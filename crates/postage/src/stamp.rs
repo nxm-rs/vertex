@@ -1,10 +1,7 @@
 use std::{future::Future, pin::Pin};
 
 use crate::{batch::BatchId, pat::BucketSeeker};
-use ethers_core::{
-    abi::Address,
-    types::Signature,
-};
+use ethers_core::{abi::Address, types::Signature};
 use thiserror::Error;
 use tiny_keccak::{Hasher, Keccak};
 use tracing::error;

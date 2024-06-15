@@ -4,15 +4,15 @@ members = [
     "crates/manifest",
     "crates/postage",
     "crates/logging",
-    "bin/waku-swarm-relay",
+    # "bin/waku-swarm-relay",
     "bin/swarm-tools",
     "bin/bee-rs",
     "bin/wasm-playground",
-    "bin/swarm-wasm-lib",
+    "bin/swarm-wasm-lib", "crates/p2p", "crates/swarm", "crates/protocols/handshake", "crates/protocols/pushsync", "crates/protocols/pullsync", "crates/protocols/cursors", "crates/protocols/kad", "crates/protocols/pseudosettle", "crates/protocols/retrieval", "crates/protocols/swap", "crates/protocols/status",
 ]
 default-members = [
     "bin/bee-rs",
-    "bin/waku-swarm-relay",
+    # "bin/waku-swarm-relay",
 ]
 
 # Explicitly set the resolver to version 2, which is the default for packages with edition >= 2021
@@ -41,42 +41,87 @@ incremental = false
 tiny-keccak = { version = "2.0.2", features = ["keccak"] }
 
 ## eth
-ethers-core = { version = "2.0.7", default-features = false }
-ethers-providers = { version = "2.0.7", default-features = false }
-ethers-signers = { version = "2.0.7", default-features = false }
-ethers-middleware = { version = "2.0.7", default-features = false }
-ethers-contract = { version = "2.0.7", default-features = false }
+ethers-core = { version = "2.0.14", default-features = false }
+ethers-providers = { version = "2.0.14", default-features = false }
+ethers-signers = { version = "2.0.14", default-features = false }
+ethers-middleware = { version = "2.0.14", default-features = false }
+ethers-contract = { version = "2.0.14", default-features = false }
 
 ## misc
-tracing = "0.1.37"
-tracing-subscriber = { version = "0.3.17", features = ["env-filter", "ansi", "fmt", "std", "json", "time"] }
-thiserror = "1.0.32"
-serde_json = "1.0.82"
-serde = { version = "1.0.140", features = ["derive"] }
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "ansi", "fmt", "std", "json", "time"] }
+thiserror = "1.0.61"
+serde_json = "1.0.117"
+serde = { version = "1.0.203", features = ["derive"] }
 rand = "0.8.5"
 hex = "0.4.3"
 
 ## tokio
-tokio-stream = "0.1.14"
-tokio = { version = "1.28.1", default-features = false, features = ["macros", "rt"] }
-tokio-util = { version = "0.7.8", features = ["codec"] }
+tokio-stream = "0.1.15"
+tokio = { version = "1.38.0", default-features = false, features = ["macros", "rt", "rt-multi-thread"] }
+tokio-util = { version = "0.7.11", features = ["codec"] }
 
 ## async
-async-trait = "0.1.57"
-futures = "0.3.21"
+async-trait = "0.1.80"
+futures = "0.3.30"
 
 ## wasm
-wasm-bindgen = "0.2.87"
-wasm-bindgen-futures = "0.4.37"
-wasm-bindgen-test = "0.3.37"
-js-sys = "0.3.64"
+wasm-bindgen = "0.2.92"
+wasm-bindgen-futures = "0.4.42"
+wasm-bindgen-test = "0.3.42"
+js-sys = "0.3.69"
 
-clap = { version = "4.3.0", features = ["derive", "env"] }
-chrono = "0.4.23"
+## protobufs / libp2p
+libp2p = { version = "0.54.0", git = "https://github.com/libp2p/rust-libp2p", features = [
+    "tokio",
+    "autonat",
+    "dns",
+    "kad",
+    "tcp",
+    "ping",
+    "noise",
+    "yamux",
+    "ecdsa",
+    "identify",
+    "macros"
+] }
+libp2p-stream = { git = "https://github.com/libp2p/rust-libp2p" }
+prost = "0.12.6"
+prost-types = "0.12.6"
+
+## alloy
+alloy = { git = "https://github.com/alloy-rs/alloy", rev = "f6ebef2", features = [
+    "consensus",
+    "contract",
+    "eips",
+    "kzg",
+    "network",
+    "node-bindings",
+    "provider-http",
+    "provider-ipc",
+    "provider-ws",
+    "providers",
+    "rpc-client-ipc",
+    "rpc-client-ws",
+    "rpc-client",
+    "rpc-types-eth",
+    "rpc-types-trace",
+    "rpc-types",
+    "signer-aws",
+    "signer-keystore",
+    "signer-ledger",
+    "signer-mnemonic",
+    "signer-trezor",
+    "signer-wallet",
+    "signer-yubihsm",
+    "signers",
+] }
+
+clap = { version = "4.5.6", features = ["derive", "env"] }
+chrono = "0.4.38"
 dotenv = "0.15.0"
-serde_with = { version = "3.0.0", features = ["hex"] }
-reqwest = { version = "0.11.11", features = ["json", "rustls-tls"] }
-async-recursion = "1.0.0"
-anyhow = "1.0.71"
-prost = "0.11.6"
-once_cell = "1.17.1"
+serde_with = { version = "3.8.1", features = ["hex"] }
+reqwest = { version = "0.12.4", features = ["json", "rustls-tls"] }
+async-recursion = "1.1.1"
+anyhow = "1.0.86"
+once_cell = "1.19.0"

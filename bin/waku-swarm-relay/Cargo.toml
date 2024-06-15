@@ -22,12 +22,12 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 ethers-core = { workspace = true }
 ethers-contract = { workspace = true }
 ethers-signers = { workspace = true }
-url = "2.3.1"
+url = "2.5.0"
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 waku-bindings = { git = "https://github.com/waku-org/waku-rust-bindings" }
 reqwest = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true}
-num-traits = "0.2.15"
+num-traits = "0.2.19"
 logging = { path = "../../crates/logging" }

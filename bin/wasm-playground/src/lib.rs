@@ -7,8 +7,8 @@ use rand::RngCore;
 use tracing::{debug, error, info, trace, warn};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use web_sys::HtmlTextAreaElement;
 use web_sys::window;
+use web_sys::HtmlTextAreaElement;
 use web_sys::{Event, HtmlButtonElement, HtmlDivElement, HtmlInputElement};
 
 #[wasm_bindgen(start)]
@@ -70,9 +70,7 @@ fn main() -> Result<(), JsValue> {
     // Create a label for the batch id
     let batch_id_label = document.create_element("label").unwrap();
     batch_id_label.set_text_content(Some("Batch id:"));
-    batch_id_container
-        .append_child(&batch_id_label)
-        .unwrap();
+    batch_id_container.append_child(&batch_id_label).unwrap();
 
     // Create an input field for the batch id
     let batch_id_input = document
@@ -90,9 +88,7 @@ fn main() -> Result<(), JsValue> {
         .dyn_into::<HtmlButtonElement>()
         .unwrap();
     batch_id_generate.set_inner_text("Generate");
-    batch_id_container
-        .append_child(&batch_id_generate)
-        .unwrap();
+    batch_id_container.append_child(&batch_id_generate).unwrap();
 
     // Create a new div element to put in two fields:
     // - the index of the bucket
@@ -213,7 +209,7 @@ fn main() -> Result<(), JsValue> {
     let output_label = document.create_element("label").unwrap();
     output_label.set_text_content(Some("Output:"));
     output_container.append_child(&output_label).unwrap();
-    
+
     // Create a text area for the output
     let output = document
         .create_element("textarea")
@@ -279,8 +275,7 @@ fn main() -> Result<(), JsValue> {
         batch_id_input_clone.set_value(hex::encode(batch_id).as_str());
     }) as Box<dyn FnMut(Event)>);
 
-    batch_id_generate
-        .set_onclick(Some(batch_id_closure.as_ref().unchecked_ref()));
+    batch_id_generate.set_onclick(Some(batch_id_closure.as_ref().unchecked_ref()));
     batch_id_closure.forget();
 
     // the closure that runs when the "Calculate" button is clicked
@@ -349,7 +344,7 @@ fn main() -> Result<(), JsValue> {
             wallet.address(),
             batch_depth,
             bucket_depth,
-            false
+            false,
         );
 
         // Now that we have the batch, we can put Postman Pat to work! 📬

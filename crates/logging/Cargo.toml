@@ -10,6 +10,6 @@ repository.workspace = true
 [dependencies]
 atty = "0.2.14"
 clap = { workspace = true }
-time = { version = "0.3.21", features = ["macros"] }
+time = { version = "0.3.36", features = ["macros"] }
 tracing = { workspace = true }
-tracing-subscriber = { version = "0.3.17", features = ["env-filter", "fmt", "time"] }
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "fmt", "time"] }

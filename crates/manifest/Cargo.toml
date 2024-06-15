@@ -10,7 +10,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 hex = { workspace = true }
-const_format = "0.2.26"
+const_format = "0.2.32"
 rand = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
@@ -24,4 +24,4 @@ thiserror = { workspace = true }
 lru = "0.7.8"
 
 [dev-dependencies]
-test-case = "2.2.1"
+test-case = "2.2.2"

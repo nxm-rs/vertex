@@ -16,7 +16,7 @@ wasm-bindgen-futures = { workspace = true }
 bmt = { path = "../../crates/bmt" }
 postage = { path = "../../crates/postage" }
 js-sys = { workspace = true }
-web-sys = { version = "0.3.64", features = ['console'] }
+web-sys = { version = "0.3.69", features = ['console'] }
 hex = { workspace = true }
 
 # The `console_error_panic_hook` crate provides better debugging of panics by
