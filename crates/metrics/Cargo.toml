@@ -1,0 +1,27 @@
+[package]
+name = "beers-metrics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "beers metrics utilities"
+
+[lints]
+workspace = true
+
+[dependencies]
+# beers
+beers-metrics-derive.workspace = true
+
+# metrics
+metrics.workspace = true
+
+# async
+tokio = { workspace = true, features = ["full"], optional = true }
+futures = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
+
+[features]
+common = ["tokio", "futures", "tokio-util"]

@@ -1,7 +1,6 @@
 use std::convert::TryInto;
 
-use ethers_signers::LocalWallet;
-use ethers_signers::Signer;
+use alloy_signer_wallet::LocalWallet;
 use postage::batch;
 use rand::RngCore;
 use tracing::{debug, error, info, trace, warn};

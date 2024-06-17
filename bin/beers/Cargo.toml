@@ -1,0 +1,43 @@
+[package]
+name = "beers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "A rusty bee node implementation"
+default-run = "beers"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+## beers
+beers-cli-runner = { workspace = true }
+beers-node-core = { workspace = true }
+beers-tasks = { workspace = true }
+beers-tracing = { workspace = true }
+beers-p2p = { workspace = true }
+
+# tracing
+tracing.workspace = true
+
+# metrics
+metrics-process.workspace = true
+
+# async
+tokio = { workspace = true, features = [
+    "sync",
+    "macros",
+    "time",
+    "rt-multi-thread",
+] }
+futures.workspace = true
+
+# misc
+eyre.workspace = true
+clap = { workspace = true, features = ["derive", "env"] }
+rayon.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

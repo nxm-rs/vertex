@@ -1,0 +1,69 @@
+[package]
+name = "beers-node-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+
+[dependencies]
+# beers
+beers-metrics.workspace = true
+beers-primitives.workspace = true
+beers-tasks.workspace = true
+beers-tracing.workspace = true
+
+# async
+futures.workspace = true
+tokio.workspace = true
+once_cell.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+procfs = "0.16.0"
+
+# crypto
+secp256k1 = { workspace = true, features = [
+    "global-context",
+    "rand-std",
+    "recovery",
+] }
+
+# eth
+alloy-primitives = { workspace = true }
+
+# io 
+dirs-next = "2.0.0"
+shellexpand = "3.0.0"
+
+# metrics
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+metrics-process.workspace = true
+metrics-util.workspace = true
+
+# http/rpc
+http.workspace = true
+jsonrpsee = { workspace = true, features = ["server"] }
+tower.workspace = true
+
+# misc
+eyre.workspace = true
+clap = { workspace = true, features = ["derive"] }
+const-str = "0.5.6"
+humantime.workspace = true
+thiserror.workspace = true
+
+# tracing
+tracing.workspace = true
+
+[lints]
+workspace = true
+
+[build-dependencies]
+vergen = { version = "8.0.0", features = ["build", "cargo", "git", "gitcl"] }
+
+[dev-dependencies]
+# test vectors generation
+proptest.workspace = true
