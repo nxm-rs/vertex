@@ -1,8 +1,9 @@
+use alloy_primitives::{hex, keccak256};
 use std::fmt::{Display, Formatter};
 
-use crate::{keccak256, span::Span, SEGMENT_SIZE};
+use super::{span::Span, SEGMENT_SIZE};
 
-use crate::{DEFAULT_MAX_PAYLOAD_SIZE, DEFAULT_MIN_PAYLOAD_SIZE, HASH_SIZE, SEGMENT_PAIR_SIZE};
+use super::{DEFAULT_MAX_PAYLOAD_SIZE, DEFAULT_MIN_PAYLOAD_SIZE, HASH_SIZE, SEGMENT_PAIR_SIZE};
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -87,7 +88,7 @@ impl Chunk {
         let mut hash_input: Vec<u8> = self.span().to_bytes().into_iter().collect();
         hash_input.extend(&self.bmt_root_hash());
 
-        keccak256(hash_input)
+        *keccak256(hash_input)
     }
 
     pub fn inclusion_proof(&self, mut segment_index: usize) -> Vec<Vec<u8>> {
@@ -133,11 +134,11 @@ impl Chunk {
             calculated_hash = match prove_segment_index % 2 == 0 {
                 true => {
                     calculated_hash.extend(proof_segment);
-                    Vec::from(keccak256(calculated_hash))
+                    Vec::from(*keccak256(calculated_hash))
                 }
                 false => {
                     proof_segment.extend(calculated_hash);
-                    Vec::from(keccak256(proof_segment))
+                    Vec::from(*keccak256(proof_segment))
                 }
             };
 
@@ -209,7 +210,7 @@ impl Display for Chunk {
 
 #[cfg(test)]
 mod tests {
-    use hex::ToHex;
+    use alloy_primitives::hex::ToHexExt;
 
     use super::*;
 
@@ -226,7 +227,7 @@ mod tests {
         let chunk = setup();
         assert_eq!(chunk.span().to_bytes(), EXPECTED_SPAN);
         assert_eq!(
-            chunk.address().encode_hex::<String>(),
+            chunk.address().encode_hex(),
             "ca6357a08e317d15ec560fef34e4c45f8f19f01c372aa70f1da72bfa7f1a4338"
         );
     }
@@ -237,7 +238,7 @@ mod tests {
         let tree = chunk.bmt();
 
         let mut to_hash = Vec::from(chunk.span.to_bytes());
-        to_hash.extend(tree[tree.len() - 1].clone().into_iter());
+        to_hash.extend(tree[tree.len() - 1].clone());
 
         assert_eq!(tree.len(), 8);
         assert_eq!(keccak256(to_hash).to_vec(), chunk.address());
@@ -287,7 +288,7 @@ mod tests {
         let inclusion_proof_segments: Vec<String> = chunk
             .inclusion_proof(0)
             .into_iter()
-            .map(|x| x.encode_hex::<String>())
+            .map(|x| x.encode_hex())
             .collect();
 
         assert_eq!(
@@ -306,7 +307,7 @@ mod tests {
         let inclusion_proof_segments: Vec<String> = chunk
             .inclusion_proof(127)
             .into_iter()
-            .map(|x| x.encode_hex::<String>())
+            .map(|x| x.encode_hex())
             .collect();
 
         assert_eq!(
@@ -325,7 +326,7 @@ mod tests {
         let inclusion_proof_segments: Vec<String> = chunk
             .inclusion_proof(64)
             .into_iter()
-            .map(|x| x.encode_hex::<String>())
+            .map(|x| x.encode_hex())
             .collect();
 
         assert_eq!(

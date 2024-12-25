@@ -5,19 +5,25 @@ use crate::HASH_SIZE;
 use super::SEGMENT_PAIR_SIZE;
 
 /// The non-optimised easy-to-read reference implementation of BMT
-pub(crate) struct RefHasher {
+pub struct RefHasher<const N: usize> {
     /// c * hashSize, where c = 2 ^ ceil(log2(count)), where count = ceil(length / hashSize)
     max_data_length: usize,
     /// 2 * hashSize
     segment_pair_length: usize,
 }
 
-impl RefHasher {
+impl<const N: usize> Default for RefHasher<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const N: usize> RefHasher<N> {
     /// Returns a new RefHasher
-    pub(crate) fn new(count: usize) -> Self {
+    pub fn new() -> Self {
         let mut c = 2;
 
-        while c < count {
+        while c < N {
             c *= 2;
         }
 
@@ -28,11 +34,11 @@ impl RefHasher {
     }
 
     /// Returns the BMT hash of the byte slice
-    pub(crate) fn hash(&self, data: &[u8]) -> [u8; 32] {
+    pub fn hash(&self, data: &[u8]) -> [u8; 32] {
         // if data is shorter than base length (`max_data_length`), we provide padding with zeros.
         let mut d = vec![0u8; self.max_data_length];
         let len = data.len().min(self.max_data_length);
-        d[..len].copy_from_slice(data);
+        d[..len].copy_from_slice(&data[..len]);
 
         self.hash_helper(&d, self.max_data_length)
     }
@@ -42,7 +48,7 @@ impl RefHasher {
     /// If the length of `data` is 2 * segment_size then just returns the hash of that segment
     /// pair.
     /// data has length max_data_length = segment size * 2 ^ k.
-    fn hash_helper(&self, data: &[u8], mut length: usize) -> [u8; 32] {
+    fn hash_helper(&self, data: &[u8], length: usize) -> [u8; 32] {
         let mut pair = [0u8; SEGMENT_PAIR_SIZE];
 
         if length == self.segment_pair_length {
@@ -59,73 +65,77 @@ impl RefHasher {
 
 #[cfg(test)]
 mod tests {
+    use crate::{bmt::length_to_span, SEGMENT_SIZE};
+
     use super::*;
 
-    use alloy_primitives::FixedBytes;
+    use alloy_primitives::{b256, FixedBytes};
     use rand::Rng;
 
-    type TestCase = (usize, usize, Box<dyn Fn(&[u8]) -> FixedBytes<32>>);
-
     #[test]
-    fn test_reference() {
-        let test_cases: Vec<TestCase> = vec![
-            (
-                1,
-                2,
-                Box::new(|d: &[u8]| {
-                    let mut data = [0u8; 64];
-                    data[..d.len()].copy_from_slice(d);
-                    keccak256(data)
-                }),
-            ),
-            (
-                3,
-                4,
-                Box::new(|d: &[u8]| {
-                    let mut data = [0u8; 128];
-                    data[..d.len()].copy_from_slice(d);
-                    keccak256([&keccak256(&data[..64]), &keccak256(&data[64..])].concat())
-                }),
-            ),
-            (
-                5,
-                8,
-                Box::new(|d: &[u8]| {
-                    let mut data = [0u8; 256];
-                    data[..d.len()].copy_from_slice(d);
-                    keccak256(
-                        [
-                            &keccak256(
-                                [&keccak256(&data[..64]), &keccak256(&data[64..128])].concat(),
-                            ),
-                            &keccak256(
-                                [&keccak256(&data[128..192]), &keccak256(&data[192..])].concat(),
-                            ),
-                        ]
-                        .concat(),
-                    )
-                }),
-            ),
-        ];
+    fn test_simple() {
+        let data: [u8; 3] = [1, 2, 3];
 
-        for (from, to, expected_fn) in test_cases {
-            for seg_count in from..=to {
-                for length in 1..=(seg_count * 32) {
+        let ref_bmt: RefHasher<128> = RefHasher::new();
+        let ref_no_metahash = ref_bmt.hash(&data);
+        let res_hash = *keccak256(
+            [
+                length_to_span(data.len().try_into().unwrap()).as_slice(),
+                ref_no_metahash.as_slice(),
+            ]
+            .concat(),
+        );
+        assert_eq!(
+            res_hash,
+            b256!("ca6357a08e317d15ec560fef34e4c45f8f19f01c372aa70f1da72bfa7f1a4338")
+        );
+    }
+
+    /// Macro to generate a test case for a specific buffer size `N`
+    macro_rules! test_ref_hasher {
+        ($name:ident, $N:expr, $expected_fn:expr) => {
+            #[test]
+            fn $name() {
+                for length in 1..=$N {
                     let mut data = vec![0u8; length];
                     rand::thread_rng().fill(&mut data[..]);
 
-                    let expected = expected_fn(&data);
-
-                    let hasher = RefHasher::new(seg_count);
+                    let expected = $expected_fn(&data);
+                    let hasher = RefHasher::<$N>::new();
                     let actual = hasher.hash(&data);
 
-                    assert_eq!(
-                        actual, expected,
-                        "Failed for seg_count={}, length={}",
-                        seg_count, length
-                    );
+                    assert_eq!(actual, expected, "Failed for N={}, length={}", $N, length);
                 }
             }
-        }
+        };
     }
+
+    fn expected_fn_2(d: &[u8]) -> FixedBytes<32> {
+        let mut data = [0u8; 2 * SEGMENT_SIZE];
+        data[..d.len()].copy_from_slice(d);
+        keccak256(data)
+    }
+
+    fn expected_fn_4(d: &[u8]) -> FixedBytes<32> {
+        let mut data = [0u8; 4 * SEGMENT_SIZE];
+        data[..d.len()].copy_from_slice(d);
+        keccak256([&keccak256(&data[..64]), &keccak256(&data[64..])].concat())
+    }
+
+    fn expected_fn_8(d: &[u8]) -> FixedBytes<32> {
+        let mut data = [0u8; 8 * SEGMENT_SIZE];
+        data[..d.len()].copy_from_slice(d);
+        keccak256(
+            [
+                &keccak256([&keccak256(&data[..64]), &keccak256(&data[64..128])].concat()),
+                &keccak256([&keccak256(&data[128..192]), &keccak256(&data[192..])].concat()),
+            ]
+            .concat(),
+        )
+    }
+
+    // Generate tests for different buffer sizes
+    test_ref_hasher!(test_ref_hasher_2_segments, 2, expected_fn_2);
+    test_ref_hasher!(test_ref_hasher_4_segments, 4, expected_fn_4);
+    test_ref_hasher!(test_ref_hasher_8_segments, 8, expected_fn_8);
 }

@@ -1,0 +1,39 @@
+[package]
+name = "swarm-primitives"
+version.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+alloy-primitives.workspace = true
+
+anyhow.workspace = true
+thiserror.workspace = true
+
+# getrandom
+getrandom = { workspace = true, optional = true }
+
+# rand
+rand = { workspace = true, optional = true, features = ["getrandom"] }
+
+# tokio
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio"] }
+rand = { workspace = true, features = ["getrandom"] }
+tokio = { version = "1", features = ["full"] }
+paste = { version = "1.0.15" }
+
+[features]
+asm-keccak = [
+  "alloy-primitives/asm-keccak"
+]
+
+[[bench]]
+name = "primitives"
+path = "benches/primitives.rs"
+harness = false
+required-features = ["rand"]
+
