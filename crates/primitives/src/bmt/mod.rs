@@ -171,7 +171,6 @@ where
         // Copy data into the internal buffer
         let mut bmt = self.bmt.lock().await;
         bmt.buffer[self.size..self.size + len].copy_from_slice(&data[..len]);
-        drop(bmt);
 
         // Calculate segment properties
         let from = self.size / SEGMENT_PAIR_SIZE;
@@ -404,7 +403,6 @@ fn length_to_span(length: u64) -> Span {
 
 #[cfg(test)]
 mod tests {
-    use core::ops::RangeInclusive;
     use pool::{size_to_params, Pool, PooledHasher};
     use rand::Rng;
     use reference::RefHasher;
@@ -412,9 +410,7 @@ mod tests {
     use super::*;
     use paste::paste;
 
-    const TEST_SEGMENT_COUNTS: RangeInclusive<usize> = 1..=128;
     const POOL_SIZE: usize = 16;
-    const SEGMENT_COUNT: usize = 128;
 
     fn ref_hash<const N: usize>(data: &[u8]) -> [u8; 32] {
         let ref_bmt: RefHasher<N> = RefHasher::new();
@@ -483,42 +479,4 @@ mod tests {
     }
 
     generate_tests!(1, 2, 3, 4, 5, 8, 9, 15, 16, 17, 32, 37, 42, 53, 63, 64, 65, 111, 127, 128);
-
-    //#[tokio::test]
-    //async fn test_hasher_empty_data() {
-    //    for COUNT in TEST_SEGMENT_COUNTS {
-    //        let pool = Arc::new(Pool::new::<COUNT>::(POOL_SIZE).await);let
-    //        let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
-    //        test_hasher_correctness(hasher, &[], 0).await;
-    //    }
-    //}
-    //
-    //#[tokio::test]
-    //async fn test_sync_hasher_correctness() {
-    //    let mut data = vec![0u8; 4096];
-    //    rand::thread_rng().fill(&mut data[..]);
-    //
-    //    for &count in TEST_SEGMENT_COUNTS {
-    //        let pool = Arc::new(Pool::new(POOL_SIZE).await);
-    //        let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
-    //        test_hasher_correctness(hasher, &data, data.len()).await;
-    //    }
-    //}
-    //
-    //#[tokio::test]
-    //async fn concurrent_hash() {
-    //    let pool = Arc::new(Pool::new::<128>(POOL_SIZE).await);
-    //    let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
-    //
-    //    let mut data = vec![0u8; 4096];
-    //    rand::thread_rng().fill(&mut data[..]);
-    //
-    //    let concurrent = sync_hash(hasher, &data).await;
-    //
-    //    println!("hash produced was: {:?}", concurrent);
-    //
-    //    let rhash = ref_hash::<128>(&data);
-    //
-    //    assert_eq!(concurrent, rhash);
-    //}
 }

@@ -28,7 +28,7 @@ where
 
         // Iterate over levels and creates 2^(depth-level) nodes
         let mut count = 2;
-        for _level in (0..=DEPTH - 2).rev() {
+        for _level in (0..DEPTH).rev() {
             let mut nodes = Vec::with_capacity(count);
 
             for i in 0..count {
@@ -41,13 +41,10 @@ where
         }
 
         // The datanode level is the nodes on the last level
-        let ret_value = Self {
+        Self {
             leaves: prev_level,
             buffer: [0u8; W * SEGMENT_SIZE],
-        };
-        println!("Buffer has size: {}", ret_value.buffer.len());
-
-        ret_value
+        }
     }
 }
 
