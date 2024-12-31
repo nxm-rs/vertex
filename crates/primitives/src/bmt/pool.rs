@@ -1,5 +1,6 @@
 use crate::bmt::HasherBuilder;
 use crate::{bmt::tree::Tree, HASH_SIZE, SEGMENT_SIZE};
+use once_cell::sync::Lazy;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -17,7 +18,6 @@ where
     [(); W * SEGMENT_SIZE]:,
     [(); DEPTH + 1]:,
 {
-    pub(crate) config: Arc<PoolConfig<W, DEPTH>>,
     /// Sender used for returning trees back to the pool after use
     pub(crate) sender: mpsc::Sender<Arc<Mutex<Tree<W, DEPTH>>>>,
     /// Receiver used for receiving trees from the pool when available
@@ -49,7 +49,6 @@ where
         }
 
         Pool {
-            config,
             sender,
             receiver: Arc::new(Mutex::new(receiver)),
         }
@@ -80,46 +79,19 @@ where
     }
 }
 
-/// Pool configuration for all hashers within the pool
-#[derive(Debug, Clone)]
-pub struct PoolConfig<const W: usize, const DEPTH: usize>
-where
-    [(); DEPTH + 1]:,
-    [(); W * SEGMENT_SIZE]:,
-{
-    /// Lookup table for predictable padding subtrees for all levels
-    pub(crate) zero_hashes: [[u8; HASH_SIZE]; DEPTH + 1],
-}
+const DEPTH: usize = 7;
 
-impl<const W: usize, const DEPTH: usize> Default for PoolConfig<W, DEPTH>
-where
-    [(); DEPTH + 1]:,
-    [(); W * SEGMENT_SIZE]:,
-{
-    fn default() -> Self {
-        let mut zero_hashes = [[0u8; HASH_SIZE]; DEPTH + 1];
-        let mut zeros = ZERO_SEGMENT;
+// Lazy initialisation of the zero_hashes lookup table
+pub(crate) static ZERO_HASHES: Lazy<[Segment; DEPTH + 1]> = Lazy::new(|| {
+    let mut zero_hashes = [[0u8; HASH_SIZE]; DEPTH + 1];
+    let mut zeros = ZERO_SEGMENT;
 
-        zero_hashes[0] = zeros;
+    zero_hashes[0] = zeros;
 
-        for slot in zero_hashes.iter_mut().take(DEPTH + 1).skip(1) {
-            zeros = *keccak256([&zeros[..], &zeros[..]].concat());
-            *slot = zeros;
-        }
-
-        Self { zero_hashes }
-    }
-}
-
-/// Calculates the depth (number of levels) and segment count in the BMT tree.
-/// This is useful for calcualting the zero hash table.
-pub const fn size_to_params(n: usize) -> (usize, usize) {
-    let mut c = 2;
-    let mut depth = 1;
-    while c < n {
-        c <<= 1;
-        depth += 1;
+    for slot in zero_hashes.iter_mut().take(DEPTH + 1).skip(1) {
+        zeros = *keccak256([&zeros[..], &zeros[..]].concat());
+        *slot = zeros;
     }
 
-    (c, depth)
-}
+    zero_hashes
+});

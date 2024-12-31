@@ -13,7 +13,7 @@ pub(crate) type Segment = [u8; SEGMENT_SIZE];
 pub mod pool;
 pub mod reference;
 pub mod tree;
-use pool::{Pool, PoolConfig};
+use pool::{Pool, ZERO_HASHES};
 
 const SEGMENT_PAIR_SIZE: usize = 2 * SEGMENT_SIZE;
 
@@ -29,7 +29,6 @@ where
     [(); W * SEGMENT_SIZE]:,
     [(); DEPTH + 1]:,
 {
-    config: Arc<PoolConfig<W, DEPTH>>,
     bmt: Arc<Mutex<Tree<W, DEPTH>>>,
     size: usize,
     pos: usize,
@@ -46,7 +45,6 @@ where
     [(); W * SEGMENT_SIZE]:,
     [(); DEPTH + 1]:,
 {
-    config: Option<Arc<PoolConfig<W, DEPTH>>>,
     bmt: Option<Arc<Mutex<Tree<W, DEPTH>>>>,
     pool_tx: Option<mpsc::Sender<Arc<Mutex<Tree<W, DEPTH>>>>>,
 }
@@ -62,18 +60,10 @@ where
     }
 
     /// Populate the builder with configuration from the respective pool..
-    pub async fn with_pool(mut self, pool: Arc<Pool<N, W, DEPTH>>) -> Self {
-        self.config = Some(pool.config.clone());
+    pub async fn with_pool(mut self, pool: Arc<Pool<W, DEPTH>>) -> Self {
         self.bmt = Some(pool.get().await);
         self.pool_tx = Some(pool.sender.clone());
 
-        self
-    }
-
-    /// Use the respective [`PoolConfig`], which is essentially just for the zero hash sister
-    /// lookup table.
-    pub fn with_config(mut self, config: Arc<PoolConfig<W, DEPTH>>) -> Self {
-        self.config = Some(config);
         self
     }
 
@@ -132,7 +122,7 @@ where
 {
     pub async fn hash(&mut self) -> Result<Segment> {
         if self.size == 0 {
-            return Ok(self.root_hash(&self.config.zero_hashes[DEPTH].clone()));
+            return Ok(self.root_hash(&ZERO_HASHES[DEPTH]));
         }
 
         // Fill the remaining buffer with zeroes
@@ -141,15 +131,7 @@ where
         drop(bmt);
 
         // write the last section with final flag set to true
-        process_segment_pair(
-            self.bmt.clone(),
-            self.pos,
-            self.size,
-            true,
-            self.result_tx.clone(),
-            self.config.clone(),
-        )
-        .await;
+        process_segment_pair(self.bmt.clone(), self.pos, true, self.result_tx.clone()).await;
 
         match self.result_rx.take() {
             Some(mut rx) => {
@@ -192,9 +174,8 @@ where
             let config = self.config.clone();
             let bmt = self.bmt.clone();
             let result_tx = self.result_tx.clone();
-            let size = self.size;
             tokio::spawn(async move {
-                process_segment_pair(bmt, i, size, false, result_tx, config).await;
+                process_segment_pair(bmt, i, false, result_tx).await;
             });
         }
 
@@ -241,7 +222,6 @@ where
 async fn process_segment_pair<const W: usize, const DEPTH: usize>(
     tree: Arc<Mutex<Tree<W, DEPTH>>>,
     i: usize,
-    length: usize,
     is_final: bool,
     result_tx: Option<mpsc::Sender<Segment>>,
 ) where
@@ -250,11 +230,6 @@ async fn process_segment_pair<const W: usize, const DEPTH: usize>(
 {
     let offset = i * SEGMENT_PAIR_SIZE;
     let level = 1;
-
-    println!(
-        "Processing segment pair offset: {} is_final: {}",
-        i, is_final
-    );
 
     // Select the leaf node for the segment pair
     let (n, is_left, segment_pair_hash) = {
@@ -265,32 +240,8 @@ async fn process_segment_pair<const W: usize, const DEPTH: usize>(
         (n.parent(), n.is_left, segment_pair_hash)
     };
 
-    // write hash into parent node
-    //if is_final && length == SEGMENT_PAIR_SIZE {
-    //    write_final_node(
-    //        level,
-    //        n,
-    //        is_left,
-    //        Some(*segment_pair_hash),
-    //        result_tx,
-    //        config,
-    //    )
-    //    .await;
-    //} else {
-    //    write_node(n, is_left, *segment_pair_hash, result_tx).await;
-    //}
     match is_final {
-        true => {
-            write_final_node(
-                level,
-                n,
-                is_left,
-                Some(*segment_pair_hash),
-                result_tx,
-                config,
-            )
-            .await
-        }
+        true => write_final_node(level, n, is_left, Some(*segment_pair_hash), result_tx).await,
         false => write_node(n, is_left, *segment_pair_hash, result_tx).await,
     }
 }
@@ -354,7 +305,7 @@ async fn write_final_node<const W: usize, const DEPTH: usize>(
             // When the final segment's path is going via left child node we include an
             // all-zero subtree hash for the right level and toggle the node.
             true => {
-                node_mut.set(false, config.zero_hashes[level]);
+                node_mut.set(false, ZERO_HASHES[level]);
 
                 if let Some(seg) = segment {
                     // If a left final node carries a hash, it must be the first (and only
@@ -505,6 +456,13 @@ mod tests {
         hasher.set_header_u64(data.len().try_into().unwrap());
         hasher.write(data).await.unwrap();
         hasher.hash().await.unwrap()
+    }
+
+    #[test]
+    fn test_zerohashes() {
+        for i in 0..ZERO_HASHES.len() {
+            println!("Zero hash {}: {:?}", i, ZERO_HASHES[i]);
+        }
     }
 
     #[tokio::test]
