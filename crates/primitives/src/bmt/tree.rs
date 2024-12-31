@@ -97,7 +97,7 @@ impl Node {
     }
 
     /// A utility hashing function that returns the hash of a segment pair in a node
-    pub(crate) fn hash_segment(&self) -> [u8; 32] {
+    pub(crate) fn hash_segment(&self) -> Segment {
         let mut buffer = ZERO_SEGMENT_PAIR;
         buffer[..HASH_SIZE].copy_from_slice(&self.left.unwrap());
         buffer[HASH_SIZE..].copy_from_slice(&self.right.unwrap());

@@ -6,13 +6,13 @@ use std::sync::Arc;
 use alloy_primitives::keccak256;
 use tokio::sync::{mpsc, Mutex};
 
-use super::{HashError, Hasher, ZERO_SEGMENT};
+use super::{HashError, Hasher, Segment, ZERO_SEGMENT};
 
 /// Provides a pool of trees used as resource by the BMT Hasher.
 /// A tree popped from the pool is guaranteed to have a clean state ready
 /// for hashing a new chunk.
 #[derive(Debug)]
-pub struct Pool<const N: usize, const W: usize, const DEPTH: usize>
+pub struct Pool<const W: usize, const DEPTH: usize>
 where
     [(); W * SEGMENT_SIZE]:,
     [(); DEPTH + 1]:,

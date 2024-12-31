@@ -20,6 +20,9 @@ const SEGMENT_PAIR_SIZE: usize = 2 * SEGMENT_SIZE;
 const ZERO_SPAN: Span = [0u8; SPAN_SIZE];
 const ZERO_SEGMENT: Segment = [0u8; SEGMENT_SIZE];
 
+pub(crate) type SegmentPair = [u8; SEGMENT_PAIR_SIZE];
+const ZERO_SEGMENT_PAIR: SegmentPair = [0u8; SEGMENT_PAIR_SIZE];
+
 #[derive(Debug)]
 pub struct Hasher<const N: usize, const W: usize, const DEPTH: usize>
 where
@@ -32,8 +35,8 @@ where
     pos: usize,
     span: Span,
     // Channels
-    result_tx: Option<mpsc::Sender<[u8; 32]>>,
-    result_rx: Option<mpsc::Receiver<[u8; 32]>>,
+    result_tx: Option<mpsc::Sender<Segment>>,
+    result_rx: Option<mpsc::Receiver<Segment>>,
     pool_tx: Option<mpsc::Sender<Arc<Mutex<Tree<W, DEPTH>>>>>,
 }
 
@@ -92,7 +95,7 @@ where
     pub fn build(self) -> Result<Hasher<N, W, DEPTH>, HashError> {
         let config = self.config.unwrap_or(Arc::new(PoolConfig::default()));
         let bmt = self.bmt.unwrap_or(Arc::new(Mutex::new(Tree::new())));
-        let (result_tx, result_rx) = mpsc::channel::<[u8; 32]>(1);
+        let (result_tx, result_rx) = mpsc::channel::<Segment>(1);
 
         Ok(Hasher {
             config,
@@ -127,7 +130,7 @@ where
     [(); W * SEGMENT_SIZE]:,
     [(); DEPTH + 1]:,
 {
-    pub async fn hash(&mut self) -> Result<[u8; 32]> {
+    pub async fn hash(&mut self) -> Result<Segment> {
         if self.size == 0 {
             return Ok(self.root_hash(&self.config.zero_hashes[DEPTH].clone()));
         }
@@ -202,7 +205,7 @@ where
     pub fn reset(&mut self) {
         (self.pos, self.size, self.span) = (0, 0, ZERO_SPAN);
 
-        let (tx, rx) = mpsc::channel::<[u8; 32]>(1);
+        let (tx, rx) = mpsc::channel::<Segment>(1);
         self.result_tx = Some(tx);
         self.result_rx = Some(rx);
     }
@@ -224,7 +227,7 @@ where
         self.span = length_to_span(header);
     }
 
-    fn root_hash(&self, last: &[u8]) -> [u8; 32] {
+    fn root_hash(&self, last: &[u8]) -> Segment {
         let mut input = [0u8; SPAN_SIZE + HASH_SIZE];
 
         input[..SPAN_SIZE].copy_from_slice(&self.span[..]);
@@ -240,8 +243,7 @@ async fn process_segment_pair<const W: usize, const DEPTH: usize>(
     i: usize,
     length: usize,
     is_final: bool,
-    result_tx: Option<mpsc::Sender<[u8; 32]>>,
-    config: Arc<PoolConfig<W, DEPTH>>,
+    result_tx: Option<mpsc::Sender<Segment>>,
 ) where
     [(); W * SEGMENT_SIZE]:,
     [(); DEPTH + 1]:,
@@ -293,7 +295,7 @@ async fn process_segment_pair<const W: usize, const DEPTH: usize>(
     }
 }
 
-async fn send_segment(sender: Option<mpsc::Sender<[u8; 32]>>, segment: [u8; HASH_SIZE]) {
+async fn send_segment(sender: Option<mpsc::Sender<Segment>>, segment: Segment) {
     if let Some(tx) = &sender {
         let tx = tx.clone();
         if let Err(_e) = tx.send(segment).await {
@@ -310,7 +312,7 @@ async fn write_node(
     mut node: Option<Arc<Mutex<Node>>>,
     mut is_left: bool,
     mut segment: [u8; HASH_SIZE],
-    result_tx: Option<mpsc::Sender<[u8; 32]>>,
+    result_tx: Option<mpsc::Sender<Segment>>,
 ) {
     while let Some(node_ref) = node {
         let mut node_mut = node_ref.lock().await;
@@ -339,8 +341,7 @@ async fn write_final_node<const W: usize, const DEPTH: usize>(
     mut node: Option<Arc<Mutex<Node>>>,
     mut is_left: bool,
     mut segment: Option<[u8; HASH_SIZE]>,
-    result_tx: Option<mpsc::Sender<[u8; 32]>>,
-    config: Arc<PoolConfig<W, DEPTH>>,
+    result_tx: Option<mpsc::Sender<Segment>>,
 ) where
     [(); W * SEGMENT_SIZE]:,
     [(); DEPTH + 1]:,
@@ -474,7 +475,7 @@ mod tests {
 
     const POOL_SIZE: usize = 16;
 
-    fn ref_hash<const N: usize>(data: &[u8]) -> [u8; 32] {
+    fn ref_hash<const N: usize>(data: &[u8]) -> Segment {
         let ref_bmt: RefHasher<N> = RefHasher::new();
         let ref_no_metahash = ref_bmt.hash(data);
 
@@ -490,7 +491,7 @@ mod tests {
     async fn sync_hash<const N: usize, const W: usize, const DEPTH: usize>(
         hasher: Arc<Mutex<Hasher<N, W, DEPTH>>>,
         data: &[u8],
-    ) -> [u8; 32]
+    ) -> Segment
     where
         [(); W * SEGMENT_SIZE]:,
         [(); DEPTH + 1]:,
