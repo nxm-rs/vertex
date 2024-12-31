@@ -40,7 +40,6 @@ where
     /// Initialze the pool with a specific capacity
     pub async fn new(capacity: usize) -> Self {
         let (sender, receiver) = mpsc::channel(capacity);
-        let config = Arc::new(PoolConfig::<W, DEPTH>::default());
 
         // Pre-fill the Pool
         for _ in 0..capacity {
