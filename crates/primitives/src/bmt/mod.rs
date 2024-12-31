@@ -24,7 +24,7 @@ pub(crate) type SegmentPair = [u8; SEGMENT_PAIR_SIZE];
 const ZERO_SEGMENT_PAIR: SegmentPair = [0u8; SEGMENT_PAIR_SIZE];
 
 #[derive(Debug)]
-pub struct Hasher<const N: usize, const W: usize, const DEPTH: usize>
+pub struct Hasher<const W: usize, const DEPTH: usize>
 where
     [(); W * SEGMENT_SIZE]:,
     [(); DEPTH + 1]:,
@@ -40,7 +40,7 @@ where
 }
 
 #[derive(Default)]
-pub struct HasherBuilder<const N: usize, const W: usize, const DEPTH: usize>
+pub struct HasherBuilder<const W: usize, const DEPTH: usize>
 where
     [(); W * SEGMENT_SIZE]:,
     [(); DEPTH + 1]:,
@@ -49,7 +49,7 @@ where
     pool_tx: Option<mpsc::Sender<Arc<Mutex<Tree<W, DEPTH>>>>>,
 }
 
-impl<const N: usize, const W: usize, const DEPTH: usize> HasherBuilder<N, W, DEPTH>
+impl<const W: usize, const DEPTH: usize> HasherBuilder<W, DEPTH>
 where
     [(); W * SEGMENT_SIZE]:,
     [(); DEPTH + 1]:,
@@ -82,16 +82,13 @@ where
     }
 
     /// Given the state of the builder, construct a [`Hasher`].
-    pub fn build(self) -> Result<Hasher<N, W, DEPTH>, HashError> {
-        let config = self.config.unwrap_or(Arc::new(PoolConfig::default()));
+    pub fn build(self) -> Result<Hasher<W, DEPTH>, HashError> {
         let bmt = self.bmt.unwrap_or(Arc::new(Mutex::new(Tree::new())));
         let (result_tx, result_rx) = mpsc::channel::<Segment>(1);
 
         Ok(Hasher {
-            config,
             bmt,
             size: 0,
-            // todo should be able trim out this max_size as this sohuld be equal to W
             pos: 0,
             span: ZERO_SPAN,
             result_tx: Some(result_tx),
@@ -115,7 +112,7 @@ pub enum HashError {
     ReceivedChannelFail,
 }
 
-impl<const N: usize, const W: usize, const DEPTH: usize> Hasher<N, W, DEPTH>
+impl<const W: usize, const DEPTH: usize> Hasher<W, DEPTH>
 where
     [(); W * SEGMENT_SIZE]:,
     [(); DEPTH + 1]:,
@@ -352,42 +349,7 @@ async fn write_final_node<const W: usize, const DEPTH: usize>(
     }
 }
 
-//async fn write_final_node<const W: usize, const DEPTH: usize>(
-//    mut level: usize,
-//    mut node: Option<Arc<Mutex<Node>>>,
-//    mut is_left: bool,
-//    mut segment: Option<[u8; HASH_SIZE]>,
-//    result_tx: Option<mpsc::Sender<[u8; 32]>>,
-//    config: Arc<PoolConfig<W, DEPTH>>,
-//) where
-//    [(); W * SEGMENT_SIZE]:,
-//    [(); DEPTH + 1]:,
-//{
-//    while let Some(node_ref) = node {
-//        let mut node_mut = node_ref.lock().await;
-//
-//        if let Some(seg) = segment {
-//            node_mut.set(is_left, seg);
-//        } else if is_left {
-//            node_mut.set(false, config.zero_hashes[level]);
-//        }
-//
-//        if node_mut.segment(!is_left).is_none() {
-//            break;
-//        }
-//
-//        segment = Some(node_mut.hash_segment());
-//        is_left = node_mut.is_left;
-//        node = node_mut.parent();
-//        level += 1;
-//    }
-//
-//    if let Some(seg) = segment {
-//        send_segment(result_tx, seg).await;
-//    }
-//}
-
-impl<const N: usize, const W: usize, const DEPTH: usize> Drop for Hasher<N, W, DEPTH>
+impl<const W: usize, const DEPTH: usize> Drop for Hasher<W, DEPTH>
 where
     [(); W * SEGMENT_SIZE]:,
     [(); DEPTH + 1]:,
@@ -418,7 +380,7 @@ fn length_to_span(length: u64) -> Span {
 #[cfg(test)]
 mod tests {
     use alloy_primitives::b256;
-    use pool::{size_to_params, Pool, PooledHasher};
+    use pool::{Pool, PooledHasher};
     use reference::RefHasher;
 
     use super::*;
@@ -439,17 +401,14 @@ mod tests {
         )
     }
 
-    async fn sync_hash<const N: usize, const W: usize, const DEPTH: usize>(
-        hasher: Arc<Mutex<Hasher<N, W, DEPTH>>>,
+    async fn sync_hash<const W: usize, const DEPTH: usize>(
+        hasher: Arc<Mutex<Hasher<W, DEPTH>>>,
         data: &[u8],
     ) -> Segment
     where
         [(); W * SEGMENT_SIZE]:,
         [(); DEPTH + 1]:,
     {
-        println!("Running sync_hash with N: {} W: {} DEPTH: {}", N, W, DEPTH);
-        println!("Data length: {}", data.len());
-        println!("Data: {:?}", data);
         let mut hasher = hasher.lock().await;
         hasher.reset();
 
@@ -469,7 +428,7 @@ mod tests {
     async fn test_concurrent_simple() {
         let data: [u8; 3] = [1, 2, 3];
 
-        let pool = Arc::new(Pool::<128, 128, 7>::new(1).await);
+        let pool = Arc::new(Pool::<128, 7>::new(1).await);
         let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
         let mut hasher = hasher.lock().await;
         hasher.set_header_u64(data.len().try_into().unwrap());
@@ -486,20 +445,20 @@ mod tests {
     async fn test_concurrent_fullsize() {
         let data: Vec<u8> = (0..4096).map(|_| rand::random::<u8>()).collect();
 
-        let pool = Arc::new(Pool::<128, 128, 7>::new(1).await);
+        let pool = Arc::new(Pool::<128, 7>::new(1).await);
         let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
         test_hasher_correctness(hasher, &data).await;
     }
 
     // Test correctness by comparing against the reference implementation
-    async fn test_hasher_correctness<const N: usize, const W: usize, const DEPTH: usize>(
-        hasher: Arc<Mutex<Hasher<N, W, DEPTH>>>,
+    async fn test_hasher_correctness<const W: usize, const DEPTH: usize>(
+        hasher: Arc<Mutex<Hasher<W, DEPTH>>>,
         data: &[u8],
     ) where
         [(); W * SEGMENT_SIZE]:,
         [(); DEPTH + 1]:,
     {
-        let exp_hash = ref_hash::<N>(data);
+        let exp_hash = ref_hash::<W>(data);
         let res_hash = sync_hash(hasher, data).await;
 
         assert_eq!(
@@ -514,10 +473,8 @@ mod tests {
             // Nested macro for common setup
             macro_rules! common_setup {
                 ($count:expr) => {
-                    const N: usize = $count;
-                    const PARAMS: (usize, usize) = size_to_params(N);
-                    const W: usize = PARAMS.0;
-                    const DEPTH: usize = PARAMS.1;
+                    const W: usize = 128;
+                    const DEPTH: usize = 7;
                 };
             }
             $(
@@ -527,7 +484,7 @@ mod tests {
                         common_setup!($segment_count);
 
                         let pool = Arc::new(Pool::new(POOL_SIZE).await);
-                        let hasher: Arc<Mutex<Hasher<N, W, DEPTH>>> = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
+                        let hasher: Arc<Mutex<Hasher<W, DEPTH>>> = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
 
                         test_hasher_correctness(hasher, &[]).await;
                     }
@@ -541,7 +498,7 @@ mod tests {
 
                         let mut increment = 1;
                         for start in (0..test_data.len()).step_by(increment) {
-                            let hasher: Arc<Mutex<Hasher<N, W, DEPTH>>> = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
+                            let hasher: Arc<Mutex<Hasher<W, DEPTH>>> = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
                             test_hasher_correctness(hasher, &test_data[..start]).await;
                             increment = (increment % 5) + 1;
                         }
@@ -551,7 +508,7 @@ mod tests {
                     async fn [<test_hasher_reuse_ $segment_count>]() {
                         common_setup!($segment_count);
 
-                        let pool = Arc::new(Pool::<N, W, DEPTH>::new(POOL_SIZE).await);
+                        let pool = Arc::new(Pool::<W, DEPTH>::new(POOL_SIZE).await);
                         let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
 
                         for _ in 0..100 {

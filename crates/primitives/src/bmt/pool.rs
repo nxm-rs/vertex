@@ -24,15 +24,15 @@ where
     pub(crate) receiver: Arc<Mutex<mpsc::Receiver<Arc<Mutex<Tree<W, DEPTH>>>>>>,
 }
 
-pub trait PooledHasher<const N: usize, const W: usize, const DEPTH: usize>
+pub trait PooledHasher<const W: usize, const DEPTH: usize>
 where
     [(); W * SEGMENT_SIZE]:,
     [(); DEPTH + 1]:,
 {
-    fn get_hasher(&self) -> impl Future<Output = Result<Hasher<N, W, DEPTH>, HashError>> + Send;
+    fn get_hasher(&self) -> impl Future<Output = Result<Hasher<W, DEPTH>, HashError>> + Send;
 }
 
-impl<const N: usize, const W: usize, const DEPTH: usize> Pool<N, W, DEPTH>
+impl<const W: usize, const DEPTH: usize> Pool<W, DEPTH>
 where
     [(); W * SEGMENT_SIZE]:,
     [(); DEPTH + 1]:,
@@ -65,13 +65,12 @@ where
     }
 }
 
-impl<const N: usize, const W: usize, const DEPTH: usize> PooledHasher<N, W, DEPTH>
-    for Arc<Pool<N, W, DEPTH>>
+impl<const W: usize, const DEPTH: usize> PooledHasher<W, DEPTH> for Arc<Pool<W, DEPTH>>
 where
     [(); W * SEGMENT_SIZE]:,
     [(); DEPTH + 1]:,
 {
-    async fn get_hasher(&self) -> Result<Hasher<N, W, DEPTH>, HashError> {
+    async fn get_hasher(&self) -> Result<Hasher<W, DEPTH>, HashError> {
         HasherBuilder::default()
             .with_pool(self.clone())
             .await
