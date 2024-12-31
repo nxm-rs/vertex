@@ -29,7 +29,6 @@ where
     config: Arc<PoolConfig<W, DEPTH>>,
     bmt: Arc<Mutex<Tree<W, DEPTH>>>,
     size: usize,
-    max_size: usize,
     pos: usize,
     span: Span,
     // Channels
@@ -100,7 +99,6 @@ where
             bmt,
             size: 0,
             // todo should be able trim out this max_size as this sohuld be equal to W
-            max_size: N * SEGMENT_SIZE,
             pos: 0,
             span: ZERO_SPAN,
             result_tx: Some(result_tx),
@@ -143,6 +141,7 @@ where
         process_segment_pair(
             self.bmt.clone(),
             self.pos,
+            self.size,
             true,
             self.result_tx.clone(),
             self.config.clone(),
@@ -162,7 +161,7 @@ where
     /// process_segment_pair in another thread.
     pub async fn write(&mut self, data: &[u8]) -> Result<usize> {
         let mut len = data.len();
-        let max_val = self.max_size - self.size;
+        let max_val = W * SEGMENT_SIZE - self.size;
 
         if len > max_val {
             len = max_val;
@@ -174,20 +173,25 @@ where
 
         // Calculate segment properties
         let from = self.size / SEGMENT_PAIR_SIZE;
-        let mut to = (self.size + len) / SEGMENT_PAIR_SIZE;
         self.size += len;
+        let mut to = self.size / SEGMENT_PAIR_SIZE;
+
+        println!("to: {}", to);
 
         if len == max_val {
             to -= 1;
         }
         self.pos = to;
 
+        println!("from: {}, to: {}, size: {}", from, to, self.size);
+
         for i in from..to {
             let config = self.config.clone();
             let bmt = self.bmt.clone();
             let result_tx = self.result_tx.clone();
+            let size = self.size;
             tokio::spawn(async move {
-                process_segment_pair(bmt, i, false, result_tx, config).await;
+                process_segment_pair(bmt, i, size, false, result_tx, config).await;
             });
         }
 
@@ -234,6 +238,7 @@ where
 async fn process_segment_pair<const W: usize, const DEPTH: usize>(
     tree: Arc<Mutex<Tree<W, DEPTH>>>,
     i: usize,
+    length: usize,
     is_final: bool,
     result_tx: Option<mpsc::Sender<[u8; 32]>>,
     config: Arc<PoolConfig<W, DEPTH>>,
@@ -243,6 +248,11 @@ async fn process_segment_pair<const W: usize, const DEPTH: usize>(
 {
     let offset = i * SEGMENT_PAIR_SIZE;
     let level = 1;
+
+    println!(
+        "Processing segment pair offset: {} is_final: {}",
+        i, is_final
+    );
 
     // Select the leaf node for the segment pair
     let (n, is_left, segment_pair_hash) = {
@@ -254,6 +264,19 @@ async fn process_segment_pair<const W: usize, const DEPTH: usize>(
     };
 
     // write hash into parent node
+    //if is_final && length == SEGMENT_PAIR_SIZE {
+    //    write_final_node(
+    //        level,
+    //        n,
+    //        is_left,
+    //        Some(*segment_pair_hash),
+    //        result_tx,
+    //        config,
+    //    )
+    //    .await;
+    //} else {
+    //    write_node(n, is_left, *segment_pair_hash, result_tx).await;
+    //}
     match is_final {
         true => {
             write_final_node(
@@ -281,7 +304,7 @@ async fn send_segment(sender: Option<mpsc::Sender<[u8; 32]>>, segment: [u8; HASH
 
 /// Pushes the data to the node.
 /// If it is the first of 2 sisters written, the routine terminates.
-/// If it is the second, it calcualtes the hash and writes it to the
+/// If it is the second, it calculates the hash and writes it to the
 /// parent node recursively.
 async fn write_node(
     mut node: Option<Arc<Mutex<Node>>>,
@@ -340,7 +363,7 @@ async fn write_final_node<const W: usize, const DEPTH: usize>(
 
                     false
                 } else {
-                    // If the first thread then propagate None and calcualte no hash
+                    // If the first thread then propagate None and calculate no hash
                     true
                 }
             }
@@ -377,19 +400,58 @@ async fn write_final_node<const W: usize, const DEPTH: usize>(
     }
 }
 
-//impl Drop for Hasher {
-//    fn drop(&mut self) {
-//        if let Some(tx) = &self.pool_tx {
-//            let tx = tx.clone();
-//            let value = self.bmt.clone();
-//            tokio::spawn(async move {
-//                if let Err(e) = tx.send(value).await {
-//                    eprintln!("Error sending data through the async channel: {:?}", e);
-//                }
-//            });
+//async fn write_final_node<const W: usize, const DEPTH: usize>(
+//    mut level: usize,
+//    mut node: Option<Arc<Mutex<Node>>>,
+//    mut is_left: bool,
+//    mut segment: Option<[u8; HASH_SIZE]>,
+//    result_tx: Option<mpsc::Sender<[u8; 32]>>,
+//    config: Arc<PoolConfig<W, DEPTH>>,
+//) where
+//    [(); W * SEGMENT_SIZE]:,
+//    [(); DEPTH + 1]:,
+//{
+//    while let Some(node_ref) = node {
+//        let mut node_mut = node_ref.lock().await;
+//
+//        if let Some(seg) = segment {
+//            node_mut.set(is_left, seg);
+//        } else if is_left {
+//            node_mut.set(false, config.zero_hashes[level]);
 //        }
+//
+//        if node_mut.segment(!is_left).is_none() {
+//            break;
+//        }
+//
+//        segment = Some(node_mut.hash_segment());
+//        is_left = node_mut.is_left;
+//        node = node_mut.parent();
+//        level += 1;
+//    }
+//
+//    if let Some(seg) = segment {
+//        send_segment(result_tx, seg).await;
 //    }
 //}
+
+impl<const N: usize, const W: usize, const DEPTH: usize> Drop for Hasher<N, W, DEPTH>
+where
+    [(); W * SEGMENT_SIZE]:,
+    [(); DEPTH + 1]:,
+{
+    fn drop(&mut self) {
+        if let Some(tx) = &self.pool_tx {
+            let tx = tx.clone();
+            let value = self.bmt.clone();
+            tokio::spawn(async move {
+                if let Err(e) = tx.send(value).await {
+                    eprintln!("Error sending data through the async channel: {:?}", e);
+                }
+            });
+        }
+    }
+}
 
 /// Creates a binary data span size representation - required for calcualting the BMT hash
 fn length_to_span(length: u64) -> Span {
@@ -403,8 +465,8 @@ fn length_to_span(length: u64) -> Span {
 
 #[cfg(test)]
 mod tests {
+    use alloy_primitives::b256;
     use pool::{size_to_params, Pool, PooledHasher};
-    use rand::Rng;
     use reference::RefHasher;
 
     use super::*;
@@ -433,12 +495,41 @@ mod tests {
         [(); W * SEGMENT_SIZE]:,
         [(); DEPTH + 1]:,
     {
+        println!("Running sync_hash with N: {} W: {} DEPTH: {}", N, W, DEPTH);
+        println!("Data length: {}", data.len());
+        println!("Data: {:?}", data);
         let mut hasher = hasher.lock().await;
         hasher.reset();
 
         hasher.set_header_u64(data.len().try_into().unwrap());
         hasher.write(data).await.unwrap();
         hasher.hash().await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_simple() {
+        let data: [u8; 3] = [1, 2, 3];
+
+        let pool = Arc::new(Pool::<128, 128, 7>::new(1).await);
+        let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
+        let mut hasher = hasher.lock().await;
+        hasher.set_header_u64(data.len().try_into().unwrap());
+        hasher.write(&data).await.unwrap();
+        let res_hash = hasher.hash().await.unwrap();
+
+        assert_eq!(
+            res_hash,
+            b256!("ca6357a08e317d15ec560fef34e4c45f8f19f01c372aa70f1da72bfa7f1a4338")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_fullsize() {
+        let data: Vec<u8> = (0..4096).map(|_| rand::random::<u8>()).collect();
+
+        let pool = Arc::new(Pool::<128, 128, 7>::new(1).await);
+        let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
+        test_hasher_correctness(hasher, &data).await;
     }
 
     // Test correctness by comparing against the reference implementation
@@ -461,17 +552,54 @@ mod tests {
 
     macro_rules! generate_tests {
         ($($segment_count:expr),*) => {
+            // Nested macro for common setup
+            macro_rules! common_setup {
+                ($count:expr) => {
+                    const N: usize = $count;
+                    const PARAMS: (usize, usize) = size_to_params(N);
+                    const W: usize = PARAMS.0;
+                    const DEPTH: usize = PARAMS.1;
+                };
+            }
             $(
                 paste! {
                     #[tokio::test]
                     async fn [<test_hasher_empty_data_ $segment_count>]() {
-                        const N: usize = $segment_count;
-                        const PARAMS: (usize, usize) = size_to_params(N);
-                        const W: usize = PARAMS.0;
-                        const DEPTH: usize = PARAMS.1;
+                        common_setup!($segment_count);
+
                         let pool = Arc::new(Pool::new(POOL_SIZE).await);
                         let hasher: Arc<Mutex<Hasher<N, W, DEPTH>>> = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
+
                         test_hasher_correctness(hasher, &[]).await;
+                    }
+
+                    #[tokio::test]
+                    async fn [<test_sync_hasher_correctness_ $segment_count>]() {
+                        common_setup!($segment_count);
+
+                        let pool = Arc::new(Pool::new(POOL_SIZE).await);
+                        let test_data: Vec<u8> = (0..4096).map(|_| rand::random::<u8>()).collect();
+
+                        let mut increment = 1;
+                        for start in (0..test_data.len()).step_by(increment) {
+                            let hasher: Arc<Mutex<Hasher<N, W, DEPTH>>> = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
+                            test_hasher_correctness(hasher, &test_data[..start]).await;
+                            increment = (increment % 5) + 1;
+                        }
+                    }
+
+                    #[tokio::test]
+                    async fn [<test_hasher_reuse_ $segment_count>]() {
+                        common_setup!($segment_count);
+
+                        let pool = Arc::new(Pool::<N, W, DEPTH>::new(POOL_SIZE).await);
+                        let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
+
+                        for _ in 0..100 {
+                            let test_data: Vec<u8> = (0..4096).map(|_| rand::random::<u8>()).collect();
+                            let test_length = rand::random::<usize>() % (W * SEGMENT_SIZE);
+                            test_hasher_correctness(hasher.clone(), &test_data[..test_length]).await;
+                        }
                     }
                 }
            )*

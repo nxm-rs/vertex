@@ -1,5 +1,5 @@
 use crate::bmt::HasherBuilder;
-use crate::{bmt::tree::Tree, BMT_BRANCHES, HASH_SIZE, SEGMENT_SIZE};
+use crate::{bmt::tree::Tree, HASH_SIZE, SEGMENT_SIZE};
 use std::future::Future;
 use std::sync::Arc;
 
@@ -7,10 +7,6 @@ use alloy_primitives::keccak256;
 use tokio::sync::{mpsc, Mutex};
 
 use super::{HashError, Hasher, ZERO_SEGMENT};
-
-const SIZE_TO_PARAMS: (usize, usize) = size_to_params(BMT_BRANCHES);
-const MAX_SIZE: usize = SIZE_TO_PARAMS.0 * SEGMENT_SIZE;
-//const DEPTH: usize = SIZE_TO_PARAMS.1;
 
 /// Provides a pool of trees used as resource by the BMT Hasher.
 /// A tree popped from the pool is guaranteed to have a clean state ready
