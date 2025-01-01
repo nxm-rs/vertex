@@ -1,4 +1,4 @@
-use crate::{bmt::HASH_SIZE, SEGMENT_SIZE};
+use crate::{bmt::DEPTH, bmt::HASH_SIZE, BMT_BRANCHES, SEGMENT_SIZE};
 use alloy_primitives::keccak256;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -7,21 +7,13 @@ use super::{Segment, ZERO_SEGMENT_PAIR};
 
 /// A reusable control structure representing a BMT organised in a binary tree
 #[derive(Debug)]
-pub struct Tree<const W: usize, const DEPTH: usize>
-where
-    [(); W * SEGMENT_SIZE]:,
-    [(); DEPTH + 1]:,
-{
+pub struct Tree {
     /// Leaf nodes of the tree, other nodes accessible via parent links
     pub(crate) leaves: Vec<Arc<Mutex<Node>>>,
-    pub(crate) buffer: [u8; W * SEGMENT_SIZE],
+    pub(crate) buffer: [u8; BMT_BRANCHES * SEGMENT_SIZE],
 }
 
-impl<const W: usize, const DEPTH: usize> Tree<W, DEPTH>
-where
-    [(); W * SEGMENT_SIZE]:,
-    [(); DEPTH + 1]:,
-{
+impl Tree {
     /// Initialises a tree by building up the nodes of a BMT
     pub(crate) fn new() -> Self {
         let root = Arc::new(Mutex::new(Node::new(0, None)));
@@ -47,7 +39,7 @@ where
         // The datanode level is the nodes on the last level
         Self {
             leaves: prev_level,
-            buffer: [0u8; W * SEGMENT_SIZE],
+            buffer: [0u8; BMT_BRANCHES * SEGMENT_SIZE],
         }
     }
 }

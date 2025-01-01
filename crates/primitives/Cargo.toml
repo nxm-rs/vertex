@@ -8,8 +8,10 @@ repository.workspace = true
 [dependencies]
 alloy-primitives.workspace = true
 
+# misc
 anyhow.workspace = true
 thiserror.workspace = true
+once_cell.workspace = true
 
 # getrandom
 getrandom = { workspace = true, optional = true }

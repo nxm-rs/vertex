@@ -1,5 +1,4 @@
-use crate::bmt::HasherBuilder;
-use crate::{bmt::tree::Tree, HASH_SIZE, SEGMENT_SIZE};
+use crate::bmt::{tree::Tree, HasherBuilder, DEPTH, HASH_SIZE};
 use once_cell::sync::Lazy;
 use std::future::Future;
 use std::sync::Arc;
@@ -13,37 +12,25 @@ use super::{HashError, Hasher, Segment, ZERO_SEGMENT};
 /// A tree popped from the pool is guaranteed to have a clean state ready
 /// for hashing a new chunk.
 #[derive(Debug)]
-pub struct Pool<const W: usize, const DEPTH: usize>
-where
-    [(); W * SEGMENT_SIZE]:,
-    [(); DEPTH + 1]:,
-{
+pub struct Pool {
     /// Sender used for returning trees back to the pool after use
-    pub(crate) sender: mpsc::Sender<Arc<Mutex<Tree<W, DEPTH>>>>,
+    pub(crate) sender: mpsc::Sender<Arc<Mutex<Tree>>>,
     /// Receiver used for receiving trees from the pool when available
-    pub(crate) receiver: Arc<Mutex<mpsc::Receiver<Arc<Mutex<Tree<W, DEPTH>>>>>>,
+    pub(crate) receiver: Arc<Mutex<mpsc::Receiver<Arc<Mutex<Tree>>>>>,
 }
 
-pub trait PooledHasher<const W: usize, const DEPTH: usize>
-where
-    [(); W * SEGMENT_SIZE]:,
-    [(); DEPTH + 1]:,
-{
-    fn get_hasher(&self) -> impl Future<Output = Result<Hasher<W, DEPTH>, HashError>> + Send;
+pub trait PooledHasher {
+    fn get_hasher(&self) -> impl Future<Output = Result<Hasher, HashError>> + Send;
 }
 
-impl<const W: usize, const DEPTH: usize> Pool<W, DEPTH>
-where
-    [(); W * SEGMENT_SIZE]:,
-    [(); DEPTH + 1]:,
-{
+impl Pool {
     /// Initialze the pool with a specific capacity
     pub async fn new(capacity: usize) -> Self {
         let (sender, receiver) = mpsc::channel(capacity);
 
         // Pre-fill the Pool
         for _ in 0..capacity {
-            let tree = Arc::new(Mutex::new(Tree::<W, DEPTH>::new()));
+            let tree = Arc::new(Mutex::new(Tree::new()));
             sender.send(tree).await.unwrap();
         }
 
@@ -54,7 +41,7 @@ where
     }
 
     /// Consume a tree from the pool asynchronously
-    pub(crate) async fn get(&self) -> Arc<Mutex<Tree<W, DEPTH>>> {
+    pub(crate) async fn get(&self) -> Arc<Mutex<Tree>> {
         self.receiver
             .lock()
             .await
@@ -64,20 +51,14 @@ where
     }
 }
 
-impl<const W: usize, const DEPTH: usize> PooledHasher<W, DEPTH> for Arc<Pool<W, DEPTH>>
-where
-    [(); W * SEGMENT_SIZE]:,
-    [(); DEPTH + 1]:,
-{
-    async fn get_hasher(&self) -> Result<Hasher<W, DEPTH>, HashError> {
+impl PooledHasher for Arc<Pool> {
+    async fn get_hasher(&self) -> Result<Hasher, HashError> {
         HasherBuilder::default()
             .with_pool(self.clone())
             .await
             .build()
     }
 }
-
-const DEPTH: usize = 7;
 
 // Lazy initialisation of the zero_hashes lookup table
 pub(crate) static ZERO_HASHES: Lazy<[Segment; DEPTH + 1]> = Lazy::new(|| {

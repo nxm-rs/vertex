@@ -1650,6 +1650,7 @@ dependencies = [
  "anyhow",
  "criterion",
  "getrandom",
+ "once_cell",
  "paste",
  "rand",
  "thiserror 2.0.6",
