@@ -5,7 +5,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{mpsc, Mutex};
 
-use crate::{BMT_BRANCHES, HASH_SIZE, SEGMENT_SIZE, SPAN_SIZE};
+use crate::{CHUNK_SIZE, HASH_SIZE, SEGMENT_SIZE, SPAN_SIZE};
 
 pub(crate) type Span = [u8; SPAN_SIZE];
 pub(crate) type Segment = [u8; SEGMENT_SIZE];
@@ -129,7 +129,7 @@ impl Hasher {
     /// process_segment_pair in another thread.
     pub async fn write(&mut self, data: &[u8]) -> Result<usize> {
         let mut len = data.len();
-        let max_val = BMT_BRANCHES * SEGMENT_SIZE - self.size;
+        let max_val = CHUNK_SIZE - self.size;
 
         if len > max_val {
             len = max_val;
@@ -138,6 +138,7 @@ impl Hasher {
         // Copy data into the internal buffer
         let mut bmt = self.bmt.lock().await;
         bmt.buffer[self.size..self.size + len].copy_from_slice(&data[..len]);
+        drop(bmt);
 
         // Calculate segment properties
         let from = self.size / SEGMENT_PAIR_SIZE;
@@ -146,13 +147,14 @@ impl Hasher {
 
         println!("to: {}", to);
 
-        if len == max_val {
+        if len % SEGMENT_PAIR_SIZE == 0 && len > 1 {
             to -= 1;
         }
         self.pos = to;
 
         println!("from: {}, to: {}, size: {}", from, to, self.size);
 
+        let mut handles = Vec::new();
         for i in from..to {
             let config = self.config.clone();
             let bmt = self.bmt.clone();
@@ -268,12 +270,15 @@ async fn write_node(
 /// table for BMT subtree root hashes for all-zero sections.
 /// Otherwise behaves like `write_node`.
 async fn write_final_node(
-    mut level: usize,
     mut node: Option<Arc<Mutex<Node>>>,
     mut is_left: bool,
     mut segment: Option<Segment>,
     result_tx: Option<mpsc::Sender<Segment>>,
 ) {
+    const LEFT: bool = true;
+    const RIGHT: bool = false;
+
+    let mut level: usize = 1;
     while let Some(node_ref) = node {
         let mut node_mut = node_ref.lock().await;
 
@@ -282,28 +287,28 @@ async fn write_final_node(
             // When the final segment's path is going via left child node we include an
             // all-zero subtree hash for the right level and toggle the node.
             true => {
-                node_mut.set(false, ZERO_HASHES[level]);
+                node_mut.set(RIGHT, ZERO_HASHES[level]);
 
                 if let Some(seg) = segment {
                     // If a left final node carries a hash, it must be the first (and only
                     // thread), so the toggle is already in passive state. No need to call
                     // yet thread needs to carry on pushing hash to parent.
-                    node_mut.set(true, seg);
+                    node_mut.set(LEFT, seg);
 
                     false
                 } else {
                     // If the first thread then propagate None and calculate no hash
-                    true
+                    node_mut.toggle()
                 }
             }
             false => {
                 if let Some(seg) = segment {
                     // If hash was pushed from right child node, write right segment change
                     // state
-                    node_mut.set(false, seg);
+                    node_mut.set(RIGHT, seg);
                     // If toggle is true, we arrived first so no hashing just push None to
                     // parent.
-                    node_mut.segment(true).is_none()
+                    node_mut.toggle()
                 } else {
                     // If sister is None, then thread arrived first at previous node and
                     // here there will be two so no need to do anything and keep sister =

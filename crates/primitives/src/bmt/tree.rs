@@ -55,6 +55,8 @@ pub struct Node {
     left: Option<Segment>,
     /// Right child segment
     right: Option<Segment>,
+    // Atomic state
+    state: AtomicBool,
 }
 
 impl Node {
@@ -63,6 +65,7 @@ impl Node {
         Self {
             parent,
             is_left: index % 2 == 0,
+            state: AtomicBool::new(true),
             ..Default::default()
         }
     }
@@ -78,6 +81,10 @@ impl Node {
             true => self.left = Some(segment),
             false => self.right = Some(segment),
         }
+    }
+
+    pub(crate) fn toggle(&mut self) -> bool {
+        self.state.fetch_not(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Returns the respective child segment
