@@ -1,6 +1,6 @@
 use crate::{bmt::DEPTH, bmt::HASH_SIZE, BMT_BRANCHES, SEGMENT_SIZE};
 use alloy_primitives::keccak256;
-use std::sync::Arc;
+use std::sync::{atomic::AtomicBool, Arc};
 use tokio::sync::Mutex;
 
 use super::{Segment, ZERO_SEGMENT_PAIR};
