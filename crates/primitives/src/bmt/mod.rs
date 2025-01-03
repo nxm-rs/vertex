@@ -145,18 +145,12 @@ impl Hasher {
         self.size += len;
         let mut to = self.size / SEGMENT_PAIR_SIZE;
 
-        println!("to: {}", to);
-
         if len % SEGMENT_PAIR_SIZE == 0 && len > 1 {
             to -= 1;
         }
         self.pos = to;
 
-        println!("from: {}, to: {}, size: {}", from, to, self.size);
-
-        let mut handles = Vec::new();
         for i in from..to {
-            let config = self.config.clone();
             let bmt = self.bmt.clone();
             let result_tx = self.result_tx.clone();
             tokio::spawn(async move {
@@ -211,7 +205,6 @@ async fn process_segment_pair(
     result_tx: Option<mpsc::Sender<Segment>>,
 ) {
     let offset = i * SEGMENT_PAIR_SIZE;
-    let level = 1;
 
     // Select the leaf node for the segment pair
     let (n, is_left, segment_pair_hash) = {
@@ -219,11 +212,11 @@ async fn process_segment_pair(
         let segment_pair_hash = keccak256(&tree.buffer[offset..offset + SEGMENT_PAIR_SIZE]);
         let n = tree.leaves[i].lock().await;
 
-        (n.parent(), n.is_left, segment_pair_hash)
+        (n.parent().clone(), n.is_left, segment_pair_hash)
     };
 
     match is_final {
-        true => write_final_node(level, n, is_left, Some(*segment_pair_hash), result_tx).await,
+        true => write_final_node(n, is_left, Some(*segment_pair_hash), result_tx).await,
         false => write_node(n, is_left, *segment_pair_hash, result_tx).await,
     }
 }
@@ -231,9 +224,11 @@ async fn process_segment_pair(
 async fn send_segment(sender: Option<mpsc::Sender<Segment>>, segment: Segment) {
     if let Some(tx) = &sender {
         let tx = tx.clone();
-        if let Err(_e) = tx.send(segment).await {
-            todo!("Add error tracing here");
-        }
+        tokio::spawn(async move {
+            if let Err(_e) = tx.send(segment).await {
+                todo!("Add error tracing here");
+            }
+        });
     }
 }
 
@@ -244,7 +239,7 @@ async fn send_segment(sender: Option<mpsc::Sender<Segment>>, segment: Segment) {
 async fn write_node(
     mut node: Option<Arc<Mutex<Node>>>,
     mut is_left: bool,
-    mut segment: [u8; HASH_SIZE],
+    mut segment: Segment,
     result_tx: Option<mpsc::Sender<Segment>>,
 ) {
     while let Some(node_ref) = node {
@@ -252,7 +247,7 @@ async fn write_node(
         node_mut.set(is_left, segment);
 
         // if the opposite segment isn't filled, waiting on the other thread so exit.
-        if node_mut.segment(!is_left).is_none() {
+        if node_mut.toggle() {
             return;
         }
 
