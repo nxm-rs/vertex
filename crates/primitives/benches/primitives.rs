@@ -1,6 +1,5 @@
 #![allow(unknown_lints, clippy::incompatible_msrv, missing_docs)]
 #![feature(async_closure)]
-#![feature(generic_const_exprs)]
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rand::prelude::*;
@@ -34,7 +33,7 @@ pub fn primitives(c: &mut Criterion) {
             .build()
             .unwrap();
         b.to_async(&rt).iter(|| async {
-            let mut hasher: Hasher<128, 128, 7> = HasherBuilder::default().build().unwrap();
+            let mut hasher: Hasher = HasherBuilder::default().build().unwrap();
             black_box(async || {
                 let _ = hasher.write(&random_chunk).await;
                 let _ = hasher.hash().await;
