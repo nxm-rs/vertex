@@ -355,14 +355,30 @@ fn length_to_span(length: u64) -> Span {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::BMT_BRANCHES;
     use alloy_primitives::b256;
+    use futures::future::join_all;
     use pool::{Pool, PooledHasher};
+    use rand::{rngs::StdRng, Rng, RngCore, SeedableRng};
     use reference::RefHasher;
 
     use super::*;
-    use paste::paste;
 
     const POOL_SIZE: usize = 16;
+
+    fn rand_data<const LENGTH: usize>() -> (Box<dyn RngCore>, Vec<u8>, String) {
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut data = vec![0u8; LENGTH];
+        rng.fill(&mut data[..]);
+
+        (Box::new(rng), data, format!("seed: {}", seed))
+    }
 
     fn ref_hash(data: &[u8]) -> Segment {
         let ref_bmt: RefHasher<BMT_BRANCHES> = RefHasher::new();
@@ -386,11 +402,16 @@ mod tests {
         hasher.hash().await.unwrap()
     }
 
-    #[test]
-    fn test_zerohashes() {
-        for i in 0..ZERO_HASHES.len() {
-            println!("Zero hash {}: {:?}", i, ZERO_HASHES[i]);
-        }
+    // Test correctness by comparing against the reference implementation
+    async fn test_hasher_correctness(hasher: Arc<Mutex<Hasher>>, data: &[u8], msg: Option<String>) {
+        let exp_hash = ref_hash(data);
+        let res_hash = sync_hash(hasher, data).await;
+
+        assert_eq!(
+            exp_hash, res_hash,
+            "Hash mismatch: expected {:?} got {:?} with {:?}",
+            exp_hash, res_hash, msg
+        );
     }
 
     #[tokio::test]
@@ -412,66 +433,66 @@ mod tests {
 
     #[tokio::test]
     async fn test_concurrent_fullsize() {
-        let data: Vec<u8> = (0..4096).map(|_| rand::random::<u8>()).collect();
-
         let pool = Arc::new(Pool::new(1).await);
         let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
-        test_hasher_correctness(hasher, &data).await;
+        let (_, data, msg) = rand_data::<CHUNK_SIZE>();
+        test_hasher_correctness(hasher, &data, Some(msg)).await;
     }
 
-    // Test correctness by comparing against the reference implementation
-    async fn test_hasher_correctness(hasher: Arc<Mutex<Hasher>>, data: &[u8]) {
-        let exp_hash = ref_hash(data);
-        let res_hash = sync_hash(hasher, data).await;
+    #[tokio::test]
+    async fn test_hasher_empty_data() {
+        let pool = Arc::new(Pool::new(1).await);
+        let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
 
-        assert_eq!(
-            exp_hash, res_hash,
-            "Hash mismatch: expected {:?} got {:?}",
-            exp_hash, res_hash
-        );
+        test_hasher_correctness(hasher, &[], None).await;
     }
 
-    macro_rules! generate_tests {
-        ($($segment_count:expr),*) => {
-            // Nested macro for common setup
-            $(
-                paste! {
-                    #[tokio::test]
-                    async fn [<test_hasher_empty_data_ $segment_count>]() {
-                        let pool = Arc::new(Pool::new(POOL_SIZE).await);
-                        let hasher: Arc<Mutex<Hasher>> = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
+    #[tokio::test]
+    async fn test_sync_hasher_correctness() {
+        let pool = Arc::new(Pool::new(1).await);
+        let (mut rng, data, msg) = rand_data::<CHUNK_SIZE>();
 
-                        test_hasher_correctness(hasher, &[]).await;
-                    }
-
-                    #[tokio::test]
-                    async fn [<test_sync_hasher_correctness_ $segment_count>]() {
-                        let pool = Arc::new(Pool::new(POOL_SIZE).await);
-                        let test_data: Vec<u8> = (0..4096).map(|_| rand::random::<u8>()).collect();
-
-                        let mut increment = 1;
-                        for start in (0..test_data.len()).step_by(increment) {
-                            let hasher: Arc<Mutex<Hasher>> = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
-                            test_hasher_correctness(hasher, &test_data[..start]).await;
-                            increment = (increment % 5) + 1;
-                        }
-                    }
-
-                    #[tokio::test]
-                    async fn [<test_hasher_reuse_ $segment_count>]() {
-                        let pool = Arc::new(Pool::new(POOL_SIZE).await);
-                        let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
-
-                        for _ in 0..100 {
-                            let test_data: Vec<u8> = (0..4096).map(|_| rand::random::<u8>()).collect();
-                            let test_length = rand::random::<usize>() % (BMT_BRANCHES * SEGMENT_SIZE);
-                            test_hasher_correctness(hasher.clone(), &test_data[..test_length]).await;
-                        }
-                    }
-                }
-           )*
-        };
+        let mut start = 0;
+        while start < data.len() {
+            let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
+            test_hasher_correctness(hasher, &data[..start], Some(msg.clone())).await;
+            start += 1 + rng.gen_range(0..=5);
+        }
     }
 
-    generate_tests!(1, 2, 3, 4, 5, 8, 9, 15, 16, 17, 32, 37, 42, 53, 63, 64, 65, 111, 127, 128);
+    #[tokio::test]
+    async fn test_hasher_reuse() {
+        let pool = Arc::new(Pool::new(POOL_SIZE).await);
+        let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
+
+        for _ in 0..100 {
+            let test_data: Vec<u8> = (0..CHUNK_SIZE).map(|_| rand::random::<u8>()).collect();
+            let test_length = rand::random::<usize>() % CHUNK_SIZE;
+            test_hasher_correctness(hasher.clone(), &test_data[..test_length], None).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_bmt_concurrent_use() {
+        let pool = Arc::new(Pool::new(POOL_SIZE).await);
+        let (mut rng, data, msg) = rand_data::<CHUNK_SIZE>();
+        let num_tasks = 100;
+
+        let handles: Vec<_> = (0..num_tasks)
+            .map(|_| {
+                let pool = pool.clone();
+                let data = data.clone();
+                let len = rng.gen_range(0..=CHUNK_SIZE);
+                let msg = msg.clone();
+                tokio::spawn(async move {
+                    let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
+                    test_hasher_correctness(hasher, &data[..len], Some(msg)).await
+                })
+            })
+            .collect();
+
+        join_all(handles).await;
+    }
+
+    // TODO: Decide whether or not to implement AsyncWrite or Write trait
 }
