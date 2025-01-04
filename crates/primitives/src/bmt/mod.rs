@@ -237,6 +237,7 @@ async fn send_segment(sender: Option<mpsc::Sender<Segment>>, segment: Segment) {
 /// If it is the first of 2 sisters written, the routine terminates.
 /// If it is the second, it calculates the hash and writes it to the
 /// parent node recursively.
+#[inline(always)]
 async fn write_node(
     mut node: Option<Arc<Mutex<Node>>>,
     mut is_left: bool,
@@ -265,6 +266,7 @@ async fn write_node(
 /// For unbalanced trees it fills in the missing right sister nodes using the pool's lookup
 /// table for BMT subtree root hashes for all-zero sections.
 /// Otherwise behaves like `write_node`.
+#[inline(always)]
 async fn write_final_node(
     mut node: Option<Arc<Mutex<Node>>>,
     mut is_left: bool,

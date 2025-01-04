@@ -1,9 +1,12 @@
-use crate::{bmt::DEPTH, bmt::HASH_SIZE, BMT_BRANCHES, SEGMENT_SIZE};
+use crate::{
+    bmt::{DEPTH, HASH_SIZE, SEGMENT_PAIR_SIZE},
+    BMT_BRANCHES, SEGMENT_SIZE,
+};
 use alloy_primitives::keccak256;
 use std::sync::{atomic::AtomicBool, Arc};
 use tokio::sync::Mutex;
 
-use super::{Segment, ZERO_SEGMENT_PAIR};
+use super::Segment;
 
 /// A reusable control structure representing a BMT organised in a binary tree
 #[derive(Debug)]
@@ -97,7 +100,7 @@ impl Node {
 
     /// A utility hashing function that returns the hash of a segment pair in a node
     pub(crate) fn hash_segment(&self) -> Segment {
-        let mut buffer = ZERO_SEGMENT_PAIR;
+        let mut buffer = [0u8; SEGMENT_PAIR_SIZE];
         buffer[..HASH_SIZE].copy_from_slice(&self.left.unwrap());
         buffer[HASH_SIZE..].copy_from_slice(&self.right.unwrap());
 

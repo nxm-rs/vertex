@@ -34,6 +34,7 @@ impl<const N: usize> RefHasher<N> {
     }
 
     /// Returns the BMT hash of the byte slice
+    #[inline(always)]
     pub fn hash(&self, data: &[u8]) -> [u8; 32] {
         // if data is shorter than base length (`max_data_length`), we provide padding with zeros.
         let mut d = vec![0u8; self.max_data_length];
@@ -48,6 +49,7 @@ impl<const N: usize> RefHasher<N> {
     /// If the length of `data` is 2 * segment_size then just returns the hash of that segment
     /// pair.
     /// data has length max_data_length = segment size * 2 ^ k.
+    #[inline(always)]
     fn hash_helper(&self, data: &[u8], length: usize) -> [u8; 32] {
         let mut pair = [0u8; SEGMENT_PAIR_SIZE];
 
