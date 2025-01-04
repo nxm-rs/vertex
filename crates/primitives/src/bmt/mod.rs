@@ -11,6 +11,7 @@ pub(crate) type Span = [u8; SPAN_SIZE];
 pub(crate) type Segment = [u8; SEGMENT_SIZE];
 
 pub mod pool;
+pub mod proof;
 pub mod reference;
 pub mod tree;
 use pool::{Pool, ZERO_HASHES};
@@ -347,11 +348,6 @@ impl Drop for Hasher {
 fn length_to_span(length: u64) -> Span {
     length.to_le_bytes()
 }
-
-///// Returns length from span
-//fn length_from_span(span: Span) -> u64 {
-//    u64::from_le_bytes(span)
-//}
 
 #[cfg(test)]
 mod tests {

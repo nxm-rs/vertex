@@ -16,7 +16,7 @@ use crate::{EXTENDED_PO, MAX_PO};
 fn proximity_helper(x: &[u8], y: &[u8], max: usize) -> u8 {
     x.iter()
         .zip(y.iter())
-        .take((max / 8 + 1) as usize)
+        .take(max / 8 + 1_usize)
         .enumerate()
         .find_map(|(i, (&o1, &o2))| {
             let oxo = o1 ^ o2;
