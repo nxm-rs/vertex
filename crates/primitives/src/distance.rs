@@ -18,6 +18,7 @@ impl Distance for Address {
 
 /// Retuns the distance between address `x` and address `y` in big-endian.
 /// Does not check the length as `Address` is a fixed length.
+#[inline(always)]
 pub fn distance(x: &Address, y: &Address) -> U256 {
     let result: Vec<u8> = x.0.iter().zip(y.0.iter()).map(|(a, b)| a ^ b).collect();
 
@@ -33,6 +34,7 @@ pub fn distance(x: &Address, y: &Address) -> U256 {
 ///
 /// NB: Unlike `bee`, there is no fail condition with the length being different. The `Address`
 ///     type is explicit about its length.
+#[inline(always)]
 pub fn distance_cmp(a: &Address, x: &Address, y: &Address) -> std::cmp::Ordering {
     let (ab, xb, yb) = (&a.0, &x.0, &y.0);
 

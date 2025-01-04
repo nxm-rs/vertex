@@ -12,7 +12,7 @@ use crate::{EXTENDED_PO, MAX_PO};
 ///
 /// It is calculated by counting the number of common leading zeros in the (MSB)
 /// binary representation of the x ^ y.
-#[inline]
+#[inline(always)]
 fn proximity_helper(x: &[u8], y: &[u8], max: usize) -> u8 {
     x.iter()
         .zip(y.iter())
@@ -27,10 +27,12 @@ fn proximity_helper(x: &[u8], y: &[u8], max: usize) -> u8 {
         .unwrap_or(max.try_into().unwrap())
 }
 
+#[inline(always)]
 pub fn proximity(x: &[u8], y: &[u8]) -> u8 {
     proximity_helper(x, y, MAX_PO)
 }
 
+#[inline(always)]
 pub fn extended_proximity(x: &[u8], y: &[u8]) -> u8 {
     proximity_helper(x, y, EXTENDED_PO)
 }

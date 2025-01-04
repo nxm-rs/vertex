@@ -29,11 +29,17 @@ impl Tree {
         while level >= 0 {
             let mut nodes = Vec::with_capacity(count);
 
-            for i in 0..count {
-                let parent = Some(&prev_level[i / 2]);
-                let node = Arc::new(Mutex::new(Node::new(i, parent.cloned())));
-                nodes.push(node);
-            }
+            let mut i = 0;
+            // use weird iteration loop to avoid bounds checks when determining the 'parent' node.
+            prev_level.iter().for_each(|parent| {
+                // create 2 nodes (left and right)
+                for _ in 0..2 {
+                    let node = Arc::new(Mutex::new(Node::new(i, Some(parent.clone()))));
+                    nodes.push(node);
+                    i += 1;
+                }
+            });
+
             prev_level = nodes;
             count <<= 1;
             level -= 1;
