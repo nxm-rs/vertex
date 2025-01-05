@@ -1,9 +1,10 @@
 use crate::bmt::tree::{is_left, Node, Tree};
 use alloy_primitives::keccak256;
 use anyhow::{anyhow, Result};
+use parking_lot::Mutex;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 
 use crate::{CHUNK_SIZE, HASH_SIZE, SEGMENT_SIZE, SPAN_SIZE};
 
@@ -20,9 +21,6 @@ const SEGMENT_PAIR_SIZE: usize = 2 * SEGMENT_SIZE;
 
 const ZERO_SPAN: Span = [0u8; SPAN_SIZE];
 const ZERO_SEGMENT: Segment = [0u8; SEGMENT_SIZE];
-
-pub(crate) type SegmentPair = [u8; SEGMENT_PAIR_SIZE];
-const ZERO_SEGMENT_PAIR: SegmentPair = [0u8; SEGMENT_PAIR_SIZE];
 
 pub(crate) const DEPTH: usize = 7;
 
@@ -110,9 +108,7 @@ impl Hasher {
         }
 
         // Fill the remaining buffer with zeroes
-        let mut bmt = self.bmt.lock().await;
-        bmt.buffer[self.size..].fill(0);
-        drop(bmt);
+        self.bmt.lock().buffer[self.size..].fill(0);
 
         // write the last section with final flag set to true
         process_segment_pair(self.bmt.clone(), self.pos, true, self.result_tx.clone()).await;
@@ -128,7 +124,7 @@ impl Hasher {
 
     /// Write calls sequentially add to the buffer to be hashed, with every full segment calls
     /// process_segment_pair in another thread.
-    pub async fn write(&mut self, data: &[u8]) -> Result<usize> {
+    pub fn write(&mut self, data: &[u8]) -> Result<usize> {
         let mut len = data.len();
         let max_val = CHUNK_SIZE - self.size;
 
@@ -137,7 +133,7 @@ impl Hasher {
         }
 
         // Copy data into the internal buffer
-        let mut bmt = self.bmt.lock().await;
+        let mut bmt = self.bmt.lock();
         bmt.buffer[self.size..self.size + len].copy_from_slice(&data[..len]);
         drop(bmt);
 
@@ -209,9 +205,9 @@ async fn process_segment_pair(
 
     // Select the leaf node for the segment pair
     let (n, segment_pair_hash) = {
-        let tree = tree.lock().await;
+        let tree = tree.lock();
         let segment_pair_hash = keccak256(&tree.buffer[offset..offset + SEGMENT_PAIR_SIZE]);
-        let n = tree.leaves[i].lock().await;
+        let n = tree.leaves[i].lock();
 
         (n.parent().clone(), segment_pair_hash)
     };
@@ -246,7 +242,7 @@ async fn write_node(
 ) {
     let mut level = 1;
     while let Some(node_ref) = node {
-        let mut node_mut = node_ref.lock().await;
+        let mut node_mut = node_ref.lock();
         node_mut.set(is_left(level, i), segment);
 
         // if the opposite segment isn't filled, waiting on the other thread so exit.
@@ -279,7 +275,7 @@ async fn write_final_node(
 
     let mut level: usize = 1;
     while let Some(node_ref) = node {
-        let mut node_mut = node_ref.lock().await;
+        let mut node_mut = node_ref.lock();
 
         let no_hash = match is_left(level, i) {
             // Coming from left sister branch
@@ -391,17 +387,21 @@ mod tests {
         )
     }
 
-    async fn sync_hash(hasher: Arc<Mutex<Hasher>>, data: &[u8]) -> Segment {
+    async fn sync_hash(hasher: Arc<tokio::sync::Mutex<Hasher>>, data: &[u8]) -> Segment {
         let mut hasher = hasher.lock().await;
         hasher.reset();
 
         hasher.set_header_u64(data.len().try_into().unwrap());
-        hasher.write(data).await.unwrap();
+        hasher.write(data).unwrap();
         hasher.hash().await.unwrap()
     }
 
     // Test correctness by comparing against the reference implementation
-    async fn test_hasher_correctness(hasher: Arc<Mutex<Hasher>>, data: &[u8], msg: Option<String>) {
+    async fn test_hasher_correctness(
+        hasher: Arc<tokio::sync::Mutex<Hasher>>,
+        data: &[u8],
+        msg: Option<String>,
+    ) {
         let exp_hash = ref_hash(data);
         let res_hash = sync_hash(hasher, data).await;
 
@@ -418,9 +418,9 @@ mod tests {
 
         let pool = Arc::new(Pool::new(1).await);
         let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
-        let mut hasher = hasher.lock().await;
+        let mut hasher = hasher.lock();
         hasher.set_header_u64(data.len().try_into().unwrap());
-        hasher.write(&data).await.unwrap();
+        hasher.write(&data).unwrap();
         let res_hash = hasher.hash().await.unwrap();
 
         assert_eq!(
@@ -432,7 +432,7 @@ mod tests {
     #[tokio::test]
     async fn test_concurrent_fullsize() {
         let pool = Arc::new(Pool::new(1).await);
-        let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
+        let hasher = Arc::new(tokio::sync::Mutex::new(pool.get_hasher().await.unwrap()));
         let (_, data, msg) = rand_data::<CHUNK_SIZE>();
         test_hasher_correctness(hasher, &data, Some(msg)).await;
     }
@@ -440,7 +440,7 @@ mod tests {
     #[tokio::test]
     async fn test_hasher_empty_data() {
         let pool = Arc::new(Pool::new(1).await);
-        let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
+        let hasher = Arc::new(tokio::sync::Mutex::new(pool.get_hasher().await.unwrap()));
 
         test_hasher_correctness(hasher, &[], None).await;
     }
@@ -452,7 +452,7 @@ mod tests {
 
         let mut start = 0;
         while start < data.len() {
-            let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
+            let hasher = Arc::new(tokio::sync::Mutex::new(pool.get_hasher().await.unwrap()));
             test_hasher_correctness(hasher, &data[..start], Some(msg.clone())).await;
             start += 1 + rng.gen_range(0..=5);
         }
@@ -461,7 +461,7 @@ mod tests {
     #[tokio::test]
     async fn test_hasher_reuse() {
         let pool = Arc::new(Pool::new(POOL_SIZE).await);
-        let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
+        let hasher = Arc::new(tokio::sync::Mutex::new(pool.get_hasher().await.unwrap()));
 
         for _ in 0..100 {
             let test_data: Vec<u8> = (0..CHUNK_SIZE).map(|_| rand::random::<u8>()).collect();
@@ -483,7 +483,8 @@ mod tests {
                 let len = rng.gen_range(0..=CHUNK_SIZE);
                 let msg = msg.clone();
                 tokio::spawn(async move {
-                    let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
+                    let hasher =
+                        Arc::new(tokio::sync::Mutex::new(pool.get_hasher().await.unwrap()));
                     test_hasher_correctness(hasher, &data[..len], Some(msg)).await
                 })
             })

@@ -13,6 +13,8 @@ anyhow.workspace = true
 thiserror.workspace = true
 once_cell.workspace = true
 
+parking_lot = "0.12.3"
+
 # getrandom
 getrandom = { workspace = true, optional = true }
 

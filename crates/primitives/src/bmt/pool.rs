@@ -1,10 +1,11 @@
 use crate::bmt::{tree::Tree, HasherBuilder, DEPTH, HASH_SIZE};
 use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use std::future::Future;
 use std::sync::Arc;
 
 use alloy_primitives::keccak256;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 
 use super::{HashError, Hasher, Segment, ZERO_SEGMENT};
 
@@ -16,7 +17,7 @@ pub struct Pool {
     /// Sender used for returning trees back to the pool after use
     pub(crate) sender: mpsc::Sender<Arc<Mutex<Tree>>>,
     /// Receiver used for receiving trees from the pool when available
-    pub(crate) receiver: Arc<Mutex<mpsc::Receiver<Arc<Mutex<Tree>>>>>,
+    pub(crate) receiver: Arc<tokio::sync::Mutex<mpsc::Receiver<Arc<Mutex<Tree>>>>>,
 }
 
 pub trait PooledHasher {
@@ -36,7 +37,7 @@ impl Pool {
 
         Pool {
             sender,
-            receiver: Arc::new(Mutex::new(receiver)),
+            receiver: Arc::new(tokio::sync::Mutex::new(receiver)),
         }
     }
 

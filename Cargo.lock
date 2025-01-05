@@ -1689,6 +1689,7 @@ dependencies = [
  "futures",
  "getrandom",
  "once_cell",
+ "parking_lot",
  "paste",
  "rand",
  "thiserror 2.0.6",

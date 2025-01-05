@@ -24,7 +24,7 @@ impl Prover for Hasher {
             return Err(anyhow!("Segment index out of range"));
         }
 
-        let tree = self.bmt.lock().await;
+        let tree = self.bmt.lock();
 
         // Calculate the starting offset of the segment pair
         let segment_index = i / 2;
@@ -54,13 +54,13 @@ impl Prover for Hasher {
 
         let mut proof_segments = vec![first_segment_sister];
 
-        let n = tree.leaves[segment_index].lock().await;
+        let n = tree.leaves[segment_index].lock();
         let mut node_ref = n.parent();
         drop(n);
 
         let mut level = 1;
         while let Some(current_node_ref) = node_ref {
-            let current_node = current_node_ref.lock().await;
+            let current_node = current_node_ref.lock();
 
             proof_segments.push(
                 current_node
@@ -104,10 +104,10 @@ impl Prover for Hasher {
             )
         };
 
-        let tree = self.bmt.lock().await;
+        let tree = self.bmt.lock();
 
         let segment_index = i / 2;
-        let n = tree.leaves[segment_index].lock().await;
+        let n = tree.leaves[segment_index].lock();
         let mut node_ref = n.parent();
         drop(n);
 
@@ -115,7 +115,7 @@ impl Prover for Hasher {
         let mut level = 1;
         for sister in &proof.proof_segments[1..] {
             if let Some(current_node_ref) = node_ref {
-                let current_node = current_node_ref.lock().await;
+                let current_node = current_node_ref.lock();
                 hash = if is_left(level, segment_index) {
                     hasher([hash.as_slice(), sister.as_slice()].concat())
                 } else {
@@ -151,7 +151,7 @@ mod tests {
         let prover = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
         let mut hasher = prover.lock().await;
         hasher.set_header_u64(buf.len() as u64);
-        hasher.write(&buf).await.unwrap();
+        hasher.write(&buf).unwrap();
 
         let _ = hasher.hash().await.expect("Unable to compute root hash");
         drop(hasher);
@@ -277,7 +277,7 @@ mod tests {
         let pool = Arc::new(Pool::new(1).await);
         let mut prover = pool.get_hasher().await.unwrap();
         prover.set_header_u64(buf.len() as u64);
-        prover.write(&buf).await.unwrap();
+        prover.write(&buf).unwrap();
 
         let proof = Proof {
             prove_segment: buf[64 * SEGMENT_SIZE..65 * SEGMENT_SIZE]
@@ -309,7 +309,7 @@ mod tests {
         let prover = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
         let mut hasher = prover.lock().await;
         hasher.set_header_u64(buf.len().try_into().unwrap());
-        hasher.write(&buf).await.unwrap();
+        hasher.write(&buf).unwrap();
 
         let root_hash = hasher.hash().await.expect("Unable to root hash");
         drop(hasher);

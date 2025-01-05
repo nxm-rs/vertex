@@ -3,8 +3,8 @@ use crate::{
     BMT_BRANCHES, SEGMENT_SIZE,
 };
 use alloy_primitives::keccak256;
+use parking_lot::Mutex;
 use std::sync::{atomic::AtomicBool, Arc};
-use tokio::sync::Mutex;
 
 use super::Segment;
 
