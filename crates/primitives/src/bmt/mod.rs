@@ -1,4 +1,4 @@
-use crate::bmt::tree::{Node, Tree};
+use crate::bmt::tree::{is_left, Node, Tree};
 use alloy_primitives::keccak256;
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
@@ -208,17 +208,17 @@ async fn process_segment_pair(
     let offset = i * SEGMENT_PAIR_SIZE;
 
     // Select the leaf node for the segment pair
-    let (n, is_left, segment_pair_hash) = {
+    let (n, segment_pair_hash) = {
         let tree = tree.lock().await;
         let segment_pair_hash = keccak256(&tree.buffer[offset..offset + SEGMENT_PAIR_SIZE]);
         let n = tree.leaves[i].lock().await;
 
-        (n.parent().clone(), n.is_left, segment_pair_hash)
+        (n.parent().clone(), segment_pair_hash)
     };
 
     match is_final {
-        true => write_final_node(n, is_left, Some(*segment_pair_hash), result_tx).await,
-        false => write_node(n, is_left, *segment_pair_hash, result_tx).await,
+        true => write_final_node(i, n, Some(*segment_pair_hash), result_tx).await,
+        false => write_node(i, n, *segment_pair_hash, result_tx).await,
     }
 }
 
@@ -239,14 +239,15 @@ async fn send_segment(sender: Option<mpsc::Sender<Segment>>, segment: Segment) {
 /// parent node recursively.
 #[inline(always)]
 async fn write_node(
+    i: usize,
     mut node: Option<Arc<Mutex<Node>>>,
-    mut is_left: bool,
     mut segment: Segment,
     result_tx: Option<mpsc::Sender<Segment>>,
 ) {
+    let mut level = 1;
     while let Some(node_ref) = node {
         let mut node_mut = node_ref.lock().await;
-        node_mut.set(is_left, segment);
+        node_mut.set(is_left(level, i), segment);
 
         // if the opposite segment isn't filled, waiting on the other thread so exit.
         if node_mut.toggle() {
@@ -254,8 +255,8 @@ async fn write_node(
         }
 
         segment = node_mut.hash_segment();
-        is_left = node_mut.is_left;
         node = node_mut.parent();
+        level += 1;
     }
 
     // Reached the root of the BMT - send it!
@@ -268,8 +269,8 @@ async fn write_node(
 /// Otherwise behaves like `write_node`.
 #[inline(always)]
 async fn write_final_node(
+    i: usize,
     mut node: Option<Arc<Mutex<Node>>>,
-    mut is_left: bool,
     mut segment: Option<Segment>,
     result_tx: Option<mpsc::Sender<Segment>>,
 ) {
@@ -280,7 +281,7 @@ async fn write_final_node(
     while let Some(node_ref) = node {
         let mut node_mut = node_ref.lock().await;
 
-        let no_hash = match is_left {
+        let no_hash = match is_left(level, i) {
             // Coming from left sister branch
             // When the final segment's path is going via left child node we include an
             // all-zero subtree hash for the right level and toggle the node.
@@ -322,7 +323,6 @@ async fn write_final_node(
             Some(node_mut.hash_segment())
         };
 
-        is_left = node_mut.is_left;
         node = node_mut.parent();
         level += 1;
     }

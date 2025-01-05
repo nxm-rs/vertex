@@ -19,7 +19,7 @@ pub struct Tree {
 impl Tree {
     /// Initialises a tree by building up the nodes of a BMT
     pub(crate) fn new() -> Self {
-        let root = Arc::new(Mutex::new(Node::new(0, None)));
+        let root = Arc::new(Mutex::new(Node::new(None)));
 
         let mut prev_level = vec![root];
 
@@ -29,14 +29,12 @@ impl Tree {
         while level >= 0 {
             let mut nodes = Vec::with_capacity(count);
 
-            let mut i = 0;
             // use weird iteration loop to avoid bounds checks when determining the 'parent' node.
             prev_level.iter().for_each(|parent| {
                 // create 2 nodes (left and right)
                 for _ in 0..2 {
-                    let node = Arc::new(Mutex::new(Node::new(i, Some(parent.clone()))));
+                    let node = Arc::new(Mutex::new(Node::new(Some(parent.clone()))));
                     nodes.push(node);
-                    i += 1;
                 }
             });
 
@@ -56,8 +54,6 @@ impl Tree {
 /// A reusable segment hasher representing a node in a BMT.
 #[derive(Debug, Default)]
 pub struct Node {
-    /// Whether it is left side of the parent double segment
-    pub(crate) is_left: bool,
     /// Pointer to parent node in the BMT
     parent: Option<Arc<Mutex<Node>>>,
     /// Left child segment
@@ -70,10 +66,9 @@ pub struct Node {
 
 impl Node {
     /// Constructs a segment hasher node in the BMT
-    pub(crate) fn new(index: usize, parent: Option<Arc<Mutex<Node>>>) -> Self {
+    pub(crate) fn new(parent: Option<Arc<Mutex<Node>>>) -> Self {
         Self {
             parent,
-            is_left: index % 2 == 0,
             state: AtomicBool::new(true),
             ..Default::default()
         }
@@ -112,4 +107,9 @@ impl Node {
 
         *keccak256(buffer)
     }
+}
+
+pub(crate) fn is_left(level: usize, index: usize) -> bool {
+    let effective_index = index / (1 << (level - 1));
+    effective_index % 2 == 0
 }

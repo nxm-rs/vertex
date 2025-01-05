@@ -1,4 +1,4 @@
-use crate::bmt::{Hasher, Segment, Span, SEGMENT_PAIR_SIZE};
+use crate::bmt::{tree::is_left, Hasher, Segment, Span, SEGMENT_PAIR_SIZE};
 use crate::{CHUNK_SIZE, SEGMENT_SIZE};
 use anyhow::{anyhow, Result};
 
@@ -55,16 +55,20 @@ impl Prover for Hasher {
         let mut proof_segments = vec![first_segment_sister];
 
         let n = tree.leaves[segment_index].lock().await;
-        let mut is_left = n.is_left;
         let mut node_ref = n.parent();
         drop(n);
 
+        let mut level = 1;
         while let Some(current_node_ref) = node_ref {
             let current_node = current_node_ref.lock().await;
 
-            proof_segments.push(current_node.segment(!is_left).unwrap());
-            is_left = current_node.is_left;
+            proof_segments.push(
+                current_node
+                    .segment(!is_left(level, segment_index))
+                    .unwrap(),
+            );
             node_ref = current_node.parent();
+            level += 1;
         }
 
         Ok(Proof {
@@ -104,21 +108,21 @@ impl Prover for Hasher {
 
         let segment_index = i / 2;
         let n = tree.leaves[segment_index].lock().await;
-        let mut is_left = n.is_left;
         let mut node_ref = n.parent();
         drop(n);
 
         // Traverse up the proof segments to compute the root hash
+        let mut level = 1;
         for sister in &proof.proof_segments[1..] {
             if let Some(current_node_ref) = node_ref {
                 let current_node = current_node_ref.lock().await;
-                hash = if is_left {
+                hash = if is_left(level, segment_index) {
                     hasher([hash.as_slice(), sister.as_slice()].concat())
                 } else {
                     hasher([sister.as_slice(), hash.as_slice()].concat())
                 };
-                is_left = current_node.is_left;
                 node_ref = current_node.parent();
+                level += 1;
             }
         }
 
