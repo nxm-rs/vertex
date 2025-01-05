@@ -109,7 +109,7 @@ impl Node {
     }
 }
 
+#[inline]
 pub(crate) fn is_left(level: usize, index: usize) -> bool {
-    let effective_index = index / (1 << (level - 1));
-    effective_index % 2 == 0
+    (index / (1 << (level - 1))) % 2 == 0
 }
