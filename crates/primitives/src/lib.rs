@@ -1,3 +1,4 @@
+#![feature(generic_const_exprs)]
 use alloy_primitives::FixedBytes;
 
 pub mod bmt;

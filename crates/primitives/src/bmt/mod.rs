@@ -1,4 +1,4 @@
-use crate::bmt::tree::{is_left, Node, Tree};
+use crate::bmt::tree::{capacity, is_left, Node, Tree};
 use alloy_primitives::keccak256;
 use anyhow::{anyhow, Result};
 use parking_lot::Mutex;
@@ -25,31 +25,40 @@ const ZERO_SEGMENT: Segment = [0u8; SEGMENT_SIZE];
 pub(crate) const DEPTH: usize = 7;
 
 #[derive(Debug)]
-pub struct Hasher {
-    bmt: Arc<Mutex<Tree>>,
+pub struct Hasher<const N: usize>
+where
+    [(); capacity(N)]:,
+{
+    bmt: Arc<Mutex<Tree<N>>>,
     size: usize,
     pos: usize,
     span: Span,
     // Channels
     result_tx: Option<mpsc::Sender<Segment>>,
     result_rx: Option<mpsc::Receiver<Segment>>,
-    pool_tx: Option<mpsc::Sender<Arc<Mutex<Tree>>>>,
+    pool_tx: Option<mpsc::Sender<Arc<Mutex<Tree<N>>>>>,
 }
 
 #[derive(Default)]
-pub struct HasherBuilder {
-    bmt: Option<Arc<Mutex<Tree>>>,
-    pool_tx: Option<mpsc::Sender<Arc<Mutex<Tree>>>>,
+pub struct HasherBuilder<const N: usize>
+where
+    [(); capacity(N)]:,
+{
+    bmt: Option<Arc<Mutex<Tree<N>>>>,
+    pool_tx: Option<mpsc::Sender<Arc<Mutex<Tree<N>>>>>,
 }
 
-impl HasherBuilder {
+impl<const N: usize> HasherBuilder<N>
+where
+    [(); capacity(N)]:,
+{
     /// Create a default builder whereby all options are set to `None`.
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Populate the builder with configuration from the respective pool..
-    pub async fn with_pool(mut self, pool: Arc<Pool>) -> Self {
+    pub async fn with_pool(mut self, pool: Arc<Pool<N>>) -> Self {
         self.bmt = Some(pool.get().await);
         self.pool_tx = Some(pool.sender.clone());
 
@@ -58,20 +67,20 @@ impl HasherBuilder {
 
     /// Use the respective [`Tree`] for building the BMT. This allows for resource reuse and
     /// prevents repetitive allocations.
-    pub fn with_bmt(mut self, bmt: Arc<Mutex<Tree>>) -> Self {
+    pub fn with_bmt(mut self, bmt: Arc<Mutex<Tree<N>>>) -> Self {
         self.bmt = Some(bmt);
         self
     }
 
     /// When the [`Hasher`] drops, it will return the BMT resource back to the pool using this
     /// channel.
-    pub fn with_pool_tx(mut self, pool_tx: mpsc::Sender<Arc<Mutex<Tree>>>) -> Self {
+    pub fn with_pool_tx(mut self, pool_tx: mpsc::Sender<Arc<Mutex<Tree<N>>>>) -> Self {
         self.pool_tx = Some(pool_tx);
         self
     }
 
     /// Given the state of the builder, construct a [`Hasher`].
-    pub fn build(self) -> Result<Hasher, HashError> {
+    pub fn build(self) -> Result<Hasher<N>, HashError> {
         let bmt = self.bmt.unwrap_or(Arc::new(Mutex::new(Tree::new())));
         let (result_tx, result_rx) = mpsc::channel::<Segment>(1);
 
@@ -101,7 +110,10 @@ pub enum HashError {
     ReceivedChannelFail,
 }
 
-impl Hasher {
+impl<const N: usize> Hasher<N>
+where
+    [(); capacity(N)]:,
+{
     pub async fn hash(&mut self) -> Result<Segment> {
         if self.size == 0 {
             return Ok(self.root_hash(ZERO_HASHES.last().unwrap()));
@@ -195,27 +207,29 @@ impl Hasher {
 }
 
 // Writes the hash of the i-th segment pair into level 1 node of the BMT tree.
-async fn process_segment_pair(
-    tree: Arc<Mutex<Tree>>,
+async fn process_segment_pair<const N: usize>(
+    tree: Arc<Mutex<Tree<N>>>,
     i: usize,
     is_final: bool,
     result_tx: Option<mpsc::Sender<Segment>>,
-) {
+) where
+    [(); capacity(N)]:,
+{
     let offset = i * SEGMENT_PAIR_SIZE;
 
     // Select the leaf node for the segment pair
-    let (n, segment_pair_hash) = {
-        let tree = tree.lock();
-        let segment_pair_hash = keccak256(&tree.buffer[offset..offset + SEGMENT_PAIR_SIZE]);
-        let n = tree.leaves[i].lock();
-
-        (n.parent().clone(), segment_pair_hash)
-    };
-
-    match is_final {
-        true => write_final_node(i, n, Some(*segment_pair_hash), result_tx).await,
-        false => write_node(i, n, *segment_pair_hash, result_tx).await,
-    }
+    //let (n, segment_pair_hash) = {
+    //    let tree = tree.lock();
+    //    let segment_pair_hash = keccak256(&tree.buffer[offset..offset + SEGMENT_PAIR_SIZE]);
+    //    let n = tree.leaves[i].lock();
+    //
+    //    (n.parent().clone(), segment_pair_hash)
+    //};
+    //
+    //match is_final {
+    //    true => write_final_node(i, n, Some(*segment_pair_hash), result_tx).await,
+    //    false => write_node(i, n, *segment_pair_hash, result_tx).await,
+    //}
 }
 
 async fn send_segment(sender: Option<mpsc::Sender<Segment>>, segment: Segment) {
@@ -328,7 +342,10 @@ async fn write_final_node(
     }
 }
 
-impl Drop for Hasher {
+impl<const N: usize> Drop for Hasher<N>
+where
+    [(); capacity(N)]:,
+{
     fn drop(&mut self) {
         if let Some(tx) = &self.pool_tx {
             let tx = tx.clone();
@@ -387,7 +404,13 @@ mod tests {
         )
     }
 
-    async fn sync_hash(hasher: Arc<tokio::sync::Mutex<Hasher>>, data: &[u8]) -> Segment {
+    async fn sync_hash<const N: usize>(
+        hasher: Arc<tokio::sync::Mutex<Hasher<N>>>,
+        data: &[u8],
+    ) -> Segment
+    where
+        [(); capacity(N)]:,
+    {
         let mut hasher = hasher.lock().await;
         hasher.reset();
 
@@ -397,11 +420,13 @@ mod tests {
     }
 
     // Test correctness by comparing against the reference implementation
-    async fn test_hasher_correctness(
-        hasher: Arc<tokio::sync::Mutex<Hasher>>,
+    async fn test_hasher_correctness<const N: usize>(
+        hasher: Arc<tokio::sync::Mutex<Hasher<N>>>,
         data: &[u8],
         msg: Option<String>,
-    ) {
+    ) where
+        [(); capacity(N)]:,
+    {
         let exp_hash = ref_hash(data);
         let res_hash = sync_hash(hasher, data).await;
 
@@ -416,7 +441,7 @@ mod tests {
     async fn test_concurrent_simple() {
         let data: [u8; 3] = [1, 2, 3];
 
-        let pool = Arc::new(Pool::new(1).await);
+        let pool = Arc::new(Pool::<128>::new(1).await);
         let hasher = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
         let mut hasher = hasher.lock();
         hasher.set_header_u64(data.len().try_into().unwrap());
@@ -431,7 +456,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_concurrent_fullsize() {
-        let pool = Arc::new(Pool::new(1).await);
+        let pool = Arc::new(Pool::<128>::new(1).await);
         let hasher = Arc::new(tokio::sync::Mutex::new(pool.get_hasher().await.unwrap()));
         let (_, data, msg) = rand_data::<CHUNK_SIZE>();
         test_hasher_correctness(hasher, &data, Some(msg)).await;
@@ -439,7 +464,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_hasher_empty_data() {
-        let pool = Arc::new(Pool::new(1).await);
+        let pool = Arc::new(Pool::<128>::new(1).await);
         let hasher = Arc::new(tokio::sync::Mutex::new(pool.get_hasher().await.unwrap()));
 
         test_hasher_correctness(hasher, &[], None).await;
@@ -447,7 +472,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sync_hasher_correctness() {
-        let pool = Arc::new(Pool::new(1).await);
+        let pool = Arc::new(Pool::<128>::new(1).await);
         let (mut rng, data, msg) = rand_data::<CHUNK_SIZE>();
 
         let mut start = 0;
@@ -460,7 +485,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_hasher_reuse() {
-        let pool = Arc::new(Pool::new(POOL_SIZE).await);
+        let pool = Arc::new(Pool::<128>::new(POOL_SIZE).await);
         let hasher = Arc::new(tokio::sync::Mutex::new(pool.get_hasher().await.unwrap()));
 
         for _ in 0..100 {
@@ -472,7 +497,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bmt_concurrent_use() {
-        let pool = Arc::new(Pool::new(POOL_SIZE).await);
+        let pool = Arc::new(Pool::<128>::new(POOL_SIZE).await);
         let (mut rng, data, msg) = rand_data::<CHUNK_SIZE>();
         let num_tasks = 100;
 

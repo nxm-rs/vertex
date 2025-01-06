@@ -1,4 +1,4 @@
-use crate::bmt::{tree::Tree, HasherBuilder, DEPTH, HASH_SIZE};
+use crate::bmt::{capacity, tree::Tree, HasherBuilder, DEPTH, HASH_SIZE};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::future::Future;
@@ -13,18 +13,27 @@ use super::{HashError, Hasher, Segment, ZERO_SEGMENT};
 /// A tree popped from the pool is guaranteed to have a clean state ready
 /// for hashing a new chunk.
 #[derive(Debug)]
-pub struct Pool {
+pub struct Pool<const N: usize>
+where
+    [(); capacity(N)]:,
+{
     /// Sender used for returning trees back to the pool after use
-    pub(crate) sender: mpsc::Sender<Arc<Mutex<Tree>>>,
+    pub(crate) sender: mpsc::Sender<Arc<Mutex<Tree<N>>>>,
     /// Receiver used for receiving trees from the pool when available
-    pub(crate) receiver: Arc<tokio::sync::Mutex<mpsc::Receiver<Arc<Mutex<Tree>>>>>,
+    pub(crate) receiver: Arc<tokio::sync::Mutex<mpsc::Receiver<Arc<Mutex<Tree<N>>>>>>,
 }
 
-pub trait PooledHasher {
-    fn get_hasher(&self) -> impl Future<Output = Result<Hasher, HashError>> + Send;
+pub trait PooledHasher<const N: usize>
+where
+    [(); capacity(N)]:,
+{
+    fn get_hasher(&self) -> impl Future<Output = Result<Hasher<N>, HashError>> + Send;
 }
 
-impl Pool {
+impl<const N: usize> Pool<N>
+where
+    [(); capacity(N)]:,
+{
     /// Initialze the pool with a specific capacity
     pub async fn new(capacity: usize) -> Self {
         let (sender, receiver) = mpsc::channel(capacity);
@@ -42,7 +51,7 @@ impl Pool {
     }
 
     /// Consume a tree from the pool asynchronously
-    pub(crate) async fn get(&self) -> Arc<Mutex<Tree>> {
+    pub(crate) async fn get(&self) -> Arc<Mutex<Tree<N>>> {
         self.receiver
             .lock()
             .await
@@ -52,8 +61,11 @@ impl Pool {
     }
 }
 
-impl PooledHasher for Arc<Pool> {
-    async fn get_hasher(&self) -> Result<Hasher, HashError> {
+impl<const N: usize> PooledHasher<N> for Arc<Pool<N>>
+where
+    [(); capacity(N)]:,
+{
+    async fn get_hasher(&self) -> Result<Hasher<N>, HashError> {
         HasherBuilder::default()
             .with_pool(self.clone())
             .await
