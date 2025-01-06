@@ -1,4 +1,4 @@
-use crate::bmt::{tree::is_left, Hasher, Segment, Span, SEGMENT_PAIR_SIZE};
+use crate::bmt::{capacity, tree::is_left, Hasher, Segment, Span, SEGMENT_PAIR_SIZE};
 use crate::{CHUNK_SIZE, SEGMENT_SIZE};
 use anyhow::{anyhow, Result};
 
@@ -18,7 +18,10 @@ pub trait Prover {
     async fn verify(&self, i: usize, proof: Proof) -> Result<Segment>;
 }
 
-impl Prover for Hasher {
+impl<const N: usize> Prover for Hasher<N>
+where
+    [(); capacity(N)]:,
+{
     async fn proof(&self, i: usize) -> Result<Proof> {
         if i >= CHUNK_SIZE / SEGMENT_SIZE {
             return Err(anyhow!("Segment index out of range"));
@@ -147,7 +150,7 @@ mod tests {
         let data = b"hello world";
         buf[..data.len()].copy_from_slice(data);
 
-        let pool = Arc::new(Pool::new(1).await);
+        let pool = Arc::new(Pool::<128>::new(1).await);
         let prover = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
         let mut hasher = prover.lock().await;
         hasher.set_header_u64(buf.len() as u64);
@@ -274,7 +277,7 @@ mod tests {
         let data = b"hello world";
         buf[..data.len()].copy_from_slice(data);
 
-        let pool = Arc::new(Pool::new(1).await);
+        let pool = Arc::new(Pool::<128>::new(1).await);
         let mut prover = pool.get_hasher().await.unwrap();
         prover.set_header_u64(buf.len() as u64);
         prover.write(&buf).unwrap();
@@ -305,7 +308,7 @@ mod tests {
         rand::thread_rng().fill(buf.as_mut_slice());
 
         // Create a BMT pool
-        let pool = Arc::new(Pool::new(16).await);
+        let pool = Arc::new(Pool::<128>::new(16).await);
         let prover = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
         let mut hasher = prover.lock().await;
         hasher.set_header_u64(buf.len().try_into().unwrap());

@@ -4,6 +4,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rand::prelude::*;
 //use swarm_primitives::bmt::chunk::{Chunk, Options};
+use alloy_primitives::keccak256;
 use swarm_primitives::bmt::reference::RefHasher;
 use swarm_primitives::bmt::{Hasher, HasherBuilder};
 use swarm_primitives::Address;
@@ -21,6 +22,11 @@ pub fn primitives(c: &mut Criterion) {
     //        black_box(chunk.address());
     //    });
     //});
+    g.bench_function("hash_baseline", |b| {
+        b.iter(|| {
+            black_box(keccak256(&random_chunk));
+        })
+    });
     g.bench_function("bmt_nonconcurrent", |b| {
         let hasher = RefHasher::<128>::new();
         b.iter(|| {
