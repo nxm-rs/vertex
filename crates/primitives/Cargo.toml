@@ -31,6 +31,9 @@ rand = { workspace = true, features = ["getrandom"] }
 tokio = { version = "1", features = ["full"] }
 paste = { version = "1.0.15" }
 
+[build-dependencies]
+alloy-primitives.workspace = true
+
 [features]
 asm-keccak = [
   "alloy-primitives/asm-keccak"
