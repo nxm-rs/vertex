@@ -61,7 +61,7 @@ impl PooledHasher for Arc<Pool> {
         let tree = self.get().await;
         HasherBuilder::default()
             .with_tree(tree)
-            .with_pool_tx(self.sender.clone())
+            .with_pool(self.clone())
             .build()
     }
 }
