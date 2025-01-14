@@ -76,10 +76,8 @@ impl HasherBuilder {
 
 #[derive(Error, Debug)]
 pub enum HashError {
-    #[error("Missing BMT")]
-    MissingBmt,
     #[error("Invalid length: {0}")]
-    InvalidLength(usize),
+    InvalidLength(u64),
 }
 
 impl Hasher {
@@ -157,13 +155,24 @@ impl Hasher {
             self.span.copy_from_slice(&header[0..SPAN_SIZE]);
             Ok(())
         } else {
-            Err(HashError::InvalidLength(header.len()))
+            Err(HashError::InvalidLength(header.len().try_into().unwrap()))
         }
     }
 
     /// Set the header bytes of BMT hash by the little-endian encoded u64.
-    pub fn set_header_u64(&mut self, header: u64) {
-        self.span = length_to_span(header);
+    pub fn set_header<H>(&mut self, header: H) -> Result<(), HashError>
+    where
+        H: TryInto<u64>,
+        H::Error: std::fmt::Debug,
+    {
+        match header.try_into() {
+            Ok(header_u64) if header_u64 <= CHUNK_SIZE.try_into().unwrap() => {
+                self.span = header_u64.to_le_bytes();
+                Ok(())
+            }
+            Ok(header_u64) => Err(HashError::InvalidLength(header_u64)),
+            Err(_) => Err(HashError::InvalidLength(0)),
+        }
     }
 
     fn root_hash(&self, last: &[u8], output: &mut [u8]) {
@@ -218,11 +227,6 @@ impl Drop for Hasher {
     }
 }
 
-/// Creates a binary data span size representation - required for calcualting the BMT hash
-fn length_to_span(length: u64) -> Span {
-    length.to_le_bytes()
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -255,7 +259,7 @@ mod tests {
         let ref_no_metahash = ref_bmt.hash(data);
 
         let mut hasher = Keccak256::new();
-        hasher.update(length_to_span(data.len().try_into().unwrap()).as_slice());
+        hasher.update((data.len().try_into().unwrap() as u64).to_le_bytes());
         hasher.update(ref_no_metahash.as_slice());
 
         *hasher.finalize()
@@ -265,7 +269,7 @@ mod tests {
         let mut hasher = hasher.lock().await;
         hasher.reset();
 
-        hasher.set_header_u64(data.len().try_into().unwrap());
+        hasher.set_header(data.len());
         hasher.write(data).await.unwrap();
         let mut segment: Segment = [0u8; 32];
         hasher.hash(segment.as_mut_slice());
@@ -295,7 +299,7 @@ mod tests {
 
         let pool = Arc::new(Pool::new(1).await);
         let mut hasher = pool.get_hasher().await.unwrap();
-        hasher.set_header_u64(data.len().try_into().unwrap());
+        hasher.set_header(data.len());
         hasher.write(&data).await.unwrap();
         let mut res_hash: Segment = [0u8; 32];
         hasher.hash(&mut res_hash);
