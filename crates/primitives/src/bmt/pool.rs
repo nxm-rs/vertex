@@ -60,7 +60,7 @@ impl PooledHasher for Arc<Pool> {
     async fn get_hasher(&self) -> Result<Hasher, HashError> {
         let tree = self.get().await;
         HasherBuilder::default()
-            .with_bmt(tree)
+            .with_tree(tree)
             .with_pool_tx(self.sender.clone())
             .build()
     }

@@ -1,5 +1,5 @@
 use crate::bmt::tree::Tree;
-use alloy_primitives::{keccak256, Keccak256};
+use alloy_primitives::Keccak256;
 use anyhow::Result;
 use futures::future::join_all;
 use std::sync::{atomic::Ordering, Arc};
@@ -7,7 +7,7 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 use tree::TreeIterator;
 
-use crate::{CHUNK_SIZE, HASH_SIZE, SEGMENT_SIZE, SPAN_SIZE};
+use crate::{CHUNK_SIZE, SEGMENT_SIZE, SPAN_SIZE};
 
 pub(crate) type Span = [u8; SPAN_SIZE];
 pub(crate) type Segment = [u8; SEGMENT_SIZE];
@@ -26,7 +26,7 @@ const ZERO_SPAN: Span = [0u8; SPAN_SIZE];
 
 #[derive(Debug)]
 pub struct Hasher {
-    bmt: Arc<Tree>,
+    flat_tree: Arc<Tree>,
     size: usize,
     pos: usize,
     span: Span,
@@ -39,7 +39,7 @@ unsafe impl Sync for Hasher {}
 
 #[derive(Default)]
 pub struct HasherBuilder {
-    bmt: Option<Arc<Tree>>,
+    tree: Option<Arc<Tree>>,
     pool_tx: Option<mpsc::Sender<Arc<Tree>>>,
 }
 
@@ -51,7 +51,7 @@ impl HasherBuilder {
 
     /// Populate the builder with configuration from the respective pool..
     pub async fn with_pool(mut self, pool: Arc<Pool>) -> Self {
-        self.bmt = Some(pool.get().await);
+        self.tree = Some(pool.get().await);
         self.pool_tx = Some(pool.sender.clone());
 
         self
@@ -59,8 +59,8 @@ impl HasherBuilder {
 
     /// Use the respective [`Tree`] for building the BMT. This allows for resource reuse and
     /// prevents repetitive allocations.
-    pub fn with_bmt(mut self, bmt: Arc<Tree>) -> Self {
-        self.bmt = Some(bmt);
+    pub fn with_tree(mut self, tree: Arc<Tree>) -> Self {
+        self.tree = Some(tree);
         self
     }
 
@@ -73,10 +73,10 @@ impl HasherBuilder {
 
     /// Given the state of the builder, construct a [`Hasher`].
     pub fn build(self) -> Result<Hasher, HashError> {
-        let bmt = self.bmt.unwrap_or(Arc::new(Tree::new()));
+        let tree = self.tree.unwrap_or(Arc::new(Tree::new()));
 
         Ok(Hasher {
-            bmt,
+            flat_tree: tree,
             size: 0,
             pos: 0,
             span: ZERO_SPAN,
@@ -87,42 +87,33 @@ impl HasherBuilder {
 
 #[derive(Error, Debug)]
 pub enum HashError {
-    #[error("MissingPoolConfig")]
-    MissingConfig,
     #[error("Missing BMT")]
     MissingBmt,
-    #[error("Missing Pooltx")]
-    MissingPoolTx,
     #[error("Invalid length: {0}")]
     InvalidLength(usize),
-    #[error("Receiving channel failed")]
-    ReceivedChannelFail,
 }
 
 impl Hasher {
-    pub fn hash(&mut self) -> Segment {
+    pub fn hash(&mut self, output: &mut [u8]) {
         if self.size == 0 {
-            return self.root_hash(ZERO_HASHES.last().unwrap());
+            return self.root_hash(ZERO_HASHES.last().unwrap(), output);
         }
 
         // Fill the remaining buffer with zeroes
         unsafe {
-            let buffer_ptr = self.bmt.buffer.as_ptr() as *mut u8;
+            let buffer_ptr = self.flat_tree.buf.as_ptr() as *mut u8;
             std::ptr::write_bytes(
                 buffer_ptr.add(self.size),
                 0,
-                self.bmt.buffer.len() - self.size,
+                self.flat_tree.buf.len() - self.size,
             );
         }
 
-        println!("bmt buffer: {:?}", self.bmt.buffer);
-
         // write the last section with final flag set to true
-        let final_hash =
-            self.root_hash(&process_segment_pair(self.bmt.clone(), self.pos, true).unwrap());
-        self.bmt.state_reset();
-
-        final_hash
+        self.root_hash(
+            &process_segment_pair(self.flat_tree.clone(), self.pos, true).unwrap(),
+            output,
+        );
     }
 
     /// Write calls sequentially add to the buffer to be hashed, with every full segment calls
@@ -137,7 +128,7 @@ impl Hasher {
 
         // Copy data into the internal buffer
         unsafe {
-            let buffer_ptr = self.bmt.buffer.as_ptr() as *mut u8;
+            let buffer_ptr = self.flat_tree.buf.as_ptr() as *mut u8;
             let slice_ptr = buffer_ptr.add(self.size);
             std::ptr::copy_nonoverlapping(data.as_ptr(), slice_ptr, len);
         }
@@ -150,18 +141,13 @@ impl Hasher {
         if len % SEGMENT_PAIR_SIZE == 0 && len > 1 {
             to -= 1;
         }
-        //let to = if self.size % SEGMENT_PAIR_SIZE == 0 {
-        //    self.size / SEGMENT_PAIR_SIZE
-        //} else {
-        //    (self.size / SEGMENT_PAIR_SIZE) + 1
-        //};
         self.pos = to;
 
         let mut handlers = Vec::new();
         for i in from..to {
-            let bmt = self.bmt.clone();
+            let tree = self.flat_tree.clone();
             let handler = tokio::spawn(async move {
-                process_segment_pair(bmt, i, false);
+                process_segment_pair(tree, i, false);
             });
             handlers.push(handler);
         }
@@ -172,6 +158,7 @@ impl Hasher {
 
     /// Given a [`Hasher`] instance, reset it for further use.
     pub fn reset(&mut self) {
+        self.flat_tree.reset();
         (self.pos, self.size, self.span) = (0, 0, ZERO_SPAN);
     }
 
@@ -190,51 +177,38 @@ impl Hasher {
         self.span = length_to_span(header);
     }
 
-    fn root_hash(&self, last: &[u8]) -> Segment {
-        let mut input = [0u8; SPAN_SIZE + HASH_SIZE];
+    fn root_hash(&self, last: &[u8], output: &mut [u8]) {
+        let mut hasher = Keccak256::new();
+        hasher.update(self.span);
+        hasher.update(last);
 
-        input[..SPAN_SIZE].copy_from_slice(&self.span[..]);
-        input[SPAN_SIZE..(SPAN_SIZE + HASH_SIZE)].copy_from_slice(last);
-
-        *keccak256(input)
+        hasher.finalize_into(output)
     }
 }
 
 // Writes the hash of the i-th segment pair into level 1 node of the BMT tree.
 fn process_segment_pair(tree: Arc<Tree>, i: usize, is_final: bool) -> Option<Segment> {
-    println!("Processing segment pair: i = {}, is_final: {}", i, is_final);
     let tree_ref = unsafe { &*Arc::as_ptr(&tree) };
-    let mut tree_iterator = TreeIterator::new(tree_ref, i);
-    unsafe {
-        while let Some((current_node, (left, right), state)) = tree_iterator.next() {
-            println!(
-                "Processing segment pair: i = {}, left = {:?}, right = {:?}, is_final = {}, level = {}",
-                i, left, right, is_final, tree_iterator.current_level - 1
-            );
+    let tree_iterator = TreeIterator::new(tree_ref, i);
 
-            let right = if right == ZERO_HASHES[0] {
-                &ZERO_HASHES[tree_iterator.current_level - 2]
-            } else {
-                right
-            };
+    for (current_node, (left, right), state, level, _) in tree_iterator {
+        let right = if is_final && right == ZERO_HASHES[0] {
+            &ZERO_HASHES[level - 1]
+        } else {
+            right
+        };
 
-            println!(
-                "Sending to hashing function left: {:?} and right: {:?}",
-                left, right
-            );
+        let mut hasher = Keccak256::new();
+        hasher.update(left);
+        hasher.update(right);
+        hasher.finalize_into(unsafe { &mut *current_node });
 
-            let mut hasher = Keccak256::new();
-            hasher.update(left);
-            hasher.update(right);
-            hasher.finalize_into(&mut *current_node);
-
-            if is_final && state.is_none() {
-                return Some(*current_node);
-            } else if let Some(state_ptr) = state {
-                let prev_state = (*state_ptr).fetch_not(Ordering::SeqCst);
-                if prev_state && !is_final {
-                    return None;
-                }
+        if is_final && state.is_none() {
+            return Some(unsafe { *current_node });
+        } else if let Some(state_ptr) = state {
+            let prev_state = unsafe { (*state_ptr).fetch_not(Ordering::SeqCst) };
+            if prev_state && !is_final {
+                return None;
             }
         }
     }
@@ -246,8 +220,8 @@ impl Drop for Hasher {
     fn drop(&mut self) {
         if let Some(tx) = &self.pool_tx {
             let tx = tx.clone();
-            let value = self.bmt.clone();
-            value.state_reset();
+            let value = self.flat_tree.clone();
+            value.reset();
             tokio::spawn(async move {
                 if let Err(e) = tx.send(value).await {
                     eprintln!("Error sending data through the async channel: {:?}", e);
@@ -293,13 +267,11 @@ mod tests {
         let ref_bmt: RefHasher<BMT_BRANCHES> = RefHasher::new();
         let ref_no_metahash = ref_bmt.hash(data);
 
-        *keccak256(
-            [
-                length_to_span(data.len().try_into().unwrap()).as_slice(),
-                ref_no_metahash.as_slice(),
-            ]
-            .concat(),
-        )
+        let mut hasher = Keccak256::new();
+        hasher.update(length_to_span(data.len().try_into().unwrap()).as_slice());
+        hasher.update(ref_no_metahash.as_slice());
+
+        *hasher.finalize()
     }
 
     async fn sync_hash(hasher: Arc<tokio::sync::Mutex<Hasher>>, data: &[u8]) -> Segment {
@@ -308,7 +280,10 @@ mod tests {
 
         hasher.set_header_u64(data.len().try_into().unwrap());
         hasher.write(data).await.unwrap();
-        hasher.hash()
+        let mut segment: Segment = [0u8; 32];
+        hasher.hash(segment.as_mut_slice());
+
+        segment
     }
 
     // Test correctness by comparing against the reference implementation
@@ -335,7 +310,8 @@ mod tests {
         let mut hasher = pool.get_hasher().await.unwrap();
         hasher.set_header_u64(data.len().try_into().unwrap());
         hasher.write(&data).await.unwrap();
-        let res_hash = hasher.hash();
+        let mut res_hash: Segment = [0u8; 32];
+        hasher.hash(&mut res_hash);
 
         assert_eq!(
             res_hash,
@@ -385,7 +361,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_bmt_concurrent_use() {
+    async fn test_concurrent_use() {
         let pool = Arc::new(Pool::new(POOL_SIZE).await);
         let (mut rng, data, msg) = rand_data::<CHUNK_SIZE>();
         let num_tasks = 100;
@@ -406,6 +382,4 @@ mod tests {
 
         join_all(handles).await;
     }
-
-    // TODO: Decide whether or not to implement AsyncWrite or Write trait
 }

@@ -42,7 +42,8 @@ pub fn primitives(c: &mut Criterion) {
             let mut hasher: Hasher = HasherBuilder::default().build().unwrap();
             black_box(async || {
                 let _ = hasher.write(&random_chunk).await;
-                let _ = hasher.hash();
+                let mut res = [0u8; 32];
+                let _ = hasher.hash(&mut res);
             });
         });
     });
