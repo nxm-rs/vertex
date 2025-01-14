@@ -20,18 +20,14 @@ pub trait Prover {
 
 impl Prover for Hasher {
     async fn proof(&self, i: usize) -> Result<Proof> {
-        if i >= CHUNK_SIZE / SEGMENT_SIZE {
-            return Err(anyhow!("Segment index out of range"));
-        }
-
-        let tree = self.bmt.lock();
+        let tree = self.treee;
 
         // Calculate the starting offset of the segment pair
         let segment_index = i / 2;
         let offset = segment_index * SEGMENT_PAIR_SIZE;
 
         // Directly index into the buffer to get the two segments
-        let section = &tree.buffer[offset..offset + SEGMENT_PAIR_SIZE];
+        let section = &tree.buffset..offset + SEGMENT_PAIR_SIZE];
         let (segment, first_segment_sister) = if i % 2 == 0 {
             (
                 section[..SEGMENT_SIZE]
@@ -58,7 +54,7 @@ impl Prover for Hasher {
         let mut node_ref = n.parent();
         drop(n);
 
-        let mut level = 1;
+<F6>        let mut level = 1;
         while let Some(current_node_ref) = node_ref {
             let current_node = current_node_ref.lock();
 
@@ -104,7 +100,7 @@ impl Prover for Hasher {
             )
         };
 
-        let tree = self.bmt.lock();
+        let tree = self.treee.lock();
 
         let segment_index = i / 2;
         let n = tree.leaves[segment_index].lock();
