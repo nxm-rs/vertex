@@ -4,7 +4,6 @@ use anyhow::Result;
 use futures::future::join_all;
 use std::sync::{atomic::Ordering, Arc};
 use thiserror::Error;
-use tokio::sync::mpsc;
 use tree::TreeIterator;
 
 use crate::{CHUNK_SIZE, SEGMENT_SIZE, SPAN_SIZE};
@@ -26,12 +25,11 @@ const ZERO_SPAN: Span = [0u8; SPAN_SIZE];
 
 #[derive(Debug)]
 pub struct Hasher {
-    flat_tree: Arc<Tree>,
+    pool: Option<Arc<Pool>>,
+    tree: Arc<Tree>,
     size: usize,
     pos: usize,
     span: Span,
-    // Channels
-    pool_tx: Option<mpsc::Sender<Arc<Tree>>>,
 }
 
 unsafe impl Send for Hasher {}
@@ -39,8 +37,8 @@ unsafe impl Sync for Hasher {}
 
 #[derive(Default)]
 pub struct HasherBuilder {
+    pool: Option<Arc<Pool>>,
     tree: Option<Arc<Tree>>,
-    pool_tx: Option<mpsc::Sender<Arc<Tree>>>,
 }
 
 impl HasherBuilder {
@@ -50,10 +48,8 @@ impl HasherBuilder {
     }
 
     /// Populate the builder with configuration from the respective pool..
-    pub async fn with_pool(mut self, pool: Arc<Pool>) -> Self {
-        self.tree = Some(pool.get().await);
-        self.pool_tx = Some(pool.sender.clone());
-
+    pub fn with_pool(mut self, pool: Arc<Pool>) -> Self {
+        self.pool = Some(pool);
         self
     }
 
@@ -64,23 +60,16 @@ impl HasherBuilder {
         self
     }
 
-    /// When the [`Hasher`] drops, it will return the BMT resource back to the pool using this
-    /// channel.
-    pub fn with_pool_tx(mut self, pool_tx: mpsc::Sender<Arc<Tree>>) -> Self {
-        self.pool_tx = Some(pool_tx);
-        self
-    }
-
     /// Given the state of the builder, construct a [`Hasher`].
     pub fn build(self) -> Result<Hasher, HashError> {
         let tree = self.tree.unwrap_or(Arc::new(Tree::new()));
 
         Ok(Hasher {
-            flat_tree: tree,
+            tree,
             size: 0,
             pos: 0,
             span: ZERO_SPAN,
-            pool_tx: self.pool_tx,
+            pool: self.pool,
         })
     }
 }
@@ -101,17 +90,17 @@ impl Hasher {
 
         // Fill the remaining buffer with zeroes
         unsafe {
-            let buffer_ptr = self.flat_tree.buf.as_ptr() as *mut u8;
+            let buffer_ptr = self.tree.buf.as_ptr() as *mut u8;
             std::ptr::write_bytes(
                 buffer_ptr.add(self.size),
                 0,
-                self.flat_tree.buf.len() - self.size,
+                self.tree.buf.len() - self.size,
             );
         }
 
         // write the last section with final flag set to true
         self.root_hash(
-            &process_segment_pair(self.flat_tree.clone(), self.pos, true).unwrap(),
+            &process_segment_pair(self.tree.clone(), self.pos, true).unwrap(),
             output,
         );
     }
@@ -128,7 +117,7 @@ impl Hasher {
 
         // Copy data into the internal buffer
         unsafe {
-            let buffer_ptr = self.flat_tree.buf.as_ptr() as *mut u8;
+            let buffer_ptr = self.tree.buf.as_ptr() as *mut u8;
             let slice_ptr = buffer_ptr.add(self.size);
             std::ptr::copy_nonoverlapping(data.as_ptr(), slice_ptr, len);
         }
@@ -145,7 +134,7 @@ impl Hasher {
 
         let mut handlers = Vec::new();
         for i in from..to {
-            let tree = self.flat_tree.clone();
+            let tree = self.tree.clone();
             let handler = tokio::spawn(async move {
                 process_segment_pair(tree, i, false);
             });
@@ -158,7 +147,7 @@ impl Hasher {
 
     /// Given a [`Hasher`] instance, reset it for further use.
     pub fn reset(&mut self) {
-        self.flat_tree.reset();
+        self.tree.reset();
         (self.pos, self.size, self.span) = (0, 0, ZERO_SPAN);
     }
 
@@ -218,14 +207,12 @@ fn process_segment_pair(tree: Arc<Tree>, i: usize, is_final: bool) -> Option<Seg
 
 impl Drop for Hasher {
     fn drop(&mut self) {
-        if let Some(tx) = &self.pool_tx {
-            let tx = tx.clone();
-            let value = self.flat_tree.clone();
-            value.reset();
+        if let Some(pool) = &self.pool {
+            let pool = pool.clone();
+            let tree = self.tree.clone();
             tokio::spawn(async move {
-                if let Err(e) = tx.send(value).await {
-                    eprintln!("Error sending data through the async channel: {:?}", e);
-                }
+                tree.reset();
+                pool.put(tree).await
             });
         }
     }
