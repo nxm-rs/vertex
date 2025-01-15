@@ -67,7 +67,7 @@ impl<const N: usize> RefHasher<N> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{bmt::length_to_span, SEGMENT_SIZE};
+    use crate::SEGMENT_SIZE;
 
     use super::*;
 
@@ -82,7 +82,7 @@ mod tests {
         let ref_no_metahash = ref_bmt.hash(&data);
         let res_hash = *keccak256(
             [
-                length_to_span(data.len().try_into().unwrap()).as_slice(),
+                (data.len() as u64).to_le_bytes().as_slice(),
                 ref_no_metahash.as_slice(),
             ]
             .concat(),
