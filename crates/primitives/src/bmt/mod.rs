@@ -166,7 +166,7 @@ impl Hasher {
         H::Error: std::fmt::Debug,
     {
         match header.try_into() {
-            Ok(header_u64) if header_u64 <= CHUNK_SIZE.try_into().unwrap() => {
+            Ok(header_u64) if header_u64 <= CHUNK_SIZE as u64 => {
                 self.span = header_u64.to_le_bytes();
                 Ok(())
             }
@@ -259,7 +259,7 @@ mod tests {
         let ref_no_metahash = ref_bmt.hash(data);
 
         let mut hasher = Keccak256::new();
-        hasher.update((data.len().try_into().unwrap() as u64).to_le_bytes());
+        hasher.update((data.len() as u64).to_le_bytes());
         hasher.update(ref_no_metahash.as_slice());
 
         *hasher.finalize()
