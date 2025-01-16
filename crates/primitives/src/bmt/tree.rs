@@ -4,11 +4,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::Segment;
 
-/// Calculates the depth of a Binary Merkle Tree given the number of nodes on the bottom level
+/// Calculate the depth of a Binary Merkle Tree given the number of nodes `n` on the bottom level
 /// (0-indexed), rounded up to the nearest power of two.
-const fn calculate_depth(num_bottom_level: usize) -> usize {
+const fn calculate_depth(n: usize) -> usize {
     let mut depth = 0;
-    let mut segments = num_bottom_level;
+    let mut segments = n;
     while segments > 1 {
         segments /= 2;
         depth += 1;
@@ -17,34 +17,38 @@ const fn calculate_depth(num_bottom_level: usize) -> usize {
 }
 
 /// Generates index offset lookup tables given some Binary Merkle Tree's depth.
-const fn generate_offset_table<const depth: usize>() -> [usize; depth] {
-    let mut offsets = [0; depth];
+const fn generate_offset_table<const DEPTH: usize>() -> [usize; DEPTH] {
+    let mut offsets = [0; DEPTH];
     let mut current_offset = 0;
     let mut level = 0;
 
-    while level < depth {
+    while level < DEPTH {
         offsets[level] = current_offset;
-        current_offset += 1 << (depth - level - 1);
+        current_offset += 1 << (DEPTH - level - 1);
         level += 1;
     }
 
     offsets
 }
 
+/// Set the depth of the BMT tree, based on configuration variables.
 const DEPTH: usize = calculate_depth(BMT_BRANCHES);
 
 /// Determine leaf constants at compile time
 /// The leaves element for the data structure dismisses the Level 0 part of the BMT (which is
-/// handled by the `buf`). Therefore, the leaves component is essentially concerned about a tree
+/// handled by `buf`). Therefore, the leaves component is essentially concerned about a tree
 /// with a depth of DEPTH - 1.
 const LEAVES_DEPTH: usize = DEPTH - 1;
 const LEAVES_CAPACITY: usize = (1 << LEAVES_DEPTH) - 1;
 const LEAVES_LEVEL_OFFSETS: [usize; LEAVES_DEPTH] = generate_offset_table::<LEAVES_DEPTH>();
 
-// Exclude levels 0 and
-/// The states element for the data structure dismisses the Level 0 (they are not the parent of any
-/// node), and the Level 1 (these are by default able to be processed as their children are known).
-/// Therefore the state component is essentially concerned about a tree with a depth of DEPTH - 2.
+// Exclude levels 0 and and 1
+/// The state element for the [`Tree`] struct includes atomic state variables for each node at
+/// DEPTH >= 2. Reasoning for omitting levels:
+/// * Level 0: Omitted as these nodes are not the parent of any other node.
+/// * Level 1: Omitted as these nodes are the parents of a pair of level 0 nodes, however there is
+/// no need to evaluate the state whether or not it has been hashed as this represents the initial
+/// level from which the algorithm starts at.
 const STATE_DEPTH: usize = DEPTH - 2;
 const STATE_CAPACITY: usize = (1 << (STATE_DEPTH)) - 1;
 const STATE_LEVEL_OFFSETS: [usize; STATE_DEPTH] = generate_offset_table::<STATE_DEPTH>();
@@ -110,14 +114,14 @@ impl Tree {
     }
 }
 
-/// A [`TreeIterator`] that when given a node's index on **Level 1** of the Binary Merkle Tree,
-/// will subseqeuntly traverse the tree through to the root.
+/// A [`TreeIterator`] that when given a node's index on **Level 1** of the BMT, will
+/// subseqeuntly traverse the tree through to the root.
 pub struct TreeIterator<'a> {
-    /// The Binary Merkle Tree for traversal,
+    /// The BMT for traversal,
     tree: &'a Tree,
-    /// The current level (0-indexed) in the Binary Merkle Tree for the iterator.
+    /// The current level (0-indexed) in the BMT for the iterator.
     level: usize,
-    /// The current index (0-indexed) of the node on `level` in the Binary Merkle Tree.
+    /// The current index (0-indexed) of the node on `level` in the BMT.
     index: usize,
 }
 
