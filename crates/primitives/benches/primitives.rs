@@ -35,7 +35,7 @@ pub fn primitives(c: &mut Criterion) {
     });
     g.bench_function("bmt_concurrent", |b| {
         let rt = Builder::new_multi_thread()
-            //.worker_threads(4)
+            .worker_threads(16)
             .build()
             .unwrap();
         b.to_async(&rt).iter(|| async {
