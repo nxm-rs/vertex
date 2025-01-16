@@ -86,21 +86,13 @@ impl Hasher {
             return self.root_hash(ZERO_HASHES.last().unwrap(), output);
         }
 
-        // Fill the remaining buffer with zeroes
-        unsafe {
-            let buffer_ptr = self.tree.buf.as_ptr() as *mut u8;
-            std::ptr::write_bytes(
-                buffer_ptr.add(self.size),
-                0,
-                self.tree.buf.len() - self.size,
-            );
-        }
-
         // write the last section with final flag set to true
         self.root_hash(
-            &process_segment_pair(self.tree.clone(), self.pos, true).unwrap(),
+            &Self::process_segment_pair(self.tree.clone(), self.pos, true).unwrap(),
             output,
         );
+
+        self.reset();
     }
 
     /// Write calls sequentially add to the buffer to be hashed, with every full segment calls
@@ -134,7 +126,7 @@ impl Hasher {
         for i in from..to {
             let tree = self.tree.clone();
             let handler = tokio::spawn(async move {
-                process_segment_pair(tree, i, false);
+                Self::process_segment_pair(tree, i, false);
             });
             handlers.push(handler);
         }
@@ -160,19 +152,43 @@ impl Hasher {
     }
 
     /// Set the header bytes of BMT hash by the little-endian encoded u64.
-    pub fn set_header<H>(&mut self, header: H) -> Result<(), HashError>
-    where
-        H: TryInto<u64>,
-        H::Error: std::fmt::Debug,
-    {
-        match header.try_into() {
-            Ok(header_u64) if header_u64 <= CHUNK_SIZE as u64 => {
-                self.span = header_u64.to_le_bytes();
-                Ok(())
-            }
-            Ok(header_u64) => Err(HashError::InvalidLength(header_u64)),
-            Err(_) => Err(HashError::InvalidLength(0)),
+    pub fn set_header_u64(&mut self, header: u64) -> Result<(), HashError> {
+        if header <= CHUNK_SIZE as u64 {
+            self.span = header.to_le_bytes();
+            Ok(())
+        } else {
+            Err(HashError::InvalidLength(header))
         }
+    }
+
+    // Writes the hash of the i-th segment pair into level 1 node of the BMT tree.
+    fn process_segment_pair(tree: Arc<Tree>, i: usize, is_final: bool) -> Option<Segment> {
+        let tree_ref = unsafe { &*Arc::as_ptr(&tree) };
+        let tree_iterator = TreeIterator::new(tree_ref, i);
+
+        for (current_node, (left, right), state, level, _) in tree_iterator {
+            let right = if is_final && right == ZERO_HASHES[0] {
+                &ZERO_HASHES[level - 1]
+            } else {
+                right
+            };
+
+            let mut hasher = Keccak256::new();
+            hasher.update(left);
+            hasher.update(right);
+            hasher.finalize_into(unsafe { &mut *current_node });
+
+            if is_final && state.is_none() {
+                return Some(unsafe { *current_node });
+            } else if let Some(state_ptr) = state {
+                let prev_state = unsafe { (*state_ptr).fetch_not(Ordering::SeqCst) };
+                if prev_state && !is_final {
+                    return None;
+                }
+            }
+        }
+        // Only to satisfy the compiler
+        None
     }
 
     fn root_hash(&self, last: &[u8], output: &mut [u8]) {
@@ -182,36 +198,6 @@ impl Hasher {
 
         hasher.finalize_into(output)
     }
-}
-
-// Writes the hash of the i-th segment pair into level 1 node of the BMT tree.
-fn process_segment_pair(tree: Arc<Tree>, i: usize, is_final: bool) -> Option<Segment> {
-    let tree_ref = unsafe { &*Arc::as_ptr(&tree) };
-    let tree_iterator = TreeIterator::new(tree_ref, i);
-
-    for (current_node, (left, right), state, level, _) in tree_iterator {
-        let right = if is_final && right == ZERO_HASHES[0] {
-            &ZERO_HASHES[level - 1]
-        } else {
-            right
-        };
-
-        let mut hasher = Keccak256::new();
-        hasher.update(left);
-        hasher.update(right);
-        hasher.finalize_into(unsafe { &mut *current_node });
-
-        if is_final && state.is_none() {
-            return Some(unsafe { *current_node });
-        } else if let Some(state_ptr) = state {
-            let prev_state = unsafe { (*state_ptr).fetch_not(Ordering::SeqCst) };
-            if prev_state && !is_final {
-                return None;
-            }
-        }
-    }
-    // Only to satisfy the compiler
-    None
 }
 
 impl Drop for Hasher {
@@ -267,9 +253,8 @@ mod tests {
 
     async fn sync_hash(hasher: Arc<tokio::sync::Mutex<Hasher>>, data: &[u8]) -> Segment {
         let mut hasher = hasher.lock().await;
-        hasher.reset();
 
-        hasher.set_header(data.len());
+        hasher.set_header_u64(data.len() as u64).unwrap();
         hasher.write(data).await.unwrap();
         let mut segment: Segment = [0u8; 32];
         hasher.hash(segment.as_mut_slice());
@@ -299,7 +284,7 @@ mod tests {
 
         let pool = Arc::new(Pool::new(1).await);
         let mut hasher = pool.get_hasher().await.unwrap();
-        hasher.set_header(data.len());
+        hasher.set_header_u64(data.len() as u64).unwrap();
         hasher.write(&data).await.unwrap();
         let mut res_hash: Segment = [0u8; 32];
         hasher.hash(&mut res_hash);

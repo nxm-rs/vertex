@@ -1,4 +1,4 @@
-use crate::{BMT_BRANCHES, SEGMENT_SIZE};
+use crate::{BMT_BRANCHES, CHUNK_SIZE, SEGMENT_SIZE};
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -17,14 +17,14 @@ const fn calculate_depth(num_bottom_level: usize) -> usize {
 }
 
 /// Generates index offset lookup tables given some Binary Merkle Tree's depth.
-const fn generate_offset_table<const DEPTH: usize>() -> [usize; DEPTH] {
-    let mut offsets = [0; DEPTH];
+const fn generate_offset_table<const depth: usize>() -> [usize; depth] {
+    let mut offsets = [0; depth];
     let mut current_offset = 0;
     let mut level = 0;
 
-    while level < DEPTH {
+    while level < depth {
         offsets[level] = current_offset;
-        current_offset += 1 << (DEPTH - level - 1);
+        current_offset += 1 << (depth - level - 1);
         level += 1;
     }
 
@@ -91,18 +91,22 @@ impl Tree {
 
     /// Reset the structure of the tree so that it can be re-used.
     pub(crate) fn reset(&self) {
+        // Resets the atomic states used for concurrency on write.
         for cell in self.state.iter() {
             unsafe {
                 (*cell.get()).store(true, Ordering::SeqCst);
             }
         }
 
+        // Reset the leaves that were used for building up the tree.
         for cell in self.leaves.iter() {
             unsafe {
-                let leaf = &mut *cell.get();
-                leaf.fill(0);
+                (*cell.get()).fill(0);
             }
         }
+
+        // Reset the buffer, ie. level 0 of the tree.
+        unsafe { std::ptr::write_bytes(self.buf.as_ptr() as *mut u8, 0, CHUNK_SIZE) }
     }
 }
 
