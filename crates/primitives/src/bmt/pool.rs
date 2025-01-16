@@ -1,8 +1,10 @@
 use crate::bmt::{tree::Tree, HasherBuilder};
-use std::future::Future;
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
+use tokio::sync::{
+    mpsc::{channel, Receiver, Sender},
+    Mutex,
+};
 
 use super::{HashError, Hasher};
 
@@ -12,19 +14,21 @@ use super::{HashError, Hasher};
 #[derive(Debug)]
 pub struct Pool {
     /// Sender used for returning trees back to the pool after use
-    pub(crate) sender: mpsc::Sender<Arc<Tree>>,
+    pub(crate) sender: Sender<Arc<Tree>>,
     /// Receiver used for receiving trees from the pool when available
-    pub(crate) receiver: Arc<tokio::sync::Mutex<mpsc::Receiver<Arc<Tree>>>>,
+    pub(crate) receiver: Arc<Mutex<Receiver<Arc<Tree>>>>,
 }
 
+/// Defines a resource pool of BMTs that are available to be used by Hashers.
 pub trait PooledHasher {
-    fn get_hasher(&self) -> impl Future<Output = Result<Hasher, HashError>> + Send;
+    /// Get a [`Hasher`] from the resource pool.
+    fn get_hasher(&self) -> impl std::future::Future<Output = Result<Hasher, HashError>> + Send;
 }
 
 impl Pool {
     /// Initialze the pool with a specific capacity
     pub async fn new(capacity: usize) -> Self {
-        let (sender, receiver) = mpsc::channel(capacity);
+        let (sender, receiver) = channel(capacity);
 
         // Pre-fill the Pool
         for _ in 0..capacity {
@@ -34,7 +38,7 @@ impl Pool {
 
         Pool {
             sender,
-            receiver: Arc::new(tokio::sync::Mutex::new(receiver)),
+            receiver: Arc::new(Mutex::new(receiver)),
         }
     }
 
@@ -48,8 +52,10 @@ impl Pool {
             .expect("Pool is empty")
     }
 
-    /// Return a tree back to the pool asynchronously
+    /// Return a tree back to the pool asynchronously. We make sure to reset the tree prior to
+    /// sending back to the pool to make sure it's in a condition for consumption when requested.
     pub(crate) async fn put(&self, tree: Arc<Tree>) {
+        tree.reset();
         if let Err(e) = self.sender.send(tree).await {
             eprintln!("Failed to return tree to pool: {:?}", e);
         }
