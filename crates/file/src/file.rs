@@ -1,8 +1,10 @@
 use std::io::{BufRead, BufReader, Cursor};
 
-use crate::keccak256;
+use alloy_primitives::keccak256;
 
-use crate::{
+// use super::keccak256;
+
+use super::{
     chunk::{Chunk, Options},
     span::Span,
     SEGMENT_SIZE,
@@ -405,10 +407,8 @@ impl ChunkedFile {
 mod tests {
     use std::{fs::File, io::Read};
 
-    use hex::ToHex;
-    extern crate test;
     use super::*;
-    use test::Bencher;
+    use alloy_primitives::hex::ToHexExt;
 
     const EXPECTED_SPAN: [u8; 8] = [3, 0, 0, 0, 0, 0, 0, 0];
 
@@ -506,7 +506,7 @@ mod tests {
         );
 
         assert_eq!(
-            chunked_file.address().encode_hex::<String>(),
+            chunked_file.address().encode_hex(),
             "b8d17f296190ccc09a2c36b7a59d0f23c4479a3958c3bb02dc669466ec919c5d"
         );
     }
@@ -655,31 +655,31 @@ mod tests {
         // expect(() => testGetFileHash(lastSegmentIndex + 1)).toThrowError(/^The given segment index/)
     }
 
-    #[bench]
-    fn find_bmt_position_of_payload_segment_index_bench(b: &mut Bencher) {
-        let (payload, file_length) = setup_carrier_chunk_file();
-
-        let chunked_file = ChunkedFile::new(payload, Options::default());
-
-        b.iter(|| {
-            let mut leaf_chunks = chunked_file.leaf_chunks();
-            let tree = chunked_file.bmt();
-
-            // check whether the last chunk is not present in the BMT tree 0 level -> carrier chunk
-            assert_eq!(tree[0].len(), leaf_chunks.len() - 1);
-
-            let carrier_chunk = leaf_chunks.pop().unwrap();
-            let segment_index = (file_length - 1) / 32; // last segment index as well
-            let last_chunk_index = (file_length - 1) / 4096;
-            let segment_id_in_tree =
-                ChunkedFile::get_bmt_index_of_segment(segment_index, last_chunk_index, 4096);
-
-            assert_eq!(segment_id_in_tree.0, 1);
-            assert_eq!(segment_id_in_tree.1, 1);
-            assert_eq!(
-                tree[segment_id_in_tree.0 as usize][segment_id_in_tree.1 as usize].address(),
-                carrier_chunk.address()
-            );
-        })
-    }
+    //#[bench]
+    //fn find_bmt_position_of_payload_segment_index_bench(b: &mut Bencher) {
+    //    let (payload, file_length) = setup_carrier_chunk_file();
+    //
+    //    let chunked_file = ChunkedFile::new(payload, Options::default());
+    //
+    //    b.iter(|| {
+    //        let mut leaf_chunks = chunked_file.leaf_chunks();
+    //        let tree = chunked_file.bmt();
+    //
+    //        // check whether the last chunk is not present in the BMT tree 0 level -> carrier chunk
+    //        assert_eq!(tree[0].len(), leaf_chunks.len() - 1);
+    //
+    //        let carrier_chunk = leaf_chunks.pop().unwrap();
+    //        let segment_index = (file_length - 1) / 32; // last segment index as well
+    //        let last_chunk_index = (file_length - 1) / 4096;
+    //        let segment_id_in_tree =
+    //            ChunkedFile::get_bmt_index_of_segment(segment_index, last_chunk_index, 4096);
+    //
+    //        assert_eq!(segment_id_in_tree.0, 1);
+    //        assert_eq!(segment_id_in_tree.1, 1);
+    //        assert_eq!(
+    //            tree[segment_id_in_tree.0 as usize][segment_id_in_tree.1 as usize].address(),
+    //            carrier_chunk.address()
+    //        );
+    //    })
+    //}
 }

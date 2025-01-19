@@ -1,82 +1,78 @@
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "AGPL-3.0"
+homepage = "https://nullisyxz.github.io/bee-rs"
+repository = "https://nullisxyz.github.io/bee-rs"
+
 [workspace]
-members = [
-    "crates/bmt",
-    "crates/manifest",
-    "crates/postage",
-    "crates/logging",
-    "bin/waku-swarm-relay",
-    "bin/swarm-tools",
-    "bin/bee-rs",
-    "bin/wasm-playground",
-    "bin/swarm-wasm-lib",
+members = [ "crates/file",
+    #"crates/bmt",
+    #"crates/manifest",
+    #"crates/postage",
+    #"crates/logging",
+    # "bin/waku-swarm-relay",
+    # "bin/swarm-tools",
+    #"bin/bee-rs",
+    # "bin/wasm-playground",
+    # "bin/swarm-wasm-lib",
+    "crates/primitives",
+    "crates/primitives-traits"
 ]
-default-members = [
-    "bin/bee-rs",
-    "bin/waku-swarm-relay",
-]
+# default-members = [
+#     "bin/bee-rs",
+#     "bin/waku-swarm-relay",
+# ]
 
 # Explicitly set the resolver to version 2, which is the default for packages with edition >= 2021
 # https://doc.rust-lang.org/edition-guide/rust-2021/default-cargo-resolver.html
 resolver = "2"
 
-[workspace.package]
-version = "0.1.0"
-edition = "2021"
-homepage = "https://rndlabs.github.io/bee-rs"
-repository = "https://github.com/rndlabs/bee-rs"
-
-# Like release, but with full debug symbols. Use for e.g. `perf`.
-[profile.debug-fast]
-inherits = "release"
-debug = true
-
-[profile.maxperf]
-inherits = "release"
-lto = "fat"
-codegen-units = 1
-incremental = false
+[workspace.lints]
+rust.unreachable_pub = "warn"
 
 [workspace.dependencies]
-## crypto
-tiny-keccak = { version = "2.0.2", features = ["keccak"] }
+## swarm
+swarm-primitives = { path = "crates/primitives" }
+swarm-primitives-traits = { path = "crates/primitives-traits" }
 
-## eth
-ethers-core = { version = "2.0.7", default-features = false }
-ethers-providers = { version = "2.0.7", default-features = false }
-ethers-signers = { version = "2.0.7", default-features = false }
-ethers-middleware = { version = "2.0.7", default-features = false }
-ethers-contract = { version = "2.0.7", default-features = false }
+## alloy
+alloy-primitives = { version = "0.8.15", features = ["asm-keccak", "getrandom"] }
+alloy-signer = "0.9.1"
 
 ## misc
-tracing = "0.1.37"
-tracing-subscriber = { version = "0.3.17", features = ["env-filter", "ansi", "fmt", "std", "json", "time"] }
-thiserror = "1.0.32"
-serde_json = "1.0.82"
-serde = { version = "1.0.140", features = ["derive"] }
-rand = "0.8.5"
+clap = { version = "4.5.23", features = ["derive", "env"] }
+chrono = "0.4.39"
+criterion = "0.5"
+getrandom = "0.2"
 hex = "0.4.3"
+once_cell = "1.20.2"
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.134"
+serde_with = { version = "3.12.0", features = ["hex"] }
+rand = "0.8.5"
+thiserror = "2.0.4"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "ansi", "fmt", "std", "json", "time"] }
 
 ## tokio
-tokio-stream = "0.1.14"
-tokio = { version = "1.28.1", default-features = false, features = ["macros", "rt"] }
-tokio-util = { version = "0.7.8", features = ["codec"] }
+tokio-stream = "0.1.17"
+tokio = { version = "1.42.0", default-features = false, features = ["macros", "rt"] }
+tokio-util = { version = "0.7.13", features = ["codec"] }
 
 ## async
-async-trait = "0.1.57"
-futures = "0.3.21"
+async-trait = "0.1"
+futures = "0.3"
 
 ## wasm
-wasm-bindgen = "0.2.87"
-wasm-bindgen-futures = "0.4.37"
-wasm-bindgen-test = "0.3.37"
-js-sys = "0.3.64"
+wasm-bindgen = "0.2.97"
+wasm-bindgen-futures = "0.4.47"
+wasm-bindgen-test = "0.3.47"
+js-sys = "0.3.74"
 
-clap = { version = "4.3.0", features = ["derive", "env"] }
-chrono = "0.4.23"
 dotenv = "0.15.0"
-serde_with = { version = "3.0.0", features = ["hex"] }
-reqwest = { version = "0.11.11", features = ["json", "rustls-tls"] }
-async-recursion = "1.0.0"
-anyhow = "1.0.71"
-prost = "0.11.6"
-once_cell = "1.17.1"
+reqwest = { version = "0.12.9", features = ["json"] }
+async-recursion = "1.1.1"
+anyhow = "1.0.94"
+prost = "0.13.4"
