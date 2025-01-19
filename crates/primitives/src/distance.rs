@@ -20,7 +20,11 @@ impl Distance for Address {
 /// Does not check the length as `Address` is a fixed length.
 #[inline(always)]
 pub fn distance(x: &Address, y: &Address) -> U256 {
-    let result: Vec<u8> = x.0.iter().zip(y.0.iter()).map(|(a, b)| a ^ b).collect();
+    let mut result = [0u8; std::mem::size_of::<Address>()];
+
+    for (i, (&a, &b)) in x.0.iter().zip(y.0.iter()).enumerate() {
+        result[i] = a ^ b;
+    }
 
     U256::from_be_slice(&result)
 }
