@@ -11,9 +11,6 @@ alloy-primitives.workspace = true
 # misc
 anyhow.workspace = true
 thiserror.workspace = true
-once_cell.workspace = true
-
-parking_lot = "0.12.3"
 
 # getrandom
 getrandom = { workspace = true, optional = true }
@@ -28,8 +25,7 @@ futures.workspace = true
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio"] }
 rand = { workspace = true, features = ["getrandom"] }
-tokio = { version = "1", features = ["full"] }
-paste = { version = "1.0.15" }
+tokio = { workspace = true, features = ["full"] }
 
 [build-dependencies]
 alloy-primitives.workspace = true
