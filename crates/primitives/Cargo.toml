@@ -45,3 +45,7 @@ path = "benches/primitives.rs"
 harness = false
 required-features = ["rand"]
 
+[[bench]]
+name = "proofs"
+path = "benches/proofs.rs"
+harness = false

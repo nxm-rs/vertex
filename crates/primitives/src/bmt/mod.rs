@@ -12,7 +12,7 @@ pub(crate) type Span = [u8; SPAN_SIZE];
 pub(crate) type Segment = [u8; SEGMENT_SIZE];
 
 pub mod pool;
-//pub mod proof;
+pub mod proof;
 pub mod reference;
 pub mod tree;
 mod zero_hashes;
@@ -81,6 +81,7 @@ pub enum HashError {
 }
 
 impl Hasher {
+    #[inline(always)]
     pub fn hash(&mut self, output: &mut [u8]) {
         if self.size == 0 {
             return self.root_hash(ZERO_HASHES.last().unwrap(), output);
@@ -91,12 +92,11 @@ impl Hasher {
             &Self::process_segment_pair(self.tree.clone(), self.pos, true).unwrap(),
             output,
         );
-
-        self.reset();
     }
 
     /// Write calls sequentially add to the buffer to be hashed, with every full segment calls
     /// process_segment_pair in another thread.
+    #[inline(always)]
     pub async fn write(&mut self, data: &[u8]) -> Result<usize> {
         let mut len = data.len();
         let max_val = CHUNK_SIZE - self.size;
@@ -106,11 +106,7 @@ impl Hasher {
         }
 
         // Copy data into the internal buffer
-        unsafe {
-            let buffer_ptr = self.tree.buf.as_ptr() as *mut u8;
-            let slice_ptr = buffer_ptr.add(self.size);
-            std::ptr::copy_nonoverlapping(data.as_ptr(), slice_ptr, len);
-        }
+        self.tree.copy_to_buf(self.size, &data[..len]);
 
         // Calculate segment properties
         let from = self.size / SEGMENT_PAIR_SIZE;
@@ -163,34 +159,42 @@ impl Hasher {
 
     // Writes the hash of the i-th segment pair into level 1 node of the BMT tree.
     fn process_segment_pair(tree: Arc<Tree>, i: usize, is_final: bool) -> Option<Segment> {
-        let tree_ref = unsafe { &*Arc::as_ptr(&tree) };
-        let tree_iterator = TreeIterator::new(tree_ref, i);
+        let tree_iterator = TreeIterator::new(tree, i);
 
-        for (current_node, (left, right), state, level, _) in tree_iterator {
-            let right = if is_final && right == ZERO_HASHES[0] {
-                &ZERO_HASHES[level - 1]
-            } else {
-                right
-            };
+        for (current_node, (left, right), parent_state, level, _) in tree_iterator {
+            // If `is_final` and `right` is zero, replace `right` with the precomputed zero hash
+            if is_final && right == &ZERO_HASHES[0] {
+                right.copy_from_slice(&ZERO_HASHES[level - 1]);
+            }
 
             let mut hasher = Keccak256::new();
             hasher.update(left);
             hasher.update(right);
-            hasher.finalize_into(unsafe { &mut *current_node });
+            hasher.finalize_into_array(current_node);
 
-            if is_final && state.is_none() {
-                return Some(unsafe { *current_node });
-            } else if let Some(state_ptr) = state {
-                let prev_state = unsafe { (*state_ptr).fetch_not(Ordering::SeqCst) };
+            // Handle concurrency when not finalising.
+            if is_final && parent_state.is_none() {
+                // No parent, therefore at the root - return it!
+                return Some(*current_node);
+            } else if let Some(state_ptr) = parent_state {
+                // There is a parent, do an atomic `fetch_not`.
+                //
+                // The first thread will toggle the [`AtomicBool`] from it's initial value of
+                // `true`, to `false`, returning the value _prior_ to the NOT function (therefore
+                // returning `true` if no other thread has toggled yet). If `true`, we know that
+                // this is the first thread, so return `None` and exit the thread.
+                let prev_state = state_ptr.fetch_not(Ordering::SeqCst);
                 if prev_state && !is_final {
                     return None;
                 }
             }
         }
-        // Only to satisfy the compiler
-        None
+
+        // This point should never be reached if the logic is correct.
+        unreachable!("process_segment_pair reached an invalid state; this should be impossible");
     }
 
+    #[inline(always)]
     fn root_hash(&self, last: &[u8], output: &mut [u8]) {
         let mut hasher = Keccak256::new();
         hasher.update(self.span);
@@ -205,10 +209,7 @@ impl Drop for Hasher {
         if let Some(pool) = &self.pool {
             let pool = pool.clone();
             let tree = self.tree.clone();
-            tokio::spawn(async move {
-                tree.reset();
-                pool.put(tree).await
-            });
+            tokio::spawn(async move { pool.put(tree).await });
         }
     }
 }
@@ -333,6 +334,7 @@ mod tests {
             let test_data: Vec<u8> = (0..CHUNK_SIZE).map(|_| rand::random::<u8>()).collect();
             let test_length = rand::random::<usize>() % CHUNK_SIZE;
             test_hasher_correctness(hasher.clone(), &test_data[..test_length], None).await;
+            hasher.lock().await.reset();
         }
     }
 

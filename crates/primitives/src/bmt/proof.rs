@@ -1,141 +1,175 @@
-use crate::bmt::{Hasher, Segment, Span, SEGMENT_PAIR_SIZE};
-use crate::{CHUNK_SIZE, SEGMENT_SIZE};
-use anyhow::{anyhow, Result};
+use crate::{
+    bmt::{tree::DEPTH, Hasher, Segment, Span, TreeIterator},
+    BMT_BRANCHES, SEGMENT_SIZE,
+};
+use alloy_primitives::Keccak256;
+use thiserror::Error;
 
-/// Represents a Merkle proof of segment
+const PROOF_LENGTH: usize = DEPTH - 1;
+
+/// The `Prover` trait provides functionality for creating and verifying Merkle proofs over a
+/// binary Merkle tree (BMT). It defines methods to:
+///
+/// 1. Generate inclusion proofs for specific segments within the tree.
+/// 2. Verify these proofs against the tree's root hash.
+///
+/// The trait is implemented by the [`Hasher`] struct, which manages hashing operations and
+/// interacts with the underlying tree structure.
+pub trait Prover {
+    /// Generates an inclusion proof for the `i`-th data segment.
+    ///
+    /// # Arguments
+    ///
+    /// * `i` - The index of the segment for which the proof is generated.
+    ///
+    /// # Returns
+    ///
+    /// A [`Result`] containing:
+    /// - A [`Proof`] struct if the operation is successful.
+    /// - A [`ProverError`] varient if an error occurs.
+    fn proof(&self, i: usize) -> Result<Proof, ProverError>;
+    /// Verifies an inclusion proof and derives the root hash of the tree.
+    ///
+    /// # Arguments
+    ///
+    /// * `i` - The index of the segment being verified.
+    /// * `proof` - The [`Proof`] struct containing the inclusion proof data.
+    ///
+    /// # Returns
+    ///
+    /// A [`Result`] containing:
+    /// - The calculated root hash if verification succeeds.
+    /// - A [`ProverError`] variant if verification fails.
+    fn verify(i: usize, proof: Proof) -> Result<Segment, ProverError>;
+}
+
+/// Represents a Merkle proof for a specific segment within a binary Merkle tree.
+///
+/// A Merkle proof demonstrates the inclusion of a segment in a binary Merkle tree, using sibling
+/// hashes to reconstruct the root hash.
 #[derive(Debug, Clone)]
 pub struct Proof {
+    /// The segment being prove for inclusion in the tree.
     pub prove_segment: Segment,
-    pub proof_segments: Vec<Segment>,
+    /// An array of sibling hashes needed to reconstruct the root hash.
+    pub proof_segments: [[u8; SEGMENT_SIZE]; PROOF_LENGTH],
+    /// The span of the data being hashed.
     pub span: Span,
+    /// The index of the segment within the tree
     pub index: usize,
 }
 
-pub trait Prover {
-    /// Returns the inclusion proof of the i-th data segment
-    async fn proof(&self, i: usize) -> Result<Proof>;
-    /// Verifies the proof and returns the root hash derived from it
-    async fn verify(&self, i: usize, proof: Proof) -> Result<Segment>;
+/// Represents errors that can occur during Merkle proof generation and verification.
+#[derive(Debug, Error)]
+pub enum ProverError {
+    #[error("Index {0} out of bounds for BMT_BRANCHES")]
+    IndexOutOfBounds(usize),
+    #[error("Tree iterator unexpectedly empty")]
+    IteratorEmpty,
+    #[error("Expected level 1, but got level {0}")]
+    UnexpectedLevel(usize),
+    #[error("Failed to collect proof segments: array mismatch")]
+    ProofCollectionFailed,
 }
 
 impl Prover for Hasher {
-    async fn proof(&self, i: usize) -> Result<Proof> {
-        let tree = self.treee;
+    fn proof(&self, i: usize) -> Result<Proof, ProverError> {
+        if i >= BMT_BRANCHES {
+            return Err(ProverError::IndexOutOfBounds(i));
+        }
 
-        // Calculate the starting offset of the segment pair
-        let segment_index = i / 2;
-        let offset = segment_index * SEGMENT_PAIR_SIZE;
+        let mut tree_iterator = TreeIterator::new(self.tree.clone(), i / 2);
 
-        // Directly index into the buffer to get the two segments
-        let section = &tree.buffset..offset + SEGMENT_PAIR_SIZE];
-        let (segment, first_segment_sister) = if i % 2 == 0 {
-            (
-                section[..SEGMENT_SIZE]
-                    .try_into()
-                    .expect("Slice size mismatch"),
-                section[SEGMENT_SIZE..]
-                    .try_into()
-                    .expect("Slice size mismatch"),
-            )
+        // Handle the special case for level 1: First element in the iterator
+        let (_, (left, right), _, level, index) =
+            tree_iterator.next().ok_or(ProverError::IteratorEmpty)?;
+
+        if level != 1 {
+            return Err(ProverError::UnexpectedLevel(level));
+        }
+
+        let (prove_segment, first_proof_segment): (&Segment, &Segment) = if i % 2 == 0 {
+            (left, right)
         } else {
-            (
-                section[SEGMENT_SIZE..]
-                    .try_into()
-                    .expect("Slice size mismatch"),
-                section[..SEGMENT_SIZE]
-                    .try_into()
-                    .expect("Slice size mismatch"),
-            )
+            (right, left)
         };
 
-        let mut proof_segments = vec![first_segment_sister];
+        let mut proof_segments: [Segment; PROOF_LENGTH] = [[0u8; SEGMENT_SIZE]; PROOF_LENGTH];
+        proof_segments[0] = *first_proof_segment;
 
-        let n = tree.leaves[segment_index].lock();
-        let mut node_ref = n.parent();
-        drop(n);
+        let mut proof_index = 1;
+        let mut from_left = index % 2 == 0;
+        for (_, (left, right), _, _, index) in tree_iterator {
+            proof_segments[proof_index] = if from_left { *right } else { *left };
 
-<F6>        let mut level = 1;
-        while let Some(current_node_ref) = node_ref {
-            let current_node = current_node_ref.lock();
-
-            proof_segments.push(
-                current_node
-                    .segment(!is_left(level, segment_index))
-                    .unwrap(),
-            );
-            node_ref = current_node.parent();
-            level += 1;
+            proof_index += 1;
+            from_left = index % 2 == 0;
         }
 
         Ok(Proof {
-            prove_segment: segment,
+            prove_segment: *prove_segment,
             proof_segments,
             span: self.span,
             index: i,
         })
     }
 
-    async fn verify(&self, i: usize, proof: Proof) -> Result<Segment> {
-        if proof.proof_segments.is_empty() {
-            return Err(anyhow!("Proof segments are empty"));
+    fn verify(mut i: usize, proof: Proof) -> Result<Segment, ProverError> {
+        if proof.proof_segments.len() != PROOF_LENGTH {
+            return Err(ProverError::ProofCollectionFailed);
         }
 
-        // Combine the first segment with its first proof segment
-        let hasher = alloy_primitives::keccak256;
-        let mut hash = if i % 2 == 0 {
-            hasher(
-                [
-                    proof.prove_segment.as_slice(),
-                    proof.proof_segments[0].as_slice(),
-                ]
-                .concat(),
-            )
+        // Initialise hasher and compute the initial hash
+        let mut hasher = Keccak256::new();
+        if i % 2 == 0 {
+            hasher.update(proof.prove_segment);
+            hasher.update(proof.proof_segments[0]);
         } else {
-            hasher(
-                [
-                    proof.proof_segments[0].as_slice(),
-                    proof.prove_segment.as_slice(),
-                ]
-                .concat(),
-            )
-        };
+            hasher.update(proof.proof_segments[0]);
+            hasher.update(proof.prove_segment);
+        }
 
-        let tree = self.treee.lock();
+        let mut current_hash: Segment = [0u8; SEGMENT_SIZE];
+        hasher.finalize_into(&mut current_hash);
 
-        let segment_index = i / 2;
-        let n = tree.leaves[segment_index].lock();
-        let mut node_ref = n.parent();
-        drop(n);
+        i /= 2;
 
-        // Traverse up the proof segments to compute the root hash
-        let mut level = 1;
-        for sister in &proof.proof_segments[1..] {
-            if let Some(current_node_ref) = node_ref {
-                let current_node = current_node_ref.lock();
-                hash = if is_left(level, segment_index) {
-                    hasher([hash.as_slice(), sister.as_slice()].concat())
-                } else {
-                    hasher([sister.as_slice(), hash.as_slice()].concat())
-                };
-                node_ref = current_node.parent();
-                level += 1;
+        // Iterate over the remaining proof segments
+        for proof_segment in proof.proof_segments.iter().skip(1) {
+            let mut hasher = Keccak256::new();
+            if i % 2 == 0 {
+                hasher.update(current_hash.as_slice());
+                hasher.update(proof_segment);
+            } else {
+                hasher.update(proof_segment);
+                hasher.update(current_hash.as_slice());
             }
+
+            hasher.finalize_into(&mut current_hash);
+
+            i /= 2;
         }
 
         // Combine the final hash with the span to compute the root hash
-        let root_hash = hasher([proof.span.as_slice(), hash.as_slice()].concat());
-        Ok(*root_hash)
+        let mut hasher = Keccak256::new();
+        hasher.update(proof.span);
+        hasher.update(&current_hash);
+
+        let mut root_hash: Segment = [0u8; SEGMENT_SIZE];
+        hasher.finalize_into(&mut root_hash);
+
+        Ok(root_hash)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bmt::{length_to_span, pool::PooledHasher, Pool};
+    use crate::bmt::{pool::PooledHasher, Pool};
+    use crate::CHUNK_SIZE;
     use alloy_primitives::hex;
     use rand::Rng;
     use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     #[tokio::test]
     async fn test_proof_correctness() {
@@ -144,13 +178,12 @@ mod tests {
         buf[..data.len()].copy_from_slice(data);
 
         let pool = Arc::new(Pool::new(1).await);
-        let prover = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
-        let mut hasher = prover.lock().await;
-        hasher.set_header_u64(buf.len() as u64);
-        hasher.write(&buf).unwrap();
+        let mut prover = pool.get_hasher().await.unwrap();
+        let _ = prover.set_header_u64(buf.len() as u64);
+        prover.write(&buf).await.unwrap();
 
-        let _ = hasher.hash().await.expect("Unable to compute root hash");
-        drop(hasher);
+        let mut output = [0u8; SEGMENT_SIZE];
+        prover.hash(&mut output);
 
         let verify_segments = |expected: &[&str], found: &[Segment]| {
             assert_eq!(
@@ -159,15 +192,18 @@ mod tests {
                 "Incorrect number of proof segments"
             );
 
-            for (exp, found_segment) in expected.iter().zip(found.iter()) {
-                let decoded = hex::decode(exp).expect("Invalid hex encoding");
-                assert_eq!(&decoded, found_segment, "Incorrect segment in proof");
+            for (expected, actual) in expected.iter().zip(found.iter()) {
+                let decoded: Segment = hex::decode(expected)
+                    .expect("Invalid hex encoding")
+                    .try_into()
+                    .expect("Slice size mismatch");
+                assert_eq!(&decoded, actual, "Incorrect segment in proof");
             }
         };
 
         // Test leftmost segment
         {
-            let proof = prover.lock().await.proof(0).await.unwrap();
+            let proof = prover.proof(0).unwrap();
             let expected_segments = [
                 "0000000000000000000000000000000000000000000000000000000000000000",
                 "ad3228b676f7d3cd4284a5443f17f1962b36e491b30a40b2405849e597ba5fb5",
@@ -178,6 +214,8 @@ mod tests {
                 "887c22bd8750d34016ac3c66b5ff102dacdd73f6b014e710b51e8022af9a1968",
             ];
 
+            println!("proof: {:?}", proof);
+
             verify_segments(&expected_segments, &proof.proof_segments);
             assert_eq!(
                 &buf[..SEGMENT_SIZE],
@@ -186,14 +224,14 @@ mod tests {
             );
             assert_eq!(
                 proof.span,
-                length_to_span(CHUNK_SIZE as u64),
+                (CHUNK_SIZE as u64).to_le_bytes(),
                 "Incorrect span for leftmost proof"
             );
         }
 
         // Test rightmost segment
         {
-            let proof = prover.lock().await.proof(127).await.unwrap();
+            let proof = prover.proof(127).unwrap();
             let expected_segments = [
                 "0000000000000000000000000000000000000000000000000000000000000000",
                 "ad3228b676f7d3cd4284a5443f17f1962b36e491b30a40b2405849e597ba5fb5",
@@ -212,14 +250,14 @@ mod tests {
             );
             assert_eq!(
                 proof.span,
-                length_to_span(CHUNK_SIZE as u64),
+                (CHUNK_SIZE as u64).to_le_bytes(),
                 "Incorrect span for rightmost proof"
             );
         }
 
         // Test middle segment
         {
-            let proof = prover.lock().await.proof(64).await.unwrap();
+            let proof = prover.proof(64).unwrap();
             let expected_segments = [
                 "0000000000000000000000000000000000000000000000000000000000000000",
                 "ad3228b676f7d3cd4284a5443f17f1962b36e491b30a40b2405849e597ba5fb5",
@@ -238,7 +276,7 @@ mod tests {
             );
             assert_eq!(
                 proof.span,
-                length_to_span(CHUNK_SIZE as u64),
+                (CHUNK_SIZE as u64).to_le_bytes(),
                 "Incorrect span for middle proof"
             );
         }
@@ -256,15 +294,13 @@ mod tests {
             "745bae095b6ff5416b4a351a167f731db6d6f5924f30cd88d48e74261795d27b",
         ];
 
-        let segments: Vec<Segment> = segment_strings
-            .iter()
-            .map(|s| {
-                hex::decode(s)
-                    .expect("Invalid hex encoding")
-                    .try_into()
-                    .expect("Slice size mismatch")
-            })
-            .collect();
+        let mut segments = [[0u8; SEGMENT_SIZE]; 7];
+        for (i, s) in segment_strings.iter().enumerate() {
+            segments[i] = hex::decode(s)
+                .expect("Invalid hex encoding")
+                .try_into()
+                .expect("Slice size mismatch");
+        }
 
         let mut buf = vec![0u8; CHUNK_SIZE];
         let data = b"hello world";
@@ -272,20 +308,21 @@ mod tests {
 
         let pool = Arc::new(Pool::new(1).await);
         let mut prover = pool.get_hasher().await.unwrap();
-        prover.set_header_u64(buf.len() as u64);
-        prover.write(&buf).unwrap();
+        let _ = prover.set_header_u64(buf.len() as u64);
+        prover.write(&buf).await.unwrap();
 
         let proof = Proof {
             prove_segment: buf[64 * SEGMENT_SIZE..65 * SEGMENT_SIZE]
                 .try_into()
                 .expect("Slice size mismatch"),
             proof_segments: segments,
-            span: length_to_span(4096),
+            span: 4096_u64.to_le_bytes(),
             index: 64,
         };
 
-        let root_hash = prover.verify(64, proof).await.unwrap();
-        let expected_root_hash = prover.hash().await.unwrap();
+        let root_hash = Hasher::verify(64, proof).unwrap();
+        let mut expected_root_hash = [0u8; SEGMENT_SIZE];
+        prover.hash(&mut expected_root_hash);
 
         assert_eq!(
             root_hash, expected_root_hash,
@@ -301,46 +338,30 @@ mod tests {
         rand::thread_rng().fill(buf.as_mut_slice());
 
         // Create a BMT pool
-        let pool = Arc::new(Pool::new(16).await);
-        let prover = Arc::new(Mutex::new(pool.get_hasher().await.unwrap()));
-        let mut hasher = prover.lock().await;
-        hasher.set_header_u64(buf.len().try_into().unwrap());
-        hasher.write(&buf).unwrap();
+        let pool = Arc::new(Pool::new(1).await);
+        let mut hasher = pool.get_hasher().await.unwrap();
+        let _ = hasher.set_header_u64(buf.len().try_into().unwrap());
+        hasher.write(&buf).await.unwrap();
 
-        let root_hash = hasher.hash().await.expect("Unable to root hash");
-        drop(hasher);
+        let mut root_hash = [0u8; SEGMENT_SIZE];
+        hasher.hash(&mut root_hash);
 
         // Iterate over all segments and test proofs
         for i in 0..CHUNK_SIZE / SEGMENT_SIZE {
             let segment_index = i;
 
-            let prover = prover.clone();
-            let pool = pool.clone();
-            tokio::task::spawn(async move {
-                let prover = prover.lock().await;
-                let proof = prover
-                    .proof(segment_index)
-                    .await
-                    .expect("Failed to generate proof");
-                drop(prover);
+            let proof = hasher
+                .proof(segment_index)
+                .expect("Failed to generate proof");
 
-                // Create a new hasher for verification
-                let verifier = pool.get_hasher().await.unwrap();
+            // Create a new hasher for verification
+            let verified_root = Hasher::verify(segment_index, proof).unwrap();
 
-                let verified_root = verifier
-                    .verify(segment_index, proof)
-                    .await
-                    .expect("Failed to verify proof");
-
-                // Ensure the root hash matches
-                assert_eq!(
-                    root_hash, verified_root,
-                    "Incorrect hash: expected {:?}, got {:?}",
-                    root_hash, verified_root
-                );
-            })
-            .await
-            .expect("Test task failed");
+            assert_eq!(
+                root_hash, verified_root,
+                "Incorrect hash: expected {:?}, got {:?}",
+                root_hash, verified_root
+            );
         }
     }
 }
