@@ -1,15 +1,15 @@
 use std::cmp::Ordering;
 
-use alloy_primitives::U256;
+use swarm_primitives_traits::SwarmAddress;
 
-use crate::Address;
+use alloy_primitives::U256;
 
 pub trait Distance {
     /// Returns true if self is closer to `a` than to `y`
     fn closer(&self, a: &Self, y: &Self) -> bool;
 }
 
-impl Distance for Address {
+impl Distance for SwarmAddress {
     fn closer(&self, a: &Self, y: &Self) -> bool {
         // TODO: why is the Equal case not counted, and how much is this closer function used?
         matches!(distance_cmp(a, self, y), Ordering::Less)
@@ -19,8 +19,8 @@ impl Distance for Address {
 /// Retuns the distance between address `x` and address `y` in big-endian.
 /// Does not check the length as `Address` is a fixed length.
 #[inline(always)]
-pub fn distance(x: &Address, y: &Address) -> U256 {
-    let mut result = [0u8; std::mem::size_of::<Address>()];
+pub fn distance(x: &SwarmAddress, y: &SwarmAddress) -> U256 {
+    let mut result = [0u8; std::mem::size_of::<SwarmAddress>()];
 
     for (i, (&a, &b)) in x.0.iter().zip(y.0.iter()).enumerate() {
         result[i] = a ^ b;
@@ -35,11 +35,8 @@ pub fn distance(x: &Address, y: &Address) -> U256 {
 ///   - `Ordering::Equal` if `x` and `y` are equidistant from `a` (this means that `x` and `y`
 ///     are the same address)
 ///   - `Ordering::Less` if `x` is farther from `a` than `y`
-///
-/// NB: Unlike `bee`, there is no fail condition with the length being different. The `Address`
-///     type is explicit about its length.
 #[inline(always)]
-pub fn distance_cmp(a: &Address, x: &Address, y: &Address) -> std::cmp::Ordering {
+pub fn distance_cmp(a: &SwarmAddress, x: &SwarmAddress, y: &SwarmAddress) -> std::cmp::Ordering {
     let (ab, xb, yb) = (&a.0, &x.0, &y.0);
 
     for i in 0..ab.len() {
@@ -59,24 +56,29 @@ pub fn distance_cmp(a: &Address, x: &Address, y: &Address) -> std::cmp::Ordering
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use alloy_primitives::b256;
     use std::{cmp::Ordering, str::FromStr};
-
-    use super::*;
+    use swarm_primitives_traits::SwarmAddress;
 
     #[test]
     fn distance_closer() {
-        let a: Address = b256!("9100000000000000000000000000000000000000000000000000000000000000");
-        let x: Address = b256!("8200000000000000000000000000000000000000000000000000000000000000");
-        let y: Address = b256!("1200000000000000000000000000000000000000000000000000000000000000");
+        let a: SwarmAddress =
+            b256!("9100000000000000000000000000000000000000000000000000000000000000");
+        let x: SwarmAddress =
+            b256!("8200000000000000000000000000000000000000000000000000000000000000");
+        let y: SwarmAddress =
+            b256!("1200000000000000000000000000000000000000000000000000000000000000");
 
         assert!(!x.closer(&a, &y));
     }
 
     #[test]
     fn distance_matches() {
-        let x: Address = b256!("9100000000000000000000000000000000000000000000000000000000000000");
-        let y: Address = b256!("8200000000000000000000000000000000000000000000000000000000000000");
+        let x: SwarmAddress =
+            b256!("9100000000000000000000000000000000000000000000000000000000000000");
+        let y: SwarmAddress =
+            b256!("8200000000000000000000000000000000000000000000000000000000000000");
 
         assert_eq!(
             distance(&x, &y),

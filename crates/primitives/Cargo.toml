@@ -7,6 +7,9 @@ repository.workspace = true
 
 [dependencies]
 alloy-primitives.workspace = true
+alloy-signer.workspace = true
+
+swarm-primitives-traits.workspace = true
 
 # misc
 anyhow.workspace = true

@@ -1,22 +1,24 @@
-pub enum ChunkType {
-    ContentAddress,
-    SingleOwnerChunk,
+use crate::{ChunkAddress, BRANCHES, SEGMENT_SIZE};
+
+pub const CHUNK_SIZE: usize = SEGMENT_SIZE * BRANCHES;
+
+pub trait Chunk {
+    fn address(&self) -> ChunkAddress;
+    fn verify(&self, address: ChunkAddress) -> bool;
 }
 
-//impl Display for ChunkType {
-//
-//}
+pub trait ChunkBody {
+    fn hash(&self) -> ChunkAddress;
+}
 
-//pub trait Chunk {
-//    fn address(&self) -> Address;
-//    fn data(&self) -> &[u8; CHUNK_SIZE as usize];
-//    fn tag_id(&self) -> u32;
-//    fn with_tag_id(&mut self, id: u32) -> Self;
-//    fn stamp(&self) -> Stamp;
-//    fn with_stamp(&mut self, s: Stamp) -> Self;
-//    fn depth(&self) -> u8;
-//    fn bucket_depth(&self) -> u8;
-//    fn immutable(&self) -> bool;
-//    fn with_batch(&mut self, bucket_depth: u8, immutable: bool) -> Self;
-//    fn equal(&self, c: &Self) -> bool;
-//}
+pub trait ChunkEncoding {
+    fn size(&self) -> usize;
+    fn to_boxed_slice(&self) -> Box<[u8]>;
+}
+
+pub trait ChunkDecoding
+where
+    Self: Sized,
+{
+    fn from_slice(buf: &[u8]) -> Result<Self, impl std::error::Error>;
+}

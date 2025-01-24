@@ -1,8 +1,5 @@
 use alloy_primitives::keccak256;
-
-use crate::HASH_SIZE;
-
-use super::SEGMENT_PAIR_SIZE;
+use swarm_primitives_traits::SEGMENT_SIZE;
 
 /// The non-optimised easy-to-read reference implementation of BMT
 pub struct RefHasher<const N: usize> {
@@ -28,8 +25,8 @@ impl<const N: usize> RefHasher<N> {
         }
 
         Self {
-            segment_pair_length: 2 * HASH_SIZE,
-            max_data_length: c * HASH_SIZE,
+            segment_pair_length: 2 * SEGMENT_SIZE,
+            max_data_length: c * SEGMENT_SIZE,
         }
     }
 
@@ -51,15 +48,15 @@ impl<const N: usize> RefHasher<N> {
     /// data has length max_data_length = segment size * 2 ^ k.
     #[inline(always)]
     fn hash_helper(&self, data: &[u8], length: usize) -> [u8; 32] {
-        let mut pair = [0u8; SEGMENT_PAIR_SIZE];
+        let mut pair = [0u8; (2 * SEGMENT_SIZE)];
 
         if length == self.segment_pair_length {
             pair.copy_from_slice(data);
         } else {
             // Data contains hashes of left and right BMT subtrees
             let half = length / 2;
-            pair[..HASH_SIZE].copy_from_slice(&self.hash_helper(&data[..half], half));
-            pair[HASH_SIZE..].copy_from_slice(&self.hash_helper(&data[half..], half));
+            pair[..SEGMENT_SIZE].copy_from_slice(&self.hash_helper(&data[..half], half));
+            pair[SEGMENT_SIZE..].copy_from_slice(&self.hash_helper(&data[half..], half));
         };
         *keccak256(pair)
     }
@@ -67,8 +64,6 @@ impl<const N: usize> RefHasher<N> {
 
 #[cfg(test)]
 mod tests {
-    use crate::SEGMENT_SIZE;
-
     use super::*;
 
     use alloy_primitives::{b256, FixedBytes};

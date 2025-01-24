@@ -1,12 +1,10 @@
-use crate::bmt::{tree::Tree, HasherBuilder};
+use crate::bmt::{HashError, Hasher, HasherBuilder, Tree};
 use std::sync::Arc;
 
 use tokio::sync::{
     mpsc::{channel, Receiver, Sender},
     Mutex,
 };
-
-use super::{HashError, Hasher};
 
 /// Provides a pool of trees used as resource by the BMT Hasher.
 /// A tree popped from the pool is guaranteed to have a clean state ready

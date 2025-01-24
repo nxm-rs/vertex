@@ -3,10 +3,8 @@ use rand::Rng;
 use std::sync::Arc;
 use tokio::runtime::Builder;
 
-use swarm_primitives::bmt::pool::{Pool, PooledHasher};
-use swarm_primitives::bmt::proof::Prover;
-use swarm_primitives::bmt::Hasher;
-use swarm_primitives::{CHUNK_SIZE, SEGMENT_SIZE};
+use swarm_primitives::bmt::{Hasher, Pool, PooledHasher, Prover};
+use swarm_primitives_traits::{CHUNK_SIZE, SEGMENT_SIZE};
 
 pub fn proofs(c: &mut Criterion) {
     let mut group = c.benchmark_group("proofs");
@@ -21,7 +19,7 @@ pub fn proofs(c: &mut Criterion) {
         let data: Vec<u8> = (0..CHUNK_SIZE).map(|_| rand::random::<u8>()).collect();
 
         let mut hasher = pool.get_hasher().await.unwrap();
-        hasher.set_header_u64(data.len() as u64).unwrap();
+        hasher.set_span(data.len() as u64);
         hasher.write(&data).await.unwrap();
 
         let mut root_hash = [0u8; SEGMENT_SIZE];

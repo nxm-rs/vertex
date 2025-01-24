@@ -1,27 +1,21 @@
-use crate::bmt::tree::Tree;
 use alloy_primitives::Keccak256;
 use anyhow::Result;
-use futures::future::join_all;
 use std::sync::{atomic::Ordering, Arc};
+use swarm_primitives_traits::{Segment, Span, CHUNK_SIZE, SEGMENT_SIZE};
 use thiserror::Error;
-use tree::TreeIterator;
+use tree::{Tree, TreeIterator};
 
-use crate::{CHUNK_SIZE, SEGMENT_SIZE, SPAN_SIZE};
-
-pub(crate) type Span = [u8; SPAN_SIZE];
-pub(crate) type Segment = [u8; SEGMENT_SIZE];
-
-pub mod pool;
-pub mod proof;
-pub mod reference;
-pub mod tree;
+mod pool;
+mod proof;
+mod reference;
+mod tree;
 mod zero_hashes;
-use pool::Pool;
 use zero_hashes::ZERO_HASHES;
 
-const SEGMENT_PAIR_SIZE: usize = 2 * SEGMENT_SIZE;
-
-const ZERO_SPAN: Span = [0u8; SPAN_SIZE];
+pub use pool::*;
+pub use proof::*;
+pub use reference::RefHasher;
+pub use tree::DEPTH;
 
 #[derive(Debug)]
 pub struct Hasher {
@@ -68,7 +62,7 @@ impl HasherBuilder {
             tree,
             size: 0,
             pos: 0,
-            span: ZERO_SPAN,
+            span: 0,
             pool: self.pool,
         })
     }
@@ -97,7 +91,7 @@ impl Hasher {
     /// Write calls sequentially add to the buffer to be hashed, with every full segment calls
     /// process_segment_pair in another thread.
     #[inline(always)]
-    pub async fn write(&mut self, data: &[u8]) -> Result<usize> {
+    pub fn write(&mut self, data: &[u8]) -> Result<usize> {
         let mut len = data.len();
         let max_val = CHUNK_SIZE - self.size;
 
@@ -109,6 +103,7 @@ impl Hasher {
         self.tree.copy_to_buf(self.size, &data[..len]);
 
         // Calculate segment properties
+        const SEGMENT_PAIR_SIZE: usize = 2 * SEGMENT_SIZE;
         let from = self.size / SEGMENT_PAIR_SIZE;
         self.size += len;
         let mut to = self.size / SEGMENT_PAIR_SIZE;
@@ -118,43 +113,22 @@ impl Hasher {
         }
         self.pos = to;
 
-        let mut handlers = Vec::new();
         for i in from..to {
-            let tree = self.tree.clone();
-            let handler = tokio::spawn(async move {
-                Self::process_segment_pair(tree, i, false);
-            });
-            handlers.push(handler);
+            Self::process_segment_pair(self.tree.clone(), i, false);
         }
 
-        let _ = join_all(handlers).await;
         Ok(len)
     }
 
     /// Given a [`Hasher`] instance, reset it for further use.
     pub fn reset(&mut self) {
         self.tree.reset();
-        (self.pos, self.size, self.span) = (0, 0, ZERO_SPAN);
-    }
-
-    /// Set the header bytes of BMT hash by copying the first 8 bytes of the argument
-    pub fn set_header_bytes(&mut self, header: &[u8]) -> Result<(), HashError> {
-        if header.len() == SPAN_SIZE {
-            self.span.copy_from_slice(&header[0..SPAN_SIZE]);
-            Ok(())
-        } else {
-            Err(HashError::InvalidLength(header.len().try_into().unwrap()))
-        }
+        (self.pos, self.size, self.span) = (0, 0, 0);
     }
 
     /// Set the header bytes of BMT hash by the little-endian encoded u64.
-    pub fn set_header_u64(&mut self, header: u64) -> Result<(), HashError> {
-        if header <= CHUNK_SIZE as u64 {
-            self.span = header.to_le_bytes();
-            Ok(())
-        } else {
-            Err(HashError::InvalidLength(header))
-        }
+    pub fn set_span(&mut self, span: u64) {
+        self.span = span;
     }
 
     // Writes the hash of the i-th segment pair into level 1 node of the BMT tree.
@@ -197,7 +171,7 @@ impl Hasher {
     #[inline(always)]
     fn root_hash(&self, last: &[u8], output: &mut [u8]) {
         let mut hasher = Keccak256::new();
-        hasher.update(self.span);
+        hasher.update(&self.span.to_le_bytes());
         hasher.update(last);
 
         hasher.finalize_into(output)
@@ -218,12 +192,10 @@ impl Drop for Hasher {
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use crate::BMT_BRANCHES;
     use alloy_primitives::b256;
     use futures::future::join_all;
-    use pool::{Pool, PooledHasher};
     use rand::{rngs::StdRng, Rng, RngCore, SeedableRng};
-    use reference::RefHasher;
+    use swarm_primitives_traits::BRANCHES;
 
     use super::*;
 
@@ -242,7 +214,7 @@ mod tests {
     }
 
     fn ref_hash(data: &[u8]) -> Segment {
-        let ref_bmt: RefHasher<BMT_BRANCHES> = RefHasher::new();
+        let ref_bmt: RefHasher<BRANCHES> = RefHasher::new();
         let ref_no_metahash = ref_bmt.hash(data);
 
         let mut hasher = Keccak256::new();
@@ -255,8 +227,8 @@ mod tests {
     async fn sync_hash(hasher: Arc<tokio::sync::Mutex<Hasher>>, data: &[u8]) -> Segment {
         let mut hasher = hasher.lock().await;
 
-        hasher.set_header_u64(data.len() as u64).unwrap();
-        hasher.write(data).await.unwrap();
+        hasher.set_span(data.len() as u64);
+        hasher.write(data).unwrap();
         let mut segment: Segment = [0u8; 32];
         hasher.hash(segment.as_mut_slice());
 
@@ -285,8 +257,8 @@ mod tests {
 
         let pool = Arc::new(Pool::new(1).await);
         let mut hasher = pool.get_hasher().await.unwrap();
-        hasher.set_header_u64(data.len() as u64).unwrap();
-        hasher.write(&data).await.unwrap();
+        hasher.set_span(data.len() as u64);
+        hasher.write(&data).unwrap();
         let mut res_hash: Segment = [0u8; 32];
         hasher.hash(&mut res_hash);
 
