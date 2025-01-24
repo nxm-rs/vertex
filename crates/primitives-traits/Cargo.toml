@@ -12,8 +12,5 @@ description = "Common types in Swarm"
 workspace = true
 
 [dependencies]
-# swarm
-swarm-primitives.workspace = true
-
 # alloy
 alloy-primitives.workspace = true
