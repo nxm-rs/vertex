@@ -33,11 +33,11 @@ pub fn primitives(c: &mut Criterion) {
             .unwrap();
         b.to_async(&rt).iter(|| async {
             let mut hasher: Hasher = HasherBuilder::default().build().unwrap();
-            black_box(async || {
-                let _ = hasher.write(&random_chunk).await;
-                let mut res = [0u8; 32];
-                let _ = hasher.hash(&mut res);
-            });
+            let _ = hasher.write(&random_chunk);
+            hasher.set_span(4096);
+            let mut res = [0u8; 32];
+            let _ = hasher.hash(&mut res);
+            black_box(res);
         });
     });
     // Generate some random addresses
