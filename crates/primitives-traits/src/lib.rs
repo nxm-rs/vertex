@@ -1,9 +1,9 @@
-use alloy_primitives::FixedBytes;
+use alloy::primitives::FixedBytes;
 
 pub mod chunk;
 pub mod stamp;
 
-pub use chunk::{Chunk, ChunkBody, ChunkDecoding, ChunkEncoding, CHUNK_SIZE};
+pub use chunk::{Chunk, ChunkBody, CHUNK_SIZE};
 pub use stamp::Stamp;
 
 const HASH_SIZE: usize = 32;

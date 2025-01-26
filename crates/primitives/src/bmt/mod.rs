@@ -1,4 +1,4 @@
-use alloy_primitives::Keccak256;
+use alloy::primitives::Keccak256;
 use anyhow::Result;
 use std::sync::{atomic::Ordering, Arc};
 use swarm_primitives_traits::{Segment, Span, CHUNK_SIZE, SEGMENT_SIZE};
@@ -192,7 +192,7 @@ impl Drop for Hasher {
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use alloy_primitives::b256;
+    use alloy::primitives::b256;
     use futures::future::join_all;
     use rand::{rngs::StdRng, Rng, RngCore, SeedableRng};
     use swarm_primitives_traits::BRANCHES;

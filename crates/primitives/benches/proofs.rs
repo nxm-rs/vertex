@@ -20,7 +20,7 @@ pub fn proofs(c: &mut Criterion) {
 
         let mut hasher = pool.get_hasher().await.unwrap();
         hasher.set_span(data.len() as u64);
-        hasher.write(&data).await.unwrap();
+        hasher.write(&data).unwrap();
 
         let mut root_hash = [0u8; SEGMENT_SIZE];
         hasher.hash(&mut root_hash);

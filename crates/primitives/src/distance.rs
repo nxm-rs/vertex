@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use swarm_primitives_traits::SwarmAddress;
 
-use alloy_primitives::U256;
+use alloy::primitives::U256;
 
 pub trait Distance {
     /// Returns true if self is closer to `a` than to `y`
@@ -16,7 +16,7 @@ impl Distance for SwarmAddress {
     }
 }
 
-/// Retuns the distance between address `x` and address `y` in big-endian.
+/// Returns the distance between address `x` and address `y` in big-endian.
 /// Does not check the length as `Address` is a fixed length.
 #[inline(always)]
 pub fn distance(x: &SwarmAddress, y: &SwarmAddress) -> U256 {
@@ -57,7 +57,7 @@ pub fn distance_cmp(a: &SwarmAddress, x: &SwarmAddress, y: &SwarmAddress) -> std
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::b256;
+    use alloy::primitives::b256;
     use std::{cmp::Ordering, str::FromStr};
     use swarm_primitives_traits::SwarmAddress;
 

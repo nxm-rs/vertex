@@ -13,4 +13,4 @@ workspace = true
 
 [dependencies]
 # alloy
-alloy-primitives.workspace = true
+alloy.workspace = true

@@ -1,155 +1,463 @@
-use alloy_primitives::{Address, Keccak256, PrimitiveSignature, B256};
-use alloy_signer::Signer;
-use swarm_primitives_traits::{Chunk, ChunkAddress, ChunkBody, ChunkDecoding, ChunkEncoding, Span};
+use alloy::{
+    primitives::{address, b256, Address, Keccak256, PrimitiveSignature, B256},
+    signers::{local::PrivateKeySigner, Signer},
+};
+use bytes::{Bytes, BytesMut};
+use std::sync::OnceLock;
+use swarm_primitives_traits::{Chunk, ChunkAddress, ChunkBody};
+use thiserror::Error;
 
 use super::bmt_body::{BMTBody, BMTBodyError};
 
 const ID_SIZE: usize = std::mem::size_of::<B256>();
-const SIGNATURE_SIZE: usize = std::mem::size_of::<PrimitiveSignature>();
+const SIGNATURE_SIZE: usize = 65;
 const MIN_SOC_FIELDS_SIZE: usize = ID_SIZE + SIGNATURE_SIZE;
 
-#[derive(Debug, thiserror::Error)]
+/// The address of the owner of the SOC for dispersed replicas.
+/// Generated from the private key `0x0100000000000000000000000000000000000000000000000000000000000000`.
+pub const DISPERSED_REPLICA_OWNER: Address = address!("0xdc5b20847f43d67928f49cd4f85d696b5a7617b5");
+pub const DISPERSED_REPLICA_OWNER_PK: B256 =
+    b256!("0x0100000000000000000000000000000000000000000000000000000000000000");
+
+#[derive(Debug, Error)]
 pub enum SingleOwnerChunkError {
     #[error("BMTBody error: {0}")]
     BMTBodyError(#[from] BMTBodyError),
+
     #[error("AlloySigner error: {0}")]
-    AlloySignerError(#[from] alloy_signer::Error),
+    AlloySignerError(#[from] alloy::signers::Error),
+
     #[error("AlloySignature error: {0}")]
-    AlloySignatureError(#[from] alloy_primitives::SignatureError),
+    AlloySignatureError(#[from] alloy::primitives::SignatureError),
+
     #[error("Recovered chunk mismatch, expected address: {address}, recovered address {recovered_chunk_address} with recovered owner {recovered_owner}")]
     ChunkMismatch {
         address: ChunkAddress,
         recovered_chunk_address: ChunkAddress,
         recovered_owner: Address,
     },
+
     #[error("Data too small ({min_size} bytes), got {actual_size} bytes")]
     InsufficientData { min_size: usize, actual_size: usize },
+
+    #[error("Missing required field: {0}")]
+    MissingField(&'static str),
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SingleOwnerChunk {
     id: B256,
-    owner: Address,
     signature: PrimitiveSignature,
     body: BMTBody,
+    cached_owner: OnceLock<Address>,
 }
 
 impl SingleOwnerChunk {
+    /// Creates a new builder for SingleOwnerChunk
+    pub fn builder() -> SingleOwnerChunkBuilder {
+        SingleOwnerChunkBuilder::default()
+    }
+
+    /// Create a new SingleOwnerChunk from a given id, data and signer.
     pub async fn new(
         id: B256,
-        data: Vec<u8>,
+        data: impl Into<Bytes>,
         signer: impl Signer,
     ) -> Result<Self, SingleOwnerChunkError> {
-        let body = BMTBody::new(data.len() as Span, data)?;
+        let body = BMTBody::builder().data(data).build()?;
         let hash = Self::to_sign(id, &body);
         let signature = signer.sign_hash(&hash).await?;
 
         Ok(Self {
             id,
-            owner: signer.address(),
             signature,
             body,
+            cached_owner: OnceLock::new(),
         })
     }
 
-    pub fn new_signed(
-        address: ChunkAddress,
+    /// Create a new SingleOwnerChunk from a given id, data and signature without verification.
+    pub fn new_signed_unchecked(
         id: B256,
         signature: PrimitiveSignature,
-        data: Vec<u8>,
+        data: impl Into<Bytes>,
     ) -> Result<Self, SingleOwnerChunkError> {
-        let body = BMTBody::new(data.len() as Span, data)?;
-        let hash = Self::to_sign(id, &body);
-        let recovered_owner = signature.recover_address_from_msg(&hash)?;
+        let body = BMTBody::builder().data(data).build()?;
 
-        let chunk = Self {
+        Ok(Self {
             id,
-            owner: recovered_owner,
             signature,
             body,
-        };
+            cached_owner: OnceLock::new(),
+        })
+    }
 
-        let recovered_chunk_address = chunk.address();
-        match recovered_chunk_address == address {
-            true => Ok(chunk),
-            false => Err(SingleOwnerChunkError::ChunkMismatch {
-                address,
-                recovered_chunk_address,
-                recovered_owner,
-            }),
-        }
+    pub async fn new_dispersed_replica(
+        first_byte: u8,
+        data: impl Into<Bytes>,
+    ) -> Result<Self, SingleOwnerChunkError> {
+        let body = BMTBody::builder().data(data).build()?;
+
+        let mut id = B256::default();
+        id[0] = first_byte;
+        id[1..].copy_from_slice(&body.hash().as_slice()[1..]);
+
+        let hash = Self::to_sign(id, &body);
+        let signer = PrivateKeySigner::from_slice(&DISPERSED_REPLICA_OWNER_PK.as_slice()).unwrap();
+        let signature = signer.sign_message(hash.as_ref()).await?;
+
+        Ok(Self {
+            id,
+            signature,
+            body,
+            cached_owner: OnceLock::new(),
+        })
+    }
+
+    /// Returns the ID of the chunk
+    pub fn id(&self) -> B256 {
+        self.id
+    }
+
+    /// Returns the signature
+    pub fn signature(&self) -> &PrimitiveSignature {
+        &self.signature
+    }
+
+    /// Returns the body
+    pub fn body(&self) -> &BMTBody {
+        &self.body
+    }
+
+    /// Returns the owner's address. If signature recovery fails, returns the zero address.
+    pub fn owner(&self) -> Address {
+        *self.cached_owner.get_or_init(|| {
+            let hash = Self::to_sign(self.id, &self.body);
+            self.signature
+                .recover_address_from_msg(&hash)
+                .unwrap_or(Address::ZERO)
+        })
+    }
+
+    /// Convert the chunk into its raw bytes representation
+    pub fn into_bytes(self) -> Bytes {
+        let mut bytes = BytesMut::with_capacity(MIN_SOC_FIELDS_SIZE + self.body.size());
+        bytes.extend_from_slice(self.id.as_ref());
+        bytes.extend_from_slice(&self.signature.as_bytes());
+        bytes.extend_from_slice(&self.body.into_bytes());
+        bytes.freeze()
+    }
+
+    /// Returns the total size in bytes
+    pub fn size(&self) -> usize {
+        MIN_SOC_FIELDS_SIZE + self.body.size()
     }
 
     fn to_sign(id: B256, body: &impl ChunkBody) -> B256 {
         let mut hasher = Keccak256::new();
         hasher.update(id);
         hasher.update(body.hash());
-
         hasher.finalize()
+    }
+
+    fn is_valid_replica(&self) -> bool {
+        self.id[1..] == self.body.hash().as_slice()[1..]
     }
 }
 
-impl swarm_primitives_traits::Chunk for SingleOwnerChunk {
+#[derive(Default)]
+pub struct SingleOwnerChunkBuilder {
+    id: Option<B256>,
+    signature: Option<PrimitiveSignature>,
+    data: Option<Bytes>,
+}
+
+impl SingleOwnerChunkBuilder {
+    pub fn id(mut self, id: B256) -> Self {
+        self.id = Some(id);
+        self
+    }
+
+    pub fn signature(mut self, signature: PrimitiveSignature) -> Self {
+        self.signature = Some(signature);
+        self
+    }
+
+    pub fn data(mut self, data: impl Into<Bytes>) -> Self {
+        self.data = Some(data.into());
+        self
+    }
+
+    pub fn build(self) -> Result<SingleOwnerChunk, SingleOwnerChunkError> {
+        let id = self.id.ok_or(SingleOwnerChunkError::MissingField("id"))?;
+        let signature = self
+            .signature
+            .ok_or(SingleOwnerChunkError::MissingField("signature"))?;
+        let body = BMTBody::builder()
+            .data(
+                self.data
+                    .ok_or(SingleOwnerChunkError::MissingField("data"))?,
+            )
+            .build()?;
+
+        Ok(SingleOwnerChunk {
+            id,
+            signature,
+            body,
+            cached_owner: OnceLock::new(),
+        })
+    }
+}
+
+impl Chunk for SingleOwnerChunk {
     fn address(&self) -> ChunkAddress {
         let mut hasher = Keccak256::new();
         hasher.update(self.id);
-        hasher.update(self.owner);
-
+        hasher.update(self.owner().as_slice());
         hasher.finalize()
     }
 
     fn verify(&self, address: ChunkAddress) -> bool {
-        let hash = Self::to_sign(self.id, &self.body);
-        let recovered = self.signature.recover_address_from_msg(hash);
-
-        if let Ok(recovered_owner) = recovered {
-            return recovered_owner == self.owner && address == self.address();
+        // Dispersed replica check
+        if self.owner() == DISPERSED_REPLICA_OWNER && !self.is_valid_replica() {
+            return false;
         }
 
-        false
+        // Verify address
+        self.address() == address
     }
 }
 
-impl ChunkEncoding for SingleOwnerChunk {
-    fn size(&self) -> usize {
-        MIN_SOC_FIELDS_SIZE + self.body.size()
-    }
+impl TryFrom<&[u8]> for SingleOwnerChunk {
+    type Error = SingleOwnerChunkError;
 
-    fn to_boxed_slice(&self) -> Box<[u8]> {
-        let mut result = Vec::with_capacity(self.size());
-        result.extend_from_slice(&self.id.as_ref());
-        result.extend_from_slice(&self.signature.as_bytes());
-        result.extend_from_slice(&self.body.to_boxed_slice());
-
-        result.into_boxed_slice()
-    }
-}
-
-impl ChunkDecoding for SingleOwnerChunk {
-    #[allow(refining_impl_trait)]
-    fn from_slice(value: &[u8]) -> Result<Self, SingleOwnerChunkError> {
-        if value.len() < MIN_SOC_FIELDS_SIZE {
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        if bytes.len() < MIN_SOC_FIELDS_SIZE {
             return Err(SingleOwnerChunkError::InsufficientData {
                 min_size: MIN_SOC_FIELDS_SIZE,
-                actual_size: value.len(),
+                actual_size: bytes.len(),
             });
         }
 
-        // SAFETY: Indexing of the slice is safe as it is guarded by the above conditional.
-        let id = B256::from_slice(&value[0..ID_SIZE]);
-        let signature = PrimitiveSignature::try_from(&value[ID_SIZE..MIN_SOC_FIELDS_SIZE])?;
-        let body = BMTBody::from_slice(match value.len() > MIN_SOC_FIELDS_SIZE {
-            true => &value[MIN_SOC_FIELDS_SIZE..],
-            false => &[],
-        })?;
-        let hash = Self::to_sign(id, &body);
-        let recovered_owner = signature.recover_address_from_msg(&hash)?;
+        let id = B256::from_slice(&bytes[..ID_SIZE]);
+        let signature = PrimitiveSignature::try_from(&bytes[ID_SIZE..MIN_SOC_FIELDS_SIZE])
+            .map_err(SingleOwnerChunkError::AlloySignatureError)?;
+
+        // Use get() to safely handle the case where bytes.len() == MIN_SOC_FIELDS_SIZE
+        let body_bytes = bytes.get(MIN_SOC_FIELDS_SIZE..).unwrap_or(&[]);
+        let body = BMTBody::try_from(body_bytes)?;
 
         Ok(Self {
             id,
-            owner: recovered_owner,
             signature,
             body,
+            cached_owner: OnceLock::new(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::hex;
+    use alloy::primitives::{address, b256};
+    use alloy::signers::local::PrivateKeySigner;
+
+    fn get_test_wallet() -> PrivateKeySigner {
+        // Test private key corresponding to address 0x8d3766440f0d7b949a5e32995d09619a7f86e632
+        let pk = hex!("2c7536e3605d9c16a7a3d7b1898e529396a65c23a3bcbd4012a11cf2731b0fbc");
+        PrivateKeySigner::from_slice(&pk).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_new() {
+        let id = B256::ZERO;
+        let data = b"foo".to_vec();
+        let wallet = get_test_wallet();
+
+        let chunk = SingleOwnerChunk::new(id, data.clone(), wallet)
+            .await
+            .unwrap();
+
+        assert_eq!(chunk.id(), id);
+        assert_eq!(chunk.body().data(), &data);
+    }
+
+    #[tokio::test]
+    async fn test_new_signed() {
+        let id = B256::ZERO;
+        let data = b"foo".to_vec();
+
+        // Known good signature from Go tests
+        let sig = hex!("5acd384febc133b7b245e5ddc62d82d2cded9182d2716126cd8844509af65a053deb418208027f548e3e88343af6f84a8772fb3cebc0a1833a0ea7ec0c1348311b");
+        let signature = PrimitiveSignature::try_from(sig.as_slice()).unwrap();
+
+        let chunk = SingleOwnerChunk::new_signed_unchecked(id, signature, data.clone()).unwrap();
+
+        assert_eq!(chunk.id(), id);
+        assert_eq!(chunk.body().data(), &data);
+        assert_eq!(chunk.signature().as_bytes(), sig);
+
+        // Verify owner address matches expected
+        let expected_owner = address!("8d3766440f0d7b949a5e32995d09619a7f86e632");
+        assert_eq!(chunk.owner(), expected_owner);
+    }
+
+    #[tokio::test]
+    async fn test_chunk_conversion() {
+        let id = B256::ZERO;
+        let data = b"foo".to_vec();
+        let wallet = get_test_wallet();
+
+        // Create signed chunk
+        let chunk = SingleOwnerChunk::new(id, data.clone(), wallet)
+            .await
+            .unwrap();
+
+        // Convert to bytes
+        let bytes = chunk.clone().into_bytes();
+
+        // Convert back from bytes
+        let recovered_chunk = SingleOwnerChunk::try_from(bytes.as_ref()).unwrap();
+
+        // Verify fields match
+        assert_eq!(recovered_chunk.id(), chunk.id());
+        assert_eq!(recovered_chunk.signature(), chunk.signature());
+        assert_eq!(recovered_chunk.body().data(), chunk.body().data());
+        assert_eq!(recovered_chunk.owner(), chunk.owner());
+    }
+
+    #[tokio::test]
+    async fn test_invalid_data() {
+        // Test insufficient data size
+        let too_small = vec![0u8; MIN_SOC_FIELDS_SIZE - 1];
+        assert!(matches!(
+            SingleOwnerChunk::try_from(too_small.as_slice()),
+            Err(SingleOwnerChunkError::InsufficientData { .. })
+        ));
+
+        // Test missing fields in builder
+        let result = SingleOwnerChunk::builder().build();
+        assert!(matches!(
+            result,
+            Err(SingleOwnerChunkError::MissingField("id"))
+        ));
+
+        let result = SingleOwnerChunk::builder().id(B256::ZERO).build();
+        assert!(matches!(
+            result,
+            Err(SingleOwnerChunkError::MissingField("signature"))
+        ));
+    }
+
+    fn get_test_chunk_data() -> Vec<u8> {
+        hex!(
+            "000000000000000000000000000000000000000000000000000000000000000\
+            05acd384febc133b7b245e5ddc62d82d2cded9182d2716126cd8844509af65a05\
+            3deb418208027f548e3e88343af6f84a8772fb3cebc0a1833a0ea7ec0c134831\
+            1b0300000000000000666f6f"
+        )
+        .to_vec()
+    }
+
+    #[tokio::test]
+    async fn test_chunk_address() {
+        // Should parse successfully
+        let chunk = SingleOwnerChunk::try_from(get_test_chunk_data().as_slice()).unwrap();
+
+        // Verify expected owner
+        let expected_owner = address!("8d3766440f0d7b949a5e32995d09619a7f86e632");
+        assert_eq!(chunk.owner(), expected_owner);
+
+        // Verify expected address
+        let expected_address =
+            b256!("9d453ebb73b2fedaaf44ceddcf7a0aa37f3e3d6453fea5841c31f0ea6d61dc85");
+        assert_eq!(chunk.address(), expected_address);
+    }
+
+    #[tokio::test]
+    async fn test_invalid_signature_returns_zero_address() {
+        let id = B256::ZERO;
+        let data = b"test".to_vec();
+        // Create an invalid signature (all zeros)
+        let invalid_signature = PrimitiveSignature::try_from([0u8; 65].as_slice()).unwrap();
+
+        let chunk = SingleOwnerChunk::new_signed_unchecked(id, invalid_signature, data).unwrap();
+
+        assert_eq!(chunk.owner(), Address::ZERO);
+    }
+
+    #[tokio::test]
+    async fn test_invalid_chunk() {
+        // Base valid data
+        let valid_data = get_test_chunk_data();
+
+        // Test: Invalid signature
+        let mut invalid_sig = valid_data.clone();
+        invalid_sig[ID_SIZE] = 0x01; // Modify first byte of signature
+        assert_eq!(
+            SingleOwnerChunk::try_from(invalid_sig.as_slice())
+                .unwrap()
+                .verify(b256!(
+                    "9d453ebb73b2fedaaf44ceddcf7a0aa37f3e3d6453fea5841c31f0ea6d61dc85"
+                )),
+            false
+        );
+
+        // Test: Invalid data size (too small)
+        let too_small = vec![0u8; MIN_SOC_FIELDS_SIZE - 1];
+        assert!(matches!(
+            SingleOwnerChunk::try_from(too_small.as_slice()),
+            Err(SingleOwnerChunkError::InsufficientData { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_dispersed_replica() {
+        let test_data = b"test data".to_vec();
+
+        // Test with different first bytes
+        for first_byte in [0u8, 1, 42, 255] {
+            let chunk = SingleOwnerChunk::new_dispersed_replica(first_byte, test_data.clone())
+                .await
+                .unwrap();
+
+            // Verify it's recognised as a dispersed replica
+            assert!(chunk.is_valid_replica());
+
+            // Verify the first byte matches what we set
+            assert_eq!(chunk.id()[0], first_byte);
+
+            // Verify the rest of the ID matches the body hash
+            let body_hash = chunk.body().hash();
+            assert_eq!(&chunk.id()[1..], &body_hash.as_slice()[1..]);
+
+            // Verify owner is correct
+            assert_eq!(chunk.owner(), DISPERSED_REPLICA_OWNER);
+
+            // Verify the chunk's address verification works
+            assert!(chunk.verify(chunk.address()));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_invalid_dispersed_replica() {
+        let test_data = b"test data".to_vec();
+
+        let chunk = SingleOwnerChunk::new_dispersed_replica(1u8, test_data)
+            .await
+            .unwrap();
+        let replica_address = chunk.address();
+        // Serialise the chunk
+        let bytes = chunk.into_bytes();
+
+        // Modify the last byte of the ID
+        // This should make the chunk not recognised as a dispersed replica
+        let mut modified_bytes = bytes.to_vec();
+        modified_bytes[ID_SIZE - 1] = 0x01;
+
+        let modified_chunk = SingleOwnerChunk::try_from(modified_bytes.as_ref()).unwrap();
+        assert!(!modified_chunk.is_valid_replica());
+        assert!(!modified_chunk.verify(replica_address));
     }
 }
