@@ -20,14 +20,6 @@ impl BMTBody {
         BMTBodyBuilder::default()
     }
 
-    pub(crate) fn new(data: impl Into<Bytes>) -> Result<Self> {
-        BMTBody::builder().data(data).build()
-    }
-
-    pub(crate) fn new_with_span(data: impl Into<Bytes>, span: Span) -> Result<Self> {
-        BMTBody::builder().span(span).data(data).build()
-    }
-
     /// Returns the span of the body
     pub(crate) fn span(&self) -> Span {
         self.span
