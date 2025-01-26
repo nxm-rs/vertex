@@ -1,10 +1,11 @@
-# Vertex ![CI status] ![deny status]
+# Vertex <!-- ![CI status] ![deny status] -->
 
 **Modular, high-performance implementation of the Ethereum Swarm protocol**
 
-[Logo placeholder]
+<!-- [Logo placeholder]
 
 **[Install](https://vertex.rs/installation) | [User Book](https://vertex.rs) | [Developer Docs](./docs) | [Crate Docs](https://vertex.rs/docs)**
+--> 
 
 ## What is Vertex?
 
