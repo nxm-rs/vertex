@@ -1,8 +1,6 @@
-use crate::{
-    bmt::{tree::DEPTH, Hasher, Segment, Span, TreeIterator},
-    BMT_BRANCHES, SEGMENT_SIZE,
-};
-use alloy_primitives::Keccak256;
+use crate::bmt::{Hasher, Segment, Span, TreeIterator, DEPTH};
+use alloy::primitives::Keccak256;
+use swarm_primitives_traits::{BRANCHES, SEGMENT_SIZE};
 use thiserror::Error;
 
 const PROOF_LENGTH: usize = DEPTH - 1;
@@ -74,7 +72,7 @@ pub enum ProverError {
 
 impl Prover for Hasher {
     fn proof(&self, i: usize) -> Result<Proof, ProverError> {
-        if i >= BMT_BRANCHES {
+        if i >= BRANCHES {
             return Err(ProverError::IndexOutOfBounds(i));
         }
 
@@ -152,7 +150,7 @@ impl Prover for Hasher {
 
         // Combine the final hash with the span to compute the root hash
         let mut hasher = Keccak256::new();
-        hasher.update(proof.span);
+        hasher.update(&proof.span.to_le_bytes());
         hasher.update(&current_hash);
 
         let mut root_hash: Segment = [0u8; SEGMENT_SIZE];
@@ -165,11 +163,11 @@ impl Prover for Hasher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bmt::{pool::PooledHasher, Pool};
-    use crate::CHUNK_SIZE;
-    use alloy_primitives::hex;
+    use crate::bmt::{Pool, PooledHasher};
+    use alloy::primitives::hex;
     use rand::Rng;
     use std::sync::Arc;
+    use swarm_primitives_traits::CHUNK_SIZE;
 
     #[tokio::test]
     async fn test_proof_correctness() {
@@ -179,8 +177,8 @@ mod tests {
 
         let pool = Arc::new(Pool::new(1).await);
         let mut prover = pool.get_hasher().await.unwrap();
-        let _ = prover.set_header_u64(buf.len() as u64);
-        prover.write(&buf).await.unwrap();
+        let _ = prover.set_span(buf.len() as u64);
+        prover.write(&buf).unwrap();
 
         let mut output = [0u8; SEGMENT_SIZE];
         prover.hash(&mut output);
@@ -223,8 +221,7 @@ mod tests {
                 "Incorrect leftmost segment"
             );
             assert_eq!(
-                proof.span,
-                (CHUNK_SIZE as u64).to_le_bytes(),
+                proof.span, CHUNK_SIZE as u64,
                 "Incorrect span for leftmost proof"
             );
         }
@@ -249,8 +246,7 @@ mod tests {
                 "Incorrect rightmost segment"
             );
             assert_eq!(
-                proof.span,
-                (CHUNK_SIZE as u64).to_le_bytes(),
+                proof.span, CHUNK_SIZE as u64,
                 "Incorrect span for rightmost proof"
             );
         }
@@ -275,8 +271,7 @@ mod tests {
                 "Incorrect middle segment"
             );
             assert_eq!(
-                proof.span,
-                (CHUNK_SIZE as u64).to_le_bytes(),
+                proof.span, CHUNK_SIZE as u64,
                 "Incorrect span for middle proof"
             );
         }
@@ -308,15 +303,15 @@ mod tests {
 
         let pool = Arc::new(Pool::new(1).await);
         let mut prover = pool.get_hasher().await.unwrap();
-        let _ = prover.set_header_u64(buf.len() as u64);
-        prover.write(&buf).await.unwrap();
+        let _ = prover.set_span(buf.len() as u64);
+        prover.write(&buf).unwrap();
 
         let proof = Proof {
             prove_segment: buf[64 * SEGMENT_SIZE..65 * SEGMENT_SIZE]
                 .try_into()
                 .expect("Slice size mismatch"),
             proof_segments: segments,
-            span: 4096_u64.to_le_bytes(),
+            span: 4096,
             index: 64,
         };
 
@@ -340,8 +335,8 @@ mod tests {
         // Create a BMT pool
         let pool = Arc::new(Pool::new(1).await);
         let mut hasher = pool.get_hasher().await.unwrap();
-        let _ = hasher.set_header_u64(buf.len().try_into().unwrap());
-        hasher.write(&buf).await.unwrap();
+        let _ = hasher.set_span(buf.len().try_into().unwrap());
+        hasher.write(&buf).unwrap();
 
         let mut root_hash = [0u8; SEGMENT_SIZE];
         hasher.hash(&mut root_hash);

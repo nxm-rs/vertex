@@ -4,11 +4,10 @@
 use alloy_primitives::keccak256;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rand::prelude::*;
-use swarm_primitives::bmt::reference::RefHasher;
-use swarm_primitives::bmt::{Hasher, HasherBuilder};
-use swarm_primitives::Address;
-use swarm_primitives::BMT_BRANCHES;
+use swarm_primitives::bmt::{Hasher, HasherBuilder, RefHasher};
+
 use swarm_primitives::{distance, proximity};
+use swarm_primitives_traits::{SwarmAddress, BRANCHES};
 use tokio::runtime::Builder;
 
 pub fn primitives(c: &mut Criterion) {
@@ -16,19 +15,13 @@ pub fn primitives(c: &mut Criterion) {
     let mut rng = rand::thread_rng();
     let random_chunk: Vec<u8> = (0..4096).map(|_| rng.gen()).collect();
 
-    //g.bench_function("chunk_address/4096", |b| {
-    //    let chunk = Chunk::new(&mut random_chunk.clone(), None, Options::default(), None);
-    //    b.iter(|| {
-    //        black_box(chunk.address());
-    //    });
-    //});
     g.bench_function("hash_baseline", |b| {
         b.iter(|| {
             black_box(keccak256(&random_chunk));
         })
     });
     g.bench_function("bmt_nonconcurrent", |b| {
-        let hasher: RefHasher<BMT_BRANCHES> = RefHasher::new();
+        let hasher: RefHasher<BRANCHES> = RefHasher::new();
         b.iter(|| {
             black_box(hasher.hash(&random_chunk));
         })
@@ -40,17 +33,17 @@ pub fn primitives(c: &mut Criterion) {
             .unwrap();
         b.to_async(&rt).iter(|| async {
             let mut hasher: Hasher = HasherBuilder::default().build().unwrap();
-            black_box(async || {
-                let _ = hasher.write(&random_chunk).await;
-                let mut res = [0u8; 32];
-                let _ = hasher.hash(&mut res);
-            });
+            let _ = hasher.write(&random_chunk);
+            hasher.set_span(4096);
+            let mut res = [0u8; 32];
+            let _ = hasher.hash(&mut res);
+            black_box(res);
         });
     });
     // Generate some random addresses
-    let x = Address::random();
-    let y = Address::random();
-    let a = Address::random();
+    let x = SwarmAddress::random();
+    let y = SwarmAddress::random();
+    let a = SwarmAddress::random();
     g.bench_function("distance", |b| {
         b.iter(|| {
             black_box(distance::distance(&x, &y));

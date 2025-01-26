@@ -6,14 +6,21 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
-alloy-primitives.workspace = true
+# serde = { workspace = true, features = ["derive"] }
+# serde_json.workspace = true
+alloy.workspace = true
+swarm-primitives-traits.workspace = true
 
 # misc
+bytes.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 
+thread_local = "1.1.8"
+rayon = "1.10.0"
+
 # getrandom
-getrandom = { workspace = true, optional = true }
+# getrandom = { workspace = true, optional = true }
 
 # rand
 rand = { workspace = true, optional = true, features = ["getrandom"] }
@@ -28,12 +35,7 @@ rand = { workspace = true, features = ["getrandom"] }
 tokio = { workspace = true, features = ["full"] }
 
 [build-dependencies]
-alloy-primitives.workspace = true
-
-[features]
-asm-keccak = [
-  "alloy-primitives/asm-keccak"
-]
+alloy.workspace = true
 
 [[bench]]
 name = "primitives"

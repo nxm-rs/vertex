@@ -1,9 +1,7 @@
-use crate::{BMT_BRANCHES, SEGMENT_SIZE};
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-
-use super::Segment;
+use swarm_primitives_traits::{Segment, BRANCHES, SEGMENT_SIZE};
 
 /// Calculate the depth of a BMT given the number of nodes `n` on the bottom level (0-indexed),
 /// rounded up to the nearest power of two.
@@ -33,7 +31,7 @@ const fn generate_offset_table<const DEPTH: usize>() -> [usize; DEPTH] {
 }
 
 /// Set the depth of the BMT tree, based on configuration variables.
-pub(crate) const DEPTH: usize = calculate_depth(BMT_BRANCHES);
+pub const DEPTH: usize = calculate_depth(BRANCHES);
 
 /// Determine leaf constants at compile time
 /// The leaves element for the data structure dismisses the Level 0 part of the BMT (which is
@@ -62,7 +60,7 @@ pub struct Tree {
     /// All nodes within the BMT, excluding level 0.
     leaves: [UnsafeCell<Segment>; LEAVES_CAPACITY],
     /// Nodes within the BMT on level 0 correspond to byte sequences.
-    pub(crate) buf: UnsafeCell<[u8; BMT_BRANCHES * SEGMENT_SIZE]>,
+    pub(crate) buf: UnsafeCell<[u8; BRANCHES * SEGMENT_SIZE]>,
 }
 
 impl Default for Tree {
@@ -70,7 +68,7 @@ impl Default for Tree {
         Self {
             state: [const { UnsafeCell::new(AtomicBool::new(true)) }; STATE_CAPACITY],
             leaves: [const { UnsafeCell::new([0u8; SEGMENT_SIZE]) }; LEAVES_CAPACITY],
-            buf: const { UnsafeCell::new([0u8; BMT_BRANCHES * SEGMENT_SIZE]) },
+            buf: const { UnsafeCell::new([0u8; BRANCHES * SEGMENT_SIZE]) },
         }
     }
 }
@@ -159,7 +157,7 @@ impl Tree {
     pub fn copy_to_buf(&self, offset: usize, data: &[u8]) {
         let len = data.len();
         assert!(
-            offset + len <= BMT_BRANCHES * SEGMENT_SIZE,
+            offset + len <= BRANCHES * SEGMENT_SIZE,
             "Attempt to write beyond buffer bounds"
         );
 
@@ -186,7 +184,7 @@ pub struct TreeIterator {
 impl TreeIterator {
     pub fn new(tree: Arc<Tree>, i: usize) -> Self {
         assert!(
-            i < BMT_BRANCHES / 2,
+            i < BRANCHES / 2,
             "Invalid index, must be less than BMT_BRANCHES / 2"
         );
 
