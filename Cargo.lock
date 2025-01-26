@@ -3467,6 +3467,8 @@ name = "swarm-primitives-traits"
 version = "0.1.0"
 dependencies = [
  "alloy",
+ "bytes",
+ "thiserror 2.0.11",
 ]
 
 [[package]]

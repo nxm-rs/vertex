@@ -1,7 +1,9 @@
 use super::bmt_body::BMTBody;
-use crate::chunk::error::{ChunkError, Result};
 use bytes::Bytes;
-use swarm_primitives_traits::{Chunk, ChunkAddress};
+use swarm_primitives_traits::{
+    chunk::{ChunkError, Result},
+    Chunk, ChunkAddress, ChunkBody, ChunkData,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentChunk {
@@ -29,24 +31,31 @@ impl ContentChunk {
         })
     }
 
-    /// Access the chunk body's data
-    pub fn data(&self) -> &[u8] {
-        self.body.data()
-    }
-
     /// Returns the span value
     pub fn span(&self) -> u64 {
         self.body.span()
     }
+}
 
-    /// Convert the chunk into its raw bytes representation
-    pub fn into_bytes(self) -> Bytes {
-        self.body.into_bytes()
+impl ChunkData for ContentChunk {
+    fn data(&self) -> &[u8] {
+        self.body.data()
     }
 
-    /// Returns the total size of the chunk in bytes
-    pub fn size(&self) -> usize {
+    fn size(&self) -> usize {
         self.body.size()
+    }
+}
+
+impl Chunk for ContentChunk {
+    fn address(&self) -> ChunkAddress {
+        self.body.hash()
+    }
+}
+
+impl From<ContentChunk> for Bytes {
+    fn from(chunk: ContentChunk) -> Self {
+        chunk.body.into()
     }
 }
 
@@ -79,12 +88,6 @@ impl ContentChunkBuilder {
             .build()?;
 
         Ok(ContentChunk { body })
-    }
-}
-
-impl Chunk for ContentChunk {
-    fn address(&self) -> ChunkAddress {
-        self.body.hash()
     }
 }
 
@@ -146,7 +149,7 @@ mod tests {
 
         let chunk = ContentChunk::try_from(data.as_slice()).unwrap();
         assert_eq!(chunk.address(), bmt_hash);
-        assert_eq!(chunk.into_bytes(), data.as_slice());
+        assert_eq!(<ContentChunk as Into<Bytes>>::into(chunk), data.as_slice());
     }
 
     #[test]
@@ -240,7 +243,7 @@ mod tests {
         let chunk = ContentChunk::new(data.clone()).unwrap();
 
         // Test conversion to bytes and back
-        let bytes = chunk.clone().into_bytes();
+        let bytes: Bytes = chunk.clone().into();
         let recovered_chunk = ContentChunk::try_from(bytes.as_ref()).unwrap();
 
         assert_eq!(chunk.address(), recovered_chunk.address());

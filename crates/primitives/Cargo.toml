@@ -12,7 +12,7 @@ alloy.workspace = true
 swarm-primitives-traits.workspace = true
 
 # misc
-bytes = "1.9.0"
+bytes.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 

@@ -1,9 +1,11 @@
 use bytes::{Bytes, BytesMut};
 use std::sync::OnceLock;
-use swarm_primitives_traits::{ChunkAddress, ChunkBody, Span, CHUNK_SIZE, SEGMENT_SIZE, SPAN_SIZE};
+use swarm_primitives_traits::{
+    chunk::{ChunkError, Result},
+    ChunkAddress, ChunkBody, ChunkData, Span, CHUNK_SIZE, SEGMENT_SIZE, SPAN_SIZE,
+};
 
 use crate::bmt::HasherBuilder;
-use crate::chunk::error::{ChunkError, Result};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct BMTBody {
@@ -18,42 +20,20 @@ impl BMTBody {
         BMTBodyBuilder::default()
     }
 
-    pub fn new(data: impl Into<Bytes>) -> Result<Self> {
+    pub(crate) fn new(data: impl Into<Bytes>) -> Result<Self> {
         BMTBody::builder().data(data).build()
     }
 
-    pub fn new_with_span(data: impl Into<Bytes>, span: Span) -> Result<Self> {
+    pub(crate) fn new_with_span(data: impl Into<Bytes>, span: Span) -> Result<Self> {
         BMTBody::builder().span(span).data(data).build()
     }
 
     /// Returns the span of the body
-    pub fn span(&self) -> Span {
+    pub(crate) fn span(&self) -> Span {
         self.span
     }
 
-    /// Returns a reference to the data
-    pub fn data(&self) -> &[u8] {
-        &self.data
-    }
-
-    /// Returns the hash of the body, computing it if necessary
-    pub fn hash(&self) -> ChunkAddress {
-        self.cached_hash.get_or_init(|| self.compute_hash()).clone()
-    }
-
     /// Converts the body into its raw bytes representation
-    pub fn into_bytes(self) -> Bytes {
-        let mut bytes = BytesMut::with_capacity(SPAN_SIZE + self.data.len());
-        bytes.extend_from_slice(&self.span.to_le_bytes());
-        bytes.extend_from_slice(&self.data);
-        bytes.freeze()
-    }
-
-    /// Returns the total size of the body in bytes
-    pub fn size(&self) -> usize {
-        SPAN_SIZE + self.data.len()
-    }
-
     // Internal method to compute the hash
     fn compute_hash(&self) -> ChunkAddress {
         let mut hasher = HasherBuilder::default()
@@ -67,6 +47,32 @@ impl BMTBody {
         hasher.hash(&mut result);
 
         result.into()
+    }
+}
+
+impl ChunkData for BMTBody {
+    fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    fn size(&self) -> usize {
+        SPAN_SIZE + self.data.len()
+    }
+}
+
+impl ChunkBody for BMTBody {
+    /// Returns the hash of the body, computing it if necessary
+    fn hash(&self) -> ChunkAddress {
+        self.cached_hash.get_or_init(|| self.compute_hash()).clone()
+    }
+}
+
+impl From<BMTBody> for Bytes {
+    fn from(body: BMTBody) -> Self {
+        let mut bytes = BytesMut::with_capacity(body.size());
+        bytes.extend_from_slice(&body.span.to_le_bytes());
+        bytes.extend_from_slice(body.data());
+        bytes.freeze()
     }
 }
 
@@ -132,9 +138,8 @@ impl TryFrom<&[u8]> for BMTBody {
 
         // SAFETY: bytes.len() >= SPAN_SIZE
         let span_bytes: [u8; SPAN_SIZE] = bytes[..SPAN_SIZE].try_into().unwrap();
-
         let span = Span::from_le_bytes(span_bytes);
-        // Use get() to safely handle the case where bytes.len() == SPAN_SIZE
+        // SAFETY: use get() to handle the case where bytes.len() == SPAN_SIZE
         let data = bytes.get(SPAN_SIZE..).unwrap_or(&[]);
         let data = Bytes::copy_from_slice(data);
 
@@ -143,16 +148,6 @@ impl TryFrom<&[u8]> for BMTBody {
             data,
             cached_hash: OnceLock::new(),
         })
-    }
-}
-
-impl ChunkBody for BMTBody {
-    fn hash(&self) -> ChunkAddress {
-        BMTBody::hash(self)
-    }
-
-    fn data(&self) -> &[u8] {
-        self.data()
     }
 }
 

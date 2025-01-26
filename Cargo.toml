@@ -73,6 +73,8 @@ thiserror = "2.0.4"
 #     "time",
 # ] }
 
+bytes = "1.9.0"
+
 ## tokio
 # tokio-stream = "0.1.17"
 tokio = { version = "1.42.0", default-features = false, features = [
