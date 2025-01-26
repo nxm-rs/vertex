@@ -1,6 +1,6 @@
 use super::bmt_body::BMTBody;
 use bytes::Bytes;
-use swarm_primitives_traits::{
+use nectar_primitives_traits::{
     chunk::{ChunkError, Result},
     Chunk, ChunkAddress, ChunkBody, ChunkData,
 };
@@ -118,7 +118,7 @@ impl From<BMTBody> for ContentChunk {
 mod tests {
     use super::*;
     use alloy::primitives::b256;
-    use swarm_primitives_traits::CHUNK_SIZE;
+    use nectar_primitives_traits::CHUNK_SIZE;
 
     #[test]
     fn test_builder_pattern() {

@@ -3,11 +3,11 @@ use alloy::{
     signers::{local::PrivateKeySigner, Signer},
 };
 use bytes::{Bytes, BytesMut};
-use std::sync::OnceLock;
-use swarm_primitives_traits::{
+use nectar_primitives_traits::{
     chunk::{ChunkError, Result},
     Chunk, ChunkAddress, ChunkBody, ChunkData, Signable,
 };
+use std::sync::OnceLock;
 
 use super::bmt_body::BMTBody;
 

@@ -1,9 +1,9 @@
 use bytes::{Bytes, BytesMut};
-use std::sync::OnceLock;
-use swarm_primitives_traits::{
+use nectar_primitives_traits::{
     chunk::{ChunkError, Result},
     ChunkAddress, ChunkBody, ChunkData, Span, CHUNK_SIZE, SPAN_SIZE,
 };
+use std::sync::OnceLock;
 
 use crate::bmt::HasherBuilder;
 

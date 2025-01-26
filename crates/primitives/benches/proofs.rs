@@ -3,8 +3,8 @@ use rand::Rng;
 use std::sync::Arc;
 use tokio::runtime::Builder;
 
-use swarm_primitives::bmt::{Hasher, Pool, PooledHasher, Prover};
-use swarm_primitives_traits::{CHUNK_SIZE, SEGMENT_SIZE};
+use nectar_primitives::bmt::{Hasher, Pool, PooledHasher, Prover};
+use nectar_primitives_traits::{CHUNK_SIZE, SEGMENT_SIZE};
 
 pub fn proofs(c: &mut Criterion) {
     let mut group = c.benchmark_group("proofs");

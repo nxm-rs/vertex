@@ -1,15 +1,16 @@
 [package]
-name = "swarm-primitives"
+name = "nectar-primitives"
 version.workspace = true
 edition.workspace = true
 homepage.workspace = true
+license.workspace = true
 repository.workspace = true
+rust-version.workspace = true
+description = "Common types in Ethereum Swarm"
 
 [dependencies]
-# serde = { workspace = true, features = ["derive"] }
-# serde_json.workspace = true
 alloy.workspace = true
-swarm-primitives-traits.workspace = true
+nectar-primitives-traits.workspace = true
 
 # misc
 bytes.workspace = true
@@ -18,9 +19,6 @@ thiserror.workspace = true
 
 thread_local = "1.1.8"
 rayon = "1.10.0"
-
-# getrandom
-# getrandom = { workspace = true, optional = true }
 
 # rand
 rand = { workspace = true, optional = true, features = ["getrandom"] }

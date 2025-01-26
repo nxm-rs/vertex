@@ -3,11 +3,11 @@
 
 use alloy_primitives::keccak256;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use nectar_primitives::bmt::{Hasher, HasherBuilder, RefHasher};
 use rand::prelude::*;
-use swarm_primitives::bmt::{Hasher, HasherBuilder, RefHasher};
 
-use swarm_primitives::{distance, proximity};
-use swarm_primitives_traits::{SwarmAddress, BRANCHES};
+use nectar_primitives::{distance, proximity};
+use nectar_primitives_traits::{SwarmAddress, BRANCHES};
 use tokio::runtime::Builder;
 
 pub fn primitives(c: &mut Criterion) {

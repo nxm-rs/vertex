@@ -1,7 +1,7 @@
 use alloy::primitives::keccak256;
+use nectar_primitives_traits::SEGMENT_SIZE;
 use rayon::prelude::*;
 use std::cell::RefCell;
-use swarm_primitives_traits::SEGMENT_SIZE;
 use thread_local::ThreadLocal;
 
 pub struct RefHasher<const N: usize> {

@@ -1,4 +1,4 @@
-use swarm_primitives_traits::BRANCHES;
+use nectar_primitives_traits::BRANCHES;
 
 pub mod bmt;
 pub mod chunk;

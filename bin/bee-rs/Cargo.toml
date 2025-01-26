@@ -1,5 +1,5 @@
 [package]
-name = "bee-rs"
+name = "vertex"
 version.workspace = true
 edition.workspace = true
 homepage.workspace = true
