@@ -1,3 +1,4 @@
+use crate::chunk::error::{ChunkError, Result};
 use alloy::{
     primitives::{address, b256, Address, Keccak256, PrimitiveSignature, B256},
     signers::{local::PrivateKeySigner, Signer},
@@ -5,9 +6,8 @@ use alloy::{
 use bytes::{Bytes, BytesMut};
 use std::sync::OnceLock;
 use swarm_primitives_traits::{Chunk, ChunkAddress, ChunkBody};
-use thiserror::Error;
 
-use super::bmt_body::{BMTBody, BMTBodyError};
+use super::bmt_body::BMTBody;
 
 const ID_SIZE: usize = std::mem::size_of::<B256>();
 const SIGNATURE_SIZE: usize = 65;
@@ -18,31 +18,6 @@ const MIN_SOC_FIELDS_SIZE: usize = ID_SIZE + SIGNATURE_SIZE;
 pub const DISPERSED_REPLICA_OWNER: Address = address!("0xdc5b20847f43d67928f49cd4f85d696b5a7617b5");
 pub const DISPERSED_REPLICA_OWNER_PK: B256 =
     b256!("0x0100000000000000000000000000000000000000000000000000000000000000");
-
-#[derive(Debug, Error)]
-pub enum SingleOwnerChunkError {
-    #[error("BMTBody error: {0}")]
-    BMTBodyError(#[from] BMTBodyError),
-
-    #[error("AlloySigner error: {0}")]
-    AlloySignerError(#[from] alloy::signers::Error),
-
-    #[error("AlloySignature error: {0}")]
-    AlloySignatureError(#[from] alloy::primitives::SignatureError),
-
-    #[error("Recovered chunk mismatch, expected address: {address}, recovered address {recovered_chunk_address} with recovered owner {recovered_owner}")]
-    ChunkMismatch {
-        address: ChunkAddress,
-        recovered_chunk_address: ChunkAddress,
-        recovered_owner: Address,
-    },
-
-    #[error("Data too small ({min_size} bytes), got {actual_size} bytes")]
-    InsufficientData { min_size: usize, actual_size: usize },
-
-    #[error("Missing required field: {0}")]
-    MissingField(&'static str),
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SingleOwnerChunk {
@@ -62,11 +37,11 @@ impl SingleOwnerChunk {
     pub async fn new(
         id: B256,
         data: impl Into<Bytes>,
-        signer: impl Signer,
-    ) -> Result<Self, SingleOwnerChunkError> {
+        signer: impl Signer + Send + Sync,
+    ) -> Result<Self> {
         let body = BMTBody::builder().data(data).build()?;
         let hash = Self::to_sign(id, &body);
-        let signature = signer.sign_hash(&hash).await?;
+        let signature = signer.sign_message(hash.as_ref()).await?;
 
         Ok(Self {
             id,
@@ -81,7 +56,7 @@ impl SingleOwnerChunk {
         id: B256,
         signature: PrimitiveSignature,
         data: impl Into<Bytes>,
-    ) -> Result<Self, SingleOwnerChunkError> {
+    ) -> Result<Self> {
         let body = BMTBody::builder().data(data).build()?;
 
         Ok(Self {
@@ -92,10 +67,7 @@ impl SingleOwnerChunk {
         })
     }
 
-    pub async fn new_dispersed_replica(
-        first_byte: u8,
-        data: impl Into<Bytes>,
-    ) -> Result<Self, SingleOwnerChunkError> {
+    pub async fn new_dispersed_replica(first_byte: u8, data: impl Into<Bytes>) -> Result<Self> {
         let body = BMTBody::builder().data(data).build()?;
 
         let mut id = B256::default();
@@ -188,16 +160,13 @@ impl SingleOwnerChunkBuilder {
         self
     }
 
-    pub fn build(self) -> Result<SingleOwnerChunk, SingleOwnerChunkError> {
-        let id = self.id.ok_or(SingleOwnerChunkError::MissingField("id"))?;
+    pub fn build(self) -> Result<SingleOwnerChunk> {
+        let id = self.id.ok_or(ChunkError::missing_field("id"))?;
         let signature = self
             .signature
-            .ok_or(SingleOwnerChunkError::MissingField("signature"))?;
+            .ok_or(ChunkError::missing_field("signature"))?;
         let body = BMTBody::builder()
-            .data(
-                self.data
-                    .ok_or(SingleOwnerChunkError::MissingField("data"))?,
-            )
+            .data(self.data.ok_or(ChunkError::missing_field("data"))?)
             .build()?;
 
         Ok(SingleOwnerChunk {
@@ -229,19 +198,20 @@ impl Chunk for SingleOwnerChunk {
 }
 
 impl TryFrom<&[u8]> for SingleOwnerChunk {
-    type Error = SingleOwnerChunkError;
+    type Error = ChunkError;
 
-    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+    fn try_from(bytes: &[u8]) -> Result<Self> {
         if bytes.len() < MIN_SOC_FIELDS_SIZE {
-            return Err(SingleOwnerChunkError::InsufficientData {
-                min_size: MIN_SOC_FIELDS_SIZE,
-                actual_size: bytes.len(),
-            });
+            return Err(ChunkError::size(
+                "insufficient data",
+                MIN_SOC_FIELDS_SIZE,
+                bytes.len(),
+            ));
         }
 
         let id = B256::from_slice(&bytes[..ID_SIZE]);
         let signature = PrimitiveSignature::try_from(&bytes[ID_SIZE..MIN_SOC_FIELDS_SIZE])
-            .map_err(SingleOwnerChunkError::AlloySignatureError)?;
+            .map_err(ChunkError::Signature)?;
 
         // Use get() to safely handle the case where bytes.len() == MIN_SOC_FIELDS_SIZE
         let body_bytes = bytes.get(MIN_SOC_FIELDS_SIZE..).unwrap_or(&[]);
@@ -333,21 +303,15 @@ mod tests {
         let too_small = vec![0u8; MIN_SOC_FIELDS_SIZE - 1];
         assert!(matches!(
             SingleOwnerChunk::try_from(too_small.as_slice()),
-            Err(SingleOwnerChunkError::InsufficientData { .. })
+            Err(ChunkError::Size { .. })
         ));
 
         // Test missing fields in builder
         let result = SingleOwnerChunk::builder().build();
-        assert!(matches!(
-            result,
-            Err(SingleOwnerChunkError::MissingField("id"))
-        ));
+        assert!(matches!(result, Err(ChunkError::MissingField("id"))));
 
         let result = SingleOwnerChunk::builder().id(B256::ZERO).build();
-        assert!(matches!(
-            result,
-            Err(SingleOwnerChunkError::MissingField("signature"))
-        ));
+        assert!(matches!(result, Err(ChunkError::MissingField("signature"))));
     }
 
     fn get_test_chunk_data() -> Vec<u8> {
@@ -408,7 +372,7 @@ mod tests {
         let too_small = vec![0u8; MIN_SOC_FIELDS_SIZE - 1];
         assert!(matches!(
             SingleOwnerChunk::try_from(too_small.as_slice()),
-            Err(SingleOwnerChunkError::InsufficientData { .. })
+            Err(ChunkError::Size { .. })
         ));
     }
 

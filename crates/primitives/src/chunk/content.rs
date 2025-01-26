@@ -1,14 +1,7 @@
+use super::bmt_body::BMTBody;
+use crate::chunk::error::{ChunkError, Result};
 use bytes::Bytes;
 use swarm_primitives_traits::{Chunk, ChunkAddress};
-use thiserror::Error;
-
-use super::bmt_body::{BMTBody, BMTBodyError};
-
-#[derive(Debug, Error)]
-pub enum ContentChunkError {
-    #[error("BMTBody error: {0}")]
-    BMTBodyError(#[from] BMTBodyError),
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentChunk {
@@ -22,7 +15,7 @@ impl ContentChunk {
     }
 
     /// Create a new ContentChunk with data (span will be inferred from data length)
-    pub fn new(data: impl Into<Bytes>) -> Result<Self, ContentChunkError> {
+    pub fn new(data: impl Into<Bytes>) -> Result<Self> {
         let data = data.into();
         Ok(Self {
             body: BMTBody::builder().data(data).build()?,
@@ -30,7 +23,7 @@ impl ContentChunk {
     }
 
     /// Create a new ContentChunk with specified span and data
-    pub fn new_with_span(span: u64, data: impl Into<Bytes>) -> Result<Self, ContentChunkError> {
+    pub fn new_with_span(span: u64, data: impl Into<Bytes>) -> Result<Self> {
         Ok(Self {
             body: BMTBody::builder().span(span).data(data).build()?,
         })
@@ -74,7 +67,7 @@ impl ContentChunkBuilder {
         self
     }
 
-    pub fn build(self) -> Result<ContentChunk, ContentChunkError> {
+    pub fn build(self) -> Result<ContentChunk> {
         let body = BMTBody::builder()
             .span(self.span.unwrap_or_else(|| {
                 self.data
@@ -82,7 +75,7 @@ impl ContentChunkBuilder {
                     .map(|d| d.len() as u64)
                     .unwrap_or_default()
             }))
-            .data(self.data.ok_or(BMTBodyError::MissingField("data"))?)
+            .data(self.data.ok_or(ChunkError::missing_field("data"))?)
             .build()?;
 
         Ok(ContentChunk { body })
@@ -96,9 +89,9 @@ impl Chunk for ContentChunk {
 }
 
 impl TryFrom<&[u8]> for ContentChunk {
-    type Error = ContentChunkError;
+    type Error = ChunkError;
 
-    fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
+    fn try_from(buf: &[u8]) -> Result<Self> {
         Ok(Self {
             body: BMTBody::try_from(buf)?,
         })
@@ -159,12 +152,7 @@ mod tests {
     #[test]
     fn test_size_validation() {
         let result = ContentChunk::new(vec![0; CHUNK_SIZE + 1]);
-        assert!(matches!(
-            result,
-            Err(ContentChunkError::BMTBodyError(
-                BMTBodyError::SizeExceeded { .. }
-            ))
-        ));
+        assert!(matches!(result, Err(ChunkError::Size { .. })));
     }
 
     #[test]
@@ -186,42 +174,22 @@ mod tests {
         // Test with data exceeding chunk size
         let large_data = vec![0u8; CHUNK_SIZE + 1];
         let result = ContentChunk::new(large_data);
-        assert!(matches!(
-            result,
-            Err(ContentChunkError::BMTBodyError(
-                BMTBodyError::SizeExceeded { .. }
-            ))
-        ));
+        assert!(matches!(result, Err(ChunkError::Size { .. })));
 
         // Test with invalid span size (less than 8 bytes)
         let invalid_span = vec![1, 2, 3]; // Only 3 bytes instead of required 8
         let result = ContentChunk::try_from(invalid_span.as_slice());
-        assert!(matches!(
-            result,
-            Err(ContentChunkError::BMTBodyError(
-                BMTBodyError::InsufficientSize { .. }
-            ))
-        ));
+        assert!(matches!(result, Err(ChunkError::Size { .. })));
 
         // Test with span size of 7 bytes (just under required 8)
         let invalid_span = vec![1, 2, 3, 4, 5, 6, 7];
         let result = ContentChunk::try_from(invalid_span.as_slice());
-        assert!(matches!(
-            result,
-            Err(ContentChunkError::BMTBodyError(
-                BMTBodyError::InsufficientSize { .. }
-            ))
-        ));
+        assert!(matches!(result, Err(ChunkError::Size { .. })));
 
         // Test with empty input
         let empty_data = vec![];
         let result = ContentChunk::try_from(empty_data.as_slice());
-        assert!(matches!(
-            result,
-            Err(ContentChunkError::BMTBodyError(
-                BMTBodyError::InsufficientSize { .. }
-            ))
-        ));
+        assert!(matches!(result, Err(ChunkError::Size { .. })));
     }
 
     #[test]

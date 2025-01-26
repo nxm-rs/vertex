@@ -1,24 +1,9 @@
 use bytes::{Bytes, BytesMut};
 use std::sync::OnceLock;
 use swarm_primitives_traits::{ChunkAddress, ChunkBody, Span, CHUNK_SIZE, SEGMENT_SIZE, SPAN_SIZE};
-use thiserror::Error;
 
 use crate::bmt::HasherBuilder;
-
-#[derive(Error, Debug)]
-pub enum BMTBodyError {
-    #[error("Data size {size} exceeds maximum {max}")]
-    SizeExceeded { size: usize, max: usize },
-
-    #[error("Data size {size} below required minimum {min}")]
-    InsufficientSize { size: usize, min: usize },
-
-    #[error("Invalid span encoding")]
-    InvalidSpan,
-
-    #[error("Missing required field: {0}")]
-    MissingField(&'static str),
-}
+use crate::chunk::error::{ChunkError, Result};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct BMTBody {
@@ -31,6 +16,14 @@ impl BMTBody {
     /// Creates a new builder for BMTBody
     pub fn builder() -> BMTBodyBuilder {
         BMTBodyBuilder::default()
+    }
+
+    pub fn new(data: impl Into<Bytes>) -> Result<Self> {
+        BMTBody::builder().data(data).build()
+    }
+
+    pub fn new_with_span(data: impl Into<Bytes>, span: Span) -> Result<Self> {
+        BMTBody::builder().span(span).data(data).build()
     }
 
     /// Returns the span of the body
@@ -94,18 +87,19 @@ impl BMTBodyBuilder {
         self
     }
 
-    pub fn build(self) -> Result<BMTBody, BMTBodyError> {
-        let data = self.data.ok_or(BMTBodyError::MissingField("data"))?;
+    pub fn build(self) -> Result<BMTBody> {
+        let data = self.data.ok_or_else(|| ChunkError::missing_field("data"))?;
 
         // If span is not provided, use data length
         let span = self.span.unwrap_or(data.len() as u64);
 
         // Validate sizes
         if data.len() > CHUNK_SIZE {
-            return Err(BMTBodyError::SizeExceeded {
-                size: data.len(),
-                max: CHUNK_SIZE,
-            });
+            return Err(ChunkError::size(
+                "data exceeds maximum chunk size",
+                data.len(),
+                CHUNK_SIZE,
+            ));
         }
 
         Ok(BMTBody {
@@ -117,26 +111,27 @@ impl BMTBodyBuilder {
 }
 
 impl TryFrom<&[u8]> for BMTBody {
-    type Error = BMTBodyError;
+    type Error = ChunkError;
 
-    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+    fn try_from(bytes: &[u8]) -> Result<Self> {
         if bytes.len() < SPAN_SIZE {
-            return Err(BMTBodyError::InsufficientSize {
+            return Err(ChunkError::Size {
+                context: "insufficient data for span",
                 size: bytes.len(),
-                min: SPAN_SIZE,
+                limit: SPAN_SIZE,
             });
         }
 
         if bytes.len() > SPAN_SIZE + CHUNK_SIZE {
-            return Err(BMTBodyError::SizeExceeded {
-                size: bytes.len(),
-                max: SPAN_SIZE + CHUNK_SIZE,
-            });
+            return Err(ChunkError::size(
+                "data exceeds maximum size",
+                bytes.len(),
+                SPAN_SIZE + CHUNK_SIZE,
+            ));
         }
 
-        let span_bytes: [u8; SPAN_SIZE] = bytes[..SPAN_SIZE]
-            .try_into()
-            .map_err(|_| BMTBodyError::InvalidSpan)?;
+        // SAFETY: bytes.len() >= SPAN_SIZE
+        let span_bytes: [u8; SPAN_SIZE] = bytes[..SPAN_SIZE].try_into().unwrap();
 
         let span = Span::from_le_bytes(span_bytes);
         // Use get() to safely handle the case where bytes.len() == SPAN_SIZE
@@ -211,6 +206,6 @@ mod tests {
             .data(vec![0; CHUNK_SIZE + 1])
             .build();
 
-        assert!(matches!(result, Err(BMTBodyError::SizeExceeded { .. })));
+        assert!(matches!(result, Err(ChunkError::Size { .. })));
     }
 }
