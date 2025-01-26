@@ -2,7 +2,7 @@ use bytes::{Bytes, BytesMut};
 use std::sync::OnceLock;
 use swarm_primitives_traits::{
     chunk::{ChunkError, Result},
-    ChunkAddress, ChunkBody, ChunkData, Span, CHUNK_SIZE, SEGMENT_SIZE, SPAN_SIZE,
+    ChunkAddress, ChunkBody, ChunkData, Span, CHUNK_SIZE, SPAN_SIZE,
 };
 
 use crate::bmt::HasherBuilder;
@@ -15,6 +15,14 @@ pub struct BMTBody {
 }
 
 impl BMTBody {
+    /// Zero-copy constructor
+    fn new_unchecked(span: Span, data: Bytes) -> Self {
+        Self {
+            span,
+            data,
+            cached_hash: OnceLock::new(),
+        }
+    }
     /// Creates a new builder for BMTBody
     pub fn builder() -> BMTBodyBuilder {
         BMTBodyBuilder::default()
@@ -33,17 +41,16 @@ impl BMTBody {
             .expect("Failed to create hasher");
 
         hasher.set_span(self.span);
-        hasher.write(&self.data);
+        hasher.write(self.data.as_ref());
 
-        let mut result = [0u8; SEGMENT_SIZE];
-        hasher.hash(&mut result);
-
-        result.into()
+        let mut result = ChunkAddress::default();
+        hasher.hash(result.as_mut());
+        result
     }
 }
 
 impl ChunkData for BMTBody {
-    fn data(&self) -> &[u8] {
+    fn data(&self) -> &Bytes {
         &self.data
     }
 
@@ -63,7 +70,7 @@ impl From<BMTBody> for Bytes {
     fn from(body: BMTBody) -> Self {
         let mut bytes = BytesMut::with_capacity(body.size());
         bytes.extend_from_slice(&body.span.to_le_bytes());
-        bytes.extend_from_slice(body.data());
+        bytes.extend_from_slice(body.data().as_ref());
         bytes.freeze()
     }
 }
@@ -88,9 +95,6 @@ impl BMTBodyBuilder {
     pub fn build(self) -> Result<BMTBody> {
         let data = self.data.ok_or_else(|| ChunkError::missing_field("data"))?;
 
-        // If span is not provided, use data length
-        let span = self.span.unwrap_or(data.len() as u64);
-
         // Validate sizes
         if data.len() > CHUNK_SIZE {
             return Err(ChunkError::size(
@@ -100,18 +104,17 @@ impl BMTBodyBuilder {
             ));
         }
 
-        Ok(BMTBody {
-            span,
+        Ok(BMTBody::new_unchecked(
+            self.span.unwrap_or(data.len() as u64),
             data,
-            cached_hash: OnceLock::new(),
-        })
+        ))
     }
 }
 
-impl TryFrom<&[u8]> for BMTBody {
+impl TryFrom<Bytes> for BMTBody {
     type Error = ChunkError;
 
-    fn try_from(bytes: &[u8]) -> Result<Self> {
+    fn try_from(mut bytes: Bytes) -> Result<Self> {
         if bytes.len() < SPAN_SIZE {
             return Err(ChunkError::Size {
                 context: "insufficient data for span",
@@ -129,17 +132,22 @@ impl TryFrom<&[u8]> for BMTBody {
         }
 
         // SAFETY: bytes.len() >= SPAN_SIZE
-        let span_bytes: [u8; SPAN_SIZE] = bytes[..SPAN_SIZE].try_into().unwrap();
-        let span = Span::from_le_bytes(span_bytes);
-        // SAFETY: use get() to handle the case where bytes.len() == SPAN_SIZE
-        let data = bytes.get(SPAN_SIZE..).unwrap_or(&[]);
-        let data = Bytes::copy_from_slice(data);
+        let span_bytes = bytes.split_to(SPAN_SIZE);
+        let span = Span::from_le_bytes(span_bytes.as_ref().try_into().unwrap());
 
         Ok(BMTBody {
             span,
-            data,
+            data: bytes,
             cached_hash: OnceLock::new(),
         })
+    }
+}
+
+impl TryFrom<&[u8]> for BMTBody {
+    type Error = ChunkError;
+
+    fn try_from(buf: &[u8]) -> Result<Self> {
+        Self::try_from(Bytes::copy_from_slice(buf))
     }
 }
 
@@ -168,9 +176,9 @@ mod tests {
         input.extend_from_slice(&42u64.to_le_bytes()); // Span
         input.extend_from_slice(&[1, 2, 3, 4, 5]); // Data
 
-        let body = BMTBody::try_from(input.as_slice()).unwrap();
+        let body = BMTBody::try_from(Bytes::from(input)).unwrap();
         assert_eq!(body.span(), 42);
-        assert_eq!(body.data(), &[1, 2, 3, 4, 5]);
+        assert_eq!(body.data(), &[1, 2, 3, 4, 5].as_slice());
     }
 
     #[test]

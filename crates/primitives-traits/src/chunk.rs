@@ -5,14 +5,15 @@ use alloy::{
     primitives::{Address, PrimitiveSignature, SignatureError},
     signers::Error as SignerError,
 };
+use bytes::Bytes;
 use thiserror::Error;
 
 pub const CHUNK_SIZE: usize = SEGMENT_SIZE * BRANCHES;
 
 /// Common trait for accessing chunk data and size
 pub trait ChunkData: Send + Sync {
-    /// Get the data that is wrapped by the chunk (excludes headers)
-    fn data(&self) -> &[u8];
+    /// Get a reference to the raw data
+    fn data(&self) -> &Bytes;
 
     /// Get the total size in bytes of the serialised chunk (including headers and other metadata)
     /// By default, just returns the size of the data.
@@ -75,9 +76,13 @@ impl<T: Chunk> CachedChunk<T> {
 }
 
 impl<T: Chunk> ChunkData for CachedChunk<T> {
-    fn data(&self) -> &[u8] {
+    fn data(&self) -> &Bytes {
         self.inner.data()
     }
+
+    // fn into_data(self) -> Bytes {
+    //     self.inner.into_data()
+    // }
 
     fn size(&self) -> usize {
         self.inner.size()

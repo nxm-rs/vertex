@@ -106,7 +106,7 @@ impl SingleOwnerChunk {
 }
 
 impl ChunkData for SingleOwnerChunk {
-    fn data(&self) -> &[u8] {
+    fn data(&self) -> &Bytes {
         self.body.data()
     }
 
@@ -170,7 +170,7 @@ impl From<SingleOwnerChunk> for Bytes {
         let mut bytes = BytesMut::with_capacity(chunk.size());
         bytes.extend_from_slice(chunk.id.as_ref());
         bytes.extend_from_slice(&chunk.signature().as_bytes());
-        bytes.extend_from_slice(&Bytes::from(chunk.body));
+        bytes.extend_from_slice(Bytes::from(chunk.body).as_ref());
         bytes.freeze()
     }
 }
@@ -216,10 +216,10 @@ impl SingleOwnerChunkBuilder {
     }
 }
 
-impl TryFrom<&[u8]> for SingleOwnerChunk {
+impl TryFrom<Bytes> for SingleOwnerChunk {
     type Error = ChunkError;
 
-    fn try_from(bytes: &[u8]) -> Result<Self> {
+    fn try_from(mut bytes: Bytes) -> Result<Self> {
         if bytes.len() < MIN_SOC_FIELDS_SIZE {
             return Err(ChunkError::size(
                 "insufficient data",
@@ -228,13 +228,12 @@ impl TryFrom<&[u8]> for SingleOwnerChunk {
             ));
         }
 
-        let id = B256::from_slice(&bytes[..ID_SIZE]);
-        let signature = PrimitiveSignature::try_from(&bytes[ID_SIZE..MIN_SOC_FIELDS_SIZE])
-            .map_err(ChunkError::Signature)?;
+        let id = B256::from_slice(&bytes.split_to(ID_SIZE));
+        let signature = PrimitiveSignature::try_from(bytes.split_to(SIGNATURE_SIZE).as_ref())
+            .map_err(|e| ChunkError::Signature(e))?;
 
-        // Use get() to safely handle the case where bytes.len() == MIN_SOC_FIELDS_SIZE
-        let body_bytes = bytes.get(MIN_SOC_FIELDS_SIZE..).unwrap_or(&[]);
-        let body = BMTBody::try_from(body_bytes)?;
+        // bytes now contains only body data
+        let body = BMTBody::try_from(bytes)?;
 
         Ok(Self {
             id,
@@ -242,6 +241,14 @@ impl TryFrom<&[u8]> for SingleOwnerChunk {
             body,
             cached_owner: OnceLock::new(),
         })
+    }
+}
+
+impl TryFrom<&[u8]> for SingleOwnerChunk {
+    type Error = ChunkError;
+
+    fn try_from(buf: &[u8]) -> Result<Self> {
+        Self::try_from(Bytes::copy_from_slice(buf))
     }
 }
 

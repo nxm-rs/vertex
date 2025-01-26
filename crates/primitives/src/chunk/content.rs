@@ -18,7 +18,6 @@ impl ContentChunk {
 
     /// Create a new ContentChunk with data (span will be inferred from data length)
     pub fn new(data: impl Into<Bytes>) -> Result<Self> {
-        let data = data.into();
         Ok(Self {
             body: BMTBody::builder().data(data).build()?,
         })
@@ -38,7 +37,7 @@ impl ContentChunk {
 }
 
 impl ChunkData for ContentChunk {
-    fn data(&self) -> &[u8] {
+    fn data(&self) -> &Bytes {
         self.body.data()
     }
 
@@ -91,13 +90,21 @@ impl ContentChunkBuilder {
     }
 }
 
+impl TryFrom<Bytes> for ContentChunk {
+    type Error = ChunkError;
+
+    fn try_from(buf: Bytes) -> Result<Self> {
+        Ok(Self {
+            body: BMTBody::try_from(buf)?,
+        })
+    }
+}
+
 impl TryFrom<&[u8]> for ContentChunk {
     type Error = ChunkError;
 
     fn try_from(buf: &[u8]) -> Result<Self> {
-        Ok(Self {
-            body: BMTBody::try_from(buf)?,
-        })
+        Self::try_from(Bytes::copy_from_slice(buf))
     }
 }
 
@@ -129,7 +136,7 @@ mod tests {
 
         let chunk = ContentChunk::new(data.to_vec()).unwrap();
         assert_eq!(chunk.address(), bmt_hash);
-        assert_eq!(chunk.data(), data);
+        assert_eq!(chunk.data(), data.as_slice());
     }
 
     #[test]
@@ -138,7 +145,7 @@ mod tests {
         let span = 42u64;
         let chunk = ContentChunk::new_with_span(span, data.to_vec()).unwrap();
 
-        assert_eq!(chunk.data(), data);
+        assert_eq!(chunk.data(), data.as_slice());
         assert_eq!(chunk.span(), span);
     }
 
@@ -220,7 +227,7 @@ mod tests {
         let chunk = ContentChunk::try_from(data.as_slice()).unwrap();
 
         assert_eq!(chunk.span(), 0);
-        assert_eq!(chunk.data(), &[0u8; 0]);
+        assert_eq!(chunk.data(), &[0u8; 0].as_slice());
         assert_eq!(chunk.size(), 8);
     }
 
