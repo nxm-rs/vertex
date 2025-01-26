@@ -1,7 +1,7 @@
 use alloy::primitives::Keccak256;
 use anyhow::Result;
+use nectar_primitives_traits::{Segment, Span, CHUNK_SIZE, SEGMENT_SIZE};
 use std::sync::{atomic::Ordering, Arc};
-use swarm_primitives_traits::{Segment, Span, CHUNK_SIZE, SEGMENT_SIZE};
 use thiserror::Error;
 use tree::{Tree, TreeIterator};
 
@@ -194,8 +194,8 @@ mod tests {
 
     use alloy::primitives::b256;
     use futures::future::join_all;
+    use nectar_primitives_traits::BRANCHES;
     use rand::{rngs::StdRng, Rng, RngCore, SeedableRng};
-    use swarm_primitives_traits::BRANCHES;
 
     use super::*;
 

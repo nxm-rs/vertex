@@ -2383,6 +2383,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "nectar-primitives"
+version = "0.1.0"
+dependencies = [
+ "alloy",
+ "anyhow",
+ "bytes",
+ "criterion",
+ "futures",
+ "nectar-primitives-traits",
+ "rand",
+ "rayon",
+ "thiserror 2.0.11",
+ "thread_local",
+ "tokio",
+]
+
+[[package]]
+name = "nectar-primitives-traits"
+version = "0.1.0"
+dependencies = [
+ "alloy",
+ "bytes",
+ "thiserror 2.0.11",
+]
+
+[[package]]
 name = "num-bigint"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3444,32 +3470,6 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
-
-[[package]]
-name = "swarm-primitives"
-version = "0.1.0"
-dependencies = [
- "alloy",
- "anyhow",
- "bytes",
- "criterion",
- "futures",
- "rand",
- "rayon",
- "swarm-primitives-traits",
- "thiserror 2.0.11",
- "thread_local",
- "tokio",
-]
-
-[[package]]
-name = "swarm-primitives-traits"
-version = "0.1.0"
-dependencies = [
- "alloy",
- "bytes",
- "thiserror 2.0.11",
-]
 
 [[package]]
 name = "syn"

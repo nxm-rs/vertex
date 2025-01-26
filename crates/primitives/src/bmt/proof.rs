@@ -1,6 +1,6 @@
 use crate::bmt::{Hasher, Segment, Span, TreeIterator, DEPTH};
 use alloy::primitives::Keccak256;
-use swarm_primitives_traits::{BRANCHES, SEGMENT_SIZE};
+use nectar_primitives_traits::{BRANCHES, SEGMENT_SIZE};
 use thiserror::Error;
 
 const PROOF_LENGTH: usize = DEPTH - 1;
@@ -165,9 +165,9 @@ mod tests {
     use super::*;
     use crate::bmt::{Pool, PooledHasher};
     use alloy::primitives::hex;
+    use nectar_primitives_traits::CHUNK_SIZE;
     use rand::Rng;
     use std::sync::Arc;
-    use swarm_primitives_traits::CHUNK_SIZE;
 
     #[tokio::test]
     async fn test_proof_correctness() {

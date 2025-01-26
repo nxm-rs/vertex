@@ -1,7 +1,7 @@
+use nectar_primitives_traits::{Segment, BRANCHES, SEGMENT_SIZE};
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use swarm_primitives_traits::{Segment, BRANCHES, SEGMENT_SIZE};
 
 /// Calculate the depth of a BMT given the number of nodes `n` on the bottom level (0-indexed),
 /// rounded up to the nearest power of two.

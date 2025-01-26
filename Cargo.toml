@@ -3,8 +3,8 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.84"
 license = "AGPL-3.0"
-homepage = "https://nullisyxz.github.io/bee-rs"
-repository = "https://nullisxyz.github.io/bee-rs"
+homepage = "https://nullisyxz.github.io/vertex"
+repository = "https://nullisxyz.github.io/vertex"
 
 [workspace]
 members = [
@@ -14,14 +14,14 @@ members = [
     #"crates/logging",
     # "bin/waku-swarm-relay",
     # "bin/swarm-tools",
-    #"bin/bee-rs",
+    # "bin/vertex",
     # "bin/wasm-playground",
     # "bin/swarm-wasm-lib",
     "crates/primitives",
     "crates/primitives-traits",
 ]
 # default-members = [
-#     "bin/bee-rs",
+#     "bin/vertex",
 #     "bin/waku-swarm-relay",
 # ]
 
@@ -33,9 +33,9 @@ resolver = "2"
 rust.unreachable_pub = "warn"
 
 [workspace.dependencies]
-## swarm
-swarm-primitives = { path = "crates/primitives" }
-swarm-primitives-traits = { path = "crates/primitives-traits" }
+## nectar
+nectar-primitives = { path = "crates/primitives" }
+nectar-primitives-traits = { path = "crates/primitives-traits" }
 
 ## alloy
 alloy = { version = "0.9.1", features = [
@@ -53,16 +53,11 @@ alloy = { version = "0.9.1", features = [
 
 ## misc
 clap = { version = "4.5.23", features = ["derive", "env"] }
-# chrono = "0.4.39"
 criterion = "0.5"
 getrandom = "0.2"
-# hex = "0.4.3"
-# once_cell = "1.20.2"
-# serde = { version = "1", features = ["derive"] }
-# serde_json = "1"
-# serde_with = { version = "3.12.0", features = ["hex"] }
 rand = "0.8.5"
 thiserror = "2.0.4"
+
 # tracing = "0.1.41"
 # tracing-subscriber = { version = "0.3.19", features = [
 #     "env-filter",
@@ -84,7 +79,6 @@ tokio = { version = "1.42.0", default-features = false, features = [
 # tokio-util = { version = "0.7.13", features = ["codec"] }
 
 ## async
-# async-trait = "0.1"
 futures = "0.3"
 
 ## wasm

@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use swarm_primitives_traits::SwarmAddress;
+use nectar_primitives_traits::SwarmAddress;
 
 use alloy::primitives::U256;
 
@@ -58,8 +58,8 @@ pub fn distance_cmp(a: &SwarmAddress, x: &SwarmAddress, y: &SwarmAddress) -> std
 mod tests {
     use super::*;
     use alloy::primitives::b256;
+    use nectar_primitives_traits::SwarmAddress;
     use std::{cmp::Ordering, str::FromStr};
-    use swarm_primitives_traits::SwarmAddress;
 
     #[test]
     fn distance_closer() {

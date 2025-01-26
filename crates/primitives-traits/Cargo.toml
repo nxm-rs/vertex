@@ -1,12 +1,12 @@
 [package]
-name = "swarm-primitives-traits"
+name = "nectar-primitives-traits"
 version.workspace = true
 edition.workspace = true
 homepage.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Common types in Swarm"
+description = "Common types in Ethereum Swarm"
 
 [lints]
 workspace = true
