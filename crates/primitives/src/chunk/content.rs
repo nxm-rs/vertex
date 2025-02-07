@@ -1,33 +1,36 @@
-use super::bmt_body::BMTBody;
+//! The `chunk::ContentChunk` module provides data structures and utilities for managing content chunks in a
+//! decentralised storage network context. A content chunk wraps a [`BMTBody`].
+//!
+//! This module includes:
+//!
+//! - The `ContentChunk` struct: Represents a content chunk which contains a BMT body.
+//! - A builder pattern (`ContentChunkBuilder`): Facilitates the creation of content chunks for setting
+//!   various parameters in a structured manner.
+use super::bmt_body::{BMTBody, BMTBodyBuilder, Initial};
 use bytes::Bytes;
 use nectar_primitives_traits::{
     chunk::{ChunkError, Result},
     Chunk, ChunkAddress, ChunkBody, ChunkData,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, arbitrary::Arbitrary)]
 pub struct ContentChunk {
+    /// The underlying BMT body which contains the data and metadata for this content chunk.
     body: BMTBody,
 }
 
 impl ContentChunk {
     /// Creates a new builder for ContentChunk
-    pub fn builder() -> ContentChunkBuilder {
-        ContentChunkBuilder::default()
+    pub fn builder() -> BMTBodyBuilder<Initial, ContentChunk> {
+        BMTBodyBuilder::default()
     }
 
-    /// Create a new ContentChunk with data (span will be inferred from data length)
+    /// Create a new `ContentChunk` with the given data. Metadata (span) is automatically calculated.
+    ///
+    /// # Arguments
+    /// * `data` - The raw data content to encapsulate in the chunk.
     pub fn new(data: impl Into<Bytes>) -> Result<Self> {
-        Ok(Self {
-            body: BMTBody::builder().data(data).build()?,
-        })
-    }
-
-    /// Create a new ContentChunk with specified span and data
-    pub fn new_with_span(span: u64, data: impl Into<Bytes>) -> Result<Self> {
-        Ok(Self {
-            body: BMTBody::builder().span(span).data(data).build()?,
-        })
+        Ok(BMTBody::builder().auto_from_data(data)?.build()?.into())
     }
 
     /// Returns the span value
@@ -47,6 +50,7 @@ impl ChunkData for ContentChunk {
 }
 
 impl Chunk for ContentChunk {
+    /// The address of a `ContentChunk` is the hash of its body.
     fn address(&self) -> ChunkAddress {
         self.body.hash()
     }
@@ -55,38 +59,6 @@ impl Chunk for ContentChunk {
 impl From<ContentChunk> for Bytes {
     fn from(chunk: ContentChunk) -> Self {
         chunk.body.into()
-    }
-}
-
-#[derive(Default)]
-pub struct ContentChunkBuilder {
-    span: Option<u64>,
-    data: Option<Bytes>,
-}
-
-impl ContentChunkBuilder {
-    pub fn span(mut self, span: u64) -> Self {
-        self.span = Some(span);
-        self
-    }
-
-    pub fn data(mut self, data: impl Into<Bytes>) -> Self {
-        self.data = Some(data.into());
-        self
-    }
-
-    pub fn build(self) -> Result<ContentChunk> {
-        let body = BMTBody::builder()
-            .span(self.span.unwrap_or_else(|| {
-                self.data
-                    .as_ref()
-                    .map(|d| d.len() as u64)
-                    .unwrap_or_default()
-            }))
-            .data(self.data.ok_or(ChunkError::missing_field("data"))?)
-            .build()?;
-
-        Ok(ContentChunk { body })
     }
 }
 
@@ -119,14 +91,73 @@ mod tests {
     use super::*;
     use alloy::primitives::b256;
     use nectar_primitives_traits::CHUNK_SIZE;
+    use proptest::prelude::*;
+    use proptest_arbitrary_interop::arb;
 
-    #[test]
-    fn test_builder_pattern() {
-        let data = b"greaterthanspan".to_vec();
-        let chunk = ContentChunk::builder().data(data.clone()).build().unwrap();
+    // Strategy for generating ContentChunk using the Arbitrary implementation
+    fn chunk_strategy() -> impl Strategy<Value = ContentChunk> {
+        arb::<ContentChunk>()
+    }
 
-        assert_eq!(chunk.data(), &data);
-        assert_eq!(chunk.span(), data.len() as u64);
+    proptest! {
+        #[test]
+        fn test_chunk_properties(chunk in chunk_strategy()) {
+            // Test basic properties
+            prop_assert!(chunk.span() <= u64::MAX);
+            prop_assert!(chunk.data().len() <= CHUNK_SIZE);
+            prop_assert_eq!(chunk.size(), 8 + chunk.data().len());
+
+            // Test round-trip conversion
+            let bytes: Bytes = chunk.clone().into();
+            let decoded = ContentChunk::try_from(bytes).unwrap();
+            prop_assert_eq!(chunk.address(), decoded.address());
+            prop_assert_eq!(chunk.data(), decoded.data());
+            prop_assert_eq!(chunk.span(), decoded.span());
+        }
+
+        #[test]
+        fn test_builder_pattern(data in proptest::collection::vec(any::<u8>(), 0..CHUNK_SIZE)) {
+            let chunk = ContentChunk::builder()
+                .auto_from_data(data.clone())
+                .unwrap()
+                .build()
+                .unwrap();
+
+            prop_assert_eq!(chunk.data(), &data);
+            prop_assert_eq!(chunk.span(), data.len() as u64);
+        }
+
+        #[test]
+        fn test_new_content_chunk(data in proptest::collection::vec(any::<u8>(), 0..CHUNK_SIZE)) {
+            let chunk = ContentChunk::new(data.clone()).unwrap();
+
+            prop_assert_eq!(chunk.data(), &data);
+            prop_assert_eq!(chunk.span(), data.len() as u64);
+            prop_assert!(!chunk.address().is_zero());
+        }
+
+        #[test]
+        fn test_chunk_size_validation(data in proptest::collection::vec(any::<u8>(), CHUNK_SIZE + 1..CHUNK_SIZE * 2)) {
+            let result = ContentChunk::new(data);
+            prop_assert_eq!(matches!(result, Err(ChunkError::Size { .. })), true);
+        }
+
+        #[test]
+        fn test_empty_and_edge_cases(size in 0usize..=10usize) {
+            // Test with empty or small data
+            let data = vec![0u8; size];
+            let chunk = ContentChunk::new(data.clone()).unwrap();
+
+            prop_assert_eq!(chunk.data().len(), size);
+            prop_assert_eq!(chunk.span(), size as u64);
+            prop_assert_eq!(chunk.size(), 8 + size);
+        }
+
+        #[test]
+        fn test_deserialize_invalid_chunks(data in proptest::collection::vec(any::<u8>(), 0..8)) {
+            let result = ContentChunk::try_from(data.as_slice());
+            prop_assert_eq!(matches!(result, Err(ChunkError::Size { .. })), true);
+        }
     }
 
     #[test]
@@ -140,16 +171,6 @@ mod tests {
     }
 
     #[test]
-    fn test_new_with_span() {
-        let data = b"greaterthanspan";
-        let span = 42u64;
-        let chunk = ContentChunk::new_with_span(span, data.to_vec()).unwrap();
-
-        assert_eq!(chunk.data(), data.as_slice());
-        assert_eq!(chunk.span(), span);
-    }
-
-    #[test]
     fn test_from_bytes() {
         let data = b"greaterthanspan";
         let bmt_hash = b256!("95022e6af5c6d6a564ee55a67f8455a3e18c511b5697c932d9e44f07f2fb8c53");
@@ -160,50 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn test_size_validation() {
-        let result = ContentChunk::new(vec![0; CHUNK_SIZE + 1]);
-        assert!(matches!(result, Err(ChunkError::Size { .. })));
-    }
-
-    #[test]
-    fn test_empty_and_nil_data() {
-        // Test with empty data
-        let chunk = ContentChunk::new(Vec::new()).unwrap();
-        assert_eq!(chunk.data().len(), 0);
-        assert_eq!(chunk.span(), 0);
-
-        // Test with zero-length slice
-        let empty_slice: &[u8] = &[];
-        let chunk = ContentChunk::new(empty_slice.to_vec()).unwrap();
-        assert_eq!(chunk.data().len(), 0);
-        assert_eq!(chunk.span(), 0);
-    }
-
-    #[test]
-    fn test_invalid_chunks() {
-        // Test with data exceeding chunk size
-        let large_data = vec![0u8; CHUNK_SIZE + 1];
-        let result = ContentChunk::new(large_data);
-        assert!(matches!(result, Err(ChunkError::Size { .. })));
-
-        // Test with invalid span size (less than 8 bytes)
-        let invalid_span = vec![1, 2, 3]; // Only 3 bytes instead of required 8
-        let result = ContentChunk::try_from(invalid_span.as_slice());
-        assert!(matches!(result, Err(ChunkError::Size { .. })));
-
-        // Test with span size of 7 bytes (just under required 8)
-        let invalid_span = vec![1, 2, 3, 4, 5, 6, 7];
-        let result = ContentChunk::try_from(invalid_span.as_slice());
-        assert!(matches!(result, Err(ChunkError::Size { .. })));
-
-        // Test with empty input
-        let empty_data = vec![];
-        let result = ContentChunk::try_from(empty_data.as_slice());
-        assert!(matches!(result, Err(ChunkError::Size { .. })));
-    }
-
-    #[test]
-    fn test_valid_chunk_verification() {
+    fn test_specific_content_hash() {
         // Test with known valid data and hash
         let data = b"foo".to_vec();
         let expected_hash =
@@ -229,32 +207,5 @@ mod tests {
         assert_eq!(chunk.span(), 0);
         assert_eq!(chunk.data(), &[0u8; 0].as_slice());
         assert_eq!(chunk.size(), 8);
-    }
-
-    #[test]
-    fn test_random_sized_chunks() {
-        use rand::{thread_rng, Rng};
-
-        let mut rng = thread_rng();
-        let size = rng.gen_range(1..=CHUNK_SIZE);
-        let random_data = (0..size).map(|_| rng.gen::<u8>()).collect::<Vec<_>>();
-
-        let chunk = ContentChunk::new(random_data.clone()).unwrap();
-        assert_eq!(chunk.data(), random_data.as_slice());
-        assert_eq!(chunk.span(), random_data.len() as u64);
-    }
-
-    #[test]
-    fn test_chunk_conversion() {
-        let data = b"test data".to_vec();
-        let chunk = ContentChunk::new(data.clone()).unwrap();
-
-        // Test conversion to bytes and back
-        let bytes: Bytes = chunk.clone().into();
-        let recovered_chunk = ContentChunk::try_from(bytes.as_ref()).unwrap();
-
-        assert_eq!(chunk.address(), recovered_chunk.address());
-        assert_eq!(chunk.data(), recovered_chunk.data());
-        assert_eq!(chunk.span(), recovered_chunk.span());
     }
 }

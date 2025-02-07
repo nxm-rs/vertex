@@ -19,6 +19,7 @@ members = [
     # "bin/swarm-wasm-lib",
     "crates/primitives",
     "crates/primitives-traits",
+    "crates/storage",
 ]
 # default-members = [
 #     "bin/vertex",
@@ -34,11 +35,15 @@ rust.unreachable_pub = "warn"
 
 [workspace.dependencies]
 ## nectar
-nectar-primitives = { path = "crates/primitives" }
+nectar-primitives = { path = "crates/primitives", features = ["arbitrary"] }
 nectar-primitives-traits = { path = "crates/primitives-traits" }
 
+## vertex
+vertex-storage = { path = "crates/storage" }
+
 ## alloy
-alloy = { version = "0.9.1", features = [
+alloy = { version = "0.11", features = [
+    "arbitrary",
     "eips",
     "full",
     "hyper",
@@ -50,10 +55,10 @@ alloy = { version = "0.9.1", features = [
     "signer-keystore",
     "signer-mnemonic",
 ] }
+alloy-chains = { version = "0.1.58", default-features = false }
 
 ## misc
 clap = { version = "4.5.23", features = ["derive", "env"] }
-criterion = "0.5"
 getrandom = "0.2"
 rand = "0.8.5"
 thiserror = "2.0.4"
@@ -92,3 +97,18 @@ futures = "0.3"
 # async-recursion = "1.1.1"
 anyhow = "1.0.94"
 # prost = "0.13.4"
+
+serde = { version = "1.0", default-features = false }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+serde_with = { version = "3", default-features = false, features = ["macros"] }
+
+
+## testing
+arbitrary = "1.3"
+assert_matches = "1.5.0"
+criterion = { package = "codspeed-criterion-compat", version = "2.7" }
+pprof = "0.14"
+proptest = "1.4"
+proptest-arbitrary-interop = "0.1"
+proptest-derive = "0.5"
+test-fuzz = "6"

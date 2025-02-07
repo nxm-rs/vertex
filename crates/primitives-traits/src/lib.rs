@@ -1,10 +1,10 @@
 use alloy::primitives::FixedBytes;
 
+pub mod auth;
 pub mod chunk;
-pub mod stamp;
 
+pub use auth::*;
 pub use chunk::*;
-pub use stamp::Stamp;
 
 const HASH_SIZE: usize = 32;
 pub const SEGMENT_SIZE: usize = HASH_SIZE;
