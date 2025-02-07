@@ -44,7 +44,7 @@ pub trait Chunk: ChunkData {
 
 /// Trait representing the body of a chunk
 pub trait ChunkBody: ChunkData {
-    /// Get the hash of the body
+    /// Get the hash of the body, computing it if necessary
     fn hash(&self) -> ChunkAddress;
 }
 
@@ -79,10 +79,6 @@ impl<T: Chunk> ChunkData for CachedChunk<T> {
     fn data(&self) -> &Bytes {
         self.inner.data()
     }
-
-    // fn into_data(self) -> Bytes {
-    //     self.inner.into_data()
-    // }
 
     fn size(&self) -> usize {
         self.inner.size()
@@ -135,6 +131,9 @@ pub enum ChunkError {
 
     #[error("Missing required field: {0}")]
     MissingField(&'static str),
+
+    #[error("Decoding error: {0}")]
+    Decode(#[from] std::array::TryFromSliceError),
 }
 
 // Type alias for Result
@@ -164,5 +163,9 @@ impl ChunkError {
 
     pub fn missing_field(field: &'static str) -> Self {
         Self::MissingField(field)
+    }
+
+    pub fn decode(err: std::array::TryFromSliceError) -> Self {
+        Self::Decode(err)
     }
 }

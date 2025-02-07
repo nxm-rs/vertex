@@ -16,24 +16,35 @@ nectar-primitives-traits.workspace = true
 bytes.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
+arbitrary = { workspace = true, features = ["derive"] }
+rand = { workspace = true, optional = true }
 
 thread_local = "1.1.8"
 rayon = "1.10.0"
-
-# rand
-rand = { workspace = true, optional = true, features = ["getrandom"] }
 
 # tokio
 tokio = { workspace = true, features = ["sync"] }
 futures.workspace = true
 
+# serde
+serde.workspace = true
+
 [dev-dependencies]
+arbitrary.workspace = true
+proptest.workspace = true
+proptest-arbitrary-interop.workspace = true
+rand.workspace = true
 criterion = { workspace = true, features = ["async_tokio"] }
-rand = { workspace = true, features = ["getrandom"] }
 tokio = { workspace = true, features = ["full"] }
 
 [build-dependencies]
 alloy.workspace = true
+
+[features]
+arbitrary = [
+    # "dep:arbitrary",
+    "dep:rand"
+]
 
 [[bench]]
 name = "primitives"
