@@ -19,7 +19,7 @@ members = [
     # "bin/swarm-wasm-lib",
     "crates/primitives",
     "crates/primitives-traits",
-    "crates/storage",
+    # "crates/storage",
 ]
 # default-members = [
 #     "bin/vertex",
