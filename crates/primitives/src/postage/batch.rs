@@ -10,18 +10,25 @@
 //!   parameters in a structured manner.
 use alloy::{
     dyn_abi::DynSolValue,
-    primitives::{Address, BlockNumber, BlockTimestamp, FixedBytes, Keccak256, B256, U256},
+    primitives::{Address, BlockNumber, Keccak256, B256, U256},
     signers::Signer,
 };
+use alloy_chains::Chain;
+use arbitrary::Arbitrary;
 use nectar_primitives_traits::CHUNK_SIZE;
 use serde::{Deserialize, Serialize};
-use std::marker::PhantomData;
+use std::{marker::PhantomData, sync::Arc, time::Duration};
 use thiserror::Error;
 
-pub type BatchId = FixedBytes<32>;
+use super::{BatchId, ChainState};
 
 // Type alias for Result
 pub type Result<T> = std::result::Result<T, BatchError>;
+
+// The minimum bucket depth here is specified in the `PostageStamp` contract.
+// TODO: Dynamically fetch this value from the contract.
+const MIN_BUCKET_DEPTH: u8 = 16;
+const IMMUTABLE_DEFAULT: bool = false;
 
 // TODO: Implement `encode` / `decode` for `Batch` for serde to/from KV storage.
 /// Represents a storage unit with specific characteristics.
@@ -30,9 +37,9 @@ pub struct Batch {
     /// The unique identifier of the batch, generally `H(nonce|owner)`.
     id: BatchId,
     /// The normalised balance associated with the batch, which represents a per-chunk value.
-    /// If value is `None`, the batch is considered to not have been created on chain (yet).
+    /// If value is `None`, the batch is considered to not have been created on-chain.
     value: Option<U256>,
-    /// the address that owns the batch and can sign stamps for it.
+    /// The address that owns the batch and can sign stamps for it.
     owner: Address,
     /// Determines the number of chunks that can be signed by the batch. (2^depth)
     depth: u8,
@@ -41,6 +48,9 @@ pub struct Batch {
     bucket_depth: u8,
     /// Indicates if the batch is immutable.
     immutable: bool,
+    /// The chain on which the batch is to be created / managed.
+    #[serde(skip)]
+    chain: Option<Arc<Chain>>,
 }
 
 impl Batch {
@@ -49,23 +59,22 @@ impl Batch {
         &self.id
     }
 
-    /// Determines whether the batch is immutable.
-    pub fn immutable(&self) -> bool {
-        self.immutable
-    }
-
-    /// Returns the bucket depth of the batch.
-    pub(crate) fn bucket_depth(&self) -> u8 {
-        self.bucket_depth
+    /// Returns a `BatchBuilder` instance in the initial state.
+    ///
+    /// The builder pattern is used to construct batches in a step-by-step manner, ensuring that all necessary fields
+    /// are properly configured. This method initialises the builder with an empty configuration and transitions it to
+    /// the `Initial` state.
+    pub fn builder() -> BatchBuilder<Initial> {
+        BatchBuilder::default()
     }
 
     /// Calculates the remaining time-to-live (TTL) in blocks.
     ///
     /// If `value` <= `current_out_payment`, the batch is considered expired and the TTL is 0.
-    pub fn ttl_blocks(&self, current_out_payment: U256, current_price: U256) -> u64 {
+    pub fn ttl_blocks(&self, chain_state: &ChainState) -> u64 {
         if let Some(value) = self.value {
-            if value > current_out_payment {
-                return (value - current_out_payment / current_price).to();
+            if value > chain_state.payment {
+                return (value - chain_state.payment / chain_state.price).to();
             }
         }
 
@@ -73,90 +82,87 @@ impl Batch {
     }
 
     /// Converts the remaining TTL from blocks to seconds using the block time.
-    pub const fn ttl_seconds(&self, blocks_remaining: u64, block_time: u64) -> u64 {
-        blocks_remaining * block_time
+    #[must_use]
+    pub fn ttl_seconds(&self, blocks_remaining: u64) -> u64 {
+        blocks_remaining
+            * self
+                .chain
+                .as_ref()
+                .unwrap_or(&Arc::new(Chain::dev()))
+                .average_blocktime_hint()
+                .unwrap_or(std::time::Duration::from_secs(12))
+                .as_secs()
     }
 
     /// Calculates the TTL in seconds based on current out payment, price, and block time.
-    pub fn ttl(&self, current_out_payment: U256, current_price: U256, block_time: u64) -> u64 {
-        self.ttl_seconds(
-            self.ttl_blocks(current_out_payment, current_price),
-            block_time,
-        )
+    pub fn ttl(&self, chain_state: &ChainState) -> u64 {
+        self.ttl_seconds(self.ttl_blocks(chain_state))
     }
 
     /// Determines the block number when the batch expires.
-    pub fn expiry_block_number(
-        &self,
-        current_out_payment: U256,
-        current_price: U256,
-        current_block_number: BlockNumber,
-    ) -> BlockNumber {
-        current_block_number + self.ttl_blocks(current_out_payment, current_price)
+    pub fn expiry_block_number(&self, chain_state: &ChainState) -> BlockNumber {
+        chain_state.block_number + self.ttl_blocks(chain_state)
     }
 
     /// Determines the expiration time of the batch in Unix timestamp.
-    pub fn expiry(
-        &self,
-        current_out_payment: U256,
-        current_price: U256,
-        current_timestamp: BlockTimestamp,
-        block_time: u64,
-    ) -> u64 {
-        current_timestamp
-            + self.ttl_seconds(
-                self.ttl_blocks(current_out_payment, current_price),
-                block_time,
-            )
+    pub fn expiry(&self, chain_state: &ChainState) -> u64 {
+        chain_state.block_timestamp + self.ttl_seconds(self.ttl_blocks(chain_state))
     }
 
     /// Checks if the batch has expired based on the current block number.
-    pub fn expired(
-        &self,
-        current_out_payment: U256,
-        current_price: U256,
-        current_block_number: BlockNumber,
-    ) -> bool {
-        self.expiry_block_number(current_out_payment, current_price, current_block_number)
-            <= current_block_number
-    }
-
-    /// Returns the maximum number of collisions possible in a bucket.
-    #[must_use]
-    pub const fn max_collisions(&self) -> u64 {
-        2_u64.pow((self.depth - self.bucket_depth) as u32)
+    pub fn expired(&self, chain_state: &ChainState) -> bool {
+        self.expiry_block_number(chain_state) <= chain_state.block_number
     }
 
     /// Calculates the cost of a batch for the additional target duration and current storage price.
     #[must_use]
-    pub fn cost(&self, duration_blocks: impl Into<Duration>, price: U256) -> Result<U256> {
+    pub fn cost(&self, duration: Duration, price: U256) -> Result<U256> {
         let chunks = Self::chunks(self.depth);
+        let chain = self.chain.as_ref().ok_or(BatchError::ChainNotSet)?;
 
-        Ok(U256::from(chunks) * price * U256::from(duration_blocks.into().to_blocks()?))
-    }
+        let blocks = duration
+            .div_duration_f64(chain.average_blocktime_hint().unwrap())
+            .ceil() as u64;
 
-    /// Returns the number of chunks in the batch (2^depth).
-    ///
-    /// # Panics
-    /// If `depth` is greater than 63, this function will panic.
-    #[track_caller]
-    pub const fn chunks(depth: u8) -> u64 {
-        2_u64.pow(depth as u32)
-    }
-
-    /// Returns the number of bytes that may be stored in the batch.
-    pub const fn size(depth: u8) -> u64 {
-        Self::chunks(depth) * CHUNK_SIZE as u64
+        Ok(U256::from(chunks) * price * U256::from(blocks))
     }
 
     /// Calculates the required depth for a given size in bytes.
     ///
-    /// Note: Uploading data of 0 bytes is allowed by represents an empty chunk.
+    /// Note: Uploading data of 0 bytes is allowed and is represented by an empty chunk.
     #[must_use]
     pub fn depth_for_size(size: u64) -> u8 {
         // A minimum of 1 chunk is always required, irrespective of the size.
         let chunks = (size / CHUNK_SIZE as u64).max(1);
         (chunks as f64).log2().ceil() as u8
+    }
+
+    // Returns the number of chunks in the batch (2^depth).
+    //
+    // # Panics
+    // If `depth` is greater than 63, this function will panic.
+    #[track_caller]
+    const fn chunks(depth: u8) -> u64 {
+        2_u64.pow(depth as u32)
+    }
+
+    /// Returns the number of bytes that may be stored in the batch.
+    pub(crate) const fn size(depth: u8) -> u64 {
+        Self::chunks(depth) * CHUNK_SIZE as u64
+    }
+
+    /// Returns how many collision buckets data stamped with this batch will be split into.
+    /// This is the number of bits that are used to determine the bucket in which a stamp is placed.
+    pub(crate) const fn bucket_count(&self) -> u64 {
+        2_u64.pow(self.bucket_depth as u32)
+    }
+
+    /// Returns the number of slots in a collision bucket.
+    ///
+    /// # Panics
+    /// This function panics if `depth` is less than `bucket_depth`.
+    pub(crate) const fn bucket_slots(&self) -> u64 {
+        2_u64.pow((self.depth - self.bucket_depth) as u32)
     }
 }
 
@@ -165,23 +171,28 @@ impl Batch {
 pub enum BatchError {
     #[error("Invalid depth: {0}")]
     InvalidDepth(u8),
-    #[error("Invalid bucket depth: {0}")]
-    InvalidBucketDepth(u8),
-    #[error("Size is too small for batch")]
-    SizeTooSmall,
-    #[error("Duration in blocks must be greater than 0")]
-    DurationInBlocksZero,
-    #[error("Block time must be greater than 0")]
-    BlockTimeZero,
-    #[error("Missing required field: {0}")]
-    MissingField(&'static str),
+    #[error("Bucket depth {0} below minimum depth {1}")]
+    BucketDepthTooSmall(u8, u8),
+    #[error("Chain not set for batch")]
+    ChainNotSet,
+    #[error("Depth must be greater than or equal to bucket depth")]
+    DepthLessThanBucketDepth(u8, u8),
+    #[error("Depth {0} exceeds maximum depth {1}")]
+    DepthTooLarge(u8, u8),
 }
 
 // Helper methods for error creation
 impl BatchError {
-    /// Creates a `MissingField` error for the given field.
-    pub fn missing_field(field: &'static str) -> Self {
-        BatchError::MissingField(field)
+    fn depth_less_than_bucket_depth(depth: u8, bucket_depth: u8) -> Self {
+        BatchError::DepthLessThanBucketDepth(depth, bucket_depth)
+    }
+
+    fn bucket_depth_too_small(bucket_depth: u8) -> Self {
+        BatchError::BucketDepthTooSmall(bucket_depth, MIN_BUCKET_DEPTH)
+    }
+
+    fn depth_too_large(depth: u8, max_depth: u8) -> Self {
+        BatchError::DepthTooLarge(depth, max_depth)
     }
 }
 
@@ -189,26 +200,27 @@ impl BatchError {
 pub trait BuilderState {}
 
 /// Initial state of the batch builder before any fields are set.
+#[derive(Default, Clone)]
 pub struct Initial;
 impl BuilderState for Initial {}
 
 /// State of the batch builder after a signer has been set.
+#[derive(Clone)]
 pub struct WithOwner;
 impl BuilderState for WithOwner {}
 
 /// State of the batch builder after an ID has been set.
+#[derive(Clone)]
 pub struct WithId;
 impl BuilderState for WithId {}
 
-/// State of the batch builder after size-related parameters have been set.
-pub struct WithSize;
-impl BuilderState for WithSize {}
-
-const MIN_BUCKET_DEPTH: u8 = 16;
-const IMMUTABLE_DEFAULT: bool = false;
+/// State of the batch builder after all required fields have been set and the batch is ready to build.
+#[derive(Clone)]
+pub struct ReadyToBuild;
+impl BuilderState for ReadyToBuild {}
 
 /// Configuration container for building a `Batch`.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct BatchConfig {
     id: Option<BatchId>,
     value: Option<U256>,
@@ -216,24 +228,11 @@ struct BatchConfig {
     depth: Option<u8>,
     bucket_depth: Option<u8>,
     immutable: Option<bool>,
-}
-
-impl BatchConfig {
-    /// Builds the `Batch` from the configured parameters.
-    #[track_caller]
-    fn build(self) -> Batch {
-        Batch {
-            id: self.id.expect("Missing batch ID"),
-            value: self.value,
-            owner: self.owner.expect("Missing batch owner"),
-            depth: self.depth.expect("Missing batch depth"),
-            bucket_depth: self.bucket_depth.expect("Missing batch bucket depth"),
-            immutable: self.immutable.unwrap_or(IMMUTABLE_DEFAULT),
-        }
-    }
+    chain: Option<Arc<Chain>>,
 }
 
 /// A stateful builder for creating batches.
+#[derive(Default, Clone)]
 pub struct BatchBuilder<S: BuilderState> {
     config: BatchConfig,
     _state: PhantomData<S>,
@@ -251,17 +250,15 @@ impl<S: BuilderState> BatchBuilder<S> {
         self.config.immutable = Some(immutable);
         self
     }
+
+    /// Sets the chain and returns a new builder instance.
+    pub fn with_chain(mut self, chain: Arc<Chain>) -> Self {
+        self.config.chain = Some(chain);
+        self
+    }
 }
 
 impl BatchBuilder<Initial> {
-    /// Creates a new batch builder in the initial state.
-    pub fn new() -> Self {
-        Self {
-            config: BatchConfig::default(),
-            _state: PhantomData,
-        }
-    }
-
     /// Sets the owner and transitions to `WithOwner` state.
     pub fn with_owner(mut self, owner: Address) -> BatchBuilder<WithOwner> {
         self.config.owner = Some(owner);
@@ -311,26 +308,37 @@ impl BatchBuilder<WithOwner> {
 }
 
 impl BatchBuilder<WithId> {
-    /// Automatically calculates the depth based on size and transitions to `WithSize` state.
-    pub fn auto_size(self, size_bytes: u64) -> Result<BatchBuilder<WithSize>> {
-        if size_bytes == 0 {
-            return Err(BatchError::SizeTooSmall);
-        }
-
+    /// Automatically calculates the depth based on size and transitions to `ReadyToBuild` state.
+    /// TODO: This **MUST** be modified to take into account *effective** utilisation.
+    pub fn auto_size(self, size_bytes: u64) -> Result<BatchBuilder<ReadyToBuild>> {
         let depth = Batch::depth_for_size(size_bytes).max(MIN_BUCKET_DEPTH);
         self.with_depths(depth, MIN_BUCKET_DEPTH)
     }
 
-    /// Sets the depth and bucket depth and transitions to `WithSize` state.
-    /// Fails if `depth` < `bucket_depth`.
-    /// Fails if `bucket_depth` < `MIN_BUCKET_DEPTH`.
-    pub fn with_depths(mut self, depth: u8, bucket_depth: u8) -> Result<BatchBuilder<WithSize>> {
-        if bucket_depth > depth {
-            return Err(BatchError::InvalidBucketDepth(bucket_depth));
+    /// Sets the depth and bucket depth and transitions to `ReadyToBuild` state.
+    /// Applies constraints on the depth and bucket depth values:
+    /// 1. Ensures that `depth` >= `bucket_depth` (undefined state as collision slots available
+    ///    would be negative).
+    /// 2. Ensures that `bucket_depth` >= `MIN_BUCKET_DEPTH` (protocol constraint).
+    /// 3. Ensures that `depth` - `bucket_depth` <= 63 (overflow prevention).
+    pub fn with_depths(
+        mut self,
+        depth: u8,
+        bucket_depth: u8,
+    ) -> Result<BatchBuilder<ReadyToBuild>> {
+        if depth < bucket_depth {
+            return Err(BatchError::depth_less_than_bucket_depth(
+                depth,
+                bucket_depth,
+            ));
         }
 
         if bucket_depth < MIN_BUCKET_DEPTH {
-            return Err(BatchError::InvalidBucketDepth(bucket_depth));
+            return Err(BatchError::bucket_depth_too_small(bucket_depth));
+        }
+
+        if depth - bucket_depth > 63 {
+            return Err(BatchError::depth_too_large(depth, 63));
         }
 
         self.config.depth = Some(depth);
@@ -343,94 +351,323 @@ impl BatchBuilder<WithId> {
     }
 }
 
-impl BatchBuilder<WithSize> {
+impl BatchBuilder<ReadyToBuild> {
     /// Builds the `Batch` from the configured parameters.
-    pub fn build(self) -> Batch {
-        self.config.build()
-    }
-}
-
-/// Represents a time duration in blocks, either directly as blocks or
-/// a combination of seconds and block time.
-#[derive(Debug, Serialize, Deserialize)]
-pub enum Duration {
-    /// Time duration specified in blocks.
-    Blocks(u64),
-    /// Time duration specified in seconds and block time.
-    Time { secs: u64, block_time: u64 },
-}
-
-impl Duration {
-    /// Converts the duration to blocks.
-    fn to_blocks(&self) -> Result<u64> {
-        match self {
-            Duration::Blocks(blocks) => Ok(*blocks),
-            Duration::Time { secs, block_time } => {
-                if *block_time == 0 {
-                    return Err(BatchError::BlockTimeZero);
-                }
-                Ok(*secs / *block_time)
-            }
+    #[track_caller]
+    fn build(mut self) -> Batch {
+        Batch {
+            id: self.config.id.take().unwrap(),
+            value: self.config.value.take(),
+            owner: self.config.owner.take().unwrap(),
+            depth: self.config.depth.take().unwrap(),
+            bucket_depth: self.config.bucket_depth.take().unwrap(),
+            immutable: self.config.immutable.unwrap_or(IMMUTABLE_DEFAULT),
+            chain: self.config.chain,
         }
     }
 }
 
-impl From<u64> for Duration {
-    /// Converts a number of blocks into a `Duration`.
-    fn from(blocks: u64) -> Self {
-        Duration::Blocks(blocks)
+impl<'a> Arbitrary<'a> for Batch {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        // Generate valid depths ensuring bucket_depth <= depth <= 63
+        let depth = u.int_in_range(MIN_BUCKET_DEPTH..=63)?;
+        let bucket_depth = u.int_in_range(MIN_BUCKET_DEPTH..=depth)?;
+
+        // Generate a random value that could be None
+        let value = if bool::arbitrary(u)? {
+            Some(U256::arbitrary(u)?)
+        } else {
+            None
+        };
+
+        // Use the builder pattern to ensure valid construction
+        Ok(Batch::builder()
+            .with_chain(Arc::new(Chain::dev()))
+            .with_owner(Address::arbitrary(u)?)
+            .with_id(BatchId::arbitrary(u)?)
+            .with_value(value.unwrap_or_default())
+            .with_immutable(bool::arbitrary(u)?)
+            .with_depths(depth, bucket_depth)
+            .expect("depths are valid by construction")
+            .build())
+    }
+
+    fn size_hint(depth: usize) -> (usize, Option<usize>) {
+        // Calculate minimum size needed for all fields
+        let min_size = BatchId::size_hint(depth).0
+            + U256::size_hint(depth).0
+            + Address::size_hint(depth).0
+            + 3; // depth + bucket_depth + immutable
+
+        // Maximum size is determinate for all our fields
+        let max_size = BatchId::size_hint(depth).1.and_then(|bid| {
+            U256::size_hint(depth).1.and_then(|u256| {
+                Address::size_hint(depth)
+                    .1
+                    .map(|addr| bid + u256 + addr + 3)
+            })
+        });
+
+        (min_size, max_size)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_chains::NamedChain;
+    use proptest::prelude::*;
+    use proptest_arbitrary_interop::arb;
+    use std::time::Duration;
 
-    use alloy::signers::local::PrivateKeySigner;
-
-    fn get_test_signer() -> PrivateKeySigner {
-        PrivateKeySigner::random()
+    // Helper function to generate chain states
+    fn arbitrary_chain_state(price: U256, payment: U256) -> ChainState {
+        ChainState {
+            block_number: 0,
+            block_timestamp: 0,
+            price,
+            payment,
+        }
     }
 
+    // Test strategies
+    fn valid_depth() -> impl Strategy<Value = u8> {
+        MIN_BUCKET_DEPTH..=32u8
+    }
+
+    fn valid_bucket_depth(depth: u8) -> impl Strategy<Value = u8> {
+        MIN_BUCKET_DEPTH..=depth
+    }
+
+    fn arbitrary_batch() -> impl Strategy<Value = Batch> {
+        arb::<Batch>()
+    }
+
+    // Batch Tests
+    proptest! {
+        #[test]
+        fn test_batch_properties(batch in arbitrary_batch()) {
+            // Basic invariants
+            prop_assert!(batch.depth >= batch.bucket_depth);
+            prop_assert!(batch.bucket_depth >= MIN_BUCKET_DEPTH);
+            prop_assert!(!batch.id().is_zero());
+        }
+
+        #[test]
+        fn test_batch_ttl_calculation(
+            batch in arbitrary_batch(),
+            price in any::<u64>(),
+            payment in any::<u64>(),
+        ) {
+            let chain_state = arbitrary_chain_state(U256::from(price), U256::from(payment));
+            let ttl_blocks = batch.ttl_blocks(&chain_state);
+            let ttl_seconds = batch.ttl_seconds(ttl_blocks);
+
+            // TTL properties
+            if let Some(value) = batch.value {
+                if value > chain_state.payment {
+                    prop_assert!(ttl_blocks > 0);
+                    prop_assert!(ttl_seconds > 0);
+                } else {
+                    prop_assert_eq!(ttl_blocks, 0);
+                    prop_assert_eq!(ttl_seconds, 0);
+                }
+            } else {
+                prop_assert_eq!(ttl_blocks, 0);
+                prop_assert_eq!(ttl_seconds, 0);
+            }
+        }
+
+        #[test]
+        fn test_batch_expiry(
+            batch in arbitrary_batch(),
+            block_number in any::<u64>(),
+            timestamp in any::<u64>(),
+        ) {
+            let mut chain_state = arbitrary_chain_state(U256::from(1), U256::from(0));
+            chain_state.block_number = block_number;
+            chain_state.block_timestamp = timestamp;
+
+            let expiry_block = batch.expiry_block_number(&chain_state);
+            let expiry_time = batch.expiry(&chain_state);
+
+            // Expiry properties
+            prop_assert!(expiry_block >= chain_state.block_number);
+            prop_assert!(expiry_time >= chain_state.block_timestamp);
+        }
+
+        #[test]
+        fn test_batch_cost_calculation(
+            batch in arbitrary_batch(),
+            duration_secs in 1..31_536_000u64, // 1 second to 1 year
+            price in 1..1_000_000u64,
+        ) {
+            let duration = Duration::from_secs(duration_secs);
+            let price = U256::from(price);
+
+            if let Ok(cost) = batch.cost(duration, price) {
+                // Cost should be proportional to duration and price
+                prop_assert!(!cost.is_zero());
+
+                // Test with double duration
+                if let Ok(double_cost) = batch.cost(duration * 2, price) {
+                    prop_assert!(double_cost > cost);
+                }
+
+                // Test with double price
+                if let Ok(double_price_cost) = batch.cost(duration, price * U256::from(2)) {
+                    prop_assert!(double_price_cost > cost);
+                }
+            }
+        }
+
+        #[test]
+        fn test_depth_calculations(
+            depth in valid_depth(),
+            bucket_depth in MIN_BUCKET_DEPTH..=32u8,
+            owner in any::<Address>(),
+            id in any::<BatchId>(),
+        ) {
+            if depth >= bucket_depth {
+                let batch = Batch::builder()
+                    .with_owner(owner)
+                    .with_id(id)
+                    .with_depths(depth, bucket_depth);
+
+                prop_assert!(batch.is_ok());
+
+                if let Ok(batch) = batch {
+                    let built = batch.build();
+                    prop_assert_eq!(built.bucket_count(), 2u64.pow(bucket_depth as u32));
+                    prop_assert_eq!(built.bucket_slots(), 2u64.pow((depth - bucket_depth) as u32));
+                }
+            } else {
+                let batch = Batch::builder()
+                    .with_owner(owner)
+                    .with_id(id)
+                    .with_depths(depth, bucket_depth);
+
+                prop_assert!(batch.is_err());
+            }
+        }
+    }
+
+    // BatchBuilder Tests
+    proptest! {
+        #[test]
+        fn test_batch_builder_chain_operations(
+            batch in arbitrary_batch(),
+        ) {
+            // Test chain operations
+            let chain = Arc::new(Chain::from_named(NamedChain::Gnosis));
+            let modified = Batch::builder()
+                .with_chain(chain.clone())
+                .with_owner(batch.owner)
+                .with_id(batch.id)
+                .with_depths(batch.depth, batch.bucket_depth)
+                .unwrap()
+                .build();
+
+            prop_assert_eq!(modified.id(), batch.id());
+            prop_assert_eq!(modified.owner, batch.owner);
+        }
+
+        #[test]
+        fn test_batch_builder_auto_size(
+            size in 1..10_000_000u64, // Test realistic file sizes
+            owner in any::<Address>(),
+            id in any::<BatchId>(),
+        ) {
+            let result = Batch::builder()
+                .with_owner(owner)
+                .with_id(id)
+                .auto_size(size);
+
+            prop_assert!(result.is_ok());
+
+            let batch = result.unwrap().build();
+            let capacity = Batch::size(batch.depth);
+            prop_assert!(capacity >= size);
+        }
+
+        #[test]
+        fn test_batch_builder_id_derivation(
+            string in "[a-zA-Z0-9]{1,32}",
+            owner in any::<Address>(),
+        ) {
+            let batch = Batch::builder()
+                .with_owner(owner)
+                .with_id_derived_from_string(&string)
+                .with_depths(MIN_BUCKET_DEPTH, MIN_BUCKET_DEPTH)
+                .unwrap()
+                .build();
+
+            // Verify the derived ID is deterministic
+            let batch2 = Batch::builder()
+                .with_owner(owner)
+                .with_id_derived_from_string(&string)
+                .with_depths(MIN_BUCKET_DEPTH, MIN_BUCKET_DEPTH)
+                .unwrap()
+                .build();
+
+            prop_assert_eq!(batch.id(), batch2.id());
+        }
+
+        #[test]
+        fn test_builder_state_transitions(
+            id in any::<BatchId>(),
+            depth in valid_depth(),
+            bucket_depth in MIN_BUCKET_DEPTH..=32u8,
+            value in any::<U256>(),
+            immutable in any::<bool>(),
+            owner in any::<Address>(),
+        ) {
+            let builder = Batch::builder()
+                .with_value(value)
+                .with_immutable(immutable)
+                .with_owner(owner);
+
+            // Test ID derivation path
+            let with_derived_id = builder.clone()
+                .with_id_derived_from_string("test");
+
+            // Test explicit ID path
+            let with_explicit_id = builder
+                .with_id(id);
+
+            // Both paths should succeed with valid depths
+            if depth >= bucket_depth {
+                prop_assert!(with_derived_id.with_depths(depth, bucket_depth).is_ok());
+                prop_assert!(with_explicit_id.with_depths(depth, bucket_depth).is_ok());
+            } else {
+                prop_assert!(with_derived_id.with_depths(depth, bucket_depth).is_err());
+                prop_assert!(with_explicit_id.with_depths(depth, bucket_depth).is_err());
+            }
+        }
+    }
+
+    // Additional utility tests
     #[test]
-    fn test_batch_builder() {
-        // Manual configuration
-        let signer = get_test_signer();
-        println!("Test signer: {}", signer.address());
+    fn test_batch_builder_error_conditions() {
+        // Test invalid depth combinations
+        assert!(Batch::builder()
+            .with_owner(Address::random())
+            .with_id(BatchId::random())
+            .with_depths(MIN_BUCKET_DEPTH - 1, MIN_BUCKET_DEPTH)
+            .is_err());
 
-        let batch = BatchBuilder::new()
-            .with_signer(signer)
-            .with_id_derived_from_string("test")
-            .with_value(U256::from(100))
-            .with_depths(20, 16)
-            .expect("Invalid depth")
-            .build();
+        // Test bucket depth > depth
+        assert!(Batch::builder()
+            .with_owner(Address::random())
+            .with_id(BatchId::random())
+            .with_depths(16, 17)
+            .is_err());
 
-        assert_eq!(batch.value, Some(U256::from(100)));
-
-        let batch_extension_cost = batch.cost(
-            Duration::Time {
-                secs: 86400 * 30,
-                block_time: 5,
-            },
-            U256::from(24000),
-        );
-
-        println!("Batch: {:?}", batch);
-        println!("Batch extension cost: {:?}", batch_extension_cost);
-
-        // Automatic size calculation and cost estimation
-        let batch2 = BatchBuilder::new()
-            .with_immutable(true)
-            .with_owner(Address::ZERO)
-            .with_id(BatchId::ZERO)
-            .auto_size(1 << 20)
-            .expect("Invalid size") // 1 MiB
-            .build();
-        println!("Batch 2: {:?}", batch2);
-
-        //
-
-        assert!(batch2.immutable());
+        // Test maximum depth overflow
+        assert!(Batch::builder()
+            .with_owner(Address::random())
+            .with_id(BatchId::random())
+            .with_depths(255, MIN_BUCKET_DEPTH)
+            .is_err());
     }
 }

@@ -10,6 +10,7 @@ description = "Common types in Ethereum Swarm"
 
 [dependencies]
 alloy.workspace = true
+alloy-chains.workspace = true
 nectar-primitives-traits.workspace = true
 
 # misc
@@ -30,6 +31,7 @@ futures.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
+alloy = { workspace = true, features = ["getrandom"] }
 arbitrary.workspace = true
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true

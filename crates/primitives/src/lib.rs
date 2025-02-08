@@ -3,7 +3,7 @@ use nectar_primitives_traits::BRANCHES;
 pub mod bmt;
 pub mod chunk;
 pub mod distance;
-// pub mod postage;
+pub mod postage;
 pub mod proximity;
 
 const ENCRYPTED_BRANCHES: usize = BRANCHES / 2;

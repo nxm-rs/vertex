@@ -1,9 +1,9 @@
 use alloy::primitives::FixedBytes;
 
-// pub mod auth;
+pub mod auth;
 pub mod chunk;
 
-// pub use auth::*;
+pub use auth::*;
 pub use chunk::*;
 
 const HASH_SIZE: usize = 32;

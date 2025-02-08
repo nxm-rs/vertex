@@ -574,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_dispersed_replica() {
+    fn test_invalid_dispersed_replica() -> Result<()> {
         let test_data = b"test data".to_vec();
         let dispersed_replica_wallet =
             PrivateKeySigner::from_slice(&DISPERSED_REPLICA_OWNER_PK.as_slice()).unwrap();
@@ -582,17 +582,12 @@ mod tests {
         let chunk = SingleOwnerChunk::builder()
             .with_body(
                 BMTBody::builder()
-                    .auto_from_data(test_data.clone())
-                    .unwrap()
-                    .build()
-                    .unwrap(),
-            )
-            .unwrap()
+                    .auto_from_data(test_data.clone())?
+                    .build()?,
+            )?
             .with_id(B256::ZERO)
-            .with_signer(dispersed_replica_wallet)
-            .unwrap()
-            .build()
-            .unwrap();
+            .with_signer(dispersed_replica_wallet)?
+            .build()?;
         let replica_address = chunk.address();
 
         assert!(!chunk.is_valid_replica());
@@ -600,5 +595,7 @@ mod tests {
             chunk.verify(replica_address),
             Err(ChunkError::Format { .. })
         ));
+
+        Ok(())
     }
 }

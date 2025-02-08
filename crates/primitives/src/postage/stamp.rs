@@ -18,11 +18,13 @@ pub type Result<T> = std::result::Result<T, PostageStampError>;
 
 // Size of components in a `PostageStamp`
 const BATCH_ID_SIZE: usize = std::mem::size_of::<B256>();
-const INDEX_SIZE: usize = std::mem::size_of::<u64>();
+const BUCKET_INDEX_SIZE: usize = std::mem::size_of::<u32>();
+const BUCKET_SLOT_SIZE: usize = std::mem::size_of::<u32>();
 const TIMESTAMP_SIZE: usize = std::mem::size_of::<u64>();
 const SIGNATURE_SIZE: usize = 65;
 // Total size of a `PostageStamp`
-const POSTAGE_STAMP_SIZE: usize = BATCH_ID_SIZE + INDEX_SIZE + TIMESTAMP_SIZE + SIGNATURE_SIZE;
+const POSTAGE_STAMP_SIZE: usize =
+    BATCH_ID_SIZE + BUCKET_INDEX_SIZE + BUCKET_SLOT_SIZE + TIMESTAMP_SIZE + SIGNATURE_SIZE;
 
 // Captures errors during stamp operations
 #[derive(Debug, Error)]
@@ -62,17 +64,25 @@ impl PostageStampError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostageStamp {
     batch_id: BatchId,
-    index: u64,
+    bucket_index: u32,
+    bucket_slot: u32,
     timestamp: u64,
     signature: PrimitiveSignature,
 }
 
 impl PostageStamp {
     /// Creates a new `PostageStamp`
-    pub fn new(batch: Batch, index: u64, timestamp: u64, signature: PrimitiveSignature) -> Self {
+    pub fn new(
+        batch: Batch,
+        bucket_index: u32,
+        bucket_slot: u32,
+        timestamp: u64,
+        signature: PrimitiveSignature,
+    ) -> Self {
         PostageStamp {
             batch_id: *batch.id(),
-            index,
+            bucket_index,
+            bucket_slot,
             timestamp,
             signature,
         }
@@ -83,9 +93,14 @@ impl PostageStamp {
         &self.batch_id
     }
 
-    /// Returns the within-batch `index` of the `PostageStamp`
-    pub fn index(&self) -> u64 {
-        self.index
+    /// Returns the `bucket_index` of the `PostageStamp`
+    pub fn bucket_index(&self) -> u32 {
+        self.bucket_index
+    }
+
+    /// Returns the `bucket_slot` of the `PostageStamp`
+    pub fn bucket_slot(&self) -> u32 {
+        self.bucket_slot
     }
 
     /// Returns the `timestamp` of the `PostageStamp`
@@ -102,7 +117,8 @@ impl PostageStamp {
     pub fn hash(&self) -> FixedBytes<32> {
         let mut hasher = Keccak256::new();
         hasher.update(&self.batch_id);
-        hasher.update(&self.index.to_be_bytes());
+        hasher.update(&self.bucket_index.to_be_bytes());
+        hasher.update(&self.bucket_slot.to_be_bytes());
         hasher.update(&self.timestamp.to_be_bytes());
         hasher.update(&self.signature.as_bytes());
 
@@ -115,7 +131,8 @@ impl From<PostageStamp> for Bytes {
         // Serializes the `PostageStamp` into a byte array
         let mut buf = BytesMut::with_capacity(POSTAGE_STAMP_SIZE);
         buf.extend_from_slice(stamp.batch_id().as_ref());
-        buf.extend_from_slice(stamp.index.to_be_bytes().as_ref());
+        buf.extend_from_slice(stamp.bucket_index().to_be_bytes().as_ref());
+        buf.extend_from_slice(stamp.bucket_slot().to_be_bytes().as_ref());
         buf.extend_from_slice(stamp.timestamp.to_be_bytes().as_ref());
         buf.extend_from_slice(stamp.signature.as_bytes().as_ref());
 
@@ -136,13 +153,16 @@ impl TryFrom<Bytes> for PostageStamp {
         }
 
         let batch_id = BatchId::from_slice(&bytes.split_to(BATCH_ID_SIZE));
-        let index = u64::from_be_bytes(bytes.split_to(INDEX_SIZE).as_ref().try_into()?);
+        let bucket_index =
+            u32::from_be_bytes(bytes.split_to(BUCKET_INDEX_SIZE).as_ref().try_into()?);
+        let bucket_slot = u32::from_be_bytes(bytes.split_to(BUCKET_SLOT_SIZE).as_ref().try_into()?);
         let timestamp = u64::from_be_bytes(bytes.split_to(TIMESTAMP_SIZE).as_ref().try_into()?);
         let signature = PrimitiveSignature::try_from(bytes.as_ref())?;
 
         Ok(PostageStamp {
             batch_id,
-            index,
+            bucket_index,
+            bucket_slot,
             timestamp,
             signature,
         })
@@ -168,7 +188,8 @@ impl AuthProof for PostageStamp {
 struct StampConfig {
     chunk: Option<Chunk>,
     batch_id: Option<BatchId>,
-    index: Option<u64>,
+    bucket_index: Option<u32>,
+    bucket_slot: Option<u32>,
     timestamp: Option<u64>,
     signature: Option<PrimitiveSignature>,
 }
@@ -178,7 +199,8 @@ impl StampConfig {
     fn build(self) -> PostageStamp {
         PostageStamp {
             batch_id: self.batch_id.expect("Missing batch ID"),
-            index: self.index.expect("Missing index"),
+            bucket_index: self.bucket_index.expect("Missing bucket index"),
+            bucket_slot: self.bucket_slot.expect("Missing bucket slot"),
             timestamp: self.timestamp.expect("Missing timestamp"),
             signature: self.signature.expect("Missing signature"),
         }
@@ -192,9 +214,15 @@ pub struct StampBuilder<S> {
 }
 
 impl<S> StampBuilder<S> {
-    /// Sets the index and returns a new builder instance.
-    pub fn with_index(mut self, index: u64) -> Self {
-        self.config.index = Some(index);
+    /// Sets the bucket index and returns a new builder instance.
+    pub fn with_bucket_index(mut self, index: u32) -> Self {
+        self.config.bucket_index = Some(index);
+        self
+    }
+
+    /// Sets the bucket slot and returns a new builder instance.
+    pub fn with_bucket_slot(mut self, slot: u32) -> Self {
+        self.config.bucket_slot = Some(slot);
         self
     }
 

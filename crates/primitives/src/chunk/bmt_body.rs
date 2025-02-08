@@ -206,10 +206,10 @@ impl<T: From<BMTBody>> BMTBodyBuilder<WithSpan, T> {
 
 impl<T: From<BMTBody>> BMTBodyBuilder<ReadyToBuild, T> {
     /// Builds a new BMTBody instance.
-    pub fn build(self) -> Result<T> {
+    pub fn build(mut self) -> Result<T> {
         // SAFETY: span and data are enforced to be Some in the ReadyToBuild state
-        let span = self.config.span.unwrap();
-        let data = self.config.data.unwrap();
+        let span = self.config.span.take().unwrap();
+        let data = self.config.data.take().unwrap();
 
         let bmt_body = BMTBody::new_unchecked(span, data);
         Ok(T::from(bmt_body))

@@ -1,5 +1,8 @@
 use alloy::{
-    primitives::{Address, BlockNumber, BlockTimestamp, PrimitiveSignature, B256, U256},
+    network::BlockResponse,
+    primitives::{
+        Address, BlockNumber, BlockTimestamp, FixedBytes, PrimitiveSignature, B256, U256,
+    },
     signers::Signer,
 };
 use nectar_primitives_traits::{
@@ -7,14 +10,13 @@ use nectar_primitives_traits::{
     TimeBoundAuthorizer,
 };
 
-pub type BatchId = B256;
-
+pub type BatchId = FixedBytes<32>;
 mod batch;
 mod stamp;
-mod tracker;
+// mod tracker;
 pub use batch::*;
 pub use stamp::*;
-pub use tracker::*;
+// pub use tracker::*;
 
 // pub struct PostageAuthorizer {
 //     batch_store: BatchStore,
@@ -124,11 +126,12 @@ pub use tracker::*;
 //     }
 // }
 
-// struct ChainState {
-//     block: BlockNumber,
-//     total_amount: U256,
-//     current_price: U256,
-// }
+pub struct ChainState {
+    pub block_number: BlockNumber,
+    pub block_timestamp: BlockTimestamp,
+    pub payment: U256,
+    pub price: U256,
+}
 
 // trait BatchStore {
 //     fn get(&self, id: &[u8]) -> AuthResult<Batch>;
