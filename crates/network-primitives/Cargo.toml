@@ -1,0 +1,29 @@
+[package]
+name = "vertex-network-primitives"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+## nectar primitives
+nectar-primitives-traits.workspace = true
+nectar-primitives.workspace = true
+
+## vertex primitives
+vertex-network-primitives-traits.workspace = true
+
+alloy.workspace = true
+alloy-chains.workspace = true
+libp2p.workspace = true
+proptest.workspace = true
+thiserror.workspace = true
+
+bytes.workspace = true
+num_enum = { version = "0.7", default-features = false }
+strum = { version = "0.26", default-features = false, features = ["derive"] }
+
+[lints]
+workspace = true

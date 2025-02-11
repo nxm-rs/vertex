@@ -12,7 +12,6 @@ pub const BRANCHES: usize = 128;
 
 // Addresses
 pub type SwarmAddress = FixedBytes<SEGMENT_SIZE>;
-pub type NodeAddress = SwarmAddress;
 
 // BMT / Chunks
 pub type ChunkAddress = SwarmAddress;
