@@ -15,8 +15,8 @@ members = [
     # "bin/waku-swarm-relay",
     # "bin/swarm-tools",
     "bin/vertex",
-    # "bin/wasm-playground",
-    # "bin/swarm-wasm-lib",
+    "crates/network-primitives",
+    "crates/network-primitives-traits",
     "crates/primitives",
     "crates/primitives-traits",
     # "crates/storage",
@@ -39,6 +39,8 @@ nectar-primitives = { path = "crates/primitives", features = ["arbitrary"] }
 nectar-primitives-traits = { path = "crates/primitives-traits" }
 
 ## vertex
+vertex-network-primitives = { path = "crates/network-primitives" }
+vertex-network-primitives-traits = { path = "crates/network-primitives-traits" }
 vertex-storage = { path = "crates/storage" }
 
 ## alloy
@@ -60,20 +62,28 @@ alloy-chains = { version = "0.1.58", default-features = false }
 ## misc
 clap = { version = "4.5.23", features = ["derive", "env"] }
 getrandom = "0.2"
-rand = "0.8.5"
+rand = "0.8"
 thiserror = "2.0.4"
 
-# tracing = "0.1.41"
-# tracing-subscriber = { version = "0.3.19", features = [
-#     "env-filter",
-#     "ansi",
-#     "fmt",
-#     "std",
-#     "json",
-#     "time",
-# ] }
+## tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = [
+    "env-filter",
+    "ansi",
+    "fmt",
+    "std",
+    "json",
+    "time",
+] }
 
 bytes = "1.9.0"
+
+## p2p
+libp2p = { version = "0.55.0", features = ["tokio", "noise", "tcp", "yamux", "dns", "macros", "ecdsa", "identify"] }
+quick-protobuf = "0.8.0"
+quick-protobuf-codec = "0.3.1"
+asynchronous-codec = "0.7.0"
+unsigned-varint = "0.8.0"
 
 ## tokio
 # tokio-stream = "0.1.17"
@@ -94,9 +104,7 @@ futures = "0.3"
 
 # dotenv = "0.15.0"
 # reqwest = { version = "0.12.9", features = ["json"] }
-# async-recursion = "1.1.1"
 anyhow = "1.0.94"
-# prost = "0.13.4"
 
 serde = { version = "1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }

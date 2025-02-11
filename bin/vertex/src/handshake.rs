@@ -1,17 +1,17 @@
 use std::{
     array::TryFromSliceError,
-    borrow::Cow,
     collections::{HashMap, VecDeque},
     future::Future,
     io,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
 
 use alloy::{
     hex::ToHexExt,
-    primitives::{FixedBytes, PrimitiveSignature, Signature, B256},
+    primitives::{FixedBytes, PrimitiveSignature, B256},
     signers::{local::PrivateKeySigner, SignerSync},
 };
 use asynchronous_codec::{Decoder, Encoder, Framed, FramedRead};
@@ -31,6 +31,8 @@ use libp2p::{
 };
 use quick_protobuf::{BytesReader, MessageRead, MessageWrite, Reader, Writer};
 use tracing::info;
+use vertex_network_primitives::LocalNodeAddressBuilder;
+use vertex_network_primitives_traits::{NodeAddress, NodeAddressError};
 
 use crate::proto::handshake::{Ack, BzzAddress, Syn, SynAck};
 
@@ -72,6 +74,8 @@ pub enum HandshakeError {
     SignatureError(#[from] alloy::primitives::SignatureError),
     #[error("Alloy signer error: {0}")]
     SignerError(#[from] alloy::signers::Error),
+    #[error("NodeAddress conversion error: {0}")]
+    NodeAddressConversion(#[from] vertex_network_primitives_traits::NodeAddressError),
 }
 
 #[derive(Debug, Clone)]
@@ -82,7 +86,7 @@ pub struct HandshakeConfig {
     pub nonce: Vec<u8>,
     pub welcome_message: String,
     pub validate_overlay: bool,
-    pub wallet: PrivateKeySigner,
+    pub wallet: Arc<PrivateKeySigner>,
 }
 
 impl Default for HandshakeConfig {
@@ -94,7 +98,7 @@ impl Default for HandshakeConfig {
             nonce: vec![0; 32],
             welcome_message: String::new(),
             validate_overlay: true,
-            wallet: PrivateKeySigner::random(),
+            wallet: Arc::new(PrivateKeySigner::random()),
         }
     }
 }
@@ -507,7 +511,14 @@ async fn handle_outbound_handshake(
 ) -> Result<HandshakeInfo, HandshakeError> {
     info!("Remote address: {:?}", remote_addr);
 
+    const MAINNET: u64 = 1;
+
     // Create longer-lived buffer
+    let local_address = LocalNodeAddressBuilder::<MAINNET, _>::new()
+        .with_nonce(B256::ZERO)
+        .with_underlay(remote_addr)
+        .with_signer(config.wallet.clone())?
+        .build()?;
 
     let syn_codec = SynCodec::<Syn, HandshakeSyn>::new(1024);
     let synack_codec = SynAckCodec::<SynAck, HandshakeSynAck>::new(1024);
@@ -566,13 +577,6 @@ async fn handle_outbound_handshake(
         welcome_message: "str".to_string(),
         observed_underlay: vec![remote_addr],
     })
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeAddress {
-    underlay: Multiaddr,
-    signature: PrimitiveSignature,
-    overlay: B256,
 }
 
 impl TryFrom<BzzAddress> for NodeAddress {
