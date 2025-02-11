@@ -1,0 +1,29 @@
+[package]
+name = "vertex"
+version.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+alloy.workspace = true
+bytes.workspace = true
+libp2p = { version = "0.55.0", features = ["tokio", "noise", "tcp", "yamux", "dns", "macros", "ecdsa", "identify"] }
+quick-protobuf = "0.8.0"
+quick-protobuf-codec = "0.3.1"
+asynchronous-codec = { version = "0.7.0" }
+futures = "0.3"
+tokio = { version = "1", features = ["full"] }
+rand = "0.8"
+thiserror.workspace = true
+unsigned-varint = "0.8.0"
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[build-dependencies]
+pb-rs = "0.9.1"
+walkdir = "2.5.0"

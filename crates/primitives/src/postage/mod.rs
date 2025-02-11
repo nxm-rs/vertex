@@ -126,6 +126,7 @@ pub use stamp::*;
 //     }
 // }
 
+#[derive(Debug)]
 pub struct ChainState {
     pub block_number: BlockNumber,
     pub block_timestamp: BlockTimestamp,

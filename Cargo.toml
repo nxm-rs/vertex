@@ -14,7 +14,7 @@ members = [
     #"crates/logging",
     # "bin/waku-swarm-relay",
     # "bin/swarm-tools",
-    # "bin/vertex",
+    "bin/vertex",
     # "bin/wasm-playground",
     # "bin/swarm-wasm-lib",
     "crates/primitives",

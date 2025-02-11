@@ -71,14 +71,26 @@ impl Batch {
     /// Calculates the remaining time-to-live (TTL) in blocks.
     ///
     /// If `value` <= `current_out_payment`, the batch is considered expired and the TTL is 0.
-    pub fn ttl_blocks(&self, chain_state: &ChainState) -> u64 {
-        if let Some(value) = self.value {
-            if value > chain_state.payment {
-                return (value - chain_state.payment / chain_state.price).to();
-            }
+    pub fn ttl_blocks(&self, chain_state: &ChainState) -> Result<u64> {
+        let value = self.value.ok_or(BatchError::BatchNotCreated)?;
+
+        if chain_state.price.is_zero() {
+            return Err(BatchError::DivisionByZero);
         }
 
-        0
+        if value <= chain_state.payment {
+            return Ok(0);
+        }
+
+        // Safety: `value` is always greater than `payment` here.
+        let remaining_value = value - chain_state.payment;
+
+        // Calculate TTL: remaining_value / price
+        remaining_value
+            .checked_div(chain_state.price)
+            .ok_or(BatchError::ArithmeticOverflow)?
+            .try_into()
+            .map_err(BatchError::UintConversion)
     }
 
     /// Converts the remaining TTL from blocks to seconds using the block time.
@@ -95,23 +107,25 @@ impl Batch {
     }
 
     /// Calculates the TTL in seconds based on current out payment, price, and block time.
-    pub fn ttl(&self, chain_state: &ChainState) -> u64 {
-        self.ttl_seconds(self.ttl_blocks(chain_state))
+    pub fn ttl(&self, chain_state: &ChainState) -> Result<u64> {
+        Ok(self.ttl_seconds(self.ttl_blocks(chain_state)?))
     }
 
     /// Determines the block number when the batch expires.
-    pub fn expiry_block_number(&self, chain_state: &ChainState) -> BlockNumber {
-        chain_state.block_number + self.ttl_blocks(chain_state)
+    pub fn expiry_block_number(&self, chain_state: &ChainState) -> Result<BlockNumber> {
+        Ok(chain_state
+            .block_number
+            .saturating_add(self.ttl_blocks(chain_state)?))
     }
 
     /// Determines the expiration time of the batch in Unix timestamp.
-    pub fn expiry(&self, chain_state: &ChainState) -> u64 {
-        chain_state.block_timestamp + self.ttl_seconds(self.ttl_blocks(chain_state))
+    pub fn expiry(&self, chain_state: &ChainState) -> Result<u64> {
+        Ok(chain_state.block_timestamp + self.ttl_seconds(self.ttl_blocks(chain_state)?))
     }
 
     /// Checks if the batch has expired based on the current block number.
-    pub fn expired(&self, chain_state: &ChainState) -> bool {
-        self.expiry_block_number(chain_state) <= chain_state.block_number
+    pub fn expired(&self, chain_state: &ChainState) -> Result<bool> {
+        Ok(self.expiry_block_number(chain_state)? <= chain_state.block_number)
     }
 
     /// Calculates the cost of a batch for the additional target duration and current storage price.
@@ -134,7 +148,7 @@ impl Batch {
     pub fn depth_for_size(size: u64) -> u8 {
         // A minimum of 1 chunk is always required, irrespective of the size.
         let chunks = (size / CHUNK_SIZE as u64).max(1);
-        (chunks as f64).log2().ceil() as u8
+        ((chunks as f64).log2().ceil() as u8).max(MIN_BUCKET_DEPTH)
     }
 
     // Returns the number of chunks in the batch (2^depth).
@@ -179,6 +193,16 @@ pub enum BatchError {
     DepthLessThanBucketDepth(u8, u8),
     #[error("Depth {0} exceeds maximum depth {1}")]
     DepthTooLarge(u8, u8),
+    #[error("Division by zero error in TTL calculation")]
+    DivisionByZero,
+    #[error("Batch value is insufficient (less than or equal to current payment")]
+    InsufficientValue,
+    #[error("Arithmetic overflow in calculation")]
+    ArithmeticOverflow,
+    #[error("Batch has not been created on-chain")]
+    BatchNotCreated,
+    #[error("Uint conversion error: {0}")]
+    UintConversion(#[from] alloy::primitives::ruint::FromUintError<u64>),
 }
 
 // Helper methods for error creation
@@ -311,7 +335,7 @@ impl BatchBuilder<WithId> {
     /// Automatically calculates the depth based on size and transitions to `ReadyToBuild` state.
     /// TODO: This **MUST** be modified to take into account *effective** utilisation.
     pub fn auto_size(self, size_bytes: u64) -> Result<BatchBuilder<ReadyToBuild>> {
-        let depth = Batch::depth_for_size(size_bytes).max(MIN_BUCKET_DEPTH);
+        let depth = Batch::depth_for_size(size_bytes);
         self.with_depths(depth, MIN_BUCKET_DEPTH)
     }
 
@@ -382,7 +406,9 @@ impl<'a> Arbitrary<'a> for Batch {
 
         // Use the builder pattern to ensure valid construction
         Ok(Batch::builder()
-            .with_chain(Arc::new(Chain::dev()))
+            .with_chain(Arc::new(Chain::from_named(
+                alloy_chains::NamedChain::Gnosis,
+            )))
             .with_owner(Address::arbitrary(u)?)
             .with_id(BatchId::arbitrary(u)?)
             .with_value(value.unwrap_or_default())
@@ -391,40 +417,44 @@ impl<'a> Arbitrary<'a> for Batch {
             .expect("depths are valid by construction")
             .build())
     }
-
-    fn size_hint(depth: usize) -> (usize, Option<usize>) {
-        // Calculate minimum size needed for all fields
-        let min_size = BatchId::size_hint(depth).0
-            + U256::size_hint(depth).0
-            + Address::size_hint(depth).0
-            + 3; // depth + bucket_depth + immutable
-
-        // Maximum size is determinate for all our fields
-        let max_size = BatchId::size_hint(depth).1.and_then(|bid| {
-            U256::size_hint(depth).1.and_then(|u256| {
-                Address::size_hint(depth)
-                    .1
-                    .map(|addr| bid + u256 + addr + 3)
-            })
-        });
-
-        (min_size, max_size)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::signers::local::PrivateKeySigner;
     use alloy_chains::NamedChain;
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb;
     use std::time::Duration;
 
-    // Helper function to generate chain states
-    fn arbitrary_chain_state(price: U256, payment: U256) -> ChainState {
+    // Helper function to create a batch with specific parameters
+    fn create_test_batch(value: Option<U256>) -> Batch {
+        let chain = Arc::new(Chain::from_named(NamedChain::Gnosis));
+        let builder = match value {
+            Some(value) => Batch::builder().with_value(value),
+            None => Batch::builder(),
+        };
+
+        builder
+            .with_owner(Address::ZERO)
+            .with_id(BatchId::ZERO)
+            .with_chain(chain)
+            .with_depths(16, 16)
+            .unwrap()
+            .build()
+    }
+
+    // Helper function to create chain state
+    fn create_chain_state(
+        block_number: u64,
+        timestamp: u64,
+        price: U256,
+        payment: U256,
+    ) -> ChainState {
         ChainState {
-            block_number: 0,
-            block_timestamp: 0,
+            block_number,
+            block_timestamp: timestamp,
             price,
             payment,
         }
@@ -433,10 +463,6 @@ mod tests {
     // Test strategies
     fn valid_depth() -> impl Strategy<Value = u8> {
         MIN_BUCKET_DEPTH..=32u8
-    }
-
-    fn valid_bucket_depth(depth: u8) -> impl Strategy<Value = u8> {
-        MIN_BUCKET_DEPTH..=depth
     }
 
     fn arbitrary_batch() -> impl Strategy<Value = Batch> {
@@ -451,49 +477,6 @@ mod tests {
             prop_assert!(batch.depth >= batch.bucket_depth);
             prop_assert!(batch.bucket_depth >= MIN_BUCKET_DEPTH);
             prop_assert!(!batch.id().is_zero());
-        }
-
-        #[test]
-        fn test_batch_ttl_calculation(
-            batch in arbitrary_batch(),
-            price in any::<u64>(),
-            payment in any::<u64>(),
-        ) {
-            let chain_state = arbitrary_chain_state(U256::from(price), U256::from(payment));
-            let ttl_blocks = batch.ttl_blocks(&chain_state);
-            let ttl_seconds = batch.ttl_seconds(ttl_blocks);
-
-            // TTL properties
-            if let Some(value) = batch.value {
-                if value > chain_state.payment {
-                    prop_assert!(ttl_blocks > 0);
-                    prop_assert!(ttl_seconds > 0);
-                } else {
-                    prop_assert_eq!(ttl_blocks, 0);
-                    prop_assert_eq!(ttl_seconds, 0);
-                }
-            } else {
-                prop_assert_eq!(ttl_blocks, 0);
-                prop_assert_eq!(ttl_seconds, 0);
-            }
-        }
-
-        #[test]
-        fn test_batch_expiry(
-            batch in arbitrary_batch(),
-            block_number in any::<u64>(),
-            timestamp in any::<u64>(),
-        ) {
-            let mut chain_state = arbitrary_chain_state(U256::from(1), U256::from(0));
-            chain_state.block_number = block_number;
-            chain_state.block_timestamp = timestamp;
-
-            let expiry_block = batch.expiry_block_number(&chain_state);
-            let expiry_time = batch.expiry(&chain_state);
-
-            // Expiry properties
-            prop_assert!(expiry_block >= chain_state.block_number);
-            prop_assert!(expiry_time >= chain_state.block_timestamp);
         }
 
         #[test]
@@ -524,7 +507,7 @@ mod tests {
         #[test]
         fn test_depth_calculations(
             depth in valid_depth(),
-            bucket_depth in MIN_BUCKET_DEPTH..=32u8,
+            bucket_depth in 0..=32u8,
             owner in any::<Address>(),
             id in any::<BatchId>(),
         ) {
@@ -534,7 +517,10 @@ mod tests {
                     .with_id(id)
                     .with_depths(depth, bucket_depth);
 
-                prop_assert!(batch.is_ok());
+                match bucket_depth < MIN_BUCKET_DEPTH {
+                    true => prop_assert!(batch.is_err()),
+                    false => prop_assert!(batch.is_ok()),
+                }
 
                 if let Ok(batch) = batch {
                     let built = batch.build();
@@ -550,10 +536,7 @@ mod tests {
                 prop_assert!(batch.is_err());
             }
         }
-    }
 
-    // BatchBuilder Tests
-    proptest! {
         #[test]
         fn test_batch_builder_chain_operations(
             batch in arbitrary_batch(),
@@ -620,12 +603,12 @@ mod tests {
             bucket_depth in MIN_BUCKET_DEPTH..=32u8,
             value in any::<U256>(),
             immutable in any::<bool>(),
-            owner in any::<Address>(),
         ) {
+            let signer = PrivateKeySigner::random();
             let builder = Batch::builder()
                 .with_value(value)
                 .with_immutable(immutable)
-                .with_owner(owner);
+                .with_signer(signer);
 
             // Test ID derivation path
             let with_derived_id = builder.clone()
@@ -669,5 +652,221 @@ mod tests {
             .with_id(BatchId::random())
             .with_depths(255, MIN_BUCKET_DEPTH)
             .is_err());
+    }
+
+    #[test]
+    fn test_ttl_blocks_edge_cases() {
+        let owner = Address::random();
+        let id = BatchId::random();
+
+        // Create a basic batch
+        let batch = Batch::builder()
+            .with_owner(owner)
+            .with_id(id)
+            .with_depths(16, 16)
+            .unwrap()
+            .with_value(U256::from(1000))
+            .build();
+
+        // Test division by zero
+        let zero_price_state = ChainState {
+            block_number: 0,
+            block_timestamp: 0,
+            price: U256::ZERO,
+            payment: U256::ZERO,
+        };
+        assert!(matches!(
+            batch.ttl_blocks(&zero_price_state),
+            Err(BatchError::DivisionByZero)
+        ));
+
+        // Test insufficient value
+        let high_payment_state = ChainState {
+            block_number: 0,
+            block_timestamp: 0,
+            price: U256::from(1),
+            payment: U256::from(2000), // Higher than batch value
+        };
+        assert!(matches!(batch.ttl_blocks(&high_payment_state), Ok(0)));
+
+        // Test batch not created
+        let uncreated_batch = Batch::builder()
+            .with_owner(owner)
+            .with_id(id)
+            .with_depths(16, 16)
+            .unwrap()
+            .build();
+
+        let normal_state = ChainState {
+            block_number: 0,
+            block_timestamp: 0,
+            price: U256::from(1),
+            payment: U256::ZERO,
+        };
+        assert!(matches!(
+            uncreated_batch.ttl_blocks(&normal_state),
+            Err(BatchError::BatchNotCreated)
+        ));
+    }
+
+    #[test]
+    fn test_ttl_basic_calculation() {
+        let batch = create_test_batch(Some(U256::from(1000)));
+        let chain_state = create_chain_state(
+            100,
+            1000,
+            U256::from(10), // price
+            U256::from(0),  // payment
+        );
+
+        // Expected: (1000 - 0) / 10 = 100 blocks
+        let ttl_blocks = batch.ttl_blocks(&chain_state).unwrap();
+        assert_eq!(ttl_blocks, 100, "TTL blocks calculation incorrect");
+
+        // With 5-second blocks (default)
+        let ttl_seconds = batch.ttl_seconds(ttl_blocks);
+        assert_eq!(ttl_seconds, 500, "TTL seconds calculation incorrect");
+    }
+
+    #[test]
+    fn test_ttl_with_existing_payment() {
+        let batch = create_test_batch(Some(U256::from(1000)));
+        let chain_state = create_chain_state(
+            100,
+            1000,
+            U256::from(10),  // price
+            U256::from(500), // payment
+        );
+
+        // Expected: (1000 - 500) / 10 = 50 blocks
+        let ttl_blocks = batch.ttl_blocks(&chain_state).unwrap();
+        assert_eq!(
+            ttl_blocks, 50,
+            "TTL blocks calculation with payment incorrect"
+        );
+    }
+
+    #[test]
+    fn test_ttl_expired_batch() {
+        let batch = create_test_batch(Some(U256::from(1000)));
+        let chain_state = create_chain_state(
+            100,
+            1000,
+            U256::from(10),   // price
+            U256::from(1000), // payment equals value
+        );
+
+        let ttl_blocks = batch.ttl_blocks(&chain_state).unwrap();
+        assert_eq!(ttl_blocks, 0, "Expired batch should have 0 TTL");
+    }
+
+    #[test]
+    fn test_ttl_uncreated_batch() {
+        let batch = create_test_batch(None);
+        let chain_state = create_chain_state(100, 1000, U256::from(10), U256::from(0));
+
+        assert!(matches!(
+            batch.ttl_blocks(&chain_state),
+            Err(BatchError::BatchNotCreated)
+        ));
+    }
+
+    #[test]
+    fn test_ttl_zero_price() {
+        let batch = create_test_batch(Some(U256::from(1000)));
+        let chain_state = create_chain_state(100, 1000, U256::ZERO, U256::from(0));
+
+        assert!(matches!(
+            batch.ttl_blocks(&chain_state),
+            Err(BatchError::DivisionByZero)
+        ));
+    }
+
+    #[test]
+    fn test_expiry_calculation() {
+        let batch = create_test_batch(Some(U256::from(1000)));
+        let chain_state = create_chain_state(
+            100,  // current block
+            1000, // current timestamp
+            U256::from(10),
+            U256::from(0),
+        );
+
+        // TTL should be 100 blocks
+        let expiry_block = batch.expiry_block_number(&chain_state).unwrap();
+        assert_eq!(expiry_block, 200, "Expiry block number incorrect");
+
+        // With 5-second blocks
+        let expiry_time = batch.expiry(&chain_state).unwrap();
+        assert_eq!(expiry_time, 1500, "Expiry timestamp incorrect");
+    }
+
+    #[test]
+    fn test_expired_status() {
+        let batch = create_test_batch(Some(U256::from(1000)));
+
+        // Test not expired
+        let chain_state = create_chain_state(100, 1000, U256::from(10), U256::from(0));
+        assert!(
+            !batch.expired(&chain_state).unwrap(),
+            "Batch should not be expired"
+        );
+
+        // Test expired
+        let expired_state = create_chain_state(
+            100,
+            1000,
+            U256::from(10),
+            U256::from(1000), // payment equals value
+        );
+        assert!(
+            batch.expired(&expired_state).unwrap(),
+            "Batch should be expired"
+        );
+    }
+
+    #[test]
+    fn test_ttl_with_other_chain() {
+        // Create a chain with 5-second block time
+        let custom_chain = Chain::from_named(NamedChain::Sepolia);
+
+        let batch = Batch::builder()
+            .with_owner(Address::ZERO)
+            .with_id(BatchId::ZERO)
+            .with_chain(Arc::new(custom_chain))
+            .with_value(U256::from(1000))
+            .with_depths(16, 16)
+            .unwrap()
+            .build();
+
+        let chain_state = create_chain_state(100, 1000, U256::from(10), U256::from(0));
+
+        let ttl_blocks = batch.ttl_blocks(&chain_state).unwrap();
+        assert_eq!(ttl_blocks, 100, "TTL blocks calculation incorrect");
+
+        // With 12-second blocks (sepolia)
+        let ttl_seconds = batch.ttl(&chain_state).unwrap();
+        assert_eq!(
+            ttl_seconds, 1200,
+            "TTL seconds calculation incorrect with custom chain"
+        );
+    }
+
+    #[test]
+    fn test_large_values() {
+        let large_value = U256::from(u64::MAX);
+        let batch = create_test_batch(Some(large_value));
+        let chain_state = create_chain_state(
+            100,
+            1000,
+            U256::from(1_000_000_000), // Large price to prevent overflow
+            U256::from(0),
+        );
+
+        let ttl_blocks = batch.ttl_blocks(&chain_state).unwrap();
+        assert!(
+            ttl_blocks > 0,
+            "TTL blocks should be calculated for large values"
+        );
     }
 }
