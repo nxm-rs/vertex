@@ -11,6 +11,11 @@ use alloy::{
 use libp2p::Multiaddr;
 use nectar_primitives_traits::SwarmAddress;
 
+mod named;
+pub use named::{NamedSwarm, NamedSwarmIter};
+mod swarm;
+pub use swarm::{Swarm, SwarmKind};
+
 // Marker traits for builder states
 pub trait BuilderState {}
 
