@@ -11,9 +11,10 @@ mod proto {
 use proto::*;
 
 #[derive(NetworkBehaviour)]
-pub struct SwarmBehaviour {
-    handshake: HandshakeBehaviour,
+pub struct SwarmBehaviour<const N: u64> {
+    handshake: HandshakeBehaviour<N>,
     identify: libp2p::identify::Behaviour,
+    ping: libp2p::ping::Behaviour,
 }
 
 #[tokio::main]
@@ -22,14 +23,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("vertex=debug".parse()?)
-                .add_directive("info".parse()?),
+                .add_directive("vertex=debug".parse()?), // .add_directive("trace".parse()?),
         )
         .with_target(true)
-        .with_thread_ids(true)
-        .with_thread_names(true)
-        .with_file(true)
-        .with_line_number(true)
+        // .with_thread_ids(true)
+        // .with_thread_names(true)
+        // .with_file(true)
+        // .with_line_number(true)
         // .with_timer(tracing_subscriber::fmt::time::ChronoUtc::rfc3339())
         .init();
 
@@ -47,16 +47,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             libp2p::dns::ResolverOpts::default(),
         )
         .with_behaviour(|key| SwarmBehaviour {
-            handshake: HandshakeBehaviour::new(HandshakeConfig::default()),
+            handshake: HandshakeBehaviour::<1>::new(HandshakeConfig::default()),
             identify: libp2p::identify::Behaviour::new(libp2p::identify::Config::new(
                 "/ipfs/id/1.0.0".to_string(),
                 key.public(),
             )),
+            ping: libp2p::ping::Behaviour::new(libp2p::ping::Config::default()),
         })?
         .build();
 
     // Listen on localhost port 1634
-    swarm.listen_on("/ip4/127.0.0.1/tcp/1634".parse()?)?;
+    swarm.listen_on("/ip4/127.0.0.1/tcp/2634".parse()?)?;
 
     // If a peer address is provided as an argument, dial it
     if let Some(addr) = std::env::args().nth(1) {

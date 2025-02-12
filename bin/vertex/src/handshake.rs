@@ -10,13 +10,12 @@ use std::{
 };
 
 use alloy::{
-    hex::ToHexExt,
-    primitives::{FixedBytes, PrimitiveSignature, B256},
-    signers::{local::PrivateKeySigner, SignerSync},
+    primitives::{FixedBytes, B256},
+    signers::local::PrivateKeySigner,
 };
 use asynchronous_codec::{Decoder, Encoder, Framed, FramedRead};
 use bytes::BytesMut;
-use futures::{AsyncReadExt, AsyncWriteExt, SinkExt, StreamExt, TryStreamExt};
+use futures::{AsyncWriteExt, SinkExt, TryStreamExt};
 use libp2p::{
     core::{
         transport::PortUse,
@@ -29,10 +28,9 @@ use libp2p::{
     },
     Multiaddr, PeerId, Stream, StreamProtocol,
 };
-use quick_protobuf::{BytesReader, MessageRead, MessageWrite, Reader, Writer};
 use tracing::info;
-use vertex_network_primitives::LocalNodeAddressBuilder;
-use vertex_network_primitives_traits::{NodeAddress, NodeAddressError};
+use vertex_network_primitives::{LocalNodeAddressBuilder, RemoteNodeAddressBuilder};
+use vertex_network_primitives_traits::NodeAddress;
 
 use crate::proto::handshake::{Ack, BzzAddress, Syn, SynAck};
 
@@ -79,8 +77,7 @@ pub enum HandshakeError {
 }
 
 #[derive(Debug, Clone)]
-pub struct HandshakeConfig {
-    pub network_id: u64,
+pub struct HandshakeConfig<const N: u64> {
     pub protocol_version: String,
     pub full_node: bool,
     pub nonce: Vec<u8>,
@@ -89,14 +86,13 @@ pub struct HandshakeConfig {
     pub wallet: Arc<PrivateKeySigner>,
 }
 
-impl Default for HandshakeConfig {
+impl<const N: u64> Default for HandshakeConfig<N> {
     fn default() -> Self {
         Self {
-            network_id: 1,
             protocol_version: PROTOCOL_VERSION.to_string(),
             full_node: true,
             nonce: vec![0; 32],
-            welcome_message: String::new(),
+            welcome_message: "Vertex into the Swarm".to_string(),
             validate_overlay: true,
             wallet: Arc::new(PrivateKeySigner::random()),
         }
@@ -139,14 +135,14 @@ pub enum HandshakeEvent {
     },
 }
 
-pub struct HandshakeBehaviour {
-    config: HandshakeConfig,
+pub struct HandshakeBehaviour<const N: u64> {
+    config: HandshakeConfig<N>,
     handshaked_peers: HashMap<PeerId, PeerState>,
     events: VecDeque<ToSwarm<HandshakeEvent, HandshakeHandlerEvent>>,
 }
 
-impl HandshakeBehaviour {
-    pub fn new(config: HandshakeConfig) -> Self {
+impl<const N: u64> HandshakeBehaviour<N> {
+    pub fn new(config: HandshakeConfig<N>) -> Self {
         Self {
             config,
             handshaked_peers: HashMap::new(),
@@ -169,8 +165,8 @@ impl HandshakeBehaviour {
     }
 }
 
-impl NetworkBehaviour for HandshakeBehaviour {
-    type ConnectionHandler = HandshakeHandler;
+impl<const N: u64> NetworkBehaviour for HandshakeBehaviour<N> {
+    type ConnectionHandler = HandshakeHandler<N>;
     type ToSwarm = HandshakeEvent;
 
     fn handle_established_inbound_connection(
@@ -269,12 +265,12 @@ impl NetworkBehaviour for HandshakeBehaviour {
 }
 
 #[derive(Debug, Clone)]
-pub struct HandshakeProtocol {
-    config: HandshakeConfig,
+pub struct HandshakeProtocol<const N: u64> {
+    config: HandshakeConfig<N>,
     remote_addr: Multiaddr,
 }
 
-impl UpgradeInfo for HandshakeProtocol {
+impl<const N: u64> UpgradeInfo for HandshakeProtocol<N> {
     type Info = StreamProtocol;
     type InfoIter = std::iter::Once<Self::Info>;
 
@@ -283,7 +279,7 @@ impl UpgradeInfo for HandshakeProtocol {
     }
 }
 
-impl InboundUpgrade<Stream> for HandshakeProtocol {
+impl<const N: u64> InboundUpgrade<Stream> for HandshakeProtocol<N> {
     type Output = HandshakeInfo;
     type Error = HandshakeError;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Output, Self::Error>> + Send>>;
@@ -297,7 +293,7 @@ impl InboundUpgrade<Stream> for HandshakeProtocol {
     }
 }
 
-impl OutboundUpgrade<Stream> for HandshakeProtocol {
+impl<const N: u64> OutboundUpgrade<Stream> for HandshakeProtocol<N> {
     type Output = HandshakeInfo;
     type Error = HandshakeError;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Output, Self::Error>> + Send>>;
@@ -311,8 +307,8 @@ impl OutboundUpgrade<Stream> for HandshakeProtocol {
     }
 }
 
-pub struct HandshakeHandler {
-    config: HandshakeConfig,
+pub struct HandshakeHandler<const N: u64> {
+    config: HandshakeConfig<N>,
     pending_handshake: Option<()>,
     state: HandshakeState,
     queued_events: VecDeque<HandshakeHandlerEvent>,
@@ -327,8 +323,8 @@ enum HandshakeState {
     Failed,
 }
 
-impl HandshakeHandler {
-    pub fn new(config: HandshakeConfig, remote_addr: Multiaddr) -> Self {
+impl<const N: u64> HandshakeHandler<N> {
+    pub fn new(config: HandshakeConfig<N>, remote_addr: Multiaddr) -> Self {
         Self {
             config,
             pending_handshake: None,
@@ -339,11 +335,11 @@ impl HandshakeHandler {
     }
 }
 
-impl ConnectionHandler for HandshakeHandler {
+impl<const N: u64> ConnectionHandler for HandshakeHandler<N> {
     type FromBehaviour = HandshakeHandlerEvent;
     type ToBehaviour = HandshakeHandlerEvent;
-    type InboundProtocol = HandshakeProtocol;
-    type OutboundProtocol = HandshakeProtocol;
+    type InboundProtocol = HandshakeProtocol<N>;
+    type OutboundProtocol = HandshakeProtocol<N>;
     type InboundOpenInfo = ();
     type OutboundOpenInfo = ();
 
@@ -418,14 +414,14 @@ impl ConnectionHandler for HandshakeHandler {
             FullyNegotiatedInbound(stream) => {
                 self.state = HandshakeState::Completed;
                 self.pending_handshake = None;
-                // self.queued_events
-                //     .push_back(HandshakeHandlerEvent::HandshakeCompleted(stream.0));
+                self.queued_events
+                    .push_back(HandshakeHandlerEvent::HandshakeCompleted(stream.0));
             }
             FullyNegotiatedOutbound(stream) => {
                 self.state = HandshakeState::Completed;
                 self.pending_handshake = None;
-                // self.queued_events
-                //     .push_back(HandshakeHandlerEvent::HandshakeCompleted(stream.0));
+                self.queued_events
+                    .push_back(HandshakeHandlerEvent::HandshakeCompleted(stream.0));
             }
             DialUpgradeError(e) => {
                 self.state = HandshakeState::Failed;
@@ -448,86 +444,83 @@ impl ConnectionHandler for HandshakeHandler {
     }
 }
 
-async fn handle_inbound_handshake(
+async fn handle_inbound_handshake<const N: u64>(
     stream: Stream,
-    config: HandshakeConfig,
+    config: HandshakeConfig<N>,
     remote_addr: Multiaddr,
 ) -> Result<HandshakeInfo, HandshakeError> {
     // Set up codecs
-    let syn_codec = SynCodec::<Syn, HandshakeSyn>::new(1024);
-    let synack_codec = SynAckCodec::<SynAck, HandshakeSynAck>::new(1024);
-    let ack_codec = AckCodec::<Ack, HandshakeAck>::new(1024);
+    let syn_codec = SynCodec::<Syn, HandshakeSyn<N>>::new(1024);
+    let synack_codec = SynAckCodec::<SynAck, HandshakeSynAck<N>>::new(1024);
+    let ack_codec = AckCodec::<Ack, HandshakeAck<N>>::new(1024);
 
     // Read SYN using framed read
     let mut framed = FramedRead::new(stream, syn_codec);
-    let handshake_syn: HandshakeSyn = framed.try_next().await?.ok_or(HandshakeError::InvalidSyn)?;
+    let handshake_syn: HandshakeSyn<N> =
+        framed.try_next().await?.ok_or(HandshakeError::InvalidSyn)?;
 
     // Create SYNACK
     let stream = framed.into_inner();
     let mut framed = Framed::new(stream, synack_codec);
 
-    let syn_ack = HandshakeSynAck {
-        syn: HandshakeSyn {
-            observed_underlay: remote_addr.clone(),
-        },
-        ack: HandshakeAck {
-            node_address: NodeAddress {
-                underlay: remote_addr.clone(),
-                signature: config.wallet.sign_message_sync(b"t")?, // Use proper signature creation
-                overlay: B256::default(),
-            },
-            network_id: config.network_id,
-            full_node: config.full_node,
-            nonce: B256::from_slice(&config.nonce),
-            welcome_message: config.welcome_message.clone(),
-        },
-    };
+    todo!("Finish implementing");
 
-    framed.send(syn_ack.into()).await?;
+    // let syn_ack = HandshakeSynAck {
+    //     syn: HandshakeSyn {
+    //         observed_underlay: remote_addr.clone(),
+    //     },
+    //     ack: HandshakeAck {
+    //         node_address: NodeAddress {
+    //             underlay: remote_addr.clone(),
+    //             signature: config.wallet.sign_message_sync(b"t")?, // Use proper signature creation
+    //             overlay: B256::default(),
+    //         },
+    //         network_id: config.network_id,
+    //         full_node: config.full_node,
+    //         nonce: B256::from_slice(&config.nonce),
+    //         welcome_message: config.welcome_message.clone(),
+    //     },
+    // };
 
-    // Read ACK
-    let stream = framed.into_inner();
-    let mut framed = FramedRead::new(stream, ack_codec);
-    let handshake_ack: HandshakeAck = framed.try_next().await?.ok_or(HandshakeError::InvalidAck)?;
+    // framed.send(syn_ack.into()).await?;
 
-    if handshake_ack.network_id != config.network_id {
-        return Err(HandshakeError::NetworkIDIncompatible);
-    }
+    // // Read ACK
+    // let stream = framed.into_inner();
+    // let mut framed = FramedRead::new(stream, ack_codec);
+    // let handshake_ack: HandshakeAck<N> =
+    //     framed.try_next().await?.ok_or(HandshakeError::InvalidAck)?;
 
-    // Create HandshakeInfo from received data
-    Ok(HandshakeInfo {
-        peer_id: PeerId::random(),      // Should come from actual peer ID
-        address: FixedBytes::default(), // Should come from actual address
-        full_node: handshake_ack.full_node,
-        welcome_message: handshake_ack.welcome_message,
-        observed_underlay: vec![remote_addr],
-    })
+    // if handshake_ack.network_id != N {
+    //     return Err(HandshakeError::NetworkIDIncompatible);
+    // }
+
+    // // Create HandshakeInfo from received data
+    // Ok(HandshakeInfo {
+    //     peer_id: PeerId::random(),      // Should come from actual peer ID
+    //     address: FixedBytes::default(), // Should come from actual address
+    //     full_node: handshake_ack.full_node,
+    //     welcome_message: handshake_ack.welcome_message,
+    //     observed_underlay: vec![remote_addr],
+    // })
 }
 
-async fn handle_outbound_handshake(
+async fn handle_outbound_handshake<const N: u64>(
     mut stream: Stream,
-    config: HandshakeConfig,
+    config: HandshakeConfig<N>,
     remote_addr: Multiaddr,
 ) -> Result<HandshakeInfo, HandshakeError> {
     info!("Remote address: {:?}", remote_addr);
 
     const MAINNET: u64 = 1;
 
-    // Create longer-lived buffer
-    let local_address = LocalNodeAddressBuilder::<MAINNET, _>::new()
-        .with_nonce(B256::ZERO)
-        .with_underlay(remote_addr)
-        .with_signer(config.wallet.clone())?
-        .build()?;
-
-    let syn_codec = SynCodec::<Syn, HandshakeSyn>::new(1024);
-    let synack_codec = SynAckCodec::<SynAck, HandshakeSynAck>::new(1024);
-    let ack_codec = AckCodec::<Ack, HandshakeAck>::new(1024);
+    let syn_codec = SynCodec::<Syn, HandshakeSyn<N>>::new(1024);
+    let synack_codec = SynAckCodec::<SynAck, HandshakeSynAck<N>>::new(1024);
+    let ack_codec = AckCodec::<Ack, HandshakeAck<N>>::new(1024);
 
     let mut framed = Framed::new(stream, syn_codec);
     framed
         .send(
-            HandshakeSyn {
+            HandshakeSyn::<N> {
                 observed_underlay: remote_addr.clone(),
             }
             .into(),
@@ -540,34 +533,41 @@ async fn handle_outbound_handshake(
     // Read SYNACK
     let stream = framed.into_inner();
     let mut framed = FramedRead::new(stream, synack_codec);
-    let syn_ack: HandshakeSynAck = framed.try_next().await?.ok_or(HandshakeError::InvalidSyn)?;
+    let syn_ack: HandshakeSynAck<N> = framed.try_next().await?.ok_or(HandshakeError::InvalidSyn)?;
 
     info!("SYNACK received: {:?}", syn_ack);
 
-    if syn_ack.ack.network_id != config.network_id {
+    if syn_ack.ack.network_id != N {
         return Err(HandshakeError::NetworkIDIncompatible);
     }
+
+    // Create longer-lived buffer
+    let local_address = LocalNodeAddressBuilder::<MAINNET, _>::new()
+        .with_nonce(B256::ZERO)
+        .with_underlay(syn_ack.syn.observed_underlay.clone())
+        .with_signer(config.wallet.clone())?
+        .build()?;
 
     // Send ACK
     let stream = framed.into_inner();
     let mut framed = Framed::new(stream, ack_codec);
+
     framed
         .send(
             HandshakeAck {
-                node_address: NodeAddress {
-                    underlay: remote_addr.clone(),
-                    signature: config.wallet.sign_message_sync(&remote_addr.to_vec())?,
-                    overlay: B256::default(),
-                },
-                network_id: config.network_id,
+                node_address: local_address.clone(),
+                network_id: N,
                 full_node: config.full_node,
-                nonce: B256::default(),
+                nonce: local_address.nonce().clone(),
                 welcome_message: config.welcome_message.clone(),
             }
             .into(),
         )
         .await
         .unwrap();
+
+    let mut stream = framed.into_inner();
+    stream.close().await.unwrap();
 
     // Create HandshakeInfo from received data
     Ok(HandshakeInfo {
@@ -579,36 +579,12 @@ async fn handle_outbound_handshake(
     })
 }
 
-impl TryFrom<BzzAddress> for NodeAddress {
-    type Error = HandshakeError;
-
-    fn try_from(value: BzzAddress) -> Result<Self, Self::Error> {
-        Ok(Self {
-            underlay: Multiaddr::try_from(value.Underlay)?,
-            signature: PrimitiveSignature::try_from(value.Signature.as_slice())?,
-            overlay: B256::try_from(value.Overlay.as_slice())?,
-        })
-    }
-}
-
-impl TryFrom<NodeAddress> for BzzAddress {
-    type Error = ();
-
-    fn try_from(value: NodeAddress) -> Result<Self, Self::Error> {
-        Ok(BzzAddress {
-            Underlay: value.underlay.to_vec(),
-            Signature: value.signature.as_bytes().to_vec(),
-            Overlay: value.overlay.to_vec(),
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HandshakeSyn {
+#[derive(Debug)]
+pub struct HandshakeSyn<const N: u64> {
     observed_underlay: Multiaddr,
 }
 
-impl TryFrom<Syn> for HandshakeSyn {
+impl<const N: u64> TryFrom<Syn> for HandshakeSyn<N> {
     type Error = io::Error;
 
     fn try_from(value: Syn) -> Result<Self, Self::Error> {
@@ -619,7 +595,7 @@ impl TryFrom<Syn> for HandshakeSyn {
     }
 }
 
-impl Into<Syn> for HandshakeSyn {
+impl<const N: u64> Into<Syn> for HandshakeSyn<N> {
     fn into(self) -> Syn {
         Syn {
             ObservedUnderlay: self.observed_underlay.to_vec(),
@@ -627,25 +603,46 @@ impl Into<Syn> for HandshakeSyn {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HandshakeAck {
-    node_address: NodeAddress,
+#[derive(Debug)]
+pub struct HandshakeAck<const N: u64> {
+    node_address: vertex_network_primitives::NodeAddressType<N>,
     network_id: u64,
     full_node: bool,
     nonce: B256,
     welcome_message: String,
 }
 
-impl TryFrom<Ack> for HandshakeAck {
+impl<const N: u64> TryFrom<Ack> for HandshakeAck<N> {
     type Error = io::Error;
 
     fn try_from(value: Ack) -> Result<Self, Self::Error> {
+        let remote_address = RemoteNodeAddressBuilder::new()
+            .with_nonce(value.Nonce.as_slice().try_into().unwrap())
+            .with_underlay(
+                Multiaddr::try_from(value.Address.as_ref().unwrap().Underlay.clone()).unwrap(),
+            )
+            .with_identity(
+                value
+                    .Address
+                    .as_ref()
+                    .unwrap()
+                    .Overlay
+                    .as_slice()
+                    .try_into()
+                    .unwrap(),
+                value
+                    .Address
+                    .unwrap()
+                    .Signature
+                    .as_slice()
+                    .try_into()
+                    .unwrap(),
+            )
+            .unwrap()
+            .build()
+            .unwrap();
         Ok(Self {
-            node_address: value
-                .Address
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Address field missing"))?
-                .try_into()
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
+            node_address: remote_address,
             network_id: value.NetworkID,
             full_node: value.FullNode,
             nonce: B256::try_from(value.Nonce.as_slice())
@@ -655,13 +652,13 @@ impl TryFrom<Ack> for HandshakeAck {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HandshakeSynAck {
-    syn: HandshakeSyn,
-    ack: HandshakeAck,
+#[derive(Debug)]
+pub struct HandshakeSynAck<const N: u64> {
+    syn: HandshakeSyn<N>,
+    ack: HandshakeAck<N>,
 }
 
-impl TryFrom<SynAck> for HandshakeSynAck {
+impl<const N: u64> TryFrom<SynAck> for HandshakeSynAck<N> {
     type Error = HandshakeError;
 
     fn try_from(value: SynAck) -> Result<Self, Self::Error> {
@@ -678,8 +675,8 @@ impl TryFrom<SynAck> for HandshakeSynAck {
     }
 }
 
-impl From<HandshakeSynAck> for SynAck {
-    fn from(value: HandshakeSynAck) -> Self {
+impl<const N: u64> From<HandshakeSynAck<N>> for SynAck {
+    fn from(value: HandshakeSynAck<N>) -> Self {
         SynAck {
             Syn: Some(value.syn.into()),
             Ack: Some(value.ack.into()),
@@ -687,15 +684,14 @@ impl From<HandshakeSynAck> for SynAck {
     }
 }
 
-impl From<HandshakeAck> for Ack {
-    fn from(value: HandshakeAck) -> Self {
+impl<const N: u64> From<HandshakeAck<N>> for Ack {
+    fn from(value: HandshakeAck<N>) -> Self {
         Ack {
-            Address: Some(
-                value
-                    .node_address
-                    .try_into()
-                    .expect("Failed to convert NodeAddress"),
-            ),
+            Address: Some(BzzAddress {
+                Underlay: value.node_address.underlay_address().to_vec(),
+                Signature: value.node_address.signature().unwrap().as_bytes().to_vec(),
+                Overlay: value.node_address.overlay_address().to_vec(),
+            }),
             NetworkID: value.network_id,
             FullNode: value.full_node,
             Nonce: value.nonce.to_vec(),

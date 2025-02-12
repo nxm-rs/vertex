@@ -106,8 +106,8 @@ impl<const SWARM: u64> LocalNodeAddressBuilder<SWARM, WithUnderlay> {
 }
 
 impl<const SWARM: u64> LocalNodeAddressBuilder<SWARM, ReadyToBuild> {
-    pub fn build(self) -> Result<LocalNodeAddress<SWARM>, NodeAddressError> {
-        Ok(LocalNodeAddress {
+    pub fn build(self) -> Result<NodeAddressType<SWARM>, NodeAddressError> {
+        Ok(NodeAddressType::Local {
             nonce: self.config.nonce.unwrap(),
             underlay: self.config.underlay.unwrap(),
             signer: self.config.signer.unwrap(),
@@ -187,8 +187,8 @@ impl<const SWARM: u64> RemoteNodeAddressBuilder<SWARM, WithUnderlay> {
 }
 
 impl<const SWARM: u64> RemoteNodeAddressBuilder<SWARM, ReadyToBuild> {
-    pub fn build(self) -> Result<RemoteNodeAddress<SWARM>, NodeAddressError> {
-        Ok(RemoteNodeAddress {
+    pub fn build(self) -> Result<NodeAddressType<SWARM>, NodeAddressError> {
+        Ok(NodeAddressType::Remote {
             nonce: self.config.nonce.unwrap(),
             underlay: self.config.underlay.unwrap(),
             chain_address: self.config.chain_address.unwrap(),
@@ -206,75 +206,85 @@ pub struct OverlayCache {
 }
 
 #[derive(Debug, Clone)]
-pub struct LocalNodeAddress<const SWARM: u64> {
-    nonce: B256,
-    underlay: Multiaddr,
-    signer: Arc<PrivateKeySigner>,
-    overlay_cache: OnceCell<OverlayCache>,
+pub enum NodeAddressType<const SWARM: u64> {
+    Local {
+        nonce: B256,
+        underlay: Multiaddr,
+        signer: Arc<PrivateKeySigner>,
+        overlay_cache: OnceCell<OverlayCache>,
+    },
+    Remote {
+        nonce: B256,
+        underlay: Multiaddr,
+        chain_address: Address,
+        signature: PrimitiveSignature,
+        overlay_cache: OnceCell<OverlayCache>,
+    },
 }
 
-impl<const SWARM: u64> NodeAddress<SWARM> for LocalNodeAddress<SWARM> {
+impl<const SWARM: u64> NodeAddress<SWARM> for NodeAddressType<SWARM> {
     fn overlay_address(&self) -> SwarmAddress {
-        self.overlay_cache
-            .get_or_init(|| OverlayCache {
-                address: compute_overlay_address::<SWARM>(&self.signer.address(), &self.nonce),
-            })
-            .address
+        match self {
+            NodeAddressType::Local {
+                signer,
+                nonce,
+                overlay_cache,
+                ..
+            } => {
+                overlay_cache
+                    .get_or_init(|| OverlayCache {
+                        address: compute_overlay_address::<SWARM>(&signer.address(), nonce),
+                    })
+                    .address
+            }
+            NodeAddressType::Remote {
+                chain_address,
+                nonce,
+                overlay_cache,
+                ..
+            } => {
+                overlay_cache
+                    .get_or_init(|| OverlayCache {
+                        address: compute_overlay_address::<SWARM>(chain_address, nonce),
+                    })
+                    .address
+            }
+        }
     }
 
     fn chain_address(&self) -> Address {
-        self.signer.address()
+        match self {
+            NodeAddressType::Local { signer, .. } => signer.address(),
+            NodeAddressType::Remote { chain_address, .. } => *chain_address,
+        }
     }
 
     fn nonce(&self) -> &B256 {
-        &self.nonce
+        match self {
+            NodeAddressType::Local { nonce, .. } => nonce,
+            NodeAddressType::Remote { nonce, .. } => nonce,
+        }
     }
 
     fn signature(&self) -> Result<PrimitiveSignature, NodeAddressError> {
-        let msg = generate_sign_message::<SWARM>(self.underlay_address(), &self.overlay_address());
-
-        self.signer
-            .sign_message_sync(&msg)
-            .map_err(NodeAddressError::from)
+        match self {
+            NodeAddressType::Local {
+                signer, underlay, ..
+            } => {
+                let msg = generate_sign_message::<SWARM>(underlay, &self.overlay_address());
+                signer
+                    .sign_message_sync(&msg)
+                    .map_err(NodeAddressError::from)
+            }
+            NodeAddressType::Remote { signature, .. } => Ok(*signature),
+        }
     }
 
     fn underlay_address(&self) -> &Multiaddr {
-        &self.underlay
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct RemoteNodeAddress<const SWARM: u64> {
-    nonce: B256,
-    underlay: Multiaddr,
-    chain_address: Address,
-    signature: PrimitiveSignature,
-    overlay_cache: OnceCell<OverlayCache>,
-}
-
-impl<const SWARM: u64> NodeAddress<SWARM> for RemoteNodeAddress<SWARM> {
-    fn overlay_address(&self) -> SwarmAddress {
-        self.overlay_cache
-            .get_or_init(|| OverlayCache {
-                address: compute_overlay_address::<SWARM>(&self.chain_address, &self.nonce),
-            })
-            .address
-    }
-
-    fn chain_address(&self) -> Address {
-        self.chain_address
-    }
-
-    fn nonce(&self) -> &B256 {
-        &self.nonce
-    }
-
-    fn signature(&self) -> Result<PrimitiveSignature, NodeAddressError> {
-        Ok(self.signature)
-    }
-
-    fn underlay_address(&self) -> &Multiaddr {
-        &self.underlay
+        match self {
+            NodeAddressType::Local { underlay, .. } => underlay,
+            NodeAddressType::Remote { underlay, .. } => underlay,
+        }
     }
 }
 

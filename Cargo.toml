@@ -17,6 +17,7 @@ members = [
     "bin/vertex",
     "crates/network-primitives",
     "crates/network-primitives-traits",
+    "crates/network/handshake",
     "crates/primitives",
     "crates/primitives-traits",
     # "crates/storage",
@@ -39,8 +40,14 @@ nectar-primitives = { path = "crates/primitives", features = ["arbitrary"] }
 nectar-primitives-traits = { path = "crates/primitives-traits" }
 
 ## vertex
+# primitives
 vertex-network-primitives = { path = "crates/network-primitives" }
 vertex-network-primitives-traits = { path = "crates/network-primitives-traits" }
+
+# network protocols
+vertex-network-handshake = { path = "crates/network/handshake" }
+
+# storage
 vertex-storage = { path = "crates/storage" }
 
 ## alloy
@@ -79,7 +86,7 @@ tracing-subscriber = { version = "0.3", features = [
 bytes = "1.9.0"
 
 ## p2p
-libp2p = { version = "0.55.0", features = ["tokio", "noise", "tcp", "yamux", "dns", "macros", "ecdsa", "identify"] }
+libp2p = { version = "0.55.0", features = ["tokio", "noise", "tcp", "yamux", "dns", "macros", "ecdsa", "identify", "upnp", "autonat", "ping"] }
 quick-protobuf = "0.8.0"
 quick-protobuf-codec = "0.3.1"
 asynchronous-codec = "0.7.0"
