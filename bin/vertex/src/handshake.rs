@@ -1,7 +1,6 @@
 use std::{
     array::TryFromSliceError,
     collections::{HashMap, VecDeque},
-    io,
     sync::Arc,
     task::{Context, Poll},
     time::Duration,
@@ -534,8 +533,7 @@ async fn handle_outbound_handshake<const N: u64>(
             }
             .into(),
         )
-        .await
-        .unwrap();
+        .await?;
 
     // Read SYNACK
     let stream = framed.into_inner();
@@ -568,10 +566,9 @@ async fn handle_outbound_handshake<const N: u64>(
             }
             .into(),
         )
-        .await
-        .unwrap();
+        .await?;
 
-    framed.close().await.unwrap();
+    framed.close().await?;
 
     // Create HandshakeInfo from received data
     Ok(HandshakeInfo {
@@ -589,12 +586,11 @@ pub struct HandshakeSyn<const N: u64> {
 }
 
 impl<const N: u64> TryFrom<Syn> for HandshakeSyn<N> {
-    type Error = io::Error;
+    type Error = HandshakeError;
 
     fn try_from(value: Syn) -> Result<Self, Self::Error> {
         Ok(Self {
-            observed_underlay: Multiaddr::try_from(value.ObservedUnderlay)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
+            observed_underlay: Multiaddr::try_from(value.ObservedUnderlay)?,
         })
     }
 }
@@ -617,40 +613,26 @@ pub struct HandshakeAck<const N: u64> {
 }
 
 impl<const N: u64> TryFrom<Ack> for HandshakeAck<N> {
-    type Error = io::Error;
+    type Error = HandshakeError;
 
     fn try_from(value: Ack) -> Result<Self, Self::Error> {
+        let protobuf_address = value
+            .Address
+            .as_ref()
+            .ok_or_else(|| HandshakeError::MissingField("address"))?;
         let remote_address = RemoteNodeAddressBuilder::new()
-            .with_nonce(value.Nonce.as_slice().try_into().unwrap())
-            .with_underlay(
-                Multiaddr::try_from(value.Address.as_ref().unwrap().Underlay.clone()).unwrap(),
-            )
+            .with_nonce(value.Nonce.as_slice().try_into()?)
+            .with_underlay(Multiaddr::try_from(protobuf_address.Underlay.clone())?)
             .with_identity(
-                value
-                    .Address
-                    .as_ref()
-                    .unwrap()
-                    .Overlay
-                    .as_slice()
-                    .try_into()
-                    .unwrap(),
-                value
-                    .Address
-                    .unwrap()
-                    .Signature
-                    .as_slice()
-                    .try_into()
-                    .unwrap(),
-            )
-            .unwrap()
-            .build()
-            .unwrap();
+                protobuf_address.Overlay.as_slice().try_into()?,
+                protobuf_address.Signature.as_slice().try_into()?,
+            )?
+            .build()?;
         Ok(Self {
             node_address: remote_address,
             network_id: value.NetworkID,
             full_node: value.FullNode,
-            nonce: B256::try_from(value.Nonce.as_slice())
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
+            nonce: B256::try_from(value.Nonce.as_slice())?,
             welcome_message: value.WelcomeMessage,
         })
     }
@@ -727,16 +709,16 @@ impl<A, B> SynCodec<A, B> {
 
 impl<A: Into<Syn>, B> Encoder for SynCodec<A, B> {
     type Item<'a> = A;
-    type Error = io::Error;
+    type Error = HandshakeError;
 
     fn encode(&mut self, item: Self::Item<'_>, dst: &mut BytesMut) -> Result<(), Self::Error> {
         Ok(self.codec.encode(item.into(), dst)?)
     }
 }
 
-impl<A, B: TryFrom<Syn, Error = io::Error>> Decoder for SynCodec<A, B> {
+impl<A, B: TryFrom<Syn, Error = HandshakeError>> Decoder for SynCodec<A, B> {
     type Item = B;
-    type Error = io::Error;
+    type Error = HandshakeError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         self.codec.decode(src)?.map(B::try_from).transpose()
@@ -760,7 +742,7 @@ impl<A, B> SynAckCodec<A, B> {
 
 impl<A: Into<SynAck>, B> Encoder for SynAckCodec<A, B> {
     type Item<'a> = A;
-    type Error = io::Error;
+    type Error = HandshakeError;
 
     fn encode(&mut self, item: Self::Item<'_>, dst: &mut BytesMut) -> Result<(), Self::Error> {
         Ok(self.codec.encode(item.into(), dst)?)
@@ -794,16 +776,16 @@ impl<A, B> AckCodec<A, B> {
 
 impl<A: Into<Ack>, B> Encoder for AckCodec<A, B> {
     type Item<'a> = A;
-    type Error = io::Error;
+    type Error = HandshakeError;
 
     fn encode(&mut self, item: Self::Item<'_>, dst: &mut BytesMut) -> Result<(), Self::Error> {
         Ok(self.codec.encode(item.into(), dst)?)
     }
 }
 
-impl<A, B: TryFrom<Ack, Error = io::Error>> Decoder for AckCodec<A, B> {
+impl<A, B: TryFrom<Ack, Error = HandshakeError>> Decoder for AckCodec<A, B> {
     type Item = B;
-    type Error = io::Error;
+    type Error = HandshakeError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         self.codec.decode(src)?.map(B::try_from).transpose()
