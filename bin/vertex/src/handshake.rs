@@ -1,9 +1,7 @@
 use std::{
     array::TryFromSliceError,
     collections::{HashMap, VecDeque},
-    future::Future,
     io,
-    pin::Pin,
     sync::Arc,
     task::{Context, Poll},
     time::Duration,
@@ -15,7 +13,7 @@ use alloy::{
 };
 use asynchronous_codec::{Decoder, Encoder, Framed, FramedRead};
 use bytes::BytesMut;
-use futures::{AsyncWriteExt, SinkExt, TryStreamExt};
+use futures::{channel::oneshot, future::BoxFuture, FutureExt, SinkExt, TryStreamExt};
 use libp2p::{
     core::{
         transport::PortUse,
@@ -23,10 +21,11 @@ use libp2p::{
         Endpoint,
     },
     swarm::{
-        ConnectionDenied, ConnectionHandler, ConnectionId, FromSwarm, NetworkBehaviour,
-        NotifyHandler, SubstreamProtocol, ToSwarm,
+        handler::{ConnectionEvent, FullyNegotiatedInbound, FullyNegotiatedOutbound},
+        ConnectionDenied, ConnectionHandler, ConnectionHandlerEvent, ConnectionId, FromSwarm,
+        NetworkBehaviour, NotifyHandler, SubstreamProtocol, THandlerInEvent, ToSwarm,
     },
-    Multiaddr, PeerId, Stream, StreamProtocol,
+    Multiaddr, PeerId, Stream,
 };
 use tracing::info;
 use vertex_network_primitives::{LocalNodeAddressBuilder, RemoteNodeAddressBuilder};
@@ -115,30 +114,15 @@ pub struct PeerState {
 }
 
 #[derive(Debug)]
-pub enum HandshakeHandlerEvent {
-    StartHandshake,
-    HandshakeCompleted(HandshakeInfo),
-    HandshakeFailed(HandshakeError),
-}
-
-#[derive(Debug)]
 pub enum HandshakeEvent {
-    Completed {
-        peer: PeerId,
-        connection: ConnectionId,
-        info: HandshakeInfo,
-    },
-    Failed {
-        peer: PeerId,
-        connection: ConnectionId,
-        error: HandshakeError,
-    },
+    Completed(HandshakeInfo),
+    Failed(HandshakeError),
 }
 
 pub struct HandshakeBehaviour<const N: u64> {
     config: HandshakeConfig<N>,
     handshaked_peers: HashMap<PeerId, PeerState>,
-    events: VecDeque<ToSwarm<HandshakeEvent, HandshakeHandlerEvent>>,
+    pub events: VecDeque<ToSwarm<HandshakeEvent, HandshakeCommand>>,
 }
 
 impl<const N: u64> HandshakeBehaviour<N> {
@@ -169,46 +153,15 @@ impl<const N: u64> NetworkBehaviour for HandshakeBehaviour<N> {
     type ConnectionHandler = HandshakeHandler<N>;
     type ToSwarm = HandshakeEvent;
 
-    fn handle_established_inbound_connection(
-        &mut self,
-        _connection_id: ConnectionId,
-        _peer: PeerId,
-        _local_addr: &Multiaddr,
-        remote_addr: &Multiaddr,
-    ) -> Result<Self::ConnectionHandler, ConnectionDenied> {
-        Ok(HandshakeHandler::new(
-            self.config.clone(),
-            remote_addr.clone(),
-        ))
-    }
-
-    fn handle_established_outbound_connection(
-        &mut self,
-        _connection_id: ConnectionId,
-        _peer: PeerId,
-        addr: &Multiaddr,
-        _role_override: Endpoint,
-        _port_use: PortUse,
-    ) -> Result<Self::ConnectionHandler, ConnectionDenied> {
-        Ok(HandshakeHandler::new(self.config.clone(), addr.clone()))
-    }
-
     fn on_swarm_event(&mut self, event: FromSwarm) {
         match event {
             FromSwarm::ConnectionEstablished(connection) => {
+                // Start handshake when connection is established
                 self.events.push_back(ToSwarm::NotifyHandler {
                     peer_id: connection.peer_id,
                     handler: NotifyHandler::One(connection.connection_id),
-                    event: HandshakeHandlerEvent::StartHandshake,
+                    event: HandshakeCommand::StartHandshake,
                 });
-            }
-            FromSwarm::ConnectionClosed(connection) => {
-                if let Some(state) = self.handshaked_peers.get_mut(&connection.peer_id) {
-                    state.connections.retain(|c| *c != connection.connection_id);
-                    if state.connections.is_empty() {
-                        self.handshaked_peers.remove(&connection.peer_id);
-                    }
-                }
             }
             _ => {}
         }
@@ -217,127 +170,169 @@ impl<const N: u64> NetworkBehaviour for HandshakeBehaviour<N> {
     fn on_connection_handler_event(
         &mut self,
         peer_id: PeerId,
-        connection_id: ConnectionId,
-        event: HandshakeHandlerEvent,
+        connection: ConnectionId,
+        event: HandshakeEvent,
     ) {
         match event {
-            HandshakeHandlerEvent::HandshakeCompleted(info) => {
-                self.handshaked_peers
-                    .entry(peer_id)
-                    .and_modify(|state| {
-                        if !state.connections.contains(&connection_id) {
-                            state.connections.push(connection_id);
-                        }
-                    })
-                    .or_insert_with(|| PeerState {
+            HandshakeEvent::Completed(info) => {
+                // Store peer info on successful handshake
+                self.handshaked_peers.insert(
+                    peer_id,
+                    PeerState {
                         info: info.clone(),
-                        connections: vec![connection_id],
-                    });
-
+                        connections: vec![connection],
+                    },
+                );
                 self.events
-                    .push_back(ToSwarm::GenerateEvent(HandshakeEvent::Completed {
-                        peer: peer_id,
-                        connection: connection_id,
-                        info,
-                    }));
+                    .push_back(ToSwarm::GenerateEvent(HandshakeEvent::Completed(info)));
             }
-            HandshakeHandlerEvent::HandshakeFailed(error) => {
+            HandshakeEvent::Failed(error) => {
                 self.events
-                    .push_back(ToSwarm::GenerateEvent(HandshakeEvent::Failed {
-                        peer: peer_id,
-                        connection: connection_id,
-                        error,
-                    }));
+                    .push_back(ToSwarm::GenerateEvent(HandshakeEvent::Failed(error)));
             }
-            HandshakeHandlerEvent::StartHandshake => {}
         }
     }
 
-    fn poll(
-        &mut self,
-        _cx: &mut Context<'_>,
-    ) -> Poll<ToSwarm<Self::ToSwarm, HandshakeHandlerEvent>> {
+    fn poll(&mut self, _: &mut Context<'_>) -> Poll<ToSwarm<Self::ToSwarm, THandlerInEvent<Self>>> {
         if let Some(event) = self.events.pop_front() {
             return Poll::Ready(event);
         }
         Poll::Pending
+    }
+
+    fn handle_established_inbound_connection(
+        &mut self,
+        _connection_id: ConnectionId,
+        peer: PeerId,
+        local_addr: &Multiaddr,
+        remote_addr: &Multiaddr,
+    ) -> Result<libp2p::swarm::THandler<Self>, ConnectionDenied> {
+        Ok(HandshakeHandler::new(
+            self.config.clone(),
+            peer,
+            remote_addr.clone(),
+        ))
+    }
+
+    fn handle_established_outbound_connection(
+        &mut self,
+        _connection_id: ConnectionId,
+        peer: PeerId,
+        addr: &Multiaddr,
+        role_override: Endpoint,
+        port_use: PortUse,
+    ) -> Result<libp2p::swarm::THandler<Self>, ConnectionDenied> {
+        Ok(HandshakeHandler::new(
+            self.config.clone(),
+            peer,
+            addr.clone(),
+        ))
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct HandshakeProtocol<const N: u64> {
     config: HandshakeConfig<N>,
-    remote_addr: Multiaddr,
 }
 
 impl<const N: u64> UpgradeInfo for HandshakeProtocol<N> {
-    type Info = StreamProtocol;
+    type Info = &'static str;
     type InfoIter = std::iter::Once<Self::Info>;
 
     fn protocol_info(&self) -> Self::InfoIter {
-        std::iter::once(StreamProtocol::new("/swarm/handshake/13.0.0/handshake"))
+        std::iter::once("/swarm/handshake/13.0.0/handshake")
     }
 }
 
 impl<const N: u64> InboundUpgrade<Stream> for HandshakeProtocol<N> {
-    type Output = HandshakeInfo;
+    type Output = Stream;
     type Error = HandshakeError;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Output, Self::Error>> + Send>>;
+    type Future = BoxFuture<'static, Result<Self::Output, Self::Error>>;
 
-    fn upgrade_inbound(self, stream: Stream, _: Self::Info) -> Self::Future {
-        Box::pin(handle_inbound_handshake(
-            stream,
-            self.config,
-            self.remote_addr.clone(),
-        ))
+    fn upgrade_inbound(self, socket: Stream, _: Self::Info) -> Self::Future {
+        // Just return the negotiated stream
+        Box::pin(futures::future::ok(socket))
     }
 }
 
 impl<const N: u64> OutboundUpgrade<Stream> for HandshakeProtocol<N> {
-    type Output = HandshakeInfo;
+    type Output = Stream;
     type Error = HandshakeError;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Output, Self::Error>> + Send>>;
+    type Future = BoxFuture<'static, Result<Self::Output, Self::Error>>;
 
-    fn upgrade_outbound(self, stream: Stream, _: Self::Info) -> Self::Future {
-        Box::pin(handle_outbound_handshake(
-            stream,
-            self.config,
-            self.remote_addr,
-        ))
+    fn upgrade_outbound(self, socket: Stream, _: Self::Info) -> Self::Future {
+        // Just return the negotiated stream
+        Box::pin(futures::future::ok(socket))
     }
 }
 
 pub struct HandshakeHandler<const N: u64> {
     config: HandshakeConfig<N>,
-    pending_handshake: Option<()>,
     state: HandshakeState,
-    queued_events: VecDeque<HandshakeHandlerEvent>,
+    queued_events: VecDeque<HandshakeEvent>,
+    pending_result: Option<oneshot::Receiver<Result<HandshakeInfo, HandshakeError>>>,
+    peer_id: PeerId,
     remote_addr: Multiaddr,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 enum HandshakeState {
     Idle,
+    Start,
     Handshaking,
     Completed,
     Failed,
 }
 
 impl<const N: u64> HandshakeHandler<N> {
-    pub fn new(config: HandshakeConfig<N>, remote_addr: Multiaddr) -> Self {
+    pub fn new(config: HandshakeConfig<N>, peer_id: PeerId, remote_addr: Multiaddr) -> Self {
         Self {
             config,
-            pending_handshake: None,
             state: HandshakeState::Idle,
             queued_events: VecDeque::new(),
+            pending_result: None,
+            peer_id,
             remote_addr,
         }
     }
+
+    fn do_inbound_handshake(&mut self, stream: Stream) {
+        let config = self.config.clone();
+        let (tx, rx) = oneshot::channel();
+
+        let peer_id = self.peer_id.clone();
+        let remote_addr = self.remote_addr.clone();
+        tokio::task::spawn(async move {
+            let result = handle_inbound_handshake(stream, config, peer_id, remote_addr).await;
+            let _ = tx.send(result);
+        });
+
+        self.pending_result = Some(rx);
+    }
+
+    fn do_outbound_handshake(&mut self, stream: Stream) {
+        let config = self.config.clone();
+        let (tx, rx) = oneshot::channel();
+
+        let peer_id = self.peer_id.clone();
+        let remote_addr = self.remote_addr.clone();
+        tokio::task::spawn(async move {
+            let result = handle_outbound_handshake(stream, config, peer_id, remote_addr).await;
+            let _ = tx.send(result);
+        });
+
+        self.pending_result = Some(rx);
+    }
+}
+
+#[derive(Debug)]
+pub enum HandshakeCommand {
+    StartHandshake,
 }
 
 impl<const N: u64> ConnectionHandler for HandshakeHandler<N> {
-    type FromBehaviour = HandshakeHandlerEvent;
-    type ToBehaviour = HandshakeHandlerEvent;
+    type FromBehaviour = HandshakeCommand;
+    type ToBehaviour = HandshakeEvent;
     type InboundProtocol = HandshakeProtocol<N>;
     type OutboundProtocol = HandshakeProtocol<N>;
     type InboundOpenInfo = ();
@@ -347,7 +342,6 @@ impl<const N: u64> ConnectionHandler for HandshakeHandler<N> {
         SubstreamProtocol::new(
             HandshakeProtocol {
                 config: self.config.clone(),
-                remote_addr: self.remote_addr.clone(),
             },
             (),
         )
@@ -355,45 +349,69 @@ impl<const N: u64> ConnectionHandler for HandshakeHandler<N> {
 
     fn on_behaviour_event(&mut self, event: Self::FromBehaviour) {
         match event {
-            HandshakeHandlerEvent::StartHandshake => {
-                if self.pending_handshake.is_none() {
-                    self.state = HandshakeState::Idle;
+            HandshakeCommand::StartHandshake => {
+                if matches!(self.state, HandshakeState::Idle) {
+                    self.state = HandshakeState::Start;
                 }
             }
-            _ => {}
         }
     }
 
     fn poll(
         &mut self,
-        _cx: &mut Context<'_>,
+        cx: &mut Context<'_>,
     ) -> Poll<
-        libp2p::swarm::ConnectionHandlerEvent<
-            Self::OutboundProtocol,
-            Self::OutboundOpenInfo,
-            Self::ToBehaviour,
-        >,
+        ConnectionHandlerEvent<Self::OutboundProtocol, Self::OutboundOpenInfo, Self::ToBehaviour>,
     > {
+        // First check for any queued events
         if let Some(event) = self.queued_events.pop_front() {
-            return Poll::Ready(libp2p::swarm::ConnectionHandlerEvent::NotifyBehaviour(
-                event,
-            ));
+            return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
         }
 
-        if self.pending_handshake.is_none() && matches!(self.state, HandshakeState::Idle) {
-            self.state = HandshakeState::Handshaking;
-            self.pending_handshake = Some(());
-            return Poll::Ready(
-                libp2p::swarm::ConnectionHandlerEvent::OutboundSubstreamRequest {
+        // Then check pending handshake result
+        if let Some(rx) = &mut self.pending_result {
+            match rx.poll_unpin(cx) {
+                Poll::Ready(Ok(Ok(info))) => {
+                    self.pending_result = None;
+                    self.state = HandshakeState::Completed;
+                    return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
+                        HandshakeEvent::Completed(info),
+                    ));
+                }
+                Poll::Ready(Ok(Err(e))) => {
+                    self.pending_result = None;
+                    self.state = HandshakeState::Failed;
+                    return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
+                        HandshakeEvent::Failed(e),
+                    ));
+                }
+                Poll::Ready(Err(_)) => {
+                    self.pending_result = None;
+                    self.state = HandshakeState::Failed;
+                    return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
+                        HandshakeEvent::Failed(HandshakeError::Protocol(
+                            "Handshake future dropped".into(),
+                        )),
+                    ));
+                }
+                Poll::Pending => {}
+            }
+        }
+
+        // Check if we need to initiate an outbound handshake
+        match self.state {
+            HandshakeState::Start => {
+                self.state = HandshakeState::Handshaking;
+                return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
                     protocol: SubstreamProtocol::new(
                         HandshakeProtocol {
                             config: self.config.clone(),
-                            remote_addr: self.remote_addr.clone(),
                         },
                         (),
                     ),
-                },
-            );
+                });
+            }
+            _ => {}
         }
 
         Poll::Pending
@@ -401,43 +419,32 @@ impl<const N: u64> ConnectionHandler for HandshakeHandler<N> {
 
     fn on_connection_event(
         &mut self,
-        event: libp2p::swarm::handler::ConnectionEvent<
-            Self::InboundProtocol,
-            Self::OutboundProtocol,
-            Self::InboundOpenInfo,
-            Self::OutboundOpenInfo,
-        >,
+        event: ConnectionEvent<Self::InboundProtocol, Self::OutboundProtocol>,
     ) {
-        use libp2p::swarm::handler::ConnectionEvent::*;
-
         match event {
-            FullyNegotiatedInbound(stream) => {
-                self.state = HandshakeState::Completed;
-                self.pending_handshake = None;
-                self.queued_events
-                    .push_back(HandshakeHandlerEvent::HandshakeCompleted(stream.0));
+            ConnectionEvent::FullyNegotiatedInbound(FullyNegotiatedInbound {
+                protocol: stream,
+                ..
+            }) => {
+                self.do_inbound_handshake(stream);
             }
-            FullyNegotiatedOutbound(stream) => {
-                self.state = HandshakeState::Completed;
-                self.pending_handshake = None;
-                self.queued_events
-                    .push_back(HandshakeHandlerEvent::HandshakeCompleted(stream.0));
+            ConnectionEvent::FullyNegotiatedOutbound(FullyNegotiatedOutbound {
+                protocol: stream,
+                ..
+            }) => {
+                self.do_outbound_handshake(stream);
             }
-            DialUpgradeError(e) => {
+            ConnectionEvent::DialUpgradeError(error) => {
+                let handshake_error = HandshakeError::Protocol(error.error.to_string());
                 self.state = HandshakeState::Failed;
-                self.pending_handshake = None;
                 self.queued_events
-                    .push_back(HandshakeHandlerEvent::HandshakeFailed(
-                        HandshakeError::Protocol(e.error.to_string()),
-                    ));
+                    .push_back(HandshakeEvent::Failed(handshake_error));
             }
-            ListenUpgradeError(e) => {
+            ConnectionEvent::ListenUpgradeError(error) => {
+                let handshake_error = HandshakeError::Protocol(error.error.to_string());
                 self.state = HandshakeState::Failed;
-                self.pending_handshake = None;
                 self.queued_events
-                    .push_back(HandshakeHandlerEvent::HandshakeFailed(
-                        HandshakeError::Protocol(e.error.to_string()),
-                    ));
+                    .push_back(HandshakeEvent::Failed(handshake_error));
             }
             _ => {}
         }
@@ -447,6 +454,7 @@ impl<const N: u64> ConnectionHandler for HandshakeHandler<N> {
 async fn handle_inbound_handshake<const N: u64>(
     stream: Stream,
     config: HandshakeConfig<N>,
+    peer_id: PeerId,
     remote_addr: Multiaddr,
 ) -> Result<HandshakeInfo, HandshakeError> {
     // Set up codecs
@@ -505,8 +513,9 @@ async fn handle_inbound_handshake<const N: u64>(
 }
 
 async fn handle_outbound_handshake<const N: u64>(
-    mut stream: Stream,
+    stream: Stream,
     config: HandshakeConfig<N>,
+    peer_id: PeerId,
     remote_addr: Multiaddr,
 ) -> Result<HandshakeInfo, HandshakeError> {
     info!("Remote address: {:?}", remote_addr);
@@ -528,14 +537,10 @@ async fn handle_outbound_handshake<const N: u64>(
         .await
         .unwrap();
 
-    info!("SYN sent");
-
     // Read SYNACK
     let stream = framed.into_inner();
     let mut framed = FramedRead::new(stream, synack_codec);
     let syn_ack: HandshakeSynAck<N> = framed.try_next().await?.ok_or(HandshakeError::InvalidSyn)?;
-
-    info!("SYNACK received: {:?}", syn_ack);
 
     if syn_ack.ack.network_id != N {
         return Err(HandshakeError::NetworkIDIncompatible);
@@ -566,16 +571,15 @@ async fn handle_outbound_handshake<const N: u64>(
         .await
         .unwrap();
 
-    let mut stream = framed.into_inner();
-    stream.close().await.unwrap();
+    framed.close().await.unwrap();
 
     // Create HandshakeInfo from received data
     Ok(HandshakeInfo {
-        peer_id: PeerId::random(),      // Should come from actual peer ID
-        address: FixedBytes::default(), // Should come from actual address
-        full_node: false,
-        welcome_message: "str".to_string(),
-        observed_underlay: vec![remote_addr],
+        peer_id,
+        address: syn_ack.ack.node_address.overlay_address().clone(),
+        full_node: syn_ack.ack.full_node,
+        welcome_message: syn_ack.ack.welcome_message,
+        observed_underlay: vec![syn_ack.ack.node_address.underlay_address().clone()],
     })
 }
 
