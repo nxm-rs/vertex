@@ -17,6 +17,8 @@ members = [
     # "bin/vertex",
     # "bin/wasm-playground",
     # "bin/swarm-wasm-lib",
+    "crates/network-primitives",
+    "crates/network-primitives-traits",
     "crates/primitives",
     "crates/primitives-traits",
     # "crates/storage",
@@ -39,7 +41,8 @@ nectar-primitives = { path = "crates/primitives", features = ["arbitrary"] }
 nectar-primitives-traits = { path = "crates/primitives-traits" }
 
 ## vertex
-vertex-storage = { path = "crates/storage" }
+vertex-network-primitives = { path = "crates/network-primitives" }
+vertex-network-primitives-traits = { path = "crates/network-primitives-traits" }
 
 ## alloy
 alloy = { version = "0.11", features = [
@@ -56,6 +59,9 @@ alloy = { version = "0.11", features = [
     "signer-mnemonic",
 ] }
 alloy-chains = { version = "0.1.58", default-features = false }
+
+## libp2p
+libp2p = { version = "0.55.0", features = ["tokio", "tcp", "noise", "yamux", "dns", "macros", "ecdsa", "identify", "upnp", "autonat", "ping"] }
 
 ## misc
 clap = { version = "4.5.23", features = ["derive", "env"] }
