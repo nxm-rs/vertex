@@ -72,9 +72,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-chains"
-version = "0.1.57"
+version = "0.1.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ab9d1367c6ffb90c93fb4a9a4989530aa85112438c6f73a734067255d348469"
+checksum = "3a754dbb534198644cb8355b8c23f4aaecf03670fb9409242be1fa1e25897ee9"
 dependencies = [
  "alloy-primitives",
  "num_enum",
@@ -341,6 +341,7 @@ dependencies = [
  "derive_arbitrary",
  "derive_more",
  "foldhash",
+ "getrandom",
  "hashbrown 0.15.2",
  "indexmap",
  "itoa",
@@ -2469,6 +2470,7 @@ name = "nectar-primitives"
 version = "0.1.0"
 dependencies = [
  "alloy",
+ "alloy-chains",
  "anyhow",
  "arbitrary",
  "bytes",
