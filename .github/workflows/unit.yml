@@ -59,12 +59,21 @@ jobs:
               uses: arduino/setup-protoc@v3
               with:
                   repo-token: ${{ secrets.GITHUB_TOKEN }}
-            - name: Run tests
+            - name: Install cargo-llvm-cov
+              uses: taiki-e/install-action@cargo-llvm-cov
+            - name: Generate coverage
               run: |
-                  cargo nextest run \
+                  cargo llvm-cov nextest \
                     ${{ matrix.args }} --workspace \
                     --no-tests=warn \
-                    -E "!kind(test)"
+                    -E "!kind(test)" \
+                    --lcov --output-path lcov.info
+            - name: Upload coverage artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: coverage-report
+                  path: lcov.info
+                  retention-days: 1
               # run: |
               #     cargo nextest run \
               #       ${{ matrix.args }} --workspace \
@@ -91,6 +100,21 @@ jobs:
             - name: Run doctests
               # run: cargo test --doc --workspace --features "${{ matrix.network }}"
               run: cargo test --doc --workspace
+
+    upload-coverage:
+        name: Upload Coverage to Codecov
+        runs-on: ubuntu-latest
+        needs: [test]
+        steps:
+            - uses: actions/download-artifact@v4
+              with:
+                  name: coverage-report
+            - name: Upload coverage to Codecov
+              uses: codecov/codecov-action@v5
+              with:
+                  files: lcov.info
+                  fail_ci_if_error: true
+                  token: ${{ secrets.CODECOV_TOKEN }}
 
     unit-success:
         name: unit success
