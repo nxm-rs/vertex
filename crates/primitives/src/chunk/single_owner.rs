@@ -95,10 +95,10 @@ impl SingleOwnerChunk {
     /// * `mined_byte` - The first byte of the chunk ID.
     /// * `body` - The underlying BMT body containing data and metadata.
     pub fn new_dispersed_replica(mined_byte: u8, body: BMTBody) -> Result<Self> {
-        Ok(Self::builder()
+        Self::builder()
             .with_body(body)?
-            .as_dispersed_replica(mined_byte)?
-            .build()?)
+            .dispersed_replica(mined_byte)?
+            .build()
     }
 
     /// Returns the ID of the chunk
@@ -166,7 +166,7 @@ impl Signable for SingleOwnerChunk {
         *self.cached_owner.get_or_init(|| {
             let hash = Self::to_sign(&self.id, &self.body);
             self.signature
-                .recover_address_from_msg(&hash)
+                .recover_address_from_msg(hash)
                 .unwrap_or(Address::ZERO)
         })
     }
@@ -270,7 +270,7 @@ impl<T: From<SingleOwnerChunk>> SingleOwnerChunkBuilder<WithBody, T> {
     }
 
     /// Creates a new dispersed replica chunk with the given first byte and transitions to ReadyToBuild state.
-    pub fn as_dispersed_replica(
+    pub fn dispersed_replica(
         self,
         first_byte: u8,
     ) -> Result<SingleOwnerChunkBuilder<ReadyToBuild, T>> {
@@ -280,7 +280,7 @@ impl<T: From<SingleOwnerChunk>> SingleOwnerChunkBuilder<WithBody, T> {
         id[1..].copy_from_slice(&body.hash().as_slice()[1..]);
 
         let hash = SingleOwnerChunk::to_sign(&id, body);
-        let signer = PrivateKeySigner::from_slice(&DISPERSED_REPLICA_OWNER_PK.as_slice()).unwrap();
+        let signer = PrivateKeySigner::from_slice(DISPERSED_REPLICA_OWNER_PK.as_slice()).unwrap();
 
         self.with_id(id)
             .with_signature(signer.sign_message_sync(hash.as_ref())?)
@@ -344,7 +344,7 @@ impl TryFrom<Bytes> for SingleOwnerChunk {
 
         let id = B256::from_slice(&bytes.split_to(ID_SIZE));
         let signature = PrimitiveSignature::try_from(bytes.split_to(SIGNATURE_SIZE).as_ref())
-            .map_err(|e| ChunkError::Signature(e))?;
+            .map_err(ChunkError::Signature)?;
 
         // bytes now contains only body data
         let body = BMTBody::try_from(bytes)?;
@@ -472,7 +472,7 @@ mod tests {
                     .unwrap()
                     .build()
                     .unwrap(),
-            ).unwrap().as_dispersed_replica(first_byte).unwrap().build().unwrap();
+            ).unwrap().dispersed_replica(first_byte).unwrap().build().unwrap();
             let replica_address = chunk.address();
             // Serialise the chunk
             let bytes: Bytes = chunk.into();
@@ -574,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_dispersed_replica() {
+    fn test_invalid_dispersed_replica() -> Result<()> {
         let test_data = b"test data".to_vec();
         let dispersed_replica_wallet =
             PrivateKeySigner::from_slice(&DISPERSED_REPLICA_OWNER_PK.as_slice()).unwrap();
@@ -582,17 +582,12 @@ mod tests {
         let chunk = SingleOwnerChunk::builder()
             .with_body(
                 BMTBody::builder()
-                    .auto_from_data(test_data.clone())
-                    .unwrap()
-                    .build()
-                    .unwrap(),
-            )
-            .unwrap()
+                    .auto_from_data(test_data.clone())?
+                    .build()?,
+            )?
             .with_id(B256::ZERO)
-            .with_signer(dispersed_replica_wallet)
-            .unwrap()
-            .build()
-            .unwrap();
+            .with_signer(dispersed_replica_wallet)?
+            .build()?;
         let replica_address = chunk.address();
 
         assert!(!chunk.is_valid_replica());
@@ -600,5 +595,7 @@ mod tests {
             chunk.verify(replica_address),
             Err(ChunkError::Format { .. })
         ));
+
+        Ok(())
     }
 }

@@ -87,7 +87,7 @@ impl ChunkData for BMTBody {
 
 impl ChunkBody for BMTBody {
     fn hash(&self) -> ChunkAddress {
-        self.cached_hash.get_or_init(|| self.hash()).clone()
+        *self.cached_hash.get_or_init(|| self.hash())
     }
 }
 
@@ -231,7 +231,7 @@ impl TryFrom<Bytes> for BMTBody {
 
         // SAFETY: bytes.len() >= SPAN_SIZE
         let span = Span::from_le_bytes(buf.split_to(SPAN_SIZE).as_ref().try_into()?);
-        Ok(BMTBody::builder().with_span(span).with_data(buf)?.build()?)
+        BMTBody::builder().with_span(span).with_data(buf)?.build()
     }
 }
 
@@ -249,7 +249,7 @@ impl<'a> arbitrary::Arbitrary<'a> for BMTBody {
         let span = Span::arbitrary(u)?;
 
         // Ensure data size does not exceed CHUNK_SIZE
-        let data_len: usize = u.int_in_range(0..=CHUNK_SIZE as usize)?;
+        let data_len: usize = u.int_in_range(0..=CHUNK_SIZE)?;
         let mut buf = vec![0; data_len];
         u.fill_buffer(&mut buf)?;
 
