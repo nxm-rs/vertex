@@ -92,11 +92,42 @@ jobs:
               # run: cargo test --doc --workspace --features "${{ matrix.network }}"
               run: cargo test --doc --workspace
 
+    coverage:
+        name: coverage
+        runs-on: ubuntu-latest
+        env:
+            RUST_BACKTRACE: 1
+        timeout-minutes: 30
+        steps:
+            - uses: actions/checkout@v4
+            - uses: rui314/setup-mold@v1
+            - uses: dtolnay/rust-toolchain@stable
+            - uses: Swatinem/rust-cache@v2
+              with:
+                  cache-on-failure: true
+            - uses: taiki-e/install-action@nextest
+            - name: Install cargo-llvm-cov
+              uses: taiki-e/install-action@cargo-llvm-cov
+
+            - name: Generate coverage
+              run: |
+                  cargo llvm-cov nextest --workspace \
+                    --no-tests=warn \
+                    -E "!kind(test)" \
+                    --lcov --output-path lcov.info
+
+            - name: Upload coverage to Codecov
+              uses: codecov/codecov-action@v5
+              with:
+                  files: lcov.info
+                  fail_ci_if_error: true
+                  token: ${{ secrets.CODECOV_TOKEN }}
+
     unit-success:
         name: unit success
         runs-on: ubuntu-latest
         if: always()
-        needs: [test]
+        needs: [test, coverage]
         timeout-minutes: 30
         steps:
             - name: Decide whether the needed jobs succeeded or failed
