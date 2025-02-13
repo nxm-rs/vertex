@@ -1,11 +1,14 @@
-# Vertex <!-- ![CI status] ![deny status] -->
+# Vertex
+
+[![CI status](https://github.com/nullisyz/vertex/actions/workflows/unit.yml/badge.svg)](https://github.com/nullisxyz/vertex/actions/workflows/unit.yml)][gh-ci]
+[![codecov](https://codecov.io/gh/nullisxyz/vertex/graph/badge.svg?token=O56JVSX6AB)](https://codecov.io/gh/nullisxyz/vertex)][codecov]
 
 **Modular, high-performance implementation of the Ethereum Swarm protocol**
 
 <!-- [Logo placeholder]
 
 **[Install](https://vertex.rs/installation) | [User Book](https://vertex.rs) | [Developer Docs](./docs) | [Crate Docs](https://vertex.rs/docs)**
---> 
+-->
 
 ## What is Vertex?
 
