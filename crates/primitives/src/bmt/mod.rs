@@ -171,7 +171,7 @@ impl Hasher {
     #[inline(always)]
     fn root_hash(&self, last: &[u8], output: &mut [u8]) {
         let mut hasher = Keccak256::new();
-        hasher.update(&self.span.to_le_bytes());
+        hasher.update(self.span.to_le_bytes());
         hasher.update(last);
 
         hasher.finalize_into(output)

@@ -1,0 +1,41 @@
+[package]
+name = "vertex-network-handshake"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[dependencies]
+## vertex
+vertex-network-primitives.workspace = true
+vertex-network-primitives-traits.workspace = true
+
+## alloy
+alloy.workspace = true
+
+## async
+futures.workspace = true
+tokio.workspace = true
+
+## p2p
+asynchronous-codec.workspace = true
+quick-protobuf.workspace = true
+quick-protobuf-codec.workspace = true
+libp2p.workspace = true
+
+## misc
+bytes.workspace = true
+thiserror.workspace = true
+
+## tracing
+tracing.workspace = true
+
+[lints]
+workspace = true
+
+[build-dependencies]
+pb-rs = "0.9.1"
+walkdir = "2.5.0"
