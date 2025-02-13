@@ -59,12 +59,21 @@ jobs:
               uses: arduino/setup-protoc@v3
               with:
                   repo-token: ${{ secrets.GITHUB_TOKEN }}
-            - name: Run tests
+            - name: Install cargo-llvm-cov
+              uses: taiki-e/install-action@cargo-llvm-cov
+            - name: Generate coverage
               run: |
-                  cargo nextest run \
+                  cargo llvm-cov nextest \
                     ${{ matrix.args }} --workspace \
                     --no-tests=warn \
-                    -E "!kind(test)"
+                    -E "!kind(test)" \
+                    --lcov --output-path lcov.info
+            - name: Upload coverage artifact
+              uses: actions/upload-artifact@v3
+              with:
+                  name: coverage-report
+                  path: lcov.info
+                  retention-days: 1
               # run: |
               #     cargo nextest run \
               #       ${{ matrix.args }} --workspace \
@@ -92,30 +101,14 @@ jobs:
               # run: cargo test --doc --workspace --features "${{ matrix.network }}"
               run: cargo test --doc --workspace
 
-    coverage:
-        name: coverage
+    upload-coverage:
+        name: Upload Coverage to Codecov
         runs-on: ubuntu-latest
-        env:
-            RUST_BACKTRACE: 1
-        timeout-minutes: 30
+        needs: [test]
         steps:
-            - uses: actions/checkout@v4
-            - uses: rui314/setup-mold@v1
-            - uses: dtolnay/rust-toolchain@stable
-            - uses: Swatinem/rust-cache@v2
+            - uses: actions/download-artifact@v3
               with:
-                  cache-on-failure: true
-            - uses: taiki-e/install-action@nextest
-            - name: Install cargo-llvm-cov
-              uses: taiki-e/install-action@cargo-llvm-cov
-
-            - name: Generate coverage
-              run: |
-                  cargo llvm-cov nextest --workspace \
-                    --no-tests=warn \
-                    -E "!kind(test)" \
-                    --lcov --output-path lcov.info
-
+                  name: coverage-report
             - name: Upload coverage to Codecov
               uses: codecov/codecov-action@v5
               with:
@@ -127,7 +120,7 @@ jobs:
         name: unit success
         runs-on: ubuntu-latest
         if: always()
-        needs: [test, coverage]
+        needs: [test]
         timeout-minutes: 30
         steps:
             - name: Decide whether the needed jobs succeeded or failed
