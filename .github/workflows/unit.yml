@@ -69,7 +69,7 @@ jobs:
                     -E "!kind(test)" \
                     --lcov --output-path lcov.info
             - name: Upload coverage artifact
-              uses: actions/upload-artifact@v3
+              uses: actions/upload-artifact@v4
               with:
                   name: coverage-report
                   path: lcov.info
@@ -106,7 +106,7 @@ jobs:
         runs-on: ubuntu-latest
         needs: [test]
         steps:
-            - uses: actions/download-artifact@v3
+            - uses: actions/download-artifact@v4
               with:
                   name: coverage-report
             - name: Upload coverage to Codecov
