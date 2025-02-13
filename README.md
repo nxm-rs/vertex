@@ -1,6 +1,6 @@
 # Vertex
 
-[![CI status](https://github.com/nullisyz/vertex/workflows/unit/badge.svg)][gh-ci]
+[![CI status](https://github.com/nullisyz/vertex/actions/workflows/unit.yml/badge.svg)][gh-ci]
 [![codecov](https://codecov.io/gh/nullisxyz/vertex/graph/badge.svg?token=O56JVSX6AB)](https://codecov.io/gh/nullisxyz/vertex)][codecov]
 
 **Modular, high-performance implementation of the Ethereum Swarm protocol**
