@@ -164,4 +164,34 @@ mod tests {
         assert!(NamedSwarm::Testnet.is_testnet());
         assert!(!NamedSwarm::Mainnet.is_testnet());
     }
+
+    #[test]
+    fn test_swarm_equality() {
+        assert_eq!(NamedSwarm::Mainnet, NamedSwarm::Mainnet);
+        assert_ne!(NamedSwarm::Mainnet, NamedSwarm::Testnet);
+        assert_ne!(NamedSwarm::Testnet, NamedSwarm::Dev);
+    }
+
+    #[test]
+    fn test_partial_eq_ord_u64() {
+        // Test PartialEq with u64
+        assert!(NamedSwarm::Mainnet == 1u64);
+        assert!(NamedSwarm::Testnet == 10u64);
+        assert!(!(NamedSwarm::Mainnet == 2u64));
+
+        // Test PartialOrd with u64
+        assert!(NamedSwarm::Mainnet < 2u64);
+        assert!(NamedSwarm::Testnet > 9u64);
+        assert!(NamedSwarm::Dev > 1000u64);
+    }
+
+    #[test]
+    fn test_swarm_chain_mapping() {
+        assert_eq!(NamedSwarm::Mainnet.chain(), Chain::from(NamedChain::Gnosis));
+        assert_eq!(
+            NamedSwarm::Testnet.chain(),
+            Chain::from(NamedChain::Sepolia)
+        );
+        assert_eq!(NamedSwarm::Dev.chain(), Chain::from(NamedChain::Dev));
+    }
 }

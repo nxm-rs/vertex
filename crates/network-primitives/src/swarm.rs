@@ -255,4 +255,42 @@ mod tests {
         let expected = Swarm::from_named(NamedSwarm::Mainnet);
         assert_eq!(default, expected);
     }
+
+    #[test]
+    fn test_named_roundtrip() {
+        let original = NamedSwarm::Testnet;
+        let swarm = Swarm::from_named(original);
+        let converted: NamedSwarm = swarm.try_into().unwrap();
+        assert_eq!(original, converted);
+    }
+
+    #[test]
+    fn test_try_from_swarm() {
+        // Test successful conversion for named swarm
+        let named_swarm = Swarm::from_named(NamedSwarm::Mainnet);
+        assert!(NamedSwarm::try_from(named_swarm).is_ok());
+
+        // Test conversion failure for custom ID
+        let custom_swarm = Swarm::from_id(999999);
+        assert!(NamedSwarm::try_from(custom_swarm).is_err());
+    }
+
+    #[test]
+    fn test_from_id_conversion() {
+        // Test that known IDs are converted to named swarms
+        let swarm = Swarm::from_id(10); // Assuming 10 is Testnet's ID
+        assert_eq!(swarm.named(), Some(NamedSwarm::Testnet));
+
+        // Test that unknown IDs remain as custom IDs
+        let swarm = Swarm::from_id(999999);
+        assert_eq!(swarm.named(), None);
+    }
+
+    #[test]
+    fn test_equality_with_u64() {
+        let swarm = Swarm::from_id(1234);
+        assert_eq!(swarm, 1234u64);
+        assert_eq!(1234u64, swarm);
+        assert_ne!(swarm, 5678u64);
+    }
 }
