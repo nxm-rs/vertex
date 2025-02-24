@@ -15,15 +15,22 @@ nectar-primitives.workspace = true
 ## vertex primitives
 vertex-network-primitives-traits.workspace = true
 
-alloy.workspace = true
+alloy = { workspace = true, features = ["arbitrary"] }
 alloy-chains.workspace = true
 libp2p.workspace = true
+arbitrary = { workspace = true, features = ["derive"] }
 proptest.workspace = true
 thiserror.workspace = true
 
 bytes.workspace = true
 num_enum = { version = "0.7", default-features = false }
 strum = { version = "0.26", default-features = false, features = ["derive"] }
+
+[dev-dependencies]
+arbitrary.workspace = true
+proptest.workspace = true
+proptest-arbitrary-interop.workspace = true
+rand.workspace = true
 
 [lints]
 workspace = true
