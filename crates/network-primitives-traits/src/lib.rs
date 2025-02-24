@@ -14,7 +14,7 @@ pub enum NodeAddressError {
 }
 
 /// A NodeAddress trait that represents a node's address on the network.
-pub trait NodeAddress<const SWARM: u64> {
+pub trait NodeAddress<const N: u64> {
     fn overlay_address(&self) -> SwarmAddress;
     fn underlay_address(&self) -> &Multiaddr;
     fn chain_address(&self) -> Address;
