@@ -3,7 +3,7 @@ use std::array::TryFromSliceError;
 #[derive(Debug, thiserror::Error)]
 pub enum HandshakeError {
     #[error("Network ID incompatible")]
-    NetworkIDIncompatible,
+    NetworkIDMismatch,
     #[error("Invalid ACK")]
     InvalidAck,
     #[error("Invalid SYN")]

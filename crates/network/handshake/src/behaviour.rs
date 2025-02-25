@@ -18,8 +18,8 @@ use crate::{
 
 pub struct HandshakeBehaviour<const N: u64> {
     config: HandshakeConfig<N>,
-    handshaked_peers: HashMap<PeerId, PeerState>,
-    pub events: VecDeque<ToSwarm<HandshakeEvent, HandshakeCommand>>,
+    handshaked_peers: HashMap<PeerId, PeerState<N>>,
+    events: VecDeque<ToSwarm<HandshakeEvent<N>, HandshakeCommand>>,
 }
 
 impl<const N: u64> HandshakeBehaviour<N> {
@@ -31,11 +31,11 @@ impl<const N: u64> HandshakeBehaviour<N> {
         }
     }
 
-    pub fn peer_info(&self, peer: &PeerId) -> Option<&HandshakeInfo> {
+    pub fn peer_info(&self, peer: &PeerId) -> Option<&HandshakeInfo<N>> {
         self.handshaked_peers.get(peer).map(|state| &state.info)
     }
 
-    pub fn handshaked_peers(&self) -> impl Iterator<Item = (&PeerId, &HandshakeInfo)> {
+    pub fn handshaked_peers(&self) -> impl Iterator<Item = (&PeerId, &HandshakeInfo<N>)> {
         self.handshaked_peers
             .iter()
             .map(|(id, state)| (id, &state.info))
@@ -48,7 +48,7 @@ impl<const N: u64> HandshakeBehaviour<N> {
 
 impl<const N: u64> NetworkBehaviour for HandshakeBehaviour<N> {
     type ConnectionHandler = HandshakeHandler<N>;
-    type ToSwarm = HandshakeEvent;
+    type ToSwarm = HandshakeEvent<N>;
 
     fn on_swarm_event(&mut self, event: FromSwarm) {
         match event {
@@ -68,7 +68,7 @@ impl<const N: u64> NetworkBehaviour for HandshakeBehaviour<N> {
         &mut self,
         peer_id: PeerId,
         connection: ConnectionId,
-        event: HandshakeEvent,
+        event: HandshakeEvent<N>,
     ) {
         match event {
             HandshakeEvent::Completed(info) => {

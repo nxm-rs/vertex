@@ -15,20 +15,17 @@ use libp2p::{
 };
 use tracing::info;
 use vertex_network_primitives::NodeAddress;
-use vertex_network_primitives_traits::NodeAddress as NodeAddressTrait;
 
 use crate::{
-    proto::handshake::{Ack, Syn, SynAck},
-    AckCodec, HandshakeAck, HandshakeCommand, HandshakeConfig, HandshakeError, HandshakeEvent,
-    HandshakeInfo, HandshakeProtocol, HandshakeState, HandshakeSyn, HandshakeSynAck, SynAckCodec,
-    SynCodec,
+    codec::*, HandshakeCommand, HandshakeConfig, HandshakeError, HandshakeEvent, HandshakeInfo,
+    HandshakeProtocol, HandshakeState, HANDSHAKE_TIMEOUT,
 };
 
 pub struct HandshakeHandler<const N: u64> {
     config: HandshakeConfig<N>,
     state: HandshakeState,
-    queued_events: VecDeque<HandshakeEvent>,
-    pending_result: Option<oneshot::Receiver<Result<HandshakeInfo, HandshakeError>>>,
+    queued_events: VecDeque<HandshakeEvent<N>>,
+    pending_result: Option<oneshot::Receiver<Result<HandshakeInfo<N>, HandshakeError>>>,
     peer_id: PeerId,
     remote_addr: Multiaddr,
 }
@@ -76,7 +73,7 @@ impl<const N: u64> HandshakeHandler<N> {
 
 impl<const N: u64> ConnectionHandler for HandshakeHandler<N> {
     type FromBehaviour = HandshakeCommand;
-    type ToBehaviour = HandshakeEvent;
+    type ToBehaviour = HandshakeEvent<N>;
     type InboundProtocol = HandshakeProtocol<N>;
     type OutboundProtocol = HandshakeProtocol<N>;
     type InboundOpenInfo = ();
@@ -89,6 +86,7 @@ impl<const N: u64> ConnectionHandler for HandshakeHandler<N> {
             },
             (),
         )
+        .with_timeout(HANDSHAKE_TIMEOUT)
     }
 
     fn on_behaviour_event(&mut self, event: Self::FromBehaviour) {
@@ -200,41 +198,34 @@ async fn handle_inbound_handshake<const N: u64>(
     config: HandshakeConfig<N>,
     peer_id: PeerId,
     remote_addr: Multiaddr,
-) -> Result<HandshakeInfo, HandshakeError> {
+) -> Result<HandshakeInfo<N>, HandshakeError> {
     // Set up codecs
-    let syn_codec = SynCodec::<Syn, HandshakeSyn<N>>::new(1024);
-    let synack_codec = SynAckCodec::<SynAck, HandshakeSynAck<N>>::new(1024);
-    let ack_codec = AckCodec::<Ack, HandshakeAck<N>>::new(1024);
+    let syn_codec = SynCodec::<N>::new(1024);
+    let synack_codec = SynAckCodec::<N>::new(1024);
+    let ack_codec = AckCodec::<N>::new(1024);
 
     // Read SYN using framed read
     let mut framed = FramedRead::new(stream, syn_codec);
-    let handshake_syn: HandshakeSyn<N> =
-        framed.try_next().await?.ok_or(HandshakeError::InvalidSyn)?;
+    let syn: Syn<N> = framed.try_next().await?.ok_or(HandshakeError::InvalidSyn)?;
+
+    todo!();
 
     // Create SYNACK
-    let stream = framed.into_inner();
-    let mut framed = Framed::new(stream, synack_codec);
-
-    todo!("Finish implementing");
-
-    // let syn_ack = HandshakeSynAck {
-    //     syn: HandshakeSyn {
-    //         observed_underlay: remote_addr.clone(),
-    //     },
-    //     ack: HandshakeAck {
-    //         node_address: NodeAddress {
-    //             underlay: remote_addr.clone(),
-    //             signature: config.wallet.sign_message_sync(b"t")?, // Use proper signature creation
-    //             overlay: B256::default(),
+    // let stream = framed.into_inner();
+    // let mut framed = Framed::new(stream, synack_codec);
+    // framed
+    //     .send(SynAck::<N> {
+    //         syn: syn.clone(),
+    //         ack: Ack::<N> {
+    //             node_address: NodeAddress {
+    //                 underlay: remote_addr.clone(),
+    //                 signature: config.wallet.sign_message_sync(b"t")?, // Use proper signature creation
+    //                 overlay: B256::default(),
+    //             },
+    //             network_id: config.network_id,
     //         },
-    //         network_id: config.network_id,
-    //         full_node: config.full_node,
-    //         nonce: B256::from_slice(&config.nonce),
-    //         welcome_message: config.welcome_message.clone(),
-    //     },
-    // };
-
-    // framed.send(syn_ack.into()).await?;
+    //     })
+    //     .await?;
 
     // // Read ACK
     // let stream = framed.into_inner();
@@ -261,19 +252,17 @@ async fn handle_outbound_handshake<const N: u64>(
     config: HandshakeConfig<N>,
     peer_id: PeerId,
     remote_addr: Multiaddr,
-) -> Result<HandshakeInfo, HandshakeError> {
+) -> Result<HandshakeInfo<N>, HandshakeError> {
     info!("Remote address: {:?}", remote_addr);
 
-    const MAINNET: u64 = 1;
-
-    let syn_codec = SynCodec::<Syn, HandshakeSyn<N>>::new(1024);
-    let synack_codec = SynAckCodec::<SynAck, HandshakeSynAck<N>>::new(1024);
-    let ack_codec = AckCodec::<Ack, HandshakeAck<N>>::new(1024);
+    let syn_codec = SynCodec::<N>::new(1024);
+    let synack_codec = SynAckCodec::<N>::new(1024);
+    let ack_codec = AckCodec::<N>::new(1024);
 
     let mut framed = Framed::new(stream, syn_codec);
     framed
         .send(
-            HandshakeSyn::<N> {
+            Syn::<N> {
                 observed_underlay: remote_addr.clone(),
             }
             .into(),
@@ -283,14 +272,10 @@ async fn handle_outbound_handshake<const N: u64>(
     // Read SYNACK
     let stream = framed.into_inner();
     let mut framed = FramedRead::new(stream, synack_codec);
-    let syn_ack: HandshakeSynAck<N> = framed.try_next().await?.ok_or(HandshakeError::InvalidSyn)?;
-
-    if syn_ack.ack.network_id != N {
-        return Err(HandshakeError::NetworkIDIncompatible);
-    }
+    let syn_ack: SynAck<N> = framed.try_next().await?.ok_or(HandshakeError::InvalidSyn)?;
 
     // Create longer-lived buffer
-    let local_address: NodeAddress<MAINNET> = NodeAddress::builder()
+    let local_address: NodeAddress<N> = NodeAddress::builder()
         .with_nonce(B256::ZERO)
         .with_underlay(syn_ack.syn.observed_underlay.clone())
         .with_signer(config.wallet.clone())?
@@ -301,16 +286,11 @@ async fn handle_outbound_handshake<const N: u64>(
     let mut framed = Framed::new(stream, ack_codec);
 
     framed
-        .send(
-            HandshakeAck {
-                node_address: local_address.clone(),
-                network_id: N,
-                full_node: config.full_node,
-                nonce: local_address.nonce().clone(),
-                welcome_message: config.welcome_message.clone(),
-            }
-            .into(),
-        )
+        .send(Ack {
+            node_address: local_address,
+            full_node: config.full_node,
+            welcome_message: config.welcome_message.clone(),
+        })
         .await?;
 
     framed.close().await?;
@@ -318,9 +298,8 @@ async fn handle_outbound_handshake<const N: u64>(
     // Create HandshakeInfo from received data
     Ok(HandshakeInfo {
         peer_id,
-        address: syn_ack.ack.node_address.overlay_address().clone(),
+        address: syn_ack.ack.node_address,
         full_node: syn_ack.ack.full_node,
         welcome_message: syn_ack.ack.welcome_message,
-        observed_underlay: vec![syn_ack.ack.node_address.underlay_address().clone()],
     })
 }

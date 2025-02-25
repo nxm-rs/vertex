@@ -1,12 +1,11 @@
 use std::{sync::Arc, time::Duration};
 
-use alloy::{primitives::FixedBytes, signers::local::PrivateKeySigner};
-use libp2p::{swarm::ConnectionId, Multiaddr, PeerId};
+use alloy::signers::local::PrivateKeySigner;
+use libp2p::{swarm::ConnectionId, PeerId};
 
 mod proto {
     include!(concat!(env!("OUT_DIR"), "/proto/mod.rs"));
 }
-pub use proto::*;
 mod error;
 pub use error::HandshakeError;
 mod behaviour;
@@ -17,6 +16,7 @@ mod handler;
 pub use handler::HandshakeHandler;
 mod codec;
 pub use codec::*;
+use vertex_network_primitives::NodeAddress;
 
 // Include protobuf generated code
 // Constants
@@ -48,23 +48,22 @@ impl<const N: u64> Default for HandshakeConfig<N> {
 }
 
 #[derive(Debug, Clone)]
-pub struct HandshakeInfo {
+pub struct HandshakeInfo<const N: u64> {
     pub peer_id: PeerId,
-    pub address: FixedBytes<32>,
+    pub address: NodeAddress<N>,
     pub full_node: bool,
     pub welcome_message: String,
-    pub observed_underlay: Vec<Multiaddr>,
 }
 
 #[derive(Debug, Clone)]
-pub struct PeerState {
-    pub info: HandshakeInfo,
+pub struct PeerState<const N: u64> {
+    pub info: HandshakeInfo<N>,
     pub connections: Vec<ConnectionId>,
 }
 
 #[derive(Debug)]
-pub enum HandshakeEvent {
-    Completed(HandshakeInfo),
+pub enum HandshakeEvent<const N: u64> {
+    Completed(HandshakeInfo<N>),
     Failed(HandshakeError),
 }
 
