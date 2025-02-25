@@ -2,8 +2,8 @@ use alloy::primitives::B256;
 use asynchronous_codec::{Decoder, Encoder};
 use bytes::BytesMut;
 use libp2p::Multiaddr;
-use vertex_network_primitives::RemoteNodeAddressBuilder;
-use vertex_network_primitives_traits::NodeAddress;
+use vertex_network_primitives::NodeAddress;
+use vertex_network_primitives_traits::NodeAddress as NodeAddressTrait;
 
 use crate::{
     proto::handshake::{Ack, BzzAddress, Syn, SynAck},
@@ -35,7 +35,7 @@ impl<const N: u64> Into<Syn> for HandshakeSyn<N> {
 
 #[derive(Debug)]
 pub struct HandshakeAck<const N: u64> {
-    pub(crate) node_address: vertex_network_primitives::NodeAddressType<N>,
+    pub(crate) node_address: NodeAddress<N>,
     pub(crate) network_id: u64,
     pub(crate) full_node: bool,
     pub(crate) nonce: B256,
@@ -50,14 +50,15 @@ impl<const N: u64> TryFrom<Ack> for HandshakeAck<N> {
             .Address
             .as_ref()
             .ok_or_else(|| HandshakeError::MissingField("address"))?;
-        let remote_address = RemoteNodeAddressBuilder::new()
+        let remote_address = NodeAddress::builder()
             .with_nonce(value.Nonce.as_slice().try_into()?)
             .with_underlay(Multiaddr::try_from(protobuf_address.Underlay.clone())?)
-            .with_identity(
+            .with_signature(
                 protobuf_address.Overlay.as_slice().try_into()?,
                 protobuf_address.Signature.as_slice().try_into()?,
+                true,
             )?
-            .build()?;
+            .build();
         Ok(Self {
             node_address: remote_address,
             network_id: value.NetworkID,

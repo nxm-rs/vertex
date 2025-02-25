@@ -14,8 +14,8 @@ use libp2p::{
     Multiaddr, PeerId, Stream,
 };
 use tracing::info;
-use vertex_network_primitives::LocalNodeAddressBuilder;
-use vertex_network_primitives_traits::NodeAddress;
+use vertex_network_primitives::NodeAddress;
+use vertex_network_primitives_traits::NodeAddress as NodeAddressTrait;
 
 use crate::{
     proto::handshake::{Ack, Syn, SynAck},
@@ -290,11 +290,11 @@ async fn handle_outbound_handshake<const N: u64>(
     }
 
     // Create longer-lived buffer
-    let local_address = LocalNodeAddressBuilder::<MAINNET, _>::new()
+    let local_address: NodeAddress<MAINNET> = NodeAddress::builder()
         .with_nonce(B256::ZERO)
         .with_underlay(syn_ack.syn.observed_underlay.clone())
         .with_signer(config.wallet.clone())?
-        .build()?;
+        .build();
 
     // Send ACK
     let stream = framed.into_inner();
