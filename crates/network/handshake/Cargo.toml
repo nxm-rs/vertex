@@ -33,6 +33,9 @@ thiserror.workspace = true
 ## tracing
 tracing.workspace = true
 
+arbitrary = { workspace = true, features = ["derive"] }
+proptest.workspace = true
+
 [lints]
 workspace = true
 
@@ -42,6 +45,11 @@ libp2p-swarm-test.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
 tracing-subscriber.workspace = true
 quickcheck.workspace = true
+
+arbitrary.workspace = true
+proptest.workspace = true
+proptest-arbitrary-interop.workspace = true
+rand.workspace = true
 
 [build-dependencies]
 pb-rs = "0.9.1"

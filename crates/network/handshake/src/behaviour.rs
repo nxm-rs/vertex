@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     sync::Arc,
     task::{Context, Poll},
 };
@@ -13,13 +13,10 @@ use libp2p::{
     Multiaddr, PeerId,
 };
 
-use crate::{
-    HandshakeCommand, HandshakeConfig, HandshakeEvent, HandshakeHandler, HandshakeInfo, PeerState,
-};
+use crate::{HandshakeCommand, HandshakeConfig, HandshakeEvent, HandshakeHandler};
 
 pub struct HandshakeBehaviour<const N: u64> {
     config: Arc<HandshakeConfig<N>>,
-    handshaked_peers: HashMap<PeerId, PeerState<N>>,
     events: VecDeque<ToSwarm<HandshakeEvent<N>, HandshakeCommand>>,
 }
 
@@ -27,23 +24,8 @@ impl<const N: u64> HandshakeBehaviour<N> {
     pub fn new(config: Arc<HandshakeConfig<N>>) -> Self {
         Self {
             config,
-            handshaked_peers: HashMap::new(),
             events: VecDeque::new(),
         }
-    }
-
-    pub fn peer_info(&self, peer: &PeerId) -> Option<&HandshakeInfo<N>> {
-        self.handshaked_peers.get(peer).map(|state| &state.info)
-    }
-
-    pub fn handshaked_peers(&self) -> impl Iterator<Item = (&PeerId, &HandshakeInfo<N>)> {
-        self.handshaked_peers
-            .iter()
-            .map(|(id, state)| (id, &state.info))
-    }
-
-    pub fn is_peer_handshaked(&self, peer: &PeerId) -> bool {
-        self.handshaked_peers.contains_key(peer)
     }
 }
 
@@ -69,20 +51,12 @@ impl<const N: u64> NetworkBehaviour for HandshakeBehaviour<N> {
 
     fn on_connection_handler_event(
         &mut self,
-        peer_id: PeerId,
-        connection: ConnectionId,
+        _: PeerId,
+        _: ConnectionId,
         event: HandshakeEvent<N>,
     ) {
         match event {
             HandshakeEvent::Completed(info) => {
-                // Store peer info on successful handshake
-                self.handshaked_peers.insert(
-                    peer_id,
-                    PeerState {
-                        info: info.clone(),
-                        connections: vec![connection],
-                    },
-                );
                 self.events
                     .push_back(ToSwarm::GenerateEvent(HandshakeEvent::Completed(info)));
             }
@@ -102,30 +76,26 @@ impl<const N: u64> NetworkBehaviour for HandshakeBehaviour<N> {
 
     fn handle_established_inbound_connection(
         &mut self,
-        _connection_id: ConnectionId,
+        _: ConnectionId,
         peer: PeerId,
-        local_addr: &Multiaddr,
+        _: &Multiaddr,
         remote_addr: &Multiaddr,
     ) -> Result<libp2p::swarm::THandler<Self>, ConnectionDenied> {
         Ok(HandshakeHandler::new(
             self.config.clone(),
             peer,
-            remote_addr.clone(),
+            remote_addr,
         ))
     }
 
     fn handle_established_outbound_connection(
         &mut self,
-        _connection_id: ConnectionId,
+        _: ConnectionId,
         peer: PeerId,
         addr: &Multiaddr,
-        role_override: Endpoint,
-        port_use: PortUse,
+        _: Endpoint,
+        _: PortUse,
     ) -> Result<libp2p::swarm::THandler<Self>, ConnectionDenied> {
-        Ok(HandshakeHandler::new(
-            self.config.clone(),
-            peer,
-            addr.clone(),
-        ))
+        Ok(HandshakeHandler::new(self.config.clone(), peer, addr))
     }
 }

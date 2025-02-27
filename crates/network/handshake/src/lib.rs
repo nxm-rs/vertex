@@ -16,17 +16,15 @@ mod handler;
 pub use handler::HandshakeHandler;
 mod codec;
 pub use codec::*;
-use vertex_network_primitives::NodeAddress;
 
 const PROTOCOL: &str = "/swarm/handshake/13.0.0/handshake";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
-const MAX_WELCOME_MESSAGE_LENGTH: usize = 140;
+const MAX_WELCOME_MESSAGE_CHARS: usize = 140;
 
 #[derive(Debug, Clone)]
 pub struct HandshakeConfig<const N: u64> {
     pub full_node: bool,
     pub welcome_message: String,
-    pub validate_overlay: bool,
     pub wallet: Arc<PrivateKeySigner>,
     pub nonce: B256,
 }
@@ -37,7 +35,6 @@ impl<const N: u64> Default for HandshakeConfig<N> {
             full_node: true,
             nonce: B256::ZERO,
             welcome_message: "Vertex into the Swarm".to_string(),
-            validate_overlay: true,
             wallet: Arc::new(PrivateKeySigner::random()),
         }
     }
@@ -46,9 +43,7 @@ impl<const N: u64> Default for HandshakeConfig<N> {
 #[derive(Debug, Clone)]
 pub struct HandshakeInfo<const N: u64> {
     pub peer_id: PeerId,
-    pub address: NodeAddress<N>,
-    pub full_node: bool,
-    pub welcome_message: String,
+    pub ack: Ack<N>,
 }
 
 #[derive(Debug, Clone)]
@@ -63,10 +58,9 @@ pub enum HandshakeEvent<const N: u64> {
     Failed(HandshakeError),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum HandshakeState {
     Idle,
-    Start,
     Handshaking,
     Completed,
     Failed,

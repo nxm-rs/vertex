@@ -31,3 +31,9 @@ pub enum CodecError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
+
+impl From<quick_protobuf_codec::Error> for CodecError {
+    fn from(error: quick_protobuf_codec::Error) -> Self {
+        CodecError::Protocol(error.to_string())
+    }
+}

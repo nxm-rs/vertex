@@ -231,7 +231,7 @@ impl<'a, const N: u64> arbitrary::Arbitrary<'a> for NodeAddress<N> {
     }
 }
 
-fn arbitrary_multiaddr(u: &mut arbitrary::Unstructured) -> arbitrary::Result<Multiaddr> {
+pub fn arbitrary_multiaddr(u: &mut arbitrary::Unstructured) -> arbitrary::Result<Multiaddr> {
     let use_ipv6: bool = u.arbitrary()?;
     let port: u16 = u.int_in_range(1025..=65535)?;
 

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use asynchronous_codec::{Framed, FramedRead};
-use futures::{future::BoxFuture, AsyncWriteExt, SinkExt, StreamExt};
+use futures::{future::BoxFuture, AsyncWriteExt, SinkExt, TryStreamExt};
 use libp2p::{core::UpgradeInfo, InboundUpgrade, Multiaddr, OutboundUpgrade, PeerId, Stream};
 use tracing::{debug, info};
 use vertex_network_primitives::NodeAddress;
@@ -61,7 +61,7 @@ async fn handle_inbound_handshake<const N: u64>(
     stream: Stream,
     config: Arc<HandshakeConfig<N>>,
     peer_id: PeerId,
-    remote_addr: Multiaddr,
+    _: Multiaddr,
 ) -> Result<HandshakeInfo<N>, HandshakeError> {
     // Set up codecs
     let syn_codec = SynCodec::<N>::new(1024);
@@ -71,36 +71,29 @@ async fn handle_inbound_handshake<const N: u64>(
     // Read SYN using framed read
     let mut framed = FramedRead::new(stream, syn_codec);
     debug!("Attempting to read SYN");
-    let syn = match framed.next().await {
-        Some(Ok(syn)) => syn,
-        Some(Err(e)) => return Err(e.into()),
-        None => {
-            debug!("Connection closed while reading SYN");
-            return Err(HandshakeError::Stream(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "Connection closed",
-            )));
-        }
-    };
+    let syn = framed
+        .try_next()
+        .await?
+        .ok_or(HandshakeError::ConnectionClosed)?;
     debug!("Received SYN: {:?}", syn);
 
     // Create local address
     let local_address: NodeAddress<N> = NodeAddress::builder()
         .with_nonce(config.nonce)
-        .with_underlay(syn.observed_underlay.clone())
+        .with_underlay(syn.observed_underlay().clone())
         .with_signer(config.wallet.clone())
         .map_err(|e| HandshakeError::Codec(e.into()))?
         .build();
 
     // Send SYNACK
-    let synack = SynAck {
+    let synack = SynAck::new(
         syn,
-        ack: Ack {
-            node_address: local_address,
-            full_node: config.full_node,
-            welcome_message: config.welcome_message.clone(),
-        },
-    };
+        Ack::new(
+            local_address,
+            config.full_node,
+            config.welcome_message.clone(),
+        )?,
+    );
 
     let mut framed = Framed::new(framed.into_inner(), synack_codec);
     framed.send(synack).await?;
@@ -108,27 +101,15 @@ async fn handle_inbound_handshake<const N: u64>(
     // Read ACK
     let mut framed = FramedRead::new(framed.into_inner(), ack_codec);
     debug!("Attempting to read ACK");
-    let ack = match framed.next().await {
-        Some(Ok(ack)) => ack,
-        Some(Err(e)) => return Err(e.into()),
-        None => {
-            debug!("Connection closed before ACK was received");
-            return Err(HandshakeError::Stream(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "Connection closed",
-            )));
-        }
-    };
+    let ack = framed
+        .try_next()
+        .await?
+        .ok_or(HandshakeError::ConnectionClosed)?;
     debug!("Received ACK: {:?}", ack);
 
     framed.close().await?;
 
-    Ok(HandshakeInfo {
-        peer_id,
-        address: ack.node_address,
-        full_node: ack.full_node,
-        welcome_message: ack.welcome_message,
-    })
+    Ok(HandshakeInfo { peer_id, ack })
 }
 
 async fn handle_outbound_handshake<const N: u64>(
@@ -144,34 +125,20 @@ async fn handle_outbound_handshake<const N: u64>(
     let ack_codec = AckCodec::<N>::new(1024);
 
     let mut framed = Framed::new(stream, syn_codec);
-    framed
-        .send(
-            Syn {
-                observed_underlay: remote_addr.clone(),
-            }
-            .into(),
-        )
-        .await?;
+    framed.send(Syn::new(remote_addr)).await?;
 
     // Read SYNACK
     let mut framed = FramedRead::new(framed.into_inner(), synack_codec);
     debug!("Attempting to read SYNACK");
-    let syn_ack = match framed.next().await {
-        Some(Ok(syn)) => syn,
-        Some(Err(e)) => return Err(e.into()),
-        None => {
-            debug!("Connection closed before SYNACK was received");
-            return Err(HandshakeError::Stream(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "Connection closed",
-            )));
-        }
-    };
+    let syn_ack = framed
+        .try_next()
+        .await?
+        .ok_or(HandshakeError::ConnectionClosed)?;
     debug!("Received SYNACK: {:?}", syn_ack);
 
     let local_address: NodeAddress<N> = NodeAddress::builder()
         .with_nonce(config.nonce)
-        .with_underlay(syn_ack.syn.observed_underlay.clone())
+        .with_underlay(syn_ack.syn().observed_underlay().clone())
         .with_signer(config.wallet.clone())
         .map_err(|e| HandshakeError::Codec(e.into()))?
         .build();
@@ -180,20 +147,16 @@ async fn handle_outbound_handshake<const N: u64>(
     let mut framed = Framed::new(framed.into_inner(), ack_codec);
 
     framed
-        .send(Ack {
-            node_address: local_address,
-            full_node: config.full_node,
-            welcome_message: config.welcome_message.clone(),
-        })
+        .send(Ack::new(
+            local_address,
+            config.full_node,
+            config.welcome_message.clone(),
+        )?)
         .await?;
 
     framed.close().await?;
 
     // Create HandshakeInfo from received data
-    Ok(HandshakeInfo {
-        peer_id,
-        address: syn_ack.ack.node_address,
-        full_node: syn_ack.ack.full_node,
-        welcome_message: syn_ack.ack.welcome_message,
-    })
+    let (_, ack) = syn_ack.into_parts();
+    Ok(HandshakeInfo { peer_id, ack })
 }

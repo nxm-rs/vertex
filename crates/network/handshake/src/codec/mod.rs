@@ -16,12 +16,6 @@ pub type SynCodec<const N: u64> = ProtocolCodec<crate::proto::handshake::Syn, Sy
 pub type SynAckCodec<const N: u64> =
     ProtocolCodec<crate::proto::handshake::SynAck, SynAck<N>, CodecError>;
 
-impl From<quick_protobuf_codec::Error> for CodecError {
-    fn from(error: quick_protobuf_codec::Error) -> Self {
-        CodecError::Protocol(error.to_string())
-    }
-}
-
 pub struct ProtocolCodec<Proto, Protocol, E>(
     quick_protobuf_codec::Codec<Proto>,
     std::marker::PhantomData<(Protocol, E)>,
