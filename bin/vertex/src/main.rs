@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use futures::StreamExt;
 use libp2p::{swarm::NetworkBehaviour, Multiaddr};
 use tracing::{info, warn};
@@ -42,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             libp2p::dns::ResolverOpts::default(),
         )
         .with_behaviour(|key| SwarmBehaviour {
-            handshake: HandshakeBehaviour::<1>::new(HandshakeConfig::default()),
+            handshake: HandshakeBehaviour::<1>::new(Arc::new(HandshakeConfig::default())),
             identify: libp2p::identify::Behaviour::new(libp2p::identify::Config::new(
                 "/ipfs/id/1.0.0".to_string(),
                 key.public(),

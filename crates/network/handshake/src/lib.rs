@@ -18,15 +18,12 @@ mod codec;
 pub use codec::*;
 use vertex_network_primitives::NodeAddress;
 
-// Include protobuf generated code
-// Constants
-const PROTOCOL_VERSION: &str = "13.0.0";
+const PROTOCOL: &str = "/swarm/handshake/13.0.0/handshake";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_WELCOME_MESSAGE_LENGTH: usize = 140;
 
 #[derive(Debug, Clone)]
 pub struct HandshakeConfig<const N: u64> {
-    pub protocol_version: String,
     pub full_node: bool,
     pub welcome_message: String,
     pub validate_overlay: bool,
@@ -37,7 +34,6 @@ pub struct HandshakeConfig<const N: u64> {
 impl<const N: u64> Default for HandshakeConfig<N> {
     fn default() -> Self {
         Self {
-            protocol_version: PROTOCOL_VERSION.to_string(),
             full_node: true,
             nonce: B256::ZERO,
             welcome_message: "Vertex into the Swarm".to_string(),

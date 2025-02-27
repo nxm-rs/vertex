@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use libp2p_swarm::{dummy, Swarm, SwarmEvent};
 use libp2p_swarm_test::SwarmExt;
 use quickcheck::QuickCheck;
@@ -13,8 +15,8 @@ async fn handshake_success() {
         .with_test_writer()
         .init();
 
-    let cfg_swarm_1 = HandshakeConfig::<1>::default();
-    let cfg_swarm_2 = HandshakeConfig::<1>::default();
+    let cfg_swarm_1 = Arc::new(HandshakeConfig::<1>::default());
+    let cfg_swarm_2 = Arc::new(HandshakeConfig::<1>::default());
 
     let mut swarm1 = Swarm::new_ephemeral(|_| HandshakeBehaviour::<1>::new(cfg_swarm_1.clone()));
     let mut swarm2 = Swarm::new_ephemeral(|_| HandshakeBehaviour::<1>::new(cfg_swarm_2.clone()));

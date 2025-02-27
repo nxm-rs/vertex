@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
+    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -17,13 +18,13 @@ use crate::{
 };
 
 pub struct HandshakeBehaviour<const N: u64> {
-    config: HandshakeConfig<N>,
+    config: Arc<HandshakeConfig<N>>,
     handshaked_peers: HashMap<PeerId, PeerState<N>>,
     events: VecDeque<ToSwarm<HandshakeEvent<N>, HandshakeCommand>>,
 }
 
 impl<const N: u64> HandshakeBehaviour<N> {
-    pub fn new(config: HandshakeConfig<N>) -> Self {
+    pub fn new(config: Arc<HandshakeConfig<N>>) -> Self {
         Self {
             config,
             handshaked_peers: HashMap::new(),

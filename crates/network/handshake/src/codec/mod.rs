@@ -1,8 +1,6 @@
 use bytes::BytesMut;
 use std::marker::PhantomData;
 
-use crate::HandshakeError;
-
 mod ack;
 mod error;
 mod syn;
