@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use alloy::signers::local::PrivateKeySigner;
+use alloy::{primitives::B256, signers::local::PrivateKeySigner};
 use libp2p::{swarm::ConnectionId, PeerId};
 
 mod proto {
@@ -28,10 +28,10 @@ const MAX_WELCOME_MESSAGE_LENGTH: usize = 140;
 pub struct HandshakeConfig<const N: u64> {
     pub protocol_version: String,
     pub full_node: bool,
-    pub nonce: Vec<u8>,
     pub welcome_message: String,
     pub validate_overlay: bool,
     pub wallet: Arc<PrivateKeySigner>,
+    pub nonce: B256,
 }
 
 impl<const N: u64> Default for HandshakeConfig<N> {
@@ -39,7 +39,7 @@ impl<const N: u64> Default for HandshakeConfig<N> {
         Self {
             protocol_version: PROTOCOL_VERSION.to_string(),
             full_node: true,
-            nonce: vec![0; 32],
+            nonce: B256::ZERO,
             welcome_message: "Vertex into the Swarm".to_string(),
             validate_overlay: true,
             wallet: Arc::new(PrivateKeySigner::random()),

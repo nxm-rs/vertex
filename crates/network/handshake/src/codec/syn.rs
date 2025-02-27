@@ -1,6 +1,6 @@
 use libp2p::Multiaddr;
 
-use crate::HandshakeError;
+use super::CodecError;
 
 #[derive(Debug, Clone)]
 pub struct Syn<const N: u64> {
@@ -8,7 +8,7 @@ pub struct Syn<const N: u64> {
 }
 
 impl<const N: u64> TryFrom<crate::proto::handshake::Syn> for Syn<N> {
-    type Error = HandshakeError;
+    type Error = CodecError;
 
     fn try_from(value: crate::proto::handshake::Syn) -> Result<Self, Self::Error> {
         Ok(Self {

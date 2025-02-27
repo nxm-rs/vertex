@@ -1,6 +1,4 @@
-use crate::HandshakeError;
-
-use super::{Ack, Syn};
+use super::{Ack, CodecError, Syn};
 
 #[derive(Debug, Clone)]
 pub struct SynAck<const N: u64> {
@@ -9,17 +7,17 @@ pub struct SynAck<const N: u64> {
 }
 
 impl<const N: u64> TryFrom<crate::proto::handshake::SynAck> for SynAck<N> {
-    type Error = HandshakeError;
+    type Error = CodecError;
 
     fn try_from(value: crate::proto::handshake::SynAck) -> Result<Self, Self::Error> {
         Ok(Self {
             syn: value
                 .Syn
-                .ok_or_else(|| HandshakeError::MissingField("syn"))?
+                .ok_or_else(|| CodecError::MissingField("syn"))?
                 .try_into()?,
             ack: value
                 .Ack
-                .ok_or_else(|| HandshakeError::MissingField("ack"))?
+                .ok_or_else(|| CodecError::MissingField("ack"))?
                 .try_into()?,
         })
     }

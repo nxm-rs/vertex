@@ -12,13 +12,9 @@ use thiserror::Error;
 /// Errors that can occur when working with node addresses.
 #[derive(Error, Debug)]
 pub enum NodeAddressError {
-    /// Indicates an invalid signature format or content
-    #[error("Invalid signature")]
-    InvalidSignature,
-
     /// Wrapper for signature validation errors from the alloy crate
     #[error("Invalid signature: {0}")]
-    InvalidAlloySignature(#[from] alloy::primitives::SignatureError),
+    InvalidSignature(#[from] alloy::primitives::SignatureError),
 
     /// Wrapper for signer-related errors from the alloy crate
     #[error("Signer error: {0}")]

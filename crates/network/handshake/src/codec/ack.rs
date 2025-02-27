@@ -2,7 +2,8 @@ use libp2p::Multiaddr;
 use vertex_network_primitives::NodeAddress;
 use vertex_network_primitives_traits::NodeAddress as NodeAddressTrait;
 
-use crate::HandshakeError;
+use crate::codec::CodecError;
+use crate::MAX_WELCOME_MESSAGE_LENGTH;
 
 #[derive(Debug, Clone)]
 pub struct Ack<const N: u64> {
@@ -12,23 +13,32 @@ pub struct Ack<const N: u64> {
 }
 
 impl<const N: u64> TryFrom<crate::proto::handshake::Ack> for Ack<N> {
-    type Error = HandshakeError;
+    type Error = CodecError;
 
     fn try_from(value: crate::proto::handshake::Ack) -> Result<Self, Self::Error> {
         if value.NetworkID != N {
-            return Err(HandshakeError::NetworkIDMismatch);
+            return Err(CodecError::NetworkIDMismatch);
+        }
+
+        if value.WelcomeMessage.len() > MAX_WELCOME_MESSAGE_LENGTH {
+            return Err(CodecError::FieldLengthLimitExceeded(
+                "welcome_message",
+                MAX_WELCOME_MESSAGE_LENGTH,
+                value.WelcomeMessage.len(),
+            ));
         }
 
         let protobuf_address = value
             .Address
             .as_ref()
-            .ok_or_else(|| HandshakeError::MissingField("address"))?;
+            .ok_or_else(|| CodecError::MissingField("address"))?;
         let remote_address = NodeAddress::builder()
             .with_nonce(value.Nonce.as_slice().try_into()?)
             .with_underlay(Multiaddr::try_from(protobuf_address.Underlay.clone())?)
             .with_signature(
                 protobuf_address.Overlay.as_slice().try_into()?,
                 protobuf_address.Signature.as_slice().try_into()?,
+                // Validate signatures at the codec level
                 true,
             )?
             .build();

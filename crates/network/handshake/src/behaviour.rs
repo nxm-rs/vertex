@@ -53,12 +53,14 @@ impl<const N: u64> NetworkBehaviour for HandshakeBehaviour<N> {
     fn on_swarm_event(&mut self, event: FromSwarm) {
         match event {
             FromSwarm::ConnectionEstablished(connection) => {
-                // Start handshake when connection is established
-                self.events.push_back(ToSwarm::NotifyHandler {
-                    peer_id: connection.peer_id,
-                    handler: NotifyHandler::One(connection.connection_id),
-                    event: HandshakeCommand::StartHandshake,
-                });
+                // Start handshake for outbound connections.
+                if connection.endpoint.is_dialer() {
+                    self.events.push_back(ToSwarm::NotifyHandler {
+                        peer_id: connection.peer_id,
+                        handler: NotifyHandler::One(connection.connection_id),
+                        event: HandshakeCommand::StartHandshake,
+                    });
+                }
             }
             _ => {}
         }

@@ -36,6 +36,13 @@ tracing.workspace = true
 [lints]
 workspace = true
 
+[dev-dependencies]
+libp2p-swarm = { workspace = true, features = ["macros"] }
+libp2p-swarm-test.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+tracing-subscriber.workspace = true
+quickcheck.workspace = true
+
 [build-dependencies]
 pb-rs = "0.9.1"
 walkdir = "2.5.0"

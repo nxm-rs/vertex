@@ -1,11 +1,13 @@
 use std::{
     collections::VecDeque,
+    future::Future,
+    pin::Pin,
     task::{Context, Poll},
 };
 
 use alloy::primitives::B256;
 use asynchronous_codec::{Framed, FramedRead};
-use futures::{channel::oneshot, FutureExt, SinkExt, TryStreamExt};
+use futures::{channel::oneshot, AsyncWriteExt, FutureExt, SinkExt, StreamExt};
 use libp2p::{
     swarm::{
         handler::{ConnectionEvent, FullyNegotiatedInbound, FullyNegotiatedOutbound},
@@ -13,7 +15,7 @@ use libp2p::{
     },
     Multiaddr, PeerId, Stream,
 };
-use tracing::info;
+use tracing::{debug, info};
 use vertex_network_primitives::NodeAddress;
 
 use crate::{
@@ -25,7 +27,8 @@ pub struct HandshakeHandler<const N: u64> {
     config: HandshakeConfig<N>,
     state: HandshakeState,
     queued_events: VecDeque<HandshakeEvent<N>>,
-    pending_result: Option<oneshot::Receiver<Result<HandshakeInfo<N>, HandshakeError>>>,
+    pending_result:
+        Option<Pin<Box<dyn Future<Output = Result<HandshakeInfo<N>, HandshakeError>> + Send>>>,
     peer_id: PeerId,
     remote_addr: Multiaddr,
 }
@@ -42,32 +45,25 @@ impl<const N: u64> HandshakeHandler<N> {
         }
     }
 
-    fn do_inbound_handshake(&mut self, stream: Stream) {
-        let config = self.config.clone();
-        let (tx, rx) = oneshot::channel();
+    fn handle_handshake(&mut self, stream: Stream, is_inbound: bool) {
+        let future: Pin<Box<dyn Future<Output = Result<HandshakeInfo<N>, HandshakeError>> + Send>> =
+            if is_inbound {
+                Box::pin(handle_inbound_handshake(
+                    stream,
+                    self.config.clone(),
+                    self.peer_id,
+                    self.remote_addr.clone(),
+                ))
+            } else {
+                Box::pin(handle_outbound_handshake(
+                    stream,
+                    self.config.clone(),
+                    self.peer_id,
+                    self.remote_addr.clone(),
+                ))
+            };
 
-        let peer_id = self.peer_id.clone();
-        let remote_addr = self.remote_addr.clone();
-        tokio::task::spawn(async move {
-            let result = handle_inbound_handshake(stream, config, peer_id, remote_addr).await;
-            let _ = tx.send(result);
-        });
-
-        self.pending_result = Some(rx);
-    }
-
-    fn do_outbound_handshake(&mut self, stream: Stream) {
-        let config = self.config.clone();
-        let (tx, rx) = oneshot::channel();
-
-        let peer_id = self.peer_id.clone();
-        let remote_addr = self.remote_addr.clone();
-        tokio::task::spawn(async move {
-            let result = handle_outbound_handshake(stream, config, peer_id, remote_addr).await;
-            let _ = tx.send(result);
-        });
-
-        self.pending_result = Some(rx);
+        self.pending_result = Some(future);
     }
 }
 
@@ -111,29 +107,20 @@ impl<const N: u64> ConnectionHandler for HandshakeHandler<N> {
         }
 
         // Then check pending handshake result
-        if let Some(rx) = &mut self.pending_result {
-            match rx.poll_unpin(cx) {
-                Poll::Ready(Ok(Ok(info))) => {
+        if let Some(pending) = self.pending_result.as_mut() {
+            match pending.as_mut().poll(cx) {
+                Poll::Ready(Ok(info)) => {
                     self.pending_result = None;
                     self.state = HandshakeState::Completed;
                     return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
                         HandshakeEvent::Completed(info),
                     ));
                 }
-                Poll::Ready(Ok(Err(e))) => {
+                Poll::Ready(Err(e)) => {
                     self.pending_result = None;
                     self.state = HandshakeState::Failed;
                     return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
                         HandshakeEvent::Failed(e),
-                    ));
-                }
-                Poll::Ready(Err(_)) => {
-                    self.pending_result = None;
-                    self.state = HandshakeState::Failed;
-                    return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
-                        HandshakeEvent::Failed(HandshakeError::Protocol(
-                            "Handshake future dropped".into(),
-                        )),
                     ));
                 }
                 Poll::Pending => {}
@@ -168,13 +155,13 @@ impl<const N: u64> ConnectionHandler for HandshakeHandler<N> {
                 protocol: stream,
                 ..
             }) => {
-                self.do_inbound_handshake(stream);
+                self.handle_handshake(stream, true);
             }
             ConnectionEvent::FullyNegotiatedOutbound(FullyNegotiatedOutbound {
                 protocol: stream,
                 ..
             }) => {
-                self.do_outbound_handshake(stream);
+                self.handle_handshake(stream, false);
             }
             ConnectionEvent::DialUpgradeError(error) => {
                 let handshake_error = HandshakeError::Protocol(error.error.to_string());
@@ -206,45 +193,65 @@ async fn handle_inbound_handshake<const N: u64>(
 
     // Read SYN using framed read
     let mut framed = FramedRead::new(stream, syn_codec);
-    let syn: Syn<N> = framed.try_next().await?.ok_or(HandshakeError::InvalidSyn)?;
+    debug!("Attempting to read SYN");
+    let syn = match framed.next().await {
+        Some(Ok(syn)) => syn,
+        Some(Err(e)) => return Err(e.into()),
+        None => {
+            debug!("Connection closed while reading SYN");
+            return Err(HandshakeError::Stream(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "Connection closed",
+            )));
+        }
+    };
+    debug!("Received SYN: {:?}", syn);
 
-    todo!();
+    // Create local address
+    let local_address: NodeAddress<N> = NodeAddress::builder()
+        .with_nonce(config.nonce)
+        .with_underlay(syn.observed_underlay.clone())
+        .with_signer(config.wallet.clone())
+        .map_err(|e| HandshakeError::Codec(e.into()))?
+        .build();
 
-    // Create SYNACK
-    // let stream = framed.into_inner();
-    // let mut framed = Framed::new(stream, synack_codec);
-    // framed
-    //     .send(SynAck::<N> {
-    //         syn: syn.clone(),
-    //         ack: Ack::<N> {
-    //             node_address: NodeAddress {
-    //                 underlay: remote_addr.clone(),
-    //                 signature: config.wallet.sign_message_sync(b"t")?, // Use proper signature creation
-    //                 overlay: B256::default(),
-    //             },
-    //             network_id: config.network_id,
-    //         },
-    //     })
-    //     .await?;
+    // Send SYNACK
+    let synack = SynAck {
+        syn,
+        ack: Ack {
+            node_address: local_address,
+            full_node: config.full_node,
+            welcome_message: config.welcome_message.clone(),
+        },
+    };
 
-    // // Read ACK
-    // let stream = framed.into_inner();
-    // let mut framed = FramedRead::new(stream, ack_codec);
-    // let handshake_ack: HandshakeAck<N> =
-    //     framed.try_next().await?.ok_or(HandshakeError::InvalidAck)?;
+    let mut framed = Framed::new(framed.into_inner(), synack_codec);
+    framed.send(synack).await?;
 
-    // if handshake_ack.network_id != N {
-    //     return Err(HandshakeError::NetworkIDIncompatible);
-    // }
+    // Read ACK
+    let mut framed = FramedRead::new(framed.into_inner(), ack_codec);
+    debug!("Attempting to read ACK");
+    let ack = match framed.next().await {
+        Some(Ok(ack)) => ack,
+        Some(Err(e)) => return Err(e.into()),
+        None => {
+            debug!("Connection closed before ACK was received");
+            return Err(HandshakeError::Stream(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "Connection closed",
+            )));
+        }
+    };
+    debug!("Received ACK: {:?}", ack);
 
-    // // Create HandshakeInfo from received data
-    // Ok(HandshakeInfo {
-    //     peer_id: PeerId::random(),      // Should come from actual peer ID
-    //     address: FixedBytes::default(), // Should come from actual address
-    //     full_node: handshake_ack.full_node,
-    //     welcome_message: handshake_ack.welcome_message,
-    //     observed_underlay: vec![remote_addr],
-    // })
+    framed.close().await;
+
+    Ok(HandshakeInfo {
+        peer_id,
+        address: ack.node_address,
+        full_node: ack.full_node,
+        welcome_message: ack.welcome_message,
+    })
 }
 
 async fn handle_outbound_handshake<const N: u64>(
@@ -262,7 +269,7 @@ async fn handle_outbound_handshake<const N: u64>(
     let mut framed = Framed::new(stream, syn_codec);
     framed
         .send(
-            Syn::<N> {
+            Syn {
                 observed_underlay: remote_addr.clone(),
             }
             .into(),
@@ -270,20 +277,30 @@ async fn handle_outbound_handshake<const N: u64>(
         .await?;
 
     // Read SYNACK
-    let stream = framed.into_inner();
-    let mut framed = FramedRead::new(stream, synack_codec);
-    let syn_ack: SynAck<N> = framed.try_next().await?.ok_or(HandshakeError::InvalidSyn)?;
+    let mut framed = FramedRead::new(framed.into_inner(), synack_codec);
+    debug!("Attempting to read SYNACK");
+    let syn_ack = match framed.next().await {
+        Some(Ok(syn)) => syn,
+        Some(Err(e)) => return Err(e.into()),
+        None => {
+            debug!("Connection closed before SYNACK was received");
+            return Err(HandshakeError::Stream(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "Connection closed",
+            )));
+        }
+    };
+    debug!("Received SYNACK: {:?}", syn_ack);
 
-    // Create longer-lived buffer
     let local_address: NodeAddress<N> = NodeAddress::builder()
-        .with_nonce(B256::ZERO)
+        .with_nonce(config.nonce)
         .with_underlay(syn_ack.syn.observed_underlay.clone())
-        .with_signer(config.wallet.clone())?
+        .with_signer(config.wallet.clone())
+        .map_err(|e| HandshakeError::Codec(e.into()))?
         .build();
 
     // Send ACK
-    let stream = framed.into_inner();
-    let mut framed = Framed::new(stream, ack_codec);
+    let mut framed = Framed::new(framed.into_inner(), ack_codec);
 
     framed
         .send(Ack {
