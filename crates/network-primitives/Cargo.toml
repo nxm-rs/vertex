@@ -15,8 +15,11 @@ nectar-primitives.workspace = true
 ## vertex primitives
 vertex-network-primitives-traits.workspace = true
 
-alloy = { workspace = true, features = ["arbitrary"] }
+alloy-primitives = { workspace = true, features = ["arbitrary"] }
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
 alloy-chains.workspace = true
+
 libp2p.workspace = true
 arbitrary = { workspace = true, features = ["derive"] }
 proptest.workspace = true

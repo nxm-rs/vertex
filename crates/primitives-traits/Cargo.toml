@@ -13,7 +13,8 @@ workspace = true
 
 [dependencies]
 # alloy
-alloy.workspace = true
+alloy-primitives.workspace = true
+alloy-signer.workspace = true
 
 bytes.workspace = true
 thiserror.workspace = true

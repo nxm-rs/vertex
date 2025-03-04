@@ -89,7 +89,7 @@ impl From<BMTBody> for ContentChunk {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::b256;
+    use alloy_primitives::b256;
     use nectar_primitives_traits::CHUNK_SIZE;
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb;

@@ -1,0 +1,17 @@
+[package]
+name = "vertex-swarm-forks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Swarm fork types used in vertex"
+
+[lints]
+workspace = true
+
+[dependencies]
+# ethereum
+alloy-chains.workspace = true
+alloy-primitives.workspace = true

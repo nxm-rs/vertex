@@ -1,5 +1,5 @@
 use crate::bmt::{Hasher, Segment, Span, TreeIterator, DEPTH};
-use alloy::primitives::Keccak256;
+use alloy_primitives::Keccak256;
 use nectar_primitives_traits::{BRANCHES, SEGMENT_SIZE};
 use thiserror::Error;
 
@@ -164,7 +164,7 @@ impl Prover for Hasher {
 mod tests {
     use super::*;
     use crate::bmt::{Pool, PooledHasher};
-    use alloy::primitives::hex;
+    use alloy_primitives::hex;
     use nectar_primitives_traits::CHUNK_SIZE;
     use rand::Rng;
     use std::sync::Arc;

@@ -9,7 +9,9 @@ rust-version.workspace = true
 description = "Common types in Ethereum Swarm"
 
 [dependencies]
-alloy.workspace = true
+alloy-primitives.workspace = true
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
 nectar-primitives-traits.workspace = true
 
 # misc
@@ -38,7 +40,7 @@ criterion = { workspace = true, features = ["async_tokio"] }
 tokio = { workspace = true, features = ["full"] }
 
 [build-dependencies]
-alloy.workspace = true
+alloy-primitives.workspace = true
 
 [features]
 arbitrary = [

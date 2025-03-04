@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use nectar_primitives_traits::SwarmAddress;
 
-use alloy::primitives::U256;
+use alloy_primitives::U256;
 
 pub trait Distance {
     /// Returns true if self is closer to `a` than to `y`
@@ -57,7 +57,7 @@ pub fn distance_cmp(a: &SwarmAddress, x: &SwarmAddress, y: &SwarmAddress) -> std
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::b256;
+    use alloy_primitives::b256;
     use nectar_primitives_traits::SwarmAddress;
     use std::{cmp::Ordering, str::FromStr};
 

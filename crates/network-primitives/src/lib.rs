@@ -4,14 +4,9 @@
 //! including a builder pattern for constructing node addresses and utilities for
 //! address verification and signature handling.
 
-use alloy::{
-    primitives::{Address, PrimitiveSignature, B256},
-    signers::{
-        k256::ecdsa::SigningKey,
-        local::{LocalSigner, PrivateKeySigner},
-        SignerSync,
-    },
-};
+use alloy_primitives::{Address, PrimitiveSignature, B256};
+use alloy_signer::{k256::ecdsa::SigningKey, SignerSync};
+use alloy_signer_local::{LocalSigner, PrivateKeySigner};
 use bytes::{Bytes, BytesMut};
 use std::marker::PhantomData;
 use std::net::{Ipv4Addr, Ipv6Addr};

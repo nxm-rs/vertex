@@ -12,7 +12,8 @@ repository.workspace = true
 nectar-primitives-traits.workspace = true
 
 ## alloy
-alloy.workspace = true
+alloy-primitives.workspace = true
+alloy-signer.workspace = true
 
 ## libp2p
 libp2p.workspace = true

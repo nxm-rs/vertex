@@ -1,4 +1,4 @@
-use alloy::primitives::Keccak256;
+use alloy_primitives::Keccak256;
 
 fn main() {
     const DEPTH: usize = 8;

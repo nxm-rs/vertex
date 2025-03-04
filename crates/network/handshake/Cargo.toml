@@ -16,7 +16,9 @@ vertex-network-primitives.workspace = true
 vertex-network-primitives-traits.workspace = true
 
 ## alloy
-alloy.workspace = true
+alloy-primitives.workspace = true
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
 
 ## async
 futures.workspace = true

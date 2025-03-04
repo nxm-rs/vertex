@@ -122,10 +122,9 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use alloy::signers::{
-        k256::ecdsa::SigningKey,
-        local::{LocalSigner, PrivateKeySigner},
-    };
+    use alloy_primitives::U256;
+    use alloy_signer::k256::ecdsa::SigningKey;
+    use alloy_signer_local::{LocalSigner, PrivateKeySigner};
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb;
 

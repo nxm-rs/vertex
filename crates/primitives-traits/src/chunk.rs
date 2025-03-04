@@ -1,10 +1,8 @@
 use std::{io, ops::Deref, sync::OnceLock};
 
 use crate::{ChunkAddress, BRANCHES, SEGMENT_SIZE};
-use alloy::{
-    primitives::{Address, PrimitiveSignature, SignatureError},
-    signers::Error as SignerError,
-};
+use alloy_primitives::{Address, PrimitiveSignature, SignatureError};
+use alloy_signer::Error as SignerError;
 use bytes::Bytes;
 use thiserror::Error;
 

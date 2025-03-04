@@ -20,7 +20,7 @@ pub enum CodecError {
     InvalidMultiaddr(#[from] multiaddr::Error),
 
     #[error("Invalid signature: {0}")]
-    InvalidSignature(#[from] alloy::primitives::SignatureError),
+    InvalidSignature(#[from] alloy_primitives::SignatureError),
 
     #[error("Invalid node address: {0}")]
     InvalidNodeAddress(#[from] NodeAddressError),

@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use alloy::primitives::B256;
+use alloy_primitives::B256;
 use clap::Args;
 
 const DEFAULT_NONCE: &str = "0x0000000000000000000000000000000000000000000000000000000000000000";

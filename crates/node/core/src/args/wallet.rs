@@ -1,7 +1,5 @@
-use alloy::signers::{
-    k256::ecdsa::SigningKey,
-    local::{LocalSigner, PrivateKeySigner},
-};
+use alloy_signer::k256::ecdsa::SigningKey;
+use alloy_signer_local::{LocalSigner, PrivateKeySigner};
 use clap::{command, Args};
 use std::{path::PathBuf, str::FromStr, sync::Arc};
 

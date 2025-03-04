@@ -1,4 +1,4 @@
-use alloy::primitives::keccak256;
+use alloy_primitives::keccak256;
 use nectar_primitives_traits::SEGMENT_SIZE;
 use rayon::prelude::*;
 use std::cell::RefCell;

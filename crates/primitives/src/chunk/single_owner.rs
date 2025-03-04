@@ -6,10 +6,9 @@
 //!   underlying BMT body containing data and metadata.
 //! - A builder pattern (`SingleOwnerChunkBuilder`): Facilitates the creation of `SingleOwnerChunk` for ensuring that
 //!   all necessary fields are properly configured in a structured manner.
-use alloy::{
-    primitives::{address, b256, Address, Keccak256, PrimitiveSignature, B256},
-    signers::{local::PrivateKeySigner, SignerSync},
-};
+use alloy_primitives::{address, b256, Address, Keccak256, PrimitiveSignature, B256};
+use alloy_signer::SignerSync;
+use alloy_signer_local::PrivateKeySigner;
 use bytes::{Bytes, BytesMut};
 use nectar_primitives_traits::{
     chunk::{ChunkError, Result},
@@ -387,9 +386,7 @@ impl<'a> arbitrary::Arbitrary<'a> for SingleOwnerChunk {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::hex;
-    use alloy::primitives::{address, b256};
-    use alloy::signers::local::PrivateKeySigner;
+    use alloy_primitives::hex;
     use nectar_primitives_traits::CHUNK_SIZE;
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb;
