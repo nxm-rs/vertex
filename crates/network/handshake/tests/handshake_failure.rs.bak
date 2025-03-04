@@ -3,7 +3,7 @@ use std::sync::Arc;
 use libp2p_swarm::Swarm;
 use libp2p_swarm_test::SwarmExt;
 use tracing_subscriber;
-use vertex_network_handshake::{HandshakeBehaviour, HandshakeConfig, HandshakeEvent};
+use vertex_network_handshake::{HandshakeBehaviour, HandshakeEvent};
 
 #[tokio::test]
 async fn handshake_failure() {

@@ -50,28 +50,28 @@ impl<const N: u64> TryFrom<crate::proto::handshake::Ack> for Ack<N> {
     type Error = CodecError;
 
     fn try_from(value: crate::proto::handshake::Ack) -> Result<Self, Self::Error> {
-        if value.NetworkID != N {
+        if value.network_id != N {
             return Err(CodecError::NetworkIDMismatch);
         }
 
         let protobuf_address = value
-            .Address
+            .address
             .as_ref()
             .ok_or_else(|| CodecError::MissingField("address"))?;
         let remote_address = NodeAddress::builder()
-            .with_nonce(value.Nonce.as_slice().try_into()?)
-            .with_underlay(Multiaddr::try_from(protobuf_address.Underlay.clone())?)
+            .with_nonce(value.nonce.as_slice().try_into()?)
+            .with_underlay(Multiaddr::try_from(protobuf_address.underlay.clone())?)
             .with_signature(
-                protobuf_address.Overlay.as_slice().try_into()?,
-                protobuf_address.Signature.as_slice().try_into()?,
+                protobuf_address.overlay.as_slice().try_into()?,
+                protobuf_address.signature.as_slice().try_into()?,
                 // Validate signatures at the codec level
                 true,
             )?
             .build();
         Ok(Ack::new(
             remote_address,
-            value.FullNode,
-            value.WelcomeMessage,
+            value.full_node,
+            value.welcome_message,
         )?)
     }
 }
@@ -79,15 +79,15 @@ impl<const N: u64> TryFrom<crate::proto::handshake::Ack> for Ack<N> {
 impl<const N: u64> Into<crate::proto::handshake::Ack> for Ack<N> {
     fn into(self) -> crate::proto::handshake::Ack {
         crate::proto::handshake::Ack {
-            Address: Some(crate::proto::handshake::BzzAddress {
-                Underlay: self.node_address.underlay_address().to_vec(),
-                Signature: self.node_address.signature().unwrap().as_bytes().to_vec(),
-                Overlay: self.node_address.overlay_address().to_vec(),
+            address: Some(crate::proto::handshake::BzzAddress {
+                underlay: self.node_address.underlay_address().to_vec(),
+                signature: self.node_address.signature().unwrap().as_bytes().to_vec(),
+                overlay: self.node_address.overlay_address().to_vec(),
             }),
-            NetworkID: N,
-            FullNode: self.full_node,
-            Nonce: self.node_address.nonce().to_vec(),
-            WelcomeMessage: self.welcome_message,
+            network_id: N,
+            full_node: self.full_node,
+            nonce: self.node_address.nonce().to_vec(),
+            welcome_message: self.welcome_message,
         }
     }
 }
@@ -122,7 +122,10 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use alloy::signers::local::PrivateKeySigner;
+    use alloy::signers::{
+        k256::ecdsa::SigningKey,
+        local::{LocalSigner, PrivateKeySigner},
+    };
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb;
 
@@ -130,7 +133,7 @@ mod tests {
 
     // Helper function to create a valid Ack instance
     fn create_test_ack<const N: u64>(
-        signer: Arc<PrivateKeySigner>,
+        signer: Arc<LocalSigner<SigningKey>>,
         welcome_message: String,
         full_node: bool,
     ) -> Result<Ack<N>, CodecError> {
@@ -188,7 +191,7 @@ mod tests {
             // Test with message exceeding max length
             let too_long_message = base_char.repeat(MAX_WELCOME_MESSAGE_CHARS + 1);
             let mut proto_ack: crate::proto::handshake::Ack = ack.unwrap().into();
-            proto_ack.WelcomeMessage = too_long_message;
+            proto_ack.welcome_message = too_long_message;
 
             let result = Ack::<TEST_NETWORK_ID>::try_from(proto_ack);
             prop_assert!(result.is_err());
@@ -201,7 +204,7 @@ mod tests {
             wrong_network_id in (TEST_NETWORK_ID + 1..u64::MAX),
         ) {
             let mut proto_ack: crate::proto::handshake::Ack = ack.into();
-            proto_ack.NetworkID = wrong_network_id;
+            proto_ack.network_id = wrong_network_id;
 
             let result = Ack::<TEST_NETWORK_ID>::try_from(proto_ack);
             prop_assert!(result.is_err());
@@ -229,16 +232,16 @@ mod tests {
             vec![
                 (
                     Box::new(|mut ack| {
-                        ack.Address = None;
+                        ack.address = None;
                         ack
                     }),
                     Box::new(|e| matches!(e, CodecError::MissingField("address"))),
                 ),
                 (
                     Box::new(|mut ack| {
-                        let mut addr = ack.Address.unwrap();
-                        addr.Signature = vec![0u8; 65];
-                        ack.Address = Some(addr);
+                        let mut addr = ack.address.unwrap();
+                        addr.signature = vec![0u8; 65];
+                        ack.address = Some(addr);
                         ack
                     }),
                     Box::new(|e| {
@@ -249,18 +252,18 @@ mod tests {
                 ),
                 (
                     Box::new(|mut ack| {
-                        let mut addr = ack.Address.unwrap();
-                        addr.Underlay = vec![0u8; 32];
-                        ack.Address = Some(addr);
+                        let mut addr = ack.address.unwrap();
+                        addr.underlay = vec![0u8; 32];
+                        ack.address = Some(addr);
                         ack
                     }),
                     Box::new(|e| matches!(e, CodecError::InvalidMultiaddr(_))),
                 ),
                 (
                     Box::new(|mut ack| {
-                        let mut addr = ack.Address.unwrap();
-                        addr.Overlay = vec![0u8; 32];
-                        ack.Address = Some(addr);
+                        let mut addr = ack.address.unwrap();
+                        addr.overlay = vec![0u8; 32];
+                        ack.address = Some(addr);
                         ack
                     }),
                     Box::new(|e| {
@@ -274,7 +277,7 @@ mod tests {
                 ),
                 (
                     Box::new(|mut ack| {
-                        ack.Nonce = vec![0u8; 16];
+                        ack.nonce = vec![0u8; 16];
                         ack
                     }),
                     Box::new(|e| matches!(e, CodecError::InvalidData(_))),

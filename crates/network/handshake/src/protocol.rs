@@ -5,15 +5,15 @@ use futures::{future::BoxFuture, AsyncWriteExt, SinkExt, TryStreamExt};
 use libp2p::{core::UpgradeInfo, InboundUpgrade, Multiaddr, OutboundUpgrade, PeerId, Stream};
 use tracing::{debug, info};
 use vertex_network_primitives::NodeAddress;
+use vertex_node_core::args::NodeCommand;
 
 use crate::{
-    Ack, AckCodec, HandshakeConfig, HandshakeError, HandshakeInfo, Syn, SynAck, SynAckCodec,
-    SynCodec, PROTOCOL,
+    Ack, AckCodec, HandshakeError, HandshakeInfo, Syn, SynAck, SynAckCodec, SynCodec, PROTOCOL,
 };
 
 #[derive(Debug, Clone)]
 pub struct HandshakeProtocol<const N: u64> {
-    pub(crate) config: Arc<HandshakeConfig<N>>,
+    pub(crate) config: Arc<NodeCommand>,
     pub(crate) peer_id: PeerId,
     pub(crate) remote_addr: Multiaddr,
 }
@@ -59,7 +59,7 @@ impl<const N: u64> OutboundUpgrade<Stream> for HandshakeProtocol<N> {
 
 async fn handle_inbound_handshake<const N: u64>(
     stream: Stream,
-    config: Arc<HandshakeConfig<N>>,
+    config: Arc<NodeCommand>,
     peer_id: PeerId,
     _: Multiaddr,
 ) -> Result<HandshakeInfo<N>, HandshakeError> {
@@ -79,9 +79,9 @@ async fn handle_inbound_handshake<const N: u64>(
 
     // Create local address
     let local_address: NodeAddress<N> = NodeAddress::builder()
-        .with_nonce(config.nonce)
+        .with_nonce(config.neighbourhood.nonce)
         .with_underlay(syn.observed_underlay().clone())
-        .with_signer(config.wallet.clone())
+        .with_signer(config.wallet.signer())
         .map_err(|e| HandshakeError::Codec(e.into()))?
         .build();
 
@@ -90,8 +90,8 @@ async fn handle_inbound_handshake<const N: u64>(
         syn,
         Ack::new(
             local_address,
-            config.full_node,
-            config.welcome_message.clone(),
+            config.neighbourhood.full,
+            config.network.welcome_message.clone(),
         )?,
     );
 
@@ -114,7 +114,7 @@ async fn handle_inbound_handshake<const N: u64>(
 
 async fn handle_outbound_handshake<const N: u64>(
     stream: Stream,
-    config: Arc<HandshakeConfig<N>>,
+    config: Arc<NodeCommand>,
     peer_id: PeerId,
     remote_addr: Multiaddr,
 ) -> Result<HandshakeInfo<N>, HandshakeError> {
@@ -137,9 +137,9 @@ async fn handle_outbound_handshake<const N: u64>(
     debug!("Received SYNACK: {:?}", syn_ack);
 
     let local_address: NodeAddress<N> = NodeAddress::builder()
-        .with_nonce(config.nonce)
+        .with_nonce(config.neighbourhood.nonce)
         .with_underlay(syn_ack.syn().observed_underlay().clone())
-        .with_signer(config.wallet.clone())
+        .with_signer(config.wallet.signer())
         .map_err(|e| HandshakeError::Codec(e.into()))?
         .build();
 
@@ -149,8 +149,8 @@ async fn handle_outbound_handshake<const N: u64>(
     framed
         .send(Ack::new(
             local_address,
-            config.full_node,
-            config.welcome_message.clone(),
+            config.neighbourhood.full,
+            config.network.welcome_message.clone(),
         )?)
         .await?;
 

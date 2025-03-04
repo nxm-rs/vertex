@@ -11,6 +11,6 @@ message Headers {
 }
 
 message Header {
-  string key = 1;
-  bytes value = 2;
+    string key = 1;
+    bytes value = 2;
 }

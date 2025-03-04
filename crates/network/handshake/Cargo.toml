@@ -10,6 +10,8 @@ build = "build.rs"
 
 [dependencies]
 ## vertex
+vertex-node-core.workspace = true
+vertex-network-codec.workspace = true
 vertex-network-primitives.workspace = true
 vertex-network-primitives-traits.workspace = true
 
@@ -52,5 +54,5 @@ proptest-arbitrary-interop.workspace = true
 rand.workspace = true
 
 [build-dependencies]
-pb-rs = "0.9.1"
-walkdir = "2.5.0"
+pb-rs.workspace = true
+walkdir.workspace = true

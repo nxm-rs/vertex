@@ -11,22 +11,23 @@ use libp2p::{
     },
     Multiaddr, PeerId,
 };
+use vertex_node_core::args::NodeCommand;
 
 use crate::{
-    HandshakeCommand, HandshakeConfig, HandshakeError, HandshakeEvent, HandshakeProtocol,
-    HandshakeState, HANDSHAKE_TIMEOUT,
+    HandshakeCommand, HandshakeError, HandshakeEvent, HandshakeProtocol, HandshakeState,
+    HANDSHAKE_TIMEOUT,
 };
 
 pub struct HandshakeHandler<const N: u64> {
     peer_id: PeerId,
     remote_addr: Multiaddr,
-    config: Arc<HandshakeConfig<N>>,
+    config: Arc<NodeCommand>,
     state: HandshakeState,
     pending_events: VecDeque<ConnectionHandlerEvent<HandshakeProtocol<N>, (), HandshakeEvent<N>>>,
 }
 
 impl<const N: u64> HandshakeHandler<N> {
-    pub fn new(config: Arc<HandshakeConfig<N>>, peer_id: PeerId, remote_addr: &Multiaddr) -> Self {
+    pub fn new(config: Arc<NodeCommand>, peer_id: PeerId, remote_addr: &Multiaddr) -> Self {
         Self {
             peer_id,
             remote_addr: remote_addr.clone(),

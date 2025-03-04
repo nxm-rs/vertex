@@ -12,16 +12,17 @@ use libp2p::{
     },
     Multiaddr, PeerId,
 };
+use vertex_node_core::args::NodeCommand;
 
-use crate::{HandshakeCommand, HandshakeConfig, HandshakeEvent, HandshakeHandler};
+use crate::{HandshakeCommand, HandshakeEvent, HandshakeHandler};
 
 pub struct HandshakeBehaviour<const N: u64> {
-    config: Arc<HandshakeConfig<N>>,
+    config: Arc<NodeCommand>,
     events: VecDeque<ToSwarm<HandshakeEvent<N>, HandshakeCommand>>,
 }
 
 impl<const N: u64> HandshakeBehaviour<N> {
-    pub fn new(config: Arc<HandshakeConfig<N>>) -> Self {
+    pub fn new(config: Arc<NodeCommand>) -> Self {
         Self {
             config,
             events: VecDeque::new(),

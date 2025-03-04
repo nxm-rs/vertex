@@ -30,11 +30,11 @@ impl<const N: u64> TryFrom<crate::proto::handshake::SynAck> for SynAck<N> {
     fn try_from(value: crate::proto::handshake::SynAck) -> Result<Self, Self::Error> {
         Ok(Self::new(
             value
-                .Syn
+                .syn
                 .ok_or_else(|| CodecError::MissingField("syn"))?
                 .try_into()?,
             value
-                .Ack
+                .ack
                 .ok_or_else(|| CodecError::MissingField("ack"))?
                 .try_into()?,
         ))
@@ -45,8 +45,8 @@ impl<const N: u64> From<SynAck<N>> for crate::proto::handshake::SynAck {
     fn from(value: SynAck<N>) -> Self {
         let (syn, ack) = value.into_parts();
         crate::proto::handshake::SynAck {
-            Syn: Some(syn.into()),
-            Ack: Some(ack.into()),
+            syn: Some(syn.into()),
+            ack: Some(ack.into()),
         }
     }
 }
@@ -110,14 +110,14 @@ mod tests {
         let test_cases: Vec<(SynAckModifier, Box<dyn Fn(CodecError) -> bool>)> = vec![
             (
                 Box::new(|mut synack| {
-                    synack.Syn = None;
+                    synack.syn = None;
                     synack
                 }),
                 Box::new(|e| matches!(e, CodecError::MissingField("syn"))),
             ),
             (
                 Box::new(|mut synack| {
-                    synack.Ack = None;
+                    synack.ack = None;
                     synack
                 }),
                 Box::new(|e| matches!(e, CodecError::MissingField("ack"))),

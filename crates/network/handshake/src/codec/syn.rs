@@ -22,14 +22,14 @@ impl<const N: u64> TryFrom<crate::proto::handshake::Syn> for Syn<N> {
     type Error = CodecError;
 
     fn try_from(value: crate::proto::handshake::Syn) -> Result<Self, Self::Error> {
-        Ok(Self::new(Multiaddr::try_from(value.ObservedUnderlay)?))
+        Ok(Self::new(Multiaddr::try_from(value.observed_underlay)?))
     }
 }
 
 impl<const N: u64> Into<crate::proto::handshake::Syn> for Syn<N> {
     fn into(self) -> crate::proto::handshake::Syn {
         crate::proto::handshake::Syn {
-            ObservedUnderlay: self.observed_underlay.to_vec(),
+            observed_underlay: self.observed_underlay.to_vec(),
         }
     }
 }
@@ -63,7 +63,7 @@ mod tests {
             // Convert Syn to proto
             let proto_syn: crate::proto::handshake::Syn = syn.clone().into();
 
-            // Convert proto back to Sy
+            // Convert proto back to Syn
             let recovered_syn = Syn::<TEST_NETWORK_ID>::try_from(proto_syn);
 
             prop_assert!(recovered_syn.is_ok());
@@ -80,7 +80,7 @@ mod tests {
     #[test]
     fn test_syn_err_on_malformed_proto() {
         let mut proto_syn: crate::proto::handshake::Syn = create_test_syn().into();
-        proto_syn.ObservedUnderlay = vec![0x01, 0x02, 0x03];
+        proto_syn.observed_underlay = vec![0x01, 0x02, 0x03];
 
         let result = Syn::<TEST_NETWORK_ID>::try_from(proto_syn);
         assert!(result.is_err());

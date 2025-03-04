@@ -4,6 +4,14 @@
 //! including a builder pattern for constructing node addresses and utilities for
 //! address verification and signature handling.
 
+use alloy::{
+    primitives::{Address, PrimitiveSignature, B256},
+    signers::{
+        k256::ecdsa::SigningKey,
+        local::{LocalSigner, PrivateKeySigner},
+        SignerSync,
+    },
+};
 use bytes::{Bytes, BytesMut};
 use std::marker::PhantomData;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -12,10 +20,6 @@ use vertex_network_primitives_traits::{
     calculate_overlay_address, NodeAddress as NodeAddressTrait, NodeAddressError,
 };
 
-use alloy::{
-    primitives::{Address, PrimitiveSignature, B256},
-    signers::{local::PrivateKeySigner, SignerSync},
-};
 use libp2p::Multiaddr;
 use nectar_primitives_traits::SwarmAddress;
 
@@ -126,7 +130,7 @@ impl<const N: u64> NodeAddressBuilder<N, WithNonce> {
 impl<const N: u64> NodeAddressBuilder<N, WithUnderlay> {
     pub fn with_signer(
         self,
-        signer: Arc<PrivateKeySigner>,
+        signer: Arc<LocalSigner<SigningKey>>,
     ) -> Result<NodeAddressBuilder<N, ReadyToBuild>, NodeAddressError> {
         let overlay =
             calculate_overlay_address::<N>(&signer.address(), &self.nonce.as_ref().unwrap());

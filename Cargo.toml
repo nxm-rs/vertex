@@ -19,7 +19,12 @@ members = [
     "bin/vertex",
     "crates/network-primitives",
     "crates/network-primitives-traits",
+    "crates/network/codec",
     "crates/network/handshake",
+    "crates/network/headers",
+    "crates/network/pricing",
+    "crates/node/cli",
+    "crates/node/core",
     "crates/primitives",
     "crates/primitives-traits",
     # "crates/storage",
@@ -47,7 +52,14 @@ vertex-network-primitives = { path = "crates/network-primitives" }
 vertex-network-primitives-traits = { path = "crates/network-primitives-traits" }
 
 # network protocols
+vertex-network-codec = { path = "crates/network/codec" }
 vertex-network-handshake = { path = "crates/network/handshake" }
+vertex-network-headers = { path = "crates/network/headers" }
+vertex-network-pricing = { path = "crates/network/pricing" }
+
+# node
+vertex-node-core = { path = "crates/node/core" }
+vertex-node-cli = { path = "crates/node/cli" }
 
 ## alloy
 alloy = { version = "0.11", features = [
@@ -66,7 +78,6 @@ alloy = { version = "0.11", features = [
 alloy-chains = { version = "0.1.58", default-features = false }
 
 ## misc
-clap = { version = "4.5.23", features = ["derive", "env"] }
 # getrandom = "0.2"
 rand = "0.8"
 thiserror = "2.0.4"
@@ -92,6 +103,8 @@ asynchronous-codec = "0.7.0"
 libp2p-swarm = "0.46.0"
 libp2p-swarm-test = "0.5.0"
 quickcheck = "1.0.3"
+pb-rs = "0.9.1"
+walkdir = "2.5.0"
 
 ## tokio
 # tokio-stream = "0.1.17"
@@ -128,3 +141,8 @@ proptest = "1.4"
 proptest-arbitrary-interop = "0.1"
 proptest-derive = "0.5"
 # test-fuzz = "6"
+vergen-gitcl = "1.0.5"
+
+# misc
+clap = "4"
+eyre = "0.6"
