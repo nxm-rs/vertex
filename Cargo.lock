@@ -74,7 +74,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "996564c1782285d4e0299c29b318bc74f24b1d7f456cef3e040810b061ee3256"
 dependencies = [
  "alloy-primitives",
+ "arbitrary",
  "num_enum",
+ "proptest",
+ "serde",
  "strum 0.27.1",
 ]
 
@@ -135,7 +138,10 @@ checksum = "675264c957689f0fd75f5993a73123c2cc3b5c235a38f5b9037fe6c826bfb2c0"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
+ "arbitrary",
  "crc",
+ "rand 0.8.5",
+ "serde",
  "thiserror 2.0.11",
 ]
 
@@ -1496,6 +1502,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "critical-section"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
+
+[[package]]
 name = "crossbeam-channel"
 version = "0.5.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1826,6 +1838,12 @@ name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
+name = "dyn-clone"
+version = "1.0.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c7a8fb8a9fbf66c1f703fe16184d10ca0ee9d23be5b4436400408ba54a95005"
 
 [[package]]
 name = "ecdsa"
@@ -3539,6 +3557,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nectar-access-control"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "auto_impl",
+ "bytes",
+ "thiserror 2.0.11",
+]
+
+[[package]]
 name = "nectar-primitives"
 version = "0.1.0"
 dependencies = [
@@ -3562,6 +3590,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "nectar-primitives-new"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "auto_impl",
+ "bytes",
+ "codspeed-criterion-compat",
+ "digest 0.10.7",
+ "dyn-clone",
+ "generic-array",
+ "nectar-access-control",
+ "once_cell",
+ "rand 0.8.5",
+ "rayon",
+ "thiserror 2.0.11",
+ "tokio",
+]
+
+[[package]]
 name = "nectar-primitives-traits"
 version = "0.1.0"
 dependencies = [
@@ -3570,6 +3617,10 @@ dependencies = [
  "bytes",
  "thiserror 2.0.11",
 ]
+
+[[package]]
+name = "nectar-swips"
+version = "0.1.0"
 
 [[package]]
 name = "netlink-packet-core"
@@ -3790,6 +3841,10 @@ name = "once_cell"
 version = "1.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "945462a4b81e43c4e3ba96bd7b49d834c6f61198356aa858733bc4acf3cbe62e"
+dependencies = [
+ "critical-section",
+ "portable-atomic",
+]
 
 [[package]]
 name = "oorandom"
@@ -5756,6 +5811,7 @@ dependencies = [
  "alloy-signer",
  "libp2p",
  "nectar-primitives-traits",
+ "once_cell",
  "thiserror 2.0.11",
 ]
 
@@ -5785,8 +5841,32 @@ dependencies = [
 name = "vertex-swarm-forks"
 version = "0.1.0"
 dependencies = [
- "alloy-chains",
+ "alloy-eip2124",
  "alloy-primitives",
+ "arbitrary",
+ "auto_impl",
+ "dyn-clone",
+ "once_cell",
+ "rustc-hash",
+ "serde",
+ "vertex-network-primitives",
+]
+
+[[package]]
+name = "vertex-swarmspec"
+version = "0.1.0"
+dependencies = [
+ "alloy-chains",
+ "alloy-eip2124",
+ "alloy-primitives",
+ "arbitrary",
+ "auto_impl",
+ "libp2p",
+ "proptest",
+ "serde",
+ "vertex-network-primitives",
+ "vertex-network-primitives-traits",
+ "vertex-swarm-forks",
 ]
 
 [[package]]

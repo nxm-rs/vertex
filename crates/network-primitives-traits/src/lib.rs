@@ -9,6 +9,9 @@ use libp2p::Multiaddr;
 use nectar_primitives_traits::SwarmAddress;
 use thiserror::Error;
 
+mod sync;
+pub use sync::*;
+
 /// Errors that can occur when working with node addresses.
 #[derive(Error, Debug)]
 pub enum NodeAddressError {

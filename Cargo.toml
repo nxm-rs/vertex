@@ -17,6 +17,9 @@ members = [
     # "bin/wasm-playground",
     # "bin/swarm-wasm-lib",
     "bin/vertex",
+    "crates/nectar-swips",
+    "crates/nectar/crates/access-control",
+    "crates/nectar/crates/primitives",
     "crates/network-primitives",
     "crates/network-primitives-traits",
     "crates/network/codec",
@@ -26,7 +29,9 @@ members = [
     "crates/node/cli",
     "crates/node/core",
     "crates/primitives",
-    "crates/primitives-traits", "crates/swarm-forks",
+    "crates/primitives-traits",
+    "crates/swarm-forks",
+    "crates/swarmspec",
     # "crates/storage",
 ]
 # default-members = [
@@ -46,10 +51,15 @@ rust.unreachable_pub = "warn"
 nectar-primitives = { path = "crates/primitives", features = ["arbitrary"] }
 nectar-primitives-traits = { path = "crates/primitives-traits" }
 
+nectar-access-control = { path = "crates/nectar/crates/access-control" }
+nectar-primitives-new = { path = "crates/nectar/crates/primitives" }
+digest = "0.10"
+
 ## vertex
 # primitives
 vertex-network-primitives = { path = "crates/network-primitives" }
 vertex-network-primitives-traits = { path = "crates/network-primitives-traits" }
+vertex-swarm-forks = { path = "crates/swarm-forks" }
 
 # network protocols
 vertex-network-codec = { path = "crates/network/codec" }
@@ -62,28 +72,11 @@ vertex-node-core = { path = "crates/node/core" }
 vertex-node-cli = { path = "crates/node/cli" }
 
 ## alloy
+alloy-eip2124 = { version = "0.1.0", default-features = false }
 alloy-primitives = { version = "0.8.22", default-features = false }
 alloy-signer = { version = "0.11.1" }
 alloy-signer-local = { version = "0.11.1", features = ["eip712", "keystore"] }
-# alloy = { version = "0.11", features = [
-#     "arbitrary",
-#     "eips",
-#     "full",
-#     "hyper",
-#     "json-rpc",
-#     "node-bindings",
-#     "rpc-client",
-#     "rpc-types-debug",
-#     "rpc-types-trace",
-#     "signer-keystore",
-#     "signer-mnemonic",
-# ] }
 alloy-chains = { version = "0.1.58", default-features = false }
-
-## misc
-# getrandom = "0.2"
-rand = "0.8"
-thiserror = "2.0.4"
 
 ## tracing
 tracing = "0.1"
@@ -95,8 +88,6 @@ tracing-subscriber = { version = "0.3", features = [
     "json",
     "time",
 ] }
-
-bytes = "1.9.0"
 
 ## p2p
 libp2p = { version = "0.55.0", features = ["tokio", "noise", "tcp", "yamux", "dns", "macros", "ecdsa", "identify", "upnp", "autonat", "ping"] }
@@ -111,31 +102,17 @@ walkdir = "2.5.0"
 
 ## tokio
 # tokio-stream = "0.1.17"
-tokio = { version = "1.42.0", default-features = false, features = [
-    "macros",
-    "rt",
-] }
+tokio = { version = "1.42.0", default-features = false }
 # tokio-util = { version = "0.7.13", features = ["codec"] }
 
 ## async
 futures = "0.3"
 
-## wasm
-# wasm-bindgen = "0.2.97"
-# wasm-bindgen-futures = "0.4.47"
-# wasm-bindgen-test = "0.3.47"
-# js-sys = "0.3.74"
+## concurrency
+rayon = "1.10"
+thread_local = "1.1"
 
-# dotenv = "0.15.0"
-# reqwest = { version = "0.12.9", features = ["json"] }
-anyhow = "1.0.94"
-
-serde = { version = "1.0", default-features = false }
-serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
-serde_with = { version = "3", default-features = false, features = ["macros"] }
-
-
-## testing
+## misc testing
 arbitrary = "1.3"
 assert_matches = "1.5.0"
 criterion = { package = "codspeed-criterion-compat", version = "2.7" }
@@ -143,9 +120,23 @@ criterion = { package = "codspeed-criterion-compat", version = "2.7" }
 proptest = "1.4"
 proptest-arbitrary-interop = "0.1"
 proptest-derive = "0.5"
-# test-fuzz = "6"
-vergen-gitcl = "1.0.5"
+# test-fuzz = "7"
 
 # misc
+anyhow = "1.0"
+auto_impl = "1"
+bytes = { version = "1.9.0", default-features = false }
 clap = "4"
+derive_more = { version = "2", default-features = false, features = ["full"] }
+dyn-clone = "1.0.17"
 eyre = "0.6"
+generic-array = "0.14"
+once_cell = { version = "1.19", default-features = false, features = ["critical-section"] }
+critical-section = { version = "1.2", features = ["std"] }
+rand = "0.8.5"
+rustc-hash = { version = "2.0", default-features = false }
+serde = { version = "1.0", default-features = false }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+serde_with = { version = "3", default-features = false, features = ["macros"] }
+thiserror = { version = "2.0", default-features = false }
+vergen-gitcl = "1.0.5"

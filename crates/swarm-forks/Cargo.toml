@@ -12,6 +12,43 @@ description = "Swarm fork types used in vertex"
 workspace = true
 
 [dependencies]
+# vertex
+vertex-network-primitives.workspace = true
+
 # ethereum
-alloy-chains.workspace = true
+alloy-eip2124.workspace = true
 alloy-primitives.workspace = true
+
+# misc
+serde = { workspace = true, features = ["derive"], optional = true }
+dyn-clone.workspace = true
+once_cell.workspace = true
+rustc-hash = { workspace = true, optional = true }
+
+# arbitrary
+arbitrary = { workspace = true, features = ["derive"], optional = true }
+auto_impl.workspace = true
+
+[dev-dependencies]
+arbitrary = { workspace = true, features = ["derive"] }
+
+[features]
+default = ["std", "serde", "rustc-hash"]
+arbitrary = [
+    "dep:arbitrary",
+    "alloy-primitives/arbitrary",
+    "alloy-eip2124/arbitrary",
+]
+serde = [
+    "dep:serde",
+    "alloy-primitives/serde",
+    "alloy-eip2124/serde",
+]
+std = [
+    "alloy-primitives/std",
+    "rustc-hash/std",
+    "serde?/std",
+    "alloy-eip2124/std",
+    "once_cell/std",
+]
+rustc-hash = ["dep:rustc-hash"]

@@ -1,7 +1,7 @@
 mod macros;
 
-mod ethereum;
-pub use ethereum::EthereumHardfork;
+mod swarm;
+pub use swarm::SwarmHardfork;
 
 mod dev;
 pub use dev::DEV_HARDFORKS;
@@ -14,9 +14,12 @@ use core::{
 use dyn_clone::DynClone;
 
 /// Generic hardfork trait.
+///
+/// This trait is implemented by all hardfork types and provides a common
+/// interface for working with hardforks.
 #[auto_impl::auto_impl(&, Box)]
 pub trait Hardfork: Any + DynClone + Send + Sync + 'static {
-    /// Fork name.
+    /// Returns the fork name.
     fn name(&self) -> &'static str;
 
     /// Returns boxed value.
@@ -54,50 +57,12 @@ mod tests {
 
     #[test]
     fn check_hardfork_from_str() {
-        let hardfork_str = [
-            "frOntier",
-            "homEstead",
-            "dao",
-            "tAngerIne",
-            "spurIousdrAgon",
-            "byzAntium",
-            "constantinople",
-            "petersburg",
-            "istanbul",
-            "muirglacier",
-            "bErlin",
-            "lonDon",
-            "arrowglacier",
-            "grayglacier",
-            "PARIS",
-            "ShAnGhAI",
-            "CaNcUn",
-            "PrAguE",
-        ];
-        let expected_hardforks = [
-            EthereumHardfork::Frontier,
-            EthereumHardfork::Homestead,
-            EthereumHardfork::Dao,
-            EthereumHardfork::Tangerine,
-            EthereumHardfork::SpuriousDragon,
-            EthereumHardfork::Byzantium,
-            EthereumHardfork::Constantinople,
-            EthereumHardfork::Petersburg,
-            EthereumHardfork::Istanbul,
-            EthereumHardfork::MuirGlacier,
-            EthereumHardfork::Berlin,
-            EthereumHardfork::London,
-            EthereumHardfork::ArrowGlacier,
-            EthereumHardfork::GrayGlacier,
-            EthereumHardfork::Paris,
-            EthereumHardfork::Shanghai,
-            EthereumHardfork::Cancun,
-            EthereumHardfork::Prague,
-        ];
+        let hardfork_str = ["frOntier"];
+        let expected_hardforks = [SwarmHardfork::Frontier];
 
-        let hardforks: Vec<EthereumHardfork> = hardfork_str
+        let hardforks: Vec<SwarmHardfork> = hardfork_str
             .iter()
-            .map(|h| EthereumHardfork::from_str(h).unwrap())
+            .map(|h| SwarmHardfork::from_str(h).unwrap())
             .collect();
 
         assert_eq!(hardforks, expected_hardforks);
@@ -105,6 +70,6 @@ mod tests {
 
     #[test]
     fn check_nonexistent_hardfork_from_str() {
-        assert!(EthereumHardfork::from_str("not a hardfork").is_err());
+        assert!(SwarmHardfork::from_str("not a hardfork").is_err());
     }
 }

@@ -1,0 +1,24 @@
+[package]
+name = "nectar-access-control"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Core access control primitives for decentralized systems"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Core dependencies
+bytes.workspace = true
+thiserror.workspace = true
+
+# Trait helpers
+auto_impl.workspace = true
+
+[dev-dependencies]
+# For examples
+alloy-primitives.workspace = true

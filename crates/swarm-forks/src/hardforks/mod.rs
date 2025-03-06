@@ -1,6 +1,6 @@
-/// Ethereum helper methods
-mod ethereum;
-pub use ethereum::EthereumHardforks;
+/// Swarm helper methods
+mod swarm;
+pub use swarm::SwarmHardforksTrait;
 
 use crate::{ForkCondition, ForkFilter, ForkId, Hardfork, Head};
 #[cfg(feature = "std")]
@@ -13,6 +13,9 @@ use alloc::collections::btree_map::Entry;
 use alloc::{boxed::Box, vec::Vec};
 
 /// Generic trait over a set of ordered hardforks
+///
+/// This trait provides methods to query hardfork activation conditions
+/// and manage fork-related functionality.
 #[auto_impl::auto_impl(&, Arc)]
 pub trait Hardforks: Clone {
     /// Retrieves [`ForkCondition`] from `fork`. If `fork` is not present, returns
@@ -42,9 +45,9 @@ pub trait Hardforks: Clone {
     fn fork_filter(&self, head: Head) -> ForkFilter;
 }
 
-/// Ordered list of a chain hardforks that implement [`Hardfork`].
+/// Ordered list of a swarm hardforks that implement [`Hardfork`].
 #[derive(Default, Clone, PartialEq, Eq)]
-pub struct ChainHardforks {
+pub struct SwarmHardforks {
     forks: Vec<(Box<dyn Hardfork>, ForkCondition)>,
     #[cfg(feature = "std")]
     map: FxHashMap<&'static str, ForkCondition>,
@@ -52,10 +55,8 @@ pub struct ChainHardforks {
     map: alloc::collections::BTreeMap<&'static str, ForkCondition>,
 }
 
-impl ChainHardforks {
-    /// Creates a new [`ChainHardforks`] from a list which **must be ordered** by activation.
-    ///
-    /// Equivalent Ethereum hardforks **must be included** as well.
+impl SwarmHardforks {
+    /// Creates a new [`SwarmHardforks`] from a list which **must be ordered** by activation.
     pub fn new(forks: Vec<(Box<dyn Hardfork>, ForkCondition)>) -> Self {
         let map = forks
             .iter()
@@ -90,7 +91,6 @@ impl ChainHardforks {
     pub fn fork_block<H: Hardfork>(&self, fork: H) -> Option<u64> {
         match self.fork(fork) {
             ForkCondition::Block(block) => Some(block),
-            ForkCondition::TTD { fork_block, .. } => fork_block,
             ForkCondition::Timestamp(ts) => Some(ts),
             ForkCondition::Never => None,
         }
@@ -144,9 +144,9 @@ impl ChainHardforks {
     }
 }
 
-impl core::fmt::Debug for ChainHardforks {
+impl core::fmt::Debug for SwarmHardforks {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ChainHardforks")
+        f.debug_struct("SwarmHardforks")
             .field(
                 "0",
                 &self

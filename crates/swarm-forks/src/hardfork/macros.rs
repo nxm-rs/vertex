@@ -1,4 +1,4 @@
-/// Macro that defines different variants of a chain specific enum. See [`crate::Hardfork`] as an
+/// Macro that defines different variants of a swarm specific enum. See [`crate::Hardfork`] as an
 /// example.
 #[macro_export]
 macro_rules! hardfork {

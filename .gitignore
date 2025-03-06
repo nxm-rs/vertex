@@ -3,3 +3,4 @@ target/
 *.tar.gz
 .env
 cspell.json
+reth
