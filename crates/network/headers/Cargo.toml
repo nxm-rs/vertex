@@ -1,0 +1,36 @@
+[package]
+name = "vertex-network-headers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+## vertex
+vertex-network-codec.workspace = true
+
+## async
+futures.workspace = true
+
+## p2p
+asynchronous-codec.workspace = true
+quick-protobuf.workspace = true
+quick-protobuf-codec.workspace = true
+libp2p.workspace = true
+
+## misc
+bytes.workspace = true
+thiserror.workspace = true
+
+## tracing
+tracing.workspace = true
+
+[build-dependencies]
+pb-rs.workspace = true
+walkdir.workspace = true

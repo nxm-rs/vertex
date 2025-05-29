@@ -1,0 +1,63 @@
+[package]
+name = "vertex-network-handshake"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[dependencies]
+## nectar
+nectar-primitives.workspace = true
+
+## vertex
+vertex-node-core.workspace = true
+vertex-network-codec.workspace = true
+vertex-network-primitives.workspace = true
+vertex-network-primitives-traits.workspace = true
+
+## alloy
+alloy-primitives.workspace = true
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
+
+## async
+futures.workspace = true
+tokio.workspace = true
+
+## p2p
+asynchronous-codec.workspace = true
+quick-protobuf.workspace = true
+quick-protobuf-codec.workspace = true
+libp2p.workspace = true
+
+## misc
+bytes.workspace = true
+thiserror.workspace = true
+
+## tracing
+tracing.workspace = true
+
+arbitrary = { workspace = true, features = ["derive"] }
+proptest.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+libp2p-swarm = { workspace = true, features = ["macros"] }
+libp2p-swarm-test.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+tracing-subscriber.workspace = true
+quickcheck.workspace = true
+
+arbitrary.workspace = true
+proptest.workspace = true
+proptest-arbitrary-interop.workspace = true
+rand.workspace = true
+
+[build-dependencies]
+pb-rs.workspace = true
+walkdir.workspace = true

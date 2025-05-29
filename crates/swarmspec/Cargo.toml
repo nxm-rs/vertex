@@ -1,0 +1,49 @@
+[package]
+name = "vertex-swarmspec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# ethereum
+alloy-eip2124.workspace = true
+alloy-chains = { workspace = true, features = ["serde"] }
+alloy-primitives = { workspace = true, features = ["serde"] }
+
+# swarm forks
+vertex-swarm-forks.workspace = true
+
+# networking
+libp2p.workspace = true
+vertex-network-primitives.workspace = true
+vertex-network-primitives-traits.workspace = true
+
+# misc
+auto_impl.workspace = true
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+# Test utilities
+proptest = { workspace = true }
+arbitrary = { workspace = true }
+
+[features]
+default = ["std"]
+std = [
+    "alloy-chains/std",
+    "alloy-primitives/std",
+    "vertex-swarm-forks/std",
+    "serde/std",
+]
+arbitrary = [
+    "alloy-chains/arbitrary",
+    "alloy-primitives/arbitrary",
+    "vertex-swarm-forks/arbitrary",
+]
+test-utils = []

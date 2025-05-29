@@ -1,0 +1,30 @@
+// Copyright 2020 The Swarm Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+syntax = "proto3";
+
+package handshake;
+
+message Syn {
+    bytes observed_underlay = 1;
+};
+
+message Ack {
+    BzzAddress address = 1;
+    uint64 network_id = 2;
+    bool full_node = 3;
+    bytes nonce = 4;
+    string welcome_message = 99;
+};
+
+message SynAck {
+    Syn syn = 1;
+    Ack ack = 2;
+};
+
+message BzzAddress {
+    bytes underlay = 1;
+    bytes signature = 2;
+    bytes overlay = 3;
+};

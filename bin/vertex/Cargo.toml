@@ -1,0 +1,21 @@
+[package]
+name = "vertex"
+version.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+libp2p.workspace = true
+futures.workspace = true
+tokio.workspace = true
+vertex-network-primitives-traits.workspace = true
+vertex-network-primitives.workspace = true
+vertex-network-handshake.workspace = true
+vertex-node-core.workspace = true
+
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap = { workspace = true, features = ["derive"] }

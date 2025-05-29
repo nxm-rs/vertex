@@ -1,5 +1,5 @@
 use alloy_chains::{Chain, NamedChain};
-use core::{cmp::Ordering, fmt, str::FromStr};
+use core::{cmp::Ordering, fmt};
 use num_enum::TryFromPrimitiveError;
 
 // #[allow(unused_imports)]

@@ -1,0 +1,30 @@
+[package]
+name = "vertex-node-api"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Node API traits for the Vertex Swarm node"
+
+[dependencies]
+# Internal crates
+vertex-primitives = { workspace = true }
+vertex-swarm-api = { workspace = true }
+vertex-swarmspec = { workspace = true }
+
+# Async
+futures = "0.3"
+async-trait = "0.1"
+
+# Error handling
+thiserror = "1.0"
+
+# Trait implementation
+auto_impl = "1.1"
+
+# Feature-gated dependencies
+serde = { version = "1.0", features = ["derive"], optional = true }
+
+[features]
+default = ["std", "serde"]
+std = ["vertex-primitives/std", "vertex-swarm-api/std", "vertex-swarmspec/std", "serde?/std"]
+serde = ["dep:serde", "vertex-primitives/serde", "vertex-swarm-api/serde", "vertex-swarmspec/serde"]

@@ -4,6 +4,9 @@
 //! including a builder pattern for constructing node addresses and utilities for
 //! address verification and signature handling.
 
+use alloy_primitives::{Address, PrimitiveSignature, B256};
+use alloy_signer::{k256::ecdsa::SigningKey, SignerSync};
+use alloy_signer_local::{LocalSigner, PrivateKeySigner};
 use bytes::{Bytes, BytesMut};
 use std::marker::PhantomData;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -12,12 +15,8 @@ use vertex_network_primitives_traits::{
     calculate_overlay_address, NodeAddress as NodeAddressTrait, NodeAddressError,
 };
 
-use alloy::{
-    primitives::{Address, PrimitiveSignature, B256},
-    signers::{local::PrivateKeySigner, SignerSync},
-};
 use libp2p::Multiaddr;
-use nectar_primitives_traits::SwarmAddress;
+use nectar_primitives::SwarmAddress;
 
 mod named;
 pub use named::{NamedSwarm, NamedSwarmIter};
@@ -126,7 +125,7 @@ impl<const N: u64> NodeAddressBuilder<N, WithNonce> {
 impl<const N: u64> NodeAddressBuilder<N, WithUnderlay> {
     pub fn with_signer(
         self,
-        signer: Arc<PrivateKeySigner>,
+        signer: Arc<LocalSigner<SigningKey>>,
     ) -> Result<NodeAddressBuilder<N, ReadyToBuild>, NodeAddressError> {
         let overlay =
             calculate_overlay_address::<N>(&signer.address(), &self.nonce.as_ref().unwrap());
@@ -231,7 +230,7 @@ impl<'a, const N: u64> arbitrary::Arbitrary<'a> for NodeAddress<N> {
     }
 }
 
-fn arbitrary_multiaddr(u: &mut arbitrary::Unstructured) -> arbitrary::Result<Multiaddr> {
+pub fn arbitrary_multiaddr(u: &mut arbitrary::Unstructured) -> arbitrary::Result<Multiaddr> {
     let use_ipv6: bool = u.arbitrary()?;
     let port: u16 = u.int_in_range(1025..=65535)?;
 
