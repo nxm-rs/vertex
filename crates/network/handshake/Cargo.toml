@@ -9,6 +9,9 @@ repository.workspace = true
 build = "build.rs"
 
 [dependencies]
+## nectar
+nectar-primitives.workspace = true
+
 ## vertex
 vertex-node-core.workspace = true
 vertex-network-codec.workspace = true

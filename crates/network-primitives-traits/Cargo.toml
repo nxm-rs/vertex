@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 ## nectar
-nectar-primitives-traits.workspace = true
+nectar-primitives.workspace = true
 
 ## alloy
 alloy-primitives.workspace = true

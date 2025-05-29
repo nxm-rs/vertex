@@ -9,7 +9,6 @@ repository.workspace = true
 
 [dependencies]
 ## nectar primitives
-nectar-primitives-traits.workspace = true
 nectar-primitives.workspace = true
 
 ## vertex primitives

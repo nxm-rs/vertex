@@ -17,9 +17,6 @@ members = [
     # "bin/wasm-playground",
     # "bin/swarm-wasm-lib",
     "bin/vertex",
-    "crates/nectar-swips",
-    "crates/nectar/crates/access-control",
-    "crates/nectar/crates/primitives",
     "crates/network-primitives",
     "crates/network-primitives-traits",
     "crates/network/codec",
@@ -28,8 +25,6 @@ members = [
     "crates/network/pricing",
     "crates/node/cli",
     "crates/node/core",
-    "crates/primitives",
-    "crates/primitives-traits",
     "crates/swarm-forks",
     "crates/swarmspec",
     # "crates/storage",
@@ -48,11 +43,8 @@ rust.unreachable_pub = "warn"
 
 [workspace.dependencies]
 ## nectar
-nectar-primitives = { path = "crates/primitives", features = ["arbitrary"] }
-nectar-primitives-traits = { path = "crates/primitives-traits" }
+nectar-primitives = { git = "https://github.com/nxm-rs/nectar" }
 
-nectar-access-control = { path = "crates/nectar/crates/access-control" }
-nectar-primitives-new = { path = "crates/nectar/crates/primitives" }
 digest = "0.10"
 
 ## vertex

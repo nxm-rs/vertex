@@ -17,9 +17,6 @@
         "ghcr.io/lee-orr/rusty-dev-containers/cargo-binstall:0": {
             "packages": "just,trunk,leptosfmt,wasm-pack,wasm-opt"
         },
-        "ghcr.io/duduribeiro/devcontainer-features/neovim:1": {},
-        "ghcr.io/duduribeiro/devcontainer-features/tmux:1": {},
-        "ghcr.io/devcontainers/features/node:1": {},
         "ghcr.io/nlordell/features/foundry": {},
         "ghcr.io/devcontainers-community/features/llvm": {}
   },

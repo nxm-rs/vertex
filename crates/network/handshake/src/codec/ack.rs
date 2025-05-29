@@ -1,4 +1,5 @@
 use libp2p::Multiaddr;
+use nectar_primitives::SwarmAddress;
 use vertex_network_primitives::NodeAddress;
 use vertex_network_primitives_traits::NodeAddress as NodeAddressTrait;
 
@@ -62,7 +63,8 @@ impl<const N: u64> TryFrom<crate::proto::handshake::Ack> for Ack<N> {
             .with_nonce(value.nonce.as_slice().try_into()?)
             .with_underlay(Multiaddr::try_from(protobuf_address.underlay.clone())?)
             .with_signature(
-                protobuf_address.overlay.as_slice().try_into()?,
+                &SwarmAddress::from_slice(protobuf_address.overlay.as_slice())
+                    .map_err(|_| CodecError::Protocol("invalid primitive".to_string()))?,
                 protobuf_address.signature.as_slice().try_into()?,
                 // Validate signatures at the codec level
                 true,
@@ -122,7 +124,6 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use alloy_primitives::U256;
     use alloy_signer::k256::ecdsa::SigningKey;
     use alloy_signer_local::{LocalSigner, PrivateKeySigner};
     use proptest::prelude::*;

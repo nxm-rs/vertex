@@ -16,7 +16,7 @@ use vertex_network_primitives_traits::{
 };
 
 use libp2p::Multiaddr;
-use nectar_primitives_traits::SwarmAddress;
+use nectar_primitives::SwarmAddress;
 
 mod named;
 pub use named::{NamedSwarm, NamedSwarmIter};

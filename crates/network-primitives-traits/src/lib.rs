@@ -6,7 +6,7 @@
 
 use alloy_primitives::{Address, Keccak256, PrimitiveSignature, B256};
 use libp2p::Multiaddr;
-use nectar_primitives_traits::SwarmAddress;
+use nectar_primitives::SwarmAddress;
 use thiserror::Error;
 
 mod sync;
@@ -85,5 +85,5 @@ pub fn calculate_overlay_address<const N: u64>(
     hasher.update(chain_address);
     hasher.update(N.to_le_bytes());
     hasher.update(nonce);
-    hasher.finalize()
+    hasher.finalize().into()
 }
