@@ -1,34 +1,5 @@
 //! Network-related traits
 //!
-//! This module defines the interfaces for network communication in the Swarm network.
-
-use alloc::{boxed::Box, string::String, vec::Vec};
-use async_trait::async_trait;
-use core::fmt::Debug;
-use vertex_primitives::{ChunkAddress, PeerId, Result};
-
-use crate::{access::Credential, chunk::Chunk};
-
-/// Network status information
-#[derive(Debug, Clone)]
-pub struct NetworkStatus {
-    /// Number of connected peers
-    pub connected_peers: usize,
-    /// Neighborhood depth (radius of responsibility)
-    pub neighborhood_depth: u8,
-    /// Estimated network size
-    pub estimated_network_size: usize,
-    /// Whether the node is connected to the network
-    pub is_connected: bool,
-    /// Network bandwidth
-Sorry, I stopped you at network.rs. Please start again from network.rs and give me the next batch.
-No problem, let's continue with the network-related traits and then move on to the next core modules:
-
-## File 9: crates/swarm-api/src/network.rs
-
-```rust
-//! Network-related traits
-//!
 //! This module defines the traits for network communication in the Swarm network.
 
 use alloc::{boxed::Box, string::String, vec::Vec};

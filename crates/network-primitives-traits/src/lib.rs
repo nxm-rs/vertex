@@ -4,7 +4,7 @@
 //! identification in the network. It defines the [`NodeAddress`] trait and related
 //! functionality for managing node addresses across different network configurations.
 
-use alloy_primitives::{Address, Keccak256, PrimitiveSignature, B256};
+use alloy_primitives::{Address, B256, Keccak256, Signature};
 use libp2p::Multiaddr;
 use nectar_primitives::SwarmAddress;
 use thiserror::Error;
@@ -61,7 +61,7 @@ pub trait NodeAddress<const N: u64> {
     ///
     /// # Errors
     /// Returns a [`NodeAddressError`] if the signature is invalid or unavailable.
-    fn signature(&self) -> Result<&PrimitiveSignature, NodeAddressError>;
+    fn signature(&self) -> Result<&Signature, NodeAddressError>;
 }
 
 /// Calculates the overlay address for a node given its chain address and nonce.
