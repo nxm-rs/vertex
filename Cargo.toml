@@ -1,21 +1,14 @@
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.84"
-license = "AGPL-3.0"
-homepage = "https://nullisyxz.github.io/vertex"
-repository = "https://nullisxyz.github.io/vertex"
+edition = "2024"
+rust-version = "1.87"
+authors = ["Nexum Contributors"]
+license = "AGPL-3.0-or-later"
+homepage = "https://nxm-rs.github.io/vertex"
+repository = "https://nxm-rs.github.io/vertex"
 
 [workspace]
 members = [
-    # "crates/file",
-    # "crates/manifest",
-    # "crates/postage",
-    # "crates/logging",
-    # "bin/waku-swarm-relay",
-    # "bin/swarm-tools",
-    # "bin/wasm-playground",
-    # "bin/swarm-wasm-lib",
     "bin/vertex",
     "crates/network-primitives",
     "crates/network-primitives-traits",
@@ -27,12 +20,7 @@ members = [
     "crates/node/core",
     "crates/swarm-forks",
     "crates/swarmspec",
-    # "crates/storage",
 ]
-# default-members = [
-#     "bin/vertex",
-#     "bin/waku-swarm-relay",
-# ]
 
 # Explicitly set the resolver to version 2, which is the default for packages with edition >= 2021
 # https://doc.rust-lang.org/edition-guide/rust-2021/default-cargo-resolver.html
@@ -64,11 +52,11 @@ vertex-node-core = { path = "crates/node/core" }
 vertex-node-cli = { path = "crates/node/cli" }
 
 ## alloy
-alloy-eip2124 = { version = "0.1.0", default-features = false }
-alloy-primitives = { version = "0.8.22", default-features = false }
-alloy-signer = { version = "0.11.1" }
-alloy-signer-local = { version = "0.11.1", features = ["eip712", "keystore"] }
-alloy-chains = { version = "0.1.58", default-features = false }
+alloy-eip2124 = { version = "0.2", default-features = false }
+alloy-primitives = { version = "1.1", default-features = false }
+alloy-signer = { version = "1.0" }
+alloy-signer-local = { version = "1.0", features = ["eip712", "keystore"] }
+alloy-chains = { version = "0.2", default-features = false }
 
 ## tracing
 tracing = "0.1"
@@ -82,19 +70,31 @@ tracing-subscriber = { version = "0.3", features = [
 ] }
 
 ## p2p
-libp2p = { version = "0.55.0", features = ["tokio", "noise", "tcp", "yamux", "dns", "macros", "ecdsa", "identify", "upnp", "autonat", "ping"] }
-quick-protobuf = "0.8.0"
+libp2p = { version = "0.55.0", features = [
+    "tokio",
+    "noise",
+    "tcp",
+    "yamux",
+    "dns",
+    "macros",
+    "ecdsa",
+    "identify",
+    "upnp",
+    "autonat",
+    "ping",
+] }
+quick-protobuf = "0.8"
 quick-protobuf-codec = "0.3.1"
 asynchronous-codec = "0.7.0"
 libp2p-swarm = "0.46.0"
 libp2p-swarm-test = "0.5.0"
 quickcheck = "1.0.3"
-pb-rs = "0.9.1"
+pb-rs = "0.10"
 walkdir = "2.5.0"
 
 ## tokio
 # tokio-stream = "0.1.17"
-tokio = { version = "1.42.0", default-features = false }
+tokio = { version = "1", default-features = false }
 # tokio-util = { version = "0.7.13", features = ["codec"] }
 
 ## async
@@ -105,11 +105,11 @@ rayon = "1.10"
 thread_local = "1.1"
 
 ## misc testing
-arbitrary = "1.3"
+arbitrary = "1.4"
 assert_matches = "1.5.0"
-criterion = { package = "codspeed-criterion-compat", version = "2.7" }
+criterion = { package = "codspeed-criterion-compat", version = "2.10.1" }
 # pprof = "0.14"
-proptest = "1.4"
+proptest = "1.6"
 proptest-arbitrary-interop = "0.1"
 proptest-derive = "0.5"
 # test-fuzz = "7"
@@ -117,18 +117,20 @@ proptest-derive = "0.5"
 # misc
 anyhow = "1.0"
 auto_impl = "1"
-bytes = { version = "1.9.0", default-features = false }
+bytes = { version = "1.10", default-features = false }
 clap = "4"
 derive_more = { version = "2", default-features = false, features = ["full"] }
-dyn-clone = "1.0.17"
+dyn-clone = "1.0"
 eyre = "0.6"
 generic-array = "0.14"
-once_cell = { version = "1.19", default-features = false, features = ["critical-section"] }
+once_cell = { version = "1.21", default-features = false, features = [
+    "critical-section",
+] }
 critical-section = { version = "1.2", features = ["std"] }
-rand = "0.8.5"
-rustc-hash = { version = "2.0", default-features = false }
+rand = "0.9"
+rustc-hash = { version = "2.1", default-features = false }
 serde = { version = "1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 serde_with = { version = "3", default-features = false, features = ["macros"] }
 thiserror = { version = "2.0", default-features = false }
-vergen-gitcl = "1.0.5"
+vergen-gitcl = "1"
