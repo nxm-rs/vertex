@@ -4,15 +4,15 @@
 //! including a builder pattern for constructing node addresses and utilities for
 //! address verification and signature handling.
 
-use alloy_primitives::{Address, PrimitiveSignature, B256};
-use alloy_signer::{k256::ecdsa::SigningKey, SignerSync};
+use alloy_primitives::{Address, B256, Signature};
+use alloy_signer::{SignerSync, k256::ecdsa::SigningKey};
 use alloy_signer_local::{LocalSigner, PrivateKeySigner};
 use bytes::{Bytes, BytesMut};
 use std::marker::PhantomData;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use vertex_network_primitives_traits::{
-    calculate_overlay_address, NodeAddress as NodeAddressTrait, NodeAddressError,
+    NodeAddress as NodeAddressTrait, NodeAddressError, calculate_overlay_address,
 };
 
 use libp2p::Multiaddr;
@@ -32,7 +32,7 @@ pub struct NodeAddress<const N: u64> {
     nonce: B256,
     underlay_address: Multiaddr,
     chain_address: Address,
-    signature: PrimitiveSignature,
+    signature: Signature,
 }
 
 /// Builder pattern states for NodeAddress construction.
@@ -72,7 +72,7 @@ impl<const N: u64> vertex_network_primitives_traits::NodeAddress<N> for NodeAddr
         &self.nonce
     }
 
-    fn signature(&self) -> Result<&PrimitiveSignature, NodeAddressError> {
+    fn signature(&self) -> Result<&Signature, NodeAddressError> {
         Ok(&self.signature)
     }
 }
@@ -86,7 +86,7 @@ pub struct NodeAddressBuilder<const N: u64, State: BuilderState> {
     nonce: Option<B256>,
     underlay: Option<Multiaddr>,
     chain_address: Option<Address>,
-    signature: Option<PrimitiveSignature>,
+    signature: Option<Signature>,
     _state: PhantomData<State>,
 }
 
@@ -146,7 +146,7 @@ impl<const N: u64> NodeAddressBuilder<N, WithUnderlay> {
     pub fn with_signature(
         self,
         overlay: &SwarmAddress,
-        signature: PrimitiveSignature,
+        signature: Signature,
         verify_overlay: bool,
     ) -> Result<NodeAddressBuilder<N, ReadyToBuild>, NodeAddressError> {
         let chain_address =
@@ -209,7 +209,7 @@ fn generate_sign_message<const N: u64>(underlay: &Multiaddr, overlay: &SwarmAddr
 fn recover_signer<const N: u64>(
     underlay: &Multiaddr,
     overlay: &SwarmAddress,
-    signature: &PrimitiveSignature,
+    signature: &Signature,
 ) -> Result<Address, NodeAddressError> {
     let prehash = generate_sign_message::<N>(underlay, overlay);
     Ok(signature.recover_address_from_msg(prehash)?)
@@ -273,7 +273,7 @@ mod tests {
         nonce: B256,
         underlay: Multiaddr,
         overlay: &SwarmAddress,
-        signature: PrimitiveSignature,
+        signature: Signature,
     ) -> Result<NodeAddress<N>, NodeAddressError> {
         NodeAddress::<N>::builder()
             .with_nonce(nonce)

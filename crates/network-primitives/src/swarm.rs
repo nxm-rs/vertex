@@ -1,7 +1,6 @@
 use crate::NamedSwarm;
 use core::{cmp::Ordering, fmt, str::FromStr};
 
-use alloy_chains::{Chain, NamedChain};
 #[cfg(feature = "arbitrary")]
 use proptest::{
     sample::Selector,
