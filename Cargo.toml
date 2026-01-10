@@ -10,16 +10,32 @@ repository = "https://nxm-rs.github.io/vertex"
 [workspace]
 members = [
     "bin/vertex",
+
+    # Metrics & Observability
+    "crates/metrics",
+
+    # Network
     "crates/network-primitives",
     "crates/network-primitives-traits",
     "crates/network/codec",
     "crates/network/handshake",
     "crates/network/headers",
     "crates/network/pricing",
-    "crates/node/cli",
-    "crates/node/core",
+
+    # Node
+    "crates/node",
+    "crates/node-api",
+
+    # Swarm
+    "crates/storage",
+    "crates/swarm-api",
+    "crates/swarm-core",
     "crates/swarm-forks",
     "crates/swarmspec",
+
+    # Data
+    # "crates/file",
+    # "crates/manifest",
 ]
 
 # Explicitly set the resolver to version 2, which is the default for packages with edition >= 2021
@@ -48,8 +64,17 @@ vertex-network-headers = { path = "crates/network/headers" }
 vertex-network-pricing = { path = "crates/network/pricing" }
 
 # node
-vertex-node-core = { path = "crates/node/core" }
-vertex-node-cli = { path = "crates/node/cli" }
+vertex-node = { path = "crates/node" }
+vertex-node-api = { path = "crates/node-api" }
+
+# metrics
+vertex-metrics = { path = "crates/metrics" }
+
+# swarm
+vertex-storage = { path = "crates/storage" }
+vertex-swarm-api = { path = "crates/swarm-api" }
+vertex-swarm-core = { path = "crates/swarm-core" }
+vertex-swarmspec = { path = "crates/swarmspec" }
 
 ## alloy
 alloy-eip2124 = { version = "0.2", default-features = false }

@@ -7,7 +7,7 @@ description = "Node API traits for the Vertex Swarm node"
 
 [dependencies]
 # Internal crates
-vertex-primitives = { workspace = true }
+nectar-primitives = { workspace = true }
 vertex-swarm-api = { workspace = true }
 vertex-swarmspec = { workspace = true }
 
@@ -26,5 +26,5 @@ serde = { version = "1.0", features = ["derive"], optional = true }
 
 [features]
 default = ["std", "serde"]
-std = ["vertex-primitives/std", "vertex-swarm-api/std", "vertex-swarmspec/std", "serde?/std"]
-serde = ["dep:serde", "vertex-primitives/serde", "vertex-swarm-api/serde", "vertex-swarmspec/serde"]
+std = ["serde?/std"]
+serde = ["dep:serde"]

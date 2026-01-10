@@ -14,7 +14,7 @@ tokio.workspace = true
 vertex-network-primitives-traits.workspace = true
 vertex-network-primitives.workspace = true
 vertex-network-handshake.workspace = true
-vertex-node-core.workspace = true
+vertex-node.workspace = true
 
 tracing.workspace = true
 tracing-subscriber.workspace = true

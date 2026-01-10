@@ -7,17 +7,16 @@ description = "Vertex Swarm node executable"
 
 [dependencies]
 # Internal dependencies
-vertex-primitives = { workspace = true }
+nectar-primitives = { workspace = true }
 vertex-swarm-api = { workspace = true }
 vertex-swarmspec = { workspace = true }
 vertex-node-api = { workspace = true }
 vertex-storage = { workspace = true }
-vertex-network = { workspace = true }
-vertex-access = { workspace = true }
-vertex-protocol = { workspace = true }
-vertex-bandwidth = { workspace = true }
-vertex-api = { workspace = true }
 vertex-metrics = { workspace = true }
+# TODO: Add when implemented
+# vertex-network = { workspace = true }
+# vertex-access = { workspace = true }
+# vertex-protocol = { workspace = true }
 
 # CLI
 clap = { version = "4.3", features = ["derive", "env"] }
@@ -48,7 +47,7 @@ rand = "0.8"
 hex = "0.4"
 
 [build-dependencies]
-vergen = { version = "7.0", features = ["build", "git", "gitcl"] }
+vergen-gitcl = { workspace = true, features = ["build", "cargo", "emit_and_set"] }
 
 [[bin]]
 name = "vertex"
