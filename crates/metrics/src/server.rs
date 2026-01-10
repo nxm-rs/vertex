@@ -31,46 +31,6 @@ pub struct MetricsServer {
 
 impl MetricsServer {
     /// Create a new metrics server
-    pub fn new(addr: SocketAddr,
-Resume from `server.rs` and continue finishing the implementation and give me the maximum amount of the node cli implementation.
-Let's continue with the implementation of the metrics server and then move on to the node CLI.
-
-## Continuing File 8: crates/metrics/src/server.rs
-
-```rust
-//! HTTP server for metrics
-
-use crate::{Hooks, PrometheusRecorder};
-use axum::{
-    extract::State,
-    response::{Html, IntoResponse},
-    routing::get,
-    Router,
-};
-use metrics_exporter_prometheus::PrometheusHandle;
-use std::{
-    net::SocketAddr,
-    sync::{Arc, Mutex},
-};
-use tokio::sync::oneshot;
-use tower::ServiceBuilder;
-use tower_http::trace::TraceLayer;
-
-/// Metrics server that exposes a prometheus endpoint
-#[derive(Debug)]
-pub struct MetricsServer {
-    /// Server address
-    addr: SocketAddr,
-    /// Prometheus handle
-    handle: PrometheusHandle,
-    /// Metrics hooks
-    hooks: Hooks,
-    /// Shutdown signal
-    shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
-}
-
-impl MetricsServer {
-    /// Create a new metrics server
     pub fn new(
         addr: SocketAddr,
         handle: PrometheusHandle,

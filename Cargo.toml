@@ -12,7 +12,7 @@ members = [
     "bin/vertex",
 
     # Metrics & Observability
-    "crates/metrics",
+    # "crates/metrics",  # TODO: Update metrics API usage
 
     # Network
     "crates/network-primitives",
@@ -24,12 +24,13 @@ members = [
 
     # Node
     "crates/node",
-    "crates/node-api",
+    # "crates/node-api",  # TODO: Fix node-api swarm-api deps
 
     # Swarm
-    "crates/storage",
-    "crates/swarm-api",
-    "crates/swarm-core",
+    # TODO: Fix swarm-api to use correct primitive sources (alloy, libp2p)
+    # "crates/storage",
+    # "crates/swarm-api",
+    # "crates/swarm-core",
     "crates/swarm-forks",
     "crates/swarmspec",
 

@@ -8,11 +8,11 @@ description = "Vertex Swarm node executable"
 [dependencies]
 # Internal dependencies
 nectar-primitives = { workspace = true }
-vertex-swarm-api = { workspace = true }
+# vertex-swarm-api = { workspace = true }  # TODO: Fix swarm-api primitives
 vertex-swarmspec = { workspace = true }
-vertex-node-api = { workspace = true }
-vertex-storage = { workspace = true }
-vertex-metrics = { workspace = true }
+# vertex-node-api = { workspace = true }  # TODO: Fix node-api deps
+# vertex-storage = { workspace = true }  # TODO: Fix storage deps
+# vertex-metrics = { workspace = true }  # TODO: Update metrics API
 # TODO: Add when implemented
 # vertex-network = { workspace = true }
 # vertex-access = { workspace = true }
