@@ -28,7 +28,7 @@ impl core::fmt::Display for DisplayFork {
         };
 
         match self.activated_at {
-            ForkCondition::Block(at) | ForkCondition::Timestamp(at) => {
+            ForkCondition::Timestamp(at) => {
                 write!(f, "{name_with_eip:32} @{at}")?;
             }
             ForkCondition::Never => unreachable!(),

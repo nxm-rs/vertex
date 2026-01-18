@@ -7,13 +7,13 @@ use core::{
 };
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use vertex_network_primitives::{NamedSwarm, Swarm, SwarmKind};
+use nectar_swarms::{NamedSwarm, Swarm, SwarmKind};
 
 hardfork!(
     /// The name of a Swarm hardfork.
     SwarmHardfork {
-        /// Frontier: The initial network launch.
-        Frontier
+        /// Accord: The Swarm 3.0 network (initial vertex-compatible release).
+        Accord
     }
 );
 
@@ -40,7 +40,7 @@ impl SwarmHardfork {
     /// Retrieves the activation timestamp for the specified hardfork on the mainnet.
     pub const fn mainnet_activation_timestamp(&self) -> Option<u64> {
         match self {
-            Self::Frontier => Some(Self::MAINNET_GENESIS_TIMESTAMP),
+            Self::Accord => Some(Self::MAINNET_GENESIS_TIMESTAMP),
             // Add additional hardforks here as they are defined
         }
     }
@@ -48,7 +48,7 @@ impl SwarmHardfork {
     /// Retrieves the activation timestamp for the specified hardfork on the testnet.
     pub const fn testnet_activation_timestamp(&self) -> Option<u64> {
         match self {
-            Self::Frontier => Some(Self::TESTNET_GENESIS_TIMESTAMP),
+            Self::Accord => Some(Self::TESTNET_GENESIS_TIMESTAMP),
             // Add additional hardforks here as they are defined
         }
     }
@@ -56,7 +56,7 @@ impl SwarmHardfork {
     /// Mainnet list of hardforks.
     pub const fn mainnet() -> [(Self, ForkCondition); 1] {
         [(
-            Self::Frontier,
+            Self::Accord,
             ForkCondition::Timestamp(Self::MAINNET_GENESIS_TIMESTAMP),
         )]
     }
@@ -64,7 +64,7 @@ impl SwarmHardfork {
     /// Testnet list of hardforks.
     pub const fn testnet() -> [(Self, ForkCondition); 1] {
         [(
-            Self::Frontier,
+            Self::Accord,
             ForkCondition::Timestamp(Self::TESTNET_GENESIS_TIMESTAMP),
         )]
     }

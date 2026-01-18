@@ -15,7 +15,8 @@ use alloc::{boxed::Box, vec::Vec};
 /// Generic trait over a set of ordered hardforks
 ///
 /// This trait provides methods to query hardfork activation conditions
-/// and manage fork-related functionality.
+/// and manage fork-related functionality. Swarm uses timestamp-based
+/// fork activation exclusively.
 #[auto_impl::auto_impl(&, Arc)]
 pub trait Hardforks: Clone {
     /// Retrieves [`ForkCondition`] from `fork`. If `fork` is not present, returns
@@ -28,11 +29,6 @@ pub trait Hardforks: Clone {
     /// Convenience method to check if a fork is active at a given timestamp.
     fn is_fork_active_at_timestamp<H: Hardfork>(&self, fork: H, timestamp: u64) -> bool {
         self.fork(fork).active_at_timestamp(timestamp)
-    }
-
-    /// Convenience method to check if a fork is active at a given block number.
-    fn is_fork_active_at_block<H: Hardfork>(&self, fork: H, block_number: u64) -> bool {
-        self.fork(fork).active_at_block(block_number)
     }
 
     /// Compute the [`ForkId`] for the given [`Head`] following eip-6122 spec
@@ -87,13 +83,9 @@ impl SwarmHardforks {
         self.map.get(fork.name()).copied()
     }
 
-    /// Retrieves the fork block number or timestamp from `fork` if it exists, otherwise `None`.
-    pub fn fork_block<H: Hardfork>(&self, fork: H) -> Option<u64> {
-        match self.fork(fork) {
-            ForkCondition::Block(block) => Some(block),
-            ForkCondition::Timestamp(ts) => Some(ts),
-            ForkCondition::Never => None,
-        }
+    /// Retrieves the fork timestamp from `fork` if it exists, otherwise `None`.
+    pub fn fork_timestamp<H: Hardfork>(&self, fork: H) -> Option<u64> {
+        self.fork(fork).as_timestamp()
     }
 
     /// Get an iterator of all hardforks with their respective activation conditions.
@@ -109,11 +101,6 @@ impl SwarmHardforks {
     /// Convenience method to check if a fork is active at a given timestamp.
     pub fn is_fork_active_at_timestamp<H: Hardfork>(&self, fork: H, timestamp: u64) -> bool {
         self.fork(fork).active_at_timestamp(timestamp)
-    }
-
-    /// Convenience method to check if a fork is active at a given block number.
-    pub fn is_fork_active_at_block<H: Hardfork>(&self, fork: H, block_number: u64) -> bool {
-        self.fork(fork).active_at_block(block_number)
     }
 
     /// Inserts `fork` into list, updating with a new [`ForkCondition`] if it already exists.

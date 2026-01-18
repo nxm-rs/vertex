@@ -57,8 +57,8 @@ mod tests {
 
     #[test]
     fn check_hardfork_from_str() {
-        let hardfork_str = ["frOntier"];
-        let expected_hardforks = [SwarmHardfork::Frontier];
+        let hardfork_str = ["aCcOrD"];
+        let expected_hardforks = [SwarmHardfork::Accord];
 
         let hardforks: Vec<SwarmHardfork> = hardfork_str
             .iter()

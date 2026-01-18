@@ -11,7 +11,7 @@ use crate::{ForkCondition, Hardfork, SwarmHardfork, SwarmHardforks};
 /// Dev hardforks - all active at timestamp 0 for development purposes
 pub static DEV_HARDFORKS: LazyLock<SwarmHardforks> = LazyLock::new(|| {
     SwarmHardforks::new(vec![(
-        SwarmHardfork::Frontier.boxed(),
+        SwarmHardfork::Accord.boxed(),
         ForkCondition::Timestamp(0),
     )])
 });

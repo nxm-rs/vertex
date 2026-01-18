@@ -16,6 +16,9 @@
 
 extern crate alloc;
 
+// Used for feature forwarding (serde, arbitrary, std)
+use alloy_primitives as _;
+
 /// Re-exported EIP-2124 forkid types for network compatibility.
 pub use alloy_eip2124::*;
 

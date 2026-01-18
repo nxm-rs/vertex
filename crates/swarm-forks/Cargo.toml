@@ -12,8 +12,8 @@ description = "Swarm fork types used in vertex"
 workspace = true
 
 [dependencies]
-# vertex
-vertex-network-primitives.workspace = true
+# nectar (no_std compatible)
+nectar-swarms.workspace = true
 
 # ethereum
 alloy-eip2124.workspace = true
@@ -45,6 +45,7 @@ serde = [
     "alloy-eip2124/serde",
 ]
 std = [
+    "nectar-swarms/std",
     "alloy-primitives/std",
     "rustc-hash/std",
     "serde?/std",
