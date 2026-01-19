@@ -1,7 +1,19 @@
 //! Constants used throughout the Swarm network specification
+//!
+//! This module re-exports contract bindings and addresses from `nectar-contracts`
+//! and defines network-specific constants like network IDs and names.
+//!
+//! For storage contract addresses, access them directly from `nectar_contracts`:
+//! - `nectar_contracts::mainnet::POSTAGE_STAMP`
+//! - `nectar_contracts::mainnet::REDISTRIBUTION`
+//! - `nectar_contracts::mainnet::STAKING`
+//! - etc.
 
-use crate::{StorageContracts, Token};
-use alloy_primitives::address;
+use crate::Token;
+
+// Re-export contract bindings and deployments from nectar-contracts for convenience.
+// This allows consumers to access all contract addresses without depending on nectar-contracts directly.
+pub use nectar_contracts::{mainnet as mainnet_contracts, testnet as testnet_contracts};
 
 /// Mainnet constants
 pub mod mainnet {
@@ -13,20 +25,31 @@ pub mod mainnet {
     /// Swarm mainnet network name
     pub const NETWORK_NAME: &str = "mainnet";
 
-    /// Swarm token on mainnet (BZZ)
+    /// Swarm token on mainnet (xBZZ on Gnosis Chain)
     pub const TOKEN: Token = Token {
-        address: address!("2ac3c1d3e24b45c6c310534bc2dd84b5ed576335"),
+        address: nectar_contracts::mainnet::BZZ_TOKEN.address,
         name: "Swarm",
-        symbol: "BZZ",
+        symbol: "xBZZ",
         decimals: 16,
     };
 
-    /// Storage contracts for mainnet
-    pub const STORAGE_CONTRACTS: StorageContracts = StorageContracts {
-        postage: address!("5b53f7a1975eb212d4b20b7cdd443baa189af7c9"),
-        redistribution: address!("eb210c2e166f61b3fd32246d53893f8b9d2a624c"),
-        staking: Some(address!("0c6aa197271466f0afe3818ca03ac47d8f5c2f8a")),
-    };
+    /// Swap contracts for mainnet
+    pub mod swap {
+        /// Chequebook factory address
+        pub const CHEQUEBOOK_FACTORY: alloy_primitives::Address =
+            nectar_contracts::mainnet::CHEQUEBOOK_FACTORY.address;
+
+        /// Swap price oracle address
+        pub const PRICE_ORACLE: alloy_primitives::Address =
+            nectar_contracts::mainnet::SWAP_PRICE_ORACLE.address;
+    }
+
+    /// Storage contracts re-exported for convenience
+    pub mod storage {
+        pub use nectar_contracts::mainnet::{
+            POSTAGE_STAMP, REDISTRIBUTION, STAKING, STORAGE_PRICE_ORACLE,
+        };
+    }
 }
 
 /// Testnet (Sepolia) constants
@@ -39,20 +62,31 @@ pub mod testnet {
     /// Swarm testnet network name
     pub const NETWORK_NAME: &str = "testnet";
 
-    /// Swarm token on testnet (tBZZ)
+    /// Swarm token on testnet (sBZZ on Sepolia)
     pub const TOKEN: Token = Token {
-        address: address!("6e01ee6183721ae9a006fd4906970c1583863765"),
+        address: nectar_contracts::testnet::BZZ_TOKEN.address,
         name: "Test Swarm",
-        symbol: "tBZZ",
+        symbol: "sBZZ",
         decimals: 16,
     };
 
-    /// Storage contracts for testnet
-    pub const STORAGE_CONTRACTS: StorageContracts = StorageContracts {
-        postage: address!("621c2e0fa5ed488c7124eb55cc7eb3af75d0d9e8"),
-        redistribution: address!("fb6c7d33be1fb12f4c5da71df7c9d5c22970ba7a"),
-        staking: Some(address!("6f252dd6f340f6c6d2f6ee8954b011dd5aba4350")),
-    };
+    /// Swap contracts for testnet
+    pub mod swap {
+        /// Chequebook factory address
+        pub const CHEQUEBOOK_FACTORY: alloy_primitives::Address =
+            nectar_contracts::testnet::CHEQUEBOOK_FACTORY.address;
+
+        /// Swap price oracle address
+        pub const PRICE_ORACLE: alloy_primitives::Address =
+            nectar_contracts::testnet::SWAP_PRICE_ORACLE.address;
+    }
+
+    /// Storage contracts re-exported for convenience
+    pub mod storage {
+        pub use nectar_contracts::testnet::{
+            POSTAGE_STAMP, REDISTRIBUTION, STAKING, STORAGE_PRICE_ORACLE,
+        };
+    }
 }
 
 /// Default values for development networks
@@ -69,12 +103,5 @@ pub mod dev {
         name: "Dev Swarm",
         symbol: "dBZZ",
         decimals: 16,
-    };
-
-    /// Default storage contracts for development
-    pub const STORAGE_CONTRACTS: StorageContracts = StorageContracts {
-        postage: Address::ZERO,
-        redistribution: Address::ZERO,
-        staking: Some(Address::ZERO),
     };
 }

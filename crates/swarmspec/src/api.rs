@@ -1,59 +1,229 @@
-//! API for interacting with Swarm network specifications
+//! The SwarmSpec trait and related abstractions
+//!
+//! This module defines [`SwarmSpec`], the core trait that any Swarm network
+//! specification must implement.
+//!
+//! # Design
+//!
+//! `SwarmSpec` is intentionally minimal. It provides only what's needed to
+//! identify a network and determine protocol behavior at any point in time:
+//!
+//! - **Identity**: network ID, name, underlying chain
+//! - **Discovery**: bootstrap nodes for joining the network
+//! - **Protocol**: hardfork schedule determining feature activation
+//! - **Economics**: which BZZ token contract the network uses
+//!
+//! The trait is generic over implementation - code accepting `impl SwarmSpec`
+//! works with mainnet, testnet, or custom test networks without modification.
+//!
+//! # Example
+//!
+//! ```ignore
+//! use vertex_swarmspec::{SwarmSpec, Hive};
+//!
+//! fn connect_to_network<S: SwarmSpec>(spec: &S) {
+//!     println!("Joining {} (network ID: {})", spec.network_name(), spec.network_id());
+//!     if let Some(bootnodes) = spec.bootnodes() {
+//!         // Connect to bootstrap nodes
+//!     }
+//! }
+//! ```
 
-use crate::{LightClient, NetworkSpec, Storage, Token};
-use alloc::vec::Vec;
+use crate::{
+    Hive, Token,
+    constants::{mainnet, testnet},
+};
+use alloc::{sync::Arc, vec::Vec};
 use alloy_chains::Chain;
+use alloy_primitives::keccak256;
+use byteorder::{LittleEndian, WriteBytesExt};
 use core::fmt::Debug;
 use libp2p::Multiaddr;
-use vertex_network_primitives::Swarm;
-use vertex_swarm_forks::{ForkCondition, SwarmHardfork};
+use vertex_net_primitives::Swarm;
+use vertex_swarm_forks::{ForkCondition, SwarmHardfork, SwarmHardforks};
 
-/// Trait representing type configuring a Swarm network specification
-#[auto_impl::auto_impl(&, Arc)]
-pub trait SwarmSpec: Send + Sync + Unpin + Debug {
-    /// Returns the corresponding Swarm network
-    fn swarm(&self) -> Swarm;
+// ============================================================================
+// Fork Digest
+// ============================================================================
 
-    /// Returns the [`Chain`] object this spec targets
-    fn chain(&self) -> Chain;
+/// A compact identifier representing a network's fork state at a point in time.
+///
+/// Used during peer handshake to verify network compatibility. Two peers with
+/// matching digests can interoperate; mismatched digests indicate incompatible
+/// protocol versions or different networks.
+///
+/// The digest is computed from:
+/// - Network ID (ensures different networks have different digests)
+/// - Genesis timestamp (distinguishes network incarnations)
+/// - Active fork timestamps (ensures protocol version agreement)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ForkDigest(pub [u8; 4]);
 
-    /// Returns the network ID for the Swarm network
-    fn network_id(&self) -> u64;
-
-    /// Returns the Swarm network name (like "mainnet", "testnet", etc.)
-    fn network_name(&self) -> &str;
-
-    /// Returns the bootnodes for the network
-    fn bootnodes(&self) -> Vec<Multiaddr>;
-
-    /// Returns the storage configuration
-    fn storage(&self) -> &Storage;
-
-    /// Returns the bandwidth incentives configuration
-    fn bandwidth(&self) -> &LightClient;
-
-    /// Returns the Swarm token details
-    fn token(&self) -> &Token;
-
-    /// Returns the fork activation status for a given Swarm hardfork at a timestamp
-    fn is_fork_active_at_timestamp(&self, fork: SwarmHardfork, timestamp: u64) -> bool;
-
-    /// Returns whether this is the mainnet Swarm
-    fn is_mainnet(&self) -> bool {
-        self.network_id() == 1
+impl ForkDigest {
+    /// Creates a new fork digest from raw bytes.
+    pub const fn new(bytes: [u8; 4]) -> Self {
+        Self(bytes)
     }
 
-    /// Returns whether this is a testnet Swarm
-    fn is_testnet(&self) -> bool {
-        self.network_id() == 10
+    /// Returns the digest as a byte array.
+    pub const fn as_bytes(&self) -> &[u8; 4] {
+        &self.0
+    }
+
+    /// Computes a fork digest from the given components using keccak256.
+    ///
+    /// Takes the first 4 bytes of the keccak256 hash of the concatenated
+    /// little-endian encoded values.
+    pub fn compute(
+        network_id: u64,
+        genesis_timestamp: u64,
+        active_fork_timestamps: &[u64],
+    ) -> Self {
+        // 8 bytes for network_id + 8 for genesis + 8 per fork
+        let mut data = Vec::with_capacity(16 + active_fork_timestamps.len() * 8);
+
+        data.write_u64::<LittleEndian>(network_id).unwrap();
+        data.write_u64::<LittleEndian>(genesis_timestamp).unwrap();
+
+        for &timestamp in active_fork_timestamps {
+            data.write_u64::<LittleEndian>(timestamp).unwrap();
+        }
+
+        let hash = keccak256(&data);
+        let mut digest = [0u8; 4];
+        digest.copy_from_slice(&hash[..4]);
+        Self(digest)
     }
 }
 
-impl SwarmSpec for NetworkSpec {
+impl core::fmt::Display for ForkDigest {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "0x{:02x}{:02x}{:02x}{:02x}",
+            self.0[0], self.0[1], self.0[2], self.0[3]
+        )
+    }
+}
+
+// ============================================================================
+// Core SwarmSpec Trait
+// ============================================================================
+
+/// A Swarm network specification.
+///
+/// Defines the consensus-critical parameters that identify a network and
+/// govern protocol behavior. All nodes on the same network must use an
+/// equivalent spec to interoperate.
+///
+/// # Scope
+///
+/// The spec covers network-level concerns that are fixed for all participants:
+/// - Network identity (ID, name, underlying L1 chain)
+/// - Bootstrap nodes for initial peer discovery
+/// - Hardfork activation schedule
+/// - Token contract address
+///
+/// It explicitly excludes node-level configuration like storage capacity,
+/// bandwidth pricing, or cache policies. These operational parameters vary
+/// per deployment and are configured separately.
+///
+/// # Implementors
+///
+/// - [`Hive`] - Standard implementation for mainnet, testnet, and dev
+/// - Custom implementations for private networks or testing
+#[auto_impl::auto_impl(&, Arc)]
+pub trait SwarmSpec: Send + Sync + Unpin + Debug + 'static {
+    // ========================================================================
+    // Network Identity
+    // ========================================================================
+
+    /// Returns the corresponding Swarm network identifier.
+    fn swarm(&self) -> Swarm;
+
+    /// Returns the underlying blockchain this network uses.
+    fn chain(&self) -> Chain;
+
+    /// Returns the network ID for the Swarm network.
+    fn network_id(&self) -> u64;
+
+    /// Returns the Swarm network name (like "mainnet", "testnet", etc.).
+    fn network_name(&self) -> &str;
+
+    // ========================================================================
+    // Network Configuration
+    // ========================================================================
+
+    /// Returns the bootnodes for the network.
+    fn bootnodes(&self) -> Option<Vec<Multiaddr>>;
+
+    /// Returns the Swarm token details.
+    ///
+    /// This defines which BZZ token this network uses and where it's deployed.
+    fn token(&self) -> &Token;
+
+    /// Returns the hardforks configuration.
+    fn hardforks(&self) -> &SwarmHardforks;
+
+    // ========================================================================
+    // Fork Activation & Compatibility
+    // ========================================================================
+
+    /// Returns the fork activation status for a given Swarm hardfork at a timestamp.
+    fn is_fork_active_at_timestamp(&self, fork: SwarmHardfork, timestamp: u64) -> bool;
+
+    /// Returns the activation timestamp of the next fork after the given timestamp.
+    ///
+    /// Used during handshake to communicate upcoming protocol changes.
+    /// Returns `None` if all known forks are already active.
+    fn next_fork_timestamp(&self, after: u64) -> Option<u64> {
+        for (_, condition) in self.hardforks().forks_iter() {
+            if let ForkCondition::Timestamp(activation) = condition {
+                if activation > after {
+                    return Some(activation);
+                }
+            }
+        }
+        None
+    }
+
+    /// Computes a digest representing the current fork state at a given timestamp.
+    ///
+    /// Two nodes with the same digest are fork-compatible and can interoperate.
+    /// The digest incorporates network ID, genesis timestamp, and active forks.
+    ///
+    /// During handshake, peers exchange digests to verify compatibility.
+    fn fork_digest(&self, at_timestamp: u64) -> ForkDigest;
+
+    // ========================================================================
+    // Network Type Checks
+    // ========================================================================
+
+    /// Returns whether this is the mainnet Swarm.
+    fn is_mainnet(&self) -> bool {
+        self.network_id() == mainnet::NETWORK_ID
+    }
+
+    /// Returns whether this is a testnet Swarm.
+    fn is_testnet(&self) -> bool {
+        self.network_id() == testnet::NETWORK_ID
+    }
+
+    /// Returns whether this is a development network.
+    fn is_dev(&self) -> bool {
+        !self.is_mainnet() && !self.is_testnet()
+    }
+}
+
+// ============================================================================
+// SwarmSpec Implementation for Hive
+// ============================================================================
+
+impl SwarmSpec for Hive {
     fn swarm(&self) -> Swarm {
         match self.network_id {
-            1 => vertex_network_primitives::NamedSwarm::Mainnet.into(),
-            10 => vertex_network_primitives::NamedSwarm::Testnet.into(),
+            mainnet::NETWORK_ID => vertex_net_primitives::NamedSwarm::Mainnet.into(),
+            testnet::NETWORK_ID => vertex_net_primitives::NamedSwarm::Testnet.into(),
             _ => Swarm::from_id(self.network_id),
         }
     }
@@ -70,20 +240,20 @@ impl SwarmSpec for NetworkSpec {
         &self.network_name
     }
 
-    fn bootnodes(&self) -> Vec<Multiaddr> {
-        self.bootnodes.clone()
-    }
-
-    fn storage(&self) -> &Storage {
-        &self.storage
-    }
-
-    fn bandwidth(&self) -> &LightClient {
-        &self.light_client
+    fn bootnodes(&self) -> Option<Vec<Multiaddr>> {
+        if self.bootnodes.is_empty() {
+            None
+        } else {
+            Some(self.bootnodes.clone())
+        }
     }
 
     fn token(&self) -> &Token {
         &self.token
+    }
+
+    fn hardforks(&self) -> &SwarmHardforks {
+        &self.hardforks
     }
 
     fn is_fork_active_at_timestamp(&self, fork: SwarmHardfork, timestamp: u64) -> bool {
@@ -91,5 +261,198 @@ impl SwarmSpec for NetworkSpec {
             Some(ForkCondition::Timestamp(activation_time)) => timestamp >= activation_time,
             _ => false,
         }
+    }
+
+    fn fork_digest(&self, at_timestamp: u64) -> ForkDigest {
+        // Collect active fork timestamps
+        let active_forks: Vec<u64> = self
+            .hardforks
+            .forks_iter()
+            .filter_map(|(_, condition)| {
+                if let ForkCondition::Timestamp(activation) = condition {
+                    if activation <= at_timestamp {
+                        return Some(activation);
+                    }
+                }
+                None
+            })
+            .collect();
+
+        ForkDigest::compute(self.network_id, self.genesis_timestamp, &active_forks)
+    }
+}
+
+// ============================================================================
+// Provider Traits
+// ============================================================================
+
+/// Trait for types that can provide a SwarmSpec.
+///
+/// This is useful for dependency injection and testing.
+#[auto_impl::auto_impl(&, Arc, Box)]
+pub trait SwarmSpecProvider: Send + Sync {
+    /// The spec type this provider returns.
+    type Spec: SwarmSpec;
+
+    /// Get a reference to the spec.
+    fn spec(&self) -> &Self::Spec;
+}
+
+/// A simple provider that wraps a spec.
+#[derive(Debug, Clone)]
+pub struct StaticSwarmSpecProvider<S: SwarmSpec> {
+    spec: Arc<S>,
+}
+
+impl<S: SwarmSpec> StaticSwarmSpecProvider<S> {
+    /// Create a new provider with the given spec.
+    pub fn new(spec: S) -> Self {
+        Self {
+            spec: Arc::new(spec),
+        }
+    }
+
+    /// Create a new provider from an Arc.
+    pub fn from_arc(spec: Arc<S>) -> Self {
+        Self { spec }
+    }
+}
+
+impl<S: SwarmSpec> SwarmSpecProvider for StaticSwarmSpecProvider<S> {
+    type Spec = S;
+
+    fn spec(&self) -> &Self::Spec {
+        &self.spec
+    }
+}
+
+// Also implement SwarmSpecProvider for Arc<Hive> directly
+impl SwarmSpecProvider for Arc<Hive> {
+    type Spec = Hive;
+
+    fn spec(&self) -> &Self::Spec {
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{HiveBuilder, init_mainnet, init_testnet};
+
+    #[test]
+    fn test_swarm_spec_trait() {
+        // Verify Hive implements SwarmSpec
+        fn assert_spec<S: SwarmSpec>(_s: &S) {}
+
+        let mainnet = init_mainnet();
+        assert_spec(&*mainnet);
+
+        let testnet = init_testnet();
+        assert_spec(&*testnet);
+    }
+
+    #[test]
+    fn test_network_checks() {
+        let mainnet = init_mainnet();
+        assert!(mainnet.is_mainnet());
+        assert!(!mainnet.is_testnet());
+        assert!(!mainnet.is_dev());
+
+        let testnet = init_testnet();
+        assert!(!testnet.is_mainnet());
+        assert!(testnet.is_testnet());
+        assert!(!testnet.is_dev());
+
+        let dev = HiveBuilder::dev().build();
+        assert!(!dev.is_mainnet());
+        assert!(!dev.is_testnet());
+        assert!(dev.is_dev());
+    }
+
+    #[test]
+    fn test_spec_provider() {
+        let spec = init_mainnet();
+        let provider: StaticSwarmSpecProvider<Hive> =
+            StaticSwarmSpecProvider::from_arc(spec.clone());
+
+        assert_eq!(provider.spec().network_id(), spec.network_id());
+    }
+
+    #[test]
+    fn test_hardforks() {
+        let spec = init_mainnet();
+        let hardforks = spec.hardforks();
+
+        // Test that we can query hardforks
+        let accord = hardforks.get(SwarmHardfork::Accord);
+        assert!(matches!(accord, Some(ForkCondition::Timestamp(_))));
+    }
+
+    #[test]
+    fn test_fork_digest() {
+        let mainnet = init_mainnet();
+        let testnet = init_testnet();
+
+        // Same network at same time should produce same digest
+        let digest1 = mainnet.fork_digest(1000000);
+        let digest2 = mainnet.fork_digest(1000000);
+        assert_eq!(digest1, digest2);
+
+        // Different networks should produce different digests
+        let mainnet_digest = mainnet.fork_digest(1000000);
+        let testnet_digest = testnet.fork_digest(1000000);
+        assert_ne!(mainnet_digest, testnet_digest);
+
+        // Digest display works
+        let digest = mainnet.fork_digest(1000000);
+        let display = format!("{}", digest);
+        assert!(display.starts_with("0x"));
+        assert_eq!(display.len(), 10); // "0x" + 8 hex chars
+    }
+
+    #[test]
+    fn test_fork_digest_changes_with_active_forks() {
+        // Build two specs with different fork activation times
+        let spec1 = HiveBuilder::new()
+            .network_id(100)
+            .with_accord(1000)
+            .genesis_timestamp(0)
+            .build();
+
+        let spec2 = HiveBuilder::new()
+            .network_id(100)
+            .with_accord(2000)
+            .genesis_timestamp(0)
+            .build();
+
+        // Before any fork is active, digests should differ only by fork timestamps in hash
+        // At timestamp 500, neither fork is active
+        let d1_before = spec1.fork_digest(500);
+        let d2_before = spec2.fork_digest(500);
+        assert_eq!(d1_before, d2_before); // Same because no forks active
+
+        // At timestamp 1500, spec1's accord is active but not spec2's
+        let d1_after = spec1.fork_digest(1500);
+        let d2_after = spec2.fork_digest(1500);
+        assert_ne!(d1_after, d2_after); // Different because different forks active
+    }
+
+    #[test]
+    fn test_next_fork_timestamp() {
+        // Build a spec with a future fork
+        let spec = HiveBuilder::new()
+            .network_id(100)
+            .with_accord(1000)
+            .genesis_timestamp(0)
+            .build();
+
+        // Before the fork, next_fork_timestamp should return the fork time
+        assert_eq!(spec.next_fork_timestamp(0), Some(1000));
+        assert_eq!(spec.next_fork_timestamp(500), Some(1000));
+
+        // After/at the fork, no more forks
+        assert_eq!(spec.next_fork_timestamp(1000), None);
+        assert_eq!(spec.next_fork_timestamp(2000), None);
     }
 }

@@ -12,20 +12,23 @@ workspace = true
 
 [dependencies]
 # ethereum
-alloy-eip2124.workspace = true
 alloy-chains = { workspace = true, features = ["serde"] }
 alloy-primitives = { workspace = true, features = ["serde"] }
+
+# nectar (contracts provide addresses and bindings)
+nectar-contracts.workspace = true
 
 # swarm forks
 vertex-swarm-forks.workspace = true
 
 # networking
 libp2p.workspace = true
-vertex-network-primitives.workspace = true
-vertex-network-primitives-traits.workspace = true
+vertex-net-primitives.workspace = true
+vertex-net-primitives-traits.workspace = true
 
 # misc
 auto_impl.workspace = true
+byteorder.workspace = true
 serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
@@ -38,6 +41,7 @@ default = ["std"]
 std = [
     "alloy-chains/std",
     "alloy-primitives/std",
+    "nectar-contracts/std",
     "vertex-swarm-forks/std",
     "serde/std",
 ]

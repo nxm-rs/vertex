@@ -1,8 +1,15 @@
-//! Network specification for Swarm networks
+//! Concrete network specifications
+//!
+//! This module provides [`Hive`], the standard implementation of [`SwarmSpec`]
+//! used for mainnet, testnet, development, and custom networks.
+//!
+//! Pre-built specifications are available via [`init_mainnet`], [`init_testnet`],
+//! and [`init_dev`]. Custom specifications can be constructed with [`HiveBuilder`].
 
 use crate::{
+    Token,
     constants::{dev, mainnet, testnet},
-    generate_dev_network_id, LightClient, Storage, StorageContracts, Token,
+    generate_dev_network_id,
 };
 use alloc::{
     string::{String, ToString},
@@ -10,17 +17,26 @@ use alloc::{
     vec::Vec,
 };
 use alloy_chains::{Chain, NamedChain};
-use alloy_eip2124::{ForkFilter, ForkFilterKey, ForkHash, ForkId, Head};
-use alloy_primitives::B256;
 use libp2p::Multiaddr;
-use vertex_network_primitives_traits::OnceLock;
-use vertex_swarm_forks::{
-    ForkCondition, Hardfork, Hardforks, SwarmHardfork, SwarmHardforks, SwarmHardforksTrait,
-};
+use vertex_net_primitives_traits::OnceLock;
+use vertex_swarm_forks::{ForkCondition, SwarmHardfork, SwarmHardforks, SwarmHardforksTrait};
 
-/// A specification for a Swarm network
+/// A concrete Swarm network specification.
+///
+/// `Hive` captures everything needed to identify and connect to a Swarm network:
+/// which blockchain it settles on, how to find peers, when protocol upgrades
+/// activate, and which token contract to use.
+///
+/// # Usage
+///
+/// For standard networks, use the provided initializers:
+/// - [`init_mainnet()`] - Production network on Gnosis Chain
+/// - [`init_testnet()`] - Test network on Sepolia
+/// - [`init_dev()`] - Local development with auto-generated network ID
+///
+/// For custom networks, use [`HiveBuilder`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NetworkSpec {
+pub struct Hive {
     /// Underlying blockchain
     pub chain: Chain,
 
@@ -36,28 +52,17 @@ pub struct NetworkSpec {
     /// Hardforks configuration
     pub hardforks: SwarmHardforks,
 
-    /// Storage configuration
-    pub storage: Storage,
-
-    /// Bandwidth incentives configuration
-    pub light_client: LightClient,
-
     /// Swarm token details
     pub token: Token,
 
-    /// Genesis hash (derived from network ID)
-    pub genesis_hash: B256,
-
-    /// Genesis timestamp
+    /// Genesis timestamp (reference point for hardfork activation)
     pub genesis_timestamp: u64,
 }
 
-impl Default for NetworkSpec {
+impl Default for Hive {
     fn default() -> Self {
         let mut hardforks = SwarmHardforks::new(vec![]);
-        hardforks.insert(SwarmHardfork::Frontier, ForkCondition::Timestamp(0));
-
-        let genesis_hash = generate_genesis_hash(generate_dev_network_id());
+        hardforks.insert(SwarmHardfork::Accord, ForkCondition::Timestamp(0));
 
         Self {
             chain: Chain::from(NamedChain::Dev),
@@ -65,46 +70,32 @@ impl Default for NetworkSpec {
             network_name: dev::NETWORK_NAME.to_string(),
             bootnodes: Vec::new(),
             hardforks,
-            storage: Storage {
-                contracts: dev::STORAGE_CONTRACTS,
-                ..Default::default()
-            },
-            light_client: LightClient::default(),
             token: dev::TOKEN,
-            genesis_hash,
             genesis_timestamp: 0,
         }
     }
 }
 
 /// The Swarm mainnet specification
-pub static MAINNET: OnceLock<Arc<NetworkSpec>> = OnceLock::new();
+pub static MAINNET: OnceLock<Arc<Hive>> = OnceLock::new();
 
 /// Initialize the mainnet specification
-pub fn init_mainnet() -> Arc<NetworkSpec> {
+pub(crate) fn init_mainnet() -> Arc<Hive> {
     MAINNET
         .get_or_init(|| {
             let mut hardforks = SwarmHardforks::new(vec![]);
             hardforks.insert(
-                SwarmHardfork::Frontier,
+                SwarmHardfork::Accord,
                 ForkCondition::Timestamp(SwarmHardfork::MAINNET_GENESIS_TIMESTAMP),
             );
 
-            let genesis_hash = generate_genesis_hash(mainnet::NETWORK_ID);
-
-            let spec = NetworkSpec {
+            let spec = Hive {
                 chain: Chain::from(NamedChain::Gnosis),
                 network_id: mainnet::NETWORK_ID,
                 network_name: mainnet::NETWORK_NAME.to_string(),
                 bootnodes: mainnet_bootnodes(),
                 hardforks,
-                storage: Storage {
-                    contracts: mainnet::STORAGE_CONTRACTS,
-                    ..Default::default()
-                },
-                light_client: LightClient::default(),
                 token: mainnet::TOKEN,
-                genesis_hash,
                 genesis_timestamp: SwarmHardfork::MAINNET_GENESIS_TIMESTAMP,
             };
 
@@ -114,33 +105,25 @@ pub fn init_mainnet() -> Arc<NetworkSpec> {
 }
 
 /// The Swarm testnet specification
-pub static TESTNET: OnceLock<Arc<NetworkSpec>> = OnceLock::new();
+pub static TESTNET: OnceLock<Arc<Hive>> = OnceLock::new();
 
 /// Initialize the testnet specification
-pub fn init_testnet() -> Arc<NetworkSpec> {
+pub(crate) fn init_testnet() -> Arc<Hive> {
     TESTNET
         .get_or_init(|| {
             let mut hardforks = SwarmHardforks::new(vec![]);
             hardforks.insert(
-                SwarmHardfork::Frontier,
+                SwarmHardfork::Accord,
                 ForkCondition::Timestamp(SwarmHardfork::TESTNET_GENESIS_TIMESTAMP),
             );
 
-            let genesis_hash = generate_genesis_hash(testnet::NETWORK_ID);
-
-            let spec = NetworkSpec {
+            let spec = Hive {
                 chain: Chain::from(NamedChain::Sepolia),
                 network_id: testnet::NETWORK_ID,
                 network_name: testnet::NETWORK_NAME.to_string(),
                 bootnodes: testnet_bootnodes(),
                 hardforks,
-                storage: Storage {
-                    contracts: testnet::STORAGE_CONTRACTS,
-                    ..Default::default()
-                },
-                light_client: LightClient::default(),
                 token: testnet::TOKEN,
-                genesis_hash,
                 genesis_timestamp: SwarmHardfork::TESTNET_GENESIS_TIMESTAMP,
             };
 
@@ -150,35 +133,30 @@ pub fn init_testnet() -> Arc<NetworkSpec> {
 }
 
 /// The Swarm development network specification
-pub static DEV: OnceLock<Arc<NetworkSpec>> = OnceLock::new();
+pub static DEV: OnceLock<Arc<Hive>> = OnceLock::new();
 
 /// Initialize the dev specification
-pub fn init_dev() -> Arc<NetworkSpec> {
-    DEV.get_or_init(|| Arc::new(NetworkSpec::default())).clone()
+pub(crate) fn init_dev() -> Arc<Hive> {
+    DEV.get_or_init(|| Arc::new(Hive::default())).clone()
 }
 
-/// An interface for accessing Swarm specifications
-#[auto_impl::auto_impl(&, Arc)]
-pub trait SwarmSpecProvider: Send + Sync {
-    /// Get an Arc to the specification
-    fn spec(&self) -> Arc<NetworkSpec>;
-}
-
-/// Helper struct to build custom Swarm network specifications
+/// Builder for constructing custom [`Hive`] specifications.
+///
+/// Start from scratch with [`HiveBuilder::new()`], or derive from an existing
+/// network with [`HiveBuilder::mainnet()`], [`HiveBuilder::testnet()`], or
+/// [`HiveBuilder::dev()`] and override specific fields.
 #[derive(Debug, Default, Clone)]
-pub struct SwarmSpecBuilder {
+pub struct HiveBuilder {
     chain: Option<Chain>,
     network_id: Option<u64>,
     network_name: Option<String>,
     bootnodes: Vec<Multiaddr>,
     hardforks: SwarmHardforks,
-    storage: Option<Storage>,
-    bandwidth: Option<LightClient>,
     token: Option<Token>,
     genesis_timestamp: Option<u64>,
 }
 
-impl SwarmSpecBuilder {
+impl HiveBuilder {
     /// Create a new specification builder
     pub fn new() -> Self {
         Self::default()
@@ -220,35 +198,16 @@ impl SwarmSpecBuilder {
         self
     }
 
-    /// Add the Frontier hardfork at a specific timestamp
-    pub fn with_frontier(mut self, timestamp: u64) -> Self {
+    /// Add the Accord hardfork at a specific timestamp
+    pub fn with_accord(mut self, timestamp: u64) -> Self {
         self.hardforks
-            .insert(SwarmHardfork::Frontier, ForkCondition::Timestamp(timestamp));
+            .insert(SwarmHardfork::Accord, ForkCondition::Timestamp(timestamp));
         self
     }
 
     /// Set the genesis timestamp
     pub fn genesis_timestamp(mut self, timestamp: u64) -> Self {
         self.genesis_timestamp = Some(timestamp);
-        self
-    }
-
-    /// Set the storage configuration
-    pub fn storage(mut self, config: Storage) -> Self {
-        self.storage = Some(config);
-        self
-    }
-
-    /// Set the storage contracts
-    pub fn storage_contracts(mut self, contracts: StorageContracts) -> Self {
-        let storage = self.storage.get_or_insert_with(Storage::default);
-        storage.contracts = contracts;
-        self
-    }
-
-    /// Set the bandwidth incentives configuration
-    pub fn bandwidth(mut self, config: LightClient) -> Self {
-        self.bandwidth = Some(config);
         self
     }
 
@@ -259,7 +218,7 @@ impl SwarmSpecBuilder {
     }
 
     /// Build the specification
-    pub fn build(self) -> NetworkSpec {
+    pub fn build(self) -> Hive {
         let chain = self.chain.unwrap_or(Chain::from(NamedChain::Dev));
         let network_id = self.network_id.unwrap_or_else(generate_dev_network_id);
 
@@ -270,55 +229,33 @@ impl SwarmSpecBuilder {
         });
 
         // Determine defaults based on chain
-        let (storage_contracts, token, default_genesis_timestamp) =
-            if chain == Chain::from(NamedChain::Gnosis) {
-                (
-                    mainnet::STORAGE_CONTRACTS,
-                    mainnet::TOKEN,
-                    SwarmHardfork::MAINNET_GENESIS_TIMESTAMP,
-                )
-            } else if chain == Chain::from(NamedChain::Sepolia) {
-                (
-                    testnet::STORAGE_CONTRACTS,
-                    testnet::TOKEN,
-                    SwarmHardfork::TESTNET_GENESIS_TIMESTAMP,
-                )
-            } else {
-                (dev::STORAGE_CONTRACTS, dev::TOKEN, 0)
-            };
+        let (token, default_genesis_timestamp) = if chain == Chain::from(NamedChain::Gnosis) {
+            (mainnet::TOKEN, SwarmHardfork::MAINNET_GENESIS_TIMESTAMP)
+        } else if chain == Chain::from(NamedChain::Sepolia) {
+            (testnet::TOKEN, SwarmHardfork::TESTNET_GENESIS_TIMESTAMP)
+        } else {
+            (dev::TOKEN, 0)
+        };
 
-        // Use provided storage or create with appropriate defaults
-        let storage = self.storage.unwrap_or_else(|| {
-            let mut default_storage = Storage::default();
-            default_storage.contracts = storage_contracts;
-            default_storage
-        });
-
-        let bandwidth = self.bandwidth.unwrap_or_default();
         let token = self.token.unwrap_or(token);
         let genesis_timestamp = self.genesis_timestamp.unwrap_or(default_genesis_timestamp);
 
-        // Ensure we have the Frontier hardfork if no hardforks are specified
+        // Ensure we have the Accord hardfork if no hardforks are specified
         let mut hardforks = self.hardforks;
         if hardforks.is_empty() {
             hardforks.insert(
-                SwarmHardfork::Frontier,
+                SwarmHardfork::Accord,
                 ForkCondition::Timestamp(genesis_timestamp),
             );
         }
 
-        let genesis_hash = generate_genesis_hash(network_id);
-
-        NetworkSpec {
+        Hive {
             chain,
             network_id,
             network_name,
             bootnodes: self.bootnodes,
             hardforks,
-            storage,
-            light_client: bandwidth,
             token,
-            genesis_hash,
             genesis_timestamp,
         }
     }
@@ -332,8 +269,6 @@ impl SwarmSpecBuilder {
             network_name: Some(spec.network_name.clone()),
             bootnodes: spec.bootnodes.clone(),
             hardforks: spec.hardforks.clone(),
-            storage: Some(spec.storage.clone()),
-            bandwidth: Some(spec.light_client.clone()),
             token: Some(spec.token.clone()),
             genesis_timestamp: Some(spec.genesis_timestamp),
         }
@@ -348,8 +283,6 @@ impl SwarmSpecBuilder {
             network_name: Some(spec.network_name.clone()),
             bootnodes: spec.bootnodes.clone(),
             hardforks: spec.hardforks.clone(),
-            storage: Some(spec.storage.clone()),
-            bandwidth: Some(spec.light_client.clone()),
             token: Some(spec.token.clone()),
             genesis_timestamp: Some(spec.genesis_timestamp),
         }
@@ -364,8 +297,6 @@ impl SwarmSpecBuilder {
             network_name: Some(spec.network_name.clone()),
             bootnodes: spec.bootnodes.clone(),
             hardforks: spec.hardforks.clone(),
-            storage: Some(spec.storage.clone()),
-            bandwidth: Some(spec.light_client.clone()),
             token: Some(spec.token.clone()),
             genesis_timestamp: Some(spec.genesis_timestamp),
         }
@@ -399,157 +330,16 @@ fn testnet_bootnodes() -> Vec<Multiaddr> {
     ]
 }
 
-/// Generate a pseudo-random genesis hash from network ID
-///
-/// This function creates a deterministic hash based on the network ID
-/// that can be used as a genesis hash.
-fn generate_genesis_hash(network_id: u64) -> B256 {
-    let mut hash = [0u8; 32];
-    // Use network ID as seed for a simple deterministic hash
-    let network_bytes = network_id.to_be_bytes();
-
-    // Fill the hash with a pattern based on network ID
-    for i in 0..32 {
-        hash[i] = network_bytes[i % 8] ^ (i as u8);
-    }
-
-    hash.into()
-}
-
-impl NetworkSpec {
-    /// Returns the genesis hash of the chain
-    pub fn genesis_hash(&self) -> B256 {
-        self.genesis_hash
-    }
-
-    /// Returns the genesis timestamp of the chain
+impl Hive {
+    /// Returns the genesis timestamp of the network.
+    ///
+    /// This is the reference point for hardfork activation timing.
     pub fn genesis_timestamp(&self) -> u64 {
         self.genesis_timestamp
     }
-
-    /// Convenience method to get the fork id for [`SwarmHardfork::Frontier`] from the spec.
-    #[inline]
-    pub fn frontier_fork_id(&self) -> Option<ForkId> {
-        self.hardfork_fork_id(SwarmHardfork::Frontier)
-    }
-
-    /// Gets the fork id for a specific hardfork from the spec.
-    #[inline]
-    pub fn hardfork_fork_id<H: Hardfork>(&self, hardfork: H) -> Option<ForkId> {
-        let condition = self.hardforks.fork(hardfork);
-        match condition {
-            ForkCondition::Timestamp(timestamp) => {
-                let head = Head {
-                    timestamp,
-                    number: 0,
-                    ..Default::default()
-                };
-                Some(self.fork_id(&head))
-            }
-            ForkCondition::Block(block) => {
-                let head = Head {
-                    number: block,
-                    ..Default::default()
-                };
-                Some(self.fork_id(&head))
-            }
-            ForkCondition::Never => None,
-        }
-    }
-
-    /// Convenience method to get the latest fork id from the spec.
-    #[inline]
-    pub fn latest_fork_id(&self) -> ForkId {
-        self.hardfork_fork_id(self.hardforks.last().unwrap().0)
-            .unwrap()
-    }
-
-    /// Creates a [`ForkFilter`] for the block described by [Head].
-    pub fn fork_filter(&self, head: Head) -> ForkFilter {
-        let forks = self.hardforks.forks_iter().filter_map(|(_, condition)| {
-            // Filter out Never conditions
-            match condition {
-                ForkCondition::Block(block) => Some(ForkFilterKey::Block(block)),
-                ForkCondition::Timestamp(time) => Some(ForkFilterKey::Time(time)),
-                ForkCondition::Never => None,
-            }
-        });
-
-        ForkFilter::new(head, self.genesis_hash(), self.genesis_timestamp(), forks)
-    }
-
-    /// Compute the [`ForkId`] for the given [`Head`] following eip-2124 spec.
-    ///
-    /// Note: In case there are multiple hardforks activated at the same block or timestamp, only
-    /// the first gets applied.
-    pub fn fork_id(&self, head: &Head) -> ForkId {
-        let mut forkhash = ForkHash::from(self.genesis_hash);
-
-        // This tracks the last applied timestamp or block fork
-        let mut current_applied = 0;
-
-        // Handle all block forks first
-        for (_, cond) in self.hardforks.forks_iter() {
-            if let ForkCondition::Block(block) = cond {
-                if cond.active_at_head(head) {
-                    // Skip duplicated hardforks enabled at the same block
-                    if block != current_applied {
-                        forkhash += block;
-                        current_applied = block;
-                    }
-                } else {
-                    // We can return here because this block fork is not active
-                    return ForkId {
-                        hash: forkhash,
-                        next: block,
-                    };
-                }
-            }
-        }
-
-        // Handle all timestamp forks after block forks
-        for (_, cond) in self.hardforks.forks_iter() {
-            if let ForkCondition::Timestamp(timestamp) = cond {
-                if cond.active_at_head(head) {
-                    // Skip duplicated hardforks activated at the same timestamp
-                    if timestamp != current_applied {
-                        forkhash += timestamp;
-                        current_applied = timestamp;
-                    }
-                } else {
-                    // This timestamp fork is not active yet
-                    return ForkId {
-                        hash: forkhash,
-                        next: timestamp,
-                    };
-                }
-            }
-        }
-
-        // All forks are active
-        ForkId {
-            hash: forkhash,
-            next: 0,
-        }
-    }
-
-    /// An internal helper function that returns a head block that satisfies a given Fork condition.
-    pub(crate) fn satisfy(&self, cond: ForkCondition) -> Head {
-        match cond {
-            ForkCondition::Block(number) => Head {
-                number,
-                ..Default::default()
-            },
-            ForkCondition::Timestamp(timestamp) => Head {
-                timestamp,
-                ..Default::default()
-            },
-            ForkCondition::Never => unreachable!(),
-        }
-    }
 }
 
-impl SwarmHardforksTrait for NetworkSpec {
+impl SwarmHardforksTrait for Hive {
     fn swarm_fork_activation(&self, fork: SwarmHardfork) -> ForkCondition {
         self.hardforks.fork(fork)
     }
@@ -561,7 +351,7 @@ mod tests {
 
     use super::*;
     use libp2p::multiaddr::Protocol;
-    use vertex_network_primitives::Swarm;
+    use vertex_net_primitives::Swarm;
 
     #[test]
     fn test_mainnet_spec() {
@@ -569,10 +359,6 @@ mod tests {
         assert_eq!(spec.network_id, mainnet::NETWORK_ID);
         assert_eq!(spec.network_name, mainnet::NETWORK_NAME);
         assert_eq!(spec.chain, Chain::from(NamedChain::Gnosis));
-        assert_eq!(
-            spec.storage.contracts.staking,
-            Some(mainnet::STORAGE_CONTRACTS.staking.unwrap())
-        );
         assert_eq!(spec.token, mainnet::TOKEN);
     }
 
@@ -582,20 +368,15 @@ mod tests {
         assert_eq!(spec.network_id, testnet::NETWORK_ID);
         assert_eq!(spec.network_name, testnet::NETWORK_NAME);
         assert_eq!(spec.chain, Chain::from(NamedChain::Sepolia));
-        assert_eq!(
-            spec.storage.contracts.staking,
-            Some(testnet::STORAGE_CONTRACTS.staking.unwrap())
-        );
         assert_eq!(spec.token, testnet::TOKEN);
     }
 
     #[test]
     fn test_default_spec() {
-        let spec = NetworkSpec::default();
+        let spec = Hive::default();
         assert_eq!(spec.chain, Chain::from(NamedChain::Dev));
-        assert_eq!(spec.storage.contracts, dev::STORAGE_CONTRACTS);
         assert_eq!(spec.token, dev::TOKEN);
-        assert!(spec.hardforks.get(SwarmHardfork::Frontier).is_some());
+        assert!(spec.hardforks.get(SwarmHardfork::Accord).is_some());
     }
 
     #[test]
@@ -611,12 +392,12 @@ mod tests {
             .with(Protocol::Ip4([127, 0, 0, 1].into()))
             .with(Protocol::Tcp(1634));
 
-        let spec = SwarmSpecBuilder::new()
+        let spec = HiveBuilder::new()
             .chain(Chain::from(NamedChain::Dev))
             .network_id(1337)
             .network_name("test")
             .add_bootnode(multiaddr.clone())
-            .with_frontier(1000) // Use the convenience method for Frontier
+            .with_accord(1000) // Use the convenience method for Accord
             .build();
 
         assert_eq!(spec.chain, Chain::from(NamedChain::Dev));
@@ -626,24 +407,24 @@ mod tests {
         assert_eq!(spec.bootnodes[0], multiaddr);
 
         // Check hardfork
-        assert!(spec.is_frontier_active_at_timestamp(1000));
-        assert!(!spec.is_frontier_active_at_timestamp(999));
+        assert!(spec.is_accord_active_at_timestamp(1000));
+        assert!(!spec.is_accord_active_at_timestamp(999));
     }
 
     #[test]
     fn test_builder_from_networks() {
         // Test mainnet builder
-        let mainnet_builder = SwarmSpecBuilder::mainnet();
+        let mainnet_builder = HiveBuilder::mainnet();
         let mainnet_spec = mainnet_builder.build();
         assert_eq!(mainnet_spec.network_id, mainnet::NETWORK_ID);
 
         // Test testnet builder
-        let testnet_builder = SwarmSpecBuilder::testnet();
+        let testnet_builder = HiveBuilder::testnet();
         let testnet_spec = testnet_builder.build();
         assert_eq!(testnet_spec.network_id, testnet::NETWORK_ID);
 
         // Test dev builder
-        let dev_builder = SwarmSpecBuilder::dev();
+        let dev_builder = HiveBuilder::dev();
         let dev_spec = dev_builder.build();
         assert_eq!(dev_spec.chain, Chain::from(NamedChain::Dev));
     }
@@ -664,49 +445,7 @@ mod tests {
 
         // Test fork activation
         let genesis_timestamp = SwarmHardfork::MAINNET_GENESIS_TIMESTAMP;
-        assert!(spec.is_fork_active_at_timestamp(SwarmHardfork::Frontier, genesis_timestamp));
-        assert!(!spec.is_fork_active_at_timestamp(SwarmHardfork::Frontier, genesis_timestamp - 1));
-    }
-
-    #[test]
-    fn test_fork_id() {
-        let spec = init_mainnet();
-
-        // Get fork ID at genesis
-        let head_genesis = Head {
-            timestamp: SwarmHardfork::MAINNET_GENESIS_TIMESTAMP,
-            ..Default::default()
-        };
-        let genesis_fork_id = spec.fork_id(&head_genesis);
-
-        // Get fork ID at a future head
-        let head_future = Head {
-            timestamp: SwarmHardfork::MAINNET_GENESIS_TIMESTAMP + 1000,
-            ..Default::default()
-        };
-        let future_fork_id = spec.fork_id(&head_future);
-
-        // Genesis should have been processed in both cases
-        assert_eq!(genesis_fork_id.hash, future_fork_id.hash);
-
-        // Next value should be 0 since all forks are active
-        assert_eq!(future_fork_id.next, 0);
-    }
-
-    #[test]
-    fn test_hardfork_fork_id() {
-        let spec = init_mainnet();
-
-        // Get frontier fork ID
-        let frontier_fork_id = spec.frontier_fork_id().unwrap();
-
-        // This should match the fork ID at the frontier timestamp
-        let head = Head {
-            timestamp: SwarmHardfork::MAINNET_GENESIS_TIMESTAMP,
-            ..Default::default()
-        };
-        let head_fork_id = spec.fork_id(&head);
-
-        assert_eq!(frontier_fork_id, head_fork_id);
+        assert!(spec.is_fork_active_at_timestamp(SwarmHardfork::Accord, genesis_timestamp));
+        assert!(!spec.is_fork_active_at_timestamp(SwarmHardfork::Accord, genesis_timestamp - 1));
     }
 }
