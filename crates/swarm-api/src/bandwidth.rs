@@ -1,146 +1,175 @@
-//! Bandwidth management traits
+//! Bandwidth incentives - per-peer accounting without mutex contention.
 //!
-//! This module defines the traits for managing bandwidth in the Swarm network.
+//! # Design
+//!
+//! The bandwidth system uses a two-level design to avoid lock contention:
+//!
+//! 1. [`BandwidthAccounting`] - Factory that creates per-peer handles
+//! 2. [`PeerBandwidth`] - Per-peer handle with lock-free operations
+//!
+//! When a connection is established, call `accounting.for_peer(overlay_addr)` to get
+//! a [`PeerBandwidth`] handle. This handle is `Clone` and can be shared by all
+//! protocols on that connection (retrieval, pushsync, pricing, swap).
+//!
+//! The `record()` operation uses atomic counters, so multiple protocols can
+//! record bandwidth concurrently without any locking.
+//!
+//! # Overlay Addresses
+//!
+//! All accounting uses [`OverlayAddress`] (32-byte Swarm address) for peer
+//! identification, not libp2p `PeerId`. This is because:
+//!
+//! - Accounting is tied to the Swarm identity (overlay), not the connection (underlay)
+//! - A peer may reconnect with a different underlay but same overlay
+//! - Settlement (SWAP cheques) is based on overlay identity
+//!
+//! # Example
+//!
+//! ```ignore
+//! // Connection established - use peer's overlay address
+//! let peer_accounting = bandwidth.for_peer(peer_overlay);
+//!
+//! // Clone for each protocol stream
+//! let retrieval_accounting = peer_accounting.clone();
+//! let pushsync_accounting = peer_accounting.clone();
+//!
+//! // Both can record concurrently - no contention
+//! retrieval_accounting.record(1024, Direction::Download);
+//! pushsync_accounting.record(4096, Direction::Upload);
+//! ```
 
-use alloc::string::String;
+use alloc::vec::Vec;
 use async_trait::async_trait;
-use core::{fmt::Debug, time::Duration};
-use vertex_primitives::{PeerId, Result};
+use vertex_primitives::{OverlayAddress, Result};
 
-/// Bandwidth usage direction
+/// Direction of bandwidth usage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
-    /// Outgoing bandwidth (upload)
-    Outgoing,
-    /// Incoming bandwidth (download)
-    Incoming,
+    /// Uploading data (sending to peer)
+    Upload,
+    /// Downloading data (receiving from peer)
+    Download,
 }
 
-/// Configuration for pseudosettle (free bandwidth allocation)
-#[derive(Debug, Clone)]
-pub struct PseudoSettleConfig {
-    /// Daily free bandwidth allowance in bytes
-    pub daily_allowance: u64,
-    /// Payment threshold in bytes
-    pub payment_threshold: u64,
-    /// Payment tolerance before disconnection in bytes
-    pub payment_tolerance: u64,
-    /// Disconnect threshold in bytes
-    pub disconnect_threshold: u64,
-}
+// ============================================================================
+// Per-Peer Bandwidth Handle
+// ============================================================================
 
-/// Configuration for SWAP payment channel based bandwidth accounting
-#[derive(Debug, Clone)]
-pub struct SwapConfig {
-    /// Minimum deposit in base units
-    pub min_deposit: u64,
-    /// Minimum settlement threshold in base units
-    pub min_settlement: u64,
-    /// Settlement timeout in seconds
-    pub settlement_timeout: Duration,
-    /// Whether to enforce timeouts
-    pub enforce_timeouts: bool,
-    /// Price per byte in base units
-    pub price_per_byte: u64,
-}
-
-/// Combined bandwidth configuration
-#[derive(Debug, Clone)]
-pub struct BandwidthConfig {
-    /// Pseudosettle configuration
-    pub pseudosettle: PseudoSettleConfig,
-    /// SWAP configuration
-    pub swap: SwapConfig,
-    /// Whether bandwidth accounting is enabled
-    pub enabled: bool,
-    /// Whether to enforce bandwidth limits
-    pub enforce_limits: bool,
-}
-
-/// Bandwidth accounting for a peer
-#[auto_impl::auto_impl(&, Arc)]
-pub trait BandwidthAccountant: Send + Sync + 'static {
-    /// Record bandwidth usage with a peer
-    fn record_usage(&self, peer: &PeerId, bytes: u64, direction: Direction) -> Result<()>;
-
-    /// Get current balance with a peer (positive = they owe us, negative = we owe them)
-    fn balance(&self, peer: &PeerId) -> Result<i64>;
-
-    /// Check if a peer has exceeded their debt limit
-    fn has_exceeded_limit(&self, peer: &PeerId) -> Result<bool>;
-
-    /// Reset balances for all peers (e.g., at the start of a new period)
-    fn reset_balances(&self) -> Result<()>;
-}
-
-/// Bandwidth payment management
+/// Per-peer bandwidth accounting handle.
+///
+/// This is the handle used by protocol streams. It must be:
+/// - `Clone` - shared across protocols on the same connection
+/// - `Send + Sync` - used from async tasks
+/// - Lock-free for `record()` - uses atomics internally
+///
+/// # Implementation Requirements
+///
+/// - `record()` MUST be lock-free (use `AtomicI64` or similar)
+/// - `allow()` should be fast (may read atomics)
+/// - `settle()` may take locks or do I/O (it's async)
 #[async_trait]
-#[auto_impl::auto_impl(&, Arc)]
-pub trait BandwidthPaymentManager: Send + Sync + 'static {
-    /// Settle debt with a peer
-    async fn settle(&self, peer: &PeerId) -> Result<()>;
+pub trait PeerBandwidth: Clone + Send + Sync {
+    /// Record bandwidth usage (lock-free).
+    ///
+    /// This is called frequently from protocol handlers and MUST NOT block.
+    /// Use atomic operations internally.
+    fn record(&self, bytes: u64, direction: Direction);
 
-    /// Process an incoming payment from a peer
-    fn process_payment(&self, peer: &PeerId, amount: u64, payment_data: &[u8]) -> Result<()>;
+    /// Check if a transfer of `bytes` is allowed.
+    ///
+    /// Returns `false` if the peer owes us too much (over disconnect threshold).
+    fn allow(&self, bytes: u64) -> bool;
 
-    /// Get payment status for a peer
-    fn payment_status(&self, peer: &PeerId) -> Result<PaymentStatus>;
+    /// Get the current balance (positive = peer owes us).
+    fn balance(&self) -> i64;
+
+    /// Request settlement of outstanding balance.
+    ///
+    /// This may involve network I/O (sending cheques, etc.) so it's async.
+    async fn settle(&self) -> Result<()>;
+
+    /// Get the overlay address this handle is for.
+    fn peer(&self) -> OverlayAddress;
 }
 
-/// Status of payments with a peer
+// ============================================================================
+// Bandwidth Accounting Factory
+// ============================================================================
+
+/// Factory for creating per-peer bandwidth accounting handles.
+///
+/// Implementations manage the set of peer accounts and create handles
+/// when connections are established.
+///
+/// # Lifecycle
+///
+/// 1. Connection established → `for_peer(peer_id)` creates/returns handle
+/// 2. Protocols clone the handle and use it for bandwidth tracking
+/// 3. Connection closed → implementation may clean up or keep for reconnect
+pub trait BandwidthAccounting: Clone + Send + Sync {
+    /// The per-peer accounting handle type.
+    type Peer: PeerBandwidth;
+
+    /// Get or create a bandwidth accounting handle for a peer.
+    ///
+    /// If accounting already exists for this peer, returns a handle to
+    /// the existing account. Otherwise creates a new one.
+    fn for_peer(&self, peer: OverlayAddress) -> Self::Peer;
+
+    /// List all peers with active accounting.
+    fn peers(&self) -> Vec<OverlayAddress>;
+
+    /// Remove accounting for a peer (e.g., after disconnect + timeout).
+    fn remove_peer(&self, peer: &OverlayAddress);
+}
+
+// ============================================================================
+// No-op Implementations
+// ============================================================================
+
+/// No-op bandwidth accounting (always allows, never settles).
+///
+/// Use this for testing or private networks without bandwidth accounting.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoBandwidthIncentives;
+
+/// No-op per-peer bandwidth handle.
 #[derive(Debug, Clone)]
-pub struct PaymentStatus {
-    /// Current balance in base units
-    pub balance: i64,
-    /// Last payment timestamp
-    pub last_payment_time: u64,
-    /// Last settlement timestamp
-    pub last_settlement_time: u64,
-    /// Whether payment channel is established
-    pub channel_established: bool,
+pub struct NoPeerBandwidth {
+    peer: OverlayAddress,
 }
 
-/// Combined bandwidth controller for accounting and payments
 #[async_trait]
-#[auto_impl::auto_impl(&, Arc)]
-pub trait BandwidthController: Send + Sync + 'static {
-    /// Record bandwidth usage
-    fn record_usage(&self, peer: &PeerId, bytes: u64, direction: Direction) -> Result<()>;
+impl PeerBandwidth for NoPeerBandwidth {
+    fn record(&self, _bytes: u64, _direction: Direction) {}
 
-    /// Check if a peer is allowed to use more bandwidth
-    fn allow_bandwidth(&self, peer: &PeerId, bytes: u64) -> Result<bool>;
+    fn allow(&self, _bytes: u64) -> bool {
+        true
+    }
 
-    /// Settle payments with a peer
-    async fn settle(&self, peer: &PeerId) -> Result<()>;
+    fn balance(&self) -> i64 {
+        0
+    }
 
-    /// Get bandwidth status for a peer
-    fn bandwidth_status(&self, peer: &PeerId) -> Result<BandwidthStatus>;
+    async fn settle(&self) -> Result<()> {
+        Ok(())
+    }
 
-    /// Get the price per byte for bandwidth
-    fn price_per_byte(&self) -> u64;
+    fn peer(&self) -> OverlayAddress {
+        self.peer
+    }
 }
 
-/// Current bandwidth status with a peer
-#[derive(Debug, Clone)]
-pub struct BandwidthStatus {
-    /// Current balance in bytes (positive = they owe us, negative = we owe them)
-    pub balance_bytes: i64,
-    /// Current balance in token base units
-    pub balance_tokens: i64,
-    /// Free bandwidth remaining for this period
-    pub free_allowance_remaining: u64,
-    /// Whether the peer has exceeded limits
-    pub exceeds_limit: bool,
-    /// Payment information
-    pub payment_info: Option<PaymentStatus>,
-}
+impl BandwidthAccounting for NoBandwidthIncentives {
+    type Peer = NoPeerBandwidth;
 
-/// Factory for creating bandwidth controllers
-#[auto_impl::auto_impl(&, Arc)]
-pub trait BandwidthControllerFactory: Send + Sync + 'static {
-    /// The type of controller this factory creates
-    type Controller: BandwidthController;
+    fn for_peer(&self, peer: OverlayAddress) -> Self::Peer {
+        NoPeerBandwidth { peer }
+    }
 
-    /// Create a new bandwidth controller
-    fn create_controller(&self, config: &BandwidthConfig) -> Result<Self::Controller>;
+    fn peers(&self) -> Vec<OverlayAddress> {
+        Vec::new()
+    }
+
+    fn remove_peer(&self, _peer: &OverlayAddress) {}
 }

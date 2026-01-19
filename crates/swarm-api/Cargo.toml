@@ -9,14 +9,13 @@ repository.workspace = true
 
 [dependencies]
 # Internal dependencies
-nectar-primitives = { workspace = true }
+vertex-primitives = { workspace = true }
 
 # External dependencies
 auto_impl = "1.1"
 futures = { workspace = true }
 thiserror = { workspace = true }
 async-trait = "0.1"
-alloy-primitives = { workspace = true }
 
 [features]
 default = ["std"]

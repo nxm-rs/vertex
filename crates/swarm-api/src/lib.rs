@@ -1,47 +1,47 @@
-//! Core API traits for the Vertex Swarm node
+//! Swarm API - Core abstractions for Ethereum Swarm
 //!
-//! This crate defines the fundamental traits and interfaces that all Vertex
-//! Swarm implementations must satisfy.
+//! This crate defines the minimal abstractions that make a Swarm a Swarm.
+//! Implementation details (libp2p, kademlia, specific storage backends) live
+//! elsewhere in `net/`, `nectar/`, etc.
+//!
+//! # Core Concepts
+//!
+//! - [`SwarmReader`] - Get chunks (read-only access with bandwidth accounting)
+//! - [`SwarmWriter`] - Put and get chunks (read-write access with payment)
+//! - [`LocalStore`] - Local chunk persistence for full nodes
+//! - [`BandwidthAccounting`] - Per-peer bandwidth tracking (pseudosettle/SWAP)
+//! - [`ChunkSync`] - Sync chunks between peers
+//! - [`Topology`] - Neighborhood awareness
+//!
+//! # Design Principles
+//!
+//! - Traits define *what*, implementations define *how*
+//! - No libp2p concepts leak into the API
+//! - Payment is configurable via associated types (can be `()` for none)
+//! - Bandwidth accounting is per-peer and lock-free
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![warn(missing_docs)]
 
 extern crate alloc;
 
-use async_trait::async_trait;
-use vertex_primitives::{ChunkAddress, Error, Result};
+mod bandwidth;
+mod store;
+mod swarm;
+mod sync;
+mod topology;
 
-/// Chunk-related traits
-pub mod chunk;
-pub use chunk::*;
-
-/// Access control traits (authentication, authorization, accounting)
-pub mod access;
-pub use access::*;
-
-/// Storage-related traits
-pub mod storage;
-pub use storage::*;
-
-/// Network-related traits
-pub mod network;
-pub use network::*;
-
-/// Node type traits
-pub mod node;
-pub use node::*;
-
-/// Bandwidth management traits
-pub mod bandwidth;
 pub use bandwidth::*;
+pub use store::*;
+pub use swarm::*;
+pub use sync::*;
+pub use topology::*;
 
-/// Protocol-related traits
-pub mod protocol;
-pub use protocol::*;
+// Re-export chunk types for convenience
+pub use vertex_primitives::{
+    AnyChunk, Chunk, ChunkAddress, ChunkType, ChunkTypeId, ChunkTypeSet, ContentChunk,
+    SingleOwnerChunk, StandardChunkSet, ValidatedChunk,
+};
 
-/// Common types and structures
-pub mod types;
-pub use types::*;
-
-// Re-export common primitives for convenience
-pub use vertex_primitives::{Address, ChunkAddress, Error, PeerId, Result, B256, U256};
+// Re-export common primitives
+pub use vertex_primitives::{Address, B256, Error, OverlayAddress, PeerId, Result, U256};
