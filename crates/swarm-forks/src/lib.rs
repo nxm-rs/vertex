@@ -27,7 +27,7 @@ mod forkcondition;
 mod hardfork;
 mod hardforks;
 
-pub use hardfork::{Hardfork, SwarmHardfork, DEV_HARDFORKS};
+pub use hardfork::{DEV_HARDFORKS, Hardfork, SwarmHardfork};
 
 pub use display::DisplayHardforks;
 pub use forkcondition::ForkCondition;

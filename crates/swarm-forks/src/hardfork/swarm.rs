@@ -1,13 +1,13 @@
-use crate::{hardfork, ForkCondition, Hardfork, SwarmHardforks};
+use crate::{ForkCondition, Hardfork, SwarmHardforks, hardfork};
 use alloc::{boxed::Box, format, string::String};
 use core::{
     fmt,
     fmt::{Display, Formatter},
     str::FromStr,
 };
+use nectar_swarms::{NamedSwarm, Swarm, SwarmKind};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use nectar_swarms::{NamedSwarm, Swarm, SwarmKind};
 
 hardfork!(
     /// The name of a Swarm hardfork.
