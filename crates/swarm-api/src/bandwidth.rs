@@ -40,7 +40,9 @@
 
 use alloc::vec::Vec;
 use async_trait::async_trait;
-use vertex_primitives::{OverlayAddress, Result};
+use vertex_primitives::OverlayAddress;
+
+use crate::SwarmResult;
 
 /// Direction of bandwidth usage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,7 +88,7 @@ pub trait PeerBandwidth: Clone + Send + Sync {
     /// Request settlement of outstanding balance.
     ///
     /// This may involve network I/O (sending cheques, etc.) so it's async.
-    async fn settle(&self) -> Result<()>;
+    async fn settle(&self) -> SwarmResult<()>;
 
     /// Get the overlay address this handle is for.
     fn peer(&self) -> OverlayAddress;
@@ -151,7 +153,7 @@ impl PeerBandwidth for NoPeerBandwidth {
         0
     }
 
-    async fn settle(&self) -> Result<()> {
+    async fn settle(&self) -> SwarmResult<()> {
         Ok(())
     }
 

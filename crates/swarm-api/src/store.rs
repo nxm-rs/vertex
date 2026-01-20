@@ -1,6 +1,7 @@
 //! Local chunk storage.
 
-use vertex_primitives::{AnyChunk, ChunkAddress, Result};
+use crate::SwarmResult;
+use vertex_primitives::{AnyChunk, ChunkAddress};
 
 /// Local chunk storage for full nodes.
 ///
@@ -8,14 +9,14 @@ use vertex_primitives::{AnyChunk, ChunkAddress, Result};
 /// persistence layer, separate from network operations.
 pub trait LocalStore: Send + Sync {
     /// Store a chunk locally.
-    fn store(&self, chunk: &AnyChunk) -> Result<()>;
+    fn store(&self, chunk: &AnyChunk) -> SwarmResult<()>;
 
     /// Retrieve a chunk from local storage.
-    fn retrieve(&self, address: &ChunkAddress) -> Result<Option<AnyChunk>>;
+    fn retrieve(&self, address: &ChunkAddress) -> SwarmResult<Option<AnyChunk>>;
 
     /// Check if a chunk exists locally.
     fn has(&self, address: &ChunkAddress) -> bool;
 
     /// Remove a chunk from local storage.
-    fn remove(&self, address: &ChunkAddress) -> Result<()>;
+    fn remove(&self, address: &ChunkAddress) -> SwarmResult<()>;
 }

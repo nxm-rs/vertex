@@ -26,12 +26,14 @@
 extern crate alloc;
 
 mod bandwidth;
+mod error;
 mod store;
 mod swarm;
 mod sync;
 mod topology;
 
 pub use bandwidth::*;
+pub use error::*;
 pub use store::*;
 pub use swarm::*;
 pub use sync::*;
@@ -40,8 +42,5 @@ pub use topology::*;
 // Re-export chunk types for convenience
 pub use vertex_primitives::{
     AnyChunk, Chunk, ChunkAddress, ChunkType, ChunkTypeId, ChunkTypeSet, ContentChunk,
-    SingleOwnerChunk, StandardChunkSet, ValidatedChunk,
+    OverlayAddress, PeerId, SingleOwnerChunk, StandardChunkSet, ValidatedChunk,
 };
-
-// Re-export common primitives
-pub use vertex_primitives::{Address, B256, Error, OverlayAddress, PeerId, Result, U256};

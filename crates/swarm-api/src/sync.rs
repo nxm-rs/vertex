@@ -5,7 +5,9 @@
 //! based on Swarm overlay addresses.
 
 use async_trait::async_trait;
-use vertex_primitives::{AnyChunk, OverlayAddress, Result};
+use vertex_primitives::{AnyChunk, OverlayAddress};
+
+use crate::SwarmResult;
 
 /// Chunk synchronization between peers.
 ///
@@ -23,12 +25,12 @@ pub trait ChunkSync: Send + Sync {
     ///
     /// Returns statistics about what was synced.
     /// The peer is identified by their overlay address.
-    async fn sync_with(&self, peer: &OverlayAddress) -> Result<SyncResult>;
+    async fn sync_with(&self, peer: &OverlayAddress) -> SwarmResult<SyncResult>;
 
     /// Offer a chunk to the network (push sync).
     ///
     /// The chunk will be forwarded to peers responsible for storing it.
-    async fn offer(&self, chunk: &AnyChunk) -> Result<()>;
+    async fn offer(&self, chunk: &AnyChunk) -> SwarmResult<()>;
 }
 
 /// Result of a sync operation.

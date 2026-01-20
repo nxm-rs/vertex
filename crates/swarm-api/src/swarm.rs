@@ -38,9 +38,9 @@
 //! }
 //! ```
 
-use crate::BandwidthAccounting;
+use crate::{BandwidthAccounting, SwarmResult};
 use async_trait::async_trait;
-use vertex_primitives::{AnyChunk, ChunkAddress, Result};
+use vertex_primitives::{AnyChunk, ChunkAddress};
 
 // ============================================================================
 // SwarmReader - Read-only access
@@ -77,7 +77,7 @@ pub trait SwarmReader: Send + Sync {
     /// 2. Check bandwidth allowance: `accounting.for_peer(peer).allow(size)`
     /// 3. Retrieve the chunk
     /// 4. Record bandwidth: `accounting.for_peer(peer).record(size, Direction::Download)`
-    async fn get(&self, address: &ChunkAddress) -> Result<AnyChunk>;
+    async fn get(&self, address: &ChunkAddress) -> SwarmResult<AnyChunk>;
 }
 
 // ============================================================================
@@ -122,5 +122,5 @@ pub trait SwarmWriter: SwarmReader {
     /// 2. Store locally if responsible
     /// 3. Forward to neighbors (push sync)
     /// 4. Record bandwidth for uploads
-    async fn put(&self, chunk: AnyChunk, payment: &Self::Payment) -> Result<()>;
+    async fn put(&self, chunk: AnyChunk, payment: &Self::Payment) -> SwarmResult<()>;
 }
