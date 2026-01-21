@@ -166,6 +166,22 @@ pub trait SwarmSpec: Send + Sync + Unpin + Debug + 'static {
     fn hardforks(&self) -> &SwarmHardforks;
 
     // ========================================================================
+    // Chunk Protocol Configuration
+    // ========================================================================
+
+    /// Returns the chunk size in bytes for this network.
+    ///
+    /// This is the fundamental unit of storage in Swarm. Standard Swarm
+    /// networks use 4096 bytes (2^12), but custom networks may differ.
+    fn chunk_size(&self) -> usize;
+
+    /// Returns the reserve capacity in number of chunks for full nodes.
+    ///
+    /// This is the target number of chunks a full storage node should hold.
+    /// Standard networks use 2^22 = 4,194,304 chunks.
+    fn reserve_capacity(&self) -> u64;
+
+    // ========================================================================
     // Fork Activation & Compatibility
     // ========================================================================
 
@@ -254,6 +270,14 @@ impl SwarmSpec for Hive {
 
     fn hardforks(&self) -> &SwarmHardforks {
         &self.hardforks
+    }
+
+    fn chunk_size(&self) -> usize {
+        self.chunk_size
+    }
+
+    fn reserve_capacity(&self) -> u64 {
+        self.reserve_capacity
     }
 
     fn is_fork_active_at_timestamp(&self, fork: SwarmHardfork, timestamp: u64) -> bool {

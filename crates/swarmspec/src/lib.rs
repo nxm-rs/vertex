@@ -184,4 +184,17 @@ mod tests {
         let provider = StaticSwarmSpecProvider::from_arc(spec);
         assert_eq!(provider.spec().network_id(), mainnet::NETWORK_ID);
     }
+
+    #[test]
+    fn test_custom_network_chunk_config() {
+        // Custom networks can override chunk protocol parameters
+        let custom = HiveBuilder::new()
+            .network_id(999)
+            .chunk_size(8192)
+            .reserve_capacity(1 << 20)
+            .build();
+
+        assert_eq!(custom.chunk_size(), 8192);
+        assert_eq!(custom.reserve_capacity(), 1 << 20);
+    }
 }

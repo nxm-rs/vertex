@@ -8,7 +8,9 @@
 
 use crate::{
     Token,
-    constants::{dev, mainnet, testnet},
+    constants::{
+        dev, mainnet, testnet, DEFAULT_CHUNK_SIZE, DEFAULT_RESERVE_CAPACITY,
+    },
     generate_dev_network_id,
 };
 use alloc::{
@@ -57,6 +59,12 @@ pub struct Hive {
 
     /// Genesis timestamp (reference point for hardfork activation)
     pub genesis_timestamp: u64,
+
+    /// Chunk size in bytes (typically 4096 = 2^12)
+    pub chunk_size: usize,
+
+    /// Reserve capacity in number of chunks for full nodes (typically 2^22)
+    pub reserve_capacity: u64,
 }
 
 impl Default for Hive {
@@ -72,6 +80,8 @@ impl Default for Hive {
             hardforks,
             token: dev::TOKEN,
             genesis_timestamp: 0,
+            chunk_size: DEFAULT_CHUNK_SIZE,
+            reserve_capacity: DEFAULT_RESERVE_CAPACITY,
         }
     }
 }
@@ -97,6 +107,8 @@ pub(crate) fn init_mainnet() -> Arc<Hive> {
                 hardforks,
                 token: mainnet::TOKEN,
                 genesis_timestamp: SwarmHardfork::MAINNET_GENESIS_TIMESTAMP,
+                chunk_size: DEFAULT_CHUNK_SIZE,
+                reserve_capacity: DEFAULT_RESERVE_CAPACITY,
             };
 
             Arc::new(spec)
@@ -125,6 +137,8 @@ pub(crate) fn init_testnet() -> Arc<Hive> {
                 hardforks,
                 token: testnet::TOKEN,
                 genesis_timestamp: SwarmHardfork::TESTNET_GENESIS_TIMESTAMP,
+                chunk_size: DEFAULT_CHUNK_SIZE,
+                reserve_capacity: DEFAULT_RESERVE_CAPACITY,
             };
 
             Arc::new(spec)
@@ -154,6 +168,8 @@ pub struct HiveBuilder {
     hardforks: SwarmHardforks,
     token: Option<Token>,
     genesis_timestamp: Option<u64>,
+    chunk_size: Option<usize>,
+    reserve_capacity: Option<u64>,
 }
 
 impl HiveBuilder {
@@ -217,6 +233,18 @@ impl HiveBuilder {
         self
     }
 
+    /// Set the chunk size in bytes
+    pub fn chunk_size(mut self, size: usize) -> Self {
+        self.chunk_size = Some(size);
+        self
+    }
+
+    /// Set the reserve capacity in number of chunks
+    pub fn reserve_capacity(mut self, capacity: u64) -> Self {
+        self.reserve_capacity = Some(capacity);
+        self
+    }
+
     /// Build the specification
     pub fn build(self) -> Hive {
         let chain = self.chain.unwrap_or(Chain::from(NamedChain::Dev));
@@ -257,6 +285,8 @@ impl HiveBuilder {
             hardforks,
             token,
             genesis_timestamp,
+            chunk_size: self.chunk_size.unwrap_or(DEFAULT_CHUNK_SIZE),
+            reserve_capacity: self.reserve_capacity.unwrap_or(DEFAULT_RESERVE_CAPACITY),
         }
     }
 
@@ -271,6 +301,8 @@ impl HiveBuilder {
             hardforks: spec.hardforks.clone(),
             token: Some(spec.token.clone()),
             genesis_timestamp: Some(spec.genesis_timestamp),
+            chunk_size: Some(spec.chunk_size),
+            reserve_capacity: Some(spec.reserve_capacity),
         }
     }
 
@@ -285,6 +317,8 @@ impl HiveBuilder {
             hardforks: spec.hardforks.clone(),
             token: Some(spec.token.clone()),
             genesis_timestamp: Some(spec.genesis_timestamp),
+            chunk_size: Some(spec.chunk_size),
+            reserve_capacity: Some(spec.reserve_capacity),
         }
     }
 
@@ -299,6 +333,8 @@ impl HiveBuilder {
             hardforks: spec.hardforks.clone(),
             token: Some(spec.token.clone()),
             genesis_timestamp: Some(spec.genesis_timestamp),
+            chunk_size: Some(spec.chunk_size),
+            reserve_capacity: Some(spec.reserve_capacity),
         }
     }
 }
