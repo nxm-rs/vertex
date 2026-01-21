@@ -1,0 +1,26 @@
+[package]
+name = "vertex-net-topology"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+## vertex
+vertex-primitives.workspace = true
+
+## p2p
+libp2p.workspace = true
+
+## misc
+thiserror.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

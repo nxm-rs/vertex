@@ -1,0 +1,26 @@
+[package]
+name = "vertex-primitives"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Core primitive types for the Vertex Swarm node"
+
+[dependencies]
+# Re-export nectar primitives for chunk types
+nectar-primitives = { workspace = true }
+
+# Alloy primitives for Ethereum types
+alloy-primitives = { workspace = true }
+
+# libp2p for peer identity
+libp2p = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+[features]
+default = ["std"]
+std = ["alloy-primitives/std", "nectar-primitives/std"]

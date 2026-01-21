@@ -1,0 +1,29 @@
+[package]
+name = "vertex-node-types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Node type definitions for Vertex Swarm"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Swarm
+vertex-primitives.workspace = true
+vertex-swarm-api.workspace = true
+vertex-swarmspec.workspace = true
+
+# misc
+auto_impl.workspace = true
+
+[features]
+default = ["std"]
+std = [
+    "vertex-primitives/std",
+    "vertex-swarm-api/std",
+    "vertex-swarmspec/std",
+]

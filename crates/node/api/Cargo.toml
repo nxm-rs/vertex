@@ -1,0 +1,35 @@
+[package]
+name = "vertex-node-api"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Node API traits for the Vertex Swarm node"
+
+[dependencies]
+# Internal crates
+vertex-node-types = { workspace = true }
+vertex-primitives = { workspace = true }
+vertex-swarm-api = { workspace = true }
+vertex-swarmspec = { workspace = true }
+
+# Async
+futures = { workspace = true }
+async-trait = "0.1"
+tokio = { workspace = true, features = ["sync", "rt", "time"] }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Trait implementation
+auto_impl = "1.1"
+
+# Logging
+tracing = { workspace = true }
+
+# Feature-gated dependencies
+serde = { version = "1.0", features = ["derive"], optional = true }
+
+[features]
+default = ["std", "serde"]
+std = ["serde?/std", "tokio/rt-multi-thread"]
+serde = ["dep:serde"]

@@ -14,22 +14,26 @@ members = [
     # Metrics & Observability
     # "crates/metrics",  # TODO: Update metrics API usage
 
+    # Primitives
+    "crates/primitives",
+
     # Network
-    "crates/network-primitives",
-    "crates/network-primitives-traits",
-    "crates/network/codec",
-    "crates/network/handshake",
-    "crates/network/headers",
-    "crates/network/pricing",
+    "crates/net/primitives",
+    "crates/net/primitives-traits",
+    "crates/net/codec",
+    "crates/net/handshake",
+    "crates/net/headers",
+    "crates/net/pricing",
+    "crates/net/topology",
 
     # Node
-    "crates/node",
-    # "crates/node-api",  # TODO: Fix node-api swarm-api deps
+    "crates/node/types",
+    "crates/node/api",
+    "crates/node/core",
 
     # Swarm
-    # TODO: Fix swarm-api to use correct primitive sources (alloy, libp2p)
+    "crates/swarm-api",
     # "crates/storage",
-    # "crates/swarm-api",
     # "crates/swarm-core",
     "crates/swarm-forks",
     "crates/swarmspec",
@@ -48,25 +52,30 @@ rust.unreachable_pub = "warn"
 
 [workspace.dependencies]
 ## nectar
-nectar-primitives = { git = "https://github.com/nxm-rs/nectar" }
+nectar-contracts = { path = "../nectar/crates/contracts" }
+nectar-primitives = { path = "../nectar/crates/primitives" }
+nectar-swarms = { path = "../nectar/crates/swarms" }
 
 digest = "0.10"
 
 ## vertex
 # primitives
-vertex-network-primitives = { path = "crates/network-primitives" }
-vertex-network-primitives-traits = { path = "crates/network-primitives-traits" }
+vertex-primitives = { path = "crates/primitives" }
 vertex-swarm-forks = { path = "crates/swarm-forks" }
 
-# network protocols
-vertex-network-codec = { path = "crates/network/codec" }
-vertex-network-handshake = { path = "crates/network/handshake" }
-vertex-network-headers = { path = "crates/network/headers" }
-vertex-network-pricing = { path = "crates/network/pricing" }
+# network
+vertex-net-primitives = { path = "crates/net/primitives" }
+vertex-net-primitives-traits = { path = "crates/net/primitives-traits" }
+vertex-net-codec = { path = "crates/net/codec" }
+vertex-net-handshake = { path = "crates/net/handshake" }
+vertex-net-headers = { path = "crates/net/headers" }
+vertex-net-pricing = { path = "crates/net/pricing" }
+vertex-net-topology = { path = "crates/net/topology" }
 
 # node
-vertex-node = { path = "crates/node" }
-vertex-node-api = { path = "crates/node-api" }
+vertex-node-types = { path = "crates/node/types" }
+vertex-node-api = { path = "crates/node/api" }
+vertex-node-core = { path = "crates/node/core" }
 
 # metrics
 vertex-metrics = { path = "crates/metrics" }
@@ -74,7 +83,7 @@ vertex-metrics = { path = "crates/metrics" }
 # swarm
 vertex-storage = { path = "crates/storage" }
 vertex-swarm-api = { path = "crates/swarm-api" }
-vertex-swarm-core = { path = "crates/swarm-core" }
+# vertex-swarm-core removed - obsolete, superseded by node/* crates
 vertex-swarmspec = { path = "crates/swarmspec" }
 
 ## alloy
@@ -142,6 +151,7 @@ proptest-derive = "0.5"
 
 # misc
 anyhow = "1.0"
+byteorder = { version = "1.5", default-features = false }
 auto_impl = "1"
 bytes = { version = "1.10", default-features = false }
 clap = "4"

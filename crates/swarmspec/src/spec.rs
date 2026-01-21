@@ -303,31 +303,21 @@ impl HiveBuilder {
     }
 }
 
-/// Implementation of mainnet bootnodes
+/// Mainnet bootnodes using dnsaddr for dynamic resolution.
+///
+/// The `/dnsaddr/mainnet.ethswarm.org` multiaddr is resolved at runtime via DNS TXT
+/// records, allowing the Swarm team to update bootnode IPs without client changes.
+/// Resolution should happen in the networking layer, not here.
 fn mainnet_bootnodes() -> Vec<Multiaddr> {
-    vec![
-        "/ip4/3.127.247.93/tcp/1634/p2p/16Uiu2HAkw5SNNtSvH1zJiQ6Gc3WoGNSxiyNueRKe6fuAuh57G3Bk"
-            .parse()
-            .unwrap(),
-        "/ip4/18.193.69.215/tcp/1634/p2p/16Uiu2HAkzcmk8MeQFnSgA7SGktjR9xCyCyx1rBbGf6rBD6vy5gEi"
-            .parse()
-            .unwrap(),
-        "/ip4/13.51.120.148/tcp/1634/p2p/16Uiu2HAmRGYzi8Huuh4TkUfmVWhVHJ6zzc7e7nFDSQJJoE1nd4Kp"
-            .parse()
-            .unwrap(),
-    ]
+    vec!["/dnsaddr/mainnet.ethswarm.org".parse().unwrap()]
 }
 
-/// Implementation of testnet bootnodes
+/// Testnet bootnodes using dnsaddr for dynamic resolution.
+///
+/// The `/dnsaddr/testnet.ethswarm.org` multiaddr is resolved at runtime via DNS TXT
+/// records. Resolution should happen in the networking layer.
 fn testnet_bootnodes() -> Vec<Multiaddr> {
-    vec![
-        "/ip4/3.8.176.112/tcp/1634/p2p/16Uiu2HAkwfcKCxGChwwJN7RyUJ1N85eHN7HyMnP3GJrqKPEUoDfL"
-            .parse()
-            .unwrap(),
-        "/ip4/3.8.176.46/tcp/1634/p2p/16Uiu2HAkzFm9WBXWYnpAKRcZK1HRu1Gv74zW5aw1XzYFz1MGpkqs"
-            .parse()
-            .unwrap(),
-    ]
+    vec!["/dnsaddr/testnet.ethswarm.org".parse().unwrap()]
 }
 
 impl Hive {
