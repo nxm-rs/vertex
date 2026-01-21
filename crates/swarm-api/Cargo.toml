@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 # Internal dependencies
 vertex-primitives = { workspace = true }
+vertex-swarmspec = { workspace = true }
 
 # External dependencies
 auto_impl = "1.1"

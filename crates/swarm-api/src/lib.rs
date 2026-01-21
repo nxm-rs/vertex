@@ -26,6 +26,7 @@
 extern crate alloc;
 
 mod bandwidth;
+mod config;
 mod error;
 mod store;
 mod swarm;
@@ -33,6 +34,7 @@ mod sync;
 mod topology;
 
 pub use bandwidth::*;
+pub use config::*;
 pub use error::*;
 pub use store::*;
 pub use swarm::*;

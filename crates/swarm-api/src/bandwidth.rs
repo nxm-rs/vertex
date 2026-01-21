@@ -108,7 +108,7 @@ pub trait PeerBandwidth: Clone + Send + Sync {
 /// 1. Connection established → `for_peer(peer_id)` creates/returns handle
 /// 2. Protocols clone the handle and use it for bandwidth tracking
 /// 3. Connection closed → implementation may clean up or keep for reconnect
-pub trait BandwidthAccounting: Clone + Send + Sync {
+pub trait BandwidthAccounting: Send + Sync {
     /// The per-peer accounting handle type.
     type Peer: PeerBandwidth;
 
