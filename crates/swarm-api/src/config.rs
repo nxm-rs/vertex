@@ -15,67 +15,91 @@
 //!
 //! ```ignore
 //! // CLI args implement config traits
-//! impl BandwidthIncentiveConfig for BandwidthArgs {
+//! impl AvailabilityIncentiveConfig for AvailabilityArgs {
 //!     fn pseudosettle_enabled(&self) -> bool { ... }
 //!     fn payment_threshold(&self) -> u64 { self.payment_threshold }
 //! }
 //!
 //! // Builder uses the trait
-//! fn build_accounting(config: &impl BandwidthIncentiveConfig) -> impl BandwidthAccounting {
+//! fn build_accounting(config: &impl AvailabilityIncentiveConfig) -> impl AvailabilityAccounting {
 //!     if config.pseudosettle_enabled() {
 //!         PseudosettleAccounting::new(config.payment_threshold())
 //!     } else {
-//!         NoBandwidthIncentives
+//!         NoAvailabilityIncentives
 //!     }
 //! }
 //! ```
 
 use core::time::Duration;
 
+use vertex_swarmspec::SwarmSpec;
+
 // ============================================================================
-// Bandwidth Incentive Configuration
+// Availability Incentive Configuration
 // ============================================================================
 
-/// Configuration for bandwidth incentives (pseudosettle / SWAP).
+/// Configuration for availability incentives (pseudosettle / SWAP).
 ///
-/// Implementations provide the parameters needed to configure bandwidth
-/// accounting between peers.
-pub trait BandwidthIncentiveConfig {
+/// All values are in **Accounting Units (AU)**, not bytes or BZZ tokens.
+/// This matches Bee's accounting system.
+///
+/// # Bee Compatibility
+///
+/// - Base price: 10,000 AU per chunk
+/// - Refresh rate: 4,500,000 AU/second (full node), 450,000 AU/second (light)
+/// - Payment threshold: 13,500,000 AU
+/// - Payment tolerance: 25% (disconnect = threshold × 1.25)
+pub trait AvailabilityIncentiveConfig {
     /// Whether pseudosettle (soft accounting) is enabled.
     fn pseudosettle_enabled(&self) -> bool;
 
     /// Whether SWAP (real payment channels) is enabled.
     fn swap_enabled(&self) -> bool;
 
-    /// Payment threshold in bytes.
+    /// Payment threshold in accounting units.
     ///
     /// When a peer's debt reaches this threshold, settlement is requested.
     fn payment_threshold(&self) -> u64;
 
-    /// Payment tolerance in bytes.
+    /// Payment tolerance as a percentage (0-100).
     ///
-    /// Additional allowance beyond threshold before refusing service.
-    fn payment_tolerance(&self) -> u64;
+    /// Disconnect threshold = payment_threshold * (100 + tolerance) / 100
+    fn payment_tolerance_percent(&self) -> u64;
 
-    /// Disconnect threshold in bytes.
+    /// Base price per chunk in accounting units.
     ///
-    /// When a peer's unpaid debt exceeds this, the connection is dropped.
-    fn disconnect_threshold(&self) -> u64;
+    /// Actual price depends on proximity: (MAX_PO - proximity + 1) * base_price
+    fn base_price(&self) -> u64;
 
-    /// Price per chunk in base units.
-    fn price_per_chunk(&self) -> u64;
+    /// Refresh rate in accounting units per second (for pseudosettle).
+    fn refresh_rate(&self) -> u64;
 
-    /// Check if any bandwidth incentive is enabled.
+    /// Early payment threshold as a percentage (0-100).
+    ///
+    /// Settlement is triggered when debt exceeds (100 - early) % of threshold.
+    fn early_payment_percent(&self) -> u64;
+
+    /// Light node scaling factor.
+    ///
+    /// Light nodes have all thresholds and rates divided by this factor.
+    fn light_factor(&self) -> u64;
+
+    /// Calculate the disconnect threshold.
+    fn disconnect_threshold(&self) -> u64 {
+        self.payment_threshold() * (100 + self.payment_tolerance_percent()) / 100
+    }
+
+    /// Check if any availability incentive is enabled.
     fn is_enabled(&self) -> bool {
         self.pseudosettle_enabled() || self.swap_enabled()
     }
 }
 
 // ============================================================================
-// Storage Configuration
+// Store Configuration (Local Chunk Storage)
 // ============================================================================
 
-/// Configuration for local chunk storage.
+/// Configuration for local chunk store.
 ///
 /// Storage capacity is expressed in number of chunks, which is the natural
 /// unit for Swarm storage. Use [`estimate_storage_bytes`] to calculate the
@@ -88,12 +112,20 @@ pub trait BandwidthIncentiveConfig {
 /// - Metadata overhead: indexes, leveldb overhead, etc. (~20% typical)
 ///
 /// Example: 1,000,000 chunks at 4KB each = ~4GB chunk data + ~800MB metadata ≈ 4.8GB
-pub trait StorageConfig {
+///
+/// # Spec-Aware Defaults
+///
+/// The [`SpecBasedStoreConfig`] implementation derives defaults from the
+/// [`SwarmSpec`], using `reserve_capacity()` for capacity and a fraction
+/// of that for cache.
+pub trait StoreConfig {
     /// Maximum storage capacity in number of chunks.
     ///
     /// This determines how many chunks the node can store (Full/Staker nodes).
     /// The actual disk space required will be approximately
     /// `chunks * chunk_size * 1.2` to account for metadata overhead.
+    ///
+    /// Default: `SwarmSpec::reserve_capacity()` (2^22 chunks on mainnet)
     fn capacity_chunks(&self) -> u64;
 
     /// Cache capacity in number of chunks.
@@ -101,11 +133,13 @@ pub trait StorageConfig {
     /// This is an in-memory cache for frequently accessed chunks, used by
     /// non-storage nodes (Light/Publisher) for retrieval and pushsync.
     /// Ephemeral nodes can use memory-only caching with no disk persistence.
+    ///
+    /// Default: `capacity_chunks / 64` (2^16 chunks when capacity is 2^22)
     fn cache_chunks(&self) -> u64;
 }
 
 /// Configuration for storage incentives (redistribution, postage).
-pub trait StorageIncentiveConfig {
+pub trait StorageConfig {
     /// Whether this node participates in redistribution.
     ///
     /// When enabled, the node participates in the redistribution game to earn
@@ -127,16 +161,8 @@ pub trait NetworkConfig {
     where
         Self: 'a;
 
-    /// Iterator over bootnode addresses (as string multiaddrs).
-    type Bootnodes<'a>: Iterator<Item = &'a str>
-    where
-        Self: 'a;
-
     /// Get the listen addresses.
     fn listen_addrs(&self) -> Self::ListenAddrs<'_>;
-
-    /// Get the bootnode addresses.
-    fn bootnodes(&self) -> Self::Bootnodes<'_>;
 
     /// Whether peer discovery is enabled.
     fn discovery_enabled(&self) -> bool;
@@ -198,10 +224,10 @@ pub trait IdentityConfig {
 /// This trait provides access to all configuration sections. It's typically
 /// implemented by a struct that holds references to individual config sources.
 pub trait NodeConfiguration {
-    /// Bandwidth incentive configuration.
-    type Bandwidth: BandwidthIncentiveConfig;
+    /// Availability incentive configuration.
+    type Availability: AvailabilityIncentiveConfig;
     /// Storage configuration.
-    type Storage: StorageConfig;
+    type Storage: StoreConfig;
     /// Network configuration.
     type Network: NetworkConfig;
     /// API configuration.
@@ -209,8 +235,8 @@ pub trait NodeConfiguration {
     /// Identity configuration.
     type Identity: IdentityConfig;
 
-    /// Get bandwidth configuration.
-    fn bandwidth(&self) -> &Self::Bandwidth;
+    /// Get availability configuration.
+    fn availability(&self) -> &Self::Availability;
 
     /// Get storage configuration.
     fn storage(&self) -> &Self::Storage;
@@ -228,92 +254,36 @@ pub trait NodeConfiguration {
 // ============================================================================
 // Default Implementations
 // ============================================================================
+//
+// Note: DefaultAvailabilityConfig and NoAvailabilityConfig are provided by
+// vertex-bandwidth-core, not here. This crate only defines traits.
 
-/// Default bandwidth configuration (pseudosettle only, standard thresholds).
-#[derive(Debug, Clone, Copy)]
-pub struct DefaultBandwidthConfig;
-
-impl BandwidthIncentiveConfig for DefaultBandwidthConfig {
-    fn pseudosettle_enabled(&self) -> bool {
-        true
-    }
-
-    fn swap_enabled(&self) -> bool {
-        false
-    }
-
-    fn payment_threshold(&self) -> u64 {
-        10 * 1024 * 1024 * 1024 // 10 GB
-    }
-
-    fn payment_tolerance(&self) -> u64 {
-        1024 * 1024 * 1024 // 1 GB
-    }
-
-    fn disconnect_threshold(&self) -> u64 {
-        100 * 1024 * 1024 * 1024 // 100 GB
-    }
-
-    fn price_per_chunk(&self) -> u64 {
-        10
-    }
-}
-
-/// No bandwidth incentives configuration.
-#[derive(Debug, Clone, Copy)]
-pub struct NoBandwidthConfig;
-
-impl BandwidthIncentiveConfig for NoBandwidthConfig {
-    fn pseudosettle_enabled(&self) -> bool {
-        false
-    }
-
-    fn swap_enabled(&self) -> bool {
-        false
-    }
-
-    fn payment_threshold(&self) -> u64 {
-        0
-    }
-
-    fn payment_tolerance(&self) -> u64 {
-        0
-    }
-
-    fn disconnect_threshold(&self) -> u64 {
-        u64::MAX
-    }
-
-    fn price_per_chunk(&self) -> u64 {
-        0
-    }
-}
-
-/// Default storage configuration.
+/// Cache capacity divisor relative to reserve capacity.
 ///
-/// Uses protocol defaults from swarmspec:
-/// - Capacity: `DEFAULT_RESERVE_CAPACITY` (2^22 chunks, ~20GB with metadata)
-/// - Cache: `DEFAULT_CACHE_CAPACITY` (2^16 chunks, ~256MB in memory)
-///
-/// Full nodes may use `DEFAULT_RESERVE_CAPACITY` for cache as well.
-#[derive(Debug, Clone, Copy)]
-pub struct DefaultStorageConfig;
+/// Default cache is `reserve_capacity / CACHE_CAPACITY_DIVISOR`.
+/// With divisor of 64: 2^22 / 64 = 2^16 = 65,536 chunks (~256MB).
+pub const CACHE_CAPACITY_DIVISOR: u64 = 64;
 
-impl StorageConfig for DefaultStorageConfig {
+/// Implement [`StoreConfig`] for any [`SwarmSpec`].
+///
+/// The spec provides all the information needed:
+/// - `capacity_chunks()` returns `spec.reserve_capacity()`
+/// - `cache_chunks()` returns `capacity / 64`
+impl<S: SwarmSpec> StoreConfig for S {
     fn capacity_chunks(&self) -> u64 {
-        vertex_swarmspec::DEFAULT_RESERVE_CAPACITY
+        self.reserve_capacity()
     }
 
     fn cache_chunks(&self) -> u64 {
-        vertex_swarmspec::DEFAULT_CACHE_CAPACITY
+        self.reserve_capacity() / CACHE_CAPACITY_DIVISOR
     }
 }
 
 /// Default storage incentive configuration (redistribution disabled).
 #[derive(Debug, Clone, Copy)]
-pub struct DefaultStorageIncentiveConfig;
+pub struct DefaultStorageConfig;
 
-impl StorageIncentiveConfig for DefaultStorageIncentiveConfig {
+impl StorageConfig for DefaultStorageConfig {
     fn redistribution_enabled(&self) -> bool {
         false
     }

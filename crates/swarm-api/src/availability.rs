@@ -1,14 +1,14 @@
-//! Bandwidth incentives - per-peer accounting without mutex contention.
+//! Availability incentives - per-peer accounting without mutex contention.
 //!
 //! # Design
 //!
-//! The bandwidth system uses a two-level design to avoid lock contention:
+//! The availability system uses a two-level design to avoid lock contention:
 //!
-//! 1. [`BandwidthAccounting`] - Factory that creates per-peer handles
-//! 2. [`PeerBandwidth`] - Per-peer handle with lock-free operations
+//! 1. [`AvailabilityAccounting`] - Factory that creates per-peer handles
+//! 2. [`PeerAvailability`] - Per-peer handle with lock-free operations
 //!
 //! When a connection is established, call `accounting.for_peer(overlay_addr)` to get
-//! a [`PeerBandwidth`] handle. This handle is `Clone` and can be shared by all
+//! a [`PeerAvailability`] handle. This handle is `Clone` and can be shared by all
 //! protocols on that connection (retrieval, pushsync, pricing, swap).
 //!
 //! The `record()` operation uses atomic counters, so multiple protocols can
@@ -27,7 +27,7 @@
 //!
 //! ```ignore
 //! // Connection established - use peer's overlay address
-//! let peer_accounting = bandwidth.for_peer(peer_overlay);
+//! let peer_accounting = availability.for_peer(peer_overlay);
 //!
 //! // Clone for each protocol stream
 //! let retrieval_accounting = peer_accounting.clone();
@@ -44,7 +44,7 @@ use vertex_primitives::OverlayAddress;
 
 use crate::SwarmResult;
 
-/// Direction of bandwidth usage.
+/// Direction of data transfer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     /// Uploading data (sending to peer)
@@ -54,10 +54,10 @@ pub enum Direction {
 }
 
 // ============================================================================
-// Per-Peer Bandwidth Handle
+// Per-Peer Availability Handle
 // ============================================================================
 
-/// Per-peer bandwidth accounting handle.
+/// Per-peer availability accounting handle.
 ///
 /// This is the handle used by protocol streams. It must be:
 /// - `Clone` - shared across protocols on the same connection
@@ -70,7 +70,7 @@ pub enum Direction {
 /// - `allow()` should be fast (may read atomics)
 /// - `settle()` may take locks or do I/O (it's async)
 #[async_trait]
-pub trait PeerBandwidth: Clone + Send + Sync {
+pub trait PeerAvailability: Clone + Send + Sync {
     /// Record bandwidth usage (lock-free).
     ///
     /// This is called frequently from protocol handlers and MUST NOT block.
@@ -95,10 +95,10 @@ pub trait PeerBandwidth: Clone + Send + Sync {
 }
 
 // ============================================================================
-// Bandwidth Accounting Factory
+// Availability Accounting Factory
 // ============================================================================
 
-/// Factory for creating per-peer bandwidth accounting handles.
+/// Factory for creating per-peer availability accounting handles.
 ///
 /// Implementations manage the set of peer accounts and create handles
 /// when connections are established.
@@ -108,11 +108,11 @@ pub trait PeerBandwidth: Clone + Send + Sync {
 /// 1. Connection established → `for_peer(peer_id)` creates/returns handle
 /// 2. Protocols clone the handle and use it for bandwidth tracking
 /// 3. Connection closed → implementation may clean up or keep for reconnect
-pub trait BandwidthAccounting: Send + Sync {
+pub trait AvailabilityAccounting: Send + Sync {
     /// The per-peer accounting handle type.
-    type Peer: PeerBandwidth;
+    type Peer: PeerAvailability;
 
-    /// Get or create a bandwidth accounting handle for a peer.
+    /// Get or create an availability accounting handle for a peer.
     ///
     /// If accounting already exists for this peer, returns a handle to
     /// the existing account. Otherwise creates a new one.
@@ -126,23 +126,24 @@ pub trait BandwidthAccounting: Send + Sync {
 }
 
 // ============================================================================
-// No-op Implementations
+// No-op Implementations (Default)
 // ============================================================================
 
-/// No-op bandwidth accounting (always allows, never settles).
+/// No-op availability accounting (always allows, never settles).
 ///
-/// Use this for testing or private networks without bandwidth accounting.
+/// Use this for testing or private networks without availability accounting.
+/// This is the default implementation used when no incentives are configured.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct NoBandwidthIncentives;
+pub struct NoAvailabilityIncentives;
 
-/// No-op per-peer bandwidth handle.
+/// No-op per-peer availability handle.
 #[derive(Debug, Clone)]
-pub struct NoPeerBandwidth {
+pub struct NoPeerAvailability {
     peer: OverlayAddress,
 }
 
 #[async_trait]
-impl PeerBandwidth for NoPeerBandwidth {
+impl PeerAvailability for NoPeerAvailability {
     fn record(&self, _bytes: u64, _direction: Direction) {}
 
     fn allow(&self, _bytes: u64) -> bool {
@@ -162,11 +163,11 @@ impl PeerBandwidth for NoPeerBandwidth {
     }
 }
 
-impl BandwidthAccounting for NoBandwidthIncentives {
-    type Peer = NoPeerBandwidth;
+impl AvailabilityAccounting for NoAvailabilityIncentives {
+    type Peer = NoPeerAvailability;
 
     fn for_peer(&self, peer: OverlayAddress) -> Self::Peer {
-        NoPeerBandwidth { peer }
+        NoPeerAvailability { peer }
     }
 
     fn peers(&self) -> Vec<OverlayAddress> {
