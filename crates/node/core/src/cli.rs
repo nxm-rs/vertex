@@ -9,39 +9,11 @@ use std::path::PathBuf;
 pub struct Cli {
     /// Logging configuration
     #[command(flatten)]
-    pub log_args: LogArgs,
+    pub logs: LogArgs,
 
     /// Subcommand to execute
     #[command(subcommand)]
     pub command: Commands,
-}
-
-/// Logging configuration
-#[derive(Debug, Args, Clone)]
-pub struct LogArgs {
-    /// Silence all output
-    #[arg(short, long)]
-    pub quiet: bool,
-
-    /// Verbose mode (-v, -vv, -vvv, etc.)
-    #[arg(short, long, action = clap::ArgAction::Count)]
-    pub verbosity: u8,
-
-    /// Include timestamps in logs
-    #[arg(long)]
-    pub timestamps: bool,
-
-    /// Enable logging to file
-    #[arg(long)]
-    pub log_file: bool,
-
-    /// Log file directory
-    #[arg(long)]
-    pub log_dir: Option<PathBuf>,
-
-    /// Log filter
-    #[arg(long, value_name = "DIRECTIVE")]
-    pub filter: Option<String>,
 }
 
 /// Swarm node commands
@@ -49,36 +21,6 @@ pub struct LogArgs {
 pub enum Commands {
     /// Run a Swarm node
     Node(NodeArgs),
-
-    /// Run a development Swarm node
-    Dev(DevArgs),
-
-    /// Display information about the node
-    Info(InfoArgs),
-
-    /// Manage node configuration
-    Config(ConfigArgs),
-}
-
-/// Identity configuration
-#[derive(Debug, Args, Clone)]
-pub struct IdentityArgs {
-    /// Password for keystore encryption/decryption.
-    ///
-    /// Can also be set via the VERTEX_PASSWORD environment variable.
-    #[arg(long, env = "VERTEX_PASSWORD")]
-    pub password: Option<String>,
-
-    /// Path to file containing keystore password
-    #[arg(long)]
-    pub password_file: Option<std::path::PathBuf>,
-
-    /// Use ephemeral identity (random key, not persisted).
-    ///
-    /// Default for light nodes. For full nodes with redistribution or SWAP,
-    /// using ephemeral identity means losing overlay address on restart.
-    #[arg(long)]
-    pub ephemeral: bool,
 }
 
 /// Arguments for the 'node' command
@@ -117,174 +59,145 @@ pub struct NodeArgs {
     pub testnet: bool,
 }
 
-/// Arguments for the 'dev' command
-#[derive(Debug, Args)]
-pub struct DevArgs {
-    /// Data directory configuration
-    #[command(flatten)]
-    pub datadir: DataDirArgs,
+// =============================================================================
+// Logging
+// =============================================================================
 
-    /// API configuration
-    #[command(flatten)]
-    pub api: ApiArgs,
-
-    /// Block time interval in seconds (0 means instant mining)
-    #[arg(long, default_value = "0")]
-    pub block_time: u64,
-
-    /// Number of accounts to generate
-    #[arg(long, default_value = "10")]
-    pub accounts: u8,
-
-    /// Amount of test BZZ to prefund accounts with
-    #[arg(long, default_value = "1000")]
-    pub prefund_amount: u64,
-}
-
-/// Arguments for the 'info' command
-#[derive(Debug, Args)]
-pub struct InfoArgs {
-    /// Data directory configuration
-    #[command(flatten)]
-    pub datadir: DataDirArgs,
-
-    /// Show network information
-    #[arg(long)]
-    pub network: bool,
-
-    /// Show storage information
-    #[arg(long)]
-    pub storage: bool,
-
-    /// Show peer information
-    #[arg(long)]
-    pub peers: bool,
-
-    /// Show all information
+/// Logging configuration
+#[derive(Debug, Args, Clone)]
+#[command(next_help_heading = "Logging")]
+pub struct LogArgs {
+    /// Silence all output
     #[arg(short, long)]
-    pub all: bool,
+    pub quiet: bool,
+
+    /// Verbose mode (-v, -vv, -vvv, etc.)
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    pub verbosity: u8,
+
+    /// Log filter directive (e.g., "vertex=debug,libp2p=info")
+    #[arg(long = "log.filter", value_name = "DIRECTIVE")]
+    pub filter: Option<String>,
 }
 
-/// Arguments for the 'config' command
-#[derive(Debug, Args)]
-pub struct ConfigArgs {
-    /// Data directory configuration
-    #[command(flatten)]
-    pub datadir: DataDirArgs,
-
-    /// Initialize default configuration
-    #[arg(long)]
-    pub init: bool,
-
-    /// Show current configuration
-    #[arg(long)]
-    pub show: bool,
-
-    /// Set configuration value (key=value)
-    #[arg(long)]
-    pub set: Option<String>,
-}
+// =============================================================================
+// Data Directory
+// =============================================================================
 
 /// Data directory configuration
 #[derive(Debug, Args, Clone)]
+#[command(next_help_heading = "Datadir")]
 pub struct DataDirArgs {
     /// Data directory path
     #[arg(long, value_name = "PATH")]
     pub datadir: Option<PathBuf>,
-
-    /// Path to static files
-    #[arg(long, value_name = "PATH")]
-    pub static_files_path: Option<PathBuf>,
 }
 
-/// Network configuration
-#[derive(Debug, Args)]
-pub struct NetworkArgs {
-    /// Disable the discovery service
+// =============================================================================
+// Identity
+// =============================================================================
+
+/// Identity and keystore configuration
+#[derive(Debug, Args, Clone)]
+#[command(next_help_heading = "Identity")]
+pub struct IdentityArgs {
+    /// Password for keystore encryption/decryption.
+    ///
+    /// Can also be set via the VERTEX_PASSWORD environment variable.
+    #[arg(long, env = "VERTEX_PASSWORD")]
+    pub password: Option<String>,
+
+    /// Path to file containing keystore password
+    #[arg(long = "password-file")]
+    pub password_file: Option<PathBuf>,
+
+    /// Use ephemeral identity (random key, not persisted).
+    ///
+    /// Default for light nodes. For full nodes with redistribution or SWAP,
+    /// using ephemeral identity means losing overlay address on restart.
     #[arg(long)]
+    pub ephemeral: bool,
+}
+
+// =============================================================================
+// Networking
+// =============================================================================
+
+/// Network configuration
+#[derive(Debug, Args, Clone)]
+#[command(next_help_heading = "Networking")]
+pub struct NetworkArgs {
+    /// Disable the P2P discovery service
+    #[arg(long = "network.no-discovery")]
     pub disable_discovery: bool,
 
-    /// Comma-separated list of bootstrap nodes
-    #[arg(long, value_delimiter = ',')]
+    /// Comma-separated list of bootstrap node multiaddresses
+    #[arg(long = "network.bootnodes", value_delimiter = ',')]
     pub bootnodes: Option<Vec<String>>,
 
-    /// The network port to listen on
-    #[arg(long, default_value_t = crate::constants::DEFAULT_P2P_PORT)]
+    /// P2P listen port
+    #[arg(long = "network.port", default_value_t = crate::constants::DEFAULT_P2P_PORT)]
     pub port: u16,
 
-    /// The network address to listen on
-    #[arg(long, default_value = "0.0.0.0")]
+    /// P2P listen address
+    #[arg(long = "network.addr", default_value = "0.0.0.0")]
     pub addr: String,
 
     /// Maximum number of peers
-    #[arg(long, default_value_t = crate::constants::DEFAULT_MAX_PEERS)]
+    #[arg(long = "network.max-peers", default_value_t = crate::constants::DEFAULT_MAX_PEERS)]
     pub max_peers: usize,
-
-    /// NAT port mapping mechanism (none, upnp, pmp)
-    #[arg(long, value_name = "MECHANISM", default_value = "upnp")]
-    pub nat: String,
-
-    /// Connect to trusted peers only
-    #[arg(long)]
-    pub trusted_only: bool,
-
-    /// Comma-separated list of trusted peer multiaddresses
-    #[arg(long, value_delimiter = ',')]
-    pub trusted_peers: Option<Vec<String>>,
 }
 
+// =============================================================================
+// Storage
+// =============================================================================
+
 /// Storage configuration
-#[derive(Debug, Args)]
+#[derive(Debug, Args, Clone)]
+#[command(next_help_heading = "Storage")]
 pub struct StorageArgs {
-    /// Maximum storage size in GB
-    #[arg(long, default_value_t = crate::constants::DEFAULT_MAX_STORAGE_SIZE_GB)]
-    pub max_storage: u64,
+    /// Maximum storage capacity in GB
+    #[arg(long = "storage.capacity", default_value_t = crate::constants::DEFAULT_MAX_STORAGE_SIZE_GB)]
+    pub capacity: u64,
 
-    /// Maximum number of chunks to store
-    #[arg(long, default_value_t = crate::constants::DEFAULT_MAX_CHUNKS as u64)]
-    pub max_chunks: u64,
-
-    /// Participate in redistribution lottery
+    /// Participate in redistribution (requires persistent identity)
     #[arg(long)]
     pub redistribution: bool,
 
-    /// Enable staking
+    /// Enable staking (requires persistent identity)
     #[arg(long)]
     pub staking: bool,
 }
 
-/// API configuration
+// =============================================================================
+// API
+// =============================================================================
+
+/// API server configuration
 #[derive(Debug, Args, Clone)]
+#[command(next_help_heading = "API")]
 pub struct ApiArgs {
     /// Enable the HTTP API
-    #[arg(long)]
+    #[arg(long = "api.http")]
     pub http: bool,
 
-    /// HTTP API address
-    #[arg(long, default_value = "127.0.0.1")]
+    /// HTTP API listen address
+    #[arg(long = "api.http-addr", default_value = "127.0.0.1")]
     pub http_addr: String,
 
-    /// HTTP API port
-    #[arg(long, default_value_t = crate::constants::DEFAULT_HTTP_API_PORT)]
+    /// HTTP API listen port
+    #[arg(long = "api.http-port", default_value_t = crate::constants::DEFAULT_HTTP_API_PORT)]
     pub http_port: u16,
 
     /// Enable metrics endpoint
-    #[arg(long)]
+    #[arg(long = "metrics")]
     pub metrics: bool,
 
-    /// Metrics address
-    #[arg(long, default_value = "127.0.0.1")]
+    /// Metrics listen address
+    #[arg(long = "metrics.addr", default_value = "127.0.0.1")]
     pub metrics_addr: String,
 
-    /// Metrics port
-    #[arg(long, default_value_t = crate::constants::DEFAULT_METRICS_PORT)]
+    /// Metrics listen port
+    #[arg(long = "metrics.port", default_value_t = crate::constants::DEFAULT_METRICS_PORT)]
     pub metrics_port: u16,
-
-    /// Enable CORS for HTTP API (comma-separated list of origins)
-    #[arg(long)]
-    pub cors: Option<String>,
-
-    /// Enable authentication for APIs
-    #[arg(long)]
-    pub auth: bool,
 }

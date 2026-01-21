@@ -285,15 +285,9 @@ impl NodeConfig {
         self.network.addr = IpAddr::from_str(&network_args.addr).unwrap_or(self.network.addr);
         self.network.port = network_args.port;
         self.network.max_peers = network_args.max_peers;
-        self.network.nat = network_args.nat.clone();
-        self.network.trusted_only = network_args.trusted_only;
-        if let Some(trusted_peers) = &network_args.trusted_peers {
-            self.network.trusted_peers = trusted_peers.clone();
-        }
 
         // Apply storage args
-        self.storage.max_storage = storage_args.max_storage * GB_TO_BYTES;
-        self.storage.max_chunks = storage_args.max_chunks;
+        self.storage.max_storage = storage_args.capacity * GB_TO_BYTES;
         self.storage.redistribution = storage_args.redistribution;
         self.storage.staking = storage_args.staking;
 
@@ -312,9 +306,6 @@ impl NodeConfig {
         self.api.metrics_enabled = api_args.metrics;
         self.api.metrics_addr = api_args.metrics_addr.clone();
         self.api.metrics_port = api_args.metrics_port;
-
-        self.api.cors = api_args.cors.clone();
-        self.api.auth_enabled = api_args.auth;
     }
 
     /// Get the HTTP API socket address

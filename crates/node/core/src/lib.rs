@@ -13,7 +13,6 @@ pub mod identity_manager;
 pub mod keystore;
 pub mod logging;
 pub mod network;
-pub mod node;
 pub mod version;
 
 use crate::cli::Cli;
@@ -32,7 +31,7 @@ pub async fn run() -> eyre::Result<()> {
     let cli = Cli::parse();
 
     // Initialize logging
-    let _guard = logging::init_logging(&cli.log_args)?;
+    logging::init_logging(&cli.logs)?;
 
     info!("Starting Vertex Swarm {}", version::VERSION);
 
@@ -40,15 +39,6 @@ pub async fn run() -> eyre::Result<()> {
     match cli.command {
         cli::Commands::Node(args) => {
             commands::node::run(args).await?;
-        }
-        cli::Commands::Dev(args) => {
-            commands::dev::run(args).await?;
-        }
-        cli::Commands::Info(args) => {
-            commands::info::run(args).await?;
-        }
-        cli::Commands::Config(args) => {
-            commands::config::run(args).await?;
         }
     }
 

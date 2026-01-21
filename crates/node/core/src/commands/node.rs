@@ -214,23 +214,16 @@ mod tests {
 
     fn default_node_args() -> NodeArgs {
         NodeArgs {
-            datadir: DataDirArgs {
-                datadir: None,
-                static_files_path: None,
-            },
+            datadir: DataDirArgs { datadir: None },
             network: NetworkArgs {
                 disable_discovery: false,
                 bootnodes: None,
                 port: 1634,
                 addr: "0.0.0.0".to_string(),
                 max_peers: 50,
-                nat: "upnp".to_string(),
-                trusted_only: false,
-                trusted_peers: None,
             },
             storage: StorageArgs {
-                max_storage: 100,
-                max_chunks: 1000000,
+                capacity: 100,
                 redistribution: false,
                 staking: false,
             },
@@ -241,8 +234,6 @@ mod tests {
                 metrics: false,
                 metrics_addr: "127.0.0.1".to_string(),
                 metrics_port: 1636,
-                cors: None,
-                auth: false,
             },
             identity: IdentityArgs {
                 password: None,
