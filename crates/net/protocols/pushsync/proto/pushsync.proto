@@ -1,0 +1,22 @@
+// Swarm pushsync protocol messages.
+// Wire-compatible with Bee's pushsync protocol.
+
+syntax = "proto3";
+
+package pushsync;
+
+// Delivery of a chunk to be stored.
+message Delivery {
+  bytes Address = 1;
+  bytes Data = 2;
+  bytes Stamp = 3;
+}
+
+// Receipt acknowledging chunk storage.
+message Receipt {
+  bytes Address = 1;
+  bytes Signature = 2;
+  bytes Nonce = 3;
+  string Err = 4;
+  uint32 StorageRadius = 5;
+}

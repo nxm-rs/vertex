@@ -10,9 +10,17 @@ repository.workspace = true
 [dependencies]
 ## vertex
 vertex-primitives.workspace = true
+vertex-net-handshake.workspace = true
+vertex-net-hive.workspace = true
+vertex-net-pingpong.workspace = true
+vertex-net-primitives-traits.workspace = true
 
 ## p2p
 libp2p.workspace = true
+
+## crypto/primitives
+alloy-primitives.workspace = true
+bytes.workspace = true
 
 ## dns resolution
 hickory-resolver = { version = "0.25.0-alpha.5", features = ["tokio-runtime"] }

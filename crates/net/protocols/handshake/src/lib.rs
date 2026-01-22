@@ -1,21 +1,43 @@
+//! Handshake protocol for Swarm peer authentication.
+//!
+//! The handshake protocol is the first protocol run when two Swarm peers connect.
+//! It exchanges identity information (overlay addresses, network IDs, etc.) and
+//! verifies that both peers are on the same network.
+//!
+//! # Protocol
+//!
+//! - Path: `/swarm/handshake/14.0.0/handshake`
+//! - Three-way handshake: SYN → SYNACK → ACK
+//!
+//! # Flow
+//!
+//! 1. **Dialer sends SYN**: Contains the observed underlay address
+//! 2. **Listener sends SYNACK**: Contains both SYN (echoed) and ACK
+//! 3. **Dialer sends ACK**: Confirms identity
+//!
+//! # Messages
+//!
+//! - `Syn`: Observed underlay address
+//! - `SynAck`: Response with both Syn and Ack
+//! - `Ack`: Node address, full node status, welcome message
+
 use std::{sync::Arc, time::Duration};
 
 use alloy_primitives::B256;
 use alloy_signer::k256::ecdsa::SigningKey;
 use alloy_signer_local::LocalSigner;
-use libp2p::{PeerId, swarm::ConnectionId};
+use libp2p::PeerId;
 
 mod proto {
     include!(concat!(env!("OUT_DIR"), "/proto/mod.rs"));
 }
+
 mod error;
 pub use error::HandshakeError;
-mod behaviour;
-pub use behaviour::HandshakeBehaviour;
+
 mod protocol;
 pub use protocol::HandshakeProtocol;
-mod handler;
-pub use handler::HandshakeHandler;
+
 mod codec;
 pub use codec::*;
 
@@ -40,42 +62,20 @@ pub trait HandshakeConfig: Send + Sync + 'static {
     fn welcome_message(&self) -> Option<String>;
 }
 
-const PROTOCOL: &str = "/swarm/handshake/14.0.0/handshake";
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+/// Protocol name for handshake.
+pub const PROTOCOL: &str = "/swarm/handshake/14.0.0/handshake";
+
+/// Timeout for handshake operations.
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Maximum length of welcome message in characters.
 const MAX_WELCOME_MESSAGE_CHARS: usize = 140;
 
+/// Information from a completed handshake.
 #[derive(Debug, Clone)]
 pub struct HandshakeInfo {
+    /// The peer ID of the remote peer.
     pub peer_id: PeerId,
+    /// The ACK message containing peer identity.
     pub ack: Ack,
-}
-
-#[derive(Debug, Clone)]
-pub struct PeerState {
-    pub info: HandshakeInfo,
-    pub connections: Vec<ConnectionId>,
-}
-
-#[derive(Debug)]
-pub enum HandshakeEvent {
-    Completed(HandshakeInfo),
-    Failed(HandshakeError),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum HandshakeState {
-    Idle,
-    Handshaking,
-    Completed,
-    Failed,
-}
-
-#[derive(Debug)]
-pub enum HandshakeCommand {
-    /// Start the handshake with the resolved remote address.
-    ///
-    /// The address should be the actual IP address we connected to,
-    /// not the DNS address we dialed (e.g., `/ip4/x.x.x.x/tcp/1634`
-    /// instead of `/dnsaddr/mainnet.ethswarm.org`).
-    StartHandshake(libp2p::Multiaddr),
 }

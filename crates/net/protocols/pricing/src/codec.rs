@@ -1,4 +1,9 @@
 //! Codec for pricing protocol messages.
+//!
+//! # Wire Format
+//!
+//! The payment threshold is encoded as big-endian bytes with leading zeros trimmed,
+//! matching Go's `big.Int.Bytes()` serialization used by Bee.
 
 use alloy_primitives::U256;
 use vertex_net_codec::ProtocolCodec;
@@ -25,8 +30,6 @@ impl From<quick_protobuf_codec::Error> for PricingCodecError {
 }
 
 /// Payment threshold announcement message.
-///
-/// Contains the payment threshold as a U256 value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnnouncePaymentThreshold {
     /// The payment threshold in accounting units.
@@ -48,28 +51,25 @@ impl AnnouncePaymentThreshold {
 impl TryFrom<crate::proto::pricing::AnnouncePaymentThreshold> for AnnouncePaymentThreshold {
     type Error = PricingCodecError;
 
-    fn try_from(value: crate::proto::pricing::AnnouncePaymentThreshold) -> Result<Self, Self::Error> {
-        // Payment threshold is encoded as big-endian bytes
-        let threshold = if value.payment_threshold.is_empty() {
+    fn try_from(proto: crate::proto::pricing::AnnouncePaymentThreshold) -> Result<Self, Self::Error> {
+        let threshold = if proto.payment_threshold.is_empty() {
             U256::ZERO
         } else {
-            U256::from_be_slice(&value.payment_threshold)
+            U256::from_be_slice(&proto.payment_threshold)
         };
 
-        Ok(Self {
-            payment_threshold: threshold,
-        })
+        Ok(Self { payment_threshold: threshold })
     }
 }
 
 impl From<AnnouncePaymentThreshold> for crate::proto::pricing::AnnouncePaymentThreshold {
     fn from(value: AnnouncePaymentThreshold) -> Self {
-        // Encode threshold as big-endian bytes, trimming leading zeros
-        let bytes = value.payment_threshold.to_be_bytes_vec();
-
-        // Find first non-zero byte to trim leading zeros (like Go's big.Int.Bytes())
-        let first_nonzero = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len());
-        let trimmed = bytes[first_nonzero..].to_vec();
+        // Match Go's big.Int.Bytes(): big-endian with leading zeros trimmed
+        let bytes = value.payment_threshold.to_be_bytes::<32>();
+        let trimmed = match bytes.iter().position(|&b| b != 0) {
+            Some(pos) => bytes[pos..].to_vec(),
+            None => vec![],
+        };
 
         crate::proto::pricing::AnnouncePaymentThreshold {
             payment_threshold: trimmed,
@@ -93,6 +93,7 @@ mod tests {
     fn test_zero_threshold() {
         let original = AnnouncePaymentThreshold::new(U256::ZERO);
         let proto: crate::proto::pricing::AnnouncePaymentThreshold = original.clone().into();
+        assert!(proto.payment_threshold.is_empty());
         let decoded = AnnouncePaymentThreshold::try_from(proto).unwrap();
         assert_eq!(original, decoded);
     }
@@ -101,7 +102,15 @@ mod tests {
     fn test_large_threshold() {
         let original = AnnouncePaymentThreshold::new(U256::MAX);
         let proto: crate::proto::pricing::AnnouncePaymentThreshold = original.clone().into();
+        assert_eq!(proto.payment_threshold.len(), 32);
         let decoded = AnnouncePaymentThreshold::try_from(proto).unwrap();
         assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_small_value_minimal_bytes() {
+        let original = AnnouncePaymentThreshold::from_u64(256);
+        let proto: crate::proto::pricing::AnnouncePaymentThreshold = original.clone().into();
+        assert_eq!(proto.payment_threshold, vec![0x01, 0x00]);
     }
 }

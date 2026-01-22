@@ -17,6 +17,17 @@ pub struct HandshakeProtocol<C: HandshakeConfig> {
     pub(crate) remote_addr: Multiaddr,
 }
 
+impl<C: HandshakeConfig> HandshakeProtocol<C> {
+    /// Create a new handshake protocol.
+    pub fn new(config: Arc<C>, peer_id: PeerId, remote_addr: Multiaddr) -> Self {
+        Self {
+            config,
+            peer_id,
+            remote_addr,
+        }
+    }
+}
+
 impl<C: HandshakeConfig> Clone for HandshakeProtocol<C> {
     fn clone(&self) -> Self {
         Self {

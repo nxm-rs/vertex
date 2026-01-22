@@ -21,17 +21,11 @@
 //! Large peer lists are split into batches of at most 30 peers.
 //! Each batch is sent as a separate stream.
 
-mod behaviour;
 mod codec;
-mod handler;
 mod protocol;
 
-pub use behaviour::{HiveBehaviour, HiveConfig, HiveEvent, MAX_BATCH_SIZE};
 pub use codec::{BzzAddress, HiveCodec, HiveCodecError, Peers};
-pub use handler::{Command as HandlerCommand, Config as HandlerConfig, Event as HandlerEvent, Handler};
-pub use protocol::{
-    HiveError, HiveInboundOutput, HiveInboundProtocol, HiveOutboundOutput, HiveOutboundProtocol,
-};
+pub use protocol::{inbound, outbound, HiveInboundProtocol, HiveOutboundProtocol};
 
 mod proto {
     include!(concat!(env!("OUT_DIR"), "/proto/mod.rs"));
@@ -39,3 +33,6 @@ mod proto {
 
 /// Protocol name for hive.
 pub const PROTOCOL_NAME: &str = "/swarm/hive/1.1.0/peers";
+
+/// Maximum number of peers per broadcast message (matching Bee's maxBatchSize).
+pub const MAX_BATCH_SIZE: usize = 30;

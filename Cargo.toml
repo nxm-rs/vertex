@@ -21,10 +21,15 @@ members = [
     "crates/net/primitives",
     "crates/net/primitives-traits",
     "crates/net/codec",
-    "crates/net/handshake",
-    "crates/net/headers",
-    "crates/net/pricing",
+    "crates/net/protocols/handshake",
+    "crates/net/protocols/headers",
+    "crates/net/protocols/hive",
+    "crates/net/protocols/pricing",
+    "crates/net/protocols/pingpong",
+    "crates/net/protocols/pushsync",
+    "crates/net/protocols/retrieval",
     "crates/net/topology",
+    "crates/net/client",
 
     # Node
     "crates/node/types",
@@ -37,6 +42,12 @@ members = [
     # "crates/swarm-core",
     "crates/swarm-forks",
     "crates/swarmspec",
+
+    # Client (includes bandwidth/data availability incentives)
+    "crates/client/core",
+    "crates/client/bandwidth/core",
+    "crates/client/bandwidth/pseudosettle",
+    "crates/client/bandwidth/swap",
 
     # Data
     # "crates/file",
@@ -67,10 +78,15 @@ vertex-swarm-forks = { path = "crates/swarm-forks" }
 vertex-net-primitives = { path = "crates/net/primitives" }
 vertex-net-primitives-traits = { path = "crates/net/primitives-traits" }
 vertex-net-codec = { path = "crates/net/codec" }
-vertex-net-handshake = { path = "crates/net/handshake" }
-vertex-net-headers = { path = "crates/net/headers" }
-vertex-net-pricing = { path = "crates/net/pricing" }
+vertex-net-handshake = { path = "crates/net/protocols/handshake" }
+vertex-net-headers = { path = "crates/net/protocols/headers" }
+vertex-net-hive = { path = "crates/net/protocols/hive" }
+vertex-net-pricing = { path = "crates/net/protocols/pricing" }
+vertex-net-pingpong = { path = "crates/net/protocols/pingpong" }
+vertex-net-pushsync = { path = "crates/net/protocols/pushsync" }
+vertex-net-retrieval = { path = "crates/net/protocols/retrieval" }
 vertex-net-topology = { path = "crates/net/topology" }
+vertex-net-client = { path = "crates/net/client" }
 
 # node
 vertex-node-types = { path = "crates/node/types" }
@@ -86,6 +102,12 @@ vertex-swarm-api = { path = "crates/swarm-api" }
 # vertex-swarm-core removed - obsolete, superseded by node/* crates
 vertex-swarmspec = { path = "crates/swarmspec" }
 
+# client (includes bandwidth/data availability incentives)
+vertex-client-core = { path = "crates/client/core" }
+vertex-bandwidth-core = { path = "crates/client/bandwidth/core" }
+vertex-bandwidth-pseudosettle = { path = "crates/client/bandwidth/pseudosettle" }
+vertex-bandwidth-swap = { path = "crates/client/bandwidth/swap" }
+
 ## alloy
 alloy-eip2124 = { version = "0.2", default-features = false }
 alloy-primitives = { version = "1.1", default-features = false }
@@ -93,7 +115,7 @@ alloy-signer = { version = "1.0" }
 alloy-signer-local = { version = "1.0", features = ["eip712", "keystore"] }
 alloy-chains = { version = "0.2", default-features = false }
 
-## tracing
+## tracing & telemetry
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = [
     "env-filter",
@@ -103,6 +125,10 @@ tracing-subscriber = { version = "0.3", features = [
     "json",
     "time",
 ] }
+tracing-opentelemetry = "0.32"
+opentelemetry = "0.31"
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
 
 ## p2p
 libp2p = { version = "0.55.0", features = [
@@ -151,6 +177,8 @@ proptest-derive = "0.5"
 
 # misc
 anyhow = "1.0"
+async-trait = "0.1"
+parking_lot = "0.12"
 byteorder = { version = "1.5", default-features = false }
 auto_impl = "1"
 bytes = { version = "1.10", default-features = false }

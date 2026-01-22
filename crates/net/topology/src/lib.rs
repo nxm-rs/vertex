@@ -44,17 +44,20 @@
 //! topology.connect_bootnodes().await?;
 //! ```
 
-#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
+pub mod behaviour;
 pub mod bootnode;
-pub mod hive;
+pub mod events;
+pub mod handler;
 pub mod kademlia;
 pub mod manager;
 
 mod error;
 
+pub use behaviour::{Config as BehaviourConfig, PeerInfo, SwarmTopologyBehaviour};
 pub use error::{TopologyError, TopologyResult};
+pub use events::{TopologyCommand, TopologyEvent};
 
 // Re-export key types
 pub use bootnode::BootnodeConnector;

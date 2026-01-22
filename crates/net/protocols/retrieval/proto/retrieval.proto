@@ -1,0 +1,18 @@
+// Swarm retrieval protocol messages.
+// Wire-compatible with Bee's retrieval protocol.
+
+syntax = "proto3";
+
+package retrieval;
+
+// Request for a chunk by address.
+message Request {
+  bytes Addr = 1;
+}
+
+// Delivery of a chunk with optional error.
+message Delivery {
+  bytes Data = 1;
+  bytes Stamp = 2;
+  string Err = 3;
+}
