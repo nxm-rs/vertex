@@ -28,8 +28,10 @@ libp2p.workspace = true
 bytes.workspace = true
 thiserror.workspace = true
 
-## tracing
+## tracing & telemetry
 tracing.workspace = true
+tracing-opentelemetry.workspace = true
+opentelemetry.workspace = true
 
 [build-dependencies]
 pb-rs.workspace = true

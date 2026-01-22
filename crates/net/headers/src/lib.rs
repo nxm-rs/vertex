@@ -1,153 +1,79 @@
-use std::collections::HashMap;
+//! Protocol headers for Swarm peer-to-peer communication.
+//!
+//! All Swarm protocols (except handshake) exchange headers before protocol data.
+//! Headers serve two purposes:
+//!
+//! 1. **Tracing** - Propagating distributed tracing span context across peers
+//! 2. **Protocol negotiation** - e.g., SWAP protocol exchanges exchange rates
+//!
+//! # Usage
+//!
+//! Implement [`HeaderedInbound`] or [`HeaderedOutbound`] for your protocol,
+//! then wrap with [`Inbound`] or [`Outbound`] to get `InboundUpgrade`/`OutboundUpgrade`.
+//!
+//! ```ignore
+//! use vertex_net_headers::{HeaderedInbound, HeaderedStream, Inbound};
+//!
+//! struct MyProtocol;
+//!
+//! impl HeaderedInbound for MyProtocol {
+//!     type Output = MyData;
+//!     type Error = MyError;
+//!
+//!     fn protocol_name(&self) -> &'static str {
+//!         "/swarm/myproto/1.0.0/stream"
+//!     }
+//!
+//!     // Optional: compute response headers based on received headers (headler pattern)
+//!     fn response_headers(&self, peer_headers: &HashMap<String, Bytes>) -> HashMap<String, Bytes> {
+//!         // ... negotiate based on peer_headers
+//!         HashMap::new()
+//!     }
+//!
+//!     fn read(self, stream: HeaderedStream) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
+//!         Box::pin(async move {
+//!             // Read protocol data from stream.into_inner()
+//!             todo!()
+//!         })
+//!     }
+//! }
+//!
+//! // Use in handler:
+//! type InboundProtocol = Inbound<MyProtocol>;
+//! ```
+//!
+//! # Distributed Tracing
+//!
+//! The headers module automatically propagates trace context:
+//!
+//! - **Outbound**: Injects trace context into headers via [`inject_trace_context`]
+//! - **Inbound**: Extracts trace context and creates a correlated span via [`span_from_headers`]
+//!
+//! This enables distributed tracing across the Swarm network when using
+//! a compatible tracing subscriber.
 
-use asynchronous_codec::Framed;
-use bytes::Bytes;
-use futures::{SinkExt, TryStreamExt, future::BoxFuture};
-use libp2p::{InboundUpgrade, OutboundUpgrade, Stream, core::UpgradeInfo};
-
+// Internal modules
 mod proto {
     include!(concat!(env!("OUT_DIR"), "/proto/mod.rs"));
 }
 
 mod codec;
+mod error;
+mod stream;
+mod tracing;
+mod traits;
+mod upgrade;
+
+// Re-exports
 pub use codec::{CodecError, Headers, HeadersCodec};
-mod instrumented;
-pub use instrumented::InstrumentedStream;
-use tracing::{Span, debug, info_span};
+pub use error::{HeadersError, ProtocolError};
+pub use stream::HeaderedStream;
+pub use tracing::{
+    extract_trace_context, has_trace_context, inject_trace_context, span_from_headers,
+    HeaderExtractor, HeaderInjector, HEADER_NAME_TRACING_SPAN_CONTEXT,
+};
+pub use traits::{HeaderedInbound, HeaderedOutbound};
+pub use upgrade::{Inbound, Outbound};
 
-pub type HeadersFn = dyn Fn(HashMap<String, Bytes>) -> HashMap<String, Bytes> + Send + Sync;
-
-pub struct HeaderedProtocol {
-    protocols: &'static [&'static str],
-    headers: HashMap<String, Bytes>,
-    response_headers_fn: Box<HeadersFn>,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum HeadersError {
-    #[error("Codec error: {0}")]
-    Codec(#[from] CodecError),
-    #[error("Connection closed")]
-    ConnectionClosed,
-}
-
-impl HeaderedProtocol {
-    pub const fn new(
-        protocols: &'static [&'static str],
-        headers: HashMap<String, Bytes>,
-        response_headers_fn: Box<HeadersFn>,
-    ) -> Self {
-        Self {
-            protocols,
-            headers,
-            response_headers_fn,
-        }
-    }
-
-    pub fn headers(&self) -> &HashMap<String, Bytes> {
-        &self.headers
-    }
-
-    async fn handle_inbound_headers(
-        &self,
-        stream: Stream,
-    ) -> Result<(Stream, HashMap<String, Bytes>), HeadersError> {
-        // Set up codecs
-        let headers_codec = HeadersCodec::new(1024);
-
-        // Read HEADERS using framed read
-        let mut framed = Framed::new(stream, headers_codec);
-        debug!("Attempting to read headers");
-        let headers = framed
-            .try_next()
-            .await?
-            .ok_or(HeadersError::ConnectionClosed)?
-            .into_inner();
-
-        // Given the headers, generate a response
-        let response_headers = (self.response_headers_fn)(headers.clone());
-
-        // Send response headers
-        framed.send(Headers::new(response_headers)).await?;
-
-        Ok((framed.into_inner(), headers))
-    }
-
-    async fn handle_outbound_headers(
-        &self,
-        socket: Stream,
-    ) -> Result<(Stream, HashMap<String, Bytes>), HeadersError> {
-        // Set up codecs
-        let headers_codec = HeadersCodec::new(1024);
-        let mut framed = Framed::new(socket, headers_codec);
-
-        // Send HEADERS using framed send
-        framed.send(Headers::new(self.headers.clone())).await?;
-
-        // Read response headers
-        debug!("Attempting to read headers");
-        let headers = framed
-            .try_next()
-            .await?
-            .ok_or(HeadersError::ConnectionClosed)?
-            .into_inner();
-
-        Ok((framed.into_inner(), headers))
-    }
-}
-
-impl UpgradeInfo for HeaderedProtocol {
-    type Info = &'static str;
-    type InfoIter = std::iter::Copied<std::slice::Iter<'static, &'static str>>;
-
-    fn protocol_info(&self) -> Self::InfoIter {
-        self.protocols.iter().copied()
-    }
-}
-
-impl InboundUpgrade<Stream> for HeaderedProtocol {
-    type Output = InstrumentedStream;
-    type Error = HeadersError;
-    type Future = BoxFuture<'static, Result<Self::Output, Self::Error>>;
-
-    fn upgrade_inbound(self, socket: Stream, info: Self::Info) -> Self::Future {
-        Box::pin(async move {
-            let (stream, headers) = self.handle_inbound_headers(socket).await?;
-            let span = create_headers_span(info, "inbound", &headers);
-            Ok(InstrumentedStream::new(stream, headers, span))
-        })
-    }
-}
-
-impl OutboundUpgrade<Stream> for HeaderedProtocol {
-    type Output = InstrumentedStream;
-    type Error = HeadersError;
-    type Future = BoxFuture<'static, Result<Self::Output, Self::Error>>;
-
-    fn upgrade_outbound(self, socket: Stream, info: Self::Info) -> Self::Future {
-        Box::pin(async move {
-            let (stream, headers) = self.handle_outbound_headers(socket).await?;
-            let span = create_headers_span(info, "outbound", &headers);
-            Ok(InstrumentedStream::new(stream, headers, span))
-        })
-    }
-}
-
-// Helper function to create span with headers
-pub fn create_headers_span(
-    protocol: &str,
-    direction: &str,
-    headers: &HashMap<String, Bytes>,
-) -> Span {
-    let span = info_span!("headers", ?protocol, ?direction);
-
-    for (key, value) in headers {
-        if let Ok(value_str) = String::from_utf8(value.to_vec()) {
-            span.record(key.as_str(), &value_str.as_str());
-        } else {
-            span.record(key.as_str(), &format!("{:?}", value).as_str());
-        }
-    }
-
-    span
-}
+/// Maximum size of headers message in bytes.
+pub const MAX_HEADERS_SIZE: usize = 1024;
