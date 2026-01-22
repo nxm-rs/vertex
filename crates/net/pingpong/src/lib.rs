@@ -17,9 +17,7 @@
 //! 2. Server receives `Ping` and responds with `Pong` containing `"{greeting}"`
 //! 3. Client receives `Pong` and measures RTT
 
-mod behaviour;
 mod codec;
-mod handler;
 mod protocol;
 
 // Include generated protobuf code
@@ -27,9 +25,7 @@ mod proto {
     include!(concat!(env!("OUT_DIR"), "/proto/mod.rs"));
 }
 
-pub use behaviour::{PingpongBehaviour, PingpongConfig, PingpongEvent};
 pub use codec::{Ping, PingCodec, PingpongCodecError, Pong, PongCodec};
-pub use handler::{Command as HandlerCommand, Config as HandlerConfig, Event as HandlerEvent, Handler};
 pub use protocol::{inbound, outbound, PingpongInboundProtocol, PingpongOutboundProtocol};
 
 /// Protocol name for pingpong.
