@@ -1,0 +1,30 @@
+[package]
+name = "vertex-node-identity"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Identity trait and implementation for Vertex Swarm nodes"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Alloy types for addresses and signing
+alloy-primitives.workspace = true
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
+
+# Internal crates
+nectar-primitives.workspace = true
+vertex-net-primitives-traits.workspace = true
+vertex-node-types.workspace = true
+vertex-swarmspec.workspace = true
+
+# Utilities
+rand.workspace = true
+
+[dev-dependencies]
