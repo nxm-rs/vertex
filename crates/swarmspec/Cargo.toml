@@ -30,6 +30,7 @@ vertex-net-primitives-traits.workspace = true
 auto_impl.workspace = true
 byteorder.workspace = true
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Test utilities
@@ -44,7 +45,9 @@ std = [
     "nectar-contracts/std",
     "vertex-swarm-forks/std",
     "serde/std",
+    "serde_json",
 ]
+serde_json = ["dep:serde_json"]
 arbitrary = [
     "alloy-chains/arbitrary",
     "alloy-primitives/arbitrary",

@@ -36,35 +36,65 @@ use vertex_swarm_forks::{ForkCondition, SwarmHardfork, SwarmHardforks, SwarmHard
 /// - [`init_testnet()`] - Test network on Sepolia
 /// - [`init_dev()`] - Local development with auto-generated network ID
 ///
-/// For custom networks, use [`HiveBuilder`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// For custom networks, use [`HiveBuilder`] or load from a JSON file with [`Hive::from_file`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Hive {
     /// Underlying blockchain
+    #[serde(default = "default_chain")]
     pub chain: Chain,
 
     /// Network ID for this Swarm network
     pub network_id: u64,
 
     /// Network name (e.g., "mainnet", "testnet")
+    #[serde(default)]
     pub network_name: String,
 
     /// Bootnodes - entry points into the network
+    #[serde(default)]
     pub bootnodes: Vec<Multiaddr>,
 
-    /// Hardforks configuration
+    /// Hardforks configuration (not serialized - uses default with Accord at genesis)
+    #[serde(skip, default = "default_hardforks")]
     pub hardforks: SwarmHardforks,
 
-    /// Swarm token details
+    /// Swarm token details (not serialized - uses dev token defaults)
+    #[serde(skip, default = "default_token")]
     pub token: Token,
 
     /// Genesis timestamp (reference point for hardfork activation)
+    #[serde(default)]
     pub genesis_timestamp: u64,
 
     /// Chunk size in bytes (typically 4096 = 2^12)
+    #[serde(default = "default_chunk_size")]
     pub chunk_size: usize,
 
     /// Reserve capacity in number of chunks for full nodes (typically 2^22)
+    #[serde(default = "default_reserve_capacity")]
     pub reserve_capacity: u64,
+}
+
+fn default_chain() -> Chain {
+    Chain::from(NamedChain::Dev)
+}
+
+fn default_hardforks() -> SwarmHardforks {
+    let mut hardforks = SwarmHardforks::new(vec![]);
+    hardforks.insert(SwarmHardfork::Accord, ForkCondition::Timestamp(0));
+    hardforks
+}
+
+fn default_token() -> Token {
+    dev::TOKEN
+}
+
+fn default_chunk_size() -> usize {
+    DEFAULT_CHUNK_SIZE
+}
+
+fn default_reserve_capacity() -> u64 {
+    DEFAULT_RESERVE_CAPACITY
 }
 
 impl Default for Hive {
@@ -362,6 +392,82 @@ impl Hive {
     /// This is the reference point for hardfork activation timing.
     pub fn genesis_timestamp(&self) -> u64 {
         self.genesis_timestamp
+    }
+
+    /// Load a SwarmSpec from a JSON file.
+    ///
+    /// Example file:
+    /// ```json
+    /// {
+    ///   "network_id": 0,
+    ///   "network_name": "local-kurtosis",
+    ///   "bootnodes": ["/ip4/127.0.0.1/tcp/1634/p2p/QmXxx..."],
+    ///   "genesis_timestamp": 0,
+    ///   "chunk_size": 4096,
+    ///   "reserve_capacity": 4194304
+    /// }
+    /// ```
+    #[cfg(feature = "std")]
+    pub fn from_file(path: &std::path::Path) -> Result<Self, SwarmSpecFileError> {
+        let content = std::fs::read_to_string(path)?;
+        Self::from_json(&content)
+    }
+
+    /// Parse a SwarmSpec from a JSON string.
+    #[cfg(feature = "std")]
+    pub fn from_json(json: &str) -> Result<Self, SwarmSpecFileError> {
+        Ok(serde_json::from_str(json)?)
+    }
+
+    /// Serialize this SwarmSpec to a JSON string.
+    #[cfg(feature = "std")]
+    pub fn to_json(&self) -> Result<String, SwarmSpecFileError> {
+        Ok(serde_json::to_string_pretty(self)?)
+    }
+
+    /// Write this SwarmSpec to a JSON file.
+    #[cfg(feature = "std")]
+    pub fn to_file(&self, path: &std::path::Path) -> Result<(), SwarmSpecFileError> {
+        let json = self.to_json()?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+}
+
+/// Error type for SwarmSpec file operations.
+#[cfg(feature = "std")]
+#[derive(Debug)]
+pub enum SwarmSpecFileError {
+    /// IO error reading/writing file
+    Io(std::io::Error),
+    /// JSON parsing/serialization error
+    Json(serde_json::Error),
+}
+
+#[cfg(feature = "std")]
+impl std::fmt::Display for SwarmSpecFileError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "IO error: {}", e),
+            Self::Json(e) => write!(f, "JSON error: {}", e),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for SwarmSpecFileError {}
+
+#[cfg(feature = "std")]
+impl From<std::io::Error> for SwarmSpecFileError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+#[cfg(feature = "std")]
+impl From<serde_json::Error> for SwarmSpecFileError {
+    fn from(e: serde_json::Error) -> Self {
+        Self::Json(e)
     }
 }
 
