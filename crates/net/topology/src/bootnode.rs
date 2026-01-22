@@ -6,27 +6,32 @@
 //! # DNS Address Resolution
 //!
 //! Swarm uses `/dnsaddr/` multiaddrs for bootnodes (e.g., `/dnsaddr/mainnet.ethswarm.org`).
-//! Resolution is handled automatically by libp2p's DNS transport when dialing.
+//! These addresses use a hierarchical DNS structure:
 //!
-//! When libp2p's `dns::tokio::Transport` wraps the TCP transport, it:
-//! 1. Intercepts dial requests containing `/dnsaddr/`, `/dns/`, `/dns4/`, `/dns6/`
-//! 2. Queries DNS TXT records for `_dnsaddr.{domain}`
-//! 3. Parses `dnsaddr=<multiaddr>` entries from TXT records
-//! 4. Dials the resolved concrete addresses
+//! ```text
+//! /dnsaddr/mainnet.ethswarm.org
+//!   └─> TXT _dnsaddr.mainnet.ethswarm.org = "dnsaddr=/dnsaddr/emea.mainnet.ethswarm.org"
+//!         └─> TXT _dnsaddr.emea.mainnet.ethswarm.org = "dnsaddr=/dnsaddr/hel.mainnet.ethswarm.org"
+//!             └─> TXT _dnsaddr.hel.mainnet.ethswarm.org = "dnsaddr=/ip4/.../tcp/1634/p2p/Qm..."
+//! ```
 //!
-//! This means we can pass `/dnsaddr/mainnet.ethswarm.org` directly to libp2p
-//! and it handles resolution transparently.
+//! The `resolve_dnsaddr` function resolves these recursively to concrete addresses.
 //!
 //! # Connection Strategy
 //!
-//! - Attempt to connect to bootnodes with timeout
+//! - Resolve all `/dnsaddr/` entries to concrete multiaddrs
 //! - Shuffle bootnode order to distribute load
+//! - Try connecting to each bootnode until we get peers from hive
 //! - Stop after connecting to a minimum number of bootnodes (typically 3)
 //! - Retry failed connections with backoff
 
+use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+use hickory_resolver::TokioResolver;
 use libp2p::multiaddr::Protocol;
 use libp2p::Multiaddr;
 use rand::seq::SliceRandom;
+use std::collections::HashSet;
+use tracing::{debug, warn};
 
 /// Maximum number of bootnode connection attempts per bootnode.
 pub const MAX_BOOTNODE_ATTEMPTS: usize = 6;
@@ -127,6 +132,150 @@ impl BootnodeConnector {
     pub fn bootnode_count(&self) -> usize {
         self.bootnodes.len()
     }
+
+    /// Resolve all bootnodes, expanding `/dnsaddr/` entries to concrete addresses.
+    ///
+    /// This recursively resolves DNS TXT records until we have concrete
+    /// IP-based multiaddrs that can be dialed directly.
+    ///
+    /// Returns a list of resolved addresses, shuffled randomly.
+    pub async fn resolve_all(&self) -> Vec<Multiaddr> {
+        let mut resolved = Vec::new();
+        let mut seen = HashSet::new();
+
+        for bootnode in &self.bootnodes {
+            match resolve_dnsaddr(bootnode, &mut seen).await {
+                Ok(addrs) => {
+                    debug!(
+                        bootnode = %bootnode,
+                        resolved_count = addrs.len(),
+                        "Resolved bootnode addresses"
+                    );
+                    resolved.extend(addrs);
+                }
+                Err(e) => {
+                    warn!(bootnode = %bootnode, error = %e, "Failed to resolve bootnode");
+                    // If resolution fails, try the original address anyway
+                    // (libp2p may be able to resolve it)
+                    resolved.push(bootnode.clone());
+                }
+            }
+        }
+
+        // Shuffle to distribute load
+        let mut rng = rand::rng();
+        resolved.shuffle(&mut rng);
+
+        resolved
+    }
+}
+
+/// Maximum recursion depth for DNS resolution to prevent infinite loops.
+const MAX_DNS_RECURSION_DEPTH: usize = 10;
+
+/// Resolve a `/dnsaddr/` multiaddr to concrete addresses.
+///
+/// This function:
+/// 1. Extracts the domain from the dnsaddr
+/// 2. Queries DNS TXT records for `_dnsaddr.{domain}`
+/// 3. Parses `dnsaddr=<multiaddr>` entries
+/// 4. Recursively resolves any nested dnsaddr entries
+///
+/// Returns concrete (non-dnsaddr) multiaddrs that can be dialed.
+pub async fn resolve_dnsaddr(
+    addr: &Multiaddr,
+    seen: &mut HashSet<String>,
+) -> Result<Vec<Multiaddr>, DnsResolveError> {
+    resolve_dnsaddr_recursive(addr, seen, 0).await
+}
+
+fn resolve_dnsaddr_recursive<'a>(
+    addr: &'a Multiaddr,
+    seen: &'a mut HashSet<String>,
+    depth: usize,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Multiaddr>, DnsResolveError>> + Send + 'a>>
+{
+    Box::pin(async move {
+        if depth > MAX_DNS_RECURSION_DEPTH {
+            return Err(DnsResolveError::MaxRecursionDepth);
+        }
+
+        // Check if this is a dnsaddr
+        let domain = match extract_dnsaddr_domain(addr) {
+            Some(d) => d,
+            None => {
+                // Not a dnsaddr, return as-is
+                return Ok(vec![addr.clone()]);
+            }
+        };
+
+        // Prevent infinite loops
+        let cache_key = format!("_dnsaddr.{}", domain);
+        if seen.contains(&cache_key) {
+            return Ok(vec![]);
+        }
+        seen.insert(cache_key.clone());
+
+        // Create DNS resolver
+        let resolver = TokioResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
+
+        // Query TXT records
+        let txt_name = format!("_dnsaddr.{}", domain);
+        debug!(name = %txt_name, "Querying DNS TXT records");
+
+        let txt_records = resolver.txt_lookup(&txt_name).await.map_err(|e| {
+            DnsResolveError::DnsLookup(format!("Failed to lookup {}: {}", txt_name, e))
+        })?;
+
+        let mut results = Vec::new();
+
+        for record in txt_records.iter() {
+            for txt in record.txt_data() {
+                let txt_str = String::from_utf8_lossy(txt);
+
+                // Parse dnsaddr=<multiaddr> format
+                if let Some(value) = txt_str.strip_prefix("dnsaddr=") {
+                    debug!(record = %value, "Found dnsaddr TXT record");
+
+                    match value.parse::<Multiaddr>() {
+                        Ok(resolved_addr) => {
+                            // Recursively resolve if this is also a dnsaddr
+                            let nested =
+                                resolve_dnsaddr_recursive(&resolved_addr, seen, depth + 1).await?;
+                            results.extend(nested);
+                        }
+                        Err(e) => {
+                            warn!(value = %value, error = %e, "Failed to parse multiaddr from TXT record");
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    })
+}
+
+/// Extract the domain from a `/dnsaddr/{domain}` multiaddr.
+fn extract_dnsaddr_domain(addr: &Multiaddr) -> Option<String> {
+    for proto in addr.iter() {
+        if let Protocol::Dnsaddr(domain) = proto {
+            return Some(domain.to_string());
+        }
+    }
+    None
+}
+
+/// Errors that can occur during DNS resolution.
+#[derive(Debug, thiserror::Error)]
+pub enum DnsResolveError {
+    /// DNS lookup failed
+    #[error("DNS lookup failed: {0}")]
+    DnsLookup(String),
+
+    /// Maximum recursion depth exceeded
+    #[error("Maximum DNS recursion depth exceeded")]
+    MaxRecursionDepth,
 }
 
 #[cfg(test)]

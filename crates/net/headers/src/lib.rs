@@ -10,9 +10,9 @@ mod proto {
 }
 
 mod codec;
-use codec::{CodecError, Headers, HeadersCodec};
+pub use codec::{CodecError, Headers, HeadersCodec};
 mod instrumented;
-use instrumented::InstrumentedStream;
+pub use instrumented::InstrumentedStream;
 use tracing::{Span, debug, info_span};
 
 pub type HeadersFn = dyn Fn(HashMap<String, Bytes>) -> HashMap<String, Bytes> + Send + Sync;

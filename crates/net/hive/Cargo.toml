@@ -1,5 +1,5 @@
 [package]
-name = "vertex-net-pricing"
+name = "vertex-net-hive"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,6 +15,7 @@ workspace = true
 ## vertex
 vertex-net-codec.workspace = true
 vertex-net-headers.workspace = true
+vertex-net-primitives.workspace = true
 
 ## async
 futures.workspace = true

@@ -1,6 +1,5 @@
-use libp2p::Multiaddr;
 use nectar_primitives::SwarmAddress;
-use vertex_net_primitives::NodeAddress;
+use vertex_net_primitives::{NodeAddress, deserialize_underlays};
 use vertex_net_primitives_traits::NodeAddress as NodeAddressTrait;
 
 use crate::MAX_WELCOME_MESSAGE_CHARS;
@@ -60,13 +59,28 @@ pub fn ack_from_proto(
         .address
         .as_ref()
         .ok_or_else(|| CodecError::MissingField("address"))?;
+
+    // Deserialize underlays (Bee can send multiple addresses)
+    let underlays = deserialize_underlays(&protobuf_address.underlay)
+        .map_err(|_| CodecError::InvalidMultiaddr(
+            libp2p::multiaddr::Error::InvalidMultiaddr
+        ))?;
+
+    // Use the first underlay (Bee picks the most relevant one first)
+    let underlay = underlays.into_iter().next()
+        .ok_or_else(|| CodecError::MissingField("underlay"))?;
+
+    let overlay = SwarmAddress::from_slice(protobuf_address.overlay.as_slice())
+        .map_err(|_| CodecError::Protocol("invalid overlay".to_string()))?;
+
     let remote_address = NodeAddress::builder()
         .with_network_id(value.network_id)
         .with_nonce(value.nonce.as_slice().try_into()?)
-        .with_underlay(Multiaddr::try_from(protobuf_address.underlay.clone())?)
+        .with_underlay(underlay)
         .with_signature(
-            &SwarmAddress::from_slice(protobuf_address.overlay.as_slice())
-                .map_err(|_| CodecError::Protocol("invalid primitive".to_string()))?,
+            // Use raw underlay bytes for signature verification (may include 0x99 prefix)
+            &protobuf_address.underlay,
+            &overlay,
             protobuf_address.signature.as_slice().try_into()?,
             // Validate signatures at the codec level
             true,
@@ -127,6 +141,7 @@ mod tests {
     use super::*;
     use alloy_signer::k256::ecdsa::SigningKey;
     use alloy_signer_local::{LocalSigner, PrivateKeySigner};
+    use libp2p::Multiaddr;
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb;
 

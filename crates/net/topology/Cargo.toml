@@ -14,9 +14,13 @@ vertex-primitives.workspace = true
 ## p2p
 libp2p.workspace = true
 
+## dns resolution
+hickory-resolver = { version = "0.25.0-alpha.5", features = ["tokio-runtime"] }
+
 ## misc
 thiserror.workspace = true
 rand.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }

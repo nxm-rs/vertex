@@ -1,5 +1,5 @@
 use libp2p::Multiaddr;
-use vertex_net_primitives::arbitrary_multiaddr;
+use vertex_net_primitives::{arbitrary_multiaddr, deserialize_underlays};
 
 use super::CodecError;
 
@@ -22,7 +22,17 @@ impl TryFrom<crate::proto::handshake::Syn> for Syn {
     type Error = CodecError;
 
     fn try_from(value: crate::proto::handshake::Syn) -> Result<Self, Self::Error> {
-        Ok(Self::new(Multiaddr::try_from(value.observed_underlay)?))
+        // Deserialize underlays (Bee can send multiple addresses)
+        let underlays = deserialize_underlays(&value.observed_underlay)
+            .map_err(|_| CodecError::InvalidMultiaddr(
+                libp2p::multiaddr::Error::InvalidMultiaddr
+            ))?;
+
+        // Use the first underlay
+        let underlay = underlays.into_iter().next()
+            .ok_or_else(|| CodecError::MissingField("observed_underlay"))?;
+
+        Ok(Self::new(underlay))
     }
 }
 

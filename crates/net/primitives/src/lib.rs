@@ -8,6 +8,7 @@ use alloy_primitives::{Address, B256, Signature};
 use alloy_signer::{SignerSync, k256::ecdsa::SigningKey};
 use alloy_signer_local::{LocalSigner, PrivateKeySigner};
 use bytes::{Bytes, BytesMut};
+use std::io::{Cursor, Read};
 use std::sync::Arc;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use vertex_net_primitives_traits::{
@@ -16,6 +17,146 @@ use vertex_net_primitives_traits::{
 
 use libp2p::Multiaddr;
 use nectar_primitives::SwarmAddress;
+
+// =============================================================================
+// Underlay Serialization (Bee-compatible)
+// =============================================================================
+
+/// Magic byte prefix for serialized lists of multiple underlays.
+/// This value (0x99 = 153) is chosen because it's not a valid multiaddr protocol code,
+/// ensuring legacy parsers will fail gracefully when encountering the new list format.
+pub const UNDERLAY_LIST_PREFIX: u8 = 0x99;
+
+/// Error type for underlay serialization/deserialization.
+#[derive(Debug, thiserror::Error)]
+pub enum UnderlayError {
+    #[error("empty byte slice")]
+    EmptyData,
+    #[error("failed to read varint: {0}")]
+    VarintError(#[from] std::io::Error),
+    #[error("inconsistent data: expected {expected} bytes, got {actual}")]
+    InconsistentLength { expected: u64, actual: usize },
+    #[error("failed to parse multiaddr: {0}")]
+    InvalidMultiaddr(#[from] libp2p::multiaddr::Error),
+}
+
+/// Serializes a slice of multiaddrs into a single byte slice.
+///
+/// This follows Bee's serialization format:
+/// - If exactly one address: returns the raw multiaddr bytes (backward compatible)
+/// - If zero or 2+ addresses: prefixes with 0x99 magic byte, then varint-length-prefixed addresses
+pub fn serialize_underlays(addrs: &[Multiaddr]) -> Vec<u8> {
+    // Backward compatibility: single address is just raw bytes
+    if addrs.len() == 1 {
+        return addrs[0].to_vec();
+    }
+
+    // For 0 or 2+ addresses, use the list format with prefix
+    let mut buf = Vec::new();
+    buf.push(UNDERLAY_LIST_PREFIX);
+
+    for addr in addrs {
+        let addr_bytes = addr.to_vec();
+        // Write varint-encoded length
+        buf.extend(encode_uvarint(addr_bytes.len() as u64));
+        buf.extend(addr_bytes);
+    }
+
+    buf
+}
+
+/// Deserializes a byte slice into a vector of multiaddrs.
+///
+/// Automatically detects the format:
+/// - If starts with 0x99: parses as a list of varint-length-prefixed addresses
+/// - Otherwise: parses as a single legacy multiaddr
+pub fn deserialize_underlays(data: &[u8]) -> Result<Vec<Multiaddr>, UnderlayError> {
+    if data.is_empty() {
+        return Err(UnderlayError::EmptyData);
+    }
+
+    // Check for list format (magic prefix)
+    if data[0] == UNDERLAY_LIST_PREFIX {
+        return deserialize_underlay_list(&data[1..]);
+    }
+
+    // Legacy format: single multiaddr
+    let addr = Multiaddr::try_from(data.to_vec())?;
+    Ok(vec![addr])
+}
+
+/// Deserializes the list format (after the magic prefix has been stripped).
+fn deserialize_underlay_list(data: &[u8]) -> Result<Vec<Multiaddr>, UnderlayError> {
+    let mut addrs = Vec::new();
+    let mut cursor = Cursor::new(data);
+
+    while (cursor.position() as usize) < data.len() {
+        // Read varint-encoded length
+        let addr_len = decode_uvarint(&mut cursor)?;
+
+        // Check we have enough bytes
+        let remaining = data.len() - cursor.position() as usize;
+        if (addr_len as usize) > remaining {
+            return Err(UnderlayError::InconsistentLength {
+                expected: addr_len,
+                actual: remaining,
+            });
+        }
+
+        // Read address bytes
+        let mut addr_bytes = vec![0u8; addr_len as usize];
+        cursor.read_exact(&mut addr_bytes)?;
+
+        // Parse multiaddr
+        let addr = Multiaddr::try_from(addr_bytes)?;
+        addrs.push(addr);
+    }
+
+    Ok(addrs)
+}
+
+/// Encode a u64 as an unsigned varint (LEB128).
+fn encode_uvarint(mut value: u64) -> Vec<u8> {
+    let mut buf = Vec::new();
+    loop {
+        let mut byte = (value & 0x7F) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80; // Set continuation bit
+        }
+        buf.push(byte);
+        if value == 0 {
+            break;
+        }
+    }
+    buf
+}
+
+/// Decode an unsigned varint (LEB128) from a cursor.
+fn decode_uvarint(cursor: &mut Cursor<&[u8]>) -> Result<u64, std::io::Error> {
+    let mut result: u64 = 0;
+    let mut shift = 0;
+
+    loop {
+        let mut byte = [0u8; 1];
+        cursor.read_exact(&mut byte)?;
+        let b = byte[0];
+
+        result |= ((b & 0x7F) as u64) << shift;
+        if b & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+        if shift >= 64 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "varint too long",
+            ));
+        }
+    }
+
+    Ok(result)
+}
 
 // Re-export swarm network types from nectar-swarms
 pub use nectar_swarms::{NamedSwarm, Swarm, SwarmKind};
@@ -148,7 +289,9 @@ impl NodeAddressBuilder<WithUnderlay> {
         let underlay = self.underlay.as_ref().unwrap();
 
         let overlay = calculate_overlay_address(&signer.address(), network_id, nonce);
-        let msg = generate_sign_message(underlay, &overlay, network_id);
+        // For local signing, use the single underlay's raw bytes
+        let underlay_bytes = underlay.to_vec();
+        let msg = generate_sign_message(&underlay_bytes, &overlay, network_id);
         let signature = signer
             .sign_message_sync(&msg)
             .map_err(NodeAddressError::SignerError)?;
@@ -163,17 +306,21 @@ impl NodeAddressBuilder<WithUnderlay> {
         })
     }
 
+    /// Verify a signature from a remote peer.
+    ///
+    /// `underlay_bytes_for_sig` should be the raw serialized underlay bytes as received
+    /// over the wire (may include 0x99 prefix for multiple underlays).
     pub fn with_signature(
         self,
+        underlay_bytes_for_sig: &[u8],
         overlay: &SwarmAddress,
         signature: Signature,
         verify_overlay: bool,
     ) -> Result<NodeAddressBuilder<ReadyToBuild>, NodeAddressError> {
         let network_id = self.network_id.unwrap();
         let nonce = self.nonce.as_ref().unwrap();
-        let underlay = self.underlay.as_ref().unwrap();
 
-        let chain_address = recover_signer(underlay, overlay, &signature, network_id)?;
+        let chain_address = recover_signer(underlay_bytes_for_sig, overlay, &signature, network_id)?;
 
         if verify_overlay {
             let recovered_overlay = calculate_overlay_address(&chain_address, network_id, nonce);
@@ -209,13 +356,13 @@ impl NodeAddressBuilder<ReadyToBuild> {
 ///
 /// The message consists of:
 /// - A prefix ("bee-handshake-")
-/// - The underlay address bytes
+/// - The underlay address bytes (raw serialized bytes, may include 0x99 prefix for multiple)
 /// - The overlay address bytes
 /// - The network ID in big-endian bytes
-fn generate_sign_message(underlay: &Multiaddr, overlay: &SwarmAddress, network_id: u64) -> Bytes {
+fn generate_sign_message(underlay_bytes: &[u8], overlay: &SwarmAddress, network_id: u64) -> Bytes {
     let mut message = BytesMut::new();
     message.extend_from_slice(b"bee-handshake-");
-    message.extend_from_slice(underlay.as_ref());
+    message.extend_from_slice(underlay_bytes);
     message.extend_from_slice(overlay.as_ref());
     message.extend_from_slice(network_id.to_be_bytes().as_slice());
     message.freeze()
@@ -226,12 +373,12 @@ fn generate_sign_message(underlay: &Multiaddr, overlay: &SwarmAddress, network_i
 /// # Errors
 /// Returns a [`NodeAddressError`] if signature recovery fails.
 fn recover_signer(
-    underlay: &Multiaddr,
+    underlay_bytes: &[u8],
     overlay: &SwarmAddress,
     signature: &Signature,
     network_id: u64,
 ) -> Result<Address, NodeAddressError> {
-    let prehash = generate_sign_message(underlay, overlay, network_id);
+    let prehash = generate_sign_message(underlay_bytes, overlay, network_id);
     Ok(signature.recover_address_from_msg(prehash)?)
 }
 
@@ -300,11 +447,13 @@ mod tests {
         overlay: &SwarmAddress,
         signature: Signature,
     ) -> Result<NodeAddress, NodeAddressError> {
+        // For tests, single underlay = raw bytes
+        let underlay_bytes = underlay.to_vec();
         NodeAddress::builder()
             .with_network_id(network_id)
             .with_nonce(nonce)
             .with_underlay(underlay)
-            .with_signature(overlay, signature, true)
+            .with_signature(&underlay_bytes, overlay, signature, true)
             .map(|builder| builder.build())
     }
 
@@ -353,8 +502,9 @@ mod tests {
             );
 
             // Verify signature recovery
+            let underlay_bytes = node.underlay_address().to_vec();
             let recovered_address = recover_signer(
-                node.underlay_address(),
+                &underlay_bytes,
                 &overlay,
                 node.signature().unwrap(),
                 node.network_id()

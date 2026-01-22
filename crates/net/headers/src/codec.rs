@@ -4,7 +4,8 @@ use vertex_net_codec::ProtocolCodec;
 
 use bytes::Bytes;
 
-pub(crate) type HeadersCodec = ProtocolCodec<crate::proto::headers::Headers, Headers, CodecError>;
+/// Codec for headers protocol messages.
+pub type HeadersCodec = ProtocolCodec<crate::proto::headers::Headers, Headers, CodecError>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CodecError {
@@ -20,19 +21,20 @@ impl From<quick_protobuf_codec::Error> for CodecError {
     }
 }
 
+/// Headers message wrapper.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Headers {
+pub struct Headers {
     inner: HashMap<String, Bytes>,
 }
 
 impl Headers {
-    pub(crate) fn new(inner: HashMap<String, Bytes>) -> Self {
+    /// Create a new Headers message.
+    pub fn new(inner: HashMap<String, Bytes>) -> Self {
         Headers { inner }
     }
-}
 
-impl Headers {
-    pub(crate) fn into_inner(self) -> HashMap<String, Bytes> {
+    /// Get the inner headers map.
+    pub fn into_inner(self) -> HashMap<String, Bytes> {
         self.inner
     }
 }
