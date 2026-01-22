@@ -5,40 +5,39 @@ use futures::{AsyncWriteExt, SinkExt, TryStreamExt, future::BoxFuture};
 use libp2p::{InboundUpgrade, Multiaddr, OutboundUpgrade, PeerId, Stream, core::UpgradeInfo};
 use tracing::{debug, info};
 use vertex_net_primitives::NodeAddress;
+use vertex_node_types::{Identity, NodeTypes};
+use vertex_swarmspec::SwarmSpec;
 
 use crate::{
-    Ack, AckCodec, HandshakeConfig, HandshakeError, HandshakeInfo, PROTOCOL, Syn, SynAck,
+    Ack, AckCodec, HandshakeError, HandshakeInfo, PROTOCOL, Syn, SynAck,
     SynAckCodec, SynCodec,
 };
 
-pub struct HandshakeProtocol<C: HandshakeConfig> {
-    pub(crate) config: Arc<C>,
+/// Handshake protocol upgrade for Swarm peer authentication.
+///
+/// This protocol handles the three-way handshake (SYN → SYNACK → ACK)
+/// that authenticates peers on the Swarm network.
+///
+/// Generic over `N: NodeTypes` to support different node configurations.
+#[derive(Clone)]
+pub struct HandshakeProtocol<N: NodeTypes> {
+    pub(crate) identity: Arc<N::Identity>,
     pub(crate) peer_id: PeerId,
     pub(crate) remote_addr: Multiaddr,
 }
 
-impl<C: HandshakeConfig> HandshakeProtocol<C> {
+impl<N: NodeTypes> HandshakeProtocol<N> {
     /// Create a new handshake protocol.
-    pub fn new(config: Arc<C>, peer_id: PeerId, remote_addr: Multiaddr) -> Self {
+    pub fn new(identity: Arc<N::Identity>, peer_id: PeerId, remote_addr: Multiaddr) -> Self {
         Self {
-            config,
+            identity,
             peer_id,
             remote_addr,
         }
     }
 }
 
-impl<C: HandshakeConfig> Clone for HandshakeProtocol<C> {
-    fn clone(&self) -> Self {
-        Self {
-            config: self.config.clone(),
-            peer_id: self.peer_id,
-            remote_addr: self.remote_addr.clone(),
-        }
-    }
-}
-
-impl<C: HandshakeConfig> std::fmt::Debug for HandshakeProtocol<C> {
+impl<N: NodeTypes> std::fmt::Debug for HandshakeProtocol<N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HandshakeProtocol")
             .field("peer_id", &self.peer_id)
@@ -47,7 +46,7 @@ impl<C: HandshakeConfig> std::fmt::Debug for HandshakeProtocol<C> {
     }
 }
 
-impl<C: HandshakeConfig> UpgradeInfo for HandshakeProtocol<C> {
+impl<N: NodeTypes> UpgradeInfo for HandshakeProtocol<N> {
     type Info = &'static str;
     type InfoIter = std::iter::Once<Self::Info>;
 
@@ -56,43 +55,43 @@ impl<C: HandshakeConfig> UpgradeInfo for HandshakeProtocol<C> {
     }
 }
 
-impl<C: HandshakeConfig> InboundUpgrade<Stream> for HandshakeProtocol<C> {
+impl<N: NodeTypes> InboundUpgrade<Stream> for HandshakeProtocol<N> {
     type Output = HandshakeInfo;
     type Error = HandshakeError;
     type Future = BoxFuture<'static, Result<Self::Output, Self::Error>>;
 
     fn upgrade_inbound(self, socket: Stream, _: Self::Info) -> Self::Future {
-        Box::pin(handle_inbound_handshake(
+        Box::pin(handle_inbound_handshake::<N>(
             socket,
-            self.config,
+            self.identity,
             self.peer_id,
             self.remote_addr,
         ))
     }
 }
 
-impl<C: HandshakeConfig> OutboundUpgrade<Stream> for HandshakeProtocol<C> {
+impl<N: NodeTypes> OutboundUpgrade<Stream> for HandshakeProtocol<N> {
     type Output = HandshakeInfo;
     type Error = HandshakeError;
     type Future = BoxFuture<'static, Result<Self::Output, Self::Error>>;
 
     fn upgrade_outbound(self, socket: Stream, _: Self::Info) -> Self::Future {
-        Box::pin(handle_outbound_handshake(
+        Box::pin(handle_outbound_handshake::<N>(
             socket,
-            self.config,
+            self.identity,
             self.peer_id,
             self.remote_addr,
         ))
     }
 }
 
-async fn handle_inbound_handshake<C: HandshakeConfig>(
+async fn handle_inbound_handshake<N: NodeTypes>(
     stream: Stream,
-    config: Arc<C>,
+    identity: Arc<N::Identity>,
     peer_id: PeerId,
     _: Multiaddr,
 ) -> Result<HandshakeInfo, HandshakeError> {
-    let network_id = config.network_id();
+    let network_id = identity.spec().network_id();
 
     // Set up codecs - SynAckCodec and AckCodec need network_id for validation
     let syn_codec = SynCodec::new(1024);
@@ -111,9 +110,9 @@ async fn handle_inbound_handshake<C: HandshakeConfig>(
     // Create local address
     let local_address = NodeAddress::builder()
         .with_network_id(network_id)
-        .with_nonce(config.nonce())
+        .with_nonce(identity.nonce())
         .with_underlay(syn.observed_underlay().clone())
-        .with_signer(config.signer())
+        .with_signer(identity.signer())
         .map_err(|e| HandshakeError::Codec(e.into()))?
         .build();
 
@@ -122,8 +121,8 @@ async fn handle_inbound_handshake<C: HandshakeConfig>(
         syn,
         Ack::new(
             local_address,
-            config.is_full_node(),
-            config.welcome_message().unwrap_or_default(),
+            identity.is_full_node(),
+            identity.welcome_message().unwrap_or_default().to_string(),
         )?,
     );
 
@@ -144,13 +143,13 @@ async fn handle_inbound_handshake<C: HandshakeConfig>(
     Ok(HandshakeInfo { peer_id, ack })
 }
 
-async fn handle_outbound_handshake<C: HandshakeConfig>(
+async fn handle_outbound_handshake<N: NodeTypes>(
     stream: Stream,
-    config: Arc<C>,
+    identity: Arc<N::Identity>,
     peer_id: PeerId,
     remote_addr: Multiaddr,
 ) -> Result<HandshakeInfo, HandshakeError> {
-    let network_id = config.network_id();
+    let network_id = identity.spec().network_id();
 
     // Construct the observed underlay with the peer ID appended
     // Format: /ip4/x.x.x.x/tcp/1634/p2p/QmPeerId...
@@ -176,9 +175,9 @@ async fn handle_outbound_handshake<C: HandshakeConfig>(
 
     let local_address = NodeAddress::builder()
         .with_network_id(network_id)
-        .with_nonce(config.nonce())
+        .with_nonce(identity.nonce())
         .with_underlay(syn_ack.syn().observed_underlay().clone())
-        .with_signer(config.signer())
+        .with_signer(identity.signer())
         .map_err(|e| HandshakeError::Codec(e.into()))?
         .build();
 
@@ -188,8 +187,8 @@ async fn handle_outbound_handshake<C: HandshakeConfig>(
     framed
         .send(Ack::new(
             local_address,
-            config.is_full_node(),
-            config.welcome_message().unwrap_or_default(),
+            identity.is_full_node(),
+            identity.welcome_message().unwrap_or_default().to_string(),
         )?)
         .await?;
 

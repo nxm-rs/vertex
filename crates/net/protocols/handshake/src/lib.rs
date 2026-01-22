@@ -21,12 +21,12 @@
 //! - `SynAck`: Response with both Syn and Ack
 //! - `Ack`: Node address, full node status, welcome message
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
-use alloy_primitives::B256;
-use alloy_signer::k256::ecdsa::SigningKey;
-use alloy_signer_local::LocalSigner;
 use libp2p::PeerId;
+
+// Re-export SwarmIdentity for convenience
+pub use vertex_node_identity::SwarmIdentity;
 
 mod proto {
     include!(concat!(env!("OUT_DIR"), "/proto/mod.rs"));
@@ -40,27 +40,6 @@ pub use protocol::HandshakeProtocol;
 
 mod codec;
 pub use codec::*;
-
-/// Configuration trait for the handshake protocol.
-///
-/// This trait abstracts the node configuration needed for the handshake,
-/// allowing the handshake crate to remain independent of specific node implementations.
-pub trait HandshakeConfig: Send + Sync + 'static {
-    /// Returns the network ID (1 for mainnet, 10 for testnet, etc.)
-    fn network_id(&self) -> u64;
-
-    /// Returns the nonce used for address generation.
-    fn nonce(&self) -> B256;
-
-    /// Returns the signer for signing handshake messages.
-    fn signer(&self) -> Arc<LocalSigner<SigningKey>>;
-
-    /// Returns whether this is a full node.
-    fn is_full_node(&self) -> bool;
-
-    /// Returns the welcome message to send to peers.
-    fn welcome_message(&self) -> Option<String>;
-}
 
 /// Protocol name for handshake.
 pub const PROTOCOL: &str = "/swarm/handshake/14.0.0/handshake";
