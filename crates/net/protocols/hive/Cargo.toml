@@ -16,6 +16,8 @@ workspace = true
 vertex-net-codec.workspace = true
 vertex-net-headers.workspace = true
 vertex-net-primitives.workspace = true
+vertex-node-types.workspace = true
+vertex-swarmspec.workspace = true
 
 ## async
 futures.workspace = true
@@ -30,7 +32,6 @@ libp2p.workspace = true
 alloy-primitives.workspace = true
 
 ## misc
-bytes.workspace = true
 thiserror.workspace = true
 
 ## tracing

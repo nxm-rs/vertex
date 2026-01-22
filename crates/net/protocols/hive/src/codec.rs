@@ -1,7 +1,6 @@
 //! Codec for hive protocol messages.
 
-use alloy_primitives::B256;
-use bytes::Bytes;
+use alloy_primitives::{B256, Signature};
 use libp2p::Multiaddr;
 use vertex_net_codec::ProtocolCodec;
 use vertex_net_primitives::{deserialize_underlays, serialize_underlays};
@@ -24,6 +23,12 @@ pub enum HiveCodecError {
     /// Invalid overlay address length
     #[error("Invalid overlay address length: expected 32, got {0}")]
     InvalidOverlayLength(usize),
+    /// Invalid signature
+    #[error("Invalid signature: {0}")]
+    InvalidSignature(#[from] alloy_primitives::SignatureError),
+    /// Invalid nonce length
+    #[error("Invalid nonce length: expected 32, got {0}")]
+    InvalidNonceLength(usize),
 }
 
 impl From<quick_protobuf_codec::Error> for HiveCodecError {
@@ -40,16 +45,16 @@ pub struct BzzAddress {
     /// Network-level addresses (multiaddrs) for connecting to the peer.
     pub underlays: Vec<Multiaddr>,
     /// Cryptographic signature proving ownership of overlay/underlay pair.
-    pub signature: Bytes,
+    pub signature: Signature,
     /// The peer's overlay address in the Kademlia topology.
     pub overlay: B256,
-    /// Transaction hash nonce used in overlay address derivation.
-    pub nonce: Bytes,
+    /// Nonce used in overlay address derivation.
+    pub nonce: B256,
 }
 
 impl BzzAddress {
     /// Create a new BzzAddress.
-    pub fn new(underlays: Vec<Multiaddr>, signature: Bytes, overlay: B256, nonce: Bytes) -> Self {
+    pub fn new(underlays: Vec<Multiaddr>, signature: Signature, overlay: B256, nonce: B256) -> Self {
         Self {
             underlays,
             signature,
@@ -72,11 +77,19 @@ impl TryFrom<crate::proto::hive::BzzAddress> for BzzAddress {
             return Err(HiveCodecError::InvalidOverlayLength(value.overlay.len()));
         };
 
+        let signature = Signature::try_from(value.signature.as_slice())?;
+
+        let nonce = if value.nonce.len() == 32 {
+            B256::from_slice(&value.nonce)
+        } else {
+            return Err(HiveCodecError::InvalidNonceLength(value.nonce.len()));
+        };
+
         Ok(Self {
             underlays,
-            signature: Bytes::from(value.signature),
+            signature,
             overlay,
-            nonce: Bytes::from(value.nonce),
+            nonce,
         })
     }
 }
@@ -85,7 +98,7 @@ impl From<BzzAddress> for crate::proto::hive::BzzAddress {
     fn from(value: BzzAddress) -> Self {
         crate::proto::hive::BzzAddress {
             underlay: serialize_underlays(&value.underlays),
-            signature: value.signature.to_vec(),
+            signature: value.signature.as_bytes().to_vec(),
             overlay: value.overlay.to_vec(),
             nonce: value.nonce.to_vec(),
         }
@@ -142,15 +155,23 @@ impl From<Peers> for crate::proto::hive::Peers {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::U256;
+
+    fn test_signature() -> Signature {
+        // Create a valid signature structure (r, s, v)
+        let r = U256::from(1u64);
+        let s = U256::from(2u64);
+        Signature::new(r, s, false)
+    }
 
     #[test]
     fn test_single_underlay_roundtrip() {
         let addr: Multiaddr = "/ip4/127.0.0.1/tcp/1633".parse().unwrap();
         let original = BzzAddress::new(
             vec![addr],
-            Bytes::from(vec![1, 2, 3]),
+            test_signature(),
             B256::repeat_byte(0x42),
-            Bytes::from(vec![4, 5, 6]),
+            B256::repeat_byte(0x01),
         );
 
         let proto: crate::proto::hive::BzzAddress = original.clone().into();
@@ -164,9 +185,9 @@ mod tests {
         let addr2: Multiaddr = "/ip4/192.168.1.1/udp/1634".parse().unwrap();
         let original = BzzAddress::new(
             vec![addr1, addr2],
-            Bytes::from(vec![1, 2, 3]),
+            test_signature(),
             B256::repeat_byte(0x42),
-            Bytes::from(vec![4, 5, 6]),
+            B256::repeat_byte(0x02),
         );
 
         let proto: crate::proto::hive::BzzAddress = original.clone().into();
@@ -179,9 +200,9 @@ mod tests {
         let addr: Multiaddr = "/ip4/127.0.0.1/tcp/1633".parse().unwrap();
         let bzz = BzzAddress::new(
             vec![addr],
-            Bytes::from(vec![1, 2, 3]),
+            test_signature(),
             B256::repeat_byte(0x42),
-            Bytes::from(vec![4, 5, 6]),
+            B256::repeat_byte(0x03),
         );
         let original = Peers::new(vec![bzz]);
 
