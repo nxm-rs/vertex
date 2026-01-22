@@ -5,8 +5,8 @@
 //! address verification and signature handling.
 
 use alloy_primitives::{Address, B256, Signature};
-use alloy_signer::{SignerSync, k256::ecdsa::SigningKey};
-use alloy_signer_local::{LocalSigner, PrivateKeySigner};
+use alloy_signer::SignerSync;
+use alloy_signer_local::PrivateKeySigner;
 use bytes::{Bytes, BytesMut};
 use std::io::{Cursor, Read};
 use std::sync::Arc;
@@ -280,9 +280,9 @@ impl NodeAddressBuilder<WithNonce> {
 }
 
 impl NodeAddressBuilder<WithUnderlay> {
-    pub fn with_signer(
+    pub fn with_signer<S: alloy_signer::Signer + SignerSync>(
         self,
-        signer: Arc<LocalSigner<SigningKey>>,
+        signer: Arc<S>,
     ) -> Result<NodeAddressBuilder<ReadyToBuild>, NodeAddressError> {
         let network_id = self.network_id.unwrap();
         let nonce = self.nonce.as_ref().unwrap();
@@ -359,7 +359,7 @@ impl NodeAddressBuilder<ReadyToBuild> {
 /// - The underlay address bytes (raw serialized bytes, may include 0x99 prefix for multiple)
 /// - The overlay address bytes
 /// - The network ID in big-endian bytes
-fn generate_sign_message(underlay_bytes: &[u8], overlay: &SwarmAddress, network_id: u64) -> Bytes {
+pub fn generate_sign_message(underlay_bytes: &[u8], overlay: &SwarmAddress, network_id: u64) -> Bytes {
     let mut message = BytesMut::new();
     message.extend_from_slice(b"bee-handshake-");
     message.extend_from_slice(underlay_bytes);
@@ -372,7 +372,7 @@ fn generate_sign_message(underlay_bytes: &[u8], overlay: &SwarmAddress, network_
 ///
 /// # Errors
 /// Returns a [`NodeAddressError`] if signature recovery fails.
-fn recover_signer(
+pub fn recover_signer(
     underlay_bytes: &[u8],
     overlay: &SwarmAddress,
     signature: &Signature,
@@ -380,6 +380,32 @@ fn recover_signer(
 ) -> Result<Address, NodeAddressError> {
     let prehash = generate_sign_message(underlay_bytes, overlay, network_id);
     Ok(signature.recover_address_from_msg(prehash)?)
+}
+
+/// Validates a BzzAddress by verifying the signature and overlay derivation.
+///
+/// This function performs the following checks:
+/// 1. Recovers the Ethereum address from the signature
+/// 2. Computes the expected overlay address from the recovered address, network_id, and nonce
+/// 3. Verifies the computed overlay matches the claimed overlay
+pub fn validate_bzz_address(
+    underlays: &[Multiaddr],
+    overlay: &B256,
+    signature: &Signature,
+    nonce: &B256,
+    network_id: u64,
+) -> Result<(), NodeAddressError> {
+    let underlay_bytes = serialize_underlays(underlays);
+    let overlay_addr = SwarmAddress::from(*overlay);
+
+    let recovered_address = recover_signer(&underlay_bytes, &overlay_addr, signature, network_id)?;
+    let expected_overlay = calculate_overlay_address(&recovered_address, network_id, nonce);
+
+    if expected_overlay != overlay_addr {
+        return Err(NodeAddressError::InvalidOverlay);
+    }
+
+    Ok(())
 }
 
 impl<'a> arbitrary::Arbitrary<'a> for NodeAddress {
