@@ -25,10 +25,10 @@
 //! - Stop after connecting to a minimum number of bootnodes (typically 3)
 //! - Retry failed connections with backoff
 
-use hickory_resolver::config::{ResolverConfig, ResolverOpts};
 use hickory_resolver::TokioResolver;
-use libp2p::multiaddr::Protocol;
+use hickory_resolver::config::{ResolverConfig, ResolverOpts};
 use libp2p::Multiaddr;
+use libp2p::multiaddr::Protocol;
 use rand::seq::SliceRandom;
 use std::collections::HashSet;
 use tracing::{debug, warn};
@@ -104,10 +104,7 @@ impl BootnodeConnector {
         addr.iter().any(|p| {
             matches!(
                 p,
-                Protocol::Dns(_)
-                    | Protocol::Dns4(_)
-                    | Protocol::Dns6(_)
-                    | Protocol::Dnsaddr(_)
+                Protocol::Dns(_) | Protocol::Dns4(_) | Protocol::Dns6(_) | Protocol::Dnsaddr(_)
             )
         })
     }
@@ -193,8 +190,9 @@ fn resolve_dnsaddr_recursive<'a>(
     addr: &'a Multiaddr,
     seen: &'a mut HashSet<String>,
     depth: usize,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Multiaddr>, DnsResolveError>> + Send + 'a>>
-{
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Vec<Multiaddr>, DnsResolveError>> + Send + 'a>,
+> {
     Box::pin(async move {
         if depth > MAX_DNS_RECURSION_DEPTH {
             return Err(DnsResolveError::MaxRecursionDepth);

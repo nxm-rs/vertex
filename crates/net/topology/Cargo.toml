@@ -10,13 +10,19 @@ repository.workspace = true
 [dependencies]
 ## vertex
 vertex-primitives.workspace = true
+vertex-node-identity.workspace = true
+vertex-node-types.workspace = true
 vertex-net-handshake.workspace = true
+vertex-net-headers.workspace = true
 vertex-net-hive.workspace = true
 vertex-net-pingpong.workspace = true
 vertex-net-primitives-traits.workspace = true
 
 ## p2p
 libp2p.workspace = true
+
+## async
+futures.workspace = true
 
 ## crypto/primitives
 alloy-primitives.workspace = true

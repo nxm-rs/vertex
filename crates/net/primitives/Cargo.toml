@@ -26,11 +26,16 @@ thiserror.workspace = true
 
 bytes.workspace = true
 
+# DNS resolution
+hickory-resolver = { version = "0.25.0-alpha.5", features = ["tokio-runtime"] }
+tracing = { workspace = true }
+
 [dev-dependencies]
 arbitrary.workspace = true
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
 rand.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]
 workspace = true

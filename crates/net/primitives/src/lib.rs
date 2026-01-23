@@ -3,14 +3,20 @@
 //! This crate provides concrete implementations of the network primitive traits,
 //! including a builder pattern for constructing node addresses and utilities for
 //! address verification and signature handling.
+//!
+//! # Modules
+//!
+//! - [`dns`] - DNS address resolution utilities for `/dnsaddr/` multiaddrs
+
+pub mod dns;
 
 use alloy_primitives::{Address, B256, Signature};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use bytes::{Bytes, BytesMut};
 use std::io::{Cursor, Read};
-use std::sync::Arc;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::sync::Arc;
 use vertex_net_primitives_traits::{
     NodeAddress as NodeAddressTrait, NodeAddressError, calculate_overlay_address,
 };
@@ -320,7 +326,8 @@ impl NodeAddressBuilder<WithUnderlay> {
         let network_id = self.network_id.unwrap();
         let nonce = self.nonce.as_ref().unwrap();
 
-        let chain_address = recover_signer(underlay_bytes_for_sig, overlay, &signature, network_id)?;
+        let chain_address =
+            recover_signer(underlay_bytes_for_sig, overlay, &signature, network_id)?;
 
         if verify_overlay {
             let recovered_overlay = calculate_overlay_address(&chain_address, network_id, nonce);
@@ -359,7 +366,11 @@ impl NodeAddressBuilder<ReadyToBuild> {
 /// - The underlay address bytes (raw serialized bytes, may include 0x99 prefix for multiple)
 /// - The overlay address bytes
 /// - The network ID in big-endian bytes
-pub fn generate_sign_message(underlay_bytes: &[u8], overlay: &SwarmAddress, network_id: u64) -> Bytes {
+pub fn generate_sign_message(
+    underlay_bytes: &[u8],
+    overlay: &SwarmAddress,
+    network_id: u64,
+) -> Bytes {
     let mut message = BytesMut::new();
     message.extend_from_slice(b"bee-handshake-");
     message.extend_from_slice(underlay_bytes);
@@ -588,13 +599,9 @@ mod tests {
         let underlay: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
 
         // Create node with first signer
-        let node1 = create_node_with_signer(
-            TEST_NETWORK_ID,
-            nonce.clone(),
-            underlay.clone(),
-            signer1,
-        )
-        .expect("Should create node1");
+        let node1 =
+            create_node_with_signer(TEST_NETWORK_ID, nonce.clone(), underlay.clone(), signer1)
+                .expect("Should create node1");
 
         // Calculate overlay address for second signer
         let overlay2 = calculate_overlay_address(&signer2.address(), TEST_NETWORK_ID, &nonce);
@@ -629,8 +636,8 @@ mod tests {
         let node2 = create_node_with_signer(2, nonce.clone(), underlay.clone(), signer.clone())
             .expect("Should create node2");
 
-        let node3 = create_node_with_signer(100, nonce, underlay, signer)
-            .expect("Should create node3");
+        let node3 =
+            create_node_with_signer(100, nonce, underlay, signer).expect("Should create node3");
 
         // Calculate overlay addresses for each network
         let overlay1 = node1.overlay_address();
