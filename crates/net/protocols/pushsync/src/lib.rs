@@ -34,7 +34,7 @@ mod proto {
 
 pub use codec::{Delivery, DeliveryCodec, PushsyncCodecError, Receipt, ReceiptCodec};
 pub use protocol::{
-    inbound, outbound, PushsyncInboundProtocol, PushsyncOutboundProtocol, PushsyncResponder,
+    PushsyncInboundProtocol, PushsyncOutboundProtocol, PushsyncResponder, inbound, outbound,
 };
 
 /// Protocol name for pushsync.

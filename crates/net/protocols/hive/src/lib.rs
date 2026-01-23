@@ -25,7 +25,7 @@ mod codec;
 mod protocol;
 
 pub use codec::{BzzAddress, HiveCodec, HiveCodecError, Peers};
-pub use protocol::{inbound, outbound, HiveInboundProtocol, HiveOutboundProtocol};
+pub use protocol::{HiveInboundProtocol, HiveOutboundProtocol, inbound, outbound};
 
 mod proto {
     include!(concat!(env!("OUT_DIR"), "/proto/mod.rs"));

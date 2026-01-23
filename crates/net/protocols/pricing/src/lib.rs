@@ -26,7 +26,7 @@ mod codec;
 mod protocol;
 
 pub use codec::{AnnouncePaymentThreshold, PricingCodecError};
-pub use protocol::{inbound, outbound, PricingInboundProtocol, PricingOutboundProtocol};
+pub use protocol::{PricingInboundProtocol, PricingOutboundProtocol, inbound, outbound};
 
 mod proto {
     include!(concat!(env!("OUT_DIR"), "/proto/mod.rs"));

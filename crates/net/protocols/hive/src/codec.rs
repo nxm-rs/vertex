@@ -54,7 +54,12 @@ pub struct BzzAddress {
 
 impl BzzAddress {
     /// Create a new BzzAddress.
-    pub fn new(underlays: Vec<Multiaddr>, signature: Signature, overlay: B256, nonce: B256) -> Self {
+    pub fn new(
+        underlays: Vec<Multiaddr>,
+        signature: Signature,
+        overlay: B256,
+        nonce: B256,
+    ) -> Self {
         Self {
             underlays,
             signature,

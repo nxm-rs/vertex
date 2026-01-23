@@ -9,8 +9,7 @@ pub type DeliveryCodec =
     ProtocolCodec<crate::proto::pushsync::Delivery, Delivery, PushsyncCodecError>;
 
 /// Codec for pushsync receipt messages.
-pub type ReceiptCodec =
-    ProtocolCodec<crate::proto::pushsync::Receipt, Receipt, PushsyncCodecError>;
+pub type ReceiptCodec = ProtocolCodec<crate::proto::pushsync::Receipt, Receipt, PushsyncCodecError>;
 
 /// Error type for pushsync codec operations.
 #[derive(Debug, thiserror::Error)]
@@ -59,7 +58,9 @@ impl TryFrom<crate::proto::pushsync::Delivery> for Delivery {
 
     fn try_from(value: crate::proto::pushsync::Delivery) -> Result<Self, Self::Error> {
         if value.Address.len() != 32 {
-            return Err(PushsyncCodecError::InvalidAddressLength(value.Address.len()));
+            return Err(PushsyncCodecError::InvalidAddressLength(
+                value.Address.len(),
+            ));
         }
         let address = ChunkAddress::from_slice(&value.Address)
             .map_err(|e| PushsyncCodecError::Protocol(e.to_string()))?;
@@ -98,7 +99,12 @@ pub struct Receipt {
 
 impl Receipt {
     /// Create a successful receipt.
-    pub fn success(address: ChunkAddress, signature: Bytes, nonce: Bytes, storage_radius: u8) -> Self {
+    pub fn success(
+        address: ChunkAddress,
+        signature: Bytes,
+        nonce: Bytes,
+        storage_radius: u8,
+    ) -> Self {
         Self {
             address,
             signature,
@@ -130,7 +136,9 @@ impl TryFrom<crate::proto::pushsync::Receipt> for Receipt {
 
     fn try_from(value: crate::proto::pushsync::Receipt) -> Result<Self, Self::Error> {
         if value.Address.len() != 32 {
-            return Err(PushsyncCodecError::InvalidAddressLength(value.Address.len()));
+            return Err(PushsyncCodecError::InvalidAddressLength(
+                value.Address.len(),
+            ));
         }
         let address = ChunkAddress::from_slice(&value.Address)
             .map_err(|e| PushsyncCodecError::Protocol(e.to_string()))?;

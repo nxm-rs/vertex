@@ -9,8 +9,11 @@ use alloy_primitives::U256;
 use vertex_net_codec::ProtocolCodec;
 
 /// Codec for pricing protocol messages.
-pub(crate) type PricingCodec =
-    ProtocolCodec<crate::proto::pricing::AnnouncePaymentThreshold, AnnouncePaymentThreshold, PricingCodecError>;
+pub(crate) type PricingCodec = ProtocolCodec<
+    crate::proto::pricing::AnnouncePaymentThreshold,
+    AnnouncePaymentThreshold,
+    PricingCodecError,
+>;
 
 /// Error type for pricing codec operations.
 #[derive(Debug, thiserror::Error)]
@@ -51,14 +54,18 @@ impl AnnouncePaymentThreshold {
 impl TryFrom<crate::proto::pricing::AnnouncePaymentThreshold> for AnnouncePaymentThreshold {
     type Error = PricingCodecError;
 
-    fn try_from(proto: crate::proto::pricing::AnnouncePaymentThreshold) -> Result<Self, Self::Error> {
+    fn try_from(
+        proto: crate::proto::pricing::AnnouncePaymentThreshold,
+    ) -> Result<Self, Self::Error> {
         let threshold = if proto.payment_threshold.is_empty() {
             U256::ZERO
         } else {
             U256::from_be_slice(&proto.payment_threshold)
         };
 
-        Ok(Self { payment_threshold: threshold })
+        Ok(Self {
+            payment_threshold: threshold,
+        })
     }
 }
 

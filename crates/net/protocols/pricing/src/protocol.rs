@@ -3,13 +3,13 @@
 //! Implements HeaderedInbound/HeaderedOutbound traits - headers are automatic.
 
 use asynchronous_codec::Framed;
-use futures::{future::BoxFuture, SinkExt, TryStreamExt};
+use futures::{SinkExt, TryStreamExt, future::BoxFuture};
 use tracing::debug;
 use vertex_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound};
 
 use crate::{
-    codec::{AnnouncePaymentThreshold, PricingCodec, PricingCodecError},
     PROTOCOL_NAME,
+    codec::{AnnouncePaymentThreshold, PricingCodec, PricingCodecError},
 };
 
 /// Maximum size of a pricing message.
@@ -33,13 +33,12 @@ impl HeaderedInbound for PricingInner {
             let mut framed = Framed::new(stream.into_inner(), codec);
 
             debug!("Pricing: Reading peer threshold");
-            framed
-                .try_next()
-                .await?
-                .ok_or_else(|| PricingCodecError::Io(std::io::Error::new(
+            framed.try_next().await?.ok_or_else(|| {
+                PricingCodecError::Io(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
                     "connection closed",
-                )))
+                ))
+            })
         })
     }
 }
@@ -64,7 +63,10 @@ impl HeaderedOutbound for PricingOutboundInner {
         PROTOCOL_NAME
     }
 
-    fn write(self, stream: HeaderedStream) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
+    fn write(
+        self,
+        stream: HeaderedStream,
+    ) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
         Box::pin(async move {
             let codec = PricingCodec::new(MAX_MESSAGE_SIZE);
             let mut framed = Framed::new(stream.into_inner(), codec);

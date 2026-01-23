@@ -9,14 +9,14 @@
 //! - **Inbound (storer)**: Receive Delivery, send Receipt
 
 use asynchronous_codec::Framed;
-use futures::{future::BoxFuture, SinkExt, TryStreamExt};
+use futures::{SinkExt, TryStreamExt, future::BoxFuture};
 use tracing::debug;
 use vertex_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound};
 use vertex_primitives::ChunkAddress;
 
 use crate::{
-    codec::{Delivery, DeliveryCodec, PushsyncCodecError, Receipt, ReceiptCodec},
     PROTOCOL_NAME,
+    codec::{Delivery, DeliveryCodec, PushsyncCodecError, Receipt, ReceiptCodec},
 };
 
 /// Maximum size of a pushsync message (chunk + stamp + overhead).
@@ -44,15 +44,12 @@ impl HeaderedInbound for PushsyncInboundInner {
             let mut framed = Framed::new(stream.into_inner(), codec);
 
             debug!("Pushsync: Reading chunk delivery");
-            let delivery = framed
-                .try_next()
-                .await?
-                .ok_or_else(|| {
-                    PushsyncCodecError::Io(std::io::Error::new(
-                        std::io::ErrorKind::UnexpectedEof,
-                        "connection closed",
-                    ))
-                })?;
+            let delivery = framed.try_next().await?.ok_or_else(|| {
+                PushsyncCodecError::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "connection closed",
+                ))
+            })?;
 
             // Return the delivery and a responder to send the receipt
             let responder = PushsyncResponder {
@@ -112,7 +109,10 @@ impl HeaderedOutbound for PushsyncOutboundInner {
         PROTOCOL_NAME
     }
 
-    fn write(self, stream: HeaderedStream) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
+    fn write(
+        self,
+        stream: HeaderedStream,
+    ) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
         Box::pin(async move {
             // Send the delivery
             let delivery_codec = DeliveryCodec::new(MAX_MESSAGE_SIZE);

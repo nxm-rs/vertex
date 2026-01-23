@@ -9,13 +9,13 @@
 //! - **Inbound (ponger)**: Receive Ping, send Pong
 
 use asynchronous_codec::Framed;
-use futures::{future::BoxFuture, SinkExt, TryStreamExt};
+use futures::{SinkExt, TryStreamExt, future::BoxFuture};
 use tracing::debug;
 use vertex_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound};
 
 use crate::{
-    codec::{Ping, PingCodec, PingpongCodecError, Pong, PongCodec},
     PROTOCOL_NAME,
+    codec::{Ping, PingCodec, PingpongCodecError, Pong, PongCodec},
 };
 
 /// Maximum size of a pingpong message.
@@ -43,15 +43,12 @@ impl HeaderedInbound for PingpongInboundInner {
             let mut framed = Framed::new(stream.into_inner(), codec);
 
             debug!("Pingpong: Reading ping");
-            let ping = framed
-                .try_next()
-                .await?
-                .ok_or_else(|| {
-                    PingpongCodecError::Io(std::io::Error::new(
-                        std::io::ErrorKind::UnexpectedEof,
-                        "connection closed",
-                    ))
-                })?;
+            let ping = framed.try_next().await?.ok_or_else(|| {
+                PingpongCodecError::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "connection closed",
+                ))
+            })?;
 
             debug!(greeting = %ping.greeting, "Pingpong: Received ping");
 
@@ -95,7 +92,10 @@ impl HeaderedOutbound for PingpongOutboundInner {
         PROTOCOL_NAME
     }
 
-    fn write(self, stream: HeaderedStream) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
+    fn write(
+        self,
+        stream: HeaderedStream,
+    ) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
         Box::pin(async move {
             // Send the ping
             let ping_codec = PingCodec::new(MAX_MESSAGE_SIZE);

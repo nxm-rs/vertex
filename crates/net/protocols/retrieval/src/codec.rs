@@ -5,7 +5,8 @@ use vertex_net_codec::ProtocolCodec;
 use vertex_primitives::ChunkAddress;
 
 /// Codec for retrieval request messages.
-pub type RequestCodec = ProtocolCodec<crate::proto::retrieval::Request, Request, RetrievalCodecError>;
+pub type RequestCodec =
+    ProtocolCodec<crate::proto::retrieval::Request, Request, RetrievalCodecError>;
 
 /// Codec for retrieval delivery messages.
 pub type DeliveryCodec =

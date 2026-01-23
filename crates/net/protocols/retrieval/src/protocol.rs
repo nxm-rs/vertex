@@ -9,14 +9,14 @@
 //! - **Inbound (responder)**: Receive Request, send Delivery
 
 use asynchronous_codec::Framed;
-use futures::{future::BoxFuture, SinkExt, TryStreamExt};
+use futures::{SinkExt, TryStreamExt, future::BoxFuture};
 use tracing::debug;
 use vertex_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound};
 use vertex_primitives::ChunkAddress;
 
 use crate::{
-    codec::{Delivery, DeliveryCodec, Request, RequestCodec, RetrievalCodecError},
     PROTOCOL_NAME,
+    codec::{Delivery, DeliveryCodec, Request, RequestCodec, RetrievalCodecError},
 };
 
 /// Maximum size of a retrieval message (chunk + stamp + overhead).
@@ -44,15 +44,12 @@ impl HeaderedInbound for RetrievalInboundInner {
             let mut framed = Framed::new(stream.into_inner(), codec);
 
             debug!("Retrieval: Reading chunk request");
-            let request = framed
-                .try_next()
-                .await?
-                .ok_or_else(|| {
-                    RetrievalCodecError::Io(std::io::Error::new(
-                        std::io::ErrorKind::UnexpectedEof,
-                        "connection closed",
-                    ))
-                })?;
+            let request = framed.try_next().await?.ok_or_else(|| {
+                RetrievalCodecError::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "connection closed",
+                ))
+            })?;
 
             // Return the request and a responder to send the delivery
             let responder = RetrievalResponder {
@@ -112,7 +109,10 @@ impl HeaderedOutbound for RetrievalOutboundInner {
         PROTOCOL_NAME
     }
 
-    fn write(self, stream: HeaderedStream) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
+    fn write(
+        self,
+        stream: HeaderedStream,
+    ) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
         Box::pin(async move {
             // Send the request
             let request_codec = RequestCodec::new(MAX_MESSAGE_SIZE);

@@ -32,7 +32,7 @@ mod proto {
 
 pub use codec::{Delivery, DeliveryCodec, Request, RequestCodec, RetrievalCodecError};
 pub use protocol::{
-    inbound, outbound, RetrievalInboundProtocol, RetrievalOutboundProtocol, RetrievalResponder,
+    RetrievalInboundProtocol, RetrievalOutboundProtocol, RetrievalResponder, inbound, outbound,
 };
 
 /// Protocol name for retrieval.

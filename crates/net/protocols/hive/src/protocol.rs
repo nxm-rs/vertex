@@ -3,7 +3,7 @@
 //! Implements HeaderedInbound/HeaderedOutbound traits - headers are automatic.
 
 use asynchronous_codec::Framed;
-use futures::{future::BoxFuture, SinkExt, TryStreamExt};
+use futures::{SinkExt, TryStreamExt, future::BoxFuture};
 use tracing::debug;
 use vertex_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound};
 use vertex_net_primitives::validate_bzz_address;
@@ -11,8 +11,8 @@ use vertex_node_types::NodeTypes;
 use vertex_swarmspec::SwarmSpec;
 
 use crate::{
-    codec::{BzzAddress, HiveCodec, HiveCodecError, Peers},
     PROTOCOL_NAME,
+    codec::{BzzAddress, HiveCodec, HiveCodecError, Peers},
 };
 
 const MAX_MESSAGE_SIZE: usize = 32 * 1024;
@@ -48,13 +48,12 @@ impl<N: NodeTypes> HeaderedInbound for HiveInner<N> {
             let mut framed = Framed::new(stream.into_inner(), codec);
 
             debug!("Hive: Reading peers message");
-            let peers = framed
-                .try_next()
-                .await?
-                .ok_or_else(|| HiveCodecError::Io(std::io::Error::new(
+            let peers = framed.try_next().await?.ok_or_else(|| {
+                HiveCodecError::Io(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
                     "connection closed",
-                )))?;
+                ))
+            })?;
 
             let total_count = peers.peers.len();
             let valid_peers: Vec<BzzAddress> = peers
@@ -116,7 +115,10 @@ impl HeaderedOutbound for HiveOutboundInner {
         PROTOCOL_NAME
     }
 
-    fn write(self, stream: HeaderedStream) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
+    fn write(
+        self,
+        stream: HeaderedStream,
+    ) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
         Box::pin(async move {
             let codec = HiveCodec::new(MAX_MESSAGE_SIZE);
             let mut framed = Framed::new(stream.into_inner(), codec);

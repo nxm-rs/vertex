@@ -26,7 +26,7 @@ mod proto {
 }
 
 pub use codec::{Ping, PingCodec, PingpongCodecError, Pong, PongCodec};
-pub use protocol::{inbound, outbound, PingpongInboundProtocol, PingpongOutboundProtocol};
+pub use protocol::{PingpongInboundProtocol, PingpongOutboundProtocol, inbound, outbound};
 
 /// Protocol name for pingpong.
 pub const PROTOCOL_NAME: &str = "/swarm/pingpong/1.0.0/pingpong";
