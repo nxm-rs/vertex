@@ -102,9 +102,8 @@ pub fn inject_trace_context(headers: &mut HashMap<String, Bytes>) {
 /// extract_trace_context(&headers); // Links span to remote trace
 /// ```
 pub fn extract_trace_context(headers: &HashMap<String, Bytes>) {
-    let parent_context = global::get_text_map_propagator(|propagator| {
-        propagator.extract(&HeaderExtractor(headers))
-    });
+    let parent_context =
+        global::get_text_map_propagator(|propagator| propagator.extract(&HeaderExtractor(headers)));
 
     // Set the extracted context as the parent of the current span
     // Ignore the result - if the span isn't recording, that's fine
@@ -136,11 +135,7 @@ pub fn span_from_headers(
     direction: &str,
     headers: &HashMap<String, Bytes>,
 ) -> Span {
-    let span = tracing::info_span!(
-        "protocol",
-        protocol = protocol,
-        direction = direction,
-    );
+    let span = tracing::info_span!("protocol", protocol = protocol, direction = direction,);
 
     // Extract and set parent context within the span
     let _guard = span.enter();

@@ -69,8 +69,8 @@ pub use codec::{CodecError, Headers, HeadersCodec};
 pub use error::{HeadersError, ProtocolError};
 pub use stream::HeaderedStream;
 pub use tracing::{
-    extract_trace_context, has_trace_context, inject_trace_context, span_from_headers,
-    HeaderExtractor, HeaderInjector, HEADER_NAME_TRACING_SPAN_CONTEXT,
+    HEADER_NAME_TRACING_SPAN_CONTEXT, HeaderExtractor, HeaderInjector, extract_trace_context,
+    has_trace_context, inject_trace_context, span_from_headers,
 };
 pub use traits::{HeaderedInbound, HeaderedOutbound};
 pub use upgrade::{Inbound, Outbound};

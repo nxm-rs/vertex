@@ -95,5 +95,6 @@ pub trait HeaderedOutbound: Send + 'static {
     ///
     /// Called after headers exchange is complete. The stream's headers contain
     /// what the peer sent us in response.
-    fn write(self, stream: HeaderedStream) -> BoxFuture<'static, Result<Self::Output, Self::Error>>;
+    fn write(self, stream: HeaderedStream)
+    -> BoxFuture<'static, Result<Self::Output, Self::Error>>;
 }

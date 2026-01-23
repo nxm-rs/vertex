@@ -1,17 +1,17 @@
 //! Protocol upgrade wrappers that handle headers exchange.
 
 use asynchronous_codec::Framed;
-use futures::{future::BoxFuture, SinkExt, TryStreamExt};
-use libp2p::{core::UpgradeInfo, InboundUpgrade, OutboundUpgrade, Stream};
-use tracing::{debug, Instrument};
+use futures::{SinkExt, TryStreamExt, future::BoxFuture};
+use libp2p::{InboundUpgrade, OutboundUpgrade, Stream, core::UpgradeInfo};
+use tracing::{Instrument, debug};
 
 use crate::{
+    MAX_HEADERS_SIZE,
     codec::{Headers, HeadersCodec},
     error::{HeadersError, ProtocolError},
     stream::HeaderedStream,
     tracing::{inject_trace_context, span_from_headers},
     traits::{HeaderedInbound, HeaderedOutbound},
-    MAX_HEADERS_SIZE,
 };
 
 /// Inbound wrapper - wraps `HeaderedInbound` into `InboundUpgrade<Stream>`.
