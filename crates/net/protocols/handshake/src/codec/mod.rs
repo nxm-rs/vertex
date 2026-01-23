@@ -5,9 +5,9 @@ mod ack;
 mod error;
 mod syn;
 mod synack;
-pub use ack::{ack_from_proto, Ack};
+pub use ack::{Ack, ack_from_proto};
 pub use syn::Syn;
-pub use synack::{synack_from_proto, SynAck};
+pub use synack::{SynAck, synack_from_proto};
 
 pub use error::CodecError;
 

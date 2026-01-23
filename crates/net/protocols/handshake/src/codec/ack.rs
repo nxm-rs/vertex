@@ -62,12 +62,12 @@ pub fn ack_from_proto(
 
     // Deserialize underlays (Bee can send multiple addresses)
     let underlays = deserialize_underlays(&protobuf_address.underlay)
-        .map_err(|_| CodecError::InvalidMultiaddr(
-            libp2p::multiaddr::Error::InvalidMultiaddr
-        ))?;
+        .map_err(|_| CodecError::InvalidMultiaddr(libp2p::multiaddr::Error::InvalidMultiaddr))?;
 
     // Use the first underlay (Bee picks the most relevant one first)
-    let underlay = underlays.into_iter().next()
+    let underlay = underlays
+        .into_iter()
+        .next()
         .ok_or_else(|| CodecError::MissingField("underlay"))?;
 
     let overlay = SwarmAddress::from_slice(protobuf_address.overlay.as_slice())
@@ -86,11 +86,7 @@ pub fn ack_from_proto(
             true,
         )?
         .build();
-    Ack::new(
-        remote_address,
-        value.full_node,
-        value.welcome_message,
-    )
+    Ack::new(remote_address, value.full_node, value.welcome_message)
 }
 
 impl From<Ack> for crate::proto::handshake::Ack {

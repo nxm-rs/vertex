@@ -23,13 +23,14 @@ impl TryFrom<crate::proto::handshake::Syn> for Syn {
 
     fn try_from(value: crate::proto::handshake::Syn) -> Result<Self, Self::Error> {
         // Deserialize underlays (Bee can send multiple addresses)
-        let underlays = deserialize_underlays(&value.observed_underlay)
-            .map_err(|_| CodecError::InvalidMultiaddr(
-                libp2p::multiaddr::Error::InvalidMultiaddr
-            ))?;
+        let underlays = deserialize_underlays(&value.observed_underlay).map_err(|_| {
+            CodecError::InvalidMultiaddr(libp2p::multiaddr::Error::InvalidMultiaddr)
+        })?;
 
         // Use the first underlay
-        let underlay = underlays.into_iter().next()
+        let underlay = underlays
+            .into_iter()
+            .next()
             .ok_or_else(|| CodecError::MissingField("observed_underlay"))?;
 
         Ok(Self::new(underlay))

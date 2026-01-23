@@ -1,4 +1,4 @@
-use super::{ack_from_proto, Ack, CodecError, Syn};
+use super::{Ack, CodecError, Syn, ack_from_proto};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SynAck {
@@ -34,9 +34,7 @@ pub fn synack_from_proto(
         .ok_or_else(|| CodecError::MissingField("syn"))?
         .try_into()?;
     let ack = ack_from_proto(
-        value
-            .ack
-            .ok_or_else(|| CodecError::MissingField("ack"))?,
+        value.ack.ok_or_else(|| CodecError::MissingField("ack"))?,
         expected_network_id,
     )?;
     Ok(SynAck::new(syn, ack))

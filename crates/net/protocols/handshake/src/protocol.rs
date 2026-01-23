@@ -9,8 +9,7 @@ use vertex_node_types::{Identity, NodeTypes};
 use vertex_swarmspec::SwarmSpec;
 
 use crate::{
-    Ack, AckCodec, HandshakeError, HandshakeInfo, PROTOCOL, Syn, SynAck,
-    SynAckCodec, SynCodec,
+    Ack, AckCodec, HandshakeError, HandshakeInfo, PROTOCOL, Syn, SynAck, SynAckCodec, SynCodec,
 };
 
 /// Handshake protocol upgrade for Swarm peer authentication.
