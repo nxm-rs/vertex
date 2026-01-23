@@ -8,9 +8,7 @@
 
 use crate::{
     Token,
-    constants::{
-        dev, mainnet, testnet, DEFAULT_CHUNK_SIZE, DEFAULT_RESERVE_CAPACITY,
-    },
+    constants::{DEFAULT_CHUNK_SIZE, DEFAULT_RESERVE_CAPACITY, dev, mainnet, testnet},
     generate_dev_network_id,
 };
 use alloc::{
