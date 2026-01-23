@@ -178,18 +178,18 @@ pub trait NetworkConfig {
 // API Configuration
 // ============================================================================
 
-/// Configuration for HTTP/gRPC API servers.
+/// Configuration for gRPC and metrics servers.
 pub trait ApiConfig {
-    /// Whether the HTTP API is enabled.
-    fn http_enabled(&self) -> bool;
+    /// Whether the gRPC server is enabled.
+    fn grpc_enabled(&self) -> bool;
 
-    /// HTTP API listen address.
-    fn http_addr(&self) -> &str;
+    /// gRPC server listen address.
+    fn grpc_addr(&self) -> &str;
 
-    /// HTTP API listen port.
-    fn http_port(&self) -> u16;
+    /// gRPC server listen port.
+    fn grpc_port(&self) -> u16;
 
-    /// Whether the metrics endpoint is enabled.
+    /// Whether the metrics HTTP endpoint is enabled.
     fn metrics_enabled(&self) -> bool;
 
     /// Metrics listen address.
@@ -350,4 +350,3 @@ pub fn estimate_chunks_for_bytes(available_bytes: u64, chunk_size: usize) -> u64
     let effective_chunk_size = chunk_size as f64 * (1.0 + METADATA_OVERHEAD_FACTOR);
     (available_bytes as f64 / effective_chunk_size) as u64
 }
-

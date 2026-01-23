@@ -23,8 +23,8 @@ pub fn init_logging(args: &LogArgs) -> Result<()> {
         };
 
         // Try to get from RUST_LOG first, then fall back to our computed level
-        let mut filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new(base_level));
+        let mut filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(base_level));
 
         // Add any custom filter directives
         if let Some(custom_filter) = &args.filter {

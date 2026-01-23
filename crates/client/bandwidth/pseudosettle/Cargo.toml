@@ -1,0 +1,23 @@
+[package]
+name = "vertex-bandwidth-pseudosettle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Pseudosettle time-based bandwidth accounting for data availability"
+
+[dependencies]
+vertex-bandwidth-core = { workspace = true }
+vertex-primitives = { workspace = true }
+vertex-swarm-api = { workspace = true }
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[features]
+default = ["std"]
+std = []

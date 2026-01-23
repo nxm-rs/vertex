@@ -1,0 +1,18 @@
+[package]
+name = "vertex-rpc-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "RPC server trait definitions for Vertex"
+
+[dependencies]
+async-trait.workspace = true
+auto_impl.workspace = true
+eyre.workspace = true
+
+[features]
+default = ["std"]
+std = []

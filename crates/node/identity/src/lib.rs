@@ -126,8 +126,8 @@ impl SwarmIdentity {
         // Generate random signing key using the correct rand version
         let mut key_bytes = [0u8; 32];
         rng.fill(&mut key_bytes);
-        let signing_key = SigningKey::from_slice(&key_bytes)
-            .expect("32 bytes is valid for secp256k1");
+        let signing_key =
+            SigningKey::from_slice(&key_bytes).expect("32 bytes is valid for secp256k1");
         let signer = LocalSigner::from_signing_key(signing_key);
 
         // Generate random nonce
@@ -166,7 +166,8 @@ impl Identity for SwarmIdentity {
     }
 
     fn welcome_message(&self) -> Option<&str> {
-        self.welcome_message.as_deref()
+        self.welcome_message
+            .as_deref()
             .or(Some("Buzzing in from the Rustacean hive"))
     }
 
@@ -220,7 +221,8 @@ mod tests {
         let signing_key = SigningKey::from_slice(&key_bytes).unwrap();
         let signer = LocalSigner::from_signing_key(signing_key);
 
-        let identity1 = SwarmIdentity::new(signer.clone(), B256::from([1u8; 32]), spec.clone(), true);
+        let identity1 =
+            SwarmIdentity::new(signer.clone(), B256::from([1u8; 32]), spec.clone(), true);
         let identity2 = SwarmIdentity::new(signer, B256::from([2u8; 32]), spec, true);
 
         // Same signer, different nonce = same eth address, different overlay
@@ -236,7 +238,10 @@ mod tests {
         // Test trait methods
         assert!(!identity.is_full_node());
         // Default welcome message from trait
-        assert_eq!(identity.welcome_message(), Some("Buzzing in from the Rustacean hive"));
+        assert_eq!(
+            identity.welcome_message(),
+            Some("Buzzing in from the Rustacean hive")
+        );
 
         let identity = identity.with_welcome_message("Hello, Swarm!");
         assert_eq!(identity.welcome_message(), Some("Hello, Swarm!"));

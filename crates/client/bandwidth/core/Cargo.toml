@@ -1,0 +1,22 @@
+[package]
+name = "vertex-bandwidth-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Core bandwidth accounting and pricing for data availability incentives"
+
+[dependencies]
+nectar-primitives = { workspace = true }
+vertex-primitives = { workspace = true }
+vertex-swarm-api = { workspace = true }
+async-trait = { workspace = true }
+auto_impl = { workspace = true }
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+default = ["std"]
+std = []

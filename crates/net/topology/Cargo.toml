@@ -28,9 +28,6 @@ futures.workspace = true
 alloy-primitives.workspace = true
 bytes.workspace = true
 
-## dns resolution
-hickory-resolver = { version = "0.25.0-alpha.5", features = ["tokio-runtime"] }
-
 ## misc
 thiserror.workspace = true
 rand.workspace = true

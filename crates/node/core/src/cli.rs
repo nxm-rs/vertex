@@ -1,7 +1,23 @@
 //! Command-line interface for the Vertex Swarm node.
+//!
+//! Arguments are organized into logical groups that correspond to node subsystems.
+//! See CLI_ARCHITECTURE.md for the full design.
+//!
+//! # Config Trait Implementations
+//!
+//! CLI argument structs implement the config traits from `vertex_swarm_api::config`,
+//! allowing them to be passed directly to component builders without intermediate
+//! conversion steps.
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
+use vertex_bandwidth_core::{
+    DEFAULT_BASE_PRICE, DEFAULT_EARLY_PAYMENT_PERCENT, DEFAULT_LIGHT_FACTOR,
+    DEFAULT_PAYMENT_THRESHOLD, DEFAULT_PAYMENT_TOLERANCE_PERCENT, DEFAULT_REFRESH_RATE,
+};
+use vertex_swarm_api::{
+    ApiConfig, AvailabilityIncentiveConfig, IdentityConfig, StorageConfig, StoreConfig,
+};
 
 /// Vertex Swarm - Ethereum Swarm Node Implementation
 #[derive(Debug, Parser)]
@@ -26,6 +42,16 @@ pub enum Commands {
 /// Arguments for the 'node' command
 #[derive(Debug, Args)]
 pub struct NodeArgs {
+    /// Node type determines what capabilities and protocols the node runs.
+    ///
+    /// - bootnode: Only topology (peer discovery)
+    /// - light: Retrieve chunks (default)
+    /// - publisher: Retrieve + upload chunks
+    /// - full: Store chunks for network
+    /// - staker: Full + redistribution rewards
+    #[arg(long = "type", value_enum, default_value_t = NodeTypeCli::Light)]
+    pub node_type: NodeTypeCli,
+
     /// Data directory configuration
     #[command(flatten)]
     pub datadir: DataDirArgs,
@@ -34,9 +60,17 @@ pub struct NodeArgs {
     #[command(flatten)]
     pub network: NetworkArgs,
 
-    /// Storage configuration
+    /// Availability incentive configuration
+    #[command(flatten)]
+    pub availability: AvailabilityArgs,
+
+    /// Local storage / cache configuration
     #[command(flatten)]
     pub storage: StorageArgs,
+
+    /// Storage incentive configuration
+    #[command(flatten)]
+    pub storage_incentives: StorageIncentiveArgs,
 
     /// API configuration
     #[command(flatten)]
@@ -46,17 +80,40 @@ pub struct NodeArgs {
     #[command(flatten)]
     pub identity: IdentityArgs,
 
-    /// Run in light client mode (no chunk storage)
-    #[arg(long)]
-    pub light: bool,
-
     /// Run the node on the mainnet
-    #[arg(long, conflicts_with = "testnet")]
+    #[arg(long, conflicts_with_all = ["testnet", "swarmspec"])]
     pub mainnet: bool,
 
     /// Run the node on the testnet
-    #[arg(long, conflicts_with = "mainnet")]
+    #[arg(long, conflicts_with_all = ["mainnet", "swarmspec"])]
     pub testnet: bool,
+
+    /// Path to a custom SwarmSpec file (JSON/TOML) for local/dev networks.
+    ///
+    /// The SwarmSpec defines the complete network configuration including:
+    /// - network_id: The network identifier
+    /// - network_name: Human-readable network name
+    /// - bootnodes: List of bootnode multiaddrs
+    ///
+    /// Cannot be used with --mainnet or --testnet.
+    #[arg(long, conflicts_with_all = ["mainnet", "testnet"], value_name = "PATH")]
+    pub swarmspec: Option<PathBuf>,
+}
+
+/// Node type for CLI (maps to config::NodeType).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum NodeTypeCli {
+    /// Only participates in topology (Kademlia/Hive)
+    Bootnode,
+    /// Can retrieve chunks from the network
+    #[default]
+    Light,
+    /// Can retrieve + upload chunks
+    Publisher,
+    /// Stores chunks for the network
+    Full,
+    /// Full + redistribution game participation
+    Staker,
 }
 
 // =============================================================================
@@ -111,19 +168,36 @@ pub struct IdentityArgs {
     #[arg(long = "password-file")]
     pub password_file: Option<PathBuf>,
 
+    /// Nonce for overlay address derivation (hex-encoded, 32 bytes).
+    ///
+    /// The overlay address is derived as: keccak256(eth_address || network_id || nonce).
+    /// Changing the nonce changes the node's position in the DHT.
+    /// If not set, uses nonce from config file or generates a random one.
+    #[arg(long, value_parser = parse_nonce)]
+    pub nonce: Option<alloy_primitives::B256>,
+
     /// Use ephemeral identity (random key, not persisted).
     ///
-    /// Default for light nodes. For full nodes with redistribution or SWAP,
-    /// using ephemeral identity means losing overlay address on restart.
+    /// Ephemeral nodes lose their overlay address on restart.
     #[arg(long)]
     pub ephemeral: bool,
+}
+
+/// Parse a hex-encoded 32-byte nonce from CLI.
+fn parse_nonce(s: &str) -> Result<alloy_primitives::B256, String> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    let bytes = hex::decode(s).map_err(|e| format!("invalid hex: {}", e))?;
+    if bytes.len() != 32 {
+        return Err(format!("nonce must be 32 bytes, got {}", bytes.len()));
+    }
+    Ok(alloy_primitives::B256::from_slice(&bytes))
 }
 
 // =============================================================================
 // Networking
 // =============================================================================
 
-/// Network configuration
+/// P2P network configuration
 #[derive(Debug, Args, Clone)]
 #[command(next_help_heading = "Networking")]
 pub struct NetworkArgs {
@@ -135,12 +209,22 @@ pub struct NetworkArgs {
     #[arg(long = "network.bootnodes", value_delimiter = ',')]
     pub bootnodes: Option<Vec<String>>,
 
+    /// Comma-separated list of trusted peer multiaddresses to connect to on startup.
+    ///
+    /// Unlike bootnodes, trusted peers are regular nodes that the node will actively
+    /// maintain connections with. Useful for connecting to known peers when bootnodes
+    /// return no peer addresses (e.g., as a light node connecting to full nodes).
+    ///
+    /// Example: --network.trusted-peers /ip4/1.2.3.4/tcp/1634/p2p/QmPeer1,/ip4/5.6.7.8/tcp/1634/p2p/QmPeer2
+    #[arg(long = "network.trusted-peers", value_delimiter = ',')]
+    pub trusted_peers: Option<Vec<String>>,
+
     /// P2P listen port
     #[arg(long = "network.port", default_value_t = crate::constants::DEFAULT_P2P_PORT)]
     pub port: u16,
 
     /// P2P listen address
-    #[arg(long = "network.addr", default_value = "0.0.0.0")]
+    #[arg(long = "network.addr", default_value = crate::constants::DEFAULT_LISTEN_ADDR)]
     pub addr: String,
 
     /// Maximum number of peers
@@ -149,24 +233,119 @@ pub struct NetworkArgs {
 }
 
 // =============================================================================
-// Storage
+// Availability Incentives
 // =============================================================================
 
-/// Storage configuration
-#[derive(Debug, Args, Clone)]
-#[command(next_help_heading = "Storage")]
-pub struct StorageArgs {
-    /// Maximum storage capacity in GB
-    #[arg(long = "storage.capacity", default_value_t = crate::constants::DEFAULT_MAX_STORAGE_SIZE_GB)]
-    pub capacity: u64,
+/// Availability incentive mode
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum AvailabilityMode {
+    /// No availability accounting (dev/testing only)
+    None,
+    /// Soft accounting without real payments
+    #[default]
+    Pseudosettle,
+    /// Real payment channels with chequebook
+    Swap,
+    /// Both pseudosettle and SWAP (SWAP when threshold reached)
+    Both,
+}
 
-    /// Participate in redistribution (requires persistent identity)
+/// Availability incentive configuration
+///
+/// All thresholds are in **Accounting Units (AU)**, matching Bee's accounting system.
+/// Default values match Bee: payment threshold = 13,500,000 AU, tolerance = 25%.
+#[derive(Debug, Args, Clone)]
+#[command(next_help_heading = "Availability Incentives")]
+pub struct AvailabilityArgs {
+    /// Availability incentive mode.
+    ///
+    /// - none: No accounting (dev only)
+    /// - pseudosettle: Soft accounting without payments (default)
+    /// - swap: Real payments via SWAP chequebook
+    /// - both: Pseudosettle until threshold, then SWAP
+    #[arg(long = "availability.mode", value_enum, default_value_t = AvailabilityMode::Pseudosettle)]
+    pub mode: AvailabilityMode,
+
+    /// Payment threshold in accounting units.
+    ///
+    /// When a peer's debt reaches this threshold, settlement is requested.
+    /// Default: 13,500,000 AU (matches Bee).
+    #[arg(long = "availability.threshold", default_value_t = DEFAULT_PAYMENT_THRESHOLD)]
+    pub payment_threshold: u64,
+
+    /// Payment tolerance as a percentage (0-100).
+    ///
+    /// Disconnect threshold = payment_threshold * (100 + tolerance) / 100.
+    /// Default: 25% (matches Bee).
+    #[arg(long = "availability.tolerance-percent", default_value_t = DEFAULT_PAYMENT_TOLERANCE_PERCENT)]
+    pub payment_tolerance_percent: u64,
+
+    /// Base price per chunk in accounting units.
+    ///
+    /// Actual price depends on proximity: (31 - proximity + 1) * base_price.
+    /// Default: 10,000 AU (matches Bee).
+    #[arg(long = "availability.base-price", default_value_t = DEFAULT_BASE_PRICE)]
+    pub base_price: u64,
+
+    /// Refresh rate in accounting units per second.
+    ///
+    /// Used for pseudosettle time-based allowance.
+    /// Default: 4,500,000 AU/s for full nodes (matches Bee).
+    #[arg(long = "availability.refresh-rate", default_value_t = DEFAULT_REFRESH_RATE)]
+    pub refresh_rate: u64,
+
+    /// Early payment trigger percentage (0-100).
+    ///
+    /// Settlement is triggered when debt exceeds (100 - early)% of threshold.
+    /// Default: 50% (matches Bee).
+    #[arg(long = "availability.early-percent", default_value_t = DEFAULT_EARLY_PAYMENT_PERCENT)]
+    pub early_payment_percent: u64,
+
+    /// Light node scaling factor.
+    ///
+    /// Light nodes have all thresholds and rates divided by this factor.
+    /// Default: 10 (matches Bee).
+    #[arg(long = "availability.light-factor", default_value_t = DEFAULT_LIGHT_FACTOR)]
+    pub light_factor: u64,
+}
+
+// =============================================================================
+// Local Storage / Cache
+// =============================================================================
+
+/// Local storage and cache configuration
+#[derive(Debug, Args, Clone)]
+#[command(next_help_heading = "Local Storage / Cache")]
+pub struct StorageArgs {
+    /// Maximum storage capacity in number of chunks.
+    ///
+    /// Storage in Swarm is measured in chunks (typically 4KB each).
+    /// Default is 2^22 chunks (~20GB with metadata).
+    #[arg(long = "storage.chunks", default_value_t = vertex_swarmspec::DEFAULT_RESERVE_CAPACITY)]
+    pub capacity_chunks: u64,
+
+    /// Cache capacity in number of chunks.
+    ///
+    /// In-memory cache for frequently accessed chunks (Light/Publisher nodes).
+    /// Default is 2^16 chunks (~256MB in memory).
+    #[arg(long = "cache.chunks", default_value_t = vertex_swarmspec::DEFAULT_CACHE_CAPACITY)]
+    pub cache_chunks: u64,
+}
+
+// =============================================================================
+// Storage Incentives
+// =============================================================================
+
+/// Storage incentive configuration (redistribution, postage)
+#[derive(Debug, Args, Clone)]
+#[command(next_help_heading = "Storage Incentives")]
+pub struct StorageIncentiveArgs {
+    /// Participate in redistribution (requires persistent identity and staking).
+    ///
+    /// When enabled, the node participates in the redistribution game to earn
+    /// rewards for storing chunks in its neighborhood.
     #[arg(long)]
     pub redistribution: bool,
-
-    /// Enable staking (requires persistent identity)
-    #[arg(long)]
-    pub staking: bool,
 }
 
 // =============================================================================
@@ -177,27 +356,126 @@ pub struct StorageArgs {
 #[derive(Debug, Args, Clone)]
 #[command(next_help_heading = "API")]
 pub struct ApiArgs {
-    /// Enable the HTTP API
-    #[arg(long = "api.http")]
-    pub http: bool,
+    /// Enable the gRPC server
+    #[arg(long = "grpc")]
+    pub grpc: bool,
 
-    /// HTTP API listen address
-    #[arg(long = "api.http-addr", default_value = "127.0.0.1")]
-    pub http_addr: String,
+    /// gRPC server listen address
+    #[arg(long = "grpc.addr", default_value = crate::constants::DEFAULT_LOCALHOST_ADDR)]
+    pub grpc_addr: String,
 
-    /// HTTP API listen port
-    #[arg(long = "api.http-port", default_value_t = crate::constants::DEFAULT_HTTP_API_PORT)]
-    pub http_port: u16,
+    /// gRPC server listen port
+    #[arg(long = "grpc.port", default_value_t = crate::constants::DEFAULT_GRPC_PORT)]
+    pub grpc_port: u16,
 
-    /// Enable metrics endpoint
+    /// Enable metrics HTTP endpoint
     #[arg(long = "metrics")]
     pub metrics: bool,
 
     /// Metrics listen address
-    #[arg(long = "metrics.addr", default_value = "127.0.0.1")]
+    #[arg(long = "metrics.addr", default_value = crate::constants::DEFAULT_LOCALHOST_ADDR)]
     pub metrics_addr: String,
 
     /// Metrics listen port
     #[arg(long = "metrics.port", default_value_t = crate::constants::DEFAULT_METRICS_PORT)]
     pub metrics_port: u16,
+}
+
+// =============================================================================
+// Config Trait Implementations
+// =============================================================================
+//
+// CLI argument structs implement the config traits from swarm-api, allowing
+// them to be passed directly to component builders without conversion.
+
+impl AvailabilityIncentiveConfig for AvailabilityArgs {
+    fn pseudosettle_enabled(&self) -> bool {
+        matches!(
+            self.mode,
+            AvailabilityMode::Pseudosettle | AvailabilityMode::Both
+        )
+    }
+
+    fn swap_enabled(&self) -> bool {
+        matches!(self.mode, AvailabilityMode::Swap | AvailabilityMode::Both)
+    }
+
+    fn payment_threshold(&self) -> u64 {
+        self.payment_threshold
+    }
+
+    fn payment_tolerance_percent(&self) -> u64 {
+        self.payment_tolerance_percent
+    }
+
+    fn base_price(&self) -> u64 {
+        self.base_price
+    }
+
+    fn refresh_rate(&self) -> u64 {
+        self.refresh_rate
+    }
+
+    fn early_payment_percent(&self) -> u64 {
+        self.early_payment_percent
+    }
+
+    fn light_factor(&self) -> u64 {
+        self.light_factor
+    }
+}
+
+impl StoreConfig for StorageArgs {
+    fn capacity_chunks(&self) -> u64 {
+        self.capacity_chunks
+    }
+
+    fn cache_chunks(&self) -> u64 {
+        self.cache_chunks
+    }
+}
+
+impl StorageConfig for StorageIncentiveArgs {
+    fn redistribution_enabled(&self) -> bool {
+        self.redistribution
+    }
+}
+
+impl ApiConfig for ApiArgs {
+    fn grpc_enabled(&self) -> bool {
+        self.grpc
+    }
+
+    fn grpc_addr(&self) -> &str {
+        &self.grpc_addr
+    }
+
+    fn grpc_port(&self) -> u16 {
+        self.grpc_port
+    }
+
+    fn metrics_enabled(&self) -> bool {
+        self.metrics
+    }
+
+    fn metrics_addr(&self) -> &str {
+        &self.metrics_addr
+    }
+
+    fn metrics_port(&self) -> u16 {
+        self.metrics_port
+    }
+}
+
+impl IdentityConfig for IdentityArgs {
+    fn ephemeral(&self) -> bool {
+        self.ephemeral
+    }
+
+    fn requires_persistent(&self) -> bool {
+        // IdentityArgs alone cannot determine this - it depends on node type.
+        // This returns a conservative default; the node command should check
+        // node type to determine actual persistence requirements.
+        !self.ephemeral
+    }
 }

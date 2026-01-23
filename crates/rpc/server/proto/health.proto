@@ -1,0 +1,31 @@
+syntax = "proto3";
+package vertex.health.v1;
+
+// Health check service following the gRPC health checking protocol.
+// See: https://github.com/grpc/grpc/blob/master/doc/health-checking.md
+service Health {
+  // Check performs a health check on the server.
+  // If the requested service is unknown, the call will fail with NOT_FOUND.
+  // An empty service name can be used to check the overall server status.
+  rpc Check(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // Watch performs a streaming health check.
+  // The server will immediately send a response with the current health status,
+  // and then send updates whenever the status changes.
+  rpc Watch(HealthCheckRequest) returns (stream HealthCheckResponse);
+}
+
+message HealthCheckRequest {
+  // Service name to check. Empty string means check overall server health.
+  string service = 1;
+}
+
+message HealthCheckResponse {
+  enum ServingStatus {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+    SERVICE_UNKNOWN = 3;  // Used for Watch only
+  }
+  ServingStatus status = 1;
+}

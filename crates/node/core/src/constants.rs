@@ -1,57 +1,82 @@
 //! Constants used throughout the Vertex Swarm node.
+//!
+//! All magic numbers and default values should be defined here or at the top
+//! of specific modules if they are tightly coupled to that module's logic.
 
-/// Default port for the Swarm network's TCP connections
+// =============================================================================
+// Network Ports
+// =============================================================================
+
+/// Default port for the Swarm network's TCP connections.
 pub const DEFAULT_P2P_PORT: u16 = 1634;
 
-/// Default port for the Swarm network's UDP discovery
+/// Default port for the Swarm network's UDP discovery.
 pub const DEFAULT_DISCOVERY_PORT: u16 = 1634;
 
-/// Default port for the HTTP API
-pub const DEFAULT_HTTP_API_PORT: u16 = 1635;
+/// Default port for the gRPC server.
+pub const DEFAULT_GRPC_PORT: u16 = 1635;
 
-/// Default port for metrics
+/// Default port for metrics.
 pub const DEFAULT_METRICS_PORT: u16 = 1637;
 
-/// Default maximum number of peers
+// =============================================================================
+// Network Addresses
+// =============================================================================
+
+/// Default listen address for P2P connections (all interfaces).
+pub const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0";
+
+/// Default bind address for local-only services (gRPC, metrics).
+pub const DEFAULT_LOCALHOST_ADDR: &str = "127.0.0.1";
+
+// =============================================================================
+// Network Peer Limits
+// =============================================================================
+
+/// Default maximum number of peers.
 pub const DEFAULT_MAX_PEERS: usize = 50;
 
-/// Default maximum number of concurrent requests
+/// Default maximum number of concurrent requests.
 pub const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 100;
 
-/// Default buffer size for chunk data (4KB)
-pub const DEFAULT_CHUNK_SIZE: usize = 4 * 1024;
+// =============================================================================
+// Network Timeouts & Intervals
+// =============================================================================
 
-/// Default data directory name
+/// Default connection idle timeout in seconds.
+pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 30;
+
+/// Default ping interval in seconds.
+pub const DEFAULT_PING_INTERVAL_SECS: u64 = 15;
+
+// =============================================================================
+// Protocol Identification
+// =============================================================================
+
+/// Protocol version string for identify protocol.
+pub const PROTOCOL_VERSION: &str = "/vertex/1.0.0";
+
+/// Default NAT traversal method.
+pub const DEFAULT_NAT_METHOD: &str = "upnp";
+
+// =============================================================================
+// Storage Configuration
+// =============================================================================
+
+/// Default data directory name.
 pub const DEFAULT_DATA_DIR_NAME: &str = "vertex";
 
-// Default pruning parameters
+// =============================================================================
+// Cryptographic Constants
+// =============================================================================
 
-/// Default maximum number of chunks to store
-pub const DEFAULT_MAX_CHUNKS: usize = 1_000_000;
+/// Size of a nonce in bytes.
+pub const NONCE_SIZE_BYTES: usize = 32;
 
-/// Default target number of chunks
-pub const DEFAULT_TARGET_CHUNKS: usize = 500_000;
+// =============================================================================
+// File System
+// =============================================================================
 
-/// Default minimum number of chunks
-pub const DEFAULT_MIN_CHUNKS: usize = 100_000;
-
-/// Default reserve storage percentage
-pub const DEFAULT_RESERVE_PERCENTAGE: u8 = 10;
-
-/// Default daily bandwidth allowance (free tier) in bytes (1MB)
-pub const DEFAULT_DAILY_BANDWIDTH_ALLOWANCE: u64 = 1_000_000;
-
-/// Default payment threshold in bytes (10MB)
-pub const DEFAULT_PAYMENT_THRESHOLD: u64 = 10_000_000;
-
-/// Default payment tolerance in bytes (5MB)
-pub const DEFAULT_PAYMENT_TOLERANCE: u64 = 5_000_000;
-
-/// Default disconnect threshold in bytes (50MB)
-pub const DEFAULT_DISCONNECT_THRESHOLD: u64 = 50_000_000;
-
-/// Default maximum storage size (in GB)
-pub const DEFAULT_MAX_STORAGE_SIZE_GB: u64 = 10;
-
-/// Convert GB to bytes
-pub const GB_TO_BYTES: u64 = 1024 * 1024 * 1024;
+/// Restrictive file permissions for sensitive files (Unix: owner read/write only).
+#[cfg(unix)]
+pub const SENSITIVE_FILE_MODE: u32 = 0o600;

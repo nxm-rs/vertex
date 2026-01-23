@@ -8,13 +8,25 @@ description = "Vertex Swarm node core library"
 [dependencies]
 # Internal dependencies
 nectar-primitives = { workspace = true }
+vertex-bandwidth-core = { workspace = true }
+vertex-bandwidth-pseudosettle = { workspace = true }
+vertex-bandwidth-swap = { workspace = true }
+vertex-client-core = { workspace = true }
+vertex-client-peermanager = { workspace = true }
 vertex-primitives = { workspace = true }
+vertex-rpc-core = { workspace = true }
+vertex-rpc-server = { workspace = true }
 vertex-swarm-api = { workspace = true }
 vertex-swarmspec = { workspace = true }
 vertex-node-api = { workspace = true }
+vertex-node-types = { workspace = true }
+vertex-node-identity = { workspace = true }
+vertex-tasks = { workspace = true }
 vertex-net-topology = { workspace = true }
-vertex-net-handshake = { workspace = true }
+vertex-net-hive = { workspace = true }
+vertex-net-pricing = { workspace = true }
 vertex-net-primitives-traits = { workspace = true }
+vertex-net-client = { workspace = true }
 # vertex-storage = { workspace = true }  # TODO: Fix storage deps
 # vertex-metrics = { workspace = true }  # TODO: Update metrics API
 
@@ -43,6 +55,10 @@ futures = "0.3"
 # Error handling
 eyre = "0.6"
 color-eyre = "0.6"
+
+# Concurrency
+parking_lot = "0.12"
+async-trait = "0.1"
 
 # Misc
 once_cell = "1.17"

@@ -23,7 +23,7 @@
 //!
 //! Components enforce that the Swarm implementation matches the NodeTypes:
 //! - `S::Accounting = N::DataAvailability` - bandwidth accounting must match
-//! - `S::Payment = N::StoragePayment` - storage payment must match
+//! - `S::Storage = N::Storage` - storage incentive proof must match
 
 use vertex_node_types::{FullNodeTypes, NodeTypes, PublisherNodeTypes};
 use vertex_swarm_api::{ChunkSync, LocalStore, SwarmReader, SwarmWriter, Topology};
@@ -85,12 +85,12 @@ where
 /// Uses [`SwarmWriter`] - can both retrieve and store chunks.
 /// Enforces that:
 /// - `S::Accounting = N::DataAvailability` - bandwidth accounting matches
-/// - `S::Payment = N::StoragePayment` - storage payment matches
+/// - `S::Storage = N::Storage` - storage incentive proof matches
 #[derive(Debug, Clone)]
 pub struct PublisherComponents<N, S>
 where
     N: PublisherNodeTypes,
-    S: SwarmWriter<Accounting = N::DataAvailability, Payment = N::StoragePayment>,
+    S: SwarmWriter<Accounting = N::DataAvailability, Storage = N::Storage>,
 {
     /// The swarm implementation for put/get operations.
     pub swarm: S,
@@ -101,7 +101,7 @@ where
 impl<N, S> PublisherComponents<N, S>
 where
     N: PublisherNodeTypes,
-    S: SwarmWriter<Accounting = N::DataAvailability, Payment = N::StoragePayment>,
+    S: SwarmWriter<Accounting = N::DataAvailability, Storage = N::Storage>,
 {
     /// Create new publisher node components.
     pub fn new(swarm: S, topology: N::Topology) -> Self {
@@ -136,7 +136,7 @@ where
 pub struct FullNodeComponents<N, S>
 where
     N: FullNodeTypes,
-    S: SwarmWriter<Accounting = N::DataAvailability, Payment = N::StoragePayment>,
+    S: SwarmWriter<Accounting = N::DataAvailability, Storage = N::Storage>,
 {
     /// The swarm implementation for put/get operations.
     pub swarm: S,
@@ -151,7 +151,7 @@ where
 impl<N, S> FullNodeComponents<N, S>
 where
     N: FullNodeTypes,
-    S: SwarmWriter<Accounting = N::DataAvailability, Payment = N::StoragePayment>,
+    S: SwarmWriter<Accounting = N::DataAvailability, Storage = N::Storage>,
 {
     /// Create new full node components.
     pub fn new(swarm: S, topology: N::Topology, store: N::Store, sync: N::Sync) -> Self {
@@ -230,7 +230,7 @@ where
 impl<N, S> HasSwarmReader for PublisherComponents<N, S>
 where
     N: PublisherNodeTypes,
-    S: SwarmWriter<Accounting = N::DataAvailability, Payment = N::StoragePayment>,
+    S: SwarmWriter<Accounting = N::DataAvailability, Storage = N::Storage>,
 {
     type Swarm = S;
 
@@ -242,14 +242,14 @@ where
 impl<N, S> HasSwarmWriter for PublisherComponents<N, S>
 where
     N: PublisherNodeTypes,
-    S: SwarmWriter<Accounting = N::DataAvailability, Payment = N::StoragePayment>,
+    S: SwarmWriter<Accounting = N::DataAvailability, Storage = N::Storage>,
 {
 }
 
 impl<N, S> HasSwarmReader for FullNodeComponents<N, S>
 where
     N: FullNodeTypes,
-    S: SwarmWriter<Accounting = N::DataAvailability, Payment = N::StoragePayment>,
+    S: SwarmWriter<Accounting = N::DataAvailability, Storage = N::Storage>,
 {
     type Swarm = S;
 
@@ -261,7 +261,7 @@ where
 impl<N, S> HasSwarmWriter for FullNodeComponents<N, S>
 where
     N: FullNodeTypes,
-    S: SwarmWriter<Accounting = N::DataAvailability, Payment = N::StoragePayment>,
+    S: SwarmWriter<Accounting = N::DataAvailability, Storage = N::Storage>,
 {
 }
 
@@ -289,7 +289,7 @@ where
 impl<N, S> HasTopology for PublisherComponents<N, S>
 where
     N: PublisherNodeTypes,
-    S: SwarmWriter<Accounting = N::DataAvailability, Payment = N::StoragePayment>,
+    S: SwarmWriter<Accounting = N::DataAvailability, Storage = N::Storage>,
 {
     type Topology = N::Topology;
 
@@ -301,7 +301,7 @@ where
 impl<N, S> HasTopology for FullNodeComponents<N, S>
 where
     N: FullNodeTypes,
-    S: SwarmWriter<Accounting = N::DataAvailability, Payment = N::StoragePayment>,
+    S: SwarmWriter<Accounting = N::DataAvailability, Storage = N::Storage>,
 {
     type Topology = N::Topology;
 
@@ -322,7 +322,7 @@ pub trait HasStore {
 impl<N, S> HasStore for FullNodeComponents<N, S>
 where
     N: FullNodeTypes,
-    S: SwarmWriter<Accounting = N::DataAvailability, Payment = N::StoragePayment>,
+    S: SwarmWriter<Accounting = N::DataAvailability, Storage = N::Storage>,
 {
     type Store = N::Store;
 
@@ -343,7 +343,7 @@ pub trait HasSync {
 impl<N, S> HasSync for FullNodeComponents<N, S>
 where
     N: FullNodeTypes,
-    S: SwarmWriter<Accounting = N::DataAvailability, Payment = N::StoragePayment>,
+    S: SwarmWriter<Accounting = N::DataAvailability, Storage = N::Storage>,
 {
     type Sync = N::Sync;
 

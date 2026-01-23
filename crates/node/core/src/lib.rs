@@ -3,16 +3,14 @@
 //! This crate provides the core node functionality for Vertex Swarm.
 //! It is used by the `vertex` binary to run the node.
 
+pub mod availability;
+pub mod builder;
 pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod constants;
 pub mod dirs;
-pub mod identity;
-pub mod identity_manager;
-pub mod keystore;
 pub mod logging;
-pub mod network;
 pub mod version;
 
 use crate::cli::Cli;

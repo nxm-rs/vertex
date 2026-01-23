@@ -12,10 +12,18 @@ description = "Node type definitions for Vertex Swarm"
 workspace = true
 
 [dependencies]
+# Alloy types for Identity trait
+alloy-primitives.workspace = true
+alloy-signer.workspace = true
+
+# Nectar primitives (for SwarmAddress)
+nectar-primitives.workspace = true
+
 # Swarm
 vertex-primitives.workspace = true
 vertex-swarm-api.workspace = true
 vertex-swarmspec.workspace = true
+vertex-net-primitives-traits.workspace = true
 
 # misc
 auto_impl.workspace = true

@@ -38,7 +38,7 @@
 //! }
 //! ```
 
-use crate::{AvailabilityAccounting, SwarmResult};
+use crate::{AvailabilityAccounting, SwarmResult, Topology};
 use async_trait::async_trait;
 use vertex_primitives::{AnyChunk, ChunkAddress};
 
@@ -49,31 +49,25 @@ use vertex_primitives::{AnyChunk, ChunkAddress};
 /// Read-only access to the Swarm network.
 ///
 /// Use this for light clients that only retrieve data. Even read operations
-/// require availability accounting to enable retrieval incentives (pseudosettle
-/// and/or SWAP payment channels).
-///
-/// # Accounting
-///
-/// The `Accounting` associated type provides per-peer availability tracking.
-/// Implementations should use `self.accounting().for_peer(peer_id)` to get
-/// a per-peer handle, then call `record()` after each chunk transfer.
+/// require topology awareness and availability accounting.
 #[async_trait]
 pub trait SwarmReader: Send + Sync {
+    /// The topology implementation for peer discovery and routing.
+    type Topology: Topology;
+
     /// The availability accounting factory for retrieval incentives.
-    ///
-    /// Even read-only nodes must account for data consumed when
-    /// retrieving chunks. This enables pseudosettle and/or SWAP.
     type Accounting: AvailabilityAccounting;
 
+    /// Get the topology for finding peers.
+    fn topology(&self) -> &Self::Topology;
+
     /// Get the availability accounting factory.
-    ///
-    /// Use this to access per-peer accounting handles for availability tracking.
     fn accounting(&self) -> &Self::Accounting;
 
     /// Get a chunk from the swarm by its address.
     ///
     /// The implementation should:
-    /// 1. Find a peer that has the chunk
+    /// 1. Find peers closest to the chunk: `topology.closest_to(address, count)`
     /// 2. Check availability allowance: `accounting.for_peer(peer).allow(size)`
     /// 3. Retrieve the chunk
     /// 4. Record usage: `accounting.for_peer(peer).record(size, Direction::Download)`

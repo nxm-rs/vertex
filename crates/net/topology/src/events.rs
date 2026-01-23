@@ -1,65 +1,66 @@
 //! Events and commands for the topology behaviour.
 //!
-//! These types define the interface between the topology layer and the rest of the node.
-//! The topology behaviour emits [`TopologyEvent`]s and accepts [`TopologyCommand`]s.
+//! These types define the interface between the topology layer (libp2p) and the
+//! client layer. All types use pure libp2p concepts (PeerId, Multiaddr) - the
+//! client layer is responsible for extracting Swarm-layer concepts (OverlayAddress)
+//! from HandshakeInfo.
 
-use libp2p::{Multiaddr, PeerId};
+use libp2p::{Multiaddr, PeerId, swarm::ConnectionId};
+use vertex_net_handshake::HandshakeInfo;
 use vertex_net_hive::BzzAddress;
-use vertex_primitives::OverlayAddress;
 
 /// Events emitted by the topology behaviour.
 ///
-/// These events notify the node about topology changes and peer state.
+/// All events use libp2p types (PeerId, Multiaddr, ConnectionId).
+/// The client layer extracts OverlayAddress from HandshakeInfo.
 #[derive(Debug, Clone)]
 pub enum TopologyEvent {
-    /// A peer has completed the handshake and is ready for protocol exchange.
+    /// A peer has completed the handshake and is authenticated.
     ///
-    /// This is the signal to activate the client handler for this peer.
-    /// The overlay address and node type are extracted from the handshake.
-    PeerReady {
+    /// The client layer should:
+    /// 1. Extract overlay address from `info.ack.node_address().overlay_address()`
+    /// 2. Register the PeerId ↔ OverlayAddress mapping in PeerManager
+    /// 3. Notify kademlia of the new connected peer
+    PeerAuthenticated {
         /// The libp2p peer ID.
         peer_id: PeerId,
-        /// The peer's Swarm overlay address.
-        overlay: OverlayAddress,
-        /// Whether the peer is a full node (affects pricing thresholds).
-        is_full_node: bool,
+        /// The connection ID for this handshake.
+        connection_id: ConnectionId,
+        /// The handshake info containing the peer's Ack.
+        info: HandshakeInfo,
     },
 
-    /// A peer has disconnected.
+    /// A peer connection has been closed.
     ///
     /// This is emitted when all connections to a peer are closed.
-    PeerDisconnected {
+    /// The client layer should resolve PeerId → OverlayAddress via PeerManager.
+    PeerConnectionClosed {
         /// The libp2p peer ID.
         peer_id: PeerId,
-        /// The peer's Swarm overlay address (if known).
-        overlay: Option<OverlayAddress>,
     },
 
-    /// New peers have been discovered via the hive protocol.
+    /// Peer addresses received via hive protocol.
     ///
-    /// These peers have been announced by a connected peer and should be
-    /// considered for connection if we need more peers.
-    PeersDiscovered {
-        /// The peer that announced these addresses.
+    /// These are raw BzzAddress entries as received on the wire.
+    /// The client layer should:
+    /// 1. Extract overlay address from each BzzAddress
+    /// 2. Cache the underlay addresses in PeerManager
+    /// 3. Notify kademlia of the discovered peers
+    HivePeersReceived {
+        /// The peer that sent us these addresses.
         from: PeerId,
-        /// The discovered peer addresses.
-        /// Note: Uses Vec of tuples to avoid dependency on hive crate.
-        /// Format: (overlay, underlays)
-        peers: Vec<(OverlayAddress, Vec<Multiaddr>)>,
+        /// The peer addresses in wire format.
+        peers: Vec<BzzAddress>,
     },
 
     /// The network depth (storage radius) has changed.
-    ///
-    /// This affects which chunks the node is responsible for storing.
     DepthChanged {
         /// The new depth value.
         new_depth: u8,
     },
 
-    /// A connection attempt failed.
-    ConnectionFailed {
-        /// The peer ID if known.
-        peer_id: Option<PeerId>,
+    /// A dial attempt failed.
+    DialFailed {
         /// The address that failed.
         address: Multiaddr,
         /// Error description.
@@ -69,36 +70,23 @@ pub enum TopologyEvent {
 
 /// Commands accepted by the topology behaviour.
 ///
-/// These commands allow the node to control the topology layer.
+/// All commands use libp2p types. The client layer resolves OverlayAddress
+/// to PeerId via PeerManager before sending commands.
 #[derive(Debug, Clone)]
 pub enum TopologyCommand {
-    /// Connect to a peer at the given address.
+    /// Dial a peer at the given address.
     ///
     /// The address should include the peer ID (e.g., `/ip4/.../tcp/.../p2p/...`).
-    ConnectPeer(Multiaddr),
+    Dial(Multiaddr),
 
-    /// Disconnect from a peer.
-    ///
-    /// This closes all connections to the specified peer.
-    DisconnectPeer(PeerId),
+    /// Close all connections to a peer.
+    CloseConnection(PeerId),
 
     /// Broadcast peer addresses to a connected peer via hive.
-    ///
-    /// This is used to share known peers with the network.
     BroadcastPeers {
         /// The peer to send addresses to.
         to: PeerId,
-        /// The peer addresses to broadcast (must be fully signed BzzAddresses).
+        /// The peer addresses to broadcast.
         peers: Vec<BzzAddress>,
-    },
-
-    /// Ban a peer from reconnecting.
-    ///
-    /// Banned peers will be rejected on connection attempts.
-    BanPeer {
-        /// The peer to ban.
-        peer_id: PeerId,
-        /// Optional reason for the ban.
-        reason: Option<String>,
     },
 }

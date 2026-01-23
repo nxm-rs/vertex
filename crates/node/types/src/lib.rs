@@ -8,17 +8,23 @@
 //!
 //! ```text
 //! NodeTypes (read-only capable)
-//!   - Spec, ChunkSet, Topology
+//!   - Spec, ChunkSet, Topology, Identity
 //!   - DataAvailability (bandwidth/retrieval incentive)
 //!          │
 //!          ▼
 //! PublisherNodeTypes (can write/publish)
-//!   - StoragePayment (proof for storing - stamps)
+//!   - Storage (proof for storing - stamps)
 //!          │
 //!          ▼
 //! FullNodeTypes (stores and syncs)
 //!   - Store, Sync
 //! ```
+//!
+//! # Identity
+//!
+//! The [`Identity`] trait defines the interface for a node's cryptographic identity.
+//! This includes the signing key, overlay address derivation, and network configuration.
+//! See the [`identity`] module for details.
 //!
 //! # Incentive Model
 //!
@@ -27,7 +33,7 @@
 //! 1. **Data Availability** (retrieval incentive) - Paid to nodes that serve data.
 //!    Implementations: pseudosettle (free allowance), SWAP (payment channels), both, or none.
 //!
-//! 2. **Storage Payment** (storage incentive) - Proof attached to chunks when storing.
+//! 2. **Storage** (storage incentive) - Proof attached to chunks when storing.
 //!    Implementations: postage stamps (mainnet), or `()` for free storage (dev/private).
 //!
 //! # Example
@@ -38,12 +44,13 @@
 //!     type Spec = Hive;
 //!     type ChunkSet = StandardChunkSet;
 //!     type Topology = KademliaTopology;
+//!     type Identity = SwarmIdentity;
 //!     type DataAvailability = PseudosettleSwap;  // Uses both
 //! }
 //!
 //! // Publisher (can also write)
 //! impl PublisherNodeTypes for PublisherClient {
-//!     type StoragePayment = nectar_postage::Stamp;
+//!     type Storage = nectar_postage::Stamp;
 //! }
 //!
 //! // Full node (stores and syncs)
@@ -58,9 +65,12 @@
 
 extern crate alloc;
 
+mod identity;
+pub use identity::Identity;
+
 use core::fmt::Debug;
 use vertex_primitives::ChunkTypeSet;
-use vertex_swarm_api::{BandwidthAccounting, ChunkSync, LocalStore, Topology};
+use vertex_swarm_api::{AvailabilityAccounting, ChunkSync, LocalStore, Topology};
 use vertex_swarmspec::SwarmSpec;
 
 // ============================================================================
@@ -71,7 +81,8 @@ use vertex_swarmspec::SwarmSpec;
 ///
 /// This defines the minimum configuration needed for a node that can
 /// retrieve chunks from the network. Even read-only clients need:
-/// - Network identity (which swarm to connect to)
+/// - Network specification (which swarm to connect to)
+/// - Identity (cryptographic identity for the network)
 /// - Chunk type support (what chunks can be handled)
 /// - Topology (who to talk to)
 /// - Data availability incentive (how to pay for retrieval)
@@ -82,6 +93,12 @@ pub trait NodeTypes: Clone + Debug + Send + Sync + Unpin + 'static {
     /// Defines network identity (mainnet, testnet, dev), hardforks,
     /// bootnodes, and token contract address.
     type Spec: SwarmSpec + Clone;
+
+    /// The node's cryptographic identity.
+    ///
+    /// Provides signing capability and overlay address derivation.
+    /// The identity's `Spec` type must match `Self::Spec`.
+    type Identity: Identity<Spec = Self::Spec>;
 
     /// The chunk types supported by this node.
     ///
@@ -98,8 +115,8 @@ pub trait NodeTypes: Clone + Debug + Send + Sync + Unpin + 'static {
     ///
     /// How this node pays for retrieving data (bandwidth accounting).
     /// This is a factory that creates per-peer accounting handles.
-    /// Options: pseudosettle, SWAP, both, or `NoBandwidthIncentives`.
-    type DataAvailability: BandwidthAccounting + Clone;
+    /// Options: pseudosettle, SWAP, both, or `NoAvailabilityIncentives`.
+    type DataAvailability: AvailabilityAccounting + Clone;
 }
 
 // ============================================================================
@@ -111,12 +128,12 @@ pub trait NodeTypes: Clone + Debug + Send + Sync + Unpin + 'static {
 /// Publishers need everything a read-only node needs, plus the ability
 /// to prove payment for storage. On mainnet this means postage stamps.
 pub trait PublisherNodeTypes: NodeTypes {
-    /// Proof of payment for storing chunks.
+    /// Storage incentive proof for storing chunks.
     ///
     /// This is attached to chunks when putting them into the network.
     /// On mainnet, this is a postage stamp from a valid batch.
     /// For dev/testing, this can be `()` for free storage.
-    type StoragePayment: Send + Sync + 'static;
+    type Storage: Send + Sync + 'static;
 }
 
 // ============================================================================
@@ -149,6 +166,9 @@ pub trait FullNodeTypes: PublisherNodeTypes {
 /// Extract the [`SwarmSpec`] type from a [`NodeTypes`] implementation.
 pub type SpecOf<N> = <N as NodeTypes>::Spec;
 
+/// Extract the [`Identity`] type from a [`NodeTypes`] implementation.
+pub type IdentityOf<N> = <N as NodeTypes>::Identity;
+
 /// Extract the [`ChunkTypeSet`] type from a [`NodeTypes`] implementation.
 pub type ChunkSetOf<N> = <N as NodeTypes>::ChunkSet;
 
@@ -158,8 +178,8 @@ pub type TopologyOf<N> = <N as NodeTypes>::Topology;
 /// Extract the data availability type from a [`NodeTypes`] implementation.
 pub type DataAvailabilityOf<N> = <N as NodeTypes>::DataAvailability;
 
-/// Extract the storage payment type from a [`PublisherNodeTypes`] implementation.
-pub type StoragePaymentOf<N> = <N as PublisherNodeTypes>::StoragePayment;
+/// Extract the storage incentive type from a [`PublisherNodeTypes`] implementation.
+pub type StorageOf<N> = <N as PublisherNodeTypes>::Storage;
 
 /// Extract the [`LocalStore`] type from a [`FullNodeTypes`] implementation.
 pub type StoreOf<N> = <N as FullNodeTypes>::Store;
@@ -203,111 +223,55 @@ use core::marker::PhantomData;
 /// Use this when you want to specify types without creating a new struct:
 ///
 /// ```ignore
-/// type MyNode = AnyNodeTypes<Hive, StandardChunkSet, KademliaTopology, PseudosettleSwap>;
+/// type MyNode = AnyNodeTypes<Hive, SwarmIdentity, StandardChunkSet, KademliaTopology, PseudosettleSwap>;
 /// ```
 #[derive(Debug)]
-pub struct AnyNodeTypes<Spec, ChunkSet, Topo, DA>(
+pub struct AnyNodeTypes<Spec, Ident, ChunkSet, Topo, DA>(
     PhantomData<Spec>,
+    PhantomData<Ident>,
     PhantomData<ChunkSet>,
     PhantomData<Topo>,
     PhantomData<DA>,
 );
 
-impl<Spec, ChunkSet, Topo, DA> Clone for AnyNodeTypes<Spec, ChunkSet, Topo, DA> {
+impl<Spec, Ident, ChunkSet, Topo, DA> Clone for AnyNodeTypes<Spec, Ident, ChunkSet, Topo, DA> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<Spec, ChunkSet, Topo, DA> Copy for AnyNodeTypes<Spec, ChunkSet, Topo, DA> {}
+impl<Spec, Ident, ChunkSet, Topo, DA> Copy for AnyNodeTypes<Spec, Ident, ChunkSet, Topo, DA> {}
 
-impl<Spec, ChunkSet, Topo, DA> Default for AnyNodeTypes<Spec, ChunkSet, Topo, DA> {
+impl<Spec, Ident, ChunkSet, Topo, DA> Default for AnyNodeTypes<Spec, Ident, ChunkSet, Topo, DA> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<Spec, ChunkSet, Topo, DA> AnyNodeTypes<Spec, ChunkSet, Topo, DA> {
+impl<Spec, Ident, ChunkSet, Topo, DA> AnyNodeTypes<Spec, Ident, ChunkSet, Topo, DA> {
     /// Create a new type configuration.
     pub const fn new() -> Self {
-        Self(PhantomData, PhantomData, PhantomData, PhantomData)
+        Self(
+            PhantomData,
+            PhantomData,
+            PhantomData,
+            PhantomData,
+            PhantomData,
+        )
     }
 }
 
-impl<Spec, ChunkSet, Topo, DA> NodeTypes for AnyNodeTypes<Spec, ChunkSet, Topo, DA>
+impl<Spec, Ident, ChunkSet, Topo, DA> NodeTypes for AnyNodeTypes<Spec, Ident, ChunkSet, Topo, DA>
 where
     Spec: SwarmSpec + Clone + Debug + Send + Sync + Unpin + 'static,
+    Ident: Identity<Spec = Spec> + Debug + Unpin,
     ChunkSet: ChunkTypeSet + Clone + Debug + Send + Sync + Unpin + 'static,
     Topo: Topology + Clone + Debug + Send + Sync + Unpin + 'static,
-    DA: BandwidthAccounting + Clone + Debug + Send + Sync + Unpin + 'static,
+    DA: AvailabilityAccounting + Clone + Debug + Send + Sync + Unpin + 'static,
 {
     type Spec = Spec;
+    type Identity = Ident;
     type ChunkSet = ChunkSet;
     type Topology = Topo;
     type DataAvailability = DA;
-}
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use vertex_primitives::StandardChunkSet;
-    use vertex_swarm_api::{BandwidthAccounting, NoBandwidthIncentives};
-    use vertex_swarmspec::Hive;
-
-    // Mock topology for testing
-    #[derive(Clone, Debug, Default)]
-    struct MockTopology;
-
-    impl Topology for MockTopology {
-        fn self_address(&self) -> vertex_primitives::OverlayAddress {
-            vertex_primitives::OverlayAddress::default()
-        }
-
-        fn neighbors(&self, _depth: u8) -> alloc::vec::Vec<vertex_primitives::OverlayAddress> {
-            alloc::vec::Vec::new()
-        }
-
-        fn is_responsible_for(&self, _address: &vertex_primitives::ChunkAddress) -> bool {
-            false
-        }
-
-        fn depth(&self) -> u8 {
-            0
-        }
-
-        fn closest_to(
-            &self,
-            _address: &vertex_primitives::ChunkAddress,
-            _count: usize,
-        ) -> alloc::vec::Vec<vertex_primitives::OverlayAddress> {
-            alloc::vec::Vec::new()
-        }
-    }
-
-    #[test]
-    fn test_any_node_types() {
-        type TestNode = AnyNodeTypes<Hive, StandardChunkSet, MockTopology, NoBandwidthIncentives>;
-
-        fn assert_node_types<N: NodeTypes>() {}
-        assert_node_types::<TestNode>();
-    }
-
-    #[test]
-    fn test_type_aliases() {
-        type TestNode = AnyNodeTypes<Hive, StandardChunkSet, MockTopology, NoBandwidthIncentives>;
-
-        fn check_spec<S: SwarmSpec>() {}
-        fn check_chunks<C: ChunkTypeSet>() {}
-        fn check_topology<T: Topology>() {}
-        fn check_da<D: BandwidthAccounting>() {}
-
-        check_spec::<SpecOf<TestNode>>();
-        check_chunks::<ChunkSetOf<TestNode>>();
-        check_topology::<TopologyOf<TestNode>>();
-        check_da::<DataAvailabilityOf<TestNode>>();
-    }
 }

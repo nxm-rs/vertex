@@ -14,8 +14,8 @@
 //!   + DataAvailability             where S::Accounting = N::DataAvailability
 //!
 //! PublisherNodeTypes         ──►  PublisherComponents<N, S: SwarmWriter>
-//!   + StoragePayment               where S::Accounting = N::DataAvailability
-//!                                        S::Payment = N::StoragePayment
+//!   + Storage                      where S::Accounting = N::DataAvailability
+//!                                        S::Storage = N::Storage
 //!
 //! FullNodeTypes              ──►  FullNodeComponents<N, S: SwarmWriter>
 //!   + Store, Sync                  (same bounds + store/sync)
@@ -30,7 +30,7 @@
 //! // Use the Swarm client
 //! components.swarm().put(chunk, &proof).await?;
 //!
-//! // Access bandwidth accounting
+//! // Access availability accounting
 //! let peer_acct = components.accounting().for_peer(peer_id);
 //! ```
 
@@ -58,7 +58,7 @@ pub use vertex_node_types::{
     NodeTypesWithSpec,
     PublisherNodeTypes,
     SpecOf,
-    StoragePaymentOf,
+    StorageOf,
     StoreOf,
     SyncOf,
     TopologyOf,
@@ -66,9 +66,9 @@ pub use vertex_node_types::{
 
 // Re-export swarm-api traits for convenience
 pub use vertex_swarm_api::{
-    AnyChunk, BandwidthAccounting, ChunkSync, Direction, LocalStore, NoBandwidthIncentives,
-    NoPeerBandwidth, PeerBandwidth, SwarmError, SwarmReader, SwarmResult, SwarmWriter, SyncResult,
-    Topology,
+    AnyChunk, AvailabilityAccounting, ChunkSync, Direction, LocalStore, NoAvailabilityIncentives,
+    NoPeerAvailability, PeerAvailability, SwarmError, SwarmReader, SwarmResult, SwarmWriter,
+    SyncResult, Topology,
 };
 
 // Re-export common primitives

@@ -108,6 +108,7 @@ pub trait PeerAvailability: Clone + Send + Sync {
 /// 1. Connection established → `for_peer(peer_id)` creates/returns handle
 /// 2. Protocols clone the handle and use it for bandwidth tracking
 /// 3. Connection closed → implementation may clean up or keep for reconnect
+#[auto_impl::auto_impl(&, Arc)]
 pub trait AvailabilityAccounting: Send + Sync {
     /// The per-peer accounting handle type.
     type Peer: PeerAvailability;

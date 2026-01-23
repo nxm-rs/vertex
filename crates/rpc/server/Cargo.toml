@@ -1,0 +1,30 @@
+[package]
+name = "vertex-rpc-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "gRPC server implementation for Vertex"
+
+[dependencies]
+vertex-rpc-core.workspace = true
+
+async-stream = "0.3"
+async-trait.workspace = true
+eyre.workspace = true
+parking_lot.workspace = true
+tokio = { workspace = true, features = ["sync", "rt"] }
+tokio-stream = { workspace = true, features = ["sync"] }
+tonic.workspace = true
+tonic-reflection = "0.12"
+prost.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+tonic-build.workspace = true
+
+[features]
+default = ["std"]
+std = []

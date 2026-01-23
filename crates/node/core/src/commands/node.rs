@@ -10,19 +10,88 @@
 //! - Running the node until shutdown is requested
 
 use crate::{
-    cli::NodeArgs,
-    config::{NodeConfig, NodeMode},
+    cli::{AvailabilityMode, NodeArgs, NodeTypeCli},
+    config::{NodeConfig, NodeType},
     dirs::DataDirs,
-    identity_manager::{IdentityConfig, IdentityManager, resolve_password},
-    network::{Network, NetworkConfig},
 };
-use eyre::Result;
-use std::sync::Arc;
-use tracing::{info, warn};
+use alloy_signer::k256::ecdsa::SigningKey;
+use alloy_signer_local::LocalSigner;
+use eyre::{Result, WrapErr};
+use std::{fs, path::Path, sync::Arc};
+use tracing::{debug, error, info, warn};
+use vertex_client_core::{NetworkConfig, SwarmNode};
+use vertex_client_peermanager::FilePeerStore;
+use vertex_node_identity::SwarmIdentity;
+use vertex_node_types::{AnyNodeTypes, Identity};
+use vertex_primitives::StandardChunkSet;
+use vertex_rpc_core::RpcServer;
+use vertex_rpc_server::{GrpcServer, GrpcServerConfig};
+use vertex_swarm_api::NoAvailabilityIncentives;
 use vertex_swarmspec::{init_mainnet, init_testnet, Hive, SwarmSpec};
+use vertex_tasks::TaskManager;
+
+/// Placeholder topology type for initial implementation.
+/// TODO: Replace with actual Kademlia topology implementation.
+#[derive(Clone, Debug, Default)]
+struct PlaceholderTopology;
+
+impl vertex_swarm_api::Topology for PlaceholderTopology {
+    fn self_address(&self) -> vertex_primitives::OverlayAddress {
+        vertex_primitives::OverlayAddress::default()
+    }
+
+    fn neighbors(&self, _depth: u8) -> Vec<vertex_primitives::OverlayAddress> {
+        Vec::new()
+    }
+
+    fn is_responsible_for(&self, _address: &vertex_primitives::ChunkAddress) -> bool {
+        false
+    }
+
+    fn depth(&self) -> u8 {
+        0
+    }
+
+    fn closest_to(
+        &self,
+        _address: &vertex_primitives::ChunkAddress,
+        _count: usize,
+    ) -> Vec<vertex_primitives::OverlayAddress> {
+        Vec::new()
+    }
+
+    fn add_peers(&self, _peers: &[vertex_primitives::OverlayAddress]) {}
+
+    fn pick(&self, _peer: &vertex_primitives::OverlayAddress, _is_full_node: bool) -> bool {
+        true
+    }
+
+    fn connected(&self, _peer: vertex_primitives::OverlayAddress) {}
+
+    fn disconnected(&self, _peer: &vertex_primitives::OverlayAddress) {}
+
+    fn peers_to_connect(&self) -> Vec<vertex_primitives::OverlayAddress> {
+        Vec::new()
+    }
+}
+
+/// Default node types for light/publisher clients.
+/// Uses no availability incentives initially (will be configurable later).
+type DefaultNodeTypes = AnyNodeTypes<
+    Hive,
+    SwarmIdentity,
+    StandardChunkSet,
+    PlaceholderTopology,
+    NoAvailabilityIncentives,
+>;
 
 /// Run the node command
 pub async fn run(args: NodeArgs) -> Result<()> {
+    // Create task manager for centralized task lifecycle management
+    // This must happen early so TaskExecutor::current() works during build
+    let task_manager = TaskManager::current();
+    let executor = task_manager.executor();
+
     // Determine which network to connect to
     let spec = resolve_network_spec(&args)?;
     info!(
@@ -35,30 +104,25 @@ pub async fn run(args: NodeArgs) -> Result<()> {
     let dirs = DataDirs::new(&spec, &args.datadir)?;
     info!("Data directory: {}", dirs.root.display());
 
-    // Determine node mode
-    let mode = if args.light {
-        NodeMode::Light
-    } else if args.storage.redistribution {
-        NodeMode::Incentivized
-    } else {
-        NodeMode::Full
-    };
-
-    info!("Node mode: {:?}", mode);
+    // Convert CLI node type to config node type
+    let node_type = cli_to_node_type(args.node_type);
+    info!("Node type: {:?}", node_type);
 
     // Load or create configuration
     let config_path = dirs.config_file();
-    let mut config = NodeConfig::load_or_create(&config_path, &spec, mode)?;
+    let mut config = NodeConfig::load_or_create(&config_path, &spec, node_type)?;
 
     // Apply CLI overrides
-    config.apply_cli_args(&args.network, &args.storage, &args.api, args.light);
+    config.apply_cli_args(
+        &args.network,
+        &args.storage,
+        &args.storage_incentives,
+        &args.api,
+        &args.availability,
+        node_type,
+    );
 
-    info!("Configuration loaded from: {}", config_path.display());
-
-    // Log network configuration
-    log_network_config(&config, &spec);
-
-    // Create network configuration from swarmspec bootnodes
+    // Create network configuration
     let network_config = NetworkConfig {
         listen_addrs: vec![
             format!("/ip4/{}/tcp/{}", config.network.addr, config.network.port)
@@ -69,50 +133,96 @@ pub async fn run(args: NodeArgs) -> Result<()> {
         ..Default::default()
     };
 
-    // Build identity configuration
-    let identity_config = IdentityConfig {
-        ephemeral: args.identity.ephemeral,
-        redistribution: args.storage.redistribution,
-        swap_enabled: config.bandwidth.swap_enabled,
-        staking: args.storage.staking,
-    };
+    // Create peer store for persistence
+    let peers_file = config
+        .network
+        .peers_file
+        .as_ref()
+        .map(|p| dirs.root.join(p))
+        .unwrap_or_else(|| dirs.peers_file());
+    let peer_store = Arc::new(
+        FilePeerStore::new_with_create_dir(&peers_file)
+            .wrap_err_with(|| format!("failed to open peers database: {}", peers_file.display()))?,
+    );
+    info!("Peers database: {}", peers_file.display());
 
-    // Resolve password if needed for persistent identity
-    let password = if identity_config.requires_persistent() && !identity_config.ephemeral {
-        resolve_password(
+    // Determine if we need ephemeral or persistent identity
+    let use_ephemeral = args.identity.ephemeral || !node_type.requires_persistent_identity();
+
+    // Create identity
+    let identity = if use_ephemeral {
+        debug!("Creating ephemeral identity");
+        SwarmIdentity::random(spec.clone(), !matches!(node_type, NodeType::Light))
+    } else {
+        // Load or create persistent identity
+        let keystore_path = config
+            .identity
+            .keystore_path
+            .as_ref()
+            .map(|p| dirs.root.join(p))
+            .unwrap_or_else(|| dirs.keys_dir().join("swarm"));
+
+        // Resolve password
+        let password = resolve_password(
             args.identity.password.as_deref(),
             args.identity.password_file.as_deref(),
-        )?
-    } else {
-        String::new()
+        )?;
+
+        // Load or create signer from keystore
+        let signer = load_or_create_signer(&keystore_path, &password)?;
+
+        // Get nonce: CLI arg > config file > generate new
+        let (nonce, nonce_source) = if let Some(cli_nonce) = args.identity.nonce {
+            (cli_nonce, "CLI argument")
+        } else {
+            let (n, generated) = config.identity.nonce_or_generate();
+            if generated {
+                (n, "generated")
+            } else {
+                (n, "config file")
+            }
+        };
+        debug!("Nonce source: {}", nonce_source);
+
+        SwarmIdentity::new(
+            signer,
+            nonce,
+            spec.clone(),
+            !matches!(node_type, NodeType::Light),
+        )
     };
 
-    // Create identity manager based on mode
-    let identity_manager = if identity_config.ephemeral || args.light {
-        IdentityManager::ephemeral(dirs.state_dir())
-    } else {
-        IdentityManager::with_file_keystore(dirs.keys_dir(), dirs.state_dir())
-    };
+    // Save config (may have updated nonce)
+    config.save(&config_path)?;
+    info!("Configuration file: {}", config_path.display());
 
-    // Load or create identity
-    let identity = identity_manager.load_or_create(
-        spec.network_id(),
-        mode,
-        &identity_config,
-        &password,
-    )?;
+    // Log identity configuration first
+    info!("Identity configuration:");
+    info!("  Ethereum address: {}", identity.ethereum_address());
+    info!(
+        "  Overlay address: {}",
+        hex::encode(identity.overlay_address().as_slice())
+    );
 
-    info!("Ethereum address: {}", identity.ethereum_address());
-    info!("Overlay address: {}", hex::encode(identity.overlay_address().as_slice()));
+    // Log node configuration
+    log_node_config(&config, &args.availability.mode);
 
-    // Initialize P2P network
+    // Initialize P2P network using SwarmNode
     info!("Initializing P2P network...");
-    let mut network = Network::new(network_config, identity).await?;
+    let (mut node, client_service, _client_handle) =
+        SwarmNode::<DefaultNodeTypes>::builder(identity)
+            .with_config(network_config)
+            .with_peer_store(peer_store.clone())
+            .build()
+            .await?;
 
-    info!("Local Peer ID: {}", network.local_peer_id());
+    // Clone the peer manager for shutdown flushing
+    let peer_manager = node.peer_manager().clone();
+
+    info!("Local Peer ID: {}", node.local_peer_id());
 
     // Start listening for connections
-    network.start_listening()?;
+    node.start_listening()?;
 
     // Connect to bootnodes
     if !spec.bootnodes.is_empty() {
@@ -121,34 +231,197 @@ pub async fn run(args: NodeArgs) -> Result<()> {
             info!("  Bootnode: {}", bn);
         }
 
-        let connected = network.connect_bootnodes().await?;
+        let connected = node.connect_bootnodes().await?;
         info!("Initiated {} bootnode connection(s)", connected);
     } else {
         warn!("No bootnodes configured - running in isolated mode");
     }
 
+    // Connect to trusted peers if configured
+    if let Some(ref trusted_peers) = args.network.trusted_peers {
+        let parsed_peers: Vec<libp2p::Multiaddr> = trusted_peers
+            .iter()
+            .filter_map(|p| match p.parse() {
+                Ok(addr) => Some(addr),
+                Err(e) => {
+                    warn!("Invalid trusted peer multiaddr '{}': {}", p, e);
+                    None
+                }
+            })
+            .collect();
+
+        if !parsed_peers.is_empty() {
+            info!("Connecting to {} trusted peer(s)...", parsed_peers.len());
+            for peer in &parsed_peers {
+                info!("  Trusted peer: {}", peer);
+                use vertex_net_topology::TopologyCommand;
+                node.topology_command(TopologyCommand::Dial(peer.clone()));
+            }
+        }
+    }
+
     info!("Node initialization complete");
+
+    // Start gRPC server if enabled
+    let grpc_server = if config.api.grpc_enabled {
+        let grpc_addr = config.grpc_socket_addr();
+        info!("Starting gRPC server on {}", grpc_addr);
+        let grpc_config = GrpcServerConfig {
+            addr: grpc_addr,
+            topology_provider: Some(node.kademlia_topology().clone()),
+        };
+        let server = GrpcServer::with_config(grpc_config);
+        Some(server)
+    } else {
+        None
+    };
+
+    // Spawn gRPC server task if enabled (not critical - can be restarted)
+    if let Some(server) = grpc_server {
+        executor.spawn(async move {
+            if let Err(e) = server.start().await {
+                error!("gRPC server error: {}", e);
+            }
+        });
+    }
+
     info!("Starting node... (press Ctrl+C to stop)");
 
-    // Run the network event loop in the background
-    let network_handle = tokio::spawn(async move {
-        if let Err(e) = network.run().await {
-            tracing::error!("Network error: {}", e);
+    // Run the client service event loop as a critical task
+    executor.spawn_critical("client_service", async move {
+        client_service.run().await;
+    });
+
+    // Run the node event loop as a critical task
+    executor.spawn_critical("swarm_node", async move {
+        if let Err(e) = node.run().await {
+            error!("Node error: {}", e);
         }
     });
 
-    // Wait for shutdown signal
+    // Wait for shutdown signal or critical task panic
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             info!("Received shutdown signal");
         }
-        _ = network_handle => {
-            warn!("Network task ended unexpectedly");
+        result = task_manager => {
+            match result {
+                Ok(()) => info!("Task manager shutdown cleanly"),
+                Err(panic_err) => error!("Critical task panicked: {}", panic_err),
+            }
+        }
+    }
+
+    // Flush peer store before shutdown
+    info!("Flushing peer store...");
+    match peer_manager.flush() {
+        Ok(()) => {
+            let stats = peer_manager.stats();
+            info!(
+                stored = stats.stored_peers,
+                connected = stats.connected_peers,
+                "Peer store flushed successfully"
+            );
+        }
+        Err(e) => {
+            error!("Failed to flush peer store: {}", e);
         }
     }
 
     info!("Node shutdown complete");
     Ok(())
+}
+
+/// Load or create a signer from an Ethereum keystore file.
+fn load_or_create_signer(keystore_path: &Path, password: &str) -> Result<LocalSigner<SigningKey>> {
+    if keystore_path.exists() {
+        info!(
+            "Loading signing key from keystore: {}",
+            keystore_path.display()
+        );
+        LocalSigner::decrypt_keystore(keystore_path, password)
+            .wrap_err_with(|| format!("Failed to decrypt keystore at {}", keystore_path.display()))
+    } else {
+        info!("Generating new signing key");
+
+        // Ensure parent directory exists
+        if let Some(parent) = keystore_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        // Generate new key
+        let mut rng = rand::thread_rng();
+        let signing_key = SigningKey::random(&mut rng);
+
+        // Get the filename from the path
+        let name = keystore_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("swarm");
+
+        // Get the parent directory
+        let dir = keystore_path.parent().unwrap_or(Path::new("."));
+
+        // Encrypt and save to keystore
+        let (signer, _uuid) = LocalSigner::encrypt_keystore(
+            dir,
+            &mut rng,
+            signing_key.to_bytes().as_slice(),
+            password,
+            Some(name),
+        )
+        .wrap_err("Failed to create keystore")?;
+
+        // Set restrictive permissions on Unix
+        #[cfg(unix)]
+        if keystore_path.exists() {
+            use crate::constants::SENSITIVE_FILE_MODE;
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(keystore_path)?.permissions();
+            perms.set_mode(SENSITIVE_FILE_MODE);
+            fs::set_permissions(keystore_path, perms)?;
+        }
+
+        Ok(signer)
+    }
+}
+
+/// Resolve password from various sources.
+///
+/// Priority: CLI argument > password file > interactive prompt
+pub fn resolve_password(password: Option<&str>, password_file: Option<&Path>) -> Result<String> {
+    // Check direct password
+    if let Some(pwd) = password {
+        return Ok(pwd.to_string());
+    }
+
+    // Check password file
+    if let Some(path) = password_file {
+        let content = fs::read_to_string(path)
+            .wrap_err_with(|| format!("Failed to read password file {:?}", path))?;
+        return Ok(content.trim().to_string());
+    }
+
+    // Try interactive prompt if we're in a terminal
+    if atty::is(atty::Stream::Stdin) {
+        return rpassword::prompt_password("Enter keystore password: ")
+            .wrap_err("Failed to read password from terminal");
+    }
+
+    Err(eyre::eyre!(
+        "No password provided. Use --password, --password-file, or VERTEX_PASSWORD environment variable"
+    ))
+}
+
+/// Convert CLI node type to config node type.
+fn cli_to_node_type(cli_type: NodeTypeCli) -> NodeType {
+    match cli_type {
+        NodeTypeCli::Bootnode => NodeType::Bootnode,
+        NodeTypeCli::Light => NodeType::Light,
+        NodeTypeCli::Publisher => NodeType::Publisher,
+        NodeTypeCli::Full => NodeType::Full,
+        NodeTypeCli::Staker => NodeType::Staker,
+    }
 }
 
 /// Resolve which network specification to use based on CLI arguments
@@ -157,16 +430,21 @@ fn resolve_network_spec(args: &NodeArgs) -> Result<Arc<Hive>> {
         Ok(init_mainnet())
     } else if args.testnet {
         Ok(init_testnet())
+    } else if let Some(ref path) = args.swarmspec {
+        // Load custom SwarmSpec from file
+        info!("Loading SwarmSpec from: {}", path.display());
+        let spec = Hive::from_file(path)
+            .wrap_err_with(|| format!("Failed to load SwarmSpec from {}", path.display()))?;
+        Ok(Arc::new(spec))
     } else {
         // Default to mainnet if no network is specified
-        // In the future, we might want to default to testnet or require explicit selection
         warn!("No network specified, defaulting to mainnet");
         Ok(init_mainnet())
     }
 }
 
-/// Log the network configuration for debugging
-fn log_network_config(config: &NodeConfig, _spec: &Hive) {
+/// Log the node configuration for debugging
+fn log_node_config(config: &NodeConfig, availability_mode: &AvailabilityMode) {
     info!("Network configuration:");
     info!("  Discovery: {}", config.network.discovery);
     info!("  Max peers: {}", config.network.max_peers);
@@ -184,18 +462,20 @@ fn log_network_config(config: &NodeConfig, _spec: &Hive) {
         );
     }
 
-    info!("Storage configuration:");
-    info!(
-        "  Max storage: {} GB",
-        config.storage.max_storage / (1024 * 1024 * 1024)
-    );
-    info!("  Max chunks: {}", config.storage.max_chunks);
-    info!("  Redistribution: {}", config.storage.redistribution);
+    if config.availability.is_some() {
+        info!("Availability incentives: {:?}", availability_mode);
+    }
 
-    if config.api.http_enabled {
+    if let Some(ref storage) = config.storage {
+        info!("Storage configuration:");
+        info!("  Capacity: {} chunks", storage.capacity_chunks);
+        info!("  Redistribution: {}", storage.redistribution);
+    }
+
+    if config.api.grpc_enabled {
         info!(
-            "HTTP API: {}:{}",
-            config.api.http_addr, config.api.http_port
+            "gRPC server: {}:{}",
+            config.api.grpc_addr, config.api.grpc_port
         );
     }
 
@@ -210,39 +490,56 @@ fn log_network_config(config: &NodeConfig, _spec: &Hive) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::{ApiArgs, DataDirArgs, IdentityArgs, NetworkArgs, StorageArgs};
+    use crate::cli::{
+        ApiArgs, AvailabilityArgs, AvailabilityMode, DataDirArgs, IdentityArgs, NetworkArgs,
+        NodeTypeCli, StorageArgs, StorageIncentiveArgs,
+    };
 
     fn default_node_args() -> NodeArgs {
         NodeArgs {
+            node_type: NodeTypeCli::Light,
             datadir: DataDirArgs { datadir: None },
             network: NetworkArgs {
                 disable_discovery: false,
                 bootnodes: None,
+                trusted_peers: None,
                 port: 1634,
                 addr: "0.0.0.0".to_string(),
                 max_peers: 50,
             },
+            availability: AvailabilityArgs {
+                mode: AvailabilityMode::Pseudosettle,
+                payment_threshold: vertex_bandwidth_core::DEFAULT_PAYMENT_THRESHOLD,
+                payment_tolerance_percent: vertex_bandwidth_core::DEFAULT_PAYMENT_TOLERANCE_PERCENT,
+                base_price: vertex_bandwidth_core::DEFAULT_BASE_PRICE,
+                refresh_rate: vertex_bandwidth_core::DEFAULT_REFRESH_RATE,
+                early_payment_percent: vertex_bandwidth_core::DEFAULT_EARLY_PAYMENT_PERCENT,
+                light_factor: vertex_bandwidth_core::DEFAULT_LIGHT_FACTOR,
+            },
             storage: StorageArgs {
-                capacity: 100,
+                capacity_chunks: 1_000_000,
+                cache_chunks: 100_000,
+            },
+            storage_incentives: StorageIncentiveArgs {
                 redistribution: false,
-                staking: false,
             },
             api: ApiArgs {
-                http: false,
-                http_addr: "127.0.0.1".to_string(),
-                http_port: 1633,
+                grpc: false,
+                grpc_addr: "127.0.0.1".to_string(),
+                grpc_port: 1635,
                 metrics: false,
                 metrics_addr: "127.0.0.1".to_string(),
-                metrics_port: 1636,
+                metrics_port: 1637,
             },
             identity: IdentityArgs {
                 password: None,
                 password_file: None,
+                nonce: None,
                 ephemeral: true,
             },
-            light: false,
             mainnet: false,
             testnet: false,
+            swarmspec: None,
         }
     }
 
@@ -270,5 +567,17 @@ mod tests {
 
         let spec = resolve_network_spec(&args).unwrap();
         assert!(spec.is_mainnet());
+    }
+
+    #[test]
+    fn test_cli_to_node_type() {
+        assert_eq!(cli_to_node_type(NodeTypeCli::Bootnode), NodeType::Bootnode);
+        assert_eq!(cli_to_node_type(NodeTypeCli::Light), NodeType::Light);
+        assert_eq!(
+            cli_to_node_type(NodeTypeCli::Publisher),
+            NodeType::Publisher
+        );
+        assert_eq!(cli_to_node_type(NodeTypeCli::Full), NodeType::Full);
+        assert_eq!(cli_to_node_type(NodeTypeCli::Staker), NodeType::Staker);
     }
 }

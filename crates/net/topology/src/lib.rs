@@ -1,14 +1,19 @@
 //! Swarm network topology management.
 //!
 //! This crate provides the libp2p behaviour and protocol handlers for Swarm topology.
-//! It handles peer discovery, bootnode connections, and topology events.
+//! It handles peer discovery, bootnode DNS resolution, and topology events.
+//!
+//! # Abstraction Boundary
+//!
+//! This crate operates at the libp2p layer and uses libp2p types (PeerId, Multiaddr,
+//! ConnectionId). The client layer (`vertex-client-peermanager`) handles the
+//! PeerId ↔ OverlayAddress mapping.
 //!
 //! # Components
 //!
 //! - **Behaviour**: libp2p `NetworkBehaviour` for topology management
-//! - **Bootnode**: Initial network entry via bootstrap nodes
-//! - **Manager**: Peer lifecycle management (connection state, disconnection)
-//! - **Events**: Topology commands and events for communication with the swarm
+//! - **Bootnode**: DNS resolution for bootstrap node addresses
+//! - **Events**: Topology commands and events using pure libp2p types
 
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
@@ -16,12 +21,11 @@ pub mod behaviour;
 pub mod bootnode;
 pub mod events;
 pub mod handler;
-pub mod manager;
 pub mod protocol;
 
 mod error;
 
-pub use behaviour::{Config as BehaviourConfig, PeerInfo, SwarmTopologyBehaviour};
+pub use behaviour::{Config as BehaviourConfig, SwarmTopologyBehaviour};
 pub use error::{TopologyError, TopologyResult};
 pub use events::{TopologyCommand, TopologyEvent};
 pub use protocol::{
@@ -31,4 +35,3 @@ pub use protocol::{
 
 // Re-export key types
 pub use bootnode::BootnodeConnector;
-pub use manager::{PeerManager, PeerState};

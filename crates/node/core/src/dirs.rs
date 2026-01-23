@@ -3,7 +3,7 @@
 use crate::cli::DataDirArgs;
 use directories::ProjectDirs;
 use eyre::{eyre, Result};
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, sync::Arc};
 use vertex_swarmspec::Hive;
 
 /// Returns the default project directories for Vertex Swarm.
@@ -26,17 +26,22 @@ pub struct DataDirs {
 
 impl DataDirs {
     /// Create a new `DataDirs` instance for the given network specification and command line args.
-    pub fn new(network: &Hive, args: &DataDirArgs) -> Result<Self> {
+    pub fn new(spec: &Arc<Hive>, args: &DataDirArgs) -> Result<Self> {
         let root = args
             .datadir
             .clone()
             .unwrap_or_else(|| default_data_dir().unwrap_or_else(|| PathBuf::from(".vertex")));
 
-        let network_dir = root.join(&network.network_name);
+        let network_dir = root.join(&spec.network_name);
 
         // Ensure network directory exists
-        fs::create_dir_all(&network_dir)
-            .map_err(|e| eyre!("Failed to create directory {}: {}", network_dir.display(), e))?;
+        fs::create_dir_all(&network_dir).map_err(|e| {
+            eyre!(
+                "Failed to create directory {}: {}",
+                network_dir.display(),
+                e
+            )
+        })?;
 
         Ok(Self {
             root,
@@ -59,5 +64,10 @@ impl DataDirs {
     /// Returns the path to the keystore directory.
     pub fn keys_dir(&self) -> PathBuf {
         self.network.join("keystore")
+    }
+
+    /// Returns the path to the peers database file.
+    pub fn peers_file(&self) -> PathBuf {
+        self.state_dir().join("peers.json")
     }
 }

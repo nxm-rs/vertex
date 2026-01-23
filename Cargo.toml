@@ -14,6 +14,9 @@ members = [
     # Metrics & Observability
     # "crates/metrics",  # TODO: Update metrics API usage
 
+    # Tasks
+    "crates/tasks",
+
     # Primitives
     "crates/primitives",
 
@@ -32,6 +35,7 @@ members = [
     "crates/net/client",
 
     # Node
+    "crates/node/identity",
     "crates/node/types",
     "crates/node/api",
     "crates/node/core",
@@ -45,9 +49,15 @@ members = [
 
     # Client (includes bandwidth/data availability incentives)
     "crates/client/core",
+    "crates/client/kademlia",
+    "crates/client/peermanager",
     "crates/client/bandwidth/core",
     "crates/client/bandwidth/pseudosettle",
     "crates/client/bandwidth/swap",
+
+    # RPC
+    "crates/rpc/core",
+    "crates/rpc/server",
 
     # Data
     # "crates/file",
@@ -89,12 +99,16 @@ vertex-net-topology = { path = "crates/net/topology" }
 vertex-net-client = { path = "crates/net/client" }
 
 # node
+vertex-node-identity = { path = "crates/node/identity" }
 vertex-node-types = { path = "crates/node/types" }
 vertex-node-api = { path = "crates/node/api" }
 vertex-node-core = { path = "crates/node/core" }
 
 # metrics
 vertex-metrics = { path = "crates/metrics" }
+
+# tasks
+vertex-tasks = { path = "crates/tasks" }
 
 # swarm
 vertex-storage = { path = "crates/storage" }
@@ -104,9 +118,15 @@ vertex-swarmspec = { path = "crates/swarmspec" }
 
 # client (includes bandwidth/data availability incentives)
 vertex-client-core = { path = "crates/client/core" }
+vertex-client-kademlia = { path = "crates/client/kademlia" }
+vertex-client-peermanager = { path = "crates/client/peermanager" }
 vertex-bandwidth-core = { path = "crates/client/bandwidth/core" }
 vertex-bandwidth-pseudosettle = { path = "crates/client/bandwidth/pseudosettle" }
 vertex-bandwidth-swap = { path = "crates/client/bandwidth/swap" }
+
+# rpc
+vertex-rpc-core = { path = "crates/rpc/core" }
+vertex-rpc-server = { path = "crates/rpc/server" }
 
 ## alloy
 alloy-eip2124 = { version = "0.2", default-features = false }
@@ -154,12 +174,17 @@ pb-rs = "0.10"
 walkdir = "2.5.0"
 
 ## tokio
-# tokio-stream = "0.1.17"
 tokio = { version = "1", default-features = false }
-# tokio-util = { version = "0.7.13", features = ["codec"] }
+tokio-stream = "0.1"
+
+## grpc
+tonic = "0.12"
+tonic-build = "0.12"
+prost = "0.13"
 
 ## async
 futures = "0.3"
+futures-util = "0.3"
 
 ## concurrency
 rayon = "1.10"
@@ -174,6 +199,13 @@ proptest = "1.6"
 proptest-arbitrary-interop = "0.1"
 proptest-derive = "0.5"
 # test-fuzz = "7"
+
+# metrics
+metrics = "0.24"
+
+# caching
+lru = "0.16"
+web-time = "1.1"
 
 # misc
 anyhow = "1.0"
