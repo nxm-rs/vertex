@@ -1,0 +1,48 @@
+[package]
+name = "vertex-swarm-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Core Swarm node orchestration with libp2p integration"
+
+[lints]
+workspace = true
+
+[dependencies]
+## nectar
+nectar-primitives.workspace = true
+
+## vertex
+vertex-client-kademlia.workspace = true
+vertex-client-peermanager.workspace = true
+vertex-net-client.workspace = true
+vertex-net-primitives.workspace = true
+vertex-net-primitives-traits.workspace = true
+vertex-net-topology.workspace = true
+vertex-node-identity.workspace = true
+vertex-node-types.workspace = true
+vertex-primitives.workspace = true
+vertex-swarm-api.workspace = true
+vertex-swarmspec.workspace = true
+vertex-tasks.workspace = true
+
+## p2p
+libp2p.workspace = true
+
+## async
+futures.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+## misc
+bytes.workspace = true
+eyre.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[features]
+default = ["std"]
+std = []

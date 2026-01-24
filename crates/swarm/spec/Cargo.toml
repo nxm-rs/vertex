@@ -23,7 +23,6 @@ nectar-primitives.workspace = true
 vertex-swarm-forks.workspace = true
 
 # networking
-libp2p.workspace = true
 vertex-net-primitives.workspace = true
 vertex-net-primitives-traits.workspace = true
 

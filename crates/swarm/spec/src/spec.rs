@@ -14,10 +14,10 @@ use crate::{
 use alloc::{
     string::{String, ToString},
     sync::Arc,
+    vec,
     vec::Vec,
 };
 use alloy_chains::{Chain, NamedChain};
-use libp2p::Multiaddr;
 use vertex_net_primitives_traits::OnceLock;
 use vertex_swarm_forks::{ForkCondition, SwarmHardfork, SwarmHardforks, SwarmHardforksTrait};
 
@@ -48,9 +48,11 @@ pub struct Hive {
     #[serde(default)]
     pub network_name: String,
 
-    /// Bootnodes - entry points into the network
+    /// Bootnodes - entry points into the network (as multiaddr strings).
+    ///
+    /// Consumers should parse these as `Multiaddr` in the networking layer.
     #[serde(default)]
-    pub bootnodes: Vec<Multiaddr>,
+    pub bootnodes: Vec<String>,
 
     /// Hardforks configuration (not serialized - uses default with Accord at genesis)
     #[serde(skip, default = "default_hardforks")]
@@ -192,7 +194,7 @@ pub struct HiveBuilder {
     chain: Option<Chain>,
     network_id: Option<u64>,
     network_name: Option<String>,
-    bootnodes: Vec<Multiaddr>,
+    bootnodes: Vec<String>,
     hardforks: SwarmHardforks,
     token: Option<Token>,
     genesis_timestamp: Option<u64>,
@@ -224,14 +226,14 @@ impl HiveBuilder {
         self
     }
 
-    /// Add a bootnode
-    pub fn add_bootnode(mut self, addr: Multiaddr) -> Self {
-        self.bootnodes.push(addr);
+    /// Add a bootnode (as a multiaddr string).
+    pub fn add_bootnode(mut self, addr: impl ToString) -> Self {
+        self.bootnodes.push(addr.to_string());
         self
     }
 
-    /// Set multiple bootnodes
-    pub fn bootnodes(mut self, addrs: Vec<Multiaddr>) -> Self {
+    /// Set multiple bootnodes (as multiaddr strings).
+    pub fn bootnodes(mut self, addrs: Vec<String>) -> Self {
         self.bootnodes = addrs;
         self
     }
@@ -371,17 +373,17 @@ impl HiveBuilder {
 ///
 /// The `/dnsaddr/mainnet.ethswarm.org` multiaddr is resolved at runtime via DNS TXT
 /// records, allowing the Swarm team to update bootnode IPs without client changes.
-/// Resolution should happen in the networking layer, not here.
-fn mainnet_bootnodes() -> Vec<Multiaddr> {
-    vec!["/dnsaddr/mainnet.ethswarm.org".parse().unwrap()]
+/// Resolution should happen in the networking layer.
+fn mainnet_bootnodes() -> Vec<String> {
+    vec!["/dnsaddr/mainnet.ethswarm.org".to_string()]
 }
 
 /// Testnet bootnodes using dnsaddr for dynamic resolution.
 ///
 /// The `/dnsaddr/testnet.ethswarm.org` multiaddr is resolved at runtime via DNS TXT
 /// records. Resolution should happen in the networking layer.
-fn testnet_bootnodes() -> Vec<Multiaddr> {
-    vec!["/dnsaddr/testnet.ethswarm.org".parse().unwrap()]
+fn testnet_bootnodes() -> Vec<String> {
+    vec!["/dnsaddr/testnet.ethswarm.org".to_string()]
 }
 
 impl Hive {
@@ -480,7 +482,6 @@ mod tests {
     use crate::SwarmSpec;
 
     use super::*;
-    use libp2p::multiaddr::Protocol;
     use vertex_net_primitives::Swarm;
 
     #[test]
@@ -518,23 +519,21 @@ mod tests {
 
     #[test]
     fn test_builder() {
-        let multiaddr = Multiaddr::empty()
-            .with(Protocol::Ip4([127, 0, 0, 1].into()))
-            .with(Protocol::Tcp(1634));
+        let bootnode = "/ip4/127.0.0.1/tcp/1634";
 
         let spec = HiveBuilder::new()
             .chain(Chain::from(NamedChain::Dev))
             .network_id(1337)
             .network_name("test")
-            .add_bootnode(multiaddr.clone())
-            .with_accord(1000) // Use the convenience method for Accord
+            .add_bootnode(bootnode)
+            .with_accord(1000)
             .build();
 
         assert_eq!(spec.chain, Chain::from(NamedChain::Dev));
         assert_eq!(spec.network_id, 1337);
         assert_eq!(spec.network_name, "test");
         assert_eq!(spec.bootnodes.len(), 1);
-        assert_eq!(spec.bootnodes[0], multiaddr);
+        assert_eq!(spec.bootnodes[0], bootnode);
 
         // Check hardfork
         assert!(spec.is_accord_active_at_timestamp(1000));

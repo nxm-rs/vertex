@@ -53,6 +53,13 @@ pub enum SwarmError {
         /// Description of the payment requirement.
         reason: String,
     },
+
+    /// Invalid chunk data.
+    #[error("invalid chunk: {reason}")]
+    InvalidChunk {
+        /// Description of why the chunk is invalid.
+        reason: String,
+    },
 }
 
 /// Result type for Swarm API operations.

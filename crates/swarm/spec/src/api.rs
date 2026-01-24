@@ -33,10 +33,9 @@ use crate::{
     Hive, Token,
     constants::{mainnet, testnet},
 };
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{string::String, sync::Arc, vec::Vec};
 use alloy_chains::Chain;
 use core::fmt::Debug;
-use libp2p::Multiaddr;
 use nectar_primitives::{ChunkTypeSet, StandardChunkSet};
 use vertex_net_primitives::Swarm;
 use vertex_swarm_forks::{ForkCondition, ForkDigest, SwarmHardfork, SwarmHardforks};
@@ -72,8 +71,10 @@ pub trait SwarmSpec: Send + Sync + Unpin + Debug + 'static {
     /// Returns the Swarm network name (like "mainnet", "testnet", etc.).
     fn network_name(&self) -> &str;
 
-    /// Returns the bootnodes for the network.
-    fn bootnodes(&self) -> Option<Vec<Multiaddr>>;
+    /// Returns the bootnodes for the network (as multiaddr strings).
+    ///
+    /// Consumers should parse these as `Multiaddr` in the networking layer.
+    fn bootnodes(&self) -> Option<Vec<String>>;
 
     /// Returns the Swarm token details.
     ///
@@ -160,7 +161,7 @@ impl SwarmSpec for Hive {
         &self.network_name
     }
 
-    fn bootnodes(&self) -> Option<Vec<Multiaddr>> {
+    fn bootnodes(&self) -> Option<Vec<String>> {
         if self.bootnodes.is_empty() {
             None
         } else {

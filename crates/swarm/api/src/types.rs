@@ -66,7 +66,11 @@ pub trait Identity: Clone + Debug + Send + Sync + 'static {
     ///
     /// Computed as: `keccak256(ethereum_address || network_id || nonce)`
     fn overlay_address(&self) -> SwarmAddress {
-        calculate_overlay_address(&self.ethereum_address(), self.spec().network_id(), &self.nonce())
+        calculate_overlay_address(
+            &self.ethereum_address(),
+            self.spec().network_id(),
+            &self.nonce(),
+        )
     }
 }
 

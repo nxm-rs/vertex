@@ -83,7 +83,7 @@ use vertex_swarm_api::Topology;
 use vertex_tasks::TaskExecutor;
 
 use crate::{
-    ClientEvent, ClientHandle, ClientService,
+    BootnodeProvider, ClientEvent, ClientHandle, ClientService,
     behaviour::{NodeBehaviour, NodeEvent},
 };
 
@@ -510,7 +510,6 @@ impl<N: NodeTypes> SwarmNodeBuilder<N> {
     /// If no bootnodes are provided in the config, falls back to spec bootnodes.
     pub fn with_network_config(mut self, config: &impl vertex_swarm_api::NetworkConfig) -> Self {
         use vertex_node_types::Identity;
-        use vertex_swarmspec::SwarmSpec;
 
         self.listen_addrs = config
             .listen_addrs()
@@ -526,7 +525,7 @@ impl<N: NodeTypes> SwarmNodeBuilder<N> {
             .collect();
 
         self.bootnodes = if config_bootnodes.is_empty() {
-            self.identity.spec().bootnodes().unwrap_or_default()
+            BootnodeProvider::bootnodes(self.identity.spec())
         } else {
             config_bootnodes
         };

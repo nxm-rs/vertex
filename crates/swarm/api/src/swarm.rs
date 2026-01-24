@@ -1,34 +1,31 @@
 //! Core Swarm traits for network access.
 //!
-//! - [`SwarmReader`] - Read-only access (requires [`LightTypes`])
-//! - [`SwarmWriter`] - Read-write access (requires [`PublisherTypes`])
+//! - [`SwarmReader`] - Read chunks from the swarm
+//! - [`SwarmWriter`] - Write chunks to the swarm
 
-use crate::{LightTypes, PublisherTypes, SwarmResult};
+use crate::SwarmResult;
 use async_trait::async_trait;
 use vertex_primitives::{AnyChunk, ChunkAddress};
 
-/// Read-only access to the Swarm network.
+/// Read chunks from the Swarm network.
 ///
-/// Generic over `Types` which must implement [`LightTypes`] to provide
-/// topology and accounting capabilities.
+/// Pure behavior trait - implementors decide their internal structure.
+/// For topology/accounting access, use the concrete type's methods.
 #[async_trait]
-pub trait SwarmReader<Types: LightTypes>: Send + Sync {
-    /// Get the topology for peer discovery and routing.
-    fn topology(&self) -> &Types::Topology;
-
-    /// Get the availability accounting for retrieval incentives.
-    fn accounting(&self) -> &Types::Accounting;
-
+pub trait SwarmReader: Send + Sync {
     /// Get a chunk from the swarm by its address.
     async fn get(&self, address: &ChunkAddress) -> SwarmResult<AnyChunk>;
 }
 
-/// Read-write access to the Swarm network.
+/// Write chunks to the Swarm network.
 ///
-/// Generic over `Types` which must implement [`PublisherTypes`] to provide
-/// storage proof capability (postage stamps on mainnet).
+/// The associated `Storage` type represents the storage proof
+/// (postage stamps on mainnet, `()` for development).
 #[async_trait]
-pub trait SwarmWriter<Types: PublisherTypes>: SwarmReader<Types> {
+pub trait SwarmWriter: SwarmReader {
+    /// Storage proof type (e.g., postage stamp).
+    type Storage: Send + Sync + 'static;
+
     /// Put a chunk into the swarm with storage proof.
-    async fn put(&self, chunk: AnyChunk, storage: &Types::Storage) -> SwarmResult<()>;
+    async fn put(&self, chunk: AnyChunk, storage: &Self::Storage) -> SwarmResult<()>;
 }
