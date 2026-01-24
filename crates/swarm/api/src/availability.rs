@@ -53,10 +53,6 @@ pub enum Direction {
     Download,
 }
 
-// ============================================================================
-// Per-Peer Availability Handle
-// ============================================================================
-
 /// Per-peer availability accounting handle.
 ///
 /// This is the handle used by protocol streams. It must be:
@@ -94,10 +90,6 @@ pub trait PeerAvailability: Clone + Send + Sync {
     fn peer(&self) -> OverlayAddress;
 }
 
-// ============================================================================
-// Availability Accounting Factory
-// ============================================================================
-
 /// Factory for creating per-peer availability accounting handles.
 ///
 /// Implementations manage the set of peer accounts and create handles
@@ -125,10 +117,6 @@ pub trait AvailabilityAccounting: Send + Sync {
     /// Remove accounting for a peer (e.g., after disconnect + timeout).
     fn remove_peer(&self, peer: &OverlayAddress);
 }
-
-// ============================================================================
-// No-op Implementations (Default)
-// ============================================================================
 
 /// No-op availability accounting (always allows, never settles).
 ///

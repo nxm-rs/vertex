@@ -26,17 +26,6 @@
 
 use crate::Token;
 
-// ============================================================================
-// Chunk Protocol Defaults
-// ============================================================================
-//
-// These constants define the default chunk structure for the Swarm network.
-// They are derived from the Binary Merkle Tree (BMT) hash structure used for
-// content addressing. Different networks can override these values.
-//
-// The LOG2 values are the canonical definitions - other values are derived
-// from them to ensure consistency.
-
 /// Default section size in bytes (hash output size).
 ///
 /// This is the size of a Keccak-256 hash output, which forms the basis
@@ -63,10 +52,6 @@ pub const DEFAULT_CHUNK_SIZE_LOG2: u32 = 12;
 /// Equivalently: `SECTION_SIZE * BRANCHES` = 32 * 128 = 4096 bytes
 pub const DEFAULT_CHUNK_SIZE: usize = 1 << DEFAULT_CHUNK_SIZE_LOG2;
 
-// ============================================================================
-// Storage Capacity Defaults
-// ============================================================================
-
 /// Default reserve capacity as a power of 2 exponent.
 ///
 /// This is the canonical definition. `DEFAULT_RESERVE_CAPACITY = 2^DEFAULT_RESERVE_CAPACITY_LOG2`
@@ -83,10 +68,6 @@ pub const DEFAULT_RESERVE_CAPACITY_LOG2: u32 = 22;
 /// At 4KB per chunk, this represents approximately 16 GB of chunk data
 /// (not including metadata and indexing overhead).
 pub const DEFAULT_RESERVE_CAPACITY: u64 = 1 << DEFAULT_RESERVE_CAPACITY_LOG2;
-
-// ============================================================================
-// Cache Capacity Defaults
-// ============================================================================
 
 /// Default cache capacity for light nodes as a power of 2 exponent.
 ///

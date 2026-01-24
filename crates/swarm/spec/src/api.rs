@@ -43,10 +43,6 @@ use nectar_primitives::{ChunkTypeSet, StandardChunkSet};
 use vertex_net_primitives::Swarm;
 use vertex_swarm_forks::{ForkCondition, SwarmHardfork, SwarmHardforks};
 
-// ============================================================================
-// Fork Digest
-// ============================================================================
-
 /// A compact identifier representing a network's fork state at a point in time.
 ///
 /// Used during peer handshake to verify network compatibility. Two peers with
@@ -107,10 +103,6 @@ impl core::fmt::Display for ForkDigest {
     }
 }
 
-// ============================================================================
-// Core SwarmSpec Trait
-// ============================================================================
-
 /// A Swarm network specification.
 ///
 /// Defines the consensus-critical parameters that identify a network and
@@ -142,10 +134,6 @@ pub trait SwarmSpec: Send + Sync + Unpin + Debug + 'static {
     /// Returns the Swarm network name (like "mainnet", "testnet", etc.).
     fn network_name(&self) -> &str;
 
-    // ========================================================================
-    // Network Configuration
-    // ========================================================================
-
     /// Returns the bootnodes for the network.
     fn bootnodes(&self) -> Option<Vec<Multiaddr>>;
 
@@ -156,10 +144,6 @@ pub trait SwarmSpec: Send + Sync + Unpin + Debug + 'static {
 
     /// Returns the hardforks configuration.
     fn hardforks(&self) -> &SwarmHardforks;
-
-    // ========================================================================
-    // Chunk Protocol Configuration
-    // ========================================================================
 
     /// Returns the chunk size in bytes for this network.
     ///
@@ -172,10 +156,6 @@ pub trait SwarmSpec: Send + Sync + Unpin + Debug + 'static {
     /// This is the target number of chunks a full storage node should hold.
     /// Standard networks use 2^22 = 4,194,304 chunks.
     fn reserve_capacity(&self) -> u64;
-
-    // ========================================================================
-    // Fork Activation & Compatibility
-    // ========================================================================
 
     /// Returns the fork activation status for a given Swarm hardfork at a timestamp.
     fn is_fork_active_at_timestamp(&self, fork: SwarmHardfork, timestamp: u64) -> bool;
@@ -203,10 +183,6 @@ pub trait SwarmSpec: Send + Sync + Unpin + Debug + 'static {
     /// During handshake, peers exchange digests to verify compatibility.
     fn fork_digest(&self, at_timestamp: u64) -> ForkDigest;
 
-    // ========================================================================
-    // Network Type Checks
-    // ========================================================================
-
     /// Returns whether this is the mainnet Swarm.
     fn is_mainnet(&self) -> bool {
         self.network_id() == mainnet::NETWORK_ID
@@ -222,10 +198,6 @@ pub trait SwarmSpec: Send + Sync + Unpin + Debug + 'static {
         !self.is_mainnet() && !self.is_testnet()
     }
 }
-
-// ============================================================================
-// SwarmSpec Implementation for Hive
-// ============================================================================
 
 impl SwarmSpec for Hive {
     type ChunkSet = StandardChunkSet;
@@ -299,10 +271,6 @@ impl SwarmSpec for Hive {
         ForkDigest::compute(self.network_id, self.genesis_timestamp, &active_forks)
     }
 }
-
-// ============================================================================
-// Provider Traits
-// ============================================================================
 
 /// Trait for types that can provide a SwarmSpec.
 ///

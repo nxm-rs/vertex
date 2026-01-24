@@ -58,26 +58,11 @@ pub use vertex_swarm_forks::*;
 // Re-export contract bindings and addresses from nectar
 pub use nectar_contracts;
 
-// ============================================================================
-// Core Exports
-// ============================================================================
-
-// SwarmSpec trait and related types
 pub use api::{ForkDigest, StaticSwarmSpecProvider, SwarmSpec, SwarmSpecProvider};
-
-// Re-export chunk type set from nectar for convenience
-pub use nectar_primitives::{ChunkTypeSet, StandardChunkSet};
-
-// Hive (concrete implementation) and builders
-pub use spec::{DEV, Hive, HiveBuilder, MAINNET, TESTNET};
-
-// Configuration types
 pub use constants::*;
+pub use nectar_primitives::{ChunkTypeSet, StandardChunkSet};
+pub use spec::{DEV, Hive, HiveBuilder, MAINNET, TESTNET};
 pub use token::Token;
-
-// ============================================================================
-// Initialization Functions
-// ============================================================================
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -123,10 +108,6 @@ pub fn init_testnet() -> Arc<Hive> {
 pub fn init_dev() -> Arc<Hive> {
     spec::init_dev()
 }
-
-// ============================================================================
-// Prelude
-// ============================================================================
 
 /// Convenient re-exports for common usage patterns.
 pub mod prelude {

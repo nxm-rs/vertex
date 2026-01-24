@@ -87,7 +87,6 @@ use crate::{
     behaviour::{NodeBehaviour, NodeEvent},
 };
 
-
 /// A Swarm node generic over the node type hierarchy.
 ///
 /// The type parameter `N` determines capabilities at compile-time:

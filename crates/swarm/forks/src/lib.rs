@@ -1,14 +1,25 @@
-//! Swarm fork types for the network.
+//! Swarm hardfork definitions and activation logic.
 //!
-//! This crate contains network fork types and helper functions for managing
-//! hardforks in a timestamp-based activation model.
+//! Hardforks in Swarm are timestamp-based protocol upgrades. Unlike Ethereum's
+//! block-based forks, Swarm nodes activate new behavior when `block.timestamp`
+//! exceeds the fork's activation time.
 //!
-//! ## Feature Flags
+//! # Core Types
 //!
-//! - `arbitrary`: Adds `arbitrary` support for primitive types.
-//! - `serde`: Adds serialization/deserialization capabilities.
-//! - `std`: Uses standard library (default feature).
-//! - `rustc-hash`: Uses rustc's hash implementation (default feature).
+//! - [`SwarmHardfork`] - Enum of all Swarm protocol upgrades
+//! - [`ForkCondition`] - When a fork activates (timestamp or "never")
+//! - [`Hardforks`] - Collection mapping hardforks to their activation times
+//!
+//! # Usage
+//!
+//! ```ignore
+//! use vertex_swarm_forks::{SwarmHardfork, ForkCondition};
+//!
+//! let condition = ForkCondition::Timestamp(1699999999);
+//! if condition.active_at_timestamp(current_time) {
+//!     // Use post-fork protocol
+//! }
+//! ```
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]

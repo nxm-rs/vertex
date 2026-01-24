@@ -34,10 +34,6 @@ use core::time::Duration;
 
 use vertex_swarmspec::SwarmSpec;
 
-// ============================================================================
-// Availability Incentive Configuration
-// ============================================================================
-
 /// Configuration for availability incentives (pseudosettle / SWAP).
 ///
 /// All values are in **Accounting Units (AU)**, not bytes or BZZ tokens.
@@ -95,10 +91,6 @@ pub trait AvailabilityIncentiveConfig {
     }
 }
 
-// ============================================================================
-// Store Configuration (Local Chunk Storage)
-// ============================================================================
-
 /// Configuration for local chunk store.
 ///
 /// Storage capacity is expressed in number of chunks, which is the natural
@@ -147,10 +139,6 @@ pub trait StorageConfig {
     fn redistribution_enabled(&self) -> bool;
 }
 
-// ============================================================================
-// Network Configuration
-// ============================================================================
-
 /// Configuration for P2P networking.
 ///
 /// Implementations provide the parameters needed to configure the libp2p
@@ -171,10 +159,6 @@ pub trait NetworkConfig {
     /// Connection idle timeout.
     fn idle_timeout(&self) -> Duration;
 }
-
-// ============================================================================
-// API Configuration
-// ============================================================================
 
 /// Configuration for gRPC and metrics servers.
 pub trait ApiConfig {
@@ -197,10 +181,6 @@ pub trait ApiConfig {
     fn metrics_port(&self) -> u16;
 }
 
-// ============================================================================
-// Identity Configuration
-// ============================================================================
-
 /// Configuration for node identity management.
 pub trait IdentityConfig {
     /// Whether to use ephemeral identity (not persisted).
@@ -212,10 +192,6 @@ pub trait IdentityConfig {
     /// (e.g., for storage nodes, SWAP, redistribution).
     fn requires_persistent(&self) -> bool;
 }
-
-// ============================================================================
-// Combined Node Configuration
-// ============================================================================
 
 /// Complete node configuration combining all component configs.
 ///
@@ -249,13 +225,6 @@ pub trait NodeConfiguration {
     fn identity(&self) -> &Self::Identity;
 }
 
-// ============================================================================
-// Default Implementations
-// ============================================================================
-//
-// Note: DefaultAvailabilityConfig and NoAvailabilityConfig are provided by
-// vertex-bandwidth-core, not here. This crate only defines traits.
-
 /// Cache capacity divisor relative to reserve capacity.
 ///
 /// Default cache is `reserve_capacity / CACHE_CAPACITY_DIVISOR`.
@@ -286,10 +255,6 @@ impl StorageConfig for DefaultStorageConfig {
         false
     }
 }
-
-// ============================================================================
-// Storage Estimation Utilities
-// ============================================================================
 
 /// Estimated metadata overhead as a fraction of chunk data.
 ///
