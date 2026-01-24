@@ -32,6 +32,7 @@ mod store;
 mod swarm;
 mod sync;
 mod topology;
+mod types;
 
 pub use availability::*;
 pub use config::*;
@@ -40,6 +41,7 @@ pub use store::*;
 pub use swarm::*;
 pub use sync::*;
 pub use topology::*;
+pub use types::*;
 
 // Re-export chunk types for convenience
 pub use vertex_primitives::{

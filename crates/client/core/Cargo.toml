@@ -25,6 +25,7 @@ vertex-net-topology.workspace = true
 vertex-node-types.workspace = true
 vertex-primitives.workspace = true
 vertex-swarm-api.workspace = true
+vertex-swarmspec.workspace = true
 vertex-tasks.workspace = true
 
 ## p2p
@@ -43,6 +44,8 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+alloy-primitives.workspace = true
+alloy-signer-local.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
 
 [features]

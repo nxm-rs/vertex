@@ -28,16 +28,12 @@
 //! # Usage
 //!
 //! ```ignore
-//! use vertex_client_core::{SwarmNode, NetworkConfig};
-//! use vertex_net_identity::SwarmIdentity;
-//! use vertex_node_types::AnyNodeTypes;
+//! use vertex_client_core::SwarmNode;
+//! use vertex_swarm_api::NetworkConfig;
 //!
-//! // Create identity
-//! let identity = SwarmIdentity::random(spec.clone(), true);
-//!
-//! // Build node with client service
+//! // Build node with network config
 //! let (mut node, client_service, client_handle) = SwarmNode::<MyNodeTypes>::builder(identity)
-//!     .with_config(NetworkConfig::mainnet())
+//!     .with_network_config(&my_network_args)
 //!     .build()
 //!     .await?;
 //!
@@ -54,13 +50,19 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 mod behaviour;
+mod builder;
 mod client;
 mod node;
 mod service;
 
 pub use behaviour::{NodeBehaviour, NodeEvent};
+pub use builder::{
+    AccountingBuilder, BandwidthAccountingBuilder, BuiltSwarmComponents, DefaultComponentsBuilder,
+    FixedPricerBuilder, KademliaTopologyBuilder, NoAccountingBuilder, PricerBuilder,
+    SwarmBuilderContext, SwarmComponentsBuilder, TopologyBuilder,
+};
 pub use client::SwarmClient;
-pub use node::{NetworkConfig, SwarmNode, SwarmNodeBuilder};
+pub use node::{SwarmNode, SwarmNodeBuilder};
 pub use service::{
     Cheque, ClientCommand, ClientEvent, ClientHandle, ClientService, RetrievalError,
     RetrievalResult,

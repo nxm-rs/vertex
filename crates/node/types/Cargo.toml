@@ -24,6 +24,7 @@ vertex-primitives.workspace = true
 vertex-swarm-api.workspace = true
 vertex-swarmspec.workspace = true
 vertex-net-primitives-traits.workspace = true
+vertex-tasks.workspace = true
 
 # misc
 auto_impl.workspace = true

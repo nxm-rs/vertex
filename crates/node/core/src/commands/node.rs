@@ -19,70 +19,32 @@ use alloy_signer_local::LocalSigner;
 use eyre::{Result, WrapErr};
 use std::{fs, path::Path, sync::Arc};
 use tracing::{debug, error, info, warn};
-use vertex_client_core::{NetworkConfig, SwarmNode};
+use vertex_client_core::SwarmNode;
+use vertex_client_kademlia::KademliaTopology;
 use vertex_client_peermanager::FilePeerStore;
 use vertex_node_identity::SwarmIdentity;
 use vertex_node_types::{AnyNodeTypes, Identity};
-use vertex_primitives::StandardChunkSet;
 use vertex_rpc_core::RpcServer;
 use vertex_rpc_server::{GrpcServer, GrpcServerConfig};
 use vertex_swarm_api::NoAvailabilityIncentives;
 use vertex_swarmspec::{init_mainnet, init_testnet, Hive, SwarmSpec};
 use vertex_tasks::TaskManager;
 
-/// Placeholder topology type for initial implementation.
-/// TODO: Replace with actual Kademlia topology implementation.
-#[derive(Clone, Debug, Default)]
-struct PlaceholderTopology;
-
-impl vertex_swarm_api::Topology for PlaceholderTopology {
-    fn self_address(&self) -> vertex_primitives::OverlayAddress {
-        vertex_primitives::OverlayAddress::default()
-    }
-
-    fn neighbors(&self, _depth: u8) -> Vec<vertex_primitives::OverlayAddress> {
-        Vec::new()
-    }
-
-    fn is_responsible_for(&self, _address: &vertex_primitives::ChunkAddress) -> bool {
-        false
-    }
-
-    fn depth(&self) -> u8 {
-        0
-    }
-
-    fn closest_to(
-        &self,
-        _address: &vertex_primitives::ChunkAddress,
-        _count: usize,
-    ) -> Vec<vertex_primitives::OverlayAddress> {
-        Vec::new()
-    }
-
-    fn add_peers(&self, _peers: &[vertex_primitives::OverlayAddress]) {}
-
-    fn pick(&self, _peer: &vertex_primitives::OverlayAddress, _is_full_node: bool) -> bool {
-        true
-    }
-
-    fn connected(&self, _peer: vertex_primitives::OverlayAddress) {}
-
-    fn disconnected(&self, _peer: &vertex_primitives::OverlayAddress) {}
-
-    fn peers_to_connect(&self) -> Vec<vertex_primitives::OverlayAddress> {
-        Vec::new()
-    }
-}
-
 /// Default node types for light/publisher clients.
-/// Uses no availability incentives initially (will be configurable later).
+///
+/// Uses:
+/// - `Hive` spec (mainnet/testnet)
+/// - `SwarmIdentity` for signing and overlay address
+/// - `KademliaTopology` for peer discovery (built by SwarmNode internally)
+/// - `NoAvailabilityIncentives` for now (pseudosettle/SWAP coming)
 type DefaultNodeTypes = AnyNodeTypes<
-    Hive,
-    SwarmIdentity,
-    StandardChunkSet,
-    PlaceholderTopology,
-    NoAvailabilityIncentives,
+    Hive,                                       // Spec
+    SwarmIdentity,                              // Identity
+    Arc<KademliaTopology<SwarmIdentity>>,       // Topology
+    NoAvailabilityIncentives,                   // Accounting
+    (),                                         // Database
+    (),                                         // Rpc
+    vertex_tasks::TaskExecutor,                 // Executor
 >;
 
 /// Run the node command
@@ -122,16 +84,6 @@ pub async fn run(args: NodeArgs) -> Result<()> {
         node_type,
     );
 
-    // Create network configuration
-    let network_config = NetworkConfig {
-        listen_addrs: vec![
-            format!("/ip4/{}/tcp/{}", config.network.addr, config.network.port)
-                .parse()
-                .unwrap(),
-        ],
-        bootnodes: spec.bootnodes.clone(),
-        ..Default::default()
-    };
 
     // Create peer store for persistence
     let peers_file = config
@@ -211,7 +163,7 @@ pub async fn run(args: NodeArgs) -> Result<()> {
     info!("Initializing P2P network...");
     let (mut node, client_service, _client_handle) =
         SwarmNode::<DefaultNodeTypes>::builder(identity)
-            .with_config(network_config)
+            .with_network_config(&args.network)
             .with_peer_store(peer_store.clone())
             .build()
             .await?;
@@ -506,6 +458,7 @@ mod tests {
                 port: 1634,
                 addr: "0.0.0.0".to_string(),
                 max_peers: 50,
+                idle_timeout_secs: crate::constants::DEFAULT_IDLE_TIMEOUT_SECS,
             },
             availability: AvailabilityArgs {
                 mode: AvailabilityMode::Pseudosettle,

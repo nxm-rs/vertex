@@ -1,216 +1,126 @@
-//! Node type definitions for Vertex Swarm
+//! Node type definitions for Vertex Swarm.
 //!
-//! This crate provides the foundational type system for Swarm nodes, following
-//! the pattern established by reth. Types are organized in a hierarchy based
-//! on node capabilities:
-//!
-//! # Node Type Hierarchy
+//! This crate wraps SwarmTypes from swarm-api and adds node infrastructure:
 //!
 //! ```text
-//! NodeTypes (read-only capable)
-//!   - Spec, ChunkSet, Topology, Identity
-//!   - DataAvailability (bandwidth/retrieval incentive)
-//!          │
-//!          ▼
-//! PublisherNodeTypes (can write/publish)
-//!   - Storage (proof for storing - stamps)
-//!          │
-//!          ▼
-//! FullNodeTypes (stores and syncs)
-//!   - Store, Sync
+//! SwarmTypes (swarm-api)          NodeTypes (node-types)
+//! ──────────────────────          ──────────────────────
+//! BootnodeTypes                   NodeTypes
+//! LightTypes          ────►         + Swarm (any SwarmTypes)
+//! PublisherTypes                    + Database
+//! FullTypes                         + Rpc
+//!                                   + Executor
 //! ```
 //!
-//! # Identity
-//!
-//! The [`Identity`] trait defines the interface for a node's cryptographic identity.
-//! This includes the signing key, overlay address derivation, and network configuration.
-//! See the [`identity`] module for details.
-//!
-//! # Incentive Model
-//!
-//! Swarm has two distinct incentive mechanisms:
-//!
-//! 1. **Data Availability** (retrieval incentive) - Paid to nodes that serve data.
-//!    Implementations: pseudosettle (free allowance), SWAP (payment channels), both, or none.
-//!
-//! 2. **Storage** (storage incentive) - Proof attached to chunks when storing.
-//!    Implementations: postage stamps (mainnet), or `()` for free storage (dev/private).
-//!
-//! # Example
-//!
-//! ```ignore
-//! // Read-only light client
-//! impl NodeTypes for ReadOnlyClient {
-//!     type Spec = Hive;
-//!     type ChunkSet = StandardChunkSet;
-//!     type Topology = KademliaTopology;
-//!     type Identity = SwarmIdentity;
-//!     type DataAvailability = PseudosettleSwap;  // Uses both
-//! }
-//!
-//! // Publisher (can also write)
-//! impl PublisherNodeTypes for PublisherClient {
-//!     type Storage = nectar_postage::Stamp;
-//! }
-//!
-//! // Full node (stores and syncs)
-//! impl FullNodeTypes for FullNode {
-//!     type Store = RocksDbStore;
-//!     type Sync = PullPushSync;
-//! }
-//! ```
+//! This separation allows:
+//! - Same Swarm logic with different databases (redb, rocksdb, in-memory)
+//! - Same Swarm logic with different RPC (JSON-RPC, gRPC, none)
+//! - Testing with mock infrastructure
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![warn(missing_docs)]
 
 extern crate alloc;
 
-mod identity;
-pub use identity::Identity;
-
 use core::fmt::Debug;
-use vertex_primitives::ChunkTypeSet;
-use vertex_swarm_api::{AvailabilityAccounting, ChunkSync, LocalStore, Topology};
-use vertex_swarmspec::SwarmSpec;
 
-// ============================================================================
-// NodeTypes - Base for all nodes (read-only capable)
-// ============================================================================
+// Re-export SwarmTypes hierarchy from swarm-api
+pub use vertex_swarm_api::{
+    BootnodeTypes, FullTypes, Identity, LightTypes, PublisherTypes,
+    AccountingOf, IdentityOf, SpecOf, StorageOf, StoreOf, SyncOf, TopologyOf,
+};
 
-/// Base type configuration for any Swarm node.
+/// Database provider trait for node state persistence.
 ///
-/// This defines the minimum configuration needed for a node that can
-/// retrieve chunks from the network. Even read-only clients need:
-/// - Network specification (which swarm to connect to)
-/// - Identity (cryptographic identity for the network)
-/// - Chunk type support (what chunks can be handled)
-/// - Topology (who to talk to)
-/// - Data availability incentive (how to pay for retrieval)
+/// Implementations: redb, rocksdb, lmdb, in-memory (testing).
 #[auto_impl::auto_impl(&, Arc)]
-pub trait NodeTypes: Clone + Debug + Send + Sync + Unpin + 'static {
-    /// The network specification.
-    ///
-    /// Defines network identity (mainnet, testnet, dev), hardforks,
-    /// bootnodes, and token contract address.
-    type Spec: SwarmSpec + Clone;
+pub trait DatabaseProvider: Send + Sync + Clone + 'static {}
 
-    /// The node's cryptographic identity.
-    ///
-    /// Provides signing capability and overlay address derivation.
-    /// The identity's `Spec` type must match `Self::Spec`.
+/// RPC server trait for node API exposure.
+///
+/// Implementations: JSON-RPC (Bee-compatible), gRPC, none.
+#[auto_impl::auto_impl(&, Arc)]
+pub trait RpcServer: Send + Sync + 'static {}
+
+/// Task executor for async runtime.
+pub trait TaskExecutor: Send + Sync + Clone + 'static {}
+
+/// No-op implementations for nodes without these features.
+impl DatabaseProvider for () {}
+impl RpcServer for () {}
+impl TaskExecutor for () {}
+
+/// Implement TaskExecutor for vertex_tasks::TaskExecutor.
+impl TaskExecutor for vertex_tasks::TaskExecutor {}
+
+/// Node types combining Swarm layer with infrastructure.
+pub trait NodeTypes: Clone + Debug + Send + Sync + 'static {
+    /// Network specification.
+    type Spec: vertex_swarmspec::SwarmSpec + Clone;
+
+    /// Cryptographic identity.
     type Identity: Identity<Spec = Self::Spec>;
 
-    /// The chunk types supported by this node.
-    ///
-    /// Determines which chunk types (content-addressed, single-owner, etc.)
-    /// this node can handle.
-    type ChunkSet: ChunkTypeSet;
+    /// Peer topology.
+    type Topology: vertex_swarm_api::Topology + Clone;
 
-    /// The topology implementation for peer discovery.
-    ///
-    /// How this node discovers and routes to peers in the network.
-    type Topology: Topology + Clone;
+    /// Availability accounting.
+    type Accounting: vertex_swarm_api::AvailabilityAccounting;
 
-    /// The data availability incentive mechanism.
-    ///
-    /// How this node pays for retrieving data (bandwidth accounting).
-    /// This is a factory that creates per-peer accounting handles.
-    /// Options: pseudosettle, SWAP, both, or `NoAvailabilityIncentives`.
-    type DataAvailability: AvailabilityAccounting + Clone;
+    /// Database provider for persistent state.
+    type Database: DatabaseProvider;
+
+    /// RPC server implementation.
+    type Rpc: RpcServer;
+
+    /// Task executor.
+    type Executor: TaskExecutor;
 }
 
-// ============================================================================
-// PublisherNodeTypes - Can write/publish to the network
-// ============================================================================
-
-/// Type configuration for nodes that can publish (store) chunks.
-///
-/// Publishers need everything a read-only node needs, plus the ability
-/// to prove payment for storage. On mainnet this means postage stamps.
+/// Node types for publisher capability.
 pub trait PublisherNodeTypes: NodeTypes {
-    /// Storage incentive proof for storing chunks.
-    ///
-    /// This is attached to chunks when putting them into the network.
-    /// On mainnet, this is a postage stamp from a valid batch.
-    /// For dev/testing, this can be `()` for free storage.
+    /// Storage proof type (postage stamps on mainnet, `()` for dev).
     type Storage: Send + Sync + 'static;
 }
 
-// ============================================================================
-// FullNodeTypes - Stores locally and syncs
-// ============================================================================
-
-/// Type configuration for full nodes that store and sync chunks.
-///
-/// Full nodes participate in the network by:
-/// - Storing chunks they're responsible for
-/// - Syncing with neighbors to ensure data availability
-///
-/// They need all publisher capabilities plus storage and sync.
+/// Node types for full node capability.
 pub trait FullNodeTypes: PublisherNodeTypes {
-    /// The local storage implementation.
-    ///
-    /// How this node persists chunks it's responsible for.
-    type Store: LocalStore + Clone;
+    /// Local chunk storage.
+    type Store: vertex_swarm_api::LocalStore + Clone;
 
-    /// The chunk synchronization implementation.
-    ///
-    /// How this node syncs chunks with its neighbors.
-    type Sync: ChunkSync + Clone;
+    /// Chunk synchronization.
+    type Sync: vertex_swarm_api::ChunkSync + Clone;
 }
 
-// ============================================================================
-// Type Aliases
-// ============================================================================
+/// Type alias to extract Spec from NodeTypes.
+pub type NodeSpecOf<N> = <N as NodeTypes>::Spec;
 
-/// Extract the [`SwarmSpec`] type from a [`NodeTypes`] implementation.
-pub type SpecOf<N> = <N as NodeTypes>::Spec;
+/// Type alias to extract Identity from NodeTypes.
+pub type NodeIdentityOf<N> = <N as NodeTypes>::Identity;
 
-/// Extract the [`Identity`] type from a [`NodeTypes`] implementation.
-pub type IdentityOf<N> = <N as NodeTypes>::Identity;
+/// Type alias to extract Topology from NodeTypes.
+pub type NodeTopologyOf<N> = <N as NodeTypes>::Topology;
 
-/// Extract the [`ChunkTypeSet`] type from a [`NodeTypes`] implementation.
-pub type ChunkSetOf<N> = <N as NodeTypes>::ChunkSet;
+/// Type alias to extract Accounting from NodeTypes.
+pub type NodeAccountingOf<N> = <N as NodeTypes>::Accounting;
 
-/// Extract the [`Topology`] type from a [`NodeTypes`] implementation.
-pub type TopologyOf<N> = <N as NodeTypes>::Topology;
+/// Type alias to extract the Database from NodeTypes.
+pub type DatabaseOf<N> = <N as NodeTypes>::Database;
 
-/// Extract the data availability type from a [`NodeTypes`] implementation.
-pub type DataAvailabilityOf<N> = <N as NodeTypes>::DataAvailability;
+/// Type alias to extract the Rpc from NodeTypes.
+pub type RpcOf<N> = <N as NodeTypes>::Rpc;
 
-/// Extract the storage incentive type from a [`PublisherNodeTypes`] implementation.
-pub type StorageOf<N> = <N as PublisherNodeTypes>::Storage;
+/// Type alias to extract the Executor from NodeTypes.
+pub type ExecutorOf<N> = <N as NodeTypes>::Executor;
 
-/// Extract the [`LocalStore`] type from a [`FullNodeTypes`] implementation.
-pub type StoreOf<N> = <N as FullNodeTypes>::Store;
+/// Type alias to extract Storage from PublisherNodeTypes.
+pub type NodeStorageOf<N> = <N as PublisherNodeTypes>::Storage;
 
-/// Extract the [`ChunkSync`] type from a [`FullNodeTypes`] implementation.
-pub type SyncOf<N> = <N as FullNodeTypes>::Sync;
+/// Type alias to extract Store from FullNodeTypes.
+pub type NodeStoreOf<N> = <N as FullNodeTypes>::Store;
 
-// ============================================================================
-// Convenience Extension Traits
-// ============================================================================
-
-/// Extension trait providing convenient access to spec methods.
-pub trait NodeTypesWithSpec: NodeTypes {
-    /// Check if configured for mainnet.
-    fn is_mainnet(spec: &Self::Spec) -> bool {
-        spec.is_mainnet()
-    }
-
-    /// Check if configured for testnet.
-    fn is_testnet(spec: &Self::Spec) -> bool {
-        spec.is_testnet()
-    }
-
-    /// Check if configured for a development network.
-    fn is_dev(spec: &Self::Spec) -> bool {
-        spec.is_dev()
-    }
-}
-
-// Blanket implementation
-impl<N: NodeTypes> NodeTypesWithSpec for N {}
+/// Type alias to extract Sync from FullNodeTypes.
+pub type NodeSyncOf<N> = <N as FullNodeTypes>::Sync;
 
 // ============================================================================
 // AnyNodeTypes - Flexible Type Builder
@@ -218,60 +128,51 @@ impl<N: NodeTypes> NodeTypesWithSpec for N {}
 
 use core::marker::PhantomData;
 
-/// A flexible [`NodeTypes`] implementation using phantom types.
+/// Flexible NodeTypes using phantom types.
 ///
-/// Use this when you want to specify types without creating a new struct:
-///
-/// ```ignore
-/// type MyNode = AnyNodeTypes<Hive, SwarmIdentity, StandardChunkSet, KademliaTopology, PseudosettleSwap>;
-/// ```
+/// Use when you need NodeTypes without creating a new struct.
 #[derive(Debug)]
-pub struct AnyNodeTypes<Spec, Ident, ChunkSet, Topo, DA>(
-    PhantomData<Spec>,
-    PhantomData<Ident>,
-    PhantomData<ChunkSet>,
-    PhantomData<Topo>,
-    PhantomData<DA>,
+pub struct AnyNodeTypes<Spec, Ident, Topo, Acct, Db = (), Rpc = (), Exec = ()>(
+    PhantomData<(Spec, Ident, Topo, Acct, Db, Rpc, Exec)>,
 );
 
-impl<Spec, Ident, ChunkSet, Topo, DA> Clone for AnyNodeTypes<Spec, Ident, ChunkSet, Topo, DA> {
+impl<Spec, Ident, Topo, Acct, Db, Rpc, Exec> Clone
+    for AnyNodeTypes<Spec, Ident, Topo, Acct, Db, Rpc, Exec>
+{
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<Spec, Ident, ChunkSet, Topo, DA> Copy for AnyNodeTypes<Spec, Ident, ChunkSet, Topo, DA> {}
+impl<Spec, Ident, Topo, Acct, Db, Rpc, Exec> Copy
+    for AnyNodeTypes<Spec, Ident, Topo, Acct, Db, Rpc, Exec>
+{
+}
 
-impl<Spec, Ident, ChunkSet, Topo, DA> Default for AnyNodeTypes<Spec, Ident, ChunkSet, Topo, DA> {
+impl<Spec, Ident, Topo, Acct, Db, Rpc, Exec> Default
+    for AnyNodeTypes<Spec, Ident, Topo, Acct, Db, Rpc, Exec>
+{
     fn default() -> Self {
-        Self::new()
+        Self(PhantomData)
     }
 }
 
-impl<Spec, Ident, ChunkSet, Topo, DA> AnyNodeTypes<Spec, Ident, ChunkSet, Topo, DA> {
-    /// Create a new type configuration.
-    pub const fn new() -> Self {
-        Self(
-            PhantomData,
-            PhantomData,
-            PhantomData,
-            PhantomData,
-            PhantomData,
-        )
-    }
-}
-
-impl<Spec, Ident, ChunkSet, Topo, DA> NodeTypes for AnyNodeTypes<Spec, Ident, ChunkSet, Topo, DA>
+impl<Spec, Ident, Topo, Acct, Db, Rpc, Exec> NodeTypes
+    for AnyNodeTypes<Spec, Ident, Topo, Acct, Db, Rpc, Exec>
 where
-    Spec: SwarmSpec + Clone + Debug + Send + Sync + Unpin + 'static,
+    Spec: vertex_swarmspec::SwarmSpec + Clone + Debug + Send + Sync + Unpin + 'static,
     Ident: Identity<Spec = Spec> + Debug + Unpin,
-    ChunkSet: ChunkTypeSet + Clone + Debug + Send + Sync + Unpin + 'static,
-    Topo: Topology + Clone + Debug + Send + Sync + Unpin + 'static,
-    DA: AvailabilityAccounting + Clone + Debug + Send + Sync + Unpin + 'static,
+    Topo: vertex_swarm_api::Topology + Clone + Debug + Send + Sync + Unpin + 'static,
+    Acct: vertex_swarm_api::AvailabilityAccounting + Debug + Send + Sync + Unpin + 'static,
+    Db: DatabaseProvider + Debug,
+    Rpc: RpcServer + Debug,
+    Exec: TaskExecutor + Debug,
 {
     type Spec = Spec;
     type Identity = Ident;
-    type ChunkSet = ChunkSet;
     type Topology = Topo;
-    type DataAvailability = DA;
+    type Accounting = Acct;
+    type Database = Db;
+    type Rpc = Rpc;
+    type Executor = Exec;
 }

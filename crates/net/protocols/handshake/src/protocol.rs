@@ -153,7 +153,7 @@ async fn handle_outbound_handshake<N: NodeTypes>(
     // Construct the observed underlay with the peer ID appended
     // Format: /ip4/x.x.x.x/tcp/1634/p2p/QmPeerId...
     let observed_underlay = remote_addr.with(libp2p::multiaddr::Protocol::P2p(peer_id));
-    info!("Observed underlay: {:?}", observed_underlay);
+    debug!("Observed underlay: {:?}", observed_underlay);
 
     // Set up codecs - SynAckCodec and AckCodec need network_id for validation
     let syn_codec = SynCodec::new(1024);

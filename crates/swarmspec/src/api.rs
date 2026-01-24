@@ -39,6 +39,7 @@ use alloy_primitives::keccak256;
 use byteorder::{LittleEndian, WriteBytesExt};
 use core::fmt::Debug;
 use libp2p::Multiaddr;
+use nectar_primitives::{ChunkTypeSet, StandardChunkSet};
 use vertex_net_primitives::Swarm;
 use vertex_swarm_forks::{ForkCondition, SwarmHardfork, SwarmHardforks};
 
@@ -116,27 +117,18 @@ impl core::fmt::Display for ForkDigest {
 /// govern protocol behavior. All nodes on the same network must use an
 /// equivalent spec to interoperate.
 ///
-/// # Scope
-///
-/// The spec covers network-level concerns that are fixed for all participants:
+/// Covers network-level concerns fixed for all participants:
 /// - Network identity (ID, name, underlying L1 chain)
 /// - Bootstrap nodes for initial peer discovery
 /// - Hardfork activation schedule
 /// - Token contract address
+/// - Supported chunk types
 ///
-/// It explicitly excludes node-level configuration like storage capacity,
-/// bandwidth pricing, or cache policies. These operational parameters vary
-/// per deployment and are configured separately.
-///
-/// # Implementors
-///
-/// - [`Hive`] - Standard implementation for mainnet, testnet, and dev
-/// - Custom implementations for private networks or testing
+/// Excludes node-level config (storage capacity, pricing, cache policies).
 #[auto_impl::auto_impl(&, Arc)]
 pub trait SwarmSpec: Send + Sync + Unpin + Debug + 'static {
-    // ========================================================================
-    // Network Identity
-    // ========================================================================
+    /// The set of chunk types supported by this network.
+    type ChunkSet: ChunkTypeSet;
 
     /// Returns the corresponding Swarm network identifier.
     fn swarm(&self) -> Swarm;
@@ -236,6 +228,8 @@ pub trait SwarmSpec: Send + Sync + Unpin + Debug + 'static {
 // ============================================================================
 
 impl SwarmSpec for Hive {
+    type ChunkSet = StandardChunkSet;
+
     fn swarm(&self) -> Swarm {
         match self.network_id {
             mainnet::NETWORK_ID => vertex_net_primitives::NamedSwarm::Mainnet.into(),

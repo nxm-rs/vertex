@@ -156,13 +156,11 @@ pub trait StorageConfig {
 /// Implementations provide the parameters needed to configure the libp2p
 /// swarm and peer connections.
 pub trait NetworkConfig {
-    /// Iterator over listen addresses (as string multiaddrs).
-    type ListenAddrs<'a>: Iterator<Item = &'a str>
-    where
-        Self: 'a;
+    /// Get listen addresses as multiaddr strings (e.g., "/ip4/0.0.0.0/tcp/1634").
+    fn listen_addrs(&self) -> Vec<String>;
 
-    /// Get the listen addresses.
-    fn listen_addrs(&self) -> Self::ListenAddrs<'_>;
+    /// Get bootnode addresses as multiaddr strings.
+    fn bootnodes(&self) -> Vec<String>;
 
     /// Whether peer discovery is enabled.
     fn discovery_enabled(&self) -> bool;

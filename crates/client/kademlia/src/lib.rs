@@ -90,6 +90,16 @@ pub struct KademliaTopology<I: Identity> {
     connection_candidates: Mutex<Vec<OverlayAddress>>,
 }
 
+impl<I: Identity> std::fmt::Debug for KademliaTopology<I> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KademliaTopology")
+            .field("depth", &self.depth.load(std::sync::atomic::Ordering::Relaxed))
+            .field("known_peers", &self.known_peers.len())
+            .field("connected_peers", &self.connected_peers.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<I: Identity> KademliaTopology<I> {
     /// Create a new Kademlia topology with the given identity.
     pub fn new(identity: I, config: KademliaConfig) -> Arc<Self> {

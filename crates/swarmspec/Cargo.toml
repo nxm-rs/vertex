@@ -15,8 +15,9 @@ workspace = true
 alloy-chains = { workspace = true, features = ["serde"] }
 alloy-primitives = { workspace = true, features = ["serde"] }
 
-# nectar (contracts provide addresses and bindings)
+# nectar (contracts provide addresses and bindings, primitives for ChunkTypeSet)
 nectar-contracts.workspace = true
+nectar-primitives.workspace = true
 
 # swarm forks
 vertex-swarm-forks.workspace = true

@@ -1,38 +1,9 @@
-//! Node API - Composition and lifecycle for Swarm nodes
+//! Node API - Component containers for Swarm nodes.
 //!
-//! This crate builds on [`vertex_node_types`] to provide:
-//!
-//! - Component containers ([`NodeComponents`], [`PublisherComponents`], [`FullNodeComponents`])
-//! - Type-safe swarm access with enforced matching between NodeTypes and Swarm
-//!
-//! # Architecture
-//!
-//! ```text
-//! node-types (what types?)        node-api (composition + enforcement)
-//! ─────────────────────────       ────────────────────────────────────
-//! NodeTypes (read-only)      ──►  NodeComponents<N, S: SwarmReader>
-//!   + DataAvailability             where S::Accounting = N::DataAvailability
-//!
-//! PublisherNodeTypes         ──►  PublisherComponents<N, S: SwarmWriter>
-//!   + Storage                      where S::Accounting = N::DataAvailability
-//!                                        S::Storage = N::Storage
-//!
-//! FullNodeTypes              ──►  FullNodeComponents<N, S: SwarmWriter>
-//!   + Store, Sync                  (same bounds + store/sync)
-//! ```
-//!
-//! # Usage
-//!
-//! ```ignore
-//! // Create components (types must match!)
-//! let components = FullNodeComponents::new(swarm, topology, store, sync);
-//!
-//! // Use the Swarm client
-//! components.swarm().put(chunk, &proof).await?;
-//!
-//! // Access availability accounting
-//! let peer_acct = components.accounting().for_peer(peer_id);
-//! ```
+//! Provides runtime containers that hold SwarmTypes instances:
+//! - [`LightComponents`] - Read-only (SwarmReader)
+//! - [`PublisherComponents`] - Can upload (SwarmWriter)
+//! - [`FullComponents`] - Stores and syncs
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![warn(missing_docs)]
@@ -45,26 +16,14 @@ mod node;
 pub use components::*;
 pub use node::*;
 
-// Re-export node-types for convenience
-pub use vertex_node_types::{
-    // Builder
-    AnyNodeTypes,
+// Re-export SwarmTypes hierarchy
+pub use vertex_swarm_api::{
+    BootnodeTypes, FullTypes, Identity, LightTypes, PublisherTypes,
     // Type aliases
-    ChunkSetOf,
-    DataAvailabilityOf,
-    // Core traits (hierarchy)
-    FullNodeTypes,
-    NodeTypes,
-    NodeTypesWithSpec,
-    PublisherNodeTypes,
-    SpecOf,
-    StorageOf,
-    StoreOf,
-    SyncOf,
-    TopologyOf,
+    AccountingOf, IdentityOf, SpecOf, StorageOf, StoreOf, SyncOf, TopologyOf,
 };
 
-// Re-export swarm-api traits for convenience
+// Re-export swarm-api traits
 pub use vertex_swarm_api::{
     AnyChunk, AvailabilityAccounting, ChunkSync, Direction, LocalStore, NoAvailabilityIncentives,
     NoPeerAvailability, PeerAvailability, SwarmError, SwarmReader, SwarmResult, SwarmWriter,

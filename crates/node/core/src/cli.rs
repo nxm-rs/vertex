@@ -11,12 +11,14 @@
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
+use std::time::Duration;
 use vertex_bandwidth_core::{
     DEFAULT_BASE_PRICE, DEFAULT_EARLY_PAYMENT_PERCENT, DEFAULT_LIGHT_FACTOR,
     DEFAULT_PAYMENT_THRESHOLD, DEFAULT_PAYMENT_TOLERANCE_PERCENT, DEFAULT_REFRESH_RATE,
 };
 use vertex_swarm_api::{
-    ApiConfig, AvailabilityIncentiveConfig, IdentityConfig, StorageConfig, StoreConfig,
+    ApiConfig, AvailabilityIncentiveConfig, IdentityConfig, NetworkConfig, StorageConfig,
+    StoreConfig,
 };
 
 /// Vertex Swarm - Ethereum Swarm Node Implementation
@@ -230,6 +232,17 @@ pub struct NetworkArgs {
     /// Maximum number of peers
     #[arg(long = "network.max-peers", default_value_t = crate::constants::DEFAULT_MAX_PEERS)]
     pub max_peers: usize,
+
+    /// Connection idle timeout in seconds
+    #[arg(long = "network.idle-timeout", default_value_t = crate::constants::DEFAULT_IDLE_TIMEOUT_SECS)]
+    pub idle_timeout_secs: u64,
+}
+
+impl NetworkArgs {
+    /// Get the primary listen address as a multiaddr string.
+    fn listen_multiaddr(&self) -> String {
+        format!("/ip4/{}/tcp/{}", self.addr, self.port)
+    }
 }
 
 // =============================================================================
@@ -477,5 +490,27 @@ impl IdentityConfig for IdentityArgs {
         // This returns a conservative default; the node command should check
         // node type to determine actual persistence requirements.
         !self.ephemeral
+    }
+}
+
+impl NetworkConfig for NetworkArgs {
+    fn listen_addrs(&self) -> Vec<String> {
+        vec![self.listen_multiaddr()]
+    }
+
+    fn bootnodes(&self) -> Vec<String> {
+        self.bootnodes.clone().unwrap_or_default()
+    }
+
+    fn discovery_enabled(&self) -> bool {
+        !self.disable_discovery
+    }
+
+    fn max_peers(&self) -> usize {
+        self.max_peers
+    }
+
+    fn idle_timeout(&self) -> Duration {
+        Duration::from_secs(self.idle_timeout_secs)
     }
 }

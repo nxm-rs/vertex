@@ -5,33 +5,28 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use vertex_bandwidth_core::Pricer;
 use vertex_primitives::{AnyChunk, ChunkAddress};
-use vertex_swarm_api::{AvailabilityAccounting, SwarmError, SwarmReader, SwarmResult, Topology};
+use vertex_swarm_api::{LightTypes, SwarmError, SwarmReader, SwarmResult, Topology};
 
 use crate::service::ClientHandle;
 
 /// Light client for Swarm chunk retrieval.
 ///
-/// Provides read-only access to the Swarm network with bandwidth accounting.
-pub struct SwarmClient<T, A, P>
-where
-    T: Topology,
-    A: AvailabilityAccounting,
-    P: Pricer,
-{
-    topology: Arc<T>,
-    accounting: Arc<A>,
+/// Generic over `Types` which provides the topology and accounting types.
+pub struct SwarmClient<Types: LightTypes, P: Pricer> {
+    topology: Arc<Types::Topology>,
+    accounting: Arc<Types::Accounting>,
     pricer: Arc<P>,
     client_handle: ClientHandle,
 }
 
-impl<T, A, P> SwarmClient<T, A, P>
-where
-    T: Topology,
-    A: AvailabilityAccounting,
-    P: Pricer,
-{
+impl<Types: LightTypes, P: Pricer> SwarmClient<Types, P> {
     /// Create a new SwarmClient.
-    pub fn new(topology: T, accounting: A, pricer: P, client_handle: ClientHandle) -> Self {
+    pub fn new(
+        topology: Types::Topology,
+        accounting: Types::Accounting,
+        pricer: P,
+        client_handle: ClientHandle,
+    ) -> Self {
         Self {
             topology: Arc::new(topology),
             accounting: Arc::new(accounting),
@@ -42,8 +37,8 @@ where
 
     /// Create from Arc-wrapped components.
     pub fn from_arcs(
-        topology: Arc<T>,
-        accounting: Arc<A>,
+        topology: Arc<Types::Topology>,
+        accounting: Arc<Types::Accounting>,
         pricer: Arc<P>,
         client_handle: ClientHandle,
     ) -> Self {
@@ -66,12 +61,7 @@ where
     }
 }
 
-impl<T, A, P> Clone for SwarmClient<T, A, P>
-where
-    T: Topology,
-    A: AvailabilityAccounting,
-    P: Pricer,
-{
+impl<Types: LightTypes, P: Pricer> Clone for SwarmClient<Types, P> {
     fn clone(&self) -> Self {
         Self {
             topology: Arc::clone(&self.topology),
@@ -83,26 +73,18 @@ where
 }
 
 #[async_trait]
-impl<T, A, P> SwarmReader for SwarmClient<T, A, P>
-where
-    T: Topology + 'static,
-    A: AvailabilityAccounting + 'static,
-    P: Pricer + 'static,
-{
-    type Topology = T;
-    type Accounting = A;
-
-    fn topology(&self) -> &Self::Topology {
-        &self.topology
+impl<Types: LightTypes + 'static, P: Pricer + 'static> SwarmReader<Types> for SwarmClient<Types, P> {
+    fn topology(&self) -> &Types::Topology {
+        &*self.topology
     }
 
-    fn accounting(&self) -> &Self::Accounting {
-        &self.accounting
+    fn accounting(&self) -> &Types::Accounting {
+        &*self.accounting
     }
 
     async fn get(&self, address: &ChunkAddress) -> SwarmResult<AnyChunk> {
         // Get closest peers to the chunk address
-        let _closest = self.topology.closest_to(address, 3);
+        let _closest = self.topology().closest_to(address, 3);
 
         // TODO: Try each peer in order of proximity
         // For each peer:
@@ -121,10 +103,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::fmt::Debug;
     use tokio::sync::mpsc;
     use vertex_bandwidth_core::{Accounting, AccountingConfig, FixedPricer};
     use vertex_net_client::ClientCommand;
     use vertex_primitives::OverlayAddress;
+    use vertex_swarm_api::{AvailabilityAccounting, BootnodeTypes, Identity};
+    use vertex_swarmspec::SwarmSpec;
 
     /// Mock topology for testing.
     #[derive(Clone, Default)]
@@ -168,6 +153,42 @@ mod tests {
         }
     }
 
+    /// Mock types for testing.
+    #[derive(Clone, Debug)]
+    struct MockTypes;
+
+    impl BootnodeTypes for MockTypes {
+        type Spec = vertex_swarmspec::Hive;
+        type Identity = MockIdentity;
+        type Topology = MockTopology;
+    }
+
+    impl LightTypes for MockTypes {
+        type Accounting = Accounting;
+    }
+
+    /// Mock identity for testing.
+    #[derive(Clone, Debug)]
+    struct MockIdentity;
+
+    impl Identity for MockIdentity {
+        type Spec = vertex_swarmspec::Hive;
+        type Signer = alloy_signer_local::PrivateKeySigner;
+
+        fn spec(&self) -> &Self::Spec {
+            unimplemented!()
+        }
+        fn nonce(&self) -> alloy_primitives::B256 {
+            alloy_primitives::B256::ZERO
+        }
+        fn signer(&self) -> Arc<Self::Signer> {
+            unimplemented!()
+        }
+        fn is_full_node(&self) -> bool {
+            false
+        }
+    }
+
     fn create_test_handle() -> ClientHandle {
         let (tx, _rx) = mpsc::unbounded_channel::<ClientCommand>();
         ClientHandle::new(tx)
@@ -180,7 +201,7 @@ mod tests {
         let pricer = FixedPricer::default();
         let handle = create_test_handle();
 
-        let client = SwarmClient::new(topology, accounting, pricer, handle);
+        let client: SwarmClient<MockTypes, _> = SwarmClient::new(topology, accounting, pricer, handle);
         let _clone = client.clone();
     }
 
@@ -191,7 +212,7 @@ mod tests {
         let pricer = FixedPricer::default();
         let handle = create_test_handle();
 
-        let client = SwarmClient::new(topology, accounting, pricer, handle);
+        let client: SwarmClient<MockTypes, _> = SwarmClient::new(topology, accounting, pricer, handle);
 
         let peers = client.accounting().peers();
         assert!(peers.is_empty());

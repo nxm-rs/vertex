@@ -12,6 +12,7 @@ vertex-bandwidth-core = { workspace = true }
 vertex-bandwidth-pseudosettle = { workspace = true }
 vertex-bandwidth-swap = { workspace = true }
 vertex-client-core = { workspace = true }
+vertex-client-kademlia = { workspace = true }
 vertex-client-peermanager = { workspace = true }
 vertex-primitives = { workspace = true }
 vertex-rpc-core = { workspace = true }

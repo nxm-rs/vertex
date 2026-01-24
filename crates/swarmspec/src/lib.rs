@@ -63,15 +63,10 @@ pub use nectar_contracts;
 // ============================================================================
 
 // SwarmSpec trait and related types
-pub use api::{
-    // Fork compatibility
-    ForkDigest,
-    // Provider traits
-    StaticSwarmSpecProvider,
-    // Core trait
-    SwarmSpec,
-    SwarmSpecProvider,
-};
+pub use api::{ForkDigest, StaticSwarmSpecProvider, SwarmSpec, SwarmSpecProvider};
+
+// Re-export chunk type set from nectar for convenience
+pub use nectar_primitives::{ChunkTypeSet, StandardChunkSet};
 
 // Hive (concrete implementation) and builders
 pub use spec::{DEV, Hive, HiveBuilder, MAINNET, TESTNET};

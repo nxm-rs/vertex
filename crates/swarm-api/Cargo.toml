@@ -9,8 +9,14 @@ repository.workspace = true
 
 [dependencies]
 # Internal dependencies
+nectar-primitives = { workspace = true }
 vertex-primitives = { workspace = true }
 vertex-swarmspec = { workspace = true }
+vertex-net-primitives-traits = { workspace = true }
+
+# Alloy
+alloy-primitives = { workspace = true }
+alloy-signer = { workspace = true }
 
 # External dependencies
 auto_impl = "1.1"

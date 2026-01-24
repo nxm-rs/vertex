@@ -87,53 +87,6 @@ use crate::{
     behaviour::{NodeBehaviour, NodeEvent},
 };
 
-/// Network configuration for SwarmNode.
-#[derive(Debug, Clone)]
-pub struct NetworkConfig {
-    /// Listen addresses for incoming connections.
-    pub listen_addrs: Vec<Multiaddr>,
-
-    /// Bootnodes to connect to on startup.
-    pub bootnodes: Vec<Multiaddr>,
-
-    /// Connection idle timeout.
-    pub idle_timeout: Duration,
-
-    /// Maximum number of established connections.
-    pub max_connections: u32,
-}
-
-impl Default for NetworkConfig {
-    fn default() -> Self {
-        Self {
-            listen_addrs: vec![
-                "/ip4/0.0.0.0/tcp/1634".parse().unwrap(),
-                "/ip6/::/tcp/1634".parse().unwrap(),
-            ],
-            bootnodes: vec![],
-            idle_timeout: Duration::from_secs(30),
-            max_connections: 50,
-        }
-    }
-}
-
-impl NetworkConfig {
-    /// Create a config for mainnet with default bootnodes.
-    pub fn mainnet() -> Self {
-        Self {
-            bootnodes: vec!["/dnsaddr/mainnet.ethswarm.org".parse().unwrap()],
-            ..Default::default()
-        }
-    }
-
-    /// Create a config for testnet with default bootnodes.
-    pub fn testnet() -> Self {
-        Self {
-            bootnodes: vec!["/dnsaddr/testnet.ethswarm.org".parse().unwrap()],
-            ..Default::default()
-        }
-    }
-}
 
 /// A Swarm node generic over the node type hierarchy.
 ///
@@ -157,8 +110,8 @@ pub struct SwarmNode<N: NodeTypes> {
     /// Bootnode connector.
     bootnode_connector: BootnodeConnector,
 
-    /// Network configuration.
-    config: NetworkConfig,
+    /// Listen addresses for incoming connections.
+    listen_addrs: Vec<Multiaddr>,
 
     /// Channel to send events to the client service.
     client_event_tx: mpsc::UnboundedSender<ClientEvent>,
@@ -208,7 +161,7 @@ impl<N: NodeTypes> SwarmNode<N> {
 
     /// Start listening on configured addresses.
     pub fn start_listening(&mut self) -> Result<()> {
-        for addr in &self.config.listen_addrs {
+        for addr in &self.listen_addrs {
             match self.swarm.listen_on(addr.clone()) {
                 Ok(_) => info!(%addr, "Listening on address"),
                 Err(e) => warn!(%addr, %e, "Failed to listen on address"),
@@ -530,7 +483,9 @@ impl<N: NodeTypes> SwarmNode<N> {
 /// Builder for SwarmNode with fluent configuration.
 pub struct SwarmNodeBuilder<N: NodeTypes> {
     identity: N::Identity,
-    config: NetworkConfig,
+    listen_addrs: Vec<Multiaddr>,
+    bootnodes: Vec<Multiaddr>,
+    idle_timeout: Duration,
     kademlia_config: KademliaConfig,
     peer_store: Option<Arc<dyn PeerStore>>,
 }
@@ -540,27 +495,56 @@ impl<N: NodeTypes> SwarmNodeBuilder<N> {
     pub fn new(identity: N::Identity) -> Self {
         Self {
             identity,
-            config: NetworkConfig::default(),
+            listen_addrs: vec![
+                "/ip4/0.0.0.0/tcp/1634".parse().unwrap(),
+                "/ip6/::/tcp/1634".parse().unwrap(),
+            ],
+            bootnodes: vec![],
+            idle_timeout: Duration::from_secs(30),
             kademlia_config: KademliaConfig::default(),
             peer_store: None,
         }
     }
 
-    /// Set the network configuration.
-    pub fn with_config(mut self, config: NetworkConfig) -> Self {
-        self.config = config;
+    /// Set network configuration from a NetworkConfig implementation.
+    ///
+    /// If no bootnodes are provided in the config, falls back to spec bootnodes.
+    pub fn with_network_config(mut self, config: &impl vertex_swarm_api::NetworkConfig) -> Self {
+        use vertex_node_types::Identity;
+        use vertex_swarmspec::SwarmSpec;
+
+        self.listen_addrs = config
+            .listen_addrs()
+            .into_iter()
+            .filter_map(|s| s.parse().ok())
+            .collect();
+
+        // Use config bootnodes, or fall back to spec bootnodes
+        let config_bootnodes: Vec<Multiaddr> = config
+            .bootnodes()
+            .into_iter()
+            .filter_map(|s| s.parse().ok())
+            .collect();
+
+        self.bootnodes = if config_bootnodes.is_empty() {
+            self.identity.spec().bootnodes().unwrap_or_default()
+        } else {
+            config_bootnodes
+        };
+
+        self.idle_timeout = config.idle_timeout();
         self
     }
 
     /// Set the bootnodes.
     pub fn with_bootnodes(mut self, bootnodes: Vec<Multiaddr>) -> Self {
-        self.config.bootnodes = bootnodes;
+        self.bootnodes = bootnodes;
         self
     }
 
     /// Set the listen addresses.
     pub fn with_listen_addrs(mut self, addrs: Vec<Multiaddr>) -> Self {
-        self.config.listen_addrs = addrs;
+        self.listen_addrs = addrs;
         self
     }
 
@@ -603,7 +587,7 @@ impl<N: NodeTypes> SwarmNodeBuilder<N> {
                     identity_for_behaviour.clone(),
                 ))
             })?
-            .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(self.config.idle_timeout))
+            .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(self.idle_timeout))
             .build();
 
         let local_peer_id = *swarm.local_peer_id();
@@ -647,7 +631,7 @@ impl<N: NodeTypes> SwarmNodeBuilder<N> {
             run_peer_store_consumer(pm_for_consumer, discovery_rx).await;
         });
 
-        let bootnode_connector = BootnodeConnector::new(self.config.bootnodes.clone());
+        let bootnode_connector = BootnodeConnector::new(self.bootnodes);
 
         // Create channels for client communication
         let (command_tx, command_rx) = mpsc::unbounded_channel();
@@ -662,7 +646,7 @@ impl<N: NodeTypes> SwarmNodeBuilder<N> {
             peer_manager,
             kademlia,
             bootnode_connector,
-            config: self.config,
+            listen_addrs: self.listen_addrs,
             client_event_tx: event_tx,
             client_command_rx: command_rx,
             discovery_tx,

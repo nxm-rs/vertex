@@ -4,51 +4,53 @@
 //! The builder tracks configured components at compile time, ensuring all
 //! required components are provided before building.
 //!
-//! # Design
+//! # Architecture
 //!
-//! The builder is generic over all `NodeTypes` associated types:
-//! - `Spec` - Network specification (mainnet, testnet, dev)
-//! - `Ident` - Node identity (signing key, overlay address)
-//! - `Topo` - Topology for peer discovery
-//! - `Avail` - Availability accounting (pseudosettle, SWAP, both, none)
+//! The builder hierarchy follows the reth pattern:
 //!
-//! For publisher/full nodes, additional types can be configured:
-//! - `Storage` - Storage incentives (postage stamps)
-//! - `Store` - Local chunk storage
-//! - `Sync` - Chunk synchronization
+//! ```text
+//! NodeBuilder                     (this module)
+//! ├── SwarmComponentsBuilder      (from vertex-client-core)
+//! │   ├── TopologyBuilder
+//! │   ├── AccountingBuilder
+//! │   └── PricerBuilder
+//! └── Infrastructure Builders     (this module)
+//!     ├── DatabaseBuilder
+//!     └── RpcBuilder
+//! ```
 //!
 //! # Example
 //!
 //! ```ignore
 //! use vertex_node_core::builder::NodeBuilder;
-//! use vertex_node_core::availability::PseudosettleSwap;
 //!
-//! // Build a light node
-//! let node = NodeBuilder::new()
+//! // Build a light node with default components
+//! let components = NodeBuilder::new()
 //!     .with_spec(spec)
 //!     .with_identity(identity)
-//!     .with_topology(topology)
-//!     .with_accounting(PseudosettleSwap::with_default_refresh(config));
-//!
-//! // Build a full node
-//! let full_node = NodeBuilder::new()
-//!     .with_spec(spec)
-//!     .with_identity(identity)
-//!     .with_topology(topology)
-//!     .with_accounting(accounting)
-//!     .with_storage(postage)
-//!     .with_store(store)
-//!     .with_sync(sync);
+//!     .with_swarm_components(DefaultComponentsBuilder::with_defaults())
+//!     .build(&ctx);
 //! ```
 
+use std::sync::Arc;
+
 use vertex_bandwidth_core::AccountingConfig;
+use vertex_node_types::{DatabaseProvider, RpcServer};
+use vertex_rpc_server::{GrpcServer, GrpcServerConfig};
 use vertex_swarm_api::{
-    AvailabilityAccounting, AvailabilityIncentiveConfig, ChunkSync, LocalStore,
-    NoAvailabilityIncentives, StorageConfig, StoreConfig, Topology,
+    AvailabilityAccounting, AvailabilityIncentiveConfig, ChunkSync, LightTypes, LocalStore,
+    NetworkConfig, NoAvailabilityIncentives, StorageConfig, StoreConfig, Topology,
 };
 use vertex_swarmspec::SwarmSpec;
 
 use crate::config::NodeType;
+
+// Re-export SwarmComponentsBuilder from client-core for convenience
+pub use vertex_client_core::{
+    AccountingBuilder, BandwidthAccountingBuilder, BuiltSwarmComponents, DefaultComponentsBuilder,
+    FixedPricerBuilder, KademliaTopologyBuilder, NoAccountingBuilder, PricerBuilder,
+    SwarmBuilderContext, SwarmComponentsBuilder, TopologyBuilder,
+};
 
 // ============================================================================
 // Marker types for unset builder fields
@@ -73,6 +75,110 @@ pub struct NoSync;
 /// Marker type for no identity configured yet.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoIdentity;
+
+// ============================================================================
+// Infrastructure Builder Traits
+// ============================================================================
+
+/// Builder context for infrastructure components.
+///
+/// Provides runtime state for building database, RPC, etc.
+pub struct NodeBuilderContext<'cfg, Types: LightTypes, Cfg: NetworkConfig> {
+    /// Swarm builder context (identity, config, executor).
+    pub swarm_ctx: SwarmBuilderContext<'cfg, Types, Cfg>,
+
+    /// Data directory root.
+    pub data_dir: Option<&'cfg std::path::Path>,
+}
+
+impl<'cfg, Types: LightTypes, Cfg: NetworkConfig> NodeBuilderContext<'cfg, Types, Cfg> {
+    /// Create from a swarm builder context.
+    pub fn new(swarm_ctx: SwarmBuilderContext<'cfg, Types, Cfg>) -> Self {
+        Self {
+            swarm_ctx,
+            data_dir: None,
+        }
+    }
+
+    /// Set the data directory.
+    pub fn with_data_dir(mut self, data_dir: &'cfg std::path::Path) -> Self {
+        self.data_dir = Some(data_dir);
+        self
+    }
+}
+
+/// Builds a database provider.
+pub trait DatabaseBuilder<Types: LightTypes, Cfg: NetworkConfig>: Send + Sync + 'static {
+    /// The database type produced.
+    type Database: DatabaseProvider;
+
+    /// Build the database given the context.
+    fn build_database(self, ctx: &NodeBuilderContext<'_, Types, Cfg>) -> Self::Database;
+}
+
+/// Builds an RPC server.
+pub trait RpcBuilder<Types: LightTypes, Cfg: NetworkConfig>: Send + Sync + 'static {
+    /// The RPC server type produced.
+    type Rpc: RpcServer;
+
+    /// Build the RPC server given the context.
+    fn build_rpc(self, ctx: &NodeBuilderContext<'_, Types, Cfg>) -> Self::Rpc;
+}
+
+// ============================================================================
+// Default Infrastructure Builders
+// ============================================================================
+
+/// No-op database builder (for nodes without persistence).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoDatabaseBuilder;
+
+impl<Types: LightTypes, Cfg: NetworkConfig> DatabaseBuilder<Types, Cfg> for NoDatabaseBuilder {
+    type Database = ();
+
+    fn build_database(self, _ctx: &NodeBuilderContext<'_, Types, Cfg>) -> Self::Database {}
+}
+
+/// No-op RPC builder (for nodes without RPC).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoRpcBuilder;
+
+impl<Types: LightTypes, Cfg: NetworkConfig> RpcBuilder<Types, Cfg> for NoRpcBuilder {
+    type Rpc = ();
+
+    fn build_rpc(self, _ctx: &NodeBuilderContext<'_, Types, Cfg>) -> Self::Rpc {}
+}
+
+/// gRPC server builder.
+#[derive(Debug, Clone)]
+pub struct GrpcServerBuilder {
+    config: GrpcServerConfig,
+}
+
+impl GrpcServerBuilder {
+    /// Create with config.
+    pub fn with_config(config: GrpcServerConfig) -> Self {
+        Self { config }
+    }
+
+    /// Create with address.
+    pub fn with_addr(addr: std::net::SocketAddr) -> Self {
+        Self {
+            config: GrpcServerConfig {
+                addr,
+                topology_provider: None,
+            },
+        }
+    }
+}
+
+impl<Types: LightTypes, Cfg: NetworkConfig> RpcBuilder<Types, Cfg> for GrpcServerBuilder {
+    type Rpc = Arc<GrpcServer>;
+
+    fn build_rpc(self, _ctx: &NodeBuilderContext<'_, Types, Cfg>) -> Self::Rpc {
+        GrpcServer::with_config(self.config)
+    }
+}
 
 // ============================================================================
 // Node Builder
