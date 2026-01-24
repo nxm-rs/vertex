@@ -6,6 +6,8 @@
 //! Pre-built specifications are available via [`init_mainnet`], [`init_testnet`],
 //! and [`init_dev`]. Custom specifications can be constructed with [`HiveBuilder`].
 
+#[cfg(feature = "std")]
+use crate::error::SwarmSpecFileError;
 use crate::{
     Token,
     constants::{DEFAULT_CHUNK_SIZE, DEFAULT_RESERVE_CAPACITY, dev, mainnet, testnet},
@@ -431,43 +433,6 @@ impl Hive {
         let json = self.to_json()?;
         std::fs::write(path, json)?;
         Ok(())
-    }
-}
-
-/// Error type for SwarmSpec file operations.
-#[cfg(feature = "std")]
-#[derive(Debug)]
-pub enum SwarmSpecFileError {
-    /// IO error reading/writing file
-    Io(std::io::Error),
-    /// JSON parsing/serialization error
-    Json(serde_json::Error),
-}
-
-#[cfg(feature = "std")]
-impl std::fmt::Display for SwarmSpecFileError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "IO error: {}", e),
-            Self::Json(e) => write!(f, "JSON error: {}", e),
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for SwarmSpecFileError {}
-
-#[cfg(feature = "std")]
-impl From<std::io::Error> for SwarmSpecFileError {
-    fn from(e: std::io::Error) -> Self {
-        Self::Io(e)
-    }
-}
-
-#[cfg(feature = "std")]
-impl From<serde_json::Error> for SwarmSpecFileError {
-    fn from(e: serde_json::Error) -> Self {
-        Self::Json(e)
     }
 }
 

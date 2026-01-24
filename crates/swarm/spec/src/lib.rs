@@ -42,12 +42,11 @@
 
 extern crate alloc;
 
+mod api;
 mod constants;
+mod error;
 mod spec;
 mod token;
-
-// API module contains the core SwarmSpec trait
-mod api;
 
 // Re-export chain types
 pub use alloy_chains::{Chain, NamedChain};
@@ -60,6 +59,8 @@ pub use nectar_contracts;
 
 pub use api::{StaticSwarmSpecProvider, SwarmSpec, SwarmSpecProvider};
 pub use constants::*;
+#[cfg(feature = "std")]
+pub use error::SwarmSpecFileError;
 pub use nectar_primitives::{ChunkTypeSet, StandardChunkSet};
 pub use spec::{DEV, Hive, HiveBuilder, MAINNET, TESTNET};
 pub use token::Token;
