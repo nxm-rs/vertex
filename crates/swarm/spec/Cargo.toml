@@ -29,7 +29,6 @@ vertex-net-primitives-traits.workspace = true
 
 # misc
 auto_impl.workspace = true
-byteorder.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
 

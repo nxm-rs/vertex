@@ -35,73 +35,11 @@ use crate::{
 };
 use alloc::{sync::Arc, vec::Vec};
 use alloy_chains::Chain;
-use alloy_primitives::keccak256;
-use byteorder::{LittleEndian, WriteBytesExt};
 use core::fmt::Debug;
 use libp2p::Multiaddr;
 use nectar_primitives::{ChunkTypeSet, StandardChunkSet};
 use vertex_net_primitives::Swarm;
-use vertex_swarm_forks::{ForkCondition, SwarmHardfork, SwarmHardforks};
-
-/// A compact identifier representing a network's fork state at a point in time.
-///
-/// Used during peer handshake to verify network compatibility. Two peers with
-/// matching digests can interoperate; mismatched digests indicate incompatible
-/// protocol versions or different networks.
-///
-/// The digest is computed from:
-/// - Network ID (ensures different networks have different digests)
-/// - Genesis timestamp (distinguishes network incarnations)
-/// - Active fork timestamps (ensures protocol version agreement)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct ForkDigest(pub [u8; 4]);
-
-impl ForkDigest {
-    /// Creates a new fork digest from raw bytes.
-    pub const fn new(bytes: [u8; 4]) -> Self {
-        Self(bytes)
-    }
-
-    /// Returns the digest as a byte array.
-    pub const fn as_bytes(&self) -> &[u8; 4] {
-        &self.0
-    }
-
-    /// Computes a fork digest from the given components using keccak256.
-    ///
-    /// Takes the first 4 bytes of the keccak256 hash of the concatenated
-    /// little-endian encoded values.
-    pub fn compute(
-        network_id: u64,
-        genesis_timestamp: u64,
-        active_fork_timestamps: &[u64],
-    ) -> Self {
-        // 8 bytes for network_id + 8 for genesis + 8 per fork
-        let mut data = Vec::with_capacity(16 + active_fork_timestamps.len() * 8);
-
-        data.write_u64::<LittleEndian>(network_id).unwrap();
-        data.write_u64::<LittleEndian>(genesis_timestamp).unwrap();
-
-        for &timestamp in active_fork_timestamps {
-            data.write_u64::<LittleEndian>(timestamp).unwrap();
-        }
-
-        let hash = keccak256(&data);
-        let mut digest = [0u8; 4];
-        digest.copy_from_slice(&hash[..4]);
-        Self(digest)
-    }
-}
-
-impl core::fmt::Display for ForkDigest {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "0x{:02x}{:02x}{:02x}{:02x}",
-            self.0[0], self.0[1], self.0[2], self.0[3]
-        )
-    }
-}
+use vertex_swarm_forks::{ForkCondition, ForkDigest, SwarmHardfork, SwarmHardforks};
 
 /// A Swarm network specification.
 ///

@@ -8,17 +8,21 @@
 //!
 //! - [`SwarmHardfork`] - Enum of all Swarm protocol upgrades
 //! - [`ForkCondition`] - When a fork activates (timestamp or "never")
+//! - [`ForkDigest`] - Compact identifier for verifying peer compatibility
 //! - [`Hardforks`] - Collection mapping hardforks to their activation times
 //!
 //! # Usage
 //!
 //! ```ignore
-//! use vertex_swarm_forks::{SwarmHardfork, ForkCondition};
+//! use vertex_swarm_forks::{SwarmHardfork, ForkCondition, ForkDigest};
 //!
 //! let condition = ForkCondition::Timestamp(1699999999);
 //! if condition.active_at_timestamp(current_time) {
 //!     // Use post-fork protocol
 //! }
+//!
+//! // Compute digest for handshake
+//! let digest = ForkDigest::compute(network_id, genesis, &active_forks);
 //! ```
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
@@ -27,21 +31,19 @@
 
 extern crate alloc;
 
-// Used for feature forwarding (serde, arbitrary, std)
-use alloy_primitives as _;
-
 /// Re-exported EIP-2124 forkid types for network compatibility.
 pub use alloy_eip2124::*;
 
+mod digest;
 mod display;
 mod forkcondition;
 mod hardfork;
 mod hardforks;
 
-pub use hardfork::{DEV_HARDFORKS, Hardfork, SwarmHardfork};
-
+pub use digest::ForkDigest;
 pub use display::DisplayHardforks;
 pub use forkcondition::ForkCondition;
+pub use hardfork::{DEV_HARDFORKS, Hardfork, SwarmHardfork};
 pub use hardforks::*;
 
 #[cfg(any(test, feature = "arbitrary"))]

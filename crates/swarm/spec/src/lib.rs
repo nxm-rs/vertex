@@ -58,7 +58,7 @@ pub use vertex_swarm_forks::*;
 // Re-export contract bindings and addresses from nectar
 pub use nectar_contracts;
 
-pub use api::{ForkDigest, StaticSwarmSpecProvider, SwarmSpec, SwarmSpecProvider};
+pub use api::{StaticSwarmSpecProvider, SwarmSpec, SwarmSpecProvider};
 pub use constants::*;
 pub use nectar_primitives::{ChunkTypeSet, StandardChunkSet};
 pub use spec::{DEV, Hive, HiveBuilder, MAINNET, TESTNET};
