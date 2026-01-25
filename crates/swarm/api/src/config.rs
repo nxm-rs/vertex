@@ -1,8 +1,7 @@
-//! Configuration traits for Swarm node components.
+//! Configuration traits for Swarm protocol components.
 //!
-//! These traits define the configuration parameters that component builders need.
-//! CLI args, config files, or programmatic configs can implement these traits,
-//! allowing builders to work with any configuration source.
+//! These traits define the configuration parameters that Swarm component builders need.
+//! They cover protocol-level concerns: bandwidth accounting, storage, networking, and identity.
 //!
 //! # Design
 //!
@@ -10,6 +9,11 @@
 //! - Traits define *what* configuration is needed
 //! - CLI args implement the traits directly (no intermediate structs)
 //! - Builders receive `impl ConfigTrait` and extract what they need
+//!
+//! # Combined Config
+//!
+//! The [`SwarmConfig`] super-trait combines all protocol configs into one bound,
+//! useful for builders that need access to everything.
 //!
 //! # Example
 //!
@@ -160,30 +164,16 @@ pub trait NetworkConfig {
     fn idle_timeout(&self) -> Duration;
 }
 
-/// Configuration for gRPC and metrics servers.
-pub trait ApiConfig {
-    /// Whether the gRPC server is enabled.
-    fn grpc_enabled(&self) -> bool;
-
-    /// gRPC server listen address.
-    fn grpc_addr(&self) -> &str;
-
-    /// gRPC server listen port.
-    fn grpc_port(&self) -> u16;
-
-    /// Whether the metrics HTTP endpoint is enabled.
-    fn metrics_enabled(&self) -> bool;
-
-    /// Metrics listen address.
-    fn metrics_addr(&self) -> &str;
-
-    /// Metrics listen port.
-    fn metrics_port(&self) -> u16;
-}
-
-/// Configuration for node identity management.
+/// Configuration for Swarm node identity.
+///
+/// The identity determines the node's overlay address (position in Kademlia DHT)
+/// and its storage responsibilities. Full nodes need persistent identity to
+/// maintain consistent storage responsibility across restarts.
 pub trait IdentityConfig {
     /// Whether to use ephemeral identity (not persisted).
+    ///
+    /// Ephemeral identities are generated fresh each run. Suitable for
+    /// light nodes and testing, but not for full nodes with storage duties.
     fn ephemeral(&self) -> bool;
 
     /// Whether this identity needs to be persistent.
@@ -193,36 +183,21 @@ pub trait IdentityConfig {
     fn requires_persistent(&self) -> bool;
 }
 
-/// Complete node configuration combining all component configs.
+/// Combined Swarm protocol configuration.
 ///
-/// This trait provides access to all configuration sections. It's typically
-/// implemented by a struct that holds references to individual config sources.
-pub trait NodeConfiguration {
-    /// Availability incentive configuration.
-    type Availability: AvailabilityIncentiveConfig;
-    /// Storage configuration.
-    type Storage: StoreConfig;
-    /// Network configuration.
-    type Network: NetworkConfig;
-    /// API configuration.
-    type Api: ApiConfig;
-    /// Identity configuration.
-    type Identity: IdentityConfig;
+/// This super-trait combines all protocol-level configs into one bound.
+/// Useful for builders and contexts that need access to all Swarm settings.
+///
+/// Any type implementing all the individual config traits automatically
+/// implements `SwarmConfig` via the blanket implementation.
+pub trait SwarmConfig:
+    AvailabilityIncentiveConfig + StoreConfig + StorageConfig + NetworkConfig + IdentityConfig
+{
+}
 
-    /// Get availability configuration.
-    fn availability(&self) -> &Self::Availability;
-
-    /// Get storage configuration.
-    fn storage(&self) -> &Self::Storage;
-
-    /// Get network configuration.
-    fn network(&self) -> &Self::Network;
-
-    /// Get API configuration.
-    fn api(&self) -> &Self::Api;
-
-    /// Get identity configuration.
-    fn identity(&self) -> &Self::Identity;
+impl<T> SwarmConfig for T where
+    T: AvailabilityIncentiveConfig + StoreConfig + StorageConfig + NetworkConfig + IdentityConfig
+{
 }
 
 /// Cache capacity divisor relative to reserve capacity.

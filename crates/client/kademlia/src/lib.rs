@@ -93,7 +93,10 @@ pub struct KademliaTopology<I: Identity> {
 impl<I: Identity> std::fmt::Debug for KademliaTopology<I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KademliaTopology")
-            .field("depth", &self.depth.load(std::sync::atomic::Ordering::Relaxed))
+            .field(
+                "depth",
+                &self.depth.load(std::sync::atomic::Ordering::Relaxed),
+            )
             .field("known_peers", &self.known_peers.len())
             .field("connected_peers", &self.connected_peers.len())
             .finish_non_exhaustive()

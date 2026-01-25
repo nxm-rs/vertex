@@ -23,7 +23,7 @@
 mod health;
 mod node;
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -32,6 +32,9 @@ use tokio::sync::watch;
 use tonic::transport::Server;
 use tracing::{info, warn};
 pub use vertex_rpc_core::{RpcServer, TopologyProvider};
+
+// Re-export the config trait for users
+pub use vertex_node_api::RpcConfig;
 
 pub use health::HealthService;
 pub use node::NodeService;
@@ -66,6 +69,26 @@ impl Default for GrpcServerConfig {
             addr: "127.0.0.1:1635".parse().unwrap(),
             topology_provider: None,
         }
+    }
+}
+
+impl GrpcServerConfig {
+    /// Create configuration from an RpcConfig trait implementation.
+    pub fn from_config(config: &impl RpcConfig) -> Self {
+        let addr = SocketAddr::new(
+            config.grpc_addr().parse().unwrap_or(IpAddr::from([127, 0, 0, 1])),
+            config.grpc_port(),
+        );
+        Self {
+            addr,
+            topology_provider: None,
+        }
+    }
+
+    /// Set the topology provider.
+    pub fn with_topology(mut self, provider: Arc<dyn TopologyProvider>) -> Self {
+        self.topology_provider = Some(provider);
+        self
     }
 }
 

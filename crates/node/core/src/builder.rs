@@ -43,7 +43,7 @@ use vertex_swarm_api::{
 };
 use vertex_swarmspec::SwarmSpec;
 
-use crate::config::NodeType;
+use vertex_swarm_core::SwarmNodeType;
 
 // Re-export SwarmComponentsBuilder from client-core for convenience
 pub use vertex_client_core::{
@@ -304,7 +304,6 @@ impl<Spec, Ident, Topo, Avail, Storage, Store, Syncer>
     /// - `NoAvailabilityIncentives` - No accounting (bootnodes, testing)
     /// - `PseudosettleAccounting` - Time-based refresh allowance
     /// - `SwapAccounting` - Chequebook-based payment
-    /// - `PseudosettleSwap` - Both mechanisms combined
     pub fn with_accounting<NewAvail: AvailabilityAccounting>(
         self,
         accounting: NewAvail,
@@ -483,13 +482,13 @@ impl StorageParams {
 
 /// Validate that the configuration is consistent with the node type.
 pub fn validate_config(
-    node_type: NodeType,
+    node_type: SwarmNodeType,
     availability: &impl AvailabilityIncentiveConfig,
     storage: &impl StoreConfig,
     storage_incentives: &impl StorageConfig,
 ) -> eyre::Result<()> {
     // Staker requires redistribution
-    if matches!(node_type, NodeType::Staker) && !storage_incentives.redistribution_enabled() {
+    if matches!(node_type, SwarmNodeType::Staker) && !storage_incentives.redistribution_enabled() {
         return Err(eyre::eyre!(
             "Staker node type requires redistribution to be enabled"
         ));
@@ -513,12 +512,11 @@ pub fn validate_config(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::availability::PseudosettleSwap;
     use vertex_bandwidth_core::{DefaultAvailabilityConfig, NoAvailabilityConfig};
     use vertex_bandwidth_pseudosettle::PseudosettleAccounting;
     use vertex_bandwidth_swap::SwapAccounting;
     use vertex_swarm_api::{
-        AvailabilityAccounting, DefaultStorageConfig, StoreConfig, CACHE_CAPACITY_DIVISOR,
+        AvailabilityAccounting, CACHE_CAPACITY_DIVISOR, DefaultStorageConfig, StoreConfig,
     };
     use vertex_swarmspec::init_testnet;
 
@@ -544,13 +542,6 @@ mod tests {
     }
 
     #[test]
-    fn test_builder_with_accounting_combined() {
-        let accounting = PseudosettleSwap::with_default_refresh(Default::default());
-        let builder = NodeBuilder::new().with_accounting(accounting);
-        let _peers = builder.accounting().peers();
-    }
-
-    #[test]
     fn test_builder_with_identity() {
         use vertex_node_identity::SwarmIdentity;
         use vertex_swarmspec::init_testnet;
@@ -566,7 +557,7 @@ mod tests {
     #[test]
     fn test_builder_chaining() {
         // Test that multiple with_* calls can be chained
-        let accounting = PseudosettleSwap::with_default_refresh(Default::default());
+        let accounting = PseudosettleAccounting::with_default_refresh(Default::default());
         let builder = NodeBuilder::new()
             .with_accounting(accounting)
             .with_storage(()); // Unit type for no payment
@@ -577,7 +568,7 @@ mod tests {
 
     #[test]
     fn test_builder_into_parts() {
-        let accounting = PseudosettleSwap::with_default_refresh(Default::default());
+        let accounting = PseudosettleAccounting::with_default_refresh(Default::default());
         let builder = NodeBuilder::new().with_accounting(accounting);
         let (_spec, _identity, _topo, accounting, _storage, _store, _sync) = builder.into_parts();
         let _peers = accounting.peers();
@@ -605,7 +596,7 @@ mod tests {
         let storage_incentives = DefaultStorageConfig;
 
         let result = validate_config(
-            NodeType::Staker,
+            SwarmNodeType::Staker,
             &availability,
             spec.as_ref(),
             &storage_incentives,
@@ -620,7 +611,7 @@ mod tests {
         let storage_incentives = DefaultStorageConfig;
 
         let result = validate_config(
-            NodeType::Light,
+            SwarmNodeType::Light,
             &availability,
             spec.as_ref(),
             &storage_incentives,
@@ -643,7 +634,7 @@ mod tests {
         let availability = DefaultAvailabilityConfig;
         let storage_incentives = DefaultStorageConfig;
         let result = validate_config(
-            NodeType::Full,
+            SwarmNodeType::Full,
             &availability,
             &ZeroCapacityStorage,
             &storage_incentives,

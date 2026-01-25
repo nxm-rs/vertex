@@ -24,7 +24,7 @@ impl ForkDigest {
 
     /// Returns the digest as a byte array.
     pub const fn as_bytes(&self) -> &[u8; 4] {
-        &self.0 .0
+        &self.0.0
     }
 
     /// Computes a fork digest from the given components using keccak256.

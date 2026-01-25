@@ -1070,6 +1070,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "atomic"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a89cbf775b137e9b968e67227ef7f775587cde3fd31b0d8599dbd0f598a48340"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1341,6 +1350,12 @@ name = "byte-slice-cast"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7575182f7272186991736b70173b0ea045398f984bf5ebbb3804736ce1330c9d"
+
+[[package]]
+name = "bytemuck"
+version = "1.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fbdf580320f38b612e485521afda1ee26d10cc9884efaaa750d383e13e3c5f4"
 
 [[package]]
 name = "byteorder"
@@ -2320,6 +2335,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 
 [[package]]
+name = "figment"
+version = "0.10.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8cb01cd46b0cf372153850f4c6c272d9cbea2da513e07538405148f95bd789f3"
+dependencies = [
+ "atomic",
+ "pear",
+ "serde",
+ "toml 0.8.22",
+ "uncased",
+ "version_check",
+]
+
+[[package]]
 name = "fixed-hash"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3129,6 +3158,12 @@ dependencies = [
  "hashbrown 0.15.3",
  "serde",
 ]
+
+[[package]]
+name = "inlinable_string"
+version = "0.1.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8fae54786f62fb2918dcfae3d568594e50eb9b5c25bf04371af6fe7516452fb"
 
 [[package]]
 name = "inout"
@@ -4301,6 +4336,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "pear"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bdeeaa00ce488657faba8ebf44ab9361f9365a97bd39ffb8a60663f57ff4b467"
+dependencies = [
+ "inlinable_string",
+ "pear_codegen",
+ "yansi",
+]
+
+[[package]]
+name = "pear_codegen"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4bab5b985dc082b345f812b7df84e1bef27e7207b39e448439ba8bd69c93f147"
+dependencies = [
+ "proc-macro2",
+ "proc-macro2-diagnostics",
+ "quote",
+ "syn 2.0.101",
+]
+
+[[package]]
 name = "pem"
 version = "3.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4535,6 +4593,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "02b3e5e68a3a1a02aad3ec490a98007cbc13c37cbe84a3cd7b8e406d76e7f778"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "proc-macro2-diagnostics"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af066a9c399a26e020ada66a034357a868728e72cd426f3adcd35f80d88d88c8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.101",
+ "version_check",
+ "yansi",
 ]
 
 [[package]]
@@ -4880,6 +4951,15 @@ dependencies = [
  "rustls-pki-types",
  "time",
  "yasna",
+]
+
+[[package]]
+name = "redb"
+version = "2.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8eca1e9d98d5a7e9002d0013e18d5a9b000aee942eb134883a82f06ebffb6c01"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -5845,7 +5925,6 @@ dependencies = [
  "signal-hook-registry",
  "socket2",
  "tokio-macros",
- "tracing",
  "windows-sys 0.52.0",
 ]
 
@@ -5898,6 +5977,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml"
+version = "0.8.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05ae329d1f08c4d17a59bed7ff5b5a769d062e64a62d34a3261b219e62cd5aae"
+dependencies = [
+ "serde",
+ "serde_spanned",
+ "toml_datetime",
+ "toml_edit 0.22.26",
+]
+
+[[package]]
 name = "toml_datetime"
 version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5926,9 +6017,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "310068873db2c5b3e7659d2cc35d21855dbafa50d1ce336397c666e3cb08137e"
 dependencies = [
  "indexmap 2.9.0",
+ "serde",
+ "serde_spanned",
  "toml_datetime",
+ "toml_write",
  "winnow 0.7.10",
 ]
+
+[[package]]
+name = "toml_write"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "tonic"
@@ -6183,6 +6283,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94"
 
 [[package]]
+name = "uncased"
+version = "0.9.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1b88fcfe09e89d3866a5c11019378088af2d24c3fbd4f0543f96b479ec90697"
+dependencies = [
+ "version_check",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6342,7 +6451,7 @@ version = "0.1.0"
 dependencies = [
  "color-eyre",
  "tokio",
- "vertex-node-core",
+ "vertex-node-commands",
 ]
 
 [[package]]
@@ -6390,27 +6499,13 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer-local",
  "async-trait",
- "bytes",
- "eyre",
- "futures",
- "libp2p",
  "nectar-primitives",
- "parking_lot",
- "thiserror 2.0.12",
  "tokio",
- "tracing",
  "vertex-bandwidth-core",
- "vertex-client-kademlia",
- "vertex-client-peermanager",
- "vertex-net-client",
- "vertex-net-handshake",
- "vertex-net-primitives",
- "vertex-net-primitives-traits",
- "vertex-net-topology",
- "vertex-node-identity",
- "vertex-node-types",
  "vertex-primitives",
  "vertex-swarm-api",
+ "vertex-swarm-builder",
+ "vertex-swarm-core",
  "vertex-swarmspec",
  "vertex-tasks",
 ]
@@ -6709,34 +6804,63 @@ dependencies = [
 ]
 
 [[package]]
-name = "vertex-node-core"
+name = "vertex-node-commands"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
- "async-trait",
  "atty",
- "chrono",
  "clap 4.5.39",
  "color-eyre",
+ "eyre",
+ "figment",
+ "hex",
+ "rand 0.8.5",
+ "rpassword",
+ "serde",
+ "tempfile",
+ "tokio",
+ "toml 0.7.8",
+ "tracing",
+ "vertex-bandwidth-core",
+ "vertex-client-core",
+ "vertex-client-kademlia",
+ "vertex-client-peermanager",
+ "vertex-node-api",
+ "vertex-node-core",
+ "vertex-node-identity",
+ "vertex-node-types",
+ "vertex-rpc-core",
+ "vertex-rpc-server",
+ "vertex-swarm-api",
+ "vertex-swarm-core",
+ "vertex-swarmspec",
+ "vertex-tasks",
+]
+
+[[package]]
+name = "vertex-node-core"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "async-trait",
+ "chrono",
+ "clap 4.5.39",
  "directories",
  "eyre",
  "futures",
  "hex",
  "humantime 2.3.0",
- "libp2p",
- "nectar-primitives",
  "once_cell",
  "parking_lot",
- "rand 0.8.5",
- "rpassword",
+ "rand 0.9.1",
  "serde",
  "serde_json",
  "shellexpand",
  "tempfile",
  "tokio",
- "toml",
+ "toml 0.7.8",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -6745,22 +6869,14 @@ dependencies = [
  "vertex-bandwidth-pseudosettle",
  "vertex-bandwidth-swap",
  "vertex-client-core",
- "vertex-client-kademlia",
- "vertex-client-peermanager",
- "vertex-net-client",
- "vertex-net-hive",
- "vertex-net-pricing",
- "vertex-net-primitives-traits",
- "vertex-net-topology",
  "vertex-node-api",
  "vertex-node-identity",
  "vertex-node-types",
  "vertex-primitives",
- "vertex-rpc-core",
  "vertex-rpc-server",
  "vertex-swarm-api",
+ "vertex-swarm-core",
  "vertex-swarmspec",
- "vertex-tasks",
 ]
 
 [[package]]
@@ -6826,8 +6942,25 @@ dependencies = [
  "tonic-build",
  "tonic-reflection",
  "tracing",
+ "vertex-node-api",
  "vertex-node-types",
  "vertex-rpc-core",
+]
+
+[[package]]
+name = "vertex-storer-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "lru 0.16.3",
+ "parking_lot",
+ "redb",
+ "tempfile",
+ "thiserror 2.0.12",
+ "tokio",
+ "tracing",
+ "vertex-primitives",
+ "vertex-swarm-api",
 ]
 
 [[package]]
@@ -6840,10 +6973,54 @@ dependencies = [
  "auto_impl",
  "futures",
  "nectar-primitives",
+ "serde",
  "thiserror 2.0.12",
  "vertex-net-primitives-traits",
  "vertex-primitives",
  "vertex-swarmspec",
+]
+
+[[package]]
+name = "vertex-swarm-builder"
+version = "0.1.0"
+dependencies = [
+ "tracing",
+ "vertex-bandwidth-core",
+ "vertex-client-kademlia",
+ "vertex-swarm-api",
+ "vertex-tasks",
+]
+
+[[package]]
+name = "vertex-swarm-core"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "bytes",
+ "clap 4.5.39",
+ "eyre",
+ "futures",
+ "hex",
+ "libp2p",
+ "nectar-primitives",
+ "parking_lot",
+ "serde",
+ "thiserror 2.0.12",
+ "tokio",
+ "tracing",
+ "vertex-bandwidth-core",
+ "vertex-client-kademlia",
+ "vertex-client-peermanager",
+ "vertex-net-client",
+ "vertex-net-primitives",
+ "vertex-net-primitives-traits",
+ "vertex-net-topology",
+ "vertex-node-identity",
+ "vertex-node-types",
+ "vertex-primitives",
+ "vertex-swarm-api",
+ "vertex-swarmspec",
+ "vertex-tasks",
 ]
 
 [[package]]
@@ -6869,13 +7046,12 @@ dependencies = [
  "alloy-primitives",
  "arbitrary",
  "auto_impl",
- "byteorder",
- "libp2p",
  "nectar-contracts",
  "nectar-primitives",
  "proptest",
  "serde",
  "serde_json",
+ "thiserror 2.0.12",
  "vertex-net-primitives",
  "vertex-net-primitives-traits",
  "vertex-swarm-forks",
@@ -7479,6 +7655,12 @@ dependencies = [
  "static_assertions",
  "web-time",
 ]
+
+[[package]]
+name = "yansi"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049"
 
 [[package]]
 name = "yasna"

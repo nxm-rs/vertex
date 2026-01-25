@@ -24,6 +24,10 @@ futures = { workspace = true }
 thiserror = { workspace = true }
 async-trait = "0.1"
 
+# Optional
+serde = { workspace = true, features = ["derive"], optional = true }
+
 [features]
 default = ["std"]
 std = []
+serde = ["dep:serde"]

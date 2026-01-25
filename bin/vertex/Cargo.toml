@@ -11,6 +11,6 @@ name = "vertex"
 path = "src/main.rs"
 
 [dependencies]
-vertex-node-core.workspace = true
+vertex-node-commands.workspace = true
 tokio = { workspace = true, features = ["full"] }
 color-eyre = "0.6"

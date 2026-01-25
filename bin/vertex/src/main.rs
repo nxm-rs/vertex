@@ -4,5 +4,5 @@
 
 #[tokio::main]
 async fn main() -> color_eyre::eyre::Result<()> {
-    vertex_node_core::run().await
+    vertex_node_commands::run().await
 }

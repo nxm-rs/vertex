@@ -48,6 +48,9 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+#[cfg(feature = "cli")]
+pub mod args;
+
 mod behaviour;
 mod bootnodes;
 mod node;
@@ -55,7 +58,7 @@ mod service;
 
 pub use behaviour::{NodeBehaviour, NodeEvent};
 pub use bootnodes::BootnodeProvider;
-pub use node::{SwarmNode, SwarmNodeBuilder};
+pub use node::{SwarmNode, SwarmNodeBuilder, SwarmNodeType};
 pub use service::{
     Cheque, ClientCommand, ClientEvent, ClientHandle, ClientService, RetrievalError,
     RetrievalResult,

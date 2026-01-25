@@ -1,71 +1,57 @@
-//! Core Vertex client and SwarmNode for network participation.
+//! Core Vertex client for Swarm network participation.
 //!
-//! This crate provides:
-//! - [`SwarmNode<N>`]: The main entry point for Swarm network participation
-//! - [`SwarmClient`]: Implements [`SwarmReader`] for chunk retrieval
-//! - [`ClientService`]: Background service for processing network events
+//! This crate provides [`SwarmClient`], a unified client for all node types:
 //!
-//! # Architecture
+//! - **Bootnode**: Topology only (peer discovery)
+//! - **Light node**: + Accounting, implements [`SwarmReader`]
+//! - **Publisher node**: + [`SwarmWriter`]
+//!
+//! For the SwarmNode and network orchestration, see `vertex_swarm_core`.
+//!
+//! # Client Structure
 //!
 //! ```text
-//! SwarmNode<N: NodeTypes>
-//! ├── swarm: Swarm<NodeBehaviour<N>>
-//! ├── identity: Arc<SwarmIdentity>
-//! ├── bootnode_connector: BootnodeConnector
-//! └── client_event_tx / client_command_rx (for ClientService)
-//!
-//! SwarmClient
-//! ├── accounting: A (AvailabilityAccounting)
-//! ├── pricer: P (Pricer)
-//! └── client_handle: ClientHandle (sends commands, receives responses)
-//!
-//! ClientService (runs in background)
-//! ├── processes ClientEvent from network
-//! ├── completes pending retrievals
-//! └── handles business logic
+//! SwarmClient<Types, A = (), P = ()>
+//! ├── topology: Types::Topology        (always present)
+//! ├── accounting: Option<Arc<A>>       (None for bootnodes)
+//! ├── pricer: Option<Arc<P>>           (None for bootnodes)
+//! └── client_handle: ClientHandle
 //! ```
 //!
 //! # Usage
 //!
 //! ```ignore
-//! use vertex_client_core::SwarmNode;
-//! use vertex_swarm_api::NetworkConfig;
+//! use vertex_client_core::SwarmClient;
+//! use vertex_swarm_core::ClientHandle;
 //!
-//! // Build node with network config
-//! let (mut node, client_service, client_handle) = SwarmNode::<MyNodeTypes>::builder(identity)
-//!     .with_network_config(&my_network_args)
-//!     .build()
-//!     .await?;
+//! // Bootnode (peer discovery only)
+//! let bootnode = SwarmClient::<MyBootnodeTypes>::bootnode(topology, handle);
 //!
-//! // Spawn client service
-//! tokio::spawn(client_service.run());
+//! // Light node (can retrieve chunks)
+//! let client = SwarmClient::new(topology, accounting, pricer, handle);
+//! let chunk = client.get(&address).await?;
 //!
-//! // Create SwarmClient for read operations
-//! let client = SwarmClient::new(accounting, pricer, client_handle);
-//!
-//! // Run node event loop
-//! node.run().await?;
+//! // Publisher node (can also upload)
+//! client.put(chunk, &storage_proof).await?;
 //! ```
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-mod behaviour;
-mod builder;
 mod client;
-mod node;
-mod service;
 
-pub use behaviour::{NodeBehaviour, NodeEvent};
-pub use builder::{
+pub use client::{BootnodeClient, LightClient, PublisherClient, SwarmClient};
+
+// Re-export from swarm-core for convenience
+pub use vertex_swarm_core::{
+    Cheque, ClientCommand, ClientEvent, ClientHandle, ClientService, NodeBehaviour, NodeEvent,
+    RetrievalError, RetrievalResult, SwarmNode, SwarmNodeBuilder,
+};
+
+// Re-export builder infrastructure from swarm-builder
+pub use vertex_swarm_builder::{
     AccountingBuilder, BandwidthAccountingBuilder, BuiltSwarmComponents, DefaultComponentsBuilder,
     FixedPricerBuilder, KademliaTopologyBuilder, NoAccountingBuilder, PricerBuilder,
     SwarmBuilderContext, SwarmComponentsBuilder, TopologyBuilder,
-};
-pub use client::SwarmClient;
-pub use node::{SwarmNode, SwarmNodeBuilder};
-pub use service::{
-    Cheque, ClientCommand, ClientEvent, ClientHandle, ClientService, RetrievalError,
-    RetrievalResult,
 };
 
 // Re-export key types for convenience
@@ -73,4 +59,3 @@ pub use vertex_bandwidth_core::{
     Accounting, AccountingConfig, AccountingError, CreditAction, DEFAULT_BASE_PRICE, DebitAction,
     FixedPricer, MAX_PO, PeerState, Pricer,
 };
-pub use vertex_node_identity::SwarmIdentity;

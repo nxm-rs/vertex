@@ -1,22 +1,22 @@
 //! Logging configuration for the Vertex Swarm node.
 
-use crate::cli::LogArgs;
 use eyre::Result;
 use tracing_subscriber::EnvFilter;
+use vertex_node_api::LoggingConfig;
 
-/// Initialize logging based on command line arguments.
+/// Initialize logging based on configuration.
 ///
 /// The filter is built with the following precedence:
-/// 1. If `--quiet` is set, only errors are shown
+/// 1. If logging is disabled, only errors are shown
 /// 2. Otherwise, start with `RUST_LOG` env var if set, or default to info level
-/// 3. Apply verbosity flags (-v, -vv, etc.) to increase log level
-/// 4. Apply any custom filter from `--log.filter`
-pub fn init_logging(args: &LogArgs) -> Result<()> {
-    let filter = if args.quiet {
+/// 3. Apply verbosity flags to increase log level
+/// 4. Apply any custom filter directive
+pub fn init_logging(config: &impl LoggingConfig) -> Result<()> {
+    let filter = if !config.logging_enabled() {
         EnvFilter::new("error")
     } else {
         // Start with RUST_LOG env var, or default based on verbosity
-        let base_level = match args.verbosity {
+        let base_level = match config.verbosity() {
             0 => "info",
             1 => "debug",
             _ => "trace",
@@ -27,7 +27,7 @@ pub fn init_logging(args: &LogArgs) -> Result<()> {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(base_level));
 
         // Add any custom filter directives
-        if let Some(custom_filter) = &args.filter {
+        if let Some(custom_filter) = config.log_filter() {
             for directive in custom_filter.split(',') {
                 if let Ok(d) = directive.parse() {
                     filter = filter.add_directive(d);
@@ -44,7 +44,7 @@ pub fn init_logging(args: &LogArgs) -> Result<()> {
         .init();
 
     // Log startup banner
-    if !args.quiet {
+    if config.logging_enabled() {
         log_startup_banner();
     }
 

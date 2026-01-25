@@ -1,14 +1,15 @@
 //! Directory management for the Vertex Swarm node.
 
-use crate::cli::DataDirArgs;
+use crate::args::DataDirArgs;
+use crate::constants::DEFAULT_DATA_DIR_NAME;
 use directories::ProjectDirs;
-use eyre::{eyre, Result};
+use eyre::{Result, eyre};
 use std::{fs, path::PathBuf, sync::Arc};
 use vertex_swarmspec::Hive;
 
 /// Returns the default project directories for Vertex Swarm.
 pub fn default_project_dirs() -> Option<ProjectDirs> {
-    ProjectDirs::from("org", "vertex", "vertex")
+    ProjectDirs::from("org", DEFAULT_DATA_DIR_NAME, DEFAULT_DATA_DIR_NAME)
 }
 
 /// Returns the default data directory path.
@@ -27,10 +28,11 @@ pub struct DataDirs {
 impl DataDirs {
     /// Create a new `DataDirs` instance for the given network specification and command line args.
     pub fn new(spec: &Arc<Hive>, args: &DataDirArgs) -> Result<Self> {
+        let fallback_dir = format!(".{}", DEFAULT_DATA_DIR_NAME);
         let root = args
             .datadir
             .clone()
-            .unwrap_or_else(|| default_data_dir().unwrap_or_else(|| PathBuf::from(".vertex")));
+            .unwrap_or_else(|| default_data_dir().unwrap_or_else(|| PathBuf::from(&fallback_dir)));
 
         let network_dir = root.join(&spec.network_name);
 

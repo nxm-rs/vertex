@@ -39,13 +39,14 @@ members = [
     "crates/node/types",
     "crates/node/api",
     "crates/node/core",
+    "crates/node/commands",
 
     # Swarm
-    "crates/swarm-api",
-    # "crates/storage",
-    # "crates/swarm-core",
-    "crates/swarm-forks",
-    "crates/swarmspec",
+    "crates/swarm/api",
+    "crates/swarm/spec",
+    "crates/swarm/forks",
+    "crates/swarm/builder",
+    "crates/swarm/core",
 
     # Client (includes bandwidth/data availability incentives)
     "crates/client/core",
@@ -54,6 +55,9 @@ members = [
     "crates/client/bandwidth/core",
     "crates/client/bandwidth/pseudosettle",
     "crates/client/bandwidth/swap",
+
+    # Storer (full node storage)
+    "crates/storer/core",
 
     # RPC
     "crates/rpc/core",
@@ -82,7 +86,7 @@ digest = "0.10"
 ## vertex
 # primitives
 vertex-primitives = { path = "crates/primitives" }
-vertex-swarm-forks = { path = "crates/swarm-forks" }
+vertex-swarm-forks = { path = "crates/swarm/forks" }
 
 # network
 vertex-net-primitives = { path = "crates/net/primitives" }
@@ -103,6 +107,7 @@ vertex-node-identity = { path = "crates/node/identity" }
 vertex-node-types = { path = "crates/node/types" }
 vertex-node-api = { path = "crates/node/api" }
 vertex-node-core = { path = "crates/node/core" }
+vertex-node-commands = { path = "crates/node/commands" }
 
 # metrics
 vertex-metrics = { path = "crates/metrics" }
@@ -112,9 +117,10 @@ vertex-tasks = { path = "crates/tasks" }
 
 # swarm
 vertex-storage = { path = "crates/storage" }
-vertex-swarm-api = { path = "crates/swarm-api" }
-# vertex-swarm-core removed - obsolete, superseded by node/* crates
-vertex-swarmspec = { path = "crates/swarmspec" }
+vertex-swarm-api = { path = "crates/swarm/api" }
+vertex-swarmspec = { path = "crates/swarm/spec" }
+vertex-swarm-builder = { path = "crates/swarm/builder" }
+vertex-swarm-core = { path = "crates/swarm/core" }
 
 # client (includes bandwidth/data availability incentives)
 vertex-client-core = { path = "crates/client/core" }
@@ -123,6 +129,9 @@ vertex-client-peermanager = { path = "crates/client/peermanager" }
 vertex-bandwidth-core = { path = "crates/client/bandwidth/core" }
 vertex-bandwidth-pseudosettle = { path = "crates/client/bandwidth/pseudosettle" }
 vertex-bandwidth-swap = { path = "crates/client/bandwidth/swap" }
+
+# storer (full node storage)
+vertex-storer-core = { path = "crates/storer/core" }
 
 # rpc
 vertex-rpc-core = { path = "crates/rpc/core" }
@@ -218,6 +227,8 @@ clap = "4"
 derive_more = { version = "2", default-features = false, features = ["full"] }
 dyn-clone = "1.0"
 eyre = "0.6"
+color-eyre = "0.6"
+hex = "0.4"
 generic-array = "0.14"
 once_cell = { version = "1.21", default-features = false, features = [
     "critical-section",

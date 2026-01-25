@@ -43,6 +43,14 @@ parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+## cli (optional)
+alloy-primitives = { workspace = true, optional = true, features = ["serde"] }
+clap = { workspace = true, features = ["derive", "env"], optional = true }
+hex = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+vertex-bandwidth-core = { workspace = true, optional = true }
+
 [features]
 default = ["std"]
 std = []
+cli = ["dep:clap", "dep:alloy-primitives", "dep:hex", "dep:serde", "dep:vertex-bandwidth-core"]

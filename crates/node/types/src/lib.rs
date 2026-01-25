@@ -26,8 +26,8 @@ use core::fmt::Debug;
 
 // Re-export SwarmTypes hierarchy from swarm-api
 pub use vertex_swarm_api::{
-    BootnodeTypes, FullTypes, Identity, LightTypes, PublisherTypes,
-    AccountingOf, IdentityOf, SpecOf, StorageOf, StoreOf, SyncOf, TopologyOf,
+    AccountingOf, BootnodeTypes, FullTypes, Identity, IdentityOf, LightTypes, PublisherTypes,
+    SpecOf, StorageOf, StoreOf, SyncOf, TopologyOf,
 };
 
 /// Database provider trait for node state persistence.

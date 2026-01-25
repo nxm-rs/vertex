@@ -158,6 +158,32 @@ impl<N: NodeTypes> SwarmNode<N> {
         self.swarm.behaviour_mut().topology.on_command(command);
     }
 
+    /// Dial peers from multiaddr strings.
+    ///
+    /// This is the preferred method for external callers - it keeps libp2p
+    /// types internal to the swarm layer.
+    ///
+    /// Returns the number of successfully initiated dials.
+    pub fn dial_addresses(&mut self, addrs: &[String]) -> usize {
+        let mut dialed = 0;
+        for addr_str in addrs {
+            match addr_str.parse::<Multiaddr>() {
+                Ok(addr) => {
+                    debug!(%addr, "Dialing peer");
+                    self.swarm
+                        .behaviour_mut()
+                        .topology
+                        .on_command(TopologyCommand::Dial(addr));
+                    dialed += 1;
+                }
+                Err(e) => {
+                    warn!(addr = %addr_str, %e, "Invalid multiaddr, skipping");
+                }
+            }
+        }
+        dialed
+    }
+
     /// Start listening on configured addresses.
     pub fn start_listening(&mut self) -> Result<()> {
         for addr in &self.listen_addrs {
@@ -651,5 +677,79 @@ impl<N: NodeTypes> SwarmNodeBuilder<N> {
         };
 
         Ok((node, client_service, client_handle))
+    }
+}
+
+/// Swarm node type determines what capabilities and protocols the node runs.
+///
+/// Each type builds on the capabilities of the previous:
+/// - Bootnode: Only topology (Hive/Kademlia)
+/// - Light: + Bandwidth accounting + Retrieval
+/// - Publisher: + Upload/Postage
+/// - Full: + Pullsync + Local storage
+/// - Staker: + Redistribution game
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum, serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "cli", serde(rename_all = "lowercase"))]
+pub enum SwarmNodeType {
+    /// Bootnode - only participates in topology (Kademlia/Hive).
+    Bootnode,
+
+    /// Light node - can retrieve chunks from the network.
+    #[default]
+    Light,
+
+    /// Publisher node - can retrieve + upload chunks.
+    Publisher,
+
+    /// Full node - stores chunks for the network.
+    Full,
+
+    /// Staker node - full storage with redistribution rewards.
+    Staker,
+}
+
+impl SwarmNodeType {
+    /// Check if this node type requires availability accounting.
+    pub fn requires_availability(&self) -> bool {
+        !matches!(self, SwarmNodeType::Bootnode)
+    }
+
+    /// Check if this node type requires retrieval protocol.
+    pub fn requires_retrieval(&self) -> bool {
+        !matches!(self, SwarmNodeType::Bootnode)
+    }
+
+    /// Check if this node type requires upload/postage.
+    pub fn requires_upload(&self) -> bool {
+        matches!(
+            self,
+            SwarmNodeType::Publisher | SwarmNodeType::Full | SwarmNodeType::Staker
+        )
+    }
+
+    /// Check if this node type requires pullsync.
+    pub fn requires_pullsync(&self) -> bool {
+        matches!(self, SwarmNodeType::Full | SwarmNodeType::Staker)
+    }
+
+    /// Check if this node type requires local storage.
+    pub fn requires_storage(&self) -> bool {
+        matches!(self, SwarmNodeType::Full | SwarmNodeType::Staker)
+    }
+
+    /// Check if this node type requires redistribution.
+    pub fn requires_redistribution(&self) -> bool {
+        matches!(self, SwarmNodeType::Staker)
+    }
+
+    /// Check if this node type requires persistent identity.
+    pub fn requires_persistent_identity(&self) -> bool {
+        matches!(self, SwarmNodeType::Full | SwarmNodeType::Staker)
+    }
+
+    /// Check if this node type requires persistent nonce (stable overlay).
+    pub fn requires_persistent_nonce(&self) -> bool {
+        matches!(self, SwarmNodeType::Full | SwarmNodeType::Staker)
     }
 }
