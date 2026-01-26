@@ -1,21 +1,19 @@
-//! Node type definitions for Vertex Swarm.
+//! Generic node type definitions for Vertex.
 //!
-//! This crate wraps SwarmTypes from swarm-api and adds node infrastructure:
+//! This crate provides infrastructure-level type traits that any protocol
+//! can use. It does NOT contain any protocol-specific types.
+//!
+//! # Type Hierarchy
 //!
 //! ```text
-//! SwarmTypes (swarm-api)          NodeTypes (node-types)
-//! ──────────────────────          ──────────────────────
-//! BootnodeTypes                   NodeTypes
-//! LightTypes          ────►         + Swarm (any SwarmTypes)
-//! PublisherTypes                    + Database
-//! FullTypes                         + Rpc
-//!                                   + Executor
+//! NodeTypes (generic infrastructure)
+//!   - Database: DatabaseProvider
+//!   - Rpc: RpcServer
+//!   - Executor: TaskExecutor
 //! ```
 //!
-//! This separation allows:
-//! - Same Swarm logic with different databases (redb, rocksdb, in-memory)
-//! - Same Swarm logic with different RPC (JSON-RPC, gRPC, none)
-//! - Testing with mock infrastructure
+//! Protocol-specific types (e.g., Swarm's Identity, Topology, Accounting)
+//! should extend these in the protocol layer, not here.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![warn(missing_docs)]
@@ -23,12 +21,7 @@
 extern crate alloc;
 
 use core::fmt::Debug;
-
-// Re-export SwarmTypes hierarchy from swarm-api
-pub use vertex_swarm_api::{
-    AccountingOf, BootnodeTypes, FullTypes, Identity, IdentityOf, LightTypes, PublisherTypes,
-    SpecOf, StorageOf, StoreOf, SyncOf, TopologyOf,
-};
+use core::marker::PhantomData;
 
 /// Database provider trait for node state persistence.
 ///
@@ -53,20 +46,24 @@ impl TaskExecutor for () {}
 /// Implement TaskExecutor for vertex_tasks::TaskExecutor.
 impl TaskExecutor for vertex_tasks::TaskExecutor {}
 
-/// Node types combining Swarm layer with infrastructure.
+/// Generic node types for infrastructure components.
+///
+/// This trait defines the infrastructure-level types that any protocol needs.
+/// Protocol-specific types (identity, topology, accounting) should be defined
+/// in the protocol layer and composed with these.
+///
+/// # Example
+///
+/// ```ignore
+/// // Protocol layer defines its own types:
+/// pub trait SwarmNodeTypes: NodeTypes {
+///     type Spec: SwarmSpec;
+///     type Identity: Identity;
+///     type Topology: Topology;
+///     type Accounting: AvailabilityAccounting;
+/// }
+/// ```
 pub trait NodeTypes: Clone + Debug + Send + Sync + 'static {
-    /// Network specification.
-    type Spec: vertex_swarmspec::SwarmSpec + Clone;
-
-    /// Cryptographic identity.
-    type Identity: Identity<Spec = Self::Spec>;
-
-    /// Peer topology.
-    type Topology: vertex_swarm_api::Topology + Clone;
-
-    /// Availability accounting.
-    type Accounting: vertex_swarm_api::AvailabilityAccounting;
-
     /// Database provider for persistent state.
     type Database: DatabaseProvider;
 
@@ -77,33 +74,6 @@ pub trait NodeTypes: Clone + Debug + Send + Sync + 'static {
     type Executor: TaskExecutor;
 }
 
-/// Node types for publisher capability.
-pub trait PublisherNodeTypes: NodeTypes {
-    /// Storage proof type (postage stamps on mainnet, `()` for dev).
-    type Storage: Send + Sync + 'static;
-}
-
-/// Node types for full node capability.
-pub trait FullNodeTypes: PublisherNodeTypes {
-    /// Local chunk storage.
-    type Store: vertex_swarm_api::LocalStore + Clone;
-
-    /// Chunk synchronization.
-    type Sync: vertex_swarm_api::ChunkSync + Clone;
-}
-
-/// Type alias to extract Spec from NodeTypes.
-pub type NodeSpecOf<N> = <N as NodeTypes>::Spec;
-
-/// Type alias to extract Identity from NodeTypes.
-pub type NodeIdentityOf<N> = <N as NodeTypes>::Identity;
-
-/// Type alias to extract Topology from NodeTypes.
-pub type NodeTopologyOf<N> = <N as NodeTypes>::Topology;
-
-/// Type alias to extract Accounting from NodeTypes.
-pub type NodeAccountingOf<N> = <N as NodeTypes>::Accounting;
-
 /// Type alias to extract the Database from NodeTypes.
 pub type DatabaseOf<N> = <N as NodeTypes>::Database;
 
@@ -113,65 +83,38 @@ pub type RpcOf<N> = <N as NodeTypes>::Rpc;
 /// Type alias to extract the Executor from NodeTypes.
 pub type ExecutorOf<N> = <N as NodeTypes>::Executor;
 
-/// Type alias to extract Storage from PublisherNodeTypes.
-pub type NodeStorageOf<N> = <N as PublisherNodeTypes>::Storage;
-
-/// Type alias to extract Store from FullNodeTypes.
-pub type NodeStoreOf<N> = <N as FullNodeTypes>::Store;
-
-/// Type alias to extract Sync from FullNodeTypes.
-pub type NodeSyncOf<N> = <N as FullNodeTypes>::Sync;
-
-// ============================================================================
-// AnyNodeTypes - Flexible Type Builder
-// ============================================================================
-
-use core::marker::PhantomData;
-
 /// Flexible NodeTypes using phantom types.
 ///
 /// Use when you need NodeTypes without creating a new struct.
+///
+/// # Example
+///
+/// ```ignore
+/// type MyNodeTypes = AnyNodeTypes<MyDb, MyRpc, MyExecutor>;
+/// ```
 #[derive(Debug)]
-pub struct AnyNodeTypes<Spec, Ident, Topo, Acct, Db = (), Rpc = (), Exec = ()>(
-    PhantomData<(Spec, Ident, Topo, Acct, Db, Rpc, Exec)>,
-);
+pub struct AnyNodeTypes<Db = (), Rpc = (), Exec = ()>(PhantomData<(Db, Rpc, Exec)>);
 
-impl<Spec, Ident, Topo, Acct, Db, Rpc, Exec> Clone
-    for AnyNodeTypes<Spec, Ident, Topo, Acct, Db, Rpc, Exec>
-{
+impl<Db, Rpc, Exec> Clone for AnyNodeTypes<Db, Rpc, Exec> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<Spec, Ident, Topo, Acct, Db, Rpc, Exec> Copy
-    for AnyNodeTypes<Spec, Ident, Topo, Acct, Db, Rpc, Exec>
-{
-}
+impl<Db, Rpc, Exec> Copy for AnyNodeTypes<Db, Rpc, Exec> {}
 
-impl<Spec, Ident, Topo, Acct, Db, Rpc, Exec> Default
-    for AnyNodeTypes<Spec, Ident, Topo, Acct, Db, Rpc, Exec>
-{
+impl<Db, Rpc, Exec> Default for AnyNodeTypes<Db, Rpc, Exec> {
     fn default() -> Self {
         Self(PhantomData)
     }
 }
 
-impl<Spec, Ident, Topo, Acct, Db, Rpc, Exec> NodeTypes
-    for AnyNodeTypes<Spec, Ident, Topo, Acct, Db, Rpc, Exec>
+impl<Db, Rpc, Exec> NodeTypes for AnyNodeTypes<Db, Rpc, Exec>
 where
-    Spec: vertex_swarmspec::SwarmSpec + Clone + Debug + Send + Sync + Unpin + 'static,
-    Ident: Identity<Spec = Spec> + Debug + Unpin,
-    Topo: vertex_swarm_api::Topology + Clone + Debug + Send + Sync + Unpin + 'static,
-    Acct: vertex_swarm_api::AvailabilityAccounting + Debug + Send + Sync + Unpin + 'static,
     Db: DatabaseProvider + Debug,
     Rpc: RpcServer + Debug,
     Exec: TaskExecutor + Debug,
 {
-    type Spec = Spec;
-    type Identity = Ident;
-    type Topology = Topo;
-    type Accounting = Acct;
     type Database = Db;
     type Rpc = Rpc;
     type Executor = Exec;

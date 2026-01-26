@@ -1,13 +1,12 @@
-//! Directory management for the Vertex Swarm node.
+//! Directory management for Vertex nodes.
 
 use crate::args::DataDirArgs;
 use crate::constants::DEFAULT_DATA_DIR_NAME;
 use directories::ProjectDirs;
 use eyre::{Result, eyre};
-use std::{fs, path::PathBuf, sync::Arc};
-use vertex_swarmspec::Hive;
+use std::{fs, path::PathBuf};
 
-/// Returns the default project directories for Vertex Swarm.
+/// Returns the default project directories for Vertex.
 pub fn default_project_dirs() -> Option<ProjectDirs> {
     ProjectDirs::from("org", DEFAULT_DATA_DIR_NAME, DEFAULT_DATA_DIR_NAME)
 }
@@ -18,6 +17,7 @@ pub fn default_data_dir() -> Option<PathBuf> {
 }
 
 /// A helper for managing data directories for a specific network.
+#[derive(Debug, Clone)]
 pub struct DataDirs {
     /// Root data directory
     pub root: PathBuf,
@@ -26,15 +26,17 @@ pub struct DataDirs {
 }
 
 impl DataDirs {
-    /// Create a new `DataDirs` instance for the given network specification and command line args.
-    pub fn new(spec: &Arc<Hive>, args: &DataDirArgs) -> Result<Self> {
+    /// Create a new `DataDirs` instance for the given network name and command line args.
+    ///
+    /// The `network_name` is used to create a network-specific subdirectory.
+    pub fn new(network_name: &str, args: &DataDirArgs) -> Result<Self> {
         let fallback_dir = format!(".{}", DEFAULT_DATA_DIR_NAME);
         let root = args
             .datadir
             .clone()
             .unwrap_or_else(|| default_data_dir().unwrap_or_else(|| PathBuf::from(&fallback_dir)));
 
-        let network_dir = root.join(&spec.network_name);
+        let network_dir = root.join(network_name);
 
         // Ensure network directory exists
         fs::create_dir_all(&network_dir).map_err(|e| {
@@ -54,22 +56,5 @@ impl DataDirs {
     /// Returns the path to the config file.
     pub fn config_file(&self) -> PathBuf {
         self.network.join("config.toml")
-    }
-
-    /// Returns the path to the state directory for persistent node state.
-    ///
-    /// This includes the nonce file and other identity-related state.
-    pub fn state_dir(&self) -> PathBuf {
-        self.network.join("state")
-    }
-
-    /// Returns the path to the keystore directory.
-    pub fn keys_dir(&self) -> PathBuf {
-        self.network.join("keystore")
-    }
-
-    /// Returns the path to the peers database file.
-    pub fn peers_file(&self) -> PathBuf {
-        self.state_dir().join("peers.json")
     }
 }

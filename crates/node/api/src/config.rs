@@ -2,6 +2,24 @@
 //!
 //! These traits define the configuration parameters for node-level infrastructure
 //! such as RPC servers, metrics endpoints, logging, and database storage.
+//!
+//! This module is protocol-agnostic - it knows nothing about specific network
+//! protocols like Swarm. Protocol configuration is handled via the [`ProtocolConfig`]
+//! trait which protocols implement to provide their specific configuration.
+//!
+//! # Protocol Configuration
+//!
+//! The [`ProtocolConfig`] trait allows protocols to define their configuration
+//! structure. This is used by the generic config loading in `vertex-node-core`
+//! to create a combined configuration:
+//!
+//! ```ignore
+//! use vertex_node_core::config::FullNodeConfig;
+//! use vertex_swarm_core::SwarmConfig;
+//!
+//! // Load combined config (generic infra + Swarm protocol)
+//! let config = FullNodeConfig::<SwarmConfig>::load(path)?;
+//! ```
 
 /// Configuration for RPC server (gRPC, REST, etc.).
 pub trait RpcConfig {
@@ -67,13 +85,12 @@ pub trait DatabaseConfig {
     fn cache_size_mb(&self) -> Option<u64>;
 }
 
-/// Combined node configuration.
+/// Combined infrastructure configuration.
 ///
-/// This trait provides access to all node-level configuration sections,
-/// combining both Swarm protocol config and infrastructure config.
+/// This trait provides access to all node-level infrastructure configuration.
+/// It is protocol-agnostic - protocol-specific configuration is handled
+/// separately by the protocol layer.
 pub trait NodeConfig {
-    /// Swarm protocol configuration.
-    type Swarm: vertex_swarm_api::SwarmConfig;
     /// RPC server configuration.
     type Rpc: RpcConfig;
     /// Metrics configuration.
@@ -82,9 +99,6 @@ pub trait NodeConfig {
     type Logging: LoggingConfig;
     /// Database configuration.
     type Database: DatabaseConfig;
-
-    /// Get Swarm protocol configuration.
-    fn swarm(&self) -> &Self::Swarm;
 
     /// Get RPC server configuration.
     fn rpc(&self) -> &Self::Rpc;
@@ -97,4 +111,51 @@ pub trait NodeConfig {
 
     /// Get database configuration.
     fn database(&self) -> &Self::Database;
+}
+
+/// Trait for protocol-specific configuration.
+///
+/// Protocols implement this trait to define their configuration structure.
+/// The configuration is combined with generic node infrastructure config
+/// via [`vertex_node_core::config::FullNodeConfig<P>`].
+///
+/// # Requirements
+///
+/// - `Default`: Provides sensible defaults when no config is specified
+/// - `Clone`: Config may need to be shared across components
+/// - `Serialize + DeserializeOwned`: For config file loading (when `serde` feature enabled)
+///
+/// # Example
+///
+/// ```ignore
+/// use vertex_node_api::ProtocolConfig;
+///
+/// #[derive(Default, Clone, Serialize, Deserialize)]
+/// pub struct SwarmConfig {
+///     pub node_type: SwarmNodeType,
+///     pub network: NetworkArgs,
+///     // ... other Swarm-specific fields
+/// }
+///
+/// impl ProtocolConfig for SwarmConfig {
+///     type Args = SwarmArgs;
+///
+///     fn apply_args(&mut self, args: &Self::Args) {
+///         self.node_type = args.node_type;
+///         self.network = args.network.clone();
+///         // ... apply other overrides
+///     }
+/// }
+/// ```
+pub trait ProtocolConfig: Default + Clone {
+    /// CLI arguments type for this protocol.
+    ///
+    /// This should be a clap `Args` struct that can be flattened into a CLI parser.
+    type Args: Clone;
+
+    /// Apply CLI argument overrides to this configuration.
+    ///
+    /// Called after loading config from file/environment to apply
+    /// command-line overrides.
+    fn apply_args(&mut self, args: &Self::Args);
 }
