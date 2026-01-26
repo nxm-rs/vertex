@@ -6,11 +6,10 @@
 //!
 //! ```ignore
 //! use vertex_node_builder::NodeBuilder;
-//! use vertex_swarm_api::SwarmLightProtocol;
 //!
-//! let handle = NodeBuilder::<SwarmLightProtocol<MyConfig>>::new()
+//! let handle = NodeBuilder::new()
 //!     .with_launch_context(executor, dirs, api_config)
-//!     .with_protocol(protocol_config)
+//!     .with_protocol(my_config)  // Protocol inferred from config type
 //!     .launch()
 //!     .await?;
 //!

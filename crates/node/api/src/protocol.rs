@@ -24,6 +24,39 @@ use crate::NodeContext;
 use async_trait::async_trait;
 use vertex_tasks::TaskExecutor;
 
+/// A build configuration that knows which protocol it builds.
+///
+/// This trait enables type inference at `with_protocol()` - the config type
+/// uniquely determines the protocol type.
+///
+/// # Example
+///
+/// ```ignore
+/// use vertex_node_api::BuildsProtocol;
+/// use vertex_swarm_api::SwarmLightProtocol;
+///
+/// impl BuildsProtocol for MyLightBuildConfig {
+///     type Protocol = SwarmLightProtocol<Self>;
+///
+///     fn protocol_name(&self) -> &'static str {
+///         "Swarm"
+///     }
+///
+///     fn node_type_name(&self) -> &'static str {
+///         "Light"
+///     }
+/// }
+/// ```
+pub trait BuildsProtocol: Send + Sync + 'static {
+    /// The protocol this config builds.
+    type Protocol: Protocol<Config = Self>;
+
+    /// Human-readable protocol name for logging (e.g., "Swarm", "Ethereum").
+    fn protocol_name(&self) -> &'static str {
+        "Unknown"
+    }
+}
+
 /// A network protocol that can be built and run by node infrastructure.
 ///
 /// # Components vs Services
