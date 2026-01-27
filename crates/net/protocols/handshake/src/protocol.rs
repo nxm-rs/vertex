@@ -5,7 +5,7 @@ use futures::{AsyncWriteExt, SinkExt, TryStreamExt, future::BoxFuture};
 use libp2p::{InboundUpgrade, Multiaddr, OutboundUpgrade, PeerId, Stream, core::UpgradeInfo};
 use tracing::{debug, info};
 use vertex_net_primitives::NodeAddress;
-use vertex_node_types::{Identity, NodeTypes};
+use vertex_swarm_api::{Identity, SwarmNodeTypes};
 use vertex_swarmspec::SwarmSpec;
 
 use crate::{
@@ -17,15 +17,15 @@ use crate::{
 /// This protocol handles the three-way handshake (SYN → SYNACK → ACK)
 /// that authenticates peers on the Swarm network.
 ///
-/// Generic over `N: NodeTypes` to support different node configurations.
+/// Generic over `N: SwarmNodeTypes` to support different node configurations.
 #[derive(Clone)]
-pub struct HandshakeProtocol<N: NodeTypes> {
+pub struct HandshakeProtocol<N: SwarmNodeTypes> {
     pub(crate) identity: Arc<N::Identity>,
     pub(crate) peer_id: PeerId,
     pub(crate) remote_addr: Multiaddr,
 }
 
-impl<N: NodeTypes> HandshakeProtocol<N> {
+impl<N: SwarmNodeTypes> HandshakeProtocol<N> {
     /// Create a new handshake protocol.
     pub fn new(identity: Arc<N::Identity>, peer_id: PeerId, remote_addr: Multiaddr) -> Self {
         Self {
@@ -36,7 +36,7 @@ impl<N: NodeTypes> HandshakeProtocol<N> {
     }
 }
 
-impl<N: NodeTypes> std::fmt::Debug for HandshakeProtocol<N> {
+impl<N: SwarmNodeTypes> std::fmt::Debug for HandshakeProtocol<N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HandshakeProtocol")
             .field("peer_id", &self.peer_id)
@@ -45,7 +45,7 @@ impl<N: NodeTypes> std::fmt::Debug for HandshakeProtocol<N> {
     }
 }
 
-impl<N: NodeTypes> UpgradeInfo for HandshakeProtocol<N> {
+impl<N: SwarmNodeTypes> UpgradeInfo for HandshakeProtocol<N> {
     type Info = &'static str;
     type InfoIter = std::iter::Once<Self::Info>;
 
@@ -54,7 +54,7 @@ impl<N: NodeTypes> UpgradeInfo for HandshakeProtocol<N> {
     }
 }
 
-impl<N: NodeTypes> InboundUpgrade<Stream> for HandshakeProtocol<N> {
+impl<N: SwarmNodeTypes> InboundUpgrade<Stream> for HandshakeProtocol<N> {
     type Output = HandshakeInfo;
     type Error = HandshakeError;
     type Future = BoxFuture<'static, Result<Self::Output, Self::Error>>;
@@ -69,7 +69,7 @@ impl<N: NodeTypes> InboundUpgrade<Stream> for HandshakeProtocol<N> {
     }
 }
 
-impl<N: NodeTypes> OutboundUpgrade<Stream> for HandshakeProtocol<N> {
+impl<N: SwarmNodeTypes> OutboundUpgrade<Stream> for HandshakeProtocol<N> {
     type Output = HandshakeInfo;
     type Error = HandshakeError;
     type Future = BoxFuture<'static, Result<Self::Output, Self::Error>>;
@@ -84,7 +84,7 @@ impl<N: NodeTypes> OutboundUpgrade<Stream> for HandshakeProtocol<N> {
     }
 }
 
-async fn handle_inbound_handshake<N: NodeTypes>(
+async fn handle_inbound_handshake<N: SwarmNodeTypes>(
     stream: Stream,
     identity: Arc<N::Identity>,
     peer_id: PeerId,
@@ -142,7 +142,7 @@ async fn handle_inbound_handshake<N: NodeTypes>(
     Ok(HandshakeInfo { peer_id, ack })
 }
 
-async fn handle_outbound_handshake<N: NodeTypes>(
+async fn handle_outbound_handshake<N: SwarmNodeTypes>(
     stream: Stream,
     identity: Arc<N::Identity>,
     peer_id: PeerId,

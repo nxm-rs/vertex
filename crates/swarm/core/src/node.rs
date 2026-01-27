@@ -667,6 +667,13 @@ impl<N: SwarmNodeTypes> SwarmNodeBuilder<N> {
         let executor = TaskExecutor::current();
         let _manage_handle = kademlia.clone().spawn_manage_loop(&executor);
 
+        // Spawn stats reporting task
+        let _stats_handle = crate::stats::spawn_stats_task(
+            kademlia.clone(),
+            crate::stats::StatsConfig::default(),
+            &executor,
+        );
+
         // Create discovery channel for peer persistence
         let (discovery_tx, discovery_rx) = discovery_channel();
 

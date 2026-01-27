@@ -29,7 +29,7 @@ use libp2p::{
 };
 use tracing::{debug, warn};
 use vertex_net_hive::{MAX_BATCH_SIZE, Peers};
-use vertex_node_types::NodeTypes;
+use vertex_swarm_api::SwarmNodeTypes;
 
 use crate::{
     TopologyCommand, TopologyEvent,
@@ -51,8 +51,8 @@ pub struct Config {
 /// events from the handler to `TopologyEvent` and handles `TopologyCommand`
 /// from the node layer.
 ///
-/// Generic over `N: NodeTypes` to support different node configurations.
-pub struct SwarmTopologyBehaviour<N: NodeTypes> {
+/// Generic over `N: SwarmNodeTypes` to support different node configurations.
+pub struct SwarmTopologyBehaviour<N: SwarmNodeTypes> {
     /// Configuration.
     config: Config,
     /// Node identity for handshake.
@@ -65,7 +65,7 @@ pub struct SwarmTopologyBehaviour<N: NodeTypes> {
     pending_actions: VecDeque<ToSwarm<TopologyEvent, HandlerCommand>>,
 }
 
-impl<N: NodeTypes> SwarmTopologyBehaviour<N> {
+impl<N: SwarmNodeTypes> SwarmTopologyBehaviour<N> {
     /// Create a new topology behaviour.
     pub fn new(identity: Arc<N::Identity>, config: Config) -> Self {
         Self {
@@ -193,7 +193,7 @@ impl<N: NodeTypes> SwarmTopologyBehaviour<N> {
     }
 }
 
-impl<N: NodeTypes> NetworkBehaviour for SwarmTopologyBehaviour<N> {
+impl<N: SwarmNodeTypes> NetworkBehaviour for SwarmTopologyBehaviour<N> {
     type ConnectionHandler = TopologyHandler<N>;
     type ToSwarm = TopologyEvent;
 

@@ -16,7 +16,7 @@ workspace = true
 vertex-net-codec.workspace = true
 vertex-net-headers.workspace = true
 vertex-net-primitives.workspace = true
-vertex-node-types.workspace = true
+vertex-swarm-api.workspace = true
 vertex-swarmspec.workspace = true
 
 ## async

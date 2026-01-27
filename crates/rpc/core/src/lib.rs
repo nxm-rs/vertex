@@ -34,34 +34,6 @@ pub trait RpcServer: Send + Sync {
     fn is_running(&self) -> bool;
 }
 
-/// Provider trait for topology information.
-///
-/// Implement this trait to expose topology data to the RPC server.
-/// The KademliaTopology can implement this directly.
-#[auto_impl::auto_impl(&, Arc)]
-pub trait TopologyProvider: Send + Sync {
-    /// Get the overlay address as hex string.
-    fn overlay_address(&self) -> String;
-
-    /// Get the current depth.
-    fn depth(&self) -> u8;
-
-    /// Get the number of connected peers.
-    fn connected_peers_count(&self) -> usize;
-
-    /// Get the number of known peers.
-    fn known_peers_count(&self) -> usize;
-
-    /// Get the number of pending connections.
-    fn pending_connections_count(&self) -> usize;
-
-    /// Get bin sizes as (connected, known) for each PO 0-31.
-    fn bin_sizes(&self) -> Vec<(usize, usize)>;
-
-    /// Get connected peer addresses in a specific bin as hex strings.
-    fn connected_peers_in_bin(&self, po: u8) -> Vec<String>;
-}
-
 /// No-op RPC server for nodes that don't expose RPC.
 ///
 /// This is useful for testing or when running nodes in embedded mode

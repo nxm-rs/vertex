@@ -39,7 +39,7 @@ use tracing::{debug, trace, warn};
 use vertex_net_handshake::{HANDSHAKE_TIMEOUT, HandshakeError, HandshakeInfo};
 use vertex_net_hive::{BzzAddress, Peers};
 use vertex_net_primitives_traits::NodeAddress as NodeAddressTrait;
-use vertex_node_types::NodeTypes;
+use vertex_swarm_api::SwarmNodeTypes;
 
 use crate::protocol::{
     TopologyInboundOutput, TopologyInboundUpgrade, TopologyOutboundInfo, TopologyOutboundOutput,
@@ -134,8 +134,8 @@ struct PendingPing {
 /// Manages handshake, hive, and pingpong protocols on a single connection.
 /// Uses `TopologyInboundUpgrade` and `TopologyOutboundUpgrade` for multi-protocol support.
 ///
-/// Generic over `N: NodeTypes` to support different node configurations.
-pub struct TopologyHandler<N: NodeTypes> {
+/// Generic over `N: SwarmNodeTypes` to support different node configurations.
+pub struct TopologyHandler<N: SwarmNodeTypes> {
     /// Handler configuration.
     config: Config,
     /// Node identity for handshake.
@@ -164,7 +164,7 @@ pub struct TopologyHandler<N: NodeTypes> {
     pending_ping_command: Option<String>,
 }
 
-impl<N: NodeTypes> TopologyHandler<N> {
+impl<N: SwarmNodeTypes> TopologyHandler<N> {
     /// Create a new topology handler.
     pub fn new(
         config: Config,
@@ -209,7 +209,7 @@ impl<N: NodeTypes> TopologyHandler<N> {
 /// Uses `TopologyInboundUpgrade` to advertise handshake, hive, and pingpong protocols.
 /// Uses `TopologyOutboundUpgrade` for outbound requests with `TopologyOutboundInfo`
 /// to track which request type is in flight.
-impl<N: NodeTypes> ConnectionHandler for TopologyHandler<N> {
+impl<N: SwarmNodeTypes> ConnectionHandler for TopologyHandler<N> {
     type FromBehaviour = Command;
     type ToBehaviour = Event;
     type InboundProtocol = TopologyInboundUpgrade<N>;
@@ -394,7 +394,7 @@ impl<N: NodeTypes> ConnectionHandler for TopologyHandler<N> {
     }
 }
 
-impl<N: NodeTypes> TopologyHandler<N> {
+impl<N: SwarmNodeTypes> TopologyHandler<N> {
     /// Handle an inbound protocol completion.
     fn handle_inbound_output(&mut self, output: TopologyInboundOutput) {
         match output {

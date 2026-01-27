@@ -14,8 +14,8 @@ nectar-primitives.workspace = true
 
 ## vertex
 vertex-net-codec.workspace = true
-vertex-node-identity.workspace = true
-vertex-node-types.workspace = true
+vertex-swarm-api.workspace = true
+vertex-swarm-identity.workspace = true
 vertex-net-primitives.workspace = true
 vertex-net-primitives-traits.workspace = true
 vertex-swarmspec.workspace = true

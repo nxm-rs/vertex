@@ -2849,6 +2849,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
+name = "humansize"
+version = "2.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cb51c9a029ddc91b07a787f1d86b53ccfa49b0e86688c946ebe8d3555685dd7"
+dependencies = [
+ "libm",
+]
+
+[[package]]
 name = "humantime"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5063,17 +5072,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rpassword"
-version = "7.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66d4c8b64f049c6721ec8ccec37ddfc3d641c4a7fca57e8f2a89de509c73df39"
-dependencies = [
- "libc",
- "rtoolbox",
- "windows-sys 0.59.0",
-]
-
-[[package]]
 name = "rtnetlink"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5090,16 +5088,6 @@ dependencies = [
  "nix",
  "thiserror 1.0.69",
  "tokio",
-]
-
-[[package]]
-name = "rtoolbox"
-version = "0.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7cc970b249fbe527d6e02e0a227762c9108b2f49d81094fe357ffc6d14d7f6f"
-dependencies = [
- "libc",
- "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6449,9 +6437,13 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vertex"
 version = "0.1.0"
 dependencies = [
- "color-eyre",
+ "eyre",
+ "hex",
  "tokio",
- "vertex-node-commands",
+ "tracing",
+ "vertex-node-builder",
+ "vertex-swarm-api",
+ "vertex-swarm-node",
 ]
 
 [[package]]
@@ -6522,9 +6514,7 @@ dependencies = [
  "parking_lot",
  "tokio",
  "tracing",
- "vertex-node-types",
  "vertex-primitives",
- "vertex-rpc-core",
  "vertex-swarm-api",
  "vertex-swarmspec",
  "vertex-tasks",
@@ -6606,8 +6596,8 @@ dependencies = [
  "vertex-net-codec",
  "vertex-net-primitives",
  "vertex-net-primitives-traits",
- "vertex-node-identity",
- "vertex-node-types",
+ "vertex-swarm-api",
+ "vertex-swarm-identity",
  "vertex-swarmspec",
  "walkdir",
 ]
@@ -6647,7 +6637,7 @@ dependencies = [
  "vertex-net-codec",
  "vertex-net-headers",
  "vertex-net-primitives",
- "vertex-node-types",
+ "vertex-swarm-api",
  "vertex-swarmspec",
  "walkdir",
 ]
@@ -6781,9 +6771,9 @@ dependencies = [
  "vertex-net-hive",
  "vertex-net-pingpong",
  "vertex-net-primitives-traits",
- "vertex-node-identity",
- "vertex-node-types",
  "vertex-primitives",
+ "vertex-swarm-api",
+ "vertex-swarm-identity",
 ]
 
 [[package]]
@@ -6791,51 +6781,35 @@ name = "vertex-node-api"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "auto_impl",
- "futures",
  "serde",
- "thiserror 2.0.12",
+ "vertex-tasks",
+]
+
+[[package]]
+name = "vertex-node-builder"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "eyre",
  "tokio",
  "tracing",
- "vertex-node-types",
- "vertex-primitives",
- "vertex-swarm-api",
- "vertex-swarmspec",
+ "vertex-node-api",
+ "vertex-node-core",
+ "vertex-rpc-server",
+ "vertex-tasks",
 ]
 
 [[package]]
 name = "vertex-node-commands"
 version = "0.1.0"
 dependencies = [
- "alloy-primitives",
- "alloy-signer",
- "alloy-signer-local",
- "atty",
  "clap 4.5.39",
  "color-eyre",
- "eyre",
- "figment",
- "hex",
- "rand 0.8.5",
- "rpassword",
- "serde",
  "tempfile",
  "tokio",
- "toml 0.7.8",
  "tracing",
- "vertex-bandwidth-core",
- "vertex-client-core",
- "vertex-client-kademlia",
- "vertex-client-peermanager",
- "vertex-node-api",
+ "vertex-node-builder",
  "vertex-node-core",
- "vertex-node-identity",
- "vertex-node-types",
- "vertex-rpc-core",
- "vertex-rpc-server",
- "vertex-swarm-api",
- "vertex-swarm-core",
- "vertex-swarmspec",
  "vertex-tasks",
 ]
 
@@ -6849,6 +6823,7 @@ dependencies = [
  "clap 4.5.39",
  "directories",
  "eyre",
+ "figment",
  "futures",
  "hex",
  "humantime 2.3.0",
@@ -6865,46 +6840,15 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "vergen-gitcl",
- "vertex-bandwidth-core",
- "vertex-bandwidth-pseudosettle",
- "vertex-bandwidth-swap",
- "vertex-client-core",
  "vertex-node-api",
- "vertex-node-identity",
- "vertex-node-types",
- "vertex-primitives",
- "vertex-rpc-server",
- "vertex-swarm-api",
- "vertex-swarm-core",
- "vertex-swarmspec",
-]
-
-[[package]]
-name = "vertex-node-identity"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "alloy-signer",
- "alloy-signer-local",
- "nectar-primitives",
- "rand 0.9.1",
- "vertex-net-primitives-traits",
- "vertex-node-types",
- "vertex-swarmspec",
+ "vertex-tasks",
 ]
 
 [[package]]
 name = "vertex-node-types"
 version = "0.1.0"
 dependencies = [
- "alloy-primitives",
- "alloy-signer",
  "auto_impl",
- "nectar-primitives",
- "vertex-net-primitives-traits",
- "vertex-primitives",
- "vertex-swarm-api",
- "vertex-swarmspec",
  "vertex-tasks",
 ]
 
@@ -6934,6 +6878,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "eyre",
+ "http 1.3.1",
  "parking_lot",
  "prost",
  "tokio",
@@ -6975,19 +6920,41 @@ dependencies = [
  "nectar-primitives",
  "serde",
  "thiserror 2.0.12",
+ "tracing",
  "vertex-net-primitives-traits",
+ "vertex-node-api",
+ "vertex-node-types",
  "vertex-primitives",
  "vertex-swarmspec",
+ "vertex-tasks",
 ]
 
 [[package]]
 name = "vertex-swarm-builder"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
+ "async-trait",
+ "eyre",
+ "hex",
+ "rand 0.8.5",
+ "rand 0.9.1",
+ "thiserror 2.0.12",
  "tracing",
  "vertex-bandwidth-core",
  "vertex-client-kademlia",
+ "vertex-client-peermanager",
+ "vertex-node-api",
+ "vertex-node-builder",
+ "vertex-node-commands",
+ "vertex-node-core",
+ "vertex-node-types",
  "vertex-swarm-api",
+ "vertex-swarm-core",
+ "vertex-swarm-identity",
+ "vertex-swarmspec",
  "vertex-tasks",
 ]
 
@@ -6996,15 +6963,20 @@ name = "vertex-swarm-core"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
  "bytes",
  "clap 4.5.39",
  "eyre",
+ "figment",
  "futures",
  "hex",
  "libp2p",
  "nectar-primitives",
  "parking_lot",
+ "rand 0.9.1",
  "serde",
+ "strum",
  "thiserror 2.0.12",
  "tokio",
  "tracing",
@@ -7015,10 +6987,11 @@ dependencies = [
  "vertex-net-primitives",
  "vertex-net-primitives-traits",
  "vertex-net-topology",
- "vertex-node-identity",
+ "vertex-node-api",
  "vertex-node-types",
  "vertex-primitives",
  "vertex-swarm-api",
+ "vertex-swarm-identity",
  "vertex-swarmspec",
  "vertex-tasks",
 ]
@@ -7039,6 +7012,55 @@ dependencies = [
 ]
 
 [[package]]
+name = "vertex-swarm-identity"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
+ "nectar-primitives",
+ "rand 0.9.1",
+ "tracing",
+ "vertex-net-primitives-traits",
+ "vertex-swarm-api",
+ "vertex-swarmspec",
+]
+
+[[package]]
+name = "vertex-swarm-node"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "clap 4.5.39",
+ "eyre",
+ "hex",
+ "rand 0.9.1",
+ "tracing",
+ "vertex-client-peermanager",
+ "vertex-node-builder",
+ "vertex-node-commands",
+ "vertex-node-core",
+ "vertex-swarm-api",
+ "vertex-swarm-builder",
+ "vertex-swarm-core",
+ "vertex-swarm-identity",
+ "vertex-swarmspec",
+ "vertex-tasks",
+]
+
+[[package]]
+name = "vertex-swarm-rpc"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "prost",
+ "tokio",
+ "tonic",
+ "tonic-build",
+ "vertex-swarm-api",
+]
+
+[[package]]
 name = "vertex-swarmspec"
 version = "0.1.0"
 dependencies = [
@@ -7046,12 +7068,14 @@ dependencies = [
  "alloy-primitives",
  "arbitrary",
  "auto_impl",
+ "humansize",
  "nectar-contracts",
  "nectar-primitives",
  "proptest",
  "serde",
  "serde_json",
  "thiserror 2.0.12",
+ "tracing",
  "vertex-net-primitives",
  "vertex-net-primitives-traits",
  "vertex-swarm-forks",

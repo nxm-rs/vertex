@@ -1,7 +1,17 @@
 //! Proximity-ordered peer storage (PSlice).
 //!
-//! Peers are organized into bins based on their proximity order (PO) relative
-//! to the base address. PO is calculated using `OverlayAddress::proximity()`.
+//! Peers are organized into bins based on their proximity order (PO).
+//! The base address is not stored here - callers provide the PO when adding peers.
+//!
+//! # Implementation
+//!
+//! Uses a single `HashMap<OverlayAddress, u8>` for O(1) peer operations,
+//! with atomic counters per bin for lock-free statistics.
+
+use std::{
+    collections::HashMap,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use parking_lot::RwLock;
 use vertex_primitives::OverlayAddress;
@@ -14,60 +24,55 @@ const NUM_BINS: usize = 32;
 
 /// Proximity-ordered peer storage.
 ///
-/// Stores peers in bins based on their proximity order (PO) relative to the
-/// base address. Each bin contains peers with the same PO value.
+/// Stores peers with their proximity order (PO).
+/// Provides O(1) insert/remove/lookup and lock-free bin count queries.
+///
+/// Does not store the base address - callers provide proximity order when adding.
 pub struct PSlice {
-    base: OverlayAddress,
-    bins: [RwLock<Vec<OverlayAddress>>; NUM_BINS],
+    /// Maps peer address to its proximity order. Single lock for all operations.
+    peers: RwLock<HashMap<OverlayAddress, u8>>,
+    /// Atomic counters per bin for lock-free size queries.
+    bin_counts: [AtomicUsize; NUM_BINS],
+}
+
+impl Default for PSlice {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PSlice {
-    /// Create a new PSlice with the given base address.
-    pub fn new(base: OverlayAddress) -> Self {
+    /// Create a new empty PSlice.
+    pub fn new() -> Self {
         Self {
-            base,
-            bins: std::array::from_fn(|_| RwLock::new(Vec::new())),
+            peers: RwLock::new(HashMap::new()),
+            bin_counts: std::array::from_fn(|_| AtomicUsize::new(0)),
         }
     }
 
-    /// Get the base address.
-    pub fn base(&self) -> OverlayAddress {
-        self.base
-    }
-
-    /// Calculate the proximity order between the base and another address.
-    pub fn proximity(&self, other: &OverlayAddress) -> u8 {
-        self.base.proximity(other)
-    }
-
-    /// Add a peer to the appropriate bin.
+    /// Add a peer with its proximity order.
     ///
     /// Returns `true` if the peer was added (not already present).
-    pub fn add(&self, peer: OverlayAddress) -> bool {
-        if peer == self.base {
+    pub fn add(&self, peer: OverlayAddress, po: u8) -> bool {
+        let mut peers = self.peers.write();
+
+        if peers.contains_key(&peer) {
             return false;
         }
 
-        let po = self.proximity(&peer) as usize;
-        let mut bin = self.bins[po].write();
-
-        if bin.contains(&peer) {
-            return false;
-        }
-
-        bin.push(peer);
+        peers.insert(peer, po);
+        self.bin_counts[po as usize].fetch_add(1, Ordering::Relaxed);
         true
     }
 
-    /// Remove a peer from its bin.
+    /// Remove a peer.
     ///
     /// Returns `true` if the peer was present and removed.
     pub fn remove(&self, peer: &OverlayAddress) -> bool {
-        let po = self.proximity(peer) as usize;
-        let mut bin = self.bins[po].write();
+        let mut peers = self.peers.write();
 
-        if let Some(idx) = bin.iter().position(|p| p == peer) {
-            bin.swap_remove(idx);
+        if let Some(po) = peers.remove(peer) {
+            self.bin_counts[po as usize].fetch_sub(1, Ordering::Relaxed);
             true
         } else {
             false
@@ -76,60 +81,76 @@ impl PSlice {
 
     /// Check if a peer exists in the PSlice.
     pub fn exists(&self, peer: &OverlayAddress) -> bool {
-        let po = self.proximity(peer) as usize;
-        self.bins[po].read().contains(peer)
+        self.peers.read().contains_key(peer)
     }
 
-    /// Get the number of peers in a specific bin.
+    /// Get the proximity order of a peer, if present.
+    pub fn get_po(&self, peer: &OverlayAddress) -> Option<u8> {
+        self.peers.read().get(peer).copied()
+    }
+
+    /// Get the number of peers in a specific bin (lock-free).
     pub fn bin_size(&self, po: u8) -> usize {
-        self.bins[po as usize].read().len()
+        self.bin_counts[po as usize].load(Ordering::Relaxed)
     }
 
-    /// Get the total number of peers.
+    /// Get the total number of peers (lock-free).
     pub fn len(&self) -> usize {
-        self.bins.iter().map(|b| b.read().len()).sum()
+        self.bin_counts
+            .iter()
+            .map(|c| c.load(Ordering::Relaxed))
+            .sum()
     }
 
-    /// Check if empty.
+    /// Check if empty (lock-free).
     pub fn is_empty(&self) -> bool {
-        self.bins.iter().all(|b| b.read().is_empty())
+        self.bin_counts
+            .iter()
+            .all(|c| c.load(Ordering::Relaxed) == 0)
     }
 
     /// Get all peers in a specific bin.
     pub fn peers_in_bin(&self, po: u8) -> Vec<OverlayAddress> {
-        self.bins[po as usize].read().clone()
+        self.peers
+            .read()
+            .iter()
+            .filter(|&(_, &p)| p == po)
+            .map(|(&addr, _)| addr)
+            .collect()
     }
 
     /// Iterate over all peers with their proximity order, from shallowest to deepest.
-    pub fn iter_by_proximity(&self) -> impl Iterator<Item = (u8, OverlayAddress)> + '_ {
-        (0..NUM_BINS as u8).flat_map(|po| {
-            self.bins[po as usize]
-                .read()
-                .clone()
-                .into_iter()
-                .map(move |peer| (po, peer))
-        })
+    pub fn iter_by_proximity(&self) -> impl Iterator<Item = (u8, OverlayAddress)> {
+        let mut peers: Vec<_> = self
+            .peers
+            .read()
+            .iter()
+            .map(|(&addr, &po)| (po, addr))
+            .collect();
+        peers.sort_by_key(|(po, _)| *po);
+        peers.into_iter()
     }
 
     /// Iterate over all peers with their proximity order, from deepest to shallowest.
-    pub fn iter_by_proximity_desc(&self) -> impl Iterator<Item = (u8, OverlayAddress)> + '_ {
-        (0..NUM_BINS as u8).rev().flat_map(|po| {
-            self.bins[po as usize]
-                .read()
-                .clone()
-                .into_iter()
-                .map(move |peer| (po, peer))
-        })
+    pub fn iter_by_proximity_desc(&self) -> impl Iterator<Item = (u8, OverlayAddress)> {
+        let mut peers: Vec<_> = self
+            .peers
+            .read()
+            .iter()
+            .map(|(&addr, &po)| (po, addr))
+            .collect();
+        peers.sort_by_key(|(po, _)| std::cmp::Reverse(*po));
+        peers.into_iter()
     }
 
     /// Get all peers as a flat vector.
     pub fn all_peers(&self) -> Vec<OverlayAddress> {
-        self.bins.iter().flat_map(|b| b.read().clone()).collect()
+        self.peers.read().keys().copied().collect()
     }
 
-    /// Get bin sizes as an array [bin0_size, bin1_size, ..., bin31_size].
+    /// Get bin sizes as an array (lock-free).
     pub fn bin_sizes(&self) -> [usize; NUM_BINS] {
-        std::array::from_fn(|i| self.bins[i].read().len())
+        std::array::from_fn(|i| self.bin_counts[i].load(Ordering::Relaxed))
     }
 }
 
@@ -137,21 +158,16 @@ impl PSlice {
 mod tests {
     use super::*;
 
-    fn addr_from_bytes(bytes: [u8; 32]) -> OverlayAddress {
-        OverlayAddress::from(bytes)
-    }
-
     #[test]
     fn test_pslice_add_remove() {
-        let base = addr_from_bytes([0x00; 32]);
-        let pslice = PSlice::new(base);
+        let pslice = PSlice::new();
 
-        let peer1 = addr_from_bytes([0x80; 32]); // PO 0
-        let peer2 = addr_from_bytes([0x40; 32]); // PO 1
+        let peer1 = OverlayAddress::from([0x80; 32]);
+        let peer2 = OverlayAddress::from([0x40; 32]);
 
-        assert!(pslice.add(peer1));
-        assert!(!pslice.add(peer1)); // Already exists
-        assert!(pslice.add(peer2));
+        assert!(pslice.add(peer1, 0)); // PO 0
+        assert!(!pslice.add(peer1, 0)); // Already exists
+        assert!(pslice.add(peer2, 1)); // PO 1
 
         assert_eq!(pslice.len(), 2);
         assert!(pslice.exists(&peer1));
@@ -167,16 +183,15 @@ mod tests {
 
     #[test]
     fn test_pslice_bin_size() {
-        let base = addr_from_bytes([0x00; 32]);
-        let pslice = PSlice::new(base);
+        let pslice = PSlice::new();
 
-        let peer1 = addr_from_bytes([0x80; 32]); // PO 0
-        let peer2 = addr_from_bytes([0xc0; 32]); // PO 0
-        let peer3 = addr_from_bytes([0x40; 32]); // PO 1
+        let peer1 = OverlayAddress::from([0x80; 32]);
+        let peer2 = OverlayAddress::from([0xc0; 32]);
+        let peer3 = OverlayAddress::from([0x40; 32]);
 
-        pslice.add(peer1);
-        pslice.add(peer2);
-        pslice.add(peer3);
+        pslice.add(peer1, 0); // PO 0
+        pslice.add(peer2, 0); // PO 0
+        pslice.add(peer3, 1); // PO 1
 
         assert_eq!(pslice.bin_size(0), 2);
         assert_eq!(pslice.bin_size(1), 1);
@@ -184,31 +199,99 @@ mod tests {
     }
 
     #[test]
-    fn test_pslice_cannot_add_self() {
-        let base = addr_from_bytes([0x42; 32]);
-        let pslice = PSlice::new(base);
+    fn test_pslice_get_po() {
+        let pslice = PSlice::new();
 
-        assert!(!pslice.add(base));
-        assert_eq!(pslice.len(), 0);
+        let peer = OverlayAddress::from([0x80; 32]);
+        pslice.add(peer, 5);
+
+        assert_eq!(pslice.get_po(&peer), Some(5));
+        assert_eq!(pslice.get_po(&OverlayAddress::from([0x00; 32])), None);
     }
 
     #[test]
     fn test_pslice_iter_by_proximity() {
-        let base = addr_from_bytes([0x00; 32]);
-        let pslice = PSlice::new(base);
+        let pslice = PSlice::new();
 
-        let peer0 = addr_from_bytes([0x80; 32]); // PO 0
-        let peer1 = addr_from_bytes([0x40; 32]); // PO 1
-        let peer2 = addr_from_bytes([0x20; 32]); // PO 2
+        let peer0 = OverlayAddress::from([0x80; 32]);
+        let peer1 = OverlayAddress::from([0x40; 32]);
+        let peer2 = OverlayAddress::from([0x20; 32]);
 
-        pslice.add(peer2);
-        pslice.add(peer0);
-        pslice.add(peer1);
+        pslice.add(peer2, 2);
+        pslice.add(peer0, 0);
+        pslice.add(peer1, 1);
 
         let collected: Vec<_> = pslice.iter_by_proximity().collect();
         assert_eq!(collected.len(), 3);
         assert_eq!(collected[0].0, 0); // First is PO 0
         assert_eq!(collected[1].0, 1); // Second is PO 1
         assert_eq!(collected[2].0, 2); // Third is PO 2
+    }
+
+    #[test]
+    fn test_pslice_iter_by_proximity_desc() {
+        let pslice = PSlice::new();
+
+        let peer0 = OverlayAddress::from([0x80; 32]);
+        let peer1 = OverlayAddress::from([0x40; 32]);
+        let peer2 = OverlayAddress::from([0x20; 32]);
+
+        pslice.add(peer0, 0);
+        pslice.add(peer1, 1);
+        pslice.add(peer2, 2);
+
+        let collected: Vec<_> = pslice.iter_by_proximity_desc().collect();
+        assert_eq!(collected.len(), 3);
+        assert_eq!(collected[0].0, 2); // First is PO 2 (deepest)
+        assert_eq!(collected[1].0, 1); // Second is PO 1
+        assert_eq!(collected[2].0, 0); // Third is PO 0 (shallowest)
+    }
+
+    #[test]
+    fn test_pslice_bin_sizes() {
+        let pslice = PSlice::new();
+
+        let peer1 = OverlayAddress::from([0x80; 32]);
+        let peer2 = OverlayAddress::from([0x40; 32]);
+        let peer3 = OverlayAddress::from([0x20; 32]);
+
+        pslice.add(peer1, 0);
+        pslice.add(peer2, 1);
+        pslice.add(peer3, 2);
+
+        let sizes = pslice.bin_sizes();
+        assert_eq!(sizes[0], 1);
+        assert_eq!(sizes[1], 1);
+        assert_eq!(sizes[2], 1);
+        assert_eq!(sizes[3], 0);
+    }
+
+    #[test]
+    fn test_pslice_peers_in_bin() {
+        let pslice = PSlice::new();
+
+        let peer1 = OverlayAddress::from([0x80; 32]);
+        let peer2 = OverlayAddress::from([0xc0; 32]);
+        let peer3 = OverlayAddress::from([0x40; 32]);
+
+        pslice.add(peer1, 0);
+        pslice.add(peer2, 0);
+        pslice.add(peer3, 1);
+
+        let bin0_peers = pslice.peers_in_bin(0);
+        assert_eq!(bin0_peers.len(), 2);
+        assert!(bin0_peers.contains(&peer1));
+        assert!(bin0_peers.contains(&peer2));
+
+        let bin1_peers = pslice.peers_in_bin(1);
+        assert_eq!(bin1_peers.len(), 1);
+        assert!(bin1_peers.contains(&peer3));
+    }
+
+    #[test]
+    fn test_pslice_default() {
+        let pslice = PSlice::default();
+        assert!(pslice.is_empty());
+        assert_eq!(pslice.len(), 0);
     }
 }

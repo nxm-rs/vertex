@@ -7,7 +7,7 @@ use futures::{SinkExt, TryStreamExt, future::BoxFuture};
 use tracing::debug;
 use vertex_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound};
 use vertex_net_primitives::validate_bzz_address;
-use vertex_node_types::NodeTypes;
+use vertex_swarm_api::SwarmNodeTypes;
 use vertex_swarmspec::SwarmSpec;
 
 use crate::{
@@ -22,18 +22,18 @@ const MAX_MESSAGE_SIZE: usize = 32 * 1024;
 /// Only peers with valid signatures and correct overlay derivation
 /// for this network are returned. Invalid peers are logged at debug level.
 #[derive(Debug, Clone)]
-pub struct HiveInner<N: NodeTypes> {
+pub struct HiveInner<N: SwarmNodeTypes> {
     spec: N::Spec,
 }
 
-impl<N: NodeTypes> HiveInner<N> {
+impl<N: SwarmNodeTypes> HiveInner<N> {
     /// Create a new hive inbound handler.
     pub fn new(spec: N::Spec) -> Self {
         Self { spec }
     }
 }
 
-impl<N: NodeTypes> HeaderedInbound for HiveInner<N> {
+impl<N: SwarmNodeTypes> HeaderedInbound for HiveInner<N> {
     type Output = Peers;
     type Error = HiveCodecError;
 
@@ -134,7 +134,7 @@ impl HeaderedOutbound for HiveOutboundInner {
 pub type HiveInboundProtocol<N> = Inbound<HiveInner<N>>;
 pub type HiveOutboundProtocol = Outbound<HiveOutboundInner>;
 
-pub fn inbound<N: NodeTypes>(spec: &N::Spec) -> HiveInboundProtocol<N> {
+pub fn inbound<N: SwarmNodeTypes>(spec: &N::Spec) -> HiveInboundProtocol<N> {
     Inbound::new(HiveInner::new(spec.clone()))
 }
 

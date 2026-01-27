@@ -14,6 +14,7 @@ vertex-node-api.workspace = true
 vertex-node-types.workspace = true
 
 async-stream = "0.3"
+http = "1.0"
 async-trait.workspace = true
 eyre.workspace = true
 parking_lot.workspace = true

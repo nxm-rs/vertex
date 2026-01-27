@@ -59,6 +59,7 @@ mod behaviour;
 mod bootnodes;
 mod node;
 mod service;
+mod stats;
 
 pub use behaviour::{NodeEvent, SwarmNodeBehaviour};
 pub use bootnodes::BootnodeProvider;
@@ -69,3 +70,4 @@ pub use service::{
     Cheque, ClientCommand, ClientEvent, ClientHandle, ClientService, RetrievalError,
     RetrievalResult,
 };
+pub use stats::{StatsConfig, spawn_stats_task};

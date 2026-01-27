@@ -10,8 +10,8 @@ repository.workspace = true
 [dependencies]
 ## vertex
 vertex-primitives.workspace = true
-vertex-node-identity.workspace = true
-vertex-node-types.workspace = true
+vertex-swarm-api.workspace = true
+vertex-swarm-identity.workspace = true
 vertex-net-handshake.workspace = true
 vertex-net-headers.workspace = true
 vertex-net-hive.workspace = true

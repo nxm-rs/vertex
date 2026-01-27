@@ -26,7 +26,7 @@ use vertex_net_hive::{HiveOutboundProtocol, PROTOCOL_NAME as HIVE_PROTOCOL, Peer
 use vertex_net_pingpong::{
     PROTOCOL_NAME as PINGPONG_PROTOCOL, PingpongInboundProtocol, PingpongOutboundProtocol, Pong,
 };
-use vertex_node_types::{Identity, NodeTypes};
+use vertex_swarm_api::{Identity, SwarmNodeTypes};
 
 // ============================================================================
 // Error Types
@@ -72,15 +72,15 @@ pub enum TopologyInboundOutput {
 /// Advertises handshake, hive, and pingpong protocols and dispatches
 /// to the appropriate handler based on the negotiated protocol.
 ///
-/// Generic over `N: NodeTypes` to support different node configurations.
+/// Generic over `N: SwarmNodeTypes` to support different node configurations.
 #[derive(Clone)]
-pub struct TopologyInboundUpgrade<N: NodeTypes> {
+pub struct TopologyInboundUpgrade<N: SwarmNodeTypes> {
     identity: Arc<N::Identity>,
     peer_id: PeerId,
     remote_addr: Multiaddr,
 }
 
-impl<N: NodeTypes> TopologyInboundUpgrade<N> {
+impl<N: SwarmNodeTypes> TopologyInboundUpgrade<N> {
     /// Create a new topology inbound upgrade.
     pub fn new(identity: Arc<N::Identity>, peer_id: PeerId, remote_addr: Multiaddr) -> Self {
         Self {
@@ -91,7 +91,7 @@ impl<N: NodeTypes> TopologyInboundUpgrade<N> {
     }
 }
 
-impl<N: NodeTypes> std::fmt::Debug for TopologyInboundUpgrade<N> {
+impl<N: SwarmNodeTypes> std::fmt::Debug for TopologyInboundUpgrade<N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TopologyInboundUpgrade")
             .field("peer_id", &self.peer_id)
@@ -100,7 +100,7 @@ impl<N: NodeTypes> std::fmt::Debug for TopologyInboundUpgrade<N> {
     }
 }
 
-impl<N: NodeTypes> UpgradeInfo for TopologyInboundUpgrade<N> {
+impl<N: SwarmNodeTypes> UpgradeInfo for TopologyInboundUpgrade<N> {
     type Info = &'static str;
     type InfoIter = std::vec::IntoIter<Self::Info>;
 
@@ -109,7 +109,7 @@ impl<N: NodeTypes> UpgradeInfo for TopologyInboundUpgrade<N> {
     }
 }
 
-impl<N: NodeTypes> InboundUpgrade<Stream> for TopologyInboundUpgrade<N> {
+impl<N: SwarmNodeTypes> InboundUpgrade<Stream> for TopologyInboundUpgrade<N> {
     type Output = TopologyInboundOutput;
     type Error = TopologyUpgradeError;
     type Future = BoxFuture<'static, Result<Self::Output, Self::Error>>;
@@ -176,16 +176,16 @@ pub enum TopologyOutboundOutput {
 /// Unlike inbound, outbound requests know which protocol to use.
 /// This enum wraps the specific request type.
 ///
-/// Generic over `N: NodeTypes` to support different node configurations.
+/// Generic over `N: SwarmNodeTypes` to support different node configurations.
 #[derive(Clone)]
-pub struct TopologyOutboundUpgrade<N: NodeTypes> {
+pub struct TopologyOutboundUpgrade<N: SwarmNodeTypes> {
     identity: Arc<N::Identity>,
     peer_id: PeerId,
     remote_addr: Multiaddr,
     request: TopologyOutboundRequest,
 }
 
-impl<N: NodeTypes> TopologyOutboundUpgrade<N> {
+impl<N: SwarmNodeTypes> TopologyOutboundUpgrade<N> {
     /// Create a new handshake outbound upgrade.
     pub fn handshake(identity: Arc<N::Identity>, peer_id: PeerId, remote_addr: Multiaddr) -> Self {
         Self {
@@ -236,7 +236,7 @@ impl<N: NodeTypes> TopologyOutboundUpgrade<N> {
     }
 }
 
-impl<N: NodeTypes> std::fmt::Debug for TopologyOutboundUpgrade<N> {
+impl<N: SwarmNodeTypes> std::fmt::Debug for TopologyOutboundUpgrade<N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TopologyOutboundUpgrade")
             .field("peer_id", &self.peer_id)
@@ -245,7 +245,7 @@ impl<N: NodeTypes> std::fmt::Debug for TopologyOutboundUpgrade<N> {
     }
 }
 
-impl<N: NodeTypes> UpgradeInfo for TopologyOutboundUpgrade<N> {
+impl<N: SwarmNodeTypes> UpgradeInfo for TopologyOutboundUpgrade<N> {
     type Info = &'static str;
     type InfoIter = std::iter::Once<Self::Info>;
 
@@ -254,7 +254,7 @@ impl<N: NodeTypes> UpgradeInfo for TopologyOutboundUpgrade<N> {
     }
 }
 
-impl<N: NodeTypes> OutboundUpgrade<Stream> for TopologyOutboundUpgrade<N> {
+impl<N: SwarmNodeTypes> OutboundUpgrade<Stream> for TopologyOutboundUpgrade<N> {
     type Output = TopologyOutboundOutput;
     type Error = TopologyUpgradeError;
     type Future = BoxFuture<'static, Result<Self::Output, Self::Error>>;

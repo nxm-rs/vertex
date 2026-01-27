@@ -10,9 +10,7 @@ description = "Kademlia-based peer topology management for Swarm clients"
 
 [dependencies]
 vertex-primitives = { workspace = true }
-vertex-rpc-core = { workspace = true }
 vertex-swarm-api = { workspace = true }
-vertex-node-types = { workspace = true }
 vertex-tasks = { workspace = true }
 hex = "0.4"
 parking_lot = { workspace = true }

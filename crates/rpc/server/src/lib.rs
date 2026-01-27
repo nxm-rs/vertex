@@ -1,27 +1,44 @@
-//! gRPC server implementation for Vertex nodes.
+//! gRPC server framework for Vertex nodes.
 //!
-//! This crate provides a gRPC-based RPC server that exposes node functionality
-//! to external clients. Currently implements:
+//! This crate provides a gRPC-based RPC server framework with:
 //!
-//! - Health check service (gRPC health checking protocol)
-//! - Node service (topology and status information)
+//! - [`GrpcRegistry`] - Dynamic service registration during protocol build
+//! - [`GrpcServer`] - Standalone server for simple use cases
+//! - [`HealthService`] - gRPC health checking protocol
 //!
-//! # Usage
+//! # Registry Pattern (Recommended)
+//!
+//! The [`GrpcRegistry`] allows protocols to register their services during
+//! the build phase, eliminating the need for a separate "providers" step:
+//!
+//! ```ignore
+//! use vertex_rpc_server::GrpcRegistry;
+//!
+//! // During protocol build
+//! let mut registry = GrpcRegistry::new();
+//! registry.add_service(MyServiceServer::new(my_service));
+//! registry.add_service(HealthServer::new(HealthService::default()));
+//! registry.add_descriptor(MY_FILE_DESCRIPTOR_SET);
+//!
+//! // Launcher builds and serves
+//! let handle = registry.into_server(addr)?;
+//! handle.serve().await?;
+//! ```
+//!
+//! # Standalone Server
+//!
+//! For simple use cases, use [`GrpcServer`] directly:
 //!
 //! ```ignore
 //! use vertex_rpc_server::{GrpcServer, GrpcServerConfig};
-//! use vertex_rpc_core::RpcServer;
 //!
-//! let config = GrpcServerConfig {
-//!     addr: "127.0.0.1:1635".parse()?,
-//!     topology_provider: Some(my_topology.clone()),
-//! };
 //! let server = GrpcServer::with_config(config);
 //! server.start().await?;
 //! ```
 
+mod grpc_protocol;
 mod health;
-mod node;
+mod registry;
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -31,13 +48,14 @@ use async_trait::async_trait;
 use tokio::sync::watch;
 use tonic::transport::Server;
 use tracing::{info, warn};
-pub use vertex_rpc_core::{RpcServer, TopologyProvider};
+pub use vertex_rpc_core::RpcServer;
 
 // Re-export the config trait for users
 pub use vertex_node_api::RpcConfig;
 
+pub use grpc_protocol::GrpcProtocol;
 pub use health::HealthService;
-pub use node::NodeService;
+pub use registry::{GrpcRegistry, GrpcServerHandle};
 
 // Re-export generated types for external use
 pub mod proto {
@@ -45,29 +63,21 @@ pub mod proto {
         tonic::include_proto!("vertex.health.v1");
     }
 
-    pub mod node {
-        tonic::include_proto!("vertex.node.v1");
-    }
-
     /// File descriptor set for gRPC reflection.
     pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("vertex_descriptor");
 }
 
 /// Configuration for the gRPC server.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct GrpcServerConfig {
     /// Address to bind to.
     pub addr: SocketAddr,
-
-    /// Optional topology provider for node status queries.
-    pub topology_provider: Option<Arc<dyn TopologyProvider>>,
 }
 
 impl Default for GrpcServerConfig {
     fn default() -> Self {
         Self {
             addr: "127.0.0.1:1635".parse().unwrap(),
-            topology_provider: None,
         }
     }
 }
@@ -76,35 +86,22 @@ impl GrpcServerConfig {
     /// Create configuration from an RpcConfig trait implementation.
     pub fn from_config(config: &impl RpcConfig) -> Self {
         let addr = SocketAddr::new(
-            config.grpc_addr().parse().unwrap_or(IpAddr::from([127, 0, 0, 1])),
+            config
+                .grpc_addr()
+                .parse()
+                .unwrap_or(IpAddr::from([127, 0, 0, 1])),
             config.grpc_port(),
         );
-        Self {
-            addr,
-            topology_provider: None,
-        }
-    }
-
-    /// Set the topology provider.
-    pub fn with_topology(mut self, provider: Arc<dyn TopologyProvider>) -> Self {
-        self.topology_provider = Some(provider);
-        self
+        Self { addr }
     }
 }
 
-impl std::fmt::Debug for GrpcServerConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GrpcServerConfig")
-            .field("addr", &self.addr)
-            .field("topology_provider", &self.topology_provider.is_some())
-            .finish()
-    }
-}
-
-/// gRPC server for Vertex nodes.
+/// gRPC server framework for Vertex nodes.
 ///
-/// Implements the [`RpcServer`] trait and provides health check and node status services.
-/// Additional services can be added as the node API expands.
+/// Provides the base infrastructure for running a gRPC server. Protocol-specific
+/// services can be added using the builder pattern or via `GrpcServiceProvider`.
+///
+/// Implements the [`RpcServer`] trait for lifecycle management.
 pub struct GrpcServer {
     config: GrpcServerConfig,
     shutdown_tx: watch::Sender<bool>,
@@ -115,10 +112,7 @@ pub struct GrpcServer {
 impl GrpcServer {
     /// Create a new gRPC server with the given address.
     pub fn new(addr: SocketAddr) -> Arc<Self> {
-        Self::with_config(GrpcServerConfig {
-            addr,
-            topology_provider: None,
-        })
+        Self::with_config(GrpcServerConfig { addr })
     }
 
     /// Create a new gRPC server with the given configuration.
@@ -131,6 +125,20 @@ impl GrpcServer {
             running: AtomicBool::new(false),
         })
     }
+
+    /// Get a new server builder for adding custom services.
+    ///
+    /// Use this to add protocol-specific services before starting the server.
+    pub fn builder() -> Server {
+        Server::builder()
+    }
+
+    /// Get the health service proto file descriptor set.
+    ///
+    /// Can be combined with protocol-specific descriptors for gRPC reflection.
+    pub fn file_descriptor_set() -> &'static [u8] {
+        proto::FILE_DESCRIPTOR_SET
+    }
 }
 
 // Implement node-types marker trait for NodeTypes compatibility
@@ -141,10 +149,6 @@ impl RpcServer for GrpcServer {
     async fn start(&self) -> eyre::Result<()> {
         let health_service = HealthService::default();
         let health_server = proto::health::health_server::HealthServer::new(health_service);
-
-        // Node service (with optional topology provider)
-        let node_service = NodeService::new(self.config.topology_provider.clone());
-        let node_server = proto::node::node_server::NodeServer::new(node_service);
 
         // Enable gRPC reflection for tools like grpcurl
         let reflection_service = tonic_reflection::server::Builder::configure()
@@ -158,7 +162,6 @@ impl RpcServer for GrpcServer {
 
         let result = Server::builder()
             .add_service(health_server)
-            .add_service(node_server)
             .add_service(reflection_service)
             .serve_with_shutdown(self.config.addr, async move {
                 shutdown_rx.changed().await.ok();

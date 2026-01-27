@@ -52,9 +52,8 @@ use std::{
 };
 use tokio::{sync::Notify, task::JoinHandle};
 use tracing::{debug, info, trace};
-use vertex_node_types::Identity;
 use vertex_primitives::{ChunkAddress, OverlayAddress};
-use vertex_swarm_api::Topology;
+use vertex_swarm_api::{Identity, Topology};
 use vertex_tasks::TaskExecutor;
 
 /// Kademlia-based peer topology.
@@ -106,11 +105,10 @@ impl<I: Identity> std::fmt::Debug for KademliaTopology<I> {
 impl<I: Identity> KademliaTopology<I> {
     /// Create a new Kademlia topology with the given identity.
     pub fn new(identity: I, config: KademliaConfig) -> Arc<Self> {
-        let base = identity.overlay_address().into();
         Arc::new(Self {
             identity,
-            known_peers: PSlice::new(base),
-            connected_peers: PSlice::new(base),
+            known_peers: PSlice::new(),
+            connected_peers: PSlice::new(),
             pending_connections: Mutex::new(HashSet::new()),
             depth: AtomicU8::new(0),
             config,
@@ -119,9 +117,14 @@ impl<I: Identity> KademliaTopology<I> {
         })
     }
 
-    /// Get the base overlay address.
+    /// Get the base overlay address from the identity.
     fn base(&self) -> OverlayAddress {
         self.identity.overlay_address().into()
+    }
+
+    /// Calculate proximity order between base and a peer.
+    fn proximity(&self, peer: &OverlayAddress) -> u8 {
+        self.base().proximity(peer)
     }
 
     /// Spawn the manage loop as a background task using the provided task executor.
@@ -349,7 +352,7 @@ impl<I: Identity> KademliaTopology<I> {
             bin_status = "(empty)".to_string();
         }
 
-        info!(
+        debug!(
             depth,
             connected = total_connected,
             known = total_known,
@@ -412,7 +415,8 @@ impl<I: Identity> Topology for KademliaTopology<I> {
     fn add_peers(&self, peers: &[OverlayAddress]) {
         let mut added = 0;
         for peer in peers {
-            if self.known_peers.add(*peer) {
+            let po = self.proximity(peer);
+            if self.known_peers.add(*peer, po) {
                 added += 1;
             }
         }
@@ -430,7 +434,7 @@ impl<I: Identity> Topology for KademliaTopology<I> {
             return true;
         }
 
-        let po = self.known_peers.proximity(peer);
+        let po = self.proximity(peer);
         let bin_size = self.connected_peers.bin_size(po);
 
         // Accept if the bin isn't oversaturated
@@ -441,8 +445,10 @@ impl<I: Identity> Topology for KademliaTopology<I> {
         // Remove from pending (connection succeeded)
         self.pending_connections.lock().remove(&peer);
 
+        let po = self.proximity(&peer);
+
         // Add to connected peers
-        if self.connected_peers.add(peer) {
+        if self.connected_peers.add(peer, po) {
             // Remove from known peers (now connected)
             self.known_peers.remove(&peer);
 
@@ -451,7 +457,6 @@ impl<I: Identity> Topology for KademliaTopology<I> {
             let new_depth = self.recalc_depth();
             self.depth.store(new_depth, Ordering::Relaxed);
 
-            let po = self.connected_peers.proximity(&peer);
             debug!(
                 %peer,
                 po,
@@ -471,15 +476,16 @@ impl<I: Identity> Topology for KademliaTopology<I> {
     fn disconnected(&self, peer: &OverlayAddress) {
         // Remove from connected peers
         if self.connected_peers.remove(peer) {
+            let po = self.proximity(peer);
+
             // Optionally add back to known peers for reconnection
-            self.known_peers.add(*peer);
+            self.known_peers.add(*peer, po);
 
             // Recalculate depth
             let old_depth = self.depth.load(Ordering::Relaxed);
             let new_depth = self.recalc_depth();
             self.depth.store(new_depth, Ordering::Relaxed);
 
-            let po = self.known_peers.proximity(peer);
             debug!(
                 %peer,
                 po,
@@ -519,7 +525,7 @@ pub struct TopologyStats {
     pub pending_connections: usize,
 }
 
-impl<I: Identity> vertex_rpc_core::TopologyProvider for KademliaTopology<I> {
+impl<I: Identity> vertex_swarm_api::TopologyProvider for KademliaTopology<I> {
     fn overlay_address(&self) -> String {
         hex::encode(self.base().as_slice())
     }

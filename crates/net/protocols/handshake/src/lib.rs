@@ -26,7 +26,7 @@ use std::time::Duration;
 use libp2p::PeerId;
 
 // Re-export SwarmIdentity for convenience
-pub use vertex_node_identity::SwarmIdentity;
+pub use vertex_swarm_identity::SwarmIdentity;
 
 mod proto {
     include!(concat!(env!("OUT_DIR"), "/proto/mod.rs"));

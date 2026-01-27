@@ -8,7 +8,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_server(true)
         .build_client(false)
         .file_descriptor_set_path(out_dir.join("vertex_descriptor.bin"))
-        .compile_protos(&["proto/health.proto", "proto/node.proto"], &["proto"])?;
+        .compile_protos(&["proto/health.proto"], &["proto"])?;
 
     Ok(())
 }

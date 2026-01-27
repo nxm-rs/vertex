@@ -43,8 +43,8 @@ pub use client::{BootnodeClient, LightClient, PublisherClient, SwarmClient};
 
 // Re-export from swarm-core for convenience
 pub use vertex_swarm_core::{
-    Cheque, ClientCommand, ClientEvent, ClientHandle, ClientService, NodeBehaviour, NodeEvent,
-    RetrievalError, RetrievalResult, SwarmNode, SwarmNodeBuilder,
+    Cheque, ClientCommand, ClientEvent, ClientHandle, ClientService, NodeEvent, RetrievalError,
+    RetrievalResult, SwarmNode, SwarmNodeBehaviour, SwarmNodeBuilder,
 };
 
 // Re-export builder infrastructure from swarm-builder
