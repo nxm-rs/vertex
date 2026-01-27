@@ -35,7 +35,7 @@ use parking_lot::RwLock;
 
 use vertex_bandwidth_core::{AccountingConfig, PeerState};
 use vertex_primitives::OverlayAddress;
-use vertex_swarm_api::{AvailabilityAccounting, Direction, PeerAvailability, SwarmResult};
+use vertex_swarm_api::{BandwidthAccounting, Direction, PeerBandwidth, SwarmResult};
 
 /// SWAP accounting with chequebook-based settlement.
 ///
@@ -89,7 +89,7 @@ impl SwapAccounting {
     }
 }
 
-impl AvailabilityAccounting for SwapAccounting {
+impl BandwidthAccounting for SwapAccounting {
     type Peer = SwapPeerHandle;
 
     fn for_peer(&self, peer: OverlayAddress) -> Self::Peer {
@@ -117,7 +117,7 @@ pub struct SwapPeerHandle {
 }
 
 #[async_trait::async_trait]
-impl PeerAvailability for SwapPeerHandle {
+impl PeerBandwidth for SwapPeerHandle {
     fn record(&self, bytes: u64, direction: Direction) {
         match direction {
             Direction::Upload => self.state.inner.add_balance(bytes as i64),

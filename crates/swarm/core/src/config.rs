@@ -21,11 +21,11 @@
 use serde::{Deserialize, Serialize};
 use vertex_node_api::ProtocolConfig;
 
-use crate::args::{
-    AvailabilityArgs, AvailabilityMode, IdentityArgs, NetworkArgs, StorageArgs,
-    StorageIncentiveArgs, SwarmArgs,
-};
 use crate::SwarmNodeType;
+use crate::args::{
+    BandwidthArgs, BandwidthMode, IdentityArgs, NetworkArgs, StorageArgs, StorageIncentiveArgs,
+    SwarmArgs,
+};
 
 /// Swarm protocol configuration.
 ///
@@ -41,8 +41,8 @@ pub struct SwarmConfig {
     /// Network configuration.
     pub network: NetworkArgs,
 
-    /// Availability incentive configuration.
-    pub availability: AvailabilityArgs,
+    /// Bandwidth incentive configuration.
+    pub bandwidth: BandwidthArgs,
 
     /// Storage configuration.
     pub storage: StorageArgs,
@@ -59,7 +59,7 @@ impl Default for SwarmConfig {
         Self {
             node_type: SwarmNodeType::default(),
             network: NetworkArgs::default(),
-            availability: AvailabilityArgs::default(),
+            bandwidth: BandwidthArgs::default(),
             storage: StorageArgs::default(),
             storage_incentives: StorageIncentiveArgs::default(),
             identity: IdentityArgs::default(),
@@ -73,7 +73,7 @@ impl ProtocolConfig for SwarmConfig {
     fn apply_args(&mut self, args: &Self::Args) {
         self.node_type = args.node_type;
         self.network = args.network.clone();
-        self.availability = args.availability.clone();
+        self.bandwidth = args.bandwidth.clone();
         self.storage = args.storage.clone();
         self.storage_incentives = args.storage_incentives.clone();
         self.identity = args.identity.clone();
@@ -86,9 +86,9 @@ impl SwarmConfig {
         self.network.listen_multiaddr()
     }
 
-    /// Get the availability mode.
-    pub fn availability_mode(&self) -> &AvailabilityMode {
-        &self.availability.mode
+    /// Get the bandwidth mode.
+    pub fn bandwidth_mode(&self) -> &BandwidthMode {
+        &self.bandwidth.mode
     }
 
     /// Returns true if the node type requires a persistent identity.

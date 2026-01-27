@@ -1,4 +1,4 @@
-//! Chunk pricing for data availability.
+//! Chunk pricing for bandwidth incentives.
 //!
 //! Chunks are priced based on the Kademlia distance between the requesting peer
 //! and the chunk's address. Chunks that are "closer" to the peer in XOR space

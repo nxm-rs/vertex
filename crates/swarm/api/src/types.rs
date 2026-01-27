@@ -29,7 +29,7 @@
 //! ```
 
 use crate::{
-    AvailabilityAccounting, ChunkSync, LocalStore, RunnableClientService, RunnableNode, Topology,
+    BandwidthAccounting, ChunkSync, LocalStore, RunnableClientService, RunnableNode, Topology,
 };
 use alloy_primitives::{Address, B256};
 use alloy_signer::{Signer, SignerSync};
@@ -115,10 +115,10 @@ pub trait BootnodeTypes: Clone + Debug + Send + Sync + Unpin + 'static {
 
 /// Types for light nodes that can retrieve chunks.
 ///
-/// Extends bootnodes with availability accounting for retrieval incentives.
+/// Extends bootnodes with bandwidth accounting for retrieval incentives.
 pub trait LightTypes: BootnodeTypes {
-    /// Availability accounting for retrieval incentives (pseudosettle/SWAP).
-    type Accounting: AvailabilityAccounting + Debug;
+    /// Bandwidth accounting for retrieval incentives (pseudosettle/SWAP).
+    type Accounting: BandwidthAccounting + Debug;
 }
 
 /// Types for publisher nodes that can upload chunks.

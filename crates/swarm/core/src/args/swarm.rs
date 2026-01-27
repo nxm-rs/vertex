@@ -28,9 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::SwarmNodeType;
 
-use super::{
-    AvailabilityArgs, IdentityArgs, NetworkArgs, StorageArgs, StorageIncentiveArgs,
-};
+use super::{BandwidthArgs, IdentityArgs, NetworkArgs, StorageArgs, StorageIncentiveArgs};
 
 /// Aggregated Swarm protocol arguments.
 ///
@@ -54,9 +52,9 @@ pub struct SwarmArgs {
     #[command(flatten)]
     pub network: NetworkArgs,
 
-    /// Availability incentive configuration.
+    /// Bandwidth incentive configuration.
     #[command(flatten)]
-    pub availability: AvailabilityArgs,
+    pub bandwidth: BandwidthArgs,
 
     /// Local storage / cache configuration.
     #[command(flatten)]
@@ -98,7 +96,7 @@ impl Default for SwarmArgs {
         Self {
             node_type: SwarmNodeType::default(),
             network: NetworkArgs::default(),
-            availability: AvailabilityArgs::default(),
+            bandwidth: BandwidthArgs::default(),
             storage: StorageArgs::default(),
             storage_incentives: StorageIncentiveArgs::default(),
             identity: IdentityArgs::default(),
@@ -112,7 +110,7 @@ impl Default for SwarmArgs {
 impl SwarmArgs {
     /// Validate all argument combinations.
     pub fn validate(&self) -> Result<(), String> {
-        self.availability.validate()?;
+        self.bandwidth.validate()?;
         Ok(())
     }
 

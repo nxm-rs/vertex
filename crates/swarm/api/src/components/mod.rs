@@ -1,15 +1,15 @@
 //! Swarm node components - traits and runtime containers.
 //!
 //! This module contains:
-//! - Component traits ([`Topology`], [`AvailabilityAccounting`], [`LocalStore`], [`ChunkSync`])
+//! - Component traits ([`Topology`], [`BandwidthAccounting`], [`LocalStore`], [`ChunkSync`])
 //! - Runtime component containers ([`SwarmBaseComponents`], [`SwarmLightComponents`], etc.)
 
-mod availability;
+mod bandwidth;
 mod store;
 mod sync;
 mod topology;
 
-pub use availability::*;
+pub use bandwidth::*;
 pub use store::*;
 pub use sync::*;
 pub use topology::*;
@@ -46,7 +46,7 @@ where
 /// Runtime components of a built light Swarm node.
 ///
 /// Light nodes can retrieve chunks but cannot store or upload them.
-/// Composes base components with availability accounting.
+/// Composes base components with bandwidth accounting.
 #[derive(Debug, Clone)]
 pub struct SwarmLightComponents<Types: LightTypes>
 where

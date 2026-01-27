@@ -26,7 +26,7 @@
 //! active state with:
 //! - Peer's overlay address
 //! - Full node status
-//! - PeerAvailability handle for bandwidth accounting
+//! - PeerBandwidth handle for bandwidth accounting
 //!
 //! # Event/Command Interface
 //!
@@ -34,7 +34,7 @@
 //! ┌─────────────────────────────────────────────────────────────┐
 //! │                    Business Logic Layer                      │
 //! │        (client/core implements SwarmReader/Writer)          │
-//! │        (bandwidth implements AvailabilityAccounting)        │
+//! │        (bandwidth implements BandwidthAccounting)           │
 //! └─────────────────────────────────────────────────────────────┘
 //!                              ▲ events    │ commands
 //!                              │           ▼

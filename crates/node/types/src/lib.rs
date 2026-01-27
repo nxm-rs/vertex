@@ -60,7 +60,7 @@ impl TaskExecutor for vertex_tasks::TaskExecutor {}
 ///     type Spec: SwarmSpec;
 ///     type Identity: Identity;
 ///     type Topology: Topology;
-///     type Accounting: AvailabilityAccounting;
+///     type Accounting: BandwidthAccounting;
 /// }
 /// ```
 pub trait NodeTypes: Clone + Debug + Send + Sync + 'static {

@@ -15,10 +15,10 @@
 //!
 //! # Core Concepts
 //!
-//! - [`SwarmReader`] - Get chunks (read-only access with availability accounting)
+//! - [`SwarmReader`] - Get chunks (read-only access with bandwidth accounting)
 //! - [`SwarmWriter`] - Put and get chunks (read-write access with payment)
 //! - [`LocalStore`] - Local chunk persistence for full nodes
-//! - [`AvailabilityAccounting`] - Per-peer availability tracking (pseudosettle/SWAP)
+//! - [`BandwidthAccounting`] - Per-peer bandwidth tracking (pseudosettle/SWAP)
 //! - [`ChunkSync`] - Sync chunks between peers
 //! - [`Topology`] - Neighborhood awareness
 //!
@@ -33,7 +33,7 @@
 //! - Traits define *what*, implementations define *how*
 //! - No libp2p concepts leak into the API
 //! - Payment is configurable via associated types (can be `()` for none)
-//! - Availability accounting is per-peer and lock-free
+//! - Bandwidth accounting is per-peer and lock-free
 //! - Components use composition (higher levels compose lower levels)
 
 #![warn(missing_docs)]

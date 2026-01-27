@@ -3,16 +3,14 @@
 use std::sync::Arc;
 
 use vertex_bandwidth_core::{Accounting, AccountingConfig};
-use vertex_swarm_api::{
-    AvailabilityAccounting, LightTypes, NetworkConfig, NoAvailabilityIncentives,
-};
+use vertex_swarm_api::{BandwidthAccounting, LightTypes, NetworkConfig, NoBandwidthIncentives};
 
 use crate::SwarmBuilderContext;
 
 /// Builds the accounting component.
 pub trait AccountingBuilder<Types: LightTypes, Cfg: NetworkConfig>: Send + Sync + 'static {
     /// The accounting type produced.
-    type Accounting: AvailabilityAccounting + Send + Sync + 'static;
+    type Accounting: BandwidthAccounting + Send + Sync + 'static;
 
     /// Build the accounting given the context.
     fn build_accounting(self, ctx: &SwarmBuilderContext<'_, Types, Cfg>) -> Self::Accounting;
@@ -20,7 +18,7 @@ pub trait AccountingBuilder<Types: LightTypes, Cfg: NetworkConfig>: Send + Sync 
 
 /// Default bandwidth accounting builder.
 ///
-/// Produces `Arc<Accounting>` which implements `AvailabilityAccounting`.
+/// Produces `Arc<Accounting>` which implements `BandwidthAccounting`.
 #[derive(Debug, Clone, Default)]
 pub struct BandwidthAccountingBuilder {
     config: AccountingConfig,
@@ -43,14 +41,14 @@ impl<Types: LightTypes, Cfg: NetworkConfig> AccountingBuilder<Types, Cfg>
     }
 }
 
-/// No-op accounting builder (for nodes without availability incentives).
+/// No-op accounting builder (for nodes without bandwidth incentives).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoAccountingBuilder;
 
 impl<Types: LightTypes, Cfg: NetworkConfig> AccountingBuilder<Types, Cfg> for NoAccountingBuilder {
-    type Accounting = NoAvailabilityIncentives;
+    type Accounting = NoBandwidthIncentives;
 
     fn build_accounting(self, _ctx: &SwarmBuilderContext<'_, Types, Cfg>) -> Self::Accounting {
-        NoAvailabilityIncentives
+        NoBandwidthIncentives
     }
 }

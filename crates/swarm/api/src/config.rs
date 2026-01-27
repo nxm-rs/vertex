@@ -30,18 +30,17 @@ use vertex_swarmspec::SwarmSpec;
 
 use crate::{BootnodeTypes, FullTypes, LightTypes, PublisherTypes, SwarmServices};
 
-/// Configuration for availability incentives (pseudosettle / SWAP).
+/// Configuration for bandwidth incentives (pseudosettle / SWAP).
 ///
 /// All values are in **Accounting Units (AU)**, not bytes or BZZ tokens.
-/// This matches Bee's accounting system.
 ///
-/// # Bee Compatibility
+/// # Defaults
 ///
 /// - Base price: 10,000 AU per chunk
 /// - Refresh rate: 4,500,000 AU/second (full node), 450,000 AU/second (light)
 /// - Payment threshold: 13,500,000 AU
 /// - Payment tolerance: 25% (disconnect = threshold × 1.25)
-pub trait AvailabilityIncentiveConfig {
+pub trait BandwidthIncentiveConfig {
     /// Whether pseudosettle (soft accounting) is enabled.
     fn pseudosettle_enabled(&self) -> bool;
 
@@ -81,7 +80,7 @@ pub trait AvailabilityIncentiveConfig {
         self.payment_threshold() * (100 + self.payment_tolerance_percent()) / 100
     }
 
-    /// Check if any availability incentive is enabled.
+    /// Check if any bandwidth incentive is enabled.
     fn is_enabled(&self) -> bool {
         self.pseudosettle_enabled() || self.swap_enabled()
     }
@@ -139,12 +138,12 @@ pub trait IdentityConfig {
 ///
 /// This super-trait combines all protocol-level configs into one bound.
 pub trait SwarmConfig:
-    AvailabilityIncentiveConfig + StoreConfig + StorageConfig + NetworkConfig + IdentityConfig
+    BandwidthIncentiveConfig + StoreConfig + StorageConfig + NetworkConfig + IdentityConfig
 {
 }
 
 impl<T> SwarmConfig for T where
-    T: AvailabilityIncentiveConfig + StoreConfig + StorageConfig + NetworkConfig + IdentityConfig
+    T: BandwidthIncentiveConfig + StoreConfig + StorageConfig + NetworkConfig + IdentityConfig
 {
 }
 

@@ -306,7 +306,7 @@ mod tests {
     use tokio::sync::mpsc;
     use vertex_bandwidth_core::{Accounting, AccountingConfig, FixedPricer};
     use vertex_primitives::OverlayAddress;
-    use vertex_swarm_api::{AvailabilityAccounting, Identity};
+    use vertex_swarm_api::{BandwidthAccounting, Identity};
     use vertex_swarm_core::ClientCommand;
 
     #[derive(Clone, Default)]

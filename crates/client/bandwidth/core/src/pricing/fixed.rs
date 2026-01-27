@@ -6,8 +6,6 @@ use vertex_primitives::{ChunkAddress, OverlayAddress};
 use super::{MAX_PO, Pricer};
 
 /// Default base price per chunk in accounting units.
-///
-/// From Bee: `basePrice = 10_000`
 pub const DEFAULT_BASE_PRICE: u64 = 10_000;
 
 /// Fixed pricing based on proximity.

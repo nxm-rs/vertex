@@ -30,13 +30,13 @@
 //!     .extract()?;
 //! ```
 
-mod availability;
+mod bandwidth;
 mod identity;
 mod network;
 mod storage;
 mod swarm;
 
-pub use availability::{AvailabilityArgs, AvailabilityMode};
+pub use bandwidth::{BandwidthArgs, BandwidthMode};
 pub use identity::IdentityArgs;
 pub use network::NetworkArgs;
 pub use storage::{StorageArgs, StorageIncentiveArgs};

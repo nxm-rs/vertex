@@ -22,13 +22,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use parking_lot::RwLock;
 
 use vertex_bandwidth_core::{
-    AccountingConfig, AccountingError, CreditAction, DebitAction, PeerState,
+    AccountingConfig, AccountingError, CreditAction, DEFAULT_REFRESH_RATE, DebitAction, PeerState,
 };
 use vertex_primitives::OverlayAddress;
-use vertex_swarm_api::{AvailabilityAccounting, Direction, PeerAvailability, SwarmResult};
-
-/// Default refresh rate in bytes per second.
-pub const DEFAULT_REFRESH_RATE: u64 = 100_000; // 100 KB/s
+use vertex_swarm_api::{BandwidthAccounting, Direction, PeerBandwidth, SwarmResult};
 
 /// Pseudosettle accounting with time-based allowance.
 ///
@@ -186,7 +183,7 @@ impl PseudosettleAccounting {
     }
 }
 
-impl AvailabilityAccounting for PseudosettleAccounting {
+impl BandwidthAccounting for PseudosettleAccounting {
     type Peer = PseudosettlePeerHandle;
 
     fn for_peer(&self, peer: OverlayAddress) -> Self::Peer {
@@ -214,7 +211,7 @@ pub struct PseudosettlePeerHandle {
 }
 
 #[async_trait::async_trait]
-impl PeerAvailability for PseudosettlePeerHandle {
+impl PeerBandwidth for PseudosettlePeerHandle {
     fn record(&self, bytes: u64, direction: Direction) {
         match direction {
             Direction::Upload => self.state.inner.add_balance(bytes as i64),

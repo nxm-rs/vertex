@@ -1,9 +1,9 @@
-//! Per-peer accounting for data availability.
+//! Per-peer accounting for bandwidth incentives.
 //!
 //! This module provides the core accounting infrastructure:
 //!
 //! - **PeerState**: Atomic per-peer balance tracking
-//! - **Accounting**: Factory implementing `AvailabilityAccounting` trait
+//! - **Accounting**: Factory implementing `BandwidthAccounting` trait
 //! - **Actions**: `CreditAction` and `DebitAction` for prepare/apply pattern
 //!
 //! Settlement logic (pseudosettle, swap) is in separate crates.
@@ -44,7 +44,7 @@
 //! Where:
 //! - `MAX_PO = 31` (maximum proximity order, the bit-depth of addresses)
 //! - `proximity` = number of leading bits two addresses share (0-31)
-//! - `base_price = 10,000 AU` (Bee default)
+//! - `base_price = 10,000 AU` (default)
 //!
 //! ## Examples
 //!
@@ -62,11 +62,6 @@
 //!
 //! The settlement mechanism is separate from accounting - this module only
 //! tracks the AU balances.
-//!
-//! # Bee Compatibility
-//!
-//! All default values match the official Bee implementation to ensure
-//! interoperability between Vertex and Bee nodes.
 
 mod action;
 mod error;
@@ -82,29 +77,24 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use vertex_primitives::OverlayAddress;
-use vertex_swarm_api::{AvailabilityAccounting, Direction, PeerAvailability, SwarmResult};
+use vertex_swarm_api::{BandwidthAccounting, Direction, PeerBandwidth, SwarmResult};
 
 // ============================================================================
-// Bee-compatible accounting constants
+// Accounting constants
 // ============================================================================
 //
 // All values are in Accounting Units (AU). See module docs for details.
-// These match Bee's values from bee/pkg/node/node.go.
 
 /// Default base price per chunk in accounting units.
 ///
 /// This is the price at maximum proximity (PO = 31).
 /// Actual price scales with distance: `(MAX_PO - proximity + 1) × base_price`.
-///
-/// From Bee: `basePrice = 10_000`
 pub const DEFAULT_BASE_PRICE: u64 = 10_000;
 
 /// Default refresh rate for full nodes in accounting units per second.
 ///
 /// In pseudosettle mode, this is the rate at which a peer's debt allowance
 /// refreshes. A higher rate means more forgiving bandwidth accounting.
-///
-/// From Bee: `refreshRate = 4_500_000`
 pub const DEFAULT_REFRESH_RATE: u64 = 4_500_000;
 
 /// Default refresh rate for light nodes in accounting units per second.
@@ -118,38 +108,29 @@ pub const DEFAULT_LIGHT_REFRESH_RATE: u64 = DEFAULT_REFRESH_RATE / DEFAULT_LIGHT
 ///
 /// When a peer's debt reaches this threshold, settlement is requested.
 /// This is the point where we ask the peer to "pay up" their debt.
-///
-/// From Bee: `paymentThreshold = 13_500_000`
 pub const DEFAULT_PAYMENT_THRESHOLD: u64 = 13_500_000;
 
 /// Default payment tolerance as a percentage.
 ///
 /// Adds a buffer above the payment threshold before disconnecting.
 /// This prevents spurious disconnections due to race conditions.
-///
-/// From Bee: `paymentTolerance = 25%`
 pub const DEFAULT_PAYMENT_TOLERANCE_PERCENT: u64 = 25;
 
 /// Default early payment percentage.
 ///
 /// Settlement is triggered when debt exceeds `(100 - early)%` of threshold.
 /// With 50%, settlement triggers at 50% of the payment threshold.
-///
-/// From Bee: `paymentEarly = 50%`
 pub const DEFAULT_EARLY_PAYMENT_PERCENT: u64 = 50;
 
 /// Light node scaling factor.
 ///
 /// Light nodes have all thresholds and rates divided by this factor,
 /// making them more sensitive to bandwidth usage.
-///
-/// From Bee: `lightFactor = 10`
 pub const DEFAULT_LIGHT_FACTOR: u64 = 10;
 
 /// Thresholds and configuration for accounting.
 ///
 /// All values are in **accounting units (AU)**, not bytes or BZZ tokens.
-/// This matches Bee's accounting system.
 #[derive(Debug, Clone)]
 pub struct AccountingConfig {
     /// Payment threshold in accounting units.
@@ -227,7 +208,7 @@ impl AccountingConfig {
 
     /// Calculate the minimum payment amount for monetary settlement.
     ///
-    /// From Bee: minimumPayment = refreshRate / 5
+    /// Calculated as: `refresh_rate / 5`
     pub fn minimum_payment(&self) -> u64 {
         self.refresh_rate / 5
     }
@@ -235,12 +216,21 @@ impl AccountingConfig {
 
 /// Core accounting implementation.
 ///
-/// Manages per-peer accounting state and implements the `AvailabilityAccounting` trait.
+/// Manages per-peer accounting state and implements the `BandwidthAccounting` trait.
 /// This is the base accounting without settlement - use `PseudosettleAccounting` or
 /// `SwapAccounting` for settlement capabilities.
 pub struct Accounting {
     config: AccountingConfig,
     peers: RwLock<HashMap<OverlayAddress, Arc<PeerState>>>,
+}
+
+impl std::fmt::Debug for Accounting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Accounting")
+            .field("config", &self.config)
+            .field("peers", &format!("<{} peers>", self.peers.read().len()))
+            .finish()
+    }
 }
 
 impl Accounting {
@@ -317,7 +307,7 @@ impl Accounting {
     }
 }
 
-impl AvailabilityAccounting for Accounting {
+impl BandwidthAccounting for Accounting {
     type Peer = AccountingPeerHandle;
 
     fn for_peer(&self, peer: OverlayAddress) -> Self::Peer {
@@ -352,7 +342,7 @@ impl AccountingPeerHandle {
 }
 
 #[async_trait::async_trait]
-impl PeerAvailability for AccountingPeerHandle {
+impl PeerBandwidth for AccountingPeerHandle {
     fn record(&self, bytes: u64, direction: Direction) {
         match direction {
             Direction::Upload => self.state.add_balance(bytes as i64),
@@ -384,9 +374,9 @@ impl PeerAvailability for AccountingPeerHandle {
 // Default Configuration Implementations
 // ============================================================================
 
-use vertex_swarm_api::AvailabilityIncentiveConfig;
+use vertex_swarm_api::BandwidthIncentiveConfig;
 
-/// Default availability configuration (pseudosettle only, Bee-compatible thresholds).
+/// Default bandwidth configuration (pseudosettle only).
 ///
 /// This provides sensible defaults for a full node running pseudosettle:
 /// - Payment threshold: 13,500,000 AU
@@ -394,9 +384,9 @@ use vertex_swarm_api::AvailabilityIncentiveConfig;
 /// - Base price: 10,000 AU
 /// - Refresh rate: 4,500,000 AU/s
 #[derive(Debug, Clone, Copy, Default)]
-pub struct DefaultAvailabilityConfig;
+pub struct DefaultBandwidthConfig;
 
-impl AvailabilityIncentiveConfig for DefaultAvailabilityConfig {
+impl BandwidthIncentiveConfig for DefaultBandwidthConfig {
     fn pseudosettle_enabled(&self) -> bool {
         true
     }
@@ -430,14 +420,14 @@ impl AvailabilityIncentiveConfig for DefaultAvailabilityConfig {
     }
 }
 
-/// No availability incentives configuration.
+/// No bandwidth incentives configuration.
 ///
-/// Use this when running without availability accounting (dev/testing only).
+/// Use this when running without bandwidth accounting (dev/testing only).
 /// All thresholds are disabled and disconnect never happens.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct NoAvailabilityConfig;
+pub struct NoBandwidthConfig;
 
-impl AvailabilityIncentiveConfig for NoAvailabilityConfig {
+impl BandwidthIncentiveConfig for NoBandwidthConfig {
     fn pseudosettle_enabled(&self) -> bool {
         false
     }

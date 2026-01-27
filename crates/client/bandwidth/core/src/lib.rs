@@ -1,14 +1,13 @@
-//! Core bandwidth accounting and pricing for data availability.
+//! Core bandwidth accounting and pricing for bandwidth incentives.
 //!
-//! This crate provides the foundational components for data availability incentives:
+//! This crate provides the foundational components for bandwidth incentives:
 //!
 //! - **Accounting**: Per-peer balance tracking with prepare/apply pattern
-//! - **Pricing**: Proximity-based chunk pricing (Bee-compatible)
+//! - **Pricing**: Proximity-based chunk pricing
 //!
 //! # Units
 //!
 //! All values are in **Accounting Units (AU)**, not bytes or BZZ tokens.
-//! This matches Bee's accounting system where:
 //!
 //! - Base price per chunk: 10,000 AU
 //! - Refresh rate (full node): 4,500,000 AU/second
@@ -41,7 +40,7 @@ pub use accounting::{
     AccountingError,
     AccountingPeerHandle,
     CreditAction,
-    // Bee-compatible constants (in Accounting Units)
+    // Constants (in Accounting Units)
     DEFAULT_BASE_PRICE,
     DEFAULT_EARLY_PAYMENT_PERCENT,
     DEFAULT_LIGHT_FACTOR,
@@ -51,8 +50,8 @@ pub use accounting::{
     DEFAULT_REFRESH_RATE,
     DebitAction,
     // Default configuration implementations
-    DefaultAvailabilityConfig,
-    NoAvailabilityConfig,
+    DefaultBandwidthConfig,
+    NoBandwidthConfig,
     PeerState,
 };
 
