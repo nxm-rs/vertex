@@ -31,7 +31,7 @@ use vertex_bandwidth_core::Accounting;
 use vertex_client_peermanager::PeerStore;
 use vertex_node_api::{BuildsProtocol, NodeContext};
 use vertex_swarm_api::{
-    Identity, NetworkConfig, SwarmLaunchConfig, SwarmLightComponents, SwarmProtocol, SwarmServices,
+    NetworkConfig, SwarmLaunchConfig, SwarmLightComponents, SwarmProtocol, SwarmServices,
 };
 use vertex_swarm_core::SwarmNode;
 use vertex_swarm_core::args::SwarmArgs;
@@ -196,12 +196,11 @@ impl SwarmLaunchConfig for LightNodeBuildConfig {
         _ctx: &NodeContext,
     ) -> Result<(Self::Components, SwarmServices<Self::Types>), Self::Error> {
         use tracing::info;
-        use vertex_swarmspec::SwarmSpecExt;
+        use vertex_swarmspec::Loggable;
 
         info!("Node type: Light");
         self.spec.log();
-        info!("Overlay address: {}", self.identity.overlay_address());
-        info!("Ethereum address: {}", self.identity.signer().address());
+        self.identity.log();
         info!("Peers database: {}", self.peers_path.display());
         info!("");
         info!("Starting Swarm Light node...");

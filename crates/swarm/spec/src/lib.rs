@@ -59,6 +59,8 @@ pub use vertex_swarm_forks::*;
 pub use nectar_contracts;
 
 pub use api::{StaticSwarmSpecProvider, SwarmSpec, SwarmSpecProvider};
+#[cfg(feature = "std")]
+pub use display::Loggable;
 pub use display::{DisplaySwarmSpec, SwarmSpecExt};
 pub use constants::*;
 #[cfg(feature = "std")]

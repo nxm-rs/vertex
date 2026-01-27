@@ -1,22 +1,19 @@
-//! Display formatting for SwarmSpec configuration.
+//! Display and logging traits for Swarm types.
 //!
-//! This module provides two ways to format a SwarmSpec:
+//! This module provides:
 //!
-//! - [`SwarmSpecExt::log()`] - Extension trait for direct logging via tracing
-//! - [`DisplaySwarmSpec`] - Wrapper for [`Display`] trait integration
+//! - [`Loggable`] - Generic trait for types that can log themselves via tracing
+//! - [`DisplaySwarmSpec`] - Wrapper for [`Display`] trait integration of SwarmSpec
 //!
 //! # Example
 //!
 //! ```ignore
-//! use vertex_swarmspec::{init_mainnet, SwarmSpec, SwarmSpecExt};
+//! use vertex_swarmspec::{init_mainnet, Loggable};
 //!
 //! let spec = init_mainnet();
 //!
-//! // Direct logging (preferred)
+//! // Log via tracing
 //! spec.log();
-//!
-//! // Display trait for string output
-//! println!("{}", spec.display());
 //! ```
 
 use alloc::string::String;
@@ -28,25 +25,41 @@ use vertex_swarm_forks::ForkCondition;
 
 use crate::SwarmSpec;
 
-/// Extension trait for SwarmSpec that provides display and logging methods.
+/// Trait for types that can log themselves via tracing.
 ///
-/// This trait is automatically implemented for all types that implement [`SwarmSpec`].
-pub trait SwarmSpecExt: SwarmSpec {
-    /// Log the specification using tracing.
+/// This provides a standard way for types to output their state to the
+/// tracing infrastructure. Implementations should use `info!()` for
+/// normal output, with each logical line as a separate log call to
+/// ensure proper formatting with log prefixes.
+///
+/// # Example
+///
+/// ```ignore
+/// use vertex_swarmspec::Loggable;
+///
+/// struct MyConfig { /* ... */ }
+///
+/// impl Loggable for MyConfig {
+///     fn log(&self) {
+///         use tracing::info;
+///         info!("MyConfig:");
+///         info!("  field1: {}", self.field1);
+///         info!("  field2: {}", self.field2);
+///     }
+/// }
+/// ```
+#[cfg(feature = "std")]
+pub trait Loggable {
+    /// Log this value using tracing.
     ///
-    /// Each configuration line gets its own `info!()` call so log prefixes
-    /// appear correctly. This is the recommended way to display spec info
-    /// in node startup logs.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// use vertex_swarmspec::{init_mainnet, SwarmSpecExt};
-    ///
-    /// let spec = init_mainnet();
-    /// spec.log();
-    /// ```
-    #[cfg(feature = "std")]
+    /// Each configuration line should get its own `info!()` call so log
+    /// prefixes appear correctly.
+    fn log(&self);
+}
+
+/// Blanket implementation of [`Loggable`] for all [`SwarmSpec`] types.
+#[cfg(feature = "std")]
+impl<S: SwarmSpec> Loggable for S {
     fn log(&self) {
         use tracing::info;
 
@@ -63,7 +76,7 @@ pub trait SwarmSpecExt: SwarmSpec {
         );
         info!("  Token: {} @ {}", self.token().symbol, self.token().address);
         info!("  Chunk size: {} bytes", self.chunk_size());
-        info!("  Chunks: {}", Self::ChunkSet::format_supported_types());
+        info!("  Chunks: {}", S::ChunkSet::format_supported_types());
         info!(
             "  Reserve capacity: {} chunks ({})",
             self.reserve_capacity(),
@@ -77,7 +90,12 @@ pub trait SwarmSpecExt: SwarmSpec {
             }
         }
     }
+}
 
+/// Extension trait for SwarmSpec that provides a display wrapper.
+///
+/// This trait is automatically implemented for all types that implement [`SwarmSpec`].
+pub trait SwarmSpecExt: SwarmSpec {
     /// Create a wrapper for [`Display`] trait integration.
     ///
     /// Use this when you need to format the spec as a string or use it
@@ -114,7 +132,7 @@ fn format_reserve_size(reserve_capacity: u64, chunk_size: usize) -> String {
 /// This wrapper implements [`Display`] for use with `println!()`, `format!()`,
 /// and other formatting macros.
 ///
-/// Prefer using [`SwarmSpecExt::log()`] for tracing output, as it formats
+/// Prefer using [`Loggable::log()`] for tracing output, as it formats
 /// each line with proper log prefixes.
 ///
 /// # Example

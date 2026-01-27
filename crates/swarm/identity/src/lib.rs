@@ -25,7 +25,7 @@ use nectar_primitives::SwarmAddress;
 use std::sync::Arc;
 use vertex_net_primitives_traits::calculate_overlay_address;
 use vertex_swarm_api::Identity;
-use vertex_swarmspec::{Hive, SwarmSpec};
+use vertex_swarmspec::{Hive, Loggable, SwarmSpec};
 
 // Re-export the Identity trait for convenience
 pub use vertex_swarm_api::Identity as IdentityTrait;
@@ -173,6 +173,17 @@ impl Identity for SwarmIdentity {
 
     fn overlay_address(&self) -> SwarmAddress {
         self.overlay
+    }
+}
+
+impl Loggable for SwarmIdentity {
+    fn log(&self) {
+        use tracing::{debug, info};
+
+        info!("Identity:");
+        info!("  Ethereum address: {}", self.signer.address());
+        debug!("  Nonce: {}", self.nonce);
+        info!("  Overlay address: {}", self.overlay_address());
     }
 }
 

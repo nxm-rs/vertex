@@ -26,5 +26,6 @@ vertex-swarmspec.workspace = true
 
 # Utilities
 rand.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]

@@ -284,7 +284,7 @@ impl<N: SwarmNodeTypes> SwarmNode<N> {
                 num_established,
                 ..
             } => {
-                info!(
+                debug!(
                     %peer_id,
                     endpoint = %endpoint.get_remote_address(),
                     num_established,
@@ -374,7 +374,7 @@ impl<N: SwarmNodeTypes> SwarmNode<N> {
                 let overlay = OverlayAddress::new(info.ack.node_address().overlay_address().into());
                 let is_full_node = info.ack.full_node();
 
-                info!(
+                debug!(
                     %peer_id,
                     %overlay,
                     %is_full_node,

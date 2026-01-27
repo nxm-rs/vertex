@@ -186,7 +186,6 @@ pub async fn build_launch_context(args: &SwarmRunNodeArgs) -> Result<SwarmLaunch
 
     // Create identity
     let identity = if use_ephemeral {
-        debug!("Creating ephemeral identity");
         SwarmIdentity::random(spec.clone(), !matches!(node_type, SwarmNodeType::Light))
     } else {
         // Load or create persistent identity
