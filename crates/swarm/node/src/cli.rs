@@ -44,7 +44,7 @@ use vertex_swarm_core::SwarmConfig;
 use vertex_swarm_core::args::SwarmArgs;
 use vertex_swarm_identity::SwarmIdentity;
 use vertex_swarmspec::{Hive, SwarmSpec, init_mainnet, init_testnet};
-use vertex_tasks::TaskManager;
+use vertex_tasks::TaskExecutor;
 
 // Re-export types that are part of the public API
 pub use vertex_swarm_core::args::SwarmNodeType;
@@ -152,7 +152,7 @@ pub async fn build_launch_context(args: &SwarmRunNodeArgs) -> Result<SwarmLaunch
     args.swarm.validate().map_err(|e| eyre::eyre!(e))?;
 
     // Get task executor
-    let executor = TaskManager::current().executor();
+    let executor = TaskExecutor::current();
 
     // Determine which network to connect to
     let spec = resolve_network_spec(&args.swarm)?;

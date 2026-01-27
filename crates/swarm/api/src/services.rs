@@ -1,6 +1,6 @@
-//! Runnable services for Swarm nodes.
+//! Services for Swarm nodes.
 //!
-//! These structs hold the services that will be consumed by [`Protocol::run()`].
+//! These structs hold the services that will be spawned as background tasks.
 //! Services are moved into spawned tasks and cannot be recovered after running.
 //!
 //! # Components vs Services
@@ -14,47 +14,23 @@
 //! All node types share the same service structure via [`SwarmServices`].
 //! The capability level (Light, Publisher, Full) only affects components,
 //! not services.
-//!
-//! [`Protocol::run()`]: vertex_node_api::Protocol::run
-
-use async_trait::async_trait;
 
 use crate::BootnodeTypes;
+use std::future::Future;
 
-/// Trait for a runnable Swarm node event loop.
+/// A service that can be spawned as a background task.
 ///
-/// This is the main P2P networking task that handles peer connections,
-/// protocol messages, and network events.
-#[async_trait]
-pub trait RunnableNode: Send + 'static {
-    /// The error type returned if the node fails.
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    /// Run the node event loop.
+/// This is the minimal trait for types that can be run via `TaskExecutor::spawn_critical()`.
+/// Implementors should provide their main event loop in `spawn_task()`.
+pub trait SpawnableTask: Send + 'static {
+    /// Run the service as a spawnable future, consuming self.
     ///
-    /// This method should run until shutdown is signaled or an error occurs.
-    /// It handles:
-    /// - Accepting incoming peer connections
-    /// - Processing protocol messages
-    /// - Managing peer state transitions
-    async fn run(self) -> Result<(), Self::Error>;
+    /// The returned future runs until completion (shutdown or error).
+    /// Errors are logged internally - the future always completes with `()`.
+    fn spawn_task(self) -> impl Future<Output = ()> + Send;
 }
 
-/// Trait for a runnable client service.
-///
-/// The client service processes chunk requests from higher-level APIs.
-#[async_trait]
-pub trait RunnableClientService: Send + 'static {
-    /// The error type returned if the service fails.
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    /// Run the client service event loop.
-    ///
-    /// This method should run until shutdown is signaled or an error occurs.
-    async fn run(self) -> Result<(), Self::Error>;
-}
-
-/// Runnable services for any Swarm node.
+/// Services for any Swarm node.
 ///
 /// All node types (Light, Publisher, Full) share the same service structure:
 /// a node event loop and a client service. The capability level only affects

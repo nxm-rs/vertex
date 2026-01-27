@@ -5,19 +5,21 @@
 //!
 //! # Lifecycle
 //!
-//! 1. **Build**: Create components and services from config + infrastructure
-//! 2. **Run**: Start services using the task executor
+//! A single [`Protocol::launch()`] method handles both building and running:
+//! 1. Create components from config + infrastructure
+//! 2. Spawn services as background tasks
+//! 3. Return components for continued use
 //!
 //! # Example
 //!
 //! ```ignore
 //! use vertex_node_api::{Protocol, NodeContext};
 //!
-//! // Build protocol from configuration
-//! let built = SwarmLightProtocol::build(config, &ctx).await?;
+//! // Launch builds and spawns in one step
+//! let components = SwarmProtocol::<MyConfig>::launch(config, &ctx, &executor).await?;
 //!
-//! // Run the protocol (services are consumed, components remain)
-//! let components = built.run(ctx.executor());
+//! // Components remain available for the lifetime of the node
+//! println!("Overlay: {}", components.identity.overlay_address());
 //! ```
 
 use crate::NodeContext;
@@ -33,17 +35,13 @@ use vertex_tasks::TaskExecutor;
 ///
 /// ```ignore
 /// use vertex_node_api::BuildsProtocol;
-/// use vertex_swarm_api::SwarmLightProtocol;
+/// use vertex_swarm_api::SwarmProtocol;
 ///
 /// impl BuildsProtocol for MyLightBuildConfig {
-///     type Protocol = SwarmLightProtocol<Self>;
+///     type Protocol = SwarmProtocol<Self>;
 ///
 ///     fn protocol_name(&self) -> &'static str {
 ///         "Swarm"
-///     }
-///
-///     fn node_type_name(&self) -> &'static str {
-///         "Light"
 ///     }
 /// }
 /// ```
@@ -57,19 +55,20 @@ pub trait BuildsProtocol: Send + Sync + 'static {
     }
 }
 
-/// A network protocol that can be built and run by node infrastructure.
+/// A network protocol that can be launched by node infrastructure.
 ///
-/// # Components vs Services
+/// # Components
 ///
-/// - **Components**: Static data for RPC queries (identity, topology, accounting).
-///   Remains available after `run()` is called.
-/// - **Services**: Runnable tasks (SwarmNode, ClientService). Consumed by `run()` -
-///   moved into spawned tasks.
+/// Components are static data for RPC queries (identity, topology, accounting).
+/// They remain available after `launch()` returns.
+///
+/// Services (background tasks like SwarmNode, ClientService) are spawned
+/// internally by `launch()` and don't appear in the trait signature.
 ///
 /// # Example
 ///
 /// ```ignore
-/// use vertex_node_api::{Protocol, Built, NodeContext};
+/// use vertex_node_api::{Protocol, NodeContext};
 /// use vertex_tasks::TaskExecutor;
 ///
 /// struct MyProtocol;
@@ -78,19 +77,21 @@ pub trait BuildsProtocol: Send + Sync + 'static {
 /// impl Protocol for MyProtocol {
 ///     type Config = MyConfig;
 ///     type Components = MyComponents;
-///     type Services = MyServices;
 ///     type BuildError = MyError;
 ///
-///     async fn build(
+///     async fn launch(
 ///         config: Self::Config,
 ///         ctx: &NodeContext,
-///     ) -> Result<Built<Self>, Self::BuildError> {
-///         // Build components and services...
-///         Ok(Built::new(components, services))
-///     }
+///         executor: &TaskExecutor,
+///     ) -> Result<Self::Components, Self::BuildError> {
+///         // Build components
+///         let components = build_components(&config, ctx)?;
 ///
-///     fn run(services: Self::Services, executor: &TaskExecutor) {
-///         // Spawn background tasks
+///         // Spawn services as background tasks
+///         let services = build_services(&config, ctx)?;
+///         executor.spawn_critical("my_service", services.run());
+///
+///         Ok(components)
 ///     }
 /// }
 /// ```
@@ -101,71 +102,23 @@ pub trait Protocol: Sized + Send + Sync + 'static {
 
     /// Static components for queries and RPC (identity, topology, accounting).
     ///
-    /// Remains available after `run()` is called.
+    /// Remains available after `launch()` returns.
     type Components: Send + Sync + 'static;
 
-    /// Runnable services (SwarmNode, ClientService).
-    ///
-    /// Consumed by `run()` - moved into spawned tasks.
-    type Services: Send + 'static;
-
-    /// Error type for build failures.
+    /// Error type for launch failures.
     type BuildError: std::error::Error + Send + Sync + 'static;
 
-    /// Build protocol from configuration using node infrastructure.
+    /// Build and launch the protocol.
     ///
-    /// Returns [`Built<Self>`] containing both components and services.
-    async fn build(
+    /// This method:
+    /// 1. Builds components from the configuration
+    /// 2. Spawns background services via the executor
+    /// 3. Returns components for continued use (RPC, metrics, etc.)
+    ///
+    /// Services are spawned as critical tasks - if they fail, the node shuts down.
+    async fn launch(
         config: Self::Config,
         ctx: &NodeContext,
-    ) -> Result<Built<Self>, Self::BuildError>;
-
-    /// Run the protocol services.
-    ///
-    /// Spawns background tasks via the executor. Services are moved into
-    /// the spawned tasks and cannot be recovered.
-    fn run(services: Self::Services, executor: &TaskExecutor);
-}
-
-/// Result of building a protocol.
-///
-/// Contains both static components and runnable services.
-/// Call [`run()`](Self::run) to start the protocol.
-///
-/// # Example
-///
-/// ```ignore
-/// // Build returns both components and services
-/// let built = SwarmLightProtocol::build(config, &ctx).await?;
-///
-/// // Run consumes services, returns components
-/// let components = built.run(ctx.executor());
-///
-/// // Components remain available for the lifetime of the node
-/// println!("Overlay: {}", components.identity.overlay_address());
-/// ```
-pub struct Built<P: Protocol> {
-    /// Static components - remain available after run().
-    pub components: P::Components,
-    /// Runnable services - consumed by run().
-    pub services: P::Services,
-}
-
-impl<P: Protocol> Built<P> {
-    /// Create a new Built with the given components and services.
-    pub fn new(components: P::Components, services: P::Services) -> Self {
-        Self {
-            components,
-            services,
-        }
-    }
-
-    /// Run the protocol, returning components for continued use.
-    ///
-    /// Services are moved into spawned tasks. Components remain
-    /// available for queries and RPC.
-    pub fn run(self, executor: &TaskExecutor) -> P::Components {
-        P::run(self.services, executor);
-        self.components
-    }
+        executor: &TaskExecutor,
+    ) -> Result<Self::Components, Self::BuildError>;
 }

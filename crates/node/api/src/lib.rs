@@ -7,14 +7,12 @@
 //! # Protocol Trait
 //!
 //! The [`Protocol`] trait defines the lifecycle interface between a network
-//! protocol (like Swarm) and the node infrastructure:
-//!
-//! 1. **Build**: Create components and services from config + infrastructure
-//! 2. **Run**: Start services using the task executor
+//! protocol (like Swarm) and the node infrastructure. A single `launch()` method
+//! handles building components and spawning services.
 //!
 //! # Node Context
 //!
-//! The [`NodeContext`] provides infrastructure to protocols during build:
+//! The [`NodeContext`] provides infrastructure to protocols during launch:
 //! - Task executor for spawning background tasks
 //! - Data directory for persistent storage
 //! - Shutdown signal for graceful termination
@@ -31,16 +29,15 @@
 //! # Example
 //!
 //! ```ignore
-//! use vertex_node_api::{Protocol, NodeContext, Built};
+//! use vertex_node_api::{Protocol, NodeContext};
 //!
 //! // Node builder creates context with infrastructure
 //! let ctx = NodeContext::new(executor, data_dir);
 //!
-//! // Protocol builds on the infrastructure
-//! let built = SwarmLightProtocol::build(config, &ctx).await?;
+//! // Launch builds and spawns in one step
+//! let components = SwarmProtocol::<MyConfig>::launch(config, &ctx, &executor).await?;
 //!
-//! // Run protocol (services consumed, components returned)
-//! let components = built.run(ctx.executor());
+//! // Components remain available for queries and RPC
 //! ```
 
 #![warn(missing_docs)]

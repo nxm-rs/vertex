@@ -44,6 +44,7 @@ extern crate alloc;
 
 mod api;
 mod constants;
+pub mod display;
 mod error;
 mod spec;
 mod token;
@@ -58,6 +59,7 @@ pub use vertex_swarm_forks::*;
 pub use nectar_contracts;
 
 pub use api::{StaticSwarmSpecProvider, SwarmSpec, SwarmSpecProvider};
+pub use display::{DisplaySwarmSpec, SwarmSpecExt};
 pub use constants::*;
 #[cfg(feature = "std")]
 pub use error::SwarmSpecFileError;

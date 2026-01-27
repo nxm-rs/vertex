@@ -78,7 +78,7 @@ use vertex_net_primitives::dns::is_dnsaddr;
 use vertex_net_primitives_traits::NodeAddress as NodeAddressTrait;
 use vertex_net_topology::{BootnodeConnector, TopologyCommand, TopologyEvent};
 use vertex_primitives::OverlayAddress;
-use vertex_swarm_api::{Identity, SwarmNodeTypes, Topology};
+use vertex_swarm_api::{Identity, SpawnableTask, SwarmNodeTypes, Topology};
 use vertex_tasks::TaskExecutor;
 
 use crate::{
@@ -239,10 +239,22 @@ impl<N: SwarmNodeTypes> SwarmNode<N> {
         Ok(connected)
     }
 
+    /// Consume self and run as a spawnable future.
+    ///
+    /// This is the preferred entry point for spawning the node as a background task.
+    /// It combines `start_listening()`, `connect_bootnodes()`, and `run()` into a
+    /// single owned future suitable for `TaskExecutor::spawn_critical()`.
+    pub async fn into_task(mut self) -> Result<()> {
+        self.start_listening()?;
+        self.connect_bootnodes().await?;
+        self.run().await
+    }
+
     /// Run the network event loop.
     ///
     /// This processes swarm events and should be run in a background task.
-    pub async fn run(&mut self) -> Result<()> {
+    /// Prefer [`into_task()`](Self::into_task) which handles setup and takes ownership.
+    pub async fn run(mut self) -> Result<()> {
         info!("Starting network event loop");
 
         loop {
@@ -501,6 +513,16 @@ impl<N: SwarmNodeTypes> SwarmNode<N> {
     /// Check if we're connected to any peers.
     pub fn is_connected(&self) -> bool {
         self.connected_peers() > 0
+    }
+}
+
+impl<N: SwarmNodeTypes> SpawnableTask for SwarmNode<N> {
+    fn spawn_task(self) -> impl std::future::Future<Output = ()> + Send {
+        async move {
+            if let Err(e) = self.into_task().await {
+                tracing::error!(error = %e, "SwarmNode error");
+            }
+        }
     }
 }
 

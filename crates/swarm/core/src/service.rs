@@ -11,6 +11,7 @@ use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_primitives::{ChunkAddress, OverlayAddress};
+use vertex_swarm_api::SpawnableTask;
 
 // Re-export the types from net/client
 pub use vertex_net_client::{Cheque, ClientCommand, ClientEvent};
@@ -157,9 +158,18 @@ impl ClientService {
         self.handle.clone()
     }
 
+    /// Consume self and run as a spawnable future.
+    ///
+    /// This is the preferred entry point for spawning the service as a background task.
+    /// It's suitable for `TaskExecutor::spawn_critical()`.
+    pub async fn into_task(self) {
+        self.run().await;
+    }
+
     /// Run the event processing loop.
     ///
     /// This should be spawned as a background task.
+    /// Prefer [`into_task()`](Self::into_task) for consistency with `SwarmNode`.
     pub async fn run(mut self) {
         while let Some(event) = self.event_rx.recv().await {
             self.process_event(event);
@@ -310,5 +320,11 @@ impl ClientService {
 impl Default for ClientService {
     fn default() -> Self {
         Self::new().0
+    }
+}
+
+impl SpawnableTask for ClientService {
+    fn spawn_task(self) -> impl std::future::Future<Output = ()> + Send {
+        self.into_task()
     }
 }

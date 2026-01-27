@@ -45,8 +45,9 @@ use std::future::Future;
 
 use clap::Parser;
 use color_eyre::eyre;
-use tracing::info;
+use tracing::{error, info};
 use vertex_node_core::{logging, version};
+use vertex_tasks::TaskManager;
 
 /// Trait for CLI types that have logging configuration.
 pub trait HasLogs {
@@ -60,9 +61,11 @@ pub trait HasLogs {
 /// - Error handling setup (color_eyre)
 /// - Logging initialization
 /// - Version banner
+/// - Task manager lifecycle (critical task monitoring)
 ///
 /// The closure receives the parsed CLI and can build protocol-specific
-/// contexts and run the node.
+/// contexts and run the node. The [`TaskManager`] is created before calling
+/// the runner and kept alive for the duration of the node's operation.
 ///
 /// # Example
 ///
@@ -106,6 +109,31 @@ where
 
     info!("Starting Vertex {}", version::VERSION);
 
-    // Call user's runner with parsed CLI
-    runner(cli).await
+    // Create task manager - this MUST be kept alive for the node's lifetime.
+    // When TaskManager is dropped, it fires the shutdown signal which terminates
+    // all spawned tasks. By awaiting it with select!, we:
+    // 1. Keep it alive while the node runs
+    // 2. Get notified if any critical task panics
+    let task_manager = TaskManager::current();
+
+    // Run the node and task manager concurrently.
+    // - If runner completes (success or error), we return that result
+    // - If task_manager completes, a critical task panicked
+    tokio::select! {
+        result = task_manager => {
+            match result {
+                Ok(()) => {
+                    // TaskManager completed normally (graceful shutdown requested)
+                    Ok(())
+                }
+                Err(e) => {
+                    error!("Critical task panicked: {}", e);
+                    Err(eyre::eyre!("Critical task panicked: {}", e))
+                }
+            }
+        }
+        result = runner(cli) => {
+            result
+        }
+    }
 }

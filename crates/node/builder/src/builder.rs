@@ -35,7 +35,7 @@
 
 use std::net::{IpAddr, SocketAddr};
 
-use vertex_node_api::{Built, BuildsProtocol, NodeContext, Protocol, RpcConfig};
+use vertex_node_api::{BuildsProtocol, NodeContext, Protocol, RpcConfig};
 use vertex_node_core::dirs::DataDirs;
 use vertex_rpc_server::GrpcRegistry;
 use vertex_tasks::TaskExecutor;
@@ -61,7 +61,11 @@ pub struct LaunchContext<A = ()> {
 impl<A> LaunchContext<A> {
     /// Create a new launch context.
     pub fn new(executor: TaskExecutor, dirs: DataDirs, api: A) -> Self {
-        Self { executor, dirs, api }
+        Self {
+            executor,
+            dirs,
+            api,
+        }
     }
 
     /// Get the data directory root.
@@ -80,7 +84,11 @@ impl<A> LaunchContext<A> {
 impl<A: RpcConfig> LaunchContext<A> {
     /// Get the gRPC socket address from configuration.
     pub fn grpc_addr(&self) -> SocketAddr {
-        let ip: IpAddr = self.api.grpc_addr().parse().unwrap_or([127, 0, 0, 1].into());
+        let ip: IpAddr = self
+            .api
+            .grpc_addr()
+            .parse()
+            .unwrap_or([127, 0, 0, 1].into());
         SocketAddr::new(ip, self.api.grpc_port())
     }
 }
@@ -169,33 +177,38 @@ where
 
     /// Launch the node.
     ///
-    /// This builds the protocol, starts the gRPC server, and runs protocol services.
+    /// This builds the protocol components, spawns services, and starts the gRPC server.
     /// The gRPC address is taken from the launch context's API configuration.
     pub async fn launch(self) -> Result<NodeHandle<P::Components>, P::BuildError> {
         use tracing::info;
 
         // Infrastructure configuration
-        info!("gRPC address: {}", self.ctx.grpc_addr());
         info!("Data directory: {}", self.ctx.dirs.root.display());
+        info!("gRPC address: {}", self.ctx.grpc_addr());
 
         let node_ctx = self.ctx.node_context();
         let grpc_addr = self.ctx.grpc_addr();
 
-        // Build the protocol
-        let built: Built<P> = P::build(self.config, &node_ctx).await?;
+        // Launch the protocol (builds components and spawns services)
+        let components = P::launch(self.config, &node_ctx, &self.ctx.executor).await?;
 
-        // Create gRPC registry
+        // Create gRPC registry and spawn as critical task
         let registry = GrpcRegistry::new();
-
-        // Build the gRPC server
         let grpc_handle = registry
             .into_server(grpc_addr)
             .expect("failed to build gRPC server");
 
-        // Run the protocol services
-        let components = built.run(&self.ctx.executor);
+        let shutdown = self.ctx.executor.on_shutdown_signal().clone();
+        self.ctx.executor.spawn_critical("grpc_server", async move {
+            if let Err(e) = grpc_handle.serve_with_shutdown(shutdown).await {
+                tracing::error!(error = %e, "gRPC server error");
+            }
+        });
 
-        Ok(NodeHandle::new(components, self.ctx.executor.clone(), grpc_handle))
+        Ok(NodeHandle::new(
+            components,
+            self.ctx.executor.on_shutdown_signal().clone(),
+        ))
     }
 }
 
@@ -210,23 +223,17 @@ where
         use tracing::info;
 
         // Infrastructure configuration
-        info!("gRPC: disabled");
         info!("Data directory: {}", self.ctx.dirs.root.display());
+        info!("gRPC: disabled");
 
         let node_ctx = self.ctx.node_context();
 
-        // Build the protocol
-        let built: Built<P> = P::build(self.config, &node_ctx).await?;
+        // Launch the protocol (builds components and spawns services)
+        let components = P::launch(self.config, &node_ctx, &self.ctx.executor).await?;
 
-        // Create empty gRPC registry (no services)
-        let registry = GrpcRegistry::new();
-        let grpc_handle = registry
-            .into_server(SocketAddr::new([127, 0, 0, 1].into(), 0))
-            .expect("failed to build gRPC server");
-
-        // Run the protocol services
-        let components = built.run(&self.ctx.executor);
-
-        Ok(NodeHandle::new(components, self.ctx.executor.clone(), grpc_handle))
+        Ok(NodeHandle::new(
+            components,
+            self.ctx.executor.on_shutdown_signal().clone(),
+        ))
     }
 }

@@ -28,9 +28,11 @@ vertex-net-primitives-traits.workspace = true
 
 # misc
 auto_impl.workspace = true
+humansize = "2.1"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
 thiserror.workspace = true
+tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Test utilities
@@ -46,6 +48,7 @@ std = [
     "vertex-swarm-forks/std",
     "serde/std",
     "serde_json",
+    "tracing",
 ]
 serde_json = ["dep:serde_json"]
 arbitrary = [

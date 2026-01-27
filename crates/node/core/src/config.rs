@@ -32,7 +32,7 @@ use figment::{
     Figment,
     providers::{Env, Format, Serialized, Toml},
 };
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use vertex_node_api::ProtocolConfig;
 
 use crate::args::{ApiArgs, DatabaseArgs, InfraArgs};

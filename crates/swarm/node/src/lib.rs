@@ -18,9 +18,9 @@
 //!         SwarmNodeBuilder::new(ctx)
 //!             .launch()
 //!             .await?
-//!             .wait_for_exit()
-//!             .await
-//!             .map_err(Into::into)
+//!             .wait_for_shutdown()
+//!             .await;
+//!         Ok(())
 //!     }).await
 //! }
 //! ```
@@ -37,7 +37,7 @@ pub use publisher::SwarmPublisherNode;
 
 // Re-export from vertex-swarm-builder
 pub use vertex_swarm_builder::{
-    ClientServiceRunner, DefaultLightTypes, DefaultNetworkConfig, LightNodeBuildConfig,
-    SwarmLaunchContext, SwarmNodeBuilder, SwarmNodeError, SwarmNodeRunner, create_and_save_signer,
-    load_signer_from_keystore, node_type, resolve_password,
+    DefaultLightTypes, DefaultNetworkConfig, LightNodeBuildConfig, SwarmLaunchContext,
+    SwarmNodeBuilder, SwarmNodeError, create_and_save_signer, load_signer_from_keystore, node_type,
+    resolve_password,
 };

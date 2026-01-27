@@ -42,7 +42,7 @@ pub use launch::{
     SwarmLaunchContext, create_and_save_signer, load_signer_from_keystore, resolve_password,
 };
 pub use node::{LightNodeBuildConfig, SwarmNodeBuilder};
-pub use types::{ClientServiceRunner, DefaultLightTypes, DefaultNetworkConfig, SwarmNodeRunner};
+pub use types::{DefaultLightTypes, DefaultNetworkConfig};
 
 // Component building
 pub use components::{

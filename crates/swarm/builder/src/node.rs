@@ -31,7 +31,7 @@ use vertex_bandwidth_core::Accounting;
 use vertex_client_peermanager::PeerStore;
 use vertex_node_api::{BuildsProtocol, NodeContext};
 use vertex_swarm_api::{
-    Identity, NetworkConfig, SwarmBuildConfig, SwarmLightComponents, SwarmProtocol, SwarmServices,
+    Identity, NetworkConfig, SwarmLaunchConfig, SwarmLightComponents, SwarmProtocol, SwarmServices,
 };
 use vertex_swarm_core::SwarmNode;
 use vertex_swarm_core::args::SwarmArgs;
@@ -41,7 +41,7 @@ use vertex_swarmspec::Hive;
 use crate::error::SwarmNodeError;
 use crate::launch::SwarmLaunchContext;
 use crate::node_type::{Bootnode, Full, Light, NodeTypeDefaults, Publisher, Staker};
-use crate::types::{ClientServiceRunner, DefaultLightTypes, DefaultNetworkConfig, SwarmNodeRunner};
+use crate::types::{DefaultLightTypes, DefaultNetworkConfig};
 
 /// Generic Swarm node builder parameterized by node type and component builders.
 ///
@@ -186,7 +186,7 @@ impl BuildsProtocol for LightNodeBuildConfig {
 }
 
 #[async_trait]
-impl SwarmBuildConfig for LightNodeBuildConfig {
+impl SwarmLaunchConfig for LightNodeBuildConfig {
     type Types = DefaultLightTypes;
     type Components = SwarmLightComponents<DefaultLightTypes>;
     type Error = SwarmNodeError;
@@ -196,14 +196,10 @@ impl SwarmBuildConfig for LightNodeBuildConfig {
         _ctx: &NodeContext,
     ) -> Result<(Self::Components, SwarmServices<Self::Types>), Self::Error> {
         use tracing::info;
-        use vertex_swarmspec::SwarmSpec;
+        use vertex_swarmspec::SwarmSpecExt;
 
         info!("Node type: Light");
-        info!(
-            "Network: {} (ID: {})",
-            self.spec.network_name(),
-            self.spec.network_id()
-        );
+        self.spec.log();
         info!("Overlay address: {}", self.identity.overlay_address());
         info!("Ethereum address: {}", self.identity.signer().address());
         info!("Peers database: {}", self.peers_path.display());
@@ -230,11 +226,8 @@ impl SwarmBuildConfig for LightNodeBuildConfig {
         // Create components
         let components = SwarmLightComponents::new(self.identity, topology, accounting);
 
-        // Wrap services in runners that implement the traits
-        let node_runner = SwarmNodeRunner::new(node);
-        let service_runner = ClientServiceRunner::new(client_service);
-
-        let services = SwarmServices::new(node_runner, service_runner, client_handle);
+        // Services implement SpawnableTask directly - no wrappers needed
+        let services = SwarmServices::new(node, client_service, client_handle);
 
         info!("Light node built successfully");
         Ok((components, services))

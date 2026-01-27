@@ -203,7 +203,7 @@ pub fn estimate_chunks_for_bytes(available_bytes: u64, chunk_size: usize) -> u64
     (available_bytes as f64 / effective_chunk_size) as u64
 }
 
-/// Configuration that knows how to build a Swarm node.
+/// Configuration that knows how to launch a Swarm node.
 ///
 /// The capability level is determined by the associated types:
 /// - `Types` must implement the appropriate capability trait
@@ -213,12 +213,12 @@ pub fn estimate_chunks_for_bytes(available_bytes: u64, chunk_size: usize) -> u64
 /// # Example
 ///
 /// ```ignore
-/// use vertex_swarm_api::{SwarmBuildConfig, SwarmLightComponents, SwarmServices, LightTypes};
+/// use vertex_swarm_api::{SwarmLaunchConfig, SwarmLightComponents, SwarmServices, LightTypes};
 ///
 /// struct MyLightConfig { /* ... */ }
 ///
 /// #[async_trait]
-/// impl SwarmBuildConfig for MyLightConfig {
+/// impl SwarmLaunchConfig for MyLightConfig {
 ///     type Types = MyLightTypes;  // Must implement LightTypes
 ///     type Components = SwarmLightComponents<MyLightTypes>;
 ///     type Error = MyError;
@@ -231,7 +231,7 @@ pub fn estimate_chunks_for_bytes(available_bytes: u64, chunk_size: usize) -> u64
 /// }
 /// ```
 #[async_trait]
-pub trait SwarmBuildConfig: Send + Sync + 'static {
+pub trait SwarmLaunchConfig: Send + Sync + 'static {
     /// The Swarm types for this configuration.
     ///
     /// Must implement the capability trait for the desired node level:
@@ -252,32 +252,34 @@ pub trait SwarmBuildConfig: Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
 
     /// Build components and services from this configuration.
+    ///
+    /// Services will be spawned by `SwarmProtocol::launch()`.
     async fn build(
         self,
         ctx: &NodeContext,
     ) -> Result<(Self::Components, SwarmServices<Self::Types>), Self::Error>;
 }
 
-/// Marker for configs that build light nodes.
-pub trait LightBuildConfig: SwarmBuildConfig
+/// Marker for configs that launch light nodes.
+pub trait LightLaunchConfig: SwarmLaunchConfig
 where
     Self::Types: LightTypes,
 {
 }
-impl<T: SwarmBuildConfig> LightBuildConfig for T where T::Types: LightTypes {}
+impl<T: SwarmLaunchConfig> LightLaunchConfig for T where T::Types: LightTypes {}
 
-/// Marker for configs that build publisher nodes.
-pub trait PublisherBuildConfig: SwarmBuildConfig
+/// Marker for configs that launch publisher nodes.
+pub trait PublisherLaunchConfig: SwarmLaunchConfig
 where
     Self::Types: PublisherTypes,
 {
 }
-impl<T: SwarmBuildConfig> PublisherBuildConfig for T where T::Types: PublisherTypes {}
+impl<T: SwarmLaunchConfig> PublisherLaunchConfig for T where T::Types: PublisherTypes {}
 
-/// Marker for configs that build full nodes.
-pub trait FullBuildConfig: SwarmBuildConfig
+/// Marker for configs that launch full nodes.
+pub trait FullLaunchConfig: SwarmLaunchConfig
 where
     Self::Types: FullTypes,
 {
 }
-impl<T: SwarmBuildConfig> FullBuildConfig for T where T::Types: FullTypes {}
+impl<T: SwarmLaunchConfig> FullLaunchConfig for T where T::Types: FullTypes {}

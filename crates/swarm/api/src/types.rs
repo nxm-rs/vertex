@@ -28,9 +28,7 @@
 //! SwarmFullNodeTypes = FullTypes + NodeTypes
 //! ```
 
-use crate::{
-    BandwidthAccounting, ChunkSync, LocalStore, RunnableClientService, RunnableNode, Topology,
-};
+use crate::{BandwidthAccounting, ChunkSync, LocalStore, SpawnableTask, Topology};
 use alloy_primitives::{Address, B256};
 use alloy_signer::{Signer, SignerSync};
 use core::fmt::Debug;
@@ -104,10 +102,10 @@ pub trait BootnodeTypes: Clone + Debug + Send + Sync + Unpin + 'static {
     ///
     /// This is the main P2P networking task that handles peer connections,
     /// protocol messages, and network events.
-    type Node: RunnableNode;
+    type Node: SpawnableTask;
 
     /// The client service type for handling chunk requests.
-    type ClientService: RunnableClientService;
+    type ClientService: SpawnableTask;
 
     /// Handle type for interacting with the client service.
     type ClientHandle: Clone + Send + Sync + 'static;

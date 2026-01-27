@@ -20,6 +20,9 @@ vertex-tasks.workspace = true
 # cli
 clap = { workspace = true, features = ["derive", "env"] }
 
+# async
+tokio = { workspace = true, features = ["macros"] }
+
 # misc
 color-eyre.workspace = true
 tracing.workspace = true

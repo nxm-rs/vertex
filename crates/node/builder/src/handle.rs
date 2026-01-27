@@ -1,29 +1,25 @@
 //! Node handle for managing a running node.
 
-use eyre::Result;
-use vertex_rpc_server::GrpcServerHandle;
-use vertex_tasks::{Shutdown, TaskExecutor};
+use vertex_tasks::Shutdown;
 
 /// Handle to a running node.
 ///
-/// Provides access to protocol components and methods for managing
-/// the node lifecycle.
+/// Provides access to protocol components and the shutdown signal.
+/// All services (protocol, gRPC) are spawned as critical tasks and
+/// managed by the `TaskManager`.
 pub struct NodeHandle<C> {
     /// Protocol components (identity, topology, etc.)
     components: C,
-    /// Task executor for the node.
-    executor: TaskExecutor,
-    /// gRPC server handle.
-    grpc_handle: GrpcServerHandle,
+    /// Shutdown signal for waiting.
+    shutdown: Shutdown,
 }
 
 impl<C> NodeHandle<C> {
     /// Create a new node handle.
-    pub fn new(components: C, executor: TaskExecutor, grpc_handle: GrpcServerHandle) -> Self {
+    pub fn new(components: C, shutdown: Shutdown) -> Self {
         Self {
             components,
-            executor,
-            grpc_handle,
+            shutdown,
         }
     }
 
@@ -42,32 +38,17 @@ impl<C> NodeHandle<C> {
         self.components
     }
 
-    /// Get the shutdown signal receiver.
+    /// Get a clone of the shutdown signal.
     pub fn shutdown_signal(&self) -> Shutdown {
-        self.executor.on_shutdown_signal().clone()
+        self.shutdown.clone()
     }
 
     /// Wait for the node to exit (shutdown signal or critical task panic).
     ///
-    /// This runs the gRPC server and waits for either:
-    /// - A shutdown signal (Ctrl+C)
-    /// - A critical task panic
-    pub async fn wait_for_exit(self) -> Result<()> {
-        let shutdown = self.executor.on_shutdown_signal().clone();
-
-        // Run the gRPC server until shutdown
-        tokio::select! {
-            result = self.grpc_handle.serve_with_shutdown(shutdown.clone()) => {
-                if let Err(e) = result {
-                    tracing::error!(error = %e, "gRPC server error");
-                    return Err(e.into());
-                }
-            }
-            _ = shutdown => {
-                tracing::info!("Received shutdown signal");
-            }
-        }
-
-        Ok(())
+    /// This simply waits for the shutdown signal. All services are already
+    /// running as spawned critical tasks.
+    pub async fn wait_for_shutdown(self) {
+        self.shutdown.await;
+        tracing::info!("Node shutdown complete");
     }
 }
