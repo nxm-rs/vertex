@@ -50,14 +50,20 @@
 
 #[cfg(feature = "cli")]
 pub mod args;
+#[cfg(feature = "cli")]
+mod config;
+#[cfg(feature = "cli")]
+mod constants;
 
 mod behaviour;
 mod bootnodes;
 mod node;
 mod service;
 
-pub use behaviour::{NodeBehaviour, NodeEvent};
+pub use behaviour::{NodeEvent, SwarmNodeBehaviour};
 pub use bootnodes::BootnodeProvider;
+#[cfg(feature = "cli")]
+pub use config::SwarmConfig;
 pub use node::{SwarmNode, SwarmNodeBuilder, SwarmNodeType};
 pub use service::{
     Cheque, ClientCommand, ClientEvent, ClientHandle, ClientService, RetrievalError,

@@ -1,39 +1,53 @@
-//! Swarm component builder infrastructure.
+//! Swarm node builder infrastructure.
 //!
-//! This crate provides the builder pattern for constructing Swarm components
-//! (topology, accounting, pricer). Follows the reth `ComponentsBuilder` pattern
-//! where each component has a dedicated builder trait.
+//! This crate provides the builder pattern for launching Swarm nodes and
+//! constructing Swarm components.
 //!
-//! # Design
+//! # Node Building
 //!
-//! Builders are separated from implementations to allow:
-//! - Dependency injection (swap implementations without changing consumers)
-//! - Testing with mock builders
-//! - Configuration-driven component selection
+//! The primary entry point is `NodeBuilder` from `vertex-node-builder`, combined
+//! with `SwarmNodeBuilder<N>` for protocol configuration:
 //!
-//! # Core Types
+//! ```ignore
+//! use vertex_node_builder::NodeBuilder;
+//! use vertex_swarm_builder::{SwarmNodeBuilder, node_type};
 //!
+//! let handle = NodeBuilder::new()
+//!     .with_context(&ctx, &args.infra)
+//!     .with_protocol(SwarmNodeBuilder::<node_type::Light>::new(&ctx, &args.swarm))
+//!     .launch()
+//!     .await?;
+//!
+//! handle.wait_for_exit().await?;
+//! ```
+//!
+//! # Component Building
+//!
+//! Lower-level component building is also available via:
 //! - [`SwarmBuilderContext`] - Runtime context passed to all builders
 //! - [`SwarmComponentsBuilder`] - Combines individual builders
-//! - [`BuiltSwarmComponents`] - The constructed components
-//!
-//! # Builder Traits
-//!
-//! - [`TopologyBuilder`] - Builds peer topology (e.g., Kademlia)
-//! - [`AccountingBuilder`] - Builds availability accounting
-//! - [`PricerBuilder`] - Builds bandwidth pricing
-//!
-//! Builders return their associated types, deciding whether to wrap in `Arc`
-//! for types requiring interior mutability.
+//! - [`TopologyBuilder`], [`AccountingBuilder`], [`PricerBuilder`] - Individual component builders
 
-mod accounting;
 mod components;
 mod context;
-mod pricer;
-mod topology;
+mod error;
+mod launch;
+mod node;
+pub mod node_type;
+mod types;
 
-pub use accounting::{AccountingBuilder, BandwidthAccountingBuilder, NoAccountingBuilder};
-pub use components::{BuiltSwarmComponents, DefaultComponentsBuilder, SwarmComponentsBuilder};
+// Node building
+pub use error::SwarmNodeError;
+pub use launch::{
+    SwarmLaunchContext, create_and_save_signer, load_signer_from_keystore, resolve_password,
+};
+pub use node::{LightNodeBuildConfig, SwarmNodeBuilder};
+pub use types::{ClientServiceRunner, DefaultLightTypes, DefaultNetworkConfig, SwarmNodeRunner};
+
+// Component building
+pub use components::{
+    AccountingBuilder, BandwidthAccountingBuilder, BuiltSwarmComponents, DefaultComponentsBuilder,
+    FixedPricerBuilder, KademliaTopologyBuilder, NoAccountingBuilder, PricerBuilder,
+    SwarmComponentsBuilder, TopologyBuilder,
+};
 pub use context::SwarmBuilderContext;
-pub use pricer::{FixedPricerBuilder, PricerBuilder};
-pub use topology::{KademliaTopologyBuilder, TopologyBuilder};

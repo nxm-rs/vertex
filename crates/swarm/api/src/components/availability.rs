@@ -38,8 +38,8 @@
 //! pushsync_accounting.record(4096, Direction::Upload);
 //! ```
 
-use alloc::vec::Vec;
 use async_trait::async_trait;
+use std::vec::Vec;
 use vertex_primitives::OverlayAddress;
 
 use crate::SwarmResult;

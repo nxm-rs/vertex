@@ -1,0 +1,28 @@
+[package]
+name = "vertex-swarm-rpc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Swarm protocol RPC services for Vertex"
+
+[dependencies]
+# Internal dependencies
+vertex-swarm-api = { workspace = true }
+
+# Async
+async-trait.workspace = true
+tokio = { workspace = true, features = ["sync", "rt"] }
+
+# gRPC
+tonic.workspace = true
+prost.workspace = true
+
+[build-dependencies]
+tonic-build.workspace = true
+
+[features]
+default = ["std"]
+std = []

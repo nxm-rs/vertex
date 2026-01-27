@@ -1,0 +1,57 @@
+syntax = "proto3";
+package vertex.swarm.node.v1;
+
+// Node service provides information about the local Swarm node and its topology.
+service Node {
+  // GetStatus returns the current status of the node.
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+
+  // GetTopology returns detailed Kademlia topology information.
+  rpc GetTopology(GetTopologyRequest) returns (GetTopologyResponse);
+}
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+  // Overlay address (hex encoded, 64 chars).
+  string overlay_address = 1;
+
+  // Current Kademlia depth.
+  uint32 depth = 2;
+
+  // Total number of connected peers.
+  uint32 connected_peers = 3;
+
+  // Total number of known (discovered but not connected) peers.
+  uint32 known_peers = 4;
+
+  // Number of pending connection attempts.
+  uint32 pending_connections = 5;
+}
+
+message GetTopologyRequest {}
+
+message GetTopologyResponse {
+  // Overlay address (hex encoded).
+  string overlay_address = 1;
+
+  // Current depth.
+  uint32 depth = 2;
+
+  // Bin information for each proximity order (0-31).
+  repeated BinInfo bins = 3;
+}
+
+message BinInfo {
+  // Proximity order (0-31).
+  uint32 proximity_order = 1;
+
+  // Number of connected peers in this bin.
+  uint32 connected_peers = 2;
+
+  // Number of known (discovered) peers in this bin.
+  uint32 known_peers = 3;
+
+  // Connected peer overlay addresses (hex encoded).
+  repeated string connected_peer_addresses = 4;
+}

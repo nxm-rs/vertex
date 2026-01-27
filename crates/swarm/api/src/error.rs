@@ -4,7 +4,7 @@
 //! Each error variant contains typed data (not strings) for better
 //! programmatic handling.
 
-use alloc::string::String;
+use std::string::String;
 use vertex_primitives::ChunkAddress;
 
 /// Error type for Swarm API operations.

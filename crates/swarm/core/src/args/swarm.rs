@@ -1,0 +1,133 @@
+//! Aggregated Swarm protocol CLI arguments.
+//!
+//! [`SwarmArgs`] combines all Swarm-specific configuration into a single
+//! struct that can be flattened into a CLI parser. This is designed to be
+//! composed with generic node arguments from `vertex-node-core`.
+//!
+//! # Example
+//!
+//! ```ignore
+//! use clap::Parser;
+//! use vertex_node_core::args::NodeArgs;
+//! use vertex_swarm_core::args::SwarmArgs;
+//!
+//! #[derive(Parser)]
+//! struct Cli {
+//!     #[command(flatten)]
+//!     node: NodeArgs,      // Generic infrastructure
+//!
+//!     #[command(flatten)]
+//!     swarm: SwarmArgs,    // Protocol-specific
+//! }
+//! ```
+
+use std::path::PathBuf;
+
+use clap::Args;
+use serde::{Deserialize, Serialize};
+
+use crate::SwarmNodeType;
+
+use super::{
+    AvailabilityArgs, IdentityArgs, NetworkArgs, StorageArgs, StorageIncentiveArgs,
+};
+
+/// Aggregated Swarm protocol arguments.
+///
+/// This struct combines all Swarm-specific CLI arguments into a single
+/// flattened group. It's designed to be composed with [`vertex_node_core::args::NodeArgs`]
+/// in the binary's CLI parser.
+#[derive(Debug, Args, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SwarmArgs {
+    /// Node mode determines what capabilities and protocols the node runs.
+    ///
+    /// - bootnode: Only topology (peer discovery)
+    /// - light: Retrieve chunks (default)
+    /// - publisher: Retrieve + upload chunks
+    /// - full: Store chunks for network
+    /// - staker: Full + redistribution rewards
+    #[arg(long = "mode", value_enum, default_value_t = SwarmNodeType::Light)]
+    pub node_type: SwarmNodeType,
+
+    /// Network configuration.
+    #[command(flatten)]
+    pub network: NetworkArgs,
+
+    /// Availability incentive configuration.
+    #[command(flatten)]
+    pub availability: AvailabilityArgs,
+
+    /// Local storage / cache configuration.
+    #[command(flatten)]
+    pub storage: StorageArgs,
+
+    /// Storage incentive configuration.
+    #[command(flatten)]
+    pub storage_incentives: StorageIncentiveArgs,
+
+    /// Identity configuration.
+    #[command(flatten)]
+    pub identity: IdentityArgs,
+
+    /// Run the node on the mainnet.
+    #[arg(long, conflicts_with_all = ["testnet", "swarmspec"])]
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub mainnet: bool,
+
+    /// Run the node on the testnet.
+    #[arg(long, conflicts_with_all = ["mainnet", "swarmspec"])]
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub testnet: bool,
+
+    /// Path to a custom SwarmSpec file (JSON/TOML) for local/dev networks.
+    ///
+    /// The SwarmSpec defines the complete network configuration including:
+    /// - network_id: The network identifier
+    /// - network_name: Human-readable network name
+    /// - bootnodes: List of bootnode multiaddrs
+    ///
+    /// Cannot be used with --mainnet or --testnet.
+    #[arg(long, conflicts_with_all = ["mainnet", "testnet"], value_name = "PATH")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swarmspec: Option<PathBuf>,
+}
+
+impl Default for SwarmArgs {
+    fn default() -> Self {
+        Self {
+            node_type: SwarmNodeType::default(),
+            network: NetworkArgs::default(),
+            availability: AvailabilityArgs::default(),
+            storage: StorageArgs::default(),
+            storage_incentives: StorageIncentiveArgs::default(),
+            identity: IdentityArgs::default(),
+            mainnet: false,
+            testnet: false,
+            swarmspec: None,
+        }
+    }
+}
+
+impl SwarmArgs {
+    /// Validate all argument combinations.
+    pub fn validate(&self) -> Result<(), String> {
+        self.availability.validate()?;
+        Ok(())
+    }
+
+    /// Returns true if mainnet is selected (explicitly or by default).
+    pub fn is_mainnet(&self) -> bool {
+        self.mainnet || (!self.testnet && self.swarmspec.is_none())
+    }
+
+    /// Returns true if testnet is explicitly selected.
+    pub fn is_testnet(&self) -> bool {
+        self.testnet
+    }
+
+    /// Returns true if a custom swarmspec is provided.
+    pub fn is_custom_network(&self) -> bool {
+        self.swarmspec.is_some()
+    }
+}

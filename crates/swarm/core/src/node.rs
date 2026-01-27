@@ -43,7 +43,7 @@
 //!
 //! ```ignore
 //! use vertex_client_core::{SwarmNode, NetworkConfig};
-//! use vertex_node_identity::SwarmIdentity;
+//! use vertex_swarm_identity::SwarmIdentity;
 //!
 //! // Create identity
 //! let identity = SwarmIdentity::random(spec.clone(), true);
@@ -77,25 +77,24 @@ use vertex_net_client::ClientCommand;
 use vertex_net_primitives::dns::is_dnsaddr;
 use vertex_net_primitives_traits::NodeAddress as NodeAddressTrait;
 use vertex_net_topology::{BootnodeConnector, TopologyCommand, TopologyEvent};
-use vertex_node_types::{Identity, NodeTypes};
 use vertex_primitives::OverlayAddress;
-use vertex_swarm_api::Topology;
+use vertex_swarm_api::{Identity, SwarmNodeTypes, Topology};
 use vertex_tasks::TaskExecutor;
 
 use crate::{
     BootnodeProvider, ClientEvent, ClientHandle, ClientService,
-    behaviour::{NodeBehaviour, NodeEvent},
+    behaviour::{NodeEvent, SwarmNodeBehaviour},
 };
 
 /// A Swarm node generic over the node type hierarchy.
 ///
 /// The type parameter `N` determines capabilities at compile-time:
-/// - `N: NodeTypes` - can retrieve chunks (light client)
-/// - `N: PublisherNodeTypes` - can also publish chunks
-/// - `N: FullNodeTypes` - can also store and sync chunks
-pub struct SwarmNode<N: NodeTypes> {
+/// - `N: SwarmNodeTypes` - can retrieve chunks (light client)
+/// - `N: SwarmPublisherNodeTypes` - can also publish chunks
+/// - `N: SwarmFullNodeTypes` - can also store and sync chunks
+pub struct SwarmNode<N: SwarmNodeTypes> {
     /// The libp2p swarm.
-    swarm: Swarm<NodeBehaviour<N>>,
+    swarm: Swarm<SwarmNodeBehaviour<N>>,
 
     /// Swarm identity.
     identity: Arc<N::Identity>,
@@ -122,7 +121,7 @@ pub struct SwarmNode<N: NodeTypes> {
     discovery_tx: DiscoverySender,
 }
 
-impl<N: NodeTypes> SwarmNode<N> {
+impl<N: SwarmNodeTypes> SwarmNode<N> {
     /// Create a builder for constructing a SwarmNode.
     pub fn builder(identity: N::Identity) -> SwarmNodeBuilder<N> {
         SwarmNodeBuilder::new(identity)
@@ -506,7 +505,7 @@ impl<N: NodeTypes> SwarmNode<N> {
 }
 
 /// Builder for SwarmNode with fluent configuration.
-pub struct SwarmNodeBuilder<N: NodeTypes> {
+pub struct SwarmNodeBuilder<N: SwarmNodeTypes> {
     identity: N::Identity,
     listen_addrs: Vec<Multiaddr>,
     bootnodes: Vec<Multiaddr>,
@@ -515,7 +514,7 @@ pub struct SwarmNodeBuilder<N: NodeTypes> {
     peer_store: Option<Arc<dyn PeerStore>>,
 }
 
-impl<N: NodeTypes> SwarmNodeBuilder<N> {
+impl<N: SwarmNodeTypes> SwarmNodeBuilder<N> {
     /// Create a new builder with the given identity.
     pub fn new(identity: N::Identity) -> Self {
         Self {
@@ -535,7 +534,7 @@ impl<N: NodeTypes> SwarmNodeBuilder<N> {
     ///
     /// If no bootnodes are provided in the config, falls back to spec bootnodes.
     pub fn with_network_config(mut self, config: &impl vertex_swarm_api::NetworkConfig) -> Self {
-        use vertex_node_types::Identity;
+        use vertex_swarm_api::Identity;
 
         self.listen_addrs = config
             .listen_addrs()
@@ -606,7 +605,7 @@ impl<N: NodeTypes> SwarmNodeBuilder<N> {
             )?
             .with_dns()?
             .with_behaviour(|keypair| {
-                Ok(NodeBehaviour::new(
+                Ok(SwarmNodeBehaviour::new(
                     keypair.public().clone(),
                     identity_for_behaviour.clone(),
                 ))
@@ -689,7 +688,10 @@ impl<N: NodeTypes> SwarmNodeBuilder<N> {
 /// - Full: + Pullsync + Local storage
 /// - Staker: + Redistribution game
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "cli", derive(clap::ValueEnum, serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "cli",
+    derive(clap::ValueEnum, serde::Serialize, serde::Deserialize)
+)]
 #[cfg_attr(feature = "cli", serde(rename_all = "lowercase"))]
 pub enum SwarmNodeType {
     /// Bootnode - only participates in topology (Kademlia/Hive).

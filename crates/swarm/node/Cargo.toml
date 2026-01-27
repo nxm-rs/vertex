@@ -1,44 +1,40 @@
 [package]
-name = "vertex-swarm-builder"
+name = "vertex-swarm-node"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Swarm node builder infrastructure"
+description = "Swarm node presets and CLI for Vertex"
 
 [lints]
 workspace = true
 
 [dependencies]
-# vertex - node infrastructure
-vertex-node-api.workspace = true
+## vertex - node infrastructure
 vertex-node-builder.workspace = true
 vertex-node-commands.workspace = true
 vertex-node-core.workspace = true
 vertex-tasks.workspace = true
 
-# vertex - swarm protocol
-vertex-bandwidth-core.workspace = true
-vertex-client-kademlia.workspace = true
+## vertex - swarm protocol
 vertex-client-peermanager.workspace = true
-vertex-node-types.workspace = true
 vertex-swarm-api.workspace = true
+vertex-swarm-builder.workspace = true
 vertex-swarm-core = { workspace = true, features = ["cli"] }
 vertex-swarm-identity.workspace = true
 vertex-swarmspec.workspace = true
 
-# alloy
+## alloy
 alloy-primitives.workspace = true
-alloy-signer.workspace = true
-alloy-signer-local.workspace = true
 
-# misc
-async-trait.workspace = true
+## misc
+clap.workspace = true
 eyre.workspace = true
 hex.workspace = true
 rand.workspace = true
-rand_08.workspace = true
-thiserror.workspace = true
 tracing.workspace = true
+
+[features]
+default = []

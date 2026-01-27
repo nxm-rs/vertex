@@ -1,11 +1,16 @@
 //! Swarm components builder combining individual builders.
 
+mod accounting;
+mod pricer;
+mod topology;
+
+pub use accounting::{AccountingBuilder, BandwidthAccountingBuilder, NoAccountingBuilder};
+pub use pricer::{FixedPricerBuilder, PricerBuilder};
+pub use topology::{KademliaTopologyBuilder, TopologyBuilder};
+
 use vertex_swarm_api::{LightTypes, NetworkConfig};
 
-use crate::{
-    AccountingBuilder, BandwidthAccountingBuilder, FixedPricerBuilder, KademliaTopologyBuilder,
-    PricerBuilder, SwarmBuilderContext, TopologyBuilder,
-};
+use crate::SwarmBuilderContext;
 
 /// Combines individual component builders into a complete set.
 ///

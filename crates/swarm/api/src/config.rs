@@ -15,28 +15,20 @@
 //! The [`SwarmConfig`] super-trait combines all protocol configs into one bound,
 //! useful for builders that need access to everything.
 //!
-//! # Example
+//! # Build Configuration
 //!
-//! ```ignore
-//! // CLI args implement config traits
-//! impl AvailabilityIncentiveConfig for AvailabilityArgs {
-//!     fn pseudosettle_enabled(&self) -> bool { ... }
-//!     fn payment_threshold(&self) -> u64 { self.payment_threshold }
-//! }
-//!
-//! // Builder uses the trait
-//! fn build_accounting(config: &impl AvailabilityIncentiveConfig) -> impl AvailabilityAccounting {
-//!     if config.pseudosettle_enabled() {
-//!         PseudosettleAccounting::new(config.payment_threshold())
-//!     } else {
-//!         NoAvailabilityIncentives
-//!     }
-//! }
-//! ```
+//! [`SwarmBuildConfig`] defines how to construct components and services.
+//! The capability level is encoded by:
+//! - `Types` implementing [`LightTypes`], [`PublisherTypes`], or [`FullTypes`]
+//! - `Components` being the corresponding components struct
 
 use core::time::Duration;
 
+use async_trait::async_trait;
+use vertex_node_api::NodeContext;
 use vertex_swarmspec::SwarmSpec;
+
+use crate::{BootnodeTypes, FullTypes, LightTypes, PublisherTypes, SwarmServices};
 
 /// Configuration for availability incentives (pseudosettle / SWAP).
 ///
@@ -100,55 +92,23 @@ pub trait AvailabilityIncentiveConfig {
 /// Storage capacity is expressed in number of chunks, which is the natural
 /// unit for Swarm storage. Use [`estimate_storage_bytes`] to calculate the
 /// approximate disk space required for a given number of chunks.
-///
-/// # Storage Estimation
-///
-/// The actual disk space required depends on:
-/// - Chunk data: `capacity_chunks * chunk_size` (e.g., 4096 bytes per chunk)
-/// - Metadata overhead: indexes, leveldb overhead, etc. (~20% typical)
-///
-/// Example: 1,000,000 chunks at 4KB each = ~4GB chunk data + ~800MB metadata ≈ 4.8GB
-///
-/// # Spec-Aware Defaults
-///
-/// The [`SpecBasedStoreConfig`] implementation derives defaults from the
-/// [`SwarmSpec`], using `reserve_capacity()` for capacity and a fraction
-/// of that for cache.
 pub trait StoreConfig {
     /// Maximum storage capacity in number of chunks.
-    ///
-    /// This determines how many chunks the node can store (Full/Staker nodes).
-    /// The actual disk space required will be approximately
-    /// `chunks * chunk_size * 1.2` to account for metadata overhead.
-    ///
-    /// Default: `SwarmSpec::reserve_capacity()` (2^22 chunks on mainnet)
     fn capacity_chunks(&self) -> u64;
 
     /// Cache capacity in number of chunks.
-    ///
-    /// This is an in-memory cache for frequently accessed chunks, used by
-    /// non-storage nodes (Light/Publisher) for retrieval and pushsync.
-    /// Ephemeral nodes can use memory-only caching with no disk persistence.
-    ///
-    /// Default: `capacity_chunks / 64` (2^16 chunks when capacity is 2^22)
     fn cache_chunks(&self) -> u64;
 }
 
 /// Configuration for storage incentives (redistribution, postage).
 pub trait StorageConfig {
     /// Whether this node participates in redistribution.
-    ///
-    /// When enabled, the node participates in the redistribution game to earn
-    /// rewards for storing chunks in its neighborhood.
     fn redistribution_enabled(&self) -> bool;
 }
 
 /// Configuration for P2P networking.
-///
-/// Implementations provide the parameters needed to configure the libp2p
-/// swarm and peer connections.
 pub trait NetworkConfig {
-    /// Get listen addresses as multiaddr strings (e.g., "/ip4/0.0.0.0/tcp/1634").
+    /// Get listen addresses as multiaddr strings.
     fn listen_addrs(&self) -> Vec<String>;
 
     /// Get bootnode addresses as multiaddr strings.
@@ -165,31 +125,19 @@ pub trait NetworkConfig {
 }
 
 /// Configuration for Swarm node identity.
-///
-/// The identity determines the node's overlay address (position in Kademlia DHT)
-/// and its storage responsibilities. Full nodes need persistent identity to
-/// maintain consistent storage responsibility across restarts.
 pub trait IdentityConfig {
-    /// Whether to use ephemeral identity (not persisted).
+    /// Whether to use ephemeral identity (random key, not persisted).
     ///
-    /// Ephemeral identities are generated fresh each run. Suitable for
-    /// light nodes and testing, but not for full nodes with storage duties.
+    /// When true, the node will generate a random identity on each start.
+    /// When false (default), identity persistence depends on node type:
+    /// - Light/Publisher nodes default to ephemeral unless keystore exists
+    /// - Full/Staker nodes require persistent identity
     fn ephemeral(&self) -> bool;
-
-    /// Whether this identity needs to be persistent.
-    ///
-    /// Returns true if the node configuration requires a stable identity
-    /// (e.g., for storage nodes, SWAP, redistribution).
-    fn requires_persistent(&self) -> bool;
 }
 
 /// Combined Swarm protocol configuration.
 ///
 /// This super-trait combines all protocol-level configs into one bound.
-/// Useful for builders and contexts that need access to all Swarm settings.
-///
-/// Any type implementing all the individual config traits automatically
-/// implements `SwarmConfig` via the blanket implementation.
 pub trait SwarmConfig:
     AvailabilityIncentiveConfig + StoreConfig + StorageConfig + NetworkConfig + IdentityConfig
 {
@@ -201,16 +149,9 @@ impl<T> SwarmConfig for T where
 }
 
 /// Cache capacity divisor relative to reserve capacity.
-///
-/// Default cache is `reserve_capacity / CACHE_CAPACITY_DIVISOR`.
-/// With divisor of 64: 2^22 / 64 = 2^16 = 65,536 chunks (~256MB).
 pub const CACHE_CAPACITY_DIVISOR: u64 = 64;
 
 /// Implement [`StoreConfig`] for any [`SwarmSpec`].
-///
-/// The spec provides all the information needed:
-/// - `capacity_chunks()` returns `spec.reserve_capacity()`
-/// - `cache_chunks()` returns `capacity / 64`
 impl<S: SwarmSpec> StoreConfig for S {
     fn capacity_chunks(&self) -> u64 {
         self.reserve_capacity()
@@ -232,27 +173,14 @@ impl StorageConfig for DefaultStorageConfig {
 }
 
 /// Estimated metadata overhead as a fraction of chunk data.
-///
-/// This accounts for LevelDB overhead, chunk indexes, stamps, and other
-/// metadata stored alongside chunks. A 20% overhead is a reasonable estimate.
 pub const METADATA_OVERHEAD_FACTOR: f64 = 0.20;
 
 /// Estimate the total disk space required for storing a given number of chunks.
-///
-/// This includes both chunk data and metadata overhead.
-///
-/// # Arguments
-/// * `num_chunks` - Number of chunks to store
-/// * `chunk_size` - Size of each chunk in bytes (typically 4096)
-///
-/// # Returns
-/// Estimated total bytes required on disk.
 ///
 /// # Example
 /// ```
 /// use vertex_swarm_api::estimate_storage_bytes;
 ///
-/// // 1 million chunks at 4KB each
 /// let bytes = estimate_storage_bytes(1_000_000, 4096);
 /// assert_eq!(bytes, 4_915_200_000); // ~4.58 GB
 /// ```
@@ -264,27 +192,93 @@ pub fn estimate_storage_bytes(num_chunks: u64, chunk_size: usize) -> u64 {
 
 /// Estimate the number of chunks that can fit in a given disk space.
 ///
-/// This accounts for metadata overhead, so the returned number of chunks
-/// will fit within the specified bytes including all metadata.
-///
-/// # Arguments
-/// * `available_bytes` - Available disk space in bytes
-/// * `chunk_size` - Size of each chunk in bytes (typically 4096)
-///
-/// # Returns
-/// Maximum number of chunks that can be stored.
-///
 /// # Example
 /// ```
 /// use vertex_swarm_api::estimate_chunks_for_bytes;
 ///
-/// // How many chunks fit in 10 GB?
 /// let chunks = estimate_chunks_for_bytes(10 * 1024 * 1024 * 1024, 4096);
-/// assert_eq!(chunks, 2_184_533); // ~2.18 million chunks
+/// assert_eq!(chunks, 2_184_533);
 /// ```
 pub fn estimate_chunks_for_bytes(available_bytes: u64, chunk_size: usize) -> u64 {
-    // bytes = chunks * chunk_size * (1 + overhead)
-    // chunks = bytes / (chunk_size * (1 + overhead))
     let effective_chunk_size = chunk_size as f64 * (1.0 + METADATA_OVERHEAD_FACTOR);
     (available_bytes as f64 / effective_chunk_size) as u64
 }
+
+/// Configuration that knows how to build a Swarm node.
+///
+/// The capability level is determined by the associated types:
+/// - `Types` must implement the appropriate capability trait
+///   ([`LightTypes`], [`PublisherTypes`], or [`FullTypes`])
+/// - `Components` must be the corresponding components struct
+///
+/// # Example
+///
+/// ```ignore
+/// use vertex_swarm_api::{SwarmBuildConfig, SwarmLightComponents, SwarmServices, LightTypes};
+///
+/// struct MyLightConfig { /* ... */ }
+///
+/// #[async_trait]
+/// impl SwarmBuildConfig for MyLightConfig {
+///     type Types = MyLightTypes;  // Must implement LightTypes
+///     type Components = SwarmLightComponents<MyLightTypes>;
+///     type Error = MyError;
+///
+///     async fn build(self, ctx: &NodeContext)
+///         -> Result<(Self::Components, SwarmServices<Self::Types>), Self::Error>
+///     {
+///         // Build identity, topology, accounting, services...
+///     }
+/// }
+/// ```
+#[async_trait]
+pub trait SwarmBuildConfig: Send + Sync + 'static {
+    /// The Swarm types for this configuration.
+    ///
+    /// Must implement the capability trait for the desired node level:
+    /// - [`LightTypes`] for light nodes
+    /// - [`PublisherTypes`] for publisher nodes
+    /// - [`FullTypes`] for full nodes
+    type Types: BootnodeTypes;
+
+    /// The components produced by building.
+    ///
+    /// Should match the capability level of `Types`:
+    /// - [`SwarmLightComponents`](crate::SwarmLightComponents) for light nodes
+    /// - [`SwarmPublisherComponents`](crate::SwarmPublisherComponents) for publishers
+    /// - [`SwarmFullComponents`](crate::SwarmFullComponents) for full nodes
+    type Components: Send + Sync + 'static;
+
+    /// Error type for build failures.
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Build components and services from this configuration.
+    async fn build(
+        self,
+        ctx: &NodeContext,
+    ) -> Result<(Self::Components, SwarmServices<Self::Types>), Self::Error>;
+}
+
+/// Marker for configs that build light nodes.
+pub trait LightBuildConfig: SwarmBuildConfig
+where
+    Self::Types: LightTypes,
+{
+}
+impl<T: SwarmBuildConfig> LightBuildConfig for T where T::Types: LightTypes {}
+
+/// Marker for configs that build publisher nodes.
+pub trait PublisherBuildConfig: SwarmBuildConfig
+where
+    Self::Types: PublisherTypes,
+{
+}
+impl<T: SwarmBuildConfig> PublisherBuildConfig for T where T::Types: PublisherTypes {}
+
+/// Marker for configs that build full nodes.
+pub trait FullBuildConfig: SwarmBuildConfig
+where
+    Self::Types: FullTypes,
+{
+}
+impl<T: SwarmBuildConfig> FullBuildConfig for T where T::Types: FullTypes {}

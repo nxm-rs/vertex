@@ -34,11 +34,13 @@ mod availability;
 mod identity;
 mod network;
 mod storage;
+mod swarm;
 
 pub use availability::{AvailabilityArgs, AvailabilityMode};
 pub use identity::IdentityArgs;
 pub use network::NetworkArgs;
 pub use storage::{StorageArgs, StorageIncentiveArgs};
+pub use swarm::SwarmArgs;
 
 // Re-export SwarmNodeType for convenience when using the cli feature
 pub use crate::SwarmNodeType;

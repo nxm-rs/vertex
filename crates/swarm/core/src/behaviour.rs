@@ -18,15 +18,15 @@ use vertex_net_client::{
 use vertex_net_topology::{
     BehaviourConfig as TopologyBehaviourConfig, SwarmTopologyBehaviour, TopologyEvent,
 };
-use vertex_node_types::NodeTypes;
+use vertex_swarm_api::SwarmNodeTypes;
 
 /// Combined network behaviour for a SwarmNode.
 ///
 /// This composes the topology and client behaviours into a single swarm behaviour.
-/// Generic over `N: NodeTypes` to support different node configurations.
+/// Generic over `N: SwarmNodeTypes` to support different node configurations.
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "NodeEvent")]
-pub struct NodeBehaviour<N: NodeTypes> {
+pub struct SwarmNodeBehaviour<N: SwarmNodeTypes> {
     /// Identify protocol - exchange peer info.
     pub identify: identify::Behaviour,
 
@@ -37,7 +37,7 @@ pub struct NodeBehaviour<N: NodeTypes> {
     pub client: SwarmClientBehaviour,
 }
 
-impl<N: NodeTypes> NodeBehaviour<N> {
+impl<N: SwarmNodeTypes> SwarmNodeBehaviour<N> {
     /// Create a new node behaviour.
     pub fn new(local_public_key: PublicKey, identity: Arc<N::Identity>) -> Self {
         Self {

@@ -97,6 +97,51 @@ impl Default for AvailabilityArgs {
     }
 }
 
+impl AvailabilityArgs {
+    /// Validate argument combinations.
+    ///
+    /// Returns an error if arguments are set that don't apply to the selected mode.
+    pub fn validate(&self) -> Result<(), String> {
+        match self.mode {
+            AvailabilityMode::None => {
+                // No args should be non-default when mode is none
+                let default = Self::default();
+                if self.refresh_rate != default.refresh_rate
+                    || self.payment_threshold != default.payment_threshold
+                    || self.payment_tolerance_percent != default.payment_tolerance_percent
+                    || self.base_price != default.base_price
+                    || self.early_payment_percent != default.early_payment_percent
+                    || self.light_factor != default.light_factor
+                {
+                    return Err(
+                        "availability options have no effect when mode is 'none'".to_string()
+                    );
+                }
+            }
+            AvailabilityMode::Pseudosettle => {
+                let default = Self::default();
+                if self.early_payment_percent != default.early_payment_percent {
+                    return Err(
+                        "early-percent only applies to 'swap' or 'both' modes".to_string()
+                    );
+                }
+            }
+            AvailabilityMode::Swap => {
+                let default = Self::default();
+                if self.refresh_rate != default.refresh_rate {
+                    return Err(
+                        "refresh-rate only applies to 'pseudosettle' or 'both' modes".to_string()
+                    );
+                }
+            }
+            AvailabilityMode::Both => {
+                // All args are valid
+            }
+        }
+        Ok(())
+    }
+}
+
 impl AvailabilityIncentiveConfig for AvailabilityArgs {
     fn pseudosettle_enabled(&self) -> bool {
         matches!(

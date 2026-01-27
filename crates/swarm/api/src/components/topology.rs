@@ -4,7 +4,7 @@
 //! All operations use [`OverlayAddress`] (not libp2p `PeerId`) since routing
 //! is based on Swarm overlay addresses.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 use vertex_primitives::{ChunkAddress, OverlayAddress};
 
 /// Neighborhood awareness - who is "close" in the overlay address space.

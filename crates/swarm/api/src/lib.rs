@@ -2,7 +2,16 @@
 //!
 //! This crate defines the minimal abstractions that make a Swarm a Swarm.
 //! Implementation details (libp2p, kademlia, specific storage backends) live
-//! elsewhere in `net/`, `nectar/`, etc.
+//! elsewhere in `vertex-client-*`, `vertex-storer-*`, etc.
+//!
+//! # Type Hierarchy
+//!
+//! Capability levels form a hierarchy with [`BootnodeTypes`] as the root:
+//!
+//! - [`BootnodeTypes`] - Network participation only
+//! - [`LightTypes`] - Adds retrieval with accounting
+//! - [`PublisherTypes`] - Adds upload capability
+//! - [`FullTypes`] - Adds local storage and sync
 //!
 //! # Core Concepts
 //!
@@ -13,34 +22,40 @@
 //! - [`ChunkSync`] - Sync chunks between peers
 //! - [`Topology`] - Neighborhood awareness
 //!
+//! # Protocol Integration
+//!
+//! - [`SwarmProtocol`] - Unified protocol for all capability levels
+//! - [`SwarmServices`] - Unified services (same for all levels)
+//! - [`SwarmRpcProviders`] - RPC data sources for gRPC/JSON-RPC exposure
+//!
 //! # Design Principles
 //!
 //! - Traits define *what*, implementations define *how*
 //! - No libp2p concepts leak into the API
 //! - Payment is configurable via associated types (can be `()` for none)
 //! - Availability accounting is per-peer and lock-free
+//! - Components use composition (higher levels compose lower levels)
 
-#![cfg_attr(not(feature = "std"), no_std)]
 #![warn(missing_docs)]
 
-extern crate alloc;
-
-mod availability;
+mod components;
 mod config;
 mod error;
-mod store;
+mod protocol;
+mod providers;
+mod rpc;
+mod services;
 mod swarm;
-mod sync;
-mod topology;
 mod types;
 
-pub use availability::*;
+pub use components::*;
 pub use config::*;
 pub use error::*;
-pub use store::*;
+pub use protocol::*;
+pub use providers::*;
+pub use rpc::*;
+pub use services::*;
 pub use swarm::*;
-pub use sync::*;
-pub use topology::*;
 pub use types::*;
 
 // Re-export chunk types for convenience
