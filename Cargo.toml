@@ -35,18 +35,21 @@ members = [
     "crates/net/client",
 
     # Node
-    "crates/node/identity",
     "crates/node/types",
     "crates/node/api",
     "crates/node/core",
+    "crates/node/builder",
     "crates/node/commands",
 
     # Swarm
+    "crates/swarm/identity",
     "crates/swarm/api",
     "crates/swarm/spec",
     "crates/swarm/forks",
     "crates/swarm/builder",
     "crates/swarm/core",
+    "crates/swarm/node",
+    "crates/swarm/rpc",
 
     # Client (includes bandwidth/data availability incentives)
     "crates/client/core",
@@ -103,10 +106,10 @@ vertex-net-topology = { path = "crates/net/topology" }
 vertex-net-client = { path = "crates/net/client" }
 
 # node
-vertex-node-identity = { path = "crates/node/identity" }
 vertex-node-types = { path = "crates/node/types" }
 vertex-node-api = { path = "crates/node/api" }
 vertex-node-core = { path = "crates/node/core" }
+vertex-node-builder = { path = "crates/node/builder" }
 vertex-node-commands = { path = "crates/node/commands" }
 
 # metrics
@@ -116,11 +119,14 @@ vertex-metrics = { path = "crates/metrics" }
 vertex-tasks = { path = "crates/tasks" }
 
 # swarm
+vertex-swarm-identity = { path = "crates/swarm/identity" }
 vertex-storage = { path = "crates/storage" }
 vertex-swarm-api = { path = "crates/swarm/api" }
 vertex-swarmspec = { path = "crates/swarm/spec" }
 vertex-swarm-builder = { path = "crates/swarm/builder" }
 vertex-swarm-core = { path = "crates/swarm/core" }
+vertex-swarm-node = { path = "crates/swarm/node" }
+vertex-swarm-rpc = { path = "crates/swarm/rpc" }
 
 # client (includes bandwidth/data availability incentives)
 vertex-client-core = { path = "crates/client/core" }
@@ -235,9 +241,11 @@ once_cell = { version = "1.21", default-features = false, features = [
 ] }
 critical-section = { version = "1.2", features = ["std"] }
 rand = "0.9"
+rand_08 = { package = "rand", version = "0.8" }
 rustc-hash = { version = "2.1", default-features = false }
 serde = { version = "1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 serde_with = { version = "3", default-features = false, features = ["macros"] }
+strum = { version = "0.27", features = ["derive"] }
 thiserror = { version = "2.0", default-features = false }
 vergen-gitcl = "1"

@@ -709,7 +709,7 @@ impl<N: SwarmNodeTypes> SwarmNodeBuilder<N> {
 /// - Publisher: + Upload/Postage
 /// - Full: + Pullsync + Local storage
 /// - Staker: + Redistribution game
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, strum::Display)]
 #[cfg_attr(
     feature = "cli",
     derive(clap::ValueEnum, serde::Serialize, serde::Deserialize)

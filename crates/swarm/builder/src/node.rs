@@ -198,12 +198,10 @@ impl SwarmLaunchConfig for LightNodeBuildConfig {
         use tracing::info;
         use vertex_swarmspec::Loggable;
 
-        info!("Node type: Light");
+        info!("Building {} node...", Light::NAME);
         self.spec.log();
         self.identity.log();
         info!("Peers database: {}", self.peers_path.display());
-        info!("");
-        info!("Starting Swarm Light node...");
 
         // Build the SwarmNode which creates the topology and client service
         let (node, client_service, client_handle) =
@@ -228,7 +226,7 @@ impl SwarmLaunchConfig for LightNodeBuildConfig {
         // Services implement SpawnableTask directly - no wrappers needed
         let services = SwarmServices::new(node, client_service, client_handle);
 
-        info!("Light node built successfully");
+        info!("{} node built successfully", Light::NAME);
         Ok((components, services))
     }
 }

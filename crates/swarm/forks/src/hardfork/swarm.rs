@@ -12,17 +12,22 @@ use serde::{Deserialize, Serialize};
 hardfork!(
     /// The name of a Swarm hardfork.
     SwarmHardfork {
-        /// Accord: The Swarm 3.0 network (initial vertex-compatible release).
+        /// Genesis: The initial Swarm network launch.
+        Genesis,
+        /// Accord: The Swarm 3.0 network upgrade (vertex-compatible release).
         Accord
     }
 );
 
 impl SwarmHardfork {
-    /// Mainnet timestamp for the hardfork activation (June 9, 2021 16:19:47 UTC)
+    /// Mainnet genesis timestamp (June 9, 2021 16:19:47 UTC)
     pub const MAINNET_GENESIS_TIMESTAMP: u64 = 1623255587;
 
-    /// Testnet timestamp for the hardfork activation (June 9, 2021 16:19:47 UTC)
+    /// Testnet genesis timestamp (June 9, 2021 16:19:47 UTC)
     pub const TESTNET_GENESIS_TIMESTAMP: u64 = 1623255587;
+
+    /// Dev network Accord timestamp (January 1, 2026 00:00:00 UTC)
+    pub const DEV_ACCORD_TIMESTAMP: u64 = 1767225600;
 
     /// Retrieves the activation timestamp for the specified hardfork on the given swarm.
     pub fn activation_timestamp(&self, swarm: Swarm) -> Option<u64> {
@@ -30,7 +35,7 @@ impl SwarmHardfork {
             SwarmKind::Named(named) => match named {
                 NamedSwarm::Mainnet => self.mainnet_activation_timestamp(),
                 NamedSwarm::Testnet => self.testnet_activation_timestamp(),
-                NamedSwarm::Dev => Some(0),
+                NamedSwarm::Dev => self.dev_activation_timestamp(),
                 _ => None,
             },
             SwarmKind::Id(_) => None,
@@ -40,23 +45,31 @@ impl SwarmHardfork {
     /// Retrieves the activation timestamp for the specified hardfork on the mainnet.
     pub const fn mainnet_activation_timestamp(&self) -> Option<u64> {
         match self {
-            Self::Accord => Some(Self::MAINNET_GENESIS_TIMESTAMP),
-            // Add additional hardforks here as they are defined
+            Self::Genesis => Some(Self::MAINNET_GENESIS_TIMESTAMP),
+            Self::Accord => None, // Not yet scheduled on mainnet
         }
     }
 
     /// Retrieves the activation timestamp for the specified hardfork on the testnet.
     pub const fn testnet_activation_timestamp(&self) -> Option<u64> {
         match self {
-            Self::Accord => Some(Self::TESTNET_GENESIS_TIMESTAMP),
-            // Add additional hardforks here as they are defined
+            Self::Genesis => Some(Self::TESTNET_GENESIS_TIMESTAMP),
+            Self::Accord => None, // Not yet scheduled on testnet
+        }
+    }
+
+    /// Retrieves the activation timestamp for the specified hardfork on dev networks.
+    pub const fn dev_activation_timestamp(&self) -> Option<u64> {
+        match self {
+            Self::Genesis => Some(0),
+            Self::Accord => Some(Self::DEV_ACCORD_TIMESTAMP),
         }
     }
 
     /// Mainnet list of hardforks.
     pub const fn mainnet() -> [(Self, ForkCondition); 1] {
         [(
-            Self::Accord,
+            Self::Genesis,
             ForkCondition::Timestamp(Self::MAINNET_GENESIS_TIMESTAMP),
         )]
     }
@@ -64,9 +77,17 @@ impl SwarmHardfork {
     /// Testnet list of hardforks.
     pub const fn testnet() -> [(Self, ForkCondition); 1] {
         [(
-            Self::Accord,
+            Self::Genesis,
             ForkCondition::Timestamp(Self::TESTNET_GENESIS_TIMESTAMP),
         )]
+    }
+
+    /// Dev network list of hardforks.
+    pub const fn dev() -> [(Self, ForkCondition); 2] {
+        [
+            (Self::Genesis, ForkCondition::Timestamp(0)),
+            (Self::Accord, ForkCondition::Timestamp(Self::DEV_ACCORD_TIMESTAMP)),
+        ]
     }
 }
 

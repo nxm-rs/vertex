@@ -310,8 +310,8 @@ mod tests {
         let hardforks = spec.hardforks();
 
         // Test that we can query hardforks
-        let accord = hardforks.get(SwarmHardfork::Accord);
-        assert!(matches!(accord, Some(ForkCondition::Timestamp(_))));
+        let genesis = hardforks.get(SwarmHardfork::Genesis);
+        assert!(matches!(genesis, Some(ForkCondition::Timestamp(_))));
     }
 
     #[test]

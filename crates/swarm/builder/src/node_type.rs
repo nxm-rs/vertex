@@ -42,6 +42,9 @@ pub struct Staker;
 /// Each node type marker implements this trait to specify which builders
 /// are used by default when creating a `SwarmNodeBuilder<N>::new()`.
 pub trait NodeTypeDefaults: Send + Sync + 'static {
+    /// Human-readable name for this node type (e.g., "Light", "Full").
+    const NAME: &'static str;
+
     /// Default topology builder for this node type.
     type DefaultTopology: Default + Send + Sync + 'static;
 
@@ -53,30 +56,35 @@ pub trait NodeTypeDefaults: Send + Sync + 'static {
 }
 
 impl NodeTypeDefaults for Light {
+    const NAME: &'static str = "Light";
     type DefaultTopology = KademliaTopologyBuilder;
     type DefaultAccounting = BandwidthAccountingBuilder;
     type DefaultPricer = FixedPricerBuilder;
 }
 
 impl NodeTypeDefaults for Full {
+    const NAME: &'static str = "Full";
     type DefaultTopology = KademliaTopologyBuilder;
     type DefaultAccounting = BandwidthAccountingBuilder;
     type DefaultPricer = FixedPricerBuilder;
 }
 
 impl NodeTypeDefaults for Bootnode {
+    const NAME: &'static str = "Bootnode";
     type DefaultTopology = KademliaTopologyBuilder;
     type DefaultAccounting = NoAccountingBuilder;
     type DefaultPricer = FixedPricerBuilder;
 }
 
 impl NodeTypeDefaults for Publisher {
+    const NAME: &'static str = "Publisher";
     type DefaultTopology = KademliaTopologyBuilder;
     type DefaultAccounting = BandwidthAccountingBuilder;
     type DefaultPricer = FixedPricerBuilder;
 }
 
 impl NodeTypeDefaults for Staker {
+    const NAME: &'static str = "Staker";
     type DefaultTopology = KademliaTopologyBuilder;
     type DefaultAccounting = BandwidthAccountingBuilder;
     type DefaultPricer = FixedPricerBuilder;

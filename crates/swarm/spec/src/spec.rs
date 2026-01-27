@@ -56,7 +56,7 @@ pub struct Hive {
     #[serde(default)]
     pub bootnodes: Vec<String>,
 
-    /// Hardforks configuration (not serialized - uses default with Accord at genesis)
+    /// Hardforks configuration (not serialized - uses default with Genesis at timestamp 0)
     #[serde(skip, default = "default_hardforks")]
     pub hardforks: SwarmHardforks,
 
@@ -82,9 +82,7 @@ fn default_chain() -> Chain {
 }
 
 fn default_hardforks() -> SwarmHardforks {
-    let mut hardforks = SwarmHardforks::new(vec![]);
-    hardforks.insert(SwarmHardfork::Accord, ForkCondition::Timestamp(0));
-    hardforks
+    SwarmHardfork::dev().into()
 }
 
 fn default_token() -> Token {
@@ -101,15 +99,12 @@ fn default_reserve_capacity() -> u64 {
 
 impl Default for Hive {
     fn default() -> Self {
-        let mut hardforks = SwarmHardforks::new(vec![]);
-        hardforks.insert(SwarmHardfork::Accord, ForkCondition::Timestamp(0));
-
         Self {
             chain: Chain::from(NamedChain::Dev),
             network_id: generate_dev_network_id(),
             network_name: dev::NETWORK_NAME.to_string(),
             bootnodes: Vec::new(),
-            hardforks,
+            hardforks: SwarmHardfork::dev().into(),
             token: dev::TOKEN,
             genesis_timestamp: 0,
             chunk_size: DEFAULT_CHUNK_SIZE,
@@ -125,18 +120,12 @@ pub static MAINNET: OnceLock<Arc<Hive>> = OnceLock::new();
 pub(crate) fn init_mainnet() -> Arc<Hive> {
     MAINNET
         .get_or_init(|| {
-            let mut hardforks = SwarmHardforks::new(vec![]);
-            hardforks.insert(
-                SwarmHardfork::Accord,
-                ForkCondition::Timestamp(SwarmHardfork::MAINNET_GENESIS_TIMESTAMP),
-            );
-
             let spec = Hive {
                 chain: Chain::from(NamedChain::Gnosis),
                 network_id: mainnet::NETWORK_ID,
                 network_name: mainnet::NETWORK_NAME.to_string(),
                 bootnodes: mainnet_bootnodes(),
-                hardforks,
+                hardforks: SwarmHardfork::mainnet().into(),
                 token: mainnet::TOKEN,
                 genesis_timestamp: SwarmHardfork::MAINNET_GENESIS_TIMESTAMP,
                 chunk_size: DEFAULT_CHUNK_SIZE,
@@ -155,18 +144,12 @@ pub static TESTNET: OnceLock<Arc<Hive>> = OnceLock::new();
 pub(crate) fn init_testnet() -> Arc<Hive> {
     TESTNET
         .get_or_init(|| {
-            let mut hardforks = SwarmHardforks::new(vec![]);
-            hardforks.insert(
-                SwarmHardfork::Accord,
-                ForkCondition::Timestamp(SwarmHardfork::TESTNET_GENESIS_TIMESTAMP),
-            );
-
             let spec = Hive {
                 chain: Chain::from(NamedChain::Sepolia),
                 network_id: testnet::NETWORK_ID,
                 network_name: testnet::NETWORK_NAME.to_string(),
                 bootnodes: testnet_bootnodes(),
-                hardforks,
+                hardforks: SwarmHardfork::testnet().into(),
                 token: testnet::TOKEN,
                 genesis_timestamp: SwarmHardfork::TESTNET_GENESIS_TIMESTAMP,
                 chunk_size: DEFAULT_CHUNK_SIZE,
@@ -246,6 +229,13 @@ impl HiveBuilder {
         self
     }
 
+    /// Add the Genesis hardfork at a specific timestamp
+    pub fn with_genesis(mut self, timestamp: u64) -> Self {
+        self.hardforks
+            .insert(SwarmHardfork::Genesis, ForkCondition::Timestamp(timestamp));
+        self
+    }
+
     /// Add the Accord hardfork at a specific timestamp
     pub fn with_accord(mut self, timestamp: u64) -> Self {
         self.hardforks
@@ -300,11 +290,11 @@ impl HiveBuilder {
         let token = self.token.unwrap_or(token);
         let genesis_timestamp = self.genesis_timestamp.unwrap_or(default_genesis_timestamp);
 
-        // Ensure we have the Accord hardfork if no hardforks are specified
+        // Ensure we have the Genesis hardfork if no hardforks are specified
         let mut hardforks = self.hardforks;
         if hardforks.is_empty() {
             hardforks.insert(
-                SwarmHardfork::Accord,
+                SwarmHardfork::Genesis,
                 ForkCondition::Timestamp(genesis_timestamp),
             );
         }
@@ -472,6 +462,8 @@ mod tests {
         let spec = Hive::default();
         assert_eq!(spec.chain, Chain::from(NamedChain::Dev));
         assert_eq!(spec.token, dev::TOKEN);
+        // Dev network has both Genesis and Accord hardforks
+        assert!(spec.hardforks.get(SwarmHardfork::Genesis).is_some());
         assert!(spec.hardforks.get(SwarmHardfork::Accord).is_some());
     }
 
@@ -539,7 +531,7 @@ mod tests {
 
         // Test fork activation
         let genesis_timestamp = SwarmHardfork::MAINNET_GENESIS_TIMESTAMP;
-        assert!(spec.is_fork_active_at_timestamp(SwarmHardfork::Accord, genesis_timestamp));
-        assert!(!spec.is_fork_active_at_timestamp(SwarmHardfork::Accord, genesis_timestamp - 1));
+        assert!(spec.is_fork_active_at_timestamp(SwarmHardfork::Genesis, genesis_timestamp));
+        assert!(!spec.is_fork_active_at_timestamp(SwarmHardfork::Genesis, genesis_timestamp - 1));
     }
 }

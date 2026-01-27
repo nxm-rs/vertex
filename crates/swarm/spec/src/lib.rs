@@ -31,8 +31,8 @@
 //! assert!(spec.is_mainnet());
 //!
 //! // Query protocol state at a given time
-//! if spec.is_fork_active_at_timestamp(SwarmHardfork::Accord, timestamp) {
-//!     // Post-Accord protocol behavior
+//! if spec.is_fork_active_at_timestamp(SwarmHardfork::Genesis, timestamp) {
+//!     // Post-Genesis protocol behavior
 //! }
 //! ```
 

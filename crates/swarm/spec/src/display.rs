@@ -150,12 +150,12 @@ fn format_reserve_size(reserve_capacity: u64, chunk_size: usize) -> String {
 /// Swarm specification:
 ///   Network: mainnet (ID: 1)
 ///   Chain: xdai (chain ID: 100)
-///   Token: xBZZ @ 0x2aC3c1d3e24b45c6C310534Bc2Dd84B5ed576335
+///   Token: xBZZ @ 0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da
 ///   Chunk size: 4096 bytes
 ///   Chunks: CAC (0x00), SOC (0x01)
 ///   Reserve capacity: 4194304 chunks (16 GiB)
 ///   Hardforks:
-///     Accord                           @1623255587
+///     Genesis                          @1623255587
 /// ```
 pub struct DisplaySwarmSpec<'a, S: SwarmSpec> {
     spec: &'a S,
@@ -234,7 +234,7 @@ mod tests {
         // Chunk types with abbreviations and hex codes
         assert!(output.contains("CAC (0x00)"));
         assert!(output.contains("SOC (0x01)"));
-        assert!(output.contains("Accord"));
+        assert!(output.contains("Genesis"));
     }
 
     #[test]
