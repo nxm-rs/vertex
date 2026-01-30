@@ -20,8 +20,9 @@ alloy-signer-local.workspace = true
 
 # Internal crates
 nectar-primitives.workspace = true
-vertex-net-primitives-traits.workspace = true
+vertex-swarm-peer.workspace = true
 vertex-swarm-api.workspace = true
+vertex-swarm-primitives.workspace = true
 vertex-swarmspec.workspace = true
 
 # Utilities
