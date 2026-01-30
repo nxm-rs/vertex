@@ -22,9 +22,8 @@ nectar-primitives.workspace = true
 # swarm forks
 vertex-swarm-forks.workspace = true
 
-# networking
-vertex-net-primitives.workspace = true
-vertex-net-primitives-traits.workspace = true
+# swarm network types
+nectar-swarms.workspace = true
 
 # misc
 auto_impl.workspace = true

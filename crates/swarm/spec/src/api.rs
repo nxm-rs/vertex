@@ -37,7 +37,7 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 use alloy_chains::Chain;
 use core::fmt::Debug;
 use nectar_primitives::{ChunkTypeSet, StandardChunkSet};
-use vertex_net_primitives::Swarm;
+use nectar_swarms::Swarm;
 use vertex_swarm_forks::{ForkCondition, ForkDigest, SwarmHardfork, SwarmHardforks};
 
 /// A Swarm network specification.
@@ -132,6 +132,11 @@ pub trait SwarmSpec: Send + Sync + Unpin + Debug + 'static {
         self.network_id() == testnet::NETWORK_ID
     }
 
+    /// Returns the maximum proximity order for addresses in this network.
+    fn max_po(&self) -> u8 {
+        nectar_primitives::MAX_PO
+    }
+
     /// Returns whether this is a development network.
     fn is_dev(&self) -> bool {
         !self.is_mainnet() && !self.is_testnet()
@@ -143,8 +148,8 @@ impl SwarmSpec for Hive {
 
     fn swarm(&self) -> Swarm {
         match self.network_id {
-            mainnet::NETWORK_ID => vertex_net_primitives::NamedSwarm::Mainnet.into(),
-            testnet::NETWORK_ID => vertex_net_primitives::NamedSwarm::Testnet.into(),
+            mainnet::NETWORK_ID => nectar_swarms::NamedSwarm::Mainnet.into(),
+            testnet::NETWORK_ID => nectar_swarms::NamedSwarm::Testnet.into(),
             _ => Swarm::from_id(self.network_id),
         }
     }

@@ -20,7 +20,7 @@ use alloc::{
     vec::Vec,
 };
 use alloy_chains::{Chain, NamedChain};
-use vertex_net_primitives_traits::OnceLock;
+use std::sync::OnceLock;
 use vertex_swarm_forks::{ForkCondition, SwarmHardfork, SwarmHardforks, SwarmHardforksTrait};
 
 /// A concrete Swarm network specification.
@@ -437,7 +437,7 @@ mod tests {
     use crate::SwarmSpec;
 
     use super::*;
-    use vertex_net_primitives::Swarm;
+    use nectar_swarms::Swarm;
 
     #[test]
     fn test_mainnet_spec() {

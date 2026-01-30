@@ -83,6 +83,8 @@ impl<S: SwarmSpec> Loggable for S {
             format_reserve_size(self.reserve_capacity(), self.chunk_size())
         );
 
+        tracing::debug!("  Max proximity order: {}", self.max_po());
+
         info!("  Hardforks:");
         for (fork, condition) in self.hardforks().forks_iter() {
             if let ForkCondition::Timestamp(ts) = condition {
