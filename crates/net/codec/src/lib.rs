@@ -2,53 +2,295 @@ use std::marker::PhantomData;
 
 use bytes::BytesMut;
 
-pub struct ProtocolCodec<Proto, Protocol, E>(
-    quick_protobuf_codec::Codec<Proto>,
-    std::marker::PhantomData<(Protocol, E)>,
-);
+/// A message type with a protobuf wire representation.
+///
+/// This trait captures the relationship between a domain type and its protobuf
+/// wire format, enabling codec types to use associated types instead of
+/// redundant type parameters.
+///
+/// # Example
+///
+/// ```ignore
+/// impl ProtoMessage for Ping {
+///     type Proto = proto::Ping;
+///     type DecodeError = PingpongCodecError;
+///
+///     fn into_proto(self) -> Self::Proto {
+///         proto::Ping { greeting: self.greeting }
+///     }
+///
+///     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
+///         Ok(Self { greeting: proto.greeting })
+///     }
+/// }
+/// ```
+pub trait ProtoMessage: Sized {
+    /// The protobuf message type for wire serialization.
+    type Proto: quick_protobuf::MessageWrite + for<'a> quick_protobuf::MessageRead<'a>;
 
-impl<Proto, Protocol, E> ProtocolCodec<Proto, Protocol, E> {
+    /// The error type when decoding fails.
+    type DecodeError;
+
+    /// Convert to protobuf wire format for encoding.
+    fn into_proto(self) -> Self::Proto;
+
+    /// Convert from protobuf wire format (decoding).
+    fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError>;
+}
+
+/// A message type requiring runtime context for decoding.
+///
+/// This is used for protocols where decoding requires runtime information
+/// that isn't available in the protobuf message itself (e.g., expected `network_id`).
+///
+/// # Example
+///
+/// ```ignore
+/// impl ProtoMessageWithContext<u64> for Ack {
+///     type Proto = proto::Ack;
+///     type DecodeError = CodecError;
+///
+///     fn into_proto(self) -> Self::Proto {
+///         // ... encoding logic
+///     }
+///
+///     fn from_proto_with_context(proto: Self::Proto, network_id: &u64) -> Result<Self, Self::DecodeError> {
+///         if proto.network_id != *network_id {
+///             return Err(CodecError::NetworkIDMismatch);
+///         }
+///         // ... rest of decoding
+///     }
+/// }
+/// ```
+pub trait ProtoMessageWithContext<Ctx>: Sized {
+    /// The protobuf message type for wire serialization.
+    type Proto: quick_protobuf::MessageWrite + for<'a> quick_protobuf::MessageRead<'a>;
+
+    /// The error type when decoding fails.
+    type DecodeError;
+
+    /// Convert to protobuf wire format for encoding.
+    fn into_proto(self) -> Self::Proto;
+
+    /// Convert from protobuf wire format with the given context.
+    fn from_proto_with_context(proto: Self::Proto, ctx: &Ctx) -> Result<Self, Self::DecodeError>;
+}
+
+/// A codec for protobuf-based protocol messages.
+///
+/// This codec handles encoding/decoding for types implementing [`ProtoMessage`].
+///
+/// # Type Parameters
+///
+/// - `M`: The domain message type (must implement `ProtoMessage`)
+/// - `E`: The error type for the codec
+///
+/// # Example
+///
+/// ```ignore
+/// pub type PingCodec = Codec<Ping, PingpongCodecError>;
+///
+/// let codec = PingCodec::new(1024);
+/// ```
+pub struct Codec<M: ProtoMessage, E> {
+    inner: quick_protobuf_codec::Codec<M::Proto>,
+    _phantom: PhantomData<E>,
+}
+
+impl<M: ProtoMessage, E> Codec<M, E> {
+    /// Create a new codec with the given maximum packet size.
     pub fn new(max_packet_size: usize) -> Self {
-        Self(
-            quick_protobuf_codec::Codec::new(max_packet_size),
-            PhantomData,
-        )
+        Self {
+            inner: quick_protobuf_codec::Codec::new(max_packet_size),
+            _phantom: PhantomData,
+        }
     }
 }
 
-impl<Proto, Protocol, E> asynchronous_codec::Encoder for ProtocolCodec<Proto, Protocol, E>
+impl<M, E> asynchronous_codec::Encoder for Codec<M, E>
 where
-    Proto: quick_protobuf::MessageWrite,
-    Protocol: Into<Proto>,
+    M: ProtoMessage,
     quick_protobuf_codec::Error: Into<E>,
     E: From<std::io::Error>,
 {
-    type Item<'a> = Protocol;
+    type Item<'a> = M;
     type Error = E;
 
     fn encode(&mut self, item: Self::Item<'_>, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        self.0.encode(item.into(), dst).map_err(Into::into)
+        self.inner.encode(item.into_proto(), dst).map_err(Into::into)
     }
 }
 
-impl<Proto, Protocol, PE, E> asynchronous_codec::Decoder for ProtocolCodec<Proto, Protocol, E>
+impl<M, E> asynchronous_codec::Decoder for Codec<M, E>
 where
-    Proto: for<'a> quick_protobuf::MessageRead<'a>,
-    Protocol: TryFrom<Proto, Error = PE>,
-    PE: Into<E>,
+    M: ProtoMessage,
+    M::DecodeError: Into<E>,
     quick_protobuf_codec::Error: Into<E>,
     E: From<std::io::Error>,
 {
-    type Item = Protocol;
+    type Item = M;
     type Error = E;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        match self.0.decode(src).map_err(Into::into)? {
-            Some(proto) => match Protocol::try_from(proto) {
-                Ok(protocol) => Ok(Some(protocol)),
-                Err(e) => Err(e.into()),
-            },
+        match self.inner.decode(src).map_err(Into::into)? {
+            Some(proto) => {
+                let message = M::from_proto(proto).map_err(Into::into)?;
+                Ok(Some(message))
+            }
             None => Ok(None),
+        }
+    }
+}
+
+/// A codec that carries validation context for decoding.
+///
+/// This is useful for protocols where decoding requires runtime information
+/// that isn't available in the protobuf message itself (e.g., expected `network_id`).
+///
+/// # Type Parameters
+///
+/// - `M`: The domain message type (must implement `ProtoMessageWithContext<Ctx>`)
+/// - `E`: The error type for the codec
+/// - `Ctx`: The validation context type (e.g., `u64` for network_id)
+///
+/// # Example
+///
+/// ```ignore
+/// pub type AckCodec = ValidatedCodec<Ack, CodecError, u64>;
+///
+/// let codec = AckCodec::new(1024, expected_network_id);
+/// ```
+pub struct ValidatedCodec<M, E, Ctx>
+where
+    M: ProtoMessageWithContext<Ctx>,
+{
+    inner: quick_protobuf_codec::Codec<M::Proto>,
+    context: Ctx,
+    _phantom: PhantomData<E>,
+}
+
+impl<M, E, Ctx> ValidatedCodec<M, E, Ctx>
+where
+    M: ProtoMessageWithContext<Ctx>,
+{
+    /// Create a new validated codec with the given context.
+    pub fn new(max_packet_size: usize, context: Ctx) -> Self {
+        Self {
+            inner: quick_protobuf_codec::Codec::new(max_packet_size),
+            context,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Returns a reference to the validation context.
+    pub fn context(&self) -> &Ctx {
+        &self.context
+    }
+}
+
+impl<M, E, Ctx> asynchronous_codec::Encoder for ValidatedCodec<M, E, Ctx>
+where
+    M: ProtoMessageWithContext<Ctx>,
+    quick_protobuf_codec::Error: Into<E>,
+    E: From<std::io::Error>,
+{
+    type Item<'a> = M;
+    type Error = E;
+
+    fn encode(&mut self, item: Self::Item<'_>, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        self.inner.encode(item.into_proto(), dst).map_err(Into::into)
+    }
+}
+
+impl<M, E, Ctx> asynchronous_codec::Decoder for ValidatedCodec<M, E, Ctx>
+where
+    M: ProtoMessageWithContext<Ctx>,
+    M::DecodeError: Into<E>,
+    quick_protobuf_codec::Error: Into<E>,
+    E: From<std::io::Error>,
+{
+    type Item = M;
+    type Error = E;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        match self.inner.decode(src).map_err(Into::into)? {
+            Some(proto) => {
+                let message =
+                    M::from_proto_with_context(proto, &self.context).map_err(Into::into)?;
+                Ok(Some(message))
+            }
+            None => Ok(None),
+        }
+    }
+}
+
+/// A generic error type for protocol codecs.
+///
+/// This provides the common error variants shared by all protocol codecs:
+/// - `Protocol` - for protobuf encoding/decoding errors
+/// - `Io` - for I/O errors during read/write
+/// - `Domain` - for protocol-specific errors (parameterized by `E`)
+///
+/// # Type Parameter
+///
+/// - `E`: Protocol-specific error type. Use `std::convert::Infallible` for
+///   protocols with no domain-specific errors.
+///
+/// # Example
+///
+/// ```ignore
+/// // Simple protocol with no custom errors:
+/// type PingCodecError = ProtocolCodecError;
+///
+/// // Protocol with custom errors:
+/// #[derive(Debug, thiserror::Error)]
+/// pub enum RetrievalError {
+///     #[error("Invalid chunk address length: expected 32, got {0}")]
+///     InvalidAddressLength(usize),
+/// }
+/// type RetrievalCodecError = ProtocolCodecError<RetrievalError>;
+/// ```
+#[derive(Debug, thiserror::Error)]
+pub enum ProtocolCodecError<E = std::convert::Infallible> {
+    /// Protocol-level error (invalid message format, protobuf errors, etc.)
+    #[error("Protocol error: {0}")]
+    Protocol(String),
+
+    /// I/O error during read/write operations.
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// Protocol-specific domain error.
+    #[error(transparent)]
+    Domain(E),
+}
+
+impl<E> From<quick_protobuf_codec::Error> for ProtocolCodecError<E> {
+    fn from(error: quick_protobuf_codec::Error) -> Self {
+        ProtocolCodecError::Protocol(error.to_string())
+    }
+}
+
+impl<E> ProtocolCodecError<E> {
+    /// Create a protocol error with a message.
+    pub fn protocol(msg: impl Into<String>) -> Self {
+        ProtocolCodecError::Protocol(msg.into())
+    }
+
+    /// Create a domain-specific error.
+    pub fn domain(error: E) -> Self {
+        ProtocolCodecError::Domain(error)
+    }
+
+    /// Map the domain error type to a different type.
+    pub fn map_domain<F, E2>(self, f: F) -> ProtocolCodecError<E2>
+    where
+        F: FnOnce(E) -> E2,
+    {
+        match self {
+            ProtocolCodecError::Protocol(msg) => ProtocolCodecError::Protocol(msg),
+            ProtocolCodecError::Io(e) => ProtocolCodecError::Io(e),
+            ProtocolCodecError::Domain(e) => ProtocolCodecError::Domain(f(e)),
         }
     }
 }
