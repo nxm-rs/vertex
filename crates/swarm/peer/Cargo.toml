@@ -1,0 +1,48 @@
+[package]
+name = "vertex-swarm-peer"
+description = "Peer identity and multiaddr primitives for Ethereum Swarm network"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+## nectar primitives
+nectar-primitives = { workspace = true }
+nectar-swarms.workspace = true
+
+## vertex crates
+vertex-swarm-api = { workspace = true }
+vertex-swarmspec.workspace = true
+vertex-swarm-primitives = { workspace = true, features = ["serde"] }
+
+alloy-primitives = { workspace = true, features = ["arbitrary"] }
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
+
+libp2p.workspace = true
+arbitrary = { workspace = true, features = ["derive"] }
+proptest.workspace = true
+thiserror.workspace = true
+auto_impl = "1.1"
+
+bytes.workspace = true
+
+# Optional serde support
+serde = { workspace = true, features = ["derive"], optional = true }
+
+[features]
+default = []
+serde = ["dep:serde", "alloy-primitives/serde", "nectar-primitives/serde"]
+
+[dev-dependencies]
+arbitrary.workspace = true
+proptest.workspace = true
+proptest-arbitrary-interop.workspace = true
+rand.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true
