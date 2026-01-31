@@ -1,12 +1,12 @@
 # libp2p Boundary Migration Plan
 
-This document outlines the migration plan to restructure the vertex crates so that the libp2p boundary is correctly placed in `vertex-client-core`, keeping all `vertex-swarm-*` crates libp2p-agnostic.
+This document outlines the migration plan to restructure the vertex crates so that the libp2p boundary is correctly placed in `vertex-swarm-client`, keeping all other `vertex-swarm-*` crates libp2p-agnostic.
 
 ## Overview
 
 The goal is to ensure:
 - `vertex-swarm-api` and `vertex-swarm-core` are **libp2p-free**
-- `vertex-client-core` is the **libp2p boundary** where all libp2p types are confined
+- `vertex-swarm-client` is the **libp2p boundary** where all libp2p types are confined
 - Higher-level crates work with abstract traits, enabling testing and alternative transports
 
 ## Current State
@@ -14,7 +14,7 @@ The goal is to ensure:
 ### vertex-swarm-core (NEEDS CHANGE)
 
 **Location:** `crates/swarm/core/`
-**Problem:** Contains libp2p code that should be in vertex-client-core
+**Problem:** Contains libp2p code that should be in vertex-swarm-client
 
 **Files with libp2p imports:**
 - `behaviour.rs` - `NodeBehaviour` composed libp2p behaviour
@@ -28,9 +28,9 @@ The goal is to ensure:
 - `config.rs` - configuration
 - `constants.rs` - constants
 
-### vertex-client-core (TARGET FOR libp2p CODE)
+### vertex-swarm-client (TARGET FOR libp2p CODE)
 
-**Location:** `crates/client/core/`
+**Location:** `crates/swarm/client/`
 **Current state:** libp2p-free (wrong!)
 
 **Current content:**
@@ -51,12 +51,12 @@ The goal is to ensure:
 
 ## Migration Steps
 
-### Phase 1: Prepare vertex-client-core
+### Phase 1: Prepare vertex-swarm-client
 
-1. Add libp2p dependencies to vertex-client-core
+1. Add libp2p dependencies to vertex-swarm-client
 2. Create module structure:
    ```
-   crates/client/core/src/
+   crates/swarm/client/src/
    ├── lib.rs
    ├── client.rs          (existing - SwarmClient)
    ├── node/
@@ -73,19 +73,19 @@ The goal is to ensure:
 
 | Source | Destination | Notes |
 |--------|-------------|-------|
-| `swarm-core/src/behaviour.rs` | `client-core/src/node/behaviour.rs` | NodeBehaviour |
-| `swarm-core/src/node.rs` | `client-core/src/node/` (split) | SwarmNode, SwarmNodeBuilder |
-| `swarm-core/src/bootnodes.rs` | `client-core/src/bootnodes.rs` | BootnodeProvider |
-| `swarm-core/src/service.rs` | `client-core/src/service.rs` | ClientService |
-| `swarm-core/src/stats.rs` | `client-core/src/stats.rs` | Stats collection |
+| `swarm-core/src/behaviour.rs` | `swarm-client/src/node/behaviour.rs` | NodeBehaviour |
+| `swarm-core/src/node.rs` | `swarm-client/src/node/` (split) | SwarmNode, SwarmNodeBuilder |
+| `swarm-core/src/bootnodes.rs` | `swarm-client/src/bootnodes.rs` | BootnodeProvider |
+| `swarm-core/src/service.rs` | `swarm-client/src/service.rs` | ClientService |
+| `swarm-core/src/stats.rs` | `swarm-client/src/stats.rs` | Stats collection |
 
 ### Phase 3: Update vertex-swarm-core
 
-1. Remove libp2p-dependent code (now in client-core)
+1. Remove libp2p-dependent code (now in swarm-client)
 2. Remove libp2p dependencies from Cargo.toml
 3. Keep only orchestration/business logic
-4. Add dependency on vertex-client-core
-5. Re-export types from client-core for API stability
+4. Add dependency on vertex-swarm-client
+5. Re-export types from swarm-client for API stability
 
 ### Phase 4: Update Dependents
 
@@ -106,9 +106,9 @@ vertex (binary)
 └── vertex-swarm-node
     ├── vertex-swarm-core (libp2p-free orchestration)
     │   ├── vertex-swarm-api (traits)
-    │   └── vertex-client-core (libp2p impl) <- NEW DEPENDENCY
-    │       ├── vertex-client-kademlia
-    │       ├── vertex-client-peermanager
+    │   └── vertex-swarm-client (libp2p impl) <- NEW DEPENDENCY
+    │       ├── vertex-swarm-kademlia
+    │       ├── vertex-swarm-peermanager
     │       └── vertex-net-*
     └── vertex-node-builder
         └── vertex-node-core
@@ -118,16 +118,16 @@ vertex (binary)
 
 ### Breaking Changes (if not using re-exports)
 
-- `vertex_swarm_core::SwarmNode` -> `vertex_client_core::SwarmNode`
-- `vertex_swarm_core::NodeBehaviour` -> `vertex_client_core::NodeBehaviour`
-- `vertex_swarm_core::ClientService` -> `vertex_client_core::ClientService`
+- `vertex_swarm_core::SwarmNode` -> `vertex_swarm_client::SwarmNode`
+- `vertex_swarm_core::NodeBehaviour` -> `vertex_swarm_client::NodeBehaviour`
+- `vertex_swarm_core::ClientService` -> `vertex_swarm_client::ClientService`
 
 ### Mitigation
 
 Add re-exports in `vertex-swarm-core/src/lib.rs`:
 ```rust
-// Re-export from client-core for backward compatibility
-pub use vertex_client_core::{
+// Re-export from swarm-client for backward compatibility
+pub use vertex_swarm_client::{
     SwarmNode, SwarmNodeBuilder, NodeBehaviour,
     ClientService, ClientHandle, ClientCommand, ClientEvent,
     // etc.
@@ -137,8 +137,8 @@ pub use vertex_client_core::{
 ## Risks and Considerations
 
 1. **Circular dependencies**: Ensure no cycles are introduced
-   - `swarm-api` must not depend on `client-core`
-   - `client-core` depends on `swarm-api` (to implement traits)
+   - `swarm-api` must not depend on `swarm-client`
+   - `swarm-client` depends on `swarm-api` (to implement traits)
    - `swarm-core` depends on both
 
 2. **Feature flags**: The `cli` feature in swarm-core may need adjustment

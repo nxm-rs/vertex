@@ -7,7 +7,7 @@ The client layer bridges libp2p networking with Swarm's overlay network. This is
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                     Client Layer                        │
-│  (vertex-client-core)                                   │
+│  (vertex-swarm-client)                                  │
 │                                                         │
 │  Types: OverlayAddress, BzzAddress, SwarmNode           │
 │  Responsibility: PeerId <-> OverlayAddress mapping      │
@@ -61,7 +61,7 @@ The client layer owns the mapping between:
                               ▲
                               │ implements
 ┌─────────────────────────────────────────────────────────────────┐
-│  vertex-client-core                                             │
+│  vertex-swarm-client                                            │
 │  (libp2p adapter layer - THE BOUNDARY)                          │
 │  HAS libp2p - implements swarm-api traits                       │
 │  - SwarmNode wrapping libp2p::Swarm                             │
@@ -89,7 +89,7 @@ Handler (protocol I/O)
 Behaviour (connection management)
     │
     ▼ TopologyEvent (libp2p types)
-Client (vertex-client-core)
+Client (vertex-swarm-client)
     │
     ▼ Maps PeerId -> OverlayAddress
 Application
@@ -119,9 +119,9 @@ vertex (binary)
 └── vertex-swarm-node
     ├── vertex-swarm-core (libp2p-free orchestration)
     │   ├── vertex-swarm-api (traits)
-    │   └── vertex-client-core (libp2p impl)
-    │       ├── vertex-client-kademlia
-    │       ├── vertex-client-peermanager
+    │   └── vertex-swarm-client (libp2p impl)
+    │       ├── vertex-swarm-kademlia
+    │       ├── vertex-swarm-peermanager
     │       └── vertex-net-*
     └── vertex-node-builder
         └── vertex-node-core
