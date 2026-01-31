@@ -6,7 +6,7 @@
 //!
 //! # Protocol Trait
 //!
-//! The [`Protocol`] trait defines the lifecycle interface between a network
+//! The [`NodeProtocol`] trait defines the lifecycle interface between a network
 //! protocol (like Swarm) and the node infrastructure. A single `launch()` method
 //! handles building components and spawning services.
 //!
@@ -19,17 +19,17 @@
 //!
 //! # Configuration Traits
 //!
-//! Infrastructure configuration is defined via traits:
-//! - [`RpcConfig`] - RPC server configuration (addresses, ports)
-//! - [`MetricsConfig`] - Metrics endpoint configuration
-//! - [`LoggingConfig`] - Logging format and rotation configuration
-//! - [`DatabaseConfig`] - Database storage configuration
+//! Infrastructure configuration is defined via traits (all prefixed with `Node`):
+//! - [`NodeRpcConfig`] - RPC server configuration (addresses, ports)
+//! - [`NodeMetricsConfig`] - Metrics endpoint configuration
+//! - [`NodeLoggingConfig`] - Logging format and rotation configuration
+//! - [`NodeDatabaseConfig`] - Database storage configuration
 //! - [`NodeConfig`] - Combined infrastructure configuration
 //!
 //! # Example
 //!
 //! ```ignore
-//! use vertex_node_api::{Protocol, NodeContext};
+//! use vertex_node_api::{NodeProtocol, NodeContext};
 //!
 //! // Node builder creates context with infrastructure
 //! let ctx = NodeContext::new(executor, data_dir);

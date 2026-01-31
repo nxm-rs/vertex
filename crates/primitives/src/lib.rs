@@ -22,7 +22,7 @@
 //!
 //! ## Address Types
 //! - [`OverlayAddress`] - Swarm overlay address (32 bytes, Kademlia routing)
-//! - [`PeerId`] - libp2p peer identifier (underlay, network connections)
+//! - [`PeerId`] - libp2p peer identifier (multiaddr, network connections)
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -35,7 +35,7 @@ pub use nectar_primitives::{
     ContentOnlyChunkSet, SingleOwnerChunk, StandardChunkSet, SwarmAddress,
 };
 
-// Re-export libp2p PeerId for underlay addressing
+// Re-export libp2p PeerId for multiaddr addressing
 pub use libp2p::PeerId;
 
 // ============================================================================
@@ -50,7 +50,7 @@ pub use libp2p::PeerId;
 /// - Chunk sync (peer identification)
 /// - Topology (neighborhood awareness)
 ///
-/// # Overlay vs Underlay
+/// # Overlay vs MultiAddr
 ///
 /// Swarm has two distinct address types:
 ///
@@ -59,11 +59,11 @@ pub use libp2p::PeerId;
 ///   `keccak256(eth_addr || network_id || nonce)`. Used for all Swarm protocol
 ///   operations (routing, accounting, sync).
 ///
-/// - **Underlay (PeerId)**: libp2p peer identifier for actual network connections.
+/// - **MultiAddr (PeerId)**: libp2p peer identifier for actual network connections.
 ///   Used only in the net/ layer for establishing and managing TCP/QUIC connections.
 ///
 /// All swarm-api traits use `OverlayAddress`. The net/ layer handles the
-/// overlay ↔ underlay mapping.
+/// overlay ↔ multiaddr mapping.
 pub type OverlayAddress = SwarmAddress;
 
 #[cfg(test)]

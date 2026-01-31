@@ -1,31 +1,22 @@
 //! Hive protocol for Swarm peer discovery.
 //!
-//! The hive protocol allows peers to gossip known peer addresses to each other.
-//! This enables peer discovery and network bootstrapping.
+//! Peers gossip known addresses to each other for network bootstrapping.
 //!
 //! # Protocol
 //!
 //! - Path: `/swarm/hive/1.1.0/peers`
-//! - Unidirectional: Sender broadcasts, receiver processes
-//! - Message: `Peers` containing repeated `BzzAddress` structures
-//!
-//! # Flow
-//!
-//! 1. Sender opens a stream to a peer
-//! 2. Sender writes a `Peers` message with peer addresses
-//! 3. Receiver reads the message and validates peers
-//! 4. Stream is closed
+//! - Unidirectional: sender broadcasts, receiver processes
+//! - Message: `Peers` containing peer addresses
 //!
 //! # Batching
 //!
 //! Large peer lists are split into batches of at most 30 peers.
-//! Each batch is sent as a separate stream.
 
 mod codec;
 mod protocol;
 
-pub use codec::{BzzAddress, HiveCodec, HiveCodecError, Peers};
-pub use protocol::{HiveInboundProtocol, HiveOutboundProtocol, inbound, outbound};
+pub use codec::{HiveCodec, HiveCodecError, Peers};
+pub use protocol::{HiveInboundProtocol, HiveOutboundProtocol, ValidatedPeers, inbound, outbound};
 
 mod proto {
     include!(concat!(env!("OUT_DIR"), "/proto/mod.rs"));
@@ -34,5 +25,5 @@ mod proto {
 /// Protocol name for hive.
 pub const PROTOCOL_NAME: &str = "/swarm/hive/1.1.0/peers";
 
-/// Maximum number of peers per broadcast message (matching Bee's maxBatchSize).
+/// Maximum number of peers per broadcast message.
 pub const MAX_BATCH_SIZE: usize = 30;

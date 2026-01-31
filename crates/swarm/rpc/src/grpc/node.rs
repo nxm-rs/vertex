@@ -1,7 +1,7 @@
 //! Node service implementation for Swarm topology and status information.
 
 use tonic::{Request, Response, Status};
-use vertex_swarm_api::TopologyProvider;
+use vertex_swarm_api::SwarmTopologyProvider;
 
 use crate::proto::node::{
     BinInfo, GetStatusRequest, GetStatusResponse, GetTopologyRequest, GetTopologyResponse,
@@ -23,7 +23,7 @@ impl<T> NodeService<T> {
 }
 
 #[tonic::async_trait]
-impl<T: TopologyProvider> Node for NodeService<T> {
+impl<T: SwarmTopologyProvider> Node for NodeService<T> {
     async fn get_status(
         &self,
         _request: Request<GetStatusRequest>,

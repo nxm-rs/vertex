@@ -1,11 +1,11 @@
 //! Protocol trait for node infrastructure integration.
 //!
-//! This module defines the [`Protocol`] trait which provides the lifecycle
+//! This module defines the [`NodeProtocol`] trait which provides the lifecycle
 //! interface between a network protocol (like Swarm) and the node infrastructure.
 //!
 //! # Lifecycle
 //!
-//! A single [`Protocol::launch()`] method handles both building and running:
+//! A single [`NodeProtocol::launch()`] method handles both building and running:
 //! 1. Create components from config + infrastructure
 //! 2. Spawn services as background tasks
 //! 3. Return components for continued use
@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use vertex_node_api::{Protocol, NodeContext};
+//! use vertex_node_api::{NodeProtocol, NodeContext};
 //!
 //! // Launch builds and spawns in one step
 //! let components = SwarmProtocol::<MyConfig>::launch(config, &ctx, &executor).await?;
@@ -34,10 +34,10 @@ use vertex_tasks::TaskExecutor;
 /// # Example
 ///
 /// ```ignore
-/// use vertex_node_api::BuildsProtocol;
+/// use vertex_node_api::NodeBuildsProtocol;
 /// use vertex_swarm_api::SwarmProtocol;
 ///
-/// impl BuildsProtocol for MyLightBuildConfig {
+/// impl NodeBuildsProtocol for MyLightBuildConfig {
 ///     type Protocol = SwarmProtocol<Self>;
 ///
 ///     fn protocol_name(&self) -> &'static str {
@@ -45,9 +45,9 @@ use vertex_tasks::TaskExecutor;
 ///     }
 /// }
 /// ```
-pub trait BuildsProtocol: Send + Sync + 'static {
+pub trait NodeBuildsProtocol: Send + Sync + 'static {
     /// The protocol this config builds.
-    type Protocol: Protocol<Config = Self>;
+    type Protocol: NodeProtocol<Config = Self>;
 
     /// Human-readable protocol name for logging (e.g., "Swarm", "Ethereum").
     fn protocol_name(&self) -> &'static str {
@@ -68,13 +68,13 @@ pub trait BuildsProtocol: Send + Sync + 'static {
 /// # Example
 ///
 /// ```ignore
-/// use vertex_node_api::{Protocol, NodeContext};
+/// use vertex_node_api::{NodeProtocol, NodeContext};
 /// use vertex_tasks::TaskExecutor;
 ///
 /// struct MyProtocol;
 ///
 /// #[async_trait]
-/// impl Protocol for MyProtocol {
+/// impl NodeProtocol for MyProtocol {
 ///     type Config = MyConfig;
 ///     type Components = MyComponents;
 ///     type BuildError = MyError;
@@ -96,7 +96,7 @@ pub trait BuildsProtocol: Send + Sync + 'static {
 /// }
 /// ```
 #[async_trait]
-pub trait Protocol: Sized + Send + Sync + 'static {
+pub trait NodeProtocol: Sized + Send + Sync + 'static {
     /// Protocol-specific configuration.
     type Config: Send + Sync + 'static;
 

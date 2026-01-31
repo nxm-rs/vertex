@@ -19,11 +19,12 @@ vertex-node-core.workspace = true
 vertex-tasks.workspace = true
 
 ## vertex - swarm protocol
-vertex-client-peermanager.workspace = true
+vertex-topology-peermanager.workspace = true
 vertex-swarm-api.workspace = true
 vertex-swarm-builder.workspace = true
 vertex-swarm-core = { workspace = true, features = ["cli"] }
 vertex-swarm-identity.workspace = true
+vertex-swarm-primitives.workspace = true
 vertex-swarmspec.workspace = true
 
 ## alloy

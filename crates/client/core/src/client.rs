@@ -1,47 +1,56 @@
-//! SwarmClient implementation.
+//! Client implementation.
 //!
 //! Provides a unified client for all node types:
 //! - Bootnodes: topology only
-//! - Light nodes: + accounting + pricer, implements [`SwarmReader`]
-//! - Publisher nodes: + [`SwarmWriter`] with storage proofs
+//! - Full nodes: + accounting + pricer, implements [`SwarmClient`]
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use vertex_primitives::{AnyChunk, ChunkAddress};
 use vertex_swarm_api::{
-    BootnodeTypes, LightTypes, SwarmError, SwarmReader, SwarmResult, SwarmWriter, Topology,
+    SwarmBootnodeTypes, SwarmClientTypes, SwarmClient, SwarmError, SwarmResult, SwarmTopology,
 };
-use vertex_swarm_builder::BuiltSwarmComponents;
-use vertex_swarm_core::ClientHandle;
+
+use crate::ClientHandle;
+
+/// Built components ready for use by Client.
+///
+/// Contains the topology, accounting, and pricer components.
+#[derive(Debug, Clone)]
+pub struct BuiltSwarmComponents<T, A, P> {
+    /// The topology.
+    pub topology: T,
+    /// The accounting.
+    pub accounting: A,
+    /// The pricer.
+    pub pricer: P,
+}
 
 // =============================================================================
-// SwarmClient
+// Client
 // =============================================================================
 
-/// Unified Swarm client for all node types.
+/// Unified client for all node types.
 ///
 /// # Type Parameters
 ///
-/// - `Types`: Node capability level ([`BootnodeTypes`], [`LightTypes`], etc.)
-/// - `C`: Components - `()` for bootnodes, `BuiltSwarmComponents<T, A, P>` for light/publisher
-/// - `S`: Storage proof type - `()` by default, postage stamp for publishers
+/// - `Types`: Node capability level ([`SwarmBootnodeTypes`], [`SwarmClientTypes`], etc.)
+/// - `C`: Components - `()` for bootnodes, `BuiltSwarmComponents<T, A, P>` for full nodes
+/// - `S`: Storage proof type - `()` by default, postage stamp for mainnet
 ///
 /// # Examples
 ///
 /// ```ignore
 /// // Bootnode (peer discovery only)
-/// let client = SwarmClient::<MyTypes>::bootnode(topology, handle);
+/// let client = Client::<MyTypes>::bootnode(topology, handle);
 ///
-/// // Light node (can retrieve chunks)
-/// let client = SwarmClient::light(topology, accounting, pricer, handle);
+/// // Full node (can retrieve and upload chunks)
+/// let client = Client::full(topology, accounting, pricer, handle);
 /// let chunk = client.get(&address).await?;
-///
-/// // Publisher node (can also upload with storage proofs)
-/// let client: SwarmClient<_, _, _, PostageStamp> = SwarmClient::publisher(topology, accounting, pricer, handle);
 /// client.put(chunk, &stamp).await?;
 /// ```
-pub struct SwarmClient<Types: BootnodeTypes, C = (), S = ()> {
+pub struct Client<Types: SwarmBootnodeTypes, C = (), S = ()> {
     topology: Arc<Types::Topology>,
     components: C,
     client_handle: ClientHandle,
@@ -52,7 +61,7 @@ pub struct SwarmClient<Types: BootnodeTypes, C = (), S = ()> {
 // Bootnode (no components)
 // =============================================================================
 
-impl<Types: BootnodeTypes> SwarmClient<Types, (), ()> {
+impl<Types: SwarmBootnodeTypes> Client<Types, (), ()> {
     /// Create a bootnode client (topology only, no accounting).
     pub fn bootnode(topology: Types::Topology, client_handle: ClientHandle) -> Self {
         Self {
@@ -75,70 +84,16 @@ impl<Types: BootnodeTypes> SwarmClient<Types, (), ()> {
 }
 
 // =============================================================================
-// Light node (with components, no storage proof type)
+// Full node (with components)
 // =============================================================================
 
-impl<Types, A, P> SwarmClient<Types, BuiltSwarmComponents<Types::Topology, A, P>, ()>
+impl<Types, A, P, S> Client<Types, BuiltSwarmComponents<Types::Topology, A, P>, S>
 where
-    Types: LightTypes,
-    Types::Topology: Clone,
-{
-    /// Create a light client from pre-built components.
-    ///
-    /// Use [`Self::light`] for convenience when passing raw accounting/pricer.
-    pub fn light_from_components(
-        components: BuiltSwarmComponents<Types::Topology, A, P>,
-        client_handle: ClientHandle,
-    ) -> Self {
-        Self {
-            topology: Arc::new(components.topology.clone()),
-            components,
-            client_handle,
-            _storage: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<Types, A, P> SwarmClient<Types, BuiltSwarmComponents<Types::Topology, Arc<A>, P>, ()>
-where
-    Types: LightTypes,
-    Types::Topology: Clone,
-{
-    /// Create a light client (can retrieve, uses `()` for storage).
-    ///
-    /// Wraps `accounting` in `Arc` for cheap cloning.
-    pub fn light(
-        topology: Types::Topology,
-        accounting: A,
-        pricer: P,
-        client_handle: ClientHandle,
-    ) -> Self {
-        Self {
-            topology: Arc::new(topology.clone()),
-            components: BuiltSwarmComponents {
-                topology,
-                accounting: Arc::new(accounting),
-                pricer,
-            },
-            client_handle,
-            _storage: std::marker::PhantomData,
-        }
-    }
-}
-
-// =============================================================================
-// Publisher node (with components and storage proof type)
-// =============================================================================
-
-impl<Types, A, P, S> SwarmClient<Types, BuiltSwarmComponents<Types::Topology, A, P>, S>
-where
-    Types: LightTypes,
+    Types: SwarmClientTypes,
     Types::Topology: Clone,
     S: Send + Sync + 'static,
 {
-    /// Create a publisher client from pre-built components.
-    ///
-    /// Use [`Self::publisher`] for convenience when passing raw accounting/pricer.
+    /// Create a client from pre-built components.
     pub fn from_components(
         components: BuiltSwarmComponents<Types::Topology, A, P>,
         client_handle: ClientHandle,
@@ -152,16 +107,16 @@ where
     }
 }
 
-impl<Types, A, P, S> SwarmClient<Types, BuiltSwarmComponents<Types::Topology, Arc<A>, P>, S>
+impl<Types, A, P, S> Client<Types, BuiltSwarmComponents<Types::Topology, Arc<A>, P>, S>
 where
-    Types: LightTypes,
+    Types: SwarmClientTypes,
     Types::Topology: Clone,
     S: Send + Sync + 'static,
 {
-    /// Create a publisher client (can retrieve and publish).
+    /// Create a full client (can retrieve and publish chunks).
     ///
     /// Wraps `accounting` in `Arc` for cheap cloning.
-    pub fn publisher(
+    pub fn full(
         topology: Types::Topology,
         accounting: A,
         pricer: P,
@@ -184,9 +139,9 @@ where
 // Component accessors (for clients with components)
 // =============================================================================
 
-impl<Types, A, P, S> SwarmClient<Types, BuiltSwarmComponents<Types::Topology, A, P>, S>
+impl<Types, A, P, S> Client<Types, BuiltSwarmComponents<Types::Topology, A, P>, S>
 where
-    Types: LightTypes,
+    Types: SwarmClientTypes,
 {
     /// Get the accounting.
     pub fn accounting(&self) -> &A {
@@ -203,7 +158,7 @@ where
 // Common methods
 // =============================================================================
 
-impl<Types: BootnodeTypes, C, S> SwarmClient<Types, C, S> {
+impl<Types: SwarmBootnodeTypes, C, S> Client<Types, C, S> {
     /// Get the topology.
     pub fn topology(&self) -> &Types::Topology {
         &self.topology
@@ -219,7 +174,7 @@ impl<Types: BootnodeTypes, C, S> SwarmClient<Types, C, S> {
 // Clone
 // =============================================================================
 
-impl<Types: BootnodeTypes, C: Clone, S> Clone for SwarmClient<Types, C, S> {
+impl<Types: SwarmBootnodeTypes, C: Clone, S> Clone for Client<Types, C, S> {
     fn clone(&self) -> Self {
         Self {
             topology: Arc::clone(&self.topology),
@@ -231,20 +186,22 @@ impl<Types: BootnodeTypes, C: Clone, S> Clone for SwarmClient<Types, C, S> {
 }
 
 // =============================================================================
-// SwarmReader (for light/publisher nodes)
+// SwarmClient trait implementation
 // =============================================================================
 
 #[async_trait]
-impl<Types, A, P, S> SwarmReader
-    for SwarmClient<Types, BuiltSwarmComponents<Types::Topology, A, P>, S>
+impl<Types, A, P, S> SwarmClient
+    for Client<Types, BuiltSwarmComponents<Types::Topology, A, P>, S>
 where
-    Types: LightTypes + 'static,
+    Types: SwarmClientTypes + 'static,
     A: Send + Sync + 'static,
     P: Send + Sync + 'static,
     S: Send + Sync + 'static,
 {
+    type Storage = S;
+
     async fn get(&self, address: &ChunkAddress) -> SwarmResult<AnyChunk> {
-        let _closest = Topology::closest_to(&*self.topology, address, 3);
+        let _closest = SwarmTopology::closest_to(&*self.topology, address, 3);
         let _handle = &self.client_handle;
         let _pricer = &self.components.pricer;
         let _accounting = &self.components.accounting;
@@ -252,25 +209,9 @@ where
         // TODO: Retrieval implementation
         Err(SwarmError::ChunkNotFound { address: *address })
     }
-}
-
-// =============================================================================
-// SwarmWriter (for publisher nodes with storage proofs)
-// =============================================================================
-
-#[async_trait]
-impl<Types, A, P, S> SwarmWriter
-    for SwarmClient<Types, BuiltSwarmComponents<Types::Topology, A, P>, S>
-where
-    Types: LightTypes + 'static,
-    A: Send + Sync + 'static,
-    P: Send + Sync + 'static,
-    S: Send + Sync + 'static,
-{
-    type Storage = S;
 
     async fn put(&self, chunk: AnyChunk, _storage: &Self::Storage) -> SwarmResult<()> {
-        let _closest = Topology::closest_to(&*self.topology, &chunk.address(), 3);
+        let _closest = SwarmTopology::closest_to(&*self.topology, &chunk.address(), 3);
         let _handle = &self.client_handle;
         let _pricer = &self.components.pricer;
 
@@ -284,15 +225,11 @@ where
 // =============================================================================
 
 /// Bootnode client (topology only).
-pub type BootnodeClient<Types> = SwarmClient<Types, (), ()>;
+pub type BootnodeClient<Types> = Client<Types, (), ()>;
 
-/// Light client (can retrieve chunks).
-pub type LightClient<Types, A, P> =
-    SwarmClient<Types, BuiltSwarmComponents<<Types as BootnodeTypes>::Topology, A, P>, ()>;
-
-/// Publisher client (can retrieve and publish chunks).
-pub type PublisherClient<Types, A, P, S> =
-    SwarmClient<Types, BuiltSwarmComponents<<Types as BootnodeTypes>::Topology, A, P>, S>;
+/// Full client (can retrieve and publish chunks).
+pub type FullClient<Types, A, P, S> =
+    Client<Types, BuiltSwarmComponents<<Types as SwarmBootnodeTypes>::Topology, A, P>, S>;
 
 // =============================================================================
 // Tests
@@ -301,20 +238,28 @@ pub type PublisherClient<Types, A, P, S> =
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::B256;
     use core::fmt::Debug;
     use tokio::sync::mpsc;
-    use vertex_bandwidth_core::{Accounting, AccountingConfig, FixedPricer};
+    use crate::{Accounting, FixedPricer, ClientCommand, ClientHandle, ClientService};
     use vertex_primitives::OverlayAddress;
-    use vertex_swarm_api::{BandwidthAccounting, Identity};
-    use vertex_swarm_core::ClientCommand;
+    use vertex_swarm_api::{SwarmBandwidthAccounting, DefaultAccountingConfig, SwarmNodeType, SwarmTopology};
+    use vertex_tasks::SpawnableTask;
+    use vertex_swarm_identity::Identity;
 
-    #[derive(Clone, Default)]
+    struct MockNode;
+
+    impl SpawnableTask for MockNode {
+        fn into_task(self) -> impl std::future::Future<Output = ()> + Send {
+            async {}
+        }
+    }
+
+    #[derive(Clone, Debug, Default)]
     struct MockTopology {
         self_addr: OverlayAddress,
     }
 
-    impl Topology for MockTopology {
+    impl SwarmTopology for MockTopology {
         fn self_address(&self) -> OverlayAddress {
             self.self_addr
         }
@@ -342,45 +287,35 @@ mod tests {
     }
 
     #[derive(Clone, Debug)]
-    struct MockIdentity;
+    struct MockSwarmBootnodeTypes;
 
-    impl Identity for MockIdentity {
+    impl SwarmBootnodeTypes for MockSwarmBootnodeTypes {
         type Spec = vertex_swarmspec::Hive;
-        type Signer = alloy_signer_local::PrivateKeySigner;
-        fn spec(&self) -> &Self::Spec {
-            unimplemented!()
-        }
-        fn nonce(&self) -> B256 {
-            B256::ZERO
-        }
-        fn signer(&self) -> Arc<Self::Signer> {
-            unimplemented!()
-        }
-        fn is_full_node(&self) -> bool {
-            false
-        }
+        type Identity = Identity;
+        type Topology = MockTopology;
+        type Node = MockNode;
+        type ClientService = ClientService;
+        type ClientHandle = ClientHandle;
     }
 
     #[derive(Clone, Debug)]
-    struct MockBootnodeTypes;
+    struct MockSwarmClientTypes;
 
-    impl BootnodeTypes for MockBootnodeTypes {
+    impl SwarmBootnodeTypes for MockSwarmClientTypes {
         type Spec = vertex_swarmspec::Hive;
-        type Identity = MockIdentity;
+        type Identity = Identity;
         type Topology = MockTopology;
+        type Node = MockNode;
+        type ClientService = ClientService;
+        type ClientHandle = ClientHandle;
     }
 
-    #[derive(Clone, Debug)]
-    struct MockLightTypes;
-
-    impl BootnodeTypes for MockLightTypes {
-        type Spec = vertex_swarmspec::Hive;
-        type Identity = MockIdentity;
-        type Topology = MockTopology;
+    impl SwarmClientTypes for MockSwarmClientTypes {
+        type Accounting = Accounting<DefaultAccountingConfig, Identity>;
     }
 
-    impl LightTypes for MockLightTypes {
-        type Accounting = Accounting;
+    fn test_identity() -> Identity {
+        Identity::random(vertex_swarmspec::init_testnet(), SwarmNodeType::Client)
     }
 
     fn create_test_handle() -> ClientHandle {
@@ -393,67 +328,48 @@ mod tests {
         let topology = MockTopology::default();
         let handle = create_test_handle();
 
-        let client = SwarmClient::<MockBootnodeTypes>::bootnode(topology.clone(), handle.clone());
+        let client = Client::<MockSwarmBootnodeTypes>::bootnode(topology.clone(), handle.clone());
         let _ = client.topology().neighbors(0);
 
         // Type alias
-        let _client: BootnodeClient<MockBootnodeTypes> = SwarmClient::bootnode(topology, handle);
+        let _client: BootnodeClient<MockSwarmBootnodeTypes> = Client::bootnode(topology, handle);
     }
 
     #[test]
     fn test_bootnode_client_clone() {
         let topology = MockTopology::default();
         let handle = create_test_handle();
-        let client = SwarmClient::<MockBootnodeTypes>::bootnode(topology, handle);
+        let client = Client::<MockSwarmBootnodeTypes>::bootnode(topology, handle);
         let _clone = client.clone();
     }
 
     #[test]
-    fn test_light_client() {
+    fn test_full_client() {
         let topology = MockTopology::default();
-        let accounting = Accounting::new(AccountingConfig::default());
-        let pricer = FixedPricer::default();
+        let accounting = Accounting::new(DefaultAccountingConfig, test_identity());
+        let pricer = FixedPricer::new(10_000, &*vertex_swarmspec::init_mainnet());
         let handle = create_test_handle();
 
-        let client = SwarmClient::<MockLightTypes, _, _>::light(
-            topology.clone(),
-            accounting,
-            pricer.clone(),
-            handle.clone(),
-        );
+        let client: FullClient<MockSwarmClientTypes, Arc<Accounting<DefaultAccountingConfig, Identity>>, FixedPricer, ()> =
+            Client::full(topology.clone(), accounting, pricer.clone(), handle.clone());
         let peers = client.accounting().peers();
         assert!(peers.is_empty());
 
-        // Type alias - accounting is wrapped in Arc by light()
-        let accounting2 = Accounting::new(AccountingConfig::default());
-        let _client: LightClient<MockLightTypes, Arc<Accounting>, FixedPricer> =
-            SwarmClient::light(topology, accounting2, pricer, handle);
+        // Type alias - accounting is wrapped in Arc by full()
+        let accounting2 = Accounting::new(DefaultAccountingConfig, test_identity());
+        let _client: FullClient<MockSwarmClientTypes, Arc<Accounting<DefaultAccountingConfig, Identity>>, FixedPricer, ()> =
+            Client::full(topology, accounting2, pricer, handle);
     }
 
     #[test]
-    fn test_light_client_clone() {
+    fn test_full_client_clone() {
         let topology = MockTopology::default();
-        let accounting = Accounting::new(AccountingConfig::default());
-        let pricer = FixedPricer::default();
+        let accounting = Accounting::new(DefaultAccountingConfig, test_identity());
+        let pricer = FixedPricer::new(10_000, &*vertex_swarmspec::init_mainnet());
         let handle = create_test_handle();
 
-        let client =
-            SwarmClient::<MockLightTypes, _, _>::light(topology, accounting, pricer, handle);
+        let client: FullClient<MockSwarmClientTypes, Arc<Accounting<DefaultAccountingConfig, Identity>>, FixedPricer, ()> =
+            Client::full(topology, accounting, pricer, handle);
         let _clone = client.clone();
-    }
-
-    #[test]
-    fn test_publisher_client() {
-        let topology = MockTopology::default();
-        let accounting = Accounting::new(AccountingConfig::default());
-        let pricer = FixedPricer::default();
-        let handle = create_test_handle();
-
-        // Publisher with unit storage - accounting is wrapped in Arc by publisher()
-        let client: PublisherClient<MockLightTypes, Arc<Accounting>, FixedPricer, ()> =
-            SwarmClient::publisher(topology, accounting, pricer, handle);
-
-        let peers = client.accounting().peers();
-        assert!(peers.is_empty());
     }
 }

@@ -1,0 +1,30 @@
+[package]
+name = "vertex-topology-peermanager"
+description = "Peer lifecycle management with PeerId/OverlayAddress abstraction boundary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+vertex-primitives = { workspace = true }
+vertex-swarm-peer = { workspace = true, features = ["serde"] }
+libp2p = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }
+lru = { workspace = true }
+web-time = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+alloy-primitives = { workspace = true, features = ["serde"] }
+auto_impl = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+netdev = { workspace = true }
+ipnet = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+tempfile = "3"

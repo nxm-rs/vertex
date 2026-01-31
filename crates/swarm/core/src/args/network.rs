@@ -3,7 +3,7 @@
 use clap::Args;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use vertex_swarm_api::NetworkConfig;
+use vertex_swarm_api::SwarmNetworkConfig;
 
 use crate::constants::{
     DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_LISTEN_ADDR, DEFAULT_MAX_PEERS, DEFAULT_P2P_PORT,
@@ -41,6 +41,24 @@ pub struct NetworkArgs {
     #[arg(long = "network.addr", default_value = DEFAULT_LISTEN_ADDR)]
     pub addr: String,
 
+    /// External/NAT addresses to advertise.
+    ///
+    /// Comma-separated list of multiaddrs that this node can be reached at from the
+    /// public internet. Use when behind NAT or port-forwarding.
+    ///
+    /// Example: `/ip4/203.0.113.50/tcp/1634,/ip4/203.0.113.50/udp/1634/quic-v1`
+    #[arg(long = "network.nat-addr", value_delimiter = ',')]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nat_addrs: Option<Vec<String>>,
+
+    /// Enable auto-NAT discovery from peer-observed addresses.
+    ///
+    /// When enabled, addresses reported by peers during handshake are used to
+    /// infer external addresses after sufficient confirmations.
+    #[arg(long = "network.nat-auto")]
+    #[serde(default)]
+    pub nat_auto: bool,
+
     /// Maximum number of peers.
     #[arg(long = "network.max-peers", default_value_t = DEFAULT_MAX_PEERS)]
     pub max_peers: usize,
@@ -58,6 +76,8 @@ impl Default for NetworkArgs {
             trusted_peers: None,
             port: DEFAULT_P2P_PORT,
             addr: DEFAULT_LISTEN_ADDR.to_string(),
+            nat_addrs: None,
+            nat_auto: false,
             max_peers: DEFAULT_MAX_PEERS,
             idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
         }
@@ -71,7 +91,7 @@ impl NetworkArgs {
     }
 }
 
-impl NetworkConfig for NetworkArgs {
+impl SwarmNetworkConfig for NetworkArgs {
     fn listen_addrs(&self) -> Vec<String> {
         vec![self.listen_multiaddr()]
     }
@@ -90,5 +110,13 @@ impl NetworkConfig for NetworkArgs {
 
     fn idle_timeout(&self) -> Duration {
         Duration::from_secs(self.idle_timeout_secs)
+    }
+
+    fn nat_addrs(&self) -> Vec<String> {
+        self.nat_addrs.clone().unwrap_or_default()
+    }
+
+    fn nat_auto_enabled(&self) -> bool {
+        self.nat_auto
     }
 }

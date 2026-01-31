@@ -1,48 +1,12 @@
-//! Bandwidth incentives - per-peer accounting without mutex contention.
+//! Bandwidth incentives - per-peer accounting.
 //!
-//! # Design
-//!
-//! The bandwidth accounting system uses a two-level design to avoid lock contention:
-//!
-//! 1. [`BandwidthAccounting`] - Factory that creates per-peer handles
-//! 2. [`PeerBandwidth`] - Per-peer handle with lock-free operations
-//!
-//! When a connection is established, call `accounting.for_peer(overlay_addr)` to get
-//! a [`PeerBandwidth`] handle. This handle is `Clone` and can be shared by all
-//! protocols on that connection (retrieval, pushsync, pricing, swap).
-//!
-//! The `record()` operation uses atomic counters, so multiple protocols can
-//! record bandwidth concurrently without any locking.
-//!
-//! # Overlay Addresses
-//!
-//! All accounting uses [`OverlayAddress`] (32-byte Swarm address) for peer
-//! identification, not libp2p `PeerId`. This is because:
-//!
-//! - Accounting is tied to the Swarm identity (overlay), not the connection (underlay)
-//! - A peer may reconnect with a different underlay but same overlay
-//! - Settlement (SWAP cheques) is based on overlay identity
-//!
-//! # Example
-//!
-//! ```ignore
-//! // Connection established - use peer's overlay address
-//! let peer_bandwidth = accounting.for_peer(peer_overlay);
-//!
-//! // Clone for each protocol stream
-//! let retrieval_bandwidth = peer_bandwidth.clone();
-//! let pushsync_bandwidth = peer_bandwidth.clone();
-//!
-//! // Both can record concurrently - no contention
-//! retrieval_bandwidth.record(1024, Direction::Download);
-//! pushsync_bandwidth.record(4096, Direction::Upload);
-//! ```
+//! Two-level design: [`SwarmBandwidthAccounting`] creates per-peer [`SwarmPeerBandwidth`] handles.
+//! Uses overlay addresses for peer identification (not libp2p `PeerId`).
 
-use async_trait::async_trait;
 use std::vec::Vec;
 use vertex_primitives::OverlayAddress;
 
-use crate::SwarmResult;
+use crate::{SwarmIdentity, SwarmResult};
 
 /// Direction of data transfer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,12 +19,10 @@ pub enum Direction {
 
 /// Per-peer bandwidth accounting handle.
 ///
-/// This is the handle used by protocol streams. It must be:
-/// - `Clone` - shared across protocols on the same connection
-/// - `Send + Sync` - used from async tasks
-/// - Lock-free for `record()` - uses atomics internally
-#[async_trait]
-pub trait PeerBandwidth: Clone + Send + Sync {
+/// Clone and share across protocols on the same connection.
+/// `record()` is lock-free (uses atomics).
+#[async_trait::async_trait]
+pub trait SwarmPeerBandwidth: Clone + Send + Sync {
     /// Record bandwidth usage (lock-free).
     ///
     /// This is called frequently from protocol handlers and MUST NOT block.
@@ -85,19 +47,16 @@ pub trait PeerBandwidth: Clone + Send + Sync {
 }
 
 /// Factory for creating per-peer bandwidth accounting handles.
-///
-/// Implementations manage the set of peer accounts and create handles
-/// when connections are established.
-///
-/// # Lifecycle
-///
-/// 1. Connection established → `for_peer(peer_id)` creates/returns handle
-/// 2. Protocols clone the handle and use it for bandwidth tracking
-/// 3. Connection closed → implementation may clean up or keep for reconnect
 #[auto_impl::auto_impl(&, Arc)]
-pub trait BandwidthAccounting: Send + Sync {
+pub trait SwarmBandwidthAccounting: Send + Sync {
+    /// The node identity type, providing access to overlay address, signer, etc.
+    type Identity: SwarmIdentity;
+
     /// The per-peer accounting handle type.
-    type Peer: PeerBandwidth;
+    type Peer: SwarmPeerBandwidth;
+
+    /// Get the node's identity.
+    fn identity(&self) -> &Self::Identity;
 
     /// Get or create an availability accounting handle for a peer.
     ///
@@ -113,11 +72,17 @@ pub trait BandwidthAccounting: Send + Sync {
 }
 
 /// No-op bandwidth accounting (always allows, never settles).
-///
-/// Use this for testing or private networks without bandwidth accounting.
-/// This is the default implementation used when no incentives are configured.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoBandwidthIncentives;
+#[derive(Debug, Clone)]
+pub struct NoBandwidthIncentives<I: SwarmIdentity> {
+    identity: I,
+}
+
+impl<I: SwarmIdentity> NoBandwidthIncentives<I> {
+    /// Create a new no-op bandwidth accounting with the given identity.
+    pub fn new(identity: I) -> Self {
+        Self { identity }
+    }
+}
 
 /// No-op per-peer bandwidth handle.
 #[derive(Debug, Clone)]
@@ -125,8 +90,8 @@ pub struct NoPeerBandwidth {
     peer: OverlayAddress,
 }
 
-#[async_trait]
-impl PeerBandwidth for NoPeerBandwidth {
+#[async_trait::async_trait]
+impl SwarmPeerBandwidth for NoPeerBandwidth {
     fn record(&self, _bytes: u64, _direction: Direction) {}
 
     fn allow(&self, _bytes: u64) -> bool {
@@ -146,8 +111,13 @@ impl PeerBandwidth for NoPeerBandwidth {
     }
 }
 
-impl BandwidthAccounting for NoBandwidthIncentives {
+impl<I: SwarmIdentity> SwarmBandwidthAccounting for NoBandwidthIncentives<I> {
+    type Identity = I;
     type Peer = NoPeerBandwidth;
+
+    fn identity(&self) -> &I {
+        &self.identity
+    }
 
     fn for_peer(&self, peer: OverlayAddress) -> Self::Peer {
         NoPeerBandwidth { peer }

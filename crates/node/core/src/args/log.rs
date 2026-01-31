@@ -2,7 +2,7 @@
 
 use clap::Args;
 use serde::{Deserialize, Serialize};
-use vertex_node_api::LoggingConfig;
+use vertex_node_api::NodeLoggingConfig;
 
 /// Default log file size in MB.
 const DEFAULT_MAX_FILE_SIZE_MB: u64 = 100;
@@ -55,7 +55,7 @@ impl Default for LogArgs {
     }
 }
 
-impl LoggingConfig for LogArgs {
+impl NodeLoggingConfig for LogArgs {
     fn logging_enabled(&self) -> bool {
         !self.quiet
     }

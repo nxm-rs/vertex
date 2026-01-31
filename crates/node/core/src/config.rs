@@ -33,7 +33,7 @@ use figment::{
     providers::{Env, Format, Serialized, Toml},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use vertex_node_api::ProtocolConfig;
+use vertex_node_api::NodeProtocolConfig;
 
 use crate::args::{ApiArgs, DatabaseArgs, InfraArgs};
 
@@ -68,7 +68,7 @@ impl InfraConfig {
 ///
 /// # Type Parameters
 ///
-/// - `P`: Protocol configuration type implementing [`ProtocolConfig`]
+/// - `P`: Protocol configuration type implementing [`NodeProtocolConfig`]
 ///
 /// # Serialization
 ///
@@ -117,7 +117,7 @@ impl<P: Default> Default for FullNodeConfig<P> {
 
 impl<P> FullNodeConfig<P>
 where
-    P: ProtocolConfig + Serialize + DeserializeOwned,
+    P: NodeProtocolConfig + Serialize + DeserializeOwned,
 {
     /// Load configuration from defaults, environment, and optional config file.
     ///
@@ -156,7 +156,7 @@ mod tests {
 
     /// Minimal test protocol config
     #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-    struct TestProtocolConfig {
+    struct TestNodeProtocolConfig {
         test_value: u32,
     }
 
@@ -165,7 +165,7 @@ mod tests {
         test_value: u32,
     }
 
-    impl ProtocolConfig for TestProtocolConfig {
+    impl NodeProtocolConfig for TestNodeProtocolConfig {
         type Args = TestArgs;
 
         fn apply_args(&mut self, args: &Self::Args) {
@@ -175,7 +175,7 @@ mod tests {
 
     #[test]
     fn test_default_config() {
-        let config = FullNodeConfig::<TestProtocolConfig>::default();
+        let config = FullNodeConfig::<TestNodeProtocolConfig>::default();
         assert!(!config.infra.api.grpc);
         assert_eq!(config.protocol.test_value, 0);
     }
@@ -183,7 +183,7 @@ mod tests {
     #[test]
     fn test_load_missing_file_uses_defaults() {
         let config =
-            FullNodeConfig::<TestProtocolConfig>::load(Some(Path::new("/nonexistent.toml")))
+            FullNodeConfig::<TestNodeProtocolConfig>::load(Some(Path::new("/nonexistent.toml")))
                 .unwrap();
         assert!(!config.infra.api.grpc);
         assert_eq!(config.protocol.test_value, 0);

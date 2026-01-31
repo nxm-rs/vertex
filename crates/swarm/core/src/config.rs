@@ -19,12 +19,12 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
-use vertex_node_api::ProtocolConfig;
+use vertex_node_api::NodeProtocolConfig;
 
-use crate::SwarmNodeType;
+use vertex_swarm_primitives::{BandwidthMode, SwarmNodeType};
+
 use crate::args::{
-    BandwidthArgs, BandwidthMode, IdentityArgs, NetworkArgs, StorageArgs, StorageIncentiveArgs,
-    SwarmArgs,
+    BandwidthArgs, IdentityArgs, NetworkArgs, StorageArgs, StorageIncentiveArgs, SwarmArgs,
 };
 
 /// Swarm protocol configuration.
@@ -67,11 +67,11 @@ impl Default for SwarmConfig {
     }
 }
 
-impl ProtocolConfig for SwarmConfig {
+impl NodeProtocolConfig for SwarmConfig {
     type Args = SwarmArgs;
 
     fn apply_args(&mut self, args: &Self::Args) {
-        self.node_type = args.node_type;
+        self.node_type = args.node_type.into();
         self.network = args.network.clone();
         self.bandwidth = args.bandwidth.clone();
         self.storage = args.storage.clone();
@@ -87,8 +87,8 @@ impl SwarmConfig {
     }
 
     /// Get the bandwidth mode.
-    pub fn bandwidth_mode(&self) -> &BandwidthMode {
-        &self.bandwidth.mode
+    pub fn bandwidth_mode(&self) -> BandwidthMode {
+        self.bandwidth.mode.into()
     }
 
     /// Returns true if the node type requires a persistent identity.

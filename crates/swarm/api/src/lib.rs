@@ -1,46 +1,11 @@
-//! Swarm API - Core abstractions for Ethereum Swarm
-//!
-//! This crate defines the minimal abstractions that make a Swarm a Swarm.
-//! Implementation details (libp2p, kademlia, specific storage backends) live
-//! elsewhere in `vertex-client-*`, `vertex-storer-*`, etc.
-//!
-//! # Type Hierarchy
-//!
-//! Capability levels form a hierarchy with [`BootnodeTypes`] as the root:
-//!
-//! - [`BootnodeTypes`] - Network participation only
-//! - [`LightTypes`] - Adds retrieval with accounting
-//! - [`PublisherTypes`] - Adds upload capability
-//! - [`FullTypes`] - Adds local storage and sync
-//!
-//! # Core Concepts
-//!
-//! - [`SwarmReader`] - Get chunks (read-only access with bandwidth accounting)
-//! - [`SwarmWriter`] - Put and get chunks (read-write access with payment)
-//! - [`LocalStore`] - Local chunk persistence for full nodes
-//! - [`BandwidthAccounting`] - Per-peer bandwidth tracking (pseudosettle/SWAP)
-//! - [`ChunkSync`] - Sync chunks between peers
-//! - [`Topology`] - Neighborhood awareness
-//!
-//! # Protocol Integration
-//!
-//! - [`SwarmProtocol`] - Unified protocol for all capability levels
-//! - [`SwarmServices`] - Unified services (same for all levels)
-//! - [`SwarmRpcProviders`] - RPC data sources for gRPC/JSON-RPC exposure
-//!
-//! # Design Principles
-//!
-//! - Traits define *what*, implementations define *how*
-//! - No libp2p concepts leak into the API
-//! - Payment is configurable via associated types (can be `()` for none)
-//! - Bandwidth accounting is per-peer and lock-free
-//! - Components use composition (higher levels compose lower levels)
+//! Swarm API - Core abstractions for Ethereum Swarm.
 
 #![warn(missing_docs)]
 
 mod components;
 mod config;
 mod error;
+mod identity;
 mod protocol;
 mod providers;
 mod rpc;
@@ -51,6 +16,7 @@ mod types;
 pub use components::*;
 pub use config::*;
 pub use error::*;
+pub use identity::*;
 pub use protocol::*;
 pub use providers::*;
 pub use rpc::*;

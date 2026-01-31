@@ -1,136 +1,154 @@
-use super::{Ack, CodecError, Syn, ack_from_proto};
+//! SynAck message codec for handshake protocol.
 
-#[derive(Debug, Clone, PartialEq)]
+use vertex_swarm_peer::SwarmPeer;
+use vertex_net_codec::{ProtoMessage, ProtoMessageWithContext};
+
+use super::error::{CodecError, HandshakeCodecDomainError};
+use super::Syn;
+use super::ack::{swarm_peer_from_proto, swarm_peer_to_proto, welcome_message_from_proto};
+
+/// SynAck message containing both Syn echo and peer identity.
+#[derive(Clone)]
 pub struct SynAck {
     syn: Syn,
-    ack: Ack,
+    swarm_peer: SwarmPeer,
+    full_node: bool,
+    welcome_message: String,
 }
 
 impl SynAck {
-    pub fn new(syn: Syn, ack: Ack) -> Self {
-        Self { syn, ack }
+    /// Create a new SynAck message.
+    pub fn new(
+        syn: Syn,
+        swarm_peer: SwarmPeer,
+        full_node: bool,
+        welcome_message: String,
+    ) -> Self {
+        Self {
+            syn,
+            swarm_peer,
+            full_node,
+            welcome_message,
+        }
     }
 
+    /// Returns the Syn component.
     pub fn syn(&self) -> &Syn {
         &self.syn
     }
 
-    pub fn ack(&self) -> &Ack {
-        &self.ack
+    /// Returns the peer's Swarm identity.
+    pub fn swarm_peer(&self) -> &SwarmPeer {
+        &self.swarm_peer
     }
 
-    pub fn into_parts(self) -> (Syn, Ack) {
-        (self.syn, self.ack)
+    /// Returns whether this is a full node.
+    pub fn full_node(&self) -> bool {
+        self.full_node
+    }
+
+    /// Returns the welcome message.
+    pub fn welcome_message(&self) -> &str {
+        &self.welcome_message
+    }
+
+    /// Consume and return the components.
+    pub fn into_parts(self) -> (Syn, SwarmPeer, bool, String) {
+        (self.syn, self.swarm_peer, self.full_node, self.welcome_message)
     }
 }
 
-/// Convert from protobuf SynAck to our SynAck, validating the network_id matches.
-pub fn synack_from_proto(
-    value: crate::proto::handshake::SynAck,
-    expected_network_id: u64,
-) -> Result<SynAck, CodecError> {
-    let syn = value
-        .syn
-        .ok_or_else(|| CodecError::MissingField("syn"))?
-        .try_into()?;
-    let ack = ack_from_proto(
-        value.ack.ok_or_else(|| CodecError::MissingField("ack"))?,
-        expected_network_id,
-    )?;
-    Ok(SynAck::new(syn, ack))
-}
+impl ProtoMessageWithContext<u64> for SynAck {
+    type Proto = crate::proto::handshake::SynAck;
+    type DecodeError = CodecError;
 
-impl From<SynAck> for crate::proto::handshake::SynAck {
-    fn from(value: SynAck) -> Self {
-        let (syn, ack) = value.into_parts();
+    fn into_proto_with_context(self, network_id: &u64) -> Self::Proto {
         crate::proto::handshake::SynAck {
-            syn: Some(syn.into()),
-            ack: Some(ack.into()),
+            syn: Some(self.syn.into_proto()),
+            ack: Some(swarm_peer_to_proto(
+                &self.swarm_peer,
+                *network_id,
+                self.full_node,
+                &self.welcome_message,
+            )),
         }
     }
-}
 
-impl<'a> arbitrary::Arbitrary<'a> for SynAck {
-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        Ok(Self {
-            syn: Syn::arbitrary(u)?,
-            ack: Ack::arbitrary(u)?,
-        })
+    fn from_proto_with_context(proto: Self::Proto, expected_network_id: &u64) -> Result<Self, Self::DecodeError> {
+        let syn = Syn::from_proto(
+            proto.syn.ok_or_else(|| CodecError::domain(HandshakeCodecDomainError::MissingField("syn")))?
+        )?;
+        let proto_ack = proto.ack.ok_or_else(|| CodecError::domain(HandshakeCodecDomainError::MissingField("ack")))?;
+
+        let swarm_peer = swarm_peer_from_proto(&proto_ack, *expected_network_id)?;
+        let welcome_message = welcome_message_from_proto(&proto_ack)?;
+
+        Ok(SynAck::new(syn, swarm_peer, proto_ack.full_node, welcome_message))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arbitrary::Arbitrary;
-    use proptest::prelude::*;
-    use proptest_arbitrary_interop::arb;
-    use vertex_net_primitives_traits::NodeAddress as NodeAddressTrait;
+    use std::sync::Arc;
+    use alloy_primitives::B256;
+    use alloy_signer_local::PrivateKeySigner;
+    use libp2p::Multiaddr;
+    use vertex_net_codec::ProtocolCodecError;
 
-    // Helper function to create a test SynAck
+    const TEST_NETWORK_ID: u64 = 1234567890;
+
     fn create_test_synack() -> SynAck {
-        let syn = Syn::arbitrary(&mut arbitrary::Unstructured::new(&[0u8; 256])).unwrap();
-        let ack = Ack::arbitrary(&mut arbitrary::Unstructured::new(&[0u8; 256])).unwrap();
-        SynAck::new(syn, ack)
+        let syn = Syn::new(Multiaddr::try_from("/ip4/127.0.0.1/tcp/1234").unwrap());
+        let signer = Arc::new(PrivateKeySigner::random());
+        let multiaddr: Multiaddr = "/ip4/192.168.1.1/tcp/5678".parse().unwrap();
+        let peer = SwarmPeer::with_signer(
+            vec![multiaddr],
+            B256::default(),
+            TEST_NETWORK_ID,
+            signer,
+        ).unwrap();
+        SynAck::new(syn, peer, true, "test".to_string())
     }
 
-    proptest! {
-        #[test]
-        fn test_synack_proto_roundtrip(
-            synack in arb::<SynAck>()
-        ) {
-            // Get the network_id from the ack's node_address for validation
-            let network_id = synack.ack().node_address().network_id();
+    #[test]
+    fn test_synack_proto_roundtrip() {
+        let synack = create_test_synack();
 
-            // Convert SynAck to proto
-            let proto_synack: crate::proto::handshake::SynAck = synack.clone().into();
+        // Convert SynAck to proto with context
+        let proto_synack = synack.clone().into_proto_with_context(&TEST_NETWORK_ID);
 
-            // Convert proto back to SynAck
-            let recovered_synack = synack_from_proto(proto_synack, network_id);
+        // Convert proto back to SynAck
+        let recovered_synack = SynAck::from_proto_with_context(proto_synack, &TEST_NETWORK_ID).unwrap();
 
-            prop_assert!(recovered_synack.is_ok());
-            let recovered_synack = recovered_synack.unwrap();
-
-            // Verify equality
-            prop_assert_eq!(&synack, &recovered_synack);
-
-            // Verify fields using accessors
-            prop_assert_eq!(synack.syn(), recovered_synack.syn());
-            prop_assert_eq!(synack.ack(), recovered_synack.ack());
-        }
+        // Verify equality
+        assert_eq!(synack.syn(), recovered_synack.syn());
+        assert_eq!(synack.swarm_peer(), recovered_synack.swarm_peer());
+        assert_eq!(synack.full_node(), recovered_synack.full_node());
+        assert_eq!(synack.welcome_message(), recovered_synack.welcome_message());
     }
 
     #[test]
     fn test_synack_err_on_malformed_proto() {
         let synack = create_test_synack();
-        let network_id = synack.ack().node_address().network_id();
-        let proto_synack: crate::proto::handshake::SynAck = synack.into();
+        let proto_synack = synack.into_proto_with_context(&TEST_NETWORK_ID);
 
-        type SynAckModifier =
-            Box<dyn Fn(crate::proto::handshake::SynAck) -> crate::proto::handshake::SynAck>;
+        // Test missing syn
+        let mut modified = proto_synack.clone();
+        modified.syn = None;
+        let result = SynAck::from_proto_with_context(modified, &TEST_NETWORK_ID);
+        assert!(matches!(
+            result,
+            Err(ProtocolCodecError::Domain(HandshakeCodecDomainError::MissingField("syn")))
+        ));
 
-        let test_cases: Vec<(SynAckModifier, Box<dyn Fn(CodecError) -> bool>)> = vec![
-            (
-                Box::new(|mut synack| {
-                    synack.syn = None;
-                    synack
-                }),
-                Box::new(|e| matches!(e, CodecError::MissingField("syn"))),
-            ),
-            (
-                Box::new(|mut synack| {
-                    synack.ack = None;
-                    synack
-                }),
-                Box::new(|e| matches!(e, CodecError::MissingField("ack"))),
-            ),
-        ];
-
-        for (modify_synack, check_error) in test_cases {
-            let modified_synack = modify_synack(proto_synack.clone());
-            let result = synack_from_proto(modified_synack, network_id);
-            assert!(result.is_err());
-            assert!(check_error(result.unwrap_err()));
-        }
+        // Test missing ack
+        let mut modified = proto_synack.clone();
+        modified.ack = None;
+        let result = SynAck::from_proto_with_context(modified, &TEST_NETWORK_ID);
+        assert!(matches!(
+            result,
+            Err(ProtocolCodecError::Domain(HandshakeCodecDomainError::MissingField("ack")))
+        ));
     }
 }

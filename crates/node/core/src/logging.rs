@@ -2,7 +2,7 @@
 
 use eyre::Result;
 use tracing_subscriber::EnvFilter;
-use vertex_node_api::LoggingConfig;
+use vertex_node_api::NodeLoggingConfig;
 
 /// Initialize logging based on configuration.
 ///
@@ -11,7 +11,7 @@ use vertex_node_api::LoggingConfig;
 /// 2. Otherwise, start with `RUST_LOG` env var if set, or default to info level
 /// 3. Apply verbosity flags to increase log level
 /// 4. Apply any custom filter directive
-pub fn init_logging(config: &impl LoggingConfig) -> Result<()> {
+pub fn init_logging(config: &impl NodeLoggingConfig) -> Result<()> {
     let filter = if !config.logging_enabled() {
         EnvFilter::new("error")
     } else {

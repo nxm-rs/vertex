@@ -4,11 +4,17 @@ mod accounting;
 mod pricer;
 mod topology;
 
-pub use accounting::{AccountingBuilder, BandwidthAccountingBuilder, NoAccountingBuilder};
-pub use pricer::{FixedPricerBuilder, PricerBuilder};
+pub use accounting::{
+    AccountingBuilder, CombinedAccountingBuilder, ModeBasedAccounting,
+    ModeBasedAccountingBuilder, NoAccountingBuilder, PseudosettleAccountingBuilder,
+    SwapAccountingBuilder,
+};
+// Re-export DefaultAccountingConfig from vertex-swarm-api for convenience
+pub use vertex_swarm_api::DefaultAccountingConfig;
+pub use pricer::{FixedPricerBuilder, NoPricerBuilder, PricerBuilder};
 pub use topology::{KademliaTopologyBuilder, TopologyBuilder};
 
-use vertex_swarm_api::{LightTypes, NetworkConfig};
+use vertex_swarm_api::{SwarmClientTypes, SwarmNetworkConfig};
 
 use crate::SwarmBuilderContext;
 
@@ -19,7 +25,7 @@ use crate::SwarmBuilderContext;
 /// ```ignore
 /// let components = SwarmComponentsBuilder::default()
 ///     .topology(KademliaTopologyBuilder::default())
-///     .accounting(BandwidthAccountingBuilder::default())
+///     .accounting(PseudosettleAccountingBuilder::default())
 ///     .pricer(FixedPricerBuilder::default())
 ///     .build(&ctx);
 /// ```
@@ -80,8 +86,8 @@ impl<TB, AB, PB> SwarmComponentsBuilder<TB, AB, PB> {
         ctx: &SwarmBuilderContext<'_, Types, Cfg>,
     ) -> BuiltSwarmComponents<TB::Topology, AB::Accounting, PB::Pricer>
     where
-        Types: LightTypes,
-        Cfg: NetworkConfig,
+        Types: SwarmClientTypes,
+        Cfg: SwarmNetworkConfig,
         TB: TopologyBuilder<Types, Cfg>,
         AB: AccountingBuilder<Types, Cfg>,
         PB: PricerBuilder<Types, Cfg>,
@@ -97,7 +103,7 @@ impl<TB, AB, PB> SwarmComponentsBuilder<TB, AB, PB> {
 /// Built components ready for use.
 ///
 /// The builders decide whether to wrap types in `Arc` for cheap cloning.
-/// For example, `BandwidthAccountingBuilder` returns `Arc<Accounting>`.
+/// For example, `PseudosettleAccountingBuilder` returns `Arc<Accounting>`.
 #[derive(Debug, Clone)]
 pub struct BuiltSwarmComponents<T, A, P> {
     /// The topology.
@@ -108,16 +114,19 @@ pub struct BuiltSwarmComponents<T, A, P> {
     pub pricer: P,
 }
 
-/// Default components builder with Kademlia topology, bandwidth accounting, fixed pricer.
-pub type DefaultComponentsBuilder =
-    SwarmComponentsBuilder<KademliaTopologyBuilder, BandwidthAccountingBuilder, FixedPricerBuilder>;
+/// Default components builder with Kademlia topology, pseudosettle accounting, fixed pricer.
+pub type DefaultComponentsBuilder = SwarmComponentsBuilder<
+    KademliaTopologyBuilder,
+    PseudosettleAccountingBuilder<DefaultAccountingConfig>,
+    FixedPricerBuilder,
+>;
 
 impl DefaultComponentsBuilder {
     /// Create a default components builder with standard implementations.
     pub fn with_defaults() -> Self {
         SwarmComponentsBuilder::new()
             .topology(KademliaTopologyBuilder::default())
-            .accounting(BandwidthAccountingBuilder::default())
+            .accounting(PseudosettleAccountingBuilder::default())
             .pricer(FixedPricerBuilder::default())
     }
 }

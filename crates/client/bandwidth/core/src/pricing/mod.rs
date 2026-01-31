@@ -7,7 +7,7 @@
 //! # Formula
 //!
 //! ```text
-//! price = (MAX_PO - proximity + 1) * base_price
+//! price = (max_po - proximity + 1) * base_price
 //! ```
 
 mod fixed;
@@ -15,9 +15,6 @@ mod fixed;
 pub use fixed::FixedPricer;
 
 use vertex_primitives::{ChunkAddress, OverlayAddress};
-
-/// Maximum proximity order for 32-byte addresses.
-pub const MAX_PO: u8 = 31;
 
 /// Trait for pricing chunks.
 #[auto_impl::auto_impl(&, Arc)]
@@ -27,4 +24,18 @@ pub trait Pricer: Send + Sync {
 
     /// Get the price for a chunk when served by a specific peer.
     fn peer_price(&self, peer: &OverlayAddress, chunk: &ChunkAddress) -> u64;
+}
+
+/// No-op pricer for nodes that don't participate in pricing (e.g., bootnodes).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoPricer;
+
+impl Pricer for NoPricer {
+    fn price(&self, _chunk: &ChunkAddress) -> u64 {
+        0
+    }
+
+    fn peer_price(&self, _peer: &OverlayAddress, _chunk: &ChunkAddress) -> u64 {
+        0
+    }
 }

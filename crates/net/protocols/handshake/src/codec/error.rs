@@ -1,39 +1,42 @@
+//! Error types for handshake protocol codec.
+
 use libp2p::multiaddr;
-use thiserror::Error;
-use vertex_net_primitives_traits::NodeAddressError;
+use vertex_swarm_peer::SwarmPeerError;
+use vertex_net_codec::ProtocolCodecError;
 
-#[derive(Debug, Error)]
-pub enum CodecError {
-    #[error("Network ID mismatch")]
-    NetworkIDMismatch,
+/// Domain-specific errors for handshake protocol.
+#[derive(Debug, thiserror::Error)]
+pub enum HandshakeCodecDomainError {
+    /// Network ID mismatch between peers.
+    #[error("network ID mismatch")]
+    NetworkIdMismatch,
 
-    #[error("Missing field: {0}")]
+    /// Required field missing from message.
+    #[error("missing field: {0}")]
     MissingField(&'static str),
 
-    #[error("Maximum {0} field length exceeded limit {1}, received {2}")]
-    FieldLengthLimitExceeded(&'static str, usize, usize),
+    /// Field exceeds maximum allowed length.
+    #[error("{0} exceeds max length {1}, got {2}")]
+    FieldLengthExceeded(&'static str, usize, usize),
 
-    #[error("Invalid data conversion: {0}")]
+    /// Invalid data conversion (e.g., slice to array).
+    #[error("invalid data: {0}")]
     InvalidData(#[from] std::array::TryFromSliceError),
 
-    #[error("Invalid Multiaddr: {0}")]
+    /// Invalid multiaddr encoding.
+    #[error("invalid multiaddr: {0}")]
     InvalidMultiaddr(#[from] multiaddr::Error),
 
-    #[error("Invalid signature: {0}")]
+    /// Invalid cryptographic signature.
+    #[error("invalid signature: {0}")]
     InvalidSignature(#[from] alloy_primitives::SignatureError),
 
-    #[error("Invalid node address: {0}")]
-    InvalidNodeAddress(#[from] NodeAddressError),
-
-    #[error("Protocol error: {0}")]
-    Protocol(String),
-
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
+    /// Invalid peer identity.
+    #[error("invalid peer: {0}")]
+    InvalidPeer(#[from] SwarmPeerError),
 }
 
-impl From<quick_protobuf_codec::Error> for CodecError {
-    fn from(error: quick_protobuf_codec::Error) -> Self {
-        CodecError::Protocol(error.to_string())
-    }
-}
+/// Error type for handshake codec operations.
+///
+/// Uses the generic `ProtocolCodecError` with handshake-specific domain errors.
+pub type CodecError = ProtocolCodecError<HandshakeCodecDomainError>;

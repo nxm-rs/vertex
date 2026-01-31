@@ -1,0 +1,47 @@
+[package]
+name = "vertex-topology-core"
+description = "Topology behaviour for libp2p handshake, hive, and pingpong protocols"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+## vertex
+vertex-primitives.workspace = true
+vertex-swarm-api.workspace = true
+vertex-swarm-identity.workspace = true
+vertex-net-handshake.workspace = true
+vertex-net-headers.workspace = true
+vertex-net-hive.workspace = true
+vertex-net-pingpong.workspace = true
+vertex-swarm-peer.workspace = true
+vertex-topology-peermanager.workspace = true
+
+## p2p
+libp2p.workspace = true
+
+## async
+futures.workspace = true
+
+## crypto/primitives
+alloy-primitives.workspace = true
+bytes.workspace = true
+
+## misc
+thiserror.workspace = true
+rand.workspace = true
+tracing.workspace = true
+
+# DNS resolution (for bootnode dnsaddr resolution)
+hickory-resolver = { version = "0.25.0-alpha.5", features = ["tokio-runtime"] }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

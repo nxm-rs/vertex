@@ -1,27 +1,60 @@
 //! Bandwidth incentive CLI arguments.
 
-use clap::{Args, ValueEnum};
+use clap::Args;
 use serde::{Deserialize, Serialize};
-use vertex_bandwidth_core::{
-    DEFAULT_BASE_PRICE, DEFAULT_EARLY_PAYMENT_PERCENT, DEFAULT_LIGHT_FACTOR,
-    DEFAULT_PAYMENT_THRESHOLD, DEFAULT_PAYMENT_TOLERANCE_PERCENT, DEFAULT_REFRESH_RATE,
-};
-use vertex_swarm_api::BandwidthIncentiveConfig;
+use vertex_swarm_api::SwarmAccountingConfig;
+use vertex_swarm_primitives::BandwidthMode;
 
-/// Bandwidth incentive mode.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+/// CLI argument type for bandwidth mode selection.
+///
+/// This is a CLI-specific wrapper around [`BandwidthMode`] that provides
+/// clap integration. Use `.into()` to convert to [`BandwidthMode`].
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum, strum::FromRepr, Serialize, Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
-pub enum BandwidthMode {
-    /// No bandwidth accounting (dev/testing only).
-    None,
-    /// Soft accounting without real payments.
+#[repr(u8)]
+pub enum BandwidthModeArg {
+    /// No bandwidth accounting (dev only).
+    None = 0,
+    /// Soft accounting without real payments (default).
     #[default]
-    Pseudosettle,
+    Pseudosettle = 1,
     /// Real payment channels with chequebook.
-    Swap,
-    /// Both pseudosettle and SWAP (SWAP when threshold reached).
-    Both,
+    Swap = 2,
+    /// Both pseudosettle and SWAP.
+    Both = 3,
 }
+
+impl From<BandwidthModeArg> for BandwidthMode {
+    fn from(arg: BandwidthModeArg) -> Self {
+        BandwidthMode::from_repr(arg as u8).expect("matching repr")
+    }
+}
+
+impl From<BandwidthMode> for BandwidthModeArg {
+    fn from(mode: BandwidthMode) -> Self {
+        BandwidthModeArg::from_repr(mode as u8).expect("matching repr")
+    }
+}
+
+/// Default base price per chunk in accounting units.
+const DEFAULT_BASE_PRICE: u64 = 10_000;
+
+/// Default refresh rate in accounting units per second.
+const DEFAULT_REFRESH_RATE: u64 = 4_500_000;
+
+/// Default payment threshold in accounting units.
+const DEFAULT_PAYMENT_THRESHOLD: u64 = 13_500_000;
+
+/// Default payment tolerance as a percentage.
+const DEFAULT_PAYMENT_TOLERANCE_PERCENT: u64 = 25;
+
+/// Default early payment trigger percentage.
+const DEFAULT_EARLY_PAYMENT_PERCENT: u64 = 50;
+
+/// Default light node scaling factor.
+const DEFAULT_LIGHT_FACTOR: u64 = 10;
 
 /// Bandwidth incentive configuration.
 ///
@@ -36,8 +69,8 @@ pub struct BandwidthArgs {
     /// - pseudosettle: Soft accounting without payments (default)
     /// - swap: Real payments via SWAP chequebook
     /// - both: Pseudosettle until threshold, then SWAP
-    #[arg(long = "bandwidth.mode", value_enum, default_value_t = BandwidthMode::Pseudosettle)]
-    pub mode: BandwidthMode,
+    #[arg(long = "bandwidth.mode", value_enum, default_value_t = BandwidthModeArg::Pseudosettle)]
+    pub mode: BandwidthModeArg,
 
     /// Payment threshold in accounting units.
     ///
@@ -79,7 +112,7 @@ pub struct BandwidthArgs {
 impl Default for BandwidthArgs {
     fn default() -> Self {
         Self {
-            mode: BandwidthMode::default(),
+            mode: BandwidthModeArg::default(),
             payment_threshold: DEFAULT_PAYMENT_THRESHOLD,
             payment_tolerance_percent: DEFAULT_PAYMENT_TOLERANCE_PERCENT,
             base_price: DEFAULT_BASE_PRICE,
@@ -96,7 +129,7 @@ impl BandwidthArgs {
     /// Returns an error if arguments are set that don't apply to the selected mode.
     pub fn validate(&self) -> Result<(), String> {
         match self.mode {
-            BandwidthMode::None => {
+            BandwidthModeArg::None => {
                 // No args should be non-default when mode is none
                 let default = Self::default();
                 if self.refresh_rate != default.refresh_rate
@@ -109,13 +142,13 @@ impl BandwidthArgs {
                     return Err("bandwidth options have no effect when mode is 'none'".to_string());
                 }
             }
-            BandwidthMode::Pseudosettle => {
+            BandwidthModeArg::Pseudosettle => {
                 let default = Self::default();
                 if self.early_payment_percent != default.early_payment_percent {
                     return Err("early-percent only applies to 'swap' or 'both' modes".to_string());
                 }
             }
-            BandwidthMode::Swap => {
+            BandwidthModeArg::Swap => {
                 let default = Self::default();
                 if self.refresh_rate != default.refresh_rate {
                     return Err(
@@ -123,7 +156,7 @@ impl BandwidthArgs {
                     );
                 }
             }
-            BandwidthMode::Both => {
+            BandwidthModeArg::Both => {
                 // All args are valid
             }
         }
@@ -131,13 +164,9 @@ impl BandwidthArgs {
     }
 }
 
-impl BandwidthIncentiveConfig for BandwidthArgs {
-    fn pseudosettle_enabled(&self) -> bool {
-        matches!(self.mode, BandwidthMode::Pseudosettle | BandwidthMode::Both)
-    }
-
-    fn swap_enabled(&self) -> bool {
-        matches!(self.mode, BandwidthMode::Swap | BandwidthMode::Both)
+impl SwarmAccountingConfig for BandwidthArgs {
+    fn mode(&self) -> BandwidthMode {
+        self.mode.into()
     }
 
     fn payment_threshold(&self) -> u64 {

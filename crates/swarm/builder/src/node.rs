@@ -9,10 +9,10 @@
 //! use vertex_swarm_builder::{SwarmNodeBuilder, node_type};
 //!
 //! // Create a light node builder with defaults
-//! let builder = SwarmNodeBuilder::<node_type::Light>::new(&ctx, &args);
+//! let builder = SwarmNodeBuilder::<node_type::Client>::new(&ctx, &args);
 //!
 //! // Or customize components
-//! let builder = SwarmNodeBuilder::<node_type::Light>::new(&ctx, &args)
+//! let builder = SwarmNodeBuilder::<node_type::Client>::new(&ctx, &args)
 //!     .accounting(CustomAccountingBuilder::new());
 //!
 //! // Use with NodeBuilder
@@ -27,21 +27,24 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use tokio::sync::mpsc;
 use vertex_bandwidth_core::Accounting;
-use vertex_client_peermanager::PeerStore;
-use vertex_node_api::{BuildsProtocol, NodeContext};
+use vertex_bandwidth_pseudosettle::{PseudosettleProvider, create_pseudosettle_actor};
+use vertex_topology_peermanager::PeerStore;
+use vertex_node_api::{NodeBuildsProtocol, NodeContext};
 use vertex_swarm_api::{
-    NetworkConfig, SwarmLaunchConfig, SwarmLightComponents, SwarmProtocol, SwarmServices,
+    SwarmAccountingConfig, SwarmNetworkConfig, SwarmLaunchConfig, SwarmProtocol, Services,
 };
-use vertex_swarm_core::SwarmNode;
+use vertex_swarm_core::{ClientCommand, SwarmNode};
 use vertex_swarm_core::args::SwarmArgs;
-use vertex_swarm_identity::SwarmIdentity;
+use vertex_swarm_identity::Identity;
 use vertex_swarmspec::Hive;
+use vertex_tasks::TaskExecutor;
 
 use crate::error::SwarmNodeError;
 use crate::launch::SwarmLaunchContext;
-use crate::node_type::{Bootnode, Full, Light, NodeTypeDefaults, Publisher, Staker};
-use crate::types::{DefaultLightTypes, DefaultNetworkConfig};
+use crate::node_type::{Bootnode, Client, NodeTypeDefaults, Storer};
+use crate::types::{DefaultClientTypes, DefaultNetworkConfig};
 
 /// Generic Swarm node builder parameterized by node type and component builders.
 ///
@@ -50,7 +53,7 @@ use crate::types::{DefaultLightTypes, DefaultNetworkConfig};
 ///
 /// # Type Parameters
 ///
-/// - `N`: Node type marker (e.g., `Light`, `Full`, `Bootnode`)
+/// - `N`: Node type marker (e.g., `Client`, `Storer`, `Bootnode`)
 /// - `TB`: Topology builder type
 /// - `AB`: Accounting builder type
 /// - `PB`: Pricer builder type
@@ -60,7 +63,7 @@ pub struct SwarmNodeBuilder<
     AB = <N as NodeTypeDefaults>::DefaultAccounting,
     PB = <N as NodeTypeDefaults>::DefaultPricer,
 > {
-    identity: Arc<SwarmIdentity>,
+    identity: Arc<Identity>,
     spec: Arc<Hive>,
     peer_store: Arc<dyn PeerStore>,
     peers_path: std::path::PathBuf,
@@ -82,6 +85,8 @@ impl<N: NodeTypeDefaults> SwarmNodeBuilder<N> {
             discovery_enabled: ctx.config.protocol.network.discovery_enabled(),
             max_peers: ctx.config.protocol.network.max_peers(),
             idle_timeout_secs: ctx.config.protocol.network.idle_timeout().as_secs(),
+            nat_addrs: ctx.config.protocol.network.nat_addrs(),
+            nat_auto: ctx.config.protocol.network.nat_auto_enabled(),
         };
 
         SwarmNodeBuilder {
@@ -153,21 +158,21 @@ impl<N: NodeTypeDefaults, TB, AB, PB> SwarmNodeBuilder<N, TB, AB, PB> {
 
 /// Build config for light nodes produced by SwarmNodeBuilder.
 ///
-/// This implements `BuildsProtocol` and can be passed to `NodeBuilder::with_protocol`.
-pub struct LightNodeBuildConfig {
-    identity: Arc<SwarmIdentity>,
+/// This implements `NodeBuildsProtocol` and can be passed to `NodeBuilder::with_protocol`.
+pub struct ClientNodeBuildConfig {
+    identity: Arc<Identity>,
     spec: Arc<Hive>,
     peer_store: Arc<dyn PeerStore>,
     peers_path: std::path::PathBuf,
     network_config: DefaultNetworkConfig,
 }
 
-impl<TB, AB, PB> SwarmNodeBuilder<Light, TB, AB, PB> {
+impl<TB, AB, PB> SwarmNodeBuilder<Client, TB, AB, PB> {
     /// Build the light node configuration.
     ///
-    /// Returns a `LightNodeBuildConfig` that implements `BuildsProtocol`.
-    pub fn build(self) -> LightNodeBuildConfig {
-        LightNodeBuildConfig {
+    /// Returns a `ClientNodeBuildConfig` that implements `NodeBuildsProtocol`.
+    pub fn build(self) -> ClientNodeBuildConfig {
+        ClientNodeBuildConfig {
             identity: self.identity,
             spec: self.spec,
             peer_store: self.peer_store,
@@ -177,7 +182,7 @@ impl<TB, AB, PB> SwarmNodeBuilder<Light, TB, AB, PB> {
     }
 }
 
-impl BuildsProtocol for LightNodeBuildConfig {
+impl NodeBuildsProtocol for ClientNodeBuildConfig {
     type Protocol = SwarmProtocol<Self>;
 
     fn protocol_name(&self) -> &'static str {
@@ -186,28 +191,33 @@ impl BuildsProtocol for LightNodeBuildConfig {
 }
 
 #[async_trait]
-impl SwarmLaunchConfig for LightNodeBuildConfig {
-    type Types = DefaultLightTypes;
-    type Components = SwarmLightComponents<DefaultLightTypes>;
+impl SwarmLaunchConfig for ClientNodeBuildConfig {
+    type Types = DefaultClientTypes;
+    type Components = crate::rpc::ClientNodeRpcComponents;
     type Error = SwarmNodeError;
 
     async fn build(
         self,
         _ctx: &NodeContext,
-    ) -> Result<(Self::Components, SwarmServices<Self::Types>), Self::Error> {
+    ) -> Result<(Self::Components, Services<Self::Types>), Self::Error> {
         use tracing::info;
+        use vertex_swarm_api::ClientComponents;
         use vertex_swarmspec::Loggable;
 
-        info!("Building {} node...", Light::NAME);
+        info!("Building {} node...", Client::NAME);
         self.spec.log();
         self.identity.log();
         info!("Peers database: {}", self.peers_path.display());
 
-        // Build the SwarmNode which creates the topology and client service
+        // Create event channels for settlement services
+        let (pseudosettle_event_tx, pseudosettle_event_rx) = mpsc::unbounded_channel();
+
+        // Build the SwarmNode with event routing configured
         let (node, client_service, client_handle) =
-            SwarmNode::<DefaultLightTypes>::builder(self.identity.clone())
+            SwarmNode::<DefaultClientTypes>::builder(self.identity.clone())
                 .with_network_config(&self.network_config)
                 .with_peer_store(self.peer_store)
+                .with_pseudosettle_events(pseudosettle_event_tx)
                 .build()
                 .await
                 .map_err(|e| SwarmNodeError::Build(e.to_string()))?;
@@ -215,46 +225,162 @@ impl SwarmLaunchConfig for LightNodeBuildConfig {
         // Get the topology from the node
         let topology = node.kademlia_topology().clone();
 
-        // Create accounting
-        let accounting = Arc::new(Accounting::new(
-            vertex_bandwidth_core::AccountingConfig::default(),
+        // Create accounting configuration
+        let config = crate::components::DefaultAccountingConfig;
+
+        // Create a command channel sender for settlement services
+        // (Settlement services send commands via this channel)
+        let (settlement_command_tx, mut settlement_command_rx) =
+            mpsc::unbounded_channel::<ClientCommand>();
+
+        // Create accounting first (services will use it)
+        let accounting = Arc::new(Accounting::with_providers(
+            config.clone(),
+            self.identity.clone(),
+            // Start with empty providers - we'll add the handle-backed provider
+            vec![],
         ));
 
-        // Create components
-        let components = SwarmLightComponents::new(self.identity, topology, accounting);
+        // Create pseudosettle actor with the accounting reference
+        let (pseudosettle_service, pseudosettle_handle) = create_pseudosettle_actor(
+            pseudosettle_event_rx,
+            settlement_command_tx.clone(),
+            accounting.clone(),
+            config.refresh_rate(),
+        );
+
+        // Create accounting with the handle-backed provider
+        let accounting = Arc::new(Accounting::with_providers(
+            config.clone(),
+            self.identity.clone(),
+            vec![Box::new(PseudosettleProvider::with_handle(
+                config,
+                pseudosettle_handle,
+            ))],
+        ));
+
+        let providers = accounting.provider_names();
+        if providers.is_empty() {
+            info!("Bandwidth incentives: disabled");
+        } else {
+            info!("Bandwidth incentives: {}", providers.join(", "));
+        }
+
+        // Spawn settlement services
+        let executor = TaskExecutor::current();
+        executor.spawn(pseudosettle_service.into_task());
+
+        // Spawn a task to forward settlement commands to the client handle
+        let client_handle_for_settlement = client_handle.clone();
+        executor.spawn(async move {
+            while let Some(cmd) = settlement_command_rx.recv().await {
+                if let Err(e) = client_handle_for_settlement.send_command(cmd) {
+                    tracing::warn!(error = %e, "Failed to forward settlement command to client");
+                }
+            }
+        });
+
+        // Clone client_handle before moving into services
+        let client_handle_for_components = client_handle.clone();
+
+        // Create components (including client_handle for RPC), wrapped for RPC registration
+        let components = crate::rpc::ClientNodeRpcComponents(ClientComponents::new(
+            self.identity,
+            topology,
+            accounting,
+            client_handle_for_components,
+        ));
 
         // Services implement SpawnableTask directly - no wrappers needed
-        let services = SwarmServices::new(node, client_service, client_handle);
+        let services = Services::new(node, client_service, client_handle);
 
-        info!("{} node built successfully", Light::NAME);
+        info!("{} node built successfully", Client::NAME);
         Ok((components, services))
     }
 }
 
-impl<TB, AB, PB> SwarmNodeBuilder<Full, TB, AB, PB> {
+impl<TB, AB, PB> SwarmNodeBuilder<Storer, TB, AB, PB> {
     /// Build the full node configuration.
     pub fn build(self) -> ! {
-        unimplemented!("Full node builder not yet implemented")
-    }
-}
-
-impl<TB, AB, PB> SwarmNodeBuilder<Publisher, TB, AB, PB> {
-    /// Build the publisher node configuration.
-    pub fn build(self) -> ! {
-        unimplemented!("Publisher node builder not yet implemented")
+        unimplemented!("Storer node builder not yet implemented")
     }
 }
 
 impl<TB, AB, PB> SwarmNodeBuilder<Bootnode, TB, AB, PB> {
     /// Build the bootnode configuration.
-    pub fn build(self) -> ! {
-        unimplemented!("Bootnode builder not yet implemented")
+    pub fn build(self) -> BootnodeBuildConfig {
+        BootnodeBuildConfig {
+            identity: self.identity,
+            spec: self.spec,
+            peer_store: self.peer_store,
+            peers_path: self.peers_path,
+            network_config: self.network_config,
+        }
     }
 }
 
-impl<TB, AB, PB> SwarmNodeBuilder<Staker, TB, AB, PB> {
-    /// Build the staker node configuration.
-    pub fn build(self) -> ! {
-        unimplemented!("Staker node builder not yet implemented")
+/// Build config for bootnodes.
+pub struct BootnodeBuildConfig {
+    identity: Arc<Identity>,
+    spec: Arc<Hive>,
+    peer_store: Arc<dyn PeerStore>,
+    peers_path: std::path::PathBuf,
+    network_config: DefaultNetworkConfig,
+}
+
+impl NodeBuildsProtocol for BootnodeBuildConfig {
+    type Protocol = SwarmProtocol<Self>;
+
+    fn protocol_name(&self) -> &'static str {
+        "Swarm (Bootnode)"
+    }
+}
+
+#[async_trait]
+impl SwarmLaunchConfig for BootnodeBuildConfig {
+    type Types = crate::types::DefaultBootnodeTypes;
+    type Components = crate::rpc::BootnodeRpcComponents;
+    type Error = SwarmNodeError;
+
+    async fn build(
+        self,
+        _ctx: &NodeContext,
+    ) -> Result<(Self::Components, Services<Self::Types>), Self::Error> {
+        use tracing::info;
+        use vertex_swarmspec::Loggable;
+
+        info!("Building {} node...", Bootnode::NAME);
+        self.spec.log();
+        self.identity.log();
+        info!("Peers database: {}", self.peers_path.display());
+
+        // Build the BootNode (no client service/handle)
+        let node = vertex_swarm_core::BootNode::<crate::types::DefaultBootnodeTypes>::builder(
+            self.identity.clone(),
+        )
+        .with_network_config(&self.network_config)
+        .with_peer_store(self.peer_store)
+        .build()
+        .await
+        .map_err(|e| SwarmNodeError::Build(e.to_string()))?;
+
+        // Get topology for components
+        let topology = node.kademlia_topology().clone();
+
+        // Create components
+        let components = crate::rpc::BootnodeRpcComponents {
+            identity: self.identity,
+            topology,
+        };
+
+        // Create services with no-op client service/handle
+        let services = Services::new(
+            node,
+            crate::types::NoOpClientService,
+            crate::types::NoOpClientHandle,
+        );
+
+        info!("{} node built successfully", Bootnode::NAME);
+        Ok((components, services))
     }
 }

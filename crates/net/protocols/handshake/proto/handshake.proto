@@ -7,11 +7,11 @@ syntax = "proto3";
 package handshake;
 
 message Syn {
-    bytes observed_underlay = 1;
+    bytes observed_multiaddr = 1;
 };
 
 message Ack {
-    BzzAddress address = 1;
+    PeerAddress peer = 1;
     uint64 network_id = 2;
     bool full_node = 3;
     bytes nonce = 4;
@@ -23,8 +23,10 @@ message SynAck {
     Ack ack = 2;
 };
 
-message BzzAddress {
-    bytes underlay = 1;
+// Partial peer address - missing nonce (which is at Ack level).
+// Used for wire format only; convert to SwarmPeer for full representation.
+message PeerAddress {
+    bytes multiaddrs = 1;
     bytes signature = 2;
     bytes overlay = 3;
 };

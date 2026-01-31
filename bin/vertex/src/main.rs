@@ -7,7 +7,7 @@ use vertex_swarm_node::{SwarmNodeBuilder, SwarmNodeType, cli, node_type};
 async fn main() -> eyre::Result<()> {
     cli::run(|ctx, args| async move {
         match ctx.config.protocol.node_type {
-            SwarmNodeType::Light => {
+            SwarmNodeType::Client => {
                 NodeBuilder::new()
                     .with_launch_context(
                         ctx.base.executor.clone(),
@@ -15,24 +15,30 @@ async fn main() -> eyre::Result<()> {
                         ctx.config.infra.api.clone(),
                     )
                     .with_protocol(
-                        SwarmNodeBuilder::<node_type::Light>::new(&ctx, &args.swarm).build(),
+                        SwarmNodeBuilder::<node_type::Client>::new(&ctx, &args.swarm).build(),
                     )
                     .launch()
                     .await?
                     .wait_for_shutdown()
                     .await;
             }
-            SwarmNodeType::Full => {
-                unimplemented!("full node not yet implemented")
+            SwarmNodeType::Storer => {
+                unimplemented!("storer node not yet implemented")
             }
             SwarmNodeType::Bootnode => {
-                unimplemented!("bootnode not yet implemented")
-            }
-            SwarmNodeType::Publisher => {
-                unimplemented!("publisher node not yet implemented")
-            }
-            SwarmNodeType::Staker => {
-                unimplemented!("staker node not yet implemented")
+                NodeBuilder::new()
+                    .with_launch_context(
+                        ctx.base.executor.clone(),
+                        ctx.base.dirs.clone(),
+                        ctx.config.infra.api.clone(),
+                    )
+                    .with_protocol(
+                        SwarmNodeBuilder::<node_type::Bootnode>::new(&ctx, &args.swarm).build(),
+                    )
+                    .launch()
+                    .await?
+                    .wait_for_shutdown()
+                    .await;
             }
         }
         Ok(())

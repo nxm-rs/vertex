@@ -4,7 +4,7 @@ use alloy_primitives::B256;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use vertex_swarm_api::IdentityConfig;
+use vertex_swarm_api::SwarmIdentityConfig;
 
 /// Identity and keystore configuration.
 #[derive(Debug, Args, Clone, Default, Serialize, Deserialize)]
@@ -37,7 +37,7 @@ pub struct IdentityArgs {
     pub ephemeral: bool,
 }
 
-impl IdentityConfig for IdentityArgs {
+impl SwarmIdentityConfig for IdentityArgs {
     fn ephemeral(&self) -> bool {
         self.ephemeral
     }

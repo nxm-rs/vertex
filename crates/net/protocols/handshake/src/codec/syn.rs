@@ -1,101 +1,90 @@
+//! Syn message codec for handshake protocol.
+
 use libp2p::Multiaddr;
-use vertex_net_primitives::{arbitrary_multiaddr, deserialize_underlays};
+use vertex_swarm_peer::deserialize_multiaddrs;
+use vertex_net_codec::ProtoMessage;
 
-use super::CodecError;
+use super::error::{CodecError, HandshakeCodecDomainError};
 
+/// Syn message containing the observed multiaddr of the remote peer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Syn {
-    observed_underlay: Multiaddr,
+    observed_multiaddr: Multiaddr,
 }
 
 impl Syn {
-    pub fn new(observed_underlay: Multiaddr) -> Self {
-        Self { observed_underlay }
+    /// Create a new Syn message with the observed multiaddr.
+    pub fn new(observed_multiaddr: Multiaddr) -> Self {
+        Self { observed_multiaddr }
     }
 
-    pub fn observed_underlay(&self) -> &Multiaddr {
-        &self.observed_underlay
-    }
-}
-
-impl TryFrom<crate::proto::handshake::Syn> for Syn {
-    type Error = CodecError;
-
-    fn try_from(value: crate::proto::handshake::Syn) -> Result<Self, Self::Error> {
-        // Deserialize underlays (Bee can send multiple addresses)
-        let underlays = deserialize_underlays(&value.observed_underlay).map_err(|_| {
-            CodecError::InvalidMultiaddr(libp2p::multiaddr::Error::InvalidMultiaddr)
-        })?;
-
-        // Use the first underlay
-        let underlay = underlays
-            .into_iter()
-            .next()
-            .ok_or_else(|| CodecError::MissingField("observed_underlay"))?;
-
-        Ok(Self::new(underlay))
+    /// Returns the observed multiaddr.
+    pub fn observed_multiaddr(&self) -> &Multiaddr {
+        &self.observed_multiaddr
     }
 }
 
-impl From<Syn> for crate::proto::handshake::Syn {
-    fn from(syn: Syn) -> crate::proto::handshake::Syn {
+impl ProtoMessage for Syn {
+    type Proto = crate::proto::handshake::Syn;
+    type DecodeError = CodecError;
+
+    fn into_proto(self) -> Self::Proto {
         crate::proto::handshake::Syn {
-            observed_underlay: syn.observed_underlay.to_vec(),
+            observed_multiaddr: self.observed_multiaddr.to_vec(),
         }
     }
-}
 
-impl<'a> arbitrary::Arbitrary<'a> for Syn {
-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        let observed_underlay = arbitrary_multiaddr(u)?;
-        Ok(Self::new(observed_underlay))
+    fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
+        // Deserialize multiaddrs (Bee can send multiple addresses)
+        let multiaddrs = deserialize_multiaddrs(&proto.observed_multiaddr).map_err(|_| {
+            CodecError::domain(HandshakeCodecDomainError::InvalidMultiaddr(
+                libp2p::multiaddr::Error::InvalidMultiaddr
+            ))
+        })?;
+
+        // Use the first multiaddr
+        let multiaddr = multiaddrs
+            .into_iter()
+            .next()
+            .ok_or_else(|| CodecError::domain(HandshakeCodecDomainError::MissingField("observed_multiaddr")))?;
+
+        Ok(Self::new(multiaddr))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vertex_net_codec::ProtocolCodecError;
 
-    use proptest::prelude::*;
-    use proptest_arbitrary_interop::arb;
-
-    // Helper function to create a valid Syn instance
     fn create_test_syn() -> Syn {
         Syn::new(Multiaddr::try_from("/ip4/127.0.0.1/tcp/1234").unwrap())
     }
 
-    proptest! {
-        #[test]
-        fn test_syn_proto_roundtrip(
-            syn in arb::<Syn>()
-        ) {
-            // Convert Syn to proto
-            let proto_syn: crate::proto::handshake::Syn = syn.clone().into();
+    #[test]
+    fn test_syn_proto_roundtrip() {
+        let syn = create_test_syn();
 
-            // Convert proto back to Syn
-            let recovered_syn = Syn::try_from(proto_syn);
+        // Convert Syn to proto
+        let proto_syn = syn.clone().into_proto();
 
-            prop_assert!(recovered_syn.is_ok());
-            let recovered_syn = recovered_syn.unwrap();
+        // Convert proto back to Syn
+        let recovered_syn = Syn::from_proto(proto_syn).unwrap();
 
-            // Verify equality
-            prop_assert_eq!(&syn, &recovered_syn);
-
-            // Verify fields using accessors
-            prop_assert_eq!(syn.observed_underlay(), recovered_syn.observed_underlay());
-        }
+        // Verify equality
+        assert_eq!(syn, recovered_syn);
+        assert_eq!(syn.observed_multiaddr(), recovered_syn.observed_multiaddr());
     }
 
     #[test]
     fn test_syn_err_on_malformed_proto() {
-        let mut proto_syn: crate::proto::handshake::Syn = create_test_syn().into();
-        proto_syn.observed_underlay = vec![0x01, 0x02, 0x03];
+        let mut proto_syn = create_test_syn().into_proto();
+        proto_syn.observed_multiaddr = vec![0x01, 0x02, 0x03];
 
-        let result = Syn::try_from(proto_syn);
-        assert!(result.is_err());
+        let result = Syn::from_proto(proto_syn);
         assert!(matches!(
-            result.unwrap_err(),
-            CodecError::InvalidMultiaddr(_)
-        ))
+            result,
+            Err(ProtocolCodecError::Domain(HandshakeCodecDomainError::InvalidMultiaddr(_)))
+        ));
     }
 }

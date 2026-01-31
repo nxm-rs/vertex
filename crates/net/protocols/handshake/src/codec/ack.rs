@@ -1,132 +1,152 @@
+//! Ack message codec for handshake protocol.
+//!
+//! This module handles encoding/decoding of ACK messages, converting between
+//! the wire format (`proto::Ack`) and the domain type (`Ack`).
+
 use nectar_primitives::SwarmAddress;
-use vertex_net_primitives::{NodeAddress, deserialize_underlays};
-use vertex_net_primitives_traits::NodeAddress as NodeAddressTrait;
+use vertex_swarm_peer::SwarmPeer;
+use vertex_net_codec::ProtoMessageWithContext;
 
 use crate::MAX_WELCOME_MESSAGE_CHARS;
-use crate::codec::CodecError;
+use crate::codec::error::{CodecError, HandshakeCodecDomainError};
 
-#[derive(Debug, Clone, PartialEq)]
+/// Ack message containing peer identity and metadata.
+///
+/// This is sent as the final message in the handshake to confirm identity.
+#[derive(Clone)]
 pub struct Ack {
-    node_address: NodeAddress,
+    swarm_peer: SwarmPeer,
     full_node: bool,
     welcome_message: String,
 }
 
 impl Ack {
-    pub fn new(
-        node_address: NodeAddress,
-        full_node: bool,
-        welcome_message: String,
-    ) -> Result<Self, CodecError> {
-        if welcome_message.chars().count() > MAX_WELCOME_MESSAGE_CHARS {
-            return Err(CodecError::FieldLengthLimitExceeded(
-                "welcome_message",
-                MAX_WELCOME_MESSAGE_CHARS,
-                welcome_message.chars().count(),
-            ));
-        }
-
-        Ok(Self {
-            node_address,
+    /// Create a new Ack message.
+    pub fn new(swarm_peer: SwarmPeer, full_node: bool, welcome_message: String) -> Self {
+        Self {
+            swarm_peer,
             full_node,
             welcome_message,
-        })
+        }
     }
 
-    pub fn node_address(&self) -> &NodeAddress {
-        &self.node_address
+    /// Returns the peer's Swarm identity.
+    pub fn swarm_peer(&self) -> &SwarmPeer {
+        &self.swarm_peer
     }
 
+    /// Returns whether this is a full node.
     pub fn full_node(&self) -> bool {
         self.full_node
     }
 
+    /// Returns the welcome message.
     pub fn welcome_message(&self) -> &str {
         &self.welcome_message
     }
+
+    /// Consume and return the components.
+    pub fn into_parts(self) -> (SwarmPeer, bool, String) {
+        (self.swarm_peer, self.full_node, self.welcome_message)
+    }
 }
 
-/// Convert from protobuf Ack to our Ack, validating the network_id matches.
-pub fn ack_from_proto(
-    value: crate::proto::handshake::Ack,
+impl ProtoMessageWithContext<u64> for Ack {
+    type Proto = crate::proto::handshake::Ack;
+    type DecodeError = CodecError;
+
+    fn into_proto_with_context(self, network_id: &u64) -> Self::Proto {
+        swarm_peer_to_proto(
+            &self.swarm_peer,
+            *network_id,
+            self.full_node,
+            &self.welcome_message,
+        )
+    }
+
+    fn from_proto_with_context(proto: Self::Proto, expected_network_id: &u64) -> Result<Self, Self::DecodeError> {
+        let swarm_peer = swarm_peer_from_proto(&proto, *expected_network_id)?;
+        let welcome_message = welcome_message_from_proto(&proto)?;
+        Ok(Self::new(swarm_peer, proto.full_node, welcome_message))
+    }
+}
+
+/// Convert a proto::Ack to SwarmPeer, validating the network_id matches.
+///
+/// # Inbound-Only Peers
+///
+/// Empty multiaddrs are allowed for inbound-only peers (browsers, WebRTC, NAT-restricted)
+/// that cannot be dialed back. These peers can participate in protocols but will not
+/// be added to Kademlia topology or hive gossip.
+pub(crate) fn swarm_peer_from_proto(
+    value: &crate::proto::handshake::Ack,
     expected_network_id: u64,
-) -> Result<Ack, CodecError> {
+) -> Result<SwarmPeer, CodecError> {
     if value.network_id != expected_network_id {
-        return Err(CodecError::NetworkIDMismatch);
+        return Err(CodecError::domain(HandshakeCodecDomainError::NetworkIdMismatch));
     }
 
-    let protobuf_address = value
-        .address
+    let peer_address = value
+        .peer
         .as_ref()
-        .ok_or_else(|| CodecError::MissingField("address"))?;
+        .ok_or_else(|| CodecError::domain(HandshakeCodecDomainError::MissingField("peer")))?;
 
-    // Deserialize underlays (Bee can send multiple addresses)
-    let underlays = deserialize_underlays(&protobuf_address.underlay)
-        .map_err(|_| CodecError::InvalidMultiaddr(libp2p::multiaddr::Error::InvalidMultiaddr))?;
+    let overlay = SwarmAddress::from_slice(peer_address.overlay.as_slice())
+        .map_err(|_| CodecError::protocol("invalid overlay"))?;
 
-    // Use the first underlay (Bee picks the most relevant one first)
-    let underlay = underlays
-        .into_iter()
-        .next()
-        .ok_or_else(|| CodecError::MissingField("underlay"))?;
+    let nonce = value.nonce.as_slice().try_into()
+        .map_err(HandshakeCodecDomainError::from)
+        .map_err(CodecError::domain)?;
+    let signature = peer_address.signature.as_slice().try_into()
+        .map_err(HandshakeCodecDomainError::from)
+        .map_err(CodecError::domain)?;
 
-    let overlay = SwarmAddress::from_slice(protobuf_address.overlay.as_slice())
-        .map_err(|_| CodecError::Protocol("invalid overlay".to_string()))?;
-
-    let remote_address = NodeAddress::builder()
-        .with_network_id(value.network_id)
-        .with_nonce(value.nonce.as_slice().try_into()?)
-        .with_underlay(underlay)
-        .with_signature(
-            // Use raw underlay bytes for signature verification (may include 0x99 prefix)
-            &protobuf_address.underlay,
-            &overlay,
-            protobuf_address.signature.as_slice().try_into()?,
-            // Validate signatures at the codec level
-            true,
-        )?
-        .build();
-    Ack::new(remote_address, value.full_node, value.welcome_message)
+    // Create SwarmPeer from raw multiaddr bytes (used for signature verification)
+    SwarmPeer::from_signed(
+        &peer_address.multiaddrs,
+        signature,
+        overlay,
+        nonce,
+        value.network_id,
+        // Validate overlay derivation at the codec level
+        true,
+    )
+    .map_err(HandshakeCodecDomainError::from)
+    .map_err(CodecError::domain)
 }
 
-impl From<Ack> for crate::proto::handshake::Ack {
-    fn from(ack: Ack) -> crate::proto::handshake::Ack {
-        crate::proto::handshake::Ack {
-            address: Some(crate::proto::handshake::BzzAddress {
-                underlay: ack.node_address.underlay_address().to_vec(),
-                signature: ack.node_address.signature().unwrap().as_bytes().to_vec(),
-                overlay: ack.node_address.overlay_address().to_vec(),
-            }),
-            network_id: ack.node_address.network_id(),
-            full_node: ack.full_node,
-            nonce: ack.node_address.nonce().to_vec(),
-            welcome_message: ack.welcome_message,
-        }
+/// Validate and extract the welcome message from a proto::Ack.
+pub(crate) fn welcome_message_from_proto(
+    value: &crate::proto::handshake::Ack,
+) -> Result<String, CodecError> {
+    let char_count = value.welcome_message.chars().count();
+    if char_count > MAX_WELCOME_MESSAGE_CHARS {
+        return Err(CodecError::domain(HandshakeCodecDomainError::FieldLengthExceeded(
+            "welcome_message",
+            MAX_WELCOME_MESSAGE_CHARS,
+            char_count,
+        )));
     }
+    Ok(value.welcome_message.clone())
 }
 
-impl<'a> arbitrary::Arbitrary<'a> for Ack {
-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        let node_address = NodeAddress::arbitrary(u)?;
-        let full_node = u.arbitrary()?;
-
-        // Generate welcome message with valid length
-        let max_len = std::cmp::min(u.len(), MAX_WELCOME_MESSAGE_CHARS);
-        let welcome_len = u.int_in_range(0..=max_len)?;
-        let welcome_bytes: Vec<u8> = (0..welcome_len)
-            .map(|_| u.arbitrary())
-            .collect::<arbitrary::Result<Vec<u8>>>()?;
-
-        let welcome_message = String::from_utf8_lossy(&welcome_bytes)
-            .chars()
-            .take(MAX_WELCOME_MESSAGE_CHARS)
-            .collect::<String>();
-
-        Ok(Self {
-            node_address,
-            full_node,
-            welcome_message,
-        })
+/// Encode a SwarmPeer and metadata into a proto::Ack for sending.
+pub(crate) fn swarm_peer_to_proto(
+    peer: &SwarmPeer,
+    network_id: u64,
+    full_node: bool,
+    welcome_message: &str,
+) -> crate::proto::handshake::Ack {
+    crate::proto::handshake::Ack {
+        peer: Some(crate::proto::handshake::PeerAddress {
+            multiaddrs: peer.serialize_multiaddrs(),
+            signature: peer.signature().as_bytes().to_vec(),
+            overlay: peer.overlay().to_vec(),
+        }),
+        network_id,
+        full_node,
+        nonce: peer.nonce().to_vec(),
+        welcome_message: welcome_message.to_string(),
     }
 }
 
@@ -137,178 +157,202 @@ mod tests {
     use super::*;
     use alloy_signer::k256::ecdsa::SigningKey;
     use alloy_signer_local::{LocalSigner, PrivateKeySigner};
+    use alloy_primitives::B256;
     use libp2p::Multiaddr;
-    use proptest::prelude::*;
-    use proptest_arbitrary_interop::arb;
+    use vertex_net_codec::ProtocolCodecError;
 
     const TEST_NETWORK_ID: u64 = 1234567890;
 
-    // Helper function to create a valid Ack instance
-    fn create_test_ack(
+    fn create_test_peer(
         network_id: u64,
         signer: Arc<LocalSigner<SigningKey>>,
-        welcome_message: String,
-        full_node: bool,
-    ) -> Result<Ack, CodecError> {
-        let underlay: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
-        let node_address = NodeAddress::builder()
-            .with_network_id(network_id)
-            .with_nonce(Default::default())
-            .with_underlay(underlay)
-            .with_signer(signer)
-            .unwrap()
-            .build();
-
-        Ok(Ack {
-            node_address,
-            full_node,
-            welcome_message,
-        })
-    }
-
-    proptest! {
-        #[test]
-        fn test_ack_proto_roundtrip(
-            ack in arb::<Ack>()
-        ) {
-            let network_id = ack.node_address.network_id();
-
-            // Convert Ack to proto
-            let proto_ack: crate::proto::handshake::Ack = ack.clone().into();
-
-            // Convert proto back to Ack
-            let recovered_ack = ack_from_proto(proto_ack, network_id);
-
-            prop_assert!(recovered_ack.is_ok());
-            let recovered_ack = recovered_ack.unwrap();
-
-            // Verify equality
-            prop_assert_eq!(&ack, &recovered_ack);
-
-            // Verify fields using accessors
-            prop_assert_eq!(ack.node_address(), recovered_ack.node_address());
-            prop_assert_eq!(ack.full_node(), recovered_ack.full_node());
-            prop_assert_eq!(ack.welcome_message(), recovered_ack.welcome_message());
-        }
-
-        #[test]
-        fn test_ack_welcome_message_validation(
-            full_node in any::<bool>(),
-        ) {
-            let signer = Arc::new(PrivateKeySigner::random());
-
-            let base_char = "x";
-
-            // Test with message at max length
-            let max_message = base_char.repeat(MAX_WELCOME_MESSAGE_CHARS);
-            let ack = create_test_ack(TEST_NETWORK_ID, signer.clone(), max_message, full_node);
-            prop_assert!(ack.is_ok());
-
-            // Test with message exceeding max length
-            let too_long_message = base_char.repeat(MAX_WELCOME_MESSAGE_CHARS + 1);
-            let mut proto_ack: crate::proto::handshake::Ack = ack.unwrap().into();
-            proto_ack.welcome_message = too_long_message;
-
-            let result = ack_from_proto(proto_ack, TEST_NETWORK_ID);
-            prop_assert!(result.is_err());
-            prop_assert!(matches!(result.unwrap_err(), CodecError::FieldLengthLimitExceeded(_, _, _)))
-        }
-
-        #[test]
-        fn test_ack_network_id_validation(
-            ack in arb::<Ack>(),
-        ) {
-            let correct_network_id = ack.node_address.network_id();
-            let wrong_network_id = correct_network_id.wrapping_add(1);
-
-            let proto_ack: crate::proto::handshake::Ack = ack.into();
-
-            let result = ack_from_proto(proto_ack, wrong_network_id);
-            prop_assert!(result.is_err());
-            prop_assert!(matches!(
-                result.unwrap_err(),
-                CodecError::NetworkIDMismatch
-            ));
-        }
+    ) -> SwarmPeer {
+        let multiaddr: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
+        SwarmPeer::with_signer(
+            vec![multiaddr],
+            B256::default(),
+            network_id,
+            signer,
+        ).expect("should create peer")
     }
 
     #[test]
-    fn test_ack_err_on_malformed_proto() {
-        let proto_ack: crate::proto::handshake::Ack = create_test_ack(
-            TEST_NETWORK_ID,
-            Arc::new(PrivateKeySigner::random()),
-            "test".to_string(),
-            false,
-        )
-        .unwrap()
-        .into();
+    fn test_ack_roundtrip() {
+        let signer = Arc::new(PrivateKeySigner::random());
+        let peer = create_test_peer(TEST_NETWORK_ID, signer);
+        let ack = Ack::new(peer.clone(), true, "hello".to_string());
+
+        // Convert to proto with context and back
+        let proto = ack.clone().into_proto_with_context(&TEST_NETWORK_ID);
+        let recovered = Ack::from_proto_with_context(proto, &TEST_NETWORK_ID).unwrap();
+
+        assert_eq!(ack.swarm_peer(), recovered.swarm_peer());
+        assert_eq!(ack.full_node(), recovered.full_node());
+        assert_eq!(ack.welcome_message(), recovered.welcome_message());
+    }
+
+    #[test]
+    fn test_proto_roundtrip() {
+        let signer = Arc::new(PrivateKeySigner::random());
+        let peer = create_test_peer(TEST_NETWORK_ID, signer);
+        let full_node = true;
+        let welcome_message = "hello";
+
+        // Encode to proto
+        let proto_ack = swarm_peer_to_proto(&peer, TEST_NETWORK_ID, full_node, welcome_message);
+
+        // Decode back
+        let recovered_peer = swarm_peer_from_proto(&proto_ack, TEST_NETWORK_ID).unwrap();
+        let recovered_message = welcome_message_from_proto(&proto_ack).unwrap();
+
+        // Verify
+        assert_eq!(peer, recovered_peer);
+        assert_eq!(proto_ack.full_node, full_node);
+        assert_eq!(recovered_message, welcome_message);
+    }
+
+    #[test]
+    fn test_inbound_only_peer() {
+        let signer = Arc::new(PrivateKeySigner::random());
+        let peer = create_test_peer(TEST_NETWORK_ID, signer);
+        let mut proto_ack = swarm_peer_to_proto(&peer, TEST_NETWORK_ID, false, "browser peer");
+
+        // Clear multiaddrs to simulate an inbound-only peer
+        if let Some(ref mut peer_addr) = proto_ack.peer {
+            peer_addr.multiaddrs = vec![];
+        }
+
+        // The signature won't be valid because it was signed with the original multiaddrs
+        let result = swarm_peer_from_proto(&proto_ack, TEST_NETWORK_ID);
+        assert!(
+            matches!(
+                result,
+                Err(ProtocolCodecError::Domain(
+                    HandshakeCodecDomainError::InvalidPeer(
+                        vertex_swarm_peer::SwarmPeerError::InvalidSignature(_)
+                            | vertex_swarm_peer::SwarmPeerError::InvalidOverlay
+                    )
+                ))
+            ),
+            "expected signature/overlay error, not multiaddr error"
+        );
+    }
+
+    #[test]
+    fn test_welcome_message_validation() {
+        let signer = Arc::new(PrivateKeySigner::random());
+        let peer = create_test_peer(TEST_NETWORK_ID, signer);
+        let base_char = "x";
+
+        // Test with message at max length - should succeed
+        let max_message = base_char.repeat(MAX_WELCOME_MESSAGE_CHARS);
+        let proto_ack = swarm_peer_to_proto(&peer, TEST_NETWORK_ID, false, &max_message);
+        assert!(welcome_message_from_proto(&proto_ack).is_ok());
+
+        // Test with message exceeding max length - should fail
+        let mut proto_ack = swarm_peer_to_proto(&peer, TEST_NETWORK_ID, false, "");
+        proto_ack.welcome_message = base_char.repeat(MAX_WELCOME_MESSAGE_CHARS + 1);
+        assert!(matches!(
+            welcome_message_from_proto(&proto_ack),
+            Err(ProtocolCodecError::Domain(HandshakeCodecDomainError::FieldLengthExceeded(_, _, _)))
+        ));
+    }
+
+    #[test]
+    fn test_network_id_validation() {
+        let signer = Arc::new(PrivateKeySigner::random());
+        let peer = create_test_peer(TEST_NETWORK_ID, signer);
+        let proto_ack = swarm_peer_to_proto(&peer, TEST_NETWORK_ID, false, "hello");
+
+        let wrong_network_id = TEST_NETWORK_ID.wrapping_add(1);
+        let result = swarm_peer_from_proto(&proto_ack, wrong_network_id);
+        assert!(matches!(
+            result,
+            Err(ProtocolCodecError::Domain(HandshakeCodecDomainError::NetworkIdMismatch))
+        ));
+    }
+
+    #[test]
+    fn test_malformed_proto() {
+        let signer = Arc::new(PrivateKeySigner::random());
+        let peer = create_test_peer(TEST_NETWORK_ID, signer);
+        let proto_ack = swarm_peer_to_proto(&peer, TEST_NETWORK_ID, false, "test");
 
         type AckModifier =
             Box<dyn Fn(crate::proto::handshake::Ack) -> crate::proto::handshake::Ack>;
 
-        let test_cases: Vec<(AckModifier, Box<dyn Fn(CodecError) -> bool>)> = vec![
+        let test_cases: Vec<(AckModifier, Box<dyn Fn(&CodecError) -> bool>)> = vec![
             (
                 Box::new(|mut ack| {
-                    ack.address = None;
+                    ack.peer = None;
                     ack
                 }),
-                Box::new(|e| matches!(e, CodecError::MissingField("address"))),
+                Box::new(|e| matches!(
+                    e,
+                    ProtocolCodecError::Domain(HandshakeCodecDomainError::MissingField("peer"))
+                )),
             ),
             (
                 Box::new(|mut ack| {
-                    let mut addr = ack.address.unwrap();
-                    addr.signature = vec![0u8; 65];
-                    ack.address = Some(addr);
+                    let mut peer = ack.peer.unwrap();
+                    peer.signature = vec![0u8; 65];
+                    ack.peer = Some(peer);
                     ack
                 }),
-                Box::new(|e| {
-                    matches!(
-                        e,
-                        CodecError::InvalidNodeAddress(
-                            vertex_net_primitives_traits::NodeAddressError::InvalidSignature(_)
-                        )
-                    )
-                }),
+                Box::new(|e| matches!(
+                    e,
+                    ProtocolCodecError::Domain(HandshakeCodecDomainError::InvalidPeer(
+                        vertex_swarm_peer::SwarmPeerError::InvalidSignature(_)
+                    ))
+                )),
             ),
             (
                 Box::new(|mut ack| {
-                    let mut addr = ack.address.unwrap();
-                    addr.underlay = vec![0u8; 32];
-                    ack.address = Some(addr);
+                    let mut peer = ack.peer.unwrap();
+                    peer.multiaddrs = vec![0u8; 32];
+                    ack.peer = Some(peer);
                     ack
                 }),
-                Box::new(|e| matches!(e, CodecError::InvalidMultiaddr(_))),
+                // Now handled inside SwarmPeer::from_signed, so error is InvalidPeer(InvalidMultiaddr)
+                Box::new(|e| matches!(
+                    e,
+                    ProtocolCodecError::Domain(HandshakeCodecDomainError::InvalidPeer(
+                        vertex_swarm_peer::SwarmPeerError::InvalidMultiaddr(_)
+                    ))
+                )),
             ),
             (
                 Box::new(|mut ack| {
-                    let mut addr = ack.address.unwrap();
-                    addr.overlay = vec![0u8; 32];
-                    ack.address = Some(addr);
+                    let mut peer = ack.peer.unwrap();
+                    peer.overlay = vec![0u8; 32];
+                    ack.peer = Some(peer);
                     ack
                 }),
-                Box::new(|e| {
-                    matches!(
-                        e,
-                        CodecError::InvalidNodeAddress(
-                            vertex_net_primitives_traits::NodeAddressError::InvalidOverlay
-                        )
-                    )
-                }),
+                Box::new(|e| matches!(
+                    e,
+                    ProtocolCodecError::Domain(HandshakeCodecDomainError::InvalidPeer(
+                        vertex_swarm_peer::SwarmPeerError::InvalidOverlay
+                    ))
+                )),
             ),
             (
                 Box::new(|mut ack| {
                     ack.nonce = vec![0u8; 16];
                     ack
                 }),
-                Box::new(|e| matches!(e, CodecError::InvalidData(_))),
+                Box::new(|e| matches!(
+                    e,
+                    ProtocolCodecError::Domain(HandshakeCodecDomainError::InvalidData(_))
+                )),
             ),
         ];
 
         for (modify_ack, check_error) in test_cases {
             let modified_ack = modify_ack(proto_ack.clone());
-            let result = ack_from_proto(modified_ack, TEST_NETWORK_ID);
-            assert!(result.is_err());
-            assert!(check_error(result.unwrap_err()));
+            match swarm_peer_from_proto(&modified_ack, TEST_NETWORK_ID) {
+                Err(ref e) => assert!(check_error(e)),
+                Ok(_) => panic!("expected error"),
+            }
         }
     }
 }

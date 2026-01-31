@@ -6,23 +6,64 @@ rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Core Vertex client with SwarmReader implementation"
+description = "Core Vertex client with libp2p integration - THE libp2p boundary"
+
+[lints]
+workspace = true
 
 [dependencies]
 ## nectar
 nectar-primitives.workspace = true
 
-## vertex
-vertex-bandwidth-core.workspace = true
+## vertex - primitives
 vertex-primitives.workspace = true
+
+## vertex - network (libp2p layer)
+vertex-net-headers.workspace = true
+vertex-net-pricing.workspace = true
+vertex-net-pseudosettle.workspace = true
+
+## vertex - identity
+vertex-swarm-peer.workspace = true
+vertex-net-pushsync.workspace = true
+vertex-net-retrieval.workspace = true
+vertex-net-swap.workspace = true
+
+## vertex - bandwidth (chequebook types)
+vertex-bandwidth-chequebook.workspace = true
+
+## vertex - topology
+vertex-topology-core.workspace = true
+vertex-topology-kademlia.workspace = true
+vertex-topology-peermanager.workspace = true
+
+## vertex - swarm (libp2p-free abstractions)
 vertex-swarm-api.workspace = true
-vertex-swarm-builder.workspace = true
-vertex-swarm-core.workspace = true
+vertex-swarm-identity.workspace = true
+vertex-swarmspec.workspace = true
+
+## vertex - infrastructure
+vertex-bandwidth-core.workspace = true
+vertex-node-types.workspace = true
 vertex-tasks.workspace = true
+
+## p2p
+libp2p.workspace = true
+
+## crypto
+alloy-primitives.workspace = true
 
 ## async
 async-trait.workspace = true
+futures.workspace = true
 tokio = { workspace = true, features = ["sync"] }
+
+## misc
+bytes.workspace = true
+eyre.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 alloy-primitives.workspace = true

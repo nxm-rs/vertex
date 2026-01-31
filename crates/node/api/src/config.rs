@@ -4,12 +4,12 @@
 //! such as RPC servers, metrics endpoints, logging, and database storage.
 //!
 //! This module is protocol-agnostic - it knows nothing about specific network
-//! protocols like Swarm. Protocol configuration is handled via the [`ProtocolConfig`]
+//! protocols like Swarm. Protocol configuration is handled via the [`NodeProtocolConfig`]
 //! trait which protocols implement to provide their specific configuration.
 //!
 //! # Protocol Configuration
 //!
-//! The [`ProtocolConfig`] trait allows protocols to define their configuration
+//! The [`NodeProtocolConfig`] trait allows protocols to define their configuration
 //! structure. This is used by the generic config loading in `vertex-node-core`
 //! to create a combined configuration:
 //!
@@ -22,7 +22,7 @@
 //! ```
 
 /// Configuration for RPC server (gRPC, REST, etc.).
-pub trait RpcConfig {
+pub trait NodeRpcConfig {
     /// Whether the gRPC server is enabled.
     fn grpc_enabled(&self) -> bool;
 
@@ -34,7 +34,7 @@ pub trait RpcConfig {
 }
 
 /// Configuration for metrics and observability endpoints.
-pub trait MetricsConfig {
+pub trait NodeMetricsConfig {
     /// Whether the metrics HTTP endpoint is enabled.
     fn metrics_enabled(&self) -> bool;
 
@@ -48,7 +48,7 @@ pub trait MetricsConfig {
 /// Configuration for logging.
 ///
 /// Controls log output format, verbosity, and file rotation.
-pub trait LoggingConfig {
+pub trait NodeLoggingConfig {
     /// Whether logging is enabled.
     fn logging_enabled(&self) -> bool;
 
@@ -74,7 +74,7 @@ pub trait LoggingConfig {
 /// Configuration for database storage.
 ///
 /// Controls where persistent data is stored and database-specific settings.
-pub trait DatabaseConfig {
+pub trait NodeDatabaseConfig {
     /// Root data directory for all node data.
     fn data_dir(&self) -> Option<&str>;
 
@@ -92,13 +92,13 @@ pub trait DatabaseConfig {
 /// separately by the protocol layer.
 pub trait NodeConfig {
     /// RPC server configuration.
-    type Rpc: RpcConfig;
+    type Rpc: NodeRpcConfig;
     /// Metrics configuration.
-    type Metrics: MetricsConfig;
+    type Metrics: NodeMetricsConfig;
     /// Logging configuration.
-    type Logging: LoggingConfig;
+    type Logging: NodeLoggingConfig;
     /// Database configuration.
-    type Database: DatabaseConfig;
+    type Database: NodeDatabaseConfig;
 
     /// Get RPC server configuration.
     fn rpc(&self) -> &Self::Rpc;
@@ -128,7 +128,7 @@ pub trait NodeConfig {
 /// # Example
 ///
 /// ```ignore
-/// use vertex_node_api::ProtocolConfig;
+/// use vertex_node_api::NodeProtocolConfig;
 ///
 /// #[derive(Default, Clone, Serialize, Deserialize)]
 /// pub struct SwarmConfig {
@@ -137,7 +137,7 @@ pub trait NodeConfig {
 ///     // ... other Swarm-specific fields
 /// }
 ///
-/// impl ProtocolConfig for SwarmConfig {
+/// impl NodeProtocolConfig for SwarmConfig {
 ///     type Args = SwarmArgs;
 ///
 ///     fn apply_args(&mut self, args: &Self::Args) {
@@ -147,7 +147,7 @@ pub trait NodeConfig {
 ///     }
 /// }
 /// ```
-pub trait ProtocolConfig: Default + Clone {
+pub trait NodeProtocolConfig: Default + Clone {
     /// CLI arguments type for this protocol.
     ///
     /// This should be a clap `Args` struct that can be flattened into a CLI parser.

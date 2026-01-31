@@ -9,12 +9,14 @@ package hive;
 option go_package = "pb";
 
 message Peers {
-    repeated BzzAddress peers = 1;
+    repeated Peer peers = 1;
 }
 
-message BzzAddress {
-    bytes underlay = 1;
-    bytes signature = 2;
-    bytes overlay = 3;
-    bytes nonce = 4;
+// Peer represents a gossiped peer address in the Hive protocol.
+// Note: Field numbers match BzzAddress for wire compatibility with Bee.
+message Peer {
+    bytes multiaddrs = 1;   // Serialized multiaddrs (may include 0x99 prefix for multiple)
+    bytes signature = 2;    // ECDSA signature proving ownership
+    bytes overlay = 3;      // 32-byte Kademlia routing address
+    bytes nonce = 4;        // 32-byte nonce used in overlay derivation
 }

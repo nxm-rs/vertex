@@ -7,12 +7,12 @@
 //!
 //! ```text
 //! NodeTypes (generic infrastructure)
-//!   - Database: DatabaseProvider
-//!   - Rpc: RpcServer
-//!   - Executor: TaskExecutor
+//!   - Database: NodeDatabaseProvider
+//!   - Rpc: NodeRpcServer
+//!   - Executor: NodeTaskExecutor
 //! ```
 //!
-//! Protocol-specific types (e.g., Swarm's Identity, Topology, Accounting)
+//! Protocol-specific types (e.g., Swarm's SwarmIdentity, SwarmTopology, SwarmBandwidthAccounting)
 //! should extend these in the protocol layer, not here.
 
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -27,24 +27,24 @@ use core::marker::PhantomData;
 ///
 /// Implementations: redb, rocksdb, lmdb, in-memory (testing).
 #[auto_impl::auto_impl(&, Arc)]
-pub trait DatabaseProvider: Send + Sync + Clone + 'static {}
+pub trait NodeDatabaseProvider: Send + Sync + Clone + 'static {}
 
 /// RPC server trait for node API exposure.
 ///
 /// Implementations: JSON-RPC (Bee-compatible), gRPC, none.
 #[auto_impl::auto_impl(&, Arc)]
-pub trait RpcServer: Send + Sync + 'static {}
+pub trait NodeRpcServer: Send + Sync + 'static {}
 
 /// Task executor for async runtime.
-pub trait TaskExecutor: Send + Sync + Clone + 'static {}
+pub trait NodeTaskExecutor: Send + Sync + Clone + 'static {}
 
 /// No-op implementations for nodes without these features.
-impl DatabaseProvider for () {}
-impl RpcServer for () {}
-impl TaskExecutor for () {}
+impl NodeDatabaseProvider for () {}
+impl NodeRpcServer for () {}
+impl NodeTaskExecutor for () {}
 
-/// Implement TaskExecutor for vertex_tasks::TaskExecutor.
-impl TaskExecutor for vertex_tasks::TaskExecutor {}
+/// Implement NodeTaskExecutor for vertex_tasks::TaskExecutor.
+impl NodeTaskExecutor for vertex_tasks::TaskExecutor {}
 
 /// Generic node types for infrastructure components.
 ///
@@ -58,20 +58,20 @@ impl TaskExecutor for vertex_tasks::TaskExecutor {}
 /// // Protocol layer defines its own types:
 /// pub trait SwarmNodeTypes: NodeTypes {
 ///     type Spec: SwarmSpec;
-///     type Identity: Identity;
-///     type Topology: Topology;
-///     type Accounting: BandwidthAccounting;
+///     type Identity: SwarmIdentity;
+///     type Topology: SwarmTopology;
+///     type Accounting: SwarmBandwidthAccounting;
 /// }
 /// ```
 pub trait NodeTypes: Clone + Debug + Send + Sync + 'static {
     /// Database provider for persistent state.
-    type Database: DatabaseProvider;
+    type Database: NodeDatabaseProvider;
 
     /// RPC server implementation.
-    type Rpc: RpcServer;
+    type Rpc: NodeRpcServer;
 
     /// Task executor.
-    type Executor: TaskExecutor;
+    type Executor: NodeTaskExecutor;
 }
 
 /// Type alias to extract the Database from NodeTypes.
@@ -111,9 +111,9 @@ impl<Db, Rpc, Exec> Default for AnyNodeTypes<Db, Rpc, Exec> {
 
 impl<Db, Rpc, Exec> NodeTypes for AnyNodeTypes<Db, Rpc, Exec>
 where
-    Db: DatabaseProvider + Debug,
-    Rpc: RpcServer + Debug,
-    Exec: TaskExecutor + Debug,
+    Db: NodeDatabaseProvider + Debug,
+    Rpc: NodeRpcServer + Debug,
+    Exec: NodeTaskExecutor + Debug,
 {
     type Database = Db;
     type Rpc = Rpc;

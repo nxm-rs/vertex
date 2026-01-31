@@ -1,51 +1,30 @@
 //! Configuration traits for Swarm protocol components.
-//!
-//! These traits define the configuration parameters that Swarm component builders need.
-//! They cover protocol-level concerns: bandwidth accounting, storage, networking, and identity.
-//!
-//! # Design
-//!
-//! Following the reth pattern:
-//! - Traits define *what* configuration is needed
-//! - CLI args implement the traits directly (no intermediate structs)
-//! - Builders receive `impl ConfigTrait` and extract what they need
-//!
-//! # Combined Config
-//!
-//! The [`SwarmConfig`] super-trait combines all protocol configs into one bound,
-//! useful for builders that need access to everything.
-//!
-//! # Build Configuration
-//!
-//! [`SwarmBuildConfig`] defines how to construct components and services.
-//! The capability level is encoded by:
-//! - `Types` implementing [`LightTypes`], [`PublisherTypes`], or [`FullTypes`]
-//! - `Components` being the corresponding components struct
 
 use core::time::Duration;
 
-use async_trait::async_trait;
 use vertex_node_api::NodeContext;
 use vertex_swarmspec::SwarmSpec;
 
-use crate::{BootnodeTypes, FullTypes, LightTypes, PublisherTypes, SwarmServices};
+use crate::{SwarmBootnodeTypes, SwarmClientTypes, SwarmStorerTypes, Services};
 
-/// Configuration for bandwidth incentives (pseudosettle / SWAP).
+pub use vertex_swarm_primitives::BandwidthMode;
+
+/// Configuration for bandwidth accounting (pseudosettle / SWAP).
 ///
-/// All values are in **Accounting Units (AU)**, not bytes or BZZ tokens.
-///
-/// # Defaults
-///
-/// - Base price: 10,000 AU per chunk
-/// - Refresh rate: 4,500,000 AU/second (full node), 450,000 AU/second (light)
-/// - Payment threshold: 13,500,000 AU
-/// - Payment tolerance: 25% (disconnect = threshold × 1.25)
-pub trait BandwidthIncentiveConfig {
+/// All values are in Accounting Units (AU), not bytes or BZZ tokens.
+pub trait SwarmAccountingConfig: Send + Sync {
+    /// The bandwidth accounting mode.
+    fn mode(&self) -> BandwidthMode;
+
     /// Whether pseudosettle (soft accounting) is enabled.
-    fn pseudosettle_enabled(&self) -> bool;
+    fn pseudosettle_enabled(&self) -> bool {
+        self.mode().pseudosettle_enabled()
+    }
 
     /// Whether SWAP (real payment channels) is enabled.
-    fn swap_enabled(&self) -> bool;
+    fn swap_enabled(&self) -> bool {
+        self.mode().swap_enabled()
+    }
 
     /// Payment threshold in accounting units.
     ///
@@ -59,7 +38,7 @@ pub trait BandwidthIncentiveConfig {
 
     /// Base price per chunk in accounting units.
     ///
-    /// Actual price depends on proximity: (MAX_PO - proximity + 1) * base_price
+    /// Actual price depends on proximity: (max_po - proximity + 1) * base_price
     fn base_price(&self) -> u64;
 
     /// Refresh rate in accounting units per second (for pseudosettle).
@@ -82,16 +61,46 @@ pub trait BandwidthIncentiveConfig {
 
     /// Check if any bandwidth incentive is enabled.
     fn is_enabled(&self) -> bool {
-        self.pseudosettle_enabled() || self.swap_enabled()
+        self.mode().is_enabled()
     }
 }
 
-/// Configuration for local chunk store.
-///
-/// Storage capacity is expressed in number of chunks, which is the natural
-/// unit for Swarm storage. Use [`estimate_storage_bytes`] to calculate the
-/// approximate disk space required for a given number of chunks.
-pub trait StoreConfig {
+/// Default accounting configuration with pseudosettle enabled.
+#[derive(Clone, Copy, Default)]
+pub struct DefaultAccountingConfig;
+
+impl SwarmAccountingConfig for DefaultAccountingConfig {
+    fn mode(&self) -> BandwidthMode {
+        BandwidthMode::Pseudosettle
+    }
+
+    fn payment_threshold(&self) -> u64 {
+        13_500_000
+    }
+
+    fn payment_tolerance_percent(&self) -> u64 {
+        25
+    }
+
+    fn base_price(&self) -> u64 {
+        10_000
+    }
+
+    fn refresh_rate(&self) -> u64 {
+        4_500_000
+    }
+
+    fn early_payment_percent(&self) -> u64 {
+        50
+    }
+
+    fn light_factor(&self) -> u64 {
+        10
+    }
+}
+
+/// Configuration for local chunk store (capacity in chunks).
+pub trait SwarmStoreConfig {
     /// Maximum storage capacity in number of chunks.
     fn capacity_chunks(&self) -> u64;
 
@@ -100,13 +109,13 @@ pub trait StoreConfig {
 }
 
 /// Configuration for storage incentives (redistribution, postage).
-pub trait StorageConfig {
+pub trait SwarmStorageConfig {
     /// Whether this node participates in redistribution.
     fn redistribution_enabled(&self) -> bool;
 }
 
 /// Configuration for P2P networking.
-pub trait NetworkConfig {
+pub trait SwarmNetworkConfig {
     /// Get listen addresses as multiaddr strings.
     fn listen_addrs(&self) -> Vec<String>;
 
@@ -121,37 +130,40 @@ pub trait NetworkConfig {
 
     /// Connection idle timeout.
     fn idle_timeout(&self) -> Duration;
+
+    /// Get external/NAT addresses to advertise.
+    fn nat_addrs(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Whether auto-NAT discovery from observed addresses is enabled.
+    fn nat_auto_enabled(&self) -> bool {
+        false
+    }
 }
 
 /// Configuration for Swarm node identity.
-pub trait IdentityConfig {
+pub trait SwarmIdentityConfig {
     /// Whether to use ephemeral identity (random key, not persisted).
-    ///
-    /// When true, the node will generate a random identity on each start.
-    /// When false (default), identity persistence depends on node type:
-    /// - Light/Publisher nodes default to ephemeral unless keystore exists
-    /// - Full/Staker nodes require persistent identity
     fn ephemeral(&self) -> bool;
 }
 
 /// Combined Swarm protocol configuration.
-///
-/// This super-trait combines all protocol-level configs into one bound.
 pub trait SwarmConfig:
-    BandwidthIncentiveConfig + StoreConfig + StorageConfig + NetworkConfig + IdentityConfig
+    SwarmAccountingConfig + SwarmStoreConfig + SwarmStorageConfig + SwarmNetworkConfig + SwarmIdentityConfig
 {
 }
 
 impl<T> SwarmConfig for T where
-    T: BandwidthIncentiveConfig + StoreConfig + StorageConfig + NetworkConfig + IdentityConfig
+    T: SwarmAccountingConfig + SwarmStoreConfig + SwarmStorageConfig + SwarmNetworkConfig + SwarmIdentityConfig
 {
 }
 
 /// Cache capacity divisor relative to reserve capacity.
 pub const CACHE_CAPACITY_DIVISOR: u64 = 64;
 
-/// Implement [`StoreConfig`] for any [`SwarmSpec`].
-impl<S: SwarmSpec> StoreConfig for S {
+/// Implement [`SwarmStoreConfig`] for any [`SwarmSpec`].
+impl<S: SwarmSpec> SwarmStoreConfig for S {
     fn capacity_chunks(&self) -> u64 {
         self.reserve_capacity()
     }
@@ -165,7 +177,7 @@ impl<S: SwarmSpec> StoreConfig for S {
 #[derive(Debug, Clone, Copy)]
 pub struct DefaultStorageConfig;
 
-impl StorageConfig for DefaultStorageConfig {
+impl SwarmStorageConfig for DefaultStorageConfig {
     fn redistribution_enabled(&self) -> bool {
         false
     }
@@ -206,80 +218,38 @@ pub fn estimate_chunks_for_bytes(available_bytes: u64, chunk_size: usize) -> u64
 /// Configuration that knows how to launch a Swarm node.
 ///
 /// The capability level is determined by the associated types:
-/// - `Types` must implement the appropriate capability trait
-///   ([`LightTypes`], [`PublisherTypes`], or [`FullTypes`])
+/// - `Types` must implement [`SwarmClientTypes`] or [`SwarmStorerTypes`]
 /// - `Components` must be the corresponding components struct
-///
-/// # Example
-///
-/// ```ignore
-/// use vertex_swarm_api::{SwarmLaunchConfig, SwarmLightComponents, SwarmServices, LightTypes};
-///
-/// struct MyLightConfig { /* ... */ }
-///
-/// #[async_trait]
-/// impl SwarmLaunchConfig for MyLightConfig {
-///     type Types = MyLightTypes;  // Must implement LightTypes
-///     type Components = SwarmLightComponents<MyLightTypes>;
-///     type Error = MyError;
-///
-///     async fn build(self, ctx: &NodeContext)
-///         -> Result<(Self::Components, SwarmServices<Self::Types>), Self::Error>
-///     {
-///         // Build identity, topology, accounting, services...
-///     }
-/// }
-/// ```
-#[async_trait]
+#[async_trait::async_trait]
 pub trait SwarmLaunchConfig: Send + Sync + 'static {
     /// The Swarm types for this configuration.
-    ///
-    /// Must implement the capability trait for the desired node level:
-    /// - [`LightTypes`] for light nodes
-    /// - [`PublisherTypes`] for publisher nodes
-    /// - [`FullTypes`] for full nodes
-    type Types: BootnodeTypes;
+    type Types: SwarmBootnodeTypes;
 
     /// The components produced by building.
-    ///
-    /// Should match the capability level of `Types`:
-    /// - [`SwarmLightComponents`](crate::SwarmLightComponents) for light nodes
-    /// - [`SwarmPublisherComponents`](crate::SwarmPublisherComponents) for publishers
-    /// - [`SwarmFullComponents`](crate::SwarmFullComponents) for full nodes
     type Components: Send + Sync + 'static;
 
     /// Error type for build failures.
     type Error: std::error::Error + Send + Sync + 'static;
 
     /// Build components and services from this configuration.
-    ///
-    /// Services will be spawned by `SwarmProtocol::launch()`.
     async fn build(
         self,
         ctx: &NodeContext,
-    ) -> Result<(Self::Components, SwarmServices<Self::Types>), Self::Error>;
+    ) -> Result<(Self::Components, Services<Self::Types>), Self::Error>;
 }
 
-/// Marker for configs that launch light nodes.
-pub trait LightLaunchConfig: SwarmLaunchConfig
+/// Marker for configs that launch client nodes.
+pub trait SwarmClientLaunchConfig: SwarmLaunchConfig
 where
-    Self::Types: LightTypes,
+    Self::Types: SwarmClientTypes,
 {
 }
-impl<T: SwarmLaunchConfig> LightLaunchConfig for T where T::Types: LightTypes {}
+impl<T: SwarmLaunchConfig> SwarmClientLaunchConfig for T where T::Types: SwarmClientTypes {}
 
-/// Marker for configs that launch publisher nodes.
-pub trait PublisherLaunchConfig: SwarmLaunchConfig
+/// Marker for configs that launch storer nodes.
+pub trait SwarmStorerLaunchConfig: SwarmLaunchConfig
 where
-    Self::Types: PublisherTypes,
+    Self::Types: SwarmStorerTypes,
 {
 }
-impl<T: SwarmLaunchConfig> PublisherLaunchConfig for T where T::Types: PublisherTypes {}
-
-/// Marker for configs that launch full nodes.
-pub trait FullLaunchConfig: SwarmLaunchConfig
-where
-    Self::Types: FullTypes,
-{
-}
-impl<T: SwarmLaunchConfig> FullLaunchConfig for T where T::Types: FullTypes {}
+impl<T: SwarmLaunchConfig> SwarmStorerLaunchConfig for T where T::Types: SwarmStorerTypes {}

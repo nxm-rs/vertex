@@ -1,0 +1,38 @@
+syntax = "proto3";
+package vertex.swarm.chunk.v1;
+
+// Chunk service provides chunk retrieval from the Swarm network.
+service Chunk {
+  // RetrieveChunk retrieves a chunk by its address from the Swarm network.
+  // The node will query connected peers to find and return the chunk.
+  rpc RetrieveChunk(RetrieveChunkRequest) returns (RetrieveChunkResponse);
+
+  // HasChunk checks if a chunk exists locally.
+  rpc HasChunk(HasChunkRequest) returns (HasChunkResponse);
+}
+
+message RetrieveChunkRequest {
+  // Chunk address (hex encoded, 64 chars).
+  string address = 1;
+}
+
+message RetrieveChunkResponse {
+  // The chunk data.
+  bytes data = 1;
+
+  // Postage stamp attached to this chunk.
+  bytes stamp = 2;
+
+  // Overlay address of the peer that served this chunk (hex encoded).
+  string served_by = 3;
+}
+
+message HasChunkRequest {
+  // Chunk address (hex encoded, 64 chars).
+  string address = 1;
+}
+
+message HasChunkResponse {
+  // Whether the chunk exists locally.
+  bool exists = 1;
+}

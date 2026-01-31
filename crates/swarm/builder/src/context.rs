@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use vertex_swarm_api::{LightTypes, NetworkConfig};
+use vertex_swarm_api::{SwarmClientTypes, SwarmNetworkConfig};
 use vertex_tasks::TaskExecutor;
 
 /// Runtime context passed to component builders.
@@ -11,7 +11,7 @@ use vertex_tasks::TaskExecutor;
 /// - Identity and spec
 /// - Network configuration
 /// - Task executor for spawning
-pub struct SwarmBuilderContext<'cfg, Types: LightTypes, Cfg: NetworkConfig> {
+pub struct SwarmBuilderContext<'cfg, Types: SwarmClientTypes, Cfg: SwarmNetworkConfig> {
     /// The node's cryptographic identity.
     pub identity: Arc<Types::Identity>,
 
@@ -22,7 +22,7 @@ pub struct SwarmBuilderContext<'cfg, Types: LightTypes, Cfg: NetworkConfig> {
     pub executor: TaskExecutor,
 }
 
-impl<'cfg, Types: LightTypes, Cfg: NetworkConfig> SwarmBuilderContext<'cfg, Types, Cfg> {
+impl<'cfg, Types: SwarmClientTypes, Cfg: SwarmNetworkConfig> SwarmBuilderContext<'cfg, Types, Cfg> {
     /// Create a new builder context.
     pub fn new(identity: Arc<Types::Identity>, config: &'cfg Cfg, executor: TaskExecutor) -> Self {
         Self {

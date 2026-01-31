@@ -51,11 +51,36 @@ use tracing::{info, warn};
 pub use vertex_rpc_core::RpcServer;
 
 // Re-export the config trait for users
-pub use vertex_node_api::RpcConfig;
+pub use vertex_node_api::NodeRpcConfig;
 
 pub use grpc_protocol::GrpcProtocol;
 pub use health::HealthService;
 pub use registry::{GrpcRegistry, GrpcServerHandle};
+
+/// Trait for types that can register their gRPC services with a registry.
+///
+/// Components or providers implement this trait to add their services
+/// to the gRPC server during node launch.
+///
+/// # Example
+///
+/// ```ignore
+/// use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
+///
+/// impl RegistersGrpcServices for MyComponents {
+///     fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
+///         let service = MyServiceServer::new(MyService::new(&self.data));
+///         registry.add_service(service);
+///         registry.add_descriptor(MY_FILE_DESCRIPTOR_SET);
+///     }
+/// }
+/// ```
+pub trait RegistersGrpcServices: Send + Sync {
+    /// Register gRPC services with the given registry.
+    ///
+    /// Called during node launch to populate the gRPC server.
+    fn register_grpc_services(&self, registry: &mut GrpcRegistry);
+}
 
 // Re-export generated types for external use
 pub mod proto {
@@ -83,8 +108,8 @@ impl Default for GrpcServerConfig {
 }
 
 impl GrpcServerConfig {
-    /// Create configuration from an RpcConfig trait implementation.
-    pub fn from_config(config: &impl RpcConfig) -> Self {
+    /// Create configuration from an NodeRpcConfig trait implementation.
+    pub fn from_config(config: &impl NodeRpcConfig) -> Self {
         let addr = SocketAddr::new(
             config
                 .grpc_addr()
@@ -142,7 +167,7 @@ impl GrpcServer {
 }
 
 // Implement node-types marker trait for NodeTypes compatibility
-impl vertex_node_types::RpcServer for GrpcServer {}
+impl vertex_node_types::NodeRpcServer for GrpcServer {}
 
 #[async_trait]
 impl RpcServer for GrpcServer {

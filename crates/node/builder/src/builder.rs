@@ -9,7 +9,7 @@
 //!   ▼
 //! WithLaunchContext<A>
 //!   │
-//!   ├── with_protocol(config: impl ProtocolConfig)
+//!   ├── with_protocol(config: impl NodeProtocolConfig)
 //!   ▼
 //! WithProtocol<P, A>
 //!   │
@@ -35,9 +35,9 @@
 
 use std::net::{IpAddr, SocketAddr};
 
-use vertex_node_api::{BuildsProtocol, NodeContext, Protocol, RpcConfig};
+use vertex_node_api::{NodeBuildsProtocol, NodeContext, NodeProtocol, NodeRpcConfig};
 use vertex_node_core::dirs::DataDirs;
-use vertex_rpc_server::GrpcRegistry;
+use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
 use vertex_tasks::TaskExecutor;
 
 use crate::NodeHandle;
@@ -81,7 +81,7 @@ impl<A> LaunchContext<A> {
     }
 }
 
-impl<A: RpcConfig> LaunchContext<A> {
+impl<A: NodeRpcConfig> LaunchContext<A> {
     /// Get the gRPC socket address from configuration.
     pub fn grpc_addr(&self) -> SocketAddr {
         let ip: IpAddr = self
@@ -150,8 +150,8 @@ impl<A> WithLaunchContext<A> {
 
     /// Provide the protocol configuration.
     ///
-    /// The protocol type is inferred from the config type via [`BuildsProtocol`].
-    pub fn with_protocol<C: BuildsProtocol>(self, config: C) -> WithProtocol<C::Protocol, A> {
+    /// The protocol type is inferred from the config type via [`NodeBuildsProtocol`].
+    pub fn with_protocol<C: NodeBuildsProtocol>(self, config: C) -> WithProtocol<C::Protocol, A> {
         tracing::info!("Protocol: {}", config.protocol_name());
         WithProtocol {
             ctx: self.ctx,
@@ -161,14 +161,14 @@ impl<A> WithLaunchContext<A> {
 }
 
 /// Builder with protocol configuration, ready to launch.
-pub struct WithProtocol<P: Protocol, A> {
+pub struct WithProtocol<P: NodeProtocol, A> {
     ctx: LaunchContext<A>,
     config: P::Config,
 }
 
-impl<P: Protocol, A: RpcConfig> WithProtocol<P, A>
+impl<P: NodeProtocol, A: NodeRpcConfig> WithProtocol<P, A>
 where
-    P::Config: BuildsProtocol,
+    P::Config: NodeBuildsProtocol,
 {
     /// Get a reference to the launch context.
     pub fn context(&self) -> &LaunchContext<A> {
@@ -179,7 +179,13 @@ where
     ///
     /// This builds the protocol components, spawns services, and starts the gRPC server.
     /// The gRPC address is taken from the launch context's API configuration.
-    pub async fn launch(self) -> Result<NodeHandle<P::Components>, P::BuildError> {
+    ///
+    /// Components must implement [`RegistersGrpcServices`] to register their
+    /// protocol-specific RPC services.
+    pub async fn launch(self) -> Result<NodeHandle<P::Components>, P::BuildError>
+    where
+        P::Components: RegistersGrpcServices,
+    {
         use tracing::info;
 
         // Infrastructure configuration
@@ -192,8 +198,11 @@ where
         // Launch the protocol (builds components and spawns services)
         let components = P::launch(self.config, &node_ctx, &self.ctx.executor).await?;
 
-        // Create gRPC registry and spawn as critical task
-        let registry = GrpcRegistry::new();
+        // Create gRPC registry and let components register their services
+        let mut registry = GrpcRegistry::new();
+        components.register_grpc_services(&mut registry);
+
+        // Convert registry to server and spawn as critical task
         let grpc_handle = registry
             .into_server(grpc_addr)
             .expect("failed to build gRPC server");
@@ -212,9 +221,9 @@ where
     }
 }
 
-impl<P: Protocol> WithProtocol<P, ()>
+impl<P: NodeProtocol> WithProtocol<P, ()>
 where
-    P::Config: BuildsProtocol,
+    P::Config: NodeBuildsProtocol,
 {
     /// Launch the node without gRPC server.
     ///

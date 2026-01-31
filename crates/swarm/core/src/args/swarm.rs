@@ -26,9 +26,39 @@ use std::path::PathBuf;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
-use crate::SwarmNodeType;
+use vertex_swarm_primitives::SwarmNodeType;
 
 use super::{BandwidthArgs, IdentityArgs, NetworkArgs, StorageArgs, StorageIncentiveArgs};
+
+/// CLI argument type for node mode selection.
+///
+/// Maps to [`SwarmNodeType`]. Use `.into()` for conversion.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum, strum::FromRepr, Serialize, Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+#[repr(u8)]
+pub enum NodeTypeArg {
+    /// Topology only: peer discovery, no pricing or accounting.
+    Bootnode = 0,
+    /// Read + write: retrieval, pushsync, configurable accounting.
+    #[default]
+    Client = 1,
+    /// Storage + staking: pullsync, local storage, redistribution.
+    Storer = 2,
+}
+
+impl From<NodeTypeArg> for SwarmNodeType {
+    fn from(arg: NodeTypeArg) -> Self {
+        SwarmNodeType::from_repr(arg as u8).expect("matching repr")
+    }
+}
+
+impl From<SwarmNodeType> for NodeTypeArg {
+    fn from(node_type: SwarmNodeType) -> Self {
+        NodeTypeArg::from_repr(node_type as u8).expect("matching repr")
+    }
+}
 
 /// Aggregated Swarm protocol arguments.
 ///
@@ -38,15 +68,9 @@ use super::{BandwidthArgs, IdentityArgs, NetworkArgs, StorageArgs, StorageIncent
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SwarmArgs {
-    /// Node mode determines what capabilities and protocols the node runs.
-    ///
-    /// - bootnode: Only topology (peer discovery)
-    /// - light: Retrieve chunks (default)
-    /// - publisher: Retrieve + upload chunks
-    /// - full: Store chunks for network
-    /// - staker: Full + redistribution rewards
-    #[arg(long = "mode", value_enum, default_value_t = SwarmNodeType::Light)]
-    pub node_type: SwarmNodeType,
+    /// Node mode: bootnode (topology only), client (read+write), storer (storage+staking).
+    #[arg(long = "mode", value_enum, default_value_t = NodeTypeArg::Client)]
+    pub node_type: NodeTypeArg,
 
     /// Network configuration.
     #[command(flatten)]
@@ -94,7 +118,7 @@ pub struct SwarmArgs {
 impl Default for SwarmArgs {
     fn default() -> Self {
         Self {
-            node_type: SwarmNodeType::default(),
+            node_type: NodeTypeArg::default(),
             network: NetworkArgs::default(),
             bandwidth: BandwidthArgs::default(),
             storage: StorageArgs::default(),

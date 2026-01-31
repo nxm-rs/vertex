@@ -1,0 +1,36 @@
+[package]
+name = "vertex-bandwidth-chequebook"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Chequebook types and signing for SWAP settlement"
+
+[lints]
+workspace = true
+
+[dependencies]
+# nectar
+nectar-contracts = { workspace = true, features = ["serde"] }
+
+# vertex
+vertex-swarmspec = { workspace = true }
+
+# alloy
+alloy-primitives = { workspace = true, features = ["serde"] }
+alloy-sol-types = { workspace = true }
+alloy-signer = { workspace = true }
+
+# serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+# misc
+bytes = { workspace = true, features = ["serde"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+alloy-signer-local = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros"] }

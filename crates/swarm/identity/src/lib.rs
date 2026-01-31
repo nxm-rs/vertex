@@ -1,6 +1,6 @@
 //! Local node identity for Swarm networks.
 //!
-//! Provides [`SwarmIdentity`], the standard implementation of the [`Identity`] trait.
+//! Provides [`Identity`], the standard implementation of the [`SwarmIdentity`] trait.
 //! Overlay address derivation: `keccak256(eth_address || network_id || nonce)`
 
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
@@ -10,17 +10,17 @@ use alloy_signer::k256::ecdsa::SigningKey;
 use alloy_signer_local::LocalSigner;
 use nectar_primitives::SwarmAddress;
 use std::sync::Arc;
-use vertex_swarm_api::{Identity, SwarmNodeType};
+use vertex_swarm_api::{SwarmIdentity, SwarmNodeType};
 use vertex_swarm_primitives::compute_overlay;
 use vertex_swarmspec::{Hive, Loggable, SwarmSpec};
 
-pub use vertex_swarm_api::Identity as IdentityTrait;
+pub use vertex_swarm_api::SwarmIdentity as IdentityTrait;
 
 /// Local node identity containing signing key, nonce, and network spec.
 ///
 /// Caches the overlay address at construction time.
 #[derive(Clone)]
-pub struct SwarmIdentity {
+pub struct Identity {
     /// Network specification (network_id, bootnodes, etc.)
     spec: Arc<Hive>,
     /// Signing key for this node.
@@ -35,7 +35,7 @@ pub struct SwarmIdentity {
     welcome_message: Option<String>,
 }
 
-impl SwarmIdentity {
+impl Identity {
     /// Creates a new identity from a signer, nonce, spec, and node type.
     pub fn new(
         signer: LocalSigner<SigningKey>,
@@ -79,7 +79,7 @@ impl SwarmIdentity {
     }
 }
 
-impl Identity for SwarmIdentity {
+impl SwarmIdentity for Identity {
     type Spec = Hive;
     type Signer = LocalSigner<SigningKey>;
 
@@ -110,7 +110,7 @@ impl Identity for SwarmIdentity {
     }
 }
 
-impl Loggable for SwarmIdentity {
+impl Loggable for Identity {
     fn log(&self) {
         use tracing::{debug, info};
         info!("Identity:");
@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn random_identity() {
         let spec = init_testnet();
-        let identity = SwarmIdentity::random(spec, SwarmNodeType::Full);
+        let identity = Identity::random(spec, SwarmNodeType::Storer);
 
         assert!(!identity.ethereum_address().is_zero());
         assert!(!identity.overlay_address().is_zero());
@@ -146,8 +146,8 @@ mod tests {
         let signer = LocalSigner::from_signing_key(signing_key);
         let nonce = B256::from([0x42u8; 32]);
 
-        let id1 = SwarmIdentity::new(signer.clone(), nonce, spec.clone(), SwarmNodeType::Full);
-        let id2 = SwarmIdentity::new(signer, nonce, spec, SwarmNodeType::Full);
+        let id1 = Identity::new(signer.clone(), nonce, spec.clone(), SwarmNodeType::Storer);
+        let id2 = Identity::new(signer, nonce, spec, SwarmNodeType::Storer);
 
         assert_eq!(id1.overlay_address(), id2.overlay_address());
         assert_eq!(id1.ethereum_address(), id2.ethereum_address());
@@ -163,13 +163,13 @@ mod tests {
         let signing_key = SigningKey::from_slice(&key_bytes).unwrap();
         let signer = LocalSigner::from_signing_key(signing_key);
 
-        let id1 = SwarmIdentity::new(
+        let id1 = Identity::new(
             signer.clone(),
             B256::from([1u8; 32]),
             spec.clone(),
-            SwarmNodeType::Full,
+            SwarmNodeType::Storer,
         );
-        let id2 = SwarmIdentity::new(signer, B256::from([2u8; 32]), spec, SwarmNodeType::Full);
+        let id2 = Identity::new(signer, B256::from([2u8; 32]), spec, SwarmNodeType::Storer);
 
         assert_eq!(id1.ethereum_address(), id2.ethereum_address());
         assert_ne!(id1.overlay_address(), id2.overlay_address());
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn welcome_message() {
         let spec = init_testnet();
-        let identity = SwarmIdentity::random(spec, SwarmNodeType::Light);
+        let identity = Identity::random(spec, SwarmNodeType::Client);
 
         assert_eq!(
             identity.welcome_message(),

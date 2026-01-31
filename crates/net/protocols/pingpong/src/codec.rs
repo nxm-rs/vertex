@@ -1,29 +1,17 @@
 //! Codec for pingpong protocol messages.
 
-use vertex_net_codec::ProtocolCodec;
-
-/// Codec for ping messages.
-pub type PingCodec = ProtocolCodec<crate::proto::pingpong::Ping, Ping, PingpongCodecError>;
-
-/// Codec for pong messages.
-pub type PongCodec = ProtocolCodec<crate::proto::pingpong::Pong, Pong, PingpongCodecError>;
+use vertex_net_codec::{Codec, ProtoMessage, ProtocolCodecError};
 
 /// Error type for pingpong codec operations.
-#[derive(Debug, thiserror::Error)]
-pub enum PingpongCodecError {
-    /// Protocol-level error (invalid message format, etc.)
-    #[error("Protocol error: {0}")]
-    Protocol(String),
-    /// IO error during read/write
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-}
+///
+/// Pingpong has no domain-specific errors, so we use the base `ProtocolCodecError`.
+pub type PingpongCodecError = ProtocolCodecError;
 
-impl From<quick_protobuf_codec::Error> for PingpongCodecError {
-    fn from(error: quick_protobuf_codec::Error) -> Self {
-        PingpongCodecError::Protocol(error.to_string())
-    }
-}
+/// Codec for ping messages.
+pub type PingCodec = Codec<Ping, PingpongCodecError>;
+
+/// Codec for pong messages.
+pub type PongCodec = Codec<Pong, PingpongCodecError>;
 
 /// A ping message with a greeting.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,21 +29,20 @@ impl Ping {
     }
 }
 
-impl TryFrom<crate::proto::pingpong::Ping> for Ping {
-    type Error = PingpongCodecError;
+impl ProtoMessage for Ping {
+    type Proto = crate::proto::pingpong::Ping;
+    type DecodeError = PingpongCodecError;
 
-    fn try_from(value: crate::proto::pingpong::Ping) -> Result<Self, Self::Error> {
-        Ok(Self {
-            greeting: value.greeting,
-        })
-    }
-}
-
-impl From<Ping> for crate::proto::pingpong::Ping {
-    fn from(value: Ping) -> Self {
+    fn into_proto(self) -> Self::Proto {
         crate::proto::pingpong::Ping {
-            greeting: value.greeting,
+            greeting: self.greeting,
         }
+    }
+
+    fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
+        Ok(Self {
+            greeting: proto.greeting,
+        })
     }
 }
 
@@ -82,21 +69,20 @@ impl Pong {
     }
 }
 
-impl TryFrom<crate::proto::pingpong::Pong> for Pong {
-    type Error = PingpongCodecError;
+impl ProtoMessage for Pong {
+    type Proto = crate::proto::pingpong::Pong;
+    type DecodeError = PingpongCodecError;
 
-    fn try_from(value: crate::proto::pingpong::Pong) -> Result<Self, Self::Error> {
-        Ok(Self {
-            response: value.response,
-        })
-    }
-}
-
-impl From<Pong> for crate::proto::pingpong::Pong {
-    fn from(value: Pong) -> Self {
+    fn into_proto(self) -> Self::Proto {
         crate::proto::pingpong::Pong {
-            response: value.response,
+            response: self.response,
         }
+    }
+
+    fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
+        Ok(Self {
+            response: proto.response,
+        })
     }
 }
 
@@ -107,16 +93,16 @@ mod tests {
     #[test]
     fn test_ping_roundtrip() {
         let original = Ping::new("hello");
-        let proto: crate::proto::pingpong::Ping = original.clone().into();
-        let decoded = Ping::try_from(proto).unwrap();
+        let proto = original.clone().into_proto();
+        let decoded = Ping::from_proto(proto).unwrap();
         assert_eq!(original, decoded);
     }
 
     #[test]
     fn test_pong_roundtrip() {
         let original = Pong::new("{hello}");
-        let proto: crate::proto::pingpong::Pong = original.clone().into();
-        let decoded = Pong::try_from(proto).unwrap();
+        let proto = original.clone().into_proto();
+        let decoded = Pong::from_proto(proto).unwrap();
         assert_eq!(original, decoded);
     }
 

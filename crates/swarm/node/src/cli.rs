@@ -32,7 +32,7 @@ use std::sync::Arc;
 use alloy_primitives::B256;
 use clap::{Parser, Subcommand};
 use eyre::{Result, WrapErr};
-use vertex_client_peermanager::{FilePeerStore, PeerStore};
+use vertex_topology_peermanager::{FilePeerStore, PeerStore};
 use vertex_node_builder::LaunchContext;
 use vertex_node_commands::{HasLogs, InfraArgs, LogArgs, run_cli};
 use vertex_node_core::config::FullNodeConfig;
@@ -42,12 +42,12 @@ use vertex_swarm_builder::{
 };
 use vertex_swarm_core::SwarmConfig;
 use vertex_swarm_core::args::SwarmArgs;
-use vertex_swarm_identity::SwarmIdentity;
+use vertex_swarm_identity::Identity;
 use vertex_swarmspec::{Hive, SwarmSpec, init_mainnet, init_testnet};
 use vertex_tasks::TaskExecutor;
 
 // Re-export types that are part of the public API
-pub use vertex_swarm_core::args::SwarmNodeType;
+pub use vertex_swarm_primitives::SwarmNodeType;
 
 /// Vertex Swarm - Ethereum Swarm Node Implementation
 #[derive(Debug, Parser)]
@@ -146,7 +146,6 @@ where
 /// - Peer store initialization
 pub async fn build_launch_context(args: &SwarmRunNodeArgs) -> Result<SwarmLaunchContext> {
     use tracing::debug;
-    use vertex_swarm_core::SwarmNodeType;
 
     // Validate argument combinations
     args.swarm.validate().map_err(|e| eyre::eyre!(e))?;
@@ -186,7 +185,7 @@ pub async fn build_launch_context(args: &SwarmRunNodeArgs) -> Result<SwarmLaunch
 
     // Create identity
     let identity = if use_ephemeral {
-        SwarmIdentity::random(spec.clone(), !matches!(node_type, SwarmNodeType::Light))
+        Identity::random(spec.clone(), node_type)
     } else {
         // Load or create persistent identity
         let keystore_path = dirs.network.join("keystore").join("swarm");
@@ -216,11 +215,11 @@ pub async fn build_launch_context(args: &SwarmRunNodeArgs) -> Result<SwarmLaunch
             B256::from(bytes)
         });
 
-        SwarmIdentity::new(
+        Identity::new(
             signer,
             nonce,
             spec.clone(),
-            !matches!(node_type, SwarmNodeType::Light),
+            node_type,
         )
     };
 

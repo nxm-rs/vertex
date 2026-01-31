@@ -2,7 +2,7 @@
 
 use clap::Args;
 use serde::{Deserialize, Serialize};
-use vertex_node_api::DatabaseConfig;
+use vertex_node_api::NodeDatabaseConfig;
 
 /// Database configuration.
 #[derive(Debug, Args, Clone, Default, Serialize, Deserialize)]
@@ -19,7 +19,7 @@ pub struct DatabaseArgs {
     pub cache_size_mb: Option<u64>,
 }
 
-impl DatabaseConfig for DatabaseArgs {
+impl NodeDatabaseConfig for DatabaseArgs {
     fn data_dir(&self) -> Option<&str> {
         // DatabaseArgs doesn't own the data dir - it comes from DataDirArgs
         None

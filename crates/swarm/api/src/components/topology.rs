@@ -1,24 +1,11 @@
-//! Topology and neighborhood awareness.
-//!
-//! This module defines the [`Topology`] trait for Kademlia-style routing.
-//! All operations use [`OverlayAddress`] (not libp2p `PeerId`) since routing
-//! is based on Swarm overlay addresses.
+//! Topology and neighborhood awareness using overlay addresses.
 
 use std::vec::Vec;
 use vertex_primitives::{ChunkAddress, OverlayAddress};
 
-/// Neighborhood awareness - who is "close" in the overlay address space.
-///
-/// This is the abstract concept of proximity in a distributed hash table.
-/// Kademlia is one implementation, but the API doesn't assume any specific algorithm.
-///
-/// # Overlay Addresses
-///
-/// All methods use [`OverlayAddress`] (32-byte Swarm address) for peer identification.
-/// The overlay address determines routing proximity via XOR distance.
-/// The mapping from overlay to underlay (libp2p `PeerId`) happens in the net layer.
+/// Neighborhood awareness trait - who is "close" in the overlay address space.
 #[auto_impl::auto_impl(&, Arc)]
-pub trait Topology: Send + Sync {
+pub trait SwarmTopology: Send + Sync {
     /// Get our own overlay address.
     fn self_address(&self) -> OverlayAddress;
 

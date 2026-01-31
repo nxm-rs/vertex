@@ -5,7 +5,7 @@
 
 use tracing::{debug, trace};
 use vertex_primitives::{AnyChunk, Chunk, ChunkAddress};
-use vertex_swarm_api::{LocalStore, SwarmError, SwarmResult};
+use vertex_swarm_api::{SwarmLocalStore, SwarmError, SwarmResult};
 
 use crate::{ChunkCache, ChunkStore, Reserve, StorerError};
 
@@ -117,7 +117,7 @@ impl<S: ChunkStore> LocalStoreImpl<S> {
     }
 }
 
-impl<S: ChunkStore> LocalStore for LocalStoreImpl<S> {
+impl<S: ChunkStore> SwarmLocalStore for LocalStoreImpl<S> {
     fn store(&self, chunk: &AnyChunk) -> SwarmResult<()> {
         let address = chunk.address();
 

@@ -14,7 +14,7 @@ vertex-node-api = { workspace = true }
 vertex-node-types = { workspace = true }
 vertex-primitives = { workspace = true }
 vertex-swarmspec = { workspace = true }
-vertex-net-primitives-traits = { workspace = true }
+vertex-swarm-primitives = { workspace = true }
 vertex-tasks = { workspace = true }
 
 # Alloy
@@ -23,15 +23,17 @@ alloy-signer = { workspace = true }
 
 # External dependencies
 auto_impl = "1.1"
+bytes = { workspace = true }
 futures = { workspace = true }
 thiserror = { workspace = true }
 async-trait = "0.1"
 tracing = { workspace = true }
+strum = { workspace = true }
 
-# Optional
+# Optional serde support
 serde = { workspace = true, features = ["derive"], optional = true }
 
 [features]
 default = ["std"]
 std = []
-serde = ["dep:serde"]
+serde = ["dep:serde", "vertex-swarm-primitives/serde"]

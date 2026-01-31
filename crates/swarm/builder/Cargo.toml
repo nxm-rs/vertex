@@ -21,21 +21,32 @@ vertex-tasks.workspace = true
 
 # vertex - swarm protocol
 vertex-bandwidth-core.workspace = true
-vertex-client-kademlia.workspace = true
-vertex-client-peermanager.workspace = true
+vertex-bandwidth-pseudosettle.workspace = true
+vertex-bandwidth-swap.workspace = true
+vertex-topology-kademlia.workspace = true
+vertex-topology-peermanager.workspace = true
 vertex-node-types.workspace = true
+vertex-rpc-server.workspace = true
 vertex-swarm-api.workspace = true
 vertex-swarm-core = { workspace = true, features = ["cli"] }
 vertex-swarm-identity.workspace = true
+vertex-swarm-rpc.workspace = true
 vertex-swarmspec.workspace = true
+
+# nectar
+nectar-primitives.workspace = true
 
 # alloy
 alloy-primitives.workspace = true
 alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 
+# async
+tokio = { workspace = true, features = ["sync"] }
+
 # misc
 async-trait.workspace = true
+bytes.workspace = true
 eyre.workspace = true
 hex.workspace = true
 rand.workspace = true

@@ -14,7 +14,7 @@
 //!
 //! let handle = NodeBuilder::new()
 //!     .with_context(&ctx, &args.infra)
-//!     .with_protocol(SwarmNodeBuilder::<node_type::Light>::new(&ctx, &args.swarm))
+//!     .with_protocol(SwarmNodeBuilder::<node_type::Client>::new(&ctx, &args.swarm))
 //!     .launch()
 //!     .await?;
 //!
@@ -34,6 +34,8 @@ mod error;
 mod launch;
 mod node;
 pub mod node_type;
+mod providers;
+mod rpc;
 mod types;
 
 // Node building
@@ -41,13 +43,16 @@ pub use error::SwarmNodeError;
 pub use launch::{
     SwarmLaunchContext, create_and_save_signer, load_signer_from_keystore, resolve_password,
 };
-pub use node::{LightNodeBuildConfig, SwarmNodeBuilder};
-pub use types::{DefaultLightTypes, DefaultNetworkConfig};
+pub use node::{ClientNodeBuildConfig, SwarmNodeBuilder};
+pub use providers::NetworkChunkProvider;
+pub use rpc::ClientNodeRpcComponents;
+pub use types::{DefaultClientTypes, DefaultNetworkConfig};
 
 // Component building
 pub use components::{
-    AccountingBuilder, BandwidthAccountingBuilder, BuiltSwarmComponents, DefaultComponentsBuilder,
-    FixedPricerBuilder, KademliaTopologyBuilder, NoAccountingBuilder, PricerBuilder,
-    SwarmComponentsBuilder, TopologyBuilder,
+    AccountingBuilder, BuiltSwarmComponents, CombinedAccountingBuilder, DefaultAccountingConfig,
+    DefaultComponentsBuilder, FixedPricerBuilder, KademliaTopologyBuilder, ModeBasedAccounting,
+    ModeBasedAccountingBuilder, NoAccountingBuilder, NoPricerBuilder, PricerBuilder,
+    PseudosettleAccountingBuilder, SwapAccountingBuilder, SwarmComponentsBuilder, TopologyBuilder,
 };
 pub use context::SwarmBuilderContext;

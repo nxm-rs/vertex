@@ -1,8 +1,4 @@
 //! Error types for Swarm API operations.
-//!
-//! This module defines domain-specific errors for Swarm network operations.
-//! Each error variant contains typed data (not strings) for better
-//! programmatic handling.
 
 use std::string::String;
 use vertex_primitives::ChunkAddress;

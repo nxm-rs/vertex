@@ -1,17 +1,29 @@
 //! Pricer builder trait and implementations.
 
-use vertex_bandwidth_core::{FixedPricer, Pricer};
-use vertex_swarm_api::{LightTypes, NetworkConfig};
+use vertex_bandwidth_core::{FixedPricer, NoPricer, Pricer};
+use vertex_swarm_api::{SwarmAccountingConfig, DefaultAccountingConfig, SwarmIdentity, SwarmClientTypes, SwarmNetworkConfig};
 
 use crate::SwarmBuilderContext;
 
 /// Builds the pricer component.
-pub trait PricerBuilder<Types: LightTypes, Cfg: NetworkConfig>: Send + Sync + 'static {
+pub trait PricerBuilder<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig>: Send + Sync + 'static {
     /// The pricer type produced.
     type Pricer: Pricer + Clone + Send + Sync + 'static;
 
     /// Build the pricer given the context.
     fn build_pricer(self, ctx: &SwarmBuilderContext<'_, Types, Cfg>) -> Self::Pricer;
+}
+
+/// No-op pricer for bootnodes (no pricing protocol participation).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoPricerBuilder;
+
+impl<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig> PricerBuilder<Types, Cfg> for NoPricerBuilder {
+    type Pricer = NoPricer;
+
+    fn build_pricer(self, _ctx: &SwarmBuilderContext<'_, Types, Cfg>) -> Self::Pricer {
+        NoPricer
+    }
 }
 
 /// Default fixed pricer builder.
@@ -29,13 +41,12 @@ impl FixedPricerBuilder {
     }
 }
 
-impl<Types: LightTypes, Cfg: NetworkConfig> PricerBuilder<Types, Cfg> for FixedPricerBuilder {
+impl<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig> PricerBuilder<Types, Cfg> for FixedPricerBuilder {
     type Pricer = FixedPricer;
 
-    fn build_pricer(self, _ctx: &SwarmBuilderContext<'_, Types, Cfg>) -> Self::Pricer {
-        match self.base_price {
-            Some(price) => FixedPricer::new(price),
-            None => FixedPricer::default(),
-        }
+    fn build_pricer(self, ctx: &SwarmBuilderContext<'_, Types, Cfg>) -> Self::Pricer {
+        let spec = ctx.identity.spec();
+        let base_price = self.base_price.unwrap_or_else(|| DefaultAccountingConfig.base_price());
+        FixedPricer::new(base_price, spec)
     }
 }

@@ -1,0 +1,20 @@
+// Copyright 2020 The Swarm Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+syntax = "proto3";
+
+package swap;
+
+option go_package = "pb";
+
+// EmitCheque is sent when a node issues a cheque to a peer.
+// The cheque field contains a JSON-encoded SignedCheque.
+message EmitCheque {
+    bytes cheque = 1;
+}
+
+// Handshake is sent to exchange beneficiary addresses.
+message Handshake {
+    bytes beneficiary = 1;
+}

@@ -2,15 +2,15 @@
 
 use std::sync::Arc;
 
-use vertex_client_kademlia::{KademliaConfig, KademliaTopology};
-use vertex_swarm_api::{LightTypes, NetworkConfig, Topology};
+use vertex_topology_kademlia::{KademliaConfig, KademliaTopology};
+use vertex_swarm_api::{SwarmClientTypes, SwarmNetworkConfig, SwarmTopology};
 
 use crate::SwarmBuilderContext;
 
 /// Builds the topology component.
-pub trait TopologyBuilder<Types: LightTypes, Cfg: NetworkConfig>: Send + Sync + 'static {
+pub trait TopologyBuilder<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig>: Send + Sync + 'static {
     /// The topology type produced (may be Arc-wrapped).
-    type Topology: Topology + Send + Sync + 'static;
+    type Topology: SwarmTopology + Send + Sync + 'static;
 
     /// Build the topology given the context.
     fn build_topology(self, ctx: &SwarmBuilderContext<'_, Types, Cfg>) -> Self::Topology;
@@ -18,7 +18,7 @@ pub trait TopologyBuilder<Types: LightTypes, Cfg: NetworkConfig>: Send + Sync + 
 
 /// Default Kademlia topology builder.
 ///
-/// Produces `Arc<KademliaTopology<I>>` which implements `Topology`.
+/// Produces `Arc<KademliaTopology<I>>` which implements `SwarmTopology`.
 #[derive(Debug, Clone, Default)]
 pub struct KademliaTopologyBuilder {
     config: KademliaConfig,
@@ -33,9 +33,9 @@ impl KademliaTopologyBuilder {
 
 impl<Types, Cfg> TopologyBuilder<Types, Cfg> for KademliaTopologyBuilder
 where
-    Types: LightTypes,
+    Types: SwarmClientTypes,
     Types::Identity: Clone + Send + Sync + 'static,
-    Cfg: NetworkConfig,
+    Cfg: SwarmNetworkConfig,
 {
     type Topology = Arc<KademliaTopology<Types::Identity>>;
 

@@ -11,6 +11,15 @@ use futures_util::{
     Future, FutureExt, TryFutureExt,
     future::{BoxFuture, select},
 };
+
+/// A service that can be spawned as a background task.
+///
+/// Implement this for services that run continuously (event loops, handlers, etc.)
+/// and need to be spawned onto a task executor.
+pub trait SpawnableTask: Send + 'static {
+    /// Consume self and return a future to run as a background task.
+    fn into_task(self) -> impl Future<Output = ()> + Send;
+}
 use std::{
     any::Any,
     fmt::{Display, Formatter},

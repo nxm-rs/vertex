@@ -1,37 +1,26 @@
-//! Core Swarm node orchestration with libp2p integration.
+//! Swarm business logic and orchestration (libp2p-FREE).
 //!
-//! This crate provides the central coordination layer for Swarm nodes:
-//! - [`SwarmNode<N>`]: The main entry point for Swarm network participation
-//! - [`NodeBehaviour`]: The composed libp2p behaviour
-//! - [`ClientService`]: Background service for processing network events
+//! This crate provides configuration and CLI parsing for Swarm nodes.
+//! All libp2p networking is handled by `vertex-client-core`.
 //!
 //! # Architecture
 //!
 //! ```text
-//! SwarmNode<N: NodeTypes>
-//! ├── swarm: Swarm<NodeBehaviour<N>>
-//! ├── identity: Arc<SwarmIdentity>
-//! ├── peer_manager: Arc<PeerManager>
-//! ├── kademlia: Arc<KademliaTopology>
-//! └── bootnode_connector: BootnodeConnector
+//! vertex-swarm-core (THIS CRATE - libp2p-FREE)
+//! ├── CLI configuration (args/, config.rs)
+//! └── Re-exports from vertex-client-core
 //!
-//! ClientService (runs in background)
-//! ├── processes ClientEvent from network
-//! ├── completes pending retrievals
-//! └── handles business logic
+//! vertex-client-core (THE LIBP2P BOUNDARY)
+//! ├── SwarmNode: wraps libp2p::Swarm
+//! ├── NodeBehaviour: composed NetworkBehaviour
+//! ├── ClientService: event processing
+//! └── PeerId ↔ OverlayAddress translation
 //! ```
-//!
-//! # Abstraction Boundary
-//!
-//! The SwarmNode serves as the bridge between:
-//! - **libp2p layer**: Uses PeerId, Multiaddr, ConnectionId
-//! - **Swarm layer**: Uses OverlayAddress
 //!
 //! # Usage
 //!
 //! ```ignore
 //! use vertex_swarm_core::{SwarmNode, ClientService, ClientHandle};
-//! use vertex_swarm_api::NetworkConfig;
 //!
 //! // Build node with network config
 //! let (mut node, client_service, client_handle) = SwarmNode::<MyNodeTypes>::builder(identity)
@@ -55,19 +44,18 @@ mod config;
 #[cfg(feature = "cli")]
 mod constants;
 
-mod behaviour;
-mod bootnodes;
-mod node;
-mod service;
-mod stats;
+// Re-export everything from vertex-client-core for backwards compatibility
+pub use vertex_client_core::{
+    BootNode, BootNodeBuilder, BootnodeBehaviour, BootnodeClient, BootnodeEvent, BootnodeProvider,
+    BuiltSwarmComponents, Client, ClientCommand, ClientEvent, ClientHandle, ClientService,
+    FullClient, NodeEvent, RetrievalError, RetrievalResult, SwarmNode, SwarmNodeBehaviour,
+    SwarmNodeBuilder,
+};
 
-pub use behaviour::{NodeEvent, SwarmNodeBehaviour};
-pub use bootnodes::BootnodeProvider;
+pub use vertex_swarm_primitives::SwarmNodeType;
+
+// Re-export from vertex-client-core
+pub use vertex_client_core::{spawn_stats_task, StatsConfig};
+
 #[cfg(feature = "cli")]
 pub use config::SwarmConfig;
-pub use node::{SwarmNode, SwarmNodeBuilder, SwarmNodeType};
-pub use service::{
-    Cheque, ClientCommand, ClientEvent, ClientHandle, ClientService, RetrievalError,
-    RetrievalResult,
-};
-pub use stats::{StatsConfig, spawn_stats_task};

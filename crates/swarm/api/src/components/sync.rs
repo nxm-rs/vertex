@@ -1,26 +1,14 @@
-//! Chunk synchronization.
-//!
-//! This module defines the [`ChunkSync`] trait for syncing chunks between peers.
-//! All operations use [`OverlayAddress`] (not libp2p `PeerId`) since sync is
-//! based on Swarm overlay addresses.
+//! Chunk synchronization between peers using overlay addresses.
 
-use async_trait::async_trait;
 use vertex_primitives::{AnyChunk, OverlayAddress};
 
 use crate::SwarmResult;
 
-/// Chunk synchronization between peers.
+/// Chunk synchronization trait between peers.
 ///
 /// Full nodes sync chunks with neighbors to ensure data availability.
-/// This is how chunks get distributed across the network.
-///
-/// # Overlay Addresses
-///
-/// All sync operations use [`OverlayAddress`] for peer identification.
-/// The overlay address determines which peers should store which chunks
-/// based on Kademlia proximity.
-#[async_trait]
-pub trait ChunkSync: Send + Sync {
+#[async_trait::async_trait]
+pub trait SwarmChunkSync: Send + Sync {
     /// Sync chunks with a peer.
     ///
     /// Returns statistics about what was synced.

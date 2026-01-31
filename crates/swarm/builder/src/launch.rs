@@ -7,12 +7,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use eyre::{Result, WrapErr};
-use vertex_client_peermanager::PeerStore;
+use vertex_topology_peermanager::PeerStore;
 use vertex_node_builder::LaunchContext;
 use vertex_node_core::config::FullNodeConfig;
 use vertex_node_core::dirs::DataDirs;
 use vertex_swarm_core::SwarmConfig;
-use vertex_swarm_identity::SwarmIdentity;
+use vertex_swarm_identity::Identity;
 use vertex_swarmspec::Hive;
 use vertex_tasks::TaskExecutor;
 
@@ -35,7 +35,7 @@ pub struct SwarmLaunchContext {
     /// Network specification.
     pub spec: Arc<Hive>,
     /// Node identity.
-    pub identity: SwarmIdentity,
+    pub identity: Identity,
     /// Peer store for persistence.
     pub peer_store: Arc<dyn PeerStore>,
     /// Path to peers database file.
@@ -48,7 +48,7 @@ impl SwarmLaunchContext {
         base: LaunchContext,
         config: FullNodeConfig<SwarmConfig>,
         spec: Arc<Hive>,
-        identity: SwarmIdentity,
+        identity: Identity,
         peer_store: Arc<dyn PeerStore>,
         peers_path: PathBuf,
     ) -> Self {

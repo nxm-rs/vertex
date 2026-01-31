@@ -1,25 +1,16 @@
 use std::collections::HashMap;
 
-use vertex_net_codec::ProtocolCodec;
+use vertex_net_codec::{Codec, ProtoMessage, ProtocolCodecError};
 
 use bytes::Bytes;
 
+/// Error type for headers codec operations.
+///
+/// Headers has no domain-specific errors, so we use the base `ProtocolCodecError`.
+pub type CodecError = ProtocolCodecError;
+
 /// Codec for headers protocol messages.
-pub type HeadersCodec = ProtocolCodec<crate::proto::headers::Headers, Headers, CodecError>;
-
-#[derive(Debug, thiserror::Error)]
-pub enum CodecError {
-    #[error("Protocol error: {0}")]
-    Protocol(String),
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-}
-
-impl From<quick_protobuf_codec::Error> for CodecError {
-    fn from(error: quick_protobuf_codec::Error) -> Self {
-        CodecError::Protocol(error.to_string())
-    }
-}
+pub type HeadersCodec = Codec<Headers, CodecError>;
 
 /// Headers message wrapper.
 #[derive(Debug, Clone, PartialEq)]
@@ -39,22 +30,11 @@ impl Headers {
     }
 }
 
-impl TryFrom<crate::proto::headers::Headers> for Headers {
-    type Error = CodecError;
+impl ProtoMessage for Headers {
+    type Proto = crate::proto::headers::Headers;
+    type DecodeError = CodecError;
 
-    fn try_from(value: crate::proto::headers::Headers) -> Result<Self, Self::Error> {
-        Ok(Headers {
-            inner: value
-                .headers
-                .into_iter()
-                .map(|v| (v.key, Bytes::from(v.value)))
-                .collect(),
-        })
-    }
-}
-
-impl Into<crate::proto::headers::Headers> for Headers {
-    fn into(self) -> crate::proto::headers::Headers {
+    fn into_proto(self) -> Self::Proto {
         crate::proto::headers::Headers {
             headers: self
                 .inner
@@ -65,5 +45,15 @@ impl Into<crate::proto::headers::Headers> for Headers {
                 })
                 .collect(),
         }
+    }
+
+    fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
+        Ok(Headers {
+            inner: proto
+                .headers
+                .into_iter()
+                .map(|v| (v.key, Bytes::from(v.value)))
+                .collect(),
+        })
     }
 }

@@ -13,7 +13,7 @@ pub use serde_multiaddr::{deserialize_multiaddrs, serialize_multiaddrs};
 pub use util::arbitrary_multiaddr;
 
 use util::generate_sign_message;
-use vertex_swarm_api::Identity;
+use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_primitives::compute_overlay;
 
 pub use nectar_primitives::SwarmAddress;
@@ -72,7 +72,7 @@ impl SwarmPeer {
     }
 
     /// Create a `SwarmPeer` from an [`Identity`] and observed multiaddrs.
-    pub fn from_identity<I: Identity>(
+    pub fn from_identity<I: SwarmIdentity>(
         identity: &I,
         multiaddrs: Vec<Multiaddr>,
     ) -> Result<Self, SwarmPeerError> {

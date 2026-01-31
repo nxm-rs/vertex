@@ -2,7 +2,7 @@
 
 use clap::Args;
 use serde::{Deserialize, Serialize};
-use vertex_swarm_api::{StorageConfig, StoreConfig};
+use vertex_swarm_api::{SwarmStorageConfig, SwarmStoreConfig};
 
 /// Local storage and cache configuration.
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
@@ -33,7 +33,7 @@ impl Default for StorageArgs {
     }
 }
 
-impl StoreConfig for StorageArgs {
+impl SwarmStoreConfig for StorageArgs {
     fn capacity_chunks(&self) -> u64 {
         self.capacity_chunks
     }
@@ -56,7 +56,7 @@ pub struct StorageIncentiveArgs {
     pub redistribution: bool,
 }
 
-impl StorageConfig for StorageIncentiveArgs {
+impl SwarmStorageConfig for StorageIncentiveArgs {
     fn redistribution_enabled(&self) -> bool {
         self.redistribution
     }

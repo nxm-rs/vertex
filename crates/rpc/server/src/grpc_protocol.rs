@@ -5,11 +5,11 @@
 //! should implement this trait.
 
 use crate::GrpcRegistry;
-use vertex_node_api::Protocol;
+use vertex_node_api::NodeProtocol;
 
 /// Extension trait for protocols that expose gRPC services.
 ///
-/// This trait extends [`Protocol`] to add gRPC service registration.
+/// This trait extends [`NodeProtocol`] to add gRPC service registration.
 /// The `register_grpc` method is called by the node launcher after
 /// building the protocol, allowing protocols to register their services.
 ///
@@ -17,11 +17,11 @@ use vertex_node_api::Protocol;
 ///
 /// ```ignore
 /// use vertex_rpc_server::{GrpcProtocol, GrpcRegistry};
-/// use vertex_node_api::Protocol;
+/// use vertex_node_api::NodeProtocol;
 ///
 /// struct MyProtocol;
 ///
-/// impl Protocol for MyProtocol {
+/// impl NodeProtocol for MyProtocol {
 ///     // ... protocol implementation
 /// }
 ///
@@ -32,7 +32,7 @@ use vertex_node_api::Protocol;
 ///     }
 /// }
 /// ```
-pub trait GrpcProtocol: Protocol {
+pub trait GrpcProtocol: NodeProtocol {
     /// Register gRPC services backed by the protocol's components.
     ///
     /// Called by the node launcher after building the protocol.

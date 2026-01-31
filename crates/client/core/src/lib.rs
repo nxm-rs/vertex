@@ -1,61 +1,73 @@
-//! Core Vertex client for Swarm network participation.
+//! Core Vertex client with libp2p integration.
 //!
-//! This crate provides [`SwarmClient`], a unified client for all node types:
+//! This crate is **THE LIBP2P BOUNDARY**:
+//! - **Below**: Uses PeerId, Multiaddr, libp2p types
+//! - **Above**: Exposes only OverlayAddress and NetworkEvent/NetworkCommand
 //!
-//! - **Bootnode**: Topology only (peer discovery)
-//! - **Light node**: + Accounting, implements [`SwarmReader`]
-//! - **Publisher node**: + [`SwarmWriter`]
-//!
-//! For the SwarmNode and network orchestration, see `vertex_swarm_core`.
-//!
-//! # Client Structure
+//! # Architecture
 //!
 //! ```text
-//! SwarmClient<Types, A = (), P = ()>
-//! ├── topology: Types::Topology        (always present)
-//! ├── accounting: Option<Arc<A>>       (None for bootnodes)
-//! ├── pricer: Option<Arc<P>>           (None for bootnodes)
-//! └── client_handle: ClientHandle
+//! vertex-swarm-core (business logic - libp2p FREE)
+//!         │
+//!         ▼
+//! THIS CRATE: vertex-client-core (THE BOUNDARY)
+//! - SwarmNode: wraps libp2p::Swarm
+//! - NodeBehaviour: composed NetworkBehaviour
+//! - Client: implements SwarmClient trait
+//! - ClientService: event processing
+//! - PeerId ↔ OverlayAddress translation via PeerManager
+//!         │
+//!         ▼
+//! vertex-net-* (libp2p protocol implementations)
+//! - vertex-net-topology: handshake, hive, pingpong
+//! - vertex-net-pricing, vertex-net-retrieval, vertex-net-pushsync
 //! ```
 //!
-//! # Usage
+//! # Components
 //!
-//! ```ignore
-//! use vertex_client_core::SwarmClient;
-//! use vertex_swarm_core::ClientHandle;
-//!
-//! // Bootnode (peer discovery only)
-//! let bootnode = SwarmClient::<MyBootnodeTypes>::bootnode(topology, handle);
-//!
-//! // Light node (can retrieve chunks)
-//! let client = SwarmClient::new(topology, accounting, pricer, handle);
-//! let chunk = client.get(&address).await?;
-//!
-//! // Publisher node (can also upload)
-//! client.put(chunk, &storage_proof).await?;
-//! ```
+//! - [`SwarmNode`]: Wraps libp2p::Swarm, coordinates network activity
+//! - [`NodeBehaviour`]: Composed libp2p NetworkBehaviour
+//! - [`Client`]: Unified client implementing [`SwarmClient`] trait
+//! - [`ClientService`]: Processes network events
+//! - [`ClientHandle`]: Sends commands to the network layer
+//! - [`BootnodeProvider`]: Bootstrap node address resolution
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+mod bootnodes;
 mod client;
+mod node;
+pub mod protocol;
+mod service;
+mod stats;
 
-pub use client::{BootnodeClient, LightClient, PublisherClient, SwarmClient};
+pub use node::{SwarmNode, SwarmNodeBuilder};
+pub use node::behaviour::{NodeEvent, SwarmNodeBehaviour};
+pub use node::bootnode::{BootNode, BootNodeBuilder, BootnodeBehaviour, BootnodeEvent};
 
-// Re-export from swarm-core for convenience
-pub use vertex_swarm_core::{
-    Cheque, ClientCommand, ClientEvent, ClientHandle, ClientService, NodeEvent, RetrievalError,
-    RetrievalResult, SwarmNode, SwarmNodeBehaviour, SwarmNodeBuilder,
+// Re-export SwarmNodeType from vertex-swarm-api
+pub use vertex_swarm_api::SwarmNodeType;
+
+pub use service::{
+    ClientCommand, ClientEvent, ClientHandle, ClientService,
+    RetrievalError, RetrievalResult,
 };
 
-// Re-export builder infrastructure from swarm-builder
-pub use vertex_swarm_builder::{
-    AccountingBuilder, BandwidthAccountingBuilder, BuiltSwarmComponents, DefaultComponentsBuilder,
-    FixedPricerBuilder, KademliaTopologyBuilder, NoAccountingBuilder, PricerBuilder,
-    SwarmBuilderContext, SwarmComponentsBuilder, TopologyBuilder,
+// Re-export settlement event types for wiring
+pub use protocol::{PseudosettleEvent, SwapEvent};
+
+// Re-export protocol behaviour types
+pub use protocol::{
+    BehaviourConfig as ClientBehaviourConfig, SwarmClientBehaviour,
+    HandlerConfig as ClientHandlerConfig, SwarmClientHandler,
 };
 
-// Re-export key types for convenience
+pub use client::{BootnodeClient, BuiltSwarmComponents, Client, FullClient};
+
+pub use bootnodes::BootnodeProvider;
+pub use stats::{StatsConfig, spawn_stats_task};
+
 pub use vertex_bandwidth_core::{
-    Accounting, AccountingConfig, AccountingError, CreditAction, DEFAULT_BASE_PRICE, DebitAction,
-    FixedPricer, MAX_PO, PeerState, Pricer,
+    Accounting, AccountingError, AccountingPeerHandle, CreditAction, DebitAction, FixedPricer,
+    PeerState, Pricer,
 };

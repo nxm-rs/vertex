@@ -12,10 +12,16 @@ description = "Core bandwidth accounting and pricing for data availability incen
 nectar-primitives = { workspace = true }
 vertex-primitives = { workspace = true }
 vertex-swarm-api = { workspace = true }
+vertex-swarmspec = { workspace = true }
 async-trait = { workspace = true }
 auto_impl = { workspace = true }
 parking_lot = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+alloy-primitives = { workspace = true }
+alloy-signer-local = { workspace = true }
+vertex-swarm-identity = { workspace = true }
 
 [features]
 default = ["std"]

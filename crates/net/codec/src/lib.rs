@@ -38,10 +38,14 @@ pub trait ProtoMessage: Sized {
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError>;
 }
 
-/// A message type requiring runtime context for decoding.
+/// A message type requiring runtime context for encoding and decoding.
 ///
-/// This is used for protocols where decoding requires runtime information
-/// that isn't available in the protobuf message itself (e.g., expected `network_id`).
+/// This is used for protocols where encoding/decoding requires runtime information
+/// that isn't available in the domain type itself (e.g., `network_id`).
+///
+/// Context is available on both encode and decode:
+/// - **Encode**: Context provides values needed in the wire format but not stored in domain type
+/// - **Decode**: Context provides expected values for validation
 ///
 /// # Example
 ///
@@ -50,8 +54,11 @@ pub trait ProtoMessage: Sized {
 ///     type Proto = proto::Ack;
 ///     type DecodeError = CodecError;
 ///
-///     fn into_proto(self) -> Self::Proto {
-///         // ... encoding logic
+///     fn into_proto_with_context(self, network_id: &u64) -> Self::Proto {
+///         proto::Ack {
+///             network_id: *network_id,
+///             // ... rest of encoding
+///         }
 ///     }
 ///
 ///     fn from_proto_with_context(proto: Self::Proto, network_id: &u64) -> Result<Self, Self::DecodeError> {
@@ -69,8 +76,8 @@ pub trait ProtoMessageWithContext<Ctx>: Sized {
     /// The error type when decoding fails.
     type DecodeError;
 
-    /// Convert to protobuf wire format for encoding.
-    fn into_proto(self) -> Self::Proto;
+    /// Convert to protobuf wire format for encoding with the given context.
+    fn into_proto_with_context(self, ctx: &Ctx) -> Self::Proto;
 
     /// Convert from protobuf wire format with the given context.
     fn from_proto_with_context(proto: Self::Proto, ctx: &Ctx) -> Result<Self, Self::DecodeError>;
@@ -198,7 +205,9 @@ where
     type Error = E;
 
     fn encode(&mut self, item: Self::Item<'_>, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        self.inner.encode(item.into_proto(), dst).map_err(Into::into)
+        self.inner
+            .encode(item.into_proto_with_context(&self.context), dst)
+            .map_err(Into::into)
     }
 }
 

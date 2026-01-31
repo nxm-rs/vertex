@@ -1,8 +1,4 @@
 //! Swarm node components - traits and runtime containers.
-//!
-//! This module contains:
-//! - Component traits ([`Topology`], [`BandwidthAccounting`], [`LocalStore`], [`ChunkSync`])
-//! - Runtime component containers ([`SwarmBaseComponents`], [`SwarmLightComponents`], etc.)
 
 mod bandwidth;
 mod store;
@@ -14,13 +10,13 @@ pub use store::*;
 pub use sync::*;
 pub use topology::*;
 
-use crate::{BootnodeTypes, FullTypes, LightTypes, PublisherTypes};
+use crate::{SwarmBootnodeTypes, SwarmClientTypes, SwarmStorerTypes};
 
-/// Base components for all Swarm nodes.
+/// Base components container for all Swarm nodes.
 ///
 /// Contains the fundamental components needed for network participation.
-#[derive(Debug, Clone)]
-pub struct SwarmBaseComponents<Types: BootnodeTypes>
+#[derive(Clone)]
+pub struct BaseComponents<Types: SwarmBootnodeTypes>
 where
     Types::Identity: Clone,
     Types::Topology: Clone,
@@ -32,7 +28,7 @@ where
     pub topology: Types::Topology,
 }
 
-impl<Types: BootnodeTypes> SwarmBaseComponents<Types>
+impl<Types: SwarmBootnodeTypes> BaseComponents<Types>
 where
     Types::Identity: Clone,
     Types::Topology: Clone,
@@ -43,39 +39,48 @@ where
     }
 }
 
-/// Runtime components of a built light Swarm node.
+/// Runtime components container for a built client Swarm node.
 ///
-/// Light nodes can retrieve chunks but cannot store or upload them.
+/// Client nodes can retrieve and upload chunks but don't store them locally.
 /// Composes base components with bandwidth accounting.
-#[derive(Debug, Clone)]
-pub struct SwarmLightComponents<Types: LightTypes>
+#[derive(Clone)]
+pub struct ClientComponents<Types: SwarmClientTypes>
 where
     Types::Identity: Clone,
     Types::Topology: Clone,
     Types::Accounting: Clone,
+    Types::ClientHandle: Clone,
 {
     /// Base components (identity, topology).
-    pub base: SwarmBaseComponents<Types>,
+    pub base: BaseComponents<Types>,
 
     /// Bandwidth accounting for availability incentives.
     pub accounting: Types::Accounting,
+
+    /// Handle to the client service for network operations.
+    ///
+    /// Used for chunk retrieval via RPC.
+    pub client_handle: Types::ClientHandle,
 }
 
-impl<Types: LightTypes> SwarmLightComponents<Types>
+impl<Types: SwarmClientTypes> ClientComponents<Types>
 where
     Types::Identity: Clone,
     Types::Topology: Clone,
     Types::Accounting: Clone,
+    Types::ClientHandle: Clone,
 {
-    /// Create new light node components.
+    /// Create new client node components.
     pub fn new(
         identity: Types::Identity,
         topology: Types::Topology,
         accounting: Types::Accounting,
+        client_handle: Types::ClientHandle,
     ) -> Self {
         Self {
-            base: SwarmBaseComponents::new(identity, topology),
+            base: BaseComponents::new(identity, topology),
             accounting,
+            client_handle,
         }
     }
 
@@ -88,79 +93,29 @@ where
     pub fn topology(&self) -> &Types::Topology {
         &self.base.topology
     }
+
+    /// Get the client handle.
+    pub fn client_handle(&self) -> &Types::ClientHandle {
+        &self.client_handle
+    }
 }
 
-/// Runtime components of a built publisher Swarm node.
+/// Runtime components container for a built storer Swarm node.
 ///
-/// Publisher nodes can retrieve and upload chunks but don't store them locally.
-/// Composes light components with storage proof.
-#[derive(Debug, Clone)]
-pub struct SwarmPublisherComponents<Types: PublisherTypes>
+/// Storer nodes store chunks locally and sync with neighbors.
+/// Composes client components with local store and sync.
+#[derive(Clone)]
+pub struct StorerComponents<Types: SwarmStorerTypes>
 where
     Types::Identity: Clone,
     Types::Topology: Clone,
     Types::Accounting: Clone,
-    Types::Storage: Clone,
-{
-    /// Light node components (base + accounting).
-    pub light: SwarmLightComponents<Types>,
-
-    /// Storage proof for uploads (postage stamps).
-    pub storage: Types::Storage,
-}
-
-impl<Types: PublisherTypes> SwarmPublisherComponents<Types>
-where
-    Types::Identity: Clone,
-    Types::Topology: Clone,
-    Types::Accounting: Clone,
-    Types::Storage: Clone,
-{
-    /// Create new publisher node components.
-    pub fn new(
-        identity: Types::Identity,
-        topology: Types::Topology,
-        accounting: Types::Accounting,
-        storage: Types::Storage,
-    ) -> Self {
-        Self {
-            light: SwarmLightComponents::new(identity, topology, accounting),
-            storage,
-        }
-    }
-
-    /// Get the node's identity.
-    pub fn identity(&self) -> &Types::Identity {
-        self.light.identity()
-    }
-
-    /// Get the topology manager.
-    pub fn topology(&self) -> &Types::Topology {
-        self.light.topology()
-    }
-
-    /// Get the accounting manager.
-    pub fn accounting(&self) -> &Types::Accounting {
-        &self.light.accounting
-    }
-}
-
-/// Runtime components of a built full Swarm node.
-///
-/// Full nodes store chunks locally and sync with neighbors.
-/// Composes publisher components with local store and sync.
-#[derive(Debug, Clone)]
-pub struct SwarmFullComponents<Types: FullTypes>
-where
-    Types::Identity: Clone,
-    Types::Topology: Clone,
-    Types::Accounting: Clone,
-    Types::Storage: Clone,
+    Types::ClientHandle: Clone,
     Types::Store: Clone,
     Types::Sync: Clone,
 {
-    /// Publisher node components (light + storage).
-    pub publisher: SwarmPublisherComponents<Types>,
+    /// Client node components (base + accounting).
+    pub client: ClientComponents<Types>,
 
     /// Local chunk storage.
     pub store: Types::Store,
@@ -169,26 +124,26 @@ where
     pub sync: Types::Sync,
 }
 
-impl<Types: FullTypes> SwarmFullComponents<Types>
+impl<Types: SwarmStorerTypes> StorerComponents<Types>
 where
     Types::Identity: Clone,
     Types::Topology: Clone,
     Types::Accounting: Clone,
-    Types::Storage: Clone,
+    Types::ClientHandle: Clone,
     Types::Store: Clone,
     Types::Sync: Clone,
 {
-    /// Create new full node components.
+    /// Create new storer node components.
     pub fn new(
         identity: Types::Identity,
         topology: Types::Topology,
         accounting: Types::Accounting,
-        storage: Types::Storage,
+        client_handle: Types::ClientHandle,
         store: Types::Store,
         sync: Types::Sync,
     ) -> Self {
         Self {
-            publisher: SwarmPublisherComponents::new(identity, topology, accounting, storage),
+            client: ClientComponents::new(identity, topology, accounting, client_handle),
             store,
             sync,
         }
@@ -196,21 +151,21 @@ where
 
     /// Get the node's identity.
     pub fn identity(&self) -> &Types::Identity {
-        self.publisher.identity()
+        self.client.identity()
     }
 
     /// Get the topology manager.
     pub fn topology(&self) -> &Types::Topology {
-        self.publisher.topology()
+        self.client.topology()
     }
 
     /// Get the accounting manager.
     pub fn accounting(&self) -> &Types::Accounting {
-        self.publisher.accounting()
+        &self.client.accounting
     }
 
-    /// Get the storage proof.
-    pub fn storage(&self) -> &Types::Storage {
-        &self.publisher.storage
+    /// Get the client handle.
+    pub fn client_handle(&self) -> &Types::ClientHandle {
+        self.client.client_handle()
     }
 }

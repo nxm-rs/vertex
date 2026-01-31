@@ -28,4 +28,8 @@ pub enum AccountingError {
     /// Settlement failed.
     #[error("settlement failed: {0}")]
     SettlementFailed(String),
+
+    /// Channel closed (service stopped).
+    #[error("channel closed")]
+    ChannelClosed,
 }

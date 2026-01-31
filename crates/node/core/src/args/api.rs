@@ -3,7 +3,7 @@
 use crate::constants::{DEFAULT_GRPC_PORT, DEFAULT_LOCALHOST_ADDR, DEFAULT_METRICS_PORT};
 use clap::Args;
 use serde::{Deserialize, Serialize};
-use vertex_node_api::{MetricsConfig, RpcConfig};
+use vertex_node_api::{NodeMetricsConfig, NodeRpcConfig};
 
 /// API server configuration.
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
@@ -48,7 +48,7 @@ impl Default for ApiArgs {
     }
 }
 
-impl RpcConfig for ApiArgs {
+impl NodeRpcConfig for ApiArgs {
     fn grpc_enabled(&self) -> bool {
         self.grpc
     }
@@ -62,7 +62,7 @@ impl RpcConfig for ApiArgs {
     }
 }
 
-impl MetricsConfig for ApiArgs {
+impl NodeMetricsConfig for ApiArgs {
     fn metrics_enabled(&self) -> bool {
         self.metrics
     }
