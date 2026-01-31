@@ -18,7 +18,7 @@ pub struct StorageArgs {
 
     /// Cache capacity in number of chunks.
     ///
-    /// In-memory cache for frequently accessed chunks (Light/Publisher nodes).
+    /// In-memory cache for frequently accessed chunks (Client nodes).
     /// Default is 2^16 chunks (~256MB in memory).
     #[arg(long = "cache.chunks", default_value_t = vertex_swarmspec::DEFAULT_CACHE_CAPACITY)]
     pub cache_chunks: u64,

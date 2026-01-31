@@ -7,7 +7,7 @@ use crate::SwarmResult;
 
 /// Chunk synchronization trait between peers.
 ///
-/// Full nodes sync chunks with neighbors to ensure data availability.
+/// Storer nodes sync chunks with neighbors to ensure data availability.
 #[async_trait::async_trait]
 pub trait SwarmChunkSync: Send + Sync {
     /// Sync chunks with a peer.

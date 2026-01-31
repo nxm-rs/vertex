@@ -677,15 +677,15 @@ mod tests {
         let peer2 = addr_from_byte(0xc0); // PO 0
         let peer3 = addr_from_byte(0xa0); // PO 0
 
-        // Light nodes always accepted
+        // Client nodes always accepted
         assert!(topology.pick(&peer1, false));
 
-        // First two full nodes in bin 0 should be accepted
+        // First two Storer nodes in bin 0 should be accepted
         topology.connected(peer1);
         assert!(topology.pick(&peer2, true));
 
         topology.connected(peer2);
-        // Third full node should be rejected (bin oversaturated)
+        // Third Storer node should be rejected (bin oversaturated)
         assert!(!topology.pick(&peer3, true));
     }
 

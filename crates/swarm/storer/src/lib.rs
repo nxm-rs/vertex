@@ -1,6 +1,6 @@
-//! Full node storage implementation with LocalStore and ChunkSync.
+//! Storer node storage implementation with LocalStore and ChunkSync.
 //!
-//! This crate provides the storage layer for full nodes:
+//! This crate provides the storage layer for Storer nodes:
 //! - [`ChunkStore`] - Backend trait for chunk persistence
 //! - [`RedbChunkStore`] - redb-based implementation
 //! - [`LocalStoreImpl`] - Implements [`LocalStore`] from swarm-api

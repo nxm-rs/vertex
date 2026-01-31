@@ -3,9 +3,9 @@
 use crate::SwarmResult;
 use nectar_primitives::{AnyChunk, ChunkAddress};
 
-/// Local chunk storage trait for full nodes.
+/// Local chunk storage trait for Storer nodes.
 ///
-/// Full nodes store chunks they're responsible for. This is the local
+/// Storer nodes store chunks they're responsible for. This is the local
 /// persistence layer, separate from network operations.
 pub trait SwarmLocalStore: Send + Sync {
     /// Store a chunk locally.

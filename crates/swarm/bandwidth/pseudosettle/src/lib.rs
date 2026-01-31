@@ -8,7 +8,7 @@
 //!
 //! - Each peer accumulates a "refresh" allowance over time
 //! - The allowance is added to their balance when they would otherwise be disconnected
-//! - Light nodes receive a reduced refresh rate (e.g., 1/10th)
+//! - Client nodes receive a reduced refresh rate (e.g., 1/10th)
 //!
 //! # Actor Pattern
 //!
@@ -419,30 +419,30 @@ mod tests {
         assert!(state.last_refresh() > 0, "Timestamp should be initialized");
     }
 
-    /// Test: Light node vs full node refresh rate simulation.
-    /// In Bee, light nodes get 1/10th the refresh rate.
+    /// Test: Client node vs Storer node refresh rate simulation.
+    /// Client nodes get 1/10th the refresh rate.
     #[test]
-    fn test_light_vs_full_refresh_rate() {
-        let full_refresh_rate: u64 = 10_000;
-        let light_refresh_rate: u64 = 1_000; // 1/10th
+    fn test_client_vs_storer_refresh_rate() {
+        let storer_refresh_rate: u64 = 10_000;
+        let client_refresh_rate: u64 = 1_000; // 1/10th
 
-        let full_state = PeerState::new(test_peer(), 13_500_000, 16_875_000);
-        let light_state = PeerState::new_light(test_peer(), 13_500_000, 16_875_000, 10);
+        let storer_state = PeerState::new(test_peer(), 13_500_000, 16_875_000);
+        let client_state = PeerState::new_light(test_peer(), 13_500_000, 16_875_000, 10);
 
         // Both owe 50,000 AU, 10 seconds elapsed
-        full_state.add_balance(-50_000);
-        light_state.add_balance(-50_000);
-        full_state.set_last_refresh(current_timestamp() - 10);
-        light_state.set_last_refresh(current_timestamp() - 10);
+        storer_state.add_balance(-50_000);
+        client_state.add_balance(-50_000);
+        storer_state.set_last_refresh(current_timestamp() - 10);
+        client_state.set_last_refresh(current_timestamp() - 10);
 
-        // Full node: 10 * 10,000 = 100,000 allowance, debt is 50,000 -> credit 50,000
-        let full_credit = refresh_allowance(&full_state, full_refresh_rate);
-        assert_eq!(full_credit, 50_000);
-        assert_eq!(full_state.balance(), 0);
+        // Storer node: 10 * 10,000 = 100,000 allowance, debt is 50,000 -> credit 50,000
+        let storer_credit = refresh_allowance(&storer_state, storer_refresh_rate);
+        assert_eq!(storer_credit, 50_000);
+        assert_eq!(storer_state.balance(), 0);
 
-        // Light node: 10 * 1,000 = 10,000 allowance, debt is 50,000 -> credit 10,000
-        let light_credit = refresh_allowance(&light_state, light_refresh_rate);
-        assert_eq!(light_credit, 10_000);
-        assert_eq!(light_state.balance(), -40_000);
+        // Client node: 10 * 1,000 = 10,000 allowance, debt is 50,000 -> credit 10,000
+        let client_credit = refresh_allowance(&client_state, client_refresh_rate);
+        assert_eq!(client_credit, 10_000);
+        assert_eq!(client_state.balance(), -40_000);
     }
 }

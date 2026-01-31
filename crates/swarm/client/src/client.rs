@@ -2,7 +2,7 @@
 //!
 //! Provides a unified client for all node types:
 //! - Bootnodes: topology only
-//! - Full nodes: + accounting + pricer, implements [`SwarmClient`]
+//! - Client/Storer nodes: + accounting + pricer, implements [`SwarmClient`]
 
 use std::sync::Arc;
 
@@ -36,7 +36,7 @@ pub struct BuiltSwarmComponents<T, A, P> {
 /// # Type Parameters
 ///
 /// - `Types`: Node capability level ([`SwarmBootnodeTypes`], [`SwarmClientTypes`], etc.)
-/// - `C`: Components - `()` for bootnodes, `BuiltSwarmComponents<T, A, P>` for full nodes
+/// - `C`: Components - `()` for bootnodes, `BuiltSwarmComponents<T, A, P>` for Client/Storer nodes
 /// - `S`: Storage proof type - `()` by default, postage stamp for mainnet
 ///
 /// # Examples
@@ -45,7 +45,7 @@ pub struct BuiltSwarmComponents<T, A, P> {
 /// // Bootnode (peer discovery only)
 /// let client = Client::<MyTypes>::bootnode(topology, handle);
 ///
-/// // Full node (can retrieve and upload chunks)
+/// // Client node (can retrieve and upload chunks)
 /// let client = Client::full(topology, accounting, pricer, handle);
 /// let chunk = client.get(&address).await?;
 /// client.put(chunk, &stamp).await?;
@@ -84,7 +84,7 @@ impl<Types: SwarmBootnodeTypes> Client<Types, (), ()> {
 }
 
 // =============================================================================
-// Full node (with components)
+// Client/Storer node (with components)
 // =============================================================================
 
 impl<Types, A, P, S> Client<Types, BuiltSwarmComponents<Types::Topology, A, P>, S>
@@ -227,7 +227,7 @@ where
 /// Bootnode client (topology only).
 pub type BootnodeClient<Types> = Client<Types, (), ()>;
 
-/// Full client (can retrieve and publish chunks).
+/// Client/Storer node (can retrieve and publish chunks).
 pub type FullClient<Types, A, P, S> =
     Client<Types, BuiltSwarmComponents<<Types as SwarmBootnodeTypes>::Topology, A, P>, S>;
 

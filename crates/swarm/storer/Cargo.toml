@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Full node storage implementation with LocalStore and ChunkSync"
+description = "Storer node storage implementation with LocalStore and ChunkSync"
 
 [lints]
 workspace = true

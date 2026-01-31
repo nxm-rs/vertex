@@ -49,9 +49,9 @@ pub trait SwarmAccountingConfig: Send + Sync {
     /// Settlement is triggered when debt exceeds (100 - early) % of threshold.
     fn early_payment_percent(&self) -> u64;
 
-    /// Light node scaling factor.
+    /// Client node scaling factor.
     ///
-    /// Light nodes have all thresholds and rates divided by this factor.
+    /// Client nodes have all thresholds and rates divided by this factor.
     fn light_factor(&self) -> u64;
 
     /// Calculate the disconnect threshold.

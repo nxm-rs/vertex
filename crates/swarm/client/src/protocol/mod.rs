@@ -25,7 +25,7 @@
 //! the node sends an `ActivatePeer` command which transitions the handler to
 //! active state with:
 //! - Peer's overlay address
-//! - Full node status
+//! - Storer node status (is_full_node flag)
 //! - PeerBandwidth handle for bandwidth accounting
 //!
 //! # Event/Command Interface

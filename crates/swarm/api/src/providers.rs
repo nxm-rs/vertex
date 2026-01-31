@@ -104,7 +104,7 @@ pub enum ChunkSendError {
 
 /// Trait for sending chunks to the Swarm network via PushSync.
 ///
-/// Light nodes use this to upload chunks. Two modes are provided:
+/// Client nodes use this to upload chunks. Two modes are provided:
 /// - `send_chunk_unchecked`: Trust the caller, no validation
 /// - `send_chunk`: Validate stamp signature (but not batch validity)
 #[async_trait::async_trait]

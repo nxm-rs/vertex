@@ -89,7 +89,7 @@ impl SwarmChunkProvider for NetworkChunkProvider {
     }
 
     fn has_chunk(&self, _address: &str) -> bool {
-        // Light nodes don't have local storage
+        // Client nodes don't have local storage
         false
     }
 }

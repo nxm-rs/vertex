@@ -1,7 +1,7 @@
 //! Swarm protocol implementation for node infrastructure integration.
 //!
 //! Provides [`SwarmProtocol`] which implements [`vertex_node_api::NodeProtocol`].
-//! A single type works for all capability levels (Light, Publisher, Full).
+//! A single type works for all capability levels (Bootnode, Client, Storer).
 
 use core::marker::PhantomData;
 use vertex_node_api::{NodeContext, NodeProtocol};

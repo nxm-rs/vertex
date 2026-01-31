@@ -102,9 +102,9 @@ pub struct BandwidthArgs {
     #[arg(long = "bandwidth.early-percent", default_value_t = DEFAULT_EARLY_PAYMENT_PERCENT)]
     pub early_payment_percent: u64,
 
-    /// Light node scaling factor.
+    /// Client node scaling factor.
     ///
-    /// Light nodes have all thresholds and rates divided by this factor.
+    /// Client nodes have all thresholds and rates divided by this factor.
     #[arg(long = "bandwidth.light-factor", default_value_t = DEFAULT_LIGHT_FACTOR)]
     pub light_factor: u64,
 }
