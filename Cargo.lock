@@ -7033,22 +7033,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vertex-storer-core"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "lru 0.16.3",
- "parking_lot",
- "redb",
- "tempfile",
- "thiserror 2.0.12",
- "tokio",
- "tracing",
- "vertex-primitives",
- "vertex-swarm-api",
-]
-
-[[package]]
 name = "vertex-swarm-api"
 version = "0.1.0"
 dependencies = [
@@ -7265,6 +7249,22 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-build",
+ "vertex-swarm-api",
+]
+
+[[package]]
+name = "vertex-swarm-storer"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "lru 0.16.3",
+ "parking_lot",
+ "redb",
+ "tempfile",
+ "thiserror 2.0.12",
+ "tokio",
+ "tracing",
+ "vertex-primitives",
  "vertex-swarm-api",
 ]
 

@@ -23,7 +23,7 @@
 //! # Usage
 //!
 //! ```ignore
-//! use vertex_storer_core::{RedbChunkStore, LocalStoreImpl, Reserve};
+//! use vertex_swarm_storer::{RedbChunkStore, LocalStoreImpl, Reserve};
 //!
 //! // Create redb-backed store
 //! let chunk_store = RedbChunkStore::open("./chunks.redb")?;

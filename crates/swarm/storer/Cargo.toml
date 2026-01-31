@@ -1,5 +1,5 @@
 [package]
-name = "vertex-storer-core"
+name = "vertex-swarm-storer"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

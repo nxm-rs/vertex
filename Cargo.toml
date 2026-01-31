@@ -62,7 +62,7 @@ members = [
     "crates/client/bandwidth/swap",
 
     # Storer (full node storage)
-    "crates/storer/core",
+    "crates/swarm/storer",
 
     # RPC
     "crates/rpc/core",
@@ -145,7 +145,7 @@ vertex-bandwidth-pseudosettle = { path = "crates/client/bandwidth/pseudosettle" 
 vertex-bandwidth-swap = { path = "crates/client/bandwidth/swap" }
 
 # storer (full node storage)
-vertex-storer-core = { path = "crates/storer/core" }
+vertex-swarm-storer = { path = "crates/swarm/storer" }
 
 # rpc
 vertex-rpc-core = { path = "crates/rpc/core" }
