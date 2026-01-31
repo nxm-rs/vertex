@@ -6705,12 +6705,12 @@ dependencies = [
  "vertex-primitives",
  "vertex-swarm-api",
  "vertex-swarm-identity",
+ "vertex-swarm-kademlia",
  "vertex-swarm-peer",
+ "vertex-swarm-peermanager",
+ "vertex-swarm-topology",
  "vertex-swarmspec",
  "vertex-tasks",
- "vertex-topology-core",
- "vertex-topology-kademlia",
- "vertex-topology-peermanager",
 ]
 
 [[package]]
@@ -7100,11 +7100,11 @@ dependencies = [
  "vertex-swarm-api",
  "vertex-swarm-core",
  "vertex-swarm-identity",
+ "vertex-swarm-kademlia",
+ "vertex-swarm-peermanager",
  "vertex-swarm-rpc",
  "vertex-swarmspec",
  "vertex-tasks",
- "vertex-topology-kademlia",
- "vertex-topology-peermanager",
 ]
 
 [[package]]
@@ -7160,6 +7160,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "vertex-swarm-kademlia"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
+ "hex",
+ "nectar-primitives",
+ "parking_lot",
+ "tokio",
+ "tracing",
+ "vertex-primitives",
+ "vertex-swarm-api",
+ "vertex-swarmspec",
+ "vertex-tasks",
+]
+
+[[package]]
 name = "vertex-swarm-node"
 version = "0.1.0"
 dependencies = [
@@ -7176,10 +7194,10 @@ dependencies = [
  "vertex-swarm-builder",
  "vertex-swarm-core",
  "vertex-swarm-identity",
+ "vertex-swarm-peermanager",
  "vertex-swarm-primitives",
  "vertex-swarmspec",
  "vertex-tasks",
- "vertex-topology-peermanager",
 ]
 
 [[package]]
@@ -7207,6 +7225,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "vertex-swarm-peermanager"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "auto_impl",
+ "ipnet",
+ "libp2p",
+ "lru 0.16.3",
+ "netdev",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.12",
+ "tokio",
+ "tracing",
+ "vertex-primitives",
+ "vertex-swarm-peer",
+ "web-time",
+]
+
+[[package]]
 name = "vertex-swarm-primitives"
 version = "0.1.0"
 dependencies = [
@@ -7226,6 +7266,31 @@ dependencies = [
  "tonic",
  "tonic-build",
  "vertex-swarm-api",
+]
+
+[[package]]
+name = "vertex-swarm-topology"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "bytes",
+ "futures",
+ "hickory-resolver",
+ "libp2p",
+ "rand 0.9.1",
+ "thiserror 2.0.12",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "vertex-net-handshake",
+ "vertex-net-headers",
+ "vertex-net-hive",
+ "vertex-net-pingpong",
+ "vertex-primitives",
+ "vertex-swarm-api",
+ "vertex-swarm-identity",
+ "vertex-swarm-peer",
+ "vertex-swarm-peermanager",
 ]
 
 [[package]]
@@ -7259,71 +7324,6 @@ dependencies = [
  "thiserror 2.0.12",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "vertex-topology-core"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "bytes",
- "futures",
- "hickory-resolver",
- "libp2p",
- "rand 0.9.1",
- "thiserror 2.0.12",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "vertex-net-handshake",
- "vertex-net-headers",
- "vertex-net-hive",
- "vertex-net-pingpong",
- "vertex-primitives",
- "vertex-swarm-api",
- "vertex-swarm-identity",
- "vertex-swarm-peer",
- "vertex-topology-peermanager",
-]
-
-[[package]]
-name = "vertex-topology-kademlia"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "alloy-signer",
- "alloy-signer-local",
- "hex",
- "nectar-primitives",
- "parking_lot",
- "tokio",
- "tracing",
- "vertex-primitives",
- "vertex-swarm-api",
- "vertex-swarmspec",
- "vertex-tasks",
-]
-
-[[package]]
-name = "vertex-topology-peermanager"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "auto_impl",
- "ipnet",
- "libp2p",
- "lru 0.16.3",
- "netdev",
- "parking_lot",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.12",
- "tokio",
- "tracing",
- "vertex-primitives",
- "vertex-swarm-peer",
- "web-time",
 ]
 
 [[package]]

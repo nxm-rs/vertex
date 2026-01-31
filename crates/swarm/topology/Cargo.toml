@@ -1,5 +1,5 @@
 [package]
-name = "vertex-topology-core"
+name = "vertex-swarm-topology"
 description = "Topology behaviour for libp2p handshake, hive, and pingpong protocols"
 version.workspace = true
 edition.workspace = true
@@ -18,7 +18,7 @@ vertex-net-headers.workspace = true
 vertex-net-hive.workspace = true
 vertex-net-pingpong.workspace = true
 vertex-swarm-peer.workspace = true
-vertex-topology-peermanager.workspace = true
+vertex-swarm-peermanager.workspace = true
 
 ## p2p
 libp2p.workspace = true

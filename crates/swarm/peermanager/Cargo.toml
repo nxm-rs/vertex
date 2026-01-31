@@ -1,5 +1,5 @@
 [package]
-name = "vertex-topology-peermanager"
+name = "vertex-swarm-peermanager"
 description = "Peer lifecycle management with PeerId/OverlayAddress abstraction boundary"
 version.workspace = true
 edition.workspace = true

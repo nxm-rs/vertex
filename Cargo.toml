@@ -53,9 +53,9 @@ members = [
 
     # Client (includes bandwidth/data availability incentives)
     "crates/client/core",
-    "crates/client/topology/core",
-    "crates/client/topology/kademlia",
-    "crates/client/topology/peermanager",
+    "crates/swarm/topology",
+    "crates/swarm/kademlia",
+    "crates/swarm/peermanager",
     "crates/client/bandwidth/core",
     "crates/client/bandwidth/chequebook",
     "crates/client/bandwidth/pseudosettle",
@@ -136,10 +136,10 @@ vertex-swarm-rpc = { path = "crates/swarm/rpc" }
 vertex-client-core = { path = "crates/client/core" }
 vertex-bandwidth-core = { path = "crates/client/bandwidth/core" }
 
-# topology
-vertex-topology-core = { path = "crates/client/topology/core" }
-vertex-topology-kademlia = { path = "crates/client/topology/kademlia" }
-vertex-topology-peermanager = { path = "crates/client/topology/peermanager" }
+# topology (in swarm/)
+vertex-swarm-topology = { path = "crates/swarm/topology" }
+vertex-swarm-kademlia = { path = "crates/swarm/kademlia" }
+vertex-swarm-peermanager = { path = "crates/swarm/peermanager" }
 vertex-bandwidth-chequebook = { path = "crates/client/bandwidth/chequebook" }
 vertex-bandwidth-pseudosettle = { path = "crates/client/bandwidth/pseudosettle" }
 vertex-bandwidth-swap = { path = "crates/client/bandwidth/swap" }

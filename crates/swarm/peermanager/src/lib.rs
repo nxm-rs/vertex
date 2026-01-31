@@ -13,7 +13,7 @@
 //! # Usage
 //!
 //! ```ignore
-//! use vertex_topology_peermanager::{PeerManager, InternalPeerManager};
+//! use vertex_swarm_peermanager::{PeerManager, InternalPeerManager};
 //!
 //! let pm = PeerManager::new();
 //!

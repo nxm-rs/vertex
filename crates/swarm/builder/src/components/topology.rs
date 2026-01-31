@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use vertex_topology_kademlia::{KademliaConfig, KademliaTopology};
+use vertex_swarm_kademlia::{KademliaConfig, KademliaTopology};
 use vertex_swarm_api::{SwarmClientTypes, SwarmNetworkConfig, SwarmTopology};
 
 use crate::SwarmBuilderContext;

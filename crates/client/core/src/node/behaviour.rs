@@ -15,10 +15,10 @@ use libp2p::{identify, identity::PublicKey, swarm::NetworkBehaviour};
 use crate::protocol::{
     BehaviourConfig as ClientBehaviourConfig, ClientEvent, SwarmClientBehaviour,
 };
-use vertex_topology_core::{
+use vertex_swarm_topology::{
     BehaviourConfig as TopologyBehaviourConfig, SwarmTopologyBehaviour, TopologyEvent,
 };
-use vertex_topology_peermanager::AddressManager;
+use vertex_swarm_peermanager::AddressManager;
 use vertex_swarm_api::SwarmNodeTypes;
 
 /// Combined network behaviour for a SwarmNode.

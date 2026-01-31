@@ -30,7 +30,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 use vertex_bandwidth_core::Accounting;
 use vertex_bandwidth_pseudosettle::{PseudosettleProvider, create_pseudosettle_actor};
-use vertex_topology_peermanager::PeerStore;
+use vertex_swarm_peermanager::PeerStore;
 use vertex_node_api::{NodeBuildsProtocol, NodeContext};
 use vertex_swarm_api::{
     SwarmAccountingConfig, SwarmNetworkConfig, SwarmLaunchConfig, SwarmProtocol, Services,

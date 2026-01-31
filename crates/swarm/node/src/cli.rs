@@ -32,7 +32,7 @@ use std::sync::Arc;
 use alloy_primitives::B256;
 use clap::{Parser, Subcommand};
 use eyre::{Result, WrapErr};
-use vertex_topology_peermanager::{FilePeerStore, PeerStore};
+use vertex_swarm_peermanager::{FilePeerStore, PeerStore};
 use vertex_node_builder::LaunchContext;
 use vertex_node_commands::{HasLogs, InfraArgs, LogArgs, run_cli};
 use vertex_node_core::config::FullNodeConfig;

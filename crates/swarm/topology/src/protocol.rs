@@ -29,7 +29,7 @@ use vertex_net_pingpong::{
     PROTOCOL_NAME as PINGPONG_PROTOCOL, PingpongInboundProtocol, PingpongOutboundProtocol, Pong,
 };
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeTypes};
-use vertex_topology_peermanager::AddressManager;
+use vertex_swarm_peermanager::AddressManager;
 
 // ============================================================================
 // Error Types

@@ -33,9 +33,9 @@ vertex-net-swap.workspace = true
 vertex-bandwidth-chequebook.workspace = true
 
 ## vertex - topology
-vertex-topology-core.workspace = true
-vertex-topology-kademlia.workspace = true
-vertex-topology-peermanager.workspace = true
+vertex-swarm-topology.workspace = true
+vertex-swarm-kademlia.workspace = true
+vertex-swarm-peermanager.workspace = true
 
 ## vertex - swarm (libp2p-free abstractions)
 vertex-swarm-api.workspace = true

@@ -71,13 +71,13 @@ use libp2p::{
 use nectar_primitives::SwarmAddress;
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
-use vertex_topology_kademlia::{KademliaConfig, KademliaTopology};
-use vertex_topology_peermanager::{
+use vertex_swarm_kademlia::{KademliaConfig, KademliaTopology};
+use vertex_swarm_peermanager::{
     AddressManager, DiscoverySender, InternalPeerManager, PeerManager, PeerStore,
     SwarmPeer, discovery_channel, run_peer_store_consumer,
 };
 use crate::protocol::{ClientCommand, PseudosettleEvent, SwapEvent};
-use vertex_topology_core::{BootnodeConnector, TopologyCommand, TopologyEvent, is_dnsaddr};
+use vertex_swarm_topology::{BootnodeConnector, TopologyCommand, TopologyEvent, is_dnsaddr};
 use vertex_primitives::OverlayAddress;
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeTypes, SwarmTopology};
 use vertex_tasks::SpawnableTask;

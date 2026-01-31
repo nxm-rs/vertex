@@ -17,7 +17,7 @@
 //! # Usage
 //!
 //! ```ignore
-//! use vertex_topology_kademlia::{KademliaTopology, KademliaConfig};
+//! use vertex_swarm_kademlia::{KademliaTopology, KademliaConfig};
 //!
 //! let config = KademliaConfig::default();
 //! let topology = KademliaTopology::new(identity, config);

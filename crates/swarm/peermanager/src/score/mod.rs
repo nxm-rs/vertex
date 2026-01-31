@@ -21,7 +21,7 @@
 //! # Usage
 //!
 //! ```ignore
-//! use vertex_topology_peermanager::score::{ScoreManager, ScoreHandle};
+//! use vertex_swarm_peermanager::score::{ScoreManager, ScoreHandle};
 //!
 //! // Create manager (typically one per node)
 //! let manager = ScoreManager::new();

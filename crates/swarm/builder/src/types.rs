@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use vertex_bandwidth_core::Accounting;
-use vertex_topology_kademlia::KademliaTopology;
+use vertex_swarm_kademlia::KademliaTopology;
 use vertex_node_types::NodeTypes;
 use vertex_swarm_api::{SwarmBootnodeTypes, SwarmClientTypes, SwarmNetworkConfig};
 use vertex_tasks::SpawnableTask;

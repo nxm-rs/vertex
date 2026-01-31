@@ -19,7 +19,7 @@ vertex-node-core.workspace = true
 vertex-tasks.workspace = true
 
 ## vertex - swarm protocol
-vertex-topology-peermanager.workspace = true
+vertex-swarm-peermanager.workspace = true
 vertex-swarm-api.workspace = true
 vertex-swarm-builder.workspace = true
 vertex-swarm-core = { workspace = true, features = ["cli"] }

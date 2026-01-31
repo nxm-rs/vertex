@@ -8,7 +8,7 @@ use std::sync::Arc;
 use alloy_primitives::hex::FromHex;
 use async_trait::async_trait;
 use nectar_primitives::SwarmAddress;
-use vertex_topology_kademlia::KademliaTopology;
+use vertex_swarm_kademlia::KademliaTopology;
 use vertex_swarm_api::{SwarmChunkProvider, ChunkRetrievalError, ChunkRetrievalResult, SwarmTopology};
 use vertex_swarm_core::ClientHandle;
 use vertex_swarm_identity::Identity;

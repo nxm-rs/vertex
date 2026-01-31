@@ -1,5 +1,5 @@
 [package]
-name = "vertex-topology-kademlia"
+name = "vertex-swarm-kademlia"
 description = "Kademlia-based peer topology management for Swarm clients"
 version.workspace = true
 edition.workspace = true

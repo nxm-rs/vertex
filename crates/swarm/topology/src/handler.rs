@@ -39,7 +39,7 @@ use tracing::{debug, trace, warn};
 use vertex_swarm_peer::SwarmPeer;
 use vertex_net_handshake::{HANDSHAKE_TIMEOUT, HandshakeError, HandshakeInfo};
 use vertex_swarm_api::SwarmNodeTypes;
-use vertex_topology_peermanager::AddressManager;
+use vertex_swarm_peermanager::AddressManager;
 
 use crate::protocol::{
     TopologyInboundOutput, TopologyInboundUpgrade, TopologyOutboundInfo, TopologyOutboundOutput,

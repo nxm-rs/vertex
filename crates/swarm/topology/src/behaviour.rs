@@ -20,7 +20,7 @@ use libp2p::{
 use tracing::{debug, warn};
 use vertex_net_hive::MAX_BATCH_SIZE;
 use vertex_swarm_api::SwarmNodeTypes;
-use vertex_topology_peermanager::AddressManager;
+use vertex_swarm_peermanager::AddressManager;
 
 use crate::{
     TopologyCommand, TopologyEvent,

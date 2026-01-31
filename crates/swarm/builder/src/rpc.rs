@@ -9,7 +9,7 @@ use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
 use vertex_swarm_api::ClientComponents;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_rpc::{ChunkService, NodeService, proto};
-use vertex_topology_kademlia::KademliaTopology;
+use vertex_swarm_kademlia::KademliaTopology;
 
 use crate::providers::NetworkChunkProvider;
 use crate::types::DefaultClientTypes;

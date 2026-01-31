@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use eyre::{Result, WrapErr};
-use vertex_topology_peermanager::PeerStore;
+use vertex_swarm_peermanager::PeerStore;
 use vertex_node_builder::LaunchContext;
 use vertex_node_core::config::FullNodeConfig;
 use vertex_node_core::dirs::DataDirs;

@@ -14,12 +14,12 @@ use tracing::{debug, info, warn};
 use libp2p::swarm::NetworkBehaviour;
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeTypes};
 use vertex_tasks::SpawnableTask;
-use vertex_topology_core::{
+use vertex_swarm_topology::{
     BehaviourConfig as TopologyBehaviourConfig, BootnodeConnector, SwarmTopologyBehaviour,
     TopologyCommand, TopologyEvent, is_dnsaddr,
 };
-use vertex_topology_kademlia::{KademliaConfig, KademliaTopology};
-use vertex_topology_peermanager::{
+use vertex_swarm_kademlia::{KademliaConfig, KademliaTopology};
+use vertex_swarm_peermanager::{
     AddressManager, DiscoverySender, InternalPeerManager, PeerManager, PeerStore,
     discovery_channel, run_peer_store_consumer,
 };

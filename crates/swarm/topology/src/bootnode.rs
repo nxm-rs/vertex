@@ -6,7 +6,7 @@
 //! # Usage
 //!
 //! ```ignore
-//! use vertex_topology_core::{BootnodeConnector, resolve_all_dnsaddrs};
+//! use vertex_swarm_topology::{BootnodeConnector, resolve_all_dnsaddrs};
 //!
 //! let connector = BootnodeConnector::new(bootnodes);
 //!
