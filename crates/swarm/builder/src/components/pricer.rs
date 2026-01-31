@@ -1,7 +1,7 @@
 //! Pricer builder.
 
-use vertex_swarm_bandwidth::{DefaultAccountingConfig, FixedPricer, NoPricer, Pricer};
-use vertex_swarm_api::{SwarmAccountingConfig, SwarmIdentity, SwarmClientTypes, SwarmNetworkConfig};
+use vertex_swarm_bandwidth_pricing::{DefaultPricingConfig, FixedPricer, NoPricer, Pricer};
+use vertex_swarm_api::{SwarmIdentity, SwarmClientTypes, SwarmNetworkConfig, SwarmPricingConfig};
 
 use crate::SwarmBuilderContext;
 
@@ -26,24 +26,23 @@ impl<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig> PricerBuilder<Types, Cfg>
 
 /// Fixed-price pricer builder.
 #[derive(Debug, Clone, Default)]
-pub struct FixedPricerBuilder {
-    base_price: Option<u64>,
+pub struct FixedPricerBuilder<C: SwarmPricingConfig + Clone = DefaultPricingConfig> {
+    config: C,
 }
 
-impl FixedPricerBuilder {
-    pub fn with_base_price(base_price: u64) -> Self {
-        Self {
-            base_price: Some(base_price),
-        }
+impl<C: SwarmPricingConfig + Clone> FixedPricerBuilder<C> {
+    pub fn new(config: C) -> Self {
+        Self { config }
     }
 }
 
-impl<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig> PricerBuilder<Types, Cfg> for FixedPricerBuilder {
+impl<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig, C: SwarmPricingConfig + Clone + 'static>
+    PricerBuilder<Types, Cfg> for FixedPricerBuilder<C>
+{
     type Pricer = FixedPricer;
 
     fn build_pricer(self, ctx: &SwarmBuilderContext<'_, Types, Cfg>) -> Self::Pricer {
         let spec = ctx.identity.spec();
-        let base_price = self.base_price.unwrap_or_else(|| DefaultAccountingConfig.base_price());
-        FixedPricer::new(base_price, spec)
+        FixedPricer::new(self.config.base_price(), spec)
     }
 }

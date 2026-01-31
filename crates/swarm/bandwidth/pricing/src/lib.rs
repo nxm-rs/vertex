@@ -6,8 +6,15 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+#[cfg(feature = "cli")]
+pub mod args;
+mod config;
+mod constants;
 mod fixed;
 
+#[cfg(feature = "cli")]
+pub use args::PricingArgs;
+pub use config::DefaultPricingConfig;
 pub use fixed::FixedPricer;
 
 use nectar_primitives::ChunkAddress;

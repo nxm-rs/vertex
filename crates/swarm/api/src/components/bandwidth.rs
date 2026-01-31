@@ -74,9 +74,6 @@ pub trait SwarmSettlementProvider: Send + Sync + 'static {
 }
 
 /// Configuration for bandwidth accounting.
-///
-/// All values are in Accounting Units (AU), not bytes or BZZ tokens.
-/// AU = proximity-weighted cost: `(max_po - proximity + 1) × base_price`
 #[auto_impl::auto_impl(&, Arc)]
 pub trait SwarmAccountingConfig: Send + Sync {
     /// The bandwidth accounting mode.
@@ -94,32 +91,19 @@ pub trait SwarmAccountingConfig: Send + Sync {
         }
     }
 
-    /// Payment threshold in accounting units.
-    ///
-    /// When a peer's debt reaches this threshold, settlement is requested.
+    /// Payment threshold (triggers settlement when peer debt exceeds this).
     fn payment_threshold(&self) -> u64;
 
-    /// Payment tolerance as a percentage (0-100).
-    ///
-    /// Disconnect threshold = payment_threshold * (100 + tolerance) / 100
+    /// Payment tolerance percent (disconnect threshold = payment_threshold * (100 + tolerance) / 100).
     fn payment_tolerance_percent(&self) -> u64;
 
-    /// Base price per chunk in accounting units.
-    ///
-    /// Actual price depends on proximity: (max_po - proximity + 1) * base_price
-    fn base_price(&self) -> u64;
-
-    /// Refresh rate in accounting units per second (for pseudosettle).
+    /// Refresh rate per second (for pseudosettle).
     fn refresh_rate(&self) -> u64;
 
-    /// Early payment threshold as a percentage (0-100).
-    ///
-    /// Settlement is triggered when debt exceeds (100 - early) % of threshold.
+    /// Early payment trigger percent (for swap).
     fn early_payment_percent(&self) -> u64;
 
-    /// Client-only node scaling factor.
-    ///
-    /// Client-only nodes have all thresholds and rates divided by this factor.
+    /// Scaling factor for client-only nodes (divides thresholds).
     fn client_only_factor(&self) -> u64;
 
     /// Calculate the disconnect threshold.

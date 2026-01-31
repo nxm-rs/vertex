@@ -6977,7 +6977,10 @@ name = "vertex-swarm-bandwidth-pricing"
 version = "0.1.0"
 dependencies = [
  "auto_impl",
+ "clap 4.5.39",
  "nectar-primitives",
+ "serde",
+ "vertex-swarm-api",
  "vertex-swarm-primitives",
  "vertex-swarmspec",
 ]
@@ -7047,6 +7050,7 @@ dependencies = [
  "vertex-rpc-server",
  "vertex-swarm-api",
  "vertex-swarm-bandwidth",
+ "vertex-swarm-bandwidth-pricing",
  "vertex-swarm-bandwidth-pseudosettle",
  "vertex-swarm-bandwidth-swap",
  "vertex-swarm-core",
@@ -7110,6 +7114,7 @@ dependencies = [
  "vertex-node-api",
  "vertex-swarm-api",
  "vertex-swarm-bandwidth",
+ "vertex-swarm-bandwidth-pricing",
  "vertex-swarm-client",
  "vertex-swarm-primitives",
  "vertex-swarmspec",

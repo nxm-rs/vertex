@@ -37,7 +37,7 @@ impl From<BandwidthMode> for BandwidthModeArg {
     }
 }
 
-/// Bandwidth accounting CLI arguments. All thresholds are in AU.
+/// Bandwidth accounting CLI arguments.
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
 #[command(next_help_heading = "Bandwidth Accounting")]
 #[serde(default)]
@@ -53,10 +53,6 @@ pub struct BandwidthArgs {
     /// Payment tolerance percent for disconnect threshold
     #[arg(long = "bandwidth.tolerance-percent", default_value_t = DEFAULT_PAYMENT_TOLERANCE_PERCENT)]
     pub payment_tolerance_percent: u64,
-
-    /// Base price per chunk (scaled by proximity)
-    #[arg(long = "bandwidth.base-price", default_value_t = DEFAULT_BASE_PRICE)]
-    pub base_price: u64,
 
     /// Pseudosettle refresh rate per second
     #[arg(long = "bandwidth.refresh-rate", default_value_t = DEFAULT_REFRESH_RATE)]
@@ -77,7 +73,6 @@ impl Default for BandwidthArgs {
             mode: BandwidthModeArg::default(),
             payment_threshold: DEFAULT_PAYMENT_THRESHOLD,
             payment_tolerance_percent: DEFAULT_PAYMENT_TOLERANCE_PERCENT,
-            base_price: DEFAULT_BASE_PRICE,
             refresh_rate: DEFAULT_REFRESH_RATE,
             early_payment_percent: DEFAULT_EARLY_PAYMENT_PERCENT,
             client_only_factor: DEFAULT_CLIENT_ONLY_FACTOR,
@@ -87,8 +82,6 @@ impl Default for BandwidthArgs {
 
 impl BandwidthArgs {
     /// Validate argument combinations.
-    ///
-    /// Returns an error if arguments are set that don't apply to the selected mode.
     pub fn validate(&self) -> Result<(), String> {
         match self.mode {
             BandwidthModeArg::None => {
@@ -96,7 +89,6 @@ impl BandwidthArgs {
                 if self.refresh_rate != default.refresh_rate
                     || self.payment_threshold != default.payment_threshold
                     || self.payment_tolerance_percent != default.payment_tolerance_percent
-                    || self.base_price != default.base_price
                     || self.early_payment_percent != default.early_payment_percent
                     || self.client_only_factor != default.client_only_factor
                 {
@@ -136,10 +128,6 @@ impl SwarmAccountingConfig for BandwidthArgs {
 
     fn payment_tolerance_percent(&self) -> u64 {
         self.payment_tolerance_percent
-    }
-
-    fn base_price(&self) -> u64 {
-        self.base_price
     }
 
     fn refresh_rate(&self) -> u64 {

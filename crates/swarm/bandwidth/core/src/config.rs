@@ -21,10 +21,6 @@ impl SwarmAccountingConfig for DefaultAccountingConfig {
         DEFAULT_PAYMENT_TOLERANCE_PERCENT
     }
 
-    fn base_price(&self) -> u64 {
-        DEFAULT_BASE_PRICE
-    }
-
     fn refresh_rate(&self) -> u64 {
         DEFAULT_REFRESH_RATE
     }

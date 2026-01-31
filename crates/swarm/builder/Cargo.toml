@@ -21,6 +21,7 @@ vertex-tasks.workspace = true
 
 # vertex - swarm protocol
 vertex-swarm-bandwidth.workspace = true
+vertex-swarm-bandwidth-pricing.workspace = true
 vertex-swarm-bandwidth-pseudosettle.workspace = true
 vertex-swarm-bandwidth-swap.workspace = true
 vertex-swarm-kademlia.workspace = true

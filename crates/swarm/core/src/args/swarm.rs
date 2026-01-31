@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use vertex_swarm_primitives::SwarmNodeType;
 
-use super::{BandwidthArgs, IdentityArgs, NetworkArgs, StorageArgs, StorageIncentiveArgs};
+use super::{BandwidthArgs, IdentityArgs, NetworkArgs, PricingArgs, StorageArgs, StorageIncentiveArgs};
 
 /// CLI argument type for node mode selection.
 ///
@@ -76,9 +76,13 @@ pub struct SwarmArgs {
     #[command(flatten)]
     pub network: NetworkArgs,
 
-    /// Bandwidth incentive configuration.
+    /// Bandwidth accounting configuration.
     #[command(flatten)]
     pub bandwidth: BandwidthArgs,
+
+    /// Chunk pricing configuration.
+    #[command(flatten)]
+    pub pricing: PricingArgs,
 
     /// Local storage / cache configuration.
     #[command(flatten)]
@@ -121,6 +125,7 @@ impl Default for SwarmArgs {
             node_type: NodeTypeArg::default(),
             network: NetworkArgs::default(),
             bandwidth: BandwidthArgs::default(),
+            pricing: PricingArgs::default(),
             storage: StorageArgs::default(),
             storage_incentives: StorageIncentiveArgs::default(),
             identity: IdentityArgs::default(),

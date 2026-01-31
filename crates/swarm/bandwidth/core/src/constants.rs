@@ -1,12 +1,9 @@
 //! Default constants for bandwidth accounting.
 
-/// Default base price per chunk in accounting units.
-pub(crate) const DEFAULT_BASE_PRICE: u64 = 10_000;
-
-/// Default refresh rate in accounting units per second.
+/// Default refresh rate per second.
 pub(crate) const DEFAULT_REFRESH_RATE: u64 = 4_500_000;
 
-/// Default payment threshold in accounting units.
+/// Default payment threshold.
 pub(crate) const DEFAULT_PAYMENT_THRESHOLD: u64 = 13_500_000;
 
 /// Default payment tolerance as a percentage.

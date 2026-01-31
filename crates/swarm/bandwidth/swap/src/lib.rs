@@ -200,10 +200,6 @@ mod tests {
             25
         }
 
-        fn base_price(&self) -> u64 {
-            10_000
-        }
-
         fn refresh_rate(&self) -> u64 {
             4_500_000
         }

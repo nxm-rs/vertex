@@ -1,11 +1,13 @@
 //! Swarm node components - traits and runtime containers.
 
 mod bandwidth;
+mod pricing;
 mod store;
 mod sync;
 mod topology;
 
 pub use bandwidth::*;
+pub use pricing::*;
 pub use store::*;
 pub use sync::*;
 pub use topology::*;
