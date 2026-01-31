@@ -1,55 +1,34 @@
-//! Core bandwidth accounting and pricing for bandwidth incentives.
+//! Core bandwidth accounting for Swarm.
 //!
-//! This crate provides the foundational components for bandwidth incentives:
-//!
-//! - **Accounting**: Per-peer balance tracking with pluggable settlement providers
-//! - **Pricing**: Proximity-based chunk pricing
-//! - **Settlement**: Pluggable providers for pseudosettle and swap
-//!
-//! # Units
-//!
+//! Per-peer balance tracking with pluggable settlement providers.
 //! All values are in **Accounting Units (AU)**, not bytes or BZZ tokens.
-//! Configuration is provided via the [`AccountingConfig`](vertex_swarm_api::AccountingConfig) trait.
 //!
-//! # Architecture
+//! # Components
 //!
-//! ```text
-//! bandwidth-core
-//! ├── accounting (per-peer balance tracking + settlement delegation)
-//! ├── pricing (proximity-based chunk pricing)
-//! └── settlement (SettlementProvider trait)
+//! - [`Accounting`] - Per-peer balance factory with settlement delegation
+//! - [`AccountingPeerHandle`] - Handle for recording bandwidth per peer
+//! - [`ReceiveAction`] / [`ProvideAction`] - Prepare/apply pattern for balance changes
+//! - [`NoSettlement`] - No-op settlement provider
 //!
-//! Downstream crates:
-//! ├── pseudosettle (PseudosettleProvider)
-//! └── swap (SwapProvider)
-//! ```
-//!
-//! # Provider-Based Settlement
-//!
-//! The [`Accounting`] struct supports different [`BandwidthMode`](vertex_swarm_api::BandwidthMode)
-//! configurations through pluggable settlement providers:
-//!
-//! - **None**: Empty provider list (basic balance tracking only)
-//! - **Pseudosettle**: Single pseudosettle provider
-//! - **Swap**: Single swap provider
-//! - **Both**: Both pseudosettle and swap providers
+//! Settlement providers (`PseudosettleProvider`, `SwapProvider`) are in sibling crates.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
 
+pub mod args;
 mod accounting;
-mod pricing;
+mod config;
+mod constants;
+mod noop;
 mod settlement;
 
-// Re-export accounting types
 pub use accounting::{
-    Accounting, AccountingAction, AccountingError, AccountingPeerHandle, CreditAction, DebitAction,
-    PeerState,
+    Accounting, AccountingAction, AccountingError, AccountingPeerHandle, PeerState,
+    PeerStateSnapshot, ProvideAction, ReceiveAction,
 };
-
-// Re-export pricing types and constants
-pub use pricing::{FixedPricer, NoPricer, Pricer};
-
-// Re-export settlement provider types
-pub use settlement::{NoSettlement, SettlementProvider};
+pub use args::{BandwidthArgs, BandwidthModeArg};
+pub use config::DefaultAccountingConfig;
+pub use noop::{NoAccounting, NoPeerBandwidth};
+pub use settlement::NoSettlement;
+pub use vertex_swarm_bandwidth_pricing::{FixedPricer, NoPricer, Pricer};

@@ -242,7 +242,8 @@ mod tests {
     use tokio::sync::mpsc;
     use crate::{Accounting, FixedPricer, ClientCommand, ClientHandle, ClientService};
     use vertex_swarm_primitives::OverlayAddress;
-    use vertex_swarm_api::{SwarmBandwidthAccounting, DefaultAccountingConfig, SwarmNodeType, SwarmTopology};
+    use vertex_swarm_bandwidth::DefaultAccountingConfig;
+    use vertex_swarm_api::{SwarmBandwidthAccounting, SwarmNodeType, SwarmTopology};
     use vertex_tasks::SpawnableTask;
     use vertex_swarm_identity::Identity;
 

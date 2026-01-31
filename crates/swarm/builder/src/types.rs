@@ -16,12 +16,12 @@ use vertex_swarm_core::{BootNode, ClientHandle, ClientService, SwarmNode};
 use vertex_swarm_identity::Identity;
 use vertex_swarmspec::Hive;
 
-use crate::components::DefaultAccountingConfig;
+use vertex_swarm_bandwidth::DefaultAccountingConfig;
 
-/// Default types for light nodes.
+/// Default types for Swarm nodes.
 ///
-/// This single type satisfies both capability traits (`SwarmClientTypes`) and
-/// infrastructure traits (`SwarmLightNodeTypes` via blanket impl).
+/// This type satisfies both capability traits (`SwarmClientTypes`) and
+/// infrastructure traits (via blanket impl).
 ///
 /// Concrete implementations used:
 /// - `Identity` for identity

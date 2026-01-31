@@ -50,9 +50,8 @@ pub use types::{DefaultClientTypes, DefaultNetworkConfig};
 
 // Component building
 pub use components::{
-    AccountingBuilder, BuiltSwarmComponents, CombinedAccountingBuilder, DefaultAccountingConfig,
-    DefaultComponentsBuilder, FixedPricerBuilder, KademliaTopologyBuilder, ModeBasedAccounting,
-    ModeBasedAccountingBuilder, NoAccountingBuilder, NoPricerBuilder, PricerBuilder,
-    PseudosettleAccountingBuilder, SwapAccountingBuilder, SwarmComponentsBuilder, TopologyBuilder,
+    AccountingBuilder, BuiltSwarmComponents, DefaultAccountingBuilder, DefaultComponentsBuilder,
+    FixedPricerBuilder, KademliaTopologyBuilder, NoAccountingBuilder, NoPricerBuilder,
+    PricerBuilder, SwarmComponentsBuilder, TopologyBuilder,
 };
 pub use context::SwarmBuilderContext;

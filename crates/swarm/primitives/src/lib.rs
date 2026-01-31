@@ -135,7 +135,7 @@ impl BandwidthMode {
         matches!(self, BandwidthMode::Swap | BandwidthMode::Both)
     }
 
-    /// Check if any bandwidth incentive is enabled.
+    /// Check if bandwidth accounting is enabled.
     pub fn is_enabled(self) -> bool {
         !matches!(self, BandwidthMode::None)
     }

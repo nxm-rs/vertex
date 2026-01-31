@@ -1,15 +1,12 @@
-//! Fixed pricing based on proximity.
+//! Fixed-rate pricing using `(max_po - proximity + 1) * base_price`.
 
-use nectar_primitives::SwarmAddress;
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{ChunkAddress, SwarmAddress};
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarmspec::SwarmSpec;
 
-use super::Pricer;
+use crate::Pricer;
 
-/// Fixed pricing based on proximity.
-///
-/// Uses the formula: `price = (max_po - proximity + 1) * base_price`
+/// Prices chunks based on Kademlia proximity to peer.
 #[derive(Debug, Clone)]
 pub struct FixedPricer {
     base_price: u64,

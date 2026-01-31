@@ -1,4 +1,4 @@
-//! Accounting error types.
+//! Accounting errors (threshold violations, settlement failures).
 
 use vertex_swarm_primitives::OverlayAddress;
 

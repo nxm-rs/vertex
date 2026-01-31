@@ -1,12 +1,22 @@
-//! Bandwidth incentives - per-peer accounting.
+//! Bandwidth accounting - per-peer balance tracking.
 //!
 //! Two-level design: [`SwarmBandwidthAccounting`] creates per-peer [`SwarmPeerBandwidth`] handles.
 //! Uses overlay addresses for peer identification (not libp2p `PeerId`).
+//!
+//! # Settlement Providers
+//!
+//! Settlement is handled by pluggable [`SwarmSettlementProvider`] implementations:
+//! - **Pseudosettle**: Time-based debt forgiveness (soft accounting)
+//! - **Swap**: Chequebook-based real payments
+//!
+//! Providers are configured via [`SwarmAccountingConfig`] which specifies the [`BandwidthMode`].
 
 use std::vec::Vec;
 use vertex_swarm_primitives::OverlayAddress;
 
 use crate::{SwarmIdentity, SwarmResult};
+
+pub use vertex_swarm_primitives::BandwidthMode;
 
 /// Direction of data transfer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,32 +27,128 @@ pub enum Direction {
     Download,
 }
 
-/// Per-peer bandwidth accounting handle.
+/// Abstract peer balance state for settlement providers.
 ///
-/// Clone and share across protocols on the same connection.
-/// `record()` is lock-free (uses atomics).
-#[async_trait::async_trait]
-pub trait SwarmPeerBandwidth: Clone + Send + Sync {
-    /// Record bandwidth usage (lock-free).
-    ///
-    /// This is called frequently from protocol handlers and MUST NOT block.
-    /// Use atomic operations internally.
-    fn record(&self, bytes: u64, direction: Direction);
-
-    /// Check if a transfer of `bytes` is allowed.
-    ///
-    /// Returns `false` if the peer owes us too much (over disconnect threshold).
-    fn allow(&self, bytes: u64) -> bool;
-
+/// Positive balance = peer owes us, negative = we owe peer.
+/// The peer address is passed separately to settlement methods.
+#[auto_impl::auto_impl(&, Arc)]
+pub trait SwarmPeerState: Send + Sync {
     /// Get the current balance (positive = peer owes us).
     fn balance(&self) -> i64;
 
-    /// Request settlement of outstanding balance.
+    /// Add to the balance atomically.
+    fn add_balance(&self, amount: i64);
+
+    /// Get the last refresh timestamp (for pseudosettle).
+    fn last_refresh(&self) -> u64;
+
+    /// Set the last refresh timestamp.
+    fn set_last_refresh(&self, timestamp: u64);
+
+    /// Get the payment threshold for this peer.
+    fn payment_threshold(&self) -> u64;
+
+    /// Get the disconnect threshold for this peer.
+    fn disconnect_threshold(&self) -> u64;
+}
+
+/// Settlement provider for bandwidth accounting.
+///
+/// Providers are called at `pre_allow()` (before allowing transfers) and
+/// `settle()` (when explicit settlement is requested).
+#[async_trait::async_trait]
+pub trait SwarmSettlementProvider: Send + Sync + 'static {
+    /// The bandwidth mode this provider supports.
+    fn supported_mode(&self) -> BandwidthMode;
+
+    /// Called before checking if a transfer is allowed.
+    /// Returns the amount of balance adjustment (positive = credit added).
+    fn pre_allow(&self, peer: OverlayAddress, state: &dyn SwarmPeerState) -> i64;
+
+    /// Called when explicit settlement is requested.
+    /// Returns the amount settled, or an error if settlement failed.
+    async fn settle(&self, peer: OverlayAddress, state: &dyn SwarmPeerState) -> SwarmResult<i64>;
+
+    /// Human-readable name for logging.
+    fn name(&self) -> &'static str;
+}
+
+/// Configuration for bandwidth accounting.
+///
+/// All values are in Accounting Units (AU), not bytes or BZZ tokens.
+/// AU = proximity-weighted cost: `(max_po - proximity + 1) × base_price`
+#[auto_impl::auto_impl(&, Arc)]
+pub trait SwarmAccountingConfig: Send + Sync {
+    /// The bandwidth accounting mode.
+    fn mode(&self) -> BandwidthMode;
+
+    /// Check if a settlement provider is enabled for this configuration.
+    fn provider_enabled(&self, provider: &dyn SwarmSettlementProvider) -> bool {
+        let mode = self.mode();
+        let supported = provider.supported_mode();
+        match supported {
+            BandwidthMode::Pseudosettle => mode.pseudosettle_enabled(),
+            BandwidthMode::Swap => mode.swap_enabled(),
+            BandwidthMode::Both => mode.pseudosettle_enabled() || mode.swap_enabled(),
+            BandwidthMode::None => true, // No-op provider always works
+        }
+    }
+
+    /// Payment threshold in accounting units.
     ///
-    /// This may involve network I/O (sending cheques, etc.) so it's async.
+    /// When a peer's debt reaches this threshold, settlement is requested.
+    fn payment_threshold(&self) -> u64;
+
+    /// Payment tolerance as a percentage (0-100).
+    ///
+    /// Disconnect threshold = payment_threshold * (100 + tolerance) / 100
+    fn payment_tolerance_percent(&self) -> u64;
+
+    /// Base price per chunk in accounting units.
+    ///
+    /// Actual price depends on proximity: (max_po - proximity + 1) * base_price
+    fn base_price(&self) -> u64;
+
+    /// Refresh rate in accounting units per second (for pseudosettle).
+    fn refresh_rate(&self) -> u64;
+
+    /// Early payment threshold as a percentage (0-100).
+    ///
+    /// Settlement is triggered when debt exceeds (100 - early) % of threshold.
+    fn early_payment_percent(&self) -> u64;
+
+    /// Client-only node scaling factor.
+    ///
+    /// Client-only nodes have all thresholds and rates divided by this factor.
+    fn client_only_factor(&self) -> u64;
+
+    /// Calculate the disconnect threshold.
+    fn disconnect_threshold(&self) -> u64 {
+        self.payment_threshold() * (100 + self.payment_tolerance_percent()) / 100
+    }
+
+    /// Check if bandwidth accounting is enabled.
+    fn is_enabled(&self) -> bool {
+        self.mode().is_enabled()
+    }
+}
+
+/// Per-peer bandwidth accounting handle. Clone-safe and lock-free.
+#[async_trait::async_trait]
+pub trait SwarmPeerBandwidth: Clone + Send + Sync {
+    /// Record bandwidth usage (lock-free, must not block).
+    fn record(&self, bytes: u64, direction: Direction);
+
+    /// Check if a transfer is allowed (false if over disconnect threshold).
+    fn allow(&self, bytes: u64) -> bool;
+
+    /// Get current balance (positive = peer owes us).
+    fn balance(&self) -> i64;
+
+    /// Request settlement (may involve network I/O).
     async fn settle(&self) -> SwarmResult<()>;
 
-    /// Get the overlay address this handle is for.
+    /// Get the peer's overlay address.
     fn peer(&self) -> OverlayAddress;
 }
 
@@ -69,63 +175,4 @@ pub trait SwarmBandwidthAccounting: Send + Sync {
 
     /// Remove accounting for a peer (e.g., after disconnect + timeout).
     fn remove_peer(&self, peer: &OverlayAddress);
-}
-
-/// No-op bandwidth accounting (always allows, never settles).
-#[derive(Debug, Clone)]
-pub struct NoBandwidthIncentives<I: SwarmIdentity> {
-    identity: I,
-}
-
-impl<I: SwarmIdentity> NoBandwidthIncentives<I> {
-    /// Create a new no-op bandwidth accounting with the given identity.
-    pub fn new(identity: I) -> Self {
-        Self { identity }
-    }
-}
-
-/// No-op per-peer bandwidth handle.
-#[derive(Debug, Clone)]
-pub struct NoPeerBandwidth {
-    peer: OverlayAddress,
-}
-
-#[async_trait::async_trait]
-impl SwarmPeerBandwidth for NoPeerBandwidth {
-    fn record(&self, _bytes: u64, _direction: Direction) {}
-
-    fn allow(&self, _bytes: u64) -> bool {
-        true
-    }
-
-    fn balance(&self) -> i64 {
-        0
-    }
-
-    async fn settle(&self) -> SwarmResult<()> {
-        Ok(())
-    }
-
-    fn peer(&self) -> OverlayAddress {
-        self.peer
-    }
-}
-
-impl<I: SwarmIdentity> SwarmBandwidthAccounting for NoBandwidthIncentives<I> {
-    type Identity = I;
-    type Peer = NoPeerBandwidth;
-
-    fn identity(&self) -> &I {
-        &self.identity
-    }
-
-    fn for_peer(&self, peer: OverlayAddress) -> Self::Peer {
-        NoPeerBandwidth { peer }
-    }
-
-    fn peers(&self) -> Vec<OverlayAddress> {
-        Vec::new()
-    }
-
-    fn remove_peer(&self, _peer: &OverlayAddress) {}
 }

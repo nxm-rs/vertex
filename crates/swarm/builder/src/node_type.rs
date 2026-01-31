@@ -4,8 +4,8 @@
 //! by node type, enabling type-safe defaults and node-specific behavior.
 
 use crate::components::{
-    FixedPricerBuilder, KademliaTopologyBuilder, NoAccountingBuilder, NoPricerBuilder,
-    PseudosettleAccountingBuilder,
+    DefaultAccountingBuilder, FixedPricerBuilder, KademliaTopologyBuilder, NoAccountingBuilder,
+    NoPricerBuilder,
 };
 
 /// Marker for client nodes (read + write, no storage).
@@ -38,14 +38,14 @@ pub trait NodeTypeDefaults: Send + Sync + 'static {
 impl NodeTypeDefaults for Client {
     const NAME: &'static str = "Client";
     type DefaultTopology = KademliaTopologyBuilder;
-    type DefaultAccounting = PseudosettleAccountingBuilder;
+    type DefaultAccounting = DefaultAccountingBuilder;
     type DefaultPricer = FixedPricerBuilder;
 }
 
 impl NodeTypeDefaults for Storer {
     const NAME: &'static str = "Storer";
     type DefaultTopology = KademliaTopologyBuilder;
-    type DefaultAccounting = PseudosettleAccountingBuilder;
+    type DefaultAccounting = DefaultAccountingBuilder;
     type DefaultPricer = FixedPricerBuilder;
 }
 

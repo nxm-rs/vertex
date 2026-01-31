@@ -1,4 +1,4 @@
-//! Swap error types.
+//! SWAP settlement errors.
 
 /// Errors that can occur during swap operations.
 #[derive(Debug, Clone, thiserror::Error)]

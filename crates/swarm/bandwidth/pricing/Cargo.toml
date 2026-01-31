@@ -1,0 +1,22 @@
+[package]
+name = "vertex-swarm-bandwidth-pricing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Chunk pricing for Swarm bandwidth accounting"
+
+[dependencies]
+nectar-primitives = { workspace = true }
+vertex-swarm-primitives = { workspace = true }
+vertex-swarmspec = { workspace = true }
+auto_impl = { workspace = true }
+
+[dev-dependencies]
+vertex-swarmspec = { workspace = true }
+
+[features]
+default = ["std"]
+std = []

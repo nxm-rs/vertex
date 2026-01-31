@@ -55,6 +55,7 @@ members = [
     "crates/swarm/peermanager",
     "crates/swarm/bandwidth/core",
     "crates/swarm/bandwidth/chequebook",
+    "crates/swarm/bandwidth/pricing",
     "crates/swarm/bandwidth/pseudosettle",
     "crates/swarm/bandwidth/swap",
 
@@ -139,6 +140,7 @@ vertex-swarm-peermanager = { path = "crates/swarm/peermanager" }
 # bandwidth (in swarm/)
 vertex-swarm-bandwidth = { path = "crates/swarm/bandwidth/core" }
 vertex-swarm-bandwidth-chequebook = { path = "crates/swarm/bandwidth/chequebook" }
+vertex-swarm-bandwidth-pricing = { path = "crates/swarm/bandwidth/pricing" }
 vertex-swarm-bandwidth-pseudosettle = { path = "crates/swarm/bandwidth/pseudosettle" }
 vertex-swarm-bandwidth-swap = { path = "crates/swarm/bandwidth/swap" }
 

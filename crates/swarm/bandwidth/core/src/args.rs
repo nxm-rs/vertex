@@ -1,14 +1,13 @@
-//! Bandwidth incentive CLI arguments.
+//! CLI arguments for bandwidth accounting configuration.
 
 use clap::Args;
 use serde::{Deserialize, Serialize};
 use vertex_swarm_api::SwarmAccountingConfig;
 use vertex_swarm_primitives::BandwidthMode;
 
-/// CLI argument type for bandwidth mode selection.
-///
-/// This is a CLI-specific wrapper around [`BandwidthMode`] that provides
-/// clap integration. Use `.into()` to convert to [`BandwidthMode`].
+use crate::constants::*;
+
+/// CLI wrapper for [`BandwidthMode`] with clap integration.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum, strum::FromRepr, Serialize, Deserialize,
 )]
@@ -38,75 +37,38 @@ impl From<BandwidthMode> for BandwidthModeArg {
     }
 }
 
-/// Default base price per chunk in accounting units.
-const DEFAULT_BASE_PRICE: u64 = 10_000;
-
-/// Default refresh rate in accounting units per second.
-const DEFAULT_REFRESH_RATE: u64 = 4_500_000;
-
-/// Default payment threshold in accounting units.
-const DEFAULT_PAYMENT_THRESHOLD: u64 = 13_500_000;
-
-/// Default payment tolerance as a percentage.
-const DEFAULT_PAYMENT_TOLERANCE_PERCENT: u64 = 25;
-
-/// Default early payment trigger percentage.
-const DEFAULT_EARLY_PAYMENT_PERCENT: u64 = 50;
-
-/// Default light node scaling factor.
-const DEFAULT_LIGHT_FACTOR: u64 = 10;
-
-/// Bandwidth incentive configuration.
-///
-/// All thresholds are in **Accounting Units (AU)**.
+/// Bandwidth accounting CLI arguments. All thresholds are in AU.
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
-#[command(next_help_heading = "Bandwidth Incentives")]
+#[command(next_help_heading = "Bandwidth Accounting")]
 #[serde(default)]
 pub struct BandwidthArgs {
-    /// Bandwidth incentive mode.
-    ///
-    /// - none: No accounting (dev only)
-    /// - pseudosettle: Soft accounting without payments (default)
-    /// - swap: Real payments via SWAP chequebook
-    /// - both: Pseudosettle until threshold, then SWAP
+    /// Bandwidth accounting mode
     #[arg(long = "bandwidth.mode", value_enum, default_value_t = BandwidthModeArg::Pseudosettle)]
     pub mode: BandwidthModeArg,
 
-    /// Payment threshold in accounting units.
-    ///
-    /// When a peer's debt reaches this threshold, settlement is requested.
+    /// Payment threshold (triggers settlement when exceeded)
     #[arg(long = "bandwidth.threshold", default_value_t = DEFAULT_PAYMENT_THRESHOLD)]
     pub payment_threshold: u64,
 
-    /// Payment tolerance as a percentage (0-100).
-    ///
-    /// Disconnect threshold = payment_threshold * (100 + tolerance) / 100.
+    /// Payment tolerance percent for disconnect threshold
     #[arg(long = "bandwidth.tolerance-percent", default_value_t = DEFAULT_PAYMENT_TOLERANCE_PERCENT)]
     pub payment_tolerance_percent: u64,
 
-    /// Base price per chunk in accounting units.
-    ///
-    /// Actual price depends on proximity: (31 - proximity + 1) * base_price.
+    /// Base price per chunk (scaled by proximity)
     #[arg(long = "bandwidth.base-price", default_value_t = DEFAULT_BASE_PRICE)]
     pub base_price: u64,
 
-    /// Refresh rate in accounting units per second.
-    ///
-    /// Used for pseudosettle time-based allowance.
+    /// Pseudosettle refresh rate per second
     #[arg(long = "bandwidth.refresh-rate", default_value_t = DEFAULT_REFRESH_RATE)]
     pub refresh_rate: u64,
 
-    /// Early payment trigger percentage (0-100).
-    ///
-    /// Settlement is triggered when debt exceeds (100 - early)% of threshold.
+    /// Early payment trigger percent (for SWAP)
     #[arg(long = "bandwidth.early-percent", default_value_t = DEFAULT_EARLY_PAYMENT_PERCENT)]
     pub early_payment_percent: u64,
 
-    /// Client node scaling factor.
-    ///
-    /// Client nodes have all thresholds and rates divided by this factor.
-    #[arg(long = "bandwidth.light-factor", default_value_t = DEFAULT_LIGHT_FACTOR)]
-    pub light_factor: u64,
+    /// Scaling factor for client-only nodes (divides thresholds)
+    #[arg(long = "bandwidth.client-only-factor", default_value_t = DEFAULT_CLIENT_ONLY_FACTOR)]
+    pub client_only_factor: u64,
 }
 
 impl Default for BandwidthArgs {
@@ -118,7 +80,7 @@ impl Default for BandwidthArgs {
             base_price: DEFAULT_BASE_PRICE,
             refresh_rate: DEFAULT_REFRESH_RATE,
             early_payment_percent: DEFAULT_EARLY_PAYMENT_PERCENT,
-            light_factor: DEFAULT_LIGHT_FACTOR,
+            client_only_factor: DEFAULT_CLIENT_ONLY_FACTOR,
         }
     }
 }
@@ -130,14 +92,13 @@ impl BandwidthArgs {
     pub fn validate(&self) -> Result<(), String> {
         match self.mode {
             BandwidthModeArg::None => {
-                // No args should be non-default when mode is none
                 let default = Self::default();
                 if self.refresh_rate != default.refresh_rate
                     || self.payment_threshold != default.payment_threshold
                     || self.payment_tolerance_percent != default.payment_tolerance_percent
                     || self.base_price != default.base_price
                     || self.early_payment_percent != default.early_payment_percent
-                    || self.light_factor != default.light_factor
+                    || self.client_only_factor != default.client_only_factor
                 {
                     return Err("bandwidth options have no effect when mode is 'none'".to_string());
                 }
@@ -189,7 +150,7 @@ impl SwarmAccountingConfig for BandwidthArgs {
         self.early_payment_percent
     }
 
-    fn light_factor(&self) -> u64 {
-        self.light_factor
+    fn client_only_factor(&self) -> u64 {
+        self.client_only_factor
     }
 }

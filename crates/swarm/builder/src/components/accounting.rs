@@ -1,167 +1,78 @@
-//! Accounting builder trait and implementations.
+//! Bandwidth accounting builder.
 
 use std::sync::Arc;
 
-use vertex_swarm_bandwidth::Accounting;
+use vertex_swarm_bandwidth::{Accounting, DefaultAccountingConfig, NoAccounting};
 use vertex_swarm_bandwidth_pseudosettle::PseudosettleProvider;
 use vertex_swarm_bandwidth_swap::SwapProvider;
 use vertex_swarm_api::{
-    SwarmAccountingConfig, SwarmBandwidthAccounting, BandwidthMode, DefaultAccountingConfig, SwarmIdentity,
-    SwarmClientTypes, SwarmNetworkConfig, NoBandwidthIncentives,
+    BandwidthMode, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmClientTypes,
+    SwarmNetworkConfig, SwarmSettlementProvider,
 };
 
 use crate::SwarmBuilderContext;
 
-/// Builds the accounting component.
+/// Builder for bandwidth accounting components.
 pub trait AccountingBuilder<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig>: Send + Sync + 'static {
-    /// The accounting type produced.
     type Accounting: SwarmBandwidthAccounting + Send + Sync + 'static;
 
-    /// Build the accounting given the context.
     fn build_accounting(self, ctx: &SwarmBuilderContext<'_, Types, Cfg>) -> Self::Accounting;
 }
 
-/// No-op accounting builder (for bootnodes without bandwidth incentives).
+/// No-op accounting for bootnodes (always allows transfers, no balance tracking).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoAccountingBuilder;
 
 impl<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig> AccountingBuilder<Types, Cfg> for NoAccountingBuilder {
-    type Accounting = NoBandwidthIncentives<Arc<Types::Identity>>;
+    type Accounting = NoAccounting<Arc<Types::Identity>>;
 
     fn build_accounting(self, ctx: &SwarmBuilderContext<'_, Types, Cfg>) -> Self::Accounting {
-        NoBandwidthIncentives::new(Arc::clone(&ctx.identity))
+        NoAccounting::new(Arc::clone(&ctx.identity))
     }
 }
 
-/// Pseudosettle-only accounting builder.
-#[derive(Debug, Clone, Default)]
-pub struct PseudosettleAccountingBuilder<C: SwarmAccountingConfig + Clone = DefaultAccountingConfig> {
-    config: C,
-}
-
-impl<C: SwarmAccountingConfig + Clone + 'static> PseudosettleAccountingBuilder<C> {
-    pub fn with_config(config: C) -> Self {
-        Self { config }
-    }
-}
-
-impl<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig, C: SwarmAccountingConfig + Clone + 'static>
-    AccountingBuilder<Types, Cfg> for PseudosettleAccountingBuilder<C>
-{
-    type Accounting = Arc<Accounting<C, Arc<Types::Identity>>>;
-
-    fn build_accounting(self, ctx: &SwarmBuilderContext<'_, Types, Cfg>) -> Self::Accounting {
-        Arc::new(Accounting::with_providers(
-            self.config.clone(),
-            Arc::clone(&ctx.identity),
-            vec![Box::new(PseudosettleProvider::new(self.config))],
-        ))
-    }
-}
-
-/// SWAP-only accounting builder.
-#[derive(Debug, Clone, Default)]
-pub struct SwapAccountingBuilder<C: SwarmAccountingConfig + Clone = DefaultAccountingConfig> {
-    config: C,
-}
-
-impl<C: SwarmAccountingConfig + Clone + 'static> SwapAccountingBuilder<C> {
-    pub fn with_config(config: C) -> Self {
-        Self { config }
-    }
-}
-
-impl<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig, C: SwarmAccountingConfig + Clone + 'static>
-    AccountingBuilder<Types, Cfg> for SwapAccountingBuilder<C>
-{
-    type Accounting = Arc<Accounting<C, Arc<Types::Identity>>>;
-
-    fn build_accounting(self, ctx: &SwarmBuilderContext<'_, Types, Cfg>) -> Self::Accounting {
-        Arc::new(Accounting::with_providers(
-            self.config.clone(),
-            Arc::clone(&ctx.identity),
-            vec![Box::new(SwapProvider::new(self.config))],
-        ))
-    }
-}
-
-/// Combined pseudosettle + SWAP accounting builder.
+/// Accounting builder that creates settlement providers based on [`BandwidthMode`].
 ///
-/// Pseudosettle runs first to refresh allowance, then SWAP settles if still over threshold.
+/// Use `Arc<YourConfig>` as the type parameter for cheap cloning.
 #[derive(Debug, Clone, Default)]
-pub struct CombinedAccountingBuilder<C: SwarmAccountingConfig + Clone = DefaultAccountingConfig> {
+pub struct DefaultAccountingBuilder<C: SwarmAccountingConfig + Clone = DefaultAccountingConfig> {
     config: C,
 }
 
-impl<C: SwarmAccountingConfig + Clone + 'static> CombinedAccountingBuilder<C> {
-    pub fn with_config(config: C) -> Self {
-        Self { config }
-    }
-}
-
-impl<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig, C: SwarmAccountingConfig + Clone + 'static>
-    AccountingBuilder<Types, Cfg> for CombinedAccountingBuilder<C>
-{
-    type Accounting = Arc<Accounting<C, Arc<Types::Identity>>>;
-
-    fn build_accounting(self, ctx: &SwarmBuilderContext<'_, Types, Cfg>) -> Self::Accounting {
-        Arc::new(Accounting::with_providers(
-            self.config.clone(),
-            Arc::clone(&ctx.identity),
-            vec![
-                Box::new(PseudosettleProvider::new(self.config.clone())),
-                Box::new(SwapProvider::new(self.config)),
-            ],
-        ))
-    }
-}
-
-/// Mode-based accounting builder.
-///
-/// Selects the appropriate accounting based on `BandwidthMode` in the config.
-#[derive(Debug, Clone, Default)]
-pub struct ModeBasedAccountingBuilder<C: SwarmAccountingConfig + Clone = DefaultAccountingConfig> {
-    config: C,
-}
-
-impl<C: SwarmAccountingConfig + Clone + 'static> ModeBasedAccountingBuilder<C> {
-    pub fn with_config(config: C) -> Self {
+impl<C: SwarmAccountingConfig + Clone + 'static> DefaultAccountingBuilder<C> {
+    pub fn new(config: C) -> Self {
         Self { config }
     }
 
-    pub fn build_for_mode<I: SwarmIdentity>(self, identity: I) -> ModeBasedAccounting<C, I> {
+    fn build_providers(&self) -> Vec<Box<dyn SwarmSettlementProvider>> {
         match self.config.mode() {
-            BandwidthMode::None => ModeBasedAccounting::None(NoBandwidthIncentives::new(identity)),
+            BandwidthMode::None => vec![],
             BandwidthMode::Pseudosettle => {
-                ModeBasedAccounting::Enabled(Arc::new(Accounting::with_providers(
-                    self.config.clone(),
-                    identity,
-                    vec![Box::new(PseudosettleProvider::new(self.config))],
-                )))
+                vec![Box::new(PseudosettleProvider::new(self.config.clone()))]
             }
             BandwidthMode::Swap => {
-                ModeBasedAccounting::Enabled(Arc::new(Accounting::with_providers(
-                    self.config.clone(),
-                    identity,
-                    vec![Box::new(SwapProvider::new(self.config))],
-                )))
+                vec![Box::new(SwapProvider::new(self.config.clone()))]
             }
             BandwidthMode::Both => {
-                ModeBasedAccounting::Enabled(Arc::new(Accounting::with_providers(
-                    self.config.clone(),
-                    identity,
-                    vec![
-                        Box::new(PseudosettleProvider::new(self.config.clone())),
-                        Box::new(SwapProvider::new(self.config)),
-                    ],
-                )))
+                vec![
+                    Box::new(PseudosettleProvider::new(self.config.clone())),
+                    Box::new(SwapProvider::new(self.config.clone())),
+                ]
             }
         }
     }
 }
 
-/// Accounting type selected based on `BandwidthMode`.
-pub enum ModeBasedAccounting<C: SwarmAccountingConfig + Clone + 'static, I: SwarmIdentity> {
-    None(NoBandwidthIncentives<I>),
-    Enabled(Arc<Accounting<C, I>>),
+impl<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig, C: SwarmAccountingConfig + Clone + 'static>
+    AccountingBuilder<Types, Cfg> for DefaultAccountingBuilder<C>
+{
+    type Accounting = Arc<Accounting<C, Arc<Types::Identity>>>;
+
+    fn build_accounting(self, ctx: &SwarmBuilderContext<'_, Types, Cfg>) -> Self::Accounting {
+        Arc::new(Accounting::with_providers(
+            self.config.clone(),
+            Arc::clone(&ctx.identity),
+            self.build_providers(),
+        ))
+    }
 }

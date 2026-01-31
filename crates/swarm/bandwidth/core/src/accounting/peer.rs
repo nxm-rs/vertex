@@ -1,78 +1,44 @@
-//! Per-peer accounting state.
-//!
-//! Each peer has atomic counters for balance tracking, enabling lock-free
-//! recording of bandwidth usage from multiple protocol handlers.
+//! Atomic per-peer balance tracking for lock-free bandwidth recording.
 
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
-use vertex_swarm_primitives::OverlayAddress;
+use serde::{Deserialize, Serialize};
+use vertex_swarm_api::SwarmPeerState;
 
-/// Per-peer accounting state.
+/// Atomic per-peer balance state (serializable for persistence).
 ///
-/// Uses atomic operations for all balance modifications, allowing concurrent
-/// access from multiple protocol handlers without locks.
+/// - Positive balance: peer owes us (we provided service)
+/// - Negative balance: we owe peer (we received service)
 ///
-/// # Balance Semantics
-///
-/// - **Positive balance**: Peer owes us (we provided service)
-/// - **Negative balance**: We owe peer (we received service)
-///
-/// # Reserved Balances
-///
-/// - `reserved_balance`: Our pending local operations (credit)
-/// - `shadow_reserved_balance`: Expected incoming from peer (debit)
-/// - `surplus_balance`: Received payments not yet settled
+/// The peer address and node type are not stored; address is the map key,
+/// node type can be looked up via the peer manager.
 pub struct PeerState {
-    peer: OverlayAddress,
     balance: AtomicI64,
     reserved_balance: AtomicU64,
     shadow_reserved_balance: AtomicU64,
     surplus_balance: AtomicI64,
-    full_node: bool,
     payment_threshold: u64,
     disconnect_threshold: u64,
     last_refresh: AtomicU64,
 }
 
 impl PeerState {
-    /// Create a new peer state.
-    pub fn new(peer: OverlayAddress, payment_threshold: u64, disconnect_threshold: u64) -> Self {
+    /// Create peer state with the given thresholds.
+    pub fn new(payment_threshold: u64, disconnect_threshold: u64) -> Self {
         Self {
-            peer,
             balance: AtomicI64::new(0),
             reserved_balance: AtomicU64::new(0),
             shadow_reserved_balance: AtomicU64::new(0),
             surplus_balance: AtomicI64::new(0),
-            full_node: true,
             payment_threshold,
             disconnect_threshold,
             last_refresh: AtomicU64::new(0),
         }
     }
 
-    /// Create a new peer state for a light node.
-    pub fn new_light(
-        peer: OverlayAddress,
-        payment_threshold: u64,
-        disconnect_threshold: u64,
-        light_factor: u64,
-    ) -> Self {
-        Self {
-            peer,
-            balance: AtomicI64::new(0),
-            reserved_balance: AtomicU64::new(0),
-            shadow_reserved_balance: AtomicU64::new(0),
-            surplus_balance: AtomicI64::new(0),
-            full_node: false,
-            payment_threshold: payment_threshold / light_factor,
-            disconnect_threshold: disconnect_threshold / light_factor,
-            last_refresh: AtomicU64::new(0),
-        }
-    }
-
-    /// Get the peer's overlay address.
-    pub fn peer(&self) -> OverlayAddress {
-        self.peer
+    /// Create peer state with scaled thresholds for a client-only node.
+    pub fn new_client_only(payment_threshold: u64, disconnect_threshold: u64, factor: u64) -> Self {
+        Self::new(payment_threshold / factor, disconnect_threshold / factor)
     }
 
     /// Get the current balance.
@@ -132,11 +98,6 @@ impl PeerState {
         self.surplus_balance.fetch_add(amount, Ordering::Relaxed);
     }
 
-    /// Whether this peer is a full node.
-    pub fn is_full_node(&self) -> bool {
-        self.full_node
-    }
-
     /// Get the payment threshold.
     pub fn payment_threshold(&self) -> u64 {
         self.payment_threshold
@@ -158,17 +119,75 @@ impl PeerState {
     }
 }
 
+impl SwarmPeerState for PeerState {
+    fn balance(&self) -> i64 {
+        self.balance.load(Ordering::Relaxed)
+    }
+
+    fn add_balance(&self, amount: i64) {
+        self.balance.fetch_add(amount, Ordering::Relaxed);
+    }
+
+    fn last_refresh(&self) -> u64 {
+        self.last_refresh.load(Ordering::Relaxed)
+    }
+
+    fn set_last_refresh(&self, timestamp: u64) {
+        self.last_refresh.store(timestamp, Ordering::Relaxed);
+    }
+
+    fn payment_threshold(&self) -> u64 {
+        self.payment_threshold
+    }
+
+    fn disconnect_threshold(&self) -> u64 {
+        self.disconnect_threshold
+    }
+}
+
+/// Snapshot of peer state for serialization/persistence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerStateSnapshot {
+    pub balance: i64,
+    pub surplus_balance: i64,
+    pub payment_threshold: u64,
+    pub disconnect_threshold: u64,
+    pub last_refresh: u64,
+}
+
+impl PeerState {
+    /// Create a snapshot for persistence.
+    pub fn snapshot(&self) -> PeerStateSnapshot {
+        PeerStateSnapshot {
+            balance: self.balance.load(Ordering::Relaxed),
+            surplus_balance: self.surplus_balance.load(Ordering::Relaxed),
+            payment_threshold: self.payment_threshold,
+            disconnect_threshold: self.disconnect_threshold,
+            last_refresh: self.last_refresh.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Restore from a snapshot.
+    pub fn from_snapshot(snapshot: PeerStateSnapshot) -> Self {
+        Self {
+            balance: AtomicI64::new(snapshot.balance),
+            reserved_balance: AtomicU64::new(0),
+            shadow_reserved_balance: AtomicU64::new(0),
+            surplus_balance: AtomicI64::new(snapshot.surplus_balance),
+            payment_threshold: snapshot.payment_threshold,
+            disconnect_threshold: snapshot.disconnect_threshold,
+            last_refresh: AtomicU64::new(snapshot.last_refresh),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn test_peer() -> OverlayAddress {
-        OverlayAddress::from([1u8; 32])
-    }
-
     #[test]
     fn test_balance_operations() {
-        let state = PeerState::new(test_peer(), 1000, 10000);
+        let state = PeerState::new(1000, 10000);
 
         assert_eq!(state.balance(), 0);
 
@@ -184,7 +203,7 @@ mod tests {
 
     #[test]
     fn test_reserved_operations() {
-        let state = PeerState::new(test_peer(), 1000, 10000);
+        let state = PeerState::new(1000, 10000);
 
         assert_eq!(state.reserved_balance(), 0);
 
@@ -196,11 +215,28 @@ mod tests {
     }
 
     #[test]
-    fn test_light_node_thresholds() {
-        let state = PeerState::new_light(test_peer(), 1000, 10000, 5);
+    fn test_client_node_thresholds() {
+        let state = PeerState::new_client_only(1000, 10000, 5);
 
-        assert!(!state.is_full_node());
+        // Thresholds should be scaled down by client_factor
         assert_eq!(state.payment_threshold(), 200);
         assert_eq!(state.disconnect_threshold(), 2000);
+    }
+
+    #[test]
+    fn test_snapshot_roundtrip() {
+        let state = PeerState::new(1000, 10000);
+        state.add_balance(500);
+        state.add_surplus(100);
+        state.set_last_refresh(12345);
+
+        let snapshot = state.snapshot();
+        let restored = PeerState::from_snapshot(snapshot);
+
+        assert_eq!(restored.balance(), 500);
+        assert_eq!(restored.surplus_balance(), 100);
+        assert_eq!(restored.last_refresh(), 12345);
+        assert_eq!(restored.payment_threshold(), 1000);
+        assert_eq!(restored.disconnect_threshold(), 10000);
     }
 }

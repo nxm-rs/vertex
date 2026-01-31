@@ -6942,10 +6942,14 @@ dependencies = [
  "alloy-signer-local",
  "async-trait",
  "auto_impl",
+ "clap 4.5.39",
  "nectar-primitives",
  "parking_lot",
+ "serde",
+ "strum",
  "thiserror 2.0.12",
  "vertex-swarm-api",
+ "vertex-swarm-bandwidth-pricing",
  "vertex-swarm-identity",
  "vertex-swarm-primitives",
  "vertex-swarmspec",
@@ -6965,6 +6969,16 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.12",
  "tokio",
+ "vertex-swarmspec",
+]
+
+[[package]]
+name = "vertex-swarm-bandwidth-pricing"
+version = "0.1.0"
+dependencies = [
+ "auto_impl",
+ "nectar-primitives",
+ "vertex-swarm-primitives",
  "vertex-swarmspec",
 ]
 
@@ -7095,6 +7109,7 @@ dependencies = [
  "strum",
  "vertex-node-api",
  "vertex-swarm-api",
+ "vertex-swarm-bandwidth",
  "vertex-swarm-client",
  "vertex-swarm-primitives",
  "vertex-swarmspec",

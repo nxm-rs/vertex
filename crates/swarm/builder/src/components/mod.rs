@@ -4,17 +4,12 @@ mod accounting;
 mod pricer;
 mod topology;
 
-pub use accounting::{
-    AccountingBuilder, CombinedAccountingBuilder, ModeBasedAccounting,
-    ModeBasedAccountingBuilder, NoAccountingBuilder, PseudosettleAccountingBuilder,
-    SwapAccountingBuilder,
-};
-// Re-export DefaultAccountingConfig from vertex-swarm-api for convenience
-pub use vertex_swarm_api::DefaultAccountingConfig;
+pub use accounting::{AccountingBuilder, DefaultAccountingBuilder, NoAccountingBuilder};
 pub use pricer::{FixedPricerBuilder, NoPricerBuilder, PricerBuilder};
 pub use topology::{KademliaTopologyBuilder, TopologyBuilder};
 
 use vertex_swarm_api::{SwarmClientTypes, SwarmNetworkConfig};
+use vertex_swarm_bandwidth::DefaultAccountingConfig;
 
 use crate::SwarmBuilderContext;
 
@@ -25,7 +20,7 @@ use crate::SwarmBuilderContext;
 /// ```ignore
 /// let components = SwarmComponentsBuilder::default()
 ///     .topology(KademliaTopologyBuilder::default())
-///     .accounting(PseudosettleAccountingBuilder::default())
+///     .accounting(DefaultAccountingBuilder::default())
 ///     .pricer(FixedPricerBuilder::default())
 ///     .build(&ctx);
 /// ```
@@ -103,7 +98,7 @@ impl<TB, AB, PB> SwarmComponentsBuilder<TB, AB, PB> {
 /// Built components ready for use.
 ///
 /// The builders decide whether to wrap types in `Arc` for cheap cloning.
-/// For example, `PseudosettleAccountingBuilder` returns `Arc<Accounting>`.
+/// For example, `DefaultAccountingBuilder` returns `Arc<Accounting>`.
 #[derive(Debug, Clone)]
 pub struct BuiltSwarmComponents<T, A, P> {
     /// The topology.
@@ -114,10 +109,10 @@ pub struct BuiltSwarmComponents<T, A, P> {
     pub pricer: P,
 }
 
-/// Default components builder with Kademlia topology, pseudosettle accounting, fixed pricer.
+/// Default components builder with Kademlia topology, default accounting, fixed pricer.
 pub type DefaultComponentsBuilder = SwarmComponentsBuilder<
     KademliaTopologyBuilder,
-    PseudosettleAccountingBuilder<DefaultAccountingConfig>,
+    DefaultAccountingBuilder<DefaultAccountingConfig>,
     FixedPricerBuilder,
 >;
 
@@ -126,7 +121,7 @@ impl DefaultComponentsBuilder {
     pub fn with_defaults() -> Self {
         SwarmComponentsBuilder::new()
             .topology(KademliaTopologyBuilder::default())
-            .accounting(PseudosettleAccountingBuilder::default())
+            .accounting(DefaultAccountingBuilder::default())
             .pricer(FixedPricerBuilder::default())
     }
 }

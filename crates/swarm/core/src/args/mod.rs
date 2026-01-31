@@ -30,13 +30,12 @@
 //!     .extract()?;
 //! ```
 
-mod bandwidth;
 mod identity;
 mod network;
 mod storage;
 mod swarm;
 
-pub use bandwidth::{BandwidthArgs, BandwidthModeArg};
+pub use vertex_swarm_bandwidth::{BandwidthArgs, BandwidthModeArg};
 pub use identity::IdentityArgs;
 pub use network::NetworkArgs;
 pub use storage::{StorageArgs, StorageIncentiveArgs};

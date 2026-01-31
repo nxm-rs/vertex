@@ -1,4 +1,4 @@
-//! Topology builder trait and implementations.
+//! Topology builder.
 
 use std::sync::Arc;
 
@@ -7,25 +7,20 @@ use vertex_swarm_api::{SwarmClientTypes, SwarmNetworkConfig, SwarmTopology};
 
 use crate::SwarmBuilderContext;
 
-/// Builds the topology component.
+/// Builder for topology components.
 pub trait TopologyBuilder<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig>: Send + Sync + 'static {
-    /// The topology type produced (may be Arc-wrapped).
     type Topology: SwarmTopology + Send + Sync + 'static;
 
-    /// Build the topology given the context.
     fn build_topology(self, ctx: &SwarmBuilderContext<'_, Types, Cfg>) -> Self::Topology;
 }
 
-/// Default Kademlia topology builder.
-///
-/// Produces `Arc<KademliaTopology<I>>` which implements `SwarmTopology`.
+/// Kademlia topology builder.
 #[derive(Debug, Clone, Default)]
 pub struct KademliaTopologyBuilder {
     config: KademliaConfig,
 }
 
 impl KademliaTopologyBuilder {
-    /// Create with custom config.
     pub fn with_config(config: KademliaConfig) -> Self {
         Self { config }
     }

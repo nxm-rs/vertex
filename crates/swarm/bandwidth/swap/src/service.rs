@@ -1,8 +1,4 @@
-//! Swap service actor.
-//!
-//! This module implements the Handle+Service actor pattern for swap settlement.
-//! The service runs in its own tokio task and processes settlement commands
-//! and network events.
+//! Swap service actor (runs in its own tokio task).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -29,15 +25,7 @@ pub enum SwapCommand {
     },
 }
 
-/// The swap service runs in its own tokio task.
-///
-/// It processes:
-/// - Settlement commands from handles (outbound cheque issuance)
-/// - Network events (inbound cheques and acks)
-///
-/// # Generic Parameters
-///
-/// - `A`: The accounting implementation (must implement `SwarmBandwidthAccounting`)
+/// Processes settlement commands from handles and network events.
 pub struct SwapService<A: SwarmBandwidthAccounting> {
     /// Receive commands from handles.
     command_rx: mpsc::UnboundedReceiver<SwapCommand>,

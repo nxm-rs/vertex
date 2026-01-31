@@ -1,6 +1,4 @@
-//! Swap handle for interacting with the service.
-//!
-//! The handle is cheap to clone and can be used from multiple tasks.
+//! Cloneable handle for interacting with the swap service.
 
 use tokio::sync::{mpsc, oneshot};
 use vertex_swarm_primitives::OverlayAddress;
@@ -8,11 +6,7 @@ use vertex_swarm_primitives::OverlayAddress;
 use crate::error::SwapError;
 use crate::service::SwapCommand;
 
-/// Handle for interacting with the swap service.
-///
-/// This handle is cheap to clone and can be used from multiple tasks
-/// to request settlements. Each settlement request returns a future
-/// that resolves when the cheque is sent and acknowledged.
+/// Cloneable handle for requesting cheque settlements from the service.
 #[derive(Clone)]
 pub struct SwapHandle {
     command_tx: mpsc::UnboundedSender<SwapCommand>,
@@ -24,16 +18,7 @@ impl SwapHandle {
         Self { command_tx }
     }
 
-    /// Request settlement with a peer via cheque.
-    ///
-    /// Returns the amount actually settled.
-    ///
-    /// # Errors
-    ///
-    /// - [`SwapError::ServiceStopped`] if the service has stopped
-    /// - [`SwapError::SettlementInProgress`] if there's already a pending settlement
-    /// - [`SwapError::SigningFailed`] if cheque signing fails
-    /// - [`SwapError::InsufficientBalance`] if chequebook has insufficient balance
+    /// Request cheque settlement. Returns the amount settled.
     pub async fn settle(
         &self,
         peer: OverlayAddress,

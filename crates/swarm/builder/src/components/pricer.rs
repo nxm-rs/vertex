@@ -1,20 +1,18 @@
-//! Pricer builder trait and implementations.
+//! Pricer builder.
 
-use vertex_swarm_bandwidth::{FixedPricer, NoPricer, Pricer};
-use vertex_swarm_api::{SwarmAccountingConfig, DefaultAccountingConfig, SwarmIdentity, SwarmClientTypes, SwarmNetworkConfig};
+use vertex_swarm_bandwidth::{DefaultAccountingConfig, FixedPricer, NoPricer, Pricer};
+use vertex_swarm_api::{SwarmAccountingConfig, SwarmIdentity, SwarmClientTypes, SwarmNetworkConfig};
 
 use crate::SwarmBuilderContext;
 
-/// Builds the pricer component.
+/// Builder for chunk pricing components.
 pub trait PricerBuilder<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig>: Send + Sync + 'static {
-    /// The pricer type produced.
     type Pricer: Pricer + Clone + Send + Sync + 'static;
 
-    /// Build the pricer given the context.
     fn build_pricer(self, ctx: &SwarmBuilderContext<'_, Types, Cfg>) -> Self::Pricer;
 }
 
-/// No-op pricer for bootnodes (no pricing protocol participation).
+/// No-op pricer for bootnodes.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoPricerBuilder;
 
@@ -26,14 +24,13 @@ impl<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig> PricerBuilder<Types, Cfg>
     }
 }
 
-/// Default fixed pricer builder.
+/// Fixed-price pricer builder.
 #[derive(Debug, Clone, Default)]
 pub struct FixedPricerBuilder {
     base_price: Option<u64>,
 }
 
 impl FixedPricerBuilder {
-    /// Create with custom base price.
     pub fn with_base_price(base_price: u64) -> Self {
         Self {
             base_price: Some(base_price),

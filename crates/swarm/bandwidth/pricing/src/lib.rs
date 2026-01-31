@@ -1,14 +1,10 @@
-//! Chunk pricing for bandwidth incentives.
+//! Chunk pricing for bandwidth accounting.
 //!
-//! Chunks are priced based on the Kademlia distance between the requesting peer
-//! and the chunk's address. Chunks that are "closer" to the peer in XOR space
-//! cost more because fewer peers can serve them.
+//! Price formula: `(max_po - proximity + 1) * base_price`
 //!
-//! # Formula
-//!
-//! ```text
-//! price = (max_po - proximity + 1) * base_price
-//! ```
+//! Distant chunks cost more; nearby chunks cost less.
+
+#![cfg_attr(not(feature = "std"), no_std)]
 
 mod fixed;
 

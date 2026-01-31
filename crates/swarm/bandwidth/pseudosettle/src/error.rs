@@ -1,4 +1,4 @@
-//! Pseudosettle error types.
+//! Pseudosettle settlement errors.
 
 /// Errors that can occur during pseudosettle operations.
 #[derive(Debug, Clone, thiserror::Error)]

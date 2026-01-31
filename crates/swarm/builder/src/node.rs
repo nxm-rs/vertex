@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::sync::mpsc;
-use vertex_swarm_bandwidth::Accounting;
+use vertex_swarm_bandwidth::{Accounting, DefaultAccountingConfig};
 use vertex_swarm_bandwidth_pseudosettle::{PseudosettleProvider, create_pseudosettle_actor};
 use vertex_swarm_peermanager::PeerStore;
 use vertex_node_api::{NodeBuildsProtocol, NodeContext};
@@ -226,7 +226,7 @@ impl SwarmLaunchConfig for ClientNodeBuildConfig {
         let topology = node.kademlia_topology().clone();
 
         // Create accounting configuration
-        let config = crate::components::DefaultAccountingConfig;
+        let config = DefaultAccountingConfig;
 
         // Create a command channel sender for settlement services
         // (Settlement services send commands via this channel)

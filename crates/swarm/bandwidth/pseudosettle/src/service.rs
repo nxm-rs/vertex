@@ -1,8 +1,4 @@
-//! Pseudosettle service actor.
-//!
-//! This module implements the Handle+Service actor pattern for pseudosettle.
-//! The service runs in its own tokio task and processes settlement commands
-//! and network events.
+//! Pseudosettle service actor (runs in its own tokio task).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,15 +26,7 @@ pub enum PseudosettleCommand {
     },
 }
 
-/// The pseudosettle service runs in its own tokio task.
-///
-/// It processes:
-/// - Settlement commands from handles (outbound settlement requests)
-/// - Network events (inbound settlement requests and acks)
-///
-/// # Generic Parameters
-///
-/// - `A`: The accounting implementation (must implement `SwarmBandwidthAccounting`)
+/// Processes settlement commands from handles and network events.
 pub struct PseudosettleService<A: SwarmBandwidthAccounting> {
     /// Receive commands from handles.
     command_rx: mpsc::UnboundedReceiver<PseudosettleCommand>,
@@ -208,10 +196,7 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
         }
     }
 
-    /// Calculate the acceptable amount for an inbound pseudosettle.
-    ///
-    /// This implements time-based allowance: peers accumulate credit over time
-    /// at the refresh rate, capped at what they actually owe us.
+    /// Calculate acceptable amount, capped at what the peer owes us.
     fn calculate_acceptable(&self, handle: &A::Peer, requested: u64) -> u64 {
         let balance = handle.balance();
 
