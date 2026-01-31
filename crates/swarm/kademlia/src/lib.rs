@@ -365,8 +365,10 @@ impl<I: SwarmIdentity> KademliaTopology<I> {
 }
 
 impl<I: SwarmIdentity> SwarmTopology for KademliaTopology<I> {
-    fn self_address(&self) -> OverlayAddress {
-        self.base()
+    type Identity = I;
+
+    fn identity(&self) -> &Self::Identity {
+        &self.identity
     }
 
     fn neighbors(&self, depth: u8) -> Vec<OverlayAddress> {
@@ -376,13 +378,6 @@ impl<I: SwarmIdentity> SwarmTopology for KademliaTopology<I> {
             .filter(|(po, _)| *po >= depth)
             .map(|(_, peer)| peer)
             .collect()
-    }
-
-    fn is_responsible_for(&self, address: &ChunkAddress) -> bool {
-        // We are responsible if the chunk's PO is >= our depth
-        // ChunkAddress and OverlayAddress are both SwarmAddress
-        let po = self.base().proximity(address);
-        po >= self.depth()
     }
 
     fn depth(&self) -> u8 {
@@ -510,6 +505,7 @@ impl<I: SwarmIdentity> SwarmTopology for KademliaTopology<I> {
         self.connection_candidates.lock().clone()
     }
 }
+
 
 /// Statistics about the topology state.
 #[derive(Debug, Clone)]

@@ -4,17 +4,24 @@ use std::vec::Vec;
 use nectar_primitives::ChunkAddress;
 use vertex_swarm_primitives::OverlayAddress;
 
-/// Neighborhood awareness trait - who is "close" in the overlay address space.
+use crate::SwarmIdentity;
+
+/// Neighborhood awareness - who is "close" in the overlay address space.
 #[auto_impl::auto_impl(&, Arc)]
 pub trait SwarmTopology: Send + Sync {
+    /// The identity type for this topology.
+    type Identity: SwarmIdentity;
+
+    /// Get the node's identity.
+    fn identity(&self) -> &Self::Identity;
+
     /// Get our own overlay address.
-    fn self_address(&self) -> OverlayAddress;
+    fn self_address(&self) -> OverlayAddress {
+        self.identity().overlay_address().into()
+    }
 
     /// Get peers within our neighborhood at the given depth.
     fn neighbors(&self, depth: u8) -> Vec<OverlayAddress>;
-
-    /// Check if an address falls within our area of responsibility.
-    fn is_responsible_for(&self, address: &ChunkAddress) -> bool;
 
     /// Get the current neighborhood depth.
     fn depth(&self) -> u8;

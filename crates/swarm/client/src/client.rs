@@ -243,7 +243,7 @@ mod tests {
     use crate::{Accounting, ClientAccounting, FixedPricer, ClientCommand, ClientHandle, ClientService};
     use vertex_swarm_primitives::OverlayAddress;
     use vertex_swarm_bandwidth::DefaultAccountingConfig;
-    use vertex_swarm_api::{SwarmBandwidthAccounting, SwarmClientAccounting, SwarmNodeType, SwarmTopology};
+    use vertex_swarm_api::{SwarmBandwidthAccounting, SwarmNodeType, SwarmTopology};
     use vertex_tasks::SpawnableTask;
     use vertex_swarm_identity::Identity;
 
@@ -255,20 +255,27 @@ mod tests {
         }
     }
 
-    #[derive(Clone, Debug, Default)]
+    #[derive(Clone)]
     struct MockTopology {
-        self_addr: OverlayAddress,
+        identity: Identity,
+    }
+
+    impl Default for MockTopology {
+        fn default() -> Self {
+            Self {
+                identity: Identity::random(vertex_swarmspec::init_testnet(), SwarmNodeType::Client),
+            }
+        }
     }
 
     impl SwarmTopology for MockTopology {
-        fn self_address(&self) -> OverlayAddress {
-            self.self_addr
+        type Identity = Identity;
+
+        fn identity(&self) -> &Self::Identity {
+            &self.identity
         }
         fn neighbors(&self, _depth: u8) -> Vec<OverlayAddress> {
             Vec::new()
-        }
-        fn is_responsible_for(&self, _address: &ChunkAddress) -> bool {
-            false
         }
         fn depth(&self) -> u8 {
             0

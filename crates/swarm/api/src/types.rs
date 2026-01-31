@@ -3,8 +3,8 @@
 //! Capability levels: SwarmBootnodeTypes → SwarmClientTypes → SwarmStorerTypes.
 
 use crate::{
-    SwarmBandwidthAccounting, SwarmChunkSync, SwarmClientAccounting, SwarmIdentity,
-    SwarmLocalStore, SwarmTopology,
+    SwarmBandwidthAccounting, SwarmClientAccounting, SwarmIdentity, SwarmLocalStore,
+    SwarmTopology,
 };
 use vertex_tasks::SpawnableTask;
 use vertex_node_types::NodeTypes;
@@ -24,7 +24,7 @@ pub trait SwarmBootnodeTypes: Clone + Send + Sync + Unpin + 'static {
     type Identity: SwarmIdentity<Spec = Self::Spec>;
 
     /// Peer discovery and routing.
-    type Topology: SwarmTopology + Clone;
+    type Topology: SwarmTopology<Identity = Self::Identity>;
 
     /// The Swarm node event loop type.
     ///
@@ -49,15 +49,12 @@ pub trait SwarmClientTypes: SwarmBootnodeTypes {
     >;
 }
 
-/// Types for storer nodes that store and sync chunks locally.
+/// Types for storer nodes that store chunks locally.
 ///
-/// Extends client nodes with local storage and synchronization.
+/// Extends client nodes with local storage.
 pub trait SwarmStorerTypes: SwarmClientTypes {
     /// Local chunk storage.
     type Store: SwarmLocalStore + Clone;
-
-    /// Chunk synchronization with neighbors.
-    type Sync: SwarmChunkSync + Clone;
 }
 
 /// Swarm node types combining bootnode capability with node infrastructure.
@@ -109,6 +106,3 @@ pub type PricingOf<T> = <<T as SwarmClientTypes>::Accounting as SwarmClientAccou
 
 /// Extract the Store type from SwarmStorerTypes.
 pub type StoreOf<T> = <T as SwarmStorerTypes>::Store;
-
-/// Extract the Sync type from SwarmStorerTypes.
-pub type SyncOf<T> = <T as SwarmStorerTypes>::Sync;

@@ -3,13 +3,11 @@
 mod bandwidth;
 mod pricing;
 mod store;
-mod sync;
 mod topology;
 
 pub use bandwidth::*;
 pub use pricing::*;
 pub use store::*;
-pub use sync::*;
 pub use topology::*;
 
 use crate::{SwarmBootnodeTypes, SwarmClientTypes, SwarmStorerTypes};
@@ -104,8 +102,8 @@ where
 
 /// Runtime components container for a built storer Swarm node.
 ///
-/// Storer nodes store chunks locally and sync with neighbors.
-/// Composes client components with local store and sync.
+/// Storer nodes store chunks locally.
+/// Composes client components with local store.
 #[derive(Clone)]
 pub struct StorerComponents<Types: SwarmStorerTypes>
 where
@@ -114,16 +112,12 @@ where
     Types::Accounting: Clone,
     Types::ClientHandle: Clone,
     Types::Store: Clone,
-    Types::Sync: Clone,
 {
     /// Client node components (base + accounting).
     pub client: ClientComponents<Types>,
 
     /// Local chunk storage.
     pub store: Types::Store,
-
-    /// Chunk synchronization with neighbors.
-    pub sync: Types::Sync,
 }
 
 impl<Types: SwarmStorerTypes> StorerComponents<Types>
@@ -133,7 +127,6 @@ where
     Types::Accounting: Clone,
     Types::ClientHandle: Clone,
     Types::Store: Clone,
-    Types::Sync: Clone,
 {
     /// Create new storer node components.
     pub fn new(
@@ -142,12 +135,10 @@ where
         accounting: Types::Accounting,
         client_handle: Types::ClientHandle,
         store: Types::Store,
-        sync: Types::Sync,
     ) -> Self {
         Self {
             client: ClientComponents::new(identity, topology, accounting, client_handle),
             store,
-            sync,
         }
     }
 
