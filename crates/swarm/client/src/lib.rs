@@ -68,6 +68,6 @@ pub use bootnodes::BootnodeProvider;
 pub use stats::{StatsConfig, spawn_stats_task};
 
 pub use vertex_swarm_bandwidth::{
-    Accounting, AccountingError, AccountingPeerHandle, FixedPricer, PeerState, Pricer,
-    ProvideAction, ReceiveAction,
+    Accounting, AccountingError, AccountingPeerHandle, ClientAccounting, FixedPricer, PeerState,
+    Pricer, ProvideAction, ReceiveAction,
 };

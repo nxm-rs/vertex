@@ -2,7 +2,10 @@
 //!
 //! Capability levels: SwarmBootnodeTypes → SwarmClientTypes → SwarmStorerTypes.
 
-use crate::{SwarmBandwidthAccounting, SwarmChunkSync, SwarmIdentity, SwarmLocalStore, SwarmTopology};
+use crate::{
+    SwarmBandwidthAccounting, SwarmChunkSync, SwarmClientAccounting, SwarmIdentity,
+    SwarmLocalStore, SwarmTopology,
+};
 use vertex_tasks::SpawnableTask;
 use vertex_node_types::NodeTypes;
 use vertex_swarmspec::SwarmSpec;
@@ -38,10 +41,12 @@ pub trait SwarmBootnodeTypes: Clone + Send + Sync + Unpin + 'static {
 
 /// Types for client nodes that can retrieve and upload chunks.
 ///
-/// Extends bootnodes with bandwidth accounting for retrieval/upload incentives.
+/// Extends bootnodes with client accounting (pricing + bandwidth).
 pub trait SwarmClientTypes: SwarmBootnodeTypes {
-    /// Bandwidth accounting for retrieval incentives (pseudosettle/SWAP).
-    type Accounting: SwarmBandwidthAccounting<Identity = <Self as SwarmBootnodeTypes>::Identity>;
+    /// Combined pricing and bandwidth accounting for client operations.
+    type Accounting: SwarmClientAccounting<
+        Bandwidth: SwarmBandwidthAccounting<Identity = <Self as SwarmBootnodeTypes>::Identity>,
+    >;
 }
 
 /// Types for storer nodes that store and sync chunks locally.
@@ -94,6 +99,13 @@ pub type ClientHandleOf<T> = <T as SwarmBootnodeTypes>::ClientHandle;
 
 /// Extract the Accounting type from SwarmClientTypes.
 pub type AccountingOf<T> = <T as SwarmClientTypes>::Accounting;
+
+/// Extract the Bandwidth type from SwarmClientTypes.
+pub type BandwidthOf<T> =
+    <<T as SwarmClientTypes>::Accounting as SwarmClientAccounting>::Bandwidth;
+
+/// Extract the Pricing type from SwarmClientTypes.
+pub type PricingOf<T> = <<T as SwarmClientTypes>::Accounting as SwarmClientAccounting>::Pricing;
 
 /// Extract the Store type from SwarmStorerTypes.
 pub type StoreOf<T> = <T as SwarmStorerTypes>::Store;

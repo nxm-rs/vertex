@@ -47,6 +47,16 @@ impl Pricer for FixedPricer {
     }
 }
 
+impl vertex_swarm_api::SwarmPricing for FixedPricer {
+    fn price(&self, chunk: &ChunkAddress) -> u64 {
+        Pricer::price(self, chunk)
+    }
+
+    fn peer_price(&self, peer: &OverlayAddress, chunk: &ChunkAddress) -> u64 {
+        Pricer::peer_price(self, peer, chunk)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

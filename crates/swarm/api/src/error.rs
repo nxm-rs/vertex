@@ -56,6 +56,10 @@ pub enum SwarmError {
         /// Description of why the chunk is invalid.
         reason: String,
     },
+
+    /// Accounting operation failed.
+    #[error("accounting error: {0}")]
+    Accounting(String),
 }
 
 /// Result type for Swarm API operations.

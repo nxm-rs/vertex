@@ -12,9 +12,11 @@
 //! Providers are configured via [`SwarmAccountingConfig`] which specifies the [`BandwidthMode`].
 
 use std::vec::Vec;
+
+use nectar_primitives::ChunkAddress;
 use vertex_swarm_primitives::OverlayAddress;
 
-use crate::{SwarmIdentity, SwarmResult};
+use crate::{SwarmIdentity, SwarmPricing, SwarmResult};
 
 pub use vertex_swarm_primitives::BandwidthMode;
 
@@ -139,24 +141,105 @@ pub trait SwarmPeerBandwidth: Clone + Send + Sync {
 /// Factory for creating per-peer bandwidth accounting handles.
 #[auto_impl::auto_impl(&, Arc)]
 pub trait SwarmBandwidthAccounting: Send + Sync {
-    /// The node identity type, providing access to overlay address, signer, etc.
+    /// The node identity type.
     type Identity: SwarmIdentity;
 
     /// The per-peer accounting handle type.
     type Peer: SwarmPeerBandwidth;
 
+    /// Action for receiving service (balance decreases).
+    type ReceiveAction: Send;
+
+    /// Action for providing service (balance increases).
+    type ProvideAction: Send;
+
     /// Get the node's identity.
     fn identity(&self) -> &Self::Identity;
 
-    /// Get or create an availability accounting handle for a peer.
-    ///
-    /// If accounting already exists for this peer, returns a handle to
-    /// the existing account. Otherwise creates a new one.
+    /// Get or create an accounting handle for a peer.
     fn for_peer(&self, peer: OverlayAddress) -> Self::Peer;
 
     /// List all peers with active accounting.
     fn peers(&self) -> Vec<OverlayAddress>;
 
-    /// Remove accounting for a peer (e.g., after disconnect + timeout).
+    /// Remove accounting for a peer.
     fn remove_peer(&self, peer: &OverlayAddress);
+
+    /// Prepare to receive service from a peer (balance decreases).
+    ///
+    /// Returns an action that reserves balance. Call `apply()` to commit
+    /// or drop to release the reservation.
+    fn prepare_receive(
+        &self,
+        peer: OverlayAddress,
+        price: u64,
+        originated: bool,
+    ) -> SwarmResult<Self::ReceiveAction>;
+
+    /// Prepare to provide service to a peer (balance increases).
+    fn prepare_provide(
+        &self,
+        peer: OverlayAddress,
+        price: u64,
+    ) -> SwarmResult<Self::ProvideAction>;
+}
+
+/// Combined pricing and bandwidth accounting for client operations.
+///
+/// Unifies chunk pricing and bandwidth accounting so callers don't need
+/// to coordinate between separate pricer and accounting instances.
+#[auto_impl::auto_impl(&, Arc)]
+pub trait SwarmClientAccounting: Clone + Send + Sync {
+    /// The underlying bandwidth accounting type.
+    type Bandwidth: SwarmBandwidthAccounting;
+
+    /// The pricing strategy type.
+    type Pricing: SwarmPricing;
+
+    /// Get the bandwidth accounting.
+    fn bandwidth(&self) -> &Self::Bandwidth;
+
+    /// Get the pricer.
+    fn pricing(&self) -> &Self::Pricing;
+
+    /// Get the node's identity.
+    fn identity(&self) -> &<Self::Bandwidth as SwarmBandwidthAccounting>::Identity {
+        self.bandwidth().identity()
+    }
+
+    /// Get or create accounting for a peer.
+    fn for_peer(&self, peer: OverlayAddress) -> <Self::Bandwidth as SwarmBandwidthAccounting>::Peer {
+        self.bandwidth().for_peer(peer)
+    }
+
+    /// Prepare to receive a chunk (we pay, balance decreases).
+    fn prepare_receive_chunk(
+        &self,
+        peer: OverlayAddress,
+        chunk: &ChunkAddress,
+        originated: bool,
+    ) -> SwarmResult<<Self::Bandwidth as SwarmBandwidthAccounting>::ReceiveAction> {
+        let price = self.pricing().peer_price(&peer, chunk);
+        self.bandwidth().prepare_receive(peer, price, originated)
+    }
+
+    /// Prepare to provide a chunk (peer pays, balance increases).
+    fn prepare_provide_chunk(
+        &self,
+        peer: OverlayAddress,
+        chunk: &ChunkAddress,
+    ) -> SwarmResult<<Self::Bandwidth as SwarmBandwidthAccounting>::ProvideAction> {
+        let price = self.pricing().peer_price(&peer, chunk);
+        self.bandwidth().prepare_provide(peer, price)
+    }
+
+    /// Calculate price for receiving a chunk from a peer.
+    fn receive_price(&self, peer: &OverlayAddress, chunk: &ChunkAddress) -> u64 {
+        self.pricing().peer_price(peer, chunk)
+    }
+
+    /// Calculate price for providing a chunk to a peer.
+    fn provide_price(&self, peer: &OverlayAddress, chunk: &ChunkAddress) -> u64 {
+        self.pricing().peer_price(peer, chunk)
+    }
 }

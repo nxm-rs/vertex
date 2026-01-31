@@ -18,6 +18,7 @@ extern crate alloc;
 
 pub mod args;
 mod accounting;
+mod client_accounting;
 mod config;
 mod constants;
 mod noop;
@@ -27,8 +28,9 @@ pub use accounting::{
     Accounting, AccountingAction, AccountingError, AccountingPeerHandle, PeerState,
     PeerStateSnapshot, ProvideAction, ReceiveAction,
 };
+pub use client_accounting::ClientAccounting;
 pub use args::{BandwidthArgs, BandwidthModeArg};
 pub use config::DefaultAccountingConfig;
-pub use noop::{NoAccounting, NoPeerBandwidth};
+pub use noop::{NoAccounting, NoPeerBandwidth, NoProvideAction, NoReceiveAction};
 pub use settlement::NoSettlement;
-pub use vertex_swarm_bandwidth_pricing::{FixedPricer, NoPricer, Pricer};
+pub use vertex_swarm_bandwidth_pricing::{DefaultPricingConfig, FixedPricer, NoPricer, Pricer};

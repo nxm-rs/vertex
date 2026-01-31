@@ -240,10 +240,10 @@ mod tests {
     use super::*;
     use core::fmt::Debug;
     use tokio::sync::mpsc;
-    use crate::{Accounting, FixedPricer, ClientCommand, ClientHandle, ClientService};
+    use crate::{Accounting, ClientAccounting, FixedPricer, ClientCommand, ClientHandle, ClientService};
     use vertex_swarm_primitives::OverlayAddress;
     use vertex_swarm_bandwidth::DefaultAccountingConfig;
-    use vertex_swarm_api::{SwarmBandwidthAccounting, SwarmNodeType, SwarmTopology};
+    use vertex_swarm_api::{SwarmBandwidthAccounting, SwarmClientAccounting, SwarmNodeType, SwarmTopology};
     use vertex_tasks::SpawnableTask;
     use vertex_swarm_identity::Identity;
 
@@ -312,7 +312,7 @@ mod tests {
     }
 
     impl SwarmClientTypes for MockSwarmClientTypes {
-        type Accounting = Accounting<DefaultAccountingConfig, Identity>;
+        type Accounting = ClientAccounting<Arc<Accounting<DefaultAccountingConfig, Identity>>, FixedPricer>;
     }
 
     fn test_identity() -> Identity {
@@ -353,7 +353,8 @@ mod tests {
 
         let client: FullClient<MockSwarmClientTypes, Arc<Accounting<DefaultAccountingConfig, Identity>>, FixedPricer, ()> =
             Client::full(topology.clone(), accounting, pricer.clone(), handle.clone());
-        let peers = client.accounting().peers();
+        // full() wraps accounting in Arc internally
+        let peers = SwarmBandwidthAccounting::peers(client.accounting().as_ref());
         assert!(peers.is_empty());
 
         // Type alias - accounting is wrapped in Arc by full()

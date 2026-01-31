@@ -28,12 +28,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::sync::mpsc;
-use vertex_swarm_bandwidth::{Accounting, DefaultAccountingConfig};
+use vertex_swarm_bandwidth::{Accounting, ClientAccounting, DefaultAccountingConfig, DefaultPricingConfig, FixedPricer};
 use vertex_swarm_bandwidth_pseudosettle::{PseudosettleProvider, create_pseudosettle_actor};
 use vertex_swarm_peermanager::PeerStore;
 use vertex_node_api::{NodeBuildsProtocol, NodeContext};
 use vertex_swarm_api::{
-    SwarmAccountingConfig, SwarmNetworkConfig, SwarmLaunchConfig, SwarmProtocol, Services,
+    SwarmAccountingConfig, SwarmLaunchConfig, SwarmNetworkConfig, SwarmPricingConfig,
+    SwarmProtocol, Services,
 };
 use vertex_swarm_core::{ClientCommand, SwarmNode};
 use vertex_swarm_core::args::SwarmArgs;
@@ -249,8 +250,8 @@ impl SwarmLaunchConfig for ClientNodeBuildConfig {
             config.refresh_rate(),
         );
 
-        // Create accounting with the handle-backed provider
-        let accounting = Arc::new(Accounting::with_providers(
+        // Create bandwidth accounting with the handle-backed provider
+        let bandwidth = Arc::new(Accounting::with_providers(
             config.clone(),
             self.identity.clone(),
             vec![Box::new(PseudosettleProvider::with_handle(
@@ -259,12 +260,19 @@ impl SwarmLaunchConfig for ClientNodeBuildConfig {
             ))],
         ));
 
-        let providers = accounting.provider_names();
+        let providers = bandwidth.provider_names();
         if providers.is_empty() {
             info!("Bandwidth incentives: disabled");
         } else {
             info!("Bandwidth incentives: {}", providers.join(", "));
         }
+
+        // Create pricing strategy
+        let pricing_config = DefaultPricingConfig;
+        let pricing = FixedPricer::new(pricing_config.base_price(), self.spec.as_ref());
+
+        // Combine bandwidth accounting and pricing
+        let accounting = ClientAccounting::new(bandwidth, pricing);
 
         // Spawn settlement services
         let executor = TaskExecutor::current();

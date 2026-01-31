@@ -173,6 +173,8 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
 impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmBandwidthAccounting for Accounting<C, I> {
     type Identity = I;
     type Peer = AccountingPeerHandle;
+    type ReceiveAction = ReceiveAction;
+    type ProvideAction = ProvideAction;
 
     fn identity(&self) -> &I {
         &self.identity
@@ -195,6 +197,25 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmBandwidthAccounting for Ac
 
     fn remove_peer(&self, peer: &OverlayAddress) {
         self.peers.write().remove(peer);
+    }
+
+    fn prepare_receive(
+        &self,
+        peer: OverlayAddress,
+        price: u64,
+        originated: bool,
+    ) -> SwarmResult<ReceiveAction> {
+        Accounting::prepare_receive(self, peer, price, originated)
+            .map_err(|e| vertex_swarm_api::SwarmError::Accounting(e.to_string()))
+    }
+
+    fn prepare_provide(
+        &self,
+        peer: OverlayAddress,
+        price: u64,
+    ) -> SwarmResult<ProvideAction> {
+        Accounting::prepare_provide(self, peer, price)
+            .map_err(|e| vertex_swarm_api::SwarmError::Accounting(e.to_string()))
     }
 }
 

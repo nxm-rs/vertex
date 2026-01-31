@@ -43,3 +43,14 @@ impl Pricer for NoPricer {
         0
     }
 }
+
+// Implement SwarmPricing for NoPricer
+impl vertex_swarm_api::SwarmPricing for NoPricer {
+    fn price(&self, chunk: &ChunkAddress) -> u64 {
+        Pricer::price(self, chunk)
+    }
+
+    fn peer_price(&self, peer: &OverlayAddress, chunk: &ChunkAddress) -> u64 {
+        Pricer::peer_price(self, peer, chunk)
+    }
+}
