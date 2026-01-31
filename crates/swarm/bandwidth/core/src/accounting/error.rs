@@ -1,6 +1,6 @@
 //! Accounting error types.
 
-use vertex_primitives::OverlayAddress;
+use vertex_swarm_primitives::OverlayAddress;
 
 /// Errors that can occur during accounting operations.
 #[derive(Debug, thiserror::Error)]

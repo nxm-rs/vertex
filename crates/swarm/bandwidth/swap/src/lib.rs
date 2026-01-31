@@ -213,7 +213,7 @@ pub fn new_swap_accounting<C: SwarmAccountingConfig + Clone + 'static, I: SwarmI
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vertex_primitives::OverlayAddress;
+    use vertex_swarm_primitives::OverlayAddress;
     use vertex_swarm_api::{SwarmBandwidthAccounting, BandwidthMode, DefaultAccountingConfig, Direction, SwarmPeerBandwidth, SwarmNodeType, SwarmAccountingConfig};
     use vertex_swarm_identity::Identity;
 

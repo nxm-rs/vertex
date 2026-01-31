@@ -9,7 +9,7 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
-vertex-primitives = { workspace = true }
+vertex-swarm-primitives = { workspace = true }
 vertex-swarm-peer = { workspace = true, features = ["serde"] }
 libp2p = { workspace = true }
 parking_lot = { workspace = true }

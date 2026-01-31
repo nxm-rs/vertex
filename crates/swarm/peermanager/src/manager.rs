@@ -8,7 +8,7 @@ use libp2p::{Multiaddr, PeerId};
 use parking_lot::{Mutex, RwLock};
 use tracing::{debug, info, trace, warn};
 use vertex_swarm_peer::SwarmPeer;
-use vertex_primitives::OverlayAddress;
+use vertex_swarm_primitives::OverlayAddress;
 
 use crate::multiaddr_cache::{MultiAddrCache, MultiAddrRegistry};
 use crate::score::{ScoreConfig, ScoreHandle, ScoreManager};

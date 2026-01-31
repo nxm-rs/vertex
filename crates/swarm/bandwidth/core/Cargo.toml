@@ -10,7 +10,7 @@ description = "Core bandwidth accounting and pricing for data availability incen
 
 [dependencies]
 nectar-primitives = { workspace = true }
-vertex-primitives = { workspace = true }
+vertex-swarm-primitives = { workspace = true }
 vertex-swarm-api = { workspace = true }
 vertex-swarmspec = { workspace = true }
 async-trait = { workspace = true }

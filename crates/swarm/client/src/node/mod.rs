@@ -78,7 +78,7 @@ use vertex_swarm_peermanager::{
 };
 use crate::protocol::{ClientCommand, PseudosettleEvent, SwapEvent};
 use vertex_swarm_topology::{BootnodeConnector, TopologyCommand, TopologyEvent, is_dnsaddr};
-use vertex_primitives::OverlayAddress;
+use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeTypes, SwarmTopology};
 use vertex_tasks::SpawnableTask;
 use vertex_tasks::TaskExecutor;

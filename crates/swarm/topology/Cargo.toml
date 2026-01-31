@@ -10,7 +10,7 @@ repository.workspace = true
 
 [dependencies]
 ## vertex
-vertex-primitives.workspace = true
+vertex-swarm-primitives.workspace = true
 vertex-swarm-api.workspace = true
 vertex-swarm-identity.workspace = true
 vertex-net-handshake.workspace = true

@@ -24,7 +24,7 @@ use vertex_swarm_peermanager::{
     discovery_channel, run_peer_store_consumer,
 };
 use vertex_swarm_api::SwarmTopology;
-use vertex_primitives::OverlayAddress;
+use vertex_swarm_primitives::OverlayAddress;
 use vertex_tasks::TaskExecutor;
 
 use crate::BootnodeProvider;

@@ -75,7 +75,7 @@ impl SettlementProvider for NoSettlement {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vertex_primitives::OverlayAddress;
+    use vertex_swarm_primitives::OverlayAddress;
 
     fn test_peer_state() -> PeerState {
         PeerState::new(OverlayAddress::from([1u8; 32]), 13_500_000, 16_875_000)

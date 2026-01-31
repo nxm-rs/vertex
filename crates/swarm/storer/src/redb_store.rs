@@ -7,7 +7,7 @@ use std::path::Path;
 
 use redb::{Database, ReadableTable, TableDefinition};
 use tracing::debug;
-use vertex_primitives::ChunkAddress;
+use nectar_primitives::ChunkAddress;
 
 use crate::{ChunkStore, StorerResult};
 

@@ -1,7 +1,7 @@
 //! Error types for Swarm API operations.
 
 use std::string::String;
-use vertex_primitives::ChunkAddress;
+use nectar_primitives::ChunkAddress;
 
 /// Error type for Swarm API operations.
 #[derive(Debug, thiserror::Error)]

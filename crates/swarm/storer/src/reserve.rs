@@ -202,7 +202,7 @@ impl Reserve {
 mod tests {
     use super::*;
     use crate::traits::memory::MemoryChunkStore;
-    use vertex_primitives::ChunkAddress;
+    use nectar_primitives::ChunkAddress;
 
     fn test_address(n: u8) -> ChunkAddress {
         let mut bytes = [0u8; 32];

@@ -19,7 +19,7 @@ use libp2p::{
 };
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
-use vertex_primitives::OverlayAddress;
+use vertex_swarm_primitives::OverlayAddress;
 
 use super::{
     ClientCommand, ClientEvent, PseudosettleEvent, SwapEvent,

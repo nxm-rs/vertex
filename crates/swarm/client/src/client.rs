@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use vertex_primitives::{AnyChunk, ChunkAddress};
+use nectar_primitives::{AnyChunk, ChunkAddress};
 use vertex_swarm_api::{
     SwarmBootnodeTypes, SwarmClientTypes, SwarmClient, SwarmError, SwarmResult, SwarmTopology,
 };
@@ -241,7 +241,7 @@ mod tests {
     use core::fmt::Debug;
     use tokio::sync::mpsc;
     use crate::{Accounting, FixedPricer, ClientCommand, ClientHandle, ClientService};
-    use vertex_primitives::OverlayAddress;
+    use vertex_swarm_primitives::OverlayAddress;
     use vertex_swarm_api::{SwarmBandwidthAccounting, DefaultAccountingConfig, SwarmNodeType, SwarmTopology};
     use vertex_tasks::SpawnableTask;
     use vertex_swarm_identity::Identity;

@@ -52,7 +52,8 @@ use std::{
 };
 use tokio::{sync::Notify, task::JoinHandle};
 use tracing::{debug, info, trace};
-use vertex_primitives::{ChunkAddress, OverlayAddress};
+use nectar_primitives::ChunkAddress;
+use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_api::{SwarmIdentity, SwarmTopology};
 use vertex_tasks::TaskExecutor;
 

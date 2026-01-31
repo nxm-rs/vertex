@@ -1,7 +1,7 @@
 //! Local chunk storage.
 
 use crate::SwarmResult;
-use vertex_primitives::{AnyChunk, ChunkAddress};
+use nectar_primitives::{AnyChunk, ChunkAddress};
 
 /// Local chunk storage trait for full nodes.
 ///

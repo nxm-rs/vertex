@@ -12,7 +12,7 @@ use std::sync::Arc;
 use alloy_primitives::B256;
 use parking_lot::RwLock;
 use tracing::{debug, warn};
-use vertex_primitives::OverlayAddress;
+use vertex_swarm_primitives::OverlayAddress;
 
 use super::config::{ScoreConfig, ScoreWeights};
 use super::handle::ScoreHandle;

@@ -14,7 +14,8 @@ mod fixed;
 
 pub use fixed::FixedPricer;
 
-use vertex_primitives::{ChunkAddress, OverlayAddress};
+use nectar_primitives::ChunkAddress;
+use vertex_swarm_primitives::OverlayAddress;
 
 /// Trait for pricing chunks.
 #[auto_impl::auto_impl(&, Arc)]

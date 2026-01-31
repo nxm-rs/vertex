@@ -6,7 +6,7 @@
 use lru::LruCache;
 use parking_lot::Mutex;
 use std::num::NonZeroUsize;
-use vertex_primitives::ChunkAddress;
+use nectar_primitives::ChunkAddress;
 
 /// LRU cache for chunk data.
 ///

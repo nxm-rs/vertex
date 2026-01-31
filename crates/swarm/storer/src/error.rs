@@ -1,6 +1,6 @@
 //! Storer error types.
 
-use vertex_primitives::ChunkAddress;
+use nectar_primitives::ChunkAddress;
 
 /// Errors from storer operations.
 #[derive(Debug, thiserror::Error)]

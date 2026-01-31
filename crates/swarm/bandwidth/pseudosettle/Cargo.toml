@@ -12,7 +12,7 @@ description = "Pseudosettle time-based bandwidth accounting for data availabilit
 vertex-swarm-bandwidth = { workspace = true }
 vertex-swarm-client = { workspace = true }
 vertex-net-pseudosettle = { workspace = true }
-vertex-primitives = { workspace = true }
+vertex-swarm-primitives = { workspace = true }
 vertex-swarm-api = { workspace = true }
 alloy-primitives = { workspace = true }
 async-trait = { workspace = true }

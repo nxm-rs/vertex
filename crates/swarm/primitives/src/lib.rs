@@ -1,10 +1,29 @@
 //! Core primitive types for Ethereum Swarm nodes.
 //!
-//! This crate provides fundamental types used across the Swarm stack,
-//! kept separate to avoid circular dependencies.
+//! This crate provides fundamental types used across the Swarm stack:
+//!
+//! - [`OverlayAddress`] - Swarm overlay address for routing and peer identification
+//! - [`SwarmNodeType`] - Node type determining capabilities (Bootnode/Client/Storer)
+//! - [`BandwidthMode`] - Bandwidth accounting mode (None/Pseudosettle/Swap)
+//! - [`ValidatedChunk`] - Type-safe wrapper proving chunk validation
+
+#![cfg_attr(not(feature = "std"), no_std)]
+
+mod validated;
+
+pub use validated::{ValidatedChunk, ValidationError};
 
 use alloy_primitives::{Address, B256, Keccak256};
 use nectar_primitives::SwarmAddress;
+
+/// Overlay address for Swarm routing and peer identification.
+///
+/// A 32-byte address derived from `keccak256(ethereum_address || network_id || nonce)`.
+///
+/// Used for Kademlia routing, bandwidth accounting, chunk sync, and topology.
+/// All swarm-api traits use `OverlayAddress`. The net/ layer handles the
+/// mapping to libp2p's `PeerId` for actual network connections.
+pub type OverlayAddress = SwarmAddress;
 
 /// Computes overlay address: `keccak256(ethereum_address || network_id || nonce)`.
 pub fn compute_overlay(ethereum_address: &Address, network_id: u64, nonce: &B256) -> SwarmAddress {
@@ -17,7 +36,7 @@ pub fn compute_overlay(ethereum_address: &Address, network_id: u64, nonce: &B256
 
 /// Swarm node type determining capabilities and protocols.
 ///
-/// Hierarchy: Bootnode < Client < Storer (each adds capabilities).
+/// Hierarchy: Bootnode < Client < Storer (each level adds capabilities).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, strum::Display, strum::FromRepr)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
@@ -28,12 +47,10 @@ pub enum SwarmNodeType {
     Bootnode = 0,
 
     /// Read + write: retrieval, pushsync, pricing, configurable accounting.
-    /// Consumes the swarm network without storing chunks locally.
     #[default]
     Client = 1,
 
     /// Storage + staking: pullsync, local storage, runtime staking toggle.
-    /// Stores chunks locally and participates in the storage incentive game.
     Storer = 2,
 }
 
@@ -94,28 +111,16 @@ impl SwarmNodeType {
 #[repr(u8)]
 pub enum BandwidthMode {
     /// No bandwidth accounting (dev/testing only).
-    ///
-    /// Peers freely exchange data without tracking costs.
-    /// **Not recommended for production.**
     None = 0,
 
     /// Soft accounting without real payments (default).
-    ///
-    /// Tracks bandwidth usage between peers and periodically "settles"
-    /// by resetting balances. No actual tokens change hands.
     #[default]
     Pseudosettle = 1,
 
     /// Real payment channels with chequebook.
-    ///
-    /// Uses SWAP protocol to issue cheques that can be cashed on-chain.
-    /// Requires a funded chequebook contract.
     Swap = 2,
 
     /// Both pseudosettle and SWAP.
-    ///
-    /// Uses pseudosettle for soft accounting, with SWAP payments
-    /// triggered when thresholds are reached.
     Both = 3,
 }
 

@@ -4,7 +4,7 @@
 //! Uses overlay addresses for peer identification (not libp2p `PeerId`).
 
 use std::vec::Vec;
-use vertex_primitives::OverlayAddress;
+use vertex_swarm_primitives::OverlayAddress;
 
 use crate::{SwarmIdentity, SwarmResult};
 

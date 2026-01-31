@@ -13,7 +13,8 @@ workspace = true
 
 [dependencies]
 ## vertex
-vertex-primitives.workspace = true
+nectar-primitives.workspace = true
+vertex-swarm-primitives.workspace = true
 vertex-swarm-api.workspace = true
 
 ## storage

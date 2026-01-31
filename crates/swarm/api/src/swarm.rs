@@ -1,7 +1,7 @@
 //! Core Swarm traits for network access.
 
 use crate::SwarmResult;
-use vertex_primitives::{AnyChunk, ChunkAddress};
+use nectar_primitives::{AnyChunk, ChunkAddress};
 
 /// Unified client for reading and writing chunks to the Swarm network.
 ///

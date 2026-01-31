@@ -9,7 +9,8 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
-vertex-primitives = { workspace = true }
+nectar-primitives = { workspace = true }
+vertex-swarm-primitives = { workspace = true }
 vertex-swarm-api = { workspace = true }
 vertex-tasks = { workspace = true }
 hex = "0.4"

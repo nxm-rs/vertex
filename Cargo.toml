@@ -17,9 +17,6 @@ members = [
     # Tasks
     "crates/tasks",
 
-    # Primitives
-    "crates/primitives",
-
     # Network
     "crates/net/codec",
     "crates/net/protocols/handshake",
@@ -90,7 +87,6 @@ digest = "0.10"
 
 ## vertex
 # primitives
-vertex-primitives = { path = "crates/primitives" }
 vertex-swarm-forks = { path = "crates/swarm/forks" }
 vertex-swarm-primitives = { path = "crates/swarm/primitives" }
 

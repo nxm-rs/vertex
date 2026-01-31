@@ -6752,6 +6752,7 @@ dependencies = [
  "bytes",
  "futures",
  "libp2p",
+ "nectar-primitives",
  "pb-rs",
  "quick-protobuf",
  "quick-protobuf-codec",
@@ -6760,7 +6761,6 @@ dependencies = [
  "tracing",
  "vertex-net-codec",
  "vertex-net-headers",
- "vertex-primitives",
  "walkdir",
 ]
 
@@ -6772,6 +6772,7 @@ dependencies = [
  "bytes",
  "futures",
  "libp2p",
+ "nectar-primitives",
  "pb-rs",
  "quick-protobuf",
  "quick-protobuf-codec",
@@ -6780,7 +6781,6 @@ dependencies = [
  "tracing",
  "vertex-net-codec",
  "vertex-net-headers",
- "vertex-primitives",
  "walkdir",
 ]
 
@@ -6883,16 +6883,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vertex-primitives"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "libp2p",
- "nectar-primitives",
- "thiserror 2.0.12",
-]
-
-[[package]]
 name = "vertex-rpc-core"
 version = "0.1.0"
 dependencies = [
@@ -6939,7 +6929,6 @@ dependencies = [
  "tracing",
  "vertex-node-api",
  "vertex-node-types",
- "vertex-primitives",
  "vertex-swarm-primitives",
  "vertex-swarmspec",
  "vertex-tasks",
@@ -6956,9 +6945,9 @@ dependencies = [
  "nectar-primitives",
  "parking_lot",
  "thiserror 2.0.12",
- "vertex-primitives",
  "vertex-swarm-api",
  "vertex-swarm-identity",
+ "vertex-swarm-primitives",
  "vertex-swarmspec",
 ]
 
@@ -6991,11 +6980,11 @@ dependencies = [
  "tokio",
  "tracing",
  "vertex-net-pseudosettle",
- "vertex-primitives",
  "vertex-swarm-api",
  "vertex-swarm-bandwidth",
  "vertex-swarm-client",
  "vertex-swarm-identity",
+ "vertex-swarm-primitives",
  "vertex-swarmspec",
 ]
 
@@ -7010,12 +6999,12 @@ dependencies = [
  "thiserror 2.0.12",
  "tokio",
  "tracing",
- "vertex-primitives",
  "vertex-swarm-api",
  "vertex-swarm-bandwidth",
  "vertex-swarm-bandwidth-chequebook",
  "vertex-swarm-client",
  "vertex-swarm-identity",
+ "vertex-swarm-primitives",
  "vertex-swarmspec",
 ]
 
@@ -7078,7 +7067,6 @@ dependencies = [
  "vertex-net-retrieval",
  "vertex-net-swap",
  "vertex-node-types",
- "vertex-primitives",
  "vertex-swarm-api",
  "vertex-swarm-bandwidth",
  "vertex-swarm-bandwidth-chequebook",
@@ -7086,6 +7074,7 @@ dependencies = [
  "vertex-swarm-kademlia",
  "vertex-swarm-peer",
  "vertex-swarm-peermanager",
+ "vertex-swarm-primitives",
  "vertex-swarm-topology",
  "vertex-swarmspec",
  "vertex-tasks",
@@ -7105,7 +7094,6 @@ dependencies = [
  "serde",
  "strum",
  "vertex-node-api",
- "vertex-primitives",
  "vertex-swarm-api",
  "vertex-swarm-client",
  "vertex-swarm-primitives",
@@ -7155,8 +7143,8 @@ dependencies = [
  "parking_lot",
  "tokio",
  "tracing",
- "vertex-primitives",
  "vertex-swarm-api",
+ "vertex-swarm-primitives",
  "vertex-swarmspec",
  "vertex-tasks",
 ]
@@ -7225,8 +7213,8 @@ dependencies = [
  "thiserror 2.0.12",
  "tokio",
  "tracing",
- "vertex-primitives",
  "vertex-swarm-peer",
+ "vertex-swarm-primitives",
  "web-time",
 ]
 
@@ -7238,6 +7226,7 @@ dependencies = [
  "nectar-primitives",
  "serde",
  "strum",
+ "thiserror 2.0.12",
 ]
 
 [[package]]
@@ -7258,14 +7247,15 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "lru 0.16.3",
+ "nectar-primitives",
  "parking_lot",
  "redb",
  "tempfile",
  "thiserror 2.0.12",
  "tokio",
  "tracing",
- "vertex-primitives",
  "vertex-swarm-api",
+ "vertex-swarm-primitives",
 ]
 
 [[package]]
@@ -7286,11 +7276,11 @@ dependencies = [
  "vertex-net-headers",
  "vertex-net-hive",
  "vertex-net-pingpong",
- "vertex-primitives",
  "vertex-swarm-api",
  "vertex-swarm-identity",
  "vertex-swarm-peer",
  "vertex-swarm-peermanager",
+ "vertex-swarm-primitives",
 ]
 
 [[package]]

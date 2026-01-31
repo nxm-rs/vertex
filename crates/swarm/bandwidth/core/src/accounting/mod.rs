@@ -88,7 +88,7 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use vertex_primitives::OverlayAddress;
+use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_api::{
     SwarmAccountingConfig, SwarmBandwidthAccounting, Direction, SwarmIdentity, SwarmPeerBandwidth, SwarmError,
     SwarmResult,

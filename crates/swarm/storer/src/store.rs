@@ -4,7 +4,7 @@
 //! [`LocalStore`] trait from swarm-api.
 
 use tracing::{debug, trace};
-use vertex_primitives::{AnyChunk, Chunk, ChunkAddress};
+use nectar_primitives::{AnyChunk, Chunk, ChunkAddress};
 use vertex_swarm_api::{SwarmLocalStore, SwarmError, SwarmResult};
 
 use crate::{ChunkCache, ChunkStore, Reserve, StorerError};
@@ -88,7 +88,7 @@ impl<S: ChunkStore> LocalStoreImpl<S> {
     /// Note: This creates a simplified chunk. Full reconstruction would
     /// require more complex deserialization matching nectar-primitives format.
     fn deserialize_chunk(address: ChunkAddress, bytes: &[u8]) -> SwarmResult<AnyChunk> {
-        use vertex_primitives::ContentChunk;
+        use nectar_primitives::ContentChunk;
 
         if bytes.is_empty() {
             return Err(SwarmError::InvalidChunk {
@@ -206,7 +206,7 @@ impl<S: ChunkStore> SwarmLocalStore for LocalStoreImpl<S> {
 mod tests {
     use super::*;
     use crate::traits::memory::MemoryChunkStore;
-    use vertex_primitives::ContentChunk;
+    use nectar_primitives::ContentChunk;
 
     fn test_chunk(n: u8) -> AnyChunk {
         let mut addr_bytes = [0u8; 32];

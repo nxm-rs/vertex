@@ -36,7 +36,7 @@ use vertex_net_retrieval::{
     RetrievalResponder,
 };
 use vertex_net_swap::{PROTOCOL_NAME as SWAP_PROTOCOL, SettlementHeaders};
-use vertex_primitives::ChunkAddress;
+use nectar_primitives::ChunkAddress;
 
 /// Errors from client protocol upgrades.
 #[derive(Debug, Error)]

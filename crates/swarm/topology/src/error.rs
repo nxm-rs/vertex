@@ -1,7 +1,7 @@
 //! Topology error types.
 
 use libp2p::Multiaddr;
-use vertex_primitives::OverlayAddress;
+use vertex_swarm_primitives::OverlayAddress;
 
 /// Errors that can occur in topology operations.
 #[derive(Debug, thiserror::Error)]

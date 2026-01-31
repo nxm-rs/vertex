@@ -8,7 +8,7 @@ use std::{collections::HashMap, num::NonZeroUsize};
 use libp2p::{Multiaddr, PeerId};
 use lru::LruCache;
 use tracing::debug;
-use vertex_primitives::OverlayAddress;
+use vertex_swarm_primitives::OverlayAddress;
 use web_time::{Duration, Instant};
 
 /// Internal registry mapping between overlay and multiaddr addresses.

@@ -1,7 +1,8 @@
 //! Topology and neighborhood awareness using overlay addresses.
 
 use std::vec::Vec;
-use vertex_primitives::{ChunkAddress, OverlayAddress};
+use nectar_primitives::ChunkAddress;
+use vertex_swarm_primitives::OverlayAddress;
 
 /// Neighborhood awareness trait - who is "close" in the overlay address space.
 #[auto_impl::auto_impl(&, Arc)]

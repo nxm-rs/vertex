@@ -1,6 +1,7 @@
 //! Chunk synchronization between peers using overlay addresses.
 
-use vertex_primitives::{AnyChunk, OverlayAddress};
+use nectar_primitives::AnyChunk;
+use vertex_swarm_primitives::OverlayAddress;
 
 use crate::SwarmResult;
 

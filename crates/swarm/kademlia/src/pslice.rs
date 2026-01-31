@@ -14,7 +14,7 @@ use std::{
 };
 
 use parking_lot::RwLock;
-use vertex_primitives::OverlayAddress;
+use vertex_swarm_primitives::OverlayAddress;
 
 /// Maximum proximity order for 256-bit addresses.
 pub const MAX_PO: u8 = 31;

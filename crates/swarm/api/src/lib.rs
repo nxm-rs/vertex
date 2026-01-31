@@ -24,8 +24,9 @@ pub use services::*;
 pub use swarm::*;
 pub use types::*;
 
-// Re-export chunk types for convenience
-pub use vertex_primitives::{
+// Re-export primitives for convenience
+pub use nectar_primitives::{
     AnyChunk, Chunk, ChunkAddress, ChunkType, ChunkTypeId, ChunkTypeSet, ContentChunk,
-    OverlayAddress, PeerId, SingleOwnerChunk, StandardChunkSet, ValidatedChunk,
+    SingleOwnerChunk, StandardChunkSet,
 };
+pub use vertex_swarm_primitives::{OverlayAddress, ValidatedChunk, ValidationError};

@@ -117,7 +117,7 @@ pub trait SwarmChunkSender: Send + Sync + 'static {
     /// - Internal operations where validation is redundant
     async fn send_chunk_unchecked(
         &self,
-        chunk: vertex_primitives::AnyChunk,
+        chunk: nectar_primitives::AnyChunk,
     ) -> Result<ChunkSendReceipt, ChunkSendError>;
 
     /// Send a chunk with stamp signature validation.
@@ -128,7 +128,7 @@ pub trait SwarmChunkSender: Send + Sync + 'static {
     /// Returns `InvalidSignature` if the stamp doesn't match the chunk.
     async fn send_chunk(
         &self,
-        chunk: vertex_primitives::AnyChunk,
+        chunk: nectar_primitives::AnyChunk,
     ) -> Result<ChunkSendReceipt, ChunkSendError>;
 }
 

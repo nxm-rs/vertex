@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use vertex_primitives::OverlayAddress;
+use vertex_swarm_primitives::OverlayAddress;
 
 use super::config::ScoreWeights;
 use super::event::ScoreEvent;

@@ -11,7 +11,7 @@
 
 use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 
-use vertex_primitives::OverlayAddress;
+use vertex_swarm_primitives::OverlayAddress;
 
 use super::ip::current_unix_timestamp;
 

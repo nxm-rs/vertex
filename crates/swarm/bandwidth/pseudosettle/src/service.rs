@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_client::{protocol::ClientCommand, PseudosettleEvent};
 use vertex_net_pseudosettle::PaymentAck;
-use vertex_primitives::OverlayAddress;
+use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_api::{SwarmBandwidthAccounting, Direction, SwarmPeerBandwidth};
 
 use crate::error::PseudosettleError;

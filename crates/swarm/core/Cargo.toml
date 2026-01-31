@@ -16,7 +16,6 @@ workspace = true
 vertex-swarm-client = { workspace = true }
 
 ## vertex - primitives
-vertex-primitives.workspace = true
 vertex-swarm-api.workspace = true
 vertex-swarm-primitives.workspace = true
 

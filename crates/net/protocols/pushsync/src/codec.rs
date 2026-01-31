@@ -2,7 +2,7 @@
 
 use bytes::Bytes;
 use vertex_net_codec::{Codec, ProtoMessage, ProtocolCodecError};
-use vertex_primitives::ChunkAddress;
+use nectar_primitives::ChunkAddress;
 
 /// Domain-specific errors for pushsync protocol.
 #[derive(Debug, thiserror::Error)]

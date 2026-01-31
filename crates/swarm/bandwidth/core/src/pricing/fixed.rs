@@ -1,7 +1,8 @@
 //! Fixed pricing based on proximity.
 
 use nectar_primitives::SwarmAddress;
-use vertex_primitives::{ChunkAddress, OverlayAddress};
+use nectar_primitives::ChunkAddress;
+use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarmspec::SwarmSpec;
 
 use super::Pricer;

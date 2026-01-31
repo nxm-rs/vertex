@@ -16,7 +16,7 @@ workspace = true
 nectar-primitives.workspace = true
 
 ## vertex - primitives
-vertex-primitives.workspace = true
+vertex-swarm-primitives.workspace = true
 
 ## vertex - network (libp2p layer)
 vertex-net-headers.workspace = true

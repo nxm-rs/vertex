@@ -4,7 +4,7 @@
 //! allowing implementations like redb, sled, or in-memory for testing.
 
 use crate::StorerResult;
-use vertex_primitives::ChunkAddress;
+use nectar_primitives::ChunkAddress;
 
 /// Chunk storage backend trait.
 ///

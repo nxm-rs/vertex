@@ -236,7 +236,7 @@ pub fn new_pseudosettle_accounting<C: SwarmAccountingConfig + Clone + 'static, I
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vertex_primitives::OverlayAddress;
+    use vertex_swarm_primitives::OverlayAddress;
     use vertex_swarm_api::{SwarmBandwidthAccounting, DefaultAccountingConfig, Direction, SwarmPeerBandwidth, SwarmNodeType};
     use vertex_swarm_identity::Identity;
 

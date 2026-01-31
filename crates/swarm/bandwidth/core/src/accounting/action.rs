@@ -111,7 +111,7 @@ impl AccountingAction for DebitAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vertex_primitives::OverlayAddress;
+    use vertex_swarm_primitives::OverlayAddress;
 
     fn test_peer() -> OverlayAddress {
         OverlayAddress::from([1u8; 32])

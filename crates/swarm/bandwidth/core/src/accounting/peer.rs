@@ -5,7 +5,7 @@
 
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
-use vertex_primitives::OverlayAddress;
+use vertex_swarm_primitives::OverlayAddress;
 
 /// Per-peer accounting state.
 ///

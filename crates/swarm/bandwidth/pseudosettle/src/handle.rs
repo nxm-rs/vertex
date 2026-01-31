@@ -3,7 +3,7 @@
 //! The handle is cheap to clone and can be used from multiple tasks.
 
 use tokio::sync::{mpsc, oneshot};
-use vertex_primitives::OverlayAddress;
+use vertex_swarm_primitives::OverlayAddress;
 
 use crate::error::PseudosettleError;
 use crate::service::PseudosettleCommand;
