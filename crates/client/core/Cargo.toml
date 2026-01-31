@@ -30,7 +30,7 @@ vertex-net-retrieval.workspace = true
 vertex-net-swap.workspace = true
 
 ## vertex - bandwidth (chequebook types)
-vertex-bandwidth-chequebook.workspace = true
+vertex-swarm-bandwidth-chequebook.workspace = true
 
 ## vertex - topology
 vertex-swarm-topology.workspace = true
@@ -43,7 +43,7 @@ vertex-swarm-identity.workspace = true
 vertex-swarmspec.workspace = true
 
 ## vertex - infrastructure
-vertex-bandwidth-core.workspace = true
+vertex-swarm-bandwidth.workspace = true
 vertex-node-types.workspace = true
 vertex-tasks.workspace = true
 

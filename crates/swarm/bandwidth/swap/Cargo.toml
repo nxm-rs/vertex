@@ -1,5 +1,5 @@
 [package]
-name = "vertex-bandwidth-swap"
+name = "vertex-swarm-bandwidth-swap"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,8 +9,8 @@ repository.workspace = true
 description = "SWAP chequebook-based bandwidth accounting for data availability"
 
 [dependencies]
-vertex-bandwidth-chequebook = { workspace = true }
-vertex-bandwidth-core = { workspace = true }
+vertex-swarm-bandwidth-chequebook = { workspace = true }
+vertex-swarm-bandwidth = { workspace = true }
 vertex-client-core = { workspace = true }
 vertex-primitives = { workspace = true }
 vertex-swarm-api = { workspace = true }

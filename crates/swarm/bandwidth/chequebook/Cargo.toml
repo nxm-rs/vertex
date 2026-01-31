@@ -1,5 +1,5 @@
 [package]
-name = "vertex-bandwidth-chequebook"
+name = "vertex-swarm-bandwidth-chequebook"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

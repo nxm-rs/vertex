@@ -6604,80 +6604,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vertex-bandwidth-chequebook"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "alloy-signer",
- "alloy-signer-local",
- "alloy-sol-types",
- "bytes",
- "nectar-contracts",
- "serde",
- "serde_json",
- "thiserror 2.0.12",
- "tokio",
- "vertex-swarmspec",
-]
-
-[[package]]
-name = "vertex-bandwidth-core"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "alloy-signer-local",
- "async-trait",
- "auto_impl",
- "nectar-primitives",
- "parking_lot",
- "thiserror 2.0.12",
- "vertex-primitives",
- "vertex-swarm-api",
- "vertex-swarm-identity",
- "vertex-swarmspec",
-]
-
-[[package]]
-name = "vertex-bandwidth-pseudosettle"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "alloy-signer-local",
- "async-trait",
- "parking_lot",
- "thiserror 2.0.12",
- "tokio",
- "tracing",
- "vertex-bandwidth-core",
- "vertex-client-core",
- "vertex-net-pseudosettle",
- "vertex-primitives",
- "vertex-swarm-api",
- "vertex-swarm-identity",
- "vertex-swarmspec",
-]
-
-[[package]]
-name = "vertex-bandwidth-swap"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "alloy-signer-local",
- "async-trait",
- "parking_lot",
- "thiserror 2.0.12",
- "tokio",
- "tracing",
- "vertex-bandwidth-chequebook",
- "vertex-bandwidth-core",
- "vertex-client-core",
- "vertex-primitives",
- "vertex-swarm-api",
- "vertex-swarm-identity",
- "vertex-swarmspec",
-]
-
-[[package]]
 name = "vertex-client-core"
 version = "0.1.0"
 dependencies = [
@@ -6693,8 +6619,6 @@ dependencies = [
  "thiserror 2.0.12",
  "tokio",
  "tracing",
- "vertex-bandwidth-chequebook",
- "vertex-bandwidth-core",
  "vertex-net-headers",
  "vertex-net-pricing",
  "vertex-net-pseudosettle",
@@ -6704,6 +6628,8 @@ dependencies = [
  "vertex-node-types",
  "vertex-primitives",
  "vertex-swarm-api",
+ "vertex-swarm-bandwidth",
+ "vertex-swarm-bandwidth-chequebook",
  "vertex-swarm-identity",
  "vertex-swarm-kademlia",
  "vertex-swarm-peer",
@@ -6910,9 +6836,9 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.12",
  "tracing",
- "vertex-bandwidth-chequebook",
  "vertex-net-codec",
  "vertex-net-headers",
+ "vertex-swarm-bandwidth-chequebook",
  "walkdir",
 ]
 
@@ -7056,6 +6982,80 @@ dependencies = [
 ]
 
 [[package]]
+name = "vertex-swarm-bandwidth"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-signer-local",
+ "async-trait",
+ "auto_impl",
+ "nectar-primitives",
+ "parking_lot",
+ "thiserror 2.0.12",
+ "vertex-primitives",
+ "vertex-swarm-api",
+ "vertex-swarm-identity",
+ "vertex-swarmspec",
+]
+
+[[package]]
+name = "vertex-swarm-bandwidth-chequebook"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
+ "alloy-sol-types",
+ "bytes",
+ "nectar-contracts",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.12",
+ "tokio",
+ "vertex-swarmspec",
+]
+
+[[package]]
+name = "vertex-swarm-bandwidth-pseudosettle"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-signer-local",
+ "async-trait",
+ "parking_lot",
+ "thiserror 2.0.12",
+ "tokio",
+ "tracing",
+ "vertex-client-core",
+ "vertex-net-pseudosettle",
+ "vertex-primitives",
+ "vertex-swarm-api",
+ "vertex-swarm-bandwidth",
+ "vertex-swarm-identity",
+ "vertex-swarmspec",
+]
+
+[[package]]
+name = "vertex-swarm-bandwidth-swap"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-signer-local",
+ "async-trait",
+ "parking_lot",
+ "thiserror 2.0.12",
+ "tokio",
+ "tracing",
+ "vertex-client-core",
+ "vertex-primitives",
+ "vertex-swarm-api",
+ "vertex-swarm-bandwidth",
+ "vertex-swarm-bandwidth-chequebook",
+ "vertex-swarm-identity",
+ "vertex-swarmspec",
+]
+
+[[package]]
 name = "vertex-swarm-builder"
 version = "0.1.0"
 dependencies = [
@@ -7072,9 +7072,6 @@ dependencies = [
  "thiserror 2.0.12",
  "tokio",
  "tracing",
- "vertex-bandwidth-core",
- "vertex-bandwidth-pseudosettle",
- "vertex-bandwidth-swap",
  "vertex-node-api",
  "vertex-node-builder",
  "vertex-node-commands",
@@ -7082,6 +7079,9 @@ dependencies = [
  "vertex-node-types",
  "vertex-rpc-server",
  "vertex-swarm-api",
+ "vertex-swarm-bandwidth",
+ "vertex-swarm-bandwidth-pseudosettle",
+ "vertex-swarm-bandwidth-swap",
  "vertex-swarm-core",
  "vertex-swarm-identity",
  "vertex-swarm-kademlia",

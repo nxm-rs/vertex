@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use vertex_bandwidth_core::Accounting;
-use vertex_bandwidth_pseudosettle::PseudosettleProvider;
-use vertex_bandwidth_swap::SwapProvider;
+use vertex_swarm_bandwidth::Accounting;
+use vertex_swarm_bandwidth_pseudosettle::PseudosettleProvider;
+use vertex_swarm_bandwidth_swap::SwapProvider;
 use vertex_swarm_api::{
     SwarmAccountingConfig, SwarmBandwidthAccounting, BandwidthMode, DefaultAccountingConfig, SwarmIdentity,
     SwarmClientTypes, SwarmNetworkConfig, NoBandwidthIncentives,

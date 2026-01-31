@@ -25,7 +25,7 @@
 //!
 //! ```ignore
 //! use vertex_net_swap::{outbound, SettlementHeaders};
-//! use vertex_bandwidth_chequebook::SignedCheque;
+//! use vertex_swarm_bandwidth_chequebook::SignedCheque;
 //!
 //! let cheque: SignedCheque = /* ... */;
 //! let our_rate = U256::from(1_000_000u64);
@@ -64,7 +64,7 @@ pub use headers::{SettlementHeaders, HEADER_DEDUCTION, HEADER_EXCHANGE_RATE};
 pub use protocol::{SwapInboundProtocol, SwapOutboundProtocol, inbound, outbound};
 
 // Re-export SignedCheque for convenience
-pub use vertex_bandwidth_chequebook::SignedCheque;
+pub use vertex_swarm_bandwidth_chequebook::SignedCheque;
 
 mod proto {
     include!(concat!(env!("OUT_DIR"), "/proto/mod.rs"));

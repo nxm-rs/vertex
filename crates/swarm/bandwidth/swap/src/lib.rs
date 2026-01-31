@@ -24,9 +24,9 @@
 //! # Provider Pattern
 //!
 //! This crate provides [`SwapProvider`] which implements the
-//! [`SettlementProvider`](vertex_bandwidth_core::SettlementProvider) trait.
+//! [`SettlementProvider`](vertex_swarm_bandwidth::SettlementProvider) trait.
 //! It can be composed with other providers (e.g., pseudosettle) using
-//! [`Accounting`](vertex_bandwidth_core::Accounting).
+//! [`Accounting`](vertex_swarm_bandwidth::Accounting).
 //!
 //! # Current Status
 //!
@@ -48,7 +48,7 @@ use std::sync::Arc;
 
 use alloy_primitives::U256;
 use tokio::sync::mpsc;
-use vertex_bandwidth_core::{AccountingError, Accounting, AccountingPeerHandle, PeerState, SettlementProvider};
+use vertex_swarm_bandwidth::{AccountingError, Accounting, AccountingPeerHandle, PeerState, SettlementProvider};
 use vertex_client_core::protocol::ClientCommand;
 use vertex_swarm_api::{SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmIdentity};
 

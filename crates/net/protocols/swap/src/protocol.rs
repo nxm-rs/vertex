@@ -11,7 +11,7 @@ use asynchronous_codec::Framed;
 use bytes::Bytes;
 use futures::{SinkExt, TryStreamExt, future::BoxFuture};
 use tracing::debug;
-use vertex_bandwidth_chequebook::SignedCheque;
+use vertex_swarm_bandwidth_chequebook::SignedCheque;
 use vertex_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound};
 
 use crate::{
@@ -148,7 +148,7 @@ fn parse_u256_bytes(bytes: &Bytes) -> Option<alloy_primitives::U256> {
 mod tests {
     use super::*;
     use alloy_primitives::{Address, U256};
-    use vertex_bandwidth_chequebook::{Cheque, ChequeExt};
+    use vertex_swarm_bandwidth_chequebook::{Cheque, ChequeExt};
 
     fn test_signed_cheque() -> SignedCheque {
         let cheque = Cheque::new(

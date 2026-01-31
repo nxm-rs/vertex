@@ -110,7 +110,7 @@ use crate::settlement::SettlementProvider;
 /// # Example
 ///
 /// ```ignore
-/// use vertex_bandwidth_core::Accounting;
+/// use vertex_swarm_bandwidth::Accounting;
 /// use vertex_swarm_api::DefaultAccountingConfig;
 ///
 /// // Basic accounting (no settlement providers)

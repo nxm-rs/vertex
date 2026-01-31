@@ -56,10 +56,10 @@ members = [
     "crates/swarm/topology",
     "crates/swarm/kademlia",
     "crates/swarm/peermanager",
-    "crates/client/bandwidth/core",
-    "crates/client/bandwidth/chequebook",
-    "crates/client/bandwidth/pseudosettle",
-    "crates/client/bandwidth/swap",
+    "crates/swarm/bandwidth/core",
+    "crates/swarm/bandwidth/chequebook",
+    "crates/swarm/bandwidth/pseudosettle",
+    "crates/swarm/bandwidth/swap",
 
     # Storer (full node storage)
     "crates/swarm/storer",
@@ -132,17 +132,19 @@ vertex-swarm-core = { path = "crates/swarm/core" }
 vertex-swarm-node = { path = "crates/swarm/node" }
 vertex-swarm-rpc = { path = "crates/swarm/rpc" }
 
-# client (includes bandwidth/data availability incentives)
+# client
 vertex-client-core = { path = "crates/client/core" }
-vertex-bandwidth-core = { path = "crates/client/bandwidth/core" }
 
 # topology (in swarm/)
 vertex-swarm-topology = { path = "crates/swarm/topology" }
 vertex-swarm-kademlia = { path = "crates/swarm/kademlia" }
 vertex-swarm-peermanager = { path = "crates/swarm/peermanager" }
-vertex-bandwidth-chequebook = { path = "crates/client/bandwidth/chequebook" }
-vertex-bandwidth-pseudosettle = { path = "crates/client/bandwidth/pseudosettle" }
-vertex-bandwidth-swap = { path = "crates/client/bandwidth/swap" }
+
+# bandwidth (in swarm/)
+vertex-swarm-bandwidth = { path = "crates/swarm/bandwidth/core" }
+vertex-swarm-bandwidth-chequebook = { path = "crates/swarm/bandwidth/chequebook" }
+vertex-swarm-bandwidth-pseudosettle = { path = "crates/swarm/bandwidth/pseudosettle" }
+vertex-swarm-bandwidth-swap = { path = "crates/swarm/bandwidth/swap" }
 
 # storer (full node storage)
 vertex-swarm-storer = { path = "crates/swarm/storer" }

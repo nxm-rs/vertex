@@ -1,6 +1,6 @@
 //! Pricer builder trait and implementations.
 
-use vertex_bandwidth_core::{FixedPricer, NoPricer, Pricer};
+use vertex_swarm_bandwidth::{FixedPricer, NoPricer, Pricer};
 use vertex_swarm_api::{SwarmAccountingConfig, DefaultAccountingConfig, SwarmIdentity, SwarmClientTypes, SwarmNetworkConfig};
 
 use crate::SwarmBuilderContext;

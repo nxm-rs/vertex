@@ -67,7 +67,7 @@ pub use client::{BootnodeClient, BuiltSwarmComponents, Client, FullClient};
 pub use bootnodes::BootnodeProvider;
 pub use stats::{StatsConfig, spawn_stats_task};
 
-pub use vertex_bandwidth_core::{
+pub use vertex_swarm_bandwidth::{
     Accounting, AccountingError, AccountingPeerHandle, CreditAction, DebitAction, FixedPricer,
     PeerState, Pricer,
 };

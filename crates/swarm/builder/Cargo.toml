@@ -20,9 +20,9 @@ vertex-node-core.workspace = true
 vertex-tasks.workspace = true
 
 # vertex - swarm protocol
-vertex-bandwidth-core.workspace = true
-vertex-bandwidth-pseudosettle.workspace = true
-vertex-bandwidth-swap.workspace = true
+vertex-swarm-bandwidth.workspace = true
+vertex-swarm-bandwidth-pseudosettle.workspace = true
+vertex-swarm-bandwidth-swap.workspace = true
 vertex-swarm-kademlia.workspace = true
 vertex-swarm-peermanager.workspace = true
 vertex-node-types.workspace = true

@@ -32,7 +32,7 @@ use libp2p::swarm::{
     },
 };
 use tracing::{debug, warn};
-use vertex_bandwidth_chequebook::SignedCheque;
+use vertex_swarm_bandwidth_chequebook::SignedCheque;
 use vertex_net_pseudosettle::PaymentAck;
 use vertex_primitives::{ChunkAddress, OverlayAddress};
 

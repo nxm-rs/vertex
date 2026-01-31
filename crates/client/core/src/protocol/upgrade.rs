@@ -17,7 +17,7 @@ use alloy_primitives::U256;
 use futures::future::BoxFuture;
 use libp2p::{InboundUpgrade, OutboundUpgrade, Stream, core::UpgradeInfo};
 use thiserror::Error;
-use vertex_bandwidth_chequebook::SignedCheque;
+use vertex_swarm_bandwidth_chequebook::SignedCheque;
 use vertex_net_headers::ProtocolError;
 use vertex_net_pricing::{
     AnnouncePaymentThreshold, PROTOCOL_NAME as PRICING_PROTOCOL, PricingInboundProtocol,

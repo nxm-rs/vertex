@@ -7,7 +7,7 @@
 //! Cheques are serialized as JSON, matching Bee's format for interoperability.
 
 use alloy_primitives::Address;
-use vertex_bandwidth_chequebook::SignedCheque;
+use vertex_swarm_bandwidth_chequebook::SignedCheque;
 use vertex_net_codec::{Codec, ProtoMessage, ProtocolCodecError};
 
 /// Domain-specific errors for SWAP protocol.
@@ -96,7 +96,7 @@ mod tests {
     use alloy_primitives::U256;
     use asynchronous_codec::{Decoder, Encoder};
     use bytes::{Bytes, BytesMut};
-    use vertex_bandwidth_chequebook::{Cheque, ChequeExt};
+    use vertex_swarm_bandwidth_chequebook::{Cheque, ChequeExt};
 
     fn test_signed_cheque() -> SignedCheque {
         let cheque = Cheque::new(
