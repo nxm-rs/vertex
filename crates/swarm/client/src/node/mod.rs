@@ -42,7 +42,7 @@
 //! # Usage
 //!
 //! ```ignore
-//! use vertex_client_core::{SwarmNode, NetworkConfig};
+//! use vertex_swarm_client::{SwarmNode, NetworkConfig};
 //! use vertex_swarm_identity::SwarmIdentity;
 //!
 //! // Create identity

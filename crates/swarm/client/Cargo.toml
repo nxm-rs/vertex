@@ -1,5 +1,5 @@
 [package]
-name = "vertex-client-core"
+name = "vertex-swarm-client"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

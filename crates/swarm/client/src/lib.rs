@@ -10,7 +10,7 @@
 //! vertex-swarm-core (business logic - libp2p FREE)
 //!         │
 //!         ▼
-//! THIS CRATE: vertex-client-core (THE BOUNDARY)
+//! THIS CRATE: vertex-swarm-client (THE BOUNDARY)
 //! - SwarmNode: wraps libp2p::Swarm
 //! - NodeBehaviour: composed NetworkBehaviour
 //! - Client: implements SwarmClient trait

@@ -16,7 +16,7 @@
 //! - **Lock-free atomics** for hot per-peer counters (no mutex contention)
 //! - **Arc-wrapped state** created once, shared via cheap `Arc::clone()`
 //! - **Double-checked locking** for the central registry (read-fast, write-on-first-access)
-//! - **Handle pattern** for vertex-client-core to hold per-peer state
+//! - **Handle pattern** for vertex-swarm-client to hold per-peer state
 //!
 //! # Usage
 //!

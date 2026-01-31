@@ -51,8 +51,8 @@ members = [
     "crates/swarm/node",
     "crates/swarm/rpc",
 
-    # Client (includes bandwidth/data availability incentives)
-    "crates/client/core",
+    # Client (libp2p boundary)
+    "crates/swarm/client",
     "crates/swarm/topology",
     "crates/swarm/kademlia",
     "crates/swarm/peermanager",
@@ -132,8 +132,8 @@ vertex-swarm-core = { path = "crates/swarm/core" }
 vertex-swarm-node = { path = "crates/swarm/node" }
 vertex-swarm-rpc = { path = "crates/swarm/rpc" }
 
-# client
-vertex-client-core = { path = "crates/client/core" }
+# client (libp2p boundary)
+vertex-swarm-client = { path = "crates/swarm/client" }
 
 # topology (in swarm/)
 vertex-swarm-topology = { path = "crates/swarm/topology" }

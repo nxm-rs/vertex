@@ -10,7 +10,7 @@ use std::sync::Arc;
 use alloy_primitives::U256;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
-use vertex_client_core::{protocol::ClientCommand, PseudosettleEvent};
+use vertex_swarm_client::{protocol::ClientCommand, PseudosettleEvent};
 use vertex_net_pseudosettle::PaymentAck;
 use vertex_primitives::OverlayAddress;
 use vertex_swarm_api::{SwarmBandwidthAccounting, Direction, SwarmPeerBandwidth};

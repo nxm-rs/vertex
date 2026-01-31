@@ -823,7 +823,7 @@ impl Default for PeerManager {
 
 /// Bridge trait for operations that require PeerId.
 ///
-/// This trait is implemented by PeerManager and used by vertex-client-core
+/// This trait is implemented by PeerManager and used by vertex-swarm-client
 /// to handle the PeerId ↔ OverlayAddress mapping at the boundary between
 /// the libp2p network layer and the Swarm application layer.
 ///

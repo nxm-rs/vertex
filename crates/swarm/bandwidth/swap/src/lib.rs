@@ -49,13 +49,13 @@ use std::sync::Arc;
 use alloy_primitives::U256;
 use tokio::sync::mpsc;
 use vertex_swarm_bandwidth::{AccountingError, Accounting, AccountingPeerHandle, PeerState, SettlementProvider};
-use vertex_client_core::protocol::ClientCommand;
+use vertex_swarm_client::protocol::ClientCommand;
 use vertex_swarm_api::{SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmIdentity};
 
 pub use error::SwapError;
 pub use handle::SwapHandle;
 pub use service::{SwapCommand, SwapService};
-pub use vertex_client_core::SwapEvent;
+pub use vertex_swarm_client::SwapEvent;
 
 /// SWAP provider - chequebook-based settlement.
 ///

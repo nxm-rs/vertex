@@ -39,13 +39,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::mpsc;
 use vertex_swarm_bandwidth::{AccountingError, Accounting, AccountingPeerHandle, PeerState, SettlementProvider};
-use vertex_client_core::protocol::ClientCommand;
+use vertex_swarm_client::protocol::ClientCommand;
 use vertex_swarm_api::{SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmIdentity};
 
 pub use error::PseudosettleError;
 pub use handle::PseudosettleHandle;
 pub use service::{PseudosettleCommand, PseudosettleService};
-pub use vertex_client_core::PseudosettleEvent;
+pub use vertex_swarm_client::PseudosettleEvent;
 
 /// Pseudosettle provider - time-based debt forgiveness.
 ///

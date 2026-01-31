@@ -8,7 +8,7 @@
 //!
 //! All public APIs use `OverlayAddress` only. The `PeerId` mapping is
 //! encapsulated internally and exposed only through the [`InternalPeerManager`]
-//! trait for use by the bridge layer in `vertex-client-core`.
+//! trait for use by the bridge layer in `vertex-swarm-client`.
 //!
 //! # Usage
 //!

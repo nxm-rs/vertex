@@ -11,7 +11,7 @@ description = "SWAP chequebook-based bandwidth accounting for data availability"
 [dependencies]
 vertex-swarm-bandwidth-chequebook = { workspace = true }
 vertex-swarm-bandwidth = { workspace = true }
-vertex-client-core = { workspace = true }
+vertex-swarm-client = { workspace = true }
 vertex-primitives = { workspace = true }
 vertex-swarm-api = { workspace = true }
 alloy-primitives = { workspace = true }

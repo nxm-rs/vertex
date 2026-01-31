@@ -3,7 +3,7 @@
 //! The `ScoreManager` provides:
 //! - Per-peer state registry with minimal contention (double-checked locking)
 //! - IP-level tracking for abuse prevention (separate cold storage)
-//! - Handle factory for vertex-client-core integration
+//! - Handle factory for vertex-swarm-client integration
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -83,7 +83,7 @@ impl ScoreManager {
     /// Get a handle for recording events on a peer.
     ///
     /// The handle is cheap to clone and can be stored in per-peer
-    /// connection state within vertex-client-core.
+    /// connection state within vertex-swarm-client.
     pub fn handle_for(&self, peer: OverlayAddress) -> ScoreHandle {
         let state = self.get_or_create_peer(peer);
         ScoreHandle::new(state, Arc::clone(&self.weights))

@@ -13,7 +13,7 @@ workspace = true
 
 [dependencies]
 ## vertex - client layer (THE libp2p boundary)
-vertex-client-core = { workspace = true }
+vertex-swarm-client = { workspace = true }
 
 ## vertex - primitives
 vertex-primitives.workspace = true
