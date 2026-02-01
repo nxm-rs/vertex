@@ -36,7 +36,7 @@ use vertex_swarm_bandwidth::{Accounting, DefaultAccountingConfig};
 use vertex_swarm_bandwidth_pseudosettle::{PseudosettleProvider, create_pseudosettle_actor};
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::ProtocolArgs;
-use vertex_swarm_node::{ClientCommand, SwarmNode};
+use vertex_swarm_node::{ClientCommand, ClientNode};
 use vertex_swarm_peermanager::PeerStore;
 use vertex_swarmspec::Hive;
 use vertex_tasks::{SpawnableTask, TaskExecutor};
@@ -208,9 +208,9 @@ impl SwarmLaunchConfig for ClientNodeBuildConfig {
         // Create event channels for settlement services
         let (pseudosettle_event_tx, pseudosettle_event_rx) = mpsc::unbounded_channel();
 
-        // Build the SwarmNode with event routing configured
+        // Build the ClientNode with event routing configured
         let (node, client_service, client_handle) =
-            SwarmNode::<DefaultClientTypes>::builder(self.identity.clone())
+            ClientNode::<DefaultClientTypes>::builder(self.identity.clone())
                 .with_network_config(&self.network_config)
                 .with_peer_store(self.peer_store)
                 .with_pseudosettle_events(pseudosettle_event_tx)

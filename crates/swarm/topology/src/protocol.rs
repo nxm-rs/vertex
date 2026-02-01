@@ -1,23 +1,12 @@
-//! Combined protocol upgrades for topology handler.
+//! Protocol upgrades for topology handler.
 //!
-//! This module provides multi-protocol support for the topology handler,
-//! combining handshake, hive, and pingpong into a single `InboundUpgrade`.
-//!
-//! # Architecture
-//!
-//! The topology handler needs to accept multiple inbound protocols:
-//! - Handshake: Must complete before other protocols
-//! - Hive: Peer discovery gossip (after handshake)
-//! - Pingpong: Connection liveness (after handshake)
-//!
-//! We use a custom `TopologyInboundUpgrade` that implements `UpgradeInfo`
-//! with all protocol names and dispatches based on the negotiated protocol.
+//! Provides multi-protocol support combining handshake, hive, and pingpong into
+//! unified inbound/outbound upgrades for the connection handler.
 
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use libp2p::{InboundUpgrade, Multiaddr, OutboundUpgrade, PeerId, Stream, core::UpgradeInfo};
-use thiserror::Error;
 use tracing::debug;
 use vertex_net_handshake::{
     HandshakeError, HandshakeInfo, HandshakeProtocol, PROTOCOL as HANDSHAKE_PROTOCOL,
@@ -31,50 +20,30 @@ use vertex_swarm_api::{SwarmIdentity, SwarmNodeTypes};
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peermanager::AddressManager;
 
-// ============================================================================
-// Error Types
-// ============================================================================
-
 /// Errors from topology protocol upgrades.
-#[derive(Debug, Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum TopologyUpgradeError {
-    /// Handshake protocol error.
     #[error("handshake error: {0}")]
     Handshake(#[from] HandshakeError),
 
-    /// Hive protocol error.
     #[error("hive error: {0}")]
     Hive(#[source] ProtocolError),
 
-    /// Pingpong protocol error.
     #[error("pingpong error: {0}")]
     Pingpong(#[source] ProtocolError),
 
-    /// Unknown protocol negotiated.
     #[error("unknown protocol: {0}")]
     UnknownProtocol(String),
 }
 
-// ============================================================================
-// Inbound Protocol
-// ============================================================================
-
-/// Output from a topology inbound upgrade.
+/// Output from an inbound topology upgrade.
 pub enum TopologyInboundOutput {
-    /// Handshake completed successfully.
     Handshake(Box<HandshakeInfo>),
-    /// Received validated peers via hive.
     Hive(Vec<SwarmPeer>),
-    /// Responded to a ping.
     Pingpong,
 }
 
-/// Combined inbound upgrade for topology protocols.
-///
-/// Advertises handshake, hive, and pingpong protocols and dispatches
-/// to the appropriate handler based on the negotiated protocol.
-///
-/// Generic over `N: SwarmNodeTypes` to support different node configurations.
+/// Inbound upgrade that handles handshake, hive, and pingpong protocols.
 #[derive(Clone)]
 pub struct TopologyInboundUpgrade<N: SwarmNodeTypes> {
     identity: N::Identity,
@@ -84,7 +53,6 @@ pub struct TopologyInboundUpgrade<N: SwarmNodeTypes> {
 }
 
 impl<N: SwarmNodeTypes> TopologyInboundUpgrade<N> {
-    /// Create a new topology inbound upgrade.
     pub fn new(identity: N::Identity, peer_id: PeerId, remote_addr: Multiaddr) -> Self {
         Self {
             identity,
@@ -94,10 +62,6 @@ impl<N: SwarmNodeTypes> TopologyInboundUpgrade<N> {
         }
     }
 
-    /// Create a new topology inbound upgrade with address management.
-    ///
-    /// The AddressManager provides smart address selection based on the
-    /// remote peer's network scope.
     pub fn with_address_manager(
         identity: N::Identity,
         peer_id: PeerId,
@@ -140,7 +104,6 @@ impl<N: SwarmNodeTypes> InboundUpgrade<Stream> for TopologyInboundUpgrade<N> {
         Box::pin(async move {
             match info {
                 HANDSHAKE_PROTOCOL => {
-                    // Get additional addresses from AddressManager if available
                     let additional_addrs = self
                         .address_manager
                         .as_ref()
@@ -162,7 +125,6 @@ impl<N: SwarmNodeTypes> InboundUpgrade<Stream> for TopologyInboundUpgrade<N> {
                     );
                     let result = handshake.upgrade_inbound(socket, info).await?;
 
-                    // Report observed address to AddressManager if available
                     if let Some(mgr) = &self.address_manager {
                         debug!(
                             peer_id = %self.peer_id,
@@ -199,37 +161,22 @@ impl<N: SwarmNodeTypes> InboundUpgrade<Stream> for TopologyInboundUpgrade<N> {
     }
 }
 
-// ============================================================================
-// Outbound Protocol
-// ============================================================================
-
-/// Type of outbound request for topology.
+/// Type of outbound request.
 #[derive(Debug, Clone)]
 pub enum TopologyOutboundRequest {
-    /// Initiate handshake.
     Handshake,
-    /// Broadcast peers via hive.
     Hive(Vec<SwarmPeer>),
-    /// Send a ping with greeting.
     Pingpong(String),
 }
 
-/// Output from a topology outbound upgrade.
+/// Output from an outbound topology upgrade.
 pub enum TopologyOutboundOutput {
-    /// Handshake completed.
     Handshake(Box<HandshakeInfo>),
-    /// Hive broadcast completed.
     Hive,
-    /// Pong received.
     Pingpong(Pong),
 }
 
-/// Combined outbound upgrade for topology protocols.
-///
-/// Unlike inbound, outbound requests know which protocol to use.
-/// This enum wraps the specific request type.
-///
-/// Generic over `N: SwarmNodeTypes` to support different node configurations.
+/// Outbound upgrade for a specific topology protocol.
 #[derive(Clone)]
 pub struct TopologyOutboundUpgrade<N: SwarmNodeTypes> {
     identity: N::Identity,
@@ -240,7 +187,6 @@ pub struct TopologyOutboundUpgrade<N: SwarmNodeTypes> {
 }
 
 impl<N: SwarmNodeTypes> TopologyOutboundUpgrade<N> {
-    /// Create a new handshake outbound upgrade.
     pub fn handshake(identity: N::Identity, peer_id: PeerId, remote_addr: Multiaddr) -> Self {
         Self {
             identity,
@@ -251,7 +197,6 @@ impl<N: SwarmNodeTypes> TopologyOutboundUpgrade<N> {
         }
     }
 
-    /// Create a new handshake outbound upgrade with address management.
     pub fn handshake_with_address_manager(
         identity: N::Identity,
         peer_id: PeerId,
@@ -267,7 +212,6 @@ impl<N: SwarmNodeTypes> TopologyOutboundUpgrade<N> {
         }
     }
 
-    /// Create a new hive outbound upgrade.
     pub fn hive(
         identity: N::Identity,
         peer_id: PeerId,
@@ -283,7 +227,6 @@ impl<N: SwarmNodeTypes> TopologyOutboundUpgrade<N> {
         }
     }
 
-    /// Create a new pingpong outbound upgrade.
     pub fn pingpong(
         identity: N::Identity,
         peer_id: PeerId,
@@ -299,7 +242,6 @@ impl<N: SwarmNodeTypes> TopologyOutboundUpgrade<N> {
         }
     }
 
-    /// Get the protocol name for this request.
     fn protocol_name(&self) -> &'static str {
         match &self.request {
             TopologyOutboundRequest::Handshake => HANDSHAKE_PROTOCOL,
@@ -336,7 +278,6 @@ impl<N: SwarmNodeTypes> OutboundUpgrade<Stream> for TopologyOutboundUpgrade<N> {
         Box::pin(async move {
             match self.request {
                 TopologyOutboundRequest::Handshake => {
-                    // Get additional addresses from AddressManager if available
                     let additional_addrs = self
                         .address_manager
                         .as_ref()
@@ -358,7 +299,6 @@ impl<N: SwarmNodeTypes> OutboundUpgrade<Stream> for TopologyOutboundUpgrade<N> {
                     );
                     let result = handshake.upgrade_outbound(socket, info).await?;
 
-                    // Report observed address to AddressManager if available
                     if let Some(mgr) = &self.address_manager {
                         debug!(
                             peer_id = %self.peer_id,
@@ -394,17 +334,10 @@ impl<N: SwarmNodeTypes> OutboundUpgrade<Stream> for TopologyOutboundUpgrade<N> {
     }
 }
 
-// ============================================================================
-// Info for Tracking Outbound Requests
-// ============================================================================
-
-/// Information about an outbound request, used for correlating responses.
+/// Info for tracking outbound requests.
 #[derive(Debug, Clone)]
 pub enum TopologyOutboundInfo {
-    /// Handshake request.
     Handshake,
-    /// Hive broadcast.
     Hive,
-    /// Ping request with sent timestamp.
     Pingpong { sent_at: std::time::Instant },
 }

@@ -1,7 +1,8 @@
 //! Network topology behaviour.
 //!
-//! Manages handshake, hive, and pingpong protocols. Emits libp2p types only;
-//! the client layer handles PeerId ↔ OverlayAddress mapping.
+//! [`TopologyBehaviour`] is a libp2p `NetworkBehaviour` that manages peer connections
+//! using handshake, hive, and pingpong protocols. It translates between the public
+//! API ([`TopologyCommand`]/[`TopologyEvent`]) and per-connection handlers.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -24,32 +25,26 @@ use vertex_swarm_peermanager::AddressManager;
 
 use crate::{
     TopologyCommand, TopologyEvent,
-    handler::{
-        Command as HandlerCommand, Config as HandlerConfig, Event as HandlerEvent, TopologyHandler,
-    },
+    handler::{Command, Event, TopologyConfig, TopologyHandler},
 };
-
-/// Topology behaviour configuration.
-#[derive(Debug, Clone, Default)]
-pub struct Config {
-    pub handler: HandlerConfig,
-}
 
 /// Network topology behaviour.
 ///
-/// Handles handshake, hive, and pingpong. Maps handler events to `TopologyEvent`.
-pub struct SwarmTopologyBehaviour<N: SwarmNodeTypes> {
-    config: Config,
+/// Manages peer connections across handshake, hive, and pingpong protocols.
+/// Accepts [`TopologyCommand`]s via [`on_command`](Self::on_command) and emits
+/// [`TopologyEvent`]s through the libp2p swarm.
+pub struct TopologyBehaviour<N: SwarmNodeTypes> {
+    config: TopologyConfig,
     identity: N::Identity,
     address_manager: Option<Arc<AddressManager>>,
     peer_connections: HashMap<PeerId, Vec<ConnectionId>>,
     pending_events: VecDeque<TopologyEvent>,
-    pending_actions: VecDeque<ToSwarm<TopologyEvent, HandlerCommand>>,
+    pending_actions: VecDeque<ToSwarm<TopologyEvent, Command>>,
 }
 
-impl<N: SwarmNodeTypes> SwarmTopologyBehaviour<N> {
-    /// Creates a new topology behaviour.
-    pub fn new(identity: N::Identity, config: Config) -> Self {
+impl<N: SwarmNodeTypes> TopologyBehaviour<N> {
+    /// Create a new topology behaviour.
+    pub fn new(identity: N::Identity, config: TopologyConfig) -> Self {
         Self {
             config,
             identity,
@@ -60,10 +55,10 @@ impl<N: SwarmNodeTypes> SwarmTopologyBehaviour<N> {
         }
     }
 
-    /// Creates a topology behaviour with address management.
+    /// Create a topology behaviour with address management.
     pub fn with_address_manager(
         identity: N::Identity,
-        config: Config,
+        config: TopologyConfig,
         address_manager: Arc<AddressManager>,
     ) -> Self {
         Self {
@@ -76,20 +71,20 @@ impl<N: SwarmNodeTypes> SwarmTopologyBehaviour<N> {
         }
     }
 
-    /// Pings a peer.
+    /// Send a ping to a peer.
     pub fn ping(&mut self, peer_id: PeerId) {
         if let Some(connections) = self.peer_connections.get(&peer_id) {
             if let Some(&connection_id) = connections.first() {
                 self.pending_actions.push_back(ToSwarm::NotifyHandler {
                     peer_id,
                     handler: NotifyHandler::One(connection_id),
-                    event: HandlerCommand::Ping { greeting: None },
+                    event: Command::Ping { greeting: None },
                 });
             }
         }
     }
 
-    /// Handles a command from the client layer.
+    /// Handle a topology command.
     pub fn on_command(&mut self, command: TopologyCommand) {
         match command {
             TopologyCommand::Dial(addr) => {
@@ -109,7 +104,7 @@ impl<N: SwarmNodeTypes> SwarmTopologyBehaviour<N> {
                             self.pending_actions.push_back(ToSwarm::NotifyHandler {
                                 peer_id: to,
                                 handler: NotifyHandler::One(connection_id),
-                                event: HandlerCommand::BroadcastPeers(chunk.to_vec()),
+                                event: Command::BroadcastPeers(chunk.to_vec()),
                             });
                         }
                     }
@@ -118,7 +113,7 @@ impl<N: SwarmNodeTypes> SwarmTopologyBehaviour<N> {
         }
     }
 
-    /// Returns true if connected to the peer.
+    /// Check if connected to a peer.
     pub fn is_connected(&self, peer_id: &PeerId) -> bool {
         self.peer_connections
             .get(peer_id)
@@ -126,7 +121,7 @@ impl<N: SwarmNodeTypes> SwarmTopologyBehaviour<N> {
             .unwrap_or(false)
     }
 
-    /// Returns all connected peer IDs.
+    /// Iterate over connected peer IDs.
     pub fn connected_peers(&self) -> impl Iterator<Item = &PeerId> {
         self.peer_connections
             .iter()
@@ -134,21 +129,15 @@ impl<N: SwarmNodeTypes> SwarmTopologyBehaviour<N> {
             .map(|(peer_id, _)| peer_id)
     }
 
-    /// Processes a handler event.
     fn process_handler_event(
         &mut self,
         peer_id: PeerId,
         connection_id: ConnectionId,
-        event: HandlerEvent,
+        event: Event,
     ) {
         match event {
-            HandlerEvent::HandshakeCompleted(info) => {
-                debug!(
-                    %peer_id,
-                    %connection_id,
-                    "Handshake completed, peer authenticated"
-                );
-
+            Event::HandshakeCompleted(info) => {
+                debug!(%peer_id, %connection_id, "Handshake completed, peer authenticated");
                 self.pending_events
                     .push_back(TopologyEvent::PeerAuthenticated {
                         peer_id,
@@ -156,14 +145,14 @@ impl<N: SwarmNodeTypes> SwarmTopologyBehaviour<N> {
                         info,
                     });
             }
-            HandlerEvent::HandshakeFailed(error) => {
+            Event::HandshakeFailed(error) => {
                 warn!(%peer_id, %error, "Handshake failed");
                 self.pending_events.push_back(TopologyEvent::DialFailed {
                     address: Multiaddr::empty(),
                     error: error.to_string(),
                 });
             }
-            HandlerEvent::HivePeersReceived(peers) => {
+            Event::HivePeersReceived(peers) => {
                 if !peers.is_empty() {
                     debug!(%peer_id, count = peers.len(), "Peers received via hive");
                     self.pending_events
@@ -173,26 +162,26 @@ impl<N: SwarmNodeTypes> SwarmTopologyBehaviour<N> {
                         });
                 }
             }
-            HandlerEvent::HiveBroadcastComplete => {
+            Event::HiveBroadcastComplete => {
                 debug!(%peer_id, "Hive broadcast complete");
             }
-            HandlerEvent::HiveError(error) => {
+            Event::HiveError(error) => {
                 warn!(%peer_id, %error, "Hive error");
             }
-            HandlerEvent::PingpongPong { rtt } => {
+            Event::PingpongPong { rtt } => {
                 debug!(%peer_id, ?rtt, "Pingpong success");
             }
-            HandlerEvent::PingpongPingReceived => {
+            Event::PingpongPingReceived => {
                 debug!(%peer_id, "Received ping from peer");
             }
-            HandlerEvent::PingpongError(error) => {
+            Event::PingpongError(error) => {
                 warn!(%peer_id, %error, "Pingpong failed");
             }
         }
     }
 }
 
-impl<N: SwarmNodeTypes> NetworkBehaviour for SwarmTopologyBehaviour<N> {
+impl<N: SwarmNodeTypes> NetworkBehaviour for TopologyBehaviour<N> {
     type ConnectionHandler = TopologyHandler<N>;
     type ToSwarm = TopologyEvent;
 
@@ -205,14 +194,14 @@ impl<N: SwarmNodeTypes> NetworkBehaviour for SwarmTopologyBehaviour<N> {
     ) -> Result<Self::ConnectionHandler, ConnectionDenied> {
         let handler = match &self.address_manager {
             Some(mgr) => TopologyHandler::with_address_manager(
-                self.config.handler.clone(),
+                self.config.clone(),
                 self.identity.clone(),
                 peer,
                 remote_addr,
                 mgr.clone(),
             ),
             None => TopologyHandler::new(
-                self.config.handler.clone(),
+                self.config.clone(),
                 self.identity.clone(),
                 peer,
                 remote_addr,
@@ -231,18 +220,13 @@ impl<N: SwarmNodeTypes> NetworkBehaviour for SwarmTopologyBehaviour<N> {
     ) -> Result<Self::ConnectionHandler, ConnectionDenied> {
         let handler = match &self.address_manager {
             Some(mgr) => TopologyHandler::with_address_manager(
-                self.config.handler.clone(),
+                self.config.clone(),
                 self.identity.clone(),
                 peer,
                 addr,
                 mgr.clone(),
             ),
-            None => TopologyHandler::new(
-                self.config.handler.clone(),
-                self.identity.clone(),
-                peer,
-                addr,
-            ),
+            None => TopologyHandler::new(self.config.clone(), self.identity.clone(), peer, addr),
         };
         Ok(handler)
     }
@@ -255,13 +239,12 @@ impl<N: SwarmNodeTypes> NetworkBehaviour for SwarmTopologyBehaviour<N> {
                     .or_default()
                     .push(established.connection_id);
 
-                // For outbound connections, send StartHandshake command
                 if established.endpoint.is_dialer() {
                     let resolved_addr = established.endpoint.get_remote_address().clone();
                     self.pending_actions.push_back(ToSwarm::NotifyHandler {
                         peer_id: established.peer_id,
                         handler: NotifyHandler::One(established.connection_id),
-                        event: HandlerCommand::StartHandshake(resolved_addr),
+                        event: Command::StartHandshake(resolved_addr),
                     });
                 }
             }
@@ -271,11 +254,7 @@ impl<N: SwarmNodeTypes> NetworkBehaviour for SwarmTopologyBehaviour<N> {
                 }
                 if closed.remaining_established == 0 {
                     self.peer_connections.remove(&closed.peer_id);
-
-                    debug!(
-                        peer_id = %closed.peer_id,
-                        "Peer connection closed"
-                    );
+                    debug!(peer_id = %closed.peer_id, "Peer connection closed");
                     self.pending_events
                         .push_back(TopologyEvent::PeerConnectionClosed {
                             peer_id: closed.peer_id,
@@ -290,7 +269,7 @@ impl<N: SwarmNodeTypes> NetworkBehaviour for SwarmTopologyBehaviour<N> {
         &mut self,
         peer_id: PeerId,
         connection_id: ConnectionId,
-        event: HandlerEvent,
+        event: Event,
     ) {
         self.process_handler_event(peer_id, connection_id, event);
     }
@@ -299,12 +278,10 @@ impl<N: SwarmNodeTypes> NetworkBehaviour for SwarmTopologyBehaviour<N> {
         &mut self,
         _cx: &mut Context<'_>,
     ) -> Poll<ToSwarm<Self::ToSwarm, THandlerInEvent<Self>>> {
-        // Emit pending events first
         if let Some(event) = self.pending_events.pop_front() {
             return Poll::Ready(ToSwarm::GenerateEvent(event));
         }
 
-        // Process pending actions
         if let Some(action) = self.pending_actions.pop_front() {
             return Poll::Ready(action);
         }

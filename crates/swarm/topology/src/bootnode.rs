@@ -1,53 +1,27 @@
 //! Bootnode connection management.
 //!
-//! This module handles initial network entry by managing connections to bootstrap nodes.
+//! Manages initial network entry by connecting to bootstrap nodes.
 //! For `/dnsaddr/` resolution, use the [`dns`](crate::dns) module.
-//!
-//! # Usage
-//!
-//! ```ignore
-//! use vertex_swarm_topology::{BootnodeConnector, resolve_all_dnsaddrs};
-//!
-//! let connector = BootnodeConnector::new(bootnodes);
-//!
-//! // Resolve any /dnsaddr/ entries to concrete multiaddrs
-//! let resolved = resolve_all_dnsaddrs(connector.bootnodes()).await;
-//!
-//! // Shuffle for load distribution
-//! let shuffled = BootnodeConnector::shuffle(&resolved);
-//! ```
 
 use libp2p::Multiaddr;
 use rand::seq::SliceRandom;
 
-/// Maximum number of bootnode connection attempts per bootnode.
 const MAX_BOOTNODE_ATTEMPTS: usize = 6;
-
-/// Minimum number of bootnodes to connect to before considering bootstrap complete.
 const MIN_BOOTNODE_CONNECTIONS: usize = 1;
 
-/// Timeout for individual bootnode connection attempts in seconds.
 #[allow(dead_code)]
 const BOOTNODE_CONNECT_TIMEOUT_SECS: u64 = 15;
 
-/// Handles bootnode connection management.
-///
-/// Manages bootnode selection and connection strategy.
-/// For `/dnsaddr/` resolution, use the [`dns`](crate::dns) module.
+/// Bootnode connection strategy.
 #[derive(Debug, Clone)]
 pub struct BootnodeConnector {
-    /// Bootnode multiaddrs (may include dnsaddr).
     bootnodes: Vec<Multiaddr>,
-
-    /// Maximum connection attempts per bootnode.
     max_attempts: usize,
-
-    /// Minimum successful connections needed.
     min_connections: usize,
 }
 
 impl BootnodeConnector {
-    /// Create a new bootnode connector.
+    /// Create a new connector with the given bootnodes.
     pub fn new(bootnodes: Vec<Multiaddr>) -> Self {
         Self {
             bootnodes,
@@ -56,41 +30,39 @@ impl BootnodeConnector {
         }
     }
 
-    /// Set the maximum connection attempts per bootnode.
+    /// Set maximum connection attempts per bootnode.
     pub fn with_max_attempts(mut self, attempts: usize) -> Self {
         self.max_attempts = attempts;
         self
     }
 
-    /// Set the minimum number of successful connections needed.
+    /// Set minimum successful connections required.
     pub fn with_min_connections(mut self, min: usize) -> Self {
         self.min_connections = min;
         self
     }
 
-    /// Get the configured bootnodes.
+    /// Get configured bootnodes.
     pub fn bootnodes(&self) -> &[Multiaddr] {
         &self.bootnodes
     }
 
-    /// Get the maximum attempts per bootnode.
+    /// Get maximum attempts per bootnode.
     pub fn max_attempts(&self) -> usize {
         self.max_attempts
     }
 
-    /// Get the minimum connections required.
+    /// Get minimum connections required.
     pub fn min_connections(&self) -> usize {
         self.min_connections
     }
 
-    /// Get bootnodes shuffled randomly to distribute load.
+    /// Get bootnodes in random order for load distribution.
     pub fn shuffled_bootnodes(&self) -> Vec<Multiaddr> {
         Self::shuffle(&self.bootnodes)
     }
 
-    /// Shuffle a list of addresses randomly.
-    ///
-    /// Useful for distributing connection attempts across multiple resolved addresses.
+    /// Shuffle addresses randomly.
     pub fn shuffle(addrs: &[Multiaddr]) -> Vec<Multiaddr> {
         let mut shuffled = addrs.to_vec();
         let mut rng = rand::rng();
@@ -98,12 +70,12 @@ impl BootnodeConnector {
         shuffled
     }
 
-    /// Check if we have any bootnodes configured.
+    /// Check if any bootnodes are configured.
     pub fn has_bootnodes(&self) -> bool {
         !self.bootnodes.is_empty()
     }
 
-    /// Get the count of configured bootnodes.
+    /// Get bootnode count.
     pub fn bootnode_count(&self) -> usize {
         self.bootnodes.len()
     }

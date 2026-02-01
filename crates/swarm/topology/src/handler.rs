@@ -1,22 +1,13 @@
-//! Connection handler for topology protocols.
+//! Per-connection handler for topology protocols.
 //!
-//! The `TopologyHandler` manages multiple protocols on a single connection:
-//! - Handshake: Peer identity verification
-//! - Hive: Peer discovery gossip
-//! - Pingpong: Connection liveness
+//! Manages handshake, hive, and pingpong on a single connection. The handler
+//! starts in `Handshaking` state and transitions to `Ready` after successful
+//! handshake, at which point hive and pingpong become available.
 //!
-//! # Lifecycle
-//!
-//! 1. Handler starts in `Handshaking` state when connection established
-//! 2. Handshake protocol runs to exchange peer identities
-//! 3. On success, transitions to `Ready` state
-//! 4. In `Ready` state, handler accepts hive and pingpong streams
-//!
-//! # Multi-Protocol Support
-//!
-//! The handler uses `TopologyInboundUpgrade` which advertises all three
-//! protocols (handshake, hive, pingpong) and dispatches based on the
-//! negotiated protocol.
+//! The internal [`Command`] and [`Event`] types are used for communication
+//! between the handler and [`TopologyBehaviour`](crate::TopologyBehaviour).
+//! External code should use [`TopologyCommand`](crate::TopologyCommand) and
+//! [`TopologyEvent`](crate::TopologyEvent) instead.
 
 use std::{
     collections::VecDeque,
@@ -46,9 +37,9 @@ use crate::protocol::{
     TopologyOutboundUpgrade,
 };
 
-/// Configuration for the topology handler.
+/// Configuration for topology protocols.
 #[derive(Debug, Clone)]
-pub struct Config {
+pub struct TopologyConfig {
     /// Timeout for hive operations.
     pub hive_timeout: Duration,
     /// Timeout for pingpong operations.
@@ -57,7 +48,7 @@ pub struct Config {
     pub pingpong_greeting: String,
 }
 
-impl Default for Config {
+impl Default for TopologyConfig {
     fn default() -> Self {
         Self {
             hive_timeout: Duration::from_secs(60),
@@ -67,9 +58,11 @@ impl Default for Config {
     }
 }
 
-/// Commands sent from the behaviour to the handler.
+/// Commands from behaviour to handler.
+///
+/// These are internal types - use [`TopologyCommand`](crate::TopologyCommand) instead.
 pub enum Command {
-    /// Start the handshake protocol (for outbound connections).
+    /// Start handshake with resolved address.
     StartHandshake(Multiaddr),
     /// Broadcast peers via hive.
     BroadcastPeers(Vec<SwarmPeer>),
@@ -91,107 +84,83 @@ impl std::fmt::Debug for Command {
     }
 }
 
-/// Events emitted by the handler to the behaviour.
+/// Events from handler to behaviour.
+///
+/// These are internal types - use [`TopologyEvent`](crate::TopologyEvent) instead.
 pub enum Event {
-    /// Handshake completed successfully.
+    /// Handshake completed.
     HandshakeCompleted(Box<HandshakeInfo>),
     /// Handshake failed.
     HandshakeFailed(HandshakeError),
-    /// Received validated peers via hive.
+    /// Received peers via hive.
     HivePeersReceived(Vec<SwarmPeer>),
     /// Hive broadcast completed.
     HiveBroadcastComplete,
-    /// Hive protocol error.
+    /// Hive error.
     HiveError(String),
-    /// Received a pong response.
+    /// Pong received with RTT.
     PingpongPong { rtt: Duration },
-    /// Responded to an incoming ping.
+    /// Responded to incoming ping.
     PingpongPingReceived,
-    /// Pingpong protocol error.
+    /// Pingpong error.
     PingpongError(String),
 }
 
 impl std::fmt::Debug for Event {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Event::HandshakeCompleted(info) => f
+            Self::HandshakeCompleted(info) => f
                 .debug_tuple("HandshakeCompleted")
                 .field(&info.peer_id)
                 .finish(),
-            Event::HandshakeFailed(e) => f.debug_tuple("HandshakeFailed").field(e).finish(),
-            Event::HivePeersReceived(peers) => f
+            Self::HandshakeFailed(e) => f.debug_tuple("HandshakeFailed").field(e).finish(),
+            Self::HivePeersReceived(peers) => f
                 .debug_tuple("HivePeersReceived")
                 .field(&peers.len())
                 .finish(),
-            Event::HiveBroadcastComplete => f.debug_tuple("HiveBroadcastComplete").finish(),
-            Event::HiveError(e) => f.debug_tuple("HiveError").field(e).finish(),
-            Event::PingpongPong { rtt } => {
-                f.debug_struct("PingpongPong").field("rtt", rtt).finish()
-            }
-            Event::PingpongPingReceived => f.debug_tuple("PingpongPingReceived").finish(),
-            Event::PingpongError(e) => f.debug_tuple("PingpongError").field(e).finish(),
+            Self::HiveBroadcastComplete => f.debug_tuple("HiveBroadcastComplete").finish(),
+            Self::HiveError(e) => f.debug_tuple("HiveError").field(e).finish(),
+            Self::PingpongPong { rtt } => f.debug_struct("PingpongPong").field("rtt", rtt).finish(),
+            Self::PingpongPingReceived => f.debug_tuple("PingpongPingReceived").finish(),
+            Self::PingpongError(e) => f.debug_tuple("PingpongError").field(e).finish(),
         }
     }
 }
 
-/// Handler state machine.
 #[derive(Debug)]
 enum State {
-    /// Performing handshake.
     Handshaking,
-    /// Handshake complete, ready for other protocols.
     Ready,
-    /// Handshake failed.
     Failed,
 }
 
-/// Tracks a pending ping for RTT measurement.
 #[allow(dead_code)]
 struct PendingPing {
     sent_at: Instant,
 }
 
-/// Unified topology connection handler.
-///
-/// Manages handshake, hive, and pingpong protocols on a single connection.
-/// Uses `TopologyInboundUpgrade` and `TopologyOutboundUpgrade` for multi-protocol support.
-///
-/// Generic over `N: SwarmNodeTypes` to support different node configurations.
+/// Per-connection handler for topology protocols.
 pub struct TopologyHandler<N: SwarmNodeTypes> {
-    /// Handler configuration.
-    config: Config,
-    /// Node identity for handshake.
+    config: TopologyConfig,
     identity: N::Identity,
-    /// Peer ID of the remote peer.
     peer_id: PeerId,
-    /// Remote address.
     remote_addr: Multiaddr,
-    /// Address manager for smart address selection.
     address_manager: Option<Arc<AddressManager>>,
-    /// Current state.
     state: State,
-    /// Pending events to emit.
     pending_events: VecDeque<Event>,
-    /// Pending hive broadcasts.
     pending_hive_outbound: VecDeque<Vec<SwarmPeer>>,
-    /// Pending ping (only one at a time).
     pending_ping: Option<PendingPing>,
-    /// Whether we should initiate a handshake (command received but not yet sent).
     should_initiate_handshake: bool,
-    /// Whether a handshake outbound request is in flight.
     handshake_outbound_pending: bool,
-    /// Whether a hive outbound is in flight.
     hive_outbound_pending: bool,
-    /// Whether a pingpong outbound is in flight.
     pingpong_outbound_pending: bool,
-    /// Pending ping command.
     pending_ping_command: Option<String>,
 }
 
 impl<N: SwarmNodeTypes> TopologyHandler<N> {
-    /// Create a new topology handler.
+    /// Create a new handler.
     pub fn new(
-        config: Config,
+        config: TopologyConfig,
         identity: N::Identity,
         peer_id: PeerId,
         remote_addr: &Multiaddr,
@@ -214,9 +183,9 @@ impl<N: SwarmNodeTypes> TopologyHandler<N> {
         }
     }
 
-    /// Create a new topology handler with address management.
+    /// Create a handler with address management for smart address selection.
     pub fn with_address_manager(
-        config: Config,
+        config: TopologyConfig,
         identity: N::Identity,
         peer_id: PeerId,
         remote_addr: &Multiaddr,
@@ -240,7 +209,6 @@ impl<N: SwarmNodeTypes> TopologyHandler<N> {
         }
     }
 
-    /// Create the combined inbound upgrade.
     fn inbound_upgrade(&self) -> TopologyInboundUpgrade<N> {
         match &self.address_manager {
             Some(mgr) => TopologyInboundUpgrade::with_address_manager(
@@ -257,17 +225,11 @@ impl<N: SwarmNodeTypes> TopologyHandler<N> {
         }
     }
 
-    /// Check if handshake is complete.
     fn is_ready(&self) -> bool {
         matches!(self.state, State::Ready)
     }
 }
 
-/// Multi-protocol ConnectionHandler implementation.
-///
-/// Uses `TopologyInboundUpgrade` to advertise handshake, hive, and pingpong protocols.
-/// Uses `TopologyOutboundUpgrade` for outbound requests with `TopologyOutboundInfo`
-/// to track which request type is in flight.
 #[allow(deprecated)]
 impl<N: SwarmNodeTypes> ConnectionHandler for TopologyHandler<N> {
     type FromBehaviour = Command;
@@ -291,12 +253,11 @@ impl<N: SwarmNodeTypes> ConnectionHandler for TopologyHandler<N> {
     ) -> Poll<
         ConnectionHandlerEvent<Self::OutboundProtocol, Self::OutboundOpenInfo, Self::ToBehaviour>,
     > {
-        // Emit pending events first
         if let Some(event) = self.pending_events.pop_front() {
             return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
         }
 
-        // Process pending handshake initiation (only when handshaking and not already in flight)
+        // Initiate handshake if requested
         if matches!(self.state, State::Handshaking)
             && self.should_initiate_handshake
             && !self.handshake_outbound_pending
@@ -323,7 +284,7 @@ impl<N: SwarmNodeTypes> ConnectionHandler for TopologyHandler<N> {
             });
         }
 
-        // Process pending hive broadcasts (only when ready)
+        // Process hive broadcasts
         if self.is_ready() && !self.hive_outbound_pending {
             if let Some(peers) = self.pending_hive_outbound.pop_front() {
                 self.hive_outbound_pending = true;
@@ -340,7 +301,7 @@ impl<N: SwarmNodeTypes> ConnectionHandler for TopologyHandler<N> {
             }
         }
 
-        // Process pending ping commands (only when ready)
+        // Process ping commands
         if self.is_ready() && !self.pingpong_outbound_pending {
             if let Some(greeting) = self.pending_ping_command.take() {
                 self.pingpong_outbound_pending = true;
@@ -402,7 +363,6 @@ impl<N: SwarmNodeTypes> ConnectionHandler for TopologyHandler<N> {
         >,
     ) {
         match event {
-            // Handle inbound protocol completions
             ConnectionEvent::FullyNegotiatedInbound(FullyNegotiatedInbound {
                 protocol: output,
                 ..
@@ -410,7 +370,6 @@ impl<N: SwarmNodeTypes> ConnectionHandler for TopologyHandler<N> {
                 self.handle_inbound_output(output);
             }
 
-            // Handle outbound protocol completions
             ConnectionEvent::FullyNegotiatedOutbound(FullyNegotiatedOutbound {
                 protocol: output,
                 info,
@@ -419,7 +378,6 @@ impl<N: SwarmNodeTypes> ConnectionHandler for TopologyHandler<N> {
                 self.handle_outbound_output(output, info);
             }
 
-            // Handle dial (outbound) errors
             ConnectionEvent::DialUpgradeError(error) => {
                 warn!(peer_id = %self.peer_id, error = %error.error, "Outbound upgrade error");
                 match error.info {
@@ -444,17 +402,14 @@ impl<N: SwarmNodeTypes> ConnectionHandler for TopologyHandler<N> {
                 }
             }
 
-            // Handle listen (inbound) errors
             ConnectionEvent::ListenUpgradeError(error) => {
                 warn!(peer_id = %self.peer_id, error = %error.error, "Inbound upgrade error");
-                // For inbound errors during handshaking, fail the connection
                 if matches!(self.state, State::Handshaking) {
                     let handshake_error = HandshakeError::Protocol(error.error.to_string());
                     self.state = State::Failed;
                     self.pending_events
                         .push_back(Event::HandshakeFailed(handshake_error));
                 }
-                // For other protocols, just log (already done above)
             }
 
             _ => {}
@@ -463,7 +418,6 @@ impl<N: SwarmNodeTypes> ConnectionHandler for TopologyHandler<N> {
 }
 
 impl<N: SwarmNodeTypes> TopologyHandler<N> {
-    /// Handle an inbound protocol completion.
     fn handle_inbound_output(&mut self, output: TopologyInboundOutput) {
         match output {
             TopologyInboundOutput::Handshake(info) => {
@@ -484,7 +438,6 @@ impl<N: SwarmNodeTypes> TopologyHandler<N> {
         }
     }
 
-    /// Handle an outbound protocol completion.
     fn handle_outbound_output(
         &mut self,
         output: TopologyOutboundOutput,
@@ -516,7 +469,6 @@ impl<N: SwarmNodeTypes> TopologyHandler<N> {
                 trace!(peer_id = %self.peer_id, rtt_ms = rtt.as_millis(), response = %pong.response, "Pong received");
                 self.pending_events.push_back(Event::PingpongPong { rtt });
             }
-            // Mismatched output/info - should not happen
             _ => {
                 warn!(peer_id = %self.peer_id, "Mismatched outbound output and info");
             }
