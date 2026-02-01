@@ -79,10 +79,6 @@ We welcome contributions. Please read the [CLA](./CLA.md) before submitting PRs.
 - Open an [issue](https://github.com/nxm-rs/vertex/issues) if something is broken
 - Join the [Matrix space](https://matrix.to/#/#nexum:nxm.rs) to discuss development
 
-## Style Guide
-
-All documentation and comments must use Oxford English (British spelling with -ize endings). No em dashes.
-
 ## Licence
 
 [AGPL-3.0-or-later](./LICENSE): because decentralised storage should stay decentralised.
