@@ -1,52 +1,88 @@
 # Vertex
 
-[![CI Status](https://github.com/nullisxyz/vertex/actions/workflows/unit.yml/badge.svg)](https://github.com/nullisxyz/vertex/actions/workflows/unit.yml)
-[![codecov](https://codecov.io/gh/nullisxyz/vertex/graph/badge.svg?token=O56JVSX6AB)](https://codecov.io/gh/nullisxyz/vertex)
+[![CI Status](https://github.com/nxm-rs/vertex/actions/workflows/unit.yml/badge.svg)](https://github.com/nxm-rs/vertex/actions/workflows/unit.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
-**Modular, high-performance implementation of the Ethereum Swarm protocol**
-
-<!-- [Logo placeholder]
-
-**[Install](https://vertex.rs/installation) | [User Book](https://vertex.rs) | [Developer Docs](./docs) | [Crate Docs](https://vertex.rs/docs)**
--->
+**Swarm node that actually works. Built in Rust because Go wasn't cutting it for real decentralization.**
 
 ## What is Vertex?
 
-Vertex (pronunciation: /ˈvɜːrtɛks/) is a new Ethereum Swarm node implementation focused on being user-friendly, highly modular, and blazing-fast. Vertex is written in Rust and is compatible with all Swarm protocols including postage stamps, push/pull syncing, and the full storage incentives system. Built and driven forward by [Nullis](https://github.com/nullisxyz), Vertex is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+Vertex is a ground-up rewrite of the Ethereum Swarm node. Same protocol, different philosophy. We're building for modularity, performance, and the kind of reliability you'd expect from infrastructure software.
+
+Compatible with all Swarm protocols - postage stamps, push/pull sync, storage incentives, the works. If Bee does it, Vertex will do it faster.
+
+## Architecture
+
+Vertex is split into layered crates that can be used independently:
+
+### Node Layer
+| Crate | Description |
+|-------|-------------|
+| `vertex-node-api` | Protocol lifecycle traits and node configuration |
+| `vertex-node-types` | Infrastructure types (database, RPC, executor) |
+| `vertex-node-core` | Node implementation with CLI and configuration |
+| `vertex-node-builder` | Type-state builder for node construction |
+
+### Swarm Layer
+| Crate | Description |
+|-------|-------------|
+| `vertex-swarm-api` | Swarm protocol traits (topology, storage, sync) |
+| `vertex-swarm-primitives` | Core types, addresses, chunk handling |
+| `vertex-swarm-identity` | Cryptographic identity and handshake |
+| `vertex-swarm-kademlia` | Kademlia DHT implementation |
+| `vertex-swarm-bandwidth` | SWAP-compatible bandwidth accounting |
+| `vertex-swarm-topology` | Peer discovery and neighborhood management |
+| `vertex-swarm-localstore` | Local chunk storage |
+| `vertex-swarm-storer` | Full storer node implementation |
+| `vertex-swarm-client` | Client node for upload/download |
+
+### Network Layer
+| Crate | Description |
+|-------|-------------|
+| `vertex-net-p2p` | libp2p networking stack |
+| `vertex-net-primitives` | Network addressing and peer types |
+
+### Supporting Crates
+| Crate | Description |
+|-------|-------------|
+| `vertex-rpc` | JSON-RPC server implementation |
+| `vertex-metrics` | Prometheus metrics |
+| `vertex-tasks` | Async task management |
 
 ## Goals
 
-As a full Ethereum Swarm node, Vertex will allow users to connect to the Swarm network and interact with decentralised storage. This includes uploading and downloading content, participating in the storage incentives system, and being a good network citizen. Building a successful Swarm node requires creating a high-quality implementation that is both secure and efficient, as well as being easy to use on consumer hardware. It also requires building a strong community of contributors who can help support and improve the software.
+1. **Modularity** - Every component is a library. Import what you need, build what you want.
+2. **Performance** - Concurrent processing, zero-copy where possible, no GC pauses.
+3. **Client Diversity** - More implementations = more resilient network.
+4. **Developer Experience** - Ergonomic APIs and actual documentation.
 
-More concretely, our goals are:
+## Related Projects
 
-1. **Modularity**: Every component of Vertex is built to be used as a library: well-tested, heavily documented and benchmarked. We envision that developers will import components like network protocols or chunk storage and build innovative solutions on top of them. The project is split into three main repositories:
-   - `vertex`: The full node implementation
-   - `nectar`: Core primitives and protocols specific to Ethereum Swarm
-   - `dipper`: A CLI tool for interacting with Swarm (similar to `cast` in Foundry)
-
-2. **Performance**: Vertex aims to be the fastest Swarm implementation. Written in Rust with a focus on concurrent processing and efficient resource usage, we strive to optimize every aspect from chunk processing to network communication.
-
-3. **Client Diversity**: The Swarm network becomes more resilient when no single implementation dominates. By building a new client, we hope to contribute to Swarm's decentralisation and anti-fragility.
-
-4. **Developer Experience**: Through great documentation, ergonomic APIs, and developer tooling like `dipper`, we want to make it easy for developers to build on Swarm.
+- [`nectar`](https://github.com/nxm-rs/nectar) - Low-level Swarm primitives (BMT, chunks, postage)
+- [`apiary`](https://github.com/nxm-rs/apiary) - Kurtosis package for spinning up test networks
+- [`apiarist`](https://github.com/nxm-rs/apiarist) - Stress testing and integration checks
 
 ## Status
 
-Vertex is under active development and not yet ready for production use.
+Under active development. Not production ready yet, but getting there.
 
-## Getting Help
+## Building
 
-If you have questions:
+```bash
+cargo build --release
+```
 
-- Join the [Signal group](https://signal.group/#CjQKIHNV-kWphhtnpwS3zywC7LRr5BEW9Q1XyDl2qZtL2WYqEhAyO0c8tGmrQDmEsY15rALt) to discuss development with the Nullis team
-- Open a [discussion](https://github.com/nullisxyz/vertex/discussions/new) with your question
-- Open an [issue](https://github.com/nullisxyz/vertex/issues/new) to report a bug
+## Contributing
+
+We welcome contributions. Please read the [CLA](./CLA.md) before submitting PRs.
+
+- Open an [issue](https://github.com/nxm-rs/vertex/issues) if something's broken
+- Join the [Matrix space](https://matrix.to/#/#nexum:nxm.rs) to discuss development
 
 ## License
 
-Vertex is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0). See [LICENSE](./LICENSE) for details.
+[AGPL-3.0-or-later](./LICENSE) - because decentralized storage should stay decentralized.
 
 ## Warning
 
-This software is currently in development. While we strive for correctness, bugs may exist. Use at your own risk.
+This is development software. It compiles, it runs tests, but it's not ready for your production workloads. Yet.
