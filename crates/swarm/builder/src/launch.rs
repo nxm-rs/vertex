@@ -11,7 +11,7 @@ use vertex_node_builder::LaunchContext;
 use vertex_node_core::config::FullNodeConfig;
 use vertex_node_core::dirs::DataDirs;
 use vertex_swarm_identity::Identity;
-use vertex_swarm_node::SwarmConfig;
+use vertex_swarm_node::ProtocolConfig;
 use vertex_swarm_peermanager::PeerStore;
 use vertex_swarmspec::Hive;
 use vertex_tasks::TaskExecutor;
@@ -31,7 +31,7 @@ pub struct SwarmLaunchContext {
     /// Generic infrastructure context.
     pub base: LaunchContext,
     /// Loaded and merged configuration.
-    pub config: FullNodeConfig<SwarmConfig>,
+    pub config: FullNodeConfig<ProtocolConfig>,
     /// Network specification.
     pub spec: Arc<Hive>,
     /// Node identity.
@@ -46,7 +46,7 @@ impl SwarmLaunchContext {
     /// Create a new launch context with all components.
     pub fn new(
         base: LaunchContext,
-        config: FullNodeConfig<SwarmConfig>,
+        config: FullNodeConfig<ProtocolConfig>,
         spec: Arc<Hive>,
         identity: Identity,
         peer_store: Arc<dyn PeerStore>,

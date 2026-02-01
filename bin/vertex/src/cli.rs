@@ -14,7 +14,7 @@ use vertex_swarm_builder::{
     SwarmLaunchContext, create_and_save_signer, load_signer_from_keystore, resolve_password,
 };
 use vertex_swarm_identity::Identity;
-use vertex_swarm_node::SwarmConfig;
+use vertex_swarm_node::ProtocolConfig;
 use vertex_swarm_node::args::ProtocolArgs;
 use vertex_swarm_peermanager::{FilePeerStore, PeerStore};
 use vertex_swarmspec::{Hive, SwarmSpec, init_mainnet, init_testnet};
@@ -97,7 +97,7 @@ async fn build_launch_context(args: &SwarmRunNodeArgs) -> Result<SwarmLaunchCont
 
     // Load configuration
     let config_path = dirs.config_file();
-    let mut config = FullNodeConfig::<SwarmConfig>::load(if config_path.exists() {
+    let mut config = FullNodeConfig::<ProtocolConfig>::load(if config_path.exists() {
         Some(config_path.as_path())
     } else {
         None

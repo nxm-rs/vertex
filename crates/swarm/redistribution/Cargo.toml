@@ -1,0 +1,20 @@
+[package]
+name = "vertex-swarm-redistribution"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Swarm redistribution (storage incentives) configuration"
+
+[lints]
+workspace = true
+
+[dependencies]
+# vertex
+vertex-swarm-api.workspace = true
+
+# cli
+clap = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
