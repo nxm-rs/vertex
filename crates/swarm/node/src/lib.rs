@@ -1,35 +1,53 @@
-//! Swarm node CLI for Vertex.
+//! Core Vertex client with libp2p integration.
 //!
-//! This crate provides Swarm-specific CLI entry points via the [`cli`] module.
+//! This crate is the libp2p boundary layer for the Swarm protocol.
 //!
-//! # CLI Usage
-//!
-//! The recommended way to build a Swarm node binary:
-//!
-//! ```ignore
-//! use vertex_swarm_node::cli;
-//! use vertex_swarm_builder::SwarmNodeBuilder;
-//!
-//! #[tokio::main]
-//! async fn main() -> eyre::Result<()> {
-//!     cli::run(|ctx, _args| async move {
-//!         SwarmNodeBuilder::new(ctx)
-//!             .launch()
-//!             .await?
-//!             .wait_for_shutdown()
-//!             .await;
-//!         Ok(())
-//!     }).await
-//! }
-//! ```
+//! With the `cli` feature enabled, also provides [`SwarmArgs`] and [`SwarmConfig`]
+//! for CLI argument parsing and protocol configuration.
 
-pub mod cli;
+#![cfg_attr(not(feature = "std"), no_std)]
 
-pub use cli::{SwarmCli, SwarmCommands, SwarmNodeType, SwarmRunNodeArgs};
+#[cfg(feature = "cli")]
+pub mod args;
+#[cfg(feature = "cli")]
+mod config;
 
-// Re-export from vertex-swarm-builder
-pub use vertex_swarm_builder::{
-    ClientNodeBuildConfig, DefaultClientTypes, DefaultNetworkConfig, SwarmLaunchContext,
-    SwarmNodeBuilder, SwarmNodeError, create_and_save_signer, load_signer_from_keystore, node_type,
-    resolve_password,
+#[cfg(feature = "cli")]
+pub use config::SwarmConfig;
+
+mod bootnodes;
+mod client;
+mod node;
+pub mod protocol;
+mod service;
+mod stats;
+
+pub use node::behaviour::{NodeEvent, SwarmNodeBehaviour};
+pub use node::bootnode::{BootNode, BootNodeBuilder, BootnodeBehaviour, BootnodeEvent};
+pub use node::{SwarmNode, SwarmNodeBuilder};
+
+// Re-export SwarmNodeType from vertex-swarm-api
+pub use vertex_swarm_api::SwarmNodeType;
+
+pub use service::{
+    ClientCommand, ClientEvent, ClientHandle, ClientService, RetrievalError, RetrievalResult,
+};
+
+// Re-export settlement event types for wiring
+pub use protocol::{PseudosettleEvent, SwapEvent};
+
+// Re-export protocol behaviour types
+pub use protocol::{
+    BehaviourConfig as ClientBehaviourConfig, HandlerConfig as ClientHandlerConfig,
+    SwarmClientBehaviour, SwarmClientHandler,
+};
+
+pub use client::{BootnodeClient, BuiltSwarmComponents, Client, FullClient};
+
+pub use bootnodes::BootnodeProvider;
+pub use stats::{StatsConfig, spawn_stats_task};
+
+pub use vertex_swarm_bandwidth::{
+    Accounting, AccountingError, AccountingPeerHandle, ClientAccounting, FixedPricer, PeerState,
+    Pricer, ProvideAction, ReceiveAction,
 };

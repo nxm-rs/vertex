@@ -5,9 +5,17 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use vertex_swarm_api::SwarmNetworkConfig;
 
-use crate::constants::{
-    DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_LISTEN_ADDR, DEFAULT_MAX_PEERS, DEFAULT_P2P_PORT,
-};
+/// Default P2P listen port.
+const DEFAULT_P2P_PORT: u16 = 1634;
+
+/// Default listen address.
+const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0";
+
+/// Default maximum peers.
+const DEFAULT_MAX_PEERS: usize = 50;
+
+/// Default idle timeout in seconds.
+const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 60;
 
 /// P2P network configuration.
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]

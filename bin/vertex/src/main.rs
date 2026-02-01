@@ -1,7 +1,10 @@
 //! Vertex Swarm node binary.
 
+mod cli;
+
 use vertex_node_builder::NodeBuilder;
-use vertex_swarm_node::{SwarmNodeBuilder, SwarmNodeType, cli, node_type};
+use vertex_swarm_builder::{SwarmNodeBuilder, node_type};
+use vertex_swarm_primitives::SwarmNodeType;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {

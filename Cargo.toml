@@ -44,12 +44,10 @@ members = [
     "crates/swarm/spec",
     "crates/swarm/forks",
     "crates/swarm/builder",
-    "crates/swarm/core",
-    "crates/swarm/node",
     "crates/swarm/rpc",
 
-    # Client (libp2p boundary)
-    "crates/swarm/client",
+    # Node (libp2p boundary)
+    "crates/swarm/node",
     "crates/swarm/topology",
     "crates/swarm/kademlia",
     "crates/swarm/peermanager",
@@ -128,12 +126,10 @@ vertex-storage = { path = "crates/storage" }
 vertex-swarm-api = { path = "crates/swarm/api" }
 vertex-swarmspec = { path = "crates/swarm/spec" }
 vertex-swarm-builder = { path = "crates/swarm/builder" }
-vertex-swarm-core = { path = "crates/swarm/core" }
-vertex-swarm-node = { path = "crates/swarm/node" }
 vertex-swarm-rpc = { path = "crates/swarm/rpc" }
 
-# client (libp2p boundary)
-vertex-swarm-client = { path = "crates/swarm/client" }
+# node (libp2p boundary)
+vertex-swarm-node = { path = "crates/swarm/node" }
 
 # topology (in swarm/)
 vertex-swarm-topology = { path = "crates/swarm/topology" }

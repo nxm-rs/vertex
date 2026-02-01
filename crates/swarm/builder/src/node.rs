@@ -34,9 +34,9 @@ use vertex_swarm_api::{
 };
 use vertex_swarm_bandwidth::{Accounting, DefaultAccountingConfig};
 use vertex_swarm_bandwidth_pseudosettle::{PseudosettleProvider, create_pseudosettle_actor};
-use vertex_swarm_core::args::SwarmArgs;
-use vertex_swarm_core::{ClientCommand, SwarmNode};
 use vertex_swarm_identity::Identity;
+use vertex_swarm_node::args::SwarmArgs;
+use vertex_swarm_node::{ClientCommand, SwarmNode};
 use vertex_swarm_peermanager::PeerStore;
 use vertex_swarmspec::Hive;
 use vertex_tasks::{SpawnableTask, TaskExecutor};
@@ -349,7 +349,7 @@ impl SwarmLaunchConfig for BootnodeBuildConfig {
         info!("Peers database: {}", self.peers_path.display());
 
         // Build the BootNode (no client protocols)
-        let node = vertex_swarm_core::BootNode::<crate::types::DefaultBootnodeTypes>::builder(
+        let node = vertex_swarm_node::BootNode::<crate::types::DefaultBootnodeTypes>::builder(
             self.identity.clone(),
         )
         .with_network_config(&self.network_config)

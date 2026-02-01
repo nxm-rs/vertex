@@ -6,36 +6,88 @@ rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Swarm node presets and CLI for Vertex"
+description = "Swarm node implementation with libp2p integration"
 
 [lints]
 workspace = true
 
 [dependencies]
-## vertex - node infrastructure
-vertex-node-builder.workspace = true
-vertex-node-commands.workspace = true
-vertex-node-core.workspace = true
-vertex-tasks.workspace = true
+## nectar
+nectar-primitives.workspace = true
 
-## vertex - swarm protocol
-vertex-swarm-peermanager.workspace = true
-vertex-swarm-api.workspace = true
-vertex-swarm-builder.workspace = true
-vertex-swarm-core = { workspace = true, features = ["cli"] }
-vertex-swarm-identity.workspace = true
+## vertex - primitives
 vertex-swarm-primitives.workspace = true
+
+## vertex - network (libp2p layer)
+vertex-net-headers.workspace = true
+vertex-net-pricing.workspace = true
+vertex-net-pseudosettle.workspace = true
+
+## vertex - identity
+vertex-swarm-peer.workspace = true
+vertex-net-pushsync.workspace = true
+vertex-net-retrieval.workspace = true
+vertex-net-swap.workspace = true
+
+## vertex - bandwidth (chequebook types)
+vertex-swarm-bandwidth-chequebook.workspace = true
+
+## vertex - topology
+vertex-swarm-topology.workspace = true
+vertex-swarm-kademlia.workspace = true
+vertex-swarm-peermanager.workspace = true
+
+## vertex - swarm (libp2p-free abstractions)
+vertex-swarm-api.workspace = true
+vertex-swarm-identity.workspace = true
 vertex-swarmspec.workspace = true
 
-## alloy
+## vertex - infrastructure
+vertex-swarm-bandwidth.workspace = true
+vertex-node-types.workspace = true
+vertex-tasks.workspace = true
+
+## p2p
+libp2p.workspace = true
+
+## crypto
 alloy-primitives.workspace = true
 
+## async
+async-trait.workspace = true
+futures.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
 ## misc
-clap.workspace = true
+bytes.workspace = true
 eyre.workspace = true
-hex.workspace = true
-rand.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 
+## cli (optional)
+clap = { workspace = true, features = ["derive", "env"], optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+strum = { workspace = true, optional = true }
+vertex-node-api = { workspace = true, optional = true }
+vertex-swarm-bandwidth-pricing = { workspace = true, optional = true, features = ["cli"] }
+vertex-swarm-localstore = { workspace = true, optional = true }
+
+[dev-dependencies]
+alloy-primitives.workspace = true
+alloy-signer-local.workspace = true
+vertex-swarmspec.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+
 [features]
-default = []
+default = ["std"]
+std = []
+cli = [
+    "dep:clap",
+    "dep:serde",
+    "dep:strum",
+    "dep:vertex-node-api",
+    "dep:vertex-swarm-bandwidth-pricing",
+    "dep:vertex-swarm-localstore",
+    "vertex-swarm-primitives/serde",
+]

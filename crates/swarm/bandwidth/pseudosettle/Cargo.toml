@@ -10,7 +10,7 @@ description = "Time-based settlement provider for Swarm bandwidth accounting"
 
 [dependencies]
 vertex-swarm-bandwidth = { workspace = true }
-vertex-swarm-client = { workspace = true }
+vertex-swarm-node = { workspace = true }
 vertex-net-pseudosettle = { workspace = true }
 vertex-swarm-primitives = { workspace = true }
 vertex-swarm-api = { workspace = true }
