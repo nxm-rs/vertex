@@ -7,7 +7,7 @@ use alloy_primitives::U256;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_api::{Direction, SwarmBandwidthAccounting, SwarmPeerBandwidth};
-use vertex_swarm_client::{SwapEvent, protocol::ClientCommand};
+use vertex_swarm_node::{SwapEvent, protocol::ClientCommand};
 use vertex_swarm_primitives::OverlayAddress;
 
 use crate::error::SwapError;

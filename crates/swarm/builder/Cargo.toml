@@ -29,7 +29,7 @@ vertex-swarm-peermanager.workspace = true
 vertex-node-types.workspace = true
 vertex-rpc-server.workspace = true
 vertex-swarm-api.workspace = true
-vertex-swarm-client = { workspace = true, features = ["cli"] }
+vertex-swarm-node = { workspace = true, features = ["cli"] }
 vertex-swarm-identity.workspace = true
 vertex-swarm-rpc.workspace = true
 vertex-swarmspec.workspace = true

@@ -13,8 +13,8 @@ use vertex_node_core::dirs::DataDirs;
 use vertex_swarm_builder::{
     SwarmLaunchContext, create_and_save_signer, load_signer_from_keystore, resolve_password,
 };
-use vertex_swarm_client::SwarmConfig;
-use vertex_swarm_client::args::SwarmArgs;
+use vertex_swarm_node::SwarmConfig;
+use vertex_swarm_node::args::SwarmArgs;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_peermanager::{FilePeerStore, PeerStore};
 use vertex_swarmspec::{Hive, SwarmSpec, init_mainnet, init_testnet};

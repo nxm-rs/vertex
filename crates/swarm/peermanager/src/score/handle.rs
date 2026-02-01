@@ -2,7 +2,7 @@
 //!
 //! The `ScoreHandle` wraps an `Arc<PeerScoreState>` and provides a convenient
 //! API for recording events. Handles are cheap to clone (just Arc refs) and
-//! can be stored in per-peer state within vertex-swarm-client.
+//! can be stored in per-peer state within vertex-swarm-node.
 
 use std::sync::Arc;
 
@@ -15,7 +15,7 @@ use super::peer::PeerScoreState;
 /// Handle for recording score events on a single peer.
 ///
 /// This handle is cheap to clone (two Arc refs) and can be held by
-/// per-peer connection state in vertex-swarm-client. Multiple protocol
+/// per-peer connection state in vertex-swarm-node. Multiple protocol
 /// handlers can clone and use the same handle concurrently without
 /// mutex contention.
 #[derive(Clone)]

@@ -1,12 +1,12 @@
 [package]
-name = "vertex-swarm-client"
+name = "vertex-swarm-node"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Core Vertex client with libp2p integration - THE libp2p boundary"
+description = "Swarm node implementation with libp2p integration"
 
 [lints]
 workspace = true

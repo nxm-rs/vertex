@@ -34,7 +34,7 @@ Vertex is split into layered crates that can be used independently:
 | `vertex-swarm-topology` | Peer discovery and neighbourhood management |
 | `vertex-swarm-localstore` | Local chunk storage |
 | `vertex-swarm-storer` | Full storer node implementation |
-| `vertex-swarm-client` | Client node for upload/download |
+| `vertex-swarm-node` | Client node for upload/download |
 
 ### Network Layer
 | Crate | Description |
