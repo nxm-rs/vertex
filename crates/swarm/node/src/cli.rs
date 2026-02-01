@@ -123,9 +123,7 @@ where
 {
     run_cli(|cli: SwarmCli| async move {
         // Extract node args from CLI
-        let args = match cli.command {
-            SwarmCommands::Node(args) => args,
-        };
+        let SwarmCommands::Node(args) = cli.command;
 
         // Build Swarm launch context
         let ctx = build_launch_context(&args).await?;

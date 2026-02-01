@@ -210,7 +210,7 @@ where
     }
 
     async fn put(&self, chunk: AnyChunk, _storage: &Self::Storage) -> SwarmResult<()> {
-        let _closest = SwarmTopology::closest_to(&*self.topology, &chunk.address(), 3);
+        let _closest = SwarmTopology::closest_to(&*self.topology, chunk.address(), 3);
         let _handle = &self.client_handle;
         let _pricer = &self.components.pricer;
 
@@ -238,7 +238,7 @@ pub type FullClient<Types, A, P, S> =
 mod tests {
     use super::*;
     use crate::{
-        Accounting, ClientAccounting, ClientCommand, ClientHandle, ClientService, FixedPricer,
+        Accounting, ClientAccounting, ClientCommand, ClientHandle, FixedPricer,
     };
     use core::fmt::Debug;
     use tokio::sync::mpsc;

@@ -60,6 +60,7 @@ use serde::{Deserialize, Serialize};
 /// For full infrastructure args including logging, use [`NodeArgs`].
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct InfraArgs {
     /// API configuration (gRPC, metrics).
     #[command(flatten)]
@@ -74,15 +75,6 @@ pub struct InfraArgs {
     pub datadir: DataDirArgs,
 }
 
-impl Default for InfraArgs {
-    fn default() -> Self {
-        Self {
-            api: ApiArgs::default(),
-            database: DatabaseArgs::default(),
-            datadir: DataDirArgs::default(),
-        }
-    }
-}
 
 /// Full node infrastructure arguments including logging.
 ///
@@ -91,6 +83,7 @@ impl Default for InfraArgs {
 /// top level.
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct NodeArgs {
     /// Logging configuration.
     #[command(flatten)]
@@ -101,11 +94,3 @@ pub struct NodeArgs {
     pub infra: InfraArgs,
 }
 
-impl Default for NodeArgs {
-    fn default() -> Self {
-        Self {
-            logs: LogArgs::default(),
-            infra: InfraArgs::default(),
-        }
-    }
-}

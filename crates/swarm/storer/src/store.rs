@@ -100,7 +100,7 @@ impl<S: ChunkStore> LocalStoreImpl<S> {
         let data = &bytes[1..];
 
         match type_byte {
-            0 | 1 | 2 => {
+            0..=2 => {
                 // For now, treat all as content chunks
                 // TODO: Proper deserialization when chunk format is finalized
                 let chunk = ContentChunk::with_address(data.to_vec(), address).map_err(|e| {
@@ -122,7 +122,7 @@ impl<S: ChunkStore> SwarmLocalStore for LocalStoreImpl<S> {
         let address = chunk.address();
 
         // Check if already stored
-        if self.has(&address) {
+        if self.has(address) {
             trace!(%address, "Chunk already stored");
             return Ok(());
         }
@@ -137,7 +137,7 @@ impl<S: ChunkStore> SwarmLocalStore for LocalStoreImpl<S> {
         // Serialize and store
         let bytes = Self::serialize_chunk(chunk);
         self.store
-            .put(&address, &bytes)
+            .put(address, &bytes)
             .map_err(|e| SwarmError::Storage {
                 message: e.to_string(),
             })?;
@@ -229,10 +229,10 @@ mod tests {
         local_store.store(&chunk).unwrap();
 
         // Verify exists
-        assert!(local_store.has(&address));
+        assert!(local_store.has(address));
 
         // Retrieve
-        let retrieved = local_store.retrieve(&address).unwrap();
+        let retrieved = local_store.retrieve(address).unwrap();
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().address(), address);
     }
@@ -247,10 +247,10 @@ mod tests {
         let address = chunk.address();
 
         local_store.store(&chunk).unwrap();
-        assert!(local_store.has(&address));
+        assert!(local_store.has(address));
 
-        local_store.remove(&address).unwrap();
-        assert!(!local_store.has(&address));
+        local_store.remove(address).unwrap();
+        assert!(!local_store.has(address));
     }
 
     #[test]

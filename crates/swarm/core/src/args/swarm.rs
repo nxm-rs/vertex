@@ -81,6 +81,7 @@ impl From<SwarmNodeType> for NodeTypeArg {
 /// in the binary's CLI parser.
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct SwarmArgs {
     /// Node mode: bootnode (topology only), client (read+write), storer (storage+staking).
     #[arg(long = "mode", value_enum, default_value_t = NodeTypeArg::Client)]
@@ -133,22 +134,6 @@ pub struct SwarmArgs {
     pub swarmspec: Option<PathBuf>,
 }
 
-impl Default for SwarmArgs {
-    fn default() -> Self {
-        Self {
-            node_type: NodeTypeArg::default(),
-            network: NetworkArgs::default(),
-            bandwidth: BandwidthArgs::default(),
-            pricing: PricingArgs::default(),
-            localstore: LocalStoreArgs::default(),
-            storage_incentives: StorageIncentiveArgs::default(),
-            identity: IdentityArgs::default(),
-            mainnet: false,
-            testnet: false,
-            swarmspec: None,
-        }
-    }
-}
 
 impl SwarmArgs {
     /// Validate all argument combinations.

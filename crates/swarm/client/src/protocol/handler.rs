@@ -232,7 +232,7 @@ enum State {
 
 /// Outbound protocol selection.
 #[derive(Debug, Clone)]
-pub enum OutboundProtocol {
+pub(super) enum OutboundProtocol {
     Pricing(vertex_net_pricing::PricingOutboundProtocol),
     Retrieval(vertex_net_retrieval::RetrievalOutboundProtocol),
     PushSync(vertex_net_pushsync::PushsyncOutboundProtocol),
@@ -240,14 +240,14 @@ pub enum OutboundProtocol {
 
 /// Inbound protocol selection.
 #[derive(Debug, Clone)]
-pub enum InboundProtocol {
+pub(super) enum InboundProtocol {
     Pricing(vertex_net_pricing::PricingInboundProtocol),
     Retrieval(vertex_net_retrieval::RetrievalInboundProtocol),
     PushSync(vertex_net_pushsync::PushsyncInboundProtocol),
 }
 
 /// Inbound protocol output after negotiation.
-pub enum InboundOutput {
+pub(super) enum InboundOutput {
     Pricing(vertex_net_pricing::AnnouncePaymentThreshold),
     Retrieval(
         (
@@ -264,7 +264,7 @@ pub enum InboundOutput {
 }
 
 /// Outbound protocol output after negotiation.
-pub enum OutboundOutput {
+pub(super) enum OutboundOutput {
     Pricing,
     Retrieval(vertex_net_retrieval::Delivery),
     PushSync(vertex_net_pushsync::Receipt),

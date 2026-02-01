@@ -207,13 +207,13 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
 
         // Cap at what they actually owe us
         let owed = balance as u64;
-        let capped = std::cmp::min(requested, owed);
+        
 
         // Also cap at time-based allowance
         // For now, we accept up to the capped amount
         // TODO: Implement proper time-based allowance tracking per peer
         // This would involve tracking accumulated allowance since last settlement
-        capped
+        std::cmp::min(requested, owed)
     }
 }
 

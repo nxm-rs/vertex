@@ -37,6 +37,7 @@ use crate::args::{NetworkArgs, StorageIncentiveArgs, SwarmArgs};
 /// for [`vertex_node_core::config::FullNodeConfig`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct SwarmConfig {
     /// Node type (determines capabilities).
     pub node_type: SwarmNodeType,
@@ -60,19 +61,6 @@ pub struct SwarmConfig {
     pub identity: IdentityArgs,
 }
 
-impl Default for SwarmConfig {
-    fn default() -> Self {
-        Self {
-            node_type: SwarmNodeType::default(),
-            network: NetworkArgs::default(),
-            bandwidth: BandwidthArgs::default(),
-            pricing: PricingArgs::default(),
-            localstore: LocalStoreArgs::default(),
-            storage_incentives: StorageIncentiveArgs::default(),
-            identity: IdentityArgs::default(),
-        }
-    }
-}
 
 impl NodeProtocolConfig for SwarmConfig {
     type Args = SwarmArgs;

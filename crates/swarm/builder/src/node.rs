@@ -230,7 +230,7 @@ impl SwarmLaunchConfig for ClientNodeBuildConfig {
 
         // Create accounting for pseudosettle
         let accounting = Arc::new(Accounting::with_providers(
-            config.clone(),
+            config,
             self.identity.clone(),
             vec![],
         ));
@@ -245,7 +245,7 @@ impl SwarmLaunchConfig for ClientNodeBuildConfig {
 
         // Create bandwidth accounting with pseudosettle provider
         let bandwidth = Arc::new(Accounting::with_providers(
-            config.clone(),
+            config,
             self.identity.clone(),
             vec![Box::new(PseudosettleProvider::with_handle(
                 config,

@@ -399,11 +399,8 @@ impl AddressManager {
             AddressScope::Loopback => {
                 // Include loopback and private listen addresses
                 for addr in listen.iter() {
-                    match classify_multiaddr(addr) {
-                        Some(AddressScope::Loopback | AddressScope::Private) => {
-                            result.push(addr.clone());
-                        }
-                        _ => {}
+                    if let Some(AddressScope::Loopback | AddressScope::Private) = classify_multiaddr(addr) {
+                        result.push(addr.clone());
                     }
                 }
             }
@@ -434,11 +431,10 @@ impl AddressManager {
                         if now.duration_since(entry.confirmed_at) >= ttl {
                             continue;
                         }
-                        if classify_multiaddr(addr) == Some(AddressScope::Public) {
-                            if !result.contains(addr) {
+                        if classify_multiaddr(addr) == Some(AddressScope::Public)
+                            && !result.contains(addr) {
                                 result.push(addr.clone());
                             }
-                        }
                     }
                 }
             }

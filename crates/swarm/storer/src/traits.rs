@@ -52,20 +52,20 @@ pub trait ChunkStore: Send + Sync {
 
 /// In-memory chunk store for testing.
 #[cfg(test)]
-pub mod memory {
+pub(crate) mod memory {
     use super::*;
     use parking_lot::RwLock;
     use std::collections::HashMap;
 
     /// Simple in-memory chunk store.
     #[derive(Default)]
-    pub struct MemoryChunkStore {
+    pub(crate) struct MemoryChunkStore {
         chunks: RwLock<HashMap<ChunkAddress, Vec<u8>>>,
     }
 
     impl MemoryChunkStore {
         /// Create a new empty memory store.
-        pub fn new() -> Self {
+        pub(crate) fn new() -> Self {
             Self::default()
         }
     }

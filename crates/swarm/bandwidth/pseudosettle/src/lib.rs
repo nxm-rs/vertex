@@ -160,7 +160,7 @@ fn refresh_allowance(state: &dyn SwarmPeerState, refresh_rate: u64) -> i64 {
     }
 
     // Calculate allowance: elapsed_seconds * refresh_rate
-    let allowance = (elapsed as u64) * refresh_rate;
+    let allowance = elapsed * refresh_rate;
 
     // Only add credit if balance is negative (we owe them)
     let balance = state.balance();

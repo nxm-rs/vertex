@@ -58,8 +58,8 @@
 //! node.run().await?;
 //! ```
 
-pub mod behaviour;
-pub mod bootnode;
+pub(crate) mod behaviour;
+pub(crate) mod bootnode;
 
 use std::{sync::Arc, time::Duration};
 
@@ -75,7 +75,7 @@ use tracing::{debug, info, trace, warn};
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeTypes, SwarmTopology};
 use vertex_swarm_kademlia::{KademliaConfig, KademliaTopology};
 use vertex_swarm_peermanager::{
-    AddressManager, DiscoverySender, InternalPeerManager, PeerManager, PeerStore, SwarmPeer,
+    AddressManager, DiscoverySender, InternalPeerManager, PeerManager, PeerStore,
     discovery_channel, run_peer_store_consumer,
 };
 use vertex_swarm_primitives::OverlayAddress;

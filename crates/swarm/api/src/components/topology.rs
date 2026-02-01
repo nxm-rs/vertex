@@ -17,7 +17,7 @@ pub trait SwarmTopology: Send + Sync {
 
     /// Get our own overlay address.
     fn self_address(&self) -> OverlayAddress {
-        self.identity().overlay_address().into()
+        self.identity().overlay_address()
     }
 
     /// Get peers within our neighborhood at the given depth.

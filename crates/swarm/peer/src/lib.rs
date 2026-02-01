@@ -201,7 +201,7 @@ mod tests {
         let multiaddr_bytes = peer1.serialize_multiaddrs();
         let peer2 = SwarmPeer::from_signed(
             &multiaddr_bytes,
-            peer1.signature().clone(),
+            *peer1.signature(),
             *peer1.overlay(),
             nonce,
             TEST_NETWORK_ID,
@@ -247,7 +247,7 @@ mod tests {
 
         let result = SwarmPeer::from_signed(
             &peer1.serialize_multiaddrs(),
-            peer1.signature().clone(),
+            *peer1.signature(),
             overlay2,
             nonce,
             TEST_NETWORK_ID,

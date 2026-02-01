@@ -120,7 +120,7 @@ impl<I: SwarmIdentity> KademliaTopology<I> {
 
     /// Get the base overlay address from the identity.
     fn base(&self) -> OverlayAddress {
-        self.identity.overlay_address().into()
+        self.identity.overlay_address()
     }
 
     /// Calculate proximity order between base and a peer.
@@ -162,7 +162,7 @@ impl<I: SwarmIdentity> KademliaTopology<I> {
                 this.evaluate_connections();
 
                 tick_count = tick_count.wrapping_add(1);
-                if tick_count % STATUS_LOG_INTERVAL == 0 {
+                if tick_count.is_multiple_of(STATUS_LOG_INTERVAL) {
                     this.log_status();
                 }
             }
@@ -335,7 +335,7 @@ impl<I: SwarmIdentity> KademliaTopology<I> {
             let k = known_bins[po as usize];
             if c > 0 || k > 0 {
                 if !bin_status.is_empty() {
-                    bin_status.push_str(" ");
+                    bin_status.push(' ');
                 }
                 // Mark depth boundary with |
                 if po == depth {
@@ -581,7 +581,7 @@ mod tests {
         fn with_overlay(overlay: OverlayAddress) -> Self {
             let signer = LocalSigner::random();
             Self {
-                overlay: overlay.into(),
+                overlay: overlay,
                 signer: Arc::new(signer),
                 spec: vertex_swarmspec::init_testnet(),
             }

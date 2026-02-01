@@ -28,18 +28,12 @@ use super::{
 
 /// Configuration for the client behaviour.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct Config {
     /// Handler configuration.
     pub handler: HandlerConfig,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            handler: HandlerConfig::default(),
-        }
-    }
-}
 
 /// The SwarmClientBehaviour manages client-side protocols.
 ///
@@ -470,23 +464,20 @@ impl NetworkBehaviour for SwarmClientBehaviour {
     }
 
     fn on_swarm_event(&mut self, event: FromSwarm<'_>) {
-        match event {
-            FromSwarm::ConnectionClosed(info) => {
-                // Clean up peer tracking if last connection
-                if info.remaining_established == 0 {
-                    if let Some(overlay) = self.peer_overlays.remove(&info.peer_id) {
-                        self.overlay_peers.remove(&overlay);
-                        debug!(peer_id = %info.peer_id, %overlay, "Peer disconnected");
-                        self.pending_events.push_back(ToSwarm::GenerateEvent(
-                            ClientEvent::PeerDisconnected {
-                                peer_id: info.peer_id,
-                                overlay,
-                            },
-                        ));
-                    }
+        if let FromSwarm::ConnectionClosed(info) = event {
+            // Clean up peer tracking if last connection
+            if info.remaining_established == 0 {
+                if let Some(overlay) = self.peer_overlays.remove(&info.peer_id) {
+                    self.overlay_peers.remove(&overlay);
+                    debug!(peer_id = %info.peer_id, %overlay, "Peer disconnected");
+                    self.pending_events.push_back(ToSwarm::GenerateEvent(
+                        ClientEvent::PeerDisconnected {
+                            peer_id: info.peer_id,
+                            overlay,
+                        },
+                    ));
                 }
             }
-            _ => {}
         }
     }
 

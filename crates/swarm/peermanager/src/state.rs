@@ -265,7 +265,7 @@ impl StoredPeer {
     pub fn update_multiaddrs(&mut self, multiaddrs: Vec<Multiaddr>) {
         self.peer = SwarmPeer::from_validated(
             multiaddrs,
-            self.peer.signature().clone(),
+            *self.peer.signature(),
             B256::from_slice(self.peer.overlay().as_ref()),
             *self.peer.nonce(),
             *self.peer.ethereum_address(),

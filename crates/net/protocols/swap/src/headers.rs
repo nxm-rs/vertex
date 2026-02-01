@@ -44,11 +44,11 @@ impl SettlementHeaders {
     pub fn from_headers(headers: &HashMap<String, Bytes>) -> Option<Self> {
         let exchange_rate = headers
             .get(HEADER_EXCHANGE_RATE)
-            .and_then(|b| parse_u256_bytes(b))?;
+            .and_then(parse_u256_bytes)?;
 
         let deduction = headers
             .get(HEADER_DEDUCTION)
-            .and_then(|b| parse_u256_bytes(b))
+            .and_then(parse_u256_bytes)
             .unwrap_or(U256::ZERO);
 
         Some(Self {

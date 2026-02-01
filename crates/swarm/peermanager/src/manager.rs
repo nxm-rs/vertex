@@ -325,12 +325,7 @@ impl PeerManager {
         // Create or update stored peer
         {
             let mut stored = self.stored_peers.write();
-            if stored.contains_key(&overlay) {
-                // Already have this peer, just update multiaddrs if changed
-                if let Some(peer) = stored.get_mut(&overlay) {
-                    peer.update_multiaddrs(multiaddrs);
-                }
-            } else {
+            if let std::collections::hash_map::Entry::Vacant(e) = stored.entry(overlay) {
                 // New peer - create stored record
                 let peer = StoredPeer::from_components(
                     overlay,
@@ -340,7 +335,12 @@ impl PeerManager {
                     ethereum_address,
                     false,
                 );
-                stored.insert(overlay, peer);
+                e.insert(peer);
+            } else {
+                // Already have this peer, just update multiaddrs if changed
+                if let Some(peer) = stored.get_mut(&overlay) {
+                    peer.update_multiaddrs(multiaddrs);
+                }
             }
         }
 
@@ -391,15 +391,13 @@ impl PeerManager {
 
             for peer in peers {
                 let overlay = B256::from_slice(peer.overlay().as_ref());
-                if stored.contains_key(&overlay) {
-                    if let Some(stored_peer) = stored.get_mut(&overlay) {
-                        stored_peer.update_multiaddrs(peer.multiaddrs().to_vec());
-                        to_persist.push(stored_peer.clone());
-                    }
-                } else {
+                if let std::collections::hash_map::Entry::Vacant(e) = stored.entry(overlay) {
                     let stored_peer = StoredPeer::new(peer, false);
-                    stored.insert(overlay, stored_peer.clone());
+                    e.insert(stored_peer.clone());
                     to_persist.push(stored_peer);
+                } else if let Some(stored_peer) = stored.get_mut(&overlay) {
+                    stored_peer.update_multiaddrs(peer.multiaddrs().to_vec());
+                    to_persist.push(stored_peer.clone());
                 }
             }
 
