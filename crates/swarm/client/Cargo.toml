@@ -68,6 +68,10 @@ tracing.workspace = true
 ## cli (optional)
 clap = { workspace = true, features = ["derive", "env"], optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
+strum = { workspace = true, optional = true }
+vertex-node-api = { workspace = true, optional = true }
+vertex-swarm-bandwidth-pricing = { workspace = true, optional = true, features = ["cli"] }
+vertex-swarm-localstore = { workspace = true, optional = true }
 
 [dev-dependencies]
 alloy-primitives.workspace = true
@@ -78,4 +82,12 @@ tokio = { workspace = true, features = ["rt", "macros"] }
 [features]
 default = ["std"]
 std = []
-cli = ["dep:clap", "dep:serde"]
+cli = [
+    "dep:clap",
+    "dep:serde",
+    "dep:strum",
+    "dep:vertex-node-api",
+    "dep:vertex-swarm-bandwidth-pricing",
+    "dep:vertex-swarm-localstore",
+    "vertex-swarm-primitives/serde",
+]

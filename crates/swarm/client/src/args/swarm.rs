@@ -1,44 +1,19 @@
 //! Aggregated Swarm protocol CLI arguments.
-//!
-//! [`SwarmArgs`] combines all Swarm-specific configuration into a single
-//! struct that can be flattened into a CLI parser. This is designed to be
-//! composed with generic node arguments from `vertex-node-core`.
-//!
-//! # Example
-//!
-//! ```ignore
-//! use clap::Parser;
-//! use vertex_node_core::args::NodeArgs;
-//! use vertex_swarm_core::args::SwarmArgs;
-//!
-//! #[derive(Parser)]
-//! struct Cli {
-//!     #[command(flatten)]
-//!     node: NodeArgs,      // Generic infrastructure
-//!
-//!     #[command(flatten)]
-//!     swarm: SwarmArgs,    // Protocol-specific
-//! }
-//! ```
 
 use std::path::PathBuf;
 
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
-use vertex_swarm_primitives::SwarmNodeType;
-
 use vertex_swarm_bandwidth::BandwidthArgs;
 use vertex_swarm_bandwidth_pricing::PricingArgs;
-use vertex_swarm_client::args::NetworkArgs;
 use vertex_swarm_identity::IdentityArgs;
 use vertex_swarm_localstore::LocalStoreArgs;
+use vertex_swarm_primitives::SwarmNodeType;
 
-use super::StorageIncentiveArgs;
+use super::{NetworkArgs, StorageIncentiveArgs};
 
-/// CLI argument type for node mode selection.
-///
-/// Maps to [`SwarmNodeType`]. Use `.into()` for conversion.
+/// CLI argument for node mode selection. Maps to [`SwarmNodeType`].
 #[derive(
     Debug,
     Clone,
@@ -75,68 +50,53 @@ impl From<SwarmNodeType> for NodeTypeArg {
     }
 }
 
-/// Aggregated Swarm protocol arguments.
+/// Aggregated Swarm protocol CLI arguments.
 ///
-/// This struct combines all Swarm-specific CLI arguments into a single
-/// flattened group. It's designed to be composed with [`vertex_node_core::args::NodeArgs`]
-/// in the binary's CLI parser.
-#[derive(Debug, Args, Clone, Serialize, Deserialize)]
+/// Combines all Swarm-specific configuration into a single flattened group
+/// for use with clap.
+#[derive(Debug, Args, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
-#[derive(Default)]
 pub struct SwarmArgs {
-    /// Node mode: bootnode (topology only), client (read+write), storer (storage+staking).
+    /// Node mode: bootnode, client, or storer.
     #[arg(long = "mode", value_enum, default_value_t = NodeTypeArg::Client)]
     pub node_type: NodeTypeArg,
 
-    /// Network configuration.
     #[command(flatten)]
     pub network: NetworkArgs,
 
-    /// Bandwidth accounting configuration.
     #[command(flatten)]
     pub bandwidth: BandwidthArgs,
 
-    /// Chunk pricing configuration.
     #[command(flatten)]
     pub pricing: PricingArgs,
 
-    /// Local store configuration.
     #[command(flatten)]
     pub localstore: LocalStoreArgs,
 
-    /// Storage incentive configuration.
     #[command(flatten)]
     pub storage_incentives: StorageIncentiveArgs,
 
-    /// Identity configuration.
     #[command(flatten)]
     pub identity: IdentityArgs,
 
-    /// Run the node on the mainnet.
+    /// Run on mainnet.
     #[arg(long, conflicts_with_all = ["testnet", "swarmspec"])]
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub mainnet: bool,
 
-    /// Run the node on the testnet.
+    /// Run on testnet.
     #[arg(long, conflicts_with_all = ["mainnet", "swarmspec"])]
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub testnet: bool,
 
-    /// Path to a custom SwarmSpec file (JSON/TOML) for local/dev networks.
-    ///
-    /// The SwarmSpec defines the complete network configuration including:
-    /// - network_id: The network identifier
-    /// - network_name: Human-readable network name
-    /// - bootnodes: List of bootnode multiaddrs
-    ///
-    /// Cannot be used with --mainnet or --testnet.
+    /// Path to custom SwarmSpec file for local/dev networks.
     #[arg(long, conflicts_with_all = ["mainnet", "testnet"], value_name = "PATH")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub swarmspec: Option<PathBuf>,
 }
 
 impl SwarmArgs {
-    /// Validate all argument combinations.
+    /// Validate argument combinations.
     pub fn validate(&self) -> Result<(), String> {
         self.bandwidth.validate()?;
         Ok(())

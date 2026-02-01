@@ -1,64 +1,28 @@
 //! Swarm protocol configuration.
-//!
-//! [`SwarmConfig`] contains all Swarm-specific configuration settings.
-//! It implements [`ProtocolConfig`] for use with the generic
-//! [`vertex_node_core::config::FullNodeConfig`].
-//!
-//! # Example
-//!
-//! ```ignore
-//! use vertex_node_core::config::FullNodeConfig;
-//! use vertex_swarm_core::SwarmConfig;
-//!
-//! // Load combined config (infrastructure + Swarm protocol)
-//! let config = FullNodeConfig::<SwarmConfig>::load(Some(&path))?;
-//!
-//! // Access Swarm-specific settings
-//! println!("Node type: {:?}", config.protocol.node_type);
-//! println!("Max peers: {}", config.protocol.network.max_peers);
-//! ```
 
 use serde::{Deserialize, Serialize};
 use vertex_node_api::NodeProtocolConfig;
-
-use vertex_swarm_primitives::{BandwidthMode, SwarmNodeType};
-
 use vertex_swarm_bandwidth::BandwidthArgs;
 use vertex_swarm_bandwidth_pricing::PricingArgs;
-use vertex_swarm_client::args::NetworkArgs;
 use vertex_swarm_identity::IdentityArgs;
 use vertex_swarm_localstore::LocalStoreArgs;
+use vertex_swarm_primitives::{BandwidthMode, SwarmNodeType};
 
-use crate::args::{StorageIncentiveArgs, SwarmArgs};
+use crate::args::{NetworkArgs, StorageIncentiveArgs, SwarmArgs};
 
 /// Swarm protocol configuration.
 ///
-/// Contains all Swarm-specific settings, separate from generic node
-/// infrastructure configuration. This struct is used as the type parameter
-/// for [`vertex_node_core::config::FullNodeConfig`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Contains all Swarm-specific settings. Used as the type parameter
+/// for `vertex_node_core::config::FullNodeConfig`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-#[derive(Default)]
 pub struct SwarmConfig {
-    /// Node type (determines capabilities).
     pub node_type: SwarmNodeType,
-
-    /// Network configuration.
     pub network: NetworkArgs,
-
-    /// Bandwidth accounting configuration.
     pub bandwidth: BandwidthArgs,
-
-    /// Chunk pricing configuration.
     pub pricing: PricingArgs,
-
-    /// Local store configuration.
     pub localstore: LocalStoreArgs,
-
-    /// Storage incentive configuration.
     pub storage_incentives: StorageIncentiveArgs,
-
-    /// Identity configuration.
     pub identity: IdentityArgs,
 }
 

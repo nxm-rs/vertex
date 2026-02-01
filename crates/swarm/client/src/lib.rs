@@ -1,41 +1,19 @@
 //! Core Vertex client with libp2p integration.
 //!
-//! This crate is **THE LIBP2P BOUNDARY**:
-//! - **Below**: Uses PeerId, Multiaddr, libp2p types
-//! - **Above**: Exposes only OverlayAddress and NetworkEvent/NetworkCommand
+//! This crate is the libp2p boundary layer for the Swarm protocol.
 //!
-//! # Architecture
-//!
-//! ```text
-//! vertex-swarm-core (business logic - libp2p FREE)
-//!         │
-//!         ▼
-//! THIS CRATE: vertex-swarm-client (THE BOUNDARY)
-//! - SwarmNode: wraps libp2p::Swarm
-//! - NodeBehaviour: composed NetworkBehaviour
-//! - Client: implements SwarmClient trait
-//! - ClientService: event processing
-//! - PeerId ↔ OverlayAddress translation via PeerManager
-//!         │
-//!         ▼
-//! vertex-net-* (libp2p protocol implementations)
-//! - vertex-net-topology: handshake, hive, pingpong
-//! - vertex-net-pricing, vertex-net-retrieval, vertex-net-pushsync
-//! ```
-//!
-//! # Components
-//!
-//! - [`SwarmNode`]: Wraps libp2p::Swarm, coordinates network activity
-//! - [`NodeBehaviour`]: Composed libp2p NetworkBehaviour
-//! - [`Client`]: Unified client implementing [`SwarmClient`] trait
-//! - [`ClientService`]: Processes network events
-//! - [`ClientHandle`]: Sends commands to the network layer
-//! - [`BootnodeProvider`]: Bootstrap node address resolution
+//! With the `cli` feature enabled, also provides [`SwarmArgs`] and [`SwarmConfig`]
+//! for CLI argument parsing and protocol configuration.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
 #[cfg(feature = "cli")]
 pub mod args;
+#[cfg(feature = "cli")]
+mod config;
+
+#[cfg(feature = "cli")]
+pub use config::SwarmConfig;
 
 mod bootnodes;
 mod client;

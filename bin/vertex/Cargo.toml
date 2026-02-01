@@ -11,10 +11,26 @@ name = "vertex"
 path = "src/main.rs"
 
 [dependencies]
+# vertex - node infrastructure
 vertex-node-builder.workspace = true
-vertex-swarm-api.workspace = true
-vertex-swarm-node.workspace = true
+vertex-node-commands.workspace = true
+vertex-node-core.workspace = true
+vertex-tasks.workspace = true
+
+# vertex - swarm protocol
+vertex-swarm-builder.workspace = true
+vertex-swarm-client = { workspace = true, features = ["cli"] }
+vertex-swarm-identity.workspace = true
+vertex-swarm-peermanager.workspace = true
+vertex-swarm-primitives.workspace = true
+vertex-swarmspec.workspace = true
+
+# alloy
+alloy-primitives.workspace = true
+
+# misc
+clap.workspace = true
 eyre.workspace = true
-hex.workspace = true
+rand.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true

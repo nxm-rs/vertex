@@ -1,30 +1,4 @@
-//! Swarm CLI argument assembly and entry points.
-//!
-//! This module provides the Swarm-specific CLI infrastructure:
-//! - [`SwarmCli`] - Swarm-specific top-level CLI
-//! - [`SwarmCommands`] - Swarm subcommands
-//! - [`SwarmRunNodeArgs`] - Combined Swarm node arguments
-//! - [`run`] - Entry point function
-//!
-//! # Usage
-//!
-//! ```ignore
-//! // main.rs
-//! use vertex_swarm_node::cli;
-//! use vertex_swarm_builder::SwarmNodeBuilder;
-//!
-//! #[tokio::main]
-//! async fn main() -> eyre::Result<()> {
-//!     cli::run(|ctx, _args| async move {
-//!         SwarmNodeBuilder::new(ctx)
-//!             .launch()
-//!             .await?
-//!             .wait_for_exit()
-//!             .await
-//!             .map_err(Into::into)
-//!     }).await
-//! }
-//! ```
+//! Swarm CLI entry point.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -39,15 +13,12 @@ use vertex_node_core::dirs::DataDirs;
 use vertex_swarm_builder::{
     SwarmLaunchContext, create_and_save_signer, load_signer_from_keystore, resolve_password,
 };
-use vertex_swarm_core::SwarmConfig;
-use vertex_swarm_core::args::SwarmArgs;
+use vertex_swarm_client::SwarmConfig;
+use vertex_swarm_client::args::SwarmArgs;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_peermanager::{FilePeerStore, PeerStore};
 use vertex_swarmspec::{Hive, SwarmSpec, init_mainnet, init_testnet};
 use vertex_tasks::TaskExecutor;
-
-// Re-export types that are part of the public API
-pub use vertex_swarm_primitives::SwarmNodeType;
 
 /// Vertex Swarm - Ethereum Swarm Node Implementation
 #[derive(Debug, Parser)]
@@ -89,33 +60,7 @@ pub struct SwarmRunNodeArgs {
     pub swarm: SwarmArgs,
 }
 
-/// Run the Vertex Swarm node with a user-provided closure.
-///
-/// This is the recommended entry point for binaries. The closure receives
-/// the fully initialized [`SwarmLaunchContext`] and can decide which node
-/// type to run based on configuration.
-///
-/// Uses the generic [`run_cli`] from vertex-node-commands for error handling
-/// and logging setup.
-///
-/// # Example
-///
-/// ```ignore
-/// use vertex_swarm_node::cli;
-/// use vertex_swarm_builder::SwarmNodeBuilder;
-///
-/// #[tokio::main]
-/// async fn main() -> eyre::Result<()> {
-///     cli::run(|ctx, _args| async move {
-///         SwarmNodeBuilder::new(ctx)
-///             .launch()
-///             .await?
-///             .wait_for_exit()
-///             .await
-///             .map_err(Into::into)
-///     }).await
-/// }
-/// ```
+/// Run the Swarm node CLI with a user-provided closure.
 pub async fn run<F, Fut>(runner: F) -> Result<()>
 where
     F: FnOnce(SwarmLaunchContext, SwarmRunNodeArgs) -> Fut,
@@ -135,14 +80,7 @@ where
 }
 
 /// Build a Swarm launch context from CLI arguments.
-///
-/// This handles:
-/// - Network spec resolution (mainnet/testnet/custom)
-/// - Data directory initialization
-/// - Config loading and merging
-/// - Identity creation (ephemeral or persistent)
-/// - Peer store initialization
-pub async fn build_launch_context(args: &SwarmRunNodeArgs) -> Result<SwarmLaunchContext> {
+async fn build_launch_context(args: &SwarmRunNodeArgs) -> Result<SwarmLaunchContext> {
     use tracing::debug;
 
     // Validate argument combinations
@@ -224,9 +162,7 @@ pub async fn build_launch_context(args: &SwarmRunNodeArgs) -> Result<SwarmLaunch
 }
 
 /// Resolve the network specification from CLI arguments.
-///
-/// Returns the appropriate `Hive` spec based on network flags.
-pub fn resolve_network_spec(args: &SwarmArgs) -> Result<Arc<Hive>> {
+fn resolve_network_spec(args: &SwarmArgs) -> Result<Arc<Hive>> {
     if args.is_mainnet() {
         Ok(init_mainnet())
     } else if args.is_testnet() {

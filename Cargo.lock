@@ -6658,13 +6658,22 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vertex"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
+ "clap 4.5.56",
  "eyre",
- "hex",
+ "rand 0.9.2",
  "tokio",
  "tracing",
  "vertex-node-builder",
- "vertex-swarm-api",
- "vertex-swarm-node",
+ "vertex-node-commands",
+ "vertex-node-core",
+ "vertex-swarm-builder",
+ "vertex-swarm-client",
+ "vertex-swarm-identity",
+ "vertex-swarm-peermanager",
+ "vertex-swarm-primitives",
+ "vertex-swarmspec",
+ "vertex-tasks",
 ]
 
 [[package]]
@@ -7117,7 +7126,7 @@ dependencies = [
  "vertex-swarm-bandwidth-pricing",
  "vertex-swarm-bandwidth-pseudosettle",
  "vertex-swarm-bandwidth-swap",
- "vertex-swarm-core",
+ "vertex-swarm-client",
  "vertex-swarm-identity",
  "vertex-swarm-kademlia",
  "vertex-swarm-peermanager",
@@ -7141,6 +7150,7 @@ dependencies = [
  "nectar-primitives",
  "parking_lot",
  "serde",
+ "strum",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -7150,42 +7160,21 @@ dependencies = [
  "vertex-net-pushsync",
  "vertex-net-retrieval",
  "vertex-net-swap",
+ "vertex-node-api",
  "vertex-node-types",
  "vertex-swarm-api",
  "vertex-swarm-bandwidth",
  "vertex-swarm-bandwidth-chequebook",
+ "vertex-swarm-bandwidth-pricing",
  "vertex-swarm-identity",
  "vertex-swarm-kademlia",
+ "vertex-swarm-localstore",
  "vertex-swarm-peer",
  "vertex-swarm-peermanager",
  "vertex-swarm-primitives",
  "vertex-swarm-topology",
  "vertex-swarmspec",
  "vertex-tasks",
-]
-
-[[package]]
-name = "vertex-swarm-core"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "alloy-signer",
- "alloy-signer-local",
- "clap 4.5.56",
- "figment",
- "hex",
- "rand 0.9.2",
- "serde",
- "strum",
- "vertex-node-api",
- "vertex-swarm-api",
- "vertex-swarm-bandwidth",
- "vertex-swarm-bandwidth-pricing",
- "vertex-swarm-client",
- "vertex-swarm-identity",
- "vertex-swarm-localstore",
- "vertex-swarm-primitives",
- "vertex-swarmspec",
 ]
 
 [[package]]
@@ -7247,29 +7236,6 @@ dependencies = [
  "serde",
  "vertex-swarm-api",
  "vertex-swarmspec",
-]
-
-[[package]]
-name = "vertex-swarm-node"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "clap 4.5.56",
- "eyre",
- "hex",
- "rand 0.9.2",
- "tracing",
- "vertex-node-builder",
- "vertex-node-commands",
- "vertex-node-core",
- "vertex-swarm-api",
- "vertex-swarm-builder",
- "vertex-swarm-core",
- "vertex-swarm-identity",
- "vertex-swarm-peermanager",
- "vertex-swarm-primitives",
- "vertex-swarmspec",
- "vertex-tasks",
 ]
 
 [[package]]
