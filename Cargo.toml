@@ -267,4 +267,4 @@ serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 serde_with = { version = "3", default-features = false, features = ["macros"] }
 strum = { version = "0.27", features = ["derive"] }
 thiserror = { version = "2.0", default-features = false }
-vergen-gitcl = "1"
+vergen-gitcl = "9"
