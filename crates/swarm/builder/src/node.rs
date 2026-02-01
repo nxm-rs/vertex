@@ -34,9 +34,9 @@ use vertex_swarm_api::{
 };
 use vertex_swarm_bandwidth::{Accounting, DefaultAccountingConfig};
 use vertex_swarm_bandwidth_pseudosettle::{PseudosettleProvider, create_pseudosettle_actor};
+use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::SwarmArgs;
 use vertex_swarm_node::{ClientCommand, SwarmNode};
-use vertex_swarm_identity::Identity;
 use vertex_swarm_peermanager::PeerStore;
 use vertex_swarmspec::Hive;
 use vertex_tasks::{SpawnableTask, TaskExecutor};

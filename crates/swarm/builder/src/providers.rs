@@ -11,9 +11,9 @@ use nectar_primitives::SwarmAddress;
 use vertex_swarm_api::{
     ChunkRetrievalError, ChunkRetrievalResult, SwarmChunkProvider, SwarmTopology,
 };
-use vertex_swarm_node::ClientHandle;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_kademlia::KademliaTopology;
+use vertex_swarm_node::ClientHandle;
 
 /// Chunk provider implementation that uses a ClientHandle for network retrieval.
 ///
