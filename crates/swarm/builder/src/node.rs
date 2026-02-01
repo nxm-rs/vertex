@@ -35,7 +35,7 @@ use vertex_swarm_api::{
 use vertex_swarm_bandwidth::{Accounting, DefaultAccountingConfig};
 use vertex_swarm_bandwidth_pseudosettle::{PseudosettleProvider, create_pseudosettle_actor};
 use vertex_swarm_identity::Identity;
-use vertex_swarm_node::args::SwarmArgs;
+use vertex_swarm_node::args::ProtocolArgs;
 use vertex_swarm_node::{ClientCommand, SwarmNode};
 use vertex_swarm_peermanager::PeerStore;
 use vertex_swarmspec::Hive;
@@ -78,7 +78,7 @@ impl<N: NodeTypeDefaults> SwarmNodeBuilder<N> {
     /// Create a new builder with default components for the node type.
     ///
     /// Extracts configuration from the launch context and swarm args.
-    pub fn new(ctx: &SwarmLaunchContext, _args: &SwarmArgs) -> Self {
+    pub fn new(ctx: &SwarmLaunchContext, _args: &ProtocolArgs) -> Self {
         let network_config = DefaultNetworkConfig {
             listen_addrs: ctx.config.protocol.network.listen_addrs(),
             bootnodes: ctx.config.protocol.network.bootnodes(),

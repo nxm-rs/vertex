@@ -31,7 +31,7 @@ use crate::BootnodeProvider;
 
 /// Bootnode network behaviour with only topology protocols.
 ///
-/// Unlike [`SwarmNodeBehaviour`](super::behaviour::SwarmNodeBehaviour), this excludes
+/// Unlike [`NodeBehaviour`](super::behaviour::NodeBehaviour), this excludes
 /// client protocols (pricing, retrieval, pushsync, settlement).
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "BootnodeEvent")]

@@ -1,7 +1,7 @@
 //! Client service for managing network interactions.
 //!
 //! The `ClientService` bridges the business logic layer with the network layer.
-//! It owns channels to communicate with `SwarmClientBehaviour` and processes
+//! It owns channels to communicate with `ClientBehaviour` and processes
 //! incoming events.
 
 use std::collections::HashMap;

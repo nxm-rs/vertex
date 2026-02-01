@@ -85,7 +85,7 @@ use vertex_tasks::TaskExecutor;
 
 use crate::{
     BootnodeProvider, ClientEvent, ClientHandle, ClientService,
-    node::behaviour::{NodeEvent, SwarmNodeBehaviour},
+    node::behaviour::{NodeBehaviour, NodeEvent},
 };
 
 /// A Swarm node generic over the node type hierarchy.
@@ -96,7 +96,7 @@ use crate::{
 /// - `N: SwarmStorerNodeTypes` - can also store and sync chunks (storer)
 pub struct SwarmNode<N: SwarmNodeTypes> {
     /// The libp2p swarm.
-    swarm: Swarm<SwarmNodeBehaviour<N>>,
+    swarm: Swarm<NodeBehaviour<N>>,
 
     /// Swarm identity.
     identity: N::Identity,
@@ -700,15 +700,14 @@ impl<N: SwarmNodeTypes> SwarmNodeBuilder<N> {
             .with_dns()?
             .with_behaviour(|keypair| {
                 let behaviour = match address_manager_for_behaviour {
-                    Some(mgr) => SwarmNodeBehaviour::with_address_manager(
+                    Some(mgr) => NodeBehaviour::with_address_manager(
                         keypair.public().clone(),
                         identity_for_behaviour.clone(),
                         mgr,
                     ),
-                    None => SwarmNodeBehaviour::new(
-                        keypair.public().clone(),
-                        identity_for_behaviour.clone(),
-                    ),
+                    None => {
+                        NodeBehaviour::new(keypair.public().clone(), identity_for_behaviour.clone())
+                    }
                 };
                 Ok(behaviour)
             })?

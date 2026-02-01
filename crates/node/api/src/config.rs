@@ -138,7 +138,7 @@ pub trait NodeConfig {
 /// }
 ///
 /// impl NodeProtocolConfig for SwarmConfig {
-///     type Args = SwarmArgs;
+///     type Args = ProtocolArgs;
 ///
 ///     fn apply_args(&mut self, args: &Self::Args) {
 ///         self.node_type = args.node_type;

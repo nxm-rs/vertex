@@ -2,7 +2,7 @@
 //!
 //! This crate is the libp2p boundary layer for the Swarm protocol.
 //!
-//! With the `cli` feature enabled, also provides [`SwarmArgs`] and [`SwarmConfig`]
+//! With the `cli` feature enabled, also provides [`ProtocolArgs`] and [`SwarmConfig`]
 //! for CLI argument parsing and protocol configuration.
 
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -22,7 +22,7 @@ pub mod protocol;
 mod service;
 mod stats;
 
-pub use node::behaviour::{NodeEvent, SwarmNodeBehaviour};
+pub use node::behaviour::{NodeBehaviour, NodeEvent};
 pub use node::bootnode::{BootNode, BootNodeBuilder, BootnodeBehaviour, BootnodeEvent};
 pub use node::{SwarmNode, SwarmNodeBuilder};
 
@@ -38,8 +38,8 @@ pub use protocol::{PseudosettleEvent, SwapEvent};
 
 // Re-export protocol behaviour types
 pub use protocol::{
-    BehaviourConfig as ClientBehaviourConfig, HandlerConfig as ClientHandlerConfig,
-    SwarmClientBehaviour, SwarmClientHandler,
+    BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientHandler,
+    HandlerConfig as ClientHandlerConfig,
 };
 
 pub use client::{BootnodeClient, BuiltSwarmComponents, Client, FullClient};

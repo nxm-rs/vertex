@@ -6,4 +6,4 @@ mod swarm;
 
 pub use network::NetworkArgs;
 pub use storage::StorageIncentiveArgs;
-pub use swarm::{NodeTypeArg, SwarmArgs};
+pub use swarm::{NodeTypeArg, ProtocolArgs};

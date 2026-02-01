@@ -1,4 +1,4 @@
-//! SwarmClientBehaviour for managing client-side protocols.
+//! ClientBehaviour for managing client-side protocols.
 //!
 //! This behaviour manages multiple client protocols (pricing, retrieval, pushsync)
 //! using a per-connection handler pattern. Handlers start in dormant state and are
@@ -23,7 +23,7 @@ use vertex_swarm_primitives::OverlayAddress;
 
 use super::{
     ClientCommand, ClientEvent, PseudosettleEvent, SwapEvent,
-    handler::{Config as HandlerConfig, HandlerCommand, HandlerEvent, SwarmClientHandler},
+    handler::{ClientHandler, Config as HandlerConfig, HandlerCommand, HandlerEvent},
 };
 
 /// Configuration for the client behaviour.
@@ -33,7 +33,7 @@ pub struct Config {
     pub handler: HandlerConfig,
 }
 
-/// The SwarmClientBehaviour manages client-side protocols.
+/// The ClientBehaviour manages client-side protocols.
 ///
 /// It creates handlers in dormant state for each connection, and activates
 /// them after receiving `ActivatePeer` commands (typically sent after
@@ -45,7 +45,7 @@ pub struct Config {
 /// event senders. Use [`set_pseudosettle_events`](Self::set_pseudosettle_events)
 /// and [`set_swap_events`](Self::set_swap_events) to configure routing.
 /// Events are still emitted as [`ClientEvent`] for other consumers.
-pub struct SwarmClientBehaviour {
+pub struct ClientBehaviour {
     config: Config,
     /// Map of peer_id -> overlay for activated peers.
     peer_overlays: HashMap<PeerId, OverlayAddress>,
@@ -59,7 +59,7 @@ pub struct SwarmClientBehaviour {
     swap_event_tx: Option<mpsc::UnboundedSender<SwapEvent>>,
 }
 
-impl SwarmClientBehaviour {
+impl ClientBehaviour {
     /// Create a new client behaviour with the given configuration.
     pub fn new(config: Config) -> Self {
         Self {
@@ -434,8 +434,8 @@ impl SwarmClientBehaviour {
     }
 }
 
-impl NetworkBehaviour for SwarmClientBehaviour {
-    type ConnectionHandler = SwarmClientHandler;
+impl NetworkBehaviour for ClientBehaviour {
+    type ConnectionHandler = ClientHandler;
     type ToSwarm = ClientEvent;
 
     fn handle_established_inbound_connection(
@@ -446,7 +446,7 @@ impl NetworkBehaviour for SwarmClientBehaviour {
         _remote_addr: &Multiaddr,
     ) -> Result<THandler<Self>, ConnectionDenied> {
         // Create a dormant handler - will be activated after handshake
-        Ok(SwarmClientHandler::new(self.config.handler.clone()))
+        Ok(ClientHandler::new(self.config.handler.clone()))
     }
 
     fn handle_established_outbound_connection(
@@ -458,7 +458,7 @@ impl NetworkBehaviour for SwarmClientBehaviour {
         _port_use: libp2p::core::transport::PortUse,
     ) -> Result<THandler<Self>, ConnectionDenied> {
         // Create a dormant handler - will be activated after handshake
-        Ok(SwarmClientHandler::new(self.config.handler.clone()))
+        Ok(ClientHandler::new(self.config.handler.clone()))
     }
 
     fn on_swarm_event(&mut self, event: FromSwarm<'_>) {

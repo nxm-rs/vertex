@@ -8,7 +8,7 @@ use vertex_swarm_identity::IdentityArgs;
 use vertex_swarm_localstore::LocalStoreArgs;
 use vertex_swarm_primitives::{BandwidthMode, SwarmNodeType};
 
-use crate::args::{NetworkArgs, StorageIncentiveArgs, SwarmArgs};
+use crate::args::{NetworkArgs, ProtocolArgs, StorageIncentiveArgs};
 
 /// Swarm protocol configuration.
 ///
@@ -27,7 +27,7 @@ pub struct SwarmConfig {
 }
 
 impl NodeProtocolConfig for SwarmConfig {
-    type Args = SwarmArgs;
+    type Args = ProtocolArgs;
 
     fn apply_args(&mut self, args: &Self::Args) {
         self.node_type = args.node_type.into();
