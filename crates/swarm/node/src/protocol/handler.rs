@@ -1,6 +1,6 @@
 //! Connection handler for client protocols.
 //!
-//! The `SwarmClientHandler` manages multiple protocols on a single connection:
+//! The `ClientHandler` manages multiple protocols on a single connection:
 //! - Pricing: Payment threshold exchange
 //! - Retrieval: Chunk request/response
 //! - PushSync: Chunk push with receipt
@@ -278,7 +278,7 @@ pub(super) enum OutboundOutput {
 /// Swarm client connection handler.
 ///
 /// Manages multiple client protocols on a single peer connection.
-pub struct SwarmClientHandler {
+pub struct ClientHandler {
     config: Config,
     state: State,
     /// Counter for request IDs.
@@ -294,7 +294,7 @@ pub struct SwarmClientHandler {
 }
 
 #[allow(dead_code)]
-impl SwarmClientHandler {
+impl ClientHandler {
     /// Create a new handler in dormant state.
     pub fn new(config: Config) -> Self {
         Self {
@@ -458,7 +458,7 @@ impl SwarmClientHandler {
 /// Uses `ClientOutboundUpgrade` for outbound requests with `ClientOutboundInfo`
 /// to track which request type is in flight.
 #[allow(deprecated)]
-impl ConnectionHandler for SwarmClientHandler {
+impl ConnectionHandler for ClientHandler {
     type FromBehaviour = HandlerCommand;
     type ToBehaviour = HandlerEvent;
     type InboundProtocol = ClientInboundUpgrade;
@@ -625,7 +625,7 @@ impl ConnectionHandler for SwarmClientHandler {
     }
 }
 
-impl SwarmClientHandler {
+impl ClientHandler {
     /// Handle an inbound protocol completion.
     fn handle_inbound_output(&mut self, output: ClientInboundOutput) {
         match output {

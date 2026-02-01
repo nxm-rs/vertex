@@ -17,7 +17,7 @@
 //! ```ignore
 //! use clap::Parser;
 //! use vertex_node_core::args::{LogArgs, InfraArgs};
-//! use vertex_swarm_core::args::SwarmArgs;
+//! use vertex_swarm_core::args::ProtocolArgs;
 //!
 //! #[derive(Parser)]
 //! struct Cli {
@@ -37,7 +37,7 @@
 //!     infra: InfraArgs,        // Generic infrastructure
 //!
 //!     #[command(flatten)]
-//!     swarm: SwarmArgs,        // Protocol-specific
+//!     swarm: ProtocolArgs,        // Protocol-specific
 //! }
 //! ```
 

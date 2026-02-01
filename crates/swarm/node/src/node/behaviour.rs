@@ -11,9 +11,7 @@
 
 use std::sync::Arc;
 
-use crate::protocol::{
-    BehaviourConfig as ClientBehaviourConfig, ClientEvent, SwarmClientBehaviour,
-};
+use crate::protocol::{BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientEvent};
 use libp2p::{identify, identity::PublicKey, swarm::NetworkBehaviour};
 use vertex_swarm_api::SwarmNodeTypes;
 use vertex_swarm_peermanager::AddressManager;
@@ -27,7 +25,7 @@ use vertex_swarm_topology::{
 /// Generic over `N: SwarmNodeTypes` to support different node configurations.
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "NodeEvent")]
-pub struct SwarmNodeBehaviour<N: SwarmNodeTypes> {
+pub struct NodeBehaviour<N: SwarmNodeTypes> {
     /// Identify protocol - exchange peer info.
     pub identify: identify::Behaviour,
 
@@ -35,10 +33,10 @@ pub struct SwarmNodeBehaviour<N: SwarmNodeTypes> {
     pub topology: SwarmTopologyBehaviour<N>,
 
     /// Client behaviour - pricing, retrieval, pushsync.
-    pub client: SwarmClientBehaviour,
+    pub client: ClientBehaviour,
 }
 
-impl<N: SwarmNodeTypes> SwarmNodeBehaviour<N> {
+impl<N: SwarmNodeTypes> NodeBehaviour<N> {
     /// Create a new node behaviour.
     pub fn new(local_public_key: PublicKey, identity: N::Identity) -> Self {
         Self {
@@ -47,7 +45,7 @@ impl<N: SwarmNodeTypes> SwarmNodeBehaviour<N> {
                 local_public_key,
             )),
             topology: SwarmTopologyBehaviour::new(identity, TopologyBehaviourConfig::default()),
-            client: SwarmClientBehaviour::new(ClientBehaviourConfig::default()),
+            client: ClientBehaviour::new(ClientBehaviourConfig::default()),
         }
     }
 
@@ -67,7 +65,7 @@ impl<N: SwarmNodeTypes> SwarmNodeBehaviour<N> {
                 TopologyBehaviourConfig::default(),
                 address_manager,
             ),
-            client: SwarmClientBehaviour::new(ClientBehaviourConfig::default()),
+            client: ClientBehaviour::new(ClientBehaviourConfig::default()),
         }
     }
 }

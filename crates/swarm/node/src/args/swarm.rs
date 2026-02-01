@@ -56,7 +56,7 @@ impl From<SwarmNodeType> for NodeTypeArg {
 /// for use with clap.
 #[derive(Debug, Args, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
-pub struct SwarmArgs {
+pub struct ProtocolArgs {
     /// Node mode: bootnode, client, or storer.
     #[arg(long = "mode", value_enum, default_value_t = NodeTypeArg::Client)]
     pub node_type: NodeTypeArg,
@@ -95,7 +95,7 @@ pub struct SwarmArgs {
     pub swarmspec: Option<PathBuf>,
 }
 
-impl SwarmArgs {
+impl ProtocolArgs {
     /// Validate argument combinations.
     pub fn validate(&self) -> Result<(), String> {
         self.bandwidth.validate()?;

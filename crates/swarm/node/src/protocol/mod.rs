@@ -1,6 +1,6 @@
 //! Swarm client behaviour for the Vertex node.
 //!
-//! This module provides the `SwarmClientBehaviour` which handles all client-side
+//! This module provides the `ClientBehaviour` which handles all client-side
 //! protocols on the Swarm network:
 //!
 //! - **Pricing**: Payment threshold exchange
@@ -20,7 +20,7 @@
 //!
 //! # Handler Lifecycle
 //!
-//! The `SwarmClientHandler` is created in dormant state when a connection is
+//! The `ClientHandler` is created in dormant state when a connection is
 //! established. After the handshake completes (signaled by `TopologyEvent::PeerAuthenticated`),
 //! the node sends an `ActivatePeer` command which transitions the handler to
 //! active state with:
@@ -39,7 +39,7 @@
 //!                              ▲ events    │ commands
 //!                              │           ▼
 //! ┌─────────────────────────────────────────────────────────────┐
-//! │                  SwarmClientBehaviour                        │
+//! │                  ClientBehaviour                        │
 //! │                  (protocol plumbing)                         │
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
@@ -49,9 +49,9 @@ mod events;
 mod handler;
 pub mod upgrade;
 
-pub use behaviour::{Config as BehaviourConfig, SwarmClientBehaviour};
+pub use behaviour::{ClientBehaviour, Config as BehaviourConfig};
 pub use events::{ClientCommand, ClientEvent, PseudosettleEvent, SwapEvent};
-pub use handler::{Config as HandlerConfig, HandlerCommand, HandlerEvent, SwarmClientHandler};
+pub use handler::{ClientHandler, Config as HandlerConfig, HandlerCommand, HandlerEvent};
 pub use upgrade::{
     ClientInboundOutput, ClientInboundUpgrade, ClientOutboundInfo, ClientOutboundOutput,
     ClientOutboundRequest, ClientOutboundUpgrade, ClientUpgradeError,

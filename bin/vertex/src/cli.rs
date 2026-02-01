@@ -15,7 +15,7 @@ use vertex_swarm_builder::{
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::SwarmConfig;
-use vertex_swarm_node::args::SwarmArgs;
+use vertex_swarm_node::args::ProtocolArgs;
 use vertex_swarm_peermanager::{FilePeerStore, PeerStore};
 use vertex_swarmspec::{Hive, SwarmSpec, init_mainnet, init_testnet};
 use vertex_tasks::TaskExecutor;
@@ -57,7 +57,7 @@ pub struct SwarmRunNodeArgs {
 
     /// Swarm protocol configuration.
     #[command(flatten)]
-    pub swarm: SwarmArgs,
+    pub swarm: ProtocolArgs,
 }
 
 /// Run the Swarm node CLI with a user-provided closure.
@@ -162,7 +162,7 @@ async fn build_launch_context(args: &SwarmRunNodeArgs) -> Result<SwarmLaunchCont
 }
 
 /// Resolve the network specification from CLI arguments.
-fn resolve_network_spec(args: &SwarmArgs) -> Result<Arc<Hive>> {
+fn resolve_network_spec(args: &ProtocolArgs) -> Result<Arc<Hive>> {
     if args.is_mainnet() {
         Ok(init_mainnet())
     } else if args.is_testnet() {
