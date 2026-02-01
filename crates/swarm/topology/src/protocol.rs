@@ -62,7 +62,7 @@ pub enum TopologyUpgradeError {
 /// Output from a topology inbound upgrade.
 pub enum TopologyInboundOutput {
     /// Handshake completed successfully.
-    Handshake(HandshakeInfo),
+    Handshake(Box<HandshakeInfo>),
     /// Received validated peers via hive.
     Hive(Vec<SwarmPeer>),
     /// Responded to a ping.
@@ -175,7 +175,7 @@ impl<N: SwarmNodeTypes> InboundUpgrade<Stream> for TopologyInboundUpgrade<N> {
                         );
                     }
 
-                    Ok(TopologyInboundOutput::Handshake(result))
+                    Ok(TopologyInboundOutput::Handshake(Box::new(result)))
                 }
                 HIVE_PROTOCOL => {
                     let hive = vertex_net_hive::inbound::<N>(self.identity.spec());
@@ -217,7 +217,7 @@ pub enum TopologyOutboundRequest {
 /// Output from a topology outbound upgrade.
 pub enum TopologyOutboundOutput {
     /// Handshake completed.
-    Handshake(HandshakeInfo),
+    Handshake(Box<HandshakeInfo>),
     /// Hive broadcast completed.
     Hive,
     /// Pong received.
@@ -371,7 +371,7 @@ impl<N: SwarmNodeTypes> OutboundUpgrade<Stream> for TopologyOutboundUpgrade<N> {
                         );
                     }
 
-                    Ok(TopologyOutboundOutput::Handshake(result))
+                    Ok(TopologyOutboundOutput::Handshake(Box::new(result)))
                 }
                 TopologyOutboundRequest::Hive(peers) => {
                     let hive: HiveOutboundProtocol = vertex_net_hive::outbound(&peers);

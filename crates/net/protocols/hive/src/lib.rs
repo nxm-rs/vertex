@@ -18,6 +18,7 @@ mod protocol;
 pub use codec::{HiveCodec, HiveCodecError, Peers};
 pub use protocol::{HiveInboundProtocol, HiveOutboundProtocol, ValidatedPeers, inbound, outbound};
 
+#[allow(unreachable_pub)]
 mod proto {
     include!(concat!(env!("OUT_DIR"), "/proto/mod.rs"));
 }

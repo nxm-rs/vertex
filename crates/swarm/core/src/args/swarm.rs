@@ -134,7 +134,6 @@ pub struct SwarmArgs {
     pub swarmspec: Option<PathBuf>,
 }
 
-
 impl SwarmArgs {
     /// Validate all argument combinations.
     pub fn validate(&self) -> Result<(), String> {

@@ -59,14 +59,14 @@ impl<N: SwarmNodeTypes> BootnodeBehaviour<N> {
 /// Events from the bootnode behaviour.
 pub enum BootnodeEvent {
     /// Identify protocol event.
-    Identify(identify::Event),
+    Identify(Box<identify::Event>),
     /// Topology event (peer ready, disconnected, discovered).
     Topology(TopologyEvent),
 }
 
 impl From<identify::Event> for BootnodeEvent {
     fn from(event: identify::Event) -> Self {
-        BootnodeEvent::Identify(event)
+        BootnodeEvent::Identify(Box::new(event))
     }
 }
 
@@ -260,23 +260,25 @@ impl<N: SwarmNodeTypes> BootNode<N> {
 
     fn handle_behaviour_event(&mut self, event: BootnodeEvent) {
         match event {
-            BootnodeEvent::Identify(identify::Event::Received { peer_id, info, .. }) => {
-                debug!(
-                    %peer_id,
-                    protocol_version = %info.protocol_version,
-                    agent_version = %info.agent_version,
-                    "Received identify info"
-                );
-            }
-            BootnodeEvent::Identify(identify::Event::Sent { peer_id, .. }) => {
-                debug!(%peer_id, "Sent identify info");
-            }
-            BootnodeEvent::Identify(identify::Event::Pushed { peer_id, .. }) => {
-                debug!(%peer_id, "Pushed identify info");
-            }
-            BootnodeEvent::Identify(identify::Event::Error { peer_id, error, .. }) => {
-                warn!(%peer_id, %error, "Identify error");
-            }
+            BootnodeEvent::Identify(boxed_event) => match *boxed_event {
+                identify::Event::Received { peer_id, info, .. } => {
+                    debug!(
+                        %peer_id,
+                        protocol_version = %info.protocol_version,
+                        agent_version = %info.agent_version,
+                        "Received identify info"
+                    );
+                }
+                identify::Event::Sent { peer_id, .. } => {
+                    debug!(%peer_id, "Sent identify info");
+                }
+                identify::Event::Pushed { peer_id, .. } => {
+                    debug!(%peer_id, "Pushed identify info");
+                }
+                identify::Event::Error { peer_id, error, .. } => {
+                    warn!(%peer_id, %error, "Identify error");
+                }
+            },
             BootnodeEvent::Topology(event) => {
                 self.handle_topology_event(event);
             }
@@ -379,11 +381,9 @@ impl<N: SwarmNodeTypes> BootNode<N> {
 }
 
 impl<N: SwarmNodeTypes> SpawnableTask for BootNode<N> {
-    fn into_task(self) -> impl std::future::Future<Output = ()> + Send {
-        async move {
-            if let Err(e) = self.start_and_run().await {
-                tracing::error!(error = %e, "BootNode error");
-            }
+    async fn into_task(self) {
+        if let Err(e) = self.start_and_run().await {
+            tracing::error!(error = %e, "BootNode error");
         }
     }
 }

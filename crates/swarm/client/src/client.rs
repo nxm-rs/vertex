@@ -237,9 +237,7 @@ pub type FullClient<Types, A, P, S> =
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        Accounting, ClientAccounting, ClientCommand, ClientHandle, FixedPricer,
-    };
+    use crate::{Accounting, ClientAccounting, ClientCommand, ClientHandle, FixedPricer};
     use core::fmt::Debug;
     use tokio::sync::mpsc;
     use vertex_swarm_api::{SwarmBandwidthAccounting, SwarmNodeType, SwarmTopology};
@@ -248,12 +246,11 @@ mod tests {
     use vertex_swarm_primitives::OverlayAddress;
     use vertex_tasks::SpawnableTask;
 
+    #[allow(dead_code)]
     struct MockNode;
 
     impl SpawnableTask for MockNode {
-        fn into_task(self) -> impl std::future::Future<Output = ()> + Send {
-            async {}
-        }
+        async fn into_task(self) {}
     }
 
     #[derive(Clone)]

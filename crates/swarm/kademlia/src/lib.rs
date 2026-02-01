@@ -581,7 +581,7 @@ mod tests {
         fn with_overlay(overlay: OverlayAddress) -> Self {
             let signer = LocalSigner::random();
             Self {
-                overlay: overlay,
+                overlay,
                 signer: Arc::new(signer),
                 spec: vertex_swarmspec::init_testnet(),
             }

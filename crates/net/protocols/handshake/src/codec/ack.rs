@@ -283,6 +283,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::type_complexity)]
     fn test_malformed_proto() {
         let signer = Arc::new(PrivateKeySigner::random());
         let peer = create_test_peer(TEST_NETWORK_ID, signer);

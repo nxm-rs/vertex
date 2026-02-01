@@ -531,11 +531,9 @@ impl<N: SwarmNodeTypes> SwarmNode<N> {
 }
 
 impl<N: SwarmNodeTypes> SpawnableTask for SwarmNode<N> {
-    fn into_task(self) -> impl std::future::Future<Output = ()> + Send {
-        async move {
-            if let Err(e) = self.start_and_run().await {
-                tracing::error!(error = %e, "SwarmNode error");
-            }
+    async fn into_task(self) {
+        if let Err(e) = self.start_and_run().await {
+            tracing::error!(error = %e, "SwarmNode error");
         }
     }
 }

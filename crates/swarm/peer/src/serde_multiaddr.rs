@@ -122,7 +122,7 @@ mod tests {
     #[test]
     fn single_addr_roundtrip() {
         let addr: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
-        let serialized = serialize_multiaddrs(&[addr.clone()]);
+        let serialized = serialize_multiaddrs(std::slice::from_ref(&addr));
         let deserialized = deserialize_multiaddrs(&serialized).unwrap();
 
         assert_eq!(deserialized.len(), 1);

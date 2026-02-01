@@ -218,6 +218,7 @@ pub enum HandlerEvent {
 
 /// Handler state machine.
 #[derive(Debug)]
+#[allow(dead_code)]
 enum State {
     /// Waiting for activation command.
     Dormant,
@@ -232,6 +233,7 @@ enum State {
 
 /// Outbound protocol selection.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(super) enum OutboundProtocol {
     Pricing(vertex_net_pricing::PricingOutboundProtocol),
     Retrieval(vertex_net_retrieval::RetrievalOutboundProtocol),
@@ -240,6 +242,7 @@ pub(super) enum OutboundProtocol {
 
 /// Inbound protocol selection.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(super) enum InboundProtocol {
     Pricing(vertex_net_pricing::PricingInboundProtocol),
     Retrieval(vertex_net_retrieval::RetrievalInboundProtocol),
@@ -247,6 +250,7 @@ pub(super) enum InboundProtocol {
 }
 
 /// Inbound protocol output after negotiation.
+#[allow(dead_code)]
 pub(super) enum InboundOutput {
     Pricing(vertex_net_pricing::AnnouncePaymentThreshold),
     Retrieval(
@@ -264,6 +268,7 @@ pub(super) enum InboundOutput {
 }
 
 /// Outbound protocol output after negotiation.
+#[allow(dead_code)]
 pub(super) enum OutboundOutput {
     Pricing,
     Retrieval(vertex_net_retrieval::Delivery),
@@ -288,6 +293,7 @@ pub struct SwarmClientHandler {
     pricing_outbound_pending: bool,
 }
 
+#[allow(dead_code)]
 impl SwarmClientHandler {
     /// Create a new handler in dormant state.
     pub fn new(config: Config) -> Self {
@@ -451,6 +457,7 @@ impl SwarmClientHandler {
 /// Uses `ClientInboundUpgrade` to advertise pricing, retrieval, and pushsync protocols.
 /// Uses `ClientOutboundUpgrade` for outbound requests with `ClientOutboundInfo`
 /// to track which request type is in flight.
+#[allow(deprecated)]
 impl ConnectionHandler for SwarmClientHandler {
     type FromBehaviour = HandlerCommand;
     type ToBehaviour = HandlerEvent;

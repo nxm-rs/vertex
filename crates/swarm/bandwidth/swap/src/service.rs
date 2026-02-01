@@ -26,6 +26,7 @@ pub enum SwapCommand {
 }
 
 /// Processes settlement commands from handles and network events.
+#[allow(dead_code)]
 pub struct SwapService<A: SwarmBandwidthAccounting> {
     /// Receive commands from handles.
     command_rx: mpsc::UnboundedReceiver<SwapCommand>,

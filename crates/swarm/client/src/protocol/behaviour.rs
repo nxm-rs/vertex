@@ -27,13 +27,11 @@ use super::{
 };
 
 /// Configuration for the client behaviour.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Config {
     /// Handler configuration.
     pub handler: HandlerConfig,
 }
-
 
 /// The SwarmClientBehaviour manages client-side protocols.
 ///
@@ -162,7 +160,7 @@ impl SwarmClientBehaviour {
                 stamp: _,
             } => {
                 // TODO: Implement serving chunks (responding to retrieval requests)
-                if self.overlay_peers.get(&peer).is_some() {
+                if self.overlay_peers.contains_key(&peer) {
                     trace!("ServeChunk not yet implemented");
                 }
             }
@@ -174,7 +172,7 @@ impl SwarmClientBehaviour {
                 storage_radius: _,
             } => {
                 // TODO: Implement sending receipts
-                if self.overlay_peers.get(&peer).is_some() {
+                if self.overlay_peers.contains_key(&peer) {
                     trace!("SendReceipt not yet implemented");
                 }
             }

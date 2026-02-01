@@ -61,7 +61,6 @@ pub struct SwarmConfig {
     pub identity: IdentityArgs,
 }
 
-
 impl NodeProtocolConfig for SwarmConfig {
     type Args = SwarmArgs;
 

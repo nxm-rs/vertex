@@ -14,7 +14,7 @@ pub enum TopologyEvent {
     PeerAuthenticated {
         peer_id: PeerId,
         connection_id: ConnectionId,
-        info: HandshakeInfo,
+        info: Box<HandshakeInfo>,
     },
 
     /// All connections to a peer closed.

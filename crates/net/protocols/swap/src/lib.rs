@@ -66,6 +66,7 @@ pub use protocol::{SwapInboundProtocol, SwapOutboundProtocol, inbound, outbound}
 // Re-export SignedCheque for convenience
 pub use vertex_swarm_bandwidth_chequebook::SignedCheque;
 
+#[allow(unreachable_pub)]
 mod proto {
     include!(concat!(env!("OUT_DIR"), "/proto/mod.rs"));
 }

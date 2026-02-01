@@ -75,7 +75,6 @@ pub struct InfraArgs {
     pub datadir: DataDirArgs,
 }
 
-
 /// Full node infrastructure arguments including logging.
 ///
 /// This struct combines all generic infrastructure CLI arguments including
@@ -93,4 +92,3 @@ pub struct NodeArgs {
     #[command(flatten)]
     pub infra: InfraArgs,
 }
-

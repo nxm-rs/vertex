@@ -26,6 +26,7 @@ pub(crate) struct MultiAddrRegistry {
     peer_to_overlay: HashMap<PeerId, OverlayAddress>,
 }
 
+#[allow(dead_code)]
 impl MultiAddrRegistry {
     /// Create a new empty registry.
     pub fn new() -> Self {
@@ -128,6 +129,7 @@ impl Default for MultiAddrCacheConfig {
     }
 }
 
+#[allow(dead_code)]
 impl MultiAddrCacheConfig {
     /// Set the maximum cache size.
     pub fn with_max_size(mut self, max_size: usize) -> Self {
@@ -196,6 +198,7 @@ impl Default for MultiAddrCache {
     }
 }
 
+#[allow(dead_code)]
 impl MultiAddrCache {
     /// Create a new cache with the given configuration.
     pub fn new(config: MultiAddrCacheConfig) -> Self {

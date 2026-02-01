@@ -29,6 +29,7 @@ use vertex_swarm_peer::SwarmPeer;
 // Re-export Identity for convenience
 pub use vertex_swarm_identity::Identity;
 
+#[allow(unreachable_pub)]
 pub(crate) mod proto {
     include!(concat!(env!("OUT_DIR"), "/proto/mod.rs"));
 }

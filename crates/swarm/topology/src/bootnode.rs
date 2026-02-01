@@ -27,6 +27,7 @@ const MAX_BOOTNODE_ATTEMPTS: usize = 6;
 const MIN_BOOTNODE_CONNECTIONS: usize = 1;
 
 /// Timeout for individual bootnode connection attempts in seconds.
+#[allow(dead_code)]
 const BOOTNODE_CONNECT_TIMEOUT_SECS: u64 = 15;
 
 /// Handles bootnode connection management.

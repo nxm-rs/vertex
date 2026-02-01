@@ -94,7 +94,7 @@ impl std::fmt::Debug for Command {
 /// Events emitted by the handler to the behaviour.
 pub enum Event {
     /// Handshake completed successfully.
-    HandshakeCompleted(HandshakeInfo),
+    HandshakeCompleted(Box<HandshakeInfo>),
     /// Handshake failed.
     HandshakeFailed(HandshakeError),
     /// Received validated peers via hive.
@@ -146,6 +146,7 @@ enum State {
 }
 
 /// Tracks a pending ping for RTT measurement.
+#[allow(dead_code)]
 struct PendingPing {
     sent_at: Instant,
 }
@@ -267,6 +268,7 @@ impl<N: SwarmNodeTypes> TopologyHandler<N> {
 /// Uses `TopologyInboundUpgrade` to advertise handshake, hive, and pingpong protocols.
 /// Uses `TopologyOutboundUpgrade` for outbound requests with `TopologyOutboundInfo`
 /// to track which request type is in flight.
+#[allow(deprecated)]
 impl<N: SwarmNodeTypes> ConnectionHandler for TopologyHandler<N> {
     type FromBehaviour = Command;
     type ToBehaviour = Event;

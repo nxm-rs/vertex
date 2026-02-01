@@ -28,6 +28,7 @@ mod codec;
 mod protocol;
 
 // Include generated protobuf code
+#[allow(unreachable_pub)]
 mod proto {
     include!(concat!(env!("OUT_DIR"), "/proto/mod.rs"));
 }

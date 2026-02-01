@@ -27,6 +27,7 @@ pub enum PseudosettleCommand {
 }
 
 /// Processes settlement commands from handles and network events.
+#[allow(dead_code)]
 pub struct PseudosettleService<A: SwarmBandwidthAccounting> {
     /// Receive commands from handles.
     command_rx: mpsc::UnboundedReceiver<PseudosettleCommand>,
@@ -207,7 +208,6 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
 
         // Cap at what they actually owe us
         let owed = balance as u64;
-        
 
         // Also cap at time-based allowance
         // For now, we accept up to the capped amount
