@@ -15,10 +15,10 @@
 //!
 //! ```ignore
 //! use vertex_node_core::config::FullNodeConfig;
-//! use vertex_swarm_core::SwarmConfig;
+//! use vertex_swarm_node::ProtocolConfig;
 //!
 //! // Load combined config (generic infra + Swarm protocol)
-//! let config = FullNodeConfig::<SwarmConfig>::load(path)?;
+//! let config = FullNodeConfig::<ProtocolConfig>::load(path)?;
 //! ```
 
 /// Configuration for RPC server (gRPC, REST, etc.).
@@ -131,13 +131,13 @@ pub trait NodeConfig {
 /// use vertex_node_api::NodeProtocolConfig;
 ///
 /// #[derive(Default, Clone, Serialize, Deserialize)]
-/// pub struct SwarmConfig {
+/// pub struct ProtocolConfig {
 ///     pub node_type: SwarmNodeType,
 ///     pub network: NetworkArgs,
 ///     // ... other Swarm-specific fields
 /// }
 ///
-/// impl NodeProtocolConfig for SwarmConfig {
+/// impl NodeProtocolConfig for ProtocolConfig {
 ///     type Args = ProtocolArgs;
 ///
 ///     fn apply_args(&mut self, args: &Self::Args) {

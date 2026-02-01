@@ -10,8 +10,9 @@ use vertex_swarm_bandwidth_pricing::PricingArgs;
 use vertex_swarm_identity::IdentityArgs;
 use vertex_swarm_localstore::LocalStoreArgs;
 use vertex_swarm_primitives::SwarmNodeType;
+use vertex_swarm_redistribution::RedistributionArgs;
 
-use super::{NetworkArgs, StorageIncentiveArgs};
+use super::NetworkArgs;
 
 /// CLI argument for node mode selection. Maps to [`SwarmNodeType`].
 #[derive(
@@ -74,7 +75,7 @@ pub struct ProtocolArgs {
     pub localstore: LocalStoreArgs,
 
     #[command(flatten)]
-    pub storage_incentives: StorageIncentiveArgs,
+    pub redistribution: RedistributionArgs,
 
     #[command(flatten)]
     pub identity: IdentityArgs,

@@ -16,10 +16,10 @@
 //!
 //! ```ignore
 //! use vertex_node_core::config::FullNodeConfig;
-//! use vertex_swarm_core::SwarmConfig;
+//! use vertex_swarm_node::ProtocolConfig;
 //!
 //! // Load combined config
-//! let mut config = FullNodeConfig::<SwarmConfig>::load(Some(&config_path))?;
+//! let mut config = FullNodeConfig::<ProtocolConfig>::load(Some(&config_path))?;
 //!
 //! // Apply CLI overrides
 //! config.apply_args(&node_args, &swarm_args);
@@ -84,7 +84,7 @@ impl InfraConfig {
 /// [database]
 /// memory_only = false
 ///
-/// # Protocol-specific (from P, e.g., SwarmConfig)
+/// # Protocol-specific (from P, e.g., ProtocolConfig)
 /// node_type = "light"
 ///
 /// [network]

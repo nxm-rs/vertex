@@ -7233,6 +7233,7 @@ dependencies = [
  "vertex-swarm-peer",
  "vertex-swarm-peermanager",
  "vertex-swarm-primitives",
+ "vertex-swarm-redistribution",
  "vertex-swarm-topology",
  "vertex-swarmspec",
  "vertex-tasks",
@@ -7293,6 +7294,15 @@ dependencies = [
  "serde",
  "strum",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "vertex-swarm-redistribution"
+version = "0.1.0"
+dependencies = [
+ "clap 4.5.56",
+ "serde",
+ "vertex-swarm-api",
 ]
 
 [[package]]

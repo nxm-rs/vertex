@@ -2,7 +2,7 @@
 //!
 //! This crate is the libp2p boundary layer for the Swarm protocol.
 //!
-//! With the `cli` feature enabled, also provides [`ProtocolArgs`] and [`SwarmConfig`]
+//! With the `cli` feature enabled, also provides [`ProtocolArgs`] and [`ProtocolConfig`]
 //! for CLI argument parsing and protocol configuration.
 
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -13,7 +13,7 @@ pub mod args;
 mod config;
 
 #[cfg(feature = "cli")]
-pub use config::SwarmConfig;
+pub use config::ProtocolConfig;
 
 mod bootnodes;
 mod client;
