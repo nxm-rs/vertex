@@ -3,13 +3,13 @@
 [![CI Status](https://github.com/nxm-rs/vertex/actions/workflows/unit.yml/badge.svg)](https://github.com/nxm-rs/vertex/actions/workflows/unit.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
-**Swarm node that actually works. Built in Rust because Go wasn't cutting it for real decentralization.**
+**Swarm node that actually works. Built in Rust because Go was not cutting it for real decentralisation.**
 
 ## What is Vertex?
 
-Vertex is a ground-up rewrite of the Ethereum Swarm node. Same protocol, different philosophy. We're building for modularity, performance, and the kind of reliability you'd expect from infrastructure software.
+Vertex is a ground-up rewrite of the Ethereum Swarm node. Same protocol, different philosophy. We are building for modularity, performance, and the kind of reliability you would expect from infrastructure software.
 
-Compatible with all Swarm protocols - postage stamps, push/pull sync, storage incentives, the works. If Bee does it, Vertex will do it faster.
+Compatible with all Swarm protocols: postage stamps, push/pull sync, storage incentives, the works. If Bee does it, Vertex will do it faster.
 
 ## Architecture
 
@@ -31,7 +31,7 @@ Vertex is split into layered crates that can be used independently:
 | `vertex-swarm-identity` | Cryptographic identity and handshake |
 | `vertex-swarm-kademlia` | Kademlia DHT implementation |
 | `vertex-swarm-bandwidth` | SWAP-compatible bandwidth accounting |
-| `vertex-swarm-topology` | Peer discovery and neighborhood management |
+| `vertex-swarm-topology` | Peer discovery and neighbourhood management |
 | `vertex-swarm-localstore` | Local chunk storage |
 | `vertex-swarm-storer` | Full storer node implementation |
 | `vertex-swarm-client` | Client node for upload/download |
@@ -51,16 +51,16 @@ Vertex is split into layered crates that can be used independently:
 
 ## Goals
 
-1. **Modularity** - Every component is a library. Import what you need, build what you want.
-2. **Performance** - Concurrent processing, zero-copy where possible, no GC pauses.
-3. **Client Diversity** - More implementations = more resilient network.
-4. **Developer Experience** - Ergonomic APIs and actual documentation.
+1. **Modularity**: Every component is a library. Import what you need, build what you want.
+2. **Performance**: Concurrent processing, zero-copy where possible, no GC pauses.
+3. **Client Diversity**: More implementations means a more resilient network.
+4. **Developer Experience**: Ergonomic APIs and actual documentation.
 
 ## Related Projects
 
-- [`nectar`](https://github.com/nxm-rs/nectar) - Low-level Swarm primitives (BMT, chunks, postage)
-- [`apiary`](https://github.com/nxm-rs/apiary) - Kurtosis package for spinning up test networks
-- [`apiarist`](https://github.com/nxm-rs/apiarist) - Stress testing and integration checks
+- [`nectar`](https://github.com/nxm-rs/nectar): Low-level Swarm primitives (BMT, chunks, postage)
+- [`apiary`](https://github.com/nxm-rs/apiary): Kurtosis package for spinning up test networks
+- [`apiarist`](https://github.com/nxm-rs/apiarist): Stress testing and integration checks
 
 ## Status
 
@@ -76,13 +76,17 @@ cargo build --release
 
 We welcome contributions. Please read the [CLA](./CLA.md) before submitting PRs.
 
-- Open an [issue](https://github.com/nxm-rs/vertex/issues) if something's broken
+- Open an [issue](https://github.com/nxm-rs/vertex/issues) if something is broken
 - Join the [Matrix space](https://matrix.to/#/#nexum:nxm.rs) to discuss development
 
-## License
+## Style Guide
 
-[AGPL-3.0-or-later](./LICENSE) - because decentralized storage should stay decentralized.
+All documentation and comments must use Oxford English (British spelling with -ize endings). No em dashes.
+
+## Licence
+
+[AGPL-3.0-or-later](./LICENSE): because decentralised storage should stay decentralised.
 
 ## Warning
 
-This is development software. It compiles, it runs tests, but it's not ready for your production workloads. Yet.
+This is development software. It compiles, it runs tests, but it is not ready for your production workloads. Yet.
