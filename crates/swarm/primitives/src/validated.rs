@@ -114,7 +114,7 @@ impl<C: ChunkTypeSet> AsRef<AnyChunk> for ValidatedChunk<C> {
 mod tests {
     use super::*;
     use nectar_primitives::{
-        bytes::Bytes, Chunk, ContentChunk, ContentOnlyChunkSet, StandardChunkSet,
+        Chunk, ContentChunk, ContentOnlyChunkSet, StandardChunkSet, bytes::Bytes,
     };
 
     #[test]

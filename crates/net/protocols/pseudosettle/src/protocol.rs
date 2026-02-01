@@ -15,7 +15,10 @@ use vertex_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbo
 
 use crate::{
     PROTOCOL_NAME,
-    codec::{Payment, PaymentAck, PaymentAckCodec, PaymentCodec, PseudosettleCodecError, PseudosettleError},
+    codec::{
+        Payment, PaymentAck, PaymentAckCodec, PaymentCodec, PseudosettleCodecError,
+        PseudosettleError,
+    },
 };
 
 const MAX_MESSAGE_SIZE: usize = 1024;
@@ -181,12 +184,14 @@ pub fn validate_timestamp(
     let diff = (now - timestamp).abs();
 
     if diff > tolerance_nanos {
-        return Err(PseudosettleCodecError::domain(PseudosettleError::InvalidTimestamp(format!(
-            "timestamp {} is {}s away from current time (tolerance: {}s)",
-            timestamp,
-            diff / 1_000_000_000,
-            tolerance_secs
-        ))));
+        return Err(PseudosettleCodecError::domain(
+            PseudosettleError::InvalidTimestamp(format!(
+                "timestamp {} is {}s away from current time (tolerance: {}s)",
+                timestamp,
+                diff / 1_000_000_000,
+                tolerance_secs
+            )),
+        ));
     }
 
     Ok(())

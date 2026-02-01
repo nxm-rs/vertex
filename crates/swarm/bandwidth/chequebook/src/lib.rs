@@ -54,10 +54,7 @@ pub enum ChequeError {
 
     /// Cheque was signed by unexpected address.
     #[error("invalid signer: expected {expected}, got {actual}")]
-    InvalidSigner {
-        expected: Address,
-        actual: Address,
-    },
+    InvalidSigner { expected: Address, actual: Address },
 
     /// Cheque serialization/deserialization failed.
     #[error("serialization error: {0}")]

@@ -7,8 +7,8 @@
 //! Cheques are serialized as JSON, matching Bee's format for interoperability.
 
 use alloy_primitives::Address;
-use vertex_swarm_bandwidth_chequebook::SignedCheque;
 use vertex_net_codec::{Codec, ProtoMessage, ProtocolCodecError};
+use vertex_swarm_bandwidth_chequebook::SignedCheque;
 
 /// Domain-specific errors for SWAP protocol.
 #[derive(Debug, thiserror::Error)]
@@ -43,7 +43,9 @@ impl ProtoMessage for EmitCheque {
 
     fn into_proto(self) -> Self::Proto {
         let cheque_json = serde_json::to_vec(&self.cheque).expect("SignedCheque serializes");
-        crate::proto::swap::EmitCheque { cheque: cheque_json }
+        crate::proto::swap::EmitCheque {
+            cheque: cheque_json,
+        }
     }
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {

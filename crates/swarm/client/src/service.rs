@@ -7,11 +7,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use nectar_primitives::ChunkAddress;
 use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_net_pseudosettle::PaymentAck;
-use nectar_primitives::ChunkAddress;
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_tasks::SpawnableTask;
 
@@ -337,11 +337,7 @@ impl ClientService {
                 }
             }
 
-            ClientEvent::PseudosettleSent {
-                peer,
-                peer_id,
-                ack,
-            } => {
+            ClientEvent::PseudosettleSent { peer, peer_id, ack } => {
                 debug!(%peer, %peer_id, amount = %ack.amount, timestamp = ack.timestamp, "Pseudosettle sent, received ack");
             }
         }

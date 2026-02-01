@@ -74,7 +74,11 @@ impl<S: SwarmSpec> Loggable for S {
             self.chain(),
             self.chain().id()
         );
-        info!("  Token: {} @ {}", self.token().symbol, self.token().address);
+        info!(
+            "  Token: {} @ {}",
+            self.token().symbol,
+            self.token().address
+        );
         info!("  Chunk size: {} bytes", self.chunk_size());
         info!("  Chunks: {}", S::ChunkSet::format_supported_types());
         info!(

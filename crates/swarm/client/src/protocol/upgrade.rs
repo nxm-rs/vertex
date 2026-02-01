@@ -16,8 +16,8 @@
 use alloy_primitives::U256;
 use futures::future::BoxFuture;
 use libp2p::{InboundUpgrade, OutboundUpgrade, Stream, core::UpgradeInfo};
+use nectar_primitives::ChunkAddress;
 use thiserror::Error;
-use vertex_swarm_bandwidth_chequebook::SignedCheque;
 use vertex_net_headers::ProtocolError;
 use vertex_net_pricing::{
     AnnouncePaymentThreshold, PROTOCOL_NAME as PRICING_PROTOCOL, PricingInboundProtocol,
@@ -36,7 +36,7 @@ use vertex_net_retrieval::{
     RetrievalResponder,
 };
 use vertex_net_swap::{PROTOCOL_NAME as SWAP_PROTOCOL, SettlementHeaders};
-use nectar_primitives::ChunkAddress;
+use vertex_swarm_bandwidth_chequebook::SignedCheque;
 
 /// Errors from client protocol upgrades.
 #[derive(Debug, Error)]
@@ -99,11 +99,9 @@ impl std::fmt::Debug for ClientInboundOutput {
                 .field(&result.payment)
                 .field(&"<responder>")
                 .finish(),
-            Self::Swap(cheque, headers) => f
-                .debug_tuple("Swap")
-                .field(cheque)
-                .field(headers)
-                .finish(),
+            Self::Swap(cheque, headers) => {
+                f.debug_tuple("Swap").field(cheque).field(headers).finish()
+            }
         }
     }
 }
@@ -206,7 +204,10 @@ pub enum ClientOutboundRequest {
     /// Send pseudosettle payment.
     Pseudosettle(Payment),
     /// Send swap cheque with our exchange rate.
-    Swap { cheque: SignedCheque, our_rate: U256 },
+    Swap {
+        cheque: SignedCheque,
+        our_rate: U256,
+    },
 }
 
 /// Output from a client outbound upgrade.

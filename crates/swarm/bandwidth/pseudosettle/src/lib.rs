@@ -23,12 +23,12 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::mpsc;
-use vertex_swarm_bandwidth::{Accounting, AccountingPeerHandle};
-use vertex_swarm_client::protocol::ClientCommand;
 use vertex_swarm_api::{
     BandwidthMode, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmError, SwarmIdentity,
     SwarmPeerState, SwarmResult, SwarmSettlementProvider,
 };
+use vertex_swarm_bandwidth::{Accounting, AccountingPeerHandle};
+use vertex_swarm_client::protocol::ClientCommand;
 use vertex_swarm_primitives::OverlayAddress;
 
 pub use error::PseudosettleError;
@@ -55,7 +55,10 @@ impl<C: SwarmAccountingConfig> PseudosettleProvider<C> {
     /// This creates a provider without network settlement capability.
     /// Use [`create_pseudosettle_actor`] for full functionality.
     pub fn new(config: C) -> Self {
-        Self { config, handle: None }
+        Self {
+            config,
+            handle: None,
+        }
     }
 
     /// Create a new pseudosettle provider with a handle for network settlement.
@@ -96,12 +99,13 @@ impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for Pseudosettl
             }
 
             let amount = (-balance) as u64;
-            let accepted = handle
-                .settle(peer, amount)
-                .await
-                .map_err(|e| SwarmError::PaymentRequired {
-                    reason: e.to_string(),
-                })?;
+            let accepted =
+                handle
+                    .settle(peer, amount)
+                    .await
+                    .map_err(|e| SwarmError::PaymentRequired {
+                        reason: e.to_string(),
+                    })?;
 
             Ok(accepted as i64)
         } else {
@@ -201,9 +205,11 @@ pub fn new_pseudosettle_accounting<C: SwarmAccountingConfig + Clone + 'static, I
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vertex_swarm_bandwidth::PeerState;
+    use vertex_swarm_api::{
+        Direction, SwarmBandwidthAccounting, SwarmNodeType, SwarmPeerBandwidth,
+    };
     use vertex_swarm_bandwidth::DefaultAccountingConfig;
-    use vertex_swarm_api::{SwarmBandwidthAccounting, Direction, SwarmPeerBandwidth, SwarmNodeType};
+    use vertex_swarm_bandwidth::PeerState;
     use vertex_swarm_identity::Identity;
 
     fn test_identity() -> Identity {

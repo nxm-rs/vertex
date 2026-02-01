@@ -7,12 +7,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use eyre::{Result, WrapErr};
-use vertex_swarm_peermanager::PeerStore;
 use vertex_node_builder::LaunchContext;
 use vertex_node_core::config::FullNodeConfig;
 use vertex_node_core::dirs::DataDirs;
 use vertex_swarm_core::SwarmConfig;
 use vertex_swarm_identity::Identity;
+use vertex_swarm_peermanager::PeerStore;
 use vertex_swarmspec::Hive;
 use vertex_tasks::TaskExecutor;
 

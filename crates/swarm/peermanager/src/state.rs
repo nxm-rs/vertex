@@ -162,7 +162,8 @@ impl StoredPeer {
         ethereum_address: alloy_primitives::Address,
         is_full_node: bool,
     ) -> Self {
-        let peer = SwarmPeer::from_validated(multiaddrs, signature, overlay, nonce, ethereum_address);
+        let peer =
+            SwarmPeer::from_validated(multiaddrs, signature, overlay, nonce, ethereum_address);
         Self::new(peer, is_full_node)
     }
 

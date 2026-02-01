@@ -9,7 +9,16 @@ use crate::constants::*;
 
 /// CLI wrapper for [`BandwidthMode`] with clap integration.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum, strum::FromRepr, Serialize, Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    clap::ValueEnum,
+    strum::FromRepr,
+    Serialize,
+    Deserialize,
 )]
 #[serde(rename_all = "lowercase")]
 #[repr(u8)]

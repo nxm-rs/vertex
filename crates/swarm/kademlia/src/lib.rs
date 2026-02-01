@@ -42,6 +42,7 @@ pub use config::{
 };
 pub use pslice::{MAX_PO, PSlice};
 
+use nectar_primitives::ChunkAddress;
 use parking_lot::Mutex;
 use std::{
     collections::HashSet,
@@ -52,9 +53,8 @@ use std::{
 };
 use tokio::{sync::Notify, task::JoinHandle};
 use tracing::{debug, info, trace};
-use nectar_primitives::ChunkAddress;
-use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_api::{SwarmIdentity, SwarmTopology};
+use vertex_swarm_primitives::OverlayAddress;
 use vertex_tasks::TaskExecutor;
 
 /// Kademlia-based peer topology.
@@ -505,7 +505,6 @@ impl<I: SwarmIdentity> SwarmTopology for KademliaTopology<I> {
         self.connection_candidates.lock().clone()
     }
 }
-
 
 /// Statistics about the topology state.
 #[derive(Debug, Clone)]

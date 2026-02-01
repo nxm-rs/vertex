@@ -30,11 +30,11 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_api::{
     Direction, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmIdentity, SwarmPeerBandwidth,
     SwarmResult,
 };
+use vertex_swarm_primitives::OverlayAddress;
 
 use vertex_swarm_api::SwarmSettlementProvider;
 
@@ -209,11 +209,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmBandwidthAccounting for Ac
             .map_err(|e| vertex_swarm_api::SwarmError::Accounting(e.to_string()))
     }
 
-    fn prepare_provide(
-        &self,
-        peer: OverlayAddress,
-        price: u64,
-    ) -> SwarmResult<ProvideAction> {
+    fn prepare_provide(&self, peer: OverlayAddress, price: u64) -> SwarmResult<ProvideAction> {
         Accounting::prepare_provide(self, peer, price)
             .map_err(|e| vertex_swarm_api::SwarmError::Accounting(e.to_string()))
     }
@@ -480,12 +476,20 @@ mod tests {
             vertex_swarm_api::BandwidthMode::None
         }
 
-        fn pre_allow(&self, _peer: OverlayAddress, state: &dyn vertex_swarm_api::SwarmPeerState) -> i64 {
+        fn pre_allow(
+            &self,
+            _peer: OverlayAddress,
+            state: &dyn vertex_swarm_api::SwarmPeerState,
+        ) -> i64 {
             state.add_balance(self.0);
             self.0
         }
 
-        async fn settle(&self, _peer: OverlayAddress, _state: &dyn vertex_swarm_api::SwarmPeerState) -> SwarmResult<i64> {
+        async fn settle(
+            &self,
+            _peer: OverlayAddress,
+            _state: &dyn vertex_swarm_api::SwarmPeerState,
+        ) -> SwarmResult<i64> {
             Ok(0)
         }
 
@@ -499,7 +503,10 @@ mod tests {
         let accounting = Accounting::with_providers(
             DefaultAccountingConfig,
             test_identity(),
-            vec![Box::new(FixedAdjustProvider(100)), Box::new(FixedAdjustProvider(200))],
+            vec![
+                Box::new(FixedAdjustProvider(100)),
+                Box::new(FixedAdjustProvider(200)),
+            ],
         );
 
         let handle = accounting.for_peer(test_peer());

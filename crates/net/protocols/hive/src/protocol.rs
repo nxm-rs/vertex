@@ -4,9 +4,9 @@ use alloy_primitives::{B256, Signature};
 use asynchronous_codec::Framed;
 use futures::{SinkExt, TryStreamExt, future::BoxFuture};
 use tracing::debug;
-use vertex_swarm_peer::{SwarmAddress, SwarmPeer};
 use vertex_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound};
 use vertex_swarm_api::SwarmNodeTypes;
+use vertex_swarm_peer::{SwarmAddress, SwarmPeer};
 use vertex_swarmspec::SwarmSpec;
 
 use crate::{
@@ -65,7 +65,12 @@ impl<N: SwarmNodeTypes> HeaderedInbound for HiveInner<N> {
 
             let filtered = total - peers.len();
             if filtered > 0 {
-                debug!(total, valid = peers.len(), filtered, "filtered invalid peers");
+                debug!(
+                    total,
+                    valid = peers.len(),
+                    filtered,
+                    "filtered invalid peers"
+                );
             }
 
             Ok(ValidatedPeers { peers })

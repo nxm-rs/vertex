@@ -8,10 +8,12 @@ use std::sync::Arc;
 use alloy_primitives::hex::FromHex;
 use async_trait::async_trait;
 use nectar_primitives::SwarmAddress;
-use vertex_swarm_kademlia::KademliaTopology;
-use vertex_swarm_api::{SwarmChunkProvider, ChunkRetrievalError, ChunkRetrievalResult, SwarmTopology};
+use vertex_swarm_api::{
+    ChunkRetrievalError, ChunkRetrievalResult, SwarmChunkProvider, SwarmTopology,
+};
 use vertex_swarm_core::ClientHandle;
 use vertex_swarm_identity::Identity;
+use vertex_swarm_kademlia::KademliaTopology;
 
 /// Chunk provider implementation that uses a ClientHandle for network retrieval.
 ///
@@ -47,7 +49,10 @@ impl NetworkChunkProvider {
 
 #[async_trait]
 impl SwarmChunkProvider for NetworkChunkProvider {
-    async fn retrieve_chunk(&self, address: &str) -> Result<ChunkRetrievalResult, ChunkRetrievalError> {
+    async fn retrieve_chunk(
+        &self,
+        address: &str,
+    ) -> Result<ChunkRetrievalResult, ChunkRetrievalError> {
         // Parse the hex address into a SwarmAddress
         let addr_bytes = <[u8; 32]>::from_hex(address)
             .map_err(|_| ChunkRetrievalError::InvalidAddress(address.to_string()))?;
@@ -66,7 +71,11 @@ impl SwarmChunkProvider for NetworkChunkProvider {
         let mut last_error = None;
         for peer_overlay in closest_peers.into_iter().take(3) {
             // Try to retrieve from this peer
-            match self.client_handle.retrieve_chunk(peer_overlay, chunk_address).await {
+            match self
+                .client_handle
+                .retrieve_chunk(peer_overlay, chunk_address)
+                .await
+            {
                 Ok(result) => {
                     return Ok(ChunkRetrievalResult {
                         data: result.data,
@@ -93,4 +102,3 @@ impl SwarmChunkProvider for NetworkChunkProvider {
         false
     }
 }
-

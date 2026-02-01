@@ -6,9 +6,9 @@ use std::sync::Arc;
 use alloy_primitives::U256;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
-use vertex_swarm_client::{protocol::ClientCommand, SwapEvent};
+use vertex_swarm_api::{Direction, SwarmBandwidthAccounting, SwarmPeerBandwidth};
+use vertex_swarm_client::{SwapEvent, protocol::ClientCommand};
 use vertex_swarm_primitives::OverlayAddress;
-use vertex_swarm_api::{SwarmBandwidthAccounting, Direction, SwarmPeerBandwidth};
 
 use crate::error::SwapError;
 

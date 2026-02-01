@@ -54,12 +54,20 @@ pub trait SwarmIdentityConfig {
 
 /// Combined Swarm protocol configuration.
 pub trait SwarmConfig:
-    SwarmAccountingConfig + SwarmLocalStoreConfig + SwarmStorageConfig + SwarmNetworkConfig + SwarmIdentityConfig
+    SwarmAccountingConfig
+    + SwarmLocalStoreConfig
+    + SwarmStorageConfig
+    + SwarmNetworkConfig
+    + SwarmIdentityConfig
 {
 }
 
 impl<T> SwarmConfig for T where
-    T: SwarmAccountingConfig + SwarmLocalStoreConfig + SwarmStorageConfig + SwarmNetworkConfig + SwarmIdentityConfig
+    T: SwarmAccountingConfig
+        + SwarmLocalStoreConfig
+        + SwarmStorageConfig
+        + SwarmNetworkConfig
+        + SwarmIdentityConfig
 {
 }
 
@@ -121,10 +129,7 @@ pub trait SwarmLaunchConfig: Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
 
     /// Build the node's main event loop and RPC providers.
-    async fn build(
-        self,
-        ctx: &NodeContext,
-    ) -> Result<(NodeTask, Self::Providers), Self::Error>;
+    async fn build(self, ctx: &NodeContext) -> Result<(NodeTask, Self::Providers), Self::Error>;
 }
 
 /// Marker for configs that launch client nodes.

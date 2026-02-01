@@ -30,13 +30,13 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-mod manager;
-mod state;
-mod store;
-mod multiaddr_cache;
+mod address_manager;
 mod ip_addr;
 mod local_network;
-mod address_manager;
+mod manager;
+mod multiaddr_cache;
+mod state;
+mod store;
 
 pub mod discovery;
 pub mod score;
@@ -52,7 +52,7 @@ pub use discovery::{
     DiscoveryReceiver, DiscoverySender, discovery_channel, run_peer_store_consumer,
 };
 // Re-export SwarmPeer for convenience (channel uses this type)
-pub use vertex_swarm_peer::SwarmPeer;
 pub use manager::{FailureReason, InternalPeerManager, PeerManager, PeerManagerStats};
 pub use state::{BanInfo, PeerInfo, PeerState, StoredPeer};
 pub use store::{FilePeerStore, MemoryPeerStore, PeerStore, PeerStoreError};
+pub use vertex_swarm_peer::SwarmPeer;

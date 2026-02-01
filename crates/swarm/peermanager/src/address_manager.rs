@@ -16,7 +16,7 @@ use parking_lot::{Mutex, RwLock};
 use tracing::{debug, info, trace};
 use web_time::Instant;
 
-use crate::ip_addr::{classify_multiaddr, extract_ip, same_subnet, AddressScope};
+use crate::ip_addr::{AddressScope, classify_multiaddr, extract_ip, same_subnet};
 
 /// Default number of peer confirmations required before trusting an observed address.
 /// Requires 2 confirmations from different IP addresses (same protocol family) to
@@ -216,11 +216,7 @@ impl AddressManager {
         let peer_scope = classify_multiaddr(from_peer);
         let observed_scope = classify_multiaddr(&addr);
 
-        trace!(
-            ?peer_scope,
-            ?observed_scope,
-            "classified scopes"
-        );
+        trace!(?peer_scope, ?observed_scope, "classified scopes");
 
         // Ignore if we can't classify the addresses
         let (Some(peer_scope), Some(observed_scope)) = (peer_scope, observed_scope) else {

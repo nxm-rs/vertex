@@ -332,7 +332,14 @@ impl PeerManager {
                 }
             } else {
                 // New peer - create stored record
-                let peer = StoredPeer::from_components(overlay, multiaddrs, signature, nonce, ethereum_address, false);
+                let peer = StoredPeer::from_components(
+                    overlay,
+                    multiaddrs,
+                    signature,
+                    nonce,
+                    ethereum_address,
+                    false,
+                );
                 stored.insert(overlay, peer);
             }
         }
@@ -351,10 +358,7 @@ impl PeerManager {
     ///
     /// More efficient than calling [`store_hive_peer`] in a loop.
     pub fn store_hive_peers_batch(&self, peers: impl IntoIterator<Item = SwarmPeer>) {
-        let peers: Vec<SwarmPeer> = peers
-            .into_iter()
-            .filter(|p| p.is_dialable())
-            .collect();
+        let peers: Vec<SwarmPeer> = peers.into_iter().filter(|p| p.is_dialable()).collect();
 
         if peers.is_empty() {
             return;
@@ -376,9 +380,7 @@ impl PeerManager {
             let mut runtime = self.peers.write();
             for peer in &peers {
                 let overlay = OverlayAddress::from(B256::from_slice(peer.overlay().as_ref()));
-                runtime
-                    .entry(overlay)
-                    .or_insert_with(PeerInfo::new_known);
+                runtime.entry(overlay).or_insert_with(PeerInfo::new_known);
             }
         }
 
@@ -616,7 +618,9 @@ impl PeerManager {
         // Update multiaddr cache
         let multiaddrs = peer.multiaddrs();
         if !multiaddrs.is_empty() {
-            self.multiaddr_cache.write().insert(overlay, multiaddrs.to_vec());
+            self.multiaddr_cache
+                .write()
+                .insert(overlay, multiaddrs.to_vec());
         }
 
         // Ensure peer exists in peers map
@@ -630,7 +634,9 @@ impl PeerManager {
         }
 
         // Store the full peer data
-        self.stored_peers.write().insert(peer.overlay(), peer.clone());
+        self.stored_peers
+            .write()
+            .insert(peer.overlay(), peer.clone());
 
         // Persist to store if available
         if let Some(store) = &self.store {

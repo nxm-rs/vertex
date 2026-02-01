@@ -10,9 +10,9 @@
 
 use asynchronous_codec::Framed;
 use futures::{SinkExt, TryStreamExt, future::BoxFuture};
+use nectar_primitives::ChunkAddress;
 use tracing::debug;
 use vertex_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound};
-use nectar_primitives::ChunkAddress;
 
 use crate::{
     PROTOCOL_NAME,

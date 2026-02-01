@@ -36,9 +36,9 @@ use libp2p::{
     },
 };
 use tracing::{debug, trace, warn};
-use vertex_swarm_peer::SwarmPeer;
 use vertex_net_handshake::{HANDSHAKE_TIMEOUT, HandshakeError, HandshakeInfo};
 use vertex_swarm_api::SwarmNodeTypes;
+use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peermanager::AddressManager;
 
 use crate::protocol::{
@@ -81,10 +81,9 @@ impl std::fmt::Debug for Command {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Command::StartHandshake(addr) => f.debug_tuple("StartHandshake").field(addr).finish(),
-            Command::BroadcastPeers(peers) => f
-                .debug_tuple("BroadcastPeers")
-                .field(&peers.len())
-                .finish(),
+            Command::BroadcastPeers(peers) => {
+                f.debug_tuple("BroadcastPeers").field(&peers.len()).finish()
+            }
             Command::Ping { greeting } => {
                 f.debug_struct("Ping").field("greeting", greeting).finish()
             }
@@ -111,7 +110,6 @@ pub enum Event {
     /// Pingpong protocol error.
     PingpongError(String),
 }
-
 
 impl std::fmt::Debug for Event {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

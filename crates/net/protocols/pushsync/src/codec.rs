@@ -1,8 +1,8 @@
 //! Codec for pushsync protocol messages.
 
 use bytes::Bytes;
-use vertex_net_codec::{Codec, ProtoMessage, ProtocolCodecError};
 use nectar_primitives::ChunkAddress;
+use vertex_net_codec::{Codec, ProtoMessage, ProtocolCodecError};
 
 /// Domain-specific errors for pushsync protocol.
 #[derive(Debug, thiserror::Error)]

@@ -31,10 +31,10 @@ use libp2p::swarm::{
         FullyNegotiatedOutbound,
     },
 };
-use tracing::{debug, warn};
-use vertex_swarm_bandwidth_chequebook::SignedCheque;
-use vertex_net_pseudosettle::PaymentAck;
 use nectar_primitives::ChunkAddress;
+use tracing::{debug, warn};
+use vertex_net_pseudosettle::PaymentAck;
+use vertex_swarm_bandwidth_chequebook::SignedCheque;
 use vertex_swarm_primitives::OverlayAddress;
 
 use super::upgrade::{

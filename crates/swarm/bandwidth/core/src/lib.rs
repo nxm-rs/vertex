@@ -16,8 +16,8 @@
 
 extern crate alloc;
 
-pub mod args;
 mod accounting;
+pub mod args;
 mod client_accounting;
 mod config;
 mod constants;
@@ -28,8 +28,8 @@ pub use accounting::{
     Accounting, AccountingAction, AccountingError, AccountingPeerHandle, PeerState,
     PeerStateSnapshot, ProvideAction, ReceiveAction,
 };
-pub use client_accounting::ClientAccounting;
 pub use args::{BandwidthArgs, BandwidthModeArg};
+pub use client_accounting::ClientAccounting;
 pub use config::DefaultAccountingConfig;
 pub use noop::{NoAccounting, NoPeerBandwidth, NoProvideAction, NoReceiveAction};
 pub use settlement::NoSettlement;

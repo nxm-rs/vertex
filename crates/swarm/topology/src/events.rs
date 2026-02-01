@@ -4,8 +4,8 @@
 //! extracts Swarm-layer concepts (OverlayAddress) from HandshakeInfo/SwarmPeer.
 
 use libp2p::{Multiaddr, PeerId, swarm::ConnectionId};
-use vertex_swarm_peer::SwarmPeer;
 use vertex_net_handshake::HandshakeInfo;
+use vertex_swarm_peer::SwarmPeer;
 
 /// Events emitted by the topology behaviour.
 #[derive(Clone)]
@@ -18,26 +18,16 @@ pub enum TopologyEvent {
     },
 
     /// All connections to a peer closed.
-    PeerConnectionClosed {
-        peer_id: PeerId,
-    },
+    PeerConnectionClosed { peer_id: PeerId },
 
     /// Peer addresses received via hive.
-    HivePeersReceived {
-        from: PeerId,
-        peers: Vec<SwarmPeer>,
-    },
+    HivePeersReceived { from: PeerId, peers: Vec<SwarmPeer> },
 
     /// Network depth changed.
-    DepthChanged {
-        new_depth: u8,
-    },
+    DepthChanged { new_depth: u8 },
 
     /// Dial attempt failed.
-    DialFailed {
-        address: Multiaddr,
-        error: String,
-    },
+    DialFailed { address: Multiaddr, error: String },
 }
 
 /// Commands accepted by the topology behaviour.
@@ -50,8 +40,5 @@ pub enum TopologyCommand {
     CloseConnection(PeerId),
 
     /// Broadcast peer addresses via hive.
-    BroadcastPeers {
-        to: PeerId,
-        peers: Vec<SwarmPeer>,
-    },
+    BroadcastPeers { to: PeerId, peers: Vec<SwarmPeer> },
 }

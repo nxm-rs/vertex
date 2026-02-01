@@ -9,7 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nectar_primitives::{AnyChunk, ChunkAddress};
 use vertex_swarm_api::{
-    SwarmBootnodeTypes, SwarmClientTypes, SwarmClient, SwarmError, SwarmResult, SwarmTopology,
+    SwarmBootnodeTypes, SwarmClient, SwarmClientTypes, SwarmError, SwarmResult, SwarmTopology,
 };
 
 use crate::ClientHandle;
@@ -190,8 +190,7 @@ impl<Types: SwarmBootnodeTypes, C: Clone, S> Clone for Client<Types, C, S> {
 // =============================================================================
 
 #[async_trait]
-impl<Types, A, P, S> SwarmClient
-    for Client<Types, BuiltSwarmComponents<Types::Topology, A, P>, S>
+impl<Types, A, P, S> SwarmClient for Client<Types, BuiltSwarmComponents<Types::Topology, A, P>, S>
 where
     Types: SwarmClientTypes + 'static,
     A: Send + Sync + 'static,
@@ -238,14 +237,16 @@ pub type FullClient<Types, A, P, S> =
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        Accounting, ClientAccounting, ClientCommand, ClientHandle, ClientService, FixedPricer,
+    };
     use core::fmt::Debug;
     use tokio::sync::mpsc;
-    use crate::{Accounting, ClientAccounting, FixedPricer, ClientCommand, ClientHandle, ClientService};
-    use vertex_swarm_primitives::OverlayAddress;
-    use vertex_swarm_bandwidth::DefaultAccountingConfig;
     use vertex_swarm_api::{SwarmBandwidthAccounting, SwarmNodeType, SwarmTopology};
-    use vertex_tasks::SpawnableTask;
+    use vertex_swarm_bandwidth::DefaultAccountingConfig;
     use vertex_swarm_identity::Identity;
+    use vertex_swarm_primitives::OverlayAddress;
+    use vertex_tasks::SpawnableTask;
 
     struct MockNode;
 
@@ -313,7 +314,8 @@ mod tests {
     }
 
     impl SwarmClientTypes for MockSwarmClientTypes {
-        type Accounting = ClientAccounting<Arc<Accounting<DefaultAccountingConfig, Identity>>, FixedPricer>;
+        type Accounting =
+            ClientAccounting<Arc<Accounting<DefaultAccountingConfig, Identity>>, FixedPricer>;
     }
 
     fn test_identity() -> Identity {
@@ -352,16 +354,24 @@ mod tests {
         let pricer = FixedPricer::new(10_000, &*vertex_swarmspec::init_mainnet());
         let handle = create_test_handle();
 
-        let client: FullClient<MockSwarmClientTypes, Arc<Accounting<DefaultAccountingConfig, Identity>>, FixedPricer, ()> =
-            Client::full(topology.clone(), accounting, pricer.clone(), handle.clone());
+        let client: FullClient<
+            MockSwarmClientTypes,
+            Arc<Accounting<DefaultAccountingConfig, Identity>>,
+            FixedPricer,
+            (),
+        > = Client::full(topology.clone(), accounting, pricer.clone(), handle.clone());
         // full() wraps accounting in Arc internally
         let peers = SwarmBandwidthAccounting::peers(client.accounting().as_ref());
         assert!(peers.is_empty());
 
         // Type alias - accounting is wrapped in Arc by full()
         let accounting2 = Accounting::new(DefaultAccountingConfig, test_identity());
-        let _client: FullClient<MockSwarmClientTypes, Arc<Accounting<DefaultAccountingConfig, Identity>>, FixedPricer, ()> =
-            Client::full(topology, accounting2, pricer, handle);
+        let _client: FullClient<
+            MockSwarmClientTypes,
+            Arc<Accounting<DefaultAccountingConfig, Identity>>,
+            FixedPricer,
+            (),
+        > = Client::full(topology, accounting2, pricer, handle);
     }
 
     #[test]
@@ -371,8 +381,12 @@ mod tests {
         let pricer = FixedPricer::new(10_000, &*vertex_swarmspec::init_mainnet());
         let handle = create_test_handle();
 
-        let client: FullClient<MockSwarmClientTypes, Arc<Accounting<DefaultAccountingConfig, Identity>>, FixedPricer, ()> =
-            Client::full(topology, accounting, pricer, handle);
+        let client: FullClient<
+            MockSwarmClientTypes,
+            Arc<Accounting<DefaultAccountingConfig, Identity>>,
+            FixedPricer,
+            (),
+        > = Client::full(topology, accounting, pricer, handle);
         let _clone = client.clone();
     }
 }

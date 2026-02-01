@@ -82,11 +82,7 @@ impl<I: SwarmIdentity> SwarmBandwidthAccounting for NoAccounting<I> {
         Ok(NoReceiveAction)
     }
 
-    fn prepare_provide(
-        &self,
-        _peer: OverlayAddress,
-        _price: u64,
-    ) -> SwarmResult<NoProvideAction> {
+    fn prepare_provide(&self, _peer: OverlayAddress, _price: u64) -> SwarmResult<NoProvideAction> {
         Ok(NoProvideAction)
     }
 }

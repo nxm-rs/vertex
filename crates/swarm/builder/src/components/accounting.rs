@@ -2,18 +2,20 @@
 
 use std::sync::Arc;
 
-use vertex_swarm_bandwidth::{Accounting, DefaultAccountingConfig, NoAccounting};
-use vertex_swarm_bandwidth_pseudosettle::PseudosettleProvider;
-use vertex_swarm_bandwidth_swap::SwapProvider;
 use vertex_swarm_api::{
     BandwidthMode, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmClientTypes,
     SwarmNetworkConfig, SwarmSettlementProvider,
 };
+use vertex_swarm_bandwidth::{Accounting, DefaultAccountingConfig, NoAccounting};
+use vertex_swarm_bandwidth_pseudosettle::PseudosettleProvider;
+use vertex_swarm_bandwidth_swap::SwapProvider;
 
 use crate::SwarmBuilderContext;
 
 /// Builder for bandwidth accounting components.
-pub trait AccountingBuilder<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig>: Send + Sync + 'static {
+pub trait AccountingBuilder<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig>:
+    Send + Sync + 'static
+{
     type Accounting: SwarmBandwidthAccounting + Send + Sync + 'static;
 
     fn build_accounting(self, ctx: &SwarmBuilderContext<'_, Types, Cfg>) -> Self::Accounting;
@@ -23,7 +25,9 @@ pub trait AccountingBuilder<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig>: S
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoAccountingBuilder;
 
-impl<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig> AccountingBuilder<Types, Cfg> for NoAccountingBuilder {
+impl<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig> AccountingBuilder<Types, Cfg>
+    for NoAccountingBuilder
+{
     type Accounting = NoAccounting<Arc<Types::Identity>>;
 
     fn build_accounting(self, ctx: &SwarmBuilderContext<'_, Types, Cfg>) -> Self::Accounting {

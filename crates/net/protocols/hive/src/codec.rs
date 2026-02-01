@@ -1,7 +1,7 @@
 //! Codec for hive protocol messages.
 
-use vertex_swarm_peer::SwarmPeer;
 use vertex_net_codec::{Codec, ProtoMessage, ProtocolCodecError};
+use vertex_swarm_peer::SwarmPeer;
 
 /// Error type for hive codec operations.
 pub type HiveCodecError = ProtocolCodecError<HiveProtocolError>;

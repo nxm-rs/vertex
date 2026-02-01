@@ -34,7 +34,11 @@ pub trait SwarmIdentity: Clone + Send + Sync + 'static {
     ///
     /// Default computes on every call. Override to return cached value.
     fn overlay_address(&self) -> SwarmAddress {
-        compute_overlay(&self.ethereum_address(), self.spec().network_id(), &self.nonce())
+        compute_overlay(
+            &self.ethereum_address(),
+            self.spec().network_id(),
+            &self.nonce(),
+        )
     }
 
     /// Ethereum address derived from the signing key.

@@ -23,12 +23,12 @@ use vertex_net_handshake::{
     HandshakeError, HandshakeInfo, HandshakeProtocol, PROTOCOL as HANDSHAKE_PROTOCOL,
 };
 use vertex_net_headers::ProtocolError;
-use vertex_swarm_peer::SwarmPeer;
 use vertex_net_hive::{HiveOutboundProtocol, PROTOCOL_NAME as HIVE_PROTOCOL};
 use vertex_net_pingpong::{
     PROTOCOL_NAME as PINGPONG_PROTOCOL, PingpongInboundProtocol, PingpongOutboundProtocol, Pong,
 };
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeTypes};
+use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peermanager::AddressManager;
 
 // ============================================================================
@@ -68,7 +68,6 @@ pub enum TopologyInboundOutput {
     /// Responded to a ping.
     Pingpong,
 }
-
 
 /// Combined inbound upgrade for topology protocols.
 ///
@@ -142,7 +141,9 @@ impl<N: SwarmNodeTypes> InboundUpgrade<Stream> for TopologyInboundUpgrade<N> {
             match info {
                 HANDSHAKE_PROTOCOL => {
                     // Get additional addresses from AddressManager if available
-                    let additional_addrs = self.address_manager.as_ref()
+                    let additional_addrs = self
+                        .address_manager
+                        .as_ref()
                         .map(|mgr| mgr.addresses_for_peer(&self.remote_addr))
                         .unwrap_or_default();
 
@@ -222,7 +223,6 @@ pub enum TopologyOutboundOutput {
     /// Pong received.
     Pingpong(Pong),
 }
-
 
 /// Combined outbound upgrade for topology protocols.
 ///
@@ -337,7 +337,9 @@ impl<N: SwarmNodeTypes> OutboundUpgrade<Stream> for TopologyOutboundUpgrade<N> {
             match self.request {
                 TopologyOutboundRequest::Handshake => {
                     // Get additional addresses from AddressManager if available
-                    let additional_addrs = self.address_manager.as_ref()
+                    let additional_addrs = self
+                        .address_manager
+                        .as_ref()
                         .map(|mgr| mgr.addresses_for_peer(&self.remote_addr))
                         .unwrap_or_default();
 

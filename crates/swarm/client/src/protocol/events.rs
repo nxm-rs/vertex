@@ -18,9 +18,9 @@
 use alloy_primitives::U256;
 use bytes::Bytes;
 use libp2p::PeerId;
-use vertex_swarm_bandwidth_chequebook::SignedCheque;
-use vertex_net_pseudosettle::PaymentAck;
 use nectar_primitives::ChunkAddress;
+use vertex_net_pseudosettle::PaymentAck;
+use vertex_swarm_bandwidth_chequebook::SignedCheque;
 use vertex_swarm_primitives::OverlayAddress;
 
 // ============================================================================

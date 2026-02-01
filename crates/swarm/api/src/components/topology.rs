@@ -1,7 +1,7 @@
 //! Topology and neighborhood awareness using overlay addresses.
 
-use std::vec::Vec;
 use nectar_primitives::ChunkAddress;
+use std::vec::Vec;
 use vertex_swarm_primitives::OverlayAddress;
 
 use crate::SwarmIdentity;

@@ -2,13 +2,15 @@
 
 use std::sync::Arc;
 
-use vertex_swarm_kademlia::{KademliaConfig, KademliaTopology};
 use vertex_swarm_api::{SwarmClientTypes, SwarmNetworkConfig, SwarmTopology};
+use vertex_swarm_kademlia::{KademliaConfig, KademliaTopology};
 
 use crate::SwarmBuilderContext;
 
 /// Builder for topology components.
-pub trait TopologyBuilder<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig>: Send + Sync + 'static {
+pub trait TopologyBuilder<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig>:
+    Send + Sync + 'static
+{
     type Topology: SwarmTopology + Send + Sync + 'static;
 
     fn build_topology(self, ctx: &SwarmBuilderContext<'_, Types, Cfg>) -> Self::Topology;

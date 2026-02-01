@@ -4,9 +4,9 @@
 //! accessed chunks, reducing disk reads.
 
 use lru::LruCache;
+use nectar_primitives::ChunkAddress;
 use parking_lot::Mutex;
 use std::num::NonZeroUsize;
-use nectar_primitives::ChunkAddress;
 
 /// LRU cache for chunk data.
 ///

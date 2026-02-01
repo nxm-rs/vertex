@@ -28,16 +28,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::sync::mpsc;
-use vertex_swarm_bandwidth::{Accounting, DefaultAccountingConfig};
-use vertex_swarm_bandwidth_pseudosettle::{PseudosettleProvider, create_pseudosettle_actor};
-use vertex_swarm_peermanager::PeerStore;
 use vertex_node_api::{NodeBuildsProtocol, NodeContext};
 use vertex_swarm_api::{
     NodeTask, SwarmAccountingConfig, SwarmLaunchConfig, SwarmNetworkConfig, SwarmProtocol,
 };
-use vertex_swarm_core::{ClientCommand, SwarmNode};
+use vertex_swarm_bandwidth::{Accounting, DefaultAccountingConfig};
+use vertex_swarm_bandwidth_pseudosettle::{PseudosettleProvider, create_pseudosettle_actor};
 use vertex_swarm_core::args::SwarmArgs;
+use vertex_swarm_core::{ClientCommand, SwarmNode};
 use vertex_swarm_identity::Identity;
+use vertex_swarm_peermanager::PeerStore;
 use vertex_swarmspec::Hive;
 use vertex_tasks::{SpawnableTask, TaskExecutor};
 
@@ -196,10 +196,7 @@ impl SwarmLaunchConfig for ClientNodeBuildConfig {
     type Providers = crate::rpc::ClientRpcProviders<crate::providers::NetworkChunkProvider>;
     type Error = SwarmNodeError;
 
-    async fn build(
-        self,
-        _ctx: &NodeContext,
-    ) -> Result<(NodeTask, Self::Providers), Self::Error> {
+    async fn build(self, _ctx: &NodeContext) -> Result<(NodeTask, Self::Providers), Self::Error> {
         use tracing::info;
         use vertex_swarmspec::Loggable;
 
@@ -264,10 +261,8 @@ impl SwarmLaunchConfig for ClientNodeBuildConfig {
         }
 
         // Create chunk provider for RPC
-        let chunk_provider = crate::providers::NetworkChunkProvider::new(
-            client_handle.clone(),
-            topology.clone(),
-        );
+        let chunk_provider =
+            crate::providers::NetworkChunkProvider::new(client_handle.clone(), topology.clone());
 
         // Create RPC providers
         let providers = crate::rpc::ClientRpcProviders::new(topology, chunk_provider);
@@ -344,10 +339,7 @@ impl SwarmLaunchConfig for BootnodeBuildConfig {
     type Providers = crate::rpc::BootnodeRpcProviders;
     type Error = SwarmNodeError;
 
-    async fn build(
-        self,
-        _ctx: &NodeContext,
-    ) -> Result<(NodeTask, Self::Providers), Self::Error> {
+    async fn build(self, _ctx: &NodeContext) -> Result<(NodeTask, Self::Providers), Self::Error> {
         use tracing::info;
         use vertex_swarmspec::Loggable;
 

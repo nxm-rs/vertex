@@ -39,7 +39,10 @@ pub trait SwarmChunkProvider: Send + Sync + 'static {
     /// Retrieve a chunk by its address from the Swarm network.
     ///
     /// The address should be a 64-character hex string.
-    async fn retrieve_chunk(&self, address: &str) -> Result<ChunkRetrievalResult, ChunkRetrievalError>;
+    async fn retrieve_chunk(
+        &self,
+        address: &str,
+    ) -> Result<ChunkRetrievalResult, ChunkRetrievalError>;
 
     /// Check if a chunk exists locally.
     ///
@@ -131,4 +134,3 @@ pub trait SwarmChunkSender: Send + Sync + 'static {
         chunk: nectar_primitives::AnyChunk,
     ) -> Result<ChunkSendReceipt, ChunkSendError>;
 }
-

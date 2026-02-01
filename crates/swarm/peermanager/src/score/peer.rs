@@ -260,8 +260,7 @@ impl PeerScoreState {
         self.chunks_delivered
             .store(snapshot.chunks_delivered, ORDERING);
         self.invalid_chunks.store(snapshot.invalid_chunks, ORDERING);
-        self.latency_sum_ms
-            .store(snapshot.latency_sum_ms, ORDERING);
+        self.latency_sum_ms.store(snapshot.latency_sum_ms, ORDERING);
         self.latency_samples
             .store(snapshot.latency_samples, ORDERING);
     }

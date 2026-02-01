@@ -5,9 +5,9 @@
 
 use std::path::Path;
 
+use nectar_primitives::ChunkAddress;
 use redb::{Database, ReadableTable, TableDefinition};
 use tracing::debug;
-use nectar_primitives::ChunkAddress;
 
 use crate::{ChunkStore, StorerResult};
 

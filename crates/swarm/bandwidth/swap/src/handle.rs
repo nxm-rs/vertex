@@ -19,11 +19,7 @@ impl SwapHandle {
     }
 
     /// Request cheque settlement. Returns the amount settled.
-    pub async fn settle(
-        &self,
-        peer: OverlayAddress,
-        amount: u64,
-    ) -> Result<u64, SwapError> {
+    pub async fn settle(&self, peer: OverlayAddress, amount: u64) -> Result<u64, SwapError> {
         let (tx, rx) = oneshot::channel();
 
         self.command_tx

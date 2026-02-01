@@ -2,8 +2,8 @@ use asynchronous_codec::{Framed, FramedRead};
 use futures::{AsyncWriteExt, SinkExt, TryStreamExt, future::BoxFuture};
 use libp2p::{InboundUpgrade, Multiaddr, OutboundUpgrade, PeerId, Stream, core::UpgradeInfo};
 use vertex_swarm_api::SwarmIdentity;
-use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_api::SwarmNodeTypes;
+use vertex_swarm_peer::SwarmPeer;
 use vertex_swarmspec::SwarmSpec;
 
 use crate::{
@@ -82,20 +82,29 @@ impl<N: SwarmNodeTypes> HandshakeProtocol<N> {
 
         // Combine observed address with additional addresses for our identity
         let mut our_addrs = vec![observed_multiaddr.clone()];
-        our_addrs.extend(self.additional_addrs.iter().filter(|a| *a != &observed_multiaddr).cloned());
+        our_addrs.extend(
+            self.additional_addrs
+                .iter()
+                .filter(|a| *a != &observed_multiaddr)
+                .cloned(),
+        );
 
         // Create local SwarmPeer identity with all addresses
-        let local_peer = SwarmPeer::from_identity(&self.identity, our_addrs)
-            .map_err(|e| HandshakeError::Codec(crate::codec::CodecError::domain(
-                HandshakeCodecDomainError::InvalidPeer(e)
-            )))?;
+        let local_peer = SwarmPeer::from_identity(&self.identity, our_addrs).map_err(|e| {
+            HandshakeError::Codec(crate::codec::CodecError::domain(
+                HandshakeCodecDomainError::InvalidPeer(e),
+            ))
+        })?;
 
         // Send SYNACK
         let synack = SynAck::new(
             syn,
             local_peer,
             self.identity.is_full_node(),
-            self.identity.welcome_message().unwrap_or_default().to_string(),
+            self.identity
+                .welcome_message()
+                .unwrap_or_default()
+                .to_string(),
         );
 
         let mut framed = Framed::new(framed.into_inner(), synack_codec);
@@ -157,19 +166,28 @@ impl<N: SwarmNodeTypes> HandshakeProtocol<N> {
 
         // Combine observed address with additional addresses for our identity
         let mut our_addrs = vec![observed_multiaddr.clone()];
-        our_addrs.extend(self.additional_addrs.iter().filter(|a| *a != &observed_multiaddr).cloned());
+        our_addrs.extend(
+            self.additional_addrs
+                .iter()
+                .filter(|a| *a != &observed_multiaddr)
+                .cloned(),
+        );
 
         // Create local SwarmPeer identity with all addresses
-        let local_peer = SwarmPeer::from_identity(&self.identity, our_addrs)
-            .map_err(|e| HandshakeError::Codec(crate::codec::CodecError::domain(
-                HandshakeCodecDomainError::InvalidPeer(e)
-            )))?;
+        let local_peer = SwarmPeer::from_identity(&self.identity, our_addrs).map_err(|e| {
+            HandshakeError::Codec(crate::codec::CodecError::domain(
+                HandshakeCodecDomainError::InvalidPeer(e),
+            ))
+        })?;
 
         // Send ACK (network_id provided by codec context)
         let ack = Ack::new(
             local_peer,
             self.identity.is_full_node(),
-            self.identity.welcome_message().unwrap_or_default().to_string(),
+            self.identity
+                .welcome_message()
+                .unwrap_or_default()
+                .to_string(),
         );
 
         let mut framed = Framed::new(framed.into_inner(), ack_codec);

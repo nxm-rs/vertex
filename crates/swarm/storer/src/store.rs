@@ -3,9 +3,9 @@
 //! This module provides [`LocalStoreImpl`] which implements the
 //! [`LocalStore`] trait from swarm-api.
 
-use tracing::{debug, trace};
 use nectar_primitives::{AnyChunk, Chunk, ChunkAddress};
-use vertex_swarm_api::{SwarmLocalStore, SwarmError, SwarmResult};
+use tracing::{debug, trace};
+use vertex_swarm_api::{SwarmError, SwarmLocalStore, SwarmResult};
 
 use crate::{ChunkCache, ChunkStore, Reserve, StorerError};
 

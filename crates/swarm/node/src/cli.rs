@@ -32,7 +32,6 @@ use std::sync::Arc;
 use alloy_primitives::B256;
 use clap::{Parser, Subcommand};
 use eyre::{Result, WrapErr};
-use vertex_swarm_peermanager::{FilePeerStore, PeerStore};
 use vertex_node_builder::LaunchContext;
 use vertex_node_commands::{HasLogs, InfraArgs, LogArgs, run_cli};
 use vertex_node_core::config::FullNodeConfig;
@@ -43,6 +42,7 @@ use vertex_swarm_builder::{
 use vertex_swarm_core::SwarmConfig;
 use vertex_swarm_core::args::SwarmArgs;
 use vertex_swarm_identity::Identity;
+use vertex_swarm_peermanager::{FilePeerStore, PeerStore};
 use vertex_swarmspec::{Hive, SwarmSpec, init_mainnet, init_testnet};
 use vertex_tasks::TaskExecutor;
 
@@ -215,12 +215,7 @@ pub async fn build_launch_context(args: &SwarmRunNodeArgs) -> Result<SwarmLaunch
             B256::from(bytes)
         });
 
-        Identity::new(
-            signer,
-            nonce,
-            spec.clone(),
-            node_type,
-        )
+        Identity::new(signer, nonce, spec.clone(), node_type)
     };
 
     let base = LaunchContext::new(executor, dirs, ());

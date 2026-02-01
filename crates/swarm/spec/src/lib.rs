@@ -59,10 +59,10 @@ pub use vertex_swarm_forks::*;
 pub use nectar_contracts;
 
 pub use api::{StaticSwarmSpecProvider, SwarmSpec, SwarmSpecProvider};
+pub use constants::*;
 #[cfg(feature = "std")]
 pub use display::Loggable;
 pub use display::{DisplaySwarmSpec, SwarmSpecExt};
-pub use constants::*;
 #[cfg(feature = "std")]
 pub use error::SwarmSpecFileError;
 pub use nectar_primitives::{ChunkTypeSet, StandardChunkSet};

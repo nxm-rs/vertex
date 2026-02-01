@@ -1,8 +1,8 @@
 //! Error types for handshake protocol codec.
 
 use libp2p::multiaddr;
-use vertex_swarm_peer::SwarmPeerError;
 use vertex_net_codec::ProtocolCodecError;
+use vertex_swarm_peer::SwarmPeerError;
 
 /// Domain-specific errors for handshake protocol.
 #[derive(Debug, thiserror::Error)]

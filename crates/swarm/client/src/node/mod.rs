@@ -63,6 +63,7 @@ pub mod bootnode;
 
 use std::{sync::Arc, time::Duration};
 
+use crate::protocol::{ClientCommand, PseudosettleEvent, SwapEvent};
 use eyre::Result;
 use futures::StreamExt;
 use libp2p::{
@@ -71,15 +72,14 @@ use libp2p::{
 use nectar_primitives::SwarmAddress;
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
+use vertex_swarm_api::{SwarmIdentity, SwarmNodeTypes, SwarmTopology};
 use vertex_swarm_kademlia::{KademliaConfig, KademliaTopology};
 use vertex_swarm_peermanager::{
-    AddressManager, DiscoverySender, InternalPeerManager, PeerManager, PeerStore,
-    SwarmPeer, discovery_channel, run_peer_store_consumer,
+    AddressManager, DiscoverySender, InternalPeerManager, PeerManager, PeerStore, SwarmPeer,
+    discovery_channel, run_peer_store_consumer,
 };
-use crate::protocol::{ClientCommand, PseudosettleEvent, SwapEvent};
-use vertex_swarm_topology::{BootnodeConnector, TopologyCommand, TopologyEvent, is_dnsaddr};
 use vertex_swarm_primitives::OverlayAddress;
-use vertex_swarm_api::{SwarmIdentity, SwarmNodeTypes, SwarmTopology};
+use vertex_swarm_topology::{BootnodeConnector, TopologyCommand, TopologyEvent, is_dnsaddr};
 use vertex_tasks::SpawnableTask;
 use vertex_tasks::TaskExecutor;
 
@@ -282,7 +282,10 @@ impl<N: SwarmNodeTypes> SwarmNode<N> {
                 info!(%address, "New listen address");
                 if let Some(mgr) = &self.address_manager {
                     mgr.on_new_listen_addr(address.clone());
-                    debug!(listen_count = mgr.listen_addrs().len(), "AddressManager tracking listen addresses");
+                    debug!(
+                        listen_count = mgr.listen_addrs().len(),
+                        "AddressManager tracking listen addresses"
+                    );
                 }
             }
             SwarmEvent::ExpiredListenAddr { address, .. } => {
@@ -578,7 +581,10 @@ impl<N: SwarmNodeTypes> SwarmNodeBuilder<N> {
     /// Set network configuration from a NetworkConfig implementation.
     ///
     /// If no bootnodes are provided in the config, falls back to spec bootnodes.
-    pub fn with_network_config(mut self, config: &impl vertex_swarm_api::SwarmNetworkConfig) -> Self {
+    pub fn with_network_config(
+        mut self,
+        config: &impl vertex_swarm_api::SwarmNetworkConfig,
+    ) -> Self {
         use vertex_swarm_api::SwarmIdentity;
 
         self.listen_addrs = config

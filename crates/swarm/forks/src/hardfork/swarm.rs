@@ -86,7 +86,10 @@ impl SwarmHardfork {
     pub const fn dev() -> [(Self, ForkCondition); 2] {
         [
             (Self::Genesis, ForkCondition::Timestamp(0)),
-            (Self::Accord, ForkCondition::Timestamp(Self::DEV_ACCORD_TIMESTAMP)),
+            (
+                Self::Accord,
+                ForkCondition::Timestamp(Self::DEV_ACCORD_TIMESTAMP),
+            ),
         ]
     }
 }

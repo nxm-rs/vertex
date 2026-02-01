@@ -11,13 +11,13 @@ use asynchronous_codec::Framed;
 use bytes::Bytes;
 use futures::{SinkExt, TryStreamExt, future::BoxFuture};
 use tracing::debug;
-use vertex_swarm_bandwidth_chequebook::SignedCheque;
 use vertex_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound};
+use vertex_swarm_bandwidth_chequebook::SignedCheque;
 
 use crate::{
     PROTOCOL_NAME,
     codec::{EmitCheque, EmitChequeCodec, SwapCodecError},
-    headers::{SettlementHeaders, HEADER_EXCHANGE_RATE},
+    headers::{HEADER_EXCHANGE_RATE, SettlementHeaders},
 };
 
 const MAX_MESSAGE_SIZE: usize = 4096;

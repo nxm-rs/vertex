@@ -5,26 +5,26 @@ use std::time::Duration;
 
 use eyre::Result;
 use futures::StreamExt;
+use libp2p::swarm::NetworkBehaviour;
 use libp2p::{
     Multiaddr, PeerId, Swarm, SwarmBuilder, identify, identity::PublicKey, noise,
     swarm::SwarmEvent, tcp, yamux,
 };
 use nectar_primitives::SwarmAddress;
 use tracing::{debug, info, warn};
-use libp2p::swarm::NetworkBehaviour;
+use vertex_swarm_api::SwarmTopology;
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeTypes};
-use vertex_tasks::SpawnableTask;
-use vertex_swarm_topology::{
-    BehaviourConfig as TopologyBehaviourConfig, BootnodeConnector, SwarmTopologyBehaviour,
-    TopologyCommand, TopologyEvent, is_dnsaddr,
-};
 use vertex_swarm_kademlia::{KademliaConfig, KademliaTopology};
 use vertex_swarm_peermanager::{
     AddressManager, DiscoverySender, InternalPeerManager, PeerManager, PeerStore,
     discovery_channel, run_peer_store_consumer,
 };
-use vertex_swarm_api::SwarmTopology;
 use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_topology::{
+    BehaviourConfig as TopologyBehaviourConfig, BootnodeConnector, SwarmTopologyBehaviour,
+    TopologyCommand, TopologyEvent, is_dnsaddr,
+};
+use vertex_tasks::SpawnableTask;
 use vertex_tasks::TaskExecutor;
 
 use crate::BootnodeProvider;
@@ -419,7 +419,10 @@ impl<N: SwarmNodeTypes> BootNodeBuilder<N> {
     }
 
     /// Set network configuration.
-    pub fn with_network_config(mut self, config: &impl vertex_swarm_api::SwarmNetworkConfig) -> Self {
+    pub fn with_network_config(
+        mut self,
+        config: &impl vertex_swarm_api::SwarmNetworkConfig,
+    ) -> Self {
         self.listen_addrs = config
             .listen_addrs()
             .into_iter()
@@ -508,7 +511,10 @@ impl<N: SwarmNodeTypes> BootNodeBuilder<N> {
 
         let known_peers = peer_manager.known_dialable_peers();
         if !known_peers.is_empty() {
-            info!(count = known_peers.len(), "seeding kademlia with stored peers");
+            info!(
+                count = known_peers.len(),
+                "seeding kademlia with stored peers"
+            );
             kademlia.add_peers(&known_peers);
         }
 

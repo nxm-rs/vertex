@@ -4,8 +4,8 @@
 //! the wire format (`proto::Ack`) and the domain type (`Ack`).
 
 use nectar_primitives::SwarmAddress;
-use vertex_swarm_peer::SwarmPeer;
 use vertex_net_codec::ProtoMessageWithContext;
+use vertex_swarm_peer::SwarmPeer;
 
 use crate::MAX_WELCOME_MESSAGE_CHARS;
 use crate::codec::error::{CodecError, HandshakeCodecDomainError};
@@ -64,7 +64,10 @@ impl ProtoMessageWithContext<u64> for Ack {
         )
     }
 
-    fn from_proto_with_context(proto: Self::Proto, expected_network_id: &u64) -> Result<Self, Self::DecodeError> {
+    fn from_proto_with_context(
+        proto: Self::Proto,
+        expected_network_id: &u64,
+    ) -> Result<Self, Self::DecodeError> {
         let swarm_peer = swarm_peer_from_proto(&proto, *expected_network_id)?;
         let welcome_message = welcome_message_from_proto(&proto)?;
         Ok(Self::new(swarm_peer, proto.full_node, welcome_message))
@@ -83,7 +86,9 @@ pub(crate) fn swarm_peer_from_proto(
     expected_network_id: u64,
 ) -> Result<SwarmPeer, CodecError> {
     if value.network_id != expected_network_id {
-        return Err(CodecError::domain(HandshakeCodecDomainError::NetworkIdMismatch));
+        return Err(CodecError::domain(
+            HandshakeCodecDomainError::NetworkIdMismatch,
+        ));
     }
 
     let peer_address = value
@@ -94,10 +99,16 @@ pub(crate) fn swarm_peer_from_proto(
     let overlay = SwarmAddress::from_slice(peer_address.overlay.as_slice())
         .map_err(|_| CodecError::protocol("invalid overlay"))?;
 
-    let nonce = value.nonce.as_slice().try_into()
+    let nonce = value
+        .nonce
+        .as_slice()
+        .try_into()
         .map_err(HandshakeCodecDomainError::from)
         .map_err(CodecError::domain)?;
-    let signature = peer_address.signature.as_slice().try_into()
+    let signature = peer_address
+        .signature
+        .as_slice()
+        .try_into()
         .map_err(HandshakeCodecDomainError::from)
         .map_err(CodecError::domain)?;
 
@@ -121,11 +132,13 @@ pub(crate) fn welcome_message_from_proto(
 ) -> Result<String, CodecError> {
     let char_count = value.welcome_message.chars().count();
     if char_count > MAX_WELCOME_MESSAGE_CHARS {
-        return Err(CodecError::domain(HandshakeCodecDomainError::FieldLengthExceeded(
-            "welcome_message",
-            MAX_WELCOME_MESSAGE_CHARS,
-            char_count,
-        )));
+        return Err(CodecError::domain(
+            HandshakeCodecDomainError::FieldLengthExceeded(
+                "welcome_message",
+                MAX_WELCOME_MESSAGE_CHARS,
+                char_count,
+            ),
+        ));
     }
     Ok(value.welcome_message.clone())
 }
@@ -155,25 +168,18 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use alloy_primitives::B256;
     use alloy_signer::k256::ecdsa::SigningKey;
     use alloy_signer_local::{LocalSigner, PrivateKeySigner};
-    use alloy_primitives::B256;
     use libp2p::Multiaddr;
     use vertex_net_codec::ProtocolCodecError;
 
     const TEST_NETWORK_ID: u64 = 1234567890;
 
-    fn create_test_peer(
-        network_id: u64,
-        signer: Arc<LocalSigner<SigningKey>>,
-    ) -> SwarmPeer {
+    fn create_test_peer(network_id: u64, signer: Arc<LocalSigner<SigningKey>>) -> SwarmPeer {
         let multiaddr: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
-        SwarmPeer::with_signer(
-            vec![multiaddr],
-            B256::default(),
-            network_id,
-            signer,
-        ).expect("should create peer")
+        SwarmPeer::with_signer(vec![multiaddr], B256::default(), network_id, signer)
+            .expect("should create peer")
     }
 
     #[test]
@@ -254,7 +260,9 @@ mod tests {
         proto_ack.welcome_message = base_char.repeat(MAX_WELCOME_MESSAGE_CHARS + 1);
         assert!(matches!(
             welcome_message_from_proto(&proto_ack),
-            Err(ProtocolCodecError::Domain(HandshakeCodecDomainError::FieldLengthExceeded(_, _, _)))
+            Err(ProtocolCodecError::Domain(
+                HandshakeCodecDomainError::FieldLengthExceeded(_, _, _)
+            ))
         ));
     }
 
@@ -268,7 +276,9 @@ mod tests {
         let result = swarm_peer_from_proto(&proto_ack, wrong_network_id);
         assert!(matches!(
             result,
-            Err(ProtocolCodecError::Domain(HandshakeCodecDomainError::NetworkIdMismatch))
+            Err(ProtocolCodecError::Domain(
+                HandshakeCodecDomainError::NetworkIdMismatch
+            ))
         ));
     }
 
@@ -287,10 +297,12 @@ mod tests {
                     ack.peer = None;
                     ack
                 }),
-                Box::new(|e| matches!(
-                    e,
-                    ProtocolCodecError::Domain(HandshakeCodecDomainError::MissingField("peer"))
-                )),
+                Box::new(|e| {
+                    matches!(
+                        e,
+                        ProtocolCodecError::Domain(HandshakeCodecDomainError::MissingField("peer"))
+                    )
+                }),
             ),
             (
                 Box::new(|mut ack| {
@@ -299,12 +311,14 @@ mod tests {
                     ack.peer = Some(peer);
                     ack
                 }),
-                Box::new(|e| matches!(
-                    e,
-                    ProtocolCodecError::Domain(HandshakeCodecDomainError::InvalidPeer(
-                        vertex_swarm_peer::SwarmPeerError::InvalidSignature(_)
-                    ))
-                )),
+                Box::new(|e| {
+                    matches!(
+                        e,
+                        ProtocolCodecError::Domain(HandshakeCodecDomainError::InvalidPeer(
+                            vertex_swarm_peer::SwarmPeerError::InvalidSignature(_)
+                        ))
+                    )
+                }),
             ),
             (
                 Box::new(|mut ack| {
@@ -314,12 +328,14 @@ mod tests {
                     ack
                 }),
                 // Now handled inside SwarmPeer::from_signed, so error is InvalidPeer(InvalidMultiaddr)
-                Box::new(|e| matches!(
-                    e,
-                    ProtocolCodecError::Domain(HandshakeCodecDomainError::InvalidPeer(
-                        vertex_swarm_peer::SwarmPeerError::InvalidMultiaddr(_)
-                    ))
-                )),
+                Box::new(|e| {
+                    matches!(
+                        e,
+                        ProtocolCodecError::Domain(HandshakeCodecDomainError::InvalidPeer(
+                            vertex_swarm_peer::SwarmPeerError::InvalidMultiaddr(_)
+                        ))
+                    )
+                }),
             ),
             (
                 Box::new(|mut ack| {
@@ -328,22 +344,26 @@ mod tests {
                     ack.peer = Some(peer);
                     ack
                 }),
-                Box::new(|e| matches!(
-                    e,
-                    ProtocolCodecError::Domain(HandshakeCodecDomainError::InvalidPeer(
-                        vertex_swarm_peer::SwarmPeerError::InvalidOverlay
-                    ))
-                )),
+                Box::new(|e| {
+                    matches!(
+                        e,
+                        ProtocolCodecError::Domain(HandshakeCodecDomainError::InvalidPeer(
+                            vertex_swarm_peer::SwarmPeerError::InvalidOverlay
+                        ))
+                    )
+                }),
             ),
             (
                 Box::new(|mut ack| {
                     ack.nonce = vec![0u8; 16];
                     ack
                 }),
-                Box::new(|e| matches!(
-                    e,
-                    ProtocolCodecError::Domain(HandshakeCodecDomainError::InvalidData(_))
-                )),
+                Box::new(|e| {
+                    matches!(
+                        e,
+                        ProtocolCodecError::Domain(HandshakeCodecDomainError::InvalidData(_))
+                    )
+                }),
             ),
         ];
 

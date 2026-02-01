@@ -16,8 +16,8 @@
 //! Cheque(address chequebook,address beneficiary,uint256 cumulativePayout)
 //! ```
 
-use alloy_primitives::{Address, Signature, B256, U256};
-use alloy_sol_types::{eip712_domain, Eip712Domain, SolStruct};
+use alloy_primitives::{Address, B256, Signature, U256};
+use alloy_sol_types::{Eip712Domain, SolStruct, eip712_domain};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use vertex_swarmspec::SwarmSpec;

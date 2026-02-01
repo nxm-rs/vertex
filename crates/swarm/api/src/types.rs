@@ -3,8 +3,7 @@
 //! Capability levels: SwarmBootnodeTypes → SwarmClientTypes → SwarmStorerTypes.
 
 use crate::{
-    SwarmBandwidthAccounting, SwarmClientAccounting, SwarmIdentity, SwarmLocalStore,
-    SwarmTopology,
+    SwarmBandwidthAccounting, SwarmClientAccounting, SwarmIdentity, SwarmLocalStore, SwarmTopology,
 };
 use vertex_node_types::NodeTypes;
 use vertex_swarmspec::SwarmSpec;
@@ -76,8 +75,7 @@ pub type TopologyOf<T> = <T as SwarmBootnodeTypes>::Topology;
 pub type AccountingOf<T> = <T as SwarmClientTypes>::Accounting;
 
 /// Extract the Bandwidth type from SwarmClientTypes.
-pub type BandwidthOf<T> =
-    <<T as SwarmClientTypes>::Accounting as SwarmClientAccounting>::Bandwidth;
+pub type BandwidthOf<T> = <<T as SwarmClientTypes>::Accounting as SwarmClientAccounting>::Bandwidth;
 
 /// Extract the Pricing type from SwarmClientTypes.
 pub type PricingOf<T> = <<T as SwarmClientTypes>::Accounting as SwarmClientAccounting>::Pricing;

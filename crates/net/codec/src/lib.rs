@@ -124,7 +124,9 @@ where
     type Error = E;
 
     fn encode(&mut self, item: Self::Item<'_>, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        self.inner.encode(item.into_proto(), dst).map_err(Into::into)
+        self.inner
+            .encode(item.into_proto(), dst)
+            .map_err(Into::into)
     }
 }
 

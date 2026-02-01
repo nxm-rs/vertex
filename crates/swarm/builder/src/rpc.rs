@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
 use vertex_swarm_api::SwarmChunkProvider;
-use vertex_swarm_rpc::{ChunkService, NodeService, proto};
-use vertex_swarm_kademlia::KademliaTopology;
 use vertex_swarm_identity::Identity;
+use vertex_swarm_kademlia::KademliaTopology;
+use vertex_swarm_rpc::{ChunkService, NodeService, proto};
 
 /// RPC providers for client nodes.
 ///

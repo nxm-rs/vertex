@@ -60,7 +60,7 @@ mod headers;
 mod protocol;
 
 pub use codec::{EmitCheque, EmitChequeCodec, Handshake, HandshakeCodec, SwapCodecError};
-pub use headers::{SettlementHeaders, HEADER_DEDUCTION, HEADER_EXCHANGE_RATE};
+pub use headers::{HEADER_DEDUCTION, HEADER_EXCHANGE_RATE, SettlementHeaders};
 pub use protocol::{SwapInboundProtocol, SwapOutboundProtocol, inbound, outbound};
 
 // Re-export SignedCheque for convenience

@@ -39,7 +39,16 @@ use super::{NetworkArgs, StorageIncentiveArgs};
 ///
 /// Maps to [`SwarmNodeType`]. Use `.into()` for conversion.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum, strum::FromRepr, Serialize, Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    clap::ValueEnum,
+    strum::FromRepr,
+    Serialize,
+    Deserialize,
 )]
 #[serde(rename_all = "lowercase")]
 #[repr(u8)]

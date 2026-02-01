@@ -55,7 +55,7 @@ pub use vertex_swarm_client::{
 pub use vertex_swarm_primitives::SwarmNodeType;
 
 // Re-export from vertex-swarm-client
-pub use vertex_swarm_client::{spawn_stats_task, StatsConfig};
+pub use vertex_swarm_client::{StatsConfig, spawn_stats_task};
 
 #[cfg(feature = "cli")]
 pub use config::SwarmConfig;

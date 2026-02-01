@@ -1,12 +1,14 @@
 //! Pricer builder.
 
+use vertex_swarm_api::{SwarmClientTypes, SwarmIdentity, SwarmNetworkConfig, SwarmPricingConfig};
 use vertex_swarm_bandwidth_pricing::{DefaultPricingConfig, FixedPricer, NoPricer, Pricer};
-use vertex_swarm_api::{SwarmIdentity, SwarmClientTypes, SwarmNetworkConfig, SwarmPricingConfig};
 
 use crate::SwarmBuilderContext;
 
 /// Builder for chunk pricing components.
-pub trait PricerBuilder<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig>: Send + Sync + 'static {
+pub trait PricerBuilder<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig>:
+    Send + Sync + 'static
+{
     type Pricer: Pricer + Clone + Send + Sync + 'static;
 
     fn build_pricer(self, ctx: &SwarmBuilderContext<'_, Types, Cfg>) -> Self::Pricer;
@@ -16,7 +18,9 @@ pub trait PricerBuilder<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig>: Send 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoPricerBuilder;
 
-impl<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig> PricerBuilder<Types, Cfg> for NoPricerBuilder {
+impl<Types: SwarmClientTypes, Cfg: SwarmNetworkConfig> PricerBuilder<Types, Cfg>
+    for NoPricerBuilder
+{
     type Pricer = NoPricer;
 
     fn build_pricer(self, _ctx: &SwarmBuilderContext<'_, Types, Cfg>) -> Self::Pricer {

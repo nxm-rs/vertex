@@ -177,11 +177,8 @@ pub trait SwarmBandwidthAccounting: Send + Sync {
     ) -> SwarmResult<Self::ReceiveAction>;
 
     /// Prepare to provide service to a peer (balance increases).
-    fn prepare_provide(
-        &self,
-        peer: OverlayAddress,
-        price: u64,
-    ) -> SwarmResult<Self::ProvideAction>;
+    fn prepare_provide(&self, peer: OverlayAddress, price: u64)
+    -> SwarmResult<Self::ProvideAction>;
 }
 
 /// Combined pricing and bandwidth accounting for client operations.
@@ -208,7 +205,10 @@ pub trait SwarmClientAccounting: Clone + Send + Sync {
     }
 
     /// Get or create accounting for a peer.
-    fn for_peer(&self, peer: OverlayAddress) -> <Self::Bandwidth as SwarmBandwidthAccounting>::Peer {
+    fn for_peer(
+        &self,
+        peer: OverlayAddress,
+    ) -> <Self::Bandwidth as SwarmBandwidthAccounting>::Peer {
         self.bandwidth().for_peer(peer)
     }
 

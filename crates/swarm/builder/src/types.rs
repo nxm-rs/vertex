@@ -5,11 +5,11 @@
 
 use std::sync::Arc;
 
-use vertex_swarm_bandwidth::{Accounting, ClientAccounting, DefaultAccountingConfig, FixedPricer};
-use vertex_swarm_kademlia::KademliaTopology;
 use vertex_node_types::NodeTypes;
 use vertex_swarm_api::{SwarmBootnodeTypes, SwarmClientTypes, SwarmNetworkConfig};
+use vertex_swarm_bandwidth::{Accounting, ClientAccounting, DefaultAccountingConfig, FixedPricer};
 use vertex_swarm_identity::Identity;
+use vertex_swarm_kademlia::KademliaTopology;
 use vertex_swarmspec::Hive;
 
 /// Default types for client nodes.
@@ -34,7 +34,8 @@ impl SwarmBootnodeTypes for DefaultClientTypes {
 }
 
 impl SwarmClientTypes for DefaultClientTypes {
-    type Accounting = ClientAccounting<Arc<Accounting<DefaultAccountingConfig, Arc<Identity>>>, FixedPricer>;
+    type Accounting =
+        ClientAccounting<Arc<Accounting<DefaultAccountingConfig, Arc<Identity>>>, FixedPricer>;
 }
 
 /// Default types for bootnodes.
