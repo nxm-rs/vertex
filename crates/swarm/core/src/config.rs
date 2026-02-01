@@ -25,10 +25,11 @@ use vertex_swarm_primitives::{BandwidthMode, SwarmNodeType};
 
 use vertex_swarm_bandwidth::BandwidthArgs;
 use vertex_swarm_bandwidth_pricing::PricingArgs;
+use vertex_swarm_client::args::NetworkArgs;
 use vertex_swarm_identity::IdentityArgs;
 use vertex_swarm_localstore::LocalStoreArgs;
 
-use crate::args::{NetworkArgs, StorageIncentiveArgs, SwarmArgs};
+use crate::args::{StorageIncentiveArgs, SwarmArgs};
 
 /// Swarm protocol configuration.
 ///

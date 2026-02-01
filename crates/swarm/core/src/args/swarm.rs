@@ -30,10 +30,11 @@ use vertex_swarm_primitives::SwarmNodeType;
 
 use vertex_swarm_bandwidth::BandwidthArgs;
 use vertex_swarm_bandwidth_pricing::PricingArgs;
+use vertex_swarm_client::args::NetworkArgs;
 use vertex_swarm_identity::IdentityArgs;
 use vertex_swarm_localstore::LocalStoreArgs;
 
-use super::{NetworkArgs, StorageIncentiveArgs};
+use super::StorageIncentiveArgs;
 
 /// CLI argument type for node mode selection.
 ///

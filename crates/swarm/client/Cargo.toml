@@ -65,6 +65,10 @@ parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+## cli (optional)
+clap = { workspace = true, features = ["derive", "env"], optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+
 [dev-dependencies]
 alloy-primitives.workspace = true
 alloy-signer-local.workspace = true
@@ -74,3 +78,4 @@ tokio = { workspace = true, features = ["rt", "macros"] }
 [features]
 default = ["std"]
 std = []
+cli = ["dep:clap", "dep:serde"]

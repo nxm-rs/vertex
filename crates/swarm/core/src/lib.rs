@@ -41,8 +41,6 @@
 pub mod args;
 #[cfg(feature = "cli")]
 mod config;
-#[cfg(feature = "cli")]
-mod constants;
 
 // Re-export everything from vertex-swarm-client for backwards compatibility
 pub use vertex_swarm_client::{

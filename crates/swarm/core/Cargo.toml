@@ -13,7 +13,7 @@ workspace = true
 
 [dependencies]
 ## vertex - client layer (THE libp2p boundary)
-vertex-swarm-client = { workspace = true }
+vertex-swarm-client.workspace = true
 
 ## vertex - primitives
 vertex-swarm-api.workspace = true
@@ -39,4 +39,4 @@ vertex-swarm-localstore = { workspace = true, optional = true }
 [features]
 default = ["std"]
 std = []
-cli = ["dep:clap", "dep:alloy-primitives", "dep:alloy-signer", "dep:alloy-signer-local", "dep:figment", "dep:hex", "dep:rand", "dep:serde", "dep:strum", "dep:vertex-node-api", "dep:vertex-swarm-bandwidth", "dep:vertex-swarm-bandwidth-pricing", "dep:vertex-swarm-identity", "dep:vertex-swarm-localstore", "dep:vertex-swarmspec", "vertex-swarm-primitives/serde"]
+cli = ["dep:clap", "dep:alloy-primitives", "dep:alloy-signer", "dep:alloy-signer-local", "dep:figment", "dep:hex", "dep:rand", "dep:serde", "dep:strum", "dep:vertex-node-api", "dep:vertex-swarm-bandwidth", "dep:vertex-swarm-bandwidth-pricing", "dep:vertex-swarm-identity", "dep:vertex-swarm-localstore", "dep:vertex-swarmspec", "vertex-swarm-primitives/serde", "vertex-swarm-client/cli"]
