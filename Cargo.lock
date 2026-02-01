@@ -7116,6 +7116,7 @@ dependencies = [
  "vertex-swarm-bandwidth",
  "vertex-swarm-bandwidth-pricing",
  "vertex-swarm-client",
+ "vertex-swarm-localstore",
  "vertex-swarm-primitives",
  "vertex-swarmspec",
 ]
@@ -7167,6 +7168,16 @@ dependencies = [
  "vertex-swarm-primitives",
  "vertex-swarmspec",
  "vertex-tasks",
+]
+
+[[package]]
+name = "vertex-swarm-localstore"
+version = "0.1.0"
+dependencies = [
+ "clap 4.5.39",
+ "serde",
+ "vertex-swarm-api",
+ "vertex-swarmspec",
 ]
 
 [[package]]

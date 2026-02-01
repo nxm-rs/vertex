@@ -2,8 +2,6 @@
 //!
 //! This module provides concrete type implementations that wire together
 //! the various Swarm components (identity, topology, accounting, etc.).
-//!
-//! These types use implementations from `vertex-client-*` crates.
 
 use std::sync::Arc;
 
@@ -11,22 +9,15 @@ use vertex_swarm_bandwidth::{Accounting, ClientAccounting, DefaultAccountingConf
 use vertex_swarm_kademlia::KademliaTopology;
 use vertex_node_types::NodeTypes;
 use vertex_swarm_api::{SwarmBootnodeTypes, SwarmClientTypes, SwarmNetworkConfig};
-use vertex_tasks::SpawnableTask;
-use vertex_swarm_core::{BootNode, ClientHandle, ClientService, SwarmNode};
 use vertex_swarm_identity::Identity;
 use vertex_swarmspec::Hive;
 
-/// Default types for Swarm nodes.
+/// Default types for client nodes.
 ///
-/// This type satisfies both capability traits (`SwarmClientTypes`) and
-/// infrastructure traits (via blanket impl).
-///
-/// Concrete implementations used:
-/// - `Identity` for identity
-/// - `KademliaTopology` for topology
-/// - `Accounting<DefaultAccountingConfig>` for bandwidth accounting
-/// - `SwarmNode` as the node event loop
-/// - `ClientService` as the client service
+/// Concrete implementations:
+/// - `Identity` for cryptographic identity
+/// - `KademliaTopology` for peer discovery
+/// - `ClientAccounting` for bandwidth incentives
 #[derive(Debug, Clone)]
 pub struct DefaultClientTypes;
 
@@ -40,9 +31,6 @@ impl SwarmBootnodeTypes for DefaultClientTypes {
     type Spec = Hive;
     type Identity = Arc<Identity>;
     type Topology = Arc<KademliaTopology<Arc<Identity>>>;
-    type Node = SwarmNode<Self>;
-    type ClientService = ClientService;
-    type ClientHandle = ClientHandle;
 }
 
 impl SwarmClientTypes for DefaultClientTypes {
@@ -51,8 +39,7 @@ impl SwarmClientTypes for DefaultClientTypes {
 
 /// Default types for bootnodes.
 ///
-/// Unlike light nodes, bootnodes don't need client protocols. They use
-/// `BootNode` which only has topology behaviour (handshake, hive, pingpong).
+/// Bootnodes only participate in topology (no chunk retrieval).
 #[derive(Debug, Clone)]
 pub struct DefaultBootnodeTypes;
 
@@ -62,26 +49,10 @@ impl NodeTypes for DefaultBootnodeTypes {
     type Executor = ();
 }
 
-/// No-op client service for bootnodes (they don't have client protocols).
-pub struct NoOpClientService;
-
-impl SpawnableTask for NoOpClientService {
-    fn into_task(self) -> impl std::future::Future<Output = ()> + Send {
-        async {}
-    }
-}
-
-/// No-op client handle for bootnodes.
-#[derive(Clone)]
-pub struct NoOpClientHandle;
-
 impl SwarmBootnodeTypes for DefaultBootnodeTypes {
     type Spec = Hive;
     type Identity = Arc<Identity>;
     type Topology = Arc<KademliaTopology<Arc<Identity>>>;
-    type Node = BootNode<Self>;
-    type ClientService = NoOpClientService;
-    type ClientHandle = NoOpClientHandle;
 }
 
 /// Default network configuration.

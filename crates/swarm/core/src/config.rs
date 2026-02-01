@@ -23,8 +23,10 @@ use vertex_node_api::NodeProtocolConfig;
 
 use vertex_swarm_primitives::{BandwidthMode, SwarmNodeType};
 
+use vertex_swarm_localstore::LocalStoreArgs;
+
 use crate::args::{
-    BandwidthArgs, IdentityArgs, NetworkArgs, PricingArgs, StorageArgs, StorageIncentiveArgs, SwarmArgs,
+    BandwidthArgs, IdentityArgs, NetworkArgs, PricingArgs, StorageIncentiveArgs, SwarmArgs,
 };
 
 /// Swarm protocol configuration.
@@ -47,8 +49,8 @@ pub struct SwarmConfig {
     /// Chunk pricing configuration.
     pub pricing: PricingArgs,
 
-    /// Storage configuration.
-    pub storage: StorageArgs,
+    /// Local store configuration.
+    pub localstore: LocalStoreArgs,
 
     /// Storage incentive configuration.
     pub storage_incentives: StorageIncentiveArgs,
@@ -64,7 +66,7 @@ impl Default for SwarmConfig {
             network: NetworkArgs::default(),
             bandwidth: BandwidthArgs::default(),
             pricing: PricingArgs::default(),
-            storage: StorageArgs::default(),
+            localstore: LocalStoreArgs::default(),
             storage_incentives: StorageIncentiveArgs::default(),
             identity: IdentityArgs::default(),
         }
@@ -79,7 +81,7 @@ impl NodeProtocolConfig for SwarmConfig {
         self.network = args.network.clone();
         self.bandwidth = args.bandwidth.clone();
         self.pricing = args.pricing.clone();
-        self.storage = args.storage.clone();
+        self.localstore = args.localstore.clone();
         self.storage_incentives = args.storage_incentives.clone();
         self.identity = args.identity.clone();
     }

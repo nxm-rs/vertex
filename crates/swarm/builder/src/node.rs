@@ -28,19 +28,18 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::sync::mpsc;
-use vertex_swarm_bandwidth::{Accounting, ClientAccounting, DefaultAccountingConfig, DefaultPricingConfig, FixedPricer};
+use vertex_swarm_bandwidth::{Accounting, DefaultAccountingConfig};
 use vertex_swarm_bandwidth_pseudosettle::{PseudosettleProvider, create_pseudosettle_actor};
 use vertex_swarm_peermanager::PeerStore;
 use vertex_node_api::{NodeBuildsProtocol, NodeContext};
 use vertex_swarm_api::{
-    SwarmAccountingConfig, SwarmLaunchConfig, SwarmNetworkConfig, SwarmPricingConfig,
-    SwarmProtocol, Services,
+    NodeTask, SwarmAccountingConfig, SwarmLaunchConfig, SwarmNetworkConfig, SwarmProtocol,
 };
 use vertex_swarm_core::{ClientCommand, SwarmNode};
 use vertex_swarm_core::args::SwarmArgs;
 use vertex_swarm_identity::Identity;
 use vertex_swarmspec::Hive;
-use vertex_tasks::TaskExecutor;
+use vertex_tasks::{SpawnableTask, TaskExecutor};
 
 use crate::error::SwarmNodeError;
 use crate::launch::SwarmLaunchContext;
@@ -194,15 +193,14 @@ impl NodeBuildsProtocol for ClientNodeBuildConfig {
 #[async_trait]
 impl SwarmLaunchConfig for ClientNodeBuildConfig {
     type Types = DefaultClientTypes;
-    type Components = crate::rpc::ClientNodeRpcComponents;
+    type Providers = crate::rpc::ClientRpcProviders<crate::providers::NetworkChunkProvider>;
     type Error = SwarmNodeError;
 
     async fn build(
         self,
         _ctx: &NodeContext,
-    ) -> Result<(Self::Components, Services<Self::Types>), Self::Error> {
+    ) -> Result<(NodeTask, Self::Providers), Self::Error> {
         use tracing::info;
-        use vertex_swarm_api::ClientComponents;
         use vertex_swarmspec::Loggable;
 
         info!("Building {} node...", Client::NAME);
@@ -230,19 +228,17 @@ impl SwarmLaunchConfig for ClientNodeBuildConfig {
         let config = DefaultAccountingConfig;
 
         // Create a command channel sender for settlement services
-        // (Settlement services send commands via this channel)
         let (settlement_command_tx, mut settlement_command_rx) =
             mpsc::unbounded_channel::<ClientCommand>();
 
-        // Create accounting first (services will use it)
+        // Create accounting for pseudosettle
         let accounting = Arc::new(Accounting::with_providers(
             config.clone(),
             self.identity.clone(),
-            // Start with empty providers - we'll add the handle-backed provider
             vec![],
         ));
 
-        // Create pseudosettle actor with the accounting reference
+        // Create pseudosettle actor
         let (pseudosettle_service, pseudosettle_handle) = create_pseudosettle_actor(
             pseudosettle_event_rx,
             settlement_command_tx.clone(),
@@ -250,7 +246,7 @@ impl SwarmLaunchConfig for ClientNodeBuildConfig {
             config.refresh_rate(),
         );
 
-        // Create bandwidth accounting with the handle-backed provider
+        // Create bandwidth accounting with pseudosettle provider
         let bandwidth = Arc::new(Accounting::with_providers(
             config.clone(),
             self.identity.clone(),
@@ -260,50 +256,48 @@ impl SwarmLaunchConfig for ClientNodeBuildConfig {
             ))],
         ));
 
-        let providers = bandwidth.provider_names();
-        if providers.is_empty() {
+        let provider_names = bandwidth.provider_names();
+        if provider_names.is_empty() {
             info!("Bandwidth incentives: disabled");
         } else {
-            info!("Bandwidth incentives: {}", providers.join(", "));
+            info!("Bandwidth incentives: {}", provider_names.join(", "));
         }
 
-        // Create pricing strategy
-        let pricing_config = DefaultPricingConfig;
-        let pricing = FixedPricer::new(pricing_config.base_price(), self.spec.as_ref());
+        // Create chunk provider for RPC
+        let chunk_provider = crate::providers::NetworkChunkProvider::new(
+            client_handle.clone(),
+            topology.clone(),
+        );
 
-        // Combine bandwidth accounting and pricing
-        let accounting = ClientAccounting::new(bandwidth, pricing);
+        // Create RPC providers
+        let providers = crate::rpc::ClientRpcProviders::new(topology, chunk_provider);
 
-        // Spawn settlement services
-        let executor = TaskExecutor::current();
-        executor.spawn(pseudosettle_service.into_task());
+        // Create the main event loop task
+        let task: NodeTask = Box::pin(async move {
+            let executor = TaskExecutor::current();
 
-        // Spawn a task to forward settlement commands to the client handle
-        let client_handle_for_settlement = client_handle.clone();
-        executor.spawn(async move {
-            while let Some(cmd) = settlement_command_rx.recv().await {
-                if let Err(e) = client_handle_for_settlement.send_command(cmd) {
-                    tracing::warn!(error = %e, "Failed to forward settlement command to client");
+            // Spawn settlement services
+            executor.spawn(pseudosettle_service.into_task());
+
+            // Forward settlement commands to client handle
+            let client_handle_for_settlement = client_handle.clone();
+            executor.spawn(async move {
+                while let Some(cmd) = settlement_command_rx.recv().await {
+                    if let Err(e) = client_handle_for_settlement.send_command(cmd) {
+                        tracing::warn!(error = %e, "Failed to forward settlement command");
+                    }
                 }
+            });
+
+            // Run client service and node concurrently
+            tokio::select! {
+                _ = client_service.into_task() => {}
+                _ = node.into_task() => {}
             }
         });
 
-        // Clone client_handle before moving into services
-        let client_handle_for_components = client_handle.clone();
-
-        // Create components (including client_handle for RPC), wrapped for RPC registration
-        let components = crate::rpc::ClientNodeRpcComponents(ClientComponents::new(
-            self.identity,
-            topology,
-            accounting,
-            client_handle_for_components,
-        ));
-
-        // Services implement SpawnableTask directly - no wrappers needed
-        let services = Services::new(node, client_service, client_handle);
-
         info!("{} node built successfully", Client::NAME);
-        Ok((components, services))
+        Ok((task, providers))
     }
 }
 
@@ -347,13 +341,13 @@ impl NodeBuildsProtocol for BootnodeBuildConfig {
 #[async_trait]
 impl SwarmLaunchConfig for BootnodeBuildConfig {
     type Types = crate::types::DefaultBootnodeTypes;
-    type Components = crate::rpc::BootnodeRpcComponents;
+    type Providers = crate::rpc::BootnodeRpcProviders;
     type Error = SwarmNodeError;
 
     async fn build(
         self,
         _ctx: &NodeContext,
-    ) -> Result<(Self::Components, Services<Self::Types>), Self::Error> {
+    ) -> Result<(NodeTask, Self::Providers), Self::Error> {
         use tracing::info;
         use vertex_swarmspec::Loggable;
 
@@ -362,7 +356,7 @@ impl SwarmLaunchConfig for BootnodeBuildConfig {
         self.identity.log();
         info!("Peers database: {}", self.peers_path.display());
 
-        // Build the BootNode (no client service/handle)
+        // Build the BootNode (no client protocols)
         let node = vertex_swarm_core::BootNode::<crate::types::DefaultBootnodeTypes>::builder(
             self.identity.clone(),
         )
@@ -372,23 +366,18 @@ impl SwarmLaunchConfig for BootnodeBuildConfig {
         .await
         .map_err(|e| SwarmNodeError::Build(e.to_string()))?;
 
-        // Get topology for components
+        // Get topology for RPC
         let topology = node.kademlia_topology().clone();
 
-        // Create components
-        let components = crate::rpc::BootnodeRpcComponents {
-            identity: self.identity,
-            topology,
-        };
+        // Create RPC providers
+        let providers = crate::rpc::BootnodeRpcProviders::new(topology);
 
-        // Create services with no-op client service/handle
-        let services = Services::new(
-            node,
-            crate::types::NoOpClientService,
-            crate::types::NoOpClientHandle,
-        );
+        // Create the main event loop task
+        let task: NodeTask = Box::pin(async move {
+            node.into_task().await;
+        });
 
         info!("{} node built successfully", Bootnode::NAME);
-        Ok((components, services))
+        Ok((task, providers))
     }
 }

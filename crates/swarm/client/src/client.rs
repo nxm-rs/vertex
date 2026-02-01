@@ -301,9 +301,6 @@ mod tests {
         type Spec = vertex_swarmspec::Hive;
         type Identity = Identity;
         type Topology = MockTopology;
-        type Node = MockNode;
-        type ClientService = ClientService;
-        type ClientHandle = ClientHandle;
     }
 
     #[derive(Clone, Debug)]
@@ -313,9 +310,6 @@ mod tests {
         type Spec = vertex_swarmspec::Hive;
         type Identity = Identity;
         type Topology = MockTopology;
-        type Node = MockNode;
-        type ClientService = ClientService;
-        type ClientHandle = ClientHandle;
     }
 
     impl SwarmClientTypes for MockSwarmClientTypes {

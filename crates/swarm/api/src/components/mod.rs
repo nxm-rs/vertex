@@ -1,13 +1,13 @@
 //! Swarm node components - traits and runtime containers.
 
 mod bandwidth;
+mod localstore;
 mod pricing;
-mod store;
 mod topology;
 
 pub use bandwidth::*;
+pub use localstore::*;
 pub use pricing::*;
-pub use store::*;
 pub use topology::*;
 
 use crate::{SwarmBootnodeTypes, SwarmClientTypes, SwarmStorerTypes};
@@ -49,18 +49,12 @@ where
     Types::Identity: Clone,
     Types::Topology: Clone,
     Types::Accounting: Clone,
-    Types::ClientHandle: Clone,
 {
     /// Base components (identity, topology).
     pub base: BaseComponents<Types>,
 
     /// Bandwidth accounting for availability incentives.
     pub accounting: Types::Accounting,
-
-    /// Handle to the client service for network operations.
-    ///
-    /// Used for chunk retrieval via RPC.
-    pub client_handle: Types::ClientHandle,
 }
 
 impl<Types: SwarmClientTypes> ClientComponents<Types>
@@ -68,19 +62,16 @@ where
     Types::Identity: Clone,
     Types::Topology: Clone,
     Types::Accounting: Clone,
-    Types::ClientHandle: Clone,
 {
     /// Create new client node components.
     pub fn new(
         identity: Types::Identity,
         topology: Types::Topology,
         accounting: Types::Accounting,
-        client_handle: Types::ClientHandle,
     ) -> Self {
         Self {
             base: BaseComponents::new(identity, topology),
             accounting,
-            client_handle,
         }
     }
 
@@ -92,11 +83,6 @@ where
     /// Get the topology manager.
     pub fn topology(&self) -> &Types::Topology {
         &self.base.topology
-    }
-
-    /// Get the client handle.
-    pub fn client_handle(&self) -> &Types::ClientHandle {
-        &self.client_handle
     }
 }
 
@@ -110,7 +96,6 @@ where
     Types::Identity: Clone,
     Types::Topology: Clone,
     Types::Accounting: Clone,
-    Types::ClientHandle: Clone,
     Types::Store: Clone,
 {
     /// Client node components (base + accounting).
@@ -125,7 +110,6 @@ where
     Types::Identity: Clone,
     Types::Topology: Clone,
     Types::Accounting: Clone,
-    Types::ClientHandle: Clone,
     Types::Store: Clone,
 {
     /// Create new storer node components.
@@ -133,11 +117,10 @@ where
         identity: Types::Identity,
         topology: Types::Topology,
         accounting: Types::Accounting,
-        client_handle: Types::ClientHandle,
         store: Types::Store,
     ) -> Self {
         Self {
-            client: ClientComponents::new(identity, topology, accounting, client_handle),
+            client: ClientComponents::new(identity, topology, accounting),
             store,
         }
     }
@@ -155,10 +138,5 @@ where
     /// Get the accounting manager.
     pub fn accounting(&self) -> &Types::Accounting {
         &self.client.accounting
-    }
-
-    /// Get the client handle.
-    pub fn client_handle(&self) -> &Types::ClientHandle {
-        self.client.client_handle()
     }
 }

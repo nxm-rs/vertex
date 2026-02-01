@@ -1,21 +1,16 @@
 //! Configuration traits for Swarm protocol components.
 
 use core::time::Duration;
+use std::future::Future;
+use std::pin::Pin;
 
 use vertex_node_api::NodeContext;
-use vertex_swarmspec::SwarmSpec;
 
-use crate::components::SwarmAccountingConfig;
-use crate::{SwarmBootnodeTypes, SwarmClientTypes, SwarmStorerTypes, Services};
+use crate::components::{SwarmAccountingConfig, SwarmLocalStoreConfig};
+use crate::{SwarmBootnodeTypes, SwarmClientTypes, SwarmStorerTypes};
 
-/// Configuration for local chunk store (capacity in chunks).
-pub trait SwarmStoreConfig {
-    /// Maximum storage capacity in number of chunks.
-    fn capacity_chunks(&self) -> u64;
-
-    /// Cache capacity in number of chunks.
-    fn cache_chunks(&self) -> u64;
-}
+/// A boxed future representing the node's main event loop.
+pub type NodeTask = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 /// Configuration for storage incentives (redistribution, postage).
 pub trait SwarmStorageConfig {
@@ -59,27 +54,13 @@ pub trait SwarmIdentityConfig {
 
 /// Combined Swarm protocol configuration.
 pub trait SwarmConfig:
-    SwarmAccountingConfig + SwarmStoreConfig + SwarmStorageConfig + SwarmNetworkConfig + SwarmIdentityConfig
+    SwarmAccountingConfig + SwarmLocalStoreConfig + SwarmStorageConfig + SwarmNetworkConfig + SwarmIdentityConfig
 {
 }
 
 impl<T> SwarmConfig for T where
-    T: SwarmAccountingConfig + SwarmStoreConfig + SwarmStorageConfig + SwarmNetworkConfig + SwarmIdentityConfig
+    T: SwarmAccountingConfig + SwarmLocalStoreConfig + SwarmStorageConfig + SwarmNetworkConfig + SwarmIdentityConfig
 {
-}
-
-/// Cache capacity divisor relative to reserve capacity.
-pub const CACHE_CAPACITY_DIVISOR: u64 = 64;
-
-/// Implement [`SwarmStoreConfig`] for any [`SwarmSpec`].
-impl<S: SwarmSpec> SwarmStoreConfig for S {
-    fn capacity_chunks(&self) -> u64 {
-        self.reserve_capacity()
-    }
-
-    fn cache_chunks(&self) -> u64 {
-        self.reserve_capacity() / CACHE_CAPACITY_DIVISOR
-    }
 }
 
 /// Default storage incentive configuration (redistribution disabled).
@@ -126,25 +107,24 @@ pub fn estimate_chunks_for_bytes(available_bytes: u64, chunk_size: usize) -> u64
 
 /// Configuration that knows how to launch a Swarm node.
 ///
-/// The capability level is determined by the associated types:
-/// - `Types` must implement [`SwarmClientTypes`] or [`SwarmStorerTypes`]
-/// - `Components` must be the corresponding components struct
+/// Build produces a task (the main event loop) and providers for RPC.
+/// The provider type varies by node capability (bootnode vs client vs storer).
 #[async_trait::async_trait]
 pub trait SwarmLaunchConfig: Send + Sync + 'static {
     /// The Swarm types for this configuration.
     type Types: SwarmBootnodeTypes;
 
-    /// The components produced by building.
-    type Components: Send + Sync + 'static;
+    /// Providers for RPC services (node-type specific).
+    type Providers: Send + Sync + 'static;
 
     /// Error type for build failures.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Build components and services from this configuration.
+    /// Build the node's main event loop and RPC providers.
     async fn build(
         self,
         ctx: &NodeContext,
-    ) -> Result<(Self::Components, Services<Self::Types>), Self::Error>;
+    ) -> Result<(NodeTask, Self::Providers), Self::Error>;
 }
 
 /// Marker for configs that launch client nodes.

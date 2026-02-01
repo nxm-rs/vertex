@@ -45,8 +45,8 @@ pub use launch::{
 };
 pub use node::{ClientNodeBuildConfig, SwarmNodeBuilder};
 pub use providers::NetworkChunkProvider;
-pub use rpc::ClientNodeRpcComponents;
-pub use types::{DefaultClientTypes, DefaultNetworkConfig};
+pub use rpc::{BootnodeRpcProviders, ClientRpcProviders};
+pub use types::{DefaultBootnodeTypes, DefaultClientTypes, DefaultNetworkConfig};
 
 // Component building
 pub use components::{

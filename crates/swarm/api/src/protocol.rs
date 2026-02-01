@@ -8,11 +8,10 @@ use vertex_node_api::{NodeContext, NodeProtocol};
 use vertex_tasks::TaskExecutor;
 
 use crate::SwarmLaunchConfig;
-use vertex_tasks::SpawnableTask;
 
 /// Swarm protocol marker type.
 ///
-/// The launch config `Cfg` determines what components and services are built.
+/// The launch config `Cfg` determines what providers and task are built.
 pub struct SwarmProtocol<Cfg>(PhantomData<Cfg>);
 
 impl<Cfg> Default for SwarmProtocol<Cfg> {
@@ -27,7 +26,7 @@ where
     Cfg: SwarmLaunchConfig,
 {
     type Config = Cfg;
-    type Components = Cfg::Components;
+    type Components = Cfg::Providers;
     type BuildError = Cfg::Error;
 
     async fn launch(
@@ -35,13 +34,11 @@ where
         ctx: &NodeContext,
         executor: &TaskExecutor,
     ) -> Result<Self::Components, Self::BuildError> {
-        let (components, services) = config.build(ctx).await?;
+        let (task, providers) = config.build(ctx).await?;
 
-        // Spawn services as critical tasks
-        let (node, client_service, _client_handle) = services.into_parts();
-        executor.spawn_critical("swarm_client_service", client_service.into_task());
-        executor.spawn_critical("swarm_node", node.into_task());
+        // Spawn the node's main event loop
+        executor.spawn_critical("swarm", task);
 
-        Ok(components)
+        Ok(providers)
     }
 }

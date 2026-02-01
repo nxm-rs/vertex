@@ -132,18 +132,3 @@ pub trait SwarmChunkSender: Send + Sync + 'static {
     ) -> Result<ChunkSendReceipt, ChunkSendError>;
 }
 
-// Future providers can be added here:
-//
-// /// Provider trait for accounting/incentive information.
-// pub trait SwarmAccountingProvider: Send + Sync + 'static {
-//     fn peer_balance(&self, peer: &OverlayAddress) -> i64;
-//     fn total_sent(&self) -> u64;
-//     fn total_received(&self) -> u64;
-// }
-//
-// /// Provider trait for storage information.
-// pub trait SwarmStorageProvider: Send + Sync + 'static {
-//     fn capacity(&self) -> u64;
-//     fn used(&self) -> u64;
-//     fn chunk_count(&self) -> u64;
-// }

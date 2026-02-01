@@ -59,6 +59,9 @@ members = [
     "crates/swarm/bandwidth/pseudosettle",
     "crates/swarm/bandwidth/swap",
 
+    # Local store (local chunk storage configuration)
+    "crates/swarm/localstore",
+
     # Storer (full node storage)
     "crates/swarm/storer",
 
@@ -143,6 +146,9 @@ vertex-swarm-bandwidth-chequebook = { path = "crates/swarm/bandwidth/chequebook"
 vertex-swarm-bandwidth-pricing = { path = "crates/swarm/bandwidth/pricing" }
 vertex-swarm-bandwidth-pseudosettle = { path = "crates/swarm/bandwidth/pseudosettle" }
 vertex-swarm-bandwidth-swap = { path = "crates/swarm/bandwidth/swap" }
+
+# localstore (local chunk storage configuration)
+vertex-swarm-localstore = { path = "crates/swarm/localstore" }
 
 # storer (full node storage)
 vertex-swarm-storer = { path = "crates/swarm/storer" }

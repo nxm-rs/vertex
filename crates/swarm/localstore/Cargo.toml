@@ -1,0 +1,21 @@
+[package]
+name = "vertex-swarm-localstore"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Swarm local store configuration"
+
+[lints]
+workspace = true
+
+[dependencies]
+# vertex
+vertex-swarmspec.workspace = true
+vertex-swarm-api.workspace = true
+
+# cli
+clap = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }

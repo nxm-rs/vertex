@@ -9,7 +9,6 @@ mod identity;
 mod protocol;
 mod providers;
 mod rpc;
-mod services;
 mod swarm;
 mod types;
 
@@ -20,7 +19,6 @@ pub use identity::*;
 pub use protocol::*;
 pub use providers::*;
 pub use rpc::*;
-pub use services::*;
 pub use swarm::*;
 pub use types::*;
 
