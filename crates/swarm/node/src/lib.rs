@@ -1,9 +1,7 @@
-//! Core Vertex client with libp2p integration.
+//! Swarm node implementation with libp2p networking.
 //!
-//! This crate is the libp2p boundary layer for the Swarm protocol.
-//!
-//! With the `cli` feature enabled, also provides [`ProtocolArgs`] and [`ProtocolConfig`]
-//! for CLI argument parsing and protocol configuration.
+//! Provides [`BootNode`], [`ClientNode`], and [`StorerNode`] for different
+//! levels of network participation.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -22,21 +20,20 @@ pub mod protocol;
 mod service;
 mod stats;
 
-pub use node::behaviour::{NodeBehaviour, NodeEvent};
-pub use node::bootnode::{BootNode, BootNodeBuilder, BootnodeBehaviour, BootnodeEvent};
-pub use node::{SwarmNode, SwarmNodeBuilder};
+pub use node::{
+    BaseNode, BootNode, BootNodeBuilder, BootnodeBehaviour, BootnodeEvent, BuilderConfig,
+    BuiltInfrastructure, ClientNode, ClientNodeBehaviour, ClientNodeBuilder, ClientNodeEvent,
+    StorerNode, StorerNodeBuilder,
+};
 
-// Re-export SwarmNodeType from vertex-swarm-api
 pub use vertex_swarm_api::SwarmNodeType;
 
 pub use service::{
     ClientCommand, ClientEvent, ClientHandle, ClientService, RetrievalError, RetrievalResult,
 };
 
-// Re-export settlement event types for wiring
 pub use protocol::{PseudosettleEvent, SwapEvent};
 
-// Re-export protocol behaviour types
 pub use protocol::{
     BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientHandler,
     HandlerConfig as ClientHandlerConfig,

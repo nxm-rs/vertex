@@ -1,38 +1,30 @@
-//! Bootnode network behaviour and node - topology only, no client protocols.
+//! Bootnode - minimal Swarm node with topology protocols only.
+//!
+//! A [`BootNode`] participates in peer discovery via handshake, hive, and pingpong
+//! but does not run client protocols (pricing, retrieval, pushsync, settlement).
+//!
+//! Use this for dedicated bootnode servers that help new nodes join the network.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use eyre::Result;
 use futures::StreamExt;
-use libp2p::swarm::NetworkBehaviour;
 use libp2p::{
-    Multiaddr, PeerId, Swarm, SwarmBuilder, identify, identity::PublicKey, noise,
+    Multiaddr, PeerId, SwarmBuilder, identify, identity::PublicKey, noise, swarm::NetworkBehaviour,
     swarm::SwarmEvent, tcp, yamux,
 };
 use nectar_primitives::SwarmAddress;
 use tracing::{debug, info, warn};
-use vertex_swarm_api::SwarmTopology;
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeTypes};
 use vertex_swarm_kademlia::{KademliaConfig, KademliaTopology};
-use vertex_swarm_peermanager::{
-    AddressManager, DiscoverySender, InternalPeerManager, PeerManager, PeerStore,
-    discovery_channel, run_peer_store_consumer,
-};
-use vertex_swarm_primitives::OverlayAddress;
-use vertex_swarm_topology::{
-    BehaviourConfig as TopologyBehaviourConfig, BootnodeConnector, SwarmTopologyBehaviour,
-    TopologyCommand, TopologyEvent, is_dnsaddr,
-};
+use vertex_swarm_peermanager::{PeerManager, PeerStore};
+use vertex_swarm_topology::{TopologyBehaviour, TopologyCommand, TopologyConfig, TopologyEvent};
 use vertex_tasks::SpawnableTask;
-use vertex_tasks::TaskExecutor;
 
-use crate::BootnodeProvider;
+use super::base::BaseNode;
+use super::builder::{BuilderConfig, BuiltInfrastructure};
 
-/// Bootnode network behaviour with only topology protocols.
-///
-/// Unlike [`NodeBehaviour`](super::behaviour::NodeBehaviour), this excludes
-/// client protocols (pricing, retrieval, pushsync, settlement).
+/// Network behaviour for a bootnode (topology only, no client protocols).
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "BootnodeEvent")]
 pub struct BootnodeBehaviour<N: SwarmNodeTypes> {
@@ -40,7 +32,7 @@ pub struct BootnodeBehaviour<N: SwarmNodeTypes> {
     pub identify: identify::Behaviour,
 
     /// Topology behaviour - handshake, hive, pingpong only.
-    pub topology: SwarmTopologyBehaviour<N>,
+    pub topology: TopologyBehaviour<N>,
 }
 
 impl<N: SwarmNodeTypes> BootnodeBehaviour<N> {
@@ -51,7 +43,7 @@ impl<N: SwarmNodeTypes> BootnodeBehaviour<N> {
                 "/vertex/1.0.0".to_string(),
                 local_public_key,
             )),
-            topology: SwarmTopologyBehaviour::new(identity, TopologyBehaviourConfig::default()),
+            topology: TopologyBehaviour::new(identity, TopologyConfig::default()),
         }
     }
 }
@@ -76,20 +68,24 @@ impl From<TopologyEvent> for BootnodeEvent {
     }
 }
 
-/// A bootnode - minimal swarm node with only topology protocols.
+/// A minimal Swarm node with only topology protocols.
 ///
-/// Unlike [`SwarmNode`](super::SwarmNode), this excludes all client protocols
+/// Unlike [`ClientNode`](super::ClientNode), this excludes all client protocols
 /// (pricing, retrieval, pushsync, settlement). Bootnodes only participate in
 /// peer discovery via handshake, hive, and pingpong.
+///
+/// # Example
+///
+/// ```ignore
+/// let node = BootNode::<MyTypes>::builder(identity)
+///     .with_network_config(&config)
+///     .build()
+///     .await?;
+///
+/// node.into_task().await;
+/// ```
 pub struct BootNode<N: SwarmNodeTypes> {
-    swarm: Swarm<BootnodeBehaviour<N>>,
-    identity: N::Identity,
-    peer_manager: Arc<PeerManager>,
-    address_manager: Option<Arc<AddressManager>>,
-    kademlia: Arc<KademliaTopology<N::Identity>>,
-    bootnode_connector: BootnodeConnector,
-    listen_addrs: Vec<Multiaddr>,
-    discovery_tx: DiscoverySender,
+    base: BaseNode<N, BootnodeBehaviour<N>>,
 }
 
 impl<N: SwarmNodeTypes> BootNode<N> {
@@ -100,85 +96,42 @@ impl<N: SwarmNodeTypes> BootNode<N> {
 
     /// Get the local peer ID.
     pub fn local_peer_id(&self) -> &PeerId {
-        self.swarm.local_peer_id()
+        self.base.local_peer_id()
     }
 
     /// Get the overlay address.
     pub fn overlay_address(&self) -> SwarmAddress {
-        self.identity.overlay_address()
+        self.base.overlay_address()
     }
 
     /// Get the swarm identity.
     pub fn identity(&self) -> &N::Identity {
-        &self.identity
+        self.base.identity()
     }
 
     /// Get the peer manager.
     pub fn peer_manager(&self) -> &Arc<PeerManager> {
-        &self.peer_manager
+        self.base.peer_manager()
     }
 
     /// Get the Kademlia topology.
     pub fn kademlia_topology(&self) -> &Arc<KademliaTopology<N::Identity>> {
-        &self.kademlia
+        self.base.kademlia_topology()
     }
 
     /// Send a topology command.
     pub fn topology_command(&mut self, command: TopologyCommand) {
-        self.swarm.behaviour_mut().topology.on_command(command);
+        self.base.swarm.behaviour_mut().topology.on_command(command);
     }
 
     /// Start listening on configured addresses.
     pub fn start_listening(&mut self) -> Result<()> {
-        for addr in &self.listen_addrs {
-            match self.swarm.listen_on(addr.clone()) {
-                Ok(_) => info!(%addr, "Listening on address"),
-                Err(e) => warn!(%addr, %e, "Failed to listen on address"),
-            }
-        }
-        Ok(())
+        self.base.start_listening()
     }
 
     /// Connect to bootnodes.
     pub async fn connect_bootnodes(&mut self) -> Result<usize> {
-        let bootnodes = self.bootnode_connector.shuffled_bootnodes();
-
-        if bootnodes.is_empty() {
-            warn!("No bootnodes configured");
-            return Ok(0);
-        }
-
-        info!(count = bootnodes.len(), "Connecting to bootnodes...");
-
-        let mut connected = 0;
-        let min_connections = self.bootnode_connector.min_connections();
-
-        for bootnode in bootnodes {
-            if connected >= min_connections {
-                info!(connected, "Reached minimum bootnode connections");
-                break;
-            }
-
-            let is_dnsaddr = is_dnsaddr(&bootnode);
-            info!(
-                %bootnode,
-                is_dnsaddr,
-                "Dialing bootnode{}",
-                if is_dnsaddr { " (dnsaddr will be resolved)" } else { "" }
-            );
-
-            match self.swarm.dial(bootnode.clone()) {
-                Ok(_) => {
-                    debug!(%bootnode, "Dial initiated");
-                    connected += 1;
-                }
-                Err(e) => {
-                    warn!(%bootnode, %e, "Failed to dial bootnode");
-                }
-            }
-        }
-
-        Ok(connected)
+        self.base.connect_bootnodes().await
     }
 
     /// Start listening and run the event loop.
@@ -193,190 +146,57 @@ impl<N: SwarmNodeTypes> BootNode<N> {
         info!("Starting bootnode event loop");
 
         loop {
-            if let Some(event) = self.swarm.next().await {
+            if let Some(event) = self.base.swarm.next().await {
                 self.handle_swarm_event(event);
             }
         }
     }
 
     fn handle_swarm_event(&mut self, event: SwarmEvent<BootnodeEvent>) {
-        match event {
-            SwarmEvent::NewListenAddr { address, .. } => {
-                info!(%address, "New listen address");
-                if let Some(mgr) = &self.address_manager {
-                    mgr.on_new_listen_addr(address.clone());
-                }
-            }
-            SwarmEvent::ExpiredListenAddr { address, .. } => {
-                info!(%address, "Expired listen address");
-                if let Some(mgr) = &self.address_manager {
-                    mgr.on_expired_listen_addr(&address);
-                }
-            }
-            SwarmEvent::ConnectionEstablished {
-                peer_id,
-                endpoint,
-                num_established,
-                ..
-            } => {
-                debug!(
-                    %peer_id,
-                    endpoint = %endpoint.get_remote_address(),
-                    num_established,
-                    "Connection established"
-                );
-            }
-            SwarmEvent::ConnectionClosed {
-                peer_id,
-                cause,
-                num_established,
-                ..
-            } => {
-                info!(%peer_id, num_established, cause = ?cause, "Connection closed");
-            }
-            SwarmEvent::IncomingConnection {
-                local_addr,
-                send_back_addr,
-                ..
-            } => {
-                debug!(%local_addr, %send_back_addr, "Incoming connection");
-            }
-            SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                if let Some(peer_id) = peer_id {
-                    warn!(%peer_id, %error, "Outgoing connection error");
-                    if let Some(overlay) = self.peer_manager.on_peer_disconnected(&peer_id) {
-                        self.kademlia.connection_failed(&overlay);
-                    }
-                } else {
-                    warn!(%error, "Outgoing connection error (unknown peer)");
-                }
-            }
-            SwarmEvent::Behaviour(event) => {
-                self.handle_behaviour_event(event);
-            }
-            _ => {}
+        if let Some(SwarmEvent::Behaviour(behaviour_event)) =
+            self.base.handle_swarm_event_common(event)
+        {
+            self.handle_behaviour_event(behaviour_event);
         }
     }
 
     fn handle_behaviour_event(&mut self, event: BootnodeEvent) {
         match event {
-            BootnodeEvent::Identify(boxed_event) => match *boxed_event {
-                identify::Event::Received { peer_id, info, .. } => {
-                    debug!(
-                        %peer_id,
-                        protocol_version = %info.protocol_version,
-                        agent_version = %info.agent_version,
-                        "Received identify info"
-                    );
-                }
-                identify::Event::Sent { peer_id, .. } => {
-                    debug!(%peer_id, "Sent identify info");
-                }
-                identify::Event::Pushed { peer_id, .. } => {
-                    debug!(%peer_id, "Pushed identify info");
-                }
-                identify::Event::Error { peer_id, error, .. } => {
-                    warn!(%peer_id, %error, "Identify error");
-                }
-            },
+            BootnodeEvent::Identify(boxed_event) => {
+                Self::handle_identify_event(*boxed_event);
+            }
             BootnodeEvent::Topology(event) => {
-                self.handle_topology_event(event);
+                // Bootnodes don't activate any client handler on peer auth
+                self.base.handle_topology_event(event, |_, _, _, _| {});
             }
         }
     }
 
-    fn handle_topology_event(&mut self, event: TopologyEvent) {
+    fn handle_identify_event(event: identify::Event) {
         match event {
-            TopologyEvent::PeerAuthenticated {
-                peer_id,
-                connection_id: _,
-                info,
-            } => {
-                let overlay = OverlayAddress::new((*info.swarm_peer.overlay()).into());
-                let is_full_node = info.full_node;
-
-                debug!(%peer_id, %overlay, %is_full_node, "Peer authenticated");
-
-                self.peer_manager
-                    .on_peer_ready(peer_id, overlay, is_full_node);
-                self.kademlia.connected(overlay);
+            identify::Event::Received { peer_id, info, .. } => {
+                debug!(
+                    %peer_id,
+                    protocol_version = %info.protocol_version,
+                    agent_version = %info.agent_version,
+                    "Received identify info"
+                );
             }
-            TopologyEvent::PeerConnectionClosed { peer_id } => {
-                if let Some(overlay) = self.peer_manager.on_peer_disconnected(&peer_id) {
-                    debug!(%peer_id, %overlay, "Peer disconnected");
-                    self.kademlia.disconnected(&overlay);
-                }
+            identify::Event::Sent { peer_id, .. } => {
+                debug!(%peer_id, "Sent identify info");
             }
-            TopologyEvent::HivePeersReceived { from, peers } => {
-                debug!(%from, count = peers.len(), "Received peers via hive");
-
-                let mut overlays = Vec::with_capacity(peers.len());
-                let mut multiaddr_entries = Vec::with_capacity(peers.len());
-
-                for peer in &peers {
-                    let overlay = OverlayAddress::from(*peer.overlay());
-                    overlays.push(overlay);
-                    multiaddr_entries.push((overlay, peer.multiaddrs().to_vec()));
-                }
-
-                self.peer_manager.cache_multiaddrs_batch(multiaddr_entries);
-
-                for peer in peers {
-                    let _ = self.discovery_tx.send(peer);
-                }
-
-                self.kademlia.add_peers(&overlays);
-                self.kademlia.evaluate_connections();
-                self.dial_connection_candidates();
+            identify::Event::Pushed { peer_id, .. } => {
+                debug!(%peer_id, "Pushed identify info");
             }
-            TopologyEvent::DialFailed { address, error } => {
-                warn!(%address, %error, "Dial failed");
-            }
-            TopologyEvent::DepthChanged { new_depth } => {
-                info!(%new_depth, "Network depth changed");
-            }
-        }
-    }
-
-    fn dial_connection_candidates(&mut self) {
-        let candidates = self.kademlia.peers_to_connect();
-        let dialable = self.peer_manager.filter_dialable_candidates(&candidates);
-
-        for (overlay, multiaddrs) in dialable {
-            let Some((addr, peer_id)) = multiaddrs.iter().find_map(|addr| {
-                addr.iter().find_map(|p| {
-                    if let libp2p::multiaddr::Protocol::P2p(id) = p {
-                        Some((addr.clone(), id))
-                    } else {
-                        None
-                    }
-                })
-            }) else {
-                continue;
-            };
-
-            if self.swarm.is_connected(&peer_id) {
-                continue;
-            }
-
-            debug!(%overlay, %addr, %peer_id, "Dialing discovered peer");
-
-            if !self.peer_manager.start_connecting(overlay) {
-                continue;
-            }
-
-            self.kademlia.start_connecting(overlay);
-
-            if let Err(e) = self.swarm.dial(addr.clone()) {
-                debug!(%overlay, %addr, %e, "Failed to dial");
-                self.peer_manager.connection_failed(&overlay);
+            identify::Event::Error { peer_id, error, .. } => {
+                warn!(%peer_id, %error, "Identify error");
             }
         }
     }
 
     /// Get the number of connected peers.
     pub fn connected_peers(&self) -> usize {
-        self.swarm.connected_peers().count()
+        self.base.connected_peers()
     }
 }
 
@@ -390,31 +210,14 @@ impl<N: SwarmNodeTypes> SpawnableTask for BootNode<N> {
 
 /// Builder for BootNode.
 pub struct BootNodeBuilder<N: SwarmNodeTypes> {
-    identity: N::Identity,
-    listen_addrs: Vec<Multiaddr>,
-    bootnodes: Vec<Multiaddr>,
-    idle_timeout: Duration,
-    kademlia_config: KademliaConfig,
-    peer_store: Option<Arc<dyn PeerStore>>,
-    nat_addrs: Vec<Multiaddr>,
-    nat_auto: bool,
+    config: BuilderConfig<N>,
 }
 
 impl<N: SwarmNodeTypes> BootNodeBuilder<N> {
     /// Create a new builder.
     pub fn new(identity: N::Identity) -> Self {
         Self {
-            identity,
-            listen_addrs: vec![
-                "/ip4/0.0.0.0/tcp/1634".parse().unwrap(),
-                "/ip6/::/tcp/1634".parse().unwrap(),
-            ],
-            bootnodes: vec![],
-            idle_timeout: Duration::from_secs(30),
-            kademlia_config: KademliaConfig::default(),
-            peer_store: None,
-            nat_addrs: vec![],
-            nat_auto: false,
+            config: BuilderConfig::new(identity),
         }
     }
 
@@ -423,38 +226,31 @@ impl<N: SwarmNodeTypes> BootNodeBuilder<N> {
         mut self,
         config: &impl vertex_swarm_api::SwarmNetworkConfig,
     ) -> Self {
-        self.listen_addrs = config
-            .listen_addrs()
-            .into_iter()
-            .filter_map(|s| s.parse().ok())
-            .collect();
+        self.config.apply_network_config(config);
+        self
+    }
 
-        let config_bootnodes: Vec<Multiaddr> = config
-            .bootnodes()
-            .into_iter()
-            .filter_map(|s| s.parse().ok())
-            .collect();
+    /// Set the bootnodes.
+    pub fn with_bootnodes(mut self, bootnodes: Vec<Multiaddr>) -> Self {
+        self.config.bootnodes = bootnodes;
+        self
+    }
 
-        self.bootnodes = if config_bootnodes.is_empty() {
-            BootnodeProvider::bootnodes(self.identity.spec())
-        } else {
-            config_bootnodes
-        };
+    /// Set the listen addresses.
+    pub fn with_listen_addrs(mut self, addrs: Vec<Multiaddr>) -> Self {
+        self.config.listen_addrs = addrs;
+        self
+    }
 
-        self.idle_timeout = config.idle_timeout();
-        self.nat_addrs = config
-            .nat_addrs()
-            .into_iter()
-            .filter_map(|s| s.parse().ok())
-            .collect();
-        self.nat_auto = config.nat_auto_enabled();
-
+    /// Set the Kademlia configuration.
+    pub fn with_kademlia_config(mut self, kademlia_config: KademliaConfig) -> Self {
+        self.config.kademlia_config = kademlia_config;
         self
     }
 
     /// Set the peer store.
     pub fn with_peer_store(mut self, store: Arc<dyn PeerStore>) -> Self {
-        self.peer_store = Some(store);
+        self.config.peer_store = Some(store);
         self
     }
 
@@ -462,20 +258,11 @@ impl<N: SwarmNodeTypes> BootNodeBuilder<N> {
     pub async fn build(self) -> Result<BootNode<N>> {
         info!("Initializing bootnode P2P network...");
 
-        let identity = self.identity;
+        let infra = BuiltInfrastructure::from_config(self.config)?;
 
-        let address_manager = {
-            let mgr = AddressManager::new(self.nat_addrs.clone(), self.nat_auto);
-            if !self.nat_addrs.is_empty() {
-                info!(count = self.nat_addrs.len(), "NAT addresses configured");
-            }
-            if self.nat_auto {
-                info!("Auto NAT discovery enabled");
-            }
-            Some(Arc::new(mgr))
-        };
+        let identity_for_behaviour = infra.identity.clone();
+        let idle_timeout = infra.idle_timeout;
 
-        let identity_for_behaviour = identity.clone();
         let swarm = SwarmBuilder::with_new_identity()
             .with_tokio()
             .with_tcp(
@@ -490,55 +277,24 @@ impl<N: SwarmNodeTypes> BootNodeBuilder<N> {
                     identity_for_behaviour.clone(),
                 ))
             })?
-            .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(self.idle_timeout))
+            .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(idle_timeout))
             .build();
 
         let local_peer_id = *swarm.local_peer_id();
         info!(%local_peer_id, "Bootnode peer ID");
-        info!(overlay = %identity.overlay_address(), "Overlay address");
+        info!(overlay = %infra.identity.overlay_address(), "Overlay address");
 
-        let peer_manager = match self.peer_store {
-            Some(store) => {
-                let pm = PeerManager::with_store(store)
-                    .map_err(|e| eyre::eyre!("failed to init peer manager: {}", e))?;
-                info!(count = pm.stats().stored_peers, "loaded peers from store");
-                Arc::new(pm)
-            }
-            None => Arc::new(PeerManager::new()),
+        let base = BaseNode {
+            swarm,
+            identity: infra.identity,
+            peer_manager: infra.peer_manager,
+            address_manager: infra.address_manager,
+            kademlia: infra.kademlia,
+            bootnode_connector: infra.bootnode_connector,
+            listen_addrs: infra.listen_addrs,
+            discovery_tx: infra.discovery_tx,
         };
 
-        let kademlia = KademliaTopology::new(identity.clone(), self.kademlia_config);
-
-        let known_peers = peer_manager.known_dialable_peers();
-        if !known_peers.is_empty() {
-            info!(
-                count = known_peers.len(),
-                "seeding kademlia with stored peers"
-            );
-            kademlia.add_peers(&known_peers);
-        }
-
-        let executor = TaskExecutor::current();
-        let _manage_handle = kademlia.clone().spawn_manage_loop(&executor);
-
-        let (discovery_tx, discovery_rx) = discovery_channel();
-
-        let pm_for_consumer = peer_manager.clone();
-        executor.spawn(async move {
-            run_peer_store_consumer(pm_for_consumer, discovery_rx).await;
-        });
-
-        let bootnode_connector = BootnodeConnector::new(self.bootnodes);
-
-        Ok(BootNode {
-            swarm,
-            identity,
-            peer_manager,
-            address_manager,
-            kademlia,
-            bootnode_connector,
-            listen_addrs: self.listen_addrs,
-            discovery_tx,
-        })
+        Ok(BootNode { base })
     }
 }
