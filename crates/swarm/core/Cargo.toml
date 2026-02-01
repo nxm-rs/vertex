@@ -32,10 +32,11 @@ strum = { workspace = true, optional = true }
 vertex-node-api = { workspace = true, optional = true }
 vertex-swarm-bandwidth = { workspace = true, optional = true }
 vertex-swarm-bandwidth-pricing = { workspace = true, optional = true, features = ["cli"] }
+vertex-swarm-identity = { workspace = true, optional = true }
 vertex-swarmspec = { workspace = true, optional = true }
 vertex-swarm-localstore = { workspace = true, optional = true }
 
 [features]
 default = ["std"]
 std = []
-cli = ["dep:clap", "dep:alloy-primitives", "dep:alloy-signer", "dep:alloy-signer-local", "dep:figment", "dep:hex", "dep:rand", "dep:serde", "dep:strum", "dep:vertex-node-api", "dep:vertex-swarm-bandwidth", "dep:vertex-swarm-bandwidth-pricing", "dep:vertex-swarm-localstore", "dep:vertex-swarmspec", "vertex-swarm-primitives/serde"]
+cli = ["dep:clap", "dep:alloy-primitives", "dep:alloy-signer", "dep:alloy-signer-local", "dep:figment", "dep:hex", "dep:rand", "dep:serde", "dep:strum", "dep:vertex-node-api", "dep:vertex-swarm-bandwidth", "dep:vertex-swarm-bandwidth-pricing", "dep:vertex-swarm-identity", "dep:vertex-swarm-localstore", "dep:vertex-swarmspec", "vertex-swarm-primitives/serde"]

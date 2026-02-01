@@ -25,6 +25,10 @@ vertex-swarm-api.workspace = true
 vertex-swarm-primitives.workspace = true
 vertex-swarmspec.workspace = true
 
+# CLI
+clap = { workspace = true, features = ["derive"] }
+serde = { workspace = true }
+
 # Utilities
 rand.workspace = true
 tracing.workspace = true

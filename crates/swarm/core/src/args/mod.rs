@@ -30,14 +30,9 @@
 //!     .extract()?;
 //! ```
 
-mod identity;
 mod network;
 mod storage;
 mod swarm;
-
-pub use vertex_swarm_bandwidth::{BandwidthArgs, BandwidthModeArg};
-pub use vertex_swarm_bandwidth_pricing::PricingArgs;
-pub use identity::IdentityArgs;
 pub use network::NetworkArgs;
 pub use storage::StorageIncentiveArgs;
 pub use swarm::{NodeTypeArg, SwarmArgs};

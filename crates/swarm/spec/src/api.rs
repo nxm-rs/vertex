@@ -88,7 +88,12 @@ pub trait SwarmSpec: Send + Sync + Unpin + Debug + 'static {
     ///
     /// This is the fundamental unit of storage in Swarm. Standard Swarm
     /// networks use 4096 bytes (2^12), but custom networks may differ.
-    fn chunk_size(&self) -> usize;
+    ///
+    /// The default implementation returns the chunk size from the associated
+    /// `ChunkSet` type, providing compile-time access to this value.
+    fn chunk_size(&self) -> usize {
+        Self::ChunkSet::BODY_SIZE
+    }
 
     /// Returns the reserve capacity in number of chunks for full nodes.
     ///
@@ -180,10 +185,6 @@ impl SwarmSpec for Hive {
 
     fn hardforks(&self) -> &SwarmHardforks {
         &self.hardforks
-    }
-
-    fn chunk_size(&self) -> usize {
-        self.chunk_size
     }
 
     fn reserve_capacity(&self) -> u64 {

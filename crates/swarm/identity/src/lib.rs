@@ -5,6 +5,8 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
+pub mod args;
+
 use alloy_primitives::B256;
 use alloy_signer::k256::ecdsa::SigningKey;
 use alloy_signer_local::LocalSigner;
@@ -14,6 +16,7 @@ use vertex_swarm_api::{SwarmIdentity, SwarmNodeType};
 use vertex_swarm_primitives::compute_overlay;
 use vertex_swarmspec::{Hive, Loggable, SwarmSpec};
 
+pub use args::IdentityArgs;
 pub use vertex_swarm_api::SwarmIdentity as IdentityTrait;
 
 /// Local node identity containing signing key, nonce, and network spec.

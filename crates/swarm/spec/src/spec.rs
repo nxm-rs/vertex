@@ -10,7 +10,7 @@
 use crate::error::SwarmSpecFileError;
 use crate::{
     Token,
-    constants::{DEFAULT_CHUNK_SIZE, DEFAULT_RESERVE_CAPACITY, dev, mainnet, testnet},
+    constants::{DEFAULT_RESERVE_CAPACITY, dev, mainnet, testnet},
     generate_dev_network_id,
 };
 use alloc::{
@@ -68,10 +68,6 @@ pub struct Hive {
     #[serde(default)]
     pub genesis_timestamp: u64,
 
-    /// Chunk size in bytes (typically 4096 = 2^12)
-    #[serde(default = "default_chunk_size")]
-    pub chunk_size: usize,
-
     /// Reserve capacity in number of chunks for full nodes (typically 2^22)
     #[serde(default = "default_reserve_capacity")]
     pub reserve_capacity: u64,
@@ -89,10 +85,6 @@ fn default_token() -> Token {
     dev::TOKEN
 }
 
-fn default_chunk_size() -> usize {
-    DEFAULT_CHUNK_SIZE
-}
-
 fn default_reserve_capacity() -> u64 {
     DEFAULT_RESERVE_CAPACITY
 }
@@ -107,7 +99,6 @@ impl Default for Hive {
             hardforks: SwarmHardfork::dev().into(),
             token: dev::TOKEN,
             genesis_timestamp: 0,
-            chunk_size: DEFAULT_CHUNK_SIZE,
             reserve_capacity: DEFAULT_RESERVE_CAPACITY,
         }
     }
@@ -128,7 +119,6 @@ pub(crate) fn init_mainnet() -> Arc<Hive> {
                 hardforks: SwarmHardfork::mainnet().into(),
                 token: mainnet::TOKEN,
                 genesis_timestamp: SwarmHardfork::MAINNET_GENESIS_TIMESTAMP,
-                chunk_size: DEFAULT_CHUNK_SIZE,
                 reserve_capacity: DEFAULT_RESERVE_CAPACITY,
             };
 
@@ -152,7 +142,6 @@ pub(crate) fn init_testnet() -> Arc<Hive> {
                 hardforks: SwarmHardfork::testnet().into(),
                 token: testnet::TOKEN,
                 genesis_timestamp: SwarmHardfork::TESTNET_GENESIS_TIMESTAMP,
-                chunk_size: DEFAULT_CHUNK_SIZE,
                 reserve_capacity: DEFAULT_RESERVE_CAPACITY,
             };
 
@@ -183,7 +172,6 @@ pub struct HiveBuilder {
     hardforks: SwarmHardforks,
     token: Option<Token>,
     genesis_timestamp: Option<u64>,
-    chunk_size: Option<usize>,
     reserve_capacity: Option<u64>,
 }
 
@@ -255,12 +243,6 @@ impl HiveBuilder {
         self
     }
 
-    /// Set the chunk size in bytes
-    pub fn chunk_size(mut self, size: usize) -> Self {
-        self.chunk_size = Some(size);
-        self
-    }
-
     /// Set the reserve capacity in number of chunks
     pub fn reserve_capacity(mut self, capacity: u64) -> Self {
         self.reserve_capacity = Some(capacity);
@@ -307,7 +289,6 @@ impl HiveBuilder {
             hardforks,
             token,
             genesis_timestamp,
-            chunk_size: self.chunk_size.unwrap_or(DEFAULT_CHUNK_SIZE),
             reserve_capacity: self.reserve_capacity.unwrap_or(DEFAULT_RESERVE_CAPACITY),
         }
     }
@@ -323,7 +304,6 @@ impl HiveBuilder {
             hardforks: spec.hardforks.clone(),
             token: Some(spec.token.clone()),
             genesis_timestamp: Some(spec.genesis_timestamp),
-            chunk_size: Some(spec.chunk_size),
             reserve_capacity: Some(spec.reserve_capacity),
         }
     }
@@ -339,7 +319,6 @@ impl HiveBuilder {
             hardforks: spec.hardforks.clone(),
             token: Some(spec.token.clone()),
             genesis_timestamp: Some(spec.genesis_timestamp),
-            chunk_size: Some(spec.chunk_size),
             reserve_capacity: Some(spec.reserve_capacity),
         }
     }
@@ -355,7 +334,6 @@ impl HiveBuilder {
             hardforks: spec.hardforks.clone(),
             token: Some(spec.token.clone()),
             genesis_timestamp: Some(spec.genesis_timestamp),
-            chunk_size: Some(spec.chunk_size),
             reserve_capacity: Some(spec.reserve_capacity),
         }
     }
@@ -395,7 +373,6 @@ impl Hive {
     ///   "network_name": "local-kurtosis",
     ///   "bootnodes": ["/ip4/127.0.0.1/tcp/1634/p2p/QmXxx..."],
     ///   "genesis_timestamp": 0,
-    ///   "chunk_size": 4096,
     ///   "reserve_capacity": 4194304
     /// }
     /// ```

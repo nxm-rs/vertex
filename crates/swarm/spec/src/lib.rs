@@ -160,14 +160,15 @@ mod tests {
 
     #[test]
     fn test_custom_network_chunk_config() {
-        // Custom networks can override chunk protocol parameters
+        // Reserve capacity is configurable at runtime
         let custom = HiveBuilder::new()
             .network_id(999)
-            .chunk_size(8192)
             .reserve_capacity(1 << 20)
             .build();
 
-        assert_eq!(custom.chunk_size(), 8192);
+        // chunk_size is now a compile-time constant from ChunkSet::BODY_SIZE
+        // Custom chunk sizes require implementing a different ChunkTypeSet
+        assert_eq!(custom.chunk_size(), nectar_primitives::DEFAULT_BODY_SIZE);
         assert_eq!(custom.reserve_capacity(), 1 << 20);
     }
 }

@@ -83,9 +83,9 @@ rust.unreachable_pub = "warn"
 
 [workspace.dependencies]
 ## nectar
-nectar-contracts = { path = "../nectar/crates/contracts" }
-nectar-primitives = { path = "../nectar/crates/primitives" }
-nectar-swarms = { path = "../nectar/crates/swarms" }
+nectar-contracts = { git = "https://github.com/nxm-rs/nectar.git", branch = "main" }
+nectar-primitives = { git = "https://github.com/nxm-rs/nectar.git", branch = "main" }
+nectar-swarms = { git = "https://github.com/nxm-rs/nectar.git", branch = "main" }
 
 digest = "0.10"
 
