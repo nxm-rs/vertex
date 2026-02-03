@@ -48,21 +48,12 @@ pub enum PeerReadyResult {
 }
 
 /// Configuration for the peer manager.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PeerManagerConfig {
     /// Net peer manager configuration.
     pub net_config: NetPeerManagerConfig,
     /// IP tracker configuration.
     pub ip_config: IpTrackerConfig,
-}
-
-impl Default for PeerManagerConfig {
-    fn default() -> Self {
-        Self {
-            net_config: NetPeerManagerConfig::default(),
-            ip_config: IpTrackerConfig::default(),
-        }
-    }
 }
 
 /// Peer lifecycle manager wrapping NetPeerManager with Swarm-specific extensions.

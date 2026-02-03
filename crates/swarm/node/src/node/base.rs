@@ -217,7 +217,7 @@ impl<N: SwarmNodeTypes, B: NetworkBehaviour> BaseNode<N, B> {
                 }
 
                 // Store only dialable peers and get their overlays for Kademlia
-                let stored_overlays = self.peer_manager.store_hive_peers_batch(peers.into_iter());
+                let stored_overlays = self.peer_manager.store_hive_peers_batch(peers);
 
                 if !stored_overlays.is_empty() {
                     self.kademlia.add_peers(&stored_overlays);

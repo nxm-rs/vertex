@@ -57,7 +57,7 @@ pub enum BootnodeEvent {
     /// Identify protocol event.
     Identify(Box<identify::Event>),
     /// Topology event (peer ready, disconnected, discovered).
-    Topology(TopologyEvent),
+    Topology(Box<TopologyEvent>),
 }
 
 impl From<identify::Event> for BootnodeEvent {
@@ -68,7 +68,7 @@ impl From<identify::Event> for BootnodeEvent {
 
 impl From<TopologyEvent> for BootnodeEvent {
     fn from(event: TopologyEvent) -> Self {
-        BootnodeEvent::Topology(event)
+        BootnodeEvent::Topology(Box::new(event))
     }
 }
 
@@ -182,9 +182,9 @@ impl<N: SwarmNodeTypes> BootNode<N> {
             BootnodeEvent::Identify(boxed_event) => {
                 Self::handle_identify_event(*boxed_event);
             }
-            BootnodeEvent::Topology(event) => {
+            BootnodeEvent::Topology(boxed_event) => {
                 // Bootnodes don't activate any client handler on peer auth
-                self.base.handle_topology_event(event, |_, _, _| {});
+                self.base.handle_topology_event(*boxed_event, |_, _, _| {});
             }
         }
     }
