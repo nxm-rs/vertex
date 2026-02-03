@@ -104,7 +104,9 @@ fn resolve_recursive<'a>(
         seen.insert(cache_key.clone());
 
         let resolver = Resolver::builder_tokio()
-            .map_err(|e| DnsaddrResolveError::DnsLookup(format!("Failed to create resolver: {}", e)))?
+            .map_err(|e| {
+                DnsaddrResolveError::DnsLookup(format!("Failed to create resolver: {}", e))
+            })?
             .build();
 
         let txt_name = format!("_dnsaddr.{}", domain);

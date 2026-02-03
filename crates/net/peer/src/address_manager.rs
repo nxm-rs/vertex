@@ -76,9 +76,7 @@ impl AddressManager {
             listen_addrs: RwLock::new(Vec::new()),
             nat_addrs,
             observed_addrs: RwLock::new(HashMap::new()),
-            confirmed_cache: Mutex::new(LruCache::new(
-                MAX_CONFIRMED_CACHE,
-            )),
+            confirmed_cache: Mutex::new(LruCache::new(MAX_CONFIRMED_CACHE)),
             nat_auto,
             confirmation_threshold: threshold,
             confirmed_ttl_secs: CONFIRMED_CACHE_TTL_SECS,
@@ -97,9 +95,7 @@ impl AddressManager {
             listen_addrs: RwLock::new(Vec::new()),
             nat_addrs,
             observed_addrs: RwLock::new(HashMap::new()),
-            confirmed_cache: Mutex::new(LruCache::new(
-                MAX_CONFIRMED_CACHE,
-            )),
+            confirmed_cache: Mutex::new(LruCache::new(MAX_CONFIRMED_CACHE)),
             nat_auto,
             confirmation_threshold: threshold,
             confirmed_ttl_secs: ttl_secs,
