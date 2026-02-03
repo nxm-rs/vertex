@@ -124,13 +124,11 @@ impl ProtoMessage for Delivery {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vertex_net_codec::assert_proto_roundtrip;
 
     #[test]
     fn test_request_roundtrip() {
-        let original = Request::new(ChunkAddress::new([0x42; 32]));
-        let proto = original.clone().into_proto();
-        let decoded = Request::from_proto(proto).unwrap();
-        assert_eq!(original, decoded);
+        assert_proto_roundtrip!(Request::new(ChunkAddress::new([0x42; 32])));
     }
 
     #[test]
