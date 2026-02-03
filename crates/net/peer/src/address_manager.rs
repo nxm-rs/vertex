@@ -1,10 +1,4 @@
-//! Smart multiaddr management for address selection and NAT discovery.
-//!
-//! The [`AddressManager`] handles:
-//! - Tracking listen addresses from libp2p
-//! - Managing configured NAT/external addresses
-//! - Learning external addresses from peer observations
-//! - Selecting appropriate addresses based on peer scope
+//! Multiaddr management for address selection and NAT discovery.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -16,97 +10,51 @@ use parking_lot::{Mutex, RwLock};
 use tracing::{debug, info, trace};
 use web_time::Instant;
 
-use crate::ip_addr::{AddressScope, classify_multiaddr, extract_ip, same_subnet};
+use crate::scope::{AddressScope, IpCapability, classify_multiaddr, extract_ip, same_subnet};
 
-/// Default number of peer confirmations required before trusting an observed address.
-/// Requires 2 confirmations from different IP addresses (same protocol family) to
-/// prevent a single malicious peer from confirming a false address.
+/// Require 2 unique IPs to confirm an observed address (prevents single-peer spoofing).
 const DEFAULT_CONFIRMATION_THRESHOLD: usize = 2;
-
-/// Maximum number of observed addresses to track (pending confirmation).
-/// Limits memory usage from adversarial peers sending many different observed addresses.
+/// Max pending observed addresses (bounds memory from adversarial peers).
 const MAX_OBSERVED_ADDRS: usize = 10;
-
-/// Maximum number of confirmed addresses to cache.
 const MAX_CONFIRMED_CACHE: usize = 20;
-
-/// TTL for confirmed address cache entries (1 hour).
-/// Peer lists are relatively stable, so a long TTL is appropriate.
+/// 1 hour TTL for confirmed addresses.
 const CONFIRMED_CACHE_TTL_SECS: u64 = 3600;
 
-/// Entry tracking an address observed by peers (pending confirmation).
-///
-/// Storage is bounded: we only store the first confirming IP for comparison.
-/// Once threshold is reached, the entry moves to the confirmed cache.
+/// Observed address pending confirmation.
 #[derive(Debug, Clone)]
 struct ObservedEntry {
-    /// Number of unique IPs that reported this address (1 or 2+).
     confirmations: usize,
-    /// First confirming IP - stored for duplicate detection until threshold is reached.
     first_ip: IpAddr,
-    /// When this address was most recently observed.
     last_seen: Instant,
 }
 
-/// Entry in the confirmed address cache.
-///
-/// Once an address reaches the confirmation threshold, it's moved here
-/// with a TTL. Subsequent observations use this as a fast path.
-/// LRU eviction is handled by the LruCache itself.
+/// Confirmed address with expiry timestamp.
 #[derive(Debug, Clone)]
 struct ConfirmedEntry {
-    /// When this address was confirmed (for TTL expiry).
     confirmed_at: Instant,
 }
 
 /// Manages multiaddr selection for handshake and peer advertisement.
 ///
-/// # Address Types
-///
-/// - **Listen addresses**: Addresses we're actually listening on (from libp2p)
-/// - **NAT addresses**: Configured external addresses for NAT traversal
-/// - **Observed addresses**: Addresses peers report seeing us at
-///
-/// # Selection Logic
-///
-/// When selecting addresses for a peer based on their connection address:
-///
-/// - **Loopback peer**: Include loopback + private addresses
-/// - **Private peer**: Include private addresses on same subnet + NAT addresses
-/// - **Public peer**: Include only public addresses (NAT + confirmed observed)
+/// Tracks listen addresses (from libp2p), configured NAT addresses, and
+/// peer-observed addresses (auto-NAT). Selects addresses based on peer scope:
+/// loopback peers see local addrs, public peers see only public addrs.
 pub struct AddressManager {
-    /// Addresses we're listening on (updated from libp2p events).
     listen_addrs: RwLock<Vec<Multiaddr>>,
-
-    /// Configured NAT/external addresses.
     nat_addrs: Vec<Multiaddr>,
-
-    /// Observed addresses pending confirmation.
     observed_addrs: RwLock<HashMap<Multiaddr, ObservedEntry>>,
-
-    /// Confirmed address LRU cache with TTL.
-    /// Once an address reaches confirmation threshold, it moves here.
-    /// Uses Mutex because LruCache::get mutates internal ordering.
+    /// Mutex because LruCache::get mutates internal ordering.
     confirmed_cache: Mutex<LruCache<Multiaddr, ConfirmedEntry>>,
-
-    /// Whether auto-NAT from observed addresses is enabled.
     nat_auto: bool,
-
-    /// Number of confirmations required for observed addresses.
     confirmation_threshold: usize,
-
-    /// TTL for confirmed cache entries in seconds.
     confirmed_ttl_secs: u64,
+    ip_capability: RwLock<IpCapability>,
 }
 
 impl AddressManager {
-    /// Create a new address manager.
-    ///
-    /// # Arguments
-    ///
-    /// * `nat_addrs` - Configured external/NAT addresses
-    /// * `nat_auto` - Whether to automatically learn addresses from peer observations
     pub fn new(nat_addrs: Vec<Multiaddr>, nat_auto: bool) -> Self {
+        // Compute initial capability from NAT addresses
+        let ip_capability = IpCapability::from_addrs(&nat_addrs);
         Self {
             listen_addrs: RwLock::new(Vec::new()),
             nat_addrs,
@@ -117,15 +65,16 @@ impl AddressManager {
             nat_auto,
             confirmation_threshold: DEFAULT_CONFIRMATION_THRESHOLD,
             confirmed_ttl_secs: CONFIRMED_CACHE_TTL_SECS,
+            ip_capability: RwLock::new(ip_capability),
         }
     }
 
-    /// Create a new address manager with custom confirmation threshold.
     pub fn with_confirmation_threshold(
         nat_addrs: Vec<Multiaddr>,
         nat_auto: bool,
         threshold: usize,
     ) -> Self {
+        let ip_capability = IpCapability::from_addrs(&nat_addrs);
         Self {
             listen_addrs: RwLock::new(Vec::new()),
             nat_addrs,
@@ -136,16 +85,17 @@ impl AddressManager {
             nat_auto,
             confirmation_threshold: threshold,
             confirmed_ttl_secs: CONFIRMED_CACHE_TTL_SECS,
+            ip_capability: RwLock::new(ip_capability),
         }
     }
 
-    /// Create a new address manager with custom TTL for confirmed cache.
     pub fn with_confirmed_ttl(
         nat_addrs: Vec<Multiaddr>,
         nat_auto: bool,
         threshold: usize,
         ttl_secs: u64,
     ) -> Self {
+        let ip_capability = IpCapability::from_addrs(&nat_addrs);
         Self {
             listen_addrs: RwLock::new(Vec::new()),
             nat_addrs,
@@ -156,40 +106,43 @@ impl AddressManager {
             nat_auto,
             confirmation_threshold: threshold,
             confirmed_ttl_secs: ttl_secs,
+            ip_capability: RwLock::new(ip_capability),
         }
     }
 
-    /// Called when libp2p reports a new listen address.
+    /// Handle new listen address from libp2p.
     pub fn on_new_listen_addr(&self, addr: Multiaddr) {
         let mut addrs = self.listen_addrs.write();
         if !addrs.contains(&addr) {
             debug!(listen_addr = %addr, "new listen address");
             addrs.push(addr);
+            // Recalculate IP capability
+            self.update_ip_capability(&addrs);
         }
     }
 
-    /// Called when libp2p reports an expired listen address.
+    /// Handle expired listen address from libp2p.
     pub fn on_expired_listen_addr(&self, addr: &Multiaddr) {
         let mut addrs = self.listen_addrs.write();
         if let Some(pos) = addrs.iter().position(|a| a == addr) {
             debug!(listen_addr = %addr, "expired listen address");
             addrs.remove(pos);
+            // Recalculate IP capability
+            self.update_ip_capability(&addrs);
         }
     }
 
-    /// Called when a peer reports our observed address during handshake.
-    ///
-    /// The `from_peer` address is used to validate that public peers
-    /// are reporting public addresses (prevents private peers from
-    /// claiming we're at a public address).
-    ///
-    /// Confirmations are only counted from unique IP addresses within the same
-    /// protocol family (IPv4 or IPv6) to prevent a single peer from confirming
-    /// by reconnecting multiple times.
-    ///
-    /// Once an address is confirmed, it's moved to the confirmed cache with a TTL.
-    /// Subsequent observations of cached addresses use a fast path that just
-    /// updates the last_accessed timestamp.
+    fn update_ip_capability(&self, listen_addrs: &[Multiaddr]) {
+        let new_capability =
+            IpCapability::from_addrs(listen_addrs.iter().chain(self.nat_addrs.iter()));
+        let old_capability = *self.ip_capability.read();
+        if new_capability != old_capability {
+            info!(?old_capability, ?new_capability, "IP capability changed");
+            *self.ip_capability.write() = new_capability;
+        }
+    }
+
+    /// Record an observed address reported by a peer (requires multi-peer confirmation).
     pub fn on_observed_addr(&self, addr: Multiaddr, from_peer: &Multiaddr) {
         trace!(
             observed_addr = %addr,
@@ -351,9 +304,6 @@ impl AddressManager {
         }
     }
 
-    /// Add an address to the confirmed cache.
-    ///
-    /// LruCache handles capacity and LRU eviction automatically.
     fn add_to_confirmed_cache(&self, addr: Multiaddr, now: Instant) {
         let mut cache = self.confirmed_cache.lock();
 
@@ -369,12 +319,7 @@ impl AddressManager {
         cache.put(addr, ConfirmedEntry { confirmed_at: now });
     }
 
-    /// Get addresses to advertise for a peer based on their connection scope.
-    ///
-    /// This implements smart address selection:
-    /// - Loopback peers see loopback + private addresses
-    /// - Private peers see same-subnet private addresses + NAT addresses
-    /// - Public peers see only public addresses
+    /// Select addresses to advertise based on peer's scope (loopback/private/public).
     pub fn addresses_for_peer(&self, peer_addr: &Multiaddr) -> Vec<Multiaddr> {
         let peer_scope = classify_multiaddr(peer_addr).unwrap_or(AddressScope::Public);
         let listen = self.listen_addrs.read();
@@ -463,9 +408,7 @@ impl AddressManager {
         result
     }
 
-    /// Get all known addresses (for non-selective use cases).
-    ///
-    /// Returns listen addresses + NAT addresses + confirmed observed addresses.
+    /// All known addresses (listen + NAT + confirmed observed).
     pub fn all_addresses(&self) -> Vec<Multiaddr> {
         let listen = self.listen_addrs.read();
         let cache = self.confirmed_cache.lock();
@@ -494,34 +437,26 @@ impl AddressManager {
         result
     }
 
-    /// Get the current listen addresses.
     pub fn listen_addrs(&self) -> Vec<Multiaddr> {
         self.listen_addrs.read().clone()
     }
 
-    /// Get the configured NAT addresses.
     pub fn nat_addrs(&self) -> &[Multiaddr] {
         &self.nat_addrs
     }
 
-    /// Check if auto-NAT is enabled.
     pub fn nat_auto_enabled(&self) -> bool {
         self.nat_auto
     }
 
-    /// Get the number of pending observed addresses (for diagnostics).
     pub fn pending_observed_count(&self) -> usize {
         self.observed_addrs.read().len()
     }
 
-    /// Get the number of confirmed cached addresses (for diagnostics).
     pub fn confirmed_cache_count(&self) -> usize {
         self.confirmed_cache.lock().len()
     }
 
-    /// Get confirmed observed addresses from cache (for diagnostics).
-    ///
-    /// Only returns non-expired entries.
     pub fn confirmed_observed_addrs(&self) -> Vec<Multiaddr> {
         let cache = self.confirmed_cache.lock();
         let now = Instant::now();
@@ -532,13 +467,40 @@ impl AddressManager {
             .filter(|(_, entry): &(&Multiaddr, &ConfirmedEntry)| {
                 now.duration_since(entry.confirmed_at) < ttl
             })
-            .map(|(addr, _)| addr.clone())
+            .map(|(addr, _): (&Multiaddr, &ConfirmedEntry)| addr.clone())
             .collect()
     }
 
-    /// Get the configured TTL for confirmed addresses in seconds.
     pub fn confirmed_ttl_secs(&self) -> u64 {
         self.confirmed_ttl_secs
+    }
+
+    /// Current IP connectivity (IPv4, IPv6, or both) based on listen addresses.
+    pub fn ip_capability(&self) -> IpCapability {
+        *self.ip_capability.read()
+    }
+
+    pub fn supports_ipv4(&self) -> bool {
+        self.ip_capability.read().supports_ipv4()
+    }
+
+    pub fn supports_ipv6(&self) -> bool {
+        self.ip_capability.read().supports_ipv6()
+    }
+
+    pub fn can_reach(&self, addr: &Multiaddr) -> bool {
+        self.ip_capability.read().can_reach_addr(addr)
+    }
+
+    /// Filter addresses to only those we can dial based on our IP capability.
+    pub fn filter_dialable_addrs<'a>(
+        &self,
+        addrs: &'a [Multiaddr],
+    ) -> impl Iterator<Item = &'a Multiaddr> {
+        let capability = *self.ip_capability.read();
+        addrs
+            .iter()
+            .filter(move |addr| capability.can_reach_addr(addr))
     }
 }
 

@@ -1,58 +1,40 @@
-//! Peer lifecycle management with clean abstraction boundary.
-//!
-//! This crate provides the bridge layer between:
-//! - **libp2p layer** (`vertex-net-*`): Uses `PeerId`, `Multiaddr`, `ConnectionId`
-//! - **Swarm layer** (`vertex-client-*`): Uses `OverlayAddress`
-//!
-//! # Abstraction Boundary
-//!
-//! All public APIs use `OverlayAddress` only. The `PeerId` mapping is
-//! encapsulated internally and exposed only through the [`InternalPeerManager`]
-//! trait for use by the bridge layer in `vertex-swarm-node`.
-//!
-//! # Usage
-//!
-//! ```ignore
-//! use vertex_swarm_peermanager::{PeerManager, InternalPeerManager};
-//!
-//! let pm = PeerManager::new();
-//!
-//! // Public API - OverlayAddress only
-//! pm.add_known(overlay);
-//! pm.start_connecting(overlay);
-//! pm.is_connected(&overlay);
-//!
-//! // Bridge API - PeerId for libp2p integration
-//! pm.on_peer_ready(peer_id, overlay, is_full_node);
-//! pm.on_peer_disconnected(&peer_id);
-//! pm.resolve_peer_id(&overlay);
-//! ```
+//! Peer lifecycle management with OverlayAddress/PeerId abstraction boundary.
 
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-mod address_manager;
-mod ip_addr;
-mod local_network;
+mod ext;
+mod ip_tracker;
 mod manager;
-mod multiaddr_cache;
-mod state;
-mod store;
 
 pub mod discovery;
 pub mod score;
 
-pub use address_manager::AddressManager;
-pub use ip_addr::{AddressScope, classify_multiaddr, extract_ip, same_subnet};
-pub use local_network::{
-    LocalNetworkInfo, get_local_network_info, is_directly_reachable, is_on_same_local_network,
-    refresh_network_info,
+pub use vertex_net_peer::{
+    AddressManager, AddressScope, IpCapability, IpVersion, LocalNetworkInfo, classify_multiaddr,
+    extract_ip, get_local_network_info, ip_version, is_directly_reachable, is_ipv4, is_ipv6,
+    is_on_same_local_network, same_subnet,
 };
+
+pub use vertex_net_peers::{
+    BanInfo, ConnectionState, FilePeerStore, MemoryPeerStore, NetPeerData, NetPeerId,
+    NetPeerManagerConfig, NetPeerSnapshot, NetPeerStore, NetScoringEvent, PeerStoreError,
+};
+use vertex_swarm_primitives::OverlayAddress;
+
+pub use ext::{SwarmExt, SwarmExtSnapshot};
+
+/// Swarm peer state snapshot for persistence.
+pub type PeerSnapshot = NetPeerSnapshot<OverlayAddress, SwarmExtSnapshot, ()>;
+
+/// Swarm-specific peer store trait.
+pub type PeerStore = dyn NetPeerStore<OverlayAddress, SwarmExtSnapshot, ()>;
 
 pub use discovery::{
     DiscoveryReceiver, DiscoverySender, discovery_channel, run_peer_store_consumer,
 };
-// Re-export SwarmPeer for convenience (channel uses this type)
-pub use manager::{FailureReason, InternalPeerManager, PeerManager, PeerManagerStats};
-pub use state::{BanInfo, PeerInfo, PeerState, StoredPeer};
-pub use store::{FilePeerStore, MemoryPeerStore, PeerStore, PeerStoreError};
+pub use ip_tracker::{IpScoreTracker, IpTrackerConfig, IpTrackerStats};
+pub use manager::{
+    FailureReason, InternalPeerManager, PeerManager, PeerManagerConfig, PeerManagerStats,
+    PeerReadyResult, SwarmNetPeerManager,
+};
 pub use vertex_swarm_peer::SwarmPeer;

@@ -110,7 +110,7 @@ async fn build_launch_context(args: &SwarmRunNodeArgs) -> Result<SwarmLaunchCont
 
     // Create peer store
     let peers_file = dirs.network.join("state").join("peers.json");
-    let peer_store: Arc<dyn PeerStore> = Arc::new(
+    let peer_store: Arc<PeerStore> = Arc::new(
         FilePeerStore::new_with_create_dir(&peers_file)
             .wrap_err_with(|| format!("failed to open peers database: {}", peers_file.display()))?,
     );

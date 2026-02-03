@@ -29,8 +29,11 @@ pub mod handler;
 pub mod protocol;
 
 mod error;
+mod gossip;
 
-pub use behaviour::TopologyBehaviour;
+pub use gossip::HiveGossipConfig;
+
+pub use behaviour::{DepthProvider, TopologyBehaviour};
 pub use bootnode::BootnodeConnector;
 pub use dns::{DnsaddrResolveError, is_dnsaddr, resolve_all_dnsaddrs, resolve_dnsaddr};
 pub use error::{TopologyError, TopologyResult};

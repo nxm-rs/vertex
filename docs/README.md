@@ -18,6 +18,7 @@ Swarm-specific protocol details and differences from Bee.
 
 - [**API**](swarm/api.md) - Core traits (Identity, Topology, BandwidthAccounting)
 - [**Protocols**](swarm/protocols.md) - Network protocol patterns (headered streams, etc.)
+- [**Hive Gossip**](swarm/hive-gossip.md) - Peer discovery gossip strategy
 - [**Differences from Bee**](swarm/differences-from-bee.md) - Architectural improvements over Bee
 
 ### Client Layer
@@ -25,6 +26,13 @@ Swarm-specific protocol details and differences from Bee.
 libp2p integration and the network abstraction boundary.
 
 - [**Architecture**](client/architecture.md) - libp2p boundary, PeerId/OverlayAddress mapping
+
+### Networking
+
+Protocol-agnostic network utilities.
+
+- [**Address Management**](networking/address-management.md) - Address classification, NAT, local network detection
+- [**Peer Management**](networking/peer-management.md) - Arc-per-peer state, registry, caching, events
 
 ### CLI
 

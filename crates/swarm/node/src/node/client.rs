@@ -16,9 +16,9 @@ use libp2p::{
 use nectar_primitives::SwarmAddress;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
-use vertex_swarm_api::{SwarmIdentity, SwarmNodeTypes};
+use vertex_swarm_api::{SwarmIdentity, SwarmNodeTypes, SwarmTopology};
 use vertex_swarm_kademlia::{KademliaConfig, KademliaTopology};
-use vertex_swarm_peermanager::{AddressManager, PeerManager, PeerStore};
+use vertex_swarm_peermanager::{AddressManager, InternalPeerManager, PeerManager, PeerStore};
 use vertex_swarm_topology::{TopologyBehaviour, TopologyCommand, TopologyConfig, TopologyEvent};
 use vertex_tasks::SpawnableTask;
 use vertex_tasks::TaskExecutor;
@@ -47,13 +47,17 @@ pub struct ClientNodeBehaviour<N: SwarmNodeTypes> {
 
 impl<N: SwarmNodeTypes> ClientNodeBehaviour<N> {
     /// Create a new client node behaviour.
-    pub fn new(local_public_key: PublicKey, identity: N::Identity) -> Self {
+    pub fn new(
+        local_public_key: PublicKey,
+        identity: N::Identity,
+        peer_manager: Arc<PeerManager>,
+    ) -> Self {
         Self {
             identify: identify::Behaviour::new(identify::Config::new(
                 "/vertex/1.0.0".to_string(),
                 local_public_key,
             )),
-            topology: TopologyBehaviour::new(identity, TopologyConfig::default()),
+            topology: TopologyBehaviour::new(identity, TopologyConfig::default(), peer_manager),
             client: ClientBehaviour::new(ClientBehaviourConfig::default()),
         }
     }
@@ -62,6 +66,7 @@ impl<N: SwarmNodeTypes> ClientNodeBehaviour<N> {
     pub fn with_address_manager(
         local_public_key: PublicKey,
         identity: N::Identity,
+        peer_manager: Arc<PeerManager>,
         address_manager: Arc<AddressManager>,
     ) -> Self {
         Self {
@@ -72,6 +77,7 @@ impl<N: SwarmNodeTypes> ClientNodeBehaviour<N> {
             topology: TopologyBehaviour::with_address_manager(
                 identity,
                 TopologyConfig::default(),
+                peer_manager,
                 address_manager,
             ),
             client: ClientBehaviour::new(ClientBehaviourConfig::default()),
@@ -185,7 +191,10 @@ impl<N: SwarmNodeTypes> ClientNode<N> {
                         .swarm
                         .behaviour_mut()
                         .topology
-                        .on_command(TopologyCommand::Dial(addr));
+                        .on_command(TopologyCommand::Dial {
+                            addr,
+                            for_gossip: false,
+                        });
                     dialed += 1;
                 }
                 Err(e) => {
@@ -216,6 +225,10 @@ impl<N: SwarmNodeTypes> ClientNode<N> {
     pub async fn run(mut self) -> Result<()> {
         info!("Starting client node event loop");
 
+        // Get reference to Kademlia's dial notify outside the loop
+        // to avoid borrow conflicts with &mut self.base.swarm
+        let kademlia = self.base.kademlia.clone();
+
         loop {
             tokio::select! {
                 event = self.base.swarm.select_next_some() => {
@@ -224,6 +237,11 @@ impl<N: SwarmNodeTypes> ClientNode<N> {
 
                 Some(command) = self.client_command_rx.recv() => {
                     self.handle_client_command(command);
+                }
+
+                // Kademlia signals when it has dial candidates ready
+                _ = kademlia.dial_notify().notified() => {
+                    self.base.dial_connection_candidates();
                 }
             }
         }
@@ -276,15 +294,18 @@ impl<N: SwarmNodeTypes> ClientNode<N> {
     fn handle_topology_event(&mut self, event: TopologyEvent) {
         // On peer authentication, activate the client handler
         self.base
-            .handle_topology_event(event, |base, peer_id, overlay, is_full_node| {
-                base.swarm
-                    .behaviour_mut()
-                    .client
-                    .on_command(ClientCommand::ActivatePeer {
-                        peer_id,
-                        overlay,
-                        is_full_node,
-                    });
+            .handle_topology_event(event, |base, overlay, is_full_node| {
+                // Resolve peer_id from peer_manager
+                if let Some(peer_id) = base.peer_manager.resolve_peer_id(&overlay) {
+                    base.swarm
+                        .behaviour_mut()
+                        .client
+                        .on_command(ClientCommand::ActivatePeer {
+                            peer_id,
+                            overlay,
+                            is_full_node,
+                        });
+                }
             });
     }
 
@@ -362,7 +383,7 @@ impl<N: SwarmNodeTypes> ClientNodeBuilder<N> {
     }
 
     /// Set the peer store.
-    pub fn with_peer_store(mut self, store: Arc<dyn PeerStore>) -> Self {
+    pub fn with_peer_store(mut self, store: Arc<PeerStore>) -> Self {
         self.config.peer_store = Some(store);
         self
     }
@@ -391,6 +412,7 @@ impl<N: SwarmNodeTypes> ClientNodeBuilder<N> {
         let infra = BuiltInfrastructure::from_config(self.config)?;
 
         let identity_for_behaviour = infra.identity.clone();
+        let peer_manager_for_behaviour = infra.peer_manager.clone();
         let address_manager_for_behaviour = infra.address_manager.clone();
         let idle_timeout = infra.idle_timeout;
 
@@ -407,17 +429,26 @@ impl<N: SwarmNodeTypes> ClientNodeBuilder<N> {
                     Some(mgr) => ClientNodeBehaviour::with_address_manager(
                         keypair.public().clone(),
                         identity_for_behaviour.clone(),
+                        peer_manager_for_behaviour.clone(),
                         mgr,
                     ),
                     None => ClientNodeBehaviour::new(
                         keypair.public().clone(),
                         identity_for_behaviour.clone(),
+                        peer_manager_for_behaviour.clone(),
                     ),
                 };
                 Ok(behaviour)
             })?
             .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(idle_timeout))
             .build();
+
+        // Enable gossip with depth provider from kademlia
+        let kademlia_for_depth = infra.kademlia.clone();
+        swarm.behaviour_mut().topology.enable_gossip(
+            vertex_swarm_topology::HiveGossipConfig::default(),
+            Arc::new(move || kademlia_for_depth.depth()),
+        );
 
         // Configure settlement event routing
         if let Some(tx) = self.pseudosettle_event_tx {

@@ -1,6 +1,6 @@
 [package]
-name = "vertex-swarm-peermanager"
-description = "Peer lifecycle management with PeerId/OverlayAddress abstraction boundary"
+name = "vertex-net-peers"
+description = "Generic peer management framework for libp2p networks with lock-free scoring"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,28 +8,20 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
-# New generic layers
-vertex-net-peer = { workspace = true }
-vertex-net-peers = { workspace = true }
-
-# Swarm-specific
-vertex-swarm-primitives = { workspace = true }
-vertex-swarm-peer = { workspace = true, features = ["serde"] }
-
-# Core
 libp2p = { workspace = true }
 parking_lot = { workspace = true }
 tracing = { workspace = true }
-lru = { workspace = true }
 web-time = { workspace = true }
+lru = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { version = "1.0", features = ["std"] }
-alloy-primitives = { workspace = true, features = ["serde"] }
-auto_impl = { workspace = true }
 thiserror = { workspace = true }
+auto_impl = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
-vertex-tasks = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }

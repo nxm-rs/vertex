@@ -1,0 +1,25 @@
+[package]
+name = "vertex-net-peer"
+description = "Protocol-agnostic libp2p network utilities for address classification, local network detection, and NAT traversal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+libp2p = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }
+web-time = { workspace = true }
+netdev = { workspace = true }
+ipnet = { workspace = true }
+lru = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time"] }

@@ -182,7 +182,7 @@ impl<N: SwarmNodeTypes> StorerNodeBuilder<N> {
     }
 
     /// Set the peer store.
-    pub fn with_peer_store(mut self, store: Arc<dyn PeerStore>) -> Self {
+    pub fn with_peer_store(mut self, store: Arc<PeerStore>) -> Self {
         self.config.peer_store = Some(store);
         self
     }
