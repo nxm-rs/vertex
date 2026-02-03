@@ -18,6 +18,8 @@ members = [
     "crates/tasks",
 
     # Network
+    "crates/net/peer",
+    "crates/net/peers",
     "crates/net/codec",
     "crates/net/protocols/handshake",
     "crates/net/protocols/headers",
@@ -99,6 +101,8 @@ vertex-swarm-primitives = { path = "crates/swarm/primitives" }
 vertex-swarm-peer = { path = "crates/swarm/peer" }
 
 # network
+vertex-net-peer = { path = "crates/net/peer" }
+vertex-net-peers = { path = "crates/net/peers" }
 vertex-net-codec = { path = "crates/net/codec" }
 vertex-net-handshake = { path = "crates/net/protocols/handshake" }
 vertex-net-headers = { path = "crates/net/protocols/headers" }

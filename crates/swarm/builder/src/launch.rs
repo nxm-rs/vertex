@@ -37,7 +37,7 @@ pub struct SwarmLaunchContext {
     /// Node identity.
     pub identity: Identity,
     /// Peer store for persistence.
-    pub peer_store: Arc<dyn PeerStore>,
+    pub peer_store: Arc<PeerStore>,
     /// Path to peers database file.
     pub peers_path: PathBuf,
 }
@@ -49,7 +49,7 @@ impl SwarmLaunchContext {
         config: FullNodeConfig<ProtocolConfig>,
         spec: Arc<Hive>,
         identity: Identity,
-        peer_store: Arc<dyn PeerStore>,
+        peer_store: Arc<PeerStore>,
         peers_path: PathBuf,
     ) -> Self {
         Self {

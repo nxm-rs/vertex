@@ -65,7 +65,7 @@ pub struct SwarmNodeBuilder<
 > {
     identity: Arc<Identity>,
     spec: Arc<Hive>,
-    peer_store: Arc<dyn PeerStore>,
+    peer_store: Arc<PeerStore>,
     peers_path: std::path::PathBuf,
     network_config: DefaultNetworkConfig,
     topology_builder: TB,
@@ -162,7 +162,7 @@ impl<N: NodeTypeDefaults, TB, AB, PB> SwarmNodeBuilder<N, TB, AB, PB> {
 pub struct ClientNodeBuildConfig {
     identity: Arc<Identity>,
     spec: Arc<Hive>,
-    peer_store: Arc<dyn PeerStore>,
+    peer_store: Arc<PeerStore>,
     peers_path: std::path::PathBuf,
     network_config: DefaultNetworkConfig,
 }
@@ -320,7 +320,7 @@ impl<TB, AB, PB> SwarmNodeBuilder<Bootnode, TB, AB, PB> {
 pub struct BootnodeBuildConfig {
     identity: Arc<Identity>,
     spec: Arc<Hive>,
-    peer_store: Arc<dyn PeerStore>,
+    peer_store: Arc<PeerStore>,
     peers_path: std::path::PathBuf,
     network_config: DefaultNetworkConfig,
 }

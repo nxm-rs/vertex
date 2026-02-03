@@ -1,23 +1,4 @@
-//! Local network detection using system interface information.
-//!
-//! This module provides utilities to determine if an IP address is on a directly
-//! connected local network by querying the system's network interfaces and their
-//! associated subnets.
-//!
-//! # Cross-Platform Support
-//!
-//! Uses the `netdev` crate which supports:
-//! - Linux, macOS, Windows
-//! - Android (tested on 16.0)
-//! - iOS (tested on 18.6.2)
-//! - BSDs
-//!
-//! # How It Works
-//!
-//! Instead of manually comparing IP address bits against assumed subnet sizes,
-//! we query the actual network interfaces to get their IP addresses and netmasks.
-//! An IP is considered "on the local network" if it falls within any of our
-//! directly-connected subnets.
+//! Local network detection via system interface queries.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::OnceLock;
@@ -160,27 +141,10 @@ fn get_network_info() -> LocalNetworkInfo {
     info.clone()
 }
 
-/// Check if two IP addresses are on the same local network.
+/// Check if two IPs are on the same directly-connected subnet.
 ///
-/// This queries the system's network interfaces to determine which subnets
-/// we're directly connected to, then checks if both addresses fall within
-/// the same directly-connected subnet.
-///
-/// # Arguments
-///
-/// * `our_ip` - One of our local IP addresses
-/// * `target_ip` - The IP address to check
-///
-/// # Returns
-///
-/// `true` if both IPs are on the same directly-connected subnet.
-///
-/// # Special Cases
-///
-/// - Loopback addresses (127.x.x.x, ::1): Always considered same network if both are loopback
-/// - Link-local addresses (169.254.x.x, fe80::/10): Always considered same network if both are link-local
-/// - Different IP versions: Always returns false
-/// - Unspecified addresses (0.0.0.0, ::): Always returns false
+/// Returns true for loopback pairs or link-local pairs. Returns false for
+/// mixed IP versions or unspecified addresses.
 pub fn is_on_same_local_network(our_ip: IpAddr, target_ip: IpAddr) -> bool {
     // Must be same IP version
     match (our_ip, target_ip) {
@@ -259,19 +223,7 @@ fn is_on_same_local_network_v6(our_ip: Ipv6Addr, target_ip: Ipv6Addr) -> bool {
     false
 }
 
-/// Check if a target IP is directly reachable from our local network.
-///
-/// This is a simpler check that just verifies if the target IP falls within
-/// any of our directly-connected subnets (i.e., we can reach it without
-/// going through a gateway).
-///
-/// # Arguments
-///
-/// * `target_ip` - The IP address to check
-///
-/// # Returns
-///
-/// `true` if the target is on a directly-connected subnet.
+/// Check if a target IP is on a directly-connected subnet.
 pub fn is_directly_reachable(target_ip: IpAddr) -> bool {
     // Loopback is always directly reachable
     if target_ip.is_loopback() {

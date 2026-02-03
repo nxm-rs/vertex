@@ -15,7 +15,7 @@ use libp2p::{
 };
 use nectar_primitives::SwarmAddress;
 use tracing::{debug, info, warn};
-use vertex_swarm_api::{SwarmIdentity, SwarmNodeTypes};
+use vertex_swarm_api::{SwarmIdentity, SwarmNodeTypes, SwarmTopology};
 use vertex_swarm_kademlia::{KademliaConfig, KademliaTopology};
 use vertex_swarm_peermanager::{PeerManager, PeerStore};
 use vertex_swarm_topology::{TopologyBehaviour, TopologyCommand, TopologyConfig, TopologyEvent};
@@ -37,13 +37,17 @@ pub struct BootnodeBehaviour<N: SwarmNodeTypes> {
 
 impl<N: SwarmNodeTypes> BootnodeBehaviour<N> {
     /// Create a new bootnode behaviour.
-    pub fn new(local_public_key: PublicKey, identity: N::Identity) -> Self {
+    pub fn new(
+        local_public_key: PublicKey,
+        identity: N::Identity,
+        peer_manager: Arc<PeerManager>,
+    ) -> Self {
         Self {
             identify: identify::Behaviour::new(identify::Config::new(
                 "/vertex/1.0.0".to_string(),
                 local_public_key,
             )),
-            topology: TopologyBehaviour::new(identity, TopologyConfig::default()),
+            topology: TopologyBehaviour::new(identity, TopologyConfig::default(), peer_manager),
         }
     }
 }
@@ -53,7 +57,7 @@ pub enum BootnodeEvent {
     /// Identify protocol event.
     Identify(Box<identify::Event>),
     /// Topology event (peer ready, disconnected, discovered).
-    Topology(TopologyEvent),
+    Topology(Box<TopologyEvent>),
 }
 
 impl From<identify::Event> for BootnodeEvent {
@@ -64,7 +68,7 @@ impl From<identify::Event> for BootnodeEvent {
 
 impl From<TopologyEvent> for BootnodeEvent {
     fn from(event: TopologyEvent) -> Self {
-        BootnodeEvent::Topology(event)
+        BootnodeEvent::Topology(Box::new(event))
     }
 }
 
@@ -145,9 +149,22 @@ impl<N: SwarmNodeTypes> BootNode<N> {
     pub async fn run(mut self) -> Result<()> {
         info!("Starting bootnode event loop");
 
+        // Get reference to Kademlia's dial notify outside the loop
+        // to avoid borrow conflicts with &mut self.base.swarm
+        let kademlia = self.base.kademlia.clone();
+
         loop {
-            if let Some(event) = self.base.swarm.next().await {
-                self.handle_swarm_event(event);
+            tokio::select! {
+                event = self.base.swarm.next() => {
+                    if let Some(event) = event {
+                        self.handle_swarm_event(event);
+                    }
+                }
+
+                // Kademlia signals when it has dial candidates ready
+                _ = kademlia.dial_notify().notified() => {
+                    self.base.dial_connection_candidates();
+                }
             }
         }
     }
@@ -165,9 +182,9 @@ impl<N: SwarmNodeTypes> BootNode<N> {
             BootnodeEvent::Identify(boxed_event) => {
                 Self::handle_identify_event(*boxed_event);
             }
-            BootnodeEvent::Topology(event) => {
+            BootnodeEvent::Topology(boxed_event) => {
                 // Bootnodes don't activate any client handler on peer auth
-                self.base.handle_topology_event(event, |_, _, _, _| {});
+                self.base.handle_topology_event(*boxed_event, |_, _, _| {});
             }
         }
     }
@@ -249,7 +266,7 @@ impl<N: SwarmNodeTypes> BootNodeBuilder<N> {
     }
 
     /// Set the peer store.
-    pub fn with_peer_store(mut self, store: Arc<dyn PeerStore>) -> Self {
+    pub fn with_peer_store(mut self, store: Arc<PeerStore>) -> Self {
         self.config.peer_store = Some(store);
         self
     }
@@ -261,9 +278,10 @@ impl<N: SwarmNodeTypes> BootNodeBuilder<N> {
         let infra = BuiltInfrastructure::from_config(self.config)?;
 
         let identity_for_behaviour = infra.identity.clone();
+        let peer_manager_for_behaviour = infra.peer_manager.clone();
         let idle_timeout = infra.idle_timeout;
 
-        let swarm = SwarmBuilder::with_new_identity()
+        let mut swarm = SwarmBuilder::with_new_identity()
             .with_tokio()
             .with_tcp(
                 tcp::Config::default(),
@@ -275,10 +293,18 @@ impl<N: SwarmNodeTypes> BootNodeBuilder<N> {
                 Ok(BootnodeBehaviour::new(
                     keypair.public().clone(),
                     identity_for_behaviour.clone(),
+                    peer_manager_for_behaviour.clone(),
                 ))
             })?
             .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(idle_timeout))
             .build();
+
+        // Enable gossip with depth provider from kademlia
+        let kademlia_for_depth = infra.kademlia.clone();
+        swarm.behaviour_mut().topology.enable_gossip(
+            vertex_swarm_topology::HiveGossipConfig::default(),
+            Arc::new(move || kademlia_for_depth.depth()),
+        );
 
         let local_peer_id = *swarm.local_peer_id();
         info!(%local_peer_id, "Bootnode peer ID");

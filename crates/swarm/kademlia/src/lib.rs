@@ -36,16 +36,16 @@ mod config;
 mod pslice;
 
 pub use config::{
-    DEFAULT_LOW_WATERMARK, DEFAULT_MANAGE_INTERVAL, DEFAULT_MAX_CONNECT_ATTEMPTS,
-    DEFAULT_MAX_NEIGHBOR_ATTEMPTS, DEFAULT_MAX_PENDING_CONNECTIONS, DEFAULT_OVERSATURATION_PEERS,
-    DEFAULT_SATURATION_PEERS, KademliaConfig,
+    DEFAULT_CLIENT_RESERVED_SLOTS, DEFAULT_HIGH_WATERMARK, DEFAULT_LOW_WATERMARK,
+    DEFAULT_MANAGE_INTERVAL, DEFAULT_MAX_CONNECT_ATTEMPTS, DEFAULT_MAX_NEIGHBOR_ATTEMPTS,
+    DEFAULT_MAX_PENDING_CONNECTIONS, DEFAULT_SATURATION_PEERS, KademliaConfig,
 };
 pub use pslice::{MAX_PO, PSlice};
 
 use nectar_primitives::ChunkAddress;
 use parking_lot::Mutex;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::{
         Arc,
         atomic::{AtomicU8, Ordering},
@@ -77,6 +77,9 @@ pub struct KademliaTopology<I: SwarmIdentity> {
     /// Peers we're currently trying to connect to (dial in progress).
     pending_connections: Mutex<HashSet<OverlayAddress>>,
 
+    /// Connection failure counts per peer.
+    connection_failures: Mutex<HashMap<OverlayAddress, u32>>,
+
     /// Current neighborhood depth.
     depth: AtomicU8,
 
@@ -85,6 +88,9 @@ pub struct KademliaTopology<I: SwarmIdentity> {
 
     /// Notifier to wake the manage loop.
     manage_notify: Arc<Notify>,
+
+    /// Notifier to signal dial requests are available.
+    dial_notify: Arc<Notify>,
 
     /// Peers we should try to connect to (updated by manage loop).
     connection_candidates: Mutex<Vec<OverlayAddress>>,
@@ -111,9 +117,11 @@ impl<I: SwarmIdentity> KademliaTopology<I> {
             known_peers: PSlice::new(),
             connected_peers: PSlice::new(),
             pending_connections: Mutex::new(HashSet::new()),
+            connection_failures: Mutex::new(HashMap::new()),
             depth: AtomicU8::new(0),
             config,
             manage_notify: Arc::new(Notify::new()),
+            dial_notify: Arc::new(Notify::new()),
             connection_candidates: Mutex::new(Vec::new()),
         })
     }
@@ -204,7 +212,17 @@ impl<I: SwarmIdentity> KademliaTopology<I> {
                 pending = pending_count,
                 "evaluated connection candidates"
             );
+            // Notify waiters that dial candidates are available
+            self.dial_notify.notify_waiters();
         }
+    }
+
+    /// Get a reference to the dial notify.
+    ///
+    /// The event loop should call `dial_notify().notified().await` to wait for
+    /// connection candidates, then call `peers_to_connect()` to get them.
+    pub fn dial_notify(&self) -> &Notify {
+        &self.dial_notify
     }
 
     /// Add neighbor connection candidates.
@@ -238,6 +256,10 @@ impl<I: SwarmIdentity> KademliaTopology<I> {
                 continue; // Bin saturated
             }
 
+            if self.should_skip_for_failures(&peer) {
+                continue; // Too many connection failures
+            }
+
             candidates.push(peer);
         }
     }
@@ -263,9 +285,12 @@ impl<I: SwarmIdentity> KademliaTopology<I> {
                 continue; // Bin already saturated
             }
 
-            // Find known peers in this bin that aren't connected or pending
+            // Find known peers in this bin that aren't connected, pending, or failed too many times
             for peer in self.known_peers.peers_in_bin(po) {
-                if !self.connected_peers.exists(&peer) && !pending.contains(&peer) {
+                if !self.connected_peers.exists(&peer)
+                    && !pending.contains(&peer)
+                    && !self.should_skip_for_failures(&peer)
+                {
                     candidates.push(peer);
                     // Only add one candidate per unsaturated bin per cycle
                     break;
@@ -309,7 +334,59 @@ impl<I: SwarmIdentity> KademliaTopology<I> {
     /// Call this when a dial fails to allow future connection attempts.
     pub fn connection_failed(&self, peer: &OverlayAddress) {
         self.pending_connections.lock().remove(peer);
-        trace!(%peer, "removed peer from pending connections");
+
+        // Track connection failures
+        let mut failures = self.connection_failures.lock();
+        let count = failures.entry(*peer).or_insert(0);
+        *count += 1;
+
+        let po = self.proximity(peer);
+        let is_neighbor = po >= self.depth();
+        let max_attempts = if is_neighbor {
+            self.config.max_neighbor_attempts
+        } else {
+            self.config.max_connect_attempts
+        };
+
+        if *count >= max_attempts as u32 {
+            // Prune from known_peers after too many failures
+            if self.known_peers.remove(peer) {
+                debug!(
+                    %peer,
+                    po,
+                    failures = *count,
+                    max_attempts,
+                    "pruned peer from known_peers after max connection attempts"
+                );
+            }
+            // Clean up failure tracking
+            failures.remove(peer);
+        } else {
+            trace!(
+                %peer,
+                po,
+                failures = *count,
+                max_attempts,
+                "recorded connection failure"
+            );
+        }
+    }
+
+    /// Check if a peer has too many connection failures to retry.
+    fn should_skip_for_failures(&self, peer: &OverlayAddress) -> bool {
+        let failures = self.connection_failures.lock();
+        if let Some(&count) = failures.get(peer) {
+            let po = self.proximity(peer);
+            let is_neighbor = po >= self.depth();
+            let max_attempts = if is_neighbor {
+                self.config.max_neighbor_attempts
+            } else {
+                self.config.max_connect_attempts
+            };
+            count >= max_attempts as u32
+        } else {
+            false
+        }
     }
 
     /// Get the number of pending connections.
@@ -425,21 +502,24 @@ impl<I: SwarmIdentity> SwarmTopology for KademliaTopology<I> {
     }
 
     fn pick(&self, peer: &OverlayAddress, is_full_node: bool) -> bool {
-        // Always accept light nodes
-        if !is_full_node {
-            return true;
-        }
-
         let po = self.proximity(peer);
         let bin_size = self.connected_peers.bin_size(po);
 
-        // Accept if the bin isn't oversaturated
-        bin_size < self.config.oversaturation_peers
+        if is_full_node {
+            // Full nodes are limited by the high watermark
+            bin_size < self.config.high_watermark
+        } else {
+            // Light (client) nodes can use reserved slots above the high watermark
+            bin_size < self.config.max_peers_per_bin()
+        }
     }
 
     fn connected(&self, peer: OverlayAddress) {
         // Remove from pending (connection succeeded)
         self.pending_connections.lock().remove(&peer);
+
+        // Reset failure counter on successful connection
+        self.connection_failures.lock().remove(&peer);
 
         let po = self.proximity(&peer);
 
@@ -665,7 +745,7 @@ mod tests {
     #[test]
     fn test_pick_decision() {
         let base = addr_from_byte(0x00);
-        let config = KademliaConfig::default().with_oversaturation_peers(2);
+        let config = KademliaConfig::default().with_high_watermark(2);
         let topology = make_topology(base, config);
 
         let peer1 = addr_from_byte(0x80); // PO 0

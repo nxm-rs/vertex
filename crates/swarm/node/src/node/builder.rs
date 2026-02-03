@@ -24,7 +24,7 @@ pub struct BuilderConfig<N: SwarmNodeTypes> {
     pub bootnodes: Vec<Multiaddr>,
     pub idle_timeout: Duration,
     pub kademlia_config: KademliaConfig,
-    pub peer_store: Option<Arc<dyn PeerStore>>,
+    pub peer_store: Option<Arc<PeerStore>>,
     pub nat_addrs: Vec<Multiaddr>,
     pub nat_auto: bool,
 }
@@ -130,9 +130,12 @@ impl<N: SwarmNodeTypes> BuiltInfrastructure<N> {
 
         let (discovery_tx, discovery_rx) = discovery_channel();
         let pm_for_consumer = peer_manager.clone();
-        executor.spawn(async move {
-            run_peer_store_consumer(pm_for_consumer, discovery_rx).await;
-        });
+        executor.spawn_with_graceful_shutdown_signal(
+            "peer_store_consumer",
+            |shutdown| async move {
+                run_peer_store_consumer(pm_for_consumer, discovery_rx, shutdown).await;
+            },
+        );
 
         let bootnode_connector = BootnodeConnector::new(config.bootnodes);
 

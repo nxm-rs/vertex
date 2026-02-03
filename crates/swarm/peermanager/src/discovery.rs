@@ -10,8 +10,9 @@
 use std::sync::Arc;
 
 use tokio::sync::broadcast;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 use vertex_swarm_peer::SwarmPeer;
+use vertex_tasks::GracefulShutdown;
 
 use crate::PeerManager;
 
@@ -34,63 +35,84 @@ pub fn discovery_channel() -> (DiscoverySender, DiscoveryReceiver) {
     (tx, rx)
 }
 
-/// Run the peer store consumer task.
+/// Run the peer store consumer task with graceful shutdown support.
 ///
 /// This task receives discovered peers from the channel and persists them
-/// to the peer store. It runs until the channel is closed (sender dropped).
+/// to the peer store. It runs until either:
+/// - The channel is closed (sender dropped)
+/// - The graceful shutdown signal is received
 ///
-/// # Arguments
-///
-/// * `peer_manager` - The peer manager with an attached store
-/// * `rx` - Receiver for discovered peer events
-pub async fn run_peer_store_consumer(peer_manager: Arc<PeerManager>, mut rx: DiscoveryReceiver) {
+/// On exit, flushes all pending peers and saves the complete peer state.
+pub async fn run_peer_store_consumer(
+    peer_manager: Arc<PeerManager>,
+    mut rx: DiscoveryReceiver,
+    shutdown: GracefulShutdown,
+) {
     debug!("peer store consumer task started");
 
     let mut batch: Vec<SwarmPeer> = Vec::with_capacity(64);
     let mut persist_count = 0u64;
 
+    // Pin the shutdown future for use in select
+    tokio::pin!(shutdown);
+
     loop {
-        // Try to receive, batching multiple events if available
-        match rx.recv().await {
-            Ok(peer) => {
-                batch.push(peer);
+        tokio::select! {
+            biased;
 
-                // Drain any additional pending events (non-blocking)
-                while let Ok(peer) = rx.try_recv() {
-                    batch.push(peer);
-                    if batch.len() >= 64 {
-                        break;
-                    }
-                }
-
-                // Persist the batch
-                if !batch.is_empty() {
-                    trace!(count = batch.len(), "persisting discovered peers batch");
-                    peer_manager.store_hive_peers_batch(batch.drain(..));
-                    persist_count += batch.len() as u64;
-                }
-            }
-            Err(broadcast::error::RecvError::Closed) => {
-                debug!(
-                    total_persisted = persist_count,
-                    "peer discovery channel closed, consumer task exiting"
-                );
+            // Check for shutdown signal first
+            _guard = &mut shutdown => {
+                debug!("peer store consumer received shutdown signal");
                 break;
             }
-            Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                warn!(
-                    skipped,
-                    "peer store consumer lagged, some peers may not be persisted"
-                );
-                // Continue processing - we'll catch up
+
+            // Then try to receive peers
+            result = rx.recv() => {
+                match result {
+                    Ok(peer) => {
+                        batch.push(peer);
+
+                        // Drain any additional pending events (non-blocking)
+                        while let Ok(peer) = rx.try_recv() {
+                            batch.push(peer);
+                            if batch.len() >= 64 {
+                                break;
+                            }
+                        }
+
+                        // Persist the batch
+                        if !batch.is_empty() {
+                            trace!(count = batch.len(), "persisting discovered peers batch");
+                            peer_manager.store_hive_peers_batch(batch.drain(..));
+                            persist_count += batch.len() as u64;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        debug!(
+                            total_persisted = persist_count,
+                            "peer discovery channel closed"
+                        );
+                        break;
+                    }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(
+                            skipped,
+                            "peer store consumer lagged, some peers may not be persisted"
+                        );
+                        // Continue processing - we'll catch up
+                    }
+                }
             }
         }
     }
 
-    // Final flush
-    if let Err(e) = peer_manager.flush() {
-        warn!(error = %e, "failed to flush peer store on consumer exit");
-    } else {
-        debug!("peer store flushed on consumer exit");
+    // Save all peers and flush on exit
+    match peer_manager.save_all_to_store() {
+        Ok(count) => {
+            info!(count, "saved all peers on shutdown");
+        }
+        Err(e) => {
+            warn!(error = %e, "failed to save peers on shutdown");
+        }
     }
 }

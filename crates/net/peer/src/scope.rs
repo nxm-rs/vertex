@@ -1,18 +1,10 @@
-//! IP address scope classification for smart address selection.
-//!
-//! This module provides utilities to classify IP addresses by scope (loopback,
-//! private, link-local, public) and determine subnet membership. These utilities
-//! are used by the [`AddressManager`](super::AddressManager) to select appropriate
-//! addresses to advertise based on the connecting peer's network scope.
+//! IP address scope classification and subnet utilities.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use libp2p::Multiaddr;
 
-/// Classification of IP address scope for smart address selection.
-///
-/// Used to determine which addresses to advertise based on the scope
-/// of the connecting peer.
+/// Classification of IP address scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddressScope {
     /// Loopback addresses (127.0.0.0/8, ::1)
@@ -25,9 +17,7 @@ pub enum AddressScope {
     Public,
 }
 
-/// Extract the IP address from a multiaddr.
-///
-/// Returns `None` if the multiaddr doesn't contain an IP protocol.
+/// Extract the IP address from a multiaddr, if any.
 pub fn extract_ip(addr: &Multiaddr) -> Option<IpAddr> {
     use libp2p::multiaddr::Protocol;
 
@@ -90,21 +80,12 @@ fn classify_ipv6(ip: Ipv6Addr) -> Option<AddressScope> {
     }
 }
 
-/// Classify the scope of an address in a multiaddr.
-///
-/// Returns `None` if the multiaddr doesn't contain an IP address or
-/// if the IP is unspecified (0.0.0.0, ::).
+/// Classify the scope of the IP in a multiaddr.
 pub fn classify_multiaddr(addr: &Multiaddr) -> Option<AddressScope> {
     extract_ip(addr).and_then(classify_ip)
 }
 
-/// Check if two multiaddrs are on the same local network.
-///
-/// This queries the system's network interfaces to determine which subnets
-/// we're directly connected to, then checks if both addresses fall within
-/// the same directly-connected subnet.
-///
-/// Returns `false` if either address doesn't contain an IP or they use different IP versions.
+/// Check if two multiaddrs are on the same directly-connected subnet.
 pub fn same_subnet(addr1: &Multiaddr, addr2: &Multiaddr) -> bool {
     let ip1 = match extract_ip(addr1) {
         Some(ip) => ip,
@@ -116,6 +97,104 @@ pub fn same_subnet(addr1: &Multiaddr, addr2: &Multiaddr) -> bool {
     };
 
     crate::local_network::is_on_same_local_network(ip1, ip2)
+}
+
+/// IP version of an address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IpVersion {
+    /// IPv4 address
+    V4,
+    /// IPv6 address
+    V6,
+}
+
+/// IP connectivity capabilities (IPv4, IPv6, or both).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum IpCapability {
+    /// No IP connectivity (not listening on any IP addresses).
+    #[default]
+    None,
+    /// IPv4 only - can only reach IPv4 peers.
+    V4Only,
+    /// IPv6 only - can only reach IPv6 peers.
+    V6Only,
+    /// Dual-stack - can reach both IPv4 and IPv6 peers.
+    Both,
+}
+
+impl IpCapability {
+    /// Compute capability from a set of listen addresses.
+    pub fn from_addrs<'a>(addrs: impl IntoIterator<Item = &'a Multiaddr>) -> Self {
+        let mut has_v4 = false;
+        let mut has_v6 = false;
+
+        for addr in addrs {
+            match ip_version(addr) {
+                Some(IpVersion::V4) => has_v4 = true,
+                Some(IpVersion::V6) => has_v6 = true,
+                None => {}
+            }
+            // Early exit if we already have both
+            if has_v4 && has_v6 {
+                return Self::Both;
+            }
+        }
+
+        match (has_v4, has_v6) {
+            (true, true) => Self::Both,
+            (true, false) => Self::V4Only,
+            (false, true) => Self::V6Only,
+            (false, false) => Self::None,
+        }
+    }
+
+    /// Check if we can reach an address with the given IP version.
+    pub fn can_reach(&self, version: IpVersion) -> bool {
+        match (self, version) {
+            (Self::None, _) => false,
+            (Self::V4Only, IpVersion::V4) => true,
+            (Self::V4Only, IpVersion::V6) => false,
+            (Self::V6Only, IpVersion::V4) => false,
+            (Self::V6Only, IpVersion::V6) => true,
+            (Self::Both, _) => true,
+        }
+    }
+
+    /// Check if we can reach a multiaddr (DNS addresses are assumed reachable).
+    pub fn can_reach_addr(&self, addr: &Multiaddr) -> bool {
+        match ip_version(addr) {
+            Some(version) => self.can_reach(version),
+            None => true, // DNS or other - assume reachable
+        }
+    }
+
+    /// Check if we support IPv4.
+    pub fn supports_ipv4(&self) -> bool {
+        matches!(self, Self::V4Only | Self::Both)
+    }
+
+    /// Check if we support IPv6.
+    pub fn supports_ipv6(&self) -> bool {
+        matches!(self, Self::V6Only | Self::Both)
+    }
+}
+
+/// Get the IP version of a multiaddr, if any.
+pub fn ip_version(addr: &Multiaddr) -> Option<IpVersion> {
+    extract_ip(addr).map(|ip| match ip {
+        IpAddr::V4(_) => IpVersion::V4,
+        IpAddr::V6(_) => IpVersion::V6,
+    })
+}
+
+/// Check if a multiaddr contains an IPv4 address.
+pub fn is_ipv4(addr: &Multiaddr) -> bool {
+    ip_version(addr) == Some(IpVersion::V4)
+}
+
+/// Check if a multiaddr contains an IPv6 address.
+pub fn is_ipv6(addr: &Multiaddr) -> bool {
+    ip_version(addr) == Some(IpVersion::V6)
 }
 
 #[cfg(test)]

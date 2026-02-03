@@ -6762,6 +6762,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "vertex-net-peer"
+version = "0.1.0"
+dependencies = [
+ "ipnet",
+ "libp2p",
+ "lru 0.16.3",
+ "netdev",
+ "parking_lot",
+ "serde",
+ "tokio",
+ "tracing",
+ "web-time",
+]
+
+[[package]]
+name = "vertex-net-peers"
+version = "0.1.0"
+dependencies = [
+ "auto_impl",
+ "libp2p",
+ "lru 0.16.3",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "web-time",
+]
+
+[[package]]
 name = "vertex-net-pingpong"
 version = "0.1.0"
 dependencies = [
@@ -7269,10 +7301,8 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "auto_impl",
- "ipnet",
  "libp2p",
  "lru 0.16.3",
- "netdev",
  "parking_lot",
  "serde",
  "serde_json",
@@ -7280,8 +7310,11 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "vertex-net-peer",
+ "vertex-net-peers",
  "vertex-swarm-peer",
  "vertex-swarm-primitives",
+ "vertex-tasks",
  "web-time",
 ]
 

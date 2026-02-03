@@ -8,7 +8,7 @@ use nectar_primitives::SwarmAddress;
 use tracing::{debug, info, trace, warn};
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeTypes, SwarmTopology};
 use vertex_swarm_kademlia::KademliaTopology;
-use vertex_swarm_peermanager::{AddressManager, DiscoverySender, InternalPeerManager, PeerManager};
+use vertex_swarm_peermanager::{AddressManager, DiscoverySender, PeerManager};
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_topology::{BootnodeConnector, TopologyEvent, is_dnsaddr};
 
@@ -169,9 +169,8 @@ impl<N: SwarmNodeTypes, B: NetworkBehaviour> BaseNode<N, B> {
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                 if let Some(peer_id) = peer_id {
                     warn!(%peer_id, %error, "Outgoing connection error");
-                    if let Some(overlay) = self.peer_manager.on_peer_disconnected(&peer_id) {
-                        self.kademlia.connection_failed(&overlay);
-                    }
+                    // Connection failed before handshake, so no peer_manager mapping exists.
+                    // Kademlia gets updated via dial_connection_candidates tracking.
                 } else {
                     warn!(%error, "Outgoing connection error (unknown peer)");
                 }
@@ -183,58 +182,48 @@ impl<N: SwarmNodeTypes, B: NetworkBehaviour> BaseNode<N, B> {
     }
 
     /// Handle topology event. Callback is invoked on peer authentication.
+    ///
+    /// The behaviour has already updated the PeerManager; we just need to
+    /// update kademlia and invoke the callback.
     pub(crate) fn handle_topology_event(
         &mut self,
         event: TopologyEvent,
-        on_peer_authenticated: impl FnOnce(&mut Self, PeerId, OverlayAddress, bool),
+        on_peer_authenticated: impl FnOnce(&mut Self, OverlayAddress, bool),
     ) {
         match event {
             TopologyEvent::PeerAuthenticated {
-                peer_id,
-                connection_id: _,
-                info,
+                peer,
+                is_full_node,
+                welcome_message: _,
             } => {
-                let overlay = OverlayAddress::new((*info.swarm_peer.overlay()).into());
-                let is_full_node = info.full_node;
+                let overlay = OverlayAddress::from(*peer.overlay());
+                debug!(%overlay, %is_full_node, "Peer authenticated");
 
-                debug!(%peer_id, %overlay, %is_full_node, "Peer authenticated after handshake");
-
-                self.peer_manager
-                    .on_peer_ready(peer_id, overlay, is_full_node);
                 self.kademlia.connected(overlay);
-                on_peer_authenticated(self, peer_id, overlay, is_full_node);
+                on_peer_authenticated(self, overlay, is_full_node);
             }
-            TopologyEvent::PeerConnectionClosed { peer_id } => {
-                if let Some(overlay) = self.peer_manager.on_peer_disconnected(&peer_id) {
-                    debug!(%peer_id, %overlay, "Peer disconnected");
-                    self.kademlia.disconnected(&overlay);
-                } else {
-                    debug!(%peer_id, "Peer disconnected (overlay unknown)");
-                }
+            TopologyEvent::PeerConnectionClosed { overlay } => {
+                debug!(%overlay, "Peer disconnected");
+                self.kademlia.disconnected(&overlay);
             }
             TopologyEvent::HivePeersReceived { from, peers } => {
                 debug!(%from, count = peers.len(), "Received peers via hive");
 
-                let mut overlays = Vec::with_capacity(peers.len());
-                let mut multiaddr_entries = Vec::with_capacity(peers.len());
-
+                // Send all peers to discovery channel for persistence (includes non-dialable)
                 for peer in &peers {
-                    let overlay = OverlayAddress::from(*peer.overlay());
-                    overlays.push(overlay);
-                    multiaddr_entries.push((overlay, peer.multiaddrs().to_vec()));
-                }
-
-                self.peer_manager.cache_multiaddrs_batch(multiaddr_entries);
-
-                for peer in peers {
-                    if let Err(e) = self.discovery_tx.send(peer) {
+                    if let Err(e) = self.discovery_tx.send(peer.clone()) {
                         trace!(error = %e, "discovery channel full or closed");
                     }
                 }
 
-                self.kademlia.add_peers(&overlays);
-                self.kademlia.evaluate_connections();
-                self.dial_connection_candidates();
+                // Store only dialable peers and get their overlays for Kademlia
+                let stored_overlays = self.peer_manager.store_hive_peers_batch(peers);
+
+                if !stored_overlays.is_empty() {
+                    self.kademlia.add_peers(&stored_overlays);
+                    self.kademlia.evaluate_connections();
+                    self.dial_connection_candidates();
+                }
             }
             TopologyEvent::DialFailed { address, error } => {
                 warn!(%address, %error, "Dial failed");
@@ -250,7 +239,24 @@ impl<N: SwarmNodeTypes, B: NetworkBehaviour> BaseNode<N, B> {
         let dialable = self.peer_manager.filter_dialable_candidates(&candidates);
 
         for (overlay, multiaddrs) in dialable {
-            let Some((addr, peer_id)) = multiaddrs.iter().find_map(|addr| {
+            let original_count = multiaddrs.len();
+
+            // Filter multiaddrs by IP version compatibility if we have an address manager
+            let compatible_addrs: Vec<_> = match &self.address_manager {
+                Some(mgr) => mgr.filter_dialable_addrs(&multiaddrs).cloned().collect(),
+                None => multiaddrs, // No address manager, use all addresses
+            };
+
+            if compatible_addrs.is_empty() {
+                trace!(
+                    %overlay,
+                    addr_count = original_count,
+                    "No IP-compatible multiaddrs for peer"
+                );
+                continue;
+            }
+
+            let Some((addr, peer_id)) = compatible_addrs.iter().find_map(|addr| {
                 addr.iter().find_map(|p| {
                     if let libp2p::multiaddr::Protocol::P2p(id) = p {
                         Some((addr.clone(), id))

@@ -31,8 +31,6 @@ pub trait SwarmIdentity: Clone + Send + Sync + 'static {
     fn node_type(&self) -> SwarmNodeType;
 
     /// Overlay address for Kademlia routing.
-    ///
-    /// Default computes on every call. Override to return cached value.
     fn overlay_address(&self) -> SwarmAddress {
         compute_overlay(
             &self.ethereum_address(),
