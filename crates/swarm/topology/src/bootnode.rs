@@ -9,9 +9,6 @@ use rand::seq::SliceRandom;
 const MAX_BOOTNODE_ATTEMPTS: usize = 6;
 const MIN_BOOTNODE_CONNECTIONS: usize = 1;
 
-#[allow(dead_code)]
-const BOOTNODE_CONNECT_TIMEOUT_SECS: u64 = 15;
-
 /// Bootnode connection strategy.
 #[derive(Debug, Clone)]
 pub struct BootnodeConnector {
