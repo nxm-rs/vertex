@@ -3,10 +3,9 @@
 //! The [`ChunkCache`] provides a fast in-memory cache for frequently
 //! accessed chunks, reducing disk reads.
 
-use lru::LruCache;
+use hashlink::LruCache;
 use nectar_primitives::ChunkAddress;
 use parking_lot::Mutex;
-use std::num::NonZeroUsize;
 
 /// LRU cache for chunk data.
 ///
@@ -20,7 +19,7 @@ pub struct ChunkCache {
 impl ChunkCache {
     /// Create a new cache with the given capacity.
     pub fn new(capacity: usize) -> Self {
-        let cap = NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::new(1).unwrap());
+        let cap = capacity.max(1); // Ensure at least 1
         Self {
             cache: Mutex::new(LruCache::new(cap)),
             hits: std::sync::atomic::AtomicU64::new(0),
@@ -44,19 +43,19 @@ impl ChunkCache {
     /// Put a chunk into the cache.
     pub fn put(&self, address: ChunkAddress, data: Vec<u8>) {
         let mut cache = self.cache.lock();
-        cache.put(address, data);
+        cache.insert(address, data);
     }
 
     /// Remove a chunk from the cache.
     pub fn remove(&self, address: &ChunkAddress) {
         let mut cache = self.cache.lock();
-        cache.pop(address);
+        cache.remove(address);
     }
 
     /// Check if a chunk is in the cache.
     pub fn contains(&self, address: &ChunkAddress) -> bool {
         let cache = self.cache.lock();
-        cache.contains(address)
+        cache.contains_key(address)
     }
 
     /// Get the number of cached chunks.
@@ -83,7 +82,7 @@ impl ChunkCache {
         let cache = self.cache.lock();
 
         CacheStats {
-            capacity: cache.cap().get(),
+            capacity: cache.capacity(),
             size: cache.len(),
             hits,
             misses,

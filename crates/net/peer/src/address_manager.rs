@@ -2,10 +2,9 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::num::NonZeroUsize;
 
+use hashlink::LruCache;
 use libp2p::Multiaddr;
-use lru::LruCache;
 use parking_lot::{Mutex, RwLock};
 use tracing::{debug, info, trace};
 use web_time::Instant;
@@ -59,9 +58,7 @@ impl AddressManager {
             listen_addrs: RwLock::new(Vec::new()),
             nat_addrs,
             observed_addrs: RwLock::new(HashMap::new()),
-            confirmed_cache: Mutex::new(LruCache::new(
-                NonZeroUsize::new(MAX_CONFIRMED_CACHE).unwrap(),
-            )),
+            confirmed_cache: Mutex::new(LruCache::new(MAX_CONFIRMED_CACHE)),
             nat_auto,
             confirmation_threshold: DEFAULT_CONFIRMATION_THRESHOLD,
             confirmed_ttl_secs: CONFIRMED_CACHE_TTL_SECS,
@@ -80,7 +77,7 @@ impl AddressManager {
             nat_addrs,
             observed_addrs: RwLock::new(HashMap::new()),
             confirmed_cache: Mutex::new(LruCache::new(
-                NonZeroUsize::new(MAX_CONFIRMED_CACHE).unwrap(),
+                MAX_CONFIRMED_CACHE,
             )),
             nat_auto,
             confirmation_threshold: threshold,
@@ -101,7 +98,7 @@ impl AddressManager {
             nat_addrs,
             observed_addrs: RwLock::new(HashMap::new()),
             confirmed_cache: Mutex::new(LruCache::new(
-                NonZeroUsize::new(MAX_CONFIRMED_CACHE).unwrap(),
+                MAX_CONFIRMED_CACHE,
             )),
             nat_auto,
             confirmation_threshold: threshold,
@@ -225,7 +222,7 @@ impl AddressManager {
                         observed_addr = %addr,
                         "confirmed address expired, removing from cache"
                     );
-                    cache.pop(&addr);
+                    cache.remove(&addr);
                 }
             }
         }
@@ -311,12 +308,12 @@ impl AddressManager {
             observed_addr = %addr,
             ttl_secs = self.confirmed_ttl_secs,
             cache_size = cache.len(),
-            cache_cap = cache.cap(),
+            cache_cap = cache.capacity(),
             "address added to confirmed cache"
         );
 
-        // LruCache::put automatically evicts LRU entry if at capacity
-        cache.put(addr, ConfirmedEntry { confirmed_at: now });
+        // LruCache::insert automatically evicts LRU entry if at capacity
+        cache.insert(addr, ConfirmedEntry { confirmed_at: now });
     }
 
     /// Select addresses to advertise based on peer's scope (loopback/private/public).

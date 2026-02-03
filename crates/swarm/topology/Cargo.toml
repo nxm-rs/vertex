@@ -36,7 +36,7 @@ rand.workspace = true
 tracing.workspace = true
 
 # DNS resolution (for bootnode dnsaddr resolution)
-hickory-resolver = { version = "0.25.0-alpha.5", features = ["tokio-runtime"] }
+hickory-resolver = { version = "0.25", features = ["tokio", "system-config"] }
 tokio = { workspace = true }
 
 [dev-dependencies]
