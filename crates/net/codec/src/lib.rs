@@ -1,3 +1,6 @@
+mod utils;
+pub use utils::{current_unix_timestamp, current_unix_timestamp_nanos, decode_u256_be, encode_u256_be};
+
 use std::marker::PhantomData;
 
 use bytes::BytesMut;
