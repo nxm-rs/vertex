@@ -45,10 +45,10 @@ impl HeaderedInbound for SwapInboundInner {
     }
 
     fn response_headers(&self, peer_headers: &HashMap<String, Bytes>) -> HashMap<String, Bytes> {
-        if let Some(peer_rate_bytes) = peer_headers.get(HEADER_EXCHANGE_RATE) {
-            if let Some(peer_rate) = parse_u256_bytes(peer_rate_bytes) {
-                debug!(peer_rate = %peer_rate, our_rate = %self.our_rate, "SWAP: Negotiating rate");
-            }
+        if let Some(peer_rate_bytes) = peer_headers.get(HEADER_EXCHANGE_RATE)
+            && let Some(peer_rate) = parse_u256_bytes(peer_rate_bytes)
+        {
+            debug!(peer_rate = %peer_rate, our_rate = %self.our_rate, "SWAP: Negotiating rate");
         }
         SettlementHeaders::with_rate(self.our_rate).to_headers()
     }

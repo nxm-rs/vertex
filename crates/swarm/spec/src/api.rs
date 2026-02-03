@@ -110,10 +110,10 @@ pub trait SwarmSpec: Send + Sync + Unpin + Debug + 'static {
     /// Returns `None` if all known forks are already active.
     fn next_fork_timestamp(&self, after: u64) -> Option<u64> {
         for (_, condition) in self.hardforks().forks_iter() {
-            if let ForkCondition::Timestamp(activation) = condition {
-                if activation > after {
-                    return Some(activation);
-                }
+            if let ForkCondition::Timestamp(activation) = condition
+                && activation > after
+            {
+                return Some(activation);
             }
         }
         None
@@ -204,10 +204,10 @@ impl SwarmSpec for Hive {
             .hardforks
             .forks_iter()
             .filter_map(|(_, condition)| {
-                if let ForkCondition::Timestamp(activation) = condition {
-                    if activation <= at_timestamp {
-                        return Some(activation);
-                    }
+                if let ForkCondition::Timestamp(activation) = condition
+                    && activation <= at_timestamp
+                {
+                    return Some(activation);
                 }
                 None
             })

@@ -147,14 +147,14 @@ impl<N: SwarmNodeTypes> TopologyBehaviour<N> {
             warn!(%overlay, "Cannot ping: peer not found");
             return;
         };
-        if let Some(connections) = self.peer_connections.get(&peer_id) {
-            if let Some(&connection_id) = connections.first() {
-                self.pending_actions.push_back(ToSwarm::NotifyHandler {
-                    peer_id,
-                    handler: NotifyHandler::One(connection_id),
-                    event: Command::Ping { greeting: None },
-                });
-            }
+        if let Some(connections) = self.peer_connections.get(&peer_id)
+            && let Some(&connection_id) = connections.first()
+        {
+            self.pending_actions.push_back(ToSwarm::NotifyHandler {
+                peer_id,
+                handler: NotifyHandler::One(connection_id),
+                event: Command::Ping { greeting: None },
+            });
         }
     }
 
@@ -188,15 +188,15 @@ impl<N: SwarmNodeTypes> TopologyBehaviour<N> {
             warn!(%to, "Cannot broadcast: peer not found");
             return;
         };
-        if let Some(connections) = self.peer_connections.get(&peer_id) {
-            if let Some(&connection_id) = connections.first() {
-                for chunk in peers.chunks(MAX_BATCH_SIZE) {
-                    self.pending_actions.push_back(ToSwarm::NotifyHandler {
-                        peer_id,
-                        handler: NotifyHandler::One(connection_id),
-                        event: Command::BroadcastPeers(chunk.to_vec()),
-                    });
-                }
+        if let Some(connections) = self.peer_connections.get(&peer_id)
+            && let Some(&connection_id) = connections.first()
+        {
+            for chunk in peers.chunks(MAX_BATCH_SIZE) {
+                self.pending_actions.push_back(ToSwarm::NotifyHandler {
+                    peer_id,
+                    handler: NotifyHandler::One(connection_id),
+                    event: Command::BroadcastPeers(chunk.to_vec()),
+                });
             }
         }
     }
@@ -300,15 +300,15 @@ impl<N: SwarmNodeTypes> TopologyBehaviour<N> {
                     self.pending_gossip
                         .insert(peer_id, (info.swarm_peer.clone(), is_full_node));
 
-                    if let Some(connections) = self.peer_connections.get(&peer_id) {
-                        if let Some(&connection_id) = connections.first() {
-                            self.pending_actions.push_back(ToSwarm::NotifyHandler {
-                                peer_id,
-                                handler: NotifyHandler::One(connection_id),
-                                event: Command::Ping { greeting: None },
-                            });
-                            debug!(%peer_id, %overlay, "Sent immediate health check ping");
-                        }
+                    if let Some(connections) = self.peer_connections.get(&peer_id)
+                        && let Some(&connection_id) = connections.first()
+                    {
+                        self.pending_actions.push_back(ToSwarm::NotifyHandler {
+                            peer_id,
+                            handler: NotifyHandler::One(connection_id),
+                            event: Command::Ping { greeting: None },
+                        });
+                        debug!(%peer_id, %overlay, "Sent immediate health check ping");
                     }
                 }
 
@@ -547,14 +547,14 @@ impl<N: SwarmNodeTypes> NetworkBehaviour for TopologyBehaviour<N> {
                     .insert(peer_id, (check.swarm_peer, check.is_full_node));
 
                 // Send ping to verify connection health
-                if let Some(connections) = self.peer_connections.get(&peer_id) {
-                    if let Some(&connection_id) = connections.first() {
-                        self.pending_actions.push_back(ToSwarm::NotifyHandler {
-                            peer_id,
-                            handler: NotifyHandler::One(connection_id),
-                            event: Command::Ping { greeting: None },
-                        });
-                    }
+                if let Some(connections) = self.peer_connections.get(&peer_id)
+                    && let Some(&connection_id) = connections.first()
+                {
+                    self.pending_actions.push_back(ToSwarm::NotifyHandler {
+                        peer_id,
+                        handler: NotifyHandler::One(connection_id),
+                        event: Command::Ping { greeting: None },
+                    });
                 }
             }
         }

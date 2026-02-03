@@ -105,11 +105,11 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
 
                 // Check rate limiting (1 second minimum between settlements)
                 let now = current_timestamp();
-                if let Some(&last) = self.last_settlement.get(&peer) {
-                    if now <= last {
-                        let _ = response_tx.send(Err(PseudosettleError::TooSoon));
-                        return;
-                    }
+                if let Some(&last) = self.last_settlement.get(&peer)
+                    && now <= last
+                {
+                    let _ = response_tx.send(Err(PseudosettleError::TooSoon));
+                    return;
                 }
 
                 // Store the response channel for when we get the ack
@@ -158,17 +158,17 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
 
                 // Check rate limiting
                 let now = current_timestamp();
-                if let Some(&last) = self.last_settlement.get(&peer) {
-                    if now <= last {
-                        // Too soon - ack with 0 amount
-                        let ack = PaymentAck::now(U256::ZERO);
-                        let _ = self.command_tx.send(ClientCommand::AckPseudosettle {
-                            peer,
-                            request_id,
-                            ack,
-                        });
-                        return;
-                    }
+                if let Some(&last) = self.last_settlement.get(&peer)
+                    && now <= last
+                {
+                    // Too soon - ack with 0 amount
+                    let ack = PaymentAck::now(U256::ZERO);
+                    let _ = self.command_tx.send(ClientCommand::AckPseudosettle {
+                        peer,
+                        request_id,
+                        ack,
+                    });
+                    return;
                 }
 
                 // Calculate acceptable amount based on time-based refresh
