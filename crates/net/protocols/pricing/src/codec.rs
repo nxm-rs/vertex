@@ -6,7 +6,7 @@
 //! matching Go's `big.Int.Bytes()` serialization used by Bee.
 
 use alloy_primitives::U256;
-use vertex_net_codec::{decode_u256_be, encode_u256_be, Codec, ProtoMessage, ProtocolCodecError};
+use vertex_net_codec::{Codec, ProtoMessage, ProtocolCodecError, decode_u256_be, encode_u256_be};
 
 /// Error type for pricing codec operations.
 ///

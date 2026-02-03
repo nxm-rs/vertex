@@ -9,8 +9,8 @@
 
 use alloy_primitives::U256;
 use vertex_net_codec::{
-    current_unix_timestamp_nanos, decode_u256_be, encode_u256_be, Codec, ProtoMessage,
-    ProtocolCodecError,
+    Codec, ProtoMessage, ProtocolCodecError, current_unix_timestamp_nanos, decode_u256_be,
+    encode_u256_be,
 };
 
 /// Domain-specific errors for pseudosettle protocol.

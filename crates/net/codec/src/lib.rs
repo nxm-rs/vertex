@@ -24,9 +24,12 @@ macro_rules! assert_proto_roundtrip {
     ($msg:expr) => {{
         let original = $msg;
         let proto = original.clone().into_proto();
-        let decoded = <_ as $crate::ProtoMessage>::from_proto(proto)
-            .expect("proto decoding should succeed");
-        assert_eq!(original, decoded, "roundtrip encoding should preserve message");
+        let decoded =
+            <_ as $crate::ProtoMessage>::from_proto(proto).expect("proto decoding should succeed");
+        assert_eq!(
+            original, decoded,
+            "roundtrip encoding should preserve message"
+        );
     }};
 }
 
