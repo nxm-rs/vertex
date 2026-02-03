@@ -1,0 +1,57 @@
+# cargo-deny configuration
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+targets = []
+all-features = true
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+vulnerability = "deny"
+unmaintained = "warn"
+yanked = "warn"
+notice = "warn"
+
+# Ignored advisories - build-time only dependencies that don't affect runtime
+ignore = [
+    # pb-rs (protobuf code generator) depends on clap v2 which pulls these in.
+    # These are build-time only and don't affect runtime security.
+    # Upstream issue: https://github.com/tafia/quick-protobuf/issues - needs clap v4 update
+    "RUSTSEC-2021-0139", # ansi_term unmaintained - via pb-rs -> clap v2
+    "RUSTSEC-2024-0375", # atty unmaintained - via pb-rs -> clap v2
+    "RUSTSEC-2021-0145", # atty unaligned read - via pb-rs -> clap v2 (build-time only)
+
+    # paste proc-macro is unmaintained but used by alloy-primitives & netlink-packet-*.
+    # alloy team decided: "the crate is complete and serves its purpose" (issue #897)
+    # This is compile-time only (proc-macro) with no runtime security impact.
+    # Ref: https://github.com/alloy-rs/core/issues/897
+    "RUSTSEC-2024-0436", # paste unmaintained - via alloy-primitives, netlink-packet-*
+]
+
+[licenses]
+unlicensed = "deny"
+confidence-threshold = 0.93
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+]
+copyleft = "warn"
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
