@@ -89,6 +89,6 @@ mod tests {
     #[test]
     fn test_timestamp_nanos() {
         let ts = current_unix_timestamp_nanos();
-        assert!(ts > 1700000000_000_000_000); // After 2023
+        assert!(ts > 1_700_000_000_000_000_000); // After 2023
     }
 }
