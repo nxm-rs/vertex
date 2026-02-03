@@ -89,21 +89,16 @@ impl ProtoMessage for Pong {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vertex_net_codec::assert_proto_roundtrip;
 
     #[test]
     fn test_ping_roundtrip() {
-        let original = Ping::new("hello");
-        let proto = original.clone().into_proto();
-        let decoded = Ping::from_proto(proto).unwrap();
-        assert_eq!(original, decoded);
+        assert_proto_roundtrip!(Ping::new("hello"));
     }
 
     #[test]
     fn test_pong_roundtrip() {
-        let original = Pong::new("{hello}");
-        let proto = original.clone().into_proto();
-        let decoded = Pong::from_proto(proto).unwrap();
-        assert_eq!(original, decoded);
+        assert_proto_roundtrip!(Pong::new("{hello}"));
     }
 
     #[test]

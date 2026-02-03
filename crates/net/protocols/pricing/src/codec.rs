@@ -55,13 +55,11 @@ impl ProtoMessage for AnnouncePaymentThreshold {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vertex_net_codec::assert_proto_roundtrip;
 
     #[test]
     fn test_roundtrip() {
-        let original = AnnouncePaymentThreshold::from_u64(13_500_000);
-        let proto = original.clone().into_proto();
-        let decoded = AnnouncePaymentThreshold::from_proto(proto).unwrap();
-        assert_eq!(original, decoded);
+        assert_proto_roundtrip!(AnnouncePaymentThreshold::from_u64(13_500_000));
     }
 
     #[test]
