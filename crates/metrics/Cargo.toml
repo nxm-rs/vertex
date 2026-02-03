@@ -35,6 +35,9 @@ tower-http = { version = "0.4", features = ["trace"] }
 thiserror = "1.0"
 eyre = "0.6"
 
+# Synchronization
+parking_lot = "0.12"
+
 # Misc
 once_cell = "1.17"
 chrono = "0.4"

@@ -6680,6 +6680,7 @@ dependencies = [
 name = "vertex-net-codec"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "asynchronous-codec",
  "bytes",
  "quick-protobuf",

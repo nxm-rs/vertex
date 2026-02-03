@@ -1,3 +1,38 @@
+mod utils;
+pub use utils::{
+    current_unix_timestamp, current_unix_timestamp_nanos, decode_u256_be, encode_u256_be,
+};
+
+/// Test helper macro for verifying protobuf roundtrip encoding.
+///
+/// Encodes a message to proto format and decodes it back, asserting equality.
+/// The message type must implement `ProtoMessage` and `Clone + PartialEq + Debug`.
+///
+/// # Example
+///
+/// ```ignore
+/// use vertex_net_codec::assert_proto_roundtrip;
+///
+/// #[test]
+/// fn test_my_message() {
+///     let msg = MyMessage::new(42);
+///     assert_proto_roundtrip!(msg);
+/// }
+/// ```
+#[macro_export]
+macro_rules! assert_proto_roundtrip {
+    ($msg:expr) => {{
+        let original = $msg;
+        let proto = original.clone().into_proto();
+        let decoded =
+            <_ as $crate::ProtoMessage>::from_proto(proto).expect("proto decoding should succeed");
+        assert_eq!(
+            original, decoded,
+            "roundtrip encoding should preserve message"
+        );
+    }};
+}
+
 use std::marker::PhantomData;
 
 use bytes::BytesMut;

@@ -6,6 +6,7 @@ use vertex_swarm_primitives::OverlayAddress;
 
 /// Client node capability - chunk retrieval and upload.
 #[async_trait::async_trait]
+#[auto_impl::auto_impl(&, Arc, Box)]
 pub trait SwarmClient: Send + Sync {
     /// Storage proof type (e.g., postage stamp).
     type Storage: Send + Sync + 'static;
@@ -19,6 +20,7 @@ pub trait SwarmClient: Send + Sync {
 
 /// Storer node capability - storage responsibility and sync.
 #[async_trait::async_trait]
+#[auto_impl::auto_impl(&, Arc, Box)]
 pub trait SwarmStorer: Send + Sync {
     /// Check if a chunk falls within our area of responsibility.
     fn is_responsible_for(&self, address: &ChunkAddress) -> bool;

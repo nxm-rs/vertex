@@ -105,6 +105,7 @@ impl<N: NodeTypeDefaults> SwarmNodeBuilder<N> {
 
 impl<N: NodeTypeDefaults, TB, AB, PB> SwarmNodeBuilder<N, TB, AB, PB> {
     /// Override the topology builder.
+    #[must_use]
     pub fn topology<NewTB>(self, builder: NewTB) -> SwarmNodeBuilder<N, NewTB, AB, PB> {
         SwarmNodeBuilder {
             identity: self.identity,
@@ -120,6 +121,7 @@ impl<N: NodeTypeDefaults, TB, AB, PB> SwarmNodeBuilder<N, TB, AB, PB> {
     }
 
     /// Override the accounting builder.
+    #[must_use]
     pub fn accounting<NewAB>(self, builder: NewAB) -> SwarmNodeBuilder<N, TB, NewAB, PB> {
         SwarmNodeBuilder {
             identity: self.identity,
@@ -135,6 +137,7 @@ impl<N: NodeTypeDefaults, TB, AB, PB> SwarmNodeBuilder<N, TB, AB, PB> {
     }
 
     /// Override the pricer builder.
+    #[must_use]
     pub fn pricer<NewPB>(self, builder: NewPB) -> SwarmNodeBuilder<N, TB, AB, NewPB> {
         SwarmNodeBuilder {
             identity: self.identity,
@@ -150,6 +153,7 @@ impl<N: NodeTypeDefaults, TB, AB, PB> SwarmNodeBuilder<N, TB, AB, PB> {
     }
 
     /// Override network configuration.
+    #[must_use]
     pub fn network_config(mut self, config: DefaultNetworkConfig) -> Self {
         self.network_config = config;
         self
@@ -171,6 +175,7 @@ impl<TB, AB, PB> SwarmNodeBuilder<Client, TB, AB, PB> {
     /// Build the light node configuration.
     ///
     /// Returns a `ClientNodeBuildConfig` that implements `NodeBuildsProtocol`.
+    #[must_use]
     pub fn build(self) -> ClientNodeBuildConfig {
         ClientNodeBuildConfig {
             identity: self.identity,
@@ -305,6 +310,7 @@ impl<TB, AB, PB> SwarmNodeBuilder<Storer, TB, AB, PB> {
 
 impl<TB, AB, PB> SwarmNodeBuilder<Bootnode, TB, AB, PB> {
     /// Build the bootnode configuration.
+    #[must_use]
     pub fn build(self) -> BootnodeBuildConfig {
         BootnodeBuildConfig {
             identity: self.identity,

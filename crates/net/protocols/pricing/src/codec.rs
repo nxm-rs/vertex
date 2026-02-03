@@ -6,7 +6,7 @@
 //! matching Go's `big.Int.Bytes()` serialization used by Bee.
 
 use alloy_primitives::U256;
-use vertex_net_codec::{Codec, ProtoMessage, ProtocolCodecError};
+use vertex_net_codec::{Codec, ProtoMessage, ProtocolCodecError, decode_u256_be, encode_u256_be};
 
 /// Error type for pricing codec operations.
 ///
@@ -40,27 +40,14 @@ impl ProtoMessage for AnnouncePaymentThreshold {
     type DecodeError = PricingCodecError;
 
     fn into_proto(self) -> Self::Proto {
-        // Match Go's big.Int.Bytes(): big-endian with leading zeros trimmed
-        let bytes = self.payment_threshold.to_be_bytes::<32>();
-        let trimmed = match bytes.iter().position(|&b| b != 0) {
-            Some(pos) => bytes[pos..].to_vec(),
-            None => vec![],
-        };
-
         crate::proto::pricing::AnnouncePaymentThreshold {
-            payment_threshold: trimmed,
+            payment_threshold: encode_u256_be(self.payment_threshold),
         }
     }
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
-        let threshold = if proto.payment_threshold.is_empty() {
-            U256::ZERO
-        } else {
-            U256::from_be_slice(&proto.payment_threshold)
-        };
-
         Ok(Self {
-            payment_threshold: threshold,
+            payment_threshold: decode_u256_be(&proto.payment_threshold),
         })
     }
 }
@@ -68,13 +55,11 @@ impl ProtoMessage for AnnouncePaymentThreshold {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vertex_net_codec::assert_proto_roundtrip;
 
     #[test]
     fn test_roundtrip() {
-        let original = AnnouncePaymentThreshold::from_u64(13_500_000);
-        let proto = original.clone().into_proto();
-        let decoded = AnnouncePaymentThreshold::from_proto(proto).unwrap();
-        assert_eq!(original, decoded);
+        assert_proto_roundtrip!(AnnouncePaymentThreshold::from_u64(13_500_000));
     }
 
     #[test]

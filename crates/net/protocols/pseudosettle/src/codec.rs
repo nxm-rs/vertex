@@ -8,7 +8,10 @@
 //! matching Go's `big.Int.Bytes()` serialization used by Bee.
 
 use alloy_primitives::U256;
-use vertex_net_codec::{Codec, ProtoMessage, ProtocolCodecError};
+use vertex_net_codec::{
+    Codec, ProtoMessage, ProtocolCodecError, current_unix_timestamp_nanos, decode_u256_be,
+    encode_u256_be,
+};
 
 /// Domain-specific errors for pseudosettle protocol.
 #[derive(Debug, thiserror::Error)]
@@ -40,21 +43,15 @@ impl ProtoMessage for Payment {
     type DecodeError = PseudosettleCodecError;
 
     fn into_proto(self) -> Self::Proto {
-        let bytes = self.amount.to_be_bytes::<32>();
-        let trimmed = match bytes.iter().position(|&b| b != 0) {
-            Some(pos) => bytes[pos..].to_vec(),
-            None => vec![],
-        };
-        crate::proto::pseudosettle::Payment { amount: trimmed }
+        crate::proto::pseudosettle::Payment {
+            amount: encode_u256_be(self.amount),
+        }
     }
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
-        let amount = if proto.amount.is_empty() {
-            U256::ZERO
-        } else {
-            U256::from_be_slice(&proto.amount)
-        };
-        Ok(Self { amount })
+        Ok(Self {
+            amount: decode_u256_be(&proto.amount),
+        })
     }
 }
 
@@ -72,11 +69,10 @@ impl PaymentAck {
     }
 
     pub fn now(amount: U256) -> Self {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time before unix epoch")
-            .as_nanos() as i64;
-        Self { amount, timestamp }
+        Self {
+            amount,
+            timestamp: current_unix_timestamp_nanos(),
+        }
     }
 }
 
@@ -85,25 +81,15 @@ impl ProtoMessage for PaymentAck {
     type DecodeError = PseudosettleCodecError;
 
     fn into_proto(self) -> Self::Proto {
-        let bytes = self.amount.to_be_bytes::<32>();
-        let trimmed = match bytes.iter().position(|&b| b != 0) {
-            Some(pos) => bytes[pos..].to_vec(),
-            None => vec![],
-        };
         crate::proto::pseudosettle::PaymentAck {
-            amount: trimmed,
+            amount: encode_u256_be(self.amount),
             timestamp: self.timestamp,
         }
     }
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
-        let amount = if proto.amount.is_empty() {
-            U256::ZERO
-        } else {
-            U256::from_be_slice(&proto.amount)
-        };
         Ok(Self {
-            amount,
+            amount: decode_u256_be(&proto.amount),
             timestamp: proto.timestamp,
         })
     }

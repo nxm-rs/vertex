@@ -160,17 +160,15 @@ impl ProtoMessage for Receipt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vertex_net_codec::assert_proto_roundtrip;
 
     #[test]
     fn test_delivery_roundtrip() {
-        let original = Delivery::new(
+        assert_proto_roundtrip!(Delivery::new(
             ChunkAddress::new([0x42; 32]),
             Bytes::from(vec![1, 2, 3, 4]),
             Bytes::from(vec![5, 6, 7]),
-        );
-        let proto = original.clone().into_proto();
-        let decoded = Delivery::from_proto(proto).unwrap();
-        assert_eq!(original, decoded);
+        ));
     }
 
     #[test]

@@ -102,11 +102,13 @@ pub struct NodeBuilder;
 
 impl NodeBuilder {
     /// Create a new node builder.
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
 
     /// Add launch context (executor, data directories, and API config).
+    #[must_use]
     pub fn with_launch_context<A>(
         self,
         executor: TaskExecutor,
@@ -151,6 +153,7 @@ impl<A> WithLaunchContext<A> {
     /// Provide the protocol configuration.
     ///
     /// The protocol type is inferred from the config type via [`NodeBuildsProtocol`].
+    #[must_use]
     pub fn with_protocol<C: NodeBuildsProtocol>(self, config: C) -> WithProtocol<C::Protocol, A> {
         tracing::info!("Protocol: {}", config.protocol_name());
         WithProtocol {
