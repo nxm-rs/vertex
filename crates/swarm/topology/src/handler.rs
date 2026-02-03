@@ -134,11 +134,6 @@ enum State {
     Failed,
 }
 
-#[allow(dead_code)]
-struct PendingPing {
-    sent_at: Instant,
-}
-
 /// Per-connection handler for topology protocols.
 pub struct TopologyHandler<N: SwarmNodeTypes> {
     config: TopologyConfig,
@@ -149,7 +144,6 @@ pub struct TopologyHandler<N: SwarmNodeTypes> {
     state: State,
     pending_events: VecDeque<Event>,
     pending_hive_outbound: VecDeque<Vec<SwarmPeer>>,
-    pending_ping: Option<PendingPing>,
     should_initiate_handshake: bool,
     handshake_outbound_pending: bool,
     hive_outbound_pending: bool,
@@ -174,7 +168,6 @@ impl<N: SwarmNodeTypes> TopologyHandler<N> {
             state: State::Handshaking,
             pending_events: VecDeque::new(),
             pending_hive_outbound: VecDeque::new(),
-            pending_ping: None,
             should_initiate_handshake: false,
             handshake_outbound_pending: false,
             hive_outbound_pending: false,
@@ -200,7 +193,6 @@ impl<N: SwarmNodeTypes> TopologyHandler<N> {
             state: State::Handshaking,
             pending_events: VecDeque::new(),
             pending_hive_outbound: VecDeque::new(),
-            pending_ping: None,
             should_initiate_handshake: false,
             handshake_outbound_pending: false,
             hive_outbound_pending: false,
@@ -309,7 +301,6 @@ impl<N: SwarmNodeTypes> ConnectionHandler for TopologyHandler<N> {
         {
             self.pingpong_outbound_pending = true;
             let sent_at = Instant::now();
-            self.pending_ping = Some(PendingPing { sent_at });
             let upgrade = TopologyOutboundUpgrade::pingpong(
                 self.identity.clone(),
                 self.peer_id,
@@ -397,7 +388,6 @@ impl<N: SwarmNodeTypes> ConnectionHandler for TopologyHandler<N> {
                     }
                     TopologyOutboundInfo::Pingpong { .. } => {
                         self.pingpong_outbound_pending = false;
-                        self.pending_ping = None;
                         self.pending_events
                             .push_back(Event::PingpongError(error.error.to_string()));
                     }
@@ -466,7 +456,6 @@ impl<N: SwarmNodeTypes> TopologyHandler<N> {
                 TopologyOutboundInfo::Pingpong { sent_at },
             ) => {
                 self.pingpong_outbound_pending = false;
-                self.pending_ping = None;
                 let rtt = sent_at.elapsed();
                 trace!(peer_id = %self.peer_id, rtt_ms = rtt.as_millis(), response = %pong.response, "Pong received");
                 self.pending_events.push_back(Event::PingpongPong { rtt });
