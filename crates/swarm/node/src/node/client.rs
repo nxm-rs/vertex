@@ -88,7 +88,7 @@ impl<N: SwarmNodeTypes> ClientNodeBehaviour<N> {
 /// Events from the client node behaviour.
 pub enum ClientNodeEvent {
     /// Identify protocol event.
-    Identify(identify::Event),
+    Identify(Box<identify::Event>),
     /// Topology event (peer ready, disconnected, discovered).
     Topology(TopologyEvent),
     /// Client event (pricing, retrieval, pushsync).
@@ -97,7 +97,7 @@ pub enum ClientNodeEvent {
 
 impl From<identify::Event> for ClientNodeEvent {
     fn from(event: identify::Event) -> Self {
-        ClientNodeEvent::Identify(event)
+        ClientNodeEvent::Identify(Box::new(event))
     }
 }
 
@@ -258,7 +258,7 @@ impl<N: SwarmNodeTypes> ClientNode<N> {
     fn handle_behaviour_event(&mut self, event: ClientNodeEvent) {
         match event {
             ClientNodeEvent::Identify(event) => {
-                Self::handle_identify_event(event);
+                Self::handle_identify_event(*event);
             }
             ClientNodeEvent::Topology(event) => {
                 self.handle_topology_event(event);

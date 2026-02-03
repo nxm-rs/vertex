@@ -137,10 +137,10 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> NetPeerManager<I
         }
 
         // Prune if at capacity (before adding new peer)
-        if let Some(max) = self.config.max_peers {
-            if peers.len() >= max {
-                self.prune_one_peer(&mut peers);
-            }
+        if let Some(max) = self.config.max_peers
+            && peers.len() >= max
+        {
+            self.prune_one_peer(&mut peers);
         }
 
         // Create new peer state

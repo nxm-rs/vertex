@@ -5,8 +5,7 @@
 
 use std::collections::HashSet;
 
-use hickory_resolver::TokioResolver;
-use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+use hickory_resolver::Resolver;
 use libp2p::Multiaddr;
 use libp2p::multiaddr::Protocol;
 use tracing::{debug, warn};
@@ -104,7 +103,11 @@ fn resolve_recursive<'a>(
         }
         seen.insert(cache_key.clone());
 
-        let resolver = TokioResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
+        let resolver = Resolver::builder_tokio()
+            .map_err(|e| {
+                DnsaddrResolveError::DnsLookup(format!("Failed to create resolver: {}", e))
+            })?
+            .build();
 
         let txt_name = format!("_dnsaddr.{}", domain);
         debug!(name = %txt_name, "Querying DNS TXT records");

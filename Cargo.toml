@@ -1,7 +1,7 @@
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.87"
+rust-version = "1.91"
 authors = ["Nexum Contributors"]
 license = "AGPL-3.0-or-later"
 homepage = "https://nxm-rs.github.io/vertex"
@@ -187,7 +187,7 @@ opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
 
 ## p2p
-libp2p = { version = "0.55.0", features = [
+libp2p = { version = "0.56.0", features = [
     "tokio",
     "noise",
     "tcp",
@@ -203,8 +203,8 @@ libp2p = { version = "0.55.0", features = [
 quick-protobuf = "0.8"
 quick-protobuf-codec = "0.3.1"
 asynchronous-codec = "0.7.0"
-libp2p-swarm = "0.46.0"
-libp2p-swarm-test = "0.5.0"
+libp2p-swarm = "0.47.1"
+libp2p-swarm-test = "0.6.0"
 quickcheck = "1.0.3"
 pb-rs = "0.10"
 walkdir = "2.5.0"
@@ -240,7 +240,7 @@ proptest-derive = "0.5"
 metrics = "0.24"
 
 # caching
-lru = "0.16"
+hashlink = "0.10"
 web-time = "1.1"
 
 # networking

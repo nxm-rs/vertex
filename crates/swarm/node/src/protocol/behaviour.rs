@@ -341,17 +341,16 @@ impl ClientBehaviour {
                 request_id,
             } => {
                 // Route to pseudosettle service if configured
-                if let Some(tx) = &self.pseudosettle_event_tx {
-                    if tx
+                if let Some(tx) = &self.pseudosettle_event_tx
+                    && tx
                         .send(PseudosettleEvent::Received {
                             peer: overlay,
                             amount,
                             request_id,
                         })
                         .is_err()
-                    {
-                        warn!(%overlay, "Pseudosettle event channel closed");
-                    }
+                {
+                    warn!(%overlay, "Pseudosettle event channel closed");
                 }
                 self.pending_events.push_back(ToSwarm::GenerateEvent(
                     ClientEvent::PseudosettleReceived {
@@ -364,16 +363,15 @@ impl ClientBehaviour {
             }
             HandlerEvent::PseudosettleSent { overlay, ack } => {
                 // Route to pseudosettle service if configured
-                if let Some(tx) = &self.pseudosettle_event_tx {
-                    if tx
+                if let Some(tx) = &self.pseudosettle_event_tx
+                    && tx
                         .send(PseudosettleEvent::Sent {
                             peer: overlay,
                             ack: ack.clone(),
                         })
                         .is_err()
-                    {
-                        warn!(%overlay, "Pseudosettle event channel closed");
-                    }
+                {
+                    warn!(%overlay, "Pseudosettle event channel closed");
                 }
                 self.pending_events.push_back(ToSwarm::GenerateEvent(
                     ClientEvent::PseudosettleSent {
@@ -389,17 +387,16 @@ impl ClientBehaviour {
                 peer_rate,
             } => {
                 // Route to swap service if configured
-                if let Some(tx) = &self.swap_event_tx {
-                    if tx
+                if let Some(tx) = &self.swap_event_tx
+                    && tx
                         .send(SwapEvent::ChequeReceived {
                             peer: overlay,
                             cheque: cheque.clone(),
                             peer_rate,
                         })
                         .is_err()
-                    {
-                        warn!(%overlay, "Swap event channel closed");
-                    }
+                {
+                    warn!(%overlay, "Swap event channel closed");
                 }
                 self.pending_events.push_back(ToSwarm::GenerateEvent(
                     ClientEvent::ChequeReceived {
@@ -412,16 +409,15 @@ impl ClientBehaviour {
             }
             HandlerEvent::ChequeSent { overlay, peer_rate } => {
                 // Route to swap service if configured
-                if let Some(tx) = &self.swap_event_tx {
-                    if tx
+                if let Some(tx) = &self.swap_event_tx
+                    && tx
                         .send(SwapEvent::ChequeSent {
                             peer: overlay,
                             peer_rate,
                         })
                         .is_err()
-                    {
-                        warn!(%overlay, "Swap event channel closed");
-                    }
+                {
+                    warn!(%overlay, "Swap event channel closed");
                 }
                 self.pending_events
                     .push_back(ToSwarm::GenerateEvent(ClientEvent::ChequeSent {
@@ -462,20 +458,18 @@ impl NetworkBehaviour for ClientBehaviour {
     }
 
     fn on_swarm_event(&mut self, event: FromSwarm<'_>) {
-        if let FromSwarm::ConnectionClosed(info) = event {
+        if let FromSwarm::ConnectionClosed(info) = event
+            && info.remaining_established == 0
+            && let Some(overlay) = self.peer_overlays.remove(&info.peer_id)
+        {
             // Clean up peer tracking if last connection
-            if info.remaining_established == 0 {
-                if let Some(overlay) = self.peer_overlays.remove(&info.peer_id) {
-                    self.overlay_peers.remove(&overlay);
-                    debug!(peer_id = %info.peer_id, %overlay, "Peer disconnected");
-                    self.pending_events.push_back(ToSwarm::GenerateEvent(
-                        ClientEvent::PeerDisconnected {
-                            peer_id: info.peer_id,
-                            overlay,
-                        },
-                    ));
-                }
-            }
+            self.overlay_peers.remove(&overlay);
+            debug!(peer_id = %info.peer_id, %overlay, "Peer disconnected");
+            self.pending_events
+                .push_back(ToSwarm::GenerateEvent(ClientEvent::PeerDisconnected {
+                    peer_id: info.peer_id,
+                    overlay,
+                }));
         }
     }
 

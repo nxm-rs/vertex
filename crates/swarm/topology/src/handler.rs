@@ -285,42 +285,44 @@ impl<N: SwarmNodeTypes> ConnectionHandler for TopologyHandler<N> {
         }
 
         // Process hive broadcasts
-        if self.is_ready() && !self.hive_outbound_pending {
-            if let Some(peers) = self.pending_hive_outbound.pop_front() {
-                self.hive_outbound_pending = true;
-                let upgrade = TopologyOutboundUpgrade::hive(
-                    self.identity.clone(),
-                    self.peer_id,
-                    self.remote_addr.clone(),
-                    peers,
-                );
-                return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
-                    protocol: SubstreamProtocol::new(upgrade, TopologyOutboundInfo::Hive)
-                        .with_timeout(self.config.hive_timeout),
-                });
-            }
+        if self.is_ready()
+            && !self.hive_outbound_pending
+            && let Some(peers) = self.pending_hive_outbound.pop_front()
+        {
+            self.hive_outbound_pending = true;
+            let upgrade = TopologyOutboundUpgrade::hive(
+                self.identity.clone(),
+                self.peer_id,
+                self.remote_addr.clone(),
+                peers,
+            );
+            return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
+                protocol: SubstreamProtocol::new(upgrade, TopologyOutboundInfo::Hive)
+                    .with_timeout(self.config.hive_timeout),
+            });
         }
 
         // Process ping commands
-        if self.is_ready() && !self.pingpong_outbound_pending {
-            if let Some(greeting) = self.pending_ping_command.take() {
-                self.pingpong_outbound_pending = true;
-                let sent_at = Instant::now();
-                self.pending_ping = Some(PendingPing { sent_at });
-                let upgrade = TopologyOutboundUpgrade::pingpong(
-                    self.identity.clone(),
-                    self.peer_id,
-                    self.remote_addr.clone(),
-                    greeting,
-                );
-                return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
-                    protocol: SubstreamProtocol::new(
-                        upgrade,
-                        TopologyOutboundInfo::Pingpong { sent_at },
-                    )
-                    .with_timeout(self.config.pingpong_timeout),
-                });
-            }
+        if self.is_ready()
+            && !self.pingpong_outbound_pending
+            && let Some(greeting) = self.pending_ping_command.take()
+        {
+            self.pingpong_outbound_pending = true;
+            let sent_at = Instant::now();
+            self.pending_ping = Some(PendingPing { sent_at });
+            let upgrade = TopologyOutboundUpgrade::pingpong(
+                self.identity.clone(),
+                self.peer_id,
+                self.remote_addr.clone(),
+                greeting,
+            );
+            return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
+                protocol: SubstreamProtocol::new(
+                    upgrade,
+                    TopologyOutboundInfo::Pingpong { sent_at },
+                )
+                .with_timeout(self.config.pingpong_timeout),
+            });
         }
 
         Poll::Pending

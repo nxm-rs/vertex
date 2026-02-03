@@ -18,7 +18,7 @@ tracing = { workspace = true }
 web-time = { workspace = true }
 netdev = { workspace = true }
 ipnet = { workspace = true }
-lru = { workspace = true }
+hashlink = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]

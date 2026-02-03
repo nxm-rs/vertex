@@ -132,10 +132,10 @@ where
             .merge(Serialized::defaults(Self::default()))
             .merge(Env::prefixed("VERTEX_").split("_"));
 
-        if let Some(path) = config_path {
-            if path.exists() {
-                figment = figment.merge(Toml::file(path));
-            }
+        if let Some(path) = config_path
+            && path.exists()
+        {
+            figment = figment.merge(Toml::file(path));
         }
 
         figment.extract().wrap_err("Failed to load configuration")

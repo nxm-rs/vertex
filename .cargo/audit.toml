@@ -1,0 +1,19 @@
+# cargo-audit configuration
+# https://rustsec.org/
+
+[advisories]
+# Ignored advisories - build-time only dependencies that don't affect runtime
+ignore = [
+    # pb-rs (protobuf code generator) depends on clap v2 which pulls these in.
+    # These are build-time only and don't affect runtime security.
+    # Upstream issue: https://github.com/tafia/quick-protobuf - needs clap v4 update
+    "RUSTSEC-2021-0139", # ansi_term unmaintained - via pb-rs -> clap v2
+    "RUSTSEC-2024-0375", # atty unmaintained - via pb-rs -> clap v2
+    "RUSTSEC-2021-0145", # atty unaligned read - via pb-rs -> clap v2 (build-time only)
+
+    # paste proc-macro is unmaintained but used by alloy-primitives & netlink-packet-*.
+    # alloy team decided: "the crate is complete and serves its purpose" (issue #897)
+    # This is compile-time only (proc-macro) with no runtime security impact.
+    # Ref: https://github.com/alloy-rs/core/issues/897
+    "RUSTSEC-2024-0436", # paste unmaintained - via alloy-primitives, netlink-packet-*
+]

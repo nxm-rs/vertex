@@ -551,12 +551,11 @@ impl PeerManager {
         overlay: &OverlayAddress,
         peer_state: &PeerState<OverlayAddress, SwarmExt>,
     ) {
-        if let Some(store) = &self.store {
-            if let Some(snapshot) = self.peer_state_to_snapshot(overlay, peer_state) {
-                if let Err(e) = store.save(&snapshot) {
-                    warn!(?overlay, error = %e, "failed to persist peer");
-                }
-            }
+        if let Some(store) = &self.store
+            && let Some(snapshot) = self.peer_state_to_snapshot(overlay, peer_state)
+            && let Err(e) = store.save(&snapshot)
+        {
+            warn!(?overlay, error = %e, "failed to persist peer");
         }
     }
 
@@ -744,10 +743,10 @@ impl InternalPeerManager for PeerManager {
         }
 
         // Record success for new connections
-        if result == PeerReadyResult::Accepted {
-            if let Some(peer) = self.manager.get_peer(&overlay) {
-                peer.record_success(std::time::Duration::ZERO);
-            }
+        if result == PeerReadyResult::Accepted
+            && let Some(peer) = self.manager.get_peer(&overlay)
+        {
+            peer.record_success(std::time::Duration::ZERO);
         }
 
         // Persist

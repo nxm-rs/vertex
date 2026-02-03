@@ -244,12 +244,11 @@ impl HiveGossipManager {
                     );
 
                     // Get their SwarmPeer info for notifying others
-                    if let Some(snapshot) = self.peer_manager.get_peer_snapshot(&overlay) {
-                        if let Some(swarm_peer) = snapshot.ext.peer {
-                            let peer_actions =
-                                self.handle_new_neighbor(overlay, swarm_peer, new_depth);
-                            actions.extend(peer_actions);
-                        }
+                    if let Some(snapshot) = self.peer_manager.get_peer_snapshot(&overlay)
+                        && let Some(swarm_peer) = snapshot.ext.peer
+                    {
+                        let peer_actions = self.handle_new_neighbor(overlay, swarm_peer, new_depth);
+                        actions.extend(peer_actions);
                     }
                 }
             }
@@ -349,10 +348,10 @@ impl HiveGossipManager {
             .into_iter()
             .filter(|overlay| {
                 // Exclude the target peer
-                if let Some(excluded) = exclude {
-                    if overlay == excluded {
-                        return false;
-                    }
+                if let Some(excluded) = exclude
+                    && overlay == excluded
+                {
+                    return false;
                 }
 
                 // Must be a neighbor

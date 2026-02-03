@@ -25,7 +25,7 @@ async-trait.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 
 ## caching
-lru.workspace = true
+hashlink.workspace = true
 
 ## misc
 parking_lot.workspace = true
