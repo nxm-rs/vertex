@@ -3,7 +3,7 @@
 //! This crate defines the [`RpcServer`] trait that abstracts over different
 //! RPC implementations (gRPC, JSON-RPC, etc.).
 
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
 use async_trait::async_trait;
 
@@ -52,7 +52,7 @@ impl RpcServer for NoRpcServer {
     }
 
     fn address(&self) -> SocketAddr {
-        "0.0.0.0:0".parse().unwrap()
+        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))
     }
 
     fn is_running(&self) -> bool {

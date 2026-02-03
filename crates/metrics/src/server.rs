@@ -8,10 +8,9 @@ use axum::{
     Router,
 };
 use metrics_exporter_prometheus::PrometheusHandle;
-use std::{
-    net::SocketAddr,
-    sync::{Arc, Mutex},
-};
+use std::{net::SocketAddr, sync::Arc};
+
+use parking_lot::Mutex;
 use tokio::sync::oneshot;
 use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
@@ -62,7 +61,7 @@ impl MetricsServer {
         // Create a shutdown channel
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         {
-            let mut lock = self.shutdown_tx.lock().unwrap();
+            let mut lock = self.shutdown_tx.lock();
             *lock = Some(shutdown_tx);
         }
 
@@ -88,7 +87,7 @@ impl MetricsServer {
     /// Shutdown the metrics server
     pub async fn shutdown(&self) -> eyre::Result<()> {
         let tx = {
-            let mut lock = self.shutdown_tx.lock().unwrap();
+            let mut lock = self.shutdown_tx.lock();
             lock.take()
         };
 
