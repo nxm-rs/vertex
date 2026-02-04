@@ -1,8 +1,10 @@
-//! IP address scope classification and subnet utilities.
+//! IP address scope classification and network capability tracking.
 
+use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use libp2p::Multiaddr;
+use libp2p::multiaddr::Protocol;
 
 /// Classification of IP address scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,27 +101,42 @@ pub fn same_subnet(addr1: &Multiaddr, addr2: &Multiaddr) -> bool {
     crate::system::is_on_same_subnet(ip1, ip2)
 }
 
-/// IP version of an address.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// IP version of an address (extracted from Protocol).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum IpVersion {
-    /// IPv4 address
     V4,
-    /// IPv6 address
     V6,
 }
 
-/// IP connectivity capabilities (IPv4, IPv6, or both).
+impl IpVersion {
+    /// Extract IP version from a libp2p Protocol component.
+    ///
+    /// Handles both raw IP addresses and DNS variants:
+    /// - `Ip4`, `Dns4` → V4
+    /// - `Ip6`, `Dns6` → V6
+    /// - `Dnsaddr` → None (could resolve to either)
+    pub fn from_protocol(proto: &Protocol) -> Option<Self> {
+        match proto {
+            Protocol::Ip4(_) | Protocol::Dns4(_) => Some(Self::V4),
+            Protocol::Ip6(_) | Protocol::Dns6(_) => Some(Self::V6),
+            _ => None,
+        }
+    }
+
+    /// Extract IP version from a multiaddr.
+    pub fn from_multiaddr(addr: &Multiaddr) -> Option<Self> {
+        addr.iter().find_map(|p| Self::from_protocol(&p))
+    }
+}
+
+/// IP connectivity capability (None, IPv4-only, IPv6-only, or Dual-stack).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum IpCapability {
-    /// No IP connectivity (not listening on any IP addresses).
     #[default]
     None,
-    /// IPv4 only - can only reach IPv4 peers.
     V4Only,
-    /// IPv6 only - can only reach IPv6 peers.
     V6Only,
-    /// Dual-stack - can reach both IPv4 and IPv6 peers.
-    Both,
+    Dual,
 }
 
 impl IpCapability {
@@ -129,19 +146,18 @@ impl IpCapability {
         let mut has_v6 = false;
 
         for addr in addrs {
-            match ip_version(addr) {
+            match IpVersion::from_multiaddr(addr) {
                 Some(IpVersion::V4) => has_v4 = true,
                 Some(IpVersion::V6) => has_v6 = true,
                 None => {}
             }
-            // Early exit if we already have both
             if has_v4 && has_v6 {
-                return Self::Both;
+                return Self::Dual;
             }
         }
 
         match (has_v4, has_v6) {
-            (true, true) => Self::Both,
+            (true, true) => Self::Dual,
             (true, false) => Self::V4Only,
             (false, true) => Self::V6Only,
             (false, false) => Self::None,
@@ -152,19 +168,21 @@ impl IpCapability {
     pub fn can_reach(&self, version: IpVersion) -> bool {
         match (self, version) {
             (Self::None, _) => false,
+            (Self::Dual, _) => true,
             (Self::V4Only, IpVersion::V4) => true,
-            (Self::V4Only, IpVersion::V6) => false,
-            (Self::V6Only, IpVersion::V4) => false,
             (Self::V6Only, IpVersion::V6) => true,
-            (Self::Both, _) => true,
+            _ => false,
         }
     }
 
-    /// Check if we can reach a multiaddr (DNS addresses are assumed reachable).
+    /// Check if we can reach a multiaddr.
+    ///
+    /// Returns true for addresses without explicit IP version (e.g., dnsaddr)
+    /// since they may resolve to either version.
     pub fn can_reach_addr(&self, addr: &Multiaddr) -> bool {
-        match ip_version(addr) {
+        match IpVersion::from_multiaddr(addr) {
             Some(version) => self.can_reach(version),
-            None => true, // DNS or other - assume reachable
+            None => true,
         }
     }
 
@@ -173,23 +191,32 @@ impl IpCapability {
         !matches!(self, Self::None)
     }
 
-    /// Check if we support IPv4.
     pub fn supports_ipv4(&self) -> bool {
-        matches!(self, Self::V4Only | Self::Both)
+        matches!(self, Self::V4Only | Self::Dual)
     }
 
-    /// Check if we support IPv6.
     pub fn supports_ipv6(&self) -> bool {
-        matches!(self, Self::V6Only | Self::Both)
+        matches!(self, Self::V6Only | Self::Dual)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Self::None)
+    }
+
+    /// Create a dual-stack capability.
+    pub fn dual_stack() -> Self {
+        Self::Dual
+    }
+
+    /// Check if this is a dual-stack capability.
+    pub fn is_dual_stack(&self) -> bool {
+        matches!(self, Self::Dual)
     }
 }
 
 /// Get the IP version of a multiaddr, if any.
 pub fn ip_version(addr: &Multiaddr) -> Option<IpVersion> {
-    extract_ip(addr).map(|ip| match ip {
-        IpAddr::V4(_) => IpVersion::V4,
-        IpAddr::V6(_) => IpVersion::V6,
-    })
+    IpVersion::from_multiaddr(addr)
 }
 
 /// Check if a multiaddr contains an IPv4 address.
@@ -202,57 +229,111 @@ pub fn is_ipv6(addr: &Multiaddr) -> bool {
     ip_version(addr) == Some(IpVersion::V6)
 }
 
-/// Transport protocols the node can speak.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+/// Multiaddr protocol codes for transports we track.
+/// From: https://github.com/multiformats/multiaddr/blob/master/protocols.csv
+mod proto_code {
+    pub(super) const TCP: u32 = 6;
+    pub(super) const QUIC_V1: u32 = 461;
+    pub(super) const WS: u32 = 477;
+    pub(super) const WSS: u32 = 478;
+    pub(super) const WEBTRANSPORT: u32 = 465;
+}
+
+/// Extract the transport protocol code from a Protocol.
+fn transport_code(proto: &Protocol) -> Option<u32> {
+    let code = match proto {
+        Protocol::Tcp(_) => proto_code::TCP,
+        Protocol::QuicV1 => proto_code::QUIC_V1,
+        Protocol::Ws(_) => proto_code::WS,
+        Protocol::Wss(_) => proto_code::WSS,
+        Protocol::WebTransport => proto_code::WEBTRANSPORT,
+        _ => return None,
+    };
+    Some(code)
+}
+
+/// Extract the outermost transport protocol code from a multiaddr.
+fn transport_code_from_multiaddr(addr: &Multiaddr) -> Option<u32> {
+    // Keep the last (outermost) transport found
+    // e.g., /tcp/1234/ws -> WS, not TCP
+    addr.iter().filter_map(|p| transport_code(&p)).last()
+}
+
+/// Set of transport protocols the node can speak.
+///
+/// Uses multiaddr protocol codes directly for forward compatibility.
+/// Codes from: https://github.com/multiformats/multiaddr/blob/master/protocols.csv
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TransportCapability {
-    pub tcp: bool,
-    pub quic: bool,
-    pub websocket: bool,
+    codes: HashSet<u32>,
 }
 
 impl TransportCapability {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     pub fn tcp_only() -> Self {
-        Self {
-            tcp: true,
-            quic: false,
-            websocket: false,
-        }
+        let mut codes = HashSet::new();
+        codes.insert(proto_code::TCP);
+        Self { codes }
     }
 
     pub fn from_addrs<'a>(addrs: impl IntoIterator<Item = &'a Multiaddr>) -> Self {
-        use libp2p::multiaddr::Protocol;
+        let codes = addrs
+            .into_iter()
+            .filter_map(transport_code_from_multiaddr)
+            .collect();
+        Self { codes }
+    }
 
-        let mut cap = Self::default();
-        for addr in addrs {
-            for proto in addr.iter() {
-                match proto {
-                    Protocol::Tcp(_) => cap.tcp = true,
-                    Protocol::QuicV1 => cap.quic = true,
-                    Protocol::Ws(_) | Protocol::Wss(_) => cap.websocket = true,
-                    _ => {}
-                }
-            }
-        }
-        cap
+    /// Check if we support a specific protocol code.
+    pub fn supports_code(&self, code: u32) -> bool {
+        self.codes.contains(&code)
+    }
+
+    /// Check if we support the transport used by a Protocol.
+    pub fn supports(&self, proto: &Protocol) -> bool {
+        transport_code(proto)
+            .map(|c| self.codes.contains(&c))
+            .unwrap_or(true) // Non-transport protocols are always "supported"
+    }
+
+    pub fn supports_tcp(&self) -> bool {
+        self.codes.contains(&proto_code::TCP)
+    }
+
+    pub fn supports_quic(&self) -> bool {
+        self.codes.contains(&proto_code::QUIC_V1)
+    }
+
+    pub fn supports_websocket(&self) -> bool {
+        self.codes.contains(&proto_code::WS) || self.codes.contains(&proto_code::WSS)
+    }
+
+    pub fn supports_webtransport(&self) -> bool {
+        self.codes.contains(&proto_code::WEBTRANSPORT)
     }
 
     pub fn can_reach(&self, addr: &Multiaddr) -> bool {
-        use libp2p::multiaddr::Protocol;
-
-        for proto in addr.iter() {
-            match proto {
-                Protocol::Tcp(_) => return self.tcp,
-                Protocol::QuicV1 => return self.quic,
-                Protocol::Ws(_) | Protocol::Wss(_) => return self.websocket,
-                _ => {}
-            }
+        match transport_code_from_multiaddr(addr) {
+            Some(c) => self.codes.contains(&c),
+            None => true, // No transport specified - assume reachable
         }
-        true // No transport specified - assume reachable
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.codes.is_empty()
+    }
+
+    /// Get the protocol codes this capability supports.
+    pub fn codes(&self) -> impl Iterator<Item = u32> + '_ {
+        self.codes.iter().copied()
     }
 }
 
 /// Combined IP + transport capability.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NetworkCapability {
     pub ip: IpCapability,
     pub transport: TransportCapability,
@@ -526,24 +607,22 @@ mod tests {
         let ws: Multiaddr = "/ip4/127.0.0.1/tcp/1234/ws".parse().unwrap();
 
         let cap = TransportCapability::from_addrs([&tcp]);
-        assert!(cap.tcp);
-        assert!(!cap.quic);
-        assert!(!cap.websocket);
+        assert!(cap.supports_tcp());
+        assert!(!cap.supports_quic());
+        assert!(!cap.supports_websocket());
 
         let cap = TransportCapability::from_addrs([&quic]);
-        assert!(!cap.tcp);
-        assert!(cap.quic);
-        assert!(!cap.websocket);
+        assert!(!cap.supports_tcp());
+        assert!(cap.supports_quic());
+        assert!(!cap.supports_websocket());
 
         let cap = TransportCapability::from_addrs([&ws]);
-        assert!(cap.tcp); // ws is over tcp
-        assert!(!cap.quic);
-        assert!(cap.websocket);
+        assert!(cap.supports_websocket());
 
         let cap = TransportCapability::from_addrs([&tcp, &quic]);
-        assert!(cap.tcp);
-        assert!(cap.quic);
-        assert!(!cap.websocket);
+        assert!(cap.supports_tcp());
+        assert!(cap.supports_quic());
+        assert!(!cap.supports_websocket());
     }
 
     #[test]

@@ -56,7 +56,7 @@ impl LocalCapabilities {
 
     fn update_capability(&self, listen_addrs: &[Multiaddr]) {
         let new_cap = NetworkCapability::from_addrs(listen_addrs);
-        let old_cap = *self.capability.read();
+        let old_cap = self.capability.read().clone();
         if new_cap != old_cap {
             info!(?old_cap, ?new_cap, "network capability changed");
             *self.capability.write() = new_cap;
@@ -64,7 +64,7 @@ impl LocalCapabilities {
     }
 
     pub fn capability(&self) -> NetworkCapability {
-        *self.capability.read()
+        self.capability.read().clone()
     }
 
     /// Filter addresses to only those we can dial based on our network capability.
@@ -72,7 +72,7 @@ impl LocalCapabilities {
         &self,
         addrs: &'a [Multiaddr],
     ) -> impl Iterator<Item = &'a Multiaddr> {
-        let cap = *self.capability.read();
+        let cap = self.capability.read().clone();
         addrs.iter().filter(move |addr| cap.can_reach(addr))
     }
 
@@ -216,8 +216,8 @@ mod tests {
         let net_cap = cap.capability();
         assert!(net_cap.ip.supports_ipv4());
         assert!(!net_cap.ip.supports_ipv6());
-        assert!(net_cap.transport.tcp);
-        assert!(!net_cap.transport.quic);
+        assert!(net_cap.transport.supports_tcp());
+        assert!(!net_cap.transport.supports_quic());
     }
 
     #[test]
