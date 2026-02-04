@@ -1,12 +1,14 @@
 //! Inbound and outbound protocol handlers for hive peer exchange.
 
+use std::sync::Arc;
+
 use alloy_primitives::{B256, Signature};
 use asynchronous_codec::Framed;
 use futures::{SinkExt, TryStreamExt, future::BoxFuture};
 use tracing::debug;
 use vertex_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound};
+use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 use vertex_swarm_peer::{SwarmAddress, SwarmPeer};
-use vertex_swarm_spec::SwarmSpec;
 
 use crate::{
     PROTOCOL_NAME,
@@ -24,18 +26,18 @@ pub struct ValidatedPeers {
 }
 
 /// Inbound handler that receives and validates peers.
-#[derive(Debug, Clone)]
-pub struct HiveInner<S: SwarmSpec> {
-    spec: S,
+#[derive(Debug)]
+pub struct HiveInner<I: SwarmIdentity> {
+    identity: Arc<I>,
 }
 
-impl<S: SwarmSpec> HiveInner<S> {
-    pub fn new(spec: S) -> Self {
-        Self { spec }
+impl<I: SwarmIdentity> HiveInner<I> {
+    pub fn new(identity: Arc<I>) -> Self {
+        Self { identity }
     }
 }
 
-impl<S: SwarmSpec + Clone + Send + 'static> HeaderedInbound for HiveInner<S> {
+impl<I: SwarmIdentity> HeaderedInbound for HiveInner<I> {
     type Output = ValidatedPeers;
     type Error = HiveCodecError;
 
@@ -44,7 +46,7 @@ impl<S: SwarmSpec + Clone + Send + 'static> HeaderedInbound for HiveInner<S> {
     }
 
     fn read(self, stream: HeaderedStream) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
-        let network_id = self.spec.network_id();
+        let network_id = self.identity.spec().network_id();
         Box::pin(async move {
             let codec = HiveCodec::new(MAX_MESSAGE_SIZE);
             let mut framed = Framed::new(stream.into_inner(), codec);
@@ -157,14 +159,14 @@ impl HeaderedOutbound for HiveOutboundInner {
 }
 
 /// Inbound protocol upgrade with header exchange.
-pub type HiveInboundProtocol<S> = Inbound<HiveInner<S>>;
+pub type HiveInboundProtocol<I> = Inbound<HiveInner<I>>;
 
 /// Outbound protocol upgrade with header exchange.
 pub type HiveOutboundProtocol = Outbound<HiveOutboundInner>;
 
 /// Create an inbound protocol handler for receiving peers.
-pub fn inbound<S: SwarmSpec + Clone + Send + 'static>(spec: &S) -> HiveInboundProtocol<S> {
-    Inbound::new(HiveInner::new(spec.clone()))
+pub fn inbound<I: SwarmIdentity>(identity: Arc<I>) -> HiveInboundProtocol<I> {
+    Inbound::new(HiveInner::new(identity))
 }
 
 /// Create an outbound protocol handler for sending peers.
