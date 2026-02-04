@@ -21,7 +21,7 @@ pub struct Peers {
 }
 
 impl Peers {
-    /// Create from SwarmPeers (for outbound).
+    /// Serialize SwarmPeers into wire format for outbound messages.
     pub fn from_swarm_peers(peers: &[SwarmPeer]) -> Self {
         let proto_peers = peers
             .iter()
@@ -37,7 +37,7 @@ impl Peers {
         }
     }
 
-    /// Consume and return raw proto peers (for inbound validation).
+    /// Consume and return raw proto peers for inbound validation.
     pub fn into_proto_peers(self) -> Vec<crate::proto::hive::Peer> {
         self.proto.peers
     }

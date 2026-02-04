@@ -1,16 +1,4 @@
-//! Hive protocol for Swarm peer discovery.
-//!
-//! Peers gossip known addresses to each other for network bootstrapping.
-//!
-//! # Protocol
-//!
-//! - Path: `/swarm/hive/1.1.0/peers`
-//! - Unidirectional: sender broadcasts, receiver processes
-//! - Message: `Peers` containing peer addresses
-//!
-//! # Batching
-//!
-//! Large peer lists are split into batches of at most 30 peers.
+//! Hive protocol for Swarm peer gossip and network bootstrapping.
 
 mod codec;
 mod protocol;

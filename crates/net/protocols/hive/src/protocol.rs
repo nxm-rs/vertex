@@ -1,40 +1,41 @@
-//! Protocol upgrade for hive.
+//! Inbound and outbound protocol handlers for hive peer exchange.
 
 use alloy_primitives::{B256, Signature};
 use asynchronous_codec::Framed;
 use futures::{SinkExt, TryStreamExt, future::BoxFuture};
 use tracing::debug;
 use vertex_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound};
-use vertex_swarm_api::SwarmNodeTypes;
 use vertex_swarm_peer::{SwarmAddress, SwarmPeer};
-use vertex_swarmspec::SwarmSpec;
+use vertex_swarm_spec::SwarmSpec;
 
 use crate::{
     PROTOCOL_NAME,
     codec::{HiveCodec, HiveCodecError, Peers},
 };
 
+/// 32 KiB frame limit (fits ~100 peers at typical size).
 const MAX_MESSAGE_SIZE: usize = 32 * 1024;
 
-/// Validated peers from hive inbound.
+/// Result of inbound peer validation.
 #[derive(Debug)]
 pub struct ValidatedPeers {
+    /// Peers that passed signature and format validation.
     pub peers: Vec<SwarmPeer>,
 }
 
-/// Hive inbound: receives and validates peers.
+/// Inbound handler that receives and validates peers.
 #[derive(Debug, Clone)]
-pub struct HiveInner<N: SwarmNodeTypes> {
-    spec: N::Spec,
+pub struct HiveInner<S: SwarmSpec> {
+    spec: S,
 }
 
-impl<N: SwarmNodeTypes> HiveInner<N> {
-    pub fn new(spec: N::Spec) -> Self {
+impl<S: SwarmSpec> HiveInner<S> {
+    pub fn new(spec: S) -> Self {
         Self { spec }
     }
 }
 
-impl<N: SwarmNodeTypes> HeaderedInbound for HiveInner<N> {
+impl<S: SwarmSpec + Clone + Send + 'static> HeaderedInbound for HiveInner<S> {
     type Output = ValidatedPeers;
     type Error = HiveCodecError;
 
@@ -78,7 +79,7 @@ impl<N: SwarmNodeTypes> HeaderedInbound for HiveInner<N> {
     }
 }
 
-/// Convert proto peer to SwarmPeer with validation.
+/// Validate and convert proto peer, returning None if invalid (for filter_map).
 fn proto_to_swarm_peer(p: crate::proto::hive::Peer, network_id: u64) -> Option<SwarmPeer> {
     let overlay = if p.overlay.len() == 32 {
         B256::from_slice(&p.overlay)
@@ -118,7 +119,7 @@ fn proto_to_swarm_peer(p: crate::proto::hive::Peer, network_id: u64) -> Option<S
     }
 }
 
-/// Hive outbound: sends peers.
+/// Outbound handler that sends peers to remote.
 #[derive(Debug, Clone)]
 pub struct HiveOutboundInner {
     peers: Peers,
@@ -155,13 +156,18 @@ impl HeaderedOutbound for HiveOutboundInner {
     }
 }
 
-pub type HiveInboundProtocol<N> = Inbound<HiveInner<N>>;
+/// Inbound protocol upgrade with header exchange.
+pub type HiveInboundProtocol<S> = Inbound<HiveInner<S>>;
+
+/// Outbound protocol upgrade with header exchange.
 pub type HiveOutboundProtocol = Outbound<HiveOutboundInner>;
 
-pub fn inbound<N: SwarmNodeTypes>(spec: &N::Spec) -> HiveInboundProtocol<N> {
+/// Create an inbound protocol handler for receiving peers.
+pub fn inbound<S: SwarmSpec + Clone + Send + 'static>(spec: &S) -> HiveInboundProtocol<S> {
     Inbound::new(HiveInner::new(spec.clone()))
 }
 
+/// Create an outbound protocol handler for sending peers.
 pub fn outbound(peers: &[SwarmPeer]) -> HiveOutboundProtocol {
     Outbound::new(HiveOutboundInner::new(peers))
 }

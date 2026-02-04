@@ -17,7 +17,7 @@ vertex-net-codec.workspace = true
 vertex-net-headers.workspace = true
 vertex-swarm-peer.workspace = true
 vertex-swarm-api.workspace = true
-vertex-swarmspec.workspace = true
+vertex-swarm-spec.workspace = true
 
 ## async
 futures.workspace = true
