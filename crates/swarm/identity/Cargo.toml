@@ -23,7 +23,7 @@ nectar-primitives.workspace = true
 vertex-swarm-peer.workspace = true
 vertex-swarm-api.workspace = true
 vertex-swarm-primitives.workspace = true
-vertex-swarmspec.workspace = true
+vertex-swarm-spec.workspace = true
 
 # CLI
 clap = { workspace = true, features = ["derive"] }
