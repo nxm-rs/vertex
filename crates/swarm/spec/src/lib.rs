@@ -19,13 +19,13 @@
 //! # Core Types
 //!
 //! - [`SwarmSpec`] - Trait defining what a network specification must provide
-//! - [`Hive`] - Concrete spec implementation for mainnet, testnet, and dev networks
-//! - [`HiveBuilder`] - Constructs custom specs for testing or private networks
+//! - [`Spec`] - Concrete spec implementation for mainnet, testnet, and dev networks
+//! - [`SpecBuilder`] - Constructs custom specs for testing or private networks
 //!
 //! # Example
 //!
 //! ```ignore
-//! use vertex_swarmspec::{init_mainnet, SwarmSpec};
+//! use vertex_swarm_spec::{init_mainnet, SwarmSpec};
 //!
 //! let spec = init_mainnet();
 //! assert!(spec.is_mainnet());
@@ -58,7 +58,8 @@ pub use vertex_swarm_forks::*;
 // Re-export contract bindings and addresses from nectar
 pub use nectar_contracts;
 
-pub use api::{StaticSwarmSpecProvider, SwarmSpec, SwarmSpecProvider};
+// Re-export SwarmSpec trait and providers from vertex-swarm-api
+pub use vertex_swarm_api::{StaticSwarmSpecProvider, SwarmSpec, SwarmSpecProvider, SwarmToken};
 pub use constants::*;
 #[cfg(feature = "std")]
 pub use display::Loggable;
@@ -66,7 +67,7 @@ pub use display::{DisplaySwarmSpec, SwarmSpecExt};
 #[cfg(feature = "std")]
 pub use error::SwarmSpecFileError;
 pub use nectar_primitives::{ChunkTypeSet, StandardChunkSet};
-pub use spec::{DEV, Hive, HiveBuilder, MAINNET, TESTNET};
+pub use spec::{DEV, MAINNET, Spec, SpecBuilder, TESTNET};
 pub use token::Token;
 
 use alloc::sync::Arc;
@@ -86,7 +87,7 @@ pub fn generate_dev_network_id() -> u64 {
 ///
 /// This lazily initializes the mainnet spec on first call and returns
 /// a clone of the Arc on subsequent calls.
-pub fn init_mainnet() -> Arc<Hive> {
+pub fn init_mainnet() -> Arc<Spec> {
     spec::init_mainnet()
 }
 
@@ -94,7 +95,7 @@ pub fn init_mainnet() -> Arc<Hive> {
 ///
 /// This lazily initializes the testnet spec on first call and returns
 /// a clone of the Arc on subsequent calls.
-pub fn init_testnet() -> Arc<Hive> {
+pub fn init_testnet() -> Arc<Spec> {
     spec::init_testnet()
 }
 
@@ -102,7 +103,7 @@ pub fn init_testnet() -> Arc<Hive> {
 ///
 /// This lazily initializes the dev spec on first call and returns
 /// a clone of the Arc on subsequent calls.
-pub fn init_dev() -> Arc<Hive> {
+pub fn init_dev() -> Arc<Spec> {
     spec::init_dev()
 }
 
@@ -110,8 +111,8 @@ pub fn init_dev() -> Arc<Hive> {
 pub mod prelude {
     pub use super::{
         // Concrete type
-        Hive,
-        HiveBuilder,
+        Spec,
+        SpecBuilder,
         // Core trait
         SwarmSpec,
         SwarmSpecProvider,
@@ -150,7 +151,7 @@ mod tests {
     fn test_spec_provider() {
         let spec = init_mainnet();
 
-        // Arc<Hive> implements SwarmSpecProvider
+        // Arc<Spec> implements SwarmSpecProvider
         assert_eq!(spec.spec().network_id(), mainnet::NETWORK_ID);
 
         // StaticSwarmSpecProvider also works
@@ -161,7 +162,7 @@ mod tests {
     #[test]
     fn test_custom_network_chunk_config() {
         // Reserve capacity is configurable at runtime
-        let custom = HiveBuilder::new()
+        let custom = SpecBuilder::new()
             .network_id(999)
             .reserve_capacity(1 << 20)
             .build();

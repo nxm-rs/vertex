@@ -1,10 +1,10 @@
 //! Concrete network specifications
 //!
-//! This module provides [`Hive`], the standard implementation of [`SwarmSpec`]
+//! This module provides [`Spec`], the standard implementation of [`SwarmSpec`]
 //! used for mainnet, testnet, development, and custom networks.
 //!
 //! Pre-built specifications are available via [`init_mainnet`], [`init_testnet`],
-//! and [`init_dev`]. Custom specifications can be constructed with [`HiveBuilder`].
+//! and [`init_dev`]. Custom specifications can be constructed with [`SpecBuilder`].
 
 #[cfg(feature = "std")]
 use crate::error::SwarmSpecFileError;
@@ -25,20 +25,20 @@ use vertex_swarm_forks::{ForkCondition, SwarmHardfork, SwarmHardforks, SwarmHard
 
 /// A concrete Swarm network specification.
 ///
-/// `Hive` captures everything needed to identify and connect to a Swarm network:
+/// `Spec` captures everything needed to identify and connect to a Swarm network:
 /// which blockchain it settles on, how to find peers, when protocol upgrades
 /// activate, and which token contract to use.
 ///
 /// # Usage
 ///
 /// For standard networks, use the provided initializers:
-/// - [`init_mainnet()`] - Production network on Gnosis Chain
-/// - [`init_testnet()`] - Test network on Sepolia
-/// - [`init_dev()`] - Local development with auto-generated network ID
+/// - [`crate::init_mainnet()`] - Production network on Gnosis Chain
+/// - [`crate::init_testnet()`] - Test network on Sepolia
+/// - [`crate::init_dev()`] - Local development with auto-generated network ID
 ///
-/// For custom networks, use [`HiveBuilder`] or load from a JSON file with [`Hive::from_file`].
+/// For custom networks, use [`SpecBuilder`] or load from a JSON file with [`Spec::from_file`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Hive {
+pub struct Spec {
     /// Underlying blockchain
     #[serde(default = "default_chain")]
     pub chain: Chain,
@@ -89,7 +89,7 @@ fn default_reserve_capacity() -> u64 {
     DEFAULT_RESERVE_CAPACITY
 }
 
-impl Default for Hive {
+impl Default for Spec {
     fn default() -> Self {
         Self {
             chain: Chain::from(NamedChain::Dev),
@@ -105,13 +105,13 @@ impl Default for Hive {
 }
 
 /// The Swarm mainnet specification
-pub static MAINNET: OnceLock<Arc<Hive>> = OnceLock::new();
+pub static MAINNET: OnceLock<Arc<Spec>> = OnceLock::new();
 
 /// Initialize the mainnet specification
-pub(crate) fn init_mainnet() -> Arc<Hive> {
+pub(crate) fn init_mainnet() -> Arc<Spec> {
     MAINNET
         .get_or_init(|| {
-            let spec = Hive {
+            let spec = Spec {
                 chain: Chain::from(NamedChain::Gnosis),
                 network_id: mainnet::NETWORK_ID,
                 network_name: mainnet::NETWORK_NAME.to_string(),
@@ -128,13 +128,13 @@ pub(crate) fn init_mainnet() -> Arc<Hive> {
 }
 
 /// The Swarm testnet specification
-pub static TESTNET: OnceLock<Arc<Hive>> = OnceLock::new();
+pub static TESTNET: OnceLock<Arc<Spec>> = OnceLock::new();
 
 /// Initialize the testnet specification
-pub(crate) fn init_testnet() -> Arc<Hive> {
+pub(crate) fn init_testnet() -> Arc<Spec> {
     TESTNET
         .get_or_init(|| {
-            let spec = Hive {
+            let spec = Spec {
                 chain: Chain::from(NamedChain::Sepolia),
                 network_id: testnet::NETWORK_ID,
                 network_name: testnet::NETWORK_NAME.to_string(),
@@ -151,20 +151,20 @@ pub(crate) fn init_testnet() -> Arc<Hive> {
 }
 
 /// The Swarm development network specification
-pub static DEV: OnceLock<Arc<Hive>> = OnceLock::new();
+pub static DEV: OnceLock<Arc<Spec>> = OnceLock::new();
 
 /// Initialize the dev specification
-pub(crate) fn init_dev() -> Arc<Hive> {
-    DEV.get_or_init(|| Arc::new(Hive::default())).clone()
+pub(crate) fn init_dev() -> Arc<Spec> {
+    DEV.get_or_init(|| Arc::new(Spec::default())).clone()
 }
 
-/// Builder for constructing custom [`Hive`] specifications.
+/// Builder for constructing custom [`Spec`] specifications.
 ///
-/// Start from scratch with [`HiveBuilder::new()`], or derive from an existing
-/// network with [`HiveBuilder::mainnet()`], [`HiveBuilder::testnet()`], or
-/// [`HiveBuilder::dev()`] and override specific fields.
+/// Start from scratch with [`SpecBuilder::new()`], or derive from an existing
+/// network with [`SpecBuilder::mainnet()`], [`SpecBuilder::testnet()`], or
+/// [`SpecBuilder::dev()`] and override specific fields.
 #[derive(Debug, Default, Clone)]
-pub struct HiveBuilder {
+pub struct SpecBuilder {
     chain: Option<Chain>,
     network_id: Option<u64>,
     network_name: Option<String>,
@@ -175,7 +175,7 @@ pub struct HiveBuilder {
     reserve_capacity: Option<u64>,
 }
 
-impl HiveBuilder {
+impl SpecBuilder {
     /// Create a new specification builder
     pub fn new() -> Self {
         Self::default()
@@ -250,7 +250,7 @@ impl HiveBuilder {
     }
 
     /// Build the specification
-    pub fn build(self) -> Hive {
+    pub fn build(self) -> Spec {
         let chain = self.chain.unwrap_or(Chain::from(NamedChain::Dev));
         let network_id = self.network_id.unwrap_or_else(generate_dev_network_id);
 
@@ -281,7 +281,7 @@ impl HiveBuilder {
             );
         }
 
-        Hive {
+        Spec {
             chain,
             network_id,
             network_name,
@@ -295,37 +295,22 @@ impl HiveBuilder {
 
     /// Create a builder initialized with mainnet settings
     pub fn mainnet() -> Self {
-        let spec = init_mainnet();
-        Self {
-            chain: Some(spec.chain),
-            network_id: Some(spec.network_id),
-            network_name: Some(spec.network_name.clone()),
-            bootnodes: spec.bootnodes.clone(),
-            hardforks: spec.hardforks.clone(),
-            token: Some(spec.token.clone()),
-            genesis_timestamp: Some(spec.genesis_timestamp),
-            reserve_capacity: Some(spec.reserve_capacity),
-        }
+        Self::from(init_mainnet().as_ref())
     }
 
     /// Create a builder initialized with testnet settings
     pub fn testnet() -> Self {
-        let spec = init_testnet();
-        Self {
-            chain: Some(spec.chain),
-            network_id: Some(spec.network_id),
-            network_name: Some(spec.network_name.clone()),
-            bootnodes: spec.bootnodes.clone(),
-            hardforks: spec.hardforks.clone(),
-            token: Some(spec.token.clone()),
-            genesis_timestamp: Some(spec.genesis_timestamp),
-            reserve_capacity: Some(spec.reserve_capacity),
-        }
+        Self::from(init_testnet().as_ref())
     }
 
     /// Create a builder initialized with development network settings
     pub fn dev() -> Self {
-        let spec = init_dev();
+        Self::from(init_dev().as_ref())
+    }
+}
+
+impl From<&Spec> for SpecBuilder {
+    fn from(spec: &Spec) -> Self {
         Self {
             chain: Some(spec.chain),
             network_id: Some(spec.network_id),
@@ -356,7 +341,7 @@ fn testnet_bootnodes() -> Vec<String> {
     vec!["/dnsaddr/testnet.ethswarm.org".to_string()]
 }
 
-impl Hive {
+impl Spec {
     /// Returns the genesis timestamp of the network.
     ///
     /// This is the reference point for hardfork activation timing.
@@ -403,7 +388,7 @@ impl Hive {
     }
 }
 
-impl SwarmHardforksTrait for Hive {
+impl SwarmHardforksTrait for Spec {
     fn swarm_fork_activation(&self, fork: SwarmHardfork) -> ForkCondition {
         self.hardforks.fork(fork)
     }
@@ -436,7 +421,7 @@ mod tests {
 
     #[test]
     fn test_default_spec() {
-        let spec = Hive::default();
+        let spec = Spec::default();
         assert_eq!(spec.chain, Chain::from(NamedChain::Dev));
         assert_eq!(spec.token, dev::TOKEN);
         // Dev network has both Genesis and Accord hardforks
@@ -455,7 +440,7 @@ mod tests {
     fn test_builder() {
         let bootnode = "/ip4/127.0.0.1/tcp/1634";
 
-        let spec = HiveBuilder::new()
+        let spec = SpecBuilder::new()
             .chain(Chain::from(NamedChain::Dev))
             .network_id(1337)
             .network_name("test")
@@ -477,17 +462,17 @@ mod tests {
     #[test]
     fn test_builder_from_networks() {
         // Test mainnet builder
-        let mainnet_builder = HiveBuilder::mainnet();
+        let mainnet_builder = SpecBuilder::mainnet();
         let mainnet_spec = mainnet_builder.build();
         assert_eq!(mainnet_spec.network_id, mainnet::NETWORK_ID);
 
         // Test testnet builder
-        let testnet_builder = HiveBuilder::testnet();
+        let testnet_builder = SpecBuilder::testnet();
         let testnet_spec = testnet_builder.build();
         assert_eq!(testnet_spec.network_id, testnet::NETWORK_ID);
 
         // Test dev builder
-        let dev_builder = HiveBuilder::dev();
+        let dev_builder = SpecBuilder::dev();
         let dev_spec = dev_builder.build();
         assert_eq!(dev_spec.chain, Chain::from(NamedChain::Dev));
     }

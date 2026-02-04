@@ -2,6 +2,7 @@
 
 use alloy_primitives::Address;
 use serde::{Deserialize, Serialize};
+use vertex_swarm_api::SwarmToken;
 
 /// Swarm token (BZZ) details
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,5 +25,23 @@ impl Default for Token {
             symbol: "dBZZ",
             decimals: 16,
         }
+    }
+}
+
+impl SwarmToken for Token {
+    fn address(&self) -> Address {
+        self.address
+    }
+
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn symbol(&self) -> &str {
+        self.symbol
+    }
+
+    fn decimals(&self) -> u8 {
+        self.decimals
     }
 }

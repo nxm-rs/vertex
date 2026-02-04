@@ -1,5 +1,5 @@
 [package]
-name = "vertex-swarmspec"
+name = "vertex-swarm-spec"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -22,11 +22,13 @@ nectar-primitives.workspace = true
 # swarm forks
 vertex-swarm-forks.workspace = true
 
+# swarm API (for SwarmSpec trait)
+vertex-swarm-api.workspace = true
+
 # swarm network types
 nectar-swarms.workspace = true
 
 # misc
-auto_impl.workspace = true
 humansize = "2.1"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }

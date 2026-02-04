@@ -8,7 +8,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use vertex_swarmspec::{init_mainnet, Loggable};
+//! use vertex_swarm_spec::{init_mainnet, Loggable};
 //!
 //! let spec = init_mainnet();
 //!
@@ -21,6 +21,7 @@ use core::fmt::{self, Display, Formatter};
 
 use humansize::{BINARY, format_size};
 use nectar_primitives::ChunkTypeSet;
+use vertex_swarm_api::SwarmToken;
 use vertex_swarm_forks::ForkCondition;
 
 use crate::SwarmSpec;
@@ -35,7 +36,7 @@ use crate::SwarmSpec;
 /// # Example
 ///
 /// ```ignore
-/// use vertex_swarmspec::Loggable;
+/// use vertex_swarm_spec::Loggable;
 ///
 /// struct MyConfig { /* ... */ }
 ///
@@ -76,8 +77,8 @@ impl<S: SwarmSpec> Loggable for S {
         );
         info!(
             "  Token: {} @ {}",
-            self.token().symbol,
-            self.token().address
+            self.token().symbol(),
+            self.token().address()
         );
         info!("  Chunk size: {} bytes", self.chunk_size());
         info!("  Chunks: {}", S::ChunkSet::format_supported_types());
@@ -110,7 +111,7 @@ pub trait SwarmSpecExt: SwarmSpec {
     /// # Example
     ///
     /// ```ignore
-    /// use vertex_swarmspec::{init_mainnet, SwarmSpecExt};
+    /// use vertex_swarm_spec::{init_mainnet, SwarmSpecExt};
     ///
     /// let spec = init_mainnet();
     /// println!("{}", spec.display());
@@ -144,7 +145,7 @@ fn format_reserve_size(reserve_capacity: u64, chunk_size: usize) -> String {
 /// # Example
 ///
 /// ```ignore
-/// use vertex_swarmspec::{init_mainnet, SwarmSpecExt};
+/// use vertex_swarm_spec::{init_mainnet, SwarmSpecExt};
 ///
 /// let spec = init_mainnet();
 /// println!("{}", spec.display());
@@ -192,8 +193,8 @@ impl<S: SwarmSpec> Display for DisplaySwarmSpec<'_, S> {
         writeln!(
             f,
             "  Token: {} @ {}",
-            self.spec.token().symbol,
-            self.spec.token().address
+            self.spec.token().symbol(),
+            self.spec.token().address()
         )?;
         writeln!(f, "  Chunk size: {} bytes", self.spec.chunk_size())?;
         writeln!(f, "  Chunks: {}", S::ChunkSet::format_supported_types())?;
