@@ -2,9 +2,8 @@ use asynchronous_codec::{Framed, FramedRead};
 use futures::{AsyncWriteExt, SinkExt, TryStreamExt, future::BoxFuture};
 use libp2p::{InboundUpgrade, Multiaddr, OutboundUpgrade, PeerId, Stream, core::UpgradeInfo};
 use vertex_swarm_api::SwarmIdentity;
-use vertex_swarm_api::SwarmNodeTypes;
 use vertex_swarm_peer::SwarmPeer;
-use vertex_swarmspec::SwarmSpec;
+use vertex_swarm_spec::SwarmSpec;
 
 use crate::{
     Ack, AckCodec, HandshakeError, HandshakeInfo, PROTOCOL, Syn, SynAck, SynAckCodec, SynCodec,
@@ -16,10 +15,9 @@ use crate::{
 /// This protocol handles the three-way handshake (SYN → SYNACK → ACK)
 /// that authenticates peers on the Swarm network.
 ///
-/// Generic over `N: SwarmNodeTypes` to support different node configurations.
-#[derive(Clone)]
-pub struct HandshakeProtocol<N: SwarmNodeTypes> {
-    pub(crate) identity: N::Identity,
+/// Generic over `I: SwarmIdentity` to support different identity implementations.
+pub struct HandshakeProtocol<I: SwarmIdentity> {
+    pub(crate) identity: I,
     pub(crate) peer_id: PeerId,
     pub(crate) remote_addr: Multiaddr,
     /// Additional addresses to advertise (in addition to observed address).
@@ -29,9 +27,9 @@ pub struct HandshakeProtocol<N: SwarmNodeTypes> {
     pub(crate) additional_addrs: Vec<Multiaddr>,
 }
 
-impl<N: SwarmNodeTypes> HandshakeProtocol<N> {
+impl<I: SwarmIdentity> HandshakeProtocol<I> {
     /// Create a new handshake protocol.
-    pub fn new(identity: N::Identity, peer_id: PeerId, remote_addr: Multiaddr) -> Self {
+    pub fn new(identity: I, peer_id: PeerId, remote_addr: Multiaddr) -> Self {
         Self {
             identity,
             peer_id,
@@ -46,7 +44,7 @@ impl<N: SwarmNodeTypes> HandshakeProtocol<N> {
     /// creating our identity for the handshake. Use this to advertise
     /// NAT addresses, listen addresses, etc.
     pub fn with_addrs(
-        identity: N::Identity,
+        identity: I,
         peer_id: PeerId,
         remote_addr: Multiaddr,
         additional_addrs: Vec<Multiaddr>,
@@ -207,7 +205,7 @@ impl<N: SwarmNodeTypes> HandshakeProtocol<N> {
     }
 }
 
-impl<N: SwarmNodeTypes> UpgradeInfo for HandshakeProtocol<N> {
+impl<I: SwarmIdentity> UpgradeInfo for HandshakeProtocol<I> {
     type Info = &'static str;
     type InfoIter = std::iter::Once<Self::Info>;
 
@@ -216,7 +214,7 @@ impl<N: SwarmNodeTypes> UpgradeInfo for HandshakeProtocol<N> {
     }
 }
 
-impl<N: SwarmNodeTypes> InboundUpgrade<Stream> for HandshakeProtocol<N> {
+impl<I: SwarmIdentity> InboundUpgrade<Stream> for HandshakeProtocol<I> {
     type Output = HandshakeInfo;
     type Error = HandshakeError;
     type Future = BoxFuture<'static, Result<Self::Output, Self::Error>>;
@@ -226,7 +224,7 @@ impl<N: SwarmNodeTypes> InboundUpgrade<Stream> for HandshakeProtocol<N> {
     }
 }
 
-impl<N: SwarmNodeTypes> OutboundUpgrade<Stream> for HandshakeProtocol<N> {
+impl<I: SwarmIdentity> OutboundUpgrade<Stream> for HandshakeProtocol<I> {
     type Output = HandshakeInfo;
     type Error = HandshakeError;
     type Future = BoxFuture<'static, Result<Self::Output, Self::Error>>;

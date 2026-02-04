@@ -30,17 +30,14 @@ impl Ack {
         }
     }
 
-    /// Returns the peer's Swarm identity.
     pub fn swarm_peer(&self) -> &SwarmPeer {
         &self.swarm_peer
     }
 
-    /// Returns whether this is a full node.
     pub fn full_node(&self) -> bool {
         self.full_node
     }
 
-    /// Returns the welcome message.
     pub fn welcome_message(&self) -> &str {
         &self.welcome_message
     }

@@ -17,7 +17,7 @@ vertex-net-codec.workspace = true
 vertex-swarm-api.workspace = true
 vertex-swarm-identity.workspace = true
 vertex-swarm-peer.workspace = true
-vertex-swarmspec.workspace = true
+vertex-swarm-spec.workspace = true
 
 ## alloy
 alloy-primitives.workspace = true

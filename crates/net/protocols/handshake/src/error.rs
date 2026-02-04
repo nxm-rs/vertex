@@ -17,12 +17,3 @@ pub enum HandshakeError {
     #[error("Missing data")]
     MissingData,
 }
-
-impl<T> From<Option<T>> for HandshakeError {
-    fn from(opt: Option<T>) -> Self {
-        match opt {
-            None => HandshakeError::ConnectionClosed,
-            Some(_) => unreachable!("Should not convert Some variant"),
-        }
-    }
-}
