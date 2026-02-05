@@ -106,7 +106,7 @@ impl LocalCapabilities {
 
     /// Check if a target IP is on a directly-connected subnet.
     pub fn is_directly_reachable(&self, addr: &Multiaddr) -> bool {
-        extract_ip(addr).map_or(false, crate::system::is_directly_reachable)
+        extract_ip(addr).is_some_and(crate::system::is_directly_reachable)
     }
 
     /// Check if two addresses are on the same local subnet.
