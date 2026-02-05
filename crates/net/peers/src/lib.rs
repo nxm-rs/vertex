@@ -14,7 +14,7 @@ pub mod traits;
 
 mod time;
 
-pub use manager::{NetPeerManager, NetPeerManagerConfig};
+pub use manager::{DEFAULT_BAN_THRESHOLD, DEFAULT_MAX_TRACKED_PEERS, NetPeerManager};
 pub use registry::{PeerRegistry, RegisterResult};
 pub use score::{PeerScore, PeerScoreSnapshot};
 pub use state::{BanInfo, ConnectionState, NetPeerSnapshot, PeerState};

@@ -14,25 +14,24 @@ use crate::time::unix_timestamp_secs;
 use crate::traits::{NetPeerExt, NetPeerId, NetPeerScoreExt};
 
 /// Peer connection state (stored as u8 for atomic operations).
+///
+/// Dial tracking (connecting state) is handled separately by DialTracker.
+/// PeerManager only tracks fully-known peers in these states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum ConnectionState {
-    Known = 0,
-    Connecting = 1,
-    Connected = 2,
-    Disconnected = 3,
-    Banned = 4,
+    Connected = 0,
+    Disconnected = 1,
+    Banned = 2,
 }
 
 impl ConnectionState {
     fn from_u8(value: u8) -> Self {
         match value {
-            0 => Self::Known,
-            1 => Self::Connecting,
-            2 => Self::Connected,
-            3 => Self::Disconnected,
-            4 => Self::Banned,
-            _ => Self::Known,
+            0 => Self::Connected,
+            1 => Self::Disconnected,
+            2 => Self::Banned,
+            _ => Self::Disconnected,
         }
     }
 
@@ -40,8 +39,8 @@ impl ConnectionState {
         matches!(self, ConnectionState::Connected)
     }
 
-    pub fn is_dialable(&self) -> bool {
-        matches!(self, ConnectionState::Known | ConnectionState::Disconnected)
+    pub fn is_disconnected(&self) -> bool {
+        matches!(self, ConnectionState::Disconnected)
     }
 
     pub fn is_banned(&self) -> bool {
@@ -61,13 +60,13 @@ pub struct BanInfo {
 /// The `Ext` type parameter allows protocols to add custom state (stored in RwLock).
 /// The `ScoreExt` type parameter allows protocols to add custom scoring metrics.
 #[derive(Debug)]
-pub struct PeerState<Id: NetPeerId, Ext: NetPeerExt = (), ScoreExt: NetPeerScoreExt = ()> {
+pub struct PeerState<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt = ()> {
     _marker: PhantomData<Id>,
 
     /// Scoring metrics (Arc for cheap sharing with protocol handlers).
     scoring: Arc<PeerScore<ScoreExt>>,
 
-    state: AtomicU8,
+    connection_state: AtomicU8,
     first_seen: AtomicU64,
     last_seen: AtomicU64,
 
@@ -79,39 +78,26 @@ pub struct PeerState<Id: NetPeerId, Ext: NetPeerExt = (), ScoreExt: NetPeerScore
 }
 
 impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> PeerState<Id, Ext, ScoreExt> {
-    pub fn new() -> Self {
+    /// Create a new peer state with extension data.
+    pub fn new(ext: Ext) -> Self {
         let now = unix_timestamp_secs();
         Self {
             _marker: PhantomData,
             scoring: Arc::new(PeerScore::new()),
-            state: AtomicU8::new(ConnectionState::Known as u8),
+            connection_state: AtomicU8::new(ConnectionState::Disconnected as u8),
             first_seen: AtomicU64::new(now),
             last_seen: AtomicU64::new(now),
             multiaddrs: RwLock::new(Vec::new()),
             ban_info: RwLock::new(None),
-            ext: RwLock::new(Ext::default()),
+            ext: RwLock::new(ext),
         }
     }
 
-    pub fn with_multiaddrs(multiaddrs: Vec<Multiaddr>) -> Self {
+    /// Create with multiaddrs and extension data.
+    pub fn with_multiaddrs(multiaddrs: Vec<Multiaddr>, ext: Ext) -> Self {
         Self {
             multiaddrs: RwLock::new(multiaddrs),
-            ..Self::new()
-        }
-    }
-
-    pub fn with_ext(ext: Ext) -> Self {
-        Self {
-            ext: RwLock::new(ext),
-            ..Self::new()
-        }
-    }
-
-    pub fn with_multiaddrs_and_ext(multiaddrs: Vec<Multiaddr>, ext: Ext) -> Self {
-        Self {
-            multiaddrs: RwLock::new(multiaddrs),
-            ext: RwLock::new(ext),
-            ..Self::new()
+            ..Self::new(ext)
         }
     }
 
@@ -196,15 +182,15 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> PeerState<Id, Ex
     }
 
     pub fn connection_state(&self) -> ConnectionState {
-        ConnectionState::from_u8(self.state.load(Ordering::Relaxed))
+        ConnectionState::from_u8(self.connection_state.load(Ordering::Relaxed))
     }
 
     pub fn is_connected(&self) -> bool {
         self.connection_state().is_connected()
     }
 
-    pub fn is_dialable(&self) -> bool {
-        self.connection_state().is_dialable()
+    pub fn is_disconnected(&self) -> bool {
+        self.connection_state().is_disconnected()
     }
 
     pub fn is_banned(&self) -> bool {
@@ -220,7 +206,7 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> PeerState<Id, Ex
     }
 
     pub fn set_connection_state(&self, state: ConnectionState) {
-        self.state.store(state as u8, Ordering::Relaxed);
+        self.connection_state.store(state as u8, Ordering::Relaxed);
         self.touch();
     }
 
@@ -271,10 +257,6 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> PeerState<Id, Ex
         self.ext.write()
     }
 
-    pub fn set_ext(&self, ext: Ext) {
-        *self.ext.write() = ext;
-    }
-
     /// Create a serializable snapshot. ID must be provided since it's not stored here.
     pub fn snapshot(&self, id: Id) -> NetPeerSnapshot<Id, Ext::Snapshot, ScoreExt::Snapshot> {
         NetPeerSnapshot {
@@ -291,21 +273,13 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> PeerState<Id, Ex
 
     pub fn restore(&self, snapshot: &NetPeerSnapshot<Id, Ext::Snapshot, ScoreExt::Snapshot>) {
         self.scoring.restore(&snapshot.scoring);
-        self.state.store(snapshot.state as u8, Ordering::Relaxed);
+        self.connection_state.store(snapshot.state as u8, Ordering::Relaxed);
         self.first_seen
             .store(snapshot.first_seen, Ordering::Relaxed);
         self.last_seen.store(snapshot.last_seen, Ordering::Relaxed);
         *self.multiaddrs.write() = snapshot.multiaddrs.clone();
         *self.ban_info.write() = snapshot.ban_info.clone();
         self.ext.write().restore(&snapshot.ext);
-    }
-}
-
-impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> Default
-    for PeerState<Id, Ext, ScoreExt>
-{
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -334,7 +308,8 @@ impl<Id: NetPeerId, ExtSnap, ScoreExtSnap> NetPeerSnapshot<Id, ExtSnap, ScoreExt
         Ext: NetPeerExt<Snapshot = ExtSnap>,
         ScoreExt: NetPeerScoreExt<Snapshot = ScoreExtSnap>,
     {
-        let state = PeerState::new();
+        let ext = Ext::from_snapshot(&self.ext);
+        let state = PeerState::new(ext);
         state.restore(&self);
         (self.id, state)
     }
@@ -363,21 +338,33 @@ mod tests {
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
     struct TestId(u64);
 
+    #[derive(Clone, Debug, Default)]
+    struct TestExt;
+
+    impl NetPeerExt for TestExt {
+        type Snapshot = ();
+        fn snapshot(&self) -> Self::Snapshot {}
+        fn restore(&mut self, _snapshot: &Self::Snapshot) {}
+        fn from_snapshot(_snapshot: &Self::Snapshot) -> Self {
+            TestExt
+        }
+    }
+
     #[test]
     fn test_peer_state_new() {
-        let state: PeerState<TestId> = PeerState::new();
+        let state: PeerState<TestId, TestExt> = PeerState::new(TestExt);
 
         assert_eq!(state.score(), 0.0);
-        assert_eq!(state.connection_state(), ConnectionState::Known);
+        assert_eq!(state.connection_state(), ConnectionState::Disconnected);
         assert!(!state.is_connected());
-        assert!(state.is_dialable());
+        assert!(state.is_disconnected());
         assert!(!state.is_banned());
         assert!(state.latency().is_none());
     }
 
     #[test]
     fn test_score_operations() {
-        let state: PeerState<TestId> = PeerState::new();
+        let state: PeerState<TestId, TestExt> = PeerState::new(TestExt);
 
         state.add_score(10.0);
         assert!((state.score() - 10.0).abs() < 0.001);
@@ -391,24 +378,20 @@ mod tests {
 
     #[test]
     fn test_connection_state() {
-        let state: PeerState<TestId> = PeerState::new();
-
-        state.set_connection_state(ConnectionState::Connecting);
-        assert_eq!(state.connection_state(), ConnectionState::Connecting);
-        assert!(!state.is_connected());
-        assert!(!state.is_dialable());
+        let state: PeerState<TestId, TestExt> = PeerState::new(TestExt);
 
         state.set_connection_state(ConnectionState::Connected);
         assert!(state.is_connected());
+        assert!(!state.is_disconnected());
 
         state.set_connection_state(ConnectionState::Disconnected);
         assert!(!state.is_connected());
-        assert!(state.is_dialable());
+        assert!(state.is_disconnected());
     }
 
     #[test]
     fn test_record_operations() {
-        let state: PeerState<TestId> = PeerState::new();
+        let state: PeerState<TestId, TestExt> = PeerState::new(TestExt);
 
         state.record_success(Duration::from_millis(50));
         assert_eq!(state.connection_successes(), 1);
@@ -430,7 +413,7 @@ mod tests {
 
     #[test]
     fn test_multiaddrs() {
-        let state: PeerState<TestId> = PeerState::new();
+        let state: PeerState<TestId, TestExt> = PeerState::new(TestExt);
 
         let addr1: Multiaddr = "/ip4/127.0.0.1/tcp/1634".parse().unwrap();
         let addr2: Multiaddr = "/ip4/127.0.0.2/tcp/1634".parse().unwrap();
@@ -447,7 +430,7 @@ mod tests {
 
     #[test]
     fn test_ban_unban() {
-        let state: PeerState<TestId> = PeerState::new();
+        let state: PeerState<TestId, TestExt> = PeerState::new(TestExt);
 
         state.ban(Some("test reason".to_string()));
         assert!(state.is_banned());
@@ -464,7 +447,7 @@ mod tests {
 
     #[test]
     fn test_scoring_arc() {
-        let state: PeerState<TestId> = PeerState::new();
+        let state: PeerState<TestId, TestExt> = PeerState::new(TestExt);
 
         let scoring = state.scoring();
 
@@ -477,7 +460,7 @@ mod tests {
 
     #[test]
     fn test_snapshot_roundtrip() {
-        let state: PeerState<TestId> = PeerState::new();
+        let state: PeerState<TestId, TestExt> = PeerState::new(TestExt);
         state.set_score(75.5);
         state.set_connection_state(ConnectionState::Connected);
         state.record_success(Duration::from_millis(100));
@@ -488,7 +471,7 @@ mod tests {
         assert!((snapshot.score() - 76.5).abs() < 0.1);
         assert_eq!(snapshot.state, ConnectionState::Connected);
 
-        let (restored_id, restored): (TestId, PeerState<TestId>) = snapshot.into_state();
+        let (restored_id, restored): (TestId, PeerState<TestId, TestExt>) = snapshot.into_state();
         assert_eq!(restored_id, TestId(42));
         assert!((restored.score() - state.score()).abs() < 0.001);
         assert_eq!(
@@ -501,7 +484,7 @@ mod tests {
     fn test_concurrent_score_updates() {
         use std::thread;
 
-        let state: Arc<PeerState<TestId>> = Arc::new(PeerState::new());
+        let state: Arc<PeerState<TestId, TestExt>> = Arc::new(PeerState::new(TestExt));
         let mut handles = vec![];
 
         for _ in 0..10 {

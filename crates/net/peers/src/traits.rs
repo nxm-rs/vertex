@@ -20,23 +20,7 @@ impl<T> NetPeerId for T where
 ///
 /// Implement this trait to add custom state to `PeerState`. The state is stored
 /// in a `RwLock` and accessed via `ext()` and `ext_mut()` methods.
-///
-/// # Example
-///
-/// ```ignore
-/// #[derive(Debug, Default)]
-/// struct SwarmExt {
-///     overlay: Option<OverlayAddress>,
-///     ethereum_address: Option<Address>,
-/// }
-///
-/// impl NetPeerExt for SwarmExt {
-///     type Snapshot = SwarmExtSnapshot;
-///     fn snapshot(&self) -> Self::Snapshot { /* ... */ }
-///     fn restore(&mut self, snapshot: &Self::Snapshot) { /* ... */ }
-/// }
-/// ```
-pub trait NetPeerExt: Debug + Default + Send + Sync + 'static {
+pub trait NetPeerExt: Debug + Send + Sync + 'static {
     /// Serializable snapshot type for persistence.
     type Snapshot: Clone + Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static;
 
@@ -45,6 +29,9 @@ pub trait NetPeerExt: Debug + Default + Send + Sync + 'static {
 
     /// Restore state from a snapshot.
     fn restore(&mut self, snapshot: &Self::Snapshot);
+
+    /// Create from a snapshot (for loading from persistence).
+    fn from_snapshot(snapshot: &Self::Snapshot) -> Self;
 }
 
 /// No extended state (default). Uses `()` for both state and snapshot.
@@ -54,6 +41,8 @@ impl NetPeerExt for () {
     fn snapshot(&self) -> Self::Snapshot {}
 
     fn restore(&mut self, _snapshot: &Self::Snapshot) {}
+
+    fn from_snapshot(_snapshot: &Self::Snapshot) -> Self {}
 }
 
 /// Scoring event with configurable weight (positive = good, negative = bad).

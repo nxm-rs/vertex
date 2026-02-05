@@ -12,36 +12,14 @@ use crate::state::{ConnectionState, NetPeerSnapshot, PeerState};
 use crate::store::{ExtSnapBounds, NetPeerStore, PeerStoreError};
 use crate::traits::{NetPeerExt, NetPeerId, NetPeerScoreExt};
 
-/// Type alias for the internal peer map to avoid clippy::type_complexity.
+/// Type alias for the internal peer map.
 type PeerMap<Id, Ext, ScoreExt> = HashMap<Id, Arc<PeerState<Id, Ext, ScoreExt>>>;
 
-/// Peer manager configuration.
-#[derive(Debug, Clone)]
-pub struct NetPeerManagerConfig {
-    /// Score threshold below which peers get banned.
-    pub ban_threshold: f64,
-    /// Maximum peers to track. None = unlimited (for bootnodes/crawlers).
-    pub max_peers: Option<usize>,
-}
+/// Default ban threshold score (peers below this get banned).
+pub const DEFAULT_BAN_THRESHOLD: f64 = -100.0;
 
-impl Default for NetPeerManagerConfig {
-    fn default() -> Self {
-        Self {
-            ban_threshold: -100.0,
-            max_peers: Some(10_000),
-        }
-    }
-}
-
-impl NetPeerManagerConfig {
-    /// Config for bootnodes/crawlers with unlimited peer tracking.
-    pub fn unlimited() -> Self {
-        Self {
-            max_peers: None,
-            ..Default::default()
-        }
-    }
-}
+/// Default max tracked peers (storage limit, not connection limit).
+pub const DEFAULT_MAX_TRACKED_PEERS: usize = 10_000;
 
 /// Priority for pruning (higher = prune first).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -83,37 +61,46 @@ impl Ord for PrunePriority {
 /// Protocol handlers get `Arc<PeerState>` once, then all subsequent operations
 /// are lock-free (atomics) or per-peer locked (no global contention).
 ///
-/// The `Ext` type parameter allows protocols to add custom state to each peer.
-/// The `ScoreExt` type parameter allows protocols to add custom scoring metrics.
-pub struct NetPeerManager<Id: NetPeerId, Ext: NetPeerExt = (), ScoreExt: NetPeerScoreExt = ()> {
-    config: NetPeerManagerConfig,
-    /// Brief lock to get Arc, then release.
+/// Peers are only added when full identity (Ext) is known - dial tracking
+/// is handled separately by DialTracker.
+pub struct NetPeerManager<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt = ()> {
+    ban_threshold: f64,
+    max_tracked_peers: Option<usize>,
     peers: RwLock<PeerMap<Id, Ext, ScoreExt>>,
     registry: PeerRegistry<Id>,
 }
 
 impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> NetPeerManager<Id, Ext, ScoreExt> {
-    pub fn new(config: NetPeerManagerConfig) -> Self {
+    /// Create a new peer manager with specified limits.
+    pub fn new(ban_threshold: f64, max_tracked_peers: Option<usize>) -> Self {
         Self {
-            config,
+            ban_threshold,
+            max_tracked_peers,
             peers: RwLock::new(HashMap::new()),
             registry: PeerRegistry::new(),
         }
     }
 
+    /// Create with default settings.
     pub fn with_defaults() -> Self {
-        Self::new(NetPeerManagerConfig::default())
+        Self::new(DEFAULT_BAN_THRESHOLD, Some(DEFAULT_MAX_TRACKED_PEERS))
     }
 
-    pub fn config(&self) -> &NetPeerManagerConfig {
-        &self.config
+    /// Get the ban threshold.
+    pub fn ban_threshold(&self) -> f64 {
+        self.ban_threshold
     }
 
-    /// Get or create peer state. Returns Arc that can be cached for lock-free access.
+    /// Get the max tracked peers limit.
+    pub fn max_tracked_peers(&self) -> Option<usize> {
+        self.max_tracked_peers
+    }
+
+    /// Insert a peer with extension data. Returns the peer state.
     ///
-    /// Callers should cache the returned Arc along with the id for efficient access.
-    pub fn peer(&self, id: Id) -> Arc<PeerState<Id, Ext, ScoreExt>> {
-        // Fast path: read lock
+    /// If peer already exists, returns existing state (ext is not updated).
+    pub fn insert_peer(&self, id: Id, ext: Ext) -> Arc<PeerState<Id, Ext, ScoreExt>> {
+        // Fast path: check if exists
         {
             let peers = self.peers.read();
             if let Some(state) = peers.get(&id) {
@@ -121,7 +108,7 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> NetPeerManager<I
             }
         }
 
-        // Slow path: write lock (only on first access per peer)
+        // Slow path: insert
         let mut peers = self.peers.write();
 
         // Double-check after acquiring write lock
@@ -129,36 +116,29 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> NetPeerManager<I
             return Arc::clone(state);
         }
 
-        // Prune if at capacity (before adding new peer)
-        if let Some(max) = self.config.max_peers
+        // Prune if at capacity
+        if let Some(max) = self.max_tracked_peers
             && peers.len() >= max
         {
             self.prune_one_peer(&mut peers);
         }
 
-        // Create new peer state
-        let state = Arc::new(PeerState::new());
+        let state = Arc::new(PeerState::new(ext));
         peers.insert(id.clone(), Arc::clone(&state));
 
-        debug!(?id, "new peer added to manager");
+        debug!(?id, "peer inserted");
 
         state
     }
 
-    /// Prune one peer to make room. Uses heuristic:
-    /// 1. Banned peers (oldest ban first)
-    /// 2. Disconnected peers (lowest score first)
-    /// 3. Known peers (oldest last_seen first)
-    ///
-    /// Never prunes: Connected, Connecting peers
+    /// Prune one peer to make room. Never prunes Connected peers.
     fn prune_one_peer(&self, peers: &mut PeerMap<Id, Ext, ScoreExt>) {
-        // Collect prunable peers with their priority info
         let mut candidates: Vec<(Id, PrunePriority)> = peers
             .iter()
             .filter_map(|(id, state)| {
                 let conn_state = state.connection_state();
-                // Never prune connected or connecting peers
-                if conn_state.is_connected() || conn_state == ConnectionState::Connecting {
+                // Never prune connected peers
+                if conn_state.is_connected() {
                     return None;
                 }
                 let priority = PrunePriority {
@@ -171,19 +151,16 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> NetPeerManager<I
             .collect();
 
         if candidates.is_empty() {
-            // All peers are connected/connecting, can't prune
             trace!("no prunable peers found");
             return;
         }
 
-        // Sort by prune priority (worst first)
         candidates.sort_by(|a, b| b.1.cmp(&a.1));
 
-        // Remove the worst peer
         if let Some((id, _)) = candidates.first() {
             peers.remove(id);
             self.registry.remove_by_id(id);
-            debug!(?id, "pruned peer to stay under max_peers");
+            debug!(?id, "pruned peer");
         }
     }
 
@@ -203,45 +180,29 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> NetPeerManager<I
         self.peers.read().keys().cloned().collect()
     }
 
-    /// Returns true if transition was valid (peer was dialable).
-    pub fn start_connecting(&self, id: Id) -> bool {
-        let peer = self.peer(id.clone());
-        let old_state = peer.connection_state();
-
-        if !old_state.is_dialable() {
-            trace!(?id, ?old_state, "peer not dialable");
+    /// Mark peer connected and register Id ↔ PeerId mapping.
+    ///
+    /// Peer must already exist (via `insert_peer`).
+    pub fn on_connected(&self, id: &Id, peer_id: PeerId) -> bool {
+        let Some(peer) = self.get_peer(id) else {
+            debug!(?id, "on_connected: peer not found");
             return false;
-        }
+        };
 
-        peer.set_connection_state(ConnectionState::Connecting);
+        peer.set_connection_state(ConnectionState::Connected);
+        self.registry.register(id.clone(), peer_id);
 
+        debug!(%peer_id, ?id, "peer connected");
         true
     }
 
-    /// Mark peer connected and register Id ↔ PeerId mapping.
-    pub fn on_connected(&self, id: Id, peer_id: PeerId) {
-        let peer = self.peer(id.clone());
-        peer.set_connection_state(ConnectionState::Connected);
-
-        // Register in bidirectional registry
-        self.registry.register(id.clone(), peer_id);
-
-        debug!(peer_id = %peer_id, "peer connected");
-    }
-
-    /// Handle disconnection by libp2p PeerId. Returns protocol ID if found.
-    ///
-    /// Note: The registry mapping is preserved after disconnect to allow resolving
-    /// peer_id → overlay for buffered events (e.g., hive data arriving after disconnect).
-    /// The mapping is cleaned up when the peer is removed from the store or reconnects
-    /// with a different peer_id.
+    /// Handle disconnection by PeerId. Returns protocol ID if found.
     pub fn on_disconnected_by_peer_id(&self, peer_id: &PeerId) -> Option<Id> {
-        // Resolve protocol ID from registry (don't remove - keep for buffered event handling)
         let id = self.registry.resolve_id(peer_id)?;
 
         if let Some(peer) = self.get_peer(&id) {
             peer.set_connection_state(ConnectionState::Disconnected);
-            debug!(peer_id = %peer_id, "peer disconnected");
+            debug!(%peer_id, ?id, "peer disconnected");
         }
 
         Some(id)
@@ -253,12 +214,11 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> NetPeerManager<I
         }
     }
 
-    pub fn ban(&self, id: Id, reason: Option<String>) {
-        let peer = self.peer(id.clone());
-        peer.ban(reason);
-
-        // Remove from registry (disconnect if connected)
-        let _ = self.registry.remove_by_id(&id);
+    pub fn ban(&self, id: &Id, reason: Option<String>) {
+        if let Some(peer) = self.get_peer(id) {
+            peer.ban(reason);
+            self.registry.remove_by_id(id);
+        }
     }
 
     pub fn unban(&self, id: &Id) {
@@ -280,6 +240,15 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> NetPeerManager<I
             .read()
             .iter()
             .filter(|(_, state)| state.is_connected())
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    pub fn disconnected_peers(&self) -> Vec<Id> {
+        self.peers
+            .read()
+            .iter()
+            .filter(|(_, state)| state.is_disconnected())
             .map(|(id, _)| id.clone())
             .collect()
     }
@@ -313,36 +282,23 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> NetPeerManager<I
         let snapshots = store.load_all()?;
         let count = snapshots.len();
 
-        let mut sanitized_connected = 0;
-        let mut sanitized_connecting = 0;
+        let mut sanitized = 0;
 
         let mut peers = self.peers.write();
         for snapshot in snapshots {
             let (id, state) = snapshot.into_state::<Ext, ScoreExt>();
 
-            // Sanitize transient states from previous session
-            match state.connection_state() {
-                ConnectionState::Connected => {
-                    state.set_connection_state(ConnectionState::Disconnected);
-                    sanitized_connected += 1;
-                }
-                ConnectionState::Connecting => {
-                    state.set_connection_state(ConnectionState::Disconnected);
-                    sanitized_connecting += 1;
-                }
-                _ => {}
+            // Sanitize Connected state from previous session
+            if state.connection_state().is_connected() {
+                state.set_connection_state(ConnectionState::Disconnected);
+                sanitized += 1;
             }
 
             peers.insert(id, Arc::new(state));
         }
 
-        if sanitized_connected > 0 || sanitized_connecting > 0 {
-            debug!(
-                count,
-                sanitized_connected,
-                sanitized_connecting,
-                "loaded peers from store (sanitized transient states)"
-            );
+        if sanitized > 0 {
+            debug!(count, sanitized, "loaded peers (sanitized connected states)");
         } else {
             debug!(count, "loaded peers from store");
         }
@@ -363,14 +319,10 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> NetPeerManager<I
         let count = snapshots.len();
         drop(peers);
 
-        // Sanitize transient states before persisting - Connected/Connecting
-        // are session-specific and should be saved as Disconnected
+        // Sanitize Connected state before persisting
         for snapshot in &mut snapshots {
-            match snapshot.state {
-                ConnectionState::Connected | ConnectionState::Connecting => {
-                    snapshot.state = ConnectionState::Disconnected;
-                }
-                _ => {}
+            if snapshot.state.is_connected() {
+                snapshot.state = ConnectionState::Disconnected;
             }
         }
 
@@ -404,7 +356,9 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> NetPeerManager<I
         let mut peers = self.peers.write();
         let stale: Vec<Id> = peers
             .iter()
-            .filter(|(_, state)| !state.is_connected() && (now - state.last_seen()) >= max_age_secs)
+            .filter(|(_, state)| {
+                state.is_disconnected() && (now - state.last_seen()) >= max_age_secs
+            })
             .map(|(id, _)| id.clone())
             .collect();
 
@@ -429,9 +383,31 @@ mod tests {
     use serde::{Deserialize, Serialize};
 
     use super::*;
+    use crate::traits::NetPeerExt;
 
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
     struct TestId(u64);
+
+    #[derive(Clone, Debug, Default)]
+    struct TestExt {
+        data: u32,
+    }
+
+    impl NetPeerExt for TestExt {
+        type Snapshot = u32;
+
+        fn snapshot(&self) -> Self::Snapshot {
+            self.data
+        }
+
+        fn restore(&mut self, snapshot: &Self::Snapshot) {
+            self.data = *snapshot;
+        }
+
+        fn from_snapshot(snapshot: &Self::Snapshot) -> Self {
+            Self { data: *snapshot }
+        }
+    }
 
     fn test_peer_id(n: u8) -> PeerId {
         let bytes = [n; 32];
@@ -442,36 +418,35 @@ mod tests {
     }
 
     #[test]
-    fn test_manager_peer_creation() {
-        let manager = NetPeerManager::<TestId>::with_defaults();
+    fn test_manager_insert_peer() {
+        let manager = NetPeerManager::<TestId, TestExt>::with_defaults();
 
-        // First access creates peer
-        let peer1 = manager.peer(TestId(1));
+        let peer1 = manager.insert_peer(TestId(1), TestExt { data: 42 });
         assert_eq!(manager.peer_count(), 1);
+        assert_eq!(peer1.ext().data, 42);
 
-        // Second access returns same Arc
-        let peer2 = manager.peer(TestId(1));
+        // Second insert returns same Arc
+        let peer2 = manager.insert_peer(TestId(1), TestExt { data: 99 });
         assert!(Arc::ptr_eq(&peer1, &peer2));
-        assert_eq!(manager.peer_count(), 1);
+        assert_eq!(peer2.ext().data, 42); // Original data preserved
 
         // Different ID creates new peer
-        let peer3 = manager.peer(TestId(2));
+        let peer3 = manager.insert_peer(TestId(2), TestExt { data: 100 });
         assert!(!Arc::ptr_eq(&peer1, &peer3));
         assert_eq!(manager.peer_count(), 2);
     }
 
     #[test]
     fn test_manager_connection_flow() {
-        let manager = NetPeerManager::<TestId>::with_defaults();
+        let manager = NetPeerManager::<TestId, TestExt>::with_defaults();
         let id = TestId(1);
         let peer_id = test_peer_id(1);
 
-        // Start connecting
-        assert!(manager.start_connecting(id));
-        assert!(!manager.is_connected(&id));
+        // Insert peer first
+        manager.insert_peer(id, TestExt::default());
 
         // Mark connected
-        manager.on_connected(id, peer_id);
+        assert!(manager.on_connected(&id, peer_id));
         assert!(manager.is_connected(&id));
         assert_eq!(manager.connected_count(), 1);
 
@@ -484,30 +459,49 @@ mod tests {
         assert_eq!(disconnected_id, Some(id));
         assert!(!manager.is_connected(&id));
         assert_eq!(manager.connected_count(), 0);
+    }
 
-        // Registry mapping should be preserved for buffered event handling
-        assert_eq!(manager.resolve_peer_id(&id), Some(peer_id));
+    #[test]
+    fn test_manager_on_connected_unknown_peer() {
+        let manager = NetPeerManager::<TestId, TestExt>::with_defaults();
+        let id = TestId(1);
+        let peer_id = test_peer_id(1);
+
+        // on_connected without insert returns false
+        assert!(!manager.on_connected(&id, peer_id));
+        assert!(!manager.is_connected(&id));
     }
 
     #[test]
     fn test_manager_banning() {
-        let manager = NetPeerManager::<TestId>::with_defaults();
+        let manager = NetPeerManager::<TestId, TestExt>::with_defaults();
         let id = TestId(1);
 
-        // Create peer
-        let _ = manager.peer(id);
+        manager.insert_peer(id, TestExt::default());
 
-        // Ban
-        manager.ban(id, Some("test reason".to_string()));
+        manager.ban(&id, Some("test reason".to_string()));
         assert!(manager.is_banned(&id));
 
-        // Can't connect to banned peer
-        assert!(!manager.start_connecting(id));
-
-        // Unban
         manager.unban(&id);
         assert!(!manager.is_banned(&id));
-        assert!(manager.start_connecting(id));
+    }
+
+    #[test]
+    fn test_manager_disconnected_peers() {
+        let manager = NetPeerManager::<TestId, TestExt>::with_defaults();
+
+        // Insert some peers
+        for i in 1..=5 {
+            manager.insert_peer(TestId(i), TestExt::default());
+        }
+
+        // All should be disconnected initially
+        assert_eq!(manager.disconnected_peers().len(), 5);
+
+        // Connect one
+        manager.on_connected(&TestId(1), test_peer_id(1));
+        assert_eq!(manager.disconnected_peers().len(), 4);
+        assert_eq!(manager.connected_count(), 1);
     }
 
     #[test]
@@ -515,16 +509,18 @@ mod tests {
         use std::sync::Arc;
         use std::thread;
 
-        let manager = Arc::new(NetPeerManager::<TestId>::with_defaults());
+        let manager = Arc::new(NetPeerManager::<TestId, TestExt>::with_defaults());
+        manager.insert_peer(TestId(1), TestExt::default());
+
         let mut handles = vec![];
 
-        // Multiple threads accessing same peer
         for _ in 0..10 {
             let manager_clone = Arc::clone(&manager);
             handles.push(thread::spawn(move || {
-                let peer = manager_clone.peer(TestId(1));
-                for _ in 0..100 {
-                    peer.add_score(1.0);
+                if let Some(peer) = manager_clone.get_peer(&TestId(1)) {
+                    for _ in 0..100 {
+                        peer.add_score(1.0);
+                    }
                 }
             }));
         }
@@ -533,40 +529,20 @@ mod tests {
             handle.join().unwrap();
         }
 
-        // Score should be approximately 1000
         let score = manager.score(&TestId(1)).unwrap();
         assert!((score - 1000.0).abs() < 1.0);
     }
 
     #[test]
-    fn test_manager_peer_state_independence() {
-        let manager = NetPeerManager::<TestId>::with_defaults();
-
-        // Get Arc for peer 1
-        let peer1 = manager.peer(TestId(1));
-        peer1.set_score(50.0);
-
-        // Get Arc for peer 2
-        let peer2 = manager.peer(TestId(2));
-        peer2.set_score(100.0);
-
-        // Updates to one don't affect the other
-        peer1.add_score(10.0);
-        assert!((peer1.score() - 60.0).abs() < 0.001);
-        assert!((peer2.score() - 100.0).abs() < 0.001);
-    }
-
-    #[test]
     fn test_manager_prune_stale() {
-        let manager = NetPeerManager::<TestId>::with_defaults();
+        let manager = NetPeerManager::<TestId, TestExt>::with_defaults();
 
-        // Create some peers
         for i in 1..=5 {
-            let _ = manager.peer(TestId(i));
+            manager.insert_peer(TestId(i), TestExt::default());
         }
         assert_eq!(manager.peer_count(), 5);
 
-        // Prune with 0 max age (all disconnected peers are stale)
+        // Prune with 0 max age
         manager.prune_stale_peers(0);
 
         // All should be pruned (none are connected)

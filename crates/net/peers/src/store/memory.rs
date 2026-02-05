@@ -104,7 +104,7 @@ mod tests {
         NetPeerSnapshot {
             id: TestId(n),
             scoring: PeerScoreSnapshot::default(),
-            state: ConnectionState::Known,
+            state: ConnectionState::Disconnected,
             first_seen: 0,
             last_seen: 0,
             multiaddrs: vec![format!("/ip4/127.0.0.{}/tcp/1634", n).parse().unwrap()],
