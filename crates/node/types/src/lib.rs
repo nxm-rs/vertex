@@ -20,7 +20,6 @@
 
 extern crate alloc;
 
-use core::fmt::Debug;
 use core::marker::PhantomData;
 
 /// Database provider trait for node state persistence.
@@ -63,7 +62,7 @@ impl NodeTaskExecutor for vertex_tasks::TaskExecutor {}
 ///     type Accounting: SwarmBandwidthAccounting;
 /// }
 /// ```
-pub trait NodeTypes: Clone + Debug + Send + Sync + 'static {
+pub trait NodeTypes: Send + Sync + 'static {
     /// Database provider for persistent state.
     type Database: NodeDatabaseProvider;
 
@@ -92,7 +91,6 @@ pub type ExecutorOf<N> = <N as NodeTypes>::Executor;
 /// ```ignore
 /// type MyNodeTypes = AnyNodeTypes<MyDb, MyRpc, MyExecutor>;
 /// ```
-#[derive(Debug)]
 pub struct AnyNodeTypes<Db = (), Rpc = (), Exec = ()>(PhantomData<(Db, Rpc, Exec)>);
 
 impl<Db, Rpc, Exec> Clone for AnyNodeTypes<Db, Rpc, Exec> {
@@ -111,9 +109,9 @@ impl<Db, Rpc, Exec> Default for AnyNodeTypes<Db, Rpc, Exec> {
 
 impl<Db, Rpc, Exec> NodeTypes for AnyNodeTypes<Db, Rpc, Exec>
 where
-    Db: NodeDatabaseProvider + Debug,
-    Rpc: NodeRpcServer + Debug,
-    Exec: NodeTaskExecutor + Debug,
+    Db: NodeDatabaseProvider,
+    Rpc: NodeRpcServer,
+    Exec: NodeTaskExecutor,
 {
     type Database = Db;
     type Rpc = Rpc;
