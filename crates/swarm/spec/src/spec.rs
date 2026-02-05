@@ -37,7 +37,7 @@ use vertex_swarm_forks::{ForkCondition, SwarmHardfork, SwarmHardforks, SwarmHard
 /// - [`crate::init_dev()`] - Local development with auto-generated network ID
 ///
 /// For custom networks, use [`SpecBuilder`] or load from a JSON file with [`Spec::from_file`].
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Spec {
     /// Underlying blockchain
     #[serde(default = "default_chain")]
@@ -163,7 +163,7 @@ pub(crate) fn init_dev() -> Arc<Spec> {
 /// Start from scratch with [`SpecBuilder::new()`], or derive from an existing
 /// network with [`SpecBuilder::mainnet()`], [`SpecBuilder::testnet()`], or
 /// [`SpecBuilder::dev()`] and override specific fields.
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
 pub struct SpecBuilder {
     chain: Option<Chain>,
     network_id: Option<u64>,
@@ -407,7 +407,7 @@ mod tests {
         assert_eq!(spec.network_id, mainnet::NETWORK_ID);
         assert_eq!(spec.network_name, mainnet::NETWORK_NAME);
         assert_eq!(spec.chain, Chain::from(NamedChain::Gnosis));
-        assert_eq!(spec.token, mainnet::TOKEN);
+        assert!(spec.token == mainnet::TOKEN);
     }
 
     #[test]
@@ -416,14 +416,14 @@ mod tests {
         assert_eq!(spec.network_id, testnet::NETWORK_ID);
         assert_eq!(spec.network_name, testnet::NETWORK_NAME);
         assert_eq!(spec.chain, Chain::from(NamedChain::Sepolia));
-        assert_eq!(spec.token, testnet::TOKEN);
+        assert!(spec.token == testnet::TOKEN);
     }
 
     #[test]
     fn test_default_spec() {
         let spec = Spec::default();
         assert_eq!(spec.chain, Chain::from(NamedChain::Dev));
-        assert_eq!(spec.token, dev::TOKEN);
+        assert!(spec.token == dev::TOKEN);
         // Dev network has both Genesis and Accord hardforks
         assert!(spec.hardforks.get(SwarmHardfork::Genesis).is_some());
         assert!(spec.hardforks.get(SwarmHardfork::Accord).is_some());

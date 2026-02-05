@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use vertex_swarm_api::SwarmToken;
 
 /// Swarm token (BZZ) details
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Token {
     /// Contract address
     pub address: Address,
