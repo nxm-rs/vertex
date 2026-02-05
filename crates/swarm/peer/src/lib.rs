@@ -1,6 +1,7 @@
 //! Peer identity and addressing primitives for the Ethereum Swarm P2P network.
 //!
 //! - [`SwarmPeer`] - Canonical peer identity type
+//! - [`SwarmIdentityExt`] - Extension trait for creating peers from identities
 //! - Multiaddr serialization (Bee-compatible)
 //! - Signature verification and overlay validation
 
@@ -15,24 +16,27 @@ pub use util::arbitrary_multiaddr;
 use util::generate_sign_message;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_primitives::compute_overlay;
+use vertex_swarm_spec::SwarmSpec;
 
 pub use nectar_primitives::SwarmAddress;
 pub use nectar_swarms::{NamedSwarm, Swarm, SwarmKind};
 pub use vertex_swarm_primitives::SwarmNodeType;
 
 use alloy_primitives::{Address, B256, Signature};
-use alloy_signer::SignerSync;
+use alloy_signer::{Signer, SignerSync};
 use libp2p::Multiaddr;
-use std::sync::Arc;
 
-/// A Swarm peer's identity and addressing information.
-///
-/// Contains everything needed to identify, verify, and connect to a peer:
-/// multiaddrs, signature, overlay address, nonce, and ethereum address.
-///
-/// Construct via [`with_signer`](Self::with_signer) for local identity,
-/// [`from_signed`](Self::from_signed) for received protocol data, or
-/// [`from_validated`](Self::from_validated) for pre-validated data.
+/// Extension trait for creating [`SwarmPeer`] from any [`SwarmIdentity`].
+pub trait SwarmIdentityExt: SwarmIdentity {
+    /// Create a [`SwarmPeer`] from this identity with the given multiaddrs.
+    fn to_swarm_peer(&self, multiaddrs: Vec<Multiaddr>) -> Result<SwarmPeer, SwarmPeerError> {
+        SwarmPeer::from_identity(self, multiaddrs)
+    }
+}
+
+impl<I: SwarmIdentity> SwarmIdentityExt for I {}
+
+/// Verifiable peer identity with multiaddrs, signature, and overlay address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SwarmPeer {
@@ -44,16 +48,21 @@ pub struct SwarmPeer {
 }
 
 impl SwarmPeer {
-    /// Create a `SwarmPeer` for the local node by signing with the provided signer.
-    pub fn with_signer<S: alloy_signer::Signer + SignerSync>(
+    /// Create a `SwarmPeer` from an identity and observed multiaddrs.
+    ///
+    /// Signs the multiaddrs with the identity's signer to create a verifiable peer.
+    /// At least one multiaddr is required - peers must be dialable.
+    pub fn from_identity<I: SwarmIdentity + ?Sized>(
+        identity: &I,
         multiaddrs: Vec<Multiaddr>,
-        nonce: B256,
-        network_id: u64,
-        signer: Arc<S>,
     ) -> Result<Self, SwarmPeerError> {
         if multiaddrs.is_empty() {
             return Err(SwarmPeerError::NoMultiaddrs);
         }
+
+        let signer = identity.signer();
+        let nonce = identity.nonce();
+        let network_id = identity.spec().network_id();
 
         let ethereum_address = signer.address();
         let overlay = compute_overlay(&ethereum_address, network_id, &nonce);
@@ -71,23 +80,10 @@ impl SwarmPeer {
         })
     }
 
-    /// Create a `SwarmPeer` from an [`Identity`] and observed multiaddrs.
-    pub fn from_identity<I: SwarmIdentity>(
-        identity: &I,
-        multiaddrs: Vec<Multiaddr>,
-    ) -> Result<Self, SwarmPeerError> {
-        use vertex_swarmspec::SwarmSpec;
-        Self::with_signer(
-            multiaddrs,
-            identity.nonce(),
-            identity.spec().network_id(),
-            identity.signer(),
-        )
-    }
-
     /// Create a `SwarmPeer` from protocol data, recovering the ethereum address from signature.
     ///
-    /// Empty multiaddrs are allowed for inbound-only peers (browsers, WebRTC, NAT-restricted).
+    /// At least one multiaddr is required - peers without dialable addresses are rejected.
+    /// Use the connection's remote address as fallback when creating peers.
     pub fn from_signed(
         multiaddrs_bytes: &[u8],
         signature: Signature,
@@ -97,6 +93,10 @@ impl SwarmPeer {
         validate_overlay: bool,
     ) -> Result<Self, SwarmPeerError> {
         let multiaddrs = deserialize_multiaddrs(multiaddrs_bytes)?;
+        if multiaddrs.is_empty() {
+            return Err(SwarmPeerError::NoMultiaddrs);
+        }
+
         let ethereum_address = recover_signer(multiaddrs_bytes, &overlay, &signature, network_id)?;
 
         if validate_overlay {
@@ -140,11 +140,6 @@ impl SwarmPeer {
         self.multiaddrs.first()
     }
 
-    /// Returns true if this peer has dialable addresses.
-    pub fn is_dialable(&self) -> bool {
-        !self.multiaddrs.is_empty()
-    }
-
     pub fn signature(&self) -> &Signature {
         &self.signature
     }
@@ -180,31 +175,25 @@ fn recover_signer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_signer_local::PrivateKeySigner;
-
-    const TEST_NETWORK_ID: u64 = 1;
+    use vertex_swarm_identity::Identity;
+    use vertex_swarm_primitives::SwarmNodeType;
+    use vertex_swarm_spec::{init_testnet, SpecBuilder};
 
     #[test]
     fn swarm_peer_roundtrip() {
-        let signer = Arc::new(PrivateKeySigner::random());
-        let nonce = B256::ZERO;
+        let spec = init_testnet();
+        let identity = Identity::random((*spec).clone(), SwarmNodeType::Storer);
         let multiaddr: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
 
-        let peer1 = SwarmPeer::with_signer(
-            vec![multiaddr.clone()],
-            nonce,
-            TEST_NETWORK_ID,
-            signer.clone(),
-        )
-        .unwrap();
+        let peer1 = SwarmPeer::from_identity(&identity, vec![multiaddr]).unwrap();
 
         let multiaddr_bytes = peer1.serialize_multiaddrs();
         let peer2 = SwarmPeer::from_signed(
             &multiaddr_bytes,
             *peer1.signature(),
             *peer1.overlay(),
-            nonce,
-            TEST_NETWORK_ID,
+            identity.nonce(),
+            spec.network_id(),
             true,
         )
         .unwrap();
@@ -214,43 +203,40 @@ mod tests {
 
     #[test]
     fn signature_recovery() {
-        let signer = Arc::new(PrivateKeySigner::random());
-        let nonce = B256::ZERO;
+        let spec = init_testnet();
+        let identity = Identity::random((*spec).clone(), SwarmNodeType::Storer);
         let multiaddr: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
 
-        let peer = SwarmPeer::with_signer(vec![multiaddr], nonce, TEST_NETWORK_ID, signer.clone())
-            .unwrap();
+        let peer = SwarmPeer::from_identity(&identity, vec![multiaddr]).unwrap();
 
         let multiaddr_bytes = peer.serialize_multiaddrs();
         let recovered = recover_signer(
             &multiaddr_bytes,
             peer.overlay(),
             peer.signature(),
-            TEST_NETWORK_ID,
+            spec.network_id(),
         )
         .unwrap();
 
-        assert_eq!(recovered, signer.address());
+        assert_eq!(recovered, identity.ethereum_address());
     }
 
     #[test]
     fn invalid_overlay_rejected() {
-        let signer1 = Arc::new(PrivateKeySigner::random());
-        let signer2 = Arc::new(PrivateKeySigner::random());
-        let nonce = B256::ZERO;
+        let spec = init_testnet();
+        let identity1 = Identity::random((*spec).clone(), SwarmNodeType::Storer);
+        let identity2 = Identity::random((*spec).clone(), SwarmNodeType::Storer);
         let multiaddr: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
 
-        let peer1 =
-            SwarmPeer::with_signer(vec![multiaddr], nonce, TEST_NETWORK_ID, signer1).unwrap();
+        let peer1 = SwarmPeer::from_identity(&identity1, vec![multiaddr]).unwrap();
 
-        let overlay2 = compute_overlay(&signer2.address(), TEST_NETWORK_ID, &nonce);
-
+        // Try to verify peer1's signature with identity2's overlay
         let result = SwarmPeer::from_signed(
             &peer1.serialize_multiaddrs(),
             *peer1.signature(),
-            overlay2,
-            nonce,
-            TEST_NETWORK_ID,
+            identity2.overlay_address(),
+            identity1.nonce(),
+            spec.network_id(),
             true,
         );
 
@@ -259,18 +245,55 @@ mod tests {
 
     #[test]
     fn different_networks_different_overlays() {
-        let signer = Arc::new(PrivateKeySigner::random());
-        let nonce = B256::ZERO;
         let multiaddr: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
 
-        let peer1 =
-            SwarmPeer::with_signer(vec![multiaddr.clone()], nonce, 1, signer.clone()).unwrap();
-        let peer2 =
-            SwarmPeer::with_signer(vec![multiaddr.clone()], nonce, 2, signer.clone()).unwrap();
-        let peer3 = SwarmPeer::with_signer(vec![multiaddr], nonce, 100, signer).unwrap();
+        // Create specs with different network IDs
+        let spec1 = SpecBuilder::testnet().network_id(1).build();
+        let spec2 = SpecBuilder::testnet().network_id(2).build();
+        let spec3 = SpecBuilder::testnet().network_id(100).build();
+
+        let identity1 = Identity::random(spec1, SwarmNodeType::Storer);
+        let identity2 = Identity::random(spec2, SwarmNodeType::Storer);
+        let identity3 = Identity::random(spec3, SwarmNodeType::Storer);
+
+        let peer1 = SwarmPeer::from_identity(&identity1, vec![multiaddr.clone()]).unwrap();
+        let peer2 = SwarmPeer::from_identity(&identity2, vec![multiaddr.clone()]).unwrap();
+        let peer3 = SwarmPeer::from_identity(&identity3, vec![multiaddr]).unwrap();
 
         assert_ne!(peer1.overlay(), peer2.overlay());
         assert_ne!(peer1.overlay(), peer3.overlay());
         assert_ne!(peer2.overlay(), peer3.overlay());
+    }
+
+    #[test]
+    fn empty_multiaddrs_rejected_from_identity() {
+        let spec = init_testnet();
+        let identity = Identity::random((*spec).clone(), SwarmNodeType::Storer);
+
+        let result = SwarmPeer::from_identity(&identity, vec![]);
+        assert!(matches!(result, Err(SwarmPeerError::NoMultiaddrs)));
+    }
+
+    #[test]
+    fn empty_multiaddrs_rejected_from_signed() {
+        let spec = init_testnet();
+        let identity = Identity::random((*spec).clone(), SwarmNodeType::Storer);
+        let multiaddr: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
+
+        // Create a valid peer first
+        let peer = SwarmPeer::from_identity(&identity, vec![multiaddr]).unwrap();
+
+        // Try to create from signed with empty multiaddrs bytes
+        let empty_bytes = serialize_multiaddrs(&[]);
+        let result = SwarmPeer::from_signed(
+            &empty_bytes,
+            *peer.signature(),
+            *peer.overlay(),
+            identity.nonce(),
+            spec.network_id(),
+            false,
+        );
+
+        assert!(matches!(result, Err(SwarmPeerError::NoMultiaddrs)));
     }
 }

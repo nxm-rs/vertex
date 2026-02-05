@@ -15,12 +15,11 @@ nectar-swarms.workspace = true
 
 ## vertex crates
 vertex-swarm-api = { workspace = true }
-vertex-swarmspec.workspace = true
+vertex-swarm-spec.workspace = true
 vertex-swarm-primitives = { workspace = true, features = ["serde"] }
 
 alloy-primitives = { workspace = true, features = ["arbitrary"] }
 alloy-signer.workspace = true
-alloy-signer-local.workspace = true
 
 libp2p.workspace = true
 arbitrary = { workspace = true, features = ["derive"] }
@@ -43,6 +42,7 @@ proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
 rand.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+vertex-swarm-identity.workspace = true
 
 [lints]
 workspace = true
