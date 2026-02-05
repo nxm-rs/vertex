@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
+use crate::time::unix_timestamp_secs;
 use crate::traits::NetPeerScoreExt;
 
 /// Fixed-point scaling for score precision without floats in atomics.
@@ -39,7 +40,7 @@ impl<Ext: NetPeerScoreExt> PeerScore<Ext> {
     pub fn new() -> Self {
         Self {
             score: AtomicI64::new(0),
-            last_updated: AtomicU64::new(current_unix_timestamp()),
+            last_updated: AtomicU64::new(unix_timestamp_secs()),
             connection_successes: AtomicU32::new(0),
             connection_timeouts: AtomicU32::new(0),
             connection_refusals: AtomicU32::new(0),
@@ -95,7 +96,7 @@ impl<Ext: NetPeerScoreExt> PeerScore<Ext> {
     }
 
     pub fn touch(&self) {
-        self.last_updated.store(current_unix_timestamp(), ORD);
+        self.last_updated.store(unix_timestamp_secs(), ORD);
     }
 
     pub fn connection_successes(&self) -> u32 {
@@ -285,14 +286,6 @@ impl<ExtSnap> PeerScoreSnapshot<ExtSnap> {
         }
         Some(self.latency_sum_nanos / self.latency_samples as u64)
     }
-}
-
-fn current_unix_timestamp() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

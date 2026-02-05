@@ -5,10 +5,8 @@ use std::sync::Arc;
 
 use libp2p::PeerId;
 use parking_lot::RwLock;
-use tokio::sync::broadcast;
 use tracing::{debug, trace};
 
-use crate::events::{EventEmitter, PeerEvent};
 use crate::registry::PeerRegistry;
 use crate::state::{ConnectionState, NetPeerSnapshot, PeerState};
 use crate::store::{ExtSnapBounds, NetPeerStore, PeerStoreError};
@@ -24,8 +22,6 @@ pub struct NetPeerManagerConfig {
     pub ban_threshold: f64,
     /// Maximum peers to track. None = unlimited (for bootnodes/crawlers).
     pub max_peers: Option<usize>,
-    /// Broadcast channel capacity for peer events.
-    pub event_channel_capacity: usize,
 }
 
 impl Default for NetPeerManagerConfig {
@@ -33,7 +29,6 @@ impl Default for NetPeerManagerConfig {
         Self {
             ban_threshold: -100.0,
             max_peers: Some(10_000),
-            event_channel_capacity: 256,
         }
     }
 }
@@ -95,13 +90,11 @@ pub struct NetPeerManager<Id: NetPeerId, Ext: NetPeerExt = (), ScoreExt: NetPeer
     /// Brief lock to get Arc, then release.
     peers: RwLock<PeerMap<Id, Ext, ScoreExt>>,
     registry: PeerRegistry<Id>,
-    events: EventEmitter<Id>,
 }
 
 impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> NetPeerManager<Id, Ext, ScoreExt> {
     pub fn new(config: NetPeerManagerConfig) -> Self {
         Self {
-            events: EventEmitter::new(config.event_channel_capacity),
             config,
             peers: RwLock::new(HashMap::new()),
             registry: PeerRegistry::new(),
@@ -148,7 +141,6 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> NetPeerManager<I
         peers.insert(id.clone(), Arc::clone(&state));
 
         debug!(?id, "new peer added to manager");
-        self.events.peer_discovered(id);
 
         state
     }
@@ -222,9 +214,6 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> NetPeerManager<I
         }
 
         peer.set_connection_state(ConnectionState::Connecting);
-        self.events
-            .state_changed(id.clone(), old_state, ConnectionState::Connecting);
-        self.events.peer_connecting(id);
 
         true
     }
@@ -232,16 +221,10 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> NetPeerManager<I
     /// Mark peer connected and register Id ↔ PeerId mapping.
     pub fn on_connected(&self, id: Id, peer_id: PeerId) {
         let peer = self.peer(id.clone());
-        let old_state = peer.connection_state();
-
         peer.set_connection_state(ConnectionState::Connected);
 
         // Register in bidirectional registry
         self.registry.register(id.clone(), peer_id);
-
-        self.events
-            .state_changed(id.clone(), old_state, ConnectionState::Connected);
-        self.events.peer_connected(id, Some(peer_id));
 
         debug!(peer_id = %peer_id, "peer connected");
     }
@@ -257,12 +240,7 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> NetPeerManager<I
         let id = self.registry.resolve_id(peer_id)?;
 
         if let Some(peer) = self.get_peer(&id) {
-            let old_state = peer.connection_state();
             peer.set_connection_state(ConnectionState::Disconnected);
-
-            self.events
-                .state_changed(id.clone(), old_state, ConnectionState::Disconnected);
-            self.events.peer_disconnected(id.clone(), Some(*peer_id));
             debug!(peer_id = %peer_id, "peer disconnected");
         }
 
@@ -271,32 +249,21 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> NetPeerManager<I
 
     pub fn on_disconnected(&self, id: &Id) {
         if let Some(peer) = self.get_peer(id) {
-            let old_state = peer.connection_state();
             peer.set_connection_state(ConnectionState::Disconnected);
-
-            // Don't remove from registry - keep mapping for buffered event handling
-            let peer_id = self.registry.resolve_peer(id);
-
-            self.events
-                .state_changed(id.clone(), old_state, ConnectionState::Disconnected);
-            self.events.peer_disconnected(id.clone(), peer_id);
         }
     }
 
     pub fn ban(&self, id: Id, reason: Option<String>) {
         let peer = self.peer(id.clone());
-        peer.ban(reason.clone());
+        peer.ban(reason);
 
         // Remove from registry (disconnect if connected)
         let _ = self.registry.remove_by_id(&id);
-
-        self.events.peer_banned(id, reason);
     }
 
     pub fn unban(&self, id: &Id) {
         if let Some(peer) = self.get_peer(id) {
             peer.unban();
-            self.events.peer_unbanned(id.clone());
         }
     }
 
@@ -337,14 +304,6 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> NetPeerManager<I
         self.registry.resolve_id(peer_id)
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<PeerEvent<Id>> {
-        self.events.subscribe()
-    }
-
-    pub fn events(&self) -> &EventEmitter<Id> {
-        &self.events
-    }
-
     pub fn load_from_store<S>(&self, store: &S) -> Result<usize, PeerStoreError>
     where
         S: NetPeerStore<Id, Ext::Snapshot, ScoreExt::Snapshot> + ?Sized,
@@ -354,13 +313,39 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> NetPeerManager<I
         let snapshots = store.load_all()?;
         let count = snapshots.len();
 
+        let mut sanitized_connected = 0;
+        let mut sanitized_connecting = 0;
+
         let mut peers = self.peers.write();
         for snapshot in snapshots {
             let (id, state) = snapshot.into_state::<Ext, ScoreExt>();
+
+            // Sanitize transient states from previous session
+            match state.connection_state() {
+                ConnectionState::Connected => {
+                    state.set_connection_state(ConnectionState::Disconnected);
+                    sanitized_connected += 1;
+                }
+                ConnectionState::Connecting => {
+                    state.set_connection_state(ConnectionState::Disconnected);
+                    sanitized_connecting += 1;
+                }
+                _ => {}
+            }
+
             peers.insert(id, Arc::new(state));
         }
 
-        debug!(count, "loaded peers from store");
+        if sanitized_connected > 0 || sanitized_connecting > 0 {
+            debug!(
+                count,
+                sanitized_connected,
+                sanitized_connecting,
+                "loaded peers from store (sanitized transient states)"
+            );
+        } else {
+            debug!(count, "loaded peers from store");
+        }
         Ok(count)
     }
 
@@ -371,12 +356,23 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> NetPeerManager<I
         ScoreExt::Snapshot: ExtSnapBounds,
     {
         let peers = self.peers.read();
-        let snapshots: Vec<NetPeerSnapshot<Id, Ext::Snapshot, ScoreExt::Snapshot>> = peers
+        let mut snapshots: Vec<NetPeerSnapshot<Id, Ext::Snapshot, ScoreExt::Snapshot>> = peers
             .iter()
             .map(|(id, state)| state.snapshot(id.clone()))
             .collect();
         let count = snapshots.len();
         drop(peers);
+
+        // Sanitize transient states before persisting - Connected/Connecting
+        // are session-specific and should be saved as Disconnected
+        for snapshot in &mut snapshots {
+            match snapshot.state {
+                ConnectionState::Connected | ConnectionState::Connecting => {
+                    snapshot.state = ConnectionState::Disconnected;
+                }
+                _ => {}
+            }
+        }
 
         store.save_batch(&snapshots)?;
         store.flush()?;
@@ -540,21 +536,6 @@ mod tests {
         // Score should be approximately 1000
         let score = manager.score(&TestId(1)).unwrap();
         assert!((score - 1000.0).abs() < 1.0);
-    }
-
-    #[tokio::test]
-    async fn test_manager_events() {
-        let manager = NetPeerManager::<TestId>::with_defaults();
-        let mut rx = manager.subscribe();
-
-        // Create peer (emits Discovered event)
-        let _ = manager.peer(TestId(1));
-
-        let event = rx.recv().await.unwrap();
-        match event {
-            PeerEvent::Discovered { id } => assert_eq!(id, TestId(1)),
-            _ => panic!("expected Discovered event"),
-        }
     }
 
     #[test]

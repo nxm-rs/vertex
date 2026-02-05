@@ -1,6 +1,10 @@
-//! Protocol-agnostic peer management with Arc-per-peer pattern for minimal lock contention.
+//! Peer management with Arc-per-peer pattern for minimal lock contention.
+//!
+//! This crate provides generic peer state management built on libp2p primitives
+//! (PeerId, Multiaddr). It uses an Arc-per-peer pattern where protocol handlers
+//! get `Arc<PeerState>` once, then all subsequent operations are lock-free
+//! (atomics) or per-peer locked (no global contention).
 
-pub mod events;
 pub mod manager;
 pub mod registry;
 pub mod score;
@@ -8,7 +12,8 @@ pub mod state;
 pub mod store;
 pub mod traits;
 
-pub use events::{EventEmitter, PeerEvent};
+mod time;
+
 pub use manager::{NetPeerManager, NetPeerManagerConfig};
 pub use registry::{PeerRegistry, RegisterResult};
 pub use score::{PeerScore, PeerScoreSnapshot};

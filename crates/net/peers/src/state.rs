@@ -10,6 +10,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 use crate::score::{PeerScore, PeerScoreSnapshot};
+use crate::time::unix_timestamp_secs;
 use crate::traits::{NetPeerExt, NetPeerId, NetPeerScoreExt};
 
 /// Peer connection state (stored as u8 for atomic operations).
@@ -79,7 +80,7 @@ pub struct PeerState<Id: NetPeerId, Ext: NetPeerExt = (), ScoreExt: NetPeerScore
 
 impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> PeerState<Id, Ext, ScoreExt> {
     pub fn new() -> Self {
-        let now = current_unix_timestamp();
+        let now = unix_timestamp_secs();
         Self {
             _marker: PhantomData,
             scoring: Arc::new(PeerScore::new()),
@@ -225,7 +226,7 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> PeerState<Id, Ex
 
     pub fn touch(&self) {
         self.last_seen
-            .store(current_unix_timestamp(), Ordering::Relaxed);
+            .store(unix_timestamp_secs(), Ordering::Relaxed);
     }
 
     pub fn multiaddrs(&self) -> Vec<Multiaddr> {
@@ -252,7 +253,7 @@ impl<Id: NetPeerId, Ext: NetPeerExt, ScoreExt: NetPeerScoreExt> PeerState<Id, Ex
     pub fn ban(&self, reason: Option<String>) {
         self.set_connection_state(ConnectionState::Banned);
         *self.ban_info.write() = Some(BanInfo {
-            banned_at_unix: current_unix_timestamp(),
+            banned_at_unix: unix_timestamp_secs(),
             reason,
         });
     }
@@ -353,14 +354,6 @@ impl<Id: NetPeerId, ExtSnap, ScoreExtSnap> NetPeerSnapshot<Id, ExtSnap, ScoreExt
     pub fn protocol_errors(&self) -> u32 {
         self.scoring.protocol_errors
     }
-}
-
-fn current_unix_timestamp() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
