@@ -15,11 +15,6 @@ pub trait SwarmTopology: Send + Sync {
     /// Get the node's identity.
     fn identity(&self) -> &Self::Identity;
 
-    /// Get our own overlay address.
-    fn self_address(&self) -> OverlayAddress {
-        self.identity().overlay_address()
-    }
-
     /// Get peers within our neighborhood at the given depth.
     fn neighbors(&self, depth: u8) -> Vec<OverlayAddress>;
 
@@ -33,7 +28,7 @@ pub trait SwarmTopology: Send + Sync {
     fn add_peers(&self, peers: &[OverlayAddress]);
 
     /// Should we accept an inbound connection from this peer?
-    fn pick(&self, peer: &OverlayAddress, is_full_node: bool) -> bool;
+    fn should_accept_peer(&self, peer: &OverlayAddress, is_full_node: bool) -> bool;
 
     /// Notify that a peer has connected.
     fn connected(&self, peer: OverlayAddress);
@@ -43,4 +38,16 @@ pub trait SwarmTopology: Send + Sync {
 
     /// Get peers we should try to connect to.
     fn peers_to_connect(&self) -> Vec<OverlayAddress>;
+
+    /// Record a connection failure for a peer.
+    fn record_connection_failure(&self, peer: &OverlayAddress);
+
+    /// Check if a peer is temporarily unavailable due to recent failures.
+    fn is_temporarily_unavailable(&self, peer: &OverlayAddress) -> bool;
+
+    /// Get the current failure count for a peer.
+    fn failure_count(&self, peer: &OverlayAddress) -> u32;
+
+    /// Remove a peer from all routing state (for banning).
+    fn remove_peer(&self, peer: &OverlayAddress);
 }

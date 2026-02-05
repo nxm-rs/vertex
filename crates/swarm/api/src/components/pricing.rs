@@ -14,7 +14,7 @@ pub trait SwarmPricingConfig: Send + Sync {
 ///
 /// Calculates prices in Accounting Units (AU) based on peer proximity.
 #[auto_impl::auto_impl(&, Arc)]
-pub trait SwarmPricing: Clone + Send + Sync {
+pub trait SwarmPricing: Send + Sync {
     /// Base price for a chunk (ignoring peer proximity).
     fn price(&self, chunk: &ChunkAddress) -> u64;
 

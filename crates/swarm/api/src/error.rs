@@ -1,5 +1,6 @@
 //! Error types for Swarm API operations.
 
+use libp2p::multiaddr;
 use nectar_primitives::ChunkAddress;
 use std::string::String;
 
@@ -64,3 +65,50 @@ pub enum SwarmError {
 
 /// Result type for Swarm API operations.
 pub type SwarmResult<T> = core::result::Result<T, SwarmError>;
+
+/// Error type for configuration validation.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    /// Invalid listen address.
+    #[error("invalid listen address '{addr}': {source}")]
+    InvalidListenAddr {
+        /// The invalid address string.
+        addr: String,
+        /// The parse error.
+        #[source]
+        source: multiaddr::Error,
+    },
+
+    /// Invalid bootnode address.
+    #[error("invalid bootnode address '{addr}': {source}")]
+    InvalidBootnode {
+        /// The invalid address string.
+        addr: String,
+        /// The parse error.
+        #[source]
+        source: multiaddr::Error,
+    },
+
+    /// Invalid NAT address.
+    #[error("invalid NAT address '{addr}': {source}")]
+    InvalidNatAddr {
+        /// The invalid address string.
+        addr: String,
+        /// The parse error.
+        #[source]
+        source: multiaddr::Error,
+    },
+
+    /// Invalid trusted peer address.
+    #[error("invalid trusted peer address '{addr}': {source}")]
+    InvalidTrustedPeer {
+        /// The invalid address string.
+        addr: String,
+        /// The parse error.
+        #[source]
+        source: multiaddr::Error,
+    },
+}
+
+/// Result type for configuration operations.
+pub type ConfigResult<T> = core::result::Result<T, ConfigError>;

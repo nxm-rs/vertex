@@ -1,4 +1,4 @@
-//! Swarm node components - traits and runtime containers.
+//! Component containers for Swarm node capabilities.
 
 mod bandwidth;
 mod localstore;
@@ -10,133 +10,130 @@ pub use localstore::*;
 pub use pricing::*;
 pub use topology::*;
 
-use crate::{SwarmBootnodeTypes, SwarmClientTypes, SwarmStorerTypes};
-
-/// Base components container for all Swarm nodes.
-///
-/// Contains the fundamental components needed for network participation.
-#[derive(Clone)]
-pub struct BaseComponents<Types: SwarmBootnodeTypes>
-where
-    Types::Identity: Clone,
-    Types::Topology: Clone,
-{
-    /// The node's cryptographic identity.
-    pub identity: Types::Identity,
-
-    /// Network topology manager (peer discovery, routing).
-    pub topology: Types::Topology,
+/// Uniform topology access across component levels.
+pub trait HasTopology {
+    /// The topology type.
+    type Topology;
+    /// Get the topology.
+    fn topology(&self) -> &Self::Topology;
 }
 
-impl<Types: SwarmBootnodeTypes> BaseComponents<Types>
-where
-    Types::Identity: Clone,
-    Types::Topology: Clone,
-{
-    /// Create new base components.
-    pub fn new(identity: Types::Identity, topology: Types::Topology) -> Self {
-        Self { identity, topology }
+/// Uniform accounting access (client/storer levels).
+pub trait HasAccounting {
+    /// The accounting type.
+    type Accounting;
+    /// Get the accounting.
+    fn accounting(&self) -> &Self::Accounting;
+}
+
+/// Uniform store access (storer level).
+pub trait HasStore {
+    /// The store type.
+    type Store;
+    /// Get the local store.
+    fn store(&self) -> &Self::Store;
+}
+
+/// Bootnode components (topology only). Identity via `topology.identity()`.
+#[derive(Debug)]
+pub struct BootnodeComponents<T> {
+    /// Network topology.
+    pub topology: T,
+}
+
+impl<T> BootnodeComponents<T> {
+    /// Create bootnode components.
+    pub fn new(topology: T) -> Self {
+        Self { topology }
     }
 }
 
-/// Runtime components container for a built client Swarm node.
-///
-/// Client nodes can retrieve and upload chunks but don't store them locally.
-/// Composes base components with bandwidth accounting.
-#[derive(Clone)]
-pub struct ClientComponents<Types: SwarmClientTypes>
-where
-    Types::Identity: Clone,
-    Types::Topology: Clone,
-    Types::Accounting: Clone,
-{
-    /// Base components (identity, topology).
-    pub base: BaseComponents<Types>,
-
-    /// Bandwidth accounting for availability incentives.
-    pub accounting: Types::Accounting,
+impl<T> HasTopology for BootnodeComponents<T> {
+    type Topology = T;
+    fn topology(&self) -> &T {
+        &self.topology
+    }
 }
 
-impl<Types: SwarmClientTypes> ClientComponents<Types>
-where
-    Types::Identity: Clone,
-    Types::Topology: Clone,
-    Types::Accounting: Clone,
-{
-    /// Create new client node components.
-    pub fn new(
-        identity: Types::Identity,
-        topology: Types::Topology,
-        accounting: Types::Accounting,
-    ) -> Self {
+/// Client components (topology + accounting). Can retrieve/upload chunks.
+#[derive(Debug)]
+pub struct ClientComponents<T, A> {
+    /// Base bootnode components.
+    pub base: BootnodeComponents<T>,
+    /// Combined pricing and bandwidth accounting.
+    pub accounting: A,
+}
+
+impl<T, A> ClientComponents<T, A> {
+    /// Create client components.
+    pub fn new(topology: T, accounting: A) -> Self {
         Self {
-            base: BaseComponents::new(identity, topology),
+            base: BootnodeComponents::new(topology),
             accounting,
         }
     }
 
-    /// Get the node's identity.
-    pub fn identity(&self) -> &Types::Identity {
-        &self.base.identity
-    }
-
-    /// Get the topology manager.
-    pub fn topology(&self) -> &Types::Topology {
-        &self.base.topology
+    /// Create from existing bootnode components.
+    pub fn from_base(base: BootnodeComponents<T>, accounting: A) -> Self {
+        Self { base, accounting }
     }
 }
 
-/// Runtime components container for a built storer Swarm node.
-///
-/// Storer nodes store chunks locally.
-/// Composes client components with local store.
-#[derive(Clone)]
-pub struct StorerComponents<Types: SwarmStorerTypes>
-where
-    Types::Identity: Clone,
-    Types::Topology: Clone,
-    Types::Accounting: Clone,
-    Types::Store: Clone,
-{
-    /// Client node components (base + accounting).
-    pub client: ClientComponents<Types>,
+impl<T, A> HasTopology for ClientComponents<T, A> {
+    type Topology = T;
+    fn topology(&self) -> &T {
+        self.base.topology()
+    }
+}
 
+impl<T, A> HasAccounting for ClientComponents<T, A> {
+    type Accounting = A;
+    fn accounting(&self) -> &A {
+        &self.accounting
+    }
+}
+
+/// Storer components (client + local store). Stores chunks locally.
+#[derive(Debug)]
+pub struct StorerComponents<T, A, S> {
+    /// Client-level components.
+    pub client: ClientComponents<T, A>,
     /// Local chunk storage.
-    pub store: Types::Store,
+    pub store: S,
 }
 
-impl<Types: SwarmStorerTypes> StorerComponents<Types>
-where
-    Types::Identity: Clone,
-    Types::Topology: Clone,
-    Types::Accounting: Clone,
-    Types::Store: Clone,
-{
-    /// Create new storer node components.
-    pub fn new(
-        identity: Types::Identity,
-        topology: Types::Topology,
-        accounting: Types::Accounting,
-        store: Types::Store,
-    ) -> Self {
+impl<T, A, S> StorerComponents<T, A, S> {
+    /// Create storer components.
+    pub fn new(topology: T, accounting: A, store: S) -> Self {
         Self {
-            client: ClientComponents::new(identity, topology, accounting),
+            client: ClientComponents::new(topology, accounting),
             store,
         }
     }
 
-    /// Get the node's identity.
-    pub fn identity(&self) -> &Types::Identity {
-        self.client.identity()
+    /// Create from existing client components.
+    pub fn from_client(client: ClientComponents<T, A>, store: S) -> Self {
+        Self { client, store }
     }
+}
 
-    /// Get the topology manager.
-    pub fn topology(&self) -> &Types::Topology {
+impl<T, A, S> HasTopology for StorerComponents<T, A, S> {
+    type Topology = T;
+    fn topology(&self) -> &T {
         self.client.topology()
     }
+}
 
-    /// Get the accounting manager.
-    pub fn accounting(&self) -> &Types::Accounting {
-        &self.client.accounting
+impl<T, A, S> HasAccounting for StorerComponents<T, A, S> {
+    type Accounting = A;
+    fn accounting(&self) -> &A {
+        self.client.accounting()
+    }
+}
+
+impl<T, A, S> HasStore for StorerComponents<T, A, S> {
+    type Store = S;
+    fn store(&self) -> &S {
+        &self.store
     }
 }
