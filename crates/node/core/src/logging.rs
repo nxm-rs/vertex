@@ -40,7 +40,6 @@ pub fn init_logging(config: &impl NodeLoggingConfig) -> Result<()> {
 
     tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .without_time()
         .init();
 
     // Log startup banner
