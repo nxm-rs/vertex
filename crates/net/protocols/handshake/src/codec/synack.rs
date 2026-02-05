@@ -97,36 +97,33 @@ impl ProtoMessageWithContext<u64> for SynAck {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::B256;
-    use alloy_signer_local::PrivateKeySigner;
     use libp2p::Multiaddr;
-    use std::sync::Arc;
     use vertex_net_codec::ProtocolCodecError;
+    use vertex_swarm_identity::Identity;
+    use vertex_swarm_peer::SwarmNodeType;
+    use vertex_swarm_spec::{SpecBuilder, SwarmSpec};
 
-    const TEST_NETWORK_ID: u64 = 1234567890;
+    fn test_spec() -> vertex_swarm_spec::Spec {
+        SpecBuilder::testnet().network_id(1234567890).build()
+    }
 
-    fn create_test_synack() -> SynAck {
+    fn create_test_synack() -> (SynAck, u64) {
+        let spec = test_spec();
+        let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
         let syn = Syn::new(Multiaddr::try_from("/ip4/127.0.0.1/tcp/1234").unwrap());
-        let signer = Arc::new(PrivateKeySigner::random());
         let multiaddr: Multiaddr = "/ip4/192.168.1.1/tcp/5678".parse().unwrap();
-        let peer =
-            SwarmPeer::with_signer(vec![multiaddr], B256::default(), TEST_NETWORK_ID, signer)
-                .unwrap();
-        SynAck::new(syn, peer, true, "test".to_string())
+        let peer = SwarmPeer::from_identity(&identity, vec![multiaddr]).unwrap();
+        (SynAck::new(syn, peer, true, "test".to_string()), spec.network_id())
     }
 
     #[test]
     fn test_synack_proto_roundtrip() {
-        let synack = create_test_synack();
+        let (synack, network_id) = create_test_synack();
 
-        // Convert SynAck to proto with context
-        let proto_synack = synack.clone().into_proto_with_context(&TEST_NETWORK_ID);
-
-        // Convert proto back to SynAck
+        let proto_synack = synack.clone().into_proto_with_context(&network_id);
         let recovered_synack =
-            SynAck::from_proto_with_context(proto_synack, &TEST_NETWORK_ID).unwrap();
+            SynAck::from_proto_with_context(proto_synack, &network_id).unwrap();
 
-        // Verify equality
         assert_eq!(synack.syn(), recovered_synack.syn());
         assert_eq!(synack.swarm_peer(), recovered_synack.swarm_peer());
         assert_eq!(synack.full_node(), recovered_synack.full_node());
@@ -135,13 +132,13 @@ mod tests {
 
     #[test]
     fn test_synack_err_on_malformed_proto() {
-        let synack = create_test_synack();
-        let proto_synack = synack.into_proto_with_context(&TEST_NETWORK_ID);
+        let (synack, network_id) = create_test_synack();
+        let proto_synack = synack.into_proto_with_context(&network_id);
 
         // Test missing syn
         let mut modified = proto_synack.clone();
         modified.syn = None;
-        let result = SynAck::from_proto_with_context(modified, &TEST_NETWORK_ID);
+        let result = SynAck::from_proto_with_context(modified, &network_id);
         assert!(matches!(
             result,
             Err(ProtocolCodecError::Domain(
@@ -152,7 +149,7 @@ mod tests {
         // Test missing ack
         let mut modified = proto_synack.clone();
         modified.ack = None;
-        let result = SynAck::from_proto_with_context(modified, &TEST_NETWORK_ID);
+        let result = SynAck::from_proto_with_context(modified, &network_id);
         assert!(matches!(
             result,
             Err(ProtocolCodecError::Domain(

@@ -162,32 +162,32 @@ pub(crate) fn swarm_peer_to_proto(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
-    use alloy_primitives::B256;
-    use alloy_signer::k256::ecdsa::SigningKey;
-    use alloy_signer_local::{LocalSigner, PrivateKeySigner};
     use libp2p::Multiaddr;
     use vertex_net_codec::ProtocolCodecError;
+    use vertex_swarm_identity::Identity;
+    use vertex_swarm_peer::SwarmNodeType;
+    use vertex_swarm_spec::{SpecBuilder, SwarmSpec};
 
-    const TEST_NETWORK_ID: u64 = 1234567890;
+    fn test_spec() -> vertex_swarm_spec::Spec {
+        SpecBuilder::testnet().network_id(1234567890).build()
+    }
 
-    fn create_test_peer(network_id: u64, signer: Arc<LocalSigner<SigningKey>>) -> SwarmPeer {
+    fn create_test_peer() -> SwarmPeer {
+        let spec = test_spec();
+        let identity = Identity::random(spec, SwarmNodeType::Storer);
         let multiaddr: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
-        SwarmPeer::with_signer(vec![multiaddr], B256::default(), network_id, signer)
-            .expect("should create peer")
+        SwarmPeer::from_identity(&identity, vec![multiaddr]).expect("should create peer")
     }
 
     #[test]
     fn test_ack_roundtrip() {
-        let signer = Arc::new(PrivateKeySigner::random());
-        let peer = create_test_peer(TEST_NETWORK_ID, signer);
+        let spec = test_spec();
+        let peer = create_test_peer();
         let ack = Ack::new(peer.clone(), true, "hello".to_string());
 
-        // Convert to proto with context and back
-        let proto = ack.clone().into_proto_with_context(&TEST_NETWORK_ID);
-        let recovered = Ack::from_proto_with_context(proto, &TEST_NETWORK_ID).unwrap();
+        let proto = ack.clone().into_proto_with_context(&spec.network_id());
+        let recovered = Ack::from_proto_with_context(proto, &spec.network_id()).unwrap();
 
         assert_eq!(ack.swarm_peer(), recovered.swarm_peer());
         assert_eq!(ack.full_node(), recovered.full_node());
@@ -196,64 +196,60 @@ mod tests {
 
     #[test]
     fn test_proto_roundtrip() {
-        let signer = Arc::new(PrivateKeySigner::random());
-        let peer = create_test_peer(TEST_NETWORK_ID, signer);
+        let spec = test_spec();
+        let peer = create_test_peer();
         let full_node = true;
         let welcome_message = "hello";
 
-        // Encode to proto
-        let proto_ack = swarm_peer_to_proto(&peer, TEST_NETWORK_ID, full_node, welcome_message);
+        let proto_ack = swarm_peer_to_proto(&peer, spec.network_id(), full_node, welcome_message);
 
-        // Decode back
-        let recovered_peer = swarm_peer_from_proto(&proto_ack, TEST_NETWORK_ID).unwrap();
+        let recovered_peer = swarm_peer_from_proto(&proto_ack, spec.network_id()).unwrap();
         let recovered_message = welcome_message_from_proto(&proto_ack).unwrap();
 
-        // Verify
         assert_eq!(peer, recovered_peer);
         assert_eq!(proto_ack.full_node, full_node);
         assert_eq!(recovered_message, welcome_message);
     }
 
     #[test]
-    fn test_inbound_only_peer() {
-        let signer = Arc::new(PrivateKeySigner::random());
-        let peer = create_test_peer(TEST_NETWORK_ID, signer);
-        let mut proto_ack = swarm_peer_to_proto(&peer, TEST_NETWORK_ID, false, "browser peer");
+    fn test_empty_multiaddrs_rejected() {
+        let spec = test_spec();
+        let peer = create_test_peer();
+        let mut proto_ack = swarm_peer_to_proto(&peer, spec.network_id(), false, "test");
 
-        // Clear multiaddrs to simulate an inbound-only peer
+        // Clear multiaddrs - should be rejected
         if let Some(ref mut peer_addr) = proto_ack.peer {
             peer_addr.multiaddrs = vec![];
         }
 
-        // The signature won't be valid because it was signed with the original multiaddrs
-        let result = swarm_peer_from_proto(&proto_ack, TEST_NETWORK_ID);
+        let result = swarm_peer_from_proto(&proto_ack, spec.network_id());
         assert!(
             matches!(
                 result,
                 Err(ProtocolCodecError::Domain(
                     HandshakeCodecDomainError::InvalidPeer(
-                        vertex_swarm_peer::SwarmPeerError::InvalidSignature(_)
-                            | vertex_swarm_peer::SwarmPeerError::InvalidOverlay
+                        vertex_swarm_peer::SwarmPeerError::NoMultiaddrs
                     )
                 ))
             ),
-            "expected signature/overlay error, not multiaddr error"
+            "expected NoMultiaddrs error, got: {:?}",
+            result
         );
     }
 
     #[test]
     fn test_welcome_message_validation() {
-        let signer = Arc::new(PrivateKeySigner::random());
-        let peer = create_test_peer(TEST_NETWORK_ID, signer);
+        let spec = test_spec();
+        let peer = create_test_peer();
         let base_char = "x";
 
         // Test with message at max length - should succeed
         let max_message = base_char.repeat(MAX_WELCOME_MESSAGE_CHARS);
-        let proto_ack = swarm_peer_to_proto(&peer, TEST_NETWORK_ID, false, &max_message);
+        let proto_ack = swarm_peer_to_proto(&peer, spec.network_id(), false, &max_message);
         assert!(welcome_message_from_proto(&proto_ack).is_ok());
 
         // Test with message exceeding max length - should fail
-        let mut proto_ack = swarm_peer_to_proto(&peer, TEST_NETWORK_ID, false, "");
+        let mut proto_ack = swarm_peer_to_proto(&peer, spec.network_id(), false, "");
         proto_ack.welcome_message = base_char.repeat(MAX_WELCOME_MESSAGE_CHARS + 1);
         assert!(matches!(
             welcome_message_from_proto(&proto_ack),
@@ -265,11 +261,11 @@ mod tests {
 
     #[test]
     fn test_network_id_validation() {
-        let signer = Arc::new(PrivateKeySigner::random());
-        let peer = create_test_peer(TEST_NETWORK_ID, signer);
-        let proto_ack = swarm_peer_to_proto(&peer, TEST_NETWORK_ID, false, "hello");
+        let spec = test_spec();
+        let peer = create_test_peer();
+        let proto_ack = swarm_peer_to_proto(&peer, spec.network_id(), false, "hello");
 
-        let wrong_network_id = TEST_NETWORK_ID.wrapping_add(1);
+        let wrong_network_id = spec.network_id().wrapping_add(1);
         let result = swarm_peer_from_proto(&proto_ack, wrong_network_id);
         assert!(matches!(
             result,
@@ -282,9 +278,9 @@ mod tests {
     #[test]
     #[allow(clippy::type_complexity)]
     fn test_malformed_proto() {
-        let signer = Arc::new(PrivateKeySigner::random());
-        let peer = create_test_peer(TEST_NETWORK_ID, signer);
-        let proto_ack = swarm_peer_to_proto(&peer, TEST_NETWORK_ID, false, "test");
+        let spec = test_spec();
+        let peer = create_test_peer();
+        let proto_ack = swarm_peer_to_proto(&peer, spec.network_id(), false, "test");
 
         type AckModifier =
             Box<dyn Fn(crate::proto::handshake::Ack) -> crate::proto::handshake::Ack>;
@@ -325,7 +321,6 @@ mod tests {
                     ack.peer = Some(peer);
                     ack
                 }),
-                // Now handled inside SwarmPeer::from_signed, so error is InvalidPeer(InvalidMultiaddr)
                 Box::new(|e| {
                     matches!(
                         e,
@@ -367,7 +362,7 @@ mod tests {
 
         for (modify_ack, check_error) in test_cases {
             let modified_ack = modify_ack(proto_ack.clone());
-            match swarm_peer_from_proto(&modified_ack, TEST_NETWORK_ID) {
+            match swarm_peer_from_proto(&modified_ack, spec.network_id()) {
                 Err(ref e) => assert!(check_error(e)),
                 Ok(_) => panic!("expected error"),
             }
