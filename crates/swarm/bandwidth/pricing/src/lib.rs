@@ -13,8 +13,8 @@ mod constants;
 mod fixed;
 
 #[cfg(feature = "cli")]
-pub use args::PricingArgs;
-pub use config::DefaultPricingConfig;
+pub use args::FixedPricingArgs;
+pub use config::FixedPricingConfig;
 pub use fixed::FixedPricer;
 
 use nectar_primitives::ChunkAddress;
@@ -44,7 +44,6 @@ impl Pricer for NoPricer {
     }
 }
 
-// Implement SwarmPricing for NoPricer
 impl vertex_swarm_api::SwarmPricing for NoPricer {
     fn price(&self, chunk: &ChunkAddress) -> u64 {
         Pricer::price(self, chunk)

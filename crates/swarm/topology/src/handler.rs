@@ -4,10 +4,10 @@
 //! starts in `Handshaking` state and transitions to `Ready` after successful
 //! handshake, at which point hive and pingpong become available.
 //!
-//! The internal [`Command`] and [`Event`] types are used for communication
-//! between the handler and [`TopologyBehaviour`](crate::TopologyBehaviour).
-//! External code should use [`TopologyCommand`](crate::TopologyCommand) and
-//! [`TopologyEvent`](crate::TopologyEvent) instead.
+//! Internal [`Command`] and [`Event`] types communicate between the handler
+//! and [`TopologyBehaviour`](crate::TopologyBehaviour). External code should
+//! subscribe to [`TopologyServiceEvent`](crate::TopologyServiceEvent) for peer
+//! state changes.
 
 use std::{
     collections::VecDeque,
@@ -28,9 +28,10 @@ use libp2p::{
 };
 use tracing::{debug, trace, warn};
 use vertex_net_handshake::{HANDSHAKE_TIMEOUT, HandshakeError, HandshakeInfo};
-use vertex_swarm_api::SwarmNodeTypes;
+use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_peer::SwarmPeer;
-use vertex_swarm_peermanager::AddressManager;
+
+use crate::nat_discovery::NatDiscovery;
 
 use crate::protocol::{
     TopologyInboundOutput, TopologyInboundUpgrade, TopologyOutboundInfo, TopologyOutboundOutput,
@@ -58,9 +59,7 @@ impl Default for TopologyConfig {
     }
 }
 
-/// Commands from behaviour to handler.
-///
-/// These are internal types - use [`TopologyCommand`](crate::TopologyCommand) instead.
+/// Commands from behaviour to handler (internal).
 pub enum Command {
     /// Start handshake with resolved address.
     StartHandshake(Multiaddr),
@@ -84,9 +83,7 @@ impl std::fmt::Debug for Command {
     }
 }
 
-/// Events from handler to behaviour.
-///
-/// These are internal types - use [`TopologyEvent`](crate::TopologyEvent) instead.
+/// Events from handler to behaviour (internal).
 pub enum Event {
     /// Handshake completed.
     HandshakeCompleted(Box<HandshakeInfo>),
@@ -135,12 +132,12 @@ enum State {
 }
 
 /// Per-connection handler for topology protocols.
-pub struct TopologyHandler<N: SwarmNodeTypes> {
+pub struct TopologyHandler<I: SwarmIdentity> {
     config: TopologyConfig,
-    identity: N::Identity,
+    identity: Arc<I>,
     peer_id: PeerId,
     remote_addr: Multiaddr,
-    address_manager: Option<Arc<AddressManager>>,
+    nat_discovery: Arc<NatDiscovery>,
     state: State,
     pending_events: VecDeque<Event>,
     pending_hive_outbound: VecDeque<Vec<SwarmPeer>>,
@@ -151,20 +148,21 @@ pub struct TopologyHandler<N: SwarmNodeTypes> {
     pending_ping_command: Option<String>,
 }
 
-impl<N: SwarmNodeTypes> TopologyHandler<N> {
+impl<I: SwarmIdentity> TopologyHandler<I> {
     /// Create a new handler.
     pub fn new(
         config: TopologyConfig,
-        identity: N::Identity,
+        identity: Arc<I>,
         peer_id: PeerId,
         remote_addr: &Multiaddr,
+        nat_discovery: Arc<NatDiscovery>,
     ) -> Self {
         Self {
             config,
             identity,
             peer_id,
             remote_addr: remote_addr.clone(),
-            address_manager: None,
+            nat_discovery,
             state: State::Handshaking,
             pending_events: VecDeque::new(),
             pending_hive_outbound: VecDeque::new(),
@@ -176,45 +174,13 @@ impl<N: SwarmNodeTypes> TopologyHandler<N> {
         }
     }
 
-    /// Create a handler with address management for smart address selection.
-    pub fn with_address_manager(
-        config: TopologyConfig,
-        identity: N::Identity,
-        peer_id: PeerId,
-        remote_addr: &Multiaddr,
-        address_manager: Arc<AddressManager>,
-    ) -> Self {
-        Self {
-            config,
-            identity,
-            peer_id,
-            remote_addr: remote_addr.clone(),
-            address_manager: Some(address_manager),
-            state: State::Handshaking,
-            pending_events: VecDeque::new(),
-            pending_hive_outbound: VecDeque::new(),
-            should_initiate_handshake: false,
-            handshake_outbound_pending: false,
-            hive_outbound_pending: false,
-            pingpong_outbound_pending: false,
-            pending_ping_command: None,
-        }
-    }
-
-    fn inbound_upgrade(&self) -> TopologyInboundUpgrade<N> {
-        match &self.address_manager {
-            Some(mgr) => TopologyInboundUpgrade::with_address_manager(
-                self.identity.clone(),
-                self.peer_id,
-                self.remote_addr.clone(),
-                mgr.clone(),
-            ),
-            None => TopologyInboundUpgrade::new(
-                self.identity.clone(),
-                self.peer_id,
-                self.remote_addr.clone(),
-            ),
-        }
+    fn inbound_upgrade(&self) -> TopologyInboundUpgrade<I> {
+        TopologyInboundUpgrade::new(
+            self.identity.clone(),
+            self.peer_id,
+            self.remote_addr.clone(),
+            self.nat_discovery.clone(),
+        )
     }
 
     fn is_ready(&self) -> bool {
@@ -223,11 +189,11 @@ impl<N: SwarmNodeTypes> TopologyHandler<N> {
 }
 
 #[allow(deprecated)]
-impl<N: SwarmNodeTypes> ConnectionHandler for TopologyHandler<N> {
+impl<I: SwarmIdentity> ConnectionHandler for TopologyHandler<I> {
     type FromBehaviour = Command;
     type ToBehaviour = Event;
-    type InboundProtocol = TopologyInboundUpgrade<N>;
-    type OutboundProtocol = TopologyOutboundUpgrade<N>;
+    type InboundProtocol = TopologyInboundUpgrade<I>;
+    type OutboundProtocol = TopologyOutboundUpgrade<I>;
     type InboundOpenInfo = ();
     type OutboundOpenInfo = TopologyOutboundInfo;
 
@@ -257,19 +223,12 @@ impl<N: SwarmNodeTypes> ConnectionHandler for TopologyHandler<N> {
             self.should_initiate_handshake = false;
             self.handshake_outbound_pending = true;
             debug!(peer_id = %self.peer_id, "Initiating outbound handshake");
-            let upgrade = match &self.address_manager {
-                Some(mgr) => TopologyOutboundUpgrade::handshake_with_address_manager(
-                    self.identity.clone(),
-                    self.peer_id,
-                    self.remote_addr.clone(),
-                    mgr.clone(),
-                ),
-                None => TopologyOutboundUpgrade::handshake(
-                    self.identity.clone(),
-                    self.peer_id,
-                    self.remote_addr.clone(),
-                ),
-            };
+            let upgrade = TopologyOutboundUpgrade::handshake(
+                self.identity.clone(),
+                self.peer_id,
+                self.remote_addr.clone(),
+                self.nat_discovery.clone(),
+            );
             return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
                 protocol: SubstreamProtocol::new(upgrade, TopologyOutboundInfo::Handshake)
                     .with_timeout(HANDSHAKE_TIMEOUT),
@@ -287,6 +246,7 @@ impl<N: SwarmNodeTypes> ConnectionHandler for TopologyHandler<N> {
                 self.peer_id,
                 self.remote_addr.clone(),
                 peers,
+                self.nat_discovery.clone(),
             );
             return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
                 protocol: SubstreamProtocol::new(upgrade, TopologyOutboundInfo::Hive)
@@ -306,6 +266,7 @@ impl<N: SwarmNodeTypes> ConnectionHandler for TopologyHandler<N> {
                 self.peer_id,
                 self.remote_addr.clone(),
                 greeting,
+                self.nat_discovery.clone(),
             );
             return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
                 protocol: SubstreamProtocol::new(
@@ -409,7 +370,7 @@ impl<N: SwarmNodeTypes> ConnectionHandler for TopologyHandler<N> {
     }
 }
 
-impl<N: SwarmNodeTypes> TopologyHandler<N> {
+impl<I: SwarmIdentity> TopologyHandler<I> {
     fn handle_inbound_output(&mut self, output: TopologyInboundOutput) {
         match output {
             TopologyInboundOutput::Handshake(info) => {

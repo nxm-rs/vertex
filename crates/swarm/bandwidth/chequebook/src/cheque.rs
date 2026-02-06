@@ -20,7 +20,7 @@ use alloy_primitives::{Address, B256, Signature, U256};
 use alloy_sol_types::{Eip712Domain, SolStruct, eip712_domain};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use vertex_swarmspec::SwarmSpec;
+use vertex_swarm_spec::SwarmSpec;
 
 use crate::ChequeError;
 
@@ -152,7 +152,7 @@ mod tests {
     use super::*;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
-    use vertex_swarmspec::init_mainnet;
+    use vertex_swarm_spec::init_mainnet;
 
     fn test_cheque() -> Cheque {
         Cheque::new(

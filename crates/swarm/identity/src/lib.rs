@@ -6,6 +6,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 pub mod args;
+pub mod keystore;
 
 use alloy_primitives::B256;
 use alloy_signer::k256::ecdsa::SigningKey;
@@ -14,17 +15,18 @@ use nectar_primitives::SwarmAddress;
 use std::sync::Arc;
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeType};
 use vertex_swarm_primitives::compute_overlay;
-use vertex_swarm_spec::{Loggable, Spec, SwarmSpec};
+use vertex_swarm_spec::{HasSpec, Loggable, Spec, SwarmSpec};
 
 pub use args::IdentityArgs;
+pub use keystore::{create_and_save_signer, load_signer_from_keystore, resolve_password};
 pub use vertex_swarm_api::SwarmIdentity as IdentityTrait;
 
 /// Local node identity containing signing key, nonce, and network spec.
 ///
-/// Generic over `SwarmSpec` to support different network configurations.
-/// Uses `Spec` as default for convenience. Wrap in `Arc<Identity>` for sharing.
-pub struct Identity<S: SwarmSpec = Spec> {
-    spec: S,
+/// Holds an `Arc<Spec>` for shared access to the network specification.
+/// Wrap in `Arc<Identity>` for sharing across components.
+pub struct Identity {
+    spec: Arc<Spec>,
     signer: Arc<LocalSigner<SigningKey>>,
     nonce: B256,
     /// Cached at construction time.
@@ -33,9 +35,14 @@ pub struct Identity<S: SwarmSpec = Spec> {
     welcome_message: Option<String>,
 }
 
-impl<S: SwarmSpec> Identity<S> {
+impl Identity {
     /// Creates a new identity from a signer, nonce, spec, and node type.
-    pub fn new(signer: LocalSigner<SigningKey>, nonce: B256, spec: S, node_type: SwarmNodeType) -> Self {
+    pub fn new(
+        signer: LocalSigner<SigningKey>,
+        nonce: B256,
+        spec: Arc<Spec>,
+        node_type: SwarmNodeType,
+    ) -> Self {
         let overlay = compute_overlay(&signer.address(), spec.network_id(), &nonce);
         Self {
             spec,
@@ -48,7 +55,7 @@ impl<S: SwarmSpec> Identity<S> {
     }
 
     /// Creates a random ephemeral identity for testing.
-    pub fn random(spec: S, node_type: SwarmNodeType) -> Self {
+    pub fn random(spec: Arc<Spec>, node_type: SwarmNodeType) -> Self {
         let nonce = B256::from(rand::random::<[u8; 32]>());
         Self::new(LocalSigner::random(), nonce, spec, node_type)
     }
@@ -60,8 +67,14 @@ impl<S: SwarmSpec> Identity<S> {
     }
 }
 
-impl<S: SwarmSpec> SwarmIdentity for Identity<S> {
-    type Spec = S;
+impl HasSpec for Identity {
+    fn spec(&self) -> &Arc<Spec> {
+        &self.spec
+    }
+}
+
+impl SwarmIdentity for Identity {
+    type Spec = Arc<Spec>;
     type Signer = LocalSigner<SigningKey>;
 
     fn spec(&self) -> &Self::Spec {
@@ -91,7 +104,7 @@ impl<S: SwarmSpec> SwarmIdentity for Identity<S> {
     }
 }
 
-impl<S: SwarmSpec> Loggable for Identity<S> {
+impl Loggable for Identity {
     fn log(&self) {
         use tracing::{debug, info};
         info!("Identity:");
@@ -158,5 +171,19 @@ mod tests {
 
         let identity = identity.with_welcome_message("Hello!");
         assert_eq!(identity.welcome_message(), Some("Hello!"));
+    }
+
+    #[test]
+    fn has_spec_trait() {
+        let spec = init_testnet();
+        let identity = Identity::random(spec.clone(), SwarmNodeType::Client);
+
+        // HasSpec returns &Arc<Spec>
+        let spec_ref: &Arc<Spec> = HasSpec::spec(&identity);
+        assert_eq!(spec_ref.network_id(), spec.network_id());
+
+        // Can clone the Arc without taking ownership
+        let cloned: Arc<Spec> = spec_ref.clone();
+        assert_eq!(cloned.network_id(), spec.network_id());
     }
 }

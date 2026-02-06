@@ -1,13 +1,29 @@
 //! Chunk pricing based on Kademlia proximity.
 
+use std::sync::Arc;
+
 use nectar_primitives::ChunkAddress;
 use vertex_swarm_primitives::OverlayAddress;
 
-/// Configuration for chunk pricing.
+use crate::SwarmSpec;
+
+/// Configuration that holds a pricing strategy.
 #[auto_impl::auto_impl(&, Arc)]
 pub trait SwarmPricingConfig: Send + Sync {
-    /// Base price per chunk (scaled by proximity for peer pricing).
-    fn base_price(&self) -> u64;
+    /// The pricing configuration type.
+    type Pricing: Default + Clone + Send + Sync;
+
+    /// Get the pricing configuration.
+    fn pricing(&self) -> &Self::Pricing;
+}
+
+/// Builder that creates a pricer from configuration and spec.
+pub trait SwarmPricingBuilder<S: SwarmSpec>: Clone + Send + Sync {
+    /// The pricer type produced by this builder.
+    type Pricer: SwarmPricing + Clone + Send + Sync + 'static;
+
+    /// Build a pricer from configuration and spec.
+    fn build_pricer(&self, spec: Arc<S>) -> Self::Pricer;
 }
 
 /// Chunk pricing strategy.

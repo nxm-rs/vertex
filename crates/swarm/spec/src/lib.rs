@@ -46,6 +46,8 @@ mod api;
 mod constants;
 pub mod display;
 mod error;
+#[cfg(feature = "std")]
+mod parser;
 mod spec;
 mod token;
 
@@ -59,7 +61,9 @@ pub use vertex_swarm_forks::*;
 pub use nectar_contracts;
 
 // Re-export SwarmSpec trait and providers from vertex-swarm-api
-pub use vertex_swarm_api::{StaticSwarmSpecProvider, SwarmSpec, SwarmSpecProvider, SwarmToken};
+pub use vertex_swarm_api::{
+    StaticSwarmSpecProvider, SwarmSpec, SwarmSpecParser, SwarmSpecProvider, SwarmToken,
+};
 pub use constants::*;
 #[cfg(feature = "std")]
 pub use display::Loggable;
@@ -67,11 +71,25 @@ pub use display::{DisplaySwarmSpec, SwarmSpecExt};
 #[cfg(feature = "std")]
 pub use error::SwarmSpecFileError;
 pub use nectar_primitives::{ChunkTypeSet, StandardChunkSet};
+#[cfg(feature = "std")]
+pub use parser::DefaultSpecParser;
 pub use spec::{DEV, MAINNET, Spec, SpecBuilder, TESTNET};
 pub use token::Token;
 
+// HasSpec trait is defined in this module and exported directly
+
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
+
+/// Types that hold an `Arc<Spec>`.
+///
+/// Provides shared access to the network specification without transferring ownership.
+/// Implement this for types that need to provide spec access to multiple consumers.
+#[auto_impl::auto_impl(&, Arc, Box)]
+pub trait HasSpec: Send + Sync {
+    /// Get the network specification.
+    fn spec(&self) -> &Arc<Spec>;
+}
 
 /// A counter for generating unique network IDs for development/testing
 static DEV_NETWORK_ID_COUNTER: AtomicU64 = AtomicU64::new(1337);
@@ -113,14 +131,18 @@ pub mod prelude {
         // Concrete type
         Spec,
         SpecBuilder,
-        // Core trait
+        // Core traits
         SwarmSpec,
+        SwarmSpecParser,
         SwarmSpecProvider,
         // Initialization
         init_dev,
         init_mainnet,
         init_testnet,
     };
+
+    #[cfg(feature = "std")]
+    pub use super::DefaultSpecParser;
 }
 
 #[cfg(test)]

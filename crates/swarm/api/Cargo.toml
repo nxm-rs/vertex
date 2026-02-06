@@ -24,6 +24,7 @@ alloy-signer = { workspace = true }
 # External dependencies
 auto_impl = "1.1"
 bytes = { workspace = true }
+eyre = { workspace = true }
 futures = { workspace = true }
 libp2p = { workspace = true }
 thiserror = { workspace = true }

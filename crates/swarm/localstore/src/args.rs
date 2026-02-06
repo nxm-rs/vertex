@@ -1,8 +1,8 @@
 //! Local store CLI arguments.
 
+use crate::LocalStoreConfig;
 use clap::Args;
 use serde::{Deserialize, Serialize};
-use vertex_swarm_api::SwarmLocalStoreConfig;
 use vertex_swarm_spec::SwarmSpec;
 
 /// Cache divisor for storer nodes (smaller cache relative to reserve).
@@ -25,6 +25,11 @@ impl LocalStoreArgs {
             cache_chunks: spec.reserve_capacity() / STORER_CACHE_DIVISOR,
         }
     }
+
+    /// Create validated LocalStoreConfig from these CLI arguments.
+    pub fn local_store_config(&self) -> LocalStoreConfig {
+        LocalStoreConfig::new(self.cache_chunks)
+    }
 }
 
 impl Default for LocalStoreArgs {
@@ -32,11 +37,5 @@ impl Default for LocalStoreArgs {
         Self {
             cache_chunks: vertex_swarm_spec::DEFAULT_CACHE_CAPACITY,
         }
-    }
-}
-
-impl SwarmLocalStoreConfig for LocalStoreArgs {
-    fn cache_chunks(&self) -> u64 {
-        self.cache_chunks
     }
 }

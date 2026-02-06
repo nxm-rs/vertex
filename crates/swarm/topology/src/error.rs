@@ -1,11 +1,25 @@
 //! Topology error types.
 
+use std::path::PathBuf;
+
 use libp2p::Multiaddr;
 use vertex_swarm_primitives::OverlayAddress;
 
 /// Errors that can occur in topology operations.
 #[derive(Debug, thiserror::Error)]
 pub enum TopologyError {
+    /// Failed to parse a multiaddr string.
+    #[error("invalid multiaddr '{addr}': {reason}")]
+    InvalidMultiaddr { addr: String, reason: String },
+
+    /// Failed to create the peer store.
+    #[error("failed to create peer store at {path}: {reason}")]
+    PeerStoreCreation { path: PathBuf, reason: String },
+
+    /// Failed to load peers from the store.
+    #[error("failed to load peer store: {reason}")]
+    PeerStoreLoad { reason: String },
+
     /// Failed to resolve a dnsaddr multiaddr.
     #[error("failed to resolve dnsaddr {addr}: {reason}")]
     DnsResolutionFailed { addr: Multiaddr, reason: String },
@@ -29,6 +43,10 @@ pub enum TopologyError {
     /// The operation timed out.
     #[error("operation timed out")]
     Timeout,
+
+    /// The topology service has shut down.
+    #[error("topology service has shut down")]
+    ServiceShutdown,
 }
 
 /// Result type for topology operations.

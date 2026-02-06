@@ -175,6 +175,7 @@ fn recover_signer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use vertex_swarm_identity::Identity;
     use vertex_swarm_primitives::SwarmNodeType;
     use vertex_swarm_spec::{init_testnet, SpecBuilder};
@@ -182,7 +183,7 @@ mod tests {
     #[test]
     fn swarm_peer_roundtrip() {
         let spec = init_testnet();
-        let identity = Identity::random((*spec).clone(), SwarmNodeType::Storer);
+        let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
         let multiaddr: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
 
         let peer1 = SwarmPeer::from_identity(&identity, vec![multiaddr]).unwrap();
@@ -204,7 +205,7 @@ mod tests {
     #[test]
     fn signature_recovery() {
         let spec = init_testnet();
-        let identity = Identity::random((*spec).clone(), SwarmNodeType::Storer);
+        let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
         let multiaddr: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
 
         let peer = SwarmPeer::from_identity(&identity, vec![multiaddr]).unwrap();
@@ -224,8 +225,8 @@ mod tests {
     #[test]
     fn invalid_overlay_rejected() {
         let spec = init_testnet();
-        let identity1 = Identity::random((*spec).clone(), SwarmNodeType::Storer);
-        let identity2 = Identity::random((*spec).clone(), SwarmNodeType::Storer);
+        let identity1 = Identity::random(spec.clone(), SwarmNodeType::Storer);
+        let identity2 = Identity::random(spec.clone(), SwarmNodeType::Storer);
         let multiaddr: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
 
         let peer1 = SwarmPeer::from_identity(&identity1, vec![multiaddr]).unwrap();
@@ -252,9 +253,9 @@ mod tests {
         let spec2 = SpecBuilder::testnet().network_id(2).build();
         let spec3 = SpecBuilder::testnet().network_id(100).build();
 
-        let identity1 = Identity::random(spec1, SwarmNodeType::Storer);
-        let identity2 = Identity::random(spec2, SwarmNodeType::Storer);
-        let identity3 = Identity::random(spec3, SwarmNodeType::Storer);
+        let identity1 = Identity::random(Arc::new(spec1), SwarmNodeType::Storer);
+        let identity2 = Identity::random(Arc::new(spec2), SwarmNodeType::Storer);
+        let identity3 = Identity::random(Arc::new(spec3), SwarmNodeType::Storer);
 
         let peer1 = SwarmPeer::from_identity(&identity1, vec![multiaddr.clone()]).unwrap();
         let peer2 = SwarmPeer::from_identity(&identity2, vec![multiaddr.clone()]).unwrap();
@@ -268,7 +269,7 @@ mod tests {
     #[test]
     fn empty_multiaddrs_rejected_from_identity() {
         let spec = init_testnet();
-        let identity = Identity::random((*spec).clone(), SwarmNodeType::Storer);
+        let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
 
         let result = SwarmPeer::from_identity(&identity, vec![]);
         assert!(matches!(result, Err(SwarmPeerError::NoMultiaddrs)));
@@ -277,7 +278,7 @@ mod tests {
     #[test]
     fn empty_multiaddrs_rejected_from_signed() {
         let spec = init_testnet();
-        let identity = Identity::random((*spec).clone(), SwarmNodeType::Storer);
+        let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
         let multiaddr: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
 
         // Create a valid peer first

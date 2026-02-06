@@ -1,6 +1,6 @@
 [package]
 name = "vertex-swarm-topology"
-description = "Topology behaviour for libp2p handshake, hive, and pingpong protocols"
+description = "Topology behaviour and Kademlia routing for Swarm peer management"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,18 +13,23 @@ repository.workspace = true
 vertex-swarm-primitives.workspace = true
 vertex-swarm-api.workspace = true
 vertex-swarm-identity.workspace = true
+vertex-swarm-spec.workspace = true
+vertex-net-local.workspace = true
 vertex-net-handshake.workspace = true
 vertex-net-headers.workspace = true
 vertex-net-hive.workspace = true
 vertex-net-pingpong.workspace = true
 vertex-swarm-peer.workspace = true
 vertex-swarm-peermanager.workspace = true
+vertex-tasks.workspace = true
+nectar-primitives.workspace = true
 
 ## p2p
 libp2p.workspace = true
 
 ## async
 futures.workspace = true
+tokio.workspace = true
 
 ## crypto/primitives
 alloy-primitives.workspace = true
@@ -34,14 +39,20 @@ bytes.workspace = true
 thiserror.workspace = true
 rand.workspace = true
 tracing.workspace = true
+parking_lot.workspace = true
+hashlink.workspace = true
+web-time.workspace = true
+hex = "0.4"
 
 # DNS resolution (for bootnode dnsaddr resolution)
 hickory-resolver = { version = "0.25", features = ["tokio", "system-config"] }
-tokio = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
 tracing-subscriber.workspace = true
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
+vertex-swarm-spec.workspace = true
 
 [lints]
 workspace = true

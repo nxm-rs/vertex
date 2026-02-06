@@ -5,5 +5,7 @@
 //! neighborhood of responsibility.
 
 mod args;
+mod config;
 
 pub use args::RedistributionArgs;
+pub use config::StorageConfig;

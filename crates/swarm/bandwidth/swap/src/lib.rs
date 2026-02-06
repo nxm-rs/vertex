@@ -184,12 +184,12 @@ mod tests {
         BandwidthMode, Direction, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmNodeType,
         SwarmPeerBandwidth,
     };
-    use vertex_swarm_bandwidth::DefaultAccountingConfig;
+    use vertex_swarm_bandwidth::BandwidthConfig;
     use vertex_swarm_bandwidth::PeerState;
     use vertex_swarm_identity::Identity;
 
     fn test_identity() -> Identity {
-        Identity::random(vertex_swarmspec::init_testnet(), SwarmNodeType::Client)
+        Identity::random(vertex_swarm_spec::init_testnet(), SwarmNodeType::Client)
     }
 
     struct SwapTestConfig;
@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn test_swap_accounting_basic() {
-        let accounting = new_swap_accounting(DefaultAccountingConfig, test_identity());
+        let accounting = new_swap_accounting(BandwidthConfig::default(), test_identity());
 
         let handle = accounting.for_peer(test_peer());
         assert_eq!(handle.balance(), 0);

@@ -1,27 +1,25 @@
 //! Swarm CLI entry point.
 
-use std::future::Future;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use alloy_primitives::B256;
 use clap::{Parser, Subcommand};
-use eyre::{Result, WrapErr};
-use vertex_node_builder::LaunchContext;
+use eyre::Result;
 use vertex_node_commands::{HasLogs, InfraArgs, LogArgs, run_cli};
 use vertex_node_core::config::FullNodeConfig;
 use vertex_node_core::dirs::DataDirs;
+use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
 use vertex_swarm_builder::{
-    SwarmLaunchContext, create_and_save_signer, load_signer_from_keystore, resolve_password,
+    BootnodeConfig, ClientConfig, DefaultClientBuilder, DefaultNodeBuilder, DefaultStorerBuilder,
+    StorerConfig,
 };
-use vertex_swarm_identity::Identity;
 use vertex_swarm_node::ProtocolConfig;
 use vertex_swarm_node::args::ProtocolArgs;
-use vertex_swarm_peermanager::{FilePeerStore, PeerStore};
-use vertex_swarmspec::{Hive, SwarmSpec, init_mainnet, init_testnet};
-use vertex_tasks::TaskExecutor;
+use vertex_swarm_primitives::SwarmNodeType;
+use vertex_swarm_spec::{DefaultSpecParser, Spec, SwarmSpec};
 
 /// Vertex Swarm - Ethereum Swarm Node Implementation
-#[derive(Debug, Parser)]
+#[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 pub struct SwarmCli {
     /// Logging configuration (applies to all subcommands).
@@ -40,135 +38,146 @@ impl HasLogs for SwarmCli {
 }
 
 /// Available Swarm commands.
-#[derive(Debug, Subcommand)]
+#[derive(Subcommand)]
 pub enum SwarmCommands {
     /// Run a Swarm node.
     Node(SwarmRunNodeArgs),
 }
 
 /// Combined arguments for the Swarm 'node' command.
-///
-/// This composes generic infrastructure args with Swarm protocol-specific args.
-#[derive(Debug, clap::Args)]
+#[derive(clap::Args)]
 pub struct SwarmRunNodeArgs {
+    /// Swarm network: "mainnet", "testnet", "dev", or path to spec file.
+    #[arg(long, default_value = "mainnet", value_parser = DefaultSpecParser::parser())]
+    pub swarm: Arc<Spec>,
+
     /// Generic node infrastructure configuration.
     #[command(flatten)]
     pub infra: InfraArgs,
 
     /// Swarm protocol configuration.
     #[command(flatten)]
-    pub swarm: ProtocolArgs,
+    pub protocol: ProtocolArgs,
 }
 
-/// Run the Swarm node CLI with a user-provided closure.
-pub async fn run<F, Fut>(runner: F) -> Result<()>
-where
-    F: FnOnce(SwarmLaunchContext, SwarmRunNodeArgs) -> Fut,
-    Fut: Future<Output = Result<()>>,
-{
+/// Run the Swarm CLI.
+pub async fn run() -> Result<()> {
     run_cli(|cli: SwarmCli| async move {
-        // Extract node args from CLI
         let SwarmCommands::Node(args) = cli.command;
 
-        // Build Swarm launch context
-        let ctx = build_launch_context(&args).await?;
+        // Spec is already parsed by clap via DefaultSpecParser::parser()
+        let spec = args.swarm;
 
-        // Call user's runner
-        runner(ctx, args).await
+        // Initialize data directories
+        let network_name = spec.network_name();
+        let dirs = DataDirs::new(network_name, &args.infra.datadir)?;
+
+        // Load and merge configuration
+        let config_path = dirs.config_file();
+        let mut config = FullNodeConfig::<ProtocolConfig>::load(if config_path.exists() {
+            Some(config_path.as_path())
+        } else {
+            None
+        })?;
+        config.apply_args(&args.infra, &args.protocol);
+
+        // Build validated configs
+        let network = config
+            .protocol
+            .network_config()
+            .map_err(|e| eyre::eyre!("network config error: {}", e))?;
+        let identity = config.protocol.identity(spec.clone(), &dirs.network)?;
+        let peers_path = dirs.network.join("state").join("peers.json");
+        let grpc_addr = socket_addr(&config.infra.api.grpc_addr, config.infra.api.grpc_port);
+
+        // Dispatch based on node type
+        match config.protocol.node_type {
+            SwarmNodeType::Client => {
+                let bandwidth = config
+                    .protocol
+                    .bandwidth_config()
+                    .map_err(|e| eyre::eyre!("bandwidth config error: {}", e))?;
+
+                let node_config =
+                    ClientConfig::new(spec, identity, network, bandwidth, peers_path);
+
+                let (task, rpc_providers, _topology) =
+                    DefaultClientBuilder::from_config(node_config)
+                        .build()
+                        .await?
+                        .into_parts();
+                run_with_grpc(task, &rpc_providers, grpc_addr).await
+            }
+            SwarmNodeType::Bootnode => {
+                let node_config = BootnodeConfig::new(spec, identity, network, peers_path);
+
+                let (task, rpc_providers, _topology) =
+                    DefaultNodeBuilder::from_config(node_config)
+                        .build()
+                        .await?
+                        .into_parts();
+                run_with_grpc(task, &rpc_providers, grpc_addr).await
+            }
+            SwarmNodeType::Storer => {
+                let bandwidth = config
+                    .protocol
+                    .bandwidth_config()
+                    .map_err(|e| eyre::eyre!("bandwidth config error: {}", e))?;
+                let local_store = config.protocol.local_store_config();
+                let storage = config.protocol.storage_config();
+
+                let node_config = StorerConfig::new(
+                    spec,
+                    identity,
+                    network,
+                    bandwidth,
+                    local_store,
+                    storage,
+                    peers_path,
+                );
+
+                let (task, rpc_providers, _topology) =
+                    DefaultStorerBuilder::from_config(node_config)
+                        .build()
+                        .await?
+                        .into_parts();
+                run_with_grpc(task, &rpc_providers, grpc_addr).await
+            }
+        }
     })
     .await
 }
 
-/// Build a Swarm launch context from CLI arguments.
-async fn build_launch_context(args: &SwarmRunNodeArgs) -> Result<SwarmLaunchContext> {
-    use tracing::debug;
+/// Run node task with gRPC server.
+async fn run_with_grpc<P: RegistersGrpcServices>(
+    task: vertex_swarm_api::NodeTask,
+    providers: &P,
+    grpc_addr: SocketAddr,
+) -> Result<()> {
+    // Build gRPC server
+    let mut registry = GrpcRegistry::new();
+    providers.register_grpc_services(&mut registry);
+    let server = registry.into_server(grpc_addr)?;
+    tracing::info!(%grpc_addr, "Starting gRPC server");
 
-    // Validate argument combinations
-    args.swarm.validate().map_err(|e| eyre::eyre!(e))?;
-
-    // Get task executor
-    let executor = TaskExecutor::current();
-
-    // Determine which network to connect to
-    let spec = resolve_network_spec(&args.swarm)?;
-
-    // Initialize data directories
-    let dirs = DataDirs::new(spec.network_name(), &args.infra.datadir)?;
-
-    // Load configuration
-    let config_path = dirs.config_file();
-    let mut config = FullNodeConfig::<ProtocolConfig>::load(if config_path.exists() {
-        Some(config_path.as_path())
-    } else {
-        None
-    })?;
-
-    // Apply CLI overrides
-    config.apply_args(&args.infra, &args.swarm);
-
-    let node_type = config.protocol.node_type;
-
-    // Create peer store
-    let peers_file = dirs.network.join("state").join("peers.json");
-    let peer_store: Arc<PeerStore> = Arc::new(
-        FilePeerStore::new_with_create_dir(&peers_file)
-            .wrap_err_with(|| format!("failed to open peers database: {}", peers_file.display()))?,
-    );
-
-    // Determine if we need ephemeral or persistent identity
-    let use_ephemeral =
-        config.protocol.identity.ephemeral || !node_type.requires_persistent_identity();
-
-    // Create identity
-    let identity = if use_ephemeral {
-        Identity::random(spec.clone(), node_type)
-    } else {
-        // Load or create persistent identity
-        let keystore_path = dirs.network.join("keystore").join("swarm");
-
-        let password = resolve_password(
-            config.protocol.identity.password.as_deref(),
-            config
-                .protocol
-                .identity
-                .password_file
-                .as_ref()
-                .map(|p| p.to_string_lossy())
-                .as_deref(),
-        )?;
-
-        let signer = if keystore_path.exists() {
-            load_signer_from_keystore(&keystore_path, &password)?
-        } else {
-            create_and_save_signer(&keystore_path, &password)?
-        };
-
-        let nonce = config.protocol.identity.nonce.unwrap_or_else(|| {
-            use rand::Rng;
-            let mut bytes = [0u8; 32];
-            rand::rng().fill(&mut bytes);
-            debug!("Generated new nonce");
-            B256::from(bytes)
-        });
-
-        Identity::new(signer, nonce, spec.clone(), node_type)
-    };
-
-    let base = LaunchContext::new(executor, dirs, ());
-
-    Ok(SwarmLaunchContext::new(
-        base, config, spec, identity, peer_store, peers_file,
-    ))
+    // Run until shutdown
+    tokio::select! {
+        result = server.serve_with_shutdown(async {
+            tokio::signal::ctrl_c().await.ok();
+            tracing::info!("Received shutdown signal");
+        }) => {
+            result?;
+        }
+        _ = task => {
+            tracing::info!("Node task completed");
+        }
+    }
+    Ok(())
 }
 
-/// Resolve the network specification from CLI arguments.
-fn resolve_network_spec(args: &ProtocolArgs) -> Result<Arc<Hive>> {
-    if args.is_mainnet() {
-        Ok(init_mainnet())
-    } else if args.is_testnet() {
-        Ok(init_testnet())
-    } else {
-        // Default to mainnet
-        Ok(init_mainnet())
-    }
+fn socket_addr(addr: &str, port: u16) -> SocketAddr {
+    SocketAddr::new(
+        addr.parse().unwrap_or(IpAddr::from([127, 0, 0, 1])),
+        port,
+    )
 }

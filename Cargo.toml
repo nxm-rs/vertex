@@ -18,7 +18,7 @@ members = [
     "crates/tasks",
 
     # Network
-    "crates/net/peer",
+    "crates/net/local",
     "crates/net/peers",
     "crates/net/codec",
     "crates/net/protocols/handshake",
@@ -51,7 +51,6 @@ members = [
     # Node (libp2p boundary)
     "crates/swarm/node",
     "crates/swarm/topology",
-    "crates/swarm/kademlia",
     "crates/swarm/peermanager",
     "crates/swarm/bandwidth/core",
     "crates/swarm/bandwidth/chequebook",
@@ -85,10 +84,10 @@ resolver = "2"
 rust.unreachable_pub = "warn"
 
 [workspace.dependencies]
-## nectar
-nectar-contracts = { git = "https://github.com/nxm-rs/nectar.git", branch = "main" }
-nectar-primitives = { git = "https://github.com/nxm-rs/nectar.git", branch = "main" }
-nectar-swarms = { git = "https://github.com/nxm-rs/nectar.git", branch = "main" }
+## nectar (local submodule)
+nectar-contracts = { path = "../nectar/crates/contracts" }
+nectar-primitives = { path = "../nectar/crates/primitives" }
+nectar-swarms = { path = "../nectar/crates/swarms" }
 
 digest = "0.10"
 
@@ -101,7 +100,7 @@ vertex-swarm-primitives = { path = "crates/swarm/primitives" }
 vertex-swarm-peer = { path = "crates/swarm/peer" }
 
 # network
-vertex-net-peer = { path = "crates/net/peer" }
+vertex-net-local = { path = "crates/net/local" }
 vertex-net-peers = { path = "crates/net/peers" }
 vertex-net-codec = { path = "crates/net/codec" }
 vertex-net-handshake = { path = "crates/net/protocols/handshake" }
@@ -131,7 +130,7 @@ vertex-tasks = { path = "crates/tasks" }
 vertex-swarm-identity = { path = "crates/swarm/identity" }
 vertex-storage = { path = "crates/storage" }
 vertex-swarm-api = { path = "crates/swarm/api" }
-vertex-swarmspec = { path = "crates/swarm/spec" }
+vertex-swarm-spec = { path = "crates/swarm/spec" }
 vertex-swarm-builder = { path = "crates/swarm/builder" }
 vertex-swarm-rpc = { path = "crates/swarm/rpc" }
 
@@ -140,7 +139,6 @@ vertex-swarm-node = { path = "crates/swarm/node" }
 
 # topology (in swarm/)
 vertex-swarm-topology = { path = "crates/swarm/topology" }
-vertex-swarm-kademlia = { path = "crates/swarm/kademlia" }
 vertex-swarm-peermanager = { path = "crates/swarm/peermanager" }
 
 # bandwidth (in swarm/)

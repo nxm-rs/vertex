@@ -1,45 +1,21 @@
 //! RPC provider implementations for Swarm nodes.
-//!
-//! This module provides concrete implementations of the provider traits
-//! defined in `vertex-swarm-api`.
-
-use std::sync::Arc;
 
 use alloy_primitives::hex::FromHex;
 use async_trait::async_trait;
 use nectar_primitives::SwarmAddress;
-use vertex_swarm_api::{
-    ChunkRetrievalError, ChunkRetrievalResult, SwarmChunkProvider, SwarmTopology,
-};
-use vertex_swarm_identity::Identity;
-use vertex_swarm_kademlia::KademliaTopology;
+use vertex_swarm_api::{ChunkRetrievalError, ChunkRetrievalResult, SwarmChunkProvider, SwarmIdentity};
 use vertex_swarm_node::ClientHandle;
+use vertex_swarm_topology::TopologyHandle;
 
-/// Chunk provider implementation that uses a ClientHandle for network retrieval.
-///
-/// This wraps the network layer's ClientHandle to provide chunk retrieval
-/// via the gRPC API.
+/// Chunk provider using ClientHandle for network retrieval.
 #[derive(Clone)]
-pub struct NetworkChunkProvider {
+pub struct NetworkChunkProvider<I: SwarmIdentity> {
     client_handle: ClientHandle,
-    topology: Arc<KademliaTopology<Arc<Identity>>>,
+    topology: TopologyHandle<I>,
 }
 
-impl std::fmt::Debug for NetworkChunkProvider {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NetworkChunkProvider")
-            .field("client_handle", &"ClientHandle")
-            .field("topology", &"KademliaTopology")
-            .finish()
-    }
-}
-
-impl NetworkChunkProvider {
-    /// Create a new network chunk provider.
-    pub fn new(
-        client_handle: ClientHandle,
-        topology: Arc<KademliaTopology<Arc<Identity>>>,
-    ) -> Self {
+impl<I: SwarmIdentity> NetworkChunkProvider<I> {
+    pub fn new(client_handle: ClientHandle, topology: TopologyHandle<I>) -> Self {
         Self {
             client_handle,
             topology,
@@ -48,7 +24,7 @@ impl NetworkChunkProvider {
 }
 
 #[async_trait]
-impl SwarmChunkProvider for NetworkChunkProvider {
+impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
     async fn retrieve_chunk(
         &self,
         address: &str,

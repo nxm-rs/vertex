@@ -1,45 +1,52 @@
 //! Swarm network topology management.
 //!
-//! Provides libp2p behaviour and handlers for Swarm peer discovery and connection
-//! management. Operates at the libp2p layer using `PeerId` and `Multiaddr`.
-//!
-//! # Public API vs Internal Types
-//!
-//! This crate exposes two levels of command/event types:
-//!
-//! - **Public API** ([`TopologyCommand`], [`TopologyEvent`]): High-level commands and
-//!   events for the node layer. Use these to interact with the topology behaviour.
-//!
-//! - **Internal** (`handler::Command`, `handler::Event`): Low-level per-connection
-//!   messages between the behaviour and connection handlers. These are not exported.
-//!
-//! # Components
-//!
-//! - [`TopologyBehaviour`]: libp2p `NetworkBehaviour` managing handshake, hive, pingpong
-//! - [`BootnodeConnector`]: Bootstrap node connection strategy
-//! - [`dns`]: Resolution of `/dnsaddr/` multiaddrs
+//! Provides libp2p behaviour, handlers, and Kademlia routing for Swarm peer
+//! discovery and connection management.
 
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
+// Public modules (user-facing)
 pub mod behaviour;
-pub mod bootnode;
 pub mod dns;
 pub mod events;
-pub mod handler;
-pub mod protocol;
+pub mod handle;
+pub mod nat_discovery;
+pub mod routing;
+pub mod service;
 
+// Internal modules (crate-only)
+pub(crate) mod bootnode;
+pub(crate) mod dial_tracker;
 mod error;
 mod gossip;
+mod gossip_coordinator;
+pub(crate) mod handler;
+pub(crate) mod protocol;
 
+// Public re-exports
 pub use gossip::HiveGossipConfig;
+pub use nat_discovery::{NatDiscovery, NatDiscoveryConfig};
 
-pub use behaviour::{DepthProvider, TopologyBehaviour};
-pub use bootnode::BootnodeConnector;
+pub use behaviour::TopologyBehaviour;
+pub use gossip_coordinator::DepthProvider;
 pub use dns::{DnsaddrResolveError, is_dnsaddr, resolve_all_dnsaddrs, resolve_dnsaddr};
 pub use error::{TopologyError, TopologyResult};
-pub use events::{TopologyCommand, TopologyEvent};
+pub use events::{TopologyCommand, TopologyServiceEvent};
+pub use handle::TopologyHandle;
 pub use handler::TopologyConfig;
-pub use protocol::{
-    TopologyInboundOutput, TopologyInboundUpgrade, TopologyOutboundInfo, TopologyOutboundOutput,
-    TopologyOutboundRequest, TopologyOutboundUpgrade, TopologyUpgradeError,
+pub use service::{CommandReceiver, TopologyBehaviourComponents, TopologyService, TopologyServiceConfig};
+
+// Re-export DialTracker since it's exposed in TopologyBehaviourComponents
+pub use dial_tracker::DialTracker;
+
+// Re-export routing types at crate root for convenience
+pub use routing::{
+    KademliaConfig, KademliaRouting, PeerFailureProvider, RoutingStats,
+    DEFAULT_CLIENT_RESERVED_SLOTS, DEFAULT_HIGH_WATERMARK, DEFAULT_LOW_WATERMARK,
+    DEFAULT_MANAGE_INTERVAL, DEFAULT_MAX_BALANCED_CANDIDATES, DEFAULT_MAX_CONNECT_ATTEMPTS,
+    DEFAULT_MAX_NEIGHBOR_ATTEMPTS, DEFAULT_MAX_NEIGHBOR_CANDIDATES, DEFAULT_SATURATION_PEERS,
+    MAX_PO,
 };
+
+// Re-export libp2p types used in public API
+pub use libp2p::Multiaddr;

@@ -29,9 +29,13 @@ vertex-swarm-api.workspace = true
 nectar-swarms.workspace = true
 
 # misc
+auto_impl.workspace = true
+clap = { workspace = true, optional = true }
+eyre = { workspace = true }
 humansize = "2.1"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
+strum = { workspace = true }
 thiserror.workspace = true
 tracing = { workspace = true, optional = true }
 
@@ -50,6 +54,7 @@ std = [
     "serde/std",
     "serde_json",
     "tracing",
+    "clap",
 ]
 serde_json = ["dep:serde_json"]
 arbitrary = [

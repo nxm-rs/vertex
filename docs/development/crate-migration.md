@@ -63,13 +63,10 @@ Define a stateless trait that carries associated types:
 
 ```rust
 // node/types/src/lib.rs
-pub trait NodeTypes: Clone + Debug + Send + Sync + 'static {
-    /// Network specification
-    type Spec: SwarmSpec;
-    /// Chunk types this node handles
-    type ChunkSet: ChunkTypeSet;
-    /// Storage backend type
-    type Storage: Default + Send + Sync + 'static;
+pub trait NodeTypes: Send + Sync + 'static {
+    type Database: NodeDatabaseProvider;
+    type Rpc: NodeRpcServer;
+    type Executor: NodeTaskExecutor;
 }
 ```
 

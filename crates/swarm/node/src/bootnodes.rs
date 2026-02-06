@@ -4,7 +4,7 @@
 //! with the networking layer (which needs `Multiaddr`).
 
 use libp2p::Multiaddr;
-use vertex_swarmspec::SwarmSpec;
+use vertex_swarm_spec::SwarmSpec;
 
 /// Provides bootstrap node addresses for network discovery.
 ///

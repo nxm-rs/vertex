@@ -1,153 +1,174 @@
 //! Shared builder infrastructure for node types.
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
-use eyre::Result;
+use eyre::{Result, WrapErr};
 use libp2p::Multiaddr;
-use tracing::info;
-use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmNodeTypes, SwarmTopology};
-use vertex_swarm_kademlia::{KademliaConfig, KademliaTopology};
-use vertex_swarm_peermanager::{
-    AddressManager, DiscoverySender, PeerManager, PeerStore, discovery_channel,
-    run_peer_store_consumer,
+use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig};
+use vertex_swarm_topology::{
+    HiveGossipConfig, KademliaConfig, TopologyBehaviourComponents, TopologyHandle, TopologyService,
+    TopologyServiceConfig,
 };
-use vertex_swarm_topology::BootnodeConnector;
-use vertex_tasks::TaskExecutor;
 
 use crate::BootnodeProvider;
 
-/// Common builder configuration for all node types.
-#[derive(Clone)]
-pub struct BuilderConfig<N: SwarmNodeTypes> {
-    pub identity: N::Identity,
-    pub listen_addrs: Vec<Multiaddr>,
-    pub bootnodes: Vec<Multiaddr>,
-    pub idle_timeout: Duration,
-    pub kademlia_config: KademliaConfig,
-    pub peer_store: Option<Arc<PeerStore>>,
-    pub nat_addrs: Vec<Multiaddr>,
-    pub nat_auto: bool,
+/// Options for building topology infrastructure.
+#[derive(Debug, Clone)]
+pub struct TopologyBuildOptions {
+    /// Kademlia configuration override (uses defaults if None).
+    pub kademlia_config: Option<KademliaConfig>,
+    /// Gossip configuration (None disables, Some enables with config).
+    pub gossip: Option<HiveGossipConfig>,
 }
 
-impl<N: SwarmNodeTypes> BuilderConfig<N> {
-    pub fn new(identity: N::Identity) -> Self {
+impl Default for TopologyBuildOptions {
+    fn default() -> Self {
         Self {
-            identity,
-            listen_addrs: vec![
-                "/ip4/0.0.0.0/tcp/1634".parse().unwrap(),
-                "/ip6/::/tcp/1634".parse().unwrap(),
-            ],
-            bootnodes: vec![],
-            idle_timeout: Duration::from_secs(30),
-            kademlia_config: KademliaConfig::default(),
-            peer_store: None,
-            nat_addrs: vec![],
-            nat_auto: false,
+            kademlia_config: None,
+            gossip: Some(HiveGossipConfig::default()),
         }
     }
+}
 
-    pub fn apply_network_config(&mut self, config: &impl SwarmNetworkConfig) {
-        self.listen_addrs = config
-            .listen_addrs()
-            .into_iter()
-            .filter_map(|s| s.parse().ok())
-            .collect();
+impl TopologyBuildOptions {
+    /// Create with default values (gossip enabled with default config).
+    pub fn new() -> Self {
+        Self::default()
+    }
 
-        let config_bootnodes: Vec<Multiaddr> = config
-            .bootnodes()
-            .into_iter()
-            .filter_map(|s| s.parse().ok())
-            .collect();
+    /// Set Kademlia configuration.
+    pub fn with_kademlia(mut self, config: KademliaConfig) -> Self {
+        self.kademlia_config = Some(config);
+        self
+    }
 
-        self.bootnodes = if config_bootnodes.is_empty() {
-            BootnodeProvider::bootnodes(self.identity.spec())
-        } else {
-            config_bootnodes
-        };
+    /// Set gossip configuration (None disables gossip).
+    pub fn with_gossip(mut self, config: Option<HiveGossipConfig>) -> Self {
+        self.gossip = config;
+        self
+    }
 
-        self.idle_timeout = config.idle_timeout();
-
-        self.nat_addrs = config
-            .nat_addrs()
-            .into_iter()
-            .filter_map(|s| s.parse().ok())
-            .collect();
-        self.nat_auto = config.nat_auto_enabled();
+    /// Disable gossip.
+    pub fn without_gossip(mut self) -> Self {
+        self.gossip = None;
+        self
     }
 }
 
 /// Pre-built infrastructure components ready for swarm assembly.
-pub struct BuiltInfrastructure<N: SwarmNodeTypes> {
-    pub identity: N::Identity,
-    pub peer_manager: Arc<PeerManager>,
-    pub address_manager: Option<Arc<AddressManager>>,
-    pub kademlia: Arc<KademliaTopology<N::Identity>>,
-    pub bootnode_connector: BootnodeConnector,
+pub struct BuiltInfrastructure<I: SwarmIdentity> {
+    pub identity: I,
+    /// Unified topology service owning routing, peer state, and address management.
+    pub topology_service: TopologyService<I>,
+    /// Unified topology handle for queries (wraps kademlia + peer_manager).
+    pub topology_handle: TopologyHandle<I>,
+    /// Components for TopologyBehaviour construction. Use .take() to extract.
+    pub behaviour_components: Option<TopologyBehaviourComponents<I>>,
     pub listen_addrs: Vec<Multiaddr>,
     pub idle_timeout: Duration,
-    pub discovery_tx: DiscoverySender,
 }
 
-impl<N: SwarmNodeTypes> BuiltInfrastructure<N> {
-    pub fn from_config(config: BuilderConfig<N>) -> Result<Self> {
-        let address_manager = {
-            let mgr = AddressManager::new(config.nat_addrs.clone(), config.nat_auto);
-            if !config.nat_addrs.is_empty() {
-                info!(count = config.nat_addrs.len(), "NAT addresses configured");
-                for addr in &config.nat_addrs {
-                    info!(%addr, "NAT address");
-                }
-            }
-            if config.nat_auto {
-                info!("Auto NAT discovery enabled");
-            }
-            Some(Arc::new(mgr))
+impl<I: SwarmIdentity> BuiltInfrastructure<I> {
+    /// Build infrastructure from network configuration.
+    ///
+    /// Identity must be `Clone` (typically `Arc<Identity>`) to share with topology.
+    /// If no bootnodes are provided in config, falls back to spec-defined defaults.
+    pub fn from_config<C>(
+        identity: I,
+        network_config: &C,
+        options: TopologyBuildOptions,
+    ) -> Result<Self>
+    where
+        I: Clone,
+        C: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig<Routing = KademliaConfig>,
+    {
+        // Determine bootnodes: use config or fall back to spec defaults
+        let bootnodes = if network_config.bootnodes().is_empty() {
+            BootnodeProvider::bootnodes(identity.spec())
+        } else {
+            network_config.bootnodes().to_vec()
         };
 
-        let peer_manager = match config.peer_store {
-            Some(store) => {
-                let pm = PeerManager::with_store(store)
-                    .map_err(|e| eyre::eyre!("failed to initialize peer manager: {}", e))?;
-                info!(count = pm.stats().stored_peers, "loaded peers from store");
-                Arc::new(pm)
-            }
-            None => Arc::new(PeerManager::new()),
-        };
+        // Build Kademlia config: use options override or config routing
+        let kademlia_config = options
+            .kademlia_config
+            .unwrap_or_else(|| network_config.routing().clone());
 
-        let kademlia = KademliaTopology::new(config.identity.clone(), config.kademlia_config);
-
-        let known_peers = peer_manager.known_dialable_peers();
-        if !known_peers.is_empty() {
-            info!(
-                count = known_peers.len(),
-                "seeding kademlia with stored peers"
-            );
-            kademlia.add_peers(&known_peers);
+        // Build topology-specific config
+        let mut topology_config = TopologyServiceConfig::new().with_kademlia(kademlia_config);
+        if let Some(gossip_config) = options.gossip {
+            topology_config = topology_config.with_gossip(gossip_config);
         }
 
-        let executor = TaskExecutor::current();
-        let _manage_handle = kademlia.clone().spawn_manage_loop(&executor);
+        // Create a config adapter that provides the resolved bootnodes
+        let config_with_bootnodes = ConfigWithBootnodes {
+            inner: network_config,
+            bootnodes,
+        };
 
-        let (discovery_tx, discovery_rx) = discovery_channel();
-        let pm_for_consumer = peer_manager.clone();
-        executor.spawn_with_graceful_shutdown_signal(
-            "peer_store_consumer",
-            |shutdown| async move {
-                run_peer_store_consumer(pm_for_consumer, discovery_rx, shutdown).await;
-            },
-        );
+        let (topology_service, topology_handle, behaviour_components) =
+            TopologyService::new(identity.clone(), &config_with_bootnodes, topology_config)
+                .wrap_err("failed to create topology service")?;
 
-        let bootnode_connector = BootnodeConnector::new(config.bootnodes);
+        // Get listen addrs from topology service
+        let listen_addrs = topology_service.listen_addrs().to_vec();
 
         Ok(Self {
-            identity: config.identity,
-            peer_manager,
-            address_manager,
-            kademlia,
-            bootnode_connector,
-            listen_addrs: config.listen_addrs,
-            idle_timeout: config.idle_timeout,
-            discovery_tx,
+            identity,
+            topology_service,
+            topology_handle,
+            behaviour_components: Some(behaviour_components),
+            listen_addrs,
+            idle_timeout: network_config.idle_timeout(),
         })
+    }
+
+}
+
+/// Config adapter that provides resolved bootnodes (from spec defaults if needed).
+struct ConfigWithBootnodes<'a, C> {
+    inner: &'a C,
+    bootnodes: Vec<Multiaddr>,
+}
+
+impl<C: SwarmNetworkConfig> SwarmNetworkConfig for ConfigWithBootnodes<'_, C> {
+    fn listen_addrs(&self) -> &[Multiaddr] {
+        self.inner.listen_addrs()
+    }
+
+    fn bootnodes(&self) -> &[Multiaddr] {
+        &self.bootnodes
+    }
+
+    fn trusted_peers(&self) -> &[Multiaddr] {
+        self.inner.trusted_peers()
+    }
+
+    fn discovery_enabled(&self) -> bool {
+        self.inner.discovery_enabled()
+    }
+
+    fn max_peers(&self) -> usize {
+        self.inner.max_peers()
+    }
+
+    fn idle_timeout(&self) -> Duration {
+        self.inner.idle_timeout()
+    }
+
+    fn nat_addrs(&self) -> &[Multiaddr] {
+        self.inner.nat_addrs()
+    }
+
+    fn nat_auto_enabled(&self) -> bool {
+        self.inner.nat_auto_enabled()
+    }
+}
+
+impl<C: SwarmPeerConfig> SwarmPeerConfig for ConfigWithBootnodes<'_, C> {
+    type Peers = C::Peers;
+
+    fn peers(&self) -> &Self::Peers {
+        self.inner.peers()
     }
 }

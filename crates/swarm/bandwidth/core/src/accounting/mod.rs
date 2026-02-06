@@ -315,20 +315,20 @@ impl SwarmPeerBandwidth for AccountingPeerHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DefaultAccountingConfig, NoSettlement};
+    use crate::{BandwidthConfig, NoSettlement};
     use vertex_swarm_api::SwarmNodeType;
     use vertex_swarm_identity::Identity;
 
     fn test_identity() -> Identity {
-        Identity::random(vertex_swarmspec::init_testnet(), SwarmNodeType::Client)
+        Identity::random(vertex_swarm_spec::init_testnet(), SwarmNodeType::Client)
     }
 
     fn test_peer() -> OverlayAddress {
         OverlayAddress::from([1u8; 32])
     }
 
-    fn test_accounting() -> Accounting<DefaultAccountingConfig, Identity> {
-        Accounting::new(DefaultAccountingConfig, test_identity())
+    fn test_accounting() -> Accounting<BandwidthConfig, Identity> {
+        Accounting::new(BandwidthConfig::default(), test_identity())
     }
 
     #[test]
@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn test_with_single_provider() {
         let accounting = Accounting::with_providers(
-            DefaultAccountingConfig,
+            BandwidthConfig::default(),
             test_identity(),
             vec![Box::new(NoSettlement)],
         );
@@ -395,7 +395,7 @@ mod tests {
     #[test]
     fn test_with_two_providers() {
         let accounting = Accounting::with_providers(
-            DefaultAccountingConfig,
+            BandwidthConfig::default(),
             test_identity(),
             vec![Box::new(NoSettlement), Box::new(NoSettlement)],
         );
@@ -501,7 +501,7 @@ mod tests {
     #[test]
     fn test_provider_composition_pre_allow() {
         let accounting = Accounting::with_providers(
-            DefaultAccountingConfig,
+            BandwidthConfig::default(),
             test_identity(),
             vec![
                 Box::new(FixedAdjustProvider(100)),

@@ -16,9 +16,10 @@ use vertex_net_hive::{HiveOutboundProtocol, PROTOCOL_NAME as HIVE_PROTOCOL};
 use vertex_net_pingpong::{
     PROTOCOL_NAME as PINGPONG_PROTOCOL, PingpongInboundProtocol, PingpongOutboundProtocol, Pong,
 };
-use vertex_swarm_api::{SwarmIdentity, SwarmNodeTypes};
+use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_peer::SwarmPeer;
-use vertex_swarm_peermanager::AddressManager;
+
+use crate::nat_discovery::NatDiscovery;
 
 /// Errors from topology protocol upgrades.
 #[derive(Debug, thiserror::Error)]
@@ -45,39 +46,30 @@ pub enum TopologyInboundOutput {
 
 /// Inbound upgrade that handles handshake, hive, and pingpong protocols.
 #[derive(Clone)]
-pub struct TopologyInboundUpgrade<N: SwarmNodeTypes> {
-    identity: N::Identity,
+pub struct TopologyInboundUpgrade<I: SwarmIdentity> {
+    identity: Arc<I>,
     peer_id: PeerId,
     remote_addr: Multiaddr,
-    address_manager: Option<Arc<AddressManager>>,
+    nat_discovery: Arc<NatDiscovery>,
 }
 
-impl<N: SwarmNodeTypes> TopologyInboundUpgrade<N> {
-    pub fn new(identity: N::Identity, peer_id: PeerId, remote_addr: Multiaddr) -> Self {
-        Self {
-            identity,
-            peer_id,
-            remote_addr,
-            address_manager: None,
-        }
-    }
-
-    pub fn with_address_manager(
-        identity: N::Identity,
+impl<I: SwarmIdentity> TopologyInboundUpgrade<I> {
+    pub fn new(
+        identity: Arc<I>,
         peer_id: PeerId,
         remote_addr: Multiaddr,
-        address_manager: Arc<AddressManager>,
+        nat_discovery: Arc<NatDiscovery>,
     ) -> Self {
         Self {
             identity,
             peer_id,
             remote_addr,
-            address_manager: Some(address_manager),
+            nat_discovery,
         }
     }
 }
 
-impl<N: SwarmNodeTypes> std::fmt::Debug for TopologyInboundUpgrade<N> {
+impl<I: SwarmIdentity> std::fmt::Debug for TopologyInboundUpgrade<I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TopologyInboundUpgrade")
             .field("peer_id", &self.peer_id)
@@ -86,7 +78,7 @@ impl<N: SwarmNodeTypes> std::fmt::Debug for TopologyInboundUpgrade<N> {
     }
 }
 
-impl<N: SwarmNodeTypes> UpgradeInfo for TopologyInboundUpgrade<N> {
+impl<I: SwarmIdentity> UpgradeInfo for TopologyInboundUpgrade<I> {
     type Info = &'static str;
     type InfoIter = std::vec::IntoIter<Self::Info>;
 
@@ -95,7 +87,7 @@ impl<N: SwarmNodeTypes> UpgradeInfo for TopologyInboundUpgrade<N> {
     }
 }
 
-impl<N: SwarmNodeTypes> InboundUpgrade<Stream> for TopologyInboundUpgrade<N> {
+impl<I: SwarmIdentity> InboundUpgrade<Stream> for TopologyInboundUpgrade<I> {
     type Output = TopologyInboundOutput;
     type Error = TopologyUpgradeError;
     type Future = BoxFuture<'static, Result<Self::Output, Self::Error>>;
@@ -104,11 +96,7 @@ impl<N: SwarmNodeTypes> InboundUpgrade<Stream> for TopologyInboundUpgrade<N> {
         Box::pin(async move {
             match info {
                 HANDSHAKE_PROTOCOL => {
-                    let additional_addrs = self
-                        .address_manager
-                        .as_ref()
-                        .map(|mgr| mgr.addresses_for_peer(&self.remote_addr))
-                        .unwrap_or_default();
+                    let additional_addrs = self.nat_discovery.addresses_for_peer(&self.remote_addr);
 
                     debug!(
                         peer_id = %self.peer_id,
@@ -117,30 +105,28 @@ impl<N: SwarmNodeTypes> InboundUpgrade<Stream> for TopologyInboundUpgrade<N> {
                         "Inbound handshake: selected addresses for peer"
                     );
 
-                    let handshake = HandshakeProtocol::<N>::with_addrs(
-                        self.identity,
+                    let handshake = HandshakeProtocol::with_addrs(
+                        Arc::clone(&self.identity),
                         self.peer_id,
                         self.remote_addr.clone(),
                         additional_addrs,
                     );
                     let result = handshake.upgrade_inbound(socket, info).await?;
 
-                    if let Some(mgr) = &self.address_manager {
-                        debug!(
-                            peer_id = %self.peer_id,
-                            observed_addr = %result.observed_multiaddr(),
-                            "Inbound handshake: reporting observed address"
-                        );
-                        mgr.on_observed_addr(
-                            result.observed_multiaddr().clone(),
-                            &self.remote_addr,
-                        );
-                    }
+                    debug!(
+                        peer_id = %self.peer_id,
+                        observed_addr = %result.observed_multiaddr(),
+                        "Inbound handshake: reporting observed address"
+                    );
+                    self.nat_discovery.on_observed_addr(
+                        result.observed_multiaddr().clone(),
+                        &self.remote_addr,
+                    );
 
                     Ok(TopologyInboundOutput::Handshake(Box::new(result)))
                 }
                 HIVE_PROTOCOL => {
-                    let hive = vertex_net_hive::inbound::<N>(self.identity.spec());
+                    let hive = vertex_net_hive::inbound(Arc::clone(&self.identity));
                     let validated = hive
                         .upgrade_inbound(socket, info)
                         .await
@@ -163,7 +149,7 @@ impl<N: SwarmNodeTypes> InboundUpgrade<Stream> for TopologyInboundUpgrade<N> {
 
 /// Type of outbound request.
 #[derive(Debug, Clone)]
-pub enum TopologyOutboundRequest {
+pub(crate) enum TopologyOutboundRequest {
     Handshake,
     Hive(Vec<SwarmPeer>),
     Pingpong(String),
@@ -178,67 +164,59 @@ pub enum TopologyOutboundOutput {
 
 /// Outbound upgrade for a specific topology protocol.
 #[derive(Clone)]
-pub struct TopologyOutboundUpgrade<N: SwarmNodeTypes> {
-    identity: N::Identity,
+pub struct TopologyOutboundUpgrade<I: SwarmIdentity> {
+    identity: Arc<I>,
     peer_id: PeerId,
     remote_addr: Multiaddr,
     request: TopologyOutboundRequest,
-    address_manager: Option<Arc<AddressManager>>,
+    nat_discovery: Arc<NatDiscovery>,
 }
 
-impl<N: SwarmNodeTypes> TopologyOutboundUpgrade<N> {
-    pub fn handshake(identity: N::Identity, peer_id: PeerId, remote_addr: Multiaddr) -> Self {
-        Self {
-            identity,
-            peer_id,
-            remote_addr,
-            request: TopologyOutboundRequest::Handshake,
-            address_manager: None,
-        }
-    }
-
-    pub fn handshake_with_address_manager(
-        identity: N::Identity,
+impl<I: SwarmIdentity> TopologyOutboundUpgrade<I> {
+    pub fn handshake(
+        identity: Arc<I>,
         peer_id: PeerId,
         remote_addr: Multiaddr,
-        address_manager: Arc<AddressManager>,
+        nat_discovery: Arc<NatDiscovery>,
     ) -> Self {
         Self {
             identity,
             peer_id,
             remote_addr,
             request: TopologyOutboundRequest::Handshake,
-            address_manager: Some(address_manager),
+            nat_discovery,
         }
     }
 
     pub fn hive(
-        identity: N::Identity,
+        identity: Arc<I>,
         peer_id: PeerId,
         remote_addr: Multiaddr,
         peers: Vec<SwarmPeer>,
+        nat_discovery: Arc<NatDiscovery>,
     ) -> Self {
         Self {
             identity,
             peer_id,
             remote_addr,
             request: TopologyOutboundRequest::Hive(peers),
-            address_manager: None,
+            nat_discovery,
         }
     }
 
     pub fn pingpong(
-        identity: N::Identity,
+        identity: Arc<I>,
         peer_id: PeerId,
         remote_addr: Multiaddr,
         greeting: String,
+        nat_discovery: Arc<NatDiscovery>,
     ) -> Self {
         Self {
             identity,
             peer_id,
             remote_addr,
             request: TopologyOutboundRequest::Pingpong(greeting),
-            address_manager: None,
+            nat_discovery,
         }
     }
 
@@ -251,7 +229,7 @@ impl<N: SwarmNodeTypes> TopologyOutboundUpgrade<N> {
     }
 }
 
-impl<N: SwarmNodeTypes> std::fmt::Debug for TopologyOutboundUpgrade<N> {
+impl<I: SwarmIdentity> std::fmt::Debug for TopologyOutboundUpgrade<I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TopologyOutboundUpgrade")
             .field("peer_id", &self.peer_id)
@@ -260,7 +238,7 @@ impl<N: SwarmNodeTypes> std::fmt::Debug for TopologyOutboundUpgrade<N> {
     }
 }
 
-impl<N: SwarmNodeTypes> UpgradeInfo for TopologyOutboundUpgrade<N> {
+impl<I: SwarmIdentity> UpgradeInfo for TopologyOutboundUpgrade<I> {
     type Info = &'static str;
     type InfoIter = std::iter::Once<Self::Info>;
 
@@ -269,7 +247,7 @@ impl<N: SwarmNodeTypes> UpgradeInfo for TopologyOutboundUpgrade<N> {
     }
 }
 
-impl<N: SwarmNodeTypes> OutboundUpgrade<Stream> for TopologyOutboundUpgrade<N> {
+impl<I: SwarmIdentity> OutboundUpgrade<Stream> for TopologyOutboundUpgrade<I> {
     type Output = TopologyOutboundOutput;
     type Error = TopologyUpgradeError;
     type Future = BoxFuture<'static, Result<Self::Output, Self::Error>>;
@@ -278,11 +256,7 @@ impl<N: SwarmNodeTypes> OutboundUpgrade<Stream> for TopologyOutboundUpgrade<N> {
         Box::pin(async move {
             match self.request {
                 TopologyOutboundRequest::Handshake => {
-                    let additional_addrs = self
-                        .address_manager
-                        .as_ref()
-                        .map(|mgr| mgr.addresses_for_peer(&self.remote_addr))
-                        .unwrap_or_default();
+                    let additional_addrs = self.nat_discovery.addresses_for_peer(&self.remote_addr);
 
                     debug!(
                         peer_id = %self.peer_id,
@@ -291,25 +265,23 @@ impl<N: SwarmNodeTypes> OutboundUpgrade<Stream> for TopologyOutboundUpgrade<N> {
                         "Outbound handshake: selected addresses for peer"
                     );
 
-                    let handshake = HandshakeProtocol::<N>::with_addrs(
-                        self.identity,
+                    let handshake = HandshakeProtocol::with_addrs(
+                        Arc::clone(&self.identity),
                         self.peer_id,
                         self.remote_addr.clone(),
                         additional_addrs,
                     );
                     let result = handshake.upgrade_outbound(socket, info).await?;
 
-                    if let Some(mgr) = &self.address_manager {
-                        debug!(
-                            peer_id = %self.peer_id,
-                            observed_addr = %result.observed_multiaddr(),
-                            "Outbound handshake: reporting observed address"
-                        );
-                        mgr.on_observed_addr(
-                            result.observed_multiaddr().clone(),
-                            &self.remote_addr,
-                        );
-                    }
+                    debug!(
+                        peer_id = %self.peer_id,
+                        observed_addr = %result.observed_multiaddr(),
+                        "Outbound handshake: reporting observed address"
+                    );
+                    self.nat_discovery.on_observed_addr(
+                        result.observed_multiaddr().clone(),
+                        &self.remote_addr,
+                    );
 
                     Ok(TopologyOutboundOutput::Handshake(Box::new(result)))
                 }

@@ -1,8 +1,8 @@
 //! Redistribution (storage incentives) CLI arguments.
 
+use crate::StorageConfig;
 use clap::Args;
 use serde::{Deserialize, Serialize};
-use vertex_swarm_api::SwarmStorageConfig;
 
 /// Redistribution configuration for storage incentives.
 ///
@@ -20,8 +20,9 @@ pub struct RedistributionArgs {
     pub redistribution: bool,
 }
 
-impl SwarmStorageConfig for RedistributionArgs {
-    fn redistribution_enabled(&self) -> bool {
-        self.redistribution
+impl RedistributionArgs {
+    /// Create validated StorageConfig from these CLI arguments.
+    pub fn storage_config(&self) -> StorageConfig {
+        StorageConfig::new(self.redistribution)
     }
 }

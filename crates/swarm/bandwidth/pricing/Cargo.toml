@@ -12,13 +12,13 @@ description = "Chunk pricing for Swarm bandwidth accounting"
 nectar-primitives = { workspace = true }
 vertex-swarm-api = { workspace = true }
 vertex-swarm-primitives = { workspace = true }
-vertex-swarmspec = { workspace = true }
+vertex-swarm-spec = { workspace = true }
 auto_impl = { workspace = true }
 clap = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]
-vertex-swarmspec = { workspace = true }
+vertex-swarm-spec = { workspace = true }
 
 [features]
 default = ["std"]

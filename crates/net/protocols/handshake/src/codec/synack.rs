@@ -103,8 +103,8 @@ mod tests {
     use vertex_swarm_peer::SwarmNodeType;
     use vertex_swarm_spec::{SpecBuilder, SwarmSpec};
 
-    fn test_spec() -> vertex_swarm_spec::Spec {
-        SpecBuilder::testnet().network_id(1234567890).build()
+    fn test_spec() -> std::sync::Arc<vertex_swarm_spec::Spec> {
+        std::sync::Arc::new(SpecBuilder::testnet().network_id(1234567890).build())
     }
 
     fn create_test_synack() -> (SynAck, u64) {

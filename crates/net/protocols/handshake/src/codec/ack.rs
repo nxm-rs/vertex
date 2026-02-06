@@ -169,13 +169,13 @@ mod tests {
     use vertex_swarm_peer::SwarmNodeType;
     use vertex_swarm_spec::{SpecBuilder, SwarmSpec};
 
-    fn test_spec() -> vertex_swarm_spec::Spec {
-        SpecBuilder::testnet().network_id(1234567890).build()
+    fn test_spec() -> std::sync::Arc<vertex_swarm_spec::Spec> {
+        std::sync::Arc::new(SpecBuilder::testnet().network_id(1234567890).build())
     }
 
     fn create_test_peer() -> SwarmPeer {
         let spec = test_spec();
-        let identity = Identity::random(spec, SwarmNodeType::Storer);
+        let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
         let multiaddr: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
         SwarmPeer::from_identity(&identity, vec![multiaddr]).expect("should create peer")
     }

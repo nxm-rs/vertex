@@ -1,40 +1,30 @@
 //! RPC providers for Swarm nodes.
-//!
-//! Each node type has its own provider struct that implements `RegistersGrpcServices`.
-
-use std::sync::Arc;
 
 use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
-use vertex_swarm_api::SwarmChunkProvider;
-use vertex_swarm_identity::Identity;
-use vertex_swarm_kademlia::KademliaTopology;
+use vertex_swarm_api::{SwarmChunkProvider, SwarmIdentity};
 use vertex_swarm_rpc::{ChunkService, NodeService, proto};
+use vertex_swarm_topology::TopologyHandle;
 
-/// RPC providers for client nodes.
-///
-/// Provides both node status (topology) and chunk retrieval.
-pub struct ClientRpcProviders<C> {
-    /// Topology for node status RPC.
-    pub topology: Arc<KademliaTopology<Arc<Identity>>>,
-    /// Chunk provider for chunk retrieval RPC.
-    pub chunks: C,
+/// RPC providers for client nodes (topology status + chunk retrieval).
+pub struct ClientRpcProviders<I: SwarmIdentity, C> {
+    topology: TopologyHandle<I>,
+    chunks: C,
 }
 
-impl<C> ClientRpcProviders<C> {
-    /// Create new client RPC providers.
-    pub fn new(topology: Arc<KademliaTopology<Arc<Identity>>>, chunks: C) -> Self {
+impl<I: SwarmIdentity, C> ClientRpcProviders<I, C> {
+    pub fn new(topology: TopologyHandle<I>, chunks: C) -> Self {
         Self { topology, chunks }
     }
 }
 
-impl<C: SwarmChunkProvider + Clone> RegistersGrpcServices for ClientRpcProviders<C> {
+impl<I: SwarmIdentity, C: SwarmChunkProvider + Clone> RegistersGrpcServices
+    for ClientRpcProviders<I, C>
+{
     fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
-        // Register node service (topology status)
         let node_service = NodeService::new(self.topology.clone());
         let node_server = proto::node::node_server::NodeServer::new(node_service);
         registry.add_service(node_server);
 
-        // Register chunk service
         let chunk_service = ChunkService::new(self.chunks.clone());
         let chunk_server = proto::chunk::chunk_server::ChunkServer::new(chunk_service);
         registry.add_service(chunk_server);
@@ -43,24 +33,41 @@ impl<C: SwarmChunkProvider + Clone> RegistersGrpcServices for ClientRpcProviders
     }
 }
 
-/// RPC providers for bootnodes.
-///
-/// Only provides node status (topology), no chunk service.
-pub struct BootnodeRpcProviders {
-    /// Topology for node status RPC.
-    pub topology: Arc<KademliaTopology<Arc<Identity>>>,
+/// RPC providers for bootnodes (topology status only).
+pub struct BootnodeRpcProviders<I: SwarmIdentity> {
+    topology: TopologyHandle<I>,
 }
 
-impl BootnodeRpcProviders {
-    /// Create new bootnode RPC providers.
-    pub fn new(topology: Arc<KademliaTopology<Arc<Identity>>>) -> Self {
+impl<I: SwarmIdentity> BootnodeRpcProviders<I> {
+    pub fn new(topology: TopologyHandle<I>) -> Self {
         Self { topology }
     }
 }
 
-impl RegistersGrpcServices for BootnodeRpcProviders {
+impl<I: SwarmIdentity> RegistersGrpcServices for BootnodeRpcProviders<I> {
     fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
-        // Register node service (topology status only)
+        let node_service = NodeService::new(self.topology.clone());
+        let node_server = proto::node::node_server::NodeServer::new(node_service);
+        registry.add_service(node_server);
+
+        registry.add_descriptor(proto::FILE_DESCRIPTOR_SET);
+    }
+}
+
+/// RPC providers for storer (full) nodes (topology + chunks + storage).
+pub struct StorerRpcProviders<I: SwarmIdentity> {
+    topology: TopologyHandle<I>,
+}
+
+impl<I: SwarmIdentity> StorerRpcProviders<I> {
+    pub fn new(topology: TopologyHandle<I>) -> Self {
+        Self { topology }
+    }
+}
+
+impl<I: SwarmIdentity> RegistersGrpcServices for StorerRpcProviders<I> {
+    fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
+        // TODO: Add storer-specific RPC services (storage, redistribution, etc.)
         let node_service = NodeService::new(self.topology.clone());
         let node_server = proto::node::node_server::NodeServer::new(node_service);
         registry.add_service(node_server);

@@ -10,7 +10,7 @@ repository.workspace = true
 
 [dependencies]
 # New generic layers
-vertex-net-peer = { workspace = true }
+vertex-net-local = { workspace = true }
 vertex-net-peers = { workspace = true }
 
 # Swarm-specific

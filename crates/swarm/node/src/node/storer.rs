@@ -6,20 +6,15 @@
 //!
 //! Use this for nodes that store and serve chunks in the Swarm network.
 
-use std::sync::Arc;
-
 use eyre::Result;
-use libp2p::{Multiaddr, PeerId};
+use libp2p::PeerId;
 use nectar_primitives::SwarmAddress;
 use tokio::sync::mpsc;
 use tracing::info;
-use vertex_swarm_api::SwarmNodeTypes;
-use vertex_swarm_kademlia::{KademliaConfig, KademliaTopology};
-use vertex_swarm_peermanager::{PeerManager, PeerStore};
-use vertex_swarm_topology::TopologyCommand;
+use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig};
+use vertex_swarm_topology::{KademliaConfig, TopologyCommand, TopologyHandle};
 use vertex_tasks::SpawnableTask;
 
-use super::builder::BuilderConfig;
 use super::client::{ClientNode, ClientNodeBuilder};
 use crate::protocol::{PseudosettleEvent, SwapEvent};
 use crate::{ClientHandle, ClientService};
@@ -34,9 +29,8 @@ use crate::{ClientHandle, ClientService};
 /// # Example
 ///
 /// ```ignore
-/// let (node, service, handle) = StorerNode::<MyTypes>::builder(identity)
-///     .with_network_config(&config)
-///     .build()
+/// let (node, service, handle) = StorerNode::builder(identity)
+///     .build(&config)
 ///     .await?;
 ///
 /// // Spawn the service
@@ -45,18 +39,18 @@ use crate::{ClientHandle, ClientService};
 /// // Run the node
 /// node.into_task().await;
 /// ```
-pub struct StorerNode<N: SwarmNodeTypes> {
+pub struct StorerNode<I: SwarmIdentity> {
     /// The underlying client node.
-    client: ClientNode<N>,
+    client: ClientNode<I>,
     // TODO: Add storage-specific components:
     // - local_store: Arc<dyn LocalStore>
     // - chunk_sync: ChunkSyncService
     // - redistribution: RedistributionService
 }
 
-impl<N: SwarmNodeTypes> StorerNode<N> {
+impl<I: SwarmIdentity> StorerNode<I> {
     /// Create a builder for constructing a StorerNode.
-    pub fn builder(identity: N::Identity) -> StorerNodeBuilder<N> {
+    pub fn builder(identity: I) -> StorerNodeBuilder<I> {
         StorerNodeBuilder::new(identity)
     }
 
@@ -71,18 +65,13 @@ impl<N: SwarmNodeTypes> StorerNode<N> {
     }
 
     /// Get the swarm identity.
-    pub fn identity(&self) -> &N::Identity {
+    pub fn identity(&self) -> &I {
         self.client.identity()
     }
 
-    /// Get the peer manager.
-    pub fn peer_manager(&self) -> &Arc<PeerManager> {
-        self.client.peer_manager()
-    }
-
-    /// Get the Kademlia topology.
-    pub fn kademlia_topology(&self) -> &Arc<KademliaTopology<N::Identity>> {
-        self.client.kademlia_topology()
+    /// Get the topology handle for peer and routing queries.
+    pub fn topology_handle(&self) -> &TopologyHandle<I> {
+        self.client.topology_handle()
     }
 
     /// Send a topology command.
@@ -98,11 +87,6 @@ impl<N: SwarmNodeTypes> StorerNode<N> {
     /// Start listening on configured addresses.
     pub fn start_listening(&mut self) -> Result<()> {
         self.client.start_listening()
-    }
-
-    /// Connect to bootnodes.
-    pub async fn connect_bootnodes(&mut self) -> Result<usize> {
-        self.client.connect_bootnodes().await
     }
 
     /// Run the network event loop.
@@ -125,7 +109,7 @@ impl<N: SwarmNodeTypes> StorerNode<N> {
     }
 }
 
-impl<N: SwarmNodeTypes> SpawnableTask for StorerNode<N> {
+impl<I: SwarmIdentity> SpawnableTask for StorerNode<I> {
     async fn into_task(self) {
         if let Err(e) = self.run().await {
             tracing::error!(error = %e, "StorerNode error");
@@ -134,56 +118,41 @@ impl<N: SwarmNodeTypes> SpawnableTask for StorerNode<N> {
 }
 
 /// Builder for StorerNode.
-pub struct StorerNodeBuilder<N: SwarmNodeTypes> {
-    config: BuilderConfig<N>,
+pub struct StorerNodeBuilder<I: SwarmIdentity> {
+    identity: I,
+    kademlia_config: Option<KademliaConfig>,
+    gossip: Option<vertex_swarm_topology::HiveGossipConfig>,
     pseudosettle_event_tx: Option<mpsc::UnboundedSender<PseudosettleEvent>>,
     swap_event_tx: Option<mpsc::UnboundedSender<SwapEvent>>,
-    // TODO: Add storage-specific config:
-    // - local_store_config: LocalStoreConfig
-    // - chunk_sync_config: ChunkSyncConfig
-    // - redistribution_config: RedistributionConfig
 }
 
-impl<N: SwarmNodeTypes> StorerNodeBuilder<N> {
+impl<I: SwarmIdentity> StorerNodeBuilder<I> {
     /// Create a new builder.
-    pub fn new(identity: N::Identity) -> Self {
+    pub fn new(identity: I) -> Self {
         Self {
-            config: BuilderConfig::new(identity),
+            identity,
+            kademlia_config: None,
+            gossip: Some(vertex_swarm_topology::HiveGossipConfig::default()),
             pseudosettle_event_tx: None,
             swap_event_tx: None,
         }
     }
 
-    /// Set network configuration.
-    pub fn with_network_config(
-        mut self,
-        config: &impl vertex_swarm_api::SwarmNetworkConfig,
-    ) -> Self {
-        self.config.apply_network_config(config);
-        self
-    }
-
-    /// Set the bootnodes.
-    pub fn with_bootnodes(mut self, bootnodes: Vec<Multiaddr>) -> Self {
-        self.config.bootnodes = bootnodes;
-        self
-    }
-
-    /// Set the listen addresses.
-    pub fn with_listen_addrs(mut self, addrs: Vec<Multiaddr>) -> Self {
-        self.config.listen_addrs = addrs;
-        self
-    }
-
     /// Set the Kademlia configuration.
     pub fn with_kademlia_config(mut self, kademlia_config: KademliaConfig) -> Self {
-        self.config.kademlia_config = kademlia_config;
+        self.kademlia_config = Some(kademlia_config);
         self
     }
 
-    /// Set the peer store.
-    pub fn with_peer_store(mut self, store: Arc<PeerStore>) -> Self {
-        self.config.peer_store = Some(store);
+    /// Set gossip configuration (None disables gossip).
+    pub fn with_gossip(mut self, config: Option<vertex_swarm_topology::HiveGossipConfig>) -> Self {
+        self.gossip = config;
+        self
+    }
+
+    /// Disable gossip-based peer discovery.
+    pub fn without_gossip(mut self) -> Self {
+        self.gossip = None;
         self
     }
 
@@ -201,21 +170,26 @@ impl<N: SwarmNodeTypes> StorerNodeBuilder<N> {
         self.swap_event_tx = Some(tx);
         self
     }
+}
 
-    /// Build the StorerNode and ClientService.
-    pub async fn build(self) -> Result<(StorerNode<N>, ClientService, ClientHandle)> {
+impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
+    /// Build the StorerNode and ClientService using the provided network configuration.
+    pub async fn build<C>(
+        self,
+        network_config: &C,
+    ) -> Result<(StorerNode<I>, ClientService, ClientHandle)>
+    where
+        C: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig<Routing = KademliaConfig>,
+    {
         info!("Initializing storer P2P network...");
 
         // Build the underlying client node using the builder pattern
-        let mut client_builder = ClientNodeBuilder::new(self.config.identity)
-            .with_bootnodes(self.config.bootnodes)
-            .with_listen_addrs(self.config.listen_addrs)
-            .with_kademlia_config(self.config.kademlia_config);
+        let mut client_builder = ClientNodeBuilder::new(self.identity);
 
-        if let Some(store) = self.config.peer_store {
-            client_builder = client_builder.with_peer_store(store);
+        if let Some(kademlia) = self.kademlia_config {
+            client_builder = client_builder.with_kademlia_config(kademlia);
         }
-
+        client_builder = client_builder.with_gossip(self.gossip);
         if let Some(tx) = self.pseudosettle_event_tx {
             client_builder = client_builder.with_pseudosettle_events(tx);
         }
@@ -223,7 +197,7 @@ impl<N: SwarmNodeTypes> StorerNodeBuilder<N> {
             client_builder = client_builder.with_swap_events(tx);
         }
 
-        let (client, service, handle) = client_builder.build().await?;
+        let (client, service, handle) = client_builder.build(network_config).await?;
 
         // TODO: Initialize storage-specific components:
         // - local_store

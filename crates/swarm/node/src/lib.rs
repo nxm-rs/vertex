@@ -21,9 +21,9 @@ mod service;
 mod stats;
 
 pub use node::{
-    BaseNode, BootNode, BootNodeBuilder, BootnodeBehaviour, BootnodeEvent, BuilderConfig,
-    BuiltInfrastructure, ClientNode, ClientNodeBehaviour, ClientNodeBuilder, ClientNodeEvent,
-    StorerNode, StorerNodeBuilder,
+    BaseNode, BootNode, BootNodeBuilder, BootnodeBehaviour, BootnodeEvent, BuiltInfrastructure,
+    ClientNode, ClientNodeBehaviour, ClientNodeBuilder, ClientNodeEvent, StorerNode,
+    StorerNodeBuilder, TopologyBuildOptions,
 };
 
 pub use vertex_swarm_api::SwarmNodeType;
@@ -39,7 +39,7 @@ pub use protocol::{
     HandlerConfig as ClientHandlerConfig,
 };
 
-pub use client::{BootnodeClient, BuiltSwarmComponents, Client, FullClient};
+pub use client::{BootnodeClient, Client, FullClient};
 
 pub use bootnodes::BootnodeProvider;
 pub use stats::{StatsConfig, spawn_stats_task};

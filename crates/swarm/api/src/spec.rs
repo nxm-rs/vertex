@@ -1,4 +1,4 @@
-//! Network specification trait for Swarm.
+//! Network specification traits for Swarm.
 
 use alloc::{string::String, sync::Arc, vec::Vec};
 use alloy_chains::Chain;
@@ -6,6 +6,21 @@ use alloy_primitives::Address;
 use nectar_primitives::ChunkTypeSet;
 use nectar_swarms::{NamedSwarm, Swarm};
 use vertex_swarm_forks::{ForkCondition, ForkDigest, SwarmHardfork, SwarmHardforks};
+
+/// Parser for Swarm network specifications.
+///
+/// Handles both preset names ("mainnet", "testnet") and file paths via a single
+/// `parse()` method.
+pub trait SwarmSpecParser: Clone + Send + Sync + 'static {
+    /// The spec type this parser produces.
+    type Spec: SwarmSpec + Send + Sync;
+
+    /// Supported preset network names.
+    const SUPPORTED_NETWORKS: &'static [&'static str];
+
+    /// Parse a spec from a preset name or file path.
+    fn parse(s: &str) -> eyre::Result<Arc<Self::Spec>>;
+}
 
 /// Token trait for Swarm network tokens (BZZ variants).
 #[auto_impl::auto_impl(&, Arc)]

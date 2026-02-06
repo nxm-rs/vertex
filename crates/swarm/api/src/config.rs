@@ -31,10 +31,75 @@ pub trait SwarmRoutingConfig {
     fn routing(&self) -> &Self::Routing;
 }
 
+/// Default ban threshold for peer scoring (-100.0).
+pub const DEFAULT_PEER_BAN_THRESHOLD: f64 = -100.0;
+
+/// Default maximum number of tracked peers (10,000).
+pub const DEFAULT_PEER_STORE_LIMIT: usize = 10_000;
+
+/// Configuration for peer management (scoring, limits).
+pub trait SwarmPeerConfig {
+    /// The peer management configuration type.
+    type Peers: Default + PeerConfigValues;
+
+    /// Get the peer configuration.
+    fn peers(&self) -> &Self::Peers;
+}
+
+/// Values required from a peer configuration.
+pub trait PeerConfigValues {
+    /// Score threshold below which peers are banned.
+    fn ban_threshold(&self) -> f64;
+
+    /// Maximum number of peers to track. None for unlimited.
+    fn store_limit(&self) -> Option<usize>;
+
+    /// Path for peer store persistence. None uses ephemeral in-memory storage.
+    fn store_path(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+}
+
+/// Default peer management configuration.
+#[derive(Debug, Clone)]
+pub struct DefaultPeerConfig {
+    /// Score threshold for banning peers.
+    pub ban_threshold: f64,
+    /// Maximum peers to track (None = unlimited).
+    pub store_limit: Option<usize>,
+    /// Path for peer store persistence.
+    pub store_path: Option<std::path::PathBuf>,
+}
+
+impl Default for DefaultPeerConfig {
+    fn default() -> Self {
+        Self {
+            ban_threshold: DEFAULT_PEER_BAN_THRESHOLD,
+            store_limit: Some(DEFAULT_PEER_STORE_LIMIT),
+            store_path: None,
+        }
+    }
+}
+
+impl PeerConfigValues for DefaultPeerConfig {
+    fn ban_threshold(&self) -> f64 {
+        self.ban_threshold
+    }
+
+    fn store_limit(&self) -> Option<usize> {
+        self.store_limit
+    }
+
+    fn store_path(&self) -> Option<std::path::PathBuf> {
+        self.store_path.clone()
+    }
+}
+
 /// Configuration for P2P networking.
 ///
 /// Address methods return parsed `Multiaddr` to ensure validation happens early.
-/// Implementors should parse addresses at construction time (e.g., in `finalize()`).
+/// Implementors should validate and parse addresses at construction time
+/// (e.g., in `TryFrom` or a constructor that returns `Result`).
 pub trait SwarmNetworkConfig {
     /// Listen addresses (parsed).
     fn listen_addrs(&self) -> &[Multiaddr];
@@ -65,11 +130,6 @@ pub trait SwarmNetworkConfig {
     fn nat_auto_enabled(&self) -> bool {
         false
     }
-
-    /// Path for peer store persistence. None uses ephemeral in-memory storage.
-    fn peer_store_path(&self) -> Option<std::path::PathBuf> {
-        None
-    }
 }
 
 /// Configuration for Swarm node identity.
@@ -87,12 +147,12 @@ pub trait SwarmIdentityConfig {
 /// identity is created before node building and passed in directly.
 ///
 /// This is the foundation of the config hierarchy:
-/// - `SwarmBootnodeConfig` - networking (this trait)
+/// - `SwarmBootnodeConfig` - networking + peer management (this trait)
 /// - `SwarmClientConfig` - adds accounting + pricing
 /// - `SwarmStorerConfig` - adds local storage + redistribution
-pub trait SwarmBootnodeConfig: SwarmNetworkConfig {}
+pub trait SwarmBootnodeConfig: SwarmNetworkConfig + SwarmPeerConfig {}
 
-impl<T> SwarmBootnodeConfig for T where T: SwarmNetworkConfig {}
+impl<T> SwarmBootnodeConfig for T where T: SwarmNetworkConfig + SwarmPeerConfig {}
 
 /// Configuration for client nodes.
 ///

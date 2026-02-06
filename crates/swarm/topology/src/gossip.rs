@@ -62,7 +62,6 @@ pub(crate) struct HiveGossipManager {
     peer_manager: Arc<PeerManager>,
     last_broadcast: HashMap<OverlayAddress, Instant>,
     last_depth: u8,
-    last_tick: Instant,
 }
 
 impl HiveGossipManager {
@@ -78,7 +77,6 @@ impl HiveGossipManager {
             peer_manager,
             last_broadcast: HashMap::new(),
             last_depth: 0,
-            last_tick: Instant::now(),
         }
     }
 
@@ -228,7 +226,7 @@ impl HiveGossipManager {
         let mut actions = Vec::new();
 
         // Find peers that are now neighbors but weren't before
-        let connected = self.peer_manager.manager.connected_peers();
+        let connected = self.peer_manager.connected_peers();
         for overlay in connected {
             let proximity = self.local_overlay.proximity(&overlay);
 
@@ -244,10 +242,9 @@ impl HiveGossipManager {
                     );
 
                     // Get their SwarmPeer info for notifying others
-                    if let Some(snapshot) = self.peer_manager.get_peer_snapshot(&overlay)
-                        && let Some(swarm_peer) = snapshot.ext.peer
-                    {
-                        let peer_actions = self.handle_new_neighbor(overlay, swarm_peer, new_depth);
+                    if let Some(snapshot) = self.peer_manager.get_peer_snapshot(&overlay) {
+                        let peer_actions =
+                            self.handle_new_neighbor(overlay, snapshot.ext.peer, new_depth);
                         actions.extend(peer_actions);
                     }
                 }
@@ -257,18 +254,8 @@ impl HiveGossipManager {
         actions
     }
 
-    /// Check if it's time for a periodic tick and handle it.
-    pub(crate) fn maybe_tick(&mut self, depth: u8) -> Vec<GossipAction> {
-        let now = Instant::now();
-        if now.duration_since(self.last_tick) < self.config.refresh_interval {
-            return Vec::new();
-        }
-        self.last_tick = now;
-        self.on_tick(depth)
-    }
-
-    /// Refresh stale neighborhood peers.
-    fn on_tick(&mut self, depth: u8) -> Vec<GossipAction> {
+    /// Handle periodic gossip tick - refresh stale neighborhood peers.
+    pub(crate) fn on_tick(&mut self, depth: u8) -> Vec<GossipAction> {
         let now = Instant::now();
 
         let mut actions = Vec::new();
@@ -322,7 +309,6 @@ impl HiveGossipManager {
     /// Get all connected full nodes that are neighbors (proximity >= depth).
     fn get_connected_neighbors(&self, depth: u8) -> Vec<OverlayAddress> {
         self.peer_manager
-            .manager
             .connected_peers()
             .into_iter()
             .filter(|overlay| {
@@ -343,7 +329,6 @@ impl HiveGossipManager {
         exclude: Option<&OverlayAddress>,
     ) -> Vec<SwarmPeer> {
         self.peer_manager
-            .manager
             .connected_peers()
             .into_iter()
             .filter(|overlay| {
@@ -366,7 +351,7 @@ impl HiveGossipManager {
             .filter_map(|overlay| {
                 self.peer_manager
                     .get_peer_snapshot(&overlay)
-                    .and_then(|s| s.ext.peer)
+                    .map(|s| s.ext.peer)
             })
             .collect()
     }
@@ -382,14 +367,13 @@ impl HiveGossipManager {
         // Get all connected full nodes with their SwarmPeer data, filtered by recipient capability
         let full_nodes: Vec<(OverlayAddress, SwarmPeer)> = self
             .peer_manager
-            .manager
             .connected_peers()
             .into_iter()
             .filter(|overlay| self.peer_manager.is_full_node(overlay))
             .filter_map(|overlay| {
                 self.peer_manager
                     .get_peer_snapshot(&overlay)
-                    .and_then(|s| s.ext.peer.map(|peer| (overlay, peer)))
+                    .map(|s| (overlay, s.ext.peer))
             })
             .filter(|(overlay, _)| {
                 // Filter by recipient's IP capability using stored peer capability
@@ -457,11 +441,13 @@ impl HiveGossipManager {
         self.last_broadcast.remove(overlay);
     }
 
-    /// Get the IP capability of a peer (defaults to Both if unknown).
+    /// Get the IP capability of a peer.
+    ///
+    /// Returns a dual-stack capability if unknown (conservative assumption).
     fn get_peer_capability(&self, overlay: &OverlayAddress) -> IpCapability {
         self.peer_manager
             .get_peer_capability(overlay)
-            .unwrap_or(IpCapability::Both) // Conservative: assume dual-stack if unknown
+            .unwrap_or_else(IpCapability::dual_stack)
     }
 
     /// Filter peers to only those reachable by the recipient's IP capability.
@@ -470,7 +456,7 @@ impl HiveGossipManager {
         peers: Vec<SwarmPeer>,
         recipient_capability: IpCapability,
     ) -> Vec<SwarmPeer> {
-        if recipient_capability == IpCapability::Both {
+        if recipient_capability.is_dual_stack() {
             // Dual-stack recipient can reach everyone
             return peers;
         }
@@ -488,19 +474,15 @@ impl HiveGossipManager {
     }
 
     /// Check if a recipient with the given capability can reach a peer with the given capability.
+    ///
+    /// Returns true if there's at least one IP version in common between recipient and peer.
     fn capabilities_compatible(recipient: IpCapability, peer: IpCapability) -> bool {
-        match (recipient, peer) {
-            // Recipient can't reach anyone
-            (IpCapability::None, _) => false,
-            // Dual-stack recipient can reach everyone
-            (IpCapability::Both, _) => true,
-            // V4-only recipient can reach V4-only or dual-stack peers
-            (IpCapability::V4Only, IpCapability::V4Only | IpCapability::Both) => true,
-            (IpCapability::V4Only, _) => false,
-            // V6-only recipient can reach V6-only or dual-stack peers
-            (IpCapability::V6Only, IpCapability::V6Only | IpCapability::Both) => true,
-            (IpCapability::V6Only, _) => false,
+        if recipient.is_empty() {
+            return false;
         }
+        // Check for any overlapping IP version
+        (recipient.supports_ipv4() && peer.supports_ipv4())
+            || (recipient.supports_ipv6() && peer.supports_ipv6())
     }
 }
 
