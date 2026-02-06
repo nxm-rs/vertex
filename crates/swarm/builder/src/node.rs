@@ -17,7 +17,7 @@ use vertex_swarm_node::args::NetworkConfig;
 use vertex_swarm_node::ClientNode;
 use vertex_swarm_redistribution::StorageConfig;
 use vertex_swarm_spec::{Loggable, Spec};
-use vertex_swarm_topology::{HiveGossipConfig, KademliaConfig, TopologyHandle};
+use vertex_swarm_topology::{KademliaConfig, TopologyHandle};
 use vertex_tasks::SpawnableTask;
 
 use crate::config::{BootnodeConfig, ClientConfig, StorerConfig};
@@ -132,7 +132,6 @@ where
     identity: I,
     network: N,
     kademlia_config: Option<KademliaConfig>,
-    gossip: Option<HiveGossipConfig>,
 }
 
 impl<I, N> NodeBuilder<I, N>
@@ -147,25 +146,12 @@ where
             identity,
             network,
             kademlia_config: None,
-            gossip: Some(HiveGossipConfig::default()),
         }
     }
 
     /// Override Kademlia routing configuration.
     pub fn with_kademlia_config(mut self, config: KademliaConfig) -> Self {
         self.kademlia_config = Some(config);
-        self
-    }
-
-    /// Set gossip configuration (None disables gossip).
-    pub fn with_gossip(mut self, config: Option<HiveGossipConfig>) -> Self {
-        self.gossip = config;
-        self
-    }
-
-    /// Disable gossip protocol.
-    pub fn without_gossip(mut self) -> Self {
-        self.gossip = None;
         self
     }
 
@@ -231,8 +217,6 @@ where
             builder = builder.with_kademlia_config(kademlia);
         }
 
-        builder = builder.with_gossip(self.gossip);
-
         let node = builder
             .build(&self.network)
             .await
@@ -277,18 +261,6 @@ where
     /// Override Kademlia routing configuration.
     pub fn with_kademlia_config(mut self, config: KademliaConfig) -> Self {
         self.base = self.base.with_kademlia_config(config);
-        self
-    }
-
-    /// Set gossip configuration (None disables gossip).
-    pub fn with_gossip(mut self, config: Option<HiveGossipConfig>) -> Self {
-        self.base = self.base.with_gossip(config);
-        self
-    }
-
-    /// Disable gossip protocol.
-    pub fn without_gossip(mut self) -> Self {
-        self.base = self.base.without_gossip();
         self
     }
 
@@ -348,7 +320,6 @@ where
             identity,
             network,
             kademlia_config,
-            gossip,
         } = self.base;
 
         info!("Building Client node...");
@@ -366,8 +337,6 @@ where
         if let Some(kademlia) = kademlia_config {
             builder = builder.with_kademlia_config(kademlia);
         }
-
-        builder = builder.with_gossip(gossip);
 
         let (node, client_service, client_handle) = builder
             .build(&network)
@@ -430,18 +399,6 @@ where
         self
     }
 
-    /// Set gossip configuration (None disables gossip).
-    pub fn with_gossip(mut self, config: Option<HiveGossipConfig>) -> Self {
-        self.client = self.client.with_gossip(config);
-        self
-    }
-
-    /// Disable gossip protocol.
-    pub fn without_gossip(mut self) -> Self {
-        self.client = self.client.without_gossip();
-        self
-    }
-
     /// Apply a transformation function.
     pub fn apply<F>(self, f: F) -> Self
     where
@@ -489,7 +446,6 @@ where
                     identity,
                     network,
                     kademlia_config,
-                    gossip,
                 },
             accounting,
         } = self.client;
@@ -517,8 +473,6 @@ where
         if let Some(kademlia) = kademlia_config {
             builder = builder.with_kademlia_config(kademlia);
         }
-
-        builder = builder.with_gossip(gossip);
 
         let (node, client_service, _client_handle) = builder
             .build(&network)

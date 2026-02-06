@@ -323,7 +323,6 @@ pub struct ClientNodeBuilder<I: SwarmIdentity> {
     identity: I,
     infra: Option<BuiltInfrastructure<I>>,
     kademlia_config: Option<KademliaConfig>,
-    gossip: Option<vertex_swarm_topology::HiveGossipConfig>,
     pseudosettle_event_tx: Option<mpsc::UnboundedSender<PseudosettleEvent>>,
     swap_event_tx: Option<mpsc::UnboundedSender<SwapEvent>>,
 }
@@ -335,7 +334,6 @@ impl<I: SwarmIdentity> ClientNodeBuilder<I> {
             identity,
             infra: None,
             kademlia_config: None,
-            gossip: Some(vertex_swarm_topology::HiveGossipConfig::default()),
             pseudosettle_event_tx: None,
             swap_event_tx: None,
         }
@@ -350,18 +348,6 @@ impl<I: SwarmIdentity> ClientNodeBuilder<I> {
     /// Set the Kademlia configuration.
     pub fn with_kademlia_config(mut self, kademlia_config: KademliaConfig) -> Self {
         self.kademlia_config = Some(kademlia_config);
-        self
-    }
-
-    /// Set gossip configuration (None disables gossip).
-    pub fn with_gossip(mut self, config: Option<vertex_swarm_topology::HiveGossipConfig>) -> Self {
-        self.gossip = config;
-        self
-    }
-
-    /// Disable gossip-based peer discovery.
-    pub fn without_gossip(mut self) -> Self {
-        self.gossip = None;
         self
     }
 
@@ -401,7 +387,6 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
                 if let Some(kademlia) = self.kademlia_config {
                     options = options.with_kademlia(kademlia);
                 }
-                options = options.with_gossip(self.gossip);
                 BuiltInfrastructure::from_config(self.identity, network_config, options)?
             }
         };

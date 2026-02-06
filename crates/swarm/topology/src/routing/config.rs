@@ -51,6 +51,20 @@ pub struct KademliaConfig {
 }
 
 impl KademliaConfig {
+    /// Create a default configuration in const context.
+    pub const fn default_const() -> Self {
+        Self {
+            saturation_peers: DEFAULT_SATURATION_PEERS,
+            high_watermark: DEFAULT_HIGH_WATERMARK,
+            client_reserved_slots: DEFAULT_CLIENT_RESERVED_SLOTS,
+            low_watermark: DEFAULT_LOW_WATERMARK,
+            max_connect_attempts: DEFAULT_MAX_CONNECT_ATTEMPTS,
+            max_neighbor_attempts: DEFAULT_MAX_NEIGHBOR_ATTEMPTS,
+            max_neighbor_candidates: DEFAULT_MAX_NEIGHBOR_CANDIDATES,
+            max_balanced_candidates: DEFAULT_MAX_BALANCED_CANDIDATES,
+        }
+    }
+
     /// Total maximum peers per bin (high watermark + client reserved).
     pub fn max_peers_per_bin(&self) -> usize {
         self.high_watermark + self.client_reserved_slots

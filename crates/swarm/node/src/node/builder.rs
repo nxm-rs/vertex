@@ -6,32 +6,21 @@ use eyre::{Result, WrapErr};
 use libp2p::Multiaddr;
 use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig};
 use vertex_swarm_topology::{
-    HiveGossipConfig, KademliaConfig, TopologyBehaviourComponents, TopologyHandle, TopologyService,
+    KademliaConfig, TopologyBehaviourComponents, TopologyHandle, TopologyService,
     TopologyServiceConfig,
 };
 
 use crate::BootnodeProvider;
 
 /// Options for building topology infrastructure.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TopologyBuildOptions {
     /// Kademlia configuration override (uses defaults if None).
     pub kademlia_config: Option<KademliaConfig>,
-    /// Gossip configuration (None disables, Some enables with config).
-    pub gossip: Option<HiveGossipConfig>,
-}
-
-impl Default for TopologyBuildOptions {
-    fn default() -> Self {
-        Self {
-            kademlia_config: None,
-            gossip: Some(HiveGossipConfig::default()),
-        }
-    }
 }
 
 impl TopologyBuildOptions {
-    /// Create with default values (gossip enabled with default config).
+    /// Create with default values.
     pub fn new() -> Self {
         Self::default()
     }
@@ -39,18 +28,6 @@ impl TopologyBuildOptions {
     /// Set Kademlia configuration.
     pub fn with_kademlia(mut self, config: KademliaConfig) -> Self {
         self.kademlia_config = Some(config);
-        self
-    }
-
-    /// Set gossip configuration (None disables gossip).
-    pub fn with_gossip(mut self, config: Option<HiveGossipConfig>) -> Self {
-        self.gossip = config;
-        self
-    }
-
-    /// Disable gossip.
-    pub fn without_gossip(mut self) -> Self {
-        self.gossip = None;
         self
     }
 }
@@ -95,10 +72,7 @@ impl<I: SwarmIdentity> BuiltInfrastructure<I> {
             .unwrap_or_else(|| network_config.routing().clone());
 
         // Build topology-specific config
-        let mut topology_config = TopologyServiceConfig::new().with_kademlia(kademlia_config);
-        if let Some(gossip_config) = options.gossip {
-            topology_config = topology_config.with_gossip(gossip_config);
-        }
+        let topology_config = TopologyServiceConfig::new().with_kademlia(kademlia_config);
 
         // Create a config adapter that provides the resolved bootnodes
         let config_with_bootnodes = ConfigWithBootnodes {
@@ -170,5 +144,13 @@ impl<C: SwarmPeerConfig> SwarmPeerConfig for ConfigWithBootnodes<'_, C> {
 
     fn peers(&self) -> &Self::Peers {
         self.inner.peers()
+    }
+}
+
+impl<C: SwarmRoutingConfig> SwarmRoutingConfig for ConfigWithBootnodes<'_, C> {
+    type Routing = C::Routing;
+
+    fn routing(&self) -> &Self::Routing {
+        self.inner.routing()
     }
 }

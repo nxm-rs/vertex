@@ -140,19 +140,19 @@ pub trait SwarmIdentityConfig {
 
 /// Base configuration for all Swarm nodes (bootnode level).
 ///
-/// Provides P2P networking configuration needed by any node that
+/// Provides P2P networking and routing configuration needed by any node that
 /// participates in the Swarm overlay network.
 ///
 /// Note: Identity configuration (`SwarmIdentityConfig`) is separate since
 /// identity is created before node building and passed in directly.
 ///
 /// This is the foundation of the config hierarchy:
-/// - `SwarmBootnodeConfig` - networking + peer management (this trait)
+/// - `SwarmBootnodeConfig` - networking + peer management + routing (this trait)
 /// - `SwarmClientConfig` - adds accounting + pricing
 /// - `SwarmStorerConfig` - adds local storage + redistribution
-pub trait SwarmBootnodeConfig: SwarmNetworkConfig + SwarmPeerConfig {}
+pub trait SwarmBootnodeConfig: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig {}
 
-impl<T> SwarmBootnodeConfig for T where T: SwarmNetworkConfig + SwarmPeerConfig {}
+impl<T> SwarmBootnodeConfig for T where T: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig {}
 
 /// Configuration for client nodes.
 ///

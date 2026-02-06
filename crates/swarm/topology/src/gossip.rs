@@ -11,40 +11,14 @@ use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peermanager::{IpCapability, PeerManager};
 use vertex_swarm_primitives::OverlayAddress;
 
-/// Configuration for hive gossip behavior.
-#[derive(Debug, Clone)]
-pub struct HiveGossipConfig {
-    /// Interval for refreshing neighborhood peers.
-    pub refresh_interval: Duration,
-    /// Maximum peers to send to distant (non-neighbor) peers.
-    pub max_peers_for_distant: usize,
-    /// Number of peers close to recipient's overlay to include.
-    pub close_peers_count: usize,
-}
+/// Interval for refreshing neighborhood peers (10 minutes).
+pub(crate) const GOSSIP_REFRESH_INTERVAL: Duration = Duration::from_secs(600);
 
-impl Default for HiveGossipConfig {
-    fn default() -> Self {
-        Self {
-            refresh_interval: Duration::from_secs(600), // 10 minutes
-            max_peers_for_distant: 16,
-            close_peers_count: 4,
-        }
-    }
-}
+/// Maximum peers to send to distant (non-neighbor) peers.
+const MAX_PEERS_FOR_DISTANT: usize = 16;
 
-impl HiveGossipConfig {
-    /// Set the refresh interval.
-    pub fn with_refresh_interval(mut self, interval: Duration) -> Self {
-        self.refresh_interval = interval;
-        self
-    }
-
-    /// Set the maximum peers for distant nodes.
-    pub fn with_max_peers_for_distant(mut self, count: usize) -> Self {
-        self.max_peers_for_distant = count;
-        self
-    }
-}
+/// Number of peers close to recipient's overlay to include.
+const CLOSE_PEERS_COUNT: usize = 4;
 
 /// An action to send peers to a specific overlay address.
 #[derive(Debug, Clone)]
@@ -57,7 +31,6 @@ pub(crate) struct GossipAction {
 
 /// Hive gossip manager.
 pub(crate) struct HiveGossipManager {
-    config: HiveGossipConfig,
     local_overlay: OverlayAddress,
     peer_manager: Arc<PeerManager>,
     last_broadcast: HashMap<OverlayAddress, Instant>,
@@ -66,13 +39,8 @@ pub(crate) struct HiveGossipManager {
 
 impl HiveGossipManager {
     /// Create a new gossip manager.
-    pub(crate) fn new(
-        config: HiveGossipConfig,
-        local_overlay: OverlayAddress,
-        peer_manager: Arc<PeerManager>,
-    ) -> Self {
+    pub(crate) fn new(local_overlay: OverlayAddress, peer_manager: Arc<PeerManager>) -> Self {
         Self {
-            config,
             local_overlay,
             peer_manager,
             last_broadcast: HashMap::new(),
@@ -267,7 +235,7 @@ impl HiveGossipManager {
             let is_stale = self
                 .last_broadcast
                 .get(&neighbor)
-                .map(|t| now.duration_since(*t) > self.config.refresh_interval)
+                .map(|t| now.duration_since(*t) > GOSSIP_REFRESH_INTERVAL)
                 .unwrap_or(true);
 
             if is_stale {
@@ -362,7 +330,7 @@ impl HiveGossipManager {
         recipient: OverlayAddress,
         recipient_capability: IpCapability,
     ) -> Vec<SwarmPeer> {
-        let mut selected = Vec::with_capacity(self.config.max_peers_for_distant);
+        let mut selected = Vec::with_capacity(MAX_PEERS_FOR_DISTANT);
 
         // Get all connected full nodes with their SwarmPeer data, filtered by recipient capability
         let full_nodes: Vec<(OverlayAddress, SwarmPeer)> = self
@@ -398,7 +366,7 @@ impl HiveGossipManager {
         by_proximity.sort_by(|a, b| b.0.cmp(&a.0));
 
         // Take the closest peers
-        for (_, _, peer) in by_proximity.iter().take(self.config.close_peers_count) {
+        for (_, _, peer) in by_proximity.iter().take(CLOSE_PEERS_COUNT) {
             selected.push((*peer).clone());
         }
 
@@ -407,7 +375,7 @@ impl HiveGossipManager {
         let mut added_bins = std::collections::HashSet::new();
 
         for (overlay, peer) in &full_nodes {
-            if selected.len() >= self.config.max_peers_for_distant {
+            if selected.len() >= MAX_PEERS_FOR_DISTANT {
                 break;
             }
 
@@ -425,7 +393,7 @@ impl HiveGossipManager {
 
         // Fill remaining slots with any peers not yet included
         for (_, peer) in &full_nodes {
-            if selected.len() >= self.config.max_peers_for_distant {
+            if selected.len() >= MAX_PEERS_FOR_DISTANT {
                 break;
             }
             if !selected.iter().any(|p| p.overlay() == peer.overlay()) {

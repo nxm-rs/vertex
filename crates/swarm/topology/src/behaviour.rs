@@ -32,7 +32,7 @@ use crate::nat_discovery::NatDiscovery;
 use crate::{
     TopologyCommand, TopologyServiceEvent,
     gossip::GossipAction,
-    gossip_coordinator::{DepthProvider, GossipCoordinator, HiveGossipConfig},
+    gossip_coordinator::{DepthProvider, GossipCoordinator},
     handler::{Command, Event, TopologyConfig, TopologyHandler},
     routing::KademliaRouting,
 };
@@ -99,19 +99,11 @@ impl<I: SwarmIdentity> TopologyBehaviour<I> {
         self.gossip_coordinator.set_health_check_delay(delay);
     }
 
-    /// Enable automatic hive gossip with the given configuration.
-    pub fn enable_gossip(
-        &mut self,
-        gossip_config: HiveGossipConfig,
-        depth_provider: DepthProvider,
-    ) {
+    /// Enable automatic hive gossip.
+    pub fn enable_gossip(&mut self, peer_manager: Arc<PeerManager>, depth_provider: DepthProvider) {
         let local_overlay = self.identity.overlay_address();
-        self.gossip_coordinator.enable_gossip(
-            gossip_config,
-            local_overlay,
-            self.peer_manager.clone(),
-            depth_provider,
-        );
+        self.gossip_coordinator
+            .enable_gossip(local_overlay, peer_manager, depth_provider);
     }
 
     /// Send a ping to a peer by overlay address.

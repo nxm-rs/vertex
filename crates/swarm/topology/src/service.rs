@@ -50,17 +50,16 @@ const EVENT_CHANNEL_CAPACITY: usize = 256;
 /// Command channel capacity.
 const COMMAND_CHANNEL_CAPACITY: usize = 64;
 
-/// Topology-specific configuration (Kademlia routing, gossip, dial interval).
+/// Topology-specific configuration (Kademlia routing, dial interval).
 ///
 /// Network addresses (bootnodes, listen addrs, NAT) come from `SwarmNetworkConfig`.
+/// Gossip is always enabled internally with fixed parameters.
 #[derive(Debug, Clone, Default)]
 pub struct TopologyServiceConfig {
     /// Kademlia routing configuration.
-    pub kademlia: KademliaConfig,
+    pub(crate) kademlia: KademliaConfig,
     /// Dial candidate check interval (None for default 5s, Some(ZERO) disables).
-    pub dial_interval: Option<std::time::Duration>,
-    /// Gossip configuration (None disables gossip, Some enables with config).
-    pub gossip: Option<crate::gossip::HiveGossipConfig>,
+    pub(crate) dial_interval: Option<std::time::Duration>,
 }
 
 impl TopologyServiceConfig {
@@ -78,18 +77,6 @@ impl TopologyServiceConfig {
     /// Set dial candidate check interval. Pass `Duration::ZERO` to disable dial polling.
     pub fn with_dial_interval(mut self, interval: std::time::Duration) -> Self {
         self.dial_interval = Some(interval);
-        self
-    }
-
-    /// Enable gossip with the given configuration.
-    pub fn with_gossip(mut self, config: crate::gossip::HiveGossipConfig) -> Self {
-        self.gossip = Some(config);
-        self
-    }
-
-    /// Enable gossip with default configuration.
-    pub fn with_gossip_enabled(mut self) -> Self {
-        self.gossip = Some(crate::gossip::HiveGossipConfig::default());
         self
     }
 }
@@ -141,11 +128,10 @@ pub struct TopologyBehaviourComponents<I: SwarmIdentity> {
     pub(crate) command_rx: CommandReceiver,
     pub(crate) nat_discovery: Arc<NatDiscovery>,
     pub(crate) dial_interval: Option<std::time::Duration>,
-    pub(crate) gossip: Option<crate::gossip::HiveGossipConfig>,
 }
 
 impl<I: SwarmIdentity> TopologyBehaviourComponents<I> {
-    /// Consume components to create TopologyBehaviour, auto-enabling gossip if configured.
+    /// Consume components to create TopologyBehaviour with gossip enabled.
     pub fn into_behaviour(
         self,
         config: crate::handler::TopologyConfig,
@@ -158,7 +144,7 @@ impl<I: SwarmIdentity> TopologyBehaviourComponents<I> {
         let mut behaviour = crate::behaviour::TopologyBehaviour::new(
             self.identity,
             config,
-            self.peer_manager,
+            self.peer_manager.clone(),
             self.routing,
             self.event_tx,
             self.dial_tracker,
@@ -167,10 +153,8 @@ impl<I: SwarmIdentity> TopologyBehaviourComponents<I> {
             self.dial_interval,
         );
 
-        // Auto-enable gossip if config was provided
-        if let Some(gossip_config) = self.gossip {
-            behaviour.enable_gossip(gossip_config, depth_provider.clone());
-        }
+        // Always enable gossip - it's an internal protocol detail
+        behaviour.enable_gossip(self.peer_manager, depth_provider.clone());
 
         (behaviour, depth_provider)
     }
@@ -300,7 +284,6 @@ impl<I: SwarmIdentity> TopologyService<I> {
             command_rx,
             nat_discovery,
             dial_interval: topology_config.dial_interval,
-            gossip: topology_config.gossip,
         };
 
         Ok((service, handle, components))
@@ -579,6 +562,15 @@ mod tests {
         }
     }
 
+    impl vertex_swarm_api::SwarmRoutingConfig for TestNetworkConfig {
+        type Routing = KademliaConfig;
+
+        fn routing(&self) -> &Self::Routing {
+            static DEFAULT: KademliaConfig = KademliaConfig::default_const();
+            &DEFAULT
+        }
+    }
+
     #[tokio::test]
     async fn test_topology_service_creation() {
         let base = addr_from_byte(0x00);
@@ -684,10 +676,9 @@ mod tests {
     #[test]
     fn test_topology_service_config() {
         let config = TopologyServiceConfig::new()
-            .with_kademlia(KademliaConfig::default().with_low_watermark(3))
-            .with_gossip_enabled();
+            .with_kademlia(KademliaConfig::default().with_low_watermark(3));
 
-        assert!(config.gossip.is_some());
+        assert_eq!(config.kademlia.low_watermark, 3);
     }
 
     #[tokio::test]
@@ -960,29 +951,11 @@ mod tests {
                     .with_high_watermark(16)
                     .with_saturation_peers(4),
             )
-            .with_dial_interval(std::time::Duration::from_secs(10))
-            .with_gossip_enabled();
+            .with_dial_interval(std::time::Duration::from_secs(10));
 
         assert_eq!(config.dial_interval, Some(std::time::Duration::from_secs(10)));
-        assert!(config.gossip.is_some());
         assert_eq!(config.kademlia.low_watermark, 2);
         assert_eq!(config.kademlia.high_watermark, 16);
-    }
-
-    #[test]
-    fn test_topology_service_config_with_custom_gossip() {
-        use crate::gossip::HiveGossipConfig;
-
-        let gossip_config = HiveGossipConfig::default()
-            .with_refresh_interval(std::time::Duration::from_secs(300))
-            .with_max_peers_for_distant(8);
-
-        let config = TopologyServiceConfig::new().with_gossip(gossip_config);
-
-        assert!(config.gossip.is_some());
-        let gossip = config.gossip.unwrap();
-        assert_eq!(gossip.refresh_interval, std::time::Duration::from_secs(300));
-        assert_eq!(gossip.max_peers_for_distant, 8);
     }
 
     #[tokio::test]

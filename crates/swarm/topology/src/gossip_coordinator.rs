@@ -17,10 +17,7 @@ use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peermanager::PeerManager;
 use vertex_swarm_primitives::OverlayAddress;
 
-use crate::gossip::{GossipAction, HiveGossipManager};
-
-// Re-export HiveGossipConfig for consumers (re-exported via lib.rs)
-pub(crate) use crate::gossip::HiveGossipConfig;
+use crate::gossip::{GossipAction, HiveGossipManager, GOSSIP_REFRESH_INTERVAL};
 
 /// Callback to get current network depth for gossip decisions.
 pub type DepthProvider = Arc<dyn Fn() -> u8 + Send + Sync>;
@@ -72,18 +69,16 @@ impl GossipCoordinator {
         }
     }
 
-    /// Enable automatic hive gossip with the given configuration.
+    /// Enable automatic hive gossip.
     pub(crate) fn enable_gossip(
         &mut self,
-        config: HiveGossipConfig,
         local_overlay: OverlayAddress,
         peer_manager: Arc<PeerManager>,
         depth_provider: DepthProvider,
     ) {
-        let refresh_interval = config.refresh_interval;
-        self.gossip_manager = Some(HiveGossipManager::new(config, local_overlay, peer_manager));
+        self.gossip_manager = Some(HiveGossipManager::new(local_overlay, peer_manager));
         self.depth_provider = Some(depth_provider);
-        self.gossip_interval = Some(Box::pin(tokio::time::interval(refresh_interval)));
+        self.gossip_interval = Some(Box::pin(tokio::time::interval(GOSSIP_REFRESH_INTERVAL)));
     }
 
     /// Set the delay before sending health check ping after handshake.

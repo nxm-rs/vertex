@@ -121,7 +121,6 @@ impl<I: SwarmIdentity> SpawnableTask for StorerNode<I> {
 pub struct StorerNodeBuilder<I: SwarmIdentity> {
     identity: I,
     kademlia_config: Option<KademliaConfig>,
-    gossip: Option<vertex_swarm_topology::HiveGossipConfig>,
     pseudosettle_event_tx: Option<mpsc::UnboundedSender<PseudosettleEvent>>,
     swap_event_tx: Option<mpsc::UnboundedSender<SwapEvent>>,
 }
@@ -132,7 +131,6 @@ impl<I: SwarmIdentity> StorerNodeBuilder<I> {
         Self {
             identity,
             kademlia_config: None,
-            gossip: Some(vertex_swarm_topology::HiveGossipConfig::default()),
             pseudosettle_event_tx: None,
             swap_event_tx: None,
         }
@@ -141,18 +139,6 @@ impl<I: SwarmIdentity> StorerNodeBuilder<I> {
     /// Set the Kademlia configuration.
     pub fn with_kademlia_config(mut self, kademlia_config: KademliaConfig) -> Self {
         self.kademlia_config = Some(kademlia_config);
-        self
-    }
-
-    /// Set gossip configuration (None disables gossip).
-    pub fn with_gossip(mut self, config: Option<vertex_swarm_topology::HiveGossipConfig>) -> Self {
-        self.gossip = config;
-        self
-    }
-
-    /// Disable gossip-based peer discovery.
-    pub fn without_gossip(mut self) -> Self {
-        self.gossip = None;
         self
     }
 
@@ -189,7 +175,6 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
         if let Some(kademlia) = self.kademlia_config {
             client_builder = client_builder.with_kademlia_config(kademlia);
         }
-        client_builder = client_builder.with_gossip(self.gossip);
         if let Some(tx) = self.pseudosettle_event_tx {
             client_builder = client_builder.with_pseudosettle_events(tx);
         }

@@ -24,7 +24,6 @@ pub(crate) mod handler;
 pub(crate) mod protocol;
 
 // Public re-exports
-pub use gossip::HiveGossipConfig;
 pub use nat_discovery::{NatDiscovery, NatDiscoveryConfig};
 
 pub use behaviour::TopologyBehaviour;
