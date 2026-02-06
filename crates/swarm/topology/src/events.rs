@@ -23,6 +23,8 @@ pub enum TopologyServiceEvent {
 /// Commands for the topology behaviour.
 #[derive(Debug, Clone)]
 pub enum TopologyCommand {
+    /// Connect to bootnodes and trusted peers.
+    ConnectBootnodes,
     /// Dial a peer. If `for_gossip` is true, uses delayed health check ping.
     Dial { addr: Multiaddr, for_gossip: bool },
     /// Close all connections to a peer.

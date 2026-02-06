@@ -38,6 +38,15 @@ impl From<&PeerArgs> for PeerConfig {
     }
 }
 
+impl PeerConfig {
+    /// Set the store path if not already set.
+    pub fn set_default_store_path(&mut self, path: PathBuf) {
+        if self.store_path.is_none() {
+            self.store_path = Some(path);
+        }
+    }
+}
+
 impl PeerConfigValues for PeerConfig {
     fn ban_threshold(&self) -> f64 {
         self.ban_threshold

@@ -121,8 +121,8 @@ impl<I: SwarmIdentity> StorerNodeHandle<I> {
 /// Builder for base nodes (bootnodes).
 ///
 /// Generic over identity type `I` and network configuration type `N`.
-/// Can be used directly to create a bootnode, or extended via
-/// [`with_accounting`](Self::with_accounting).
+/// The network's routing config must implement `SwarmTopologyBuilder<I>`
+/// to enable topology construction.
 pub struct NodeBuilder<I, N>
 where
     I: SwarmIdentity,
@@ -131,7 +131,6 @@ where
     spec: Arc<Spec>,
     identity: I,
     network: N,
-    kademlia_config: Option<KademliaConfig>,
 }
 
 impl<I, N> NodeBuilder<I, N>
@@ -145,14 +144,7 @@ where
             spec,
             identity,
             network,
-            kademlia_config: None,
         }
-    }
-
-    /// Override Kademlia routing configuration.
-    pub fn with_kademlia_config(mut self, config: KademliaConfig) -> Self {
-        self.kademlia_config = Some(config);
-        self
     }
 
     /// Apply a transformation function.
@@ -211,13 +203,7 @@ where
         self.spec.log();
         log_peers_path(&self.network);
 
-        let mut builder = vertex_swarm_node::BootNode::builder(self.identity.clone());
-
-        if let Some(kademlia) = self.kademlia_config {
-            builder = builder.with_kademlia_config(kademlia);
-        }
-
-        let node = builder
+        let node = vertex_swarm_node::BootNode::builder(self.identity.clone())
             .build(&self.network)
             .await
             .map_err(|e| SwarmNodeError::Build(e.to_string()))?;
@@ -258,12 +244,6 @@ where
     N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
     A: SwarmAccountingConfig + SwarmPricingConfig,
 {
-    /// Override Kademlia routing configuration.
-    pub fn with_kademlia_config(mut self, config: KademliaConfig) -> Self {
-        self.base = self.base.with_kademlia_config(config);
-        self
-    }
-
     /// Apply a transformation function.
     pub fn apply<F>(self, f: F) -> Self
     where
@@ -319,7 +299,6 @@ where
             spec,
             identity,
             network,
-            kademlia_config,
         } = self.base;
 
         info!("Building Client node...");
@@ -332,13 +311,7 @@ where
             .with_pricer_from_config(spec.clone())
             .build(&identity);
 
-        let mut builder = ClientNode::builder(identity.clone());
-
-        if let Some(kademlia) = kademlia_config {
-            builder = builder.with_kademlia_config(kademlia);
-        }
-
-        let (node, client_service, client_handle) = builder
+        let (node, client_service, client_handle) = ClientNode::builder(identity.clone())
             .build(&network)
             .await
             .map_err(|e| SwarmNodeError::Build(e.to_string()))?;
@@ -393,12 +366,6 @@ where
     S: SwarmLocalStoreConfig,
     St: SwarmStorageConfig,
 {
-    /// Override Kademlia routing configuration.
-    pub fn with_kademlia_config(mut self, config: KademliaConfig) -> Self {
-        self.client = self.client.with_kademlia_config(config);
-        self
-    }
-
     /// Apply a transformation function.
     pub fn apply<F>(self, f: F) -> Self
     where
@@ -445,7 +412,6 @@ where
                     spec,
                     identity,
                     network,
-                    kademlia_config,
                 },
             accounting,
         } = self.client;
@@ -468,13 +434,7 @@ where
         let _ = self.storage;
 
         // Build as ClientNode for now (storer components stubbed)
-        let mut builder = ClientNode::builder(identity.clone());
-
-        if let Some(kademlia) = kademlia_config {
-            builder = builder.with_kademlia_config(kademlia);
-        }
-
-        let (node, client_service, _client_handle) = builder
+        let (node, client_service, _client_handle) = ClientNode::builder(identity.clone())
             .build(&network)
             .await
             .map_err(|e| SwarmNodeError::Build(e.to_string()))?;
@@ -504,17 +464,17 @@ where
 
 // Type aliases for common configurations using default types
 
-/// Default node builder using Arc<Identity> and NetworkConfig.
-pub type DefaultNodeBuilder = NodeBuilder<Arc<Identity>, NetworkConfig>;
+/// Default node builder using Arc<Identity> and NetworkConfig<KademliaConfig>.
+pub type DefaultNodeBuilder = NodeBuilder<Arc<Identity>, NetworkConfig<KademliaConfig>>;
 
 /// Default client builder using standard types.
 pub type DefaultClientBuilder =
-    ClientNodeBuilder<Arc<Identity>, NetworkConfig, DefaultBandwidthConfig>;
+    ClientNodeBuilder<Arc<Identity>, NetworkConfig<KademliaConfig>, DefaultBandwidthConfig>;
 
 /// Default storer builder using standard types.
 pub type DefaultStorerBuilder = StorerNodeBuilder<
     Arc<Identity>,
-    NetworkConfig,
+    NetworkConfig<KademliaConfig>,
     DefaultBandwidthConfig,
     LocalStoreConfig,
     StorageConfig,
@@ -525,7 +485,11 @@ pub type DefaultStorerBuilder = StorerNodeBuilder<
 impl DefaultNodeBuilder {
     /// Create from a bootnode config.
     pub fn from_config(config: BootnodeConfig) -> Self {
-        Self::new(config.spec, config.identity, config.network)
+        Self::new(
+            config.spec().clone(),
+            config.identity().clone(),
+            config.network().clone(),
+        )
     }
 }
 
@@ -542,7 +506,12 @@ impl DefaultClientBuilder {
 
     /// Create from a client config.
     pub fn from_config(config: ClientConfig) -> Self {
-        Self::from_parts(config.spec, config.identity, config.network, config.bandwidth)
+        Self::from_parts(
+            config.spec().clone(),
+            config.identity().clone(),
+            config.network().clone(),
+            config.bandwidth().clone(),
+        )
     }
 }
 
@@ -564,12 +533,12 @@ impl DefaultStorerBuilder {
     /// Create from a storer config.
     pub fn from_config(config: StorerConfig) -> Self {
         Self::from_parts(
-            config.spec,
-            config.identity,
-            config.network,
-            config.bandwidth,
-            config.local_store,
-            config.storage,
+            config.spec().clone(),
+            config.identity().clone(),
+            config.network().clone(),
+            config.bandwidth().clone(),
+            config.local_store().clone(),
+            config.storage().clone(),
         )
     }
 }

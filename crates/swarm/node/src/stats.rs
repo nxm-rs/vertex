@@ -7,16 +7,14 @@ use std::time::Duration;
 
 use tokio::task::JoinHandle;
 use tracing::info;
-use vertex_swarm_api::SwarmTopologyProvider;
+use vertex_swarm_api::SwarmTopology;
 use vertex_tasks::TaskExecutor;
 
-/// Default interval for stats reporting.
 const DEFAULT_STATS_INTERVAL: Duration = Duration::from_secs(20);
 
 /// Stats reporter configuration.
 #[derive(Debug, Clone)]
 pub struct StatsConfig {
-    /// Interval between stats reports.
     pub interval: Duration,
 }
 
@@ -29,26 +27,13 @@ impl Default for StatsConfig {
 }
 
 impl StatsConfig {
-    /// Create config with custom interval.
     pub fn with_interval(interval: Duration) -> Self {
         Self { interval }
     }
 }
 
 /// Spawns a background task that periodically reports node statistics.
-///
-/// The task logs at `info` level, providing operator-friendly stats including:
-/// - Connected peer count
-/// - Known peer count
-/// - Kademlia depth
-/// - Pending connections
-///
-/// # Arguments
-///
-/// * `topology` - The topology provider to query for stats
-/// * `config` - Stats reporting configuration
-/// * `executor` - Task executor for spawning
-pub fn spawn_stats_task<T: SwarmTopologyProvider>(
+pub fn spawn_stats_task<T: SwarmTopology + 'static>(
     topology: Arc<T>,
     config: StatsConfig,
     executor: &TaskExecutor,
@@ -71,14 +56,12 @@ pub fn spawn_stats_task<T: SwarmTopologyProvider>(
     })
 }
 
-/// Log current node statistics at info level.
-fn log_stats<T: SwarmTopologyProvider>(topology: &T) {
+fn log_stats<T: SwarmTopology>(topology: &T) {
     let connected = topology.connected_peers_count();
     let known = topology.known_peers_count();
     let depth = topology.depth();
     let pending = topology.pending_connections_count();
 
-    // Build compact bin summary showing non-empty bins
     let bin_sizes = topology.bin_sizes();
     let mut bin_summary = String::new();
     for (po, (conn, known_in_bin)) in bin_sizes.iter().enumerate() {
@@ -86,7 +69,6 @@ fn log_stats<T: SwarmTopologyProvider>(topology: &T) {
             if !bin_summary.is_empty() {
                 bin_summary.push(' ');
             }
-            // Mark depth boundary with brackets
             if po as u8 == depth {
                 bin_summary.push_str(&format!("[{po}:{conn}/{known_in_bin}]"));
             } else {
@@ -112,20 +94,49 @@ fn log_stats<T: SwarmTopologyProvider>(topology: &T) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use nectar_primitives::ChunkAddress;
+    use vertex_swarm_identity::Identity;
+    use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
     struct MockTopology {
+        identity: Arc<Identity>,
         connected: usize,
         known: usize,
         depth: u8,
     }
 
-    impl SwarmTopologyProvider for MockTopology {
-        fn overlay_address(&self) -> String {
-            "00".repeat(32)
+    impl MockTopology {
+        fn new(connected: usize, known: usize, depth: u8) -> Self {
+            Self {
+                identity: Arc::new(Identity::random(
+                    vertex_swarm_spec::init_testnet(),
+                    SwarmNodeType::Client,
+                )),
+                connected,
+                known,
+                depth,
+            }
+        }
+    }
+
+    impl SwarmTopology for MockTopology {
+        type Identity = Arc<Identity>;
+
+        fn identity(&self) -> &Self::Identity {
+            &self.identity
         }
 
         fn depth(&self) -> u8 {
             self.depth
+        }
+
+        fn neighbors(&self, _depth: u8) -> Vec<OverlayAddress> {
+            vec![]
+        }
+
+        fn closest_to(&self, _address: &ChunkAddress, _count: usize) -> Vec<OverlayAddress> {
+            vec![]
         }
 
         fn connected_peers_count(&self) -> usize {
@@ -157,12 +168,7 @@ mod tests {
 
     #[test]
     fn test_log_stats_empty() {
-        let topology = MockTopology {
-            connected: 0,
-            known: 0,
-            depth: 0,
-        };
-        // Just verify it doesn't panic
+        let topology = MockTopology::new(0, 0, 0);
         log_stats(&topology);
     }
 }

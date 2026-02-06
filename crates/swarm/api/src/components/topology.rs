@@ -2,11 +2,15 @@
 
 use nectar_primitives::ChunkAddress;
 use std::vec::Vec;
+
 use vertex_swarm_primitives::OverlayAddress;
 
 use crate::SwarmIdentity;
 
-/// Neighborhood awareness - who is "close" in the overlay address space.
+// Re-export hex for use in default impl
+use hex;
+
+/// Neighborhood awareness and topology status.
 #[auto_impl::auto_impl(&, Arc)]
 pub trait SwarmTopology: Send + Sync {
     /// The identity type for this topology.
@@ -15,39 +19,36 @@ pub trait SwarmTopology: Send + Sync {
     /// Get the node's identity.
     fn identity(&self) -> &Self::Identity;
 
-    /// Get peers within our neighborhood at the given depth.
-    fn neighbors(&self, depth: u8) -> Vec<OverlayAddress>;
-
     /// Get the current neighborhood depth.
     fn depth(&self) -> u8;
+
+    /// Get peers within our neighborhood at the given depth.
+    fn neighbors(&self, depth: u8) -> Vec<OverlayAddress>;
 
     /// Find peers closest to a given address.
     fn closest_to(&self, address: &ChunkAddress, count: usize) -> Vec<OverlayAddress>;
 
-    /// Add discovered peers (from Hive). May trigger connection evaluation.
-    fn add_peers(&self, peers: &[OverlayAddress]);
+    /// Get the count of currently connected peers.
+    fn connected_peers_count(&self) -> usize;
 
-    /// Should we accept an inbound connection from this peer?
-    fn should_accept_peer(&self, peer: &OverlayAddress, is_full_node: bool) -> bool;
+    /// Get the count of known (discovered but not necessarily connected) peers.
+    fn known_peers_count(&self) -> usize;
 
-    /// Notify that a peer has connected.
-    fn connected(&self, peer: OverlayAddress);
+    /// Get the count of pending connection attempts.
+    fn pending_connections_count(&self) -> usize;
 
-    /// Notify that a peer has disconnected.
-    fn disconnected(&self, peer: &OverlayAddress);
+    /// Get bin sizes for each proximity order (0-31).
+    ///
+    /// Returns a vector of `(connected, known)` tuples, one per bin.
+    fn bin_sizes(&self) -> Vec<(usize, usize)>;
 
-    /// Get peers we should try to connect to.
-    fn peers_to_connect(&self) -> Vec<OverlayAddress>;
+    /// Get connected peer overlay addresses in a specific bin.
+    ///
+    /// Returns hex-encoded overlay addresses.
+    fn connected_peers_in_bin(&self, po: u8) -> Vec<String>;
 
-    /// Record a connection failure for a peer.
-    fn record_connection_failure(&self, peer: &OverlayAddress);
-
-    /// Check if a peer is temporarily unavailable due to recent failures.
-    fn is_temporarily_unavailable(&self, peer: &OverlayAddress) -> bool;
-
-    /// Get the current failure count for a peer.
-    fn failure_count(&self, peer: &OverlayAddress) -> u32;
-
-    /// Remove a peer from all routing state (for banning).
-    fn remove_peer(&self, peer: &OverlayAddress);
+    /// Get the node's overlay address as a hex-encoded string.
+    fn overlay_address(&self) -> String {
+        hex::encode(self.identity().overlay_address().as_slice())
+    }
 }

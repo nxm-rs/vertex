@@ -145,32 +145,30 @@ mod tests {
         fn identity(&self) -> &Self::Identity {
             &self.identity
         }
-        fn neighbors(&self, _depth: u8) -> Vec<OverlayAddress> {
-            Vec::new()
-        }
         fn depth(&self) -> u8 {
             0
+        }
+        fn neighbors(&self, _depth: u8) -> Vec<OverlayAddress> {
+            Vec::new()
         }
         fn closest_to(&self, _address: &ChunkAddress, _count: usize) -> Vec<OverlayAddress> {
             Vec::new()
         }
-        fn add_peers(&self, _peers: &[OverlayAddress]) {}
-        fn should_accept_peer(&self, _peer: &OverlayAddress, _is_full_node: bool) -> bool {
-            true
-        }
-        fn connected(&self, _peer: OverlayAddress) {}
-        fn disconnected(&self, _peer: &OverlayAddress) {}
-        fn peers_to_connect(&self) -> Vec<OverlayAddress> {
-            Vec::new()
-        }
-        fn record_connection_failure(&self, _peer: &OverlayAddress) {}
-        fn is_temporarily_unavailable(&self, _peer: &OverlayAddress) -> bool {
-            false
-        }
-        fn failure_count(&self, _peer: &OverlayAddress) -> u32 {
+        fn connected_peers_count(&self) -> usize {
             0
         }
-        fn remove_peer(&self, _peer: &OverlayAddress) {}
+        fn known_peers_count(&self) -> usize {
+            0
+        }
+        fn pending_connections_count(&self) -> usize {
+            0
+        }
+        fn bin_sizes(&self) -> Vec<(usize, usize)> {
+            vec![(0, 0); 32]
+        }
+        fn connected_peers_in_bin(&self, _po: u8) -> Vec<String> {
+            vec![]
+        }
     }
 
     fn test_identity() -> Arc<Identity> {

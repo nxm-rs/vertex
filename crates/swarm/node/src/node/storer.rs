@@ -39,7 +39,7 @@ use crate::{ClientHandle, ClientService};
 /// // Run the node
 /// node.into_task().await;
 /// ```
-pub struct StorerNode<I: SwarmIdentity> {
+pub struct StorerNode<I: SwarmIdentity + Clone> {
     /// The underlying client node.
     client: ClientNode<I>,
     // TODO: Add storage-specific components:
@@ -48,7 +48,7 @@ pub struct StorerNode<I: SwarmIdentity> {
     // - redistribution: RedistributionService
 }
 
-impl<I: SwarmIdentity> StorerNode<I> {
+impl<I: SwarmIdentity + Clone> StorerNode<I> {
     /// Create a builder for constructing a StorerNode.
     pub fn builder(identity: I) -> StorerNodeBuilder<I> {
         StorerNodeBuilder::new(identity)
@@ -109,7 +109,7 @@ impl<I: SwarmIdentity> StorerNode<I> {
     }
 }
 
-impl<I: SwarmIdentity> SpawnableTask for StorerNode<I> {
+impl<I: SwarmIdentity + Clone> SpawnableTask for StorerNode<I> {
     async fn into_task(self) {
         if let Err(e) = self.run().await {
             tracing::error!(error = %e, "StorerNode error");

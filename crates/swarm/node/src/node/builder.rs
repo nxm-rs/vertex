@@ -5,10 +5,7 @@ use std::time::Duration;
 use eyre::{Result, WrapErr};
 use libp2p::Multiaddr;
 use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig};
-use vertex_swarm_topology::{
-    KademliaConfig, TopologyBehaviourComponents, TopologyHandle, TopologyService,
-    TopologyServiceConfig,
-};
+use vertex_swarm_topology::{KademliaConfig, SwarmTopologyBuilder, TopologyBehaviour, TopologyHandle};
 
 use crate::BootnodeProvider;
 
@@ -20,12 +17,10 @@ pub struct TopologyBuildOptions {
 }
 
 impl TopologyBuildOptions {
-    /// Create with default values.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Set Kademlia configuration.
     pub fn with_kademlia(mut self, config: KademliaConfig) -> Self {
         self.kademlia_config = Some(config);
         self
@@ -34,72 +29,65 @@ impl TopologyBuildOptions {
 
 /// Pre-built infrastructure components ready for swarm assembly.
 pub struct BuiltInfrastructure<I: SwarmIdentity> {
-    pub identity: I,
-    /// Unified topology service owning routing, peer state, and address management.
-    pub topology_service: TopologyService<I>,
-    /// Unified topology handle for queries (wraps kademlia + peer_manager).
-    pub topology_handle: TopologyHandle<I>,
-    /// Components for TopologyBehaviour construction. Use .take() to extract.
-    pub behaviour_components: Option<TopologyBehaviourComponents<I>>,
-    pub listen_addrs: Vec<Multiaddr>,
-    pub idle_timeout: Duration,
+    pub(crate) identity: I,
+    pub(crate) topology_behaviour: Option<TopologyBehaviour<I>>,
+    pub(crate) topology_handle: TopologyHandle<I>,
 }
 
 impl<I: SwarmIdentity> BuiltInfrastructure<I> {
+    /// Get the identity.
+    pub fn identity(&self) -> &I {
+        &self.identity
+    }
+
+    /// Get the topology handle.
+    pub fn topology_handle(&self) -> &TopologyHandle<I> {
+        &self.topology_handle
+    }
+
+    /// Take the topology behaviour (can only be called once).
+    pub fn take_behaviour(&mut self) -> Option<TopologyBehaviour<I>> {
+        self.topology_behaviour.take()
+    }
+}
+
+impl<I: SwarmIdentity + Clone> BuiltInfrastructure<I> {
     /// Build infrastructure from network configuration.
-    ///
-    /// Identity must be `Clone` (typically `Arc<Identity>`) to share with topology.
-    /// If no bootnodes are provided in config, falls back to spec-defined defaults.
     pub fn from_config<C>(
         identity: I,
         network_config: &C,
         options: TopologyBuildOptions,
     ) -> Result<Self>
     where
-        I: Clone,
         C: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig<Routing = KademliaConfig>,
     {
-        // Determine bootnodes: use config or fall back to spec defaults
         let bootnodes = if network_config.bootnodes().is_empty() {
             BootnodeProvider::bootnodes(identity.spec())
         } else {
             network_config.bootnodes().to_vec()
         };
 
-        // Build Kademlia config: use options override or config routing
         let kademlia_config = options
             .kademlia_config
             .unwrap_or_else(|| network_config.routing().clone());
 
-        // Build topology-specific config
-        let topology_config = TopologyServiceConfig::new().with_kademlia(kademlia_config);
-
-        // Create a config adapter that provides the resolved bootnodes
         let config_with_bootnodes = ConfigWithBootnodes {
             inner: network_config,
-            bootnodes,
+            bootnodes: bootnodes.clone(),
         };
 
-        let (topology_service, topology_handle, behaviour_components) =
-            TopologyService::new(identity.clone(), &config_with_bootnodes, topology_config)
-                .wrap_err("failed to create topology service")?;
-
-        // Get listen addrs from topology service
-        let listen_addrs = topology_service.listen_addrs().to_vec();
+        let (topology_behaviour, topology_handle) = kademlia_config
+            .build(identity.clone(), &config_with_bootnodes)
+            .wrap_err("failed to create topology behaviour")?;
 
         Ok(Self {
             identity,
-            topology_service,
+            topology_behaviour: Some(topology_behaviour),
             topology_handle,
-            behaviour_components: Some(behaviour_components),
-            listen_addrs,
-            idle_timeout: network_config.idle_timeout(),
         })
     }
-
 }
 
-/// Config adapter that provides resolved bootnodes (from spec defaults if needed).
 struct ConfigWithBootnodes<'a, C> {
     inner: &'a C,
     bootnodes: Vec<Multiaddr>,

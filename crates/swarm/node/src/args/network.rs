@@ -181,12 +181,12 @@ impl NetworkArgs {
     pub fn network_config<S: vertex_swarm_api::SwarmSpec>(
         &self,
         spec: &S,
-    ) -> Result<NetworkConfig, ConfigError> {
+    ) -> Result<NetworkConfig<KademliaConfig>, ConfigError> {
         // Start with base conversion
         let mut config = NetworkConfig::try_from(self)?;
 
         // If no CLI bootnodes, use spec's default bootnodes
-        if config.bootnodes.is_empty() {
+        if config.bootnodes().is_empty() {
             if let Some(spec_bootnodes) = spec.bootnodes() {
                 let parsed: Result<Vec<Multiaddr>, _> = spec_bootnodes
                     .iter()
@@ -197,7 +197,7 @@ impl NetworkArgs {
                         })
                     })
                     .collect();
-                config.bootnodes = parsed?;
+                config.set_bootnodes(parsed?);
             }
         }
 
@@ -205,9 +205,12 @@ impl NetworkArgs {
     }
 }
 
-/// Validated P2P network configuration.
+/// Validated P2P network configuration, generic over routing type.
+///
+/// The default routing type is `KademliaConfig`. Use `with_routing()` to
+/// transform to a different routing configuration type.
 #[derive(Debug, Clone)]
-pub struct NetworkConfig {
+pub struct NetworkConfig<R = KademliaConfig> {
     listen_addrs: Vec<Multiaddr>,
     bootnodes: Vec<Multiaddr>,
     trusted_peers: Vec<Multiaddr>,
@@ -216,11 +219,49 @@ pub struct NetworkConfig {
     discovery_enabled: bool,
     max_peers: usize,
     idle_timeout: Duration,
-    pub peer: PeerConfig,
-    pub routing: KademliaConfig,
+    peer: PeerConfig,
+    routing: R,
 }
 
-impl Default for NetworkConfig {
+impl<R> NetworkConfig<R> {
+    /// Get the peer configuration.
+    pub fn peer(&self) -> &PeerConfig {
+        &self.peer
+    }
+
+    /// Get the routing configuration.
+    pub fn routing(&self) -> &R {
+        &self.routing
+    }
+
+    /// Replace the routing configuration, changing the type parameter.
+    pub fn with_routing<NewR>(self, routing: NewR) -> NetworkConfig<NewR> {
+        NetworkConfig {
+            listen_addrs: self.listen_addrs,
+            bootnodes: self.bootnodes,
+            trusted_peers: self.trusted_peers,
+            nat_addrs: self.nat_addrs,
+            nat_auto: self.nat_auto,
+            discovery_enabled: self.discovery_enabled,
+            max_peers: self.max_peers,
+            idle_timeout: self.idle_timeout,
+            peer: self.peer,
+            routing,
+        }
+    }
+
+    /// Set bootnodes (for spec fallback).
+    pub fn set_bootnodes(&mut self, bootnodes: Vec<Multiaddr>) {
+        self.bootnodes = bootnodes;
+    }
+
+    /// Set default peer store path if not already configured via CLI.
+    pub fn set_default_peer_store_path(&mut self, path: std::path::PathBuf) {
+        self.peer.set_default_store_path(path);
+    }
+}
+
+impl Default for NetworkConfig<KademliaConfig> {
     fn default() -> Self {
         let listen_addr: Multiaddr = format!("/ip4/{}/tcp/{}", DEFAULT_LISTEN_ADDR, DEFAULT_P2P_PORT)
             .parse()
@@ -240,7 +281,7 @@ impl Default for NetworkConfig {
     }
 }
 
-impl TryFrom<&NetworkArgs> for NetworkConfig {
+impl TryFrom<&NetworkArgs> for NetworkConfig<KademliaConfig> {
     type Error = ConfigError;
 
     fn try_from(args: &NetworkArgs) -> Result<Self, Self::Error> {
@@ -300,7 +341,7 @@ impl TryFrom<&NetworkArgs> for NetworkConfig {
     }
 }
 
-impl SwarmNetworkConfig for NetworkConfig {
+impl<R> SwarmNetworkConfig for NetworkConfig<R> {
     fn listen_addrs(&self) -> &[Multiaddr] {
         &self.listen_addrs
     }
@@ -334,7 +375,7 @@ impl SwarmNetworkConfig for NetworkConfig {
     }
 }
 
-impl SwarmPeerConfig for NetworkConfig {
+impl<R> SwarmPeerConfig for NetworkConfig<R> {
     type Peers = PeerConfig;
 
     fn peers(&self) -> &Self::Peers {
@@ -342,10 +383,10 @@ impl SwarmPeerConfig for NetworkConfig {
     }
 }
 
-impl SwarmRoutingConfig for NetworkConfig {
-    type Routing = KademliaConfig;
+impl<R: Default> SwarmRoutingConfig for NetworkConfig<R> {
+    type Routing = R;
 
-    fn routing(&self) -> &KademliaConfig {
+    fn routing(&self) -> &R {
         &self.routing
     }
 }

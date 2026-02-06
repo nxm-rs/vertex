@@ -82,13 +82,16 @@ pub async fn run() -> Result<()> {
         config.apply_args(&args.infra, &args.protocol);
 
         // Build validated configs
-        let network = config
+        let mut network = config
             .protocol
             .network_config()
             .map_err(|e| eyre::eyre!("network config error: {}", e))?;
         let identity = config.protocol.identity(spec.clone(), &dirs.network)?;
-        let peers_path = dirs.network.join("state").join("peers.json");
         let grpc_addr = socket_addr(&config.infra.api.grpc_addr, config.infra.api.grpc_port);
+
+        // Set default peers store path if not specified via CLI
+        let default_peers_path = dirs.network.join("state").join("peers.json");
+        network.set_default_peer_store_path(default_peers_path);
 
         // Dispatch based on node type
         match config.protocol.node_type {
@@ -98,8 +101,7 @@ pub async fn run() -> Result<()> {
                     .bandwidth_config()
                     .map_err(|e| eyre::eyre!("bandwidth config error: {}", e))?;
 
-                let node_config =
-                    ClientConfig::new(spec, identity, network, bandwidth, peers_path);
+                let node_config = ClientConfig::new(spec, identity, network, bandwidth);
 
                 let (task, rpc_providers, _topology) =
                     DefaultClientBuilder::from_config(node_config)
@@ -109,7 +111,7 @@ pub async fn run() -> Result<()> {
                 run_with_grpc(task, &rpc_providers, grpc_addr).await
             }
             SwarmNodeType::Bootnode => {
-                let node_config = BootnodeConfig::new(spec, identity, network, peers_path);
+                let node_config = BootnodeConfig::new(spec, identity, network);
 
                 let (task, rpc_providers, _topology) =
                     DefaultNodeBuilder::from_config(node_config)
@@ -126,15 +128,8 @@ pub async fn run() -> Result<()> {
                 let local_store = config.protocol.local_store_config();
                 let storage = config.protocol.storage_config();
 
-                let node_config = StorerConfig::new(
-                    spec,
-                    identity,
-                    network,
-                    bandwidth,
-                    local_store,
-                    storage,
-                    peers_path,
-                );
+                let node_config =
+                    StorerConfig::new(spec, identity, network, bandwidth, local_store, storage);
 
                 let (task, rpc_providers, _topology) =
                     DefaultStorerBuilder::from_config(node_config)

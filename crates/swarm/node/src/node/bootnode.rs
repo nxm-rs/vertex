@@ -14,9 +14,7 @@ use libp2p::{
 use nectar_primitives::SwarmAddress;
 use tracing::{debug, info, warn};
 use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig};
-use vertex_swarm_topology::{
-    KademliaConfig, TopologyBehaviour, TopologyCommand, TopologyConfig, TopologyHandle,
-};
+use vertex_swarm_topology::{KademliaConfig, TopologyBehaviour, TopologyCommand, TopologyHandle};
 use vertex_tasks::SpawnableTask;
 
 use super::base::BaseNode;
@@ -25,15 +23,12 @@ use super::builder::{BuiltInfrastructure, TopologyBuildOptions};
 /// Network behaviour for a bootnode (topology only, no client protocols).
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "BootnodeEvent")]
-pub struct BootnodeBehaviour<I: SwarmIdentity> {
-    /// Identify protocol - exchange peer info.
+pub struct BootnodeBehaviour<I: SwarmIdentity + Clone> {
     pub identify: identify::Behaviour,
-
-    /// Topology behaviour - handshake, hive, pingpong only.
     pub topology: TopologyBehaviour<I>,
 }
 
-impl<I: SwarmIdentity> BootnodeBehaviour<I> {
+impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
     /// Create behaviour from pre-built topology (used with libp2p SwarmBuilder).
     pub fn from_parts(local_public_key: PublicKey, topology: TopologyBehaviour<I>) -> Self {
         Self {
@@ -48,9 +43,7 @@ impl<I: SwarmIdentity> BootnodeBehaviour<I> {
 
 /// Events from the bootnode behaviour.
 pub enum BootnodeEvent {
-    /// Identify protocol event.
     Identify(Box<identify::Event>),
-    /// Topology events are emitted via TopologyServiceEvent broadcast channel.
     Topology(()),
 }
 
@@ -71,65 +64,44 @@ impl From<()> for BootnodeEvent {
 /// Unlike [`ClientNode`](super::ClientNode), this excludes all client protocols
 /// (pricing, retrieval, pushsync, settlement). Bootnodes only participate in
 /// peer discovery via handshake, hive, and pingpong.
-///
-/// # Example
-///
-/// ```ignore
-/// let node = BootNode::builder(identity)
-///     .build(&config)
-///     .await?;
-///
-/// node.into_task().await;
-/// ```
-pub struct BootNode<I: SwarmIdentity> {
+pub struct BootNode<I: SwarmIdentity + Clone> {
     base: BaseNode<I, BootnodeBehaviour<I>>,
 }
 
-impl<I: SwarmIdentity> BootNode<I> {
-    /// Create a builder for constructing a BootNode.
+impl<I: SwarmIdentity + Clone> BootNode<I> {
     pub fn builder(identity: I) -> BootNodeBuilder<I> {
         BootNodeBuilder::new(identity)
     }
 
-    /// Get the local peer ID.
     pub fn local_peer_id(&self) -> &PeerId {
         self.base.local_peer_id()
     }
 
-    /// Get the overlay address.
     pub fn overlay_address(&self) -> SwarmAddress {
         self.base.overlay_address()
     }
 
-    /// Get the swarm identity.
     pub fn identity(&self) -> &I {
         self.base.identity()
     }
 
-    /// Get the topology handle for peer and routing queries.
     pub fn topology_handle(&self) -> &TopologyHandle<I> {
         self.base.topology_handle()
     }
 
-    /// Send a topology command.
     pub fn topology_command(&mut self, command: TopologyCommand) {
         self.base.swarm.behaviour_mut().topology.on_command(command);
     }
 
-    /// Start listening on configured addresses.
     pub fn start_listening(&mut self) -> Result<()> {
         self.base.start_listening()
     }
 
-    /// Start listening and run the event loop.
-    ///
-    /// Bootnode connections are initiated during build().
     async fn start_and_run(mut self) -> Result<()> {
         self.start_listening()?;
         self.run().await
     }
 
-    /// Run the network event loop.
     pub async fn run(mut self) -> Result<()> {
         info!("Starting bootnode event loop");
 
@@ -157,10 +129,7 @@ impl<I: SwarmIdentity> BootNode<I> {
             BootnodeEvent::Identify(boxed_event) => {
                 Self::handle_identify_event(*boxed_event);
             }
-            BootnodeEvent::Topology(_) => {
-                // TopologyBehaviour now handles routing updates and emits TopologyServiceEvent
-                // directly. Bootnodes don't need to do anything additional.
-            }
+            BootnodeEvent::Topology(_) => {}
         }
     }
 
@@ -186,13 +155,12 @@ impl<I: SwarmIdentity> BootNode<I> {
         }
     }
 
-    /// Get the number of connected peers.
     pub fn connected_peers(&self) -> usize {
         self.base.connected_peers()
     }
 }
 
-impl<I: SwarmIdentity> SpawnableTask for BootNode<I> {
+impl<I: SwarmIdentity + Clone> SpawnableTask for BootNode<I> {
     async fn into_task(self) {
         if let Err(e) = self.start_and_run().await {
             tracing::error!(error = %e, "BootNode error");
@@ -208,7 +176,6 @@ pub struct BootNodeBuilder<I: SwarmIdentity> {
 }
 
 impl<I: SwarmIdentity> BootNodeBuilder<I> {
-    /// Create a new builder.
     pub fn new(identity: I) -> Self {
         Self {
             identity,
@@ -217,13 +184,11 @@ impl<I: SwarmIdentity> BootNodeBuilder<I> {
         }
     }
 
-    /// Use pre-built infrastructure (for dependency injection from SwarmNodeBuilder).
     pub fn with_infrastructure(mut self, infra: BuiltInfrastructure<I>) -> Self {
         self.infra = Some(infra);
         self
     }
 
-    /// Set the Kademlia configuration.
     pub fn with_kademlia_config(mut self, kademlia_config: KademliaConfig) -> Self {
         self.kademlia_config = Some(kademlia_config);
         self
@@ -231,7 +196,6 @@ impl<I: SwarmIdentity> BootNodeBuilder<I> {
 }
 
 impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
-    /// Build the BootNode using the provided network configuration.
     pub async fn build<C>(self, network_config: &C) -> Result<BootNode<I>>
     where
         C: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig<Routing = KademliaConfig>,
@@ -249,21 +213,15 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
             }
         };
 
-        // Extract components for behaviour construction
-        let components = infra
-            .behaviour_components
-            .take()
-            .expect("behaviour_components should be present");
+        let topology_behaviour = infra
+            .take_behaviour()
+            .expect("topology_behaviour should be present");
+        let idle_timeout = network_config.idle_timeout();
+        let listen_addrs = network_config.listen_addrs().to_vec();
 
-        // Build topology behaviour (gossip is auto-enabled via config)
-        let (topology_behaviour, _depth_provider) =
-            components.into_behaviour(TopologyConfig::default());
-        let idle_timeout = infra.idle_timeout;
-
-        // Use Mutex to pass pre-built topology through the closure
         let topology_cell = std::sync::Mutex::new(Some(topology_behaviour));
 
-        let mut swarm = SwarmBuilder::with_new_identity()
+        let swarm = SwarmBuilder::with_new_identity()
             .with_tokio()
             .with_tcp(
                 tcp::Config::default(),
@@ -286,16 +244,14 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
         info!(%local_peer_id, "Bootnode peer ID");
         info!(overlay = %infra.identity.overlay_address(), "Overlay address");
 
-        // Connect to bootnodes during build
-        let connected = infra.topology_service.connect_bootnodes(|addr| swarm.dial(addr));
-        if connected > 0 {
-            info!(connected, "Initiated bootnode connections");
+        if infra.topology_handle.connect_bootnodes().await.is_err() {
+            warn!("Failed to send connect_bootnodes command");
         }
 
         let base = BaseNode {
             swarm,
             identity: infra.identity,
-            listen_addrs: infra.listen_addrs,
+            listen_addrs,
             topology_handle: infra.topology_handle,
         };
 

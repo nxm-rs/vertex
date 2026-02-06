@@ -3,7 +3,9 @@
 use alloy_primitives::hex::FromHex;
 use async_trait::async_trait;
 use nectar_primitives::SwarmAddress;
-use vertex_swarm_api::{ChunkRetrievalError, ChunkRetrievalResult, SwarmChunkProvider, SwarmIdentity};
+use vertex_swarm_api::{
+    ChunkRetrievalError, ChunkRetrievalResult, SwarmChunkProvider, SwarmIdentity, SwarmTopology,
+};
 use vertex_swarm_node::ClientHandle;
 use vertex_swarm_topology::TopologyHandle;
 

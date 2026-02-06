@@ -50,37 +50,6 @@ pub trait SwarmChunkProvider: Send + Sync + 'static {
     fn has_chunk(&self, address: &str) -> bool;
 }
 
-/// Provider trait for topology and network status information.
-#[auto_impl::auto_impl(&, Arc, Box)]
-pub trait SwarmTopologyProvider: Send + Sync + 'static {
-    /// Get the node's overlay address as a hex-encoded string.
-    fn overlay_address(&self) -> String;
-
-    /// Get the current Kademlia depth.
-    ///
-    /// Depth indicates how "deep" into the address space we're responsible for.
-    fn depth(&self) -> u8;
-
-    /// Get the count of currently connected peers.
-    fn connected_peers_count(&self) -> usize;
-
-    /// Get the count of known (discovered but not necessarily connected) peers.
-    fn known_peers_count(&self) -> usize;
-
-    /// Get the count of pending connection attempts.
-    fn pending_connections_count(&self) -> usize;
-
-    /// Get bin sizes for each proximity order (0-31).
-    ///
-    /// Returns a vector of `(connected, known)` tuples, one per bin.
-    fn bin_sizes(&self) -> Vec<(usize, usize)>;
-
-    /// Get connected peer overlay addresses in a specific bin.
-    ///
-    /// Returns hex-encoded overlay addresses.
-    fn connected_peers_in_bin(&self, po: u8) -> Vec<String>;
-}
-
 /// Result of a successful chunk send via PushSync.
 #[derive(Debug, Clone)]
 pub struct ChunkSendReceipt {

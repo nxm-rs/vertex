@@ -1,7 +1,4 @@
-//! Read-only handle for querying topology state.
-//!
-//! [`TopologyHandle`] provides query methods for routing/peer state and commands
-//! for dial/disconnect. It implements [`SwarmTopologyProvider`] for RPC integration.
+//! Handle for querying and controlling topology state.
 
 use std::sync::Arc;
 
@@ -12,33 +9,23 @@ use vertex_swarm_api::{SwarmIdentity, SwarmTopology};
 use vertex_swarm_peermanager::PeerManager;
 use vertex_swarm_primitives::OverlayAddress;
 
-use crate::dial_tracker::DialTracker;
 use crate::events::TopologyServiceEvent;
-use crate::routing::KademliaRouting;
+use crate::routing::{KademliaRouting, SwarmRouting};
 use crate::{TopologyCommand, TopologyError};
 
-/// Read-only handle for querying topology state. Cheap to clone.
-///
-/// Exposes Arc-wrapped components for direct access. For RPC integration,
-/// this struct implements [`SwarmTopologyProvider`].
+/// Handle for querying topology state. Cheap to clone.
 pub struct TopologyHandle<I: SwarmIdentity> {
-    /// Kademlia routing table for peer discovery and routing.
-    pub routing: Arc<KademliaRouting<I>>,
-    /// Peer lifecycle management.
-    pub peer_manager: Arc<PeerManager>,
-    /// Dial attempt tracking (internal use only).
-    dial_tracker: Arc<DialTracker>,
+    routing: Arc<KademliaRouting<I>>,
+    peer_manager: Arc<PeerManager>,
     command_tx: mpsc::Sender<TopologyCommand>,
     event_tx: broadcast::Sender<TopologyServiceEvent>,
 }
 
-// Manual Clone impl to avoid requiring I: Clone (all fields are Arc/Clone types)
 impl<I: SwarmIdentity> Clone for TopologyHandle<I> {
     fn clone(&self) -> Self {
         Self {
             routing: Arc::clone(&self.routing),
             peer_manager: Arc::clone(&self.peer_manager),
-            dial_tracker: Arc::clone(&self.dial_tracker),
             command_tx: self.command_tx.clone(),
             event_tx: self.event_tx.clone(),
         }
@@ -46,50 +33,35 @@ impl<I: SwarmIdentity> Clone for TopologyHandle<I> {
 }
 
 impl<I: SwarmIdentity> TopologyHandle<I> {
-    /// Create a new topology handle.
-    pub fn new(
+    pub(crate) fn new(
         routing: Arc<KademliaRouting<I>>,
         peer_manager: Arc<PeerManager>,
-        dial_tracker: Arc<DialTracker>,
         command_tx: mpsc::Sender<TopologyCommand>,
         event_tx: broadcast::Sender<TopologyServiceEvent>,
     ) -> Self {
         Self {
             routing,
             peer_manager,
-            dial_tracker,
             command_tx,
             event_tx,
         }
     }
 
-    /// Get the node's identity.
-    pub fn identity(&self) -> &I {
-        self.routing.identity()
-    }
-
-    /// Get the current neighborhood depth.
-    pub fn depth(&self) -> u8 {
-        self.routing.depth()
-    }
-
-    /// Find peers closest to an address in overlay space.
-    pub fn closest_to(&self, addr: &ChunkAddress, count: usize) -> Vec<OverlayAddress> {
-        self.routing.closest_to(addr, count)
-    }
-
-    /// Request to dial a peer at the given address.
-    pub async fn dial(&self, addr: Multiaddr) -> Result<(), TopologyError> {
+    /// Trigger connection to bootnodes and trusted peers.
+    pub async fn connect_bootnodes(&self) -> Result<(), TopologyError> {
         self.command_tx
-            .send(TopologyCommand::Dial {
-                addr,
-                for_gossip: false,
-            })
+            .send(TopologyCommand::ConnectBootnodes)
             .await
             .map_err(|_| TopologyError::ServiceShutdown)
     }
 
-    /// Request to disconnect from a peer.
+    pub async fn dial(&self, addr: Multiaddr) -> Result<(), TopologyError> {
+        self.command_tx
+            .send(TopologyCommand::Dial { addr, for_gossip: false })
+            .await
+            .map_err(|_| TopologyError::ServiceShutdown)
+    }
+
     pub async fn disconnect(&self, peer: OverlayAddress) -> Result<(), TopologyError> {
         self.command_tx
             .send(TopologyCommand::CloseConnection(peer))
@@ -97,53 +69,82 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
             .map_err(|_| TopologyError::ServiceShutdown)
     }
 
-    /// Ban a peer and remove from routing.
     pub fn ban_peer(&self, peer: &OverlayAddress, reason: Option<String>) {
         self.peer_manager.ban(peer, reason);
-        self.routing.remove_peer(peer);
+        SwarmRouting::remove_peer(&*self.routing, peer);
     }
 
-    /// Subscribe to topology events.
     pub fn subscribe(&self) -> broadcast::Receiver<TopologyServiceEvent> {
         self.event_tx.subscribe()
+    }
+
+    pub fn peer_score(&self, peer: &OverlayAddress) -> f64 {
+        self.peer_manager.peer_score(peer)
+    }
+
+    pub fn is_banned(&self, peer: &OverlayAddress) -> bool {
+        self.peer_manager.is_banned(peer)
+    }
+
+    pub fn connected_peers(&self) -> Vec<OverlayAddress> {
+        self.routing.connected_peers()
+    }
+
+    pub fn known_peers(&self) -> Vec<OverlayAddress> {
+        self.routing.known_peers()
+    }
+
+    /// Access the underlying routing for SwarmRouting operations.
+    pub fn routing(&self) -> &Arc<KademliaRouting<I>> {
+        &self.routing
     }
 }
 
 impl<I: SwarmIdentity> std::fmt::Debug for TopologyHandle<I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TopologyHandle")
-            .field("depth", &self.depth())
+            .field("depth", &SwarmTopology::depth(self))
             .field("connected_peers", &self.routing.connected_peers().len())
             .finish()
     }
 }
 
-impl<I: SwarmIdentity> vertex_swarm_api::SwarmTopologyProvider for TopologyHandle<I> {
-    fn overlay_address(&self) -> String {
-        hex::encode(self.routing.identity().overlay_address().as_slice())
+impl<I: SwarmIdentity> SwarmTopology for TopologyHandle<I> {
+    type Identity = I;
+
+    fn identity(&self) -> &Self::Identity {
+        SwarmTopology::identity(&*self.routing)
     }
 
     fn depth(&self) -> u8 {
-        <KademliaRouting<I> as SwarmTopology>::depth(&self.routing)
+        SwarmTopology::depth(&*self.routing)
+    }
+
+    fn neighbors(&self, depth: u8) -> Vec<OverlayAddress> {
+        SwarmTopology::neighbors(&*self.routing, depth)
+    }
+
+    fn closest_to(&self, address: &ChunkAddress, count: usize) -> Vec<OverlayAddress> {
+        SwarmTopology::closest_to(&*self.routing, address, count)
     }
 
     fn connected_peers_count(&self) -> usize {
-        self.routing.connected_peers().len()
+        SwarmTopology::connected_peers_count(&*self.routing)
     }
 
     fn known_peers_count(&self) -> usize {
-        self.routing.known_peers().len()
+        SwarmTopology::known_peers_count(&*self.routing)
     }
 
     fn pending_connections_count(&self) -> usize {
-        self.dial_tracker.pending_count()
+        SwarmTopology::pending_connections_count(&*self.routing)
     }
 
     fn bin_sizes(&self) -> Vec<(usize, usize)> {
-        self.routing.bin_sizes()
+        SwarmTopology::bin_sizes(&*self.routing)
     }
 
     fn connected_peers_in_bin(&self, po: u8) -> Vec<String> {
-        vertex_swarm_api::SwarmTopologyProvider::connected_peers_in_bin(&*self.routing, po)
+        SwarmTopology::connected_peers_in_bin(&*self.routing, po)
     }
 }
