@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use tokio::task::JoinHandle;
 use tracing::info;
-use vertex_swarm_api::SwarmTopology;
+use vertex_swarm_api::{SwarmTopology, TopologyStats};
 use vertex_tasks::TaskExecutor;
 
 const DEFAULT_STATS_INTERVAL: Duration = Duration::from_secs(20);
@@ -33,7 +33,7 @@ impl StatsConfig {
 }
 
 /// Spawns a background task that periodically reports node statistics.
-pub fn spawn_stats_task<T: SwarmTopology + 'static>(
+pub fn spawn_stats_task<T: SwarmTopology + TopologyStats + 'static>(
     topology: Arc<T>,
     config: StatsConfig,
     executor: &TaskExecutor,
@@ -56,7 +56,7 @@ pub fn spawn_stats_task<T: SwarmTopology + 'static>(
     })
 }
 
-fn log_stats<T: SwarmTopology>(topology: &T) {
+fn log_stats<T: SwarmTopology + TopologyStats>(topology: &T) {
     let connected = topology.connected_peers_count();
     let known = topology.known_peers_count();
     let depth = topology.depth();
@@ -94,71 +94,7 @@ fn log_stats<T: SwarmTopology>(topology: &T) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use nectar_primitives::ChunkAddress;
-    use vertex_swarm_identity::Identity;
-    use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
-
-    struct MockTopology {
-        identity: Arc<Identity>,
-        connected: usize,
-        known: usize,
-        depth: u8,
-    }
-
-    impl MockTopology {
-        fn new(connected: usize, known: usize, depth: u8) -> Self {
-            Self {
-                identity: Arc::new(Identity::random(
-                    vertex_swarm_spec::init_testnet(),
-                    SwarmNodeType::Client,
-                )),
-                connected,
-                known,
-                depth,
-            }
-        }
-    }
-
-    impl SwarmTopology for MockTopology {
-        type Identity = Arc<Identity>;
-
-        fn identity(&self) -> &Self::Identity {
-            &self.identity
-        }
-
-        fn depth(&self) -> u8 {
-            self.depth
-        }
-
-        fn neighbors(&self, _depth: u8) -> Vec<OverlayAddress> {
-            vec![]
-        }
-
-        fn closest_to(&self, _address: &ChunkAddress, _count: usize) -> Vec<OverlayAddress> {
-            vec![]
-        }
-
-        fn connected_peers_count(&self) -> usize {
-            self.connected
-        }
-
-        fn known_peers_count(&self) -> usize {
-            self.known
-        }
-
-        fn pending_connections_count(&self) -> usize {
-            0
-        }
-
-        fn bin_sizes(&self) -> Vec<(usize, usize)> {
-            vec![(0, 0); 32]
-        }
-
-        fn connected_peers_in_bin(&self, _po: u8) -> Vec<String> {
-            vec![]
-        }
-    }
+    use vertex_swarm_test_utils::MockTopology;
 
     #[test]
     fn test_config_default() {

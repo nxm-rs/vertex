@@ -111,72 +111,9 @@ mod tests {
     use crate::{Accounting, ClientCommand, ClientHandle, FixedPricer};
     use std::sync::Arc;
     use tokio::sync::mpsc;
-    use vertex_swarm_api::{SwarmBandwidthAccounting, SwarmTopology};
+    use vertex_swarm_api::SwarmBandwidthAccounting;
     use vertex_swarm_bandwidth::{ClientAccounting, DefaultBandwidthConfig};
-    use vertex_swarm_identity::Identity;
-    use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
-
-    struct MockTopology {
-        identity: Arc<Identity>,
-    }
-
-    impl Clone for MockTopology {
-        fn clone(&self) -> Self {
-            Self {
-                identity: Arc::clone(&self.identity),
-            }
-        }
-    }
-
-    impl Default for MockTopology {
-        fn default() -> Self {
-            Self {
-                identity: Arc::new(Identity::random(
-                    vertex_swarm_spec::init_testnet(),
-                    SwarmNodeType::Client,
-                )),
-            }
-        }
-    }
-
-    impl SwarmTopology for MockTopology {
-        type Identity = Arc<Identity>;
-
-        fn identity(&self) -> &Self::Identity {
-            &self.identity
-        }
-        fn depth(&self) -> u8 {
-            0
-        }
-        fn neighbors(&self, _depth: u8) -> Vec<OverlayAddress> {
-            Vec::new()
-        }
-        fn closest_to(&self, _address: &ChunkAddress, _count: usize) -> Vec<OverlayAddress> {
-            Vec::new()
-        }
-        fn connected_peers_count(&self) -> usize {
-            0
-        }
-        fn known_peers_count(&self) -> usize {
-            0
-        }
-        fn pending_connections_count(&self) -> usize {
-            0
-        }
-        fn bin_sizes(&self) -> Vec<(usize, usize)> {
-            vec![(0, 0); 32]
-        }
-        fn connected_peers_in_bin(&self, _po: u8) -> Vec<String> {
-            vec![]
-        }
-    }
-
-    fn test_identity() -> Arc<Identity> {
-        Arc::new(Identity::random(
-            vertex_swarm_spec::init_testnet(),
-            SwarmNodeType::Client,
-        ))
-    }
+    use vertex_swarm_test_utils::{test_identity_arc as test_identity, MockTopology};
 
     fn create_test_handle() -> ClientHandle {
         let (tx, _rx) = mpsc::unbounded_channel::<ClientCommand>();

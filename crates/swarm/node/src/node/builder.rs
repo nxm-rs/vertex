@@ -35,11 +35,6 @@ pub struct BuiltInfrastructure<I: SwarmIdentity> {
 }
 
 impl<I: SwarmIdentity> BuiltInfrastructure<I> {
-    /// Get the identity.
-    pub fn identity(&self) -> &I {
-        &self.identity
-    }
-
     /// Get the topology handle.
     pub fn topology_handle(&self) -> &TopologyHandle<I> {
         &self.topology_handle

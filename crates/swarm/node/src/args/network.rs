@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use vertex_swarm_api::{
     ConfigError, Multiaddr, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig,
 };
-use vertex_swarm_topology::KademliaConfig;
+use vertex_swarm_topology::{KademliaConfig, RoutingArgs};
 
 use super::peer::{PeerArgs, PeerConfig};
 
@@ -22,82 +22,6 @@ const DEFAULT_MAX_PEERS: usize = 50;
 
 /// Default idle timeout in seconds.
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 60;
-
-/// Kademlia routing CLI arguments.
-#[derive(Debug, Args, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct RoutingArgs {
-    /// Target peers per bin before saturation.
-    #[arg(long = "network.routing.saturation-peers")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub saturation_peers: Option<usize>,
-
-    /// Maximum full nodes per bin.
-    #[arg(long = "network.routing.high-watermark")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub high_watermark: Option<usize>,
-
-    /// Slots reserved for light nodes per bin.
-    #[arg(long = "network.routing.client-reserved-slots")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_reserved_slots: Option<usize>,
-
-    /// Minimum peers per bin for depth calculation.
-    #[arg(long = "network.routing.low-watermark")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub low_watermark: Option<usize>,
-
-    /// Max connection attempts before peer removal.
-    #[arg(long = "network.routing.max-connect-attempts")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_connect_attempts: Option<usize>,
-
-    /// Max connection attempts for neighbor peers.
-    #[arg(long = "network.routing.max-neighbor-attempts")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_neighbor_attempts: Option<usize>,
-
-    /// Max pending connections for neighbor bins.
-    #[arg(long = "network.routing.max-neighbor-candidates")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_neighbor_candidates: Option<usize>,
-
-    /// Max pending connections for balanced bins.
-    #[arg(long = "network.routing.max-balanced-candidates")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_balanced_candidates: Option<usize>,
-}
-
-impl From<&RoutingArgs> for KademliaConfig {
-    fn from(args: &RoutingArgs) -> Self {
-        let mut config = KademliaConfig::default();
-        if let Some(v) = args.saturation_peers {
-            config.saturation_peers = v;
-        }
-        if let Some(v) = args.high_watermark {
-            config.high_watermark = v;
-        }
-        if let Some(v) = args.client_reserved_slots {
-            config.client_reserved_slots = v;
-        }
-        if let Some(v) = args.low_watermark {
-            config.low_watermark = v;
-        }
-        if let Some(v) = args.max_connect_attempts {
-            config.max_connect_attempts = v;
-        }
-        if let Some(v) = args.max_neighbor_attempts {
-            config.max_neighbor_attempts = v;
-        }
-        if let Some(v) = args.max_neighbor_candidates {
-            config.max_neighbor_candidates = v;
-        }
-        if let Some(v) = args.max_balanced_candidates {
-            config.max_balanced_candidates = v;
-        }
-        config
-    }
-}
 
 /// P2P network CLI arguments.
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
@@ -336,7 +260,7 @@ impl TryFrom<&NetworkArgs> for NetworkConfig<KademliaConfig> {
             max_peers: args.max_peers,
             idle_timeout: Duration::from_secs(args.idle_timeout_secs),
             peer: PeerConfig::from(&args.peer),
-            routing: KademliaConfig::from(&args.routing),
+            routing: args.routing.routing_config(),
         })
     }
 }

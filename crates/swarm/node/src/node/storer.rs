@@ -64,11 +64,6 @@ impl<I: SwarmIdentity + Clone> StorerNode<I> {
         self.client.overlay_address()
     }
 
-    /// Get the swarm identity.
-    pub fn identity(&self) -> &I {
-        self.client.identity()
-    }
-
     /// Get the topology handle for peer and routing queries.
     pub fn topology_handle(&self) -> &TopologyHandle<I> {
         self.client.topology_handle()

@@ -81,10 +81,6 @@ impl<I: SwarmIdentity + Clone> BootNode<I> {
         self.base.overlay_address()
     }
 
-    pub fn identity(&self) -> &I {
-        self.base.identity()
-    }
-
     pub fn topology_handle(&self) -> &TopologyHandle<I> {
         self.base.topology_handle()
     }

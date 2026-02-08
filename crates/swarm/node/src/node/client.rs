@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig};
 use vertex_swarm_topology::{
-    KademliaConfig, TopologyBehaviour, TopologyCommand, TopologyHandle, TopologyServiceEvent,
+    KademliaConfig, TopologyBehaviour, TopologyCommand, TopologyHandle, TopologyEvent,
 };
 use vertex_tasks::SpawnableTask;
 use vertex_tasks::TaskExecutor;
@@ -101,10 +101,6 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
         self.base.overlay_address()
     }
 
-    pub fn identity(&self) -> &I {
-        self.base.identity()
-    }
-
     pub fn topology_handle(&self) -> &TopologyHandle<I> {
         self.base.topology_handle()
     }
@@ -124,10 +120,7 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
                         .swarm
                         .behaviour_mut()
                         .topology
-                        .on_command(TopologyCommand::Dial {
-                            addr,
-                            for_gossip: false,
-                        });
+                        .on_command(TopologyCommand::Dial(addr));
                     dialed += 1;
                 }
                 Err(e) => {
@@ -213,12 +206,13 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
         }
     }
 
-    fn handle_topology_service_event(&mut self, event: TopologyServiceEvent) {
+    fn handle_topology_service_event(&mut self, event: TopologyEvent) {
         match event {
-            TopologyServiceEvent::PeerReady {
+            TopologyEvent::PeerReady {
                 overlay,
                 peer_id,
                 is_full_node,
+                ..
             } => {
                 self.base
                     .swarm
@@ -230,9 +224,11 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
                         is_full_node,
                     });
             }
-            TopologyServiceEvent::PeerDisconnected { .. } => {}
-            TopologyServiceEvent::DepthChanged { .. } => {}
-            TopologyServiceEvent::DialFailed { .. } => {}
+            TopologyEvent::PeerDisconnected { .. } => {}
+            TopologyEvent::PeerRejected { .. } => {}
+            TopologyEvent::DepthChanged { .. } => {}
+            TopologyEvent::DialFailed { .. } => {}
+            TopologyEvent::PingCompleted { .. } => {}
         }
     }
 
