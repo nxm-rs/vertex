@@ -1,10 +1,9 @@
 //! Lock-free peer scoring with atomics.
 
 use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
-
-use crate::time::unix_timestamp_secs;
+use crate::snapshot::PeerScoreSnapshot;
 use crate::traits::NetPeerScoreExt;
 
 /// Fixed-point scaling for score precision without floats in atomics.
@@ -16,7 +15,6 @@ const ORD: Ordering = Ordering::Relaxed;
 /// Lock-free peer scoring using atomics for concurrent access.
 #[derive(Debug)]
 pub struct PeerScore<Ext: NetPeerScoreExt = ()> {
-    /// Fixed-point score (score * SCORE_SCALE).
     score: AtomicI64,
     last_updated: AtomicU64,
     connection_successes: AtomicU32,
@@ -26,7 +24,6 @@ pub struct PeerScore<Ext: NetPeerScoreExt = ()> {
     protocol_errors: AtomicU32,
     latency_sum_nanos: AtomicU64,
     latency_samples: AtomicU32,
-    /// Protocol-specific scoring extension.
     ext: Ext,
 }
 
@@ -182,9 +179,8 @@ impl<Ext: NetPeerScoreExt> PeerScore<Ext> {
         Some(self.latency_sum_nanos.load(ORD) / samples as u64)
     }
 
-    pub fn avg_latency(&self) -> Option<std::time::Duration> {
-        self.avg_latency_nanos()
-            .map(std::time::Duration::from_nanos)
+    pub fn avg_latency(&self) -> Option<Duration> {
+        self.avg_latency_nanos().map(Duration::from_nanos)
     }
 
     /// Access to protocol-specific scoring extension.
@@ -193,99 +189,45 @@ impl<Ext: NetPeerScoreExt> PeerScore<Ext> {
     }
 
     pub fn snapshot(&self) -> PeerScoreSnapshot<Ext::Snapshot> {
-        PeerScoreSnapshot {
-            score: self.score(),
-            last_updated: self.last_updated(),
-            connection_successes: self.connection_successes(),
-            connection_timeouts: self.connection_timeouts(),
-            connection_refusals: self.connection_refusals(),
-            handshake_failures: self.handshake_failures(),
-            protocol_errors: self.protocol_errors(),
-            latency_sum_nanos: self.latency_sum_nanos(),
-            latency_samples: self.latency_samples(),
-            ext: self.ext.snapshot(),
-        }
+        PeerScoreSnapshot::new(
+            self.score(),
+            self.last_updated(),
+            self.connection_successes(),
+            self.connection_timeouts(),
+            self.connection_refusals(),
+            self.handshake_failures(),
+            self.protocol_errors(),
+            self.latency_sum_nanos(),
+            self.latency_samples(),
+            self.ext.snapshot(),
+        )
     }
 
     pub fn restore(&self, snapshot: &PeerScoreSnapshot<Ext::Snapshot>) {
-        self.score.store((snapshot.score * SCORE_SCALE) as i64, ORD);
-        self.last_updated.store(snapshot.last_updated, ORD);
+        self.score
+            .store((snapshot.score() * SCORE_SCALE) as i64, ORD);
+        self.last_updated.store(snapshot.last_updated(), ORD);
         self.connection_successes
-            .store(snapshot.connection_successes, ORD);
+            .store(snapshot.connection_successes(), ORD);
         self.connection_timeouts
-            .store(snapshot.connection_timeouts, ORD);
+            .store(snapshot.connection_timeouts(), ORD);
         self.connection_refusals
-            .store(snapshot.connection_refusals, ORD);
+            .store(snapshot.connection_refusals(), ORD);
         self.handshake_failures
-            .store(snapshot.handshake_failures, ORD);
-        self.protocol_errors.store(snapshot.protocol_errors, ORD);
+            .store(snapshot.handshake_failures(), ORD);
+        self.protocol_errors.store(snapshot.protocol_errors(), ORD);
         self.latency_sum_nanos
-            .store(snapshot.latency_sum_nanos, ORD);
-        self.latency_samples.store(snapshot.latency_samples, ORD);
-        self.ext.restore(&snapshot.ext);
+            .store(snapshot.latency_sum_nanos(), ORD);
+        self.latency_samples.store(snapshot.latency_samples(), ORD);
+        self.ext.restore(snapshot.ext());
     }
 }
 
-/// Serializable snapshot of peer score metrics.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "ExtSnap: Serialize",
-    deserialize = "ExtSnap: for<'a> Deserialize<'a>"
-))]
-pub struct PeerScoreSnapshot<ExtSnap = ()> {
-    pub score: f64,
-    pub last_updated: u64,
-    pub connection_successes: u32,
-    pub connection_timeouts: u32,
-    pub connection_refusals: u32,
-    pub handshake_failures: u32,
-    pub protocol_errors: u32,
-    pub latency_sum_nanos: u64,
-    pub latency_samples: u32,
-    /// Protocol-specific scoring extension snapshot.
-    pub ext: ExtSnap,
-}
-
-impl<ExtSnap: Default> Default for PeerScoreSnapshot<ExtSnap> {
-    fn default() -> Self {
-        Self {
-            score: 0.0,
-            last_updated: 0,
-            connection_successes: 0,
-            connection_timeouts: 0,
-            connection_refusals: 0,
-            handshake_failures: 0,
-            protocol_errors: 0,
-            latency_sum_nanos: 0,
-            latency_samples: 0,
-            ext: ExtSnap::default(),
-        }
-    }
-}
-
-impl<ExtSnap> PeerScoreSnapshot<ExtSnap> {
-    pub fn total_connection_attempts(&self) -> u32 {
-        self.connection_successes
-            + self.connection_timeouts
-            + self.connection_refusals
-            + self.handshake_failures
-    }
-
-    /// Returns 0.5 (neutral) if no attempts recorded.
-    pub fn success_rate(&self) -> f64 {
-        let total = self.total_connection_attempts();
-        if total == 0 {
-            return 0.5;
-        }
-        self.connection_successes as f64 / total as f64
-    }
-
-    pub fn avg_latency_nanos(&self) -> Option<u64> {
-        if self.latency_samples == 0 {
-            return None;
-        }
-        Some(self.latency_sum_nanos / self.latency_samples as u64)
-    }
+fn unix_timestamp_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -384,11 +326,11 @@ mod tests {
         score.record_protocol_error();
 
         let snapshot = score.snapshot();
-        assert!((snapshot.score - 75.5).abs() < 0.01);
-        assert_eq!(snapshot.connection_successes, 2);
-        assert_eq!(snapshot.connection_timeouts, 1);
-        assert_eq!(snapshot.connection_refusals, 1);
-        assert_eq!(snapshot.protocol_errors, 1);
+        assert!((snapshot.score() - 75.5).abs() < 0.01);
+        assert_eq!(snapshot.connection_successes(), 2);
+        assert_eq!(snapshot.connection_timeouts(), 1);
+        assert_eq!(snapshot.connection_refusals(), 1);
+        assert_eq!(snapshot.protocol_errors(), 1);
 
         let score2: PeerScore = PeerScore::new();
         score2.restore(&snapshot);

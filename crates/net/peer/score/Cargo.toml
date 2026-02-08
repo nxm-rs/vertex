@@ -1,0 +1,21 @@
+[package]
+name = "vertex-net-peer-score"
+description = "Lock-free peer scoring with policy abstraction"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+parking_lot = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+web-time = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+serde_json = { workspace = true }

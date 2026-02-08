@@ -1,6 +1,6 @@
 [package]
-name = "vertex-net-peers"
-description = "Generic peer management framework for libp2p networks with lock-free scoring"
+name = "vertex-net-peer-store"
+description = "Peer persistence with generic record storage"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,16 +12,11 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-libp2p = { workspace = true }
 parking_lot = { workspace = true }
-tracing = { workspace = true }
-web-time = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { version = "1.0", features = ["std"] }
 thiserror = { workspace = true }
 auto_impl = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "time"] }
 tempfile = "3"
