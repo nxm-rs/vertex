@@ -30,10 +30,7 @@ impl SwarmSettlementProvider for NoSettlement {
 mod tests {
     use super::*;
     use crate::PeerState;
-
-    fn test_peer() -> OverlayAddress {
-        OverlayAddress::from([1u8; 32])
-    }
+    use vertex_swarm_test_utils::test_peer;
 
     #[test]
     fn test_no_settlement_provider() {

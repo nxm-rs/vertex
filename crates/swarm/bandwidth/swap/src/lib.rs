@@ -181,16 +181,12 @@ pub fn new_swap_accounting<C: SwarmAccountingConfig + Clone + 'static, I: SwarmI
 mod tests {
     use super::*;
     use vertex_swarm_api::{
-        BandwidthMode, Direction, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmNodeType,
+        BandwidthMode, Direction, SwarmAccountingConfig, SwarmBandwidthAccounting,
         SwarmPeerBandwidth,
     };
     use vertex_swarm_bandwidth::BandwidthConfig;
     use vertex_swarm_bandwidth::PeerState;
-    use vertex_swarm_identity::Identity;
-
-    fn test_identity() -> Identity {
-        Identity::random(vertex_swarm_spec::init_testnet(), SwarmNodeType::Client)
-    }
+    use vertex_swarm_test_utils::{test_identity, test_peer};
 
     struct SwapTestConfig;
 
@@ -218,10 +214,6 @@ mod tests {
         fn client_only_factor(&self) -> u64 {
             10
         }
-    }
-
-    fn test_peer() -> OverlayAddress {
-        OverlayAddress::from([1u8; 32])
     }
 
     #[test]

@@ -150,13 +150,7 @@ impl NoAccountingBuilder {
 mod tests {
     use super::*;
     use crate::DefaultBandwidthConfig;
-    use vertex_swarm_api::SwarmNodeType;
-    use vertex_swarm_identity::Identity;
-    use vertex_swarm_spec::init_testnet;
-
-    fn test_identity() -> Arc<Identity> {
-        Arc::new(Identity::random(init_testnet(), SwarmNodeType::Client))
-    }
+    use vertex_swarm_test_utils::test_identity_arc as test_identity;
 
     #[test]
     fn test_builder_with_pricer_from_config() {

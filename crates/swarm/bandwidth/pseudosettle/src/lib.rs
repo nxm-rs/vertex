@@ -205,20 +205,10 @@ pub fn new_pseudosettle_accounting<C: SwarmAccountingConfig + Clone + 'static, I
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vertex_swarm_api::{
-        Direction, SwarmBandwidthAccounting, SwarmNodeType, SwarmPeerBandwidth,
-    };
+    use vertex_swarm_api::{Direction, SwarmBandwidthAccounting, SwarmPeerBandwidth};
     use vertex_swarm_bandwidth::BandwidthConfig;
     use vertex_swarm_bandwidth::PeerState;
-    use vertex_swarm_identity::Identity;
-
-    fn test_identity() -> Identity {
-        Identity::random(vertex_swarm_spec::init_testnet(), SwarmNodeType::Client)
-    }
-
-    fn test_peer() -> OverlayAddress {
-        OverlayAddress::from([1u8; 32])
-    }
+    use vertex_swarm_test_utils::{test_identity, test_peer};
 
     #[test]
     fn test_pseudosettle_provider_name() {

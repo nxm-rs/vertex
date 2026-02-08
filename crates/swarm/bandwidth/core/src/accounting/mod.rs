@@ -316,16 +316,7 @@ impl SwarmPeerBandwidth for AccountingPeerHandle {
 mod tests {
     use super::*;
     use crate::{BandwidthConfig, NoSettlement};
-    use vertex_swarm_api::SwarmNodeType;
-    use vertex_swarm_identity::Identity;
-
-    fn test_identity() -> Identity {
-        Identity::random(vertex_swarm_spec::init_testnet(), SwarmNodeType::Client)
-    }
-
-    fn test_peer() -> OverlayAddress {
-        OverlayAddress::from([1u8; 32])
-    }
+    use vertex_swarm_test_utils::{test_identity, test_peer, Identity};
 
     fn test_accounting() -> Accounting<BandwidthConfig, Identity> {
         Accounting::new(BandwidthConfig::default(), test_identity())
