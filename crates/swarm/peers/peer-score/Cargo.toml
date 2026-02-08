@@ -1,0 +1,28 @@
+[package]
+name = "vertex-swarm-peer-score"
+description = "Swarm-specific peer scoring with configurable policies and callbacks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Generic scoring primitives
+vertex-net-peer-score = { workspace = true }
+
+# Swarm primitives
+vertex-swarm-primitives = { workspace = true }
+
+# Core
+auto_impl = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = "1.0"
+
+[lints]
+workspace = true

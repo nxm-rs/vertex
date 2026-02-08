@@ -1,5 +1,5 @@
 [package]
-name = "vertex-swarm-peermanager"
+name = "vertex-swarm-peer-manager"
 description = "Peer lifecycle management with PeerId/OverlayAddress abstraction boundary"
 version.workspace = true
 edition.workspace = true
@@ -9,27 +9,26 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
-# New generic layers
+# Network primitives
 vertex-net-local = { workspace = true }
-vertex-net-peers = { workspace = true }
+vertex-net-peer-store = { workspace = true }
+vertex-net-peer-score = { workspace = true }
 
 # Swarm-specific
+vertex-swarm-api = { workspace = true }
 vertex-swarm-primitives = { workspace = true }
 vertex-swarm-peer = { workspace = true, features = ["serde"] }
+vertex-swarm-peer-score = { workspace = true }
 
 # Core
 libp2p = { workspace = true }
 parking_lot = { workspace = true }
 tracing = { workspace = true }
-web-time = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { version = "1.0", features = ["std"] }
-alloy-primitives = { workspace = true, features = ["serde"] }
-auto_impl = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
-vertex-tasks = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
 tempfile = "3"
+vertex-swarm-test-utils = { workspace = true }

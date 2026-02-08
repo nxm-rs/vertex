@@ -34,7 +34,7 @@ vertex-swarm-bandwidth-chequebook.workspace = true
 
 ## vertex - topology
 vertex-swarm-topology.workspace = true
-vertex-swarm-peermanager.workspace = true
+vertex-swarm-peer-manager.workspace = true
 
 ## vertex - swarm (libp2p-free abstractions)
 vertex-swarm-api.workspace = true
@@ -74,10 +74,8 @@ vertex-swarm-localstore = { workspace = true, optional = true }
 vertex-swarm-redistribution = { workspace = true, optional = true }
 
 [dev-dependencies]
-alloy-primitives.workspace = true
-alloy-signer-local.workspace = true
-vertex-swarm-spec.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
+vertex-swarm-test-utils = { workspace = true }
 
 [features]
 default = ["std"]

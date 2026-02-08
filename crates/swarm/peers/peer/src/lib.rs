@@ -26,16 +26,6 @@ use alloy_primitives::{Address, B256, Signature};
 use alloy_signer::{Signer, SignerSync};
 use libp2p::Multiaddr;
 
-/// Extension trait for creating [`SwarmPeer`] from any [`SwarmIdentity`].
-pub trait SwarmIdentityExt: SwarmIdentity {
-    /// Create a [`SwarmPeer`] from this identity with the given multiaddrs.
-    fn to_swarm_peer(&self, multiaddrs: Vec<Multiaddr>) -> Result<SwarmPeer, SwarmPeerError> {
-        SwarmPeer::from_identity(self, multiaddrs)
-    }
-}
-
-impl<I: SwarmIdentity> SwarmIdentityExt for I {}
-
 /// Verifiable peer identity with multiaddrs, signature, and overlay address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -45,6 +35,23 @@ pub struct SwarmPeer {
     overlay: SwarmAddress,
     nonce: B256,
     ethereum_address: Address,
+}
+
+impl Default for SwarmPeer {
+    /// Creates a placeholder SwarmPeer with zero values.
+    ///
+    /// Only use for deserialization defaults. Real peers should be created via
+    /// `from_identity`, `from_signed`, or `from_validated`.
+    fn default() -> Self {
+        use alloy_primitives::U256;
+        Self {
+            multiaddrs: Vec::new(),
+            signature: Signature::new(U256::ZERO, U256::ZERO, false),
+            overlay: SwarmAddress::default(),
+            nonce: B256::ZERO,
+            ethereum_address: Address::ZERO,
+        }
+    }
 }
 
 impl SwarmPeer {

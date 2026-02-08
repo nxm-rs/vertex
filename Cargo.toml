@@ -43,7 +43,7 @@ members = [
     # Swarm
     "crates/swarm/primitives",
     "crates/swarm/identity",
-    "crates/swarm/peer",
+    "crates/swarm/peers/peer",
     "crates/swarm/api",
     "crates/swarm/spec",
     "crates/swarm/forks",
@@ -54,9 +54,9 @@ members = [
     # Node (libp2p boundary)
     "crates/swarm/node",
     "crates/swarm/topology",
-    "crates/swarm/peermanager",
-    "crates/swarm/peer-registry",
-    "crates/swarm/peer-score",
+    "crates/swarm/peers/peer-manager",
+    "crates/swarm/peers/peer-registry",
+    "crates/swarm/peers/peer-score",
     "crates/swarm/bandwidth/core",
     "crates/swarm/bandwidth/chequebook",
     "crates/swarm/bandwidth/pricing",
@@ -102,7 +102,7 @@ vertex-swarm-forks = { path = "crates/swarm/forks" }
 vertex-swarm-primitives = { path = "crates/swarm/primitives" }
 
 # peer identity (libp2p boundary)
-vertex-swarm-peer = { path = "crates/swarm/peer" }
+vertex-swarm-peer = { path = "crates/swarm/peers/peer" }
 
 # network
 vertex-net-local = { path = "crates/net/local" }
@@ -147,9 +147,9 @@ vertex-swarm-node = { path = "crates/swarm/node" }
 
 # topology (in swarm/)
 vertex-swarm-topology = { path = "crates/swarm/topology" }
-vertex-swarm-peermanager = { path = "crates/swarm/peermanager" }
-vertex-swarm-peer-registry = { path = "crates/swarm/peer-registry" }
-vertex-swarm-peer-score = { path = "crates/swarm/peer-score" }
+vertex-swarm-peer-manager = { path = "crates/swarm/peers/peer-manager" }
+vertex-swarm-peer-registry = { path = "crates/swarm/peers/peer-registry" }
+vertex-swarm-peer-score = { path = "crates/swarm/peers/peer-score" }
 
 # bandwidth (in swarm/)
 vertex-swarm-bandwidth = { path = "crates/swarm/bandwidth/core" }

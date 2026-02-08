@@ -20,7 +20,8 @@ vertex-net-headers.workspace = true
 vertex-net-hive.workspace = true
 vertex-net-pingpong.workspace = true
 vertex-swarm-peer.workspace = true
-vertex-swarm-peermanager.workspace = true
+vertex-swarm-peer-manager.workspace = true
+vertex-swarm-peer-registry.workspace = true
 vertex-tasks.workspace = true
 nectar-primitives.workspace = true
 
@@ -38,11 +39,18 @@ bytes.workspace = true
 ## misc
 thiserror.workspace = true
 rand.workspace = true
-tracing.workspace = true
 parking_lot.workspace = true
 hashlink.workspace = true
 web-time.workspace = true
 hex = "0.4"
+
+## CLI args (optional, for RoutingArgs)
+clap.workspace = true
+serde.workspace = true
+
+## tracing & metrics
+tracing.workspace = true
+metrics.workspace = true
 
 # DNS resolution (for bootnode dnsaddr resolution)
 hickory-resolver = { version = "0.25", features = ["tokio", "system-config"] }
@@ -50,9 +58,7 @@ hickory-resolver = { version = "0.25", features = ["tokio", "system-config"] }
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
 tracing-subscriber.workspace = true
-alloy-signer.workspace = true
-alloy-signer-local.workspace = true
-vertex-swarm-spec.workspace = true
+vertex-swarm-test-utils = { workspace = true }
 
 [lints]
 workspace = true
