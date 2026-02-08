@@ -1,7 +1,7 @@
 //! RPC providers for Swarm nodes.
 
 use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
-use vertex_swarm_api::{SwarmChunkProvider, SwarmIdentity};
+use vertex_swarm_api::{HasTopology, SwarmChunkProvider, SwarmIdentity};
 use vertex_swarm_rpc::{ChunkService, NodeService, proto};
 use vertex_swarm_topology::TopologyHandle;
 
@@ -14,6 +14,14 @@ pub struct ClientRpcProviders<I: SwarmIdentity, C> {
 impl<I: SwarmIdentity, C> ClientRpcProviders<I, C> {
     pub fn new(topology: TopologyHandle<I>, chunks: C) -> Self {
         Self { topology, chunks }
+    }
+}
+
+impl<I: SwarmIdentity, C: Send + Sync> HasTopology for ClientRpcProviders<I, C> {
+    type Topology = TopologyHandle<I>;
+
+    fn topology(&self) -> &TopologyHandle<I> {
+        &self.topology
     }
 }
 
@@ -44,6 +52,14 @@ impl<I: SwarmIdentity> BootnodeRpcProviders<I> {
     }
 }
 
+impl<I: SwarmIdentity> HasTopology for BootnodeRpcProviders<I> {
+    type Topology = TopologyHandle<I>;
+
+    fn topology(&self) -> &TopologyHandle<I> {
+        &self.topology
+    }
+}
+
 impl<I: SwarmIdentity> RegistersGrpcServices for BootnodeRpcProviders<I> {
     fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
         let node_service = NodeService::new(self.topology.clone());
@@ -62,6 +78,14 @@ pub struct StorerRpcProviders<I: SwarmIdentity> {
 impl<I: SwarmIdentity> StorerRpcProviders<I> {
     pub fn new(topology: TopologyHandle<I>) -> Self {
         Self { topology }
+    }
+}
+
+impl<I: SwarmIdentity> HasTopology for StorerRpcProviders<I> {
+    type Topology = TopologyHandle<I>;
+
+    fn topology(&self) -> &TopologyHandle<I> {
+        &self.topology
     }
 }
 

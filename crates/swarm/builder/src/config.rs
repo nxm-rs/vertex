@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use vertex_node_api::NodeBuildsProtocol;
+use vertex_swarm_api::SwarmProtocol;
 use vertex_swarm_bandwidth::DefaultBandwidthConfig;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
@@ -137,5 +139,29 @@ impl StorerConfig {
 
     pub fn storage(&self) -> &StorageConfig {
         &self.storage
+    }
+}
+
+impl NodeBuildsProtocol for BootnodeConfig {
+    type Protocol = SwarmProtocol<Self>;
+
+    fn protocol_name(&self) -> &'static str {
+        "Swarm Bootnode"
+    }
+}
+
+impl NodeBuildsProtocol for ClientConfig {
+    type Protocol = SwarmProtocol<Self>;
+
+    fn protocol_name(&self) -> &'static str {
+        "Swarm Client"
+    }
+}
+
+impl NodeBuildsProtocol for StorerConfig {
+    type Protocol = SwarmProtocol<Self>;
+
+    fn protocol_name(&self) -> &'static str {
+        "Swarm Storer"
     }
 }
