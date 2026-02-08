@@ -1,8 +1,10 @@
 //! Logging CLI arguments.
 
+use std::path::PathBuf;
+
 use clap::Args;
 use serde::{Deserialize, Serialize};
-use vertex_node_api::NodeLoggingConfig;
+use vertex_observability::{FileConfig, LogFormat, StdoutConfig};
 
 /// Default log file size in MB.
 const DEFAULT_MAX_FILE_SIZE_MB: u64 = 100;
@@ -21,7 +23,7 @@ pub struct LogArgs {
 
     /// Verbose mode (-v, -vv, -vvv, etc.).
     #[arg(short, long, action = clap::ArgAction::Count)]
-    #[serde(skip)] // CLI-only, count action doesn't make sense in config
+    #[serde(skip)]
     pub verbosity: u8,
 
     /// Log filter directive (e.g., "vertex=debug,libp2p=info").
@@ -55,33 +57,59 @@ impl Default for LogArgs {
     }
 }
 
-impl NodeLoggingConfig for LogArgs {
-    fn logging_enabled(&self) -> bool {
-        !self.quiet
+impl LogArgs {
+    /// Build stdout logging config.
+    ///
+    /// Returns None if quiet mode is enabled.
+    pub fn stdout_config(&self) -> Option<StdoutConfig> {
+        if self.quiet {
+            return None;
+        }
+
+        let filter = self.build_filter();
+        let format = if self.json {
+            LogFormat::Json
+        } else {
+            LogFormat::Terminal
+        };
+
+        Some(StdoutConfig::new(format, filter, true))
     }
 
-    fn verbosity(&self) -> u8 {
-        self.verbosity
+    /// Build file logging config.
+    ///
+    /// Returns None if quiet mode is enabled or no log_dir provided.
+    pub fn file_config(&self, log_dir: PathBuf) -> Option<FileConfig> {
+        if self.quiet {
+            return None;
+        }
+
+        let filter = self.build_filter();
+        let format = if self.json {
+            LogFormat::Json
+        } else {
+            LogFormat::Terminal
+        };
+
+        Some(FileConfig::new(
+            log_dir,
+            "vertex.log",
+            format,
+            filter,
+            self.max_file_size_mb,
+            self.max_files,
+        ))
     }
 
-    fn json_logging(&self) -> bool {
-        self.json
-    }
+    fn build_filter(&self) -> String {
+        if let Some(ref custom) = self.filter {
+            return custom.clone();
+        }
 
-    fn log_filter(&self) -> Option<&str> {
-        self.filter.as_deref()
-    }
-
-    fn log_dir(&self) -> Option<&str> {
-        // Log directory is derived from the main data directory
-        None
-    }
-
-    fn max_log_file_size_mb(&self) -> u64 {
-        self.max_file_size_mb
-    }
-
-    fn max_log_files(&self) -> usize {
-        self.max_files
+        match self.verbosity {
+            0 => "info".to_string(),
+            1 => "debug".to_string(),
+            _ => "trace".to_string(),
+        }
     }
 }

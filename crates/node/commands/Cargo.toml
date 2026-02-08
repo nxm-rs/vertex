@@ -15,6 +15,7 @@ workspace = true
 # vertex - generic infrastructure only
 vertex-node-builder.workspace = true
 vertex-node-core.workspace = true
+vertex-observability.workspace = true
 vertex-tasks.workspace = true
 
 # cli

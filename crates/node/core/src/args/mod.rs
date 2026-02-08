@@ -45,11 +45,17 @@ mod api;
 mod database;
 mod datadir;
 mod log;
+mod metrics;
+mod observability;
+mod tracing;
 
 pub use api::ApiArgs;
 pub use database::DatabaseArgs;
 pub use datadir::DataDirArgs;
 pub use log::LogArgs;
+pub use metrics::MetricsArgs;
+pub use observability::ObservabilityArgs;
+pub use tracing::TracingArgs;
 
 use clap::Args;
 use serde::{Deserialize, Serialize};
@@ -62,7 +68,7 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 #[derive(Default)]
 pub struct InfraArgs {
-    /// API configuration (gRPC, metrics).
+    /// API configuration (gRPC).
     #[command(flatten)]
     pub api: ApiArgs,
 
@@ -73,6 +79,10 @@ pub struct InfraArgs {
     /// Data directory configuration.
     #[command(flatten)]
     pub datadir: DataDirArgs,
+
+    /// Observability configuration (metrics, tracing).
+    #[command(flatten)]
+    pub observability: ObservabilityArgs,
 }
 
 /// Full node infrastructure arguments including logging.

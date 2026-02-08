@@ -21,8 +21,6 @@
 //!
 //! Infrastructure configuration is defined via traits (all prefixed with `Node`):
 //! - [`NodeRpcConfig`] - RPC server configuration (addresses, ports)
-//! - [`NodeMetricsConfig`] - Metrics endpoint configuration
-//! - [`NodeLoggingConfig`] - Logging format and rotation configuration
 //! - [`NodeDatabaseConfig`] - Database storage configuration
 //! - [`NodeConfig`] - Combined infrastructure configuration
 //!

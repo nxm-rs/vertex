@@ -1,7 +1,7 @@
 //! Generic CLI infrastructure for Vertex nodes.
 
 pub use vertex_node_builder::LaunchContext;
-pub use vertex_node_core::args::{InfraArgs, LogArgs};
+pub use vertex_node_core::args::{InfraArgs, LogArgs, TracingArgs};
 
 use std::future::Future;
 use std::time::Duration;
@@ -9,7 +9,8 @@ use std::time::Duration;
 use clap::Parser;
 use color_eyre::eyre;
 use tracing::{error, info, warn};
-use vertex_node_core::{logging, version};
+use vertex_node_core::version;
+use vertex_observability::VertexTracer;
 use vertex_tasks::{TaskExecutor, TaskManager};
 
 /// Timeout for graceful shutdown before forcing exit.
@@ -20,16 +21,32 @@ pub trait HasLogs {
     fn logs(&self) -> &LogArgs;
 }
 
+/// CLI types with tracing configuration.
+pub trait HasTracing {
+    fn tracing(&self) -> &TracingArgs;
+}
+
 /// Run a CLI with error handling, logging, task management, and graceful shutdown.
 pub async fn run_cli<C, F, Fut>(runner: F) -> eyre::Result<()>
 where
-    C: Parser + HasLogs,
+    C: Parser + HasLogs + HasTracing,
     F: FnOnce(C) -> Fut,
     Fut: Future<Output = eyre::Result<()>>,
 {
     color_eyre::install()?;
     let cli = C::parse();
-    logging::init_logging(cli.logs())?;
+
+    // Build tracer from CLI args
+    let mut tracer = VertexTracer::new();
+
+    if let Some(stdout) = cli.logs().stdout_config() {
+        tracer = tracer.with_stdout(stdout);
+    }
+    if let Some(otlp) = cli.tracing().otlp_config() {
+        tracer = tracer.with_otlp(otlp);
+    }
+
+    let _guard = tracer.init()?;
     info!("Starting Vertex {}", version::VERSION);
 
     // TaskManager must stay alive - dropping it fires shutdown signal to all tasks.
@@ -57,7 +74,6 @@ where
             info!("Received Ctrl+C, initiating graceful shutdown...");
             match executor.initiate_graceful_shutdown() {
                 Ok(graceful_shutdown) => {
-                    // Guard must be held until shutdown completes
                     match tokio::time::timeout(GRACEFUL_SHUTDOWN_TIMEOUT, graceful_shutdown).await {
                         Ok(_guard) => info!("Graceful shutdown complete"),
                         Err(_) => warn!(

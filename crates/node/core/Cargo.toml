@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 # Internal dependencies - generic infrastructure only
+vertex-observability = { workspace = true }
 vertex-node-api = { workspace = true }
 vertex-tasks = { workspace = true }
 
