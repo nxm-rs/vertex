@@ -1,25 +1,54 @@
 //! Kademlia-based peer routing for Swarm overlay network.
 
+pub mod args;
 mod config;
 mod kademlia;
 mod pslice;
 
-pub use config::{
-    KademliaConfig, DEFAULT_CLIENT_RESERVED_SLOTS, DEFAULT_HIGH_WATERMARK, DEFAULT_LOW_WATERMARK,
-    DEFAULT_MANAGE_INTERVAL, DEFAULT_MAX_BALANCED_CANDIDATES, DEFAULT_MAX_CONNECT_ATTEMPTS,
-    DEFAULT_MAX_NEIGHBOR_ATTEMPTS, DEFAULT_MAX_NEIGHBOR_CANDIDATES, DEFAULT_SATURATION_PEERS,
-};
-pub use kademlia::{KademliaRouting, PeerFailureProvider, RoutingStats};
-pub use pslice::{PSlice, MAX_PO};
+pub use args::RoutingArgs;
+pub use config::KademliaConfig;
+pub use kademlia::KademliaRouting;
+pub use pslice::PSlice;
 
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_primitives::OverlayAddress;
+
+/// Connection capacity management for routing algorithms.
+///
+/// Provides atomic capacity reservation to prevent TOCTOU races between
+/// checking bin availability and starting a connection.
+pub trait RoutingCapacity: Send + Sync {
+    /// Atomically check capacity and reserve a dial slot.
+    /// Returns true if reserved, false if at capacity or already tracking.
+    fn try_reserve_dial(&self, overlay: &OverlayAddress, is_full_node: bool) -> bool;
+
+    /// Release a dial reservation (dial failed before connection established).
+    fn release_dial(&self, overlay: &OverlayAddress);
+
+    /// Transition from dialing to handshaking phase.
+    fn dial_connected(&self, overlay: &OverlayAddress);
+
+    /// Transition from handshaking to active.
+    fn handshake_completed(&self, overlay: &OverlayAddress);
+
+    /// Release a handshaking reservation (handshake failed).
+    fn release_handshake(&self, overlay: &OverlayAddress);
+
+    /// Connection fully disconnected - release active slot.
+    fn disconnected(&self, overlay: &OverlayAddress);
+
+    /// Check if we can accept an inbound connection (before overlay is known).
+    fn should_accept_inbound(&self, overlay: &OverlayAddress, is_full_node: bool) -> bool;
+
+    /// Reserve capacity for an accepted inbound connection.
+    fn reserve_inbound(&self, overlay: &OverlayAddress);
+}
 
 /// Internal routing operations for topology behaviour.
 ///
 /// Extends SwarmTopology with mutation and connection management.
 /// Implemented by routing algorithms (e.g., Kademlia).
-pub trait SwarmRouting<I: SwarmIdentity> {
+pub trait SwarmRouting<I: SwarmIdentity>: RoutingCapacity {
     /// Add discovered peers (from Hive). May trigger connection evaluation.
     fn add_peers(&self, peers: &[OverlayAddress]);
 
@@ -29,30 +58,15 @@ pub trait SwarmRouting<I: SwarmIdentity> {
     /// Notify that a peer has connected.
     fn connected(&self, peer: OverlayAddress);
 
-    /// Notify that a peer has disconnected.
-    fn disconnected(&self, peer: &OverlayAddress);
+    /// Update routing tables for a disconnected peer.
+    fn on_peer_disconnected(&self, peer: &OverlayAddress);
 
     /// Get peers we should try to connect to.
     fn peers_to_connect(&self) -> Vec<OverlayAddress>;
-
-    /// Record a connection failure for a peer.
-    fn record_connection_failure(&self, peer: &OverlayAddress);
-
-    /// Check if a peer is temporarily unavailable due to recent failures.
-    fn is_temporarily_unavailable(&self, peer: &OverlayAddress) -> bool;
-
-    /// Get the current failure count for a peer.
-    fn failure_count(&self, peer: &OverlayAddress) -> u32;
 
     /// Remove a peer from all routing state (for banning).
     fn remove_peer(&self, peer: &OverlayAddress);
 
     /// Evaluate and update connection candidates based on routing needs.
     fn evaluate_connections(&self);
-
-    /// Mark a peer as having a dial in progress.
-    fn mark_pending_dial(&self, peer: OverlayAddress);
-
-    /// Clear the pending dial status for a peer.
-    fn clear_pending_dial(&self, peer: &OverlayAddress);
 }

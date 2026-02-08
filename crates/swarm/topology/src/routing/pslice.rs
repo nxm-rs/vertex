@@ -5,20 +5,16 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use parking_lot::RwLock;
 use vertex_swarm_primitives::OverlayAddress;
 
-/// Maximum proximity order for 256-bit addresses.
-pub const MAX_PO: u8 = 31;
-
-const NUM_BINS: usize = 32;
-
 /// Proximity-ordered peer storage with cached sorted lists.
 ///
 /// Peers are stored per-bin for O(1) bin lookups. Sorted lists are cached
-/// and invalidated only when peers are added or removed.
+/// and invalidated only when peers are added or removed. The number of bins
+/// is determined at runtime from the network's max proximity order.
 pub struct PSlice {
     /// Peers organized by proximity order bin. Each bin is a Vec of peers.
-    bins: RwLock<[Vec<OverlayAddress>; NUM_BINS]>,
+    bins: RwLock<Vec<Vec<OverlayAddress>>>,
     /// Lock-free bin counts for fast size queries.
-    bin_counts: [AtomicUsize; NUM_BINS],
+    bin_counts: Vec<AtomicUsize>,
     /// Cache generation counter. Incremented on every mutation.
     generation: AtomicU64,
     /// Cached sorted list (ascending by PO) with its generation.
@@ -42,17 +38,15 @@ impl Default for CachedList {
     }
 }
 
-impl Default for PSlice {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl PSlice {
-    pub fn new() -> Self {
+    /// Create a new PSlice with the given maximum proximity order.
+    ///
+    /// The number of bins will be `max_po + 1` (e.g., max_po=31 gives 32 bins).
+    pub(crate) fn new(max_po: u8) -> Self {
+        let num_bins = (max_po as usize) + 1;
         Self {
-            bins: RwLock::new(std::array::from_fn(|_| Vec::new())),
-            bin_counts: std::array::from_fn(|_| AtomicUsize::new(0)),
+            bins: RwLock::new((0..num_bins).map(|_| Vec::new()).collect()),
+            bin_counts: (0..num_bins).map(|_| AtomicUsize::new(0)).collect(),
             generation: AtomicU64::new(0),
             cache_asc: RwLock::new(CachedList::default()),
             cache_desc: RwLock::new(CachedList::default()),
@@ -60,7 +54,7 @@ impl PSlice {
     }
 
     /// Returns true if the peer was added (not already present).
-    pub fn add(&self, peer: OverlayAddress, po: u8) -> bool {
+    pub(crate) fn add(&self, peer: OverlayAddress, po: u8) -> bool {
         let mut bins = self.bins.write();
         let bin = &mut bins[po as usize];
 
@@ -75,7 +69,7 @@ impl PSlice {
     }
 
     /// Returns true if the peer was present and removed.
-    pub fn remove(&self, peer: &OverlayAddress) -> bool {
+    pub(crate) fn remove(&self, peer: &OverlayAddress) -> bool {
         let mut bins = self.bins.write();
 
         for (po, bin) in bins.iter_mut().enumerate() {
@@ -89,59 +83,46 @@ impl PSlice {
         false
     }
 
-    pub fn exists(&self, peer: &OverlayAddress) -> bool {
+    pub(crate) fn exists(&self, peer: &OverlayAddress) -> bool {
         let bins = self.bins.read();
         bins.iter().any(|bin| bin.contains(peer))
     }
 
-    pub fn get_po(&self, peer: &OverlayAddress) -> Option<u8> {
-        let bins = self.bins.read();
-        for (po, bin) in bins.iter().enumerate() {
-            if bin.contains(peer) {
-                return Some(po as u8);
-            }
-        }
-        None
-    }
-
-    pub fn bin_size(&self, po: u8) -> usize {
+    pub(crate) fn bin_size(&self, po: u8) -> usize {
         self.bin_counts[po as usize].load(Ordering::Relaxed)
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.bin_counts
             .iter()
             .map(|c| c.load(Ordering::Relaxed))
             .sum()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.bin_counts
-            .iter()
-            .all(|c| c.load(Ordering::Relaxed) == 0)
-    }
-
-    pub fn peers_in_bin(&self, po: u8) -> Vec<OverlayAddress> {
+    pub(crate) fn peers_in_bin(&self, po: u8) -> Vec<OverlayAddress> {
         self.bins.read()[po as usize].clone()
     }
 
     /// Iterate from shallowest to deepest proximity order.
-    pub fn iter_by_proximity(&self) -> impl Iterator<Item = (u8, OverlayAddress)> {
+    pub(crate) fn iter_by_proximity(&self) -> impl Iterator<Item = (u8, OverlayAddress)> {
         self.get_sorted_asc().into_iter()
     }
 
     /// Iterate from deepest to shallowest proximity order.
-    pub fn iter_by_proximity_desc(&self) -> impl Iterator<Item = (u8, OverlayAddress)> {
+    pub(crate) fn iter_by_proximity_desc(&self) -> impl Iterator<Item = (u8, OverlayAddress)> {
         self.get_sorted_desc().into_iter()
     }
 
-    pub fn all_peers(&self) -> Vec<OverlayAddress> {
+    pub(crate) fn all_peers(&self) -> Vec<OverlayAddress> {
         let bins = self.bins.read();
         bins.iter().flat_map(|bin| bin.iter().copied()).collect()
     }
 
-    pub fn bin_sizes(&self) -> [usize; NUM_BINS] {
-        std::array::from_fn(|i| self.bin_counts[i].load(Ordering::Relaxed))
+    pub(crate) fn bin_sizes(&self) -> Vec<usize> {
+        self.bin_counts
+            .iter()
+            .map(|c| c.load(Ordering::Relaxed))
+            .collect()
     }
 
     /// Get the cached sorted list (ascending). Rebuilds if stale.
@@ -219,9 +200,12 @@ impl PSlice {
 mod tests {
     use super::*;
 
+    /// Standard max_po for 256-bit addresses.
+    const TEST_MAX_PO: u8 = 31;
+
     #[test]
     fn test_pslice_add_remove() {
-        let pslice = PSlice::new();
+        let pslice = PSlice::new(TEST_MAX_PO);
 
         let peer1 = OverlayAddress::from([0x80; 32]);
         let peer2 = OverlayAddress::from([0x40; 32]);
@@ -244,7 +228,7 @@ mod tests {
 
     #[test]
     fn test_pslice_bin_size() {
-        let pslice = PSlice::new();
+        let pslice = PSlice::new(TEST_MAX_PO);
 
         let peer1 = OverlayAddress::from([0x80; 32]);
         let peer2 = OverlayAddress::from([0xc0; 32]);
@@ -260,19 +244,8 @@ mod tests {
     }
 
     #[test]
-    fn test_pslice_get_po() {
-        let pslice = PSlice::new();
-
-        let peer = OverlayAddress::from([0x80; 32]);
-        pslice.add(peer, 5);
-
-        assert_eq!(pslice.get_po(&peer), Some(5));
-        assert_eq!(pslice.get_po(&OverlayAddress::from([0x00; 32])), None);
-    }
-
-    #[test]
     fn test_pslice_iter_by_proximity() {
-        let pslice = PSlice::new();
+        let pslice = PSlice::new(TEST_MAX_PO);
 
         let peer0 = OverlayAddress::from([0x80; 32]);
         let peer1 = OverlayAddress::from([0x40; 32]);
@@ -291,7 +264,7 @@ mod tests {
 
     #[test]
     fn test_pslice_iter_by_proximity_desc() {
-        let pslice = PSlice::new();
+        let pslice = PSlice::new(TEST_MAX_PO);
 
         let peer0 = OverlayAddress::from([0x80; 32]);
         let peer1 = OverlayAddress::from([0x40; 32]);
@@ -310,7 +283,7 @@ mod tests {
 
     #[test]
     fn test_pslice_bin_sizes() {
-        let pslice = PSlice::new();
+        let pslice = PSlice::new(TEST_MAX_PO);
 
         let peer1 = OverlayAddress::from([0x80; 32]);
         let peer2 = OverlayAddress::from([0x40; 32]);
@@ -329,7 +302,7 @@ mod tests {
 
     #[test]
     fn test_pslice_peers_in_bin() {
-        let pslice = PSlice::new();
+        let pslice = PSlice::new(TEST_MAX_PO);
 
         let peer1 = OverlayAddress::from([0x80; 32]);
         let peer2 = OverlayAddress::from([0xc0; 32]);
@@ -350,15 +323,8 @@ mod tests {
     }
 
     #[test]
-    fn test_pslice_default() {
-        let pslice = PSlice::default();
-        assert!(pslice.is_empty());
-        assert_eq!(pslice.len(), 0);
-    }
-
-    #[test]
     fn test_pslice_cache_invalidation() {
-        let pslice = PSlice::new();
+        let pslice = PSlice::new(TEST_MAX_PO);
 
         let peer0 = OverlayAddress::from([0x80; 32]);
         let peer1 = OverlayAddress::from([0x40; 32]);
@@ -386,7 +352,7 @@ mod tests {
 
     #[test]
     fn test_pslice_cache_reuse() {
-        let pslice = PSlice::new();
+        let pslice = PSlice::new(TEST_MAX_PO);
 
         let peer0 = OverlayAddress::from([0x80; 32]);
         let peer1 = OverlayAddress::from([0x40; 32]);
