@@ -108,6 +108,98 @@ pub enum IpVersion {
     V6,
 }
 
+/// Addresses prepared for dialing with Happy Eyeballs ordering.
+#[derive(Debug, Clone)]
+pub struct DialAddresses {
+    addrs: Vec<Multiaddr>,
+    ipv6_count: usize,
+    ipv4_count: usize,
+}
+
+impl DialAddresses {
+    /// Sorted addresses: IPv6 first, then IPv4, then DNS/other.
+    pub fn addrs(&self) -> &[Multiaddr] {
+        &self.addrs
+    }
+
+    /// Consume and return sorted addresses.
+    pub fn into_addrs(self) -> Vec<Multiaddr> {
+        self.addrs
+    }
+
+    /// Number of IPv6 addresses.
+    pub fn ipv6_count(&self) -> usize {
+        self.ipv6_count
+    }
+
+    /// Number of IPv4 addresses.
+    pub fn ipv4_count(&self) -> usize {
+        self.ipv4_count
+    }
+
+    /// Concurrency factor ensuring IPv6 addresses race first.
+    ///
+    /// Returns IPv6 count (capped at 8) so all IPv6 race in first batch.
+    /// IPv4 addresses only start after an IPv6 slot frees up.
+    pub fn concurrency_factor(&self) -> std::num::NonZeroU8 {
+        use std::num::NonZeroU8;
+        let factor = if self.ipv6_count > 0 {
+            self.ipv6_count.min(8) as u8
+        } else {
+            self.ipv4_count.min(4).max(1) as u8
+        };
+        NonZeroU8::new(factor).unwrap_or(NonZeroU8::MIN)
+    }
+
+    /// Check if peer has both IPv6 and IPv4 addresses.
+    pub fn is_dual_stack(&self) -> bool {
+        self.ipv6_count > 0 && self.ipv4_count > 0
+    }
+
+    /// Check if there are any addresses.
+    pub fn is_empty(&self) -> bool {
+        self.addrs.is_empty()
+    }
+
+    /// Total address count.
+    pub fn len(&self) -> usize {
+        self.addrs.len()
+    }
+}
+
+/// Prepare multiaddrs for dialing with Happy Eyeballs ordering.
+///
+/// Filters addresses based on local IP capability, then sorts IPv6 first.
+/// This ensures we only attempt addresses we can actually reach, and
+/// the concurrency factor accurately reflects dialable addresses.
+pub fn prepare_dial_addresses(addrs: Vec<Multiaddr>, capability: IpCapability) -> DialAddresses {
+    let mut v6 = Vec::new();
+    let mut v4 = Vec::new();
+    let mut other = Vec::new();
+
+    for addr in addrs {
+        // Skip addresses we can't reach based on our IP capability
+        if !capability.can_reach_addr(&addr) {
+            continue;
+        }
+
+        match IpVersion::from_multiaddr(&addr) {
+            Some(IpVersion::V6) => v6.push(addr),
+            Some(IpVersion::V4) => v4.push(addr),
+            None => other.push(addr),
+        }
+    }
+
+    let ipv6_count = v6.len();
+    let ipv4_count = v4.len();
+
+    DialAddresses {
+        addrs: v6.into_iter().chain(v4).chain(other).collect(),
+        ipv6_count,
+        ipv4_count,
+    }
+}
+
 impl IpVersion {
     /// Extract IP version from a libp2p Protocol component.
     ///
@@ -659,5 +751,123 @@ mod tests {
         let cap = NetworkCapability::from_addrs([&tcp]);
         assert!(cap.can_reach(&tcp));
         assert!(!cap.can_reach(&quic)); // Transport mismatch
+    }
+
+    #[test]
+    fn test_prepare_dial_addresses_ipv6_first() {
+        let addrs = vec![
+            "/ip4/1.2.3.4/tcp/1234".parse().unwrap(),
+            "/ip6/::1/tcp/1234".parse().unwrap(),
+            "/ip4/5.6.7.8/tcp/1234".parse().unwrap(),
+            "/ip6/2001:db8::1/tcp/1234".parse().unwrap(),
+        ];
+
+        let result = super::prepare_dial_addresses(addrs, IpCapability::Dual);
+
+        assert_eq!(result.ipv6_count(), 2);
+        assert_eq!(result.ipv4_count(), 2);
+        assert!(result.addrs()[0].to_string().contains("ip6"));
+        assert!(result.addrs()[1].to_string().contains("ip6"));
+        assert!(result.addrs()[2].to_string().contains("ip4"));
+        assert!(result.addrs()[3].to_string().contains("ip4"));
+    }
+
+    #[test]
+    fn test_concurrency_factor_dual_stack() {
+        let addrs = vec![
+            "/ip6/::1/tcp/1234".parse().unwrap(),
+            "/ip6/::2/tcp/1234".parse().unwrap(),
+            "/ip6/::3/tcp/1234".parse().unwrap(),
+            "/ip4/1.2.3.4/tcp/1234".parse().unwrap(),
+            "/ip4/5.6.7.8/tcp/1234".parse().unwrap(),
+        ];
+
+        let result = super::prepare_dial_addresses(addrs, IpCapability::Dual);
+        // 3 IPv6 addresses → concurrency factor = 3
+        assert_eq!(result.concurrency_factor().get(), 3);
+        assert!(result.is_dual_stack());
+    }
+
+    #[test]
+    fn test_concurrency_factor_ipv4_only() {
+        let addrs = vec![
+            "/ip4/1.2.3.4/tcp/1234".parse().unwrap(),
+            "/ip4/5.6.7.8/tcp/1234".parse().unwrap(),
+        ];
+
+        let result = super::prepare_dial_addresses(addrs, IpCapability::Dual);
+        // No IPv6 → use IPv4 count (capped at 4)
+        assert_eq!(result.concurrency_factor().get(), 2);
+        assert!(!result.is_dual_stack());
+    }
+
+    #[test]
+    fn test_concurrency_factor_capped_at_8() {
+        let addrs: Vec<_> = (0..12)
+            .map(|i| format!("/ip6/2001:db8::{}/tcp/1234", i).parse().unwrap())
+            .collect();
+
+        let result = super::prepare_dial_addresses(addrs, IpCapability::Dual);
+        // 12 IPv6 addresses → capped at 8
+        assert_eq!(result.concurrency_factor().get(), 8);
+    }
+
+    #[test]
+    fn test_dial_addresses_empty() {
+        let result = super::prepare_dial_addresses(Vec::new(), IpCapability::Dual);
+        assert!(result.is_empty());
+        assert_eq!(result.len(), 0);
+        // Empty should still return a valid concurrency factor (1)
+        assert_eq!(result.concurrency_factor().get(), 1);
+    }
+
+    #[test]
+    fn test_dial_addresses_dns_sorted_with_ip_version() {
+        // dns4 is treated as IPv4, dns6 as IPv6
+        let addrs = vec![
+            "/dns4/example.com/tcp/1234".parse().unwrap(),
+            "/ip6/::1/tcp/1234".parse().unwrap(),
+            "/ip4/1.2.3.4/tcp/1234".parse().unwrap(),
+        ];
+
+        let result = super::prepare_dial_addresses(addrs, IpCapability::Dual);
+        // IPv6 first (ip6), then IPv4 (ip4 and dns4 since dns4 → V4)
+        assert_eq!(result.ipv6_count(), 1);
+        assert_eq!(result.ipv4_count(), 2); // ip4 + dns4
+        assert!(result.addrs()[0].to_string().contains("ip6"));
+    }
+
+    #[test]
+    fn test_prepare_dial_addresses_filters_by_capability() {
+        let addrs = vec![
+            "/ip6/::1/tcp/1234".parse().unwrap(),
+            "/ip6/::2/tcp/1234".parse().unwrap(),
+            "/ip4/1.2.3.4/tcp/1234".parse().unwrap(),
+            "/ip4/5.6.7.8/tcp/1234".parse().unwrap(),
+        ];
+
+        // IPv4-only capability should filter out IPv6
+        let result = super::prepare_dial_addresses(addrs.clone(), IpCapability::V4Only);
+        assert_eq!(result.ipv6_count(), 0);
+        assert_eq!(result.ipv4_count(), 2);
+        assert_eq!(result.len(), 2);
+
+        // IPv6-only capability should filter out IPv4
+        let result = super::prepare_dial_addresses(addrs, IpCapability::V6Only);
+        assert_eq!(result.ipv6_count(), 2);
+        assert_eq!(result.ipv4_count(), 0);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_prepare_dial_addresses_none_capability() {
+        let addrs = vec![
+            "/ip6/::1/tcp/1234".parse().unwrap(),
+            "/ip4/1.2.3.4/tcp/1234".parse().unwrap(),
+        ];
+
+        // None capability should filter out all IP addresses
+        let result = super::prepare_dial_addresses(addrs, IpCapability::None);
+        assert!(result.is_empty());
     }
 }
