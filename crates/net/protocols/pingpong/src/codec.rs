@@ -8,10 +8,10 @@ use vertex_net_codec::{Codec, ProtoMessage, ProtocolCodecError};
 pub type PingpongCodecError = ProtocolCodecError;
 
 /// Codec for ping messages.
-pub type PingCodec = Codec<Ping, PingpongCodecError>;
+pub(crate) type PingCodec = Codec<Ping, PingpongCodecError>;
 
 /// Codec for pong messages.
-pub type PongCodec = Codec<Pong, PingpongCodecError>;
+pub(crate) type PongCodec = Codec<Pong, PingpongCodecError>;
 
 /// A ping message with a greeting.
 #[derive(Debug, Clone, PartialEq, Eq)]

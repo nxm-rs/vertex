@@ -26,7 +26,7 @@ mod proto {
     include!(concat!(env!("OUT_DIR"), "/proto/mod.rs"));
 }
 
-pub use codec::{Ping, PingCodec, PingpongCodecError, Pong, PongCodec};
+pub use codec::{Ping, PingpongCodecError, Pong};
 pub use protocol::{PingpongInboundProtocol, PingpongOutboundProtocol, inbound, outbound};
 
 /// Protocol name for pingpong.

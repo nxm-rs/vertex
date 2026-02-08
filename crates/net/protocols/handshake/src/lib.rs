@@ -37,6 +37,8 @@ pub(crate) mod proto {
 mod error;
 pub use error::HandshakeError;
 
+pub mod metrics;
+
 mod protocol;
 pub use protocol::HandshakeProtocol;
 
@@ -68,12 +70,3 @@ pub struct HandshakeInfo {
     pub observed_multiaddr: Multiaddr,
 }
 
-impl HandshakeInfo {
-    pub fn swarm_peer(&self) -> &SwarmPeer {
-        &self.swarm_peer
-    }
-
-    pub fn observed_multiaddr(&self) -> &Multiaddr {
-        &self.observed_multiaddr
-    }
-}

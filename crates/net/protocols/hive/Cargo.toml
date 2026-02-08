@@ -34,8 +34,9 @@ alloy-primitives.workspace = true
 ## misc
 thiserror.workspace = true
 
-## tracing
+## tracing & metrics
 tracing.workspace = true
+metrics.workspace = true
 
 [build-dependencies]
 pb-rs.workspace = true

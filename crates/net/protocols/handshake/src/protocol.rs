@@ -8,6 +8,7 @@ use vertex_swarm_spec::SwarmSpec;
 use crate::{
     Ack, AckCodec, HandshakeError, HandshakeInfo, PROTOCOL, Syn, SynAck, SynAckCodec, SynCodec,
     codec::HandshakeCodecDomainError,
+    metrics::{HandshakeMetrics, label},
 };
 
 /// Handshake protocol upgrade for Swarm peer authentication.
@@ -17,14 +18,10 @@ use crate::{
 ///
 /// Generic over `I: SwarmIdentity` to support different identity implementations.
 pub struct HandshakeProtocol<I: SwarmIdentity> {
-    pub(crate) identity: I,
-    pub(crate) peer_id: PeerId,
-    pub(crate) remote_addr: Multiaddr,
-    /// Additional addresses to advertise (in addition to observed address).
-    ///
-    /// These are typically provided by an AddressManager based on the peer's
-    /// network scope (public, private, etc.).
-    pub(crate) additional_addrs: Vec<Multiaddr>,
+    identity: I,
+    peer_id: PeerId,
+    remote_addr: Multiaddr,
+    additional_addrs: Vec<Multiaddr>,
 }
 
 impl<I: SwarmIdentity> HandshakeProtocol<I> {
@@ -61,6 +58,21 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
     ///
     /// Flow: Receive SYN → Send SYNACK → Receive ACK
     async fn handle_inbound(self, stream: Stream) -> Result<HandshakeInfo, HandshakeError> {
+        let metrics = HandshakeMetrics::new(label::direction::INBOUND);
+
+        match self.handle_inbound_inner(stream).await {
+            Ok(info) => {
+                metrics.record_success(info.full_node);
+                Ok(info)
+            }
+            Err(e) => {
+                metrics.record_failure(&e);
+                Err(e)
+            }
+        }
+    }
+
+    async fn handle_inbound_inner(self, stream: Stream) -> Result<HandshakeInfo, HandshakeError> {
         let network_id = self.identity.spec().network_id();
 
         // Set up codecs (all use network_id as context for validation/encoding)
@@ -133,6 +145,21 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
     ///
     /// Flow: Send SYN → Receive SYNACK → Send ACK
     async fn handle_outbound(self, stream: Stream) -> Result<HandshakeInfo, HandshakeError> {
+        let metrics = HandshakeMetrics::new(label::direction::OUTBOUND);
+
+        match self.handle_outbound_inner(stream).await {
+            Ok(info) => {
+                metrics.record_success(info.full_node);
+                Ok(info)
+            }
+            Err(e) => {
+                metrics.record_failure(&e);
+                Err(e)
+            }
+        }
+    }
+
+    async fn handle_outbound_inner(self, stream: Stream) -> Result<HandshakeInfo, HandshakeError> {
         let network_id = self.identity.spec().network_id();
 
         // Construct the observed multiaddr with the peer ID appended

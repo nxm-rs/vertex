@@ -167,11 +167,8 @@ mod tests {
     use vertex_net_codec::ProtocolCodecError;
     use vertex_swarm_identity::Identity;
     use vertex_swarm_peer::SwarmNodeType;
-    use vertex_swarm_spec::{SpecBuilder, SwarmSpec};
-
-    fn test_spec() -> std::sync::Arc<vertex_swarm_spec::Spec> {
-        std::sync::Arc::new(SpecBuilder::testnet().network_id(1234567890).build())
-    }
+    use vertex_swarm_api::SwarmSpec;
+    use vertex_swarm_test_utils::test_spec_isolated as test_spec;
 
     fn create_test_peer() -> SwarmPeer {
         let spec = test_spec();

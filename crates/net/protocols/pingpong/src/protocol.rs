@@ -21,10 +21,6 @@ use crate::{
 /// Maximum size of a pingpong message.
 const MAX_MESSAGE_SIZE: usize = 4096;
 
-// ============================================================================
-// Inbound (Ponger) - Receives ping, sends pong
-// ============================================================================
-
 /// Pingpong inbound: receives a ping from remote, sends pong response.
 #[derive(Debug, Clone)]
 pub struct PingpongInboundInner;
@@ -46,7 +42,7 @@ impl HeaderedInbound for PingpongInboundInner {
             let ping = framed.try_next().await?.ok_or_else(|| {
                 PingpongCodecError::Io(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
-                    "connection closed",
+                    "connection closed before receiving ping (inbound)",
                 ))
             })?;
 
@@ -64,10 +60,6 @@ impl HeaderedInbound for PingpongInboundInner {
         })
     }
 }
-
-// ============================================================================
-// Outbound (Pinger) - Sends ping, receives pong
-// ============================================================================
 
 /// Pingpong outbound: sends a ping, receives pong response.
 #[derive(Debug, Clone)]
@@ -112,16 +104,12 @@ impl HeaderedOutbound for PingpongOutboundInner {
             framed.try_next().await?.ok_or_else(|| {
                 PingpongCodecError::Io(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
-                    "connection closed",
+                    "connection closed before receiving pong (outbound)",
                 ))
             })
         })
     }
 }
-
-// ============================================================================
-// Type Aliases and Constructors
-// ============================================================================
 
 /// Inbound protocol type for handler.
 pub type PingpongInboundProtocol = Inbound<PingpongInboundInner>;

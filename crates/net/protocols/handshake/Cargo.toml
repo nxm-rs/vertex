@@ -38,8 +38,9 @@ libp2p.workspace = true
 bytes.workspace = true
 thiserror.workspace = true
 
-## tracing
+## tracing & metrics
 tracing.workspace = true
+metrics.workspace = true
 
 arbitrary = { workspace = true, features = ["derive"] }
 proptest.workspace = true
@@ -58,6 +59,7 @@ arbitrary.workspace = true
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
 rand.workspace = true
+vertex-swarm-test-utils = { workspace = true }
 
 [build-dependencies]
 pb-rs.workspace = true

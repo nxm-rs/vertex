@@ -8,21 +8,16 @@ pub type HiveCodecError = ProtocolCodecError<HiveProtocolError>;
 
 /// Domain-specific errors for hive protocol.
 #[derive(Debug, thiserror::Error)]
-pub enum HiveProtocolError {
-    /// Peer validation failed
-    #[error("Invalid peer: {0}")]
-    InvalidPeer(String),
-}
+pub enum HiveProtocolError {}
 
 /// Peers message for hive protocol.
 #[derive(Debug, Clone, Default)]
-pub struct Peers {
+pub(crate) struct Peers {
     proto: crate::proto::hive::Peers,
 }
 
 impl Peers {
-    /// Serialize SwarmPeers into wire format for outbound messages.
-    pub fn from_swarm_peers(peers: &[SwarmPeer]) -> Self {
+    pub(crate) fn from_swarm_peers(peers: &[SwarmPeer]) -> Self {
         let proto_peers = peers
             .iter()
             .map(|p| crate::proto::hive::Peer {
@@ -37,16 +32,11 @@ impl Peers {
         }
     }
 
-    /// Consume and return raw proto peers for inbound validation.
-    pub fn into_proto_peers(self) -> Vec<crate::proto::hive::Peer> {
+    pub(crate) fn into_proto_peers(self) -> Vec<crate::proto::hive::Peer> {
         self.proto.peers
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.proto.peers.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.proto.peers.len()
     }
 }
@@ -65,4 +55,4 @@ impl ProtoMessage for Peers {
 }
 
 /// Codec for hive messages.
-pub type HiveCodec = Codec<Peers, HiveCodecError>;
+pub(crate) type HiveCodec = Codec<Peers, HiveCodecError>;
