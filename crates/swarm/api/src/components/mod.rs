@@ -1,4 +1,4 @@
-//! Component containers for Swarm node capabilities.
+//! Component containers and access traits for Swarm nodes.
 
 mod bandwidth;
 mod localstore;
@@ -10,35 +10,51 @@ pub use localstore::*;
 pub use pricing::*;
 pub use topology::*;
 
-/// Uniform topology access across component levels.
-pub trait HasTopology {
+use crate::SwarmIdentity;
+
+/// Topology access.
+#[auto_impl::auto_impl(&, Arc, Box)]
+pub trait HasTopology: Send + Sync {
     /// The topology type.
-    type Topology;
+    type Topology: topology::SwarmTopology;
+
     /// Get the topology.
     fn topology(&self) -> &Self::Topology;
 }
 
-/// Uniform accounting access (client/storer levels).
-pub trait HasAccounting {
+/// Identity access.
+pub trait HasIdentity: Send + Sync {
+    /// The identity type.
+    type Identity: SwarmIdentity;
+
+    /// Get the identity.
+    fn identity(&self) -> &Self::Identity;
+}
+
+/// Accounting access (client/storer levels).
+#[auto_impl::auto_impl(&, Arc, Box)]
+pub trait HasAccounting: Send + Sync {
     /// The accounting type.
-    type Accounting;
+    type Accounting: Send + Sync;
+
     /// Get the accounting.
     fn accounting(&self) -> &Self::Accounting;
 }
 
-/// Uniform store access (storer level).
-pub trait HasStore {
+/// Local store access (storer level).
+#[auto_impl::auto_impl(&, Arc, Box)]
+pub trait HasStore: Send + Sync {
     /// The store type.
-    type Store;
+    type Store: Send + Sync;
+
     /// Get the local store.
     fn store(&self) -> &Self::Store;
 }
 
-/// Bootnode components (topology only). Identity via `topology.identity()`.
+/// Bootnode components (topology only). Identity via `topology().identity()`.
 #[derive(Debug)]
 pub struct BootnodeComponents<T> {
-    /// Network topology.
-    pub topology: T,
+    topology: T,
 }
 
 impl<T> BootnodeComponents<T> {
@@ -48,20 +64,19 @@ impl<T> BootnodeComponents<T> {
     }
 }
 
-impl<T> HasTopology for BootnodeComponents<T> {
+impl<T: topology::SwarmTopology> HasTopology for BootnodeComponents<T> {
     type Topology = T;
+
     fn topology(&self) -> &T {
         &self.topology
     }
 }
 
-/// Client components (topology + accounting). Can retrieve/upload chunks.
+/// Client components (topology + accounting).
 #[derive(Debug)]
 pub struct ClientComponents<T, A> {
-    /// Base bootnode components.
-    pub base: BootnodeComponents<T>,
-    /// Combined pricing and bandwidth accounting.
-    pub accounting: A,
+    base: BootnodeComponents<T>,
+    accounting: A,
 }
 
 impl<T, A> ClientComponents<T, A> {
@@ -79,27 +94,27 @@ impl<T, A> ClientComponents<T, A> {
     }
 }
 
-impl<T, A> HasTopology for ClientComponents<T, A> {
+impl<T: topology::SwarmTopology, A: Send + Sync> HasTopology for ClientComponents<T, A> {
     type Topology = T;
+
     fn topology(&self) -> &T {
         self.base.topology()
     }
 }
 
-impl<T, A> HasAccounting for ClientComponents<T, A> {
+impl<T: Send + Sync, A: Send + Sync> HasAccounting for ClientComponents<T, A> {
     type Accounting = A;
+
     fn accounting(&self) -> &A {
         &self.accounting
     }
 }
 
-/// Storer components (client + local store). Stores chunks locally.
+/// Storer components (client + local store).
 #[derive(Debug)]
 pub struct StorerComponents<T, A, S> {
-    /// Client-level components.
-    pub client: ClientComponents<T, A>,
-    /// Local chunk storage.
-    pub store: S,
+    client: ClientComponents<T, A>,
+    store: S,
 }
 
 impl<T, A, S> StorerComponents<T, A, S> {
@@ -117,22 +132,27 @@ impl<T, A, S> StorerComponents<T, A, S> {
     }
 }
 
-impl<T, A, S> HasTopology for StorerComponents<T, A, S> {
+impl<T: topology::SwarmTopology, A: Send + Sync, S: Send + Sync> HasTopology
+    for StorerComponents<T, A, S>
+{
     type Topology = T;
+
     fn topology(&self) -> &T {
         self.client.topology()
     }
 }
 
-impl<T, A, S> HasAccounting for StorerComponents<T, A, S> {
+impl<T: Send + Sync, A: Send + Sync, S: Send + Sync> HasAccounting for StorerComponents<T, A, S> {
     type Accounting = A;
+
     fn accounting(&self) -> &A {
         self.client.accounting()
     }
 }
 
-impl<T, A, S> HasStore for StorerComponents<T, A, S> {
+impl<T: Send + Sync, A: Send + Sync, S: Send + Sync> HasStore for StorerComponents<T, A, S> {
     type Store = S;
+
     fn store(&self) -> &S {
         &self.store
     }
