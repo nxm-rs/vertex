@@ -79,11 +79,21 @@ impl PrometheusRecorder {
         }
 
         let handle = self.handle.clone();
-        executor.spawn(async move {
+        executor.spawn_with_graceful_shutdown_signal("metrics_upkeep", move |shutdown| async move {
+            let mut shutdown = std::pin::pin!(shutdown);
             let interval = std::time::Duration::from_secs(interval_secs);
+
             loop {
-                tokio::time::sleep(interval).await;
-                handle.run_upkeep();
+                tokio::select! {
+                    guard = &mut shutdown => {
+                        tracing::debug!("Metrics upkeep task shutting down");
+                        drop(guard);
+                        break;
+                    }
+                    _ = tokio::time::sleep(interval) => {
+                        handle.run_upkeep();
+                    }
+                }
             }
         });
     }

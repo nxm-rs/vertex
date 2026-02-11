@@ -15,6 +15,9 @@ workspace = true
 # Internal crates
 vertex-tasks = { workspace = true }
 
+# Enum utilities (for LabelValue blanket impl)
+strum = { workspace = true }
+
 # Metrics
 metrics = { workspace = true }
 metrics-exporter-prometheus = "0.17"

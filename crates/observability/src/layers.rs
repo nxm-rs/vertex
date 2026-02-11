@@ -11,6 +11,9 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 
 use crate::{FileConfig, LogFormat, OtlpConfig, StdoutConfig, TracingGuard};
 
+/// Boxed tracing layer, used in return types to reduce complexity.
+type BoxedLayer<S> = Box<dyn Layer<S> + Send + Sync + 'static>;
+
 /// Build the complete subscriber from configs and initialize it.
 pub(crate) fn build_and_init(
     stdout: Option<&StdoutConfig>,
@@ -42,7 +45,7 @@ pub(crate) fn build_and_init(
 
 fn build_console_layer<S>(
     config: Option<&StdoutConfig>,
-) -> (Option<Box<dyn Layer<S> + Send + Sync + 'static>>, EnvFilter)
+) -> (Option<BoxedLayer<S>>, EnvFilter)
 where
     S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
 {
@@ -56,7 +59,7 @@ where
 
     let layer = fmt::layer().with_ansi(config.ansi());
 
-    let layer: Box<dyn Layer<S> + Send + Sync + 'static> = match config.format() {
+    let layer: BoxedLayer<S> = match config.format() {
         LogFormat::Terminal => Box::new(layer),
         LogFormat::Json => Box::new(layer.json()),
     };
@@ -66,10 +69,7 @@ where
 
 fn build_file_layer<S>(
     config: Option<&FileConfig>,
-) -> eyre::Result<(
-    Option<Box<dyn Layer<S> + Send + Sync + 'static>>,
-    Option<WorkerGuard>,
-)>
+) -> eyre::Result<(Option<BoxedLayer<S>>, Option<WorkerGuard>)>
 where
     S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
 {
@@ -84,7 +84,7 @@ where
 
     let layer = fmt::layer().with_ansi(false).with_writer(non_blocking);
 
-    let layer: Box<dyn Layer<S> + Send + Sync + 'static> = match config.format() {
+    let layer: BoxedLayer<S> = match config.format() {
         LogFormat::Terminal => Box::new(layer),
         LogFormat::Json => Box::new(layer.json()),
     };
@@ -94,10 +94,7 @@ where
 
 fn build_otel_layer<S>(
     config: Option<&OtlpConfig>,
-) -> eyre::Result<(
-    Option<Box<dyn Layer<S> + Send + Sync + 'static>>,
-    Option<SdkTracerProvider>,
-)>
+) -> eyre::Result<(Option<BoxedLayer<S>>, Option<SdkTracerProvider>)>
 where
     S: tracing::Subscriber
         + for<'span> tracing_subscriber::registry::LookupSpan<'span>
