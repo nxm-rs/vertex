@@ -1,22 +1,23 @@
 //! Swarm CLI entry point.
 
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use eyre::Result;
-use vertex_node_commands::{HasLogs, InfraArgs, LogArgs, run_cli};
+use vertex_node_builder::LaunchContextExt;
+use vertex_node_commands::{HasLogs, HasTracing, InfraArgs, LogArgs, TracingArgs, run_cli};
 use vertex_node_core::config::FullNodeConfig;
 use vertex_node_core::dirs::DataDirs;
 use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
 use vertex_swarm_builder::{
     BootnodeConfig, ClientConfig, DefaultClientBuilder, DefaultNodeBuilder, DefaultStorerBuilder,
-    StorerConfig,
+    StorerConfig, WithInfrastructure,
 };
 use vertex_swarm_node::ProtocolConfig;
 use vertex_swarm_node::args::ProtocolArgs;
 use vertex_swarm_primitives::SwarmNodeType;
-use vertex_swarm_spec::{DefaultSpecParser, Spec, SwarmSpec};
+use vertex_swarm_spec::SwarmSpec;
+use vertex_tasks::TaskExecutor;
 
 /// Vertex Swarm - Ethereum Swarm Node Implementation
 #[derive(Parser)]
@@ -37,6 +38,16 @@ impl HasLogs for SwarmCli {
     }
 }
 
+impl HasTracing for SwarmCli {
+    fn tracing(&self) -> &TracingArgs {
+        // Tracing args are inside the node subcommand's infra args.
+        // For top-level tracing init, we need to access via the subcommand.
+        match &self.command {
+            SwarmCommands::Node(args) => &args.infra.observability.tracing,
+        }
+    }
+}
+
 /// Available Swarm commands.
 #[derive(Subcommand)]
 pub enum SwarmCommands {
@@ -47,10 +58,6 @@ pub enum SwarmCommands {
 /// Combined arguments for the Swarm 'node' command.
 #[derive(clap::Args)]
 pub struct SwarmRunNodeArgs {
-    /// Swarm network: "mainnet", "testnet", "dev", or path to spec file.
-    #[arg(long, default_value = "mainnet", value_parser = DefaultSpecParser::parser())]
-    pub swarm: Arc<Spec>,
-
     /// Generic node infrastructure configuration.
     #[command(flatten)]
     pub infra: InfraArgs,
@@ -65,8 +72,9 @@ pub async fn run() -> Result<()> {
     run_cli(|cli: SwarmCli| async move {
         let SwarmCommands::Node(args) = cli.command;
 
-        // Spec is already parsed by clap via DefaultSpecParser::parser()
-        let spec = args.swarm;
+        // Spec and node type from ProtocolArgs
+        let spec = args.protocol.spec.swarm.clone();
+        let node_type = args.protocol.spec.node_type();
 
         // Initialize data directories
         let network_name = spec.network_name();
@@ -80,21 +88,28 @@ pub async fn run() -> Result<()> {
             None
         })?;
         config.apply_args(&args.infra, &args.protocol);
+        config.protocol.set_node_type(node_type);
+
+        // Build metrics config from CLI args
+        let metrics_config = args.infra.observability.metrics.metrics_config();
+
+        // Initialize metrics via launch context
+        let executor = TaskExecutor::current();
+        let launch_ctx = (executor.clone(), dirs.clone())
+            .with_metrics(metrics_config)?
+            .start_metrics_server()
+            .await?;
 
         // Build validated configs
-        let mut network = config
+        let network = config
             .protocol
             .network_config()
             .map_err(|e| eyre::eyre!("network config error: {}", e))?;
         let identity = config.protocol.identity(spec.clone(), &dirs.network)?;
         let grpc_addr = socket_addr(&config.infra.api.grpc_addr, config.infra.api.grpc_port);
 
-        // Set default peers store path if not specified via CLI
-        let default_peers_path = dirs.network.join("state").join("peers.json");
-        network.set_default_peer_store_path(default_peers_path);
-
         // Dispatch based on node type
-        match config.protocol.node_type {
+        match node_type {
             SwarmNodeType::Client => {
                 let bandwidth = config
                     .protocol
@@ -103,22 +118,22 @@ pub async fn run() -> Result<()> {
 
                 let node_config = ClientConfig::new(spec, identity, network, bandwidth);
 
-                let (task, rpc_providers, _topology) =
-                    DefaultClientBuilder::from_config(node_config)
-                        .build()
-                        .await?
-                        .into_parts();
-                run_with_grpc(task, &rpc_providers, grpc_addr).await
+                let (task_fn, rpc_providers) = DefaultClientBuilder::from_config(node_config)
+                    .with_infrastructure(&launch_ctx)
+                    .build(&launch_ctx)
+                    .await?
+                    .into_parts();
+                run_with_grpc(task_fn, rpc_providers, grpc_addr).await
             }
             SwarmNodeType::Bootnode => {
                 let node_config = BootnodeConfig::new(spec, identity, network);
 
-                let (task, rpc_providers, _topology) =
-                    DefaultNodeBuilder::from_config(node_config)
-                        .build()
-                        .await?
-                        .into_parts();
-                run_with_grpc(task, &rpc_providers, grpc_addr).await
+                let (task_fn, rpc_providers) = DefaultNodeBuilder::from_config(node_config)
+                    .with_infrastructure(&launch_ctx)
+                    .build(&launch_ctx)
+                    .await?
+                    .into_parts();
+                run_with_grpc(task_fn, rpc_providers, grpc_addr).await
             }
             SwarmNodeType::Storer => {
                 let bandwidth = config
@@ -131,12 +146,12 @@ pub async fn run() -> Result<()> {
                 let node_config =
                     StorerConfig::new(spec, identity, network, bandwidth, local_store, storage);
 
-                let (task, rpc_providers, _topology) =
-                    DefaultStorerBuilder::from_config(node_config)
-                        .build()
-                        .await?
-                        .into_parts();
-                run_with_grpc(task, &rpc_providers, grpc_addr).await
+                let (task_fn, rpc_providers) = DefaultStorerBuilder::from_config(node_config)
+                    .with_infrastructure(&launch_ctx)
+                    .build(&launch_ctx)
+                    .await?
+                    .into_parts();
+                run_with_grpc(task_fn, rpc_providers, grpc_addr).await
             }
         }
     })
@@ -144,9 +159,12 @@ pub async fn run() -> Result<()> {
 }
 
 /// Run node task with gRPC server.
-async fn run_with_grpc<P: RegistersGrpcServices>(
-    task: vertex_swarm_api::NodeTask,
-    providers: &P,
+///
+/// Uses the executor's shutdown signal for graceful shutdown coordination.
+/// The caller (run_cli) handles Ctrl+C and fires the shutdown signal.
+async fn run_with_grpc<P: RegistersGrpcServices + Send + Sync + 'static>(
+    task_fn: vertex_swarm_api::NodeTaskFn,
+    providers: P,
     grpc_addr: SocketAddr,
 ) -> Result<()> {
     // Build gRPC server
@@ -155,16 +173,25 @@ async fn run_with_grpc<P: RegistersGrpcServices>(
     let server = registry.into_server(grpc_addr)?;
     tracing::info!(%grpc_addr, "Starting gRPC server");
 
-    // Run until shutdown
+    // Get the executor's shutdown signal for the gRPC server.
+    // This signal is fired by run_cli when Ctrl+C is received.
+    let executor = TaskExecutor::current();
+    let grpc_shutdown = executor.on_shutdown_signal().clone();
+
+    // Spawn the node task with graceful shutdown support.
+    // This passes a GracefulShutdown signal to the task function.
+    let node_handle = executor.spawn_critical_with_graceful_shutdown_signal("swarm-node", task_fn);
+
+    // Run until shutdown signal fires or node task completes
     tokio::select! {
-        result = server.serve_with_shutdown(async {
-            tokio::signal::ctrl_c().await.ok();
-            tracing::info!("Received shutdown signal");
-        }) => {
+        result = server.serve_with_shutdown(grpc_shutdown) => {
             result?;
         }
-        _ = task => {
-            tracing::info!("Node task completed");
+        result = node_handle => {
+            match result {
+                Ok(()) => tracing::info!("Node task completed"),
+                Err(e) => tracing::error!(error = %e, "Node task panicked"),
+            }
         }
     }
     Ok(())
