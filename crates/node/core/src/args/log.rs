@@ -35,6 +35,11 @@ pub struct LogArgs {
     #[arg(long = "log.json")]
     pub json: bool,
 
+    /// Directory to write log files. Enables file logging when set.
+    #[arg(long = "log.dir", value_name = "PATH")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_dir: Option<PathBuf>,
+
     /// Maximum log file size in megabytes before rotation.
     #[arg(long = "log.max-size", default_value = "100", value_name = "MB")]
     pub max_file_size_mb: u64,
@@ -51,6 +56,7 @@ impl Default for LogArgs {
             verbosity: 0,
             filter: None,
             json: false,
+            log_dir: None,
             max_file_size_mb: DEFAULT_MAX_FILE_SIZE_MB,
             max_files: DEFAULT_MAX_FILES,
         }
@@ -76,9 +82,16 @@ impl LogArgs {
         Some(StdoutConfig::new(format, filter, true))
     }
 
-    /// Build file logging config.
+    /// Build file logging config from CLI args.
     ///
-    /// Returns None if quiet mode is enabled or no log_dir provided.
+    /// Returns None if quiet mode is enabled or --log.dir not set.
+    pub fn file_config_from_args(&self) -> Option<FileConfig> {
+        self.log_dir.as_ref().and_then(|dir| self.file_config(dir.clone()))
+    }
+
+    /// Build file logging config with explicit directory.
+    ///
+    /// Returns None if quiet mode is enabled.
     pub fn file_config(&self, log_dir: PathBuf) -> Option<FileConfig> {
         if self.quiet {
             return None;

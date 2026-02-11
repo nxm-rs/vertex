@@ -42,6 +42,9 @@ where
     if let Some(stdout) = cli.logs().stdout_config() {
         tracer = tracer.with_stdout(stdout);
     }
+    if let Some(file) = cli.logs().file_config_from_args() {
+        tracer = tracer.with_file(file);
+    }
     if let Some(otlp) = cli.tracing().otlp_config() {
         tracer = tracer.with_otlp(otlp);
     }
@@ -50,24 +53,35 @@ where
     info!("Starting Vertex {}", version::VERSION);
 
     // TaskManager must stay alive - dropping it fires shutdown signal to all tasks.
-    // Awaiting it in select! keeps it alive and notifies us if a critical task panics.
+    // We spawn it as a separate task so it stays alive when other select! branches complete.
+    // This allows initiate_graceful_shutdown() to send the event while TaskManager is still running.
     let task_manager = TaskManager::current();
     let executor = TaskExecutor::current();
+    let manager_handle = tokio::spawn(task_manager);
 
     tokio::select! {
-        result = task_manager => {
+        result = manager_handle => {
+            // TaskManager completed - either graceful shutdown or critical task panic
             match result {
-                Ok(()) => {
+                Ok(Ok(())) => {
                     info!("Shutdown complete");
                     Ok(())
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     error!("Critical task panicked: {}", e);
                     Err(eyre::eyre!("Critical task panicked: {}", e))
+                }
+                Err(e) => {
+                    error!("TaskManager task panicked: {}", e);
+                    Err(eyre::eyre!("TaskManager task panicked: {}", e))
                 }
             }
         }
         result = runner(cli) => {
+            // Runner completed - initiate graceful shutdown
+            if let Err(e) = executor.initiate_graceful_shutdown() {
+                warn!("Failed to initiate graceful shutdown after runner completed: {}", e);
+            }
             result
         }
         _ = tokio::signal::ctrl_c() => {

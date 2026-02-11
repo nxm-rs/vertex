@@ -68,17 +68,17 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 #[derive(Default)]
 pub struct InfraArgs {
-    /// API configuration (gRPC).
+    /// Data directory configuration.
     #[command(flatten)]
-    pub api: ApiArgs,
+    pub datadir: DataDirArgs,
 
     /// Database configuration.
     #[command(flatten)]
     pub database: DatabaseArgs,
 
-    /// Data directory configuration.
+    /// API configuration (gRPC).
     #[command(flatten)]
-    pub datadir: DataDirArgs,
+    pub api: ApiArgs,
 
     /// Observability configuration (metrics, tracing).
     #[command(flatten)]
