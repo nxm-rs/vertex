@@ -10,15 +10,13 @@
 
 use asynchronous_codec::Framed;
 use futures::{SinkExt, TryStreamExt, future::BoxFuture};
-use tracing::debug;
+use tracing::{Instrument, debug};
 use vertex_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound};
 
 use crate::{
     PROTOCOL_NAME,
-    codec::{
-        Payment, PaymentAck, PaymentAckCodec, PaymentCodec, PseudosettleCodecError,
-        PseudosettleError,
-    },
+    codec::{Payment, PaymentAck, PaymentAckCodec, PaymentCodec},
+    error::PseudosettleError,
 };
 
 const MAX_MESSAGE_SIZE: usize = 1024;
@@ -45,12 +43,12 @@ pub struct PseudosettleInboundResult {
 
 impl PseudosettleInboundResult {
     /// Send the acknowledgment response.
-    pub async fn respond(self, ack: PaymentAck) -> Result<(), PseudosettleCodecError> {
+    pub async fn respond(self, ack: PaymentAck) -> Result<(), PseudosettleError> {
         self.responder.send_ack(ack).await
     }
 
     /// Send an acknowledgment with the same amount and current timestamp.
-    pub async fn ack_now(self) -> Result<(), PseudosettleCodecError> {
+    pub async fn ack_now(self) -> Result<(), PseudosettleError> {
         let ack = PaymentAck::now(self.payment.amount);
         self.respond(ack).await
     }
@@ -62,7 +60,7 @@ pub struct PseudosettleResponder {
 }
 
 impl PseudosettleResponder {
-    pub async fn send_ack(self, ack: PaymentAck) -> Result<(), PseudosettleCodecError> {
+    pub async fn send_ack(self, ack: PaymentAck) -> Result<(), PseudosettleError> {
         let codec = PaymentAckCodec::new(MAX_MESSAGE_SIZE);
         let mut framed = Framed::new(self.stream, codec);
 
@@ -74,33 +72,36 @@ impl PseudosettleResponder {
 
 impl HeaderedInbound for PseudosettleInboundInner {
     type Output = PseudosettleInboundResult;
-    type Error = PseudosettleCodecError;
+    type Error = PseudosettleError;
 
     fn protocol_name(&self) -> &'static str {
         PROTOCOL_NAME
     }
 
     fn read(self, stream: HeaderedStream) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
-        Box::pin(async move {
-            let raw_stream = stream.into_inner();
-            let codec = PaymentCodec::new(MAX_MESSAGE_SIZE);
-            let mut framed = Framed::new(raw_stream, codec);
+        let span = tracing::info_span!("pseudosettle_receive");
+        Box::pin(
+            async move {
+                let raw_stream = stream.into_inner();
+                let codec = PaymentCodec::new(MAX_MESSAGE_SIZE);
+                let mut framed = Framed::new(raw_stream, codec);
 
-            debug!("Pseudosettle: Reading payment request");
-            let payment = framed.try_next().await?.ok_or_else(|| {
-                PseudosettleCodecError::Io(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "connection closed before payment received",
-                ))
-            })?;
+                debug!("Pseudosettle: Reading payment request");
+                let payment = framed
+                    .try_next()
+                    .await?
+                    .ok_or(PseudosettleError::ConnectionClosed)?;
 
-            debug!(amount = %payment.amount, "Pseudosettle: Received payment");
+                tracing::Span::current().record("amount", tracing::field::display(&payment.amount));
+                debug!("Pseudosettle: Received payment");
 
-            let parts = framed.into_parts();
-            let responder = PseudosettleResponder { stream: parts.io };
+                let parts = framed.into_parts();
+                let responder = PseudosettleResponder { stream: parts.io };
 
-            Ok(PseudosettleInboundResult { payment, responder })
-        })
+                Ok(PseudosettleInboundResult { payment, responder })
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -120,7 +121,7 @@ impl PseudosettleOutboundInner {
 
 impl HeaderedOutbound for PseudosettleOutboundInner {
     type Output = PaymentAck;
-    type Error = PseudosettleCodecError;
+    type Error = PseudosettleError;
 
     fn protocol_name(&self) -> &'static str {
         PROTOCOL_NAME
@@ -130,32 +131,35 @@ impl HeaderedOutbound for PseudosettleOutboundInner {
         self,
         stream: HeaderedStream,
     ) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
-        Box::pin(async move {
-            let raw_stream = stream.into_inner();
+        let amount = self.payment.amount;
+        let span = tracing::info_span!("pseudosettle_send", %amount);
+        Box::pin(
+            async move {
+                let raw_stream = stream.into_inner();
 
-            // Send Payment
-            let codec = PaymentCodec::new(MAX_MESSAGE_SIZE);
-            let mut framed = Framed::new(raw_stream, codec);
+                // Send Payment
+                let codec = PaymentCodec::new(MAX_MESSAGE_SIZE);
+                let mut framed = Framed::new(raw_stream, codec);
 
-            debug!(amount = %self.payment.amount, "Pseudosettle: Sending payment");
-            framed.send(self.payment).await?;
+                debug!(amount = %self.payment.amount, "Pseudosettle: Sending payment");
+                framed.send(self.payment).await?;
 
-            // Switch codec to read PaymentAck
-            let parts = framed.into_parts();
-            let codec = PaymentAckCodec::new(MAX_MESSAGE_SIZE);
-            let mut framed = Framed::new(parts.io, codec);
+                // Switch codec to read PaymentAck
+                let parts = framed.into_parts();
+                let codec = PaymentAckCodec::new(MAX_MESSAGE_SIZE);
+                let mut framed = Framed::new(parts.io, codec);
 
-            debug!("Pseudosettle: Waiting for ack");
-            let ack = framed.try_next().await?.ok_or_else(|| {
-                PseudosettleCodecError::Io(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "connection closed before ack received",
-                ))
-            })?;
+                debug!("Pseudosettle: Waiting for ack");
+                let ack = framed
+                    .try_next()
+                    .await?
+                    .ok_or(PseudosettleError::ConnectionClosed)?;
 
-            debug!(amount = %ack.amount, timestamp = ack.timestamp, "Pseudosettle: Received ack");
-            Ok(ack)
-        })
+                debug!(amount = %ack.amount, timestamp = ack.timestamp, "Pseudosettle: Received ack");
+                Ok(ack)
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -174,24 +178,22 @@ pub fn outbound(payment: Payment) -> PseudosettleOutboundProtocol {
 pub fn validate_timestamp(
     timestamp: i64,
     tolerance_secs: u64,
-) -> Result<(), PseudosettleCodecError> {
+) -> Result<(), PseudosettleError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time before unix epoch")
+        .map_err(|_| PseudosettleError::InvalidTimestamp("system time before unix epoch".into()))?
         .as_nanos() as i64;
 
     let tolerance_nanos = (tolerance_secs as i64) * 1_000_000_000;
     let diff = (now - timestamp).abs();
 
     if diff > tolerance_nanos {
-        return Err(PseudosettleCodecError::domain(
-            PseudosettleError::InvalidTimestamp(format!(
-                "timestamp {} is {}s away from current time (tolerance: {}s)",
-                timestamp,
-                diff / 1_000_000_000,
-                tolerance_secs
-            )),
-        ));
+        return Err(PseudosettleError::InvalidTimestamp(format!(
+            "timestamp {} is {}s away from current time (tolerance: {}s)",
+            timestamp,
+            diff / 1_000_000_000,
+            tolerance_secs
+        )));
     }
 
     Ok(())

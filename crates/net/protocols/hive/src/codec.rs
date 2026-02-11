@@ -1,14 +1,9 @@
 //! Codec for hive protocol messages.
 
-use vertex_net_codec::{Codec, ProtoMessage, ProtocolCodecError};
+use vertex_net_codec::{Codec, ProtoMessage};
 use vertex_swarm_peer::SwarmPeer;
 
-/// Error type for hive codec operations.
-pub type HiveCodecError = ProtocolCodecError<HiveProtocolError>;
-
-/// Domain-specific errors for hive protocol.
-#[derive(Debug, thiserror::Error)]
-pub enum HiveProtocolError {}
+use crate::error::HiveError;
 
 /// Peers message for hive protocol.
 #[derive(Debug, Clone, Default)]
@@ -43,10 +38,11 @@ impl Peers {
 
 impl ProtoMessage for Peers {
     type Proto = crate::proto::hive::Peers;
-    type DecodeError = HiveCodecError;
+    type EncodeError = std::convert::Infallible;
+    type DecodeError = HiveError;
 
-    fn into_proto(self) -> Self::Proto {
-        self.proto
+    fn into_proto(self) -> Result<Self::Proto, Self::EncodeError> {
+        Ok(self.proto)
     }
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
@@ -55,4 +51,4 @@ impl ProtoMessage for Peers {
 }
 
 /// Codec for hive messages.
-pub(crate) type HiveCodec = Codec<Peers, HiveCodecError>;
+pub(crate) type HiveCodec = Codec<Peers, HiveError>;

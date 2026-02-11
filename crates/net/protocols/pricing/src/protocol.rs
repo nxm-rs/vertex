@@ -4,12 +4,13 @@
 
 use asynchronous_codec::Framed;
 use futures::{SinkExt, TryStreamExt, future::BoxFuture};
-use tracing::debug;
+use tracing::{Instrument, debug};
 use vertex_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound};
 
 use crate::{
     PROTOCOL_NAME,
-    codec::{AnnouncePaymentThreshold, PricingCodec, PricingCodecError},
+    codec::{AnnouncePaymentThreshold, PricingCodec},
+    error::PricingError,
 };
 
 /// Maximum size of a pricing message.
@@ -21,25 +22,27 @@ pub struct PricingInner;
 
 impl HeaderedInbound for PricingInner {
     type Output = AnnouncePaymentThreshold;
-    type Error = PricingCodecError;
+    type Error = PricingError;
 
     fn protocol_name(&self) -> &'static str {
         PROTOCOL_NAME
     }
 
     fn read(self, stream: HeaderedStream) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
-        Box::pin(async move {
-            let codec = PricingCodec::new(MAX_MESSAGE_SIZE);
-            let mut framed = Framed::new(stream.into_inner(), codec);
+        let span = tracing::info_span!("pricing_receive");
+        Box::pin(
+            async move {
+                let codec = PricingCodec::new(MAX_MESSAGE_SIZE);
+                let mut framed = Framed::new(stream.into_inner(), codec);
 
-            debug!("Pricing: Reading peer threshold");
-            framed.try_next().await?.ok_or_else(|| {
-                PricingCodecError::Io(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "connection closed",
-                ))
-            })
-        })
+                debug!("Pricing: Reading peer threshold");
+                framed
+                    .try_next()
+                    .await?
+                    .ok_or(PricingError::ConnectionClosed)
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -57,7 +60,7 @@ impl PricingOutboundInner {
 
 impl HeaderedOutbound for PricingOutboundInner {
     type Output = ();
-    type Error = PricingCodecError;
+    type Error = PricingError;
 
     fn protocol_name(&self) -> &'static str {
         PROTOCOL_NAME
@@ -67,14 +70,18 @@ impl HeaderedOutbound for PricingOutboundInner {
         self,
         stream: HeaderedStream,
     ) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
-        Box::pin(async move {
-            let codec = PricingCodec::new(MAX_MESSAGE_SIZE);
-            let mut framed = Framed::new(stream.into_inner(), codec);
+        let span = tracing::info_span!("pricing_send");
+        Box::pin(
+            async move {
+                let codec = PricingCodec::new(MAX_MESSAGE_SIZE);
+                let mut framed = Framed::new(stream.into_inner(), codec);
 
-            debug!("Pricing: Sending our threshold");
-            framed.send(self.threshold).await?;
-            Ok(())
-        })
+                debug!("Pricing: Sending our threshold");
+                framed.send(self.threshold).await?;
+                Ok(())
+            }
+            .instrument(span),
+        )
     }
 }
 

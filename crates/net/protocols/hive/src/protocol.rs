@@ -5,15 +5,17 @@ use std::sync::Arc;
 use alloy_primitives::{B256, Signature};
 use asynchronous_codec::Framed;
 use futures::{SinkExt, TryStreamExt, future::BoxFuture};
-use tracing::debug;
+use libp2p::multiaddr::Protocol;
+use tracing::{Instrument, debug, warn};
 use vertex_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound};
 use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 use vertex_swarm_peer::{SwarmAddress, SwarmPeer};
 
 use crate::{
     PROTOCOL_NAME,
-    codec::{HiveCodec, HiveCodecError, Peers},
-    metrics::{HiveMetrics, label},
+    codec::{HiveCodec, Peers},
+    error::HiveError,
+    metrics::{HiveMetrics, ValidationFailure},
 };
 
 /// 32 KiB frame limit (fits ~100 peers at typical size).
@@ -40,7 +42,7 @@ impl<I: SwarmIdentity> HiveInner<I> {
 
 impl<I: SwarmIdentity> HeaderedInbound for HiveInner<I> {
     type Output = ValidatedPeers;
-    type Error = HiveCodecError;
+    type Error = HiveError;
 
     fn protocol_name(&self) -> &'static str {
         PROTOCOL_NAME
@@ -49,42 +51,43 @@ impl<I: SwarmIdentity> HeaderedInbound for HiveInner<I> {
     fn read(self, stream: HeaderedStream) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
         let network_id = self.identity.spec().network_id();
         let local_overlay = self.identity.overlay_address();
-        Box::pin(async move {
-            let mut metrics = HiveMetrics::new(label::direction::INBOUND);
+        let span = tracing::info_span!("hive_receive", network_id = network_id);
+        Box::pin(
+            async move {
+                let mut metrics = HiveMetrics::inbound();
 
-            let codec = HiveCodec::new(MAX_MESSAGE_SIZE);
-            let mut framed = Framed::new(stream.into_inner(), codec);
+                let codec = HiveCodec::new(MAX_MESSAGE_SIZE);
+                let mut framed = Framed::new(stream.into_inner(), codec);
 
-            debug!("Hive: reading peers");
-            let inbound = match framed.try_next().await {
-                Ok(Some(msg)) => msg,
-                Ok(None) => {
-                    let err = HiveCodecError::Io(std::io::Error::new(
-                        std::io::ErrorKind::UnexpectedEof,
-                        "connection closed",
-                    ));
-                    metrics.record_codec_error(&err);
-                    return Err(err);
-                }
-                Err(e) => {
-                    metrics.record_codec_error(&e);
-                    return Err(e);
-                }
-            };
+                debug!("Hive: reading peers");
+                let inbound = match framed.try_next().await {
+                    Ok(Some(msg)) => msg,
+                    Ok(None) => {
+                        let err = HiveError::ConnectionClosed;
+                        metrics.record_error(&err);
+                        return Err(err);
+                    }
+                    Err(e) => {
+                        metrics.record_error(&e);
+                        return Err(e);
+                    }
+                };
 
-            let proto_peers = inbound.into_proto_peers();
-            let peers: Vec<SwarmPeer> = proto_peers
-                .into_iter()
-                .filter_map(|p| {
-                    proto_to_swarm_peer_with_metrics(p, network_id, &local_overlay, &mut metrics)
-                })
-                .collect();
+                let proto_peers = inbound.into_proto_peers();
+                let peers: Vec<SwarmPeer> = proto_peers
+                    .into_iter()
+                    .filter_map(|p| {
+                        proto_to_swarm_peer_with_metrics(p, network_id, &local_overlay, &mut metrics)
+                    })
+                    .collect();
 
-            metrics.add_valid_peers(peers.len() as u64);
-            metrics.record_success();
+                metrics.add_valid_peers(peers.len() as u64);
+                metrics.record_success();
 
-            Ok(ValidatedPeers { peers })
-        })
+                Ok(ValidatedPeers { peers })
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -101,7 +104,7 @@ fn proto_to_swarm_peer_with_metrics(
         B256::from_slice(&p.overlay)
     } else {
         debug!(len = p.overlay.len(), "invalid overlay length");
-        metrics.record_validation_failure(label::validation::OVERLAY_LENGTH);
+        metrics.record_validation_failure(ValidationFailure::OverlayLength);
         return None;
     };
 
@@ -109,7 +112,7 @@ fn proto_to_swarm_peer_with_metrics(
     let peer_overlay = SwarmAddress::from(overlay);
     if peer_overlay == *local_overlay {
         debug!("Hive: rejected self-overlay from peer exchange");
-        metrics.record_validation_failure(label::validation::SELF_OVERLAY);
+        metrics.record_validation_failure(ValidationFailure::SelfOverlay);
         return None;
     }
 
@@ -117,7 +120,7 @@ fn proto_to_swarm_peer_with_metrics(
         Ok(s) => s,
         Err(e) => {
             debug!(error = %e, "invalid signature format");
-            metrics.record_validation_failure(label::validation::SIGNATURE_FORMAT);
+            metrics.record_validation_failure(ValidationFailure::SignatureFormat);
             return None;
         }
     };
@@ -126,7 +129,7 @@ fn proto_to_swarm_peer_with_metrics(
         B256::from_slice(&p.nonce)
     } else {
         debug!(len = p.nonce.len(), "invalid nonce length");
-        metrics.record_validation_failure(label::validation::NONCE_LENGTH);
+        metrics.record_validation_failure(ValidationFailure::NonceLength);
         return None;
     };
 
@@ -138,13 +141,29 @@ fn proto_to_swarm_peer_with_metrics(
         network_id,
         true,
     ) {
-        Ok(peer) => Some(peer),
+        Ok(peer) => {
+            // Validate that all multiaddrs contain /p2p/ component
+            if !peer.multiaddrs().iter().all(has_p2p_component) {
+                warn!(
+                    overlay = %overlay,
+                    "rejecting peer: multiaddrs missing /p2p/ component"
+                );
+                metrics.record_validation_failure(ValidationFailure::MissingPeerId);
+                return None;
+            }
+            Some(peer)
+        }
         Err(e) => {
             debug!(overlay = %overlay, error = %e, "peer validation failed");
-            metrics.record_validation_failure(label::validation::PEER_VALIDATION);
+            metrics.record_validation_failure(ValidationFailure::PeerValidation);
             None
         }
     }
+}
+
+/// Check if a multiaddr contains a /p2p/ component.
+fn has_p2p_component(addr: &libp2p::Multiaddr) -> bool {
+    addr.iter().any(|p| matches!(p, Protocol::P2p(_)))
 }
 
 /// Outbound handler that sends peers to remote.
@@ -163,7 +182,7 @@ impl HiveOutboundInner {
 
 impl HeaderedOutbound for HiveOutboundInner {
     type Output = ();
-    type Error = HiveCodecError;
+    type Error = HiveError;
 
     fn protocol_name(&self) -> &'static str {
         PROTOCOL_NAME
@@ -174,22 +193,26 @@ impl HeaderedOutbound for HiveOutboundInner {
         stream: HeaderedStream,
     ) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
         let peer_count = self.peers.len() as u64;
-        Box::pin(async move {
-            let mut metrics = HiveMetrics::new(label::direction::OUTBOUND);
-            metrics.add_valid_peers(peer_count);
+        let span = tracing::info_span!("hive_send", peer_count = peer_count);
+        Box::pin(
+            async move {
+                let mut metrics = HiveMetrics::outbound();
+                metrics.add_valid_peers(peer_count);
 
-            let codec = HiveCodec::new(MAX_MESSAGE_SIZE);
-            let mut framed = Framed::new(stream.into_inner(), codec);
+                let codec = HiveCodec::new(MAX_MESSAGE_SIZE);
+                let mut framed = Framed::new(stream.into_inner(), codec);
 
-            debug!("Hive: sending {} peers", peer_count);
-            if let Err(e) = framed.send(self.peers).await {
-                metrics.record_codec_error(&e);
-                return Err(e);
+                debug!("Hive: sending {} peers", peer_count);
+                if let Err(e) = framed.send(self.peers).await {
+                    metrics.record_error(&e);
+                    return Err(e);
+                }
+
+                metrics.record_success();
+                Ok(())
             }
-
-            metrics.record_success();
-            Ok(())
-        })
+            .instrument(span),
+        )
     }
 }
 

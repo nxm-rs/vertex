@@ -1,10 +1,11 @@
 //! Hive protocol for Swarm peer gossip and network bootstrapping.
 
 mod codec;
+pub mod error;
 pub mod metrics;
 mod protocol;
 
-pub use codec::HiveCodecError;
+pub use error::HiveError;
 pub use protocol::{HiveInboundProtocol, HiveOutboundProtocol, ValidatedPeers, inbound, outbound};
 
 #[allow(unreachable_pub)]

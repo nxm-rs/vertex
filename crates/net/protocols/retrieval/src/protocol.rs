@@ -11,20 +11,17 @@
 use asynchronous_codec::Framed;
 use futures::{SinkExt, TryStreamExt, future::BoxFuture};
 use nectar_primitives::ChunkAddress;
-use tracing::debug;
+use tracing::{Instrument, debug};
 use vertex_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound};
 
 use crate::{
     PROTOCOL_NAME,
-    codec::{Delivery, DeliveryCodec, Request, RequestCodec, RetrievalCodecError},
+    codec::{Delivery, DeliveryCodec, Request, RequestCodec},
+    error::RetrievalError,
 };
 
 /// Maximum size of a retrieval message (chunk + stamp + overhead).
 const MAX_MESSAGE_SIZE: usize = 5 * 1024 * 1024; // 5 MB
-
-// ============================================================================
-// Inbound (Responder) - Receives request, sends delivery
-// ============================================================================
 
 /// Retrieval inbound: receives a chunk request from remote.
 #[derive(Debug, Clone)]
@@ -32,32 +29,36 @@ pub struct RetrievalInboundInner;
 
 impl HeaderedInbound for RetrievalInboundInner {
     type Output = (Request, RetrievalResponder);
-    type Error = RetrievalCodecError;
+    type Error = RetrievalError;
 
     fn protocol_name(&self) -> &'static str {
         PROTOCOL_NAME
     }
 
     fn read(self, stream: HeaderedStream) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
-        Box::pin(async move {
-            let codec = RequestCodec::new(MAX_MESSAGE_SIZE);
-            let mut framed = Framed::new(stream.into_inner(), codec);
+        let span = tracing::info_span!("retrieval_receive");
+        Box::pin(
+            async move {
+                let codec = RequestCodec::new(MAX_MESSAGE_SIZE);
+                let mut framed = Framed::new(stream.into_inner(), codec);
 
-            debug!("Retrieval: Reading chunk request");
-            let request = framed.try_next().await?.ok_or_else(|| {
-                RetrievalCodecError::Io(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "connection closed",
-                ))
-            })?;
+                debug!("Retrieval: Reading chunk request");
+                let request = framed
+                    .try_next()
+                    .await?
+                    .ok_or(RetrievalError::ConnectionClosed)?;
 
-            // Return the request and a responder to send the delivery
-            let responder = RetrievalResponder {
-                framed: Framed::new(framed.into_inner(), DeliveryCodec::new(MAX_MESSAGE_SIZE)),
-            };
+                tracing::Span::current().record("chunk_address", tracing::field::display(&request.address));
 
-            Ok((request, responder))
-        })
+                // Return the request and a responder to send the delivery
+                let responder = RetrievalResponder {
+                    framed: Framed::new(framed.into_inner(), DeliveryCodec::new(MAX_MESSAGE_SIZE)),
+                };
+
+                Ok((request, responder))
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -72,21 +73,17 @@ impl RetrievalResponder {
         mut self,
         data: bytes::Bytes,
         stamp: bytes::Bytes,
-    ) -> Result<(), RetrievalCodecError> {
+    ) -> Result<(), RetrievalError> {
         debug!("Retrieval: Sending chunk delivery");
         self.framed.send(Delivery::success(data, stamp)).await
     }
 
     /// Send an error response.
-    pub async fn send_error(mut self, error: impl Into<String>) -> Result<(), RetrievalCodecError> {
+    pub async fn send_error(mut self, error: impl Into<String>) -> Result<(), RetrievalError> {
         debug!("Retrieval: Sending error delivery");
         self.framed.send(Delivery::error(error)).await
     }
 }
-
-// ============================================================================
-// Outbound (Requester) - Sends request, receives delivery
-// ============================================================================
 
 /// Retrieval outbound: requests a chunk from remote.
 #[derive(Debug, Clone)]
@@ -103,7 +100,7 @@ impl RetrievalOutboundInner {
 
 impl HeaderedOutbound for RetrievalOutboundInner {
     type Output = Delivery;
-    type Error = RetrievalCodecError;
+    type Error = RetrievalError;
 
     fn protocol_name(&self) -> &'static str {
         PROTOCOL_NAME
@@ -113,32 +110,31 @@ impl HeaderedOutbound for RetrievalOutboundInner {
         self,
         stream: HeaderedStream,
     ) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
-        Box::pin(async move {
-            // Send the request
-            let request_codec = RequestCodec::new(MAX_MESSAGE_SIZE);
-            let mut framed = Framed::new(stream.into_inner(), request_codec);
+        let chunk_address = self.address;
+        let span = tracing::info_span!("retrieval_request", %chunk_address);
+        Box::pin(
+            async move {
+                // Send the request
+                let request_codec = RequestCodec::new(MAX_MESSAGE_SIZE);
+                let mut framed = Framed::new(stream.into_inner(), request_codec);
 
-            debug!(address = %self.address, "Retrieval: Sending chunk request");
-            framed.send(Request::new(self.address)).await?;
+                debug!(address = %self.address, "Retrieval: Sending chunk request");
+                framed.send(Request::new(self.address)).await?;
 
-            // Switch to delivery codec and read response
-            let delivery_codec = DeliveryCodec::new(MAX_MESSAGE_SIZE);
-            let mut framed = Framed::new(framed.into_inner(), delivery_codec);
+                // Switch to delivery codec and read response
+                let delivery_codec = DeliveryCodec::new(MAX_MESSAGE_SIZE);
+                let mut framed = Framed::new(framed.into_inner(), delivery_codec);
 
-            debug!("Retrieval: Reading delivery response");
-            framed.try_next().await?.ok_or_else(|| {
-                RetrievalCodecError::Io(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "connection closed",
-                ))
-            })
-        })
+                debug!("Retrieval: Reading delivery response");
+                framed
+                    .try_next()
+                    .await?
+                    .ok_or(RetrievalError::ConnectionClosed)
+            }
+            .instrument(span),
+        )
     }
 }
-
-// ============================================================================
-// Type Aliases and Constructors
-// ============================================================================
 
 /// Inbound protocol type for handler.
 pub type RetrievalInboundProtocol = Inbound<RetrievalInboundInner>;

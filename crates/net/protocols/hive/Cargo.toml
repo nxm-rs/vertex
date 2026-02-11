@@ -37,6 +37,8 @@ thiserror.workspace = true
 ## tracing & metrics
 tracing.workspace = true
 metrics.workspace = true
+vertex-swarm-observability.workspace = true
+strum.workspace = true
 
 [build-dependencies]
 pb-rs.workspace = true

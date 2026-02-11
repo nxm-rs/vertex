@@ -1,16 +1,14 @@
+//! Codec for headers protocol messages.
+
 use std::collections::HashMap;
 
-use vertex_net_codec::{Codec, ProtoMessage, ProtocolCodecError};
-
 use bytes::Bytes;
+use vertex_net_codec::{Codec, ProtoMessage};
 
-/// Error type for headers codec operations.
-///
-/// Headers has no domain-specific errors, so we use the base `ProtocolCodecError`.
-pub type CodecError = ProtocolCodecError;
+use crate::error::HeadersError;
 
 /// Codec for headers protocol messages.
-pub type HeadersCodec = Codec<Headers, CodecError>;
+pub type HeadersCodec = Codec<Headers, HeadersError>;
 
 /// Headers message wrapper.
 #[derive(Debug, Clone, PartialEq)]
@@ -32,10 +30,11 @@ impl Headers {
 
 impl ProtoMessage for Headers {
     type Proto = crate::proto::headers::Headers;
-    type DecodeError = CodecError;
+    type EncodeError = std::convert::Infallible;
+    type DecodeError = HeadersError;
 
-    fn into_proto(self) -> Self::Proto {
-        crate::proto::headers::Headers {
+    fn into_proto(self) -> Result<Self::Proto, Self::EncodeError> {
+        Ok(crate::proto::headers::Headers {
             headers: self
                 .inner
                 .into_iter()
@@ -44,7 +43,7 @@ impl ProtoMessage for Headers {
                     value: v.into(),
                 })
                 .collect(),
-        }
+        })
     }
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {

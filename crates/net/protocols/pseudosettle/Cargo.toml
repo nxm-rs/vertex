@@ -31,6 +31,7 @@ alloy-primitives.workspace = true
 
 ## misc
 bytes.workspace = true
+strum.workspace = true
 thiserror.workspace = true
 
 ## tracing

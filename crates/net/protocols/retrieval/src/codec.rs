@@ -2,26 +2,15 @@
 
 use bytes::Bytes;
 use nectar_primitives::ChunkAddress;
-use vertex_net_codec::{Codec, ProtoMessage, ProtocolCodecError};
+use vertex_net_codec::{Codec, ProtoMessage};
 
-/// Domain-specific errors for retrieval protocol.
-#[derive(Debug, thiserror::Error)]
-pub enum RetrievalError {
-    /// Invalid chunk address length
-    #[error("Invalid chunk address length: expected 32, got {0}")]
-    InvalidAddressLength(usize),
-}
-
-/// Error type for retrieval codec operations.
-///
-/// Uses the generic `ProtocolCodecError` with retrieval-specific domain errors.
-pub type RetrievalCodecError = ProtocolCodecError<RetrievalError>;
+use crate::error::RetrievalError;
 
 /// Codec for retrieval request messages.
-pub type RequestCodec = Codec<Request, RetrievalCodecError>;
+pub type RequestCodec = Codec<Request, RetrievalError>;
 
 /// Codec for retrieval delivery messages.
-pub type DeliveryCodec = Codec<Delivery, RetrievalCodecError>;
+pub type DeliveryCodec = Codec<Delivery, RetrievalError>;
 
 /// A request for a chunk by its address.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,22 +28,21 @@ impl Request {
 
 impl ProtoMessage for Request {
     type Proto = crate::proto::retrieval::Request;
-    type DecodeError = RetrievalCodecError;
+    type EncodeError = std::convert::Infallible;
+    type DecodeError = RetrievalError;
 
-    fn into_proto(self) -> Self::Proto {
-        crate::proto::retrieval::Request {
+    fn into_proto(self) -> Result<Self::Proto, Self::EncodeError> {
+        Ok(crate::proto::retrieval::Request {
             Addr: self.address.to_vec(),
-        }
+        })
     }
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
         if proto.Addr.len() != 32 {
-            return Err(RetrievalCodecError::domain(
-                RetrievalError::InvalidAddressLength(proto.Addr.len()),
-            ));
+            return Err(RetrievalError::InvalidAddressLength(proto.Addr.len()));
         }
         let address = ChunkAddress::from_slice(&proto.Addr)
-            .map_err(|e| RetrievalCodecError::protocol(e.to_string()))?;
+            .map_err(|e| RetrievalError::InvalidAddress(e.to_string()))?;
         Ok(Self { address })
     }
 }
@@ -97,14 +85,15 @@ impl Delivery {
 
 impl ProtoMessage for Delivery {
     type Proto = crate::proto::retrieval::Delivery;
-    type DecodeError = RetrievalCodecError;
+    type EncodeError = std::convert::Infallible;
+    type DecodeError = RetrievalError;
 
-    fn into_proto(self) -> Self::Proto {
-        crate::proto::retrieval::Delivery {
+    fn into_proto(self) -> Result<Self::Proto, Self::EncodeError> {
+        Ok(crate::proto::retrieval::Delivery {
             Data: self.data.to_vec(),
             Stamp: self.stamp.to_vec(),
             Err_pb: self.error.unwrap_or_default(),
-        }
+        })
     }
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
@@ -134,7 +123,7 @@ mod tests {
     #[test]
     fn test_delivery_success_roundtrip() {
         let original = Delivery::success(Bytes::from(vec![1, 2, 3, 4]), Bytes::from(vec![5, 6, 7]));
-        let proto = original.clone().into_proto();
+        let proto = original.clone().into_proto().unwrap();
         let decoded = Delivery::from_proto(proto).unwrap();
         assert_eq!(original, decoded);
         assert!(!decoded.is_error());
@@ -143,7 +132,7 @@ mod tests {
     #[test]
     fn test_delivery_error_roundtrip() {
         let original = Delivery::error("chunk not found");
-        let proto = original.clone().into_proto();
+        let proto = original.clone().into_proto().unwrap();
         let decoded = Delivery::from_proto(proto).unwrap();
         assert_eq!(original, decoded);
         assert!(decoded.is_error());

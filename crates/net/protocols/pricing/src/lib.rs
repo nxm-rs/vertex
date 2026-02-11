@@ -1,31 +1,11 @@
-//! Pricing protocol for Swarm bandwidth accounting.
-//!
-//! This crate provides the wire protocol types for exchanging payment thresholds
-//! between peers. It is **pure protocol plumbing** - it does NOT make business
-//! decisions about thresholds.
-//!
-//! # Protocol
-//!
-//! - Path: `/swarm/pricing/1.0.0/pricing`
-//! - Symmetric: Both peers announce on connection
-//! - Message: `AnnouncePaymentThreshold` with payment threshold as bytes (big-endian)
-//!
-//! # Usage
-//!
-//! This crate is used by `vertex-net-client`'s `SwarmClientHandler` which handles
-//! the pricing protocol as part of its multi-protocol connection handler.
-//!
-//! # Business Logic (NOT in this crate)
-//!
-//! - What threshold to announce (based on peer type, config)
-//! - Whether to validate received thresholds
-//! - What minimum threshold to accept
-//! - What action to take on invalid thresholds
+//! Pricing protocol for Swarm payment threshold announcement.
 
 mod codec;
+mod error;
 mod protocol;
 
-pub use codec::{AnnouncePaymentThreshold, PricingCodecError};
+pub use codec::AnnouncePaymentThreshold;
+pub use error::PricingError;
 pub use protocol::{PricingInboundProtocol, PricingOutboundProtocol, inbound, outbound};
 
 #[allow(unreachable_pub)]

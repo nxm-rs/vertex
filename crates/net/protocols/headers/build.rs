@@ -3,30 +3,41 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 fn main() {
-    let out_dir = std::env::var("OUT_DIR").unwrap();
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR must be set by cargo");
     let out_dir = Path::new(&out_dir).join("proto");
 
-    let in_dir = PathBuf::from(::std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("proto");
-    // Re-run this build.rs if the protos dir changes (i.e. a new file is added)
-    println!("cargo:rerun-if-changed={}", in_dir.to_str().unwrap());
+    let in_dir = PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set by cargo"),
+    )
+    .join("proto");
 
-    // Find all *.proto files in the `in_dir` and add them to the list of files
+    println!(
+        "cargo:rerun-if-changed={}",
+        in_dir.to_str().expect("proto dir path must be valid UTF-8")
+    );
+
     let mut protos = Vec::new();
     let proto_ext = Some(Path::new("proto").as_os_str());
     for entry in WalkDir::new(&in_dir) {
-        let path = entry.unwrap().into_path();
+        let path = entry.expect("failed to read proto directory entry").into_path();
         if path.extension() == proto_ext {
-            // Re-run this build.rs if any of the files in the protos dir change
-            println!("cargo:rerun-if-changed={}", path.to_str().unwrap());
+            println!(
+                "cargo:rerun-if-changed={}",
+                path.to_str().expect("proto file path must be valid UTF-8")
+            );
             protos.push(path);
         }
     }
 
-    // Delete all old generated files before re-generating new ones
     if out_dir.exists() {
-        std::fs::remove_dir_all(&out_dir).unwrap();
+        std::fs::remove_dir_all(&out_dir).expect("failed to clean proto output directory");
     }
-    std::fs::DirBuilder::new().create(&out_dir).unwrap();
-    let config_builder = ConfigBuilder::new(&protos, None, Some(&out_dir), &[in_dir]).unwrap();
-    FileDescriptor::run(&config_builder.dont_use_cow(true).build()).unwrap()
+    std::fs::DirBuilder::new()
+        .create(&out_dir)
+        .expect("failed to create proto output directory");
+
+    let config_builder = ConfigBuilder::new(&protos, None, Some(&out_dir), &[in_dir])
+        .expect("failed to configure protobuf builder");
+    FileDescriptor::run(&config_builder.dont_use_cow(true).build())
+        .expect("failed to generate protobuf code");
 }

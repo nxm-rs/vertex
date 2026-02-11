@@ -16,7 +16,8 @@ use vertex_swarm_bandwidth_chequebook::SignedCheque;
 
 use crate::{
     PROTOCOL_NAME,
-    codec::{EmitCheque, EmitChequeCodec, SwapCodecError},
+    codec::{EmitCheque, EmitChequeCodec},
+    error::SwapError,
     headers::{HEADER_EXCHANGE_RATE, SettlementHeaders},
 };
 
@@ -38,7 +39,7 @@ impl SwapInboundInner {
 
 impl HeaderedInbound for SwapInboundInner {
     type Output = (SignedCheque, SettlementHeaders);
-    type Error = SwapCodecError;
+    type Error = SwapError;
 
     fn protocol_name(&self) -> &'static str {
         PROTOCOL_NAME
@@ -56,18 +57,16 @@ impl HeaderedInbound for SwapInboundInner {
     fn read(self, stream: HeaderedStream) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
         Box::pin(async move {
             let peer_headers = SettlementHeaders::from_headers(stream.headers())
-                .ok_or_else(|| SwapCodecError::Protocol("missing exchange rate header".into()))?;
+                .ok_or(SwapError::MissingHeader("exchange_rate"))?;
 
             let codec = EmitChequeCodec::new(MAX_MESSAGE_SIZE);
             let mut framed = Framed::new(stream.into_inner(), codec);
 
             debug!("SWAP: Reading cheque");
-            let emit = framed.try_next().await?.ok_or_else(|| {
-                SwapCodecError::Io(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "connection closed before cheque received",
-                ))
-            })?;
+            let emit = framed
+                .try_next()
+                .await?
+                .ok_or(SwapError::ConnectionClosed)?;
 
             debug!("SWAP: Received cheque");
             Ok((emit.cheque, peer_headers))
@@ -92,7 +91,7 @@ impl SwapOutboundInner {
 
 impl HeaderedOutbound for SwapOutboundInner {
     type Output = SettlementHeaders;
-    type Error = SwapCodecError;
+    type Error = SwapError;
 
     fn protocol_name(&self) -> &'static str {
         PROTOCOL_NAME
@@ -108,7 +107,7 @@ impl HeaderedOutbound for SwapOutboundInner {
     ) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
         Box::pin(async move {
             let peer_headers = SettlementHeaders::from_headers(stream.headers())
-                .ok_or_else(|| SwapCodecError::Protocol("missing exchange rate header".into()))?;
+                .ok_or(SwapError::MissingHeader("exchange_rate"))?;
 
             debug!(peer_rate = %peer_headers.exchange_rate, our_rate = %self.our_rate, "SWAP: Peer rate");
 

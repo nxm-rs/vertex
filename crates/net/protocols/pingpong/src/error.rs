@@ -1,14 +1,14 @@
-//! Error types for the headers protocol.
+//! Error types for pingpong protocol.
 
 use std::convert::Infallible;
 
 use strum::IntoStaticStr;
 
-/// Error during headers exchange.
+/// Pingpong protocol errors.
 #[derive(Debug, thiserror::Error, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
-pub enum HeadersError {
-    /// Connection closed before headers exchange completed.
+pub enum PingpongError {
+    /// Connection closed before operation completed.
     #[error("connection closed")]
     ConnectionClosed,
 
@@ -23,20 +23,8 @@ pub enum HeadersError {
     Io(#[from] std::io::Error),
 }
 
-impl From<Infallible> for HeadersError {
+impl From<Infallible> for PingpongError {
     fn from(never: Infallible) -> Self {
         match never {}
     }
-}
-
-/// Error from a headered protocol upgrade.
-#[derive(Debug, thiserror::Error)]
-pub enum ProtocolError {
-    /// Headers exchange failed.
-    #[error("headers error: {0}")]
-    Headers(#[from] HeadersError),
-
-    /// Inner protocol error.
-    #[error("protocol error: {0}")]
-    Protocol(Box<dyn std::error::Error + Send + Sync>),
 }

@@ -15,7 +15,8 @@ use vertex_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbo
 
 use crate::{
     PROTOCOL_NAME,
-    codec::{Ping, PingCodec, PingpongCodecError, Pong, PongCodec},
+    codec::{Ping, PingCodec, Pong, PongCodec},
+    error::PingpongError,
 };
 
 /// Maximum size of a pingpong message.
@@ -27,7 +28,7 @@ pub struct PingpongInboundInner;
 
 impl HeaderedInbound for PingpongInboundInner {
     type Output = ();
-    type Error = PingpongCodecError;
+    type Error = PingpongError;
 
     fn protocol_name(&self) -> &'static str {
         PROTOCOL_NAME
@@ -39,12 +40,10 @@ impl HeaderedInbound for PingpongInboundInner {
             let mut framed = Framed::new(stream.into_inner(), codec);
 
             debug!("Pingpong: Reading ping");
-            let ping = framed.try_next().await?.ok_or_else(|| {
-                PingpongCodecError::Io(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "connection closed before receiving ping (inbound)",
-                ))
-            })?;
+            let ping = framed
+                .try_next()
+                .await?
+                .ok_or(PingpongError::ConnectionClosed)?;
 
             debug!(greeting = %ping.greeting, "Pingpong: Received ping");
 
@@ -78,7 +77,7 @@ impl PingpongOutboundInner {
 
 impl HeaderedOutbound for PingpongOutboundInner {
     type Output = Pong;
-    type Error = PingpongCodecError;
+    type Error = PingpongError;
 
     fn protocol_name(&self) -> &'static str {
         PROTOCOL_NAME
@@ -101,12 +100,10 @@ impl HeaderedOutbound for PingpongOutboundInner {
             let mut framed = Framed::new(framed.into_inner(), pong_codec);
 
             debug!("Pingpong: Reading pong response");
-            framed.try_next().await?.ok_or_else(|| {
-                PingpongCodecError::Io(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "connection closed before receiving pong (outbound)",
-                ))
-            })
+            framed
+                .try_next()
+                .await?
+                .ok_or(PingpongError::ConnectionClosed)
         })
     }
 }

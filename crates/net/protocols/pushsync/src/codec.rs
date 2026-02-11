@@ -2,24 +2,15 @@
 
 use bytes::Bytes;
 use nectar_primitives::ChunkAddress;
-use vertex_net_codec::{Codec, ProtoMessage, ProtocolCodecError};
+use vertex_net_codec::{Codec, ProtoMessage};
 
-/// Domain-specific errors for pushsync protocol.
-#[derive(Debug, thiserror::Error)]
-pub enum PushsyncError {
-    /// Invalid chunk address length
-    #[error("Invalid chunk address length: expected 32, got {0}")]
-    InvalidAddressLength(usize),
-}
-
-/// Error type for pushsync codec operations.
-pub type PushsyncCodecError = ProtocolCodecError<PushsyncError>;
+use crate::error::PushsyncError;
 
 /// Codec for pushsync delivery messages.
-pub type DeliveryCodec = Codec<Delivery, PushsyncCodecError>;
+pub type DeliveryCodec = Codec<Delivery, PushsyncError>;
 
 /// Codec for pushsync receipt messages.
-pub type ReceiptCodec = Codec<Receipt, PushsyncCodecError>;
+pub type ReceiptCodec = Codec<Receipt, PushsyncError>;
 
 /// Delivery of a chunk to be stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,24 +36,23 @@ impl Delivery {
 
 impl ProtoMessage for Delivery {
     type Proto = crate::proto::pushsync::Delivery;
-    type DecodeError = PushsyncCodecError;
+    type EncodeError = std::convert::Infallible;
+    type DecodeError = PushsyncError;
 
-    fn into_proto(self) -> Self::Proto {
-        crate::proto::pushsync::Delivery {
+    fn into_proto(self) -> Result<Self::Proto, Self::EncodeError> {
+        Ok(crate::proto::pushsync::Delivery {
             Address: self.address.to_vec(),
             Data: self.data.to_vec(),
             Stamp: self.stamp.to_vec(),
-        }
+        })
     }
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
         if proto.Address.len() != 32 {
-            return Err(PushsyncCodecError::domain(
-                PushsyncError::InvalidAddressLength(proto.Address.len()),
-            ));
+            return Err(PushsyncError::InvalidAddressLength(proto.Address.len()));
         }
         let address = ChunkAddress::from_slice(&proto.Address)
-            .map_err(|e| PushsyncCodecError::protocol(e.to_string()))?;
+            .map_err(|e| PushsyncError::InvalidAddress(e.to_string()))?;
         Ok(Self {
             address,
             data: Bytes::from(proto.Data),
@@ -122,26 +112,25 @@ impl Receipt {
 
 impl ProtoMessage for Receipt {
     type Proto = crate::proto::pushsync::Receipt;
-    type DecodeError = PushsyncCodecError;
+    type EncodeError = std::convert::Infallible;
+    type DecodeError = PushsyncError;
 
-    fn into_proto(self) -> Self::Proto {
-        crate::proto::pushsync::Receipt {
+    fn into_proto(self) -> Result<Self::Proto, Self::EncodeError> {
+        Ok(crate::proto::pushsync::Receipt {
             Address: self.address.to_vec(),
             Signature: self.signature.to_vec(),
             Nonce: self.nonce.to_vec(),
             Err_pb: self.error.unwrap_or_default(),
             StorageRadius: self.storage_radius as u32,
-        }
+        })
     }
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
         if proto.Address.len() != 32 {
-            return Err(PushsyncCodecError::domain(
-                PushsyncError::InvalidAddressLength(proto.Address.len()),
-            ));
+            return Err(PushsyncError::InvalidAddressLength(proto.Address.len()));
         }
         let address = ChunkAddress::from_slice(&proto.Address)
-            .map_err(|e| PushsyncCodecError::protocol(e.to_string()))?;
+            .map_err(|e| PushsyncError::InvalidAddress(e.to_string()))?;
         let error = if proto.Err_pb.is_empty() {
             None
         } else {
@@ -179,7 +168,7 @@ mod tests {
             Bytes::from(vec![5, 6, 7]),
             10,
         );
-        let proto = original.clone().into_proto();
+        let proto = original.clone().into_proto().unwrap();
         let decoded = Receipt::from_proto(proto).unwrap();
         assert_eq!(original, decoded);
         assert!(!decoded.is_error());
@@ -188,7 +177,7 @@ mod tests {
     #[test]
     fn test_receipt_error_roundtrip() {
         let original = Receipt::error(ChunkAddress::new([0x42; 32]), "storage failed");
-        let proto = original.clone().into_proto();
+        let proto = original.clone().into_proto().unwrap();
         let decoded = Receipt::from_proto(proto).unwrap();
         assert_eq!(original, decoded);
         assert!(decoded.is_error());

@@ -7,24 +7,10 @@
 //! Cheques are serialized as JSON, matching Bee's format for interoperability.
 
 use alloy_primitives::Address;
-use vertex_net_codec::{Codec, ProtoMessage, ProtocolCodecError};
+use vertex_net_codec::{Codec, ProtoMessage};
 use vertex_swarm_bandwidth_chequebook::SignedCheque;
 
-/// Domain-specific errors for SWAP protocol.
-#[derive(Debug, thiserror::Error)]
-pub enum SwapError {
-    #[error("JSON error: {0}")]
-    Json(String),
-}
-
-impl From<serde_json::Error> for SwapError {
-    fn from(error: serde_json::Error) -> Self {
-        SwapError::Json(error.to_string())
-    }
-}
-
-/// Error type for swap codec operations.
-pub type SwapCodecError = ProtocolCodecError<SwapError>;
+use crate::error::SwapError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmitCheque {
@@ -39,23 +25,24 @@ impl EmitCheque {
 
 impl ProtoMessage for EmitCheque {
     type Proto = crate::proto::swap::EmitCheque;
-    type DecodeError = SwapCodecError;
+    type EncodeError = SwapError;
+    type DecodeError = SwapError;
 
-    fn into_proto(self) -> Self::Proto {
-        let cheque_json = serde_json::to_vec(&self.cheque).expect("SignedCheque serializes");
-        crate::proto::swap::EmitCheque {
+    fn into_proto(self) -> Result<Self::Proto, Self::EncodeError> {
+        let cheque_json = serde_json::to_vec(&self.cheque)?;
+        Ok(crate::proto::swap::EmitCheque {
             cheque: cheque_json,
-        }
+        })
     }
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
-        let cheque: SignedCheque = serde_json::from_slice(&proto.cheque)
-            .map_err(|e| SwapCodecError::domain(SwapError::from(e)))?;
+        let cheque: SignedCheque =
+            serde_json::from_slice(&proto.cheque).map_err(SwapError::from)?;
         Ok(Self { cheque })
     }
 }
 
-pub type EmitChequeCodec = Codec<EmitCheque, SwapCodecError>;
+pub type EmitChequeCodec = Codec<EmitCheque, SwapError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Handshake {
@@ -70,27 +57,25 @@ impl Handshake {
 
 impl ProtoMessage for Handshake {
     type Proto = crate::proto::swap::Handshake;
-    type DecodeError = SwapCodecError;
+    type EncodeError = std::convert::Infallible;
+    type DecodeError = SwapError;
 
-    fn into_proto(self) -> Self::Proto {
-        crate::proto::swap::Handshake {
+    fn into_proto(self) -> Result<Self::Proto, Self::EncodeError> {
+        Ok(crate::proto::swap::Handshake {
             beneficiary: self.beneficiary.as_slice().to_vec(),
-        }
+        })
     }
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
         if proto.beneficiary.len() != 20 {
-            return Err(SwapCodecError::protocol(format!(
-                "invalid beneficiary length: expected 20, got {}",
-                proto.beneficiary.len()
-            )));
+            return Err(SwapError::InvalidBeneficiaryLength(proto.beneficiary.len()));
         }
         let beneficiary = Address::from_slice(&proto.beneficiary);
         Ok(Self { beneficiary })
     }
 }
 
-pub type HandshakeCodec = Codec<Handshake, SwapCodecError>;
+pub type HandshakeCodec = Codec<Handshake, SwapError>;
 
 #[cfg(test)]
 mod tests {

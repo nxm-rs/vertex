@@ -6,15 +6,12 @@
 //! matching Go's `big.Int.Bytes()` serialization used by Bee.
 
 use alloy_primitives::U256;
-use vertex_net_codec::{Codec, ProtoMessage, ProtocolCodecError, decode_u256_be, encode_u256_be};
+use vertex_net_codec::{Codec, ProtoMessage, decode_u256_be, encode_u256_be};
 
-/// Error type for pricing codec operations.
-///
-/// Pricing has no domain-specific errors.
-pub type PricingCodecError = ProtocolCodecError;
+use crate::error::PricingError;
 
 /// Codec for pricing protocol messages.
-pub(crate) type PricingCodec = Codec<AnnouncePaymentThreshold, PricingCodecError>;
+pub(crate) type PricingCodec = Codec<AnnouncePaymentThreshold, PricingError>;
 
 /// Payment threshold announcement message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,12 +34,13 @@ impl AnnouncePaymentThreshold {
 
 impl ProtoMessage for AnnouncePaymentThreshold {
     type Proto = crate::proto::pricing::AnnouncePaymentThreshold;
-    type DecodeError = PricingCodecError;
+    type EncodeError = std::convert::Infallible;
+    type DecodeError = PricingError;
 
-    fn into_proto(self) -> Self::Proto {
-        crate::proto::pricing::AnnouncePaymentThreshold {
+    fn into_proto(self) -> Result<Self::Proto, Self::EncodeError> {
+        Ok(crate::proto::pricing::AnnouncePaymentThreshold {
             payment_threshold: encode_u256_be(self.payment_threshold),
-        }
+        })
     }
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
@@ -65,7 +63,7 @@ mod tests {
     #[test]
     fn test_zero_threshold() {
         let original = AnnouncePaymentThreshold::new(U256::ZERO);
-        let proto = original.clone().into_proto();
+        let proto = original.clone().into_proto().unwrap();
         assert!(proto.payment_threshold.is_empty());
         let decoded = AnnouncePaymentThreshold::from_proto(proto).unwrap();
         assert_eq!(original, decoded);
@@ -74,7 +72,7 @@ mod tests {
     #[test]
     fn test_large_threshold() {
         let original = AnnouncePaymentThreshold::new(U256::MAX);
-        let proto = original.clone().into_proto();
+        let proto = original.clone().into_proto().unwrap();
         assert_eq!(proto.payment_threshold.len(), 32);
         let decoded = AnnouncePaymentThreshold::from_proto(proto).unwrap();
         assert_eq!(original, decoded);
@@ -83,7 +81,7 @@ mod tests {
     #[test]
     fn test_small_value_minimal_bytes() {
         let original = AnnouncePaymentThreshold::from_u64(256);
-        let proto = original.clone().into_proto();
+        let proto = original.clone().into_proto().unwrap();
         assert_eq!(proto.payment_threshold, vec![0x01, 0x00]);
     }
 }

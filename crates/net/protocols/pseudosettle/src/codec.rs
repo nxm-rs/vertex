@@ -8,20 +8,9 @@
 //! matching Go's `big.Int.Bytes()` serialization used by Bee.
 
 use alloy_primitives::U256;
-use vertex_net_codec::{
-    Codec, ProtoMessage, ProtocolCodecError, current_unix_timestamp_nanos, decode_u256_be,
-    encode_u256_be,
-};
+use vertex_net_codec::{Codec, ProtoMessage, current_unix_timestamp_nanos, decode_u256_be, encode_u256_be};
 
-/// Domain-specific errors for pseudosettle protocol.
-#[derive(Debug, thiserror::Error)]
-pub enum PseudosettleError {
-    #[error("Invalid timestamp: {0}")]
-    InvalidTimestamp(String),
-}
-
-/// Error type for pseudosettle codec operations.
-pub type PseudosettleCodecError = ProtocolCodecError<PseudosettleError>;
+use crate::error::PseudosettleError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Payment {
@@ -40,12 +29,13 @@ impl Payment {
 
 impl ProtoMessage for Payment {
     type Proto = crate::proto::pseudosettle::Payment;
-    type DecodeError = PseudosettleCodecError;
+    type EncodeError = std::convert::Infallible;
+    type DecodeError = PseudosettleError;
 
-    fn into_proto(self) -> Self::Proto {
-        crate::proto::pseudosettle::Payment {
+    fn into_proto(self) -> Result<Self::Proto, Self::EncodeError> {
+        Ok(crate::proto::pseudosettle::Payment {
             amount: encode_u256_be(self.amount),
-        }
+        })
     }
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
@@ -55,7 +45,7 @@ impl ProtoMessage for Payment {
     }
 }
 
-pub type PaymentCodec = Codec<Payment, PseudosettleCodecError>;
+pub type PaymentCodec = Codec<Payment, PseudosettleError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaymentAck {
@@ -78,13 +68,14 @@ impl PaymentAck {
 
 impl ProtoMessage for PaymentAck {
     type Proto = crate::proto::pseudosettle::PaymentAck;
-    type DecodeError = PseudosettleCodecError;
+    type EncodeError = std::convert::Infallible;
+    type DecodeError = PseudosettleError;
 
-    fn into_proto(self) -> Self::Proto {
-        crate::proto::pseudosettle::PaymentAck {
+    fn into_proto(self) -> Result<Self::Proto, Self::EncodeError> {
+        Ok(crate::proto::pseudosettle::PaymentAck {
             amount: encode_u256_be(self.amount),
             timestamp: self.timestamp,
-        }
+        })
     }
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
@@ -95,7 +86,7 @@ impl ProtoMessage for PaymentAck {
     }
 }
 
-pub type PaymentAckCodec = Codec<PaymentAck, PseudosettleCodecError>;
+pub type PaymentAckCodec = Codec<PaymentAck, PseudosettleError>;
 
 #[cfg(test)]
 mod tests {

@@ -1,22 +1,17 @@
 use asynchronous_codec::{Framed, FramedRead};
 use futures::{AsyncWriteExt, SinkExt, TryStreamExt, future::BoxFuture};
 use libp2p::{InboundUpgrade, Multiaddr, OutboundUpgrade, PeerId, Stream, core::UpgradeInfo};
+use tracing::instrument;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_spec::SwarmSpec;
 
 use crate::{
     Ack, AckCodec, HandshakeError, HandshakeInfo, PROTOCOL, Syn, SynAck, SynAckCodec, SynCodec,
-    codec::HandshakeCodecDomainError,
-    metrics::{HandshakeMetrics, label},
+    metrics::HandshakeMetrics,
 };
 
 /// Handshake protocol upgrade for Swarm peer authentication.
-///
-/// This protocol handles the three-way handshake (SYN → SYNACK → ACK)
-/// that authenticates peers on the Swarm network.
-///
-/// Generic over `I: SwarmIdentity` to support different identity implementations.
 pub struct HandshakeProtocol<I: SwarmIdentity> {
     identity: I,
     peer_id: PeerId,
@@ -36,10 +31,6 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
     }
 
     /// Create a handshake protocol with additional addresses to advertise.
-    ///
-    /// The `additional_addrs` are combined with the observed address when
-    /// creating our identity for the handshake. Use this to advertise
-    /// NAT addresses, listen addresses, etc.
     pub fn with_addrs(
         identity: I,
         peer_id: PeerId,
@@ -55,14 +46,20 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
     }
 
     /// Handle an inbound handshake (we are the listener).
-    ///
-    /// Flow: Receive SYN → Send SYNACK → Receive ACK
+    #[instrument(
+        name = "handshake_inbound",
+        skip(self, stream),
+        fields(
+            peer_id = %self.peer_id,
+            remote_addr = %self.remote_addr,
+        )
+    )]
     async fn handle_inbound(self, stream: Stream) -> Result<HandshakeInfo, HandshakeError> {
-        let metrics = HandshakeMetrics::new(label::direction::INBOUND);
+        let metrics = HandshakeMetrics::inbound();
 
         match self.handle_inbound_inner(stream).await {
             Ok(info) => {
-                metrics.record_success(info.full_node);
+                metrics.record_success(info.node_type);
                 Ok(info)
             }
             Err(e) => {
@@ -75,22 +72,20 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
     async fn handle_inbound_inner(self, stream: Stream) -> Result<HandshakeInfo, HandshakeError> {
         let network_id = self.identity.spec().network_id();
 
-        // Set up codecs (all use network_id as context for validation/encoding)
         let syn_codec = SynCodec::new(1024);
         let synack_codec = SynAckCodec::new(1024, network_id);
         let ack_codec = AckCodec::new(1024, network_id);
 
-        // Read SYN using framed read
+        // Read SYN
         let mut framed = FramedRead::new(stream, syn_codec);
         let syn = framed
             .try_next()
             .await?
             .ok_or(HandshakeError::ConnectionClosed)?;
 
-        // Get the address the peer observes us at (for NAT discovery)
         let observed_multiaddr = syn.observed_multiaddr().clone();
 
-        // Combine observed address with additional addresses for our identity
+        // Combine addresses for our identity
         let mut our_addrs = vec![observed_multiaddr.clone()];
         our_addrs.extend(
             self.additional_addrs
@@ -99,18 +94,13 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
                 .cloned(),
         );
 
-        // Create local SwarmPeer identity with all addresses
-        let local_peer = SwarmPeer::from_identity(&self.identity, our_addrs).map_err(|e| {
-            HandshakeError::Codec(crate::codec::CodecError::domain(
-                HandshakeCodecDomainError::InvalidPeer(e),
-            ))
-        })?;
+        let local_peer = SwarmPeer::from_identity(&self.identity, our_addrs)?;
 
         // Send SYNACK
         let synack = SynAck::new(
             syn,
             local_peer,
-            self.identity.is_full_node(),
+            self.identity.node_type(),
             self.identity
                 .welcome_message()
                 .unwrap_or_default()
@@ -120,7 +110,7 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
         let mut framed = Framed::new(framed.into_inner(), synack_codec);
         framed.send(synack).await?;
 
-        // Read ACK (network_id validated by codec)
+        // Read ACK
         let mut framed = FramedRead::new(framed.into_inner(), ack_codec);
         let ack = framed
             .try_next()
@@ -129,27 +119,32 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
 
         framed.close().await?;
 
-        // Extract components from received Ack
-        let (swarm_peer, full_node, welcome_message) = ack.into_parts();
+        let (swarm_peer, node_type, welcome_message) = ack.into_parts();
 
         Ok(HandshakeInfo {
             peer_id: self.peer_id,
             swarm_peer,
-            full_node,
+            node_type,
             welcome_message,
             observed_multiaddr,
         })
     }
 
     /// Handle an outbound handshake (we are the dialer).
-    ///
-    /// Flow: Send SYN → Receive SYNACK → Send ACK
+    #[instrument(
+        name = "handshake_outbound",
+        skip(self, stream),
+        fields(
+            peer_id = %self.peer_id,
+            remote_addr = %self.remote_addr,
+        )
+    )]
     async fn handle_outbound(self, stream: Stream) -> Result<HandshakeInfo, HandshakeError> {
-        let metrics = HandshakeMetrics::new(label::direction::OUTBOUND);
+        let metrics = HandshakeMetrics::outbound();
 
         match self.handle_outbound_inner(stream).await {
             Ok(info) => {
-                metrics.record_success(info.full_node);
+                metrics.record_success(info.node_type);
                 Ok(info)
             }
             Err(e) => {
@@ -162,34 +157,29 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
     async fn handle_outbound_inner(self, stream: Stream) -> Result<HandshakeInfo, HandshakeError> {
         let network_id = self.identity.spec().network_id();
 
-        // Construct the observed multiaddr with the peer ID appended
-        // Format: /ip4/x.x.x.x/tcp/1634/p2p/QmPeerId...
-        // This is what we tell the remote peer we see them at
         let their_observed_multiaddr = self
             .remote_addr
             .clone()
             .with(libp2p::multiaddr::Protocol::P2p(self.peer_id));
 
-        // Set up codecs (all use network_id as context for validation/encoding)
         let syn_codec = SynCodec::new(1024);
         let synack_codec = SynAckCodec::new(1024, network_id);
         let ack_codec = AckCodec::new(1024, network_id);
 
+        // Send SYN
         let mut framed = Framed::new(stream, syn_codec);
         framed.send(Syn::new(their_observed_multiaddr)).await?;
 
-        // Read SYNACK (network_id validated by codec)
+        // Read SYNACK
         let mut framed = FramedRead::new(framed.into_inner(), synack_codec);
         let syn_ack = framed
             .try_next()
             .await?
             .ok_or(HandshakeError::ConnectionClosed)?;
 
-        // Get the address the peer observes us at (for NAT discovery)
-        // This comes from the echoed SYN in the SYNACK
         let observed_multiaddr = syn_ack.syn().observed_multiaddr().clone();
 
-        // Combine observed address with additional addresses for our identity
+        // Combine addresses for our identity
         let mut our_addrs = vec![observed_multiaddr.clone()];
         our_addrs.extend(
             self.additional_addrs
@@ -198,17 +188,12 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
                 .cloned(),
         );
 
-        // Create local SwarmPeer identity with all addresses
-        let local_peer = SwarmPeer::from_identity(&self.identity, our_addrs).map_err(|e| {
-            HandshakeError::Codec(crate::codec::CodecError::domain(
-                HandshakeCodecDomainError::InvalidPeer(e),
-            ))
-        })?;
+        let local_peer = SwarmPeer::from_identity(&self.identity, our_addrs)?;
 
-        // Send ACK (network_id provided by codec context)
+        // Send ACK
         let ack = Ack::new(
             local_peer,
-            self.identity.is_full_node(),
+            self.identity.node_type(),
             self.identity
                 .welcome_message()
                 .unwrap_or_default()
@@ -219,13 +204,12 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
         framed.send(ack).await?;
         framed.close().await?;
 
-        // Extract components from received SynAck
-        let (_, swarm_peer, full_node, welcome_message) = syn_ack.into_parts();
+        let (_, swarm_peer, node_type, welcome_message) = syn_ack.into_parts();
 
         Ok(HandshakeInfo {
             peer_id: self.peer_id,
             swarm_peer,
-            full_node,
+            node_type,
             welcome_message,
             observed_multiaddr,
         })

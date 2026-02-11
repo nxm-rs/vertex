@@ -1,17 +1,14 @@
 //! Codec for pingpong protocol messages.
 
-use vertex_net_codec::{Codec, ProtoMessage, ProtocolCodecError};
+use vertex_net_codec::{Codec, ProtoMessage};
 
-/// Error type for pingpong codec operations.
-///
-/// Pingpong has no domain-specific errors, so we use the base `ProtocolCodecError`.
-pub type PingpongCodecError = ProtocolCodecError;
+use crate::error::PingpongError;
 
 /// Codec for ping messages.
-pub(crate) type PingCodec = Codec<Ping, PingpongCodecError>;
+pub(crate) type PingCodec = Codec<Ping, PingpongError>;
 
 /// Codec for pong messages.
-pub(crate) type PongCodec = Codec<Pong, PingpongCodecError>;
+pub(crate) type PongCodec = Codec<Pong, PingpongError>;
 
 /// A ping message with a greeting.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,12 +28,13 @@ impl Ping {
 
 impl ProtoMessage for Ping {
     type Proto = crate::proto::pingpong::Ping;
-    type DecodeError = PingpongCodecError;
+    type EncodeError = std::convert::Infallible;
+    type DecodeError = PingpongError;
 
-    fn into_proto(self) -> Self::Proto {
-        crate::proto::pingpong::Ping {
+    fn into_proto(self) -> Result<Self::Proto, Self::EncodeError> {
+        Ok(crate::proto::pingpong::Ping {
             greeting: self.greeting,
-        }
+        })
     }
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
@@ -71,12 +69,13 @@ impl Pong {
 
 impl ProtoMessage for Pong {
     type Proto = crate::proto::pingpong::Pong;
-    type DecodeError = PingpongCodecError;
+    type EncodeError = std::convert::Infallible;
+    type DecodeError = PingpongError;
 
-    fn into_proto(self) -> Self::Proto {
-        crate::proto::pingpong::Pong {
+    fn into_proto(self) -> Result<Self::Proto, Self::EncodeError> {
+        Ok(crate::proto::pingpong::Pong {
             response: self.response,
-        }
+        })
     }
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {

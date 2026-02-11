@@ -1,19 +1,95 @@
-use crate::codec;
+//! Error types for handshake protocol.
 
-#[derive(Debug, thiserror::Error)]
+use std::convert::Infallible;
+
+use strum::IntoStaticStr;
+use vertex_swarm_peer::{MultiAddrError, SwarmPeerError};
+
+/// Handshake protocol errors.
+#[derive(Debug, thiserror::Error, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum HandshakeError {
-    #[error("Picker rejection")]
-    PickerRejection,
-    #[error("Timeout")]
+    /// Handshake timeout.
+    #[error("timeout")]
     Timeout,
-    #[error("Codec error: {0}")]
-    Codec(#[from] codec::CodecError),
-    #[error("Protocol error: {0}")]
-    Protocol(String),
-    #[error("Stream error: {0}")]
-    Stream(#[from] std::io::Error),
-    #[error("Connection closed")]
+
+    /// Connection closed before handshake completed.
+    #[error("connection closed")]
     ConnectionClosed,
-    #[error("Missing data")]
-    MissingData,
+
+    /// Peer rejected by admission policy.
+    ///
+    /// This error is returned when a peer passes protocol validation but is rejected
+    /// by application-level policy. Common rejection reasons include:
+    /// - Peer is banned
+    /// - Peer's overlay falls in a saturated Kademlia bin
+    /// - Maximum peer limit reached
+    /// - Duplicate connection to same overlay
+    ///
+    /// The reason string should be a static label suitable for metrics.
+    #[error("rejected: {0}")]
+    Rejected(&'static str),
+
+    /// Network ID mismatch between peers.
+    #[error("network ID mismatch")]
+    NetworkIdMismatch,
+
+    /// Required field missing from message.
+    #[error("missing field: {0}")]
+    #[strum(serialize = "missing_field")]
+    MissingField(&'static str),
+
+    /// Field exceeds maximum allowed length.
+    #[error("{field} exceeds max length {max}, got {actual}")]
+    #[strum(serialize = "field_too_long")]
+    FieldTooLong {
+        field: &'static str,
+        max: usize,
+        actual: usize,
+    },
+
+    /// Invalid data conversion (e.g., slice to fixed-size array).
+    #[error("invalid data: {0}")]
+    #[strum(serialize = "invalid_data")]
+    InvalidData(#[from] std::array::TryFromSliceError),
+
+    /// Invalid multiaddr encoding.
+    #[error("invalid multiaddr: {0}")]
+    #[strum(serialize = "invalid_multiaddr")]
+    InvalidMultiaddr(#[from] MultiAddrError),
+
+    /// Invalid signature bytes (wrong length or format).
+    #[error("invalid signature: {0}")]
+    #[strum(serialize = "invalid_signature")]
+    InvalidSignature(#[from] alloy_primitives::SignatureError),
+
+    /// Invalid peer identity (signature verification or overlay mismatch).
+    #[error("invalid peer: {0}")]
+    #[strum(serialize = "invalid_peer")]
+    InvalidPeer(#[from] SwarmPeerError),
+
+    /// Invalid overlay address.
+    #[error("invalid overlay")]
+    InvalidOverlay,
+
+    /// Protobuf encoding/decoding error.
+    #[error("protobuf error: {0}")]
+    #[strum(serialize = "protobuf_error")]
+    Protobuf(#[from] quick_protobuf_codec::Error),
+
+    /// I/O error during stream operations.
+    #[error("io error: {0}")]
+    #[strum(serialize = "io_error")]
+    Io(#[from] std::io::Error),
+
+    /// Stream upgrade failed at libp2p layer.
+    #[error("upgrade error: {0}")]
+    #[strum(serialize = "upgrade_error")]
+    UpgradeError(String),
+}
+
+impl From<Infallible> for HandshakeError {
+    fn from(never: Infallible) -> Self {
+        match never {}
+    }
 }

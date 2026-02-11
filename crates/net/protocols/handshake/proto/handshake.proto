@@ -13,7 +13,7 @@ message Syn {
 message Ack {
     PeerAddress peer = 1;
     uint64 network_id = 2;
-    bool full_node = 3;
+    bool storer = 3;
     bytes nonce = 4;
     string welcome_message = 99;
 };

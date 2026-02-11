@@ -1,16 +1,26 @@
-//! Error types for the headers protocol.
+//! Error types for pushsync protocol.
 
 use std::convert::Infallible;
 
 use strum::IntoStaticStr;
 
-/// Error during headers exchange.
+/// Pushsync protocol errors.
 #[derive(Debug, thiserror::Error, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
-pub enum HeadersError {
-    /// Connection closed before headers exchange completed.
+pub enum PushsyncError {
+    /// Connection closed before operation completed.
     #[error("connection closed")]
     ConnectionClosed,
+
+    /// Invalid chunk address length.
+    #[error("invalid chunk address length: expected 32, got {0}")]
+    #[strum(serialize = "invalid_address_length")]
+    InvalidAddressLength(usize),
+
+    /// Invalid chunk address encoding.
+    #[error("invalid chunk address: {0}")]
+    #[strum(serialize = "invalid_address")]
+    InvalidAddress(String),
 
     /// Protobuf encoding/decoding error.
     #[error("protobuf error: {0}")]
@@ -23,20 +33,8 @@ pub enum HeadersError {
     Io(#[from] std::io::Error),
 }
 
-impl From<Infallible> for HeadersError {
+impl From<Infallible> for PushsyncError {
     fn from(never: Infallible) -> Self {
         match never {}
     }
-}
-
-/// Error from a headered protocol upgrade.
-#[derive(Debug, thiserror::Error)]
-pub enum ProtocolError {
-    /// Headers exchange failed.
-    #[error("headers error: {0}")]
-    Headers(#[from] HeadersError),
-
-    /// Inner protocol error.
-    #[error("protocol error: {0}")]
-    Protocol(Box<dyn std::error::Error + Send + Sync>),
 }

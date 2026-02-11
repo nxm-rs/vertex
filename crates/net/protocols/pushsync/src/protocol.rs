@@ -11,20 +11,17 @@
 use asynchronous_codec::Framed;
 use futures::{SinkExt, TryStreamExt, future::BoxFuture};
 use nectar_primitives::ChunkAddress;
-use tracing::debug;
+use tracing::{Instrument, debug};
 use vertex_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound};
 
 use crate::{
     PROTOCOL_NAME,
-    codec::{Delivery, DeliveryCodec, PushsyncCodecError, Receipt, ReceiptCodec},
+    codec::{Delivery, DeliveryCodec, Receipt, ReceiptCodec},
+    error::PushsyncError,
 };
 
 /// Maximum size of a pushsync message (chunk + stamp + overhead).
 const MAX_MESSAGE_SIZE: usize = 5 * 1024 * 1024; // 5 MB
-
-// ============================================================================
-// Inbound (Storer) - Receives delivery, sends receipt
-// ============================================================================
 
 /// Pushsync inbound: receives a chunk delivery from remote.
 #[derive(Debug, Clone)]
@@ -32,32 +29,36 @@ pub struct PushsyncInboundInner;
 
 impl HeaderedInbound for PushsyncInboundInner {
     type Output = (Delivery, PushsyncResponder);
-    type Error = PushsyncCodecError;
+    type Error = PushsyncError;
 
     fn protocol_name(&self) -> &'static str {
         PROTOCOL_NAME
     }
 
     fn read(self, stream: HeaderedStream) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
-        Box::pin(async move {
-            let codec = DeliveryCodec::new(MAX_MESSAGE_SIZE);
-            let mut framed = Framed::new(stream.into_inner(), codec);
+        let span = tracing::info_span!("pushsync_receive");
+        Box::pin(
+            async move {
+                let codec = DeliveryCodec::new(MAX_MESSAGE_SIZE);
+                let mut framed = Framed::new(stream.into_inner(), codec);
 
-            debug!("Pushsync: Reading chunk delivery");
-            let delivery = framed.try_next().await?.ok_or_else(|| {
-                PushsyncCodecError::Io(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "connection closed",
-                ))
-            })?;
+                debug!("Pushsync: Reading chunk delivery");
+                let delivery = framed
+                    .try_next()
+                    .await?
+                    .ok_or(PushsyncError::ConnectionClosed)?;
 
-            // Return the delivery and a responder to send the receipt
-            let responder = PushsyncResponder {
-                framed: Framed::new(framed.into_inner(), ReceiptCodec::new(MAX_MESSAGE_SIZE)),
-            };
+                tracing::Span::current().record("chunk_address", tracing::field::display(&delivery.address));
 
-            Ok((delivery, responder))
-        })
+                // Return the delivery and a responder to send the receipt
+                let responder = PushsyncResponder {
+                    framed: Framed::new(framed.into_inner(), ReceiptCodec::new(MAX_MESSAGE_SIZE)),
+                };
+
+                Ok((delivery, responder))
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -68,7 +69,7 @@ pub struct PushsyncResponder {
 
 impl PushsyncResponder {
     /// Send a successful receipt.
-    pub async fn send_receipt(mut self, receipt: Receipt) -> Result<(), PushsyncCodecError> {
+    pub async fn send_receipt(mut self, receipt: Receipt) -> Result<(), PushsyncError> {
         debug!(address = %receipt.address, "Pushsync: Sending receipt");
         self.framed.send(receipt).await
     }
@@ -78,15 +79,11 @@ impl PushsyncResponder {
         mut self,
         address: ChunkAddress,
         error: impl Into<String>,
-    ) -> Result<(), PushsyncCodecError> {
+    ) -> Result<(), PushsyncError> {
         debug!(%address, "Pushsync: Sending error receipt");
         self.framed.send(Receipt::error(address, error)).await
     }
 }
-
-// ============================================================================
-// Outbound (Pusher) - Sends delivery, receives receipt
-// ============================================================================
 
 /// Pushsync outbound: pushes a chunk to remote for storage.
 #[derive(Debug, Clone)]
@@ -103,7 +100,7 @@ impl PushsyncOutboundInner {
 
 impl HeaderedOutbound for PushsyncOutboundInner {
     type Output = Receipt;
-    type Error = PushsyncCodecError;
+    type Error = PushsyncError;
 
     fn protocol_name(&self) -> &'static str {
         PROTOCOL_NAME
@@ -113,32 +110,31 @@ impl HeaderedOutbound for PushsyncOutboundInner {
         self,
         stream: HeaderedStream,
     ) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
-        Box::pin(async move {
-            // Send the delivery
-            let delivery_codec = DeliveryCodec::new(MAX_MESSAGE_SIZE);
-            let mut framed = Framed::new(stream.into_inner(), delivery_codec);
+        let chunk_address = self.delivery.address;
+        let span = tracing::info_span!("pushsync_send", %chunk_address);
+        Box::pin(
+            async move {
+                // Send the delivery
+                let delivery_codec = DeliveryCodec::new(MAX_MESSAGE_SIZE);
+                let mut framed = Framed::new(stream.into_inner(), delivery_codec);
 
-            debug!(address = %self.delivery.address, "Pushsync: Sending chunk delivery");
-            framed.send(self.delivery).await?;
+                debug!(address = %self.delivery.address, "Pushsync: Sending chunk delivery");
+                framed.send(self.delivery).await?;
 
-            // Switch to receipt codec and read response
-            let receipt_codec = ReceiptCodec::new(MAX_MESSAGE_SIZE);
-            let mut framed = Framed::new(framed.into_inner(), receipt_codec);
+                // Switch to receipt codec and read response
+                let receipt_codec = ReceiptCodec::new(MAX_MESSAGE_SIZE);
+                let mut framed = Framed::new(framed.into_inner(), receipt_codec);
 
-            debug!("Pushsync: Reading receipt");
-            framed.try_next().await?.ok_or_else(|| {
-                PushsyncCodecError::Io(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "connection closed",
-                ))
-            })
-        })
+                debug!("Pushsync: Reading receipt");
+                framed
+                    .try_next()
+                    .await?
+                    .ok_or(PushsyncError::ConnectionClosed)
+            }
+            .instrument(span),
+        )
     }
 }
-
-// ============================================================================
-// Type Aliases and Constructors
-// ============================================================================
 
 /// Inbound protocol type for handler.
 pub type PushsyncInboundProtocol = Inbound<PushsyncInboundInner>;
