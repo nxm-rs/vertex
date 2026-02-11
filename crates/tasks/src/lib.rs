@@ -5,20 +5,24 @@
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-use crate::metrics::{IncCounterOnDrop, TaskExecutorMetrics};
+mod macros;
+
+use crate::metrics::{DecGaugeOnDrop, IncCounterOnDrop, TaskExecutorMetrics};
 use dyn_clone::DynClone;
 use futures_util::{
     Future, FutureExt, TryFutureExt,
-    future::{BoxFuture, select},
+    future::{BoxFuture, Either, select},
 };
 
-/// A service that can be spawned as a background task.
+/// A service that can be spawned as a background task with graceful shutdown support.
 ///
 /// Implement this for services that run continuously (event loops, handlers, etc.)
-/// and need to be spawned onto a task executor.
+/// and need to be spawned onto a task executor with proper shutdown handling.
 pub trait SpawnableTask: Send + 'static {
     /// Consume self and return a future to run as a background task.
-    fn into_task(self) -> impl Future<Output = ()> + Send;
+    ///
+    /// The service should listen for the shutdown signal and exit gracefully when received.
+    fn into_task(self, shutdown: GracefulShutdown) -> impl Future<Output = ()> + Send;
 }
 use std::{
     any::Any,
@@ -386,17 +390,25 @@ impl TaskExecutor {
     {
         let on_shutdown = self.on_shutdown.clone();
 
-        // Choose the appropriate finished counter based on task kind
-        let finished_counter = match task_kind {
-            TaskKind::Default => self.metrics.finished_regular_tasks_total.clone(),
-            TaskKind::Blocking => self.metrics.finished_regular_blocking_tasks_total.clone(),
+        // Choose the appropriate counters/gauges based on task kind
+        let (finished_counter, running_gauge) = match task_kind {
+            TaskKind::Default => (
+                self.metrics.finished_regular_tasks_total(),
+                self.metrics.running_regular_tasks(),
+            ),
+            TaskKind::Blocking => (
+                self.metrics.finished_regular_blocking_tasks_total(),
+                self.metrics.running_blocking_tasks(),
+            ),
         };
 
-        // Wrap the original future to increment the finished tasks counter upon completion
+        // Increment running gauge
+        running_gauge.increment(1.0);
+
         let task = {
             async move {
-                // Create an instance of IncCounterOnDrop with the counter to increment
-                let _inc_counter_on_drop = IncCounterOnDrop::new(finished_counter);
+                let _dec_gauge = DecGaugeOnDrop::new(running_gauge);
+                let _inc_counter = IncCounterOnDrop::new(finished_counter);
                 let fut = pin!(fut);
                 let _ = select(on_shutdown, fut).await;
             }
@@ -454,24 +466,39 @@ impl TaskExecutor {
     {
         let panicked_tasks_tx = self.task_events_tx.clone();
         let on_shutdown = self.on_shutdown.clone();
+        let metrics = self.metrics.clone();
+
+        // Increment running gauge
+        let running_gauge = metrics.running_critical_tasks();
+        running_gauge.increment(1.0);
 
         // wrap the task in catch unwind
         let task = std::panic::AssertUnwindSafe(fut)
             .catch_unwind()
-            .map_err(move |error| {
-                let task_error = PanickedTaskError::new(name, error);
-                error!("{task_error}");
-                let _ = panicked_tasks_tx.send(TaskEvent::Panic(task_error));
+            .map_err({
+                move |error| {
+                    metrics.record_critical_panic();
+                    let task_error = PanickedTaskError::new(name, error);
+                    error!("{task_error}");
+                    let _ = panicked_tasks_tx.send(TaskEvent::Panic(task_error));
+                }
             });
 
-        // Clone only the specific counter that we need.
-        let finished_critical_tasks_total_metrics =
-            self.metrics.finished_critical_tasks_total.clone();
+        let finished_counter = self.metrics.finished_critical_tasks_total();
+
         let task = async move {
-            // Create an instance of IncCounterOnDrop with the counter to increment
-            let _inc_counter_on_drop = IncCounterOnDrop::new(finished_critical_tasks_total_metrics);
+            let _dec_gauge = DecGaugeOnDrop::new(running_gauge);
+            let _inc_counter = IncCounterOnDrop::new(finished_counter);
+            debug!(task = name, "critical task wrapper starting");
             let task = pin!(task);
-            let _ = select(on_shutdown, task).await;
+            match select(on_shutdown, task).await {
+                Either::Left(_) => {
+                    debug!(task = name, "critical task cancelled by shutdown signal");
+                }
+                Either::Right(_) => {
+                    debug!(task = name, "critical task completed normally");
+                }
+            }
         };
 
         self.spawn_on_rt(task, task_kind)
@@ -558,19 +585,29 @@ impl TaskExecutor {
     {
         debug!(task = name, "spawning critical task with graceful shutdown");
         let panicked_tasks_tx = self.task_events_tx.clone();
+        let metrics = self.metrics.clone();
         let on_shutdown = GracefulShutdown::new(
             self.on_shutdown.clone(),
             GracefulShutdownGuard::new(Arc::clone(&self.graceful_tasks)),
         );
+
+        // Update graceful pending gauge
+        let count = self.graceful_tasks.load(Ordering::Relaxed);
+        metrics.set_graceful_pending(count as f64);
+
         let fut = f(on_shutdown);
 
         // wrap the task in catch unwind
         let task = std::panic::AssertUnwindSafe(fut)
             .catch_unwind()
-            .map_err(move |error| {
-                let task_error = PanickedTaskError::new(name, error);
-                error!("{task_error}");
-                let _ = panicked_tasks_tx.send(TaskEvent::Panic(task_error));
+            .map_err({
+                let metrics = metrics.clone();
+                move |error| {
+                    metrics.record_critical_panic();
+                    let task_error = PanickedTaskError::new(name, error);
+                    error!("{task_error}");
+                    let _ = panicked_tasks_tx.send(TaskEvent::Panic(task_error));
+                }
             })
             .map(drop);
 
@@ -609,6 +646,11 @@ impl TaskExecutor {
             self.on_shutdown.clone(),
             GracefulShutdownGuard::new(Arc::clone(&self.graceful_tasks)),
         );
+
+        // Update graceful pending gauge
+        let count = self.graceful_tasks.load(Ordering::Relaxed);
+        self.metrics.set_graceful_pending(count as f64);
+
         let fut = f(on_shutdown);
 
         self.handle.spawn(fut)

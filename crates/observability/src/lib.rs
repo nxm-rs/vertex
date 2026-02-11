@@ -7,7 +7,6 @@ pub mod guards;
 mod label_value;
 pub mod labels;
 mod layers;
-mod macros;
 pub mod metrics;
 mod tracer;
 
@@ -21,6 +20,9 @@ pub use metrics::{
     install_prometheus_recorder_with_prefix,
 };
 pub use tracer::VertexTracer;
+
+// Re-export lazy metric macros from vertex-tasks.
+pub use vertex_tasks::{lazy_counter, lazy_gauge, lazy_histogram};
 
 /// Re-export the metrics crate.
 pub use ::metrics as metrics_crate;
