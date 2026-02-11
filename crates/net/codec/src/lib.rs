@@ -7,23 +7,14 @@ pub use utils::{
 ///
 /// Encodes a message to proto format and decodes it back, asserting equality.
 /// The message type must implement `ProtoMessage` and `Clone + PartialEq + Debug`.
-///
-/// # Example
-///
-/// ```ignore
-/// use vertex_net_codec::assert_proto_roundtrip;
-///
-/// #[test]
-/// fn test_my_message() {
-///     let msg = MyMessage::new(42);
-///     assert_proto_roundtrip!(msg);
-/// }
-/// ```
 #[macro_export]
 macro_rules! assert_proto_roundtrip {
     ($msg:expr) => {{
         let original = $msg;
-        let proto = original.clone().into_proto();
+        let proto = original
+            .clone()
+            .into_proto()
+            .expect("proto encoding should succeed");
         let decoded =
             <_ as $crate::ProtoMessage>::from_proto(proto).expect("proto decoding should succeed");
         assert_eq!(
@@ -42,32 +33,18 @@ use bytes::BytesMut;
 /// This trait captures the relationship between a domain type and its protobuf
 /// wire format, enabling codec types to use associated types instead of
 /// redundant type parameters.
-///
-/// # Example
-///
-/// ```ignore
-/// impl ProtoMessage for Ping {
-///     type Proto = proto::Ping;
-///     type DecodeError = PingpongCodecError;
-///
-///     fn into_proto(self) -> Self::Proto {
-///         proto::Ping { greeting: self.greeting }
-///     }
-///
-///     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
-///         Ok(Self { greeting: proto.greeting })
-///     }
-/// }
-/// ```
 pub trait ProtoMessage: Sized {
     /// The protobuf message type for wire serialization.
     type Proto: quick_protobuf::MessageWrite + for<'a> quick_protobuf::MessageRead<'a>;
+
+    /// The error type when encoding fails. Use `std::convert::Infallible` for infallible encoding.
+    type EncodeError;
 
     /// The error type when decoding fails.
     type DecodeError;
 
     /// Convert to protobuf wire format for encoding.
-    fn into_proto(self) -> Self::Proto;
+    fn into_proto(self) -> Result<Self::Proto, Self::EncodeError>;
 
     /// Convert from protobuf wire format (decoding).
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError>;
@@ -75,44 +52,20 @@ pub trait ProtoMessage: Sized {
 
 /// A message type requiring runtime context for encoding and decoding.
 ///
-/// This is used for protocols where encoding/decoding requires runtime information
-/// that isn't available in the domain type itself (e.g., `network_id`).
-///
-/// Context is available on both encode and decode:
-/// - **Encode**: Context provides values needed in the wire format but not stored in domain type
-/// - **Decode**: Context provides expected values for validation
-///
-/// # Example
-///
-/// ```ignore
-/// impl ProtoMessageWithContext<u64> for Ack {
-///     type Proto = proto::Ack;
-///     type DecodeError = CodecError;
-///
-///     fn into_proto_with_context(self, network_id: &u64) -> Self::Proto {
-///         proto::Ack {
-///             network_id: *network_id,
-///             // ... rest of encoding
-///         }
-///     }
-///
-///     fn from_proto_with_context(proto: Self::Proto, network_id: &u64) -> Result<Self, Self::DecodeError> {
-///         if proto.network_id != *network_id {
-///             return Err(CodecError::NetworkIDMismatch);
-///         }
-///         // ... rest of decoding
-///     }
-/// }
-/// ```
+/// Used for protocols where encoding/decoding requires runtime information
+/// not available in the domain type itself (e.g., `network_id`).
 pub trait ProtoMessageWithContext<Ctx>: Sized {
     /// The protobuf message type for wire serialization.
     type Proto: quick_protobuf::MessageWrite + for<'a> quick_protobuf::MessageRead<'a>;
+
+    /// The error type when encoding fails. Use `std::convert::Infallible` for infallible encoding.
+    type EncodeError;
 
     /// The error type when decoding fails.
     type DecodeError;
 
     /// Convert to protobuf wire format for encoding with the given context.
-    fn into_proto_with_context(self, ctx: &Ctx) -> Self::Proto;
+    fn into_proto_with_context(self, ctx: &Ctx) -> Result<Self::Proto, Self::EncodeError>;
 
     /// Convert from protobuf wire format with the given context.
     fn from_proto_with_context(proto: Self::Proto, ctx: &Ctx) -> Result<Self, Self::DecodeError>;
@@ -152,6 +105,7 @@ impl<M: ProtoMessage, E> Codec<M, E> {
 impl<M, E> asynchronous_codec::Encoder for Codec<M, E>
 where
     M: ProtoMessage,
+    M::EncodeError: Into<E>,
     quick_protobuf_codec::Error: Into<E>,
     E: From<std::io::Error>,
 {
@@ -159,9 +113,8 @@ where
     type Error = E;
 
     fn encode(&mut self, item: Self::Item<'_>, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        self.inner
-            .encode(item.into_proto(), dst)
-            .map_err(Into::into)
+        let proto = item.into_proto().map_err(Into::into)?;
+        self.inner.encode(proto, dst).map_err(Into::into)
     }
 }
 
@@ -235,6 +188,7 @@ where
 impl<M, E, Ctx> asynchronous_codec::Encoder for ValidatedCodec<M, E, Ctx>
 where
     M: ProtoMessageWithContext<Ctx>,
+    M::EncodeError: Into<E>,
     quick_protobuf_codec::Error: Into<E>,
     E: From<std::io::Error>,
 {
@@ -242,9 +196,8 @@ where
     type Error = E;
 
     fn encode(&mut self, item: Self::Item<'_>, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        self.inner
-            .encode(item.into_proto_with_context(&self.context), dst)
-            .map_err(Into::into)
+        let proto = item.into_proto_with_context(&self.context).map_err(Into::into)?;
+        self.inner.encode(proto, dst).map_err(Into::into)
     }
 }
 
