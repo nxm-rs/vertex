@@ -160,8 +160,6 @@ impl TaskSpawner for TokioTaskExecutor {
 #[must_use = "TaskManager must be polled to monitor critical tasks"]
 pub struct TaskManager {
     /// Handle to the tokio runtime this task manager is associated with.
-    ///
-    /// See [`Handle`] docs.
     handle: Handle,
     /// Sender half for sending task events to this type
     task_events_tx: UnboundedSender<TaskEvent>,
@@ -176,8 +174,6 @@ pub struct TaskManager {
     /// How many [`GracefulShutdown`] tasks are currently active
     graceful_tasks: Arc<AtomicUsize>,
 }
-
-// === impl TaskManager ===
 
 impl TaskManager {
     /// Returns a __new__ [`TaskManager`] over the currently running Runtime.
@@ -251,7 +247,7 @@ impl TaskManager {
                 debug!("graceful shutdown timed out");
                 return false;
             }
-            std::hint::spin_loop();
+            std::thread::yield_now();
         }
 
         debug!("gracefully shut down");
@@ -323,8 +319,6 @@ enum TaskEvent {
 #[derive(Debug, Clone)]
 pub struct TaskExecutor {
     /// Handle to the tokio runtime this task manager is associated with.
-    ///
-    /// See [`Handle`] docs.
     handle: Handle,
     /// Receiver of the shutdown signal.
     on_shutdown: Shutdown,
@@ -335,8 +329,6 @@ pub struct TaskExecutor {
     /// How many [`GracefulShutdown`] tasks are currently active
     graceful_tasks: Arc<AtomicUsize>,
 }
-
-// === impl TaskExecutor ===
 
 impl TaskExecutor {
     /// Attempts to get the current `TaskExecutor` if one has been initialized.
@@ -356,7 +348,7 @@ impl TaskExecutor {
     /// Panics if no global executor has been initialized. Use [`try_current`](Self::try_current)
     /// for a non-panicking version.
     pub fn current() -> Self {
-        Self::try_current().unwrap()
+        Self::try_current().expect("TaskExecutor::current() called before TaskManager was created")
     }
 
     /// Returns the [Handle] to the tokio runtime.
@@ -466,7 +458,7 @@ impl TaskExecutor {
     {
         let panicked_tasks_tx = self.task_events_tx.clone();
         let on_shutdown = self.on_shutdown.clone();
-        let metrics = self.metrics.clone();
+        let metrics = self.metrics;
 
         // Increment running gauge
         let running_gauge = metrics.running_critical_tasks();
@@ -480,7 +472,9 @@ impl TaskExecutor {
                     metrics.record_critical_panic();
                     let task_error = PanickedTaskError::new(name, error);
                     error!("{task_error}");
-                    let _ = panicked_tasks_tx.send(TaskEvent::Panic(task_error));
+                    if panicked_tasks_tx.send(TaskEvent::Panic(task_error)).is_err() {
+                        debug!(task = name, "failed to notify TaskManager of panic (already shut down)");
+                    }
                 }
             });
 
@@ -548,14 +542,16 @@ impl TaskExecutor {
             .map_err(move |error| {
                 let task_error = PanickedTaskError::new(name, error);
                 error!("{task_error}");
-                let _ = panicked_tasks_tx.send(TaskEvent::Panic(task_error));
+                if panicked_tasks_tx.send(TaskEvent::Panic(task_error)).is_err() {
+                    debug!(task = name, "failed to notify TaskManager of panic (already shut down)");
+                }
             })
             .map(drop);
 
         self.handle.spawn(task)
     }
 
-    /// This spawns a critical task onto the runtime.
+    /// Spawns a critical task that participates in graceful shutdown.
     ///
     /// If this task panics, the [`TaskManager`] is notified.
     /// The [`TaskManager`] will wait until the given future has completed before shutting down.
@@ -585,7 +581,7 @@ impl TaskExecutor {
     {
         debug!(task = name, "spawning critical task with graceful shutdown");
         let panicked_tasks_tx = self.task_events_tx.clone();
-        let metrics = self.metrics.clone();
+        let metrics = self.metrics;
         let on_shutdown = GracefulShutdown::new(
             self.on_shutdown.clone(),
             GracefulShutdownGuard::new(Arc::clone(&self.graceful_tasks)),
@@ -601,12 +597,13 @@ impl TaskExecutor {
         let task = std::panic::AssertUnwindSafe(fut)
             .catch_unwind()
             .map_err({
-                let metrics = metrics.clone();
                 move |error| {
                     metrics.record_critical_panic();
                     let task_error = PanickedTaskError::new(name, error);
                     error!("{task_error}");
-                    let _ = panicked_tasks_tx.send(TaskEvent::Panic(task_error));
+                    if panicked_tasks_tx.send(TaskEvent::Panic(task_error)).is_err() {
+                        debug!(task = name, "failed to notify TaskManager of panic (already shut down)");
+                    }
                 }
             })
             .map(drop);
@@ -614,7 +611,7 @@ impl TaskExecutor {
         self.handle.spawn(task)
     }
 
-    /// This spawns a regular task onto the runtime.
+    /// Spawns a regular task that participates in graceful shutdown.
     ///
     /// The [`TaskManager`] will wait until the given future has completed before shutting down.
     ///

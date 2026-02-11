@@ -102,7 +102,7 @@ impl Future for Shutdown {
 pub struct Signal(oneshot::Sender<()>);
 
 impl Signal {
-    /// Fire the signal manually.
+    /// Fire the signal manually. Best-effort: receiver may already be dropped during shutdown.
     pub fn fire(self) {
         let _ = self.0.send(());
     }
