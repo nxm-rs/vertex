@@ -61,7 +61,13 @@ impl MetricsArgs {
             return None;
         }
 
-        let ip: IpAddr = self.addr.parse().unwrap_or(IpAddr::from([127, 0, 0, 1]));
+        let ip: IpAddr = self.addr.parse().unwrap_or_else(|_| {
+            tracing::warn!(
+                addr = %self.addr,
+                "Invalid metrics address, falling back to localhost"
+            );
+            IpAddr::from([127, 0, 0, 1])
+        });
         let addr = SocketAddr::new(ip, self.port);
 
         Some(MetricsServerConfig::new(

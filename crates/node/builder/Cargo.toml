@@ -20,6 +20,7 @@ vertex-tasks.workspace = true
 
 async-trait.workspace = true
 eyre.workspace = true
+tonic-reflection.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["sync", "signal"] }
 

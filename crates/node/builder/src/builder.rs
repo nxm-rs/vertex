@@ -8,7 +8,7 @@ use vertex_node_core::dirs::DataDirs;
 use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
 use vertex_tasks::TaskExecutor;
 
-use crate::NodeHandle;
+use crate::{InfrastructureError, LaunchError, NodeHandle};
 
 /// Context for launching a node with executor, directories, and API config.
 #[derive(Clone)]
@@ -47,11 +47,13 @@ impl<A: Send + Sync> InfrastructureContext for LaunchContext<A> {
 impl<A: NodeRpcConfig> LaunchContext<A> {
     /// Get the gRPC socket address from configuration.
     pub fn grpc_addr(&self) -> SocketAddr {
-        let ip: IpAddr = self
-            .api
-            .grpc_addr()
-            .parse()
-            .unwrap_or([127, 0, 0, 1].into());
+        let ip: IpAddr = self.api.grpc_addr().parse().unwrap_or_else(|_| {
+            tracing::warn!(
+                addr = %self.api.grpc_addr(),
+                "Invalid gRPC address, falling back to localhost"
+            );
+            [127, 0, 0, 1].into()
+        });
         SocketAddr::new(ip, self.api.grpc_port())
     }
 }
@@ -134,7 +136,7 @@ where
     }
 
     /// Launch the node with gRPC server for protocol services.
-    pub async fn launch(self) -> Result<NodeHandle<P::Components>, P::BuildError>
+    pub async fn launch(self) -> Result<NodeHandle<P::Components>, LaunchError<P::BuildError>>
     where
         P::Components: RegistersGrpcServices,
     {
@@ -147,7 +149,9 @@ where
         let grpc_addr = self.ctx.grpc_addr();
 
         // Launch the protocol (builds components and spawns services)
-        let components = P::launch(self.config, &self.ctx).await?;
+        let components = P::launch(self.config, &self.ctx)
+            .await
+            .map_err(LaunchError::Protocol)?;
 
         // Create gRPC registry and let components register their services
         let mut registry = GrpcRegistry::new();
@@ -156,7 +160,7 @@ where
         // Convert registry to server and spawn as critical task
         let grpc_handle = registry
             .into_server(grpc_addr)
-            .expect("failed to build gRPC server");
+            .map_err(InfrastructureError::GrpcReflection)?;
 
         let shutdown = self.ctx.executor.on_shutdown_signal().clone();
         self.ctx.executor.spawn_critical("grpc_server", async move {
@@ -179,7 +183,9 @@ where
     /// Launch the node without gRPC server.
     ///
     /// Use this when you don't need the gRPC API.
-    pub async fn launch_without_grpc(self) -> Result<NodeHandle<P::Components>, P::BuildError> {
+    pub async fn launch_without_grpc(
+        self,
+    ) -> Result<NodeHandle<P::Components>, LaunchError<P::BuildError>> {
         use tracing::info;
 
         // Infrastructure configuration
@@ -187,7 +193,9 @@ where
         info!("gRPC: disabled");
 
         // Launch the protocol (builds components and spawns services)
-        let components = P::launch(self.config, &self.ctx).await?;
+        let components = P::launch(self.config, &self.ctx)
+            .await
+            .map_err(LaunchError::Protocol)?;
 
         Ok(NodeHandle::new(
             components,

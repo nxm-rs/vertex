@@ -1,26 +1,4 @@
-//! Protocol trait for node infrastructure integration.
-//!
-//! This module defines the [`NodeProtocol`] trait which provides the lifecycle
-//! interface between a network protocol (like Swarm) and the node infrastructure.
-//!
-//! # Lifecycle
-//!
-//! A single [`NodeProtocol::launch()`] method handles both building and running:
-//! 1. Create components from config + infrastructure context
-//! 2. Spawn services as background tasks
-//! 3. Return components for continued use
-//!
-//! # Example
-//!
-//! ```ignore
-//! use vertex_node_api::{NodeProtocol, InfrastructureContext};
-//!
-//! // Launch builds and spawns in one step
-//! let components = SwarmProtocol::<MyConfig>::launch(config, &ctx).await?;
-//!
-//! // Components remain available for the lifetime of the node
-//! println!("Overlay: {}", components.identity.overlay_address());
-//! ```
+//! Protocol lifecycle trait for node infrastructure integration.
 
 use async_trait::async_trait;
 
