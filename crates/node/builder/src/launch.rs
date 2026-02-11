@@ -1,7 +1,9 @@
 //! Type-safe launch context with state accumulation.
 
+use std::path::Path;
 use std::sync::Arc;
 
+use vertex_node_api::InfrastructureContext;
 use vertex_node_core::dirs::DataDirs;
 use vertex_observability::{
     install_prometheus_recorder_with_prefix, MetricsServer, MetricsServerConfig, PrometheusRecorder,
@@ -9,15 +11,6 @@ use vertex_observability::{
 use vertex_tasks::TaskExecutor;
 
 use crate::containers::WithMetrics;
-
-/// Infrastructure context providing access to shared node infrastructure.
-pub trait InfrastructureContext {
-    /// Get the task executor for spawning background tasks.
-    fn executor(&self) -> &TaskExecutor;
-
-    /// Get the data directories.
-    fn dirs(&self) -> &DataDirs;
-}
 
 /// Pairs two values, preserving access to both during launch sequence.
 #[derive(Clone, Copy, Debug)]
@@ -138,13 +131,13 @@ impl LaunchContextWith<WithMetrics> {
     }
 }
 
-impl<T> InfrastructureContext for LaunchContextWith<T> {
+impl<T: Send + Sync> InfrastructureContext for LaunchContextWith<T> {
     fn executor(&self) -> &TaskExecutor {
         &self.executor
     }
 
-    fn dirs(&self) -> &DataDirs {
-        &self.dirs
+    fn data_dir(&self) -> &Path {
+        &self.dirs.network
     }
 }
 

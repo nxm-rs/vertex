@@ -10,12 +10,12 @@
 //! protocol (like Swarm) and the node infrastructure. A single `launch()` method
 //! handles building components and spawning services.
 //!
-//! # Node Context
+//! # Infrastructure Context
 //!
-//! The [`NodeContext`] provides infrastructure to protocols during launch:
+//! The [`InfrastructureContext`] trait provides protocols with access to shared
+//! node infrastructure during launch:
 //! - Task executor for spawning background tasks
 //! - Data directory for persistent storage
-//! - Shutdown signal for graceful termination
 //!
 //! # Configuration Traits
 //!
@@ -27,13 +27,10 @@
 //! # Example
 //!
 //! ```ignore
-//! use vertex_node_api::{NodeProtocol, NodeContext};
-//!
-//! // Node builder creates context with infrastructure
-//! let ctx = NodeContext::new(executor, data_dir);
+//! use vertex_node_api::NodeProtocol;
 //!
 //! // Launch builds and spawns in one step
-//! let components = SwarmProtocol::<MyConfig>::launch(config, &ctx, &executor).await?;
+//! let components = SwarmProtocol::<MyConfig>::launch(config, &ctx).await?;
 //!
 //! // Components remain available for queries and RPC
 //! ```

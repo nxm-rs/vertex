@@ -6,25 +6,25 @@
 //! # Lifecycle
 //!
 //! A single [`NodeProtocol::launch()`] method handles both building and running:
-//! 1. Create components from config + infrastructure
+//! 1. Create components from config + infrastructure context
 //! 2. Spawn services as background tasks
 //! 3. Return components for continued use
 //!
 //! # Example
 //!
 //! ```ignore
-//! use vertex_node_api::{NodeProtocol, NodeContext};
+//! use vertex_node_api::{NodeProtocol, InfrastructureContext};
 //!
 //! // Launch builds and spawns in one step
-//! let components = SwarmProtocol::<MyConfig>::launch(config, &ctx, &executor).await?;
+//! let components = SwarmProtocol::<MyConfig>::launch(config, &ctx).await?;
 //!
 //! // Components remain available for the lifetime of the node
 //! println!("Overlay: {}", components.identity.overlay_address());
 //! ```
 
-use crate::NodeContext;
 use async_trait::async_trait;
-use vertex_tasks::TaskExecutor;
+
+use crate::InfrastructureContext;
 
 /// A build configuration that knows which protocol it builds.
 ///
@@ -68,8 +68,7 @@ pub trait NodeBuildsProtocol: Send + Sync + 'static {
 /// # Example
 ///
 /// ```ignore
-/// use vertex_node_api::{NodeProtocol, NodeContext};
-/// use vertex_tasks::TaskExecutor;
+/// use vertex_node_api::{NodeProtocol, InfrastructureContext};
 ///
 /// struct MyProtocol;
 ///
@@ -81,15 +80,14 @@ pub trait NodeBuildsProtocol: Send + Sync + 'static {
 ///
 ///     async fn launch(
 ///         config: Self::Config,
-///         ctx: &NodeContext,
-///         executor: &TaskExecutor,
+///         ctx: &dyn InfrastructureContext,
 ///     ) -> Result<Self::Components, Self::BuildError> {
-///         // Build components
-///         let components = build_components(&config, ctx)?;
+///         // Build components using ctx.data_dir() for persistence
+///         let components = build_components(&config, ctx.data_dir())?;
 ///
 ///         // Spawn services as background tasks
-///         let services = build_services(&config, ctx)?;
-///         executor.spawn_critical("my_service", services.run());
+///         let services = build_services(&config)?;
+///         ctx.executor().spawn_critical("my_service", services.run());
 ///
 ///         Ok(components)
 ///     }
@@ -111,14 +109,13 @@ pub trait NodeProtocol: Sized + Send + Sync + 'static {
     /// Build and launch the protocol.
     ///
     /// This method:
-    /// 1. Builds components from the configuration
-    /// 2. Spawns background services via the executor
+    /// 1. Builds components from the configuration and context
+    /// 2. Spawns background services via the context's executor
     /// 3. Returns components for continued use (RPC, metrics, etc.)
     ///
     /// Services are spawned as critical tasks - if they fail, the node shuts down.
     async fn launch(
         config: Self::Config,
-        ctx: &NodeContext,
-        executor: &TaskExecutor,
+        ctx: &dyn InfrastructureContext,
     ) -> Result<Self::Components, Self::BuildError>;
 }
