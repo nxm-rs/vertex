@@ -10,7 +10,7 @@ use crate::direction::ConnectionDirection;
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum ConnectionState<Id> {
-    /// Actively dialing (TCP/QUIC connection in progress).
+    /// Actively dialing (transport connection in progress).
     Dialing {
         peer_id: PeerId,
         /// Peer ID if known (None for bootnodes).
@@ -19,7 +19,7 @@ pub enum ConnectionState<Id> {
         addrs: Vec<Multiaddr>,
         started_at: Instant,
     },
-    /// TCP/QUIC connected, handshake in progress.
+    /// Transport connected, handshake in progress.
     Handshaking {
         peer_id: PeerId,
         connection_id: ConnectionId,

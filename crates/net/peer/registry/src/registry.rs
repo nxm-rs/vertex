@@ -1,25 +1,83 @@
 //! Generic peer connection registry.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::time::Instant;
 
 use libp2p::{Multiaddr, PeerId, swarm::ConnectionId};
-use parking_lot::RwLock;
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::direction::ConnectionDirection;
 use crate::result::ActivateResult;
 use crate::state::ConnectionState;
+
+/// Entry in the pending time index to be removed.
+struct PendingEntry<Id> {
+    id: Id,
+    started_at: Instant,
+}
+
+/// What existing state to replace during handshake completion.
+enum Replacement<Id> {
+    /// ID already has active connection - replace it
+    ById {
+        old_peer_id: PeerId,
+        old_conn_id: ConnectionId,
+        sentinel: Option<PendingEntry<Id>>,
+    },
+    /// PeerId active with different ID - replace it
+    ByPeerId {
+        existing_id: Id,
+        old_conn_id: ConnectionId,
+    },
+    /// Normal case - just clean up sentinel
+    None {
+        sentinel: Option<PendingEntry<Id>>,
+    },
+}
+
+/// Inner maps protected by a single lock.
+struct Maps<Id> {
+    by_id: HashMap<Id, ConnectionState<Id>>,
+    peer_to_id: HashMap<PeerId, Id>,
+    conn_to_id: HashMap<ConnectionId, Id>,
+    /// Pending connections indexed by start time for O(log n + k) stale detection.
+    pending_by_time: BTreeMap<Instant, HashSet<Id>>,
+}
+
+impl<Id> Default for Maps<Id> {
+    fn default() -> Self {
+        Self {
+            by_id: HashMap::new(),
+            peer_to_id: HashMap::new(),
+            conn_to_id: HashMap::new(),
+            pending_by_time: BTreeMap::new(),
+        }
+    }
+}
+
+impl<Id: Clone + Eq + Hash> Maps<Id> {
+    fn add_pending(&mut self, started_at: Instant, id: Id) {
+        self.pending_by_time.entry(started_at).or_default().insert(id);
+    }
+
+    fn remove_pending(&mut self, started_at: Instant, id: &Id) {
+        if let Some(ids) = self.pending_by_time.get_mut(&started_at) {
+            ids.remove(id);
+            if ids.is_empty() {
+                self.pending_by_time.remove(&started_at);
+            }
+        }
+    }
+}
 
 /// Generic peer connection registry.
 ///
 /// Tracks connection lifecycle without protocol-specific knowledge.
 /// `Id` is the peer identifier type (e.g., OverlayAddress for Swarm).
 pub struct PeerRegistry<Id> {
-    by_id: RwLock<HashMap<Id, ConnectionState<Id>>>,
-    peer_to_id: RwLock<HashMap<PeerId, Id>>,
-    conn_to_id: RwLock<HashMap<ConnectionId, Id>>,
+    maps: RwLock<Maps<Id>>,
 }
 
 impl<Id> Default for PeerRegistry<Id> {
@@ -31,20 +89,52 @@ impl<Id> Default for PeerRegistry<Id> {
 impl<Id> PeerRegistry<Id> {
     pub fn new() -> Self {
         Self {
-            by_id: RwLock::new(HashMap::new()),
-            peer_to_id: RwLock::new(HashMap::new()),
-            conn_to_id: RwLock::new(HashMap::new()),
+            maps: RwLock::new(Maps::default()),
         }
+    }
+
+    fn read(&self) -> RwLockReadGuard<'_, Maps<Id>> {
+        self.maps.read()
+    }
+
+    fn write(&self) -> RwLockWriteGuard<'_, Maps<Id>> {
+        self.maps.write()
     }
 }
 
 impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
+    fn start_dial_inner(
+        peer_id: PeerId,
+        registry_key: Id,
+        state_id: Option<Id>,
+        addrs: Vec<Multiaddr>,
+        maps: &mut Maps<Id>,
+    ) -> Option<Vec<Multiaddr>> {
+        if maps.by_id.contains_key(&registry_key) || maps.peer_to_id.contains_key(&peer_id) {
+            return None;
+        }
+
+        let started_at = Instant::now();
+        let state = ConnectionState::Dialing {
+            peer_id,
+            id: state_id,
+            addrs: addrs.clone(),
+            started_at,
+        };
+
+        maps.by_id.insert(registry_key.clone(), state);
+        maps.peer_to_id.insert(peer_id, registry_key.clone());
+        maps.add_pending(started_at, registry_key);
+
+        Some(addrs)
+    }
+
     pub fn get(&self, id: &Id) -> Option<ConnectionState<Id>> {
-        self.by_id.read().get(id).cloned()
+        self.read().by_id.get(id).cloned()
     }
 
     pub fn active_connection_id(&self, id: &Id) -> Option<ConnectionId> {
-        self.by_id.read().get(id).and_then(|s| {
+        self.read().by_id.get(id).and_then(|s| {
             if let ConnectionState::Active { connection_id, .. } = s {
                 Some(*connection_id)
             } else {
@@ -54,18 +144,18 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
     }
 
     pub fn resolve_id(&self, peer_id: &PeerId) -> Option<Id> {
-        self.peer_to_id.read().get(peer_id).cloned()
+        self.read().peer_to_id.get(peer_id).cloned()
     }
 
     pub fn contains_peer(&self, peer_id: &PeerId) -> bool {
-        self.peer_to_id.read().contains_key(peer_id)
+        self.read().peer_to_id.contains_key(peer_id)
     }
 
     pub fn resolve_peer_id(&self, id: &Id) -> Option<PeerId> {
-        self.by_id.read().get(id).map(|s| s.peer_id())
+        self.read().by_id.get(id).map(|s| s.peer_id())
     }
 
-    /// Start dialing a peer with known ID. Returns all addresses for DialOpts.
+    /// Start dialing a peer with known ID. Returns addresses for DialOpts.
     pub fn start_dial(
         &self,
         peer_id: PeerId,
@@ -76,24 +166,8 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
             return None;
         }
 
-        let mut by_id = self.by_id.write();
-        let mut peer_to_id = self.peer_to_id.write();
-
-        if by_id.contains_key(&id) || peer_to_id.contains_key(&peer_id) {
-            return None;
-        }
-
-        let state = ConnectionState::Dialing {
-            peer_id,
-            id: Some(id.clone()),
-            addrs: addrs.clone(),
-            started_at: Instant::now(),
-        };
-
-        by_id.insert(id.clone(), state);
-        peer_to_id.insert(peer_id, id);
-
-        Some(addrs)
+        let mut maps = self.write();
+        Self::start_dial_inner(peer_id, id.clone(), Some(id), addrs, &mut maps)
     }
 
     /// Start dialing without known ID (for bootnodes/commands).
@@ -111,42 +185,32 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
             return None;
         }
 
-        let mut peer_to_id = self.peer_to_id.write();
-        if peer_to_id.contains_key(&peer_id) {
+        let mut maps = self.write();
+
+        // Early check to avoid computing sentinel if peer already being dialed
+        if maps.peer_to_id.contains_key(&peer_id) {
             return None;
         }
 
         let sentinel = sentinel_fn(&peer_id);
-
-        let state = ConnectionState::Dialing {
-            peer_id,
-            id: None,
-            addrs: addrs.clone(),
-            started_at: Instant::now(),
-        };
-
-        self.by_id.write().insert(sentinel.clone(), state);
-        peer_to_id.insert(peer_id, sentinel);
-
-        Some(addrs)
+        Self::start_dial_inner(peer_id, sentinel, None, addrs, &mut maps)
     }
 
     /// Complete a dial attempt (success or failure). Returns state for diagnostics.
     pub fn complete_dial(&self, peer_id: &PeerId) -> Option<ConnectionState<Id>> {
-        let id = self.peer_to_id.write().remove(peer_id)?;
-        self.by_id.write().remove(&id)
+        self.disconnected(peer_id)
     }
 
-    /// Transition from Dialing to Handshaking after TCP/QUIC connection established.
+    /// Transition from Dialing to Handshaking after connection established.
     pub fn connection_established(
         &self,
         peer_id: PeerId,
         connection_id: ConnectionId,
     ) -> Option<ConnectionState<Id>> {
-        let id = self.peer_to_id.read().get(&peer_id)?.clone();
+        let mut maps = self.write();
 
-        let mut by_id = self.by_id.write();
-        let state = by_id.remove(&id)?;
+        let id = maps.peer_to_id.get(&peer_id)?.clone();
+        let state = maps.by_id.remove(&id)?;
 
         let ConnectionState::Dialing {
             id: dial_id,
@@ -154,7 +218,7 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
             ..
         } = state
         else {
-            by_id.insert(id, state);
+            maps.by_id.insert(id, state);
             return None;
         };
 
@@ -166,16 +230,13 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
             started_at,
         };
 
-        by_id.insert(id.clone(), new_state.clone());
-        drop(by_id);
-
-        self.conn_to_id.write().insert(connection_id, id);
+        maps.by_id.insert(id.clone(), new_state.clone());
+        maps.conn_to_id.insert(connection_id, id);
 
         Some(new_state)
     }
 
     /// Handle inbound connection (goes directly to Handshaking).
-    /// Uses a sentinel ID created by the provided function.
     pub fn inbound_connection<F>(
         &self,
         peer_id: PeerId,
@@ -186,119 +247,77 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
         F: FnOnce(&PeerId) -> Id,
     {
         let sentinel = sentinel_fn(&peer_id);
+        let started_at = Instant::now();
 
         let state = ConnectionState::Handshaking {
             peer_id,
             connection_id,
             id: None,
             direction: ConnectionDirection::Inbound,
-            started_at: Instant::now(),
+            started_at,
         };
 
-        self.by_id.write().insert(sentinel.clone(), state.clone());
-        self.peer_to_id.write().insert(peer_id, sentinel.clone());
-        self.conn_to_id.write().insert(connection_id, sentinel);
+        let mut maps = self.write();
+        maps.by_id.insert(sentinel.clone(), state.clone());
+        maps.peer_to_id.insert(peer_id, sentinel.clone());
+        maps.conn_to_id.insert(connection_id, sentinel.clone());
+        maps.add_pending(started_at, sentinel);
 
         state
     }
 
     /// Complete handshake and transition to Active state.
-    /// Returns Replaced if there was an existing connection that should be closed.
     pub fn handshake_completed(
         &self,
         peer_id: PeerId,
         connection_id: ConnectionId,
         id: Id,
     ) -> ActivateResult<Id> {
-        let mut by_id = self.by_id.write();
-        let mut peer_to_id = self.peer_to_id.write();
-        let mut conn_to_id = self.conn_to_id.write();
+        let mut maps = self.write();
 
-        // Check if this ID already has an ACTIVE connection
-        if let Some(ConnectionState::Active {
-            peer_id: active_peer_id,
-            connection_id: active_conn_id,
-            ..
-        }) = by_id.get(&id)
-        {
-            let old_peer_id = *active_peer_id;
-            let old_conn_id = *active_conn_id;
+        let replacement = Self::find_replacement(&maps, &id, &peer_id);
 
-            // Remove old connection mappings
-            peer_to_id.remove(&old_peer_id);
-            conn_to_id.remove(&old_conn_id);
-
-            // Clean up the sentinel entry from handshaking if present
-            if let Some(sentinel) = peer_to_id.get(&peer_id).filter(|s| *s != &id) {
-                by_id.remove(sentinel);
-            }
-
-            let new_state = ConnectionState::Active {
-                peer_id,
-                id: id.clone(),
-                connection_id,
-                connected_at: Instant::now(),
-            };
-
-            by_id.insert(id.clone(), new_state);
-            peer_to_id.insert(peer_id, id.clone());
-            conn_to_id.insert(connection_id, id);
-
-            return ActivateResult::Replaced {
-                old_peer_id,
-                old_connection_id: old_conn_id,
-                old_id: None,
-            };
+        // Remove pending time index for the main id (if it was pending)
+        if let Some(started_at) = maps.by_id.get(&id).and_then(|s| s.started_at()) {
+            maps.remove_pending(started_at, &id);
         }
 
-        // Check if this PeerId is already ACTIVE with a different ID
-        if let Some((existing_id, old_conn_id)) = peer_to_id
-            .get(&peer_id)
-            .filter(|eid| *eid != &id)
-            .and_then(|eid| {
-                if let Some(ConnectionState::Active {
-                    connection_id: conn_id,
-                    ..
-                }) = by_id.get(eid)
-                {
-                    Some((eid.clone(), *conn_id))
-                } else {
-                    None
+        let result = match replacement {
+            Replacement::ById { old_peer_id, old_conn_id, sentinel } => {
+                maps.peer_to_id.remove(&old_peer_id);
+                maps.conn_to_id.remove(&old_conn_id);
+                if let Some(entry) = sentinel {
+                    maps.by_id.remove(&entry.id);
+                    maps.remove_pending(entry.started_at, &entry.id);
                 }
-            })
-        {
-            by_id.remove(&existing_id);
-            conn_to_id.remove(&old_conn_id);
-            peer_to_id.remove(&peer_id);
-
-            let new_state = ConnectionState::Active {
-                peer_id,
-                id: id.clone(),
-                connection_id,
-                connected_at: Instant::now(),
-            };
-
-            by_id.insert(id.clone(), new_state);
-            peer_to_id.insert(peer_id, id.clone());
-            conn_to_id.insert(connection_id, id);
-
-            return ActivateResult::Replaced {
-                old_peer_id: peer_id,
-                old_connection_id: old_conn_id,
-                old_id: Some(existing_id),
-            };
-        }
-
-        // Normal case: transition from Handshaking to Active
-        // Clean up the sentinel entry from handshaking
-        if let Some(old_conn_id) = peer_to_id
-            .get(&peer_id)
-            .filter(|oid| *oid != &id)
-            .and_then(|old_id| by_id.remove(old_id))
-            .and_then(|old_state| old_state.connection_id())
-        {
-            conn_to_id.remove(&old_conn_id);
-        }
+                ActivateResult::Replaced {
+                    old_peer_id,
+                    old_connection_id: old_conn_id,
+                    old_id: None,
+                }
+            }
+            Replacement::ByPeerId { existing_id, old_conn_id } => {
+                maps.by_id.remove(&existing_id);
+                maps.conn_to_id.remove(&old_conn_id);
+                maps.peer_to_id.remove(&peer_id);
+                ActivateResult::Replaced {
+                    old_peer_id: peer_id,
+                    old_connection_id: old_conn_id,
+                    old_id: Some(existing_id),
+                }
+            }
+            Replacement::None { sentinel } => {
+                if let Some(entry) = sentinel {
+                    if let Some(state) = maps.by_id.remove(&entry.id) {
+                        if let Some(old_conn_id) = state.connection_id() {
+                            maps.conn_to_id.remove(&old_conn_id);
+                        }
+                    }
+                    maps.remove_pending(entry.started_at, &entry.id);
+                }
+                ActivateResult::Accepted
+            }
+        };
 
         let new_state = ConnectionState::Active {
             peer_id,
@@ -306,36 +325,83 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
             connection_id,
             connected_at: Instant::now(),
         };
+        maps.by_id.insert(id.clone(), new_state);
+        maps.peer_to_id.insert(peer_id, id.clone());
+        maps.conn_to_id.insert(connection_id, id);
 
-        by_id.insert(id.clone(), new_state);
-        peer_to_id.insert(peer_id, id.clone());
-        conn_to_id.insert(connection_id, id);
+        result
+    }
 
-        ActivateResult::Accepted
+    fn find_replacement(maps: &Maps<Id>, id: &Id, peer_id: &PeerId) -> Replacement<Id> {
+        // Helper to create PendingEntry from sentinel ID if state is pending
+        let pending_entry = |sentinel_id: &Id| -> Option<PendingEntry<Id>> {
+            maps.by_id.get(sentinel_id).and_then(|state| {
+                state.started_at().map(|started_at| PendingEntry {
+                    id: sentinel_id.clone(),
+                    started_at,
+                })
+            })
+        };
+
+        // Case 1: ID already has an active connection
+        if let Some(ConnectionState::Active {
+            peer_id: active_peer_id,
+            connection_id: active_conn_id,
+            ..
+        }) = maps.by_id.get(id)
+        {
+            let sentinel = maps
+                .peer_to_id
+                .get(peer_id)
+                .filter(|s| *s != id)
+                .and_then(pending_entry);
+            return Replacement::ById {
+                old_peer_id: *active_peer_id,
+                old_conn_id: *active_conn_id,
+                sentinel,
+            };
+        }
+
+        // Case 2: PeerId already active with different ID
+        if let Some(existing_id) = maps.peer_to_id.get(peer_id).filter(|eid| *eid != id) {
+            if let Some(ConnectionState::Active { connection_id, .. }) = maps.by_id.get(existing_id)
+            {
+                return Replacement::ByPeerId {
+                    existing_id: existing_id.clone(),
+                    old_conn_id: *connection_id,
+                };
+            }
+        }
+
+        // Case 3: Normal handshake, just clean up sentinel
+        let sentinel = maps
+            .peer_to_id
+            .get(peer_id)
+            .filter(|oid| *oid != id)
+            .and_then(pending_entry);
+        Replacement::None { sentinel }
     }
 
     pub fn get_by_peer_id(&self, peer_id: &PeerId) -> Option<ConnectionState<Id>> {
-        let id = self.peer_to_id.read().get(peer_id)?.clone();
-        self.by_id.read().get(&id).cloned()
-    }
-
-    pub fn complete_dial_by_peer_id(&self, peer_id: &PeerId) -> Option<ConnectionState<Id>> {
-        let id = self.peer_to_id.write().remove(peer_id)?;
-        self.remove_by_id_inner(id)
+        let maps = self.read();
+        let id = maps.peer_to_id.get(peer_id)?;
+        maps.by_id.get(id).cloned()
     }
 
     pub fn active_ids(&self) -> Vec<Id> {
-        self.by_id
-            .read()
+        self.read()
+            .by_id
             .iter()
-            .filter_map(|(id, state)| matches!(state, ConnectionState::Active { .. }).then_some(id.clone()))
+            .filter_map(|(id, state)| {
+                matches!(state, ConnectionState::Active { .. }).then_some(id.clone())
+            })
             .collect()
     }
 
     /// Count of active connections.
     pub fn active_count(&self) -> usize {
-        self.by_id
-            .read()
+        self.read()
+            .by_id
             .values()
             .filter(|state| matches!(state, ConnectionState::Active { .. }))
             .count()
@@ -343,8 +409,8 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
 
     /// Count of pending connections (dialing + handshaking).
     pub fn pending_count(&self) -> usize {
-        self.by_id
-            .read()
+        self.read()
+            .by_id
             .values()
             .filter(|state| {
                 matches!(
@@ -355,17 +421,34 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
             .count()
     }
 
-    pub fn disconnected(&self, peer_id: &PeerId) -> Option<ConnectionState<Id>> {
-        let id = self.peer_to_id.write().remove(peer_id)?;
-        self.remove_by_id_inner(id)
+    /// Get PeerIds of pending connections that have exceeded the timeout.
+    ///
+    /// Uses time-indexed lookup for O(log n + k) complexity where k = stale count.
+    pub fn stale_pending(&self, timeout: std::time::Duration) -> Vec<PeerId> {
+        let Some(cutoff) = Instant::now().checked_sub(timeout) else {
+            return Vec::new();
+        };
+        let maps = self.read();
+
+        maps.pending_by_time
+            .range(..=cutoff)
+            .flat_map(|(_, ids)| ids.iter())
+            .filter_map(|id| maps.by_id.get(id).map(|s| s.peer_id()))
+            .collect()
     }
 
-    fn remove_by_id_inner(&self, id: Id) -> Option<ConnectionState<Id>> {
-        let state = self.by_id.write().remove(&id)?;
+    pub fn disconnected(&self, peer_id: &PeerId) -> Option<ConnectionState<Id>> {
+        let mut maps = self.write();
 
-        self.peer_to_id.write().remove(&state.peer_id());
+        let id = maps.peer_to_id.remove(peer_id)?;
+        let state = maps.by_id.remove(&id)?;
+
         if let Some(conn_id) = state.connection_id() {
-            self.conn_to_id.write().remove(&conn_id);
+            maps.conn_to_id.remove(&conn_id);
+        }
+
+        if let Some(started_at) = state.started_at() {
+            maps.remove_pending(started_at, &id);
         }
 
         Some(state)
@@ -375,6 +458,7 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[derive(Clone, Debug, PartialEq, Eq, Hash)]
     struct TestId(u64);
@@ -555,5 +639,41 @@ mod tests {
 
         assert_eq!(registry.pending_count(), 1);
         assert_eq!(registry.active_count(), 1);
+    }
+
+    #[test]
+    fn test_stale_pending() {
+        let registry = PeerRegistry::<TestId>::new();
+
+        // Peer 1: in Dialing state
+        let id1 = TestId(1);
+        let peer_id1 = test_peer_id(1);
+        registry.start_dial(peer_id1, id1, vec![test_addr(9000)]);
+
+        // Peer 2: in Handshaking state
+        let id2 = TestId(2);
+        let peer_id2 = test_peer_id(2);
+        let conn_id2 = test_connection_id(2);
+        registry.start_dial(peer_id2, id2.clone(), vec![test_addr(9001)]);
+        registry.connection_established(peer_id2, conn_id2);
+
+        // Peer 3: in Active state
+        let id3 = TestId(3);
+        let peer_id3 = test_peer_id(3);
+        let conn_id3 = test_connection_id(3);
+        registry.start_dial(peer_id3, id3.clone(), vec![test_addr(9002)]);
+        registry.connection_established(peer_id3, conn_id3);
+        registry.handshake_completed(peer_id3, conn_id3, id3);
+
+        // With zero timeout, both dialing and handshaking should be stale
+        let stale = registry.stale_pending(Duration::from_secs(0));
+        assert_eq!(stale.len(), 2);
+        assert!(stale.contains(&peer_id1));
+        assert!(stale.contains(&peer_id2));
+        assert!(!stale.contains(&peer_id3)); // Active connection not included
+
+        // With a large timeout, no pending connections should be stale
+        let stale = registry.stale_pending(Duration::from_secs(3600));
+        assert!(stale.is_empty());
     }
 }
