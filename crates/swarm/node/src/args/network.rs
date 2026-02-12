@@ -5,7 +5,8 @@ use std::time::Duration;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 use vertex_swarm_api::{
-    ConfigError, Multiaddr, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig,
+    ConfigAddressKind, ConfigError, Multiaddr, SwarmNetworkConfig, SwarmPeerConfig,
+    SwarmRoutingConfig,
 };
 use vertex_swarm_topology::{KademliaConfig, RoutingArgs};
 
@@ -115,7 +116,8 @@ impl NetworkArgs {
                 let parsed: Result<Vec<Multiaddr>, _> = spec_bootnodes
                     .iter()
                     .map(|s| {
-                        s.parse().map_err(|e| ConfigError::InvalidBootnode {
+                        s.parse().map_err(|e| ConfigError::InvalidAddress {
+                            kind: ConfigAddressKind::Bootnode,
                             addr: s.clone(),
                             source: e,
                         })
@@ -212,7 +214,8 @@ impl TryFrom<&NetworkArgs> for NetworkConfig<KademliaConfig> {
         let listen_addr_str = format!("/ip4/{}/tcp/{}", args.addr, args.port);
         let listen_addrs = vec![listen_addr_str
             .parse()
-            .map_err(|e| ConfigError::InvalidListenAddr {
+            .map_err(|e| ConfigError::InvalidAddress {
+                kind: ConfigAddressKind::ListenAddr,
                 addr: listen_addr_str,
                 source: e,
             })?];
@@ -221,7 +224,8 @@ impl TryFrom<&NetworkArgs> for NetworkConfig<KademliaConfig> {
             .bootnodes_raw
             .iter()
             .map(|s| {
-                s.parse().map_err(|e| ConfigError::InvalidBootnode {
+                s.parse().map_err(|e| ConfigError::InvalidAddress {
+                    kind: ConfigAddressKind::Bootnode,
                     addr: s.clone(),
                     source: e,
                 })
@@ -232,7 +236,8 @@ impl TryFrom<&NetworkArgs> for NetworkConfig<KademliaConfig> {
             .trusted_peers_raw
             .iter()
             .map(|s| {
-                s.parse().map_err(|e| ConfigError::InvalidTrustedPeer {
+                s.parse().map_err(|e| ConfigError::InvalidAddress {
+                    kind: ConfigAddressKind::TrustedPeer,
                     addr: s.clone(),
                     source: e,
                 })
@@ -243,7 +248,8 @@ impl TryFrom<&NetworkArgs> for NetworkConfig<KademliaConfig> {
             .nat_addrs_raw
             .iter()
             .map(|s| {
-                s.parse().map_err(|e| ConfigError::InvalidNatAddr {
+                s.parse().map_err(|e| ConfigError::InvalidAddress {
+                    kind: ConfigAddressKind::NatAddr,
                     addr: s.clone(),
                     source: e,
                 })

@@ -11,7 +11,7 @@ use vertex_swarm_localstore::LocalStoreArgs;
 use vertex_swarm_primitives::SwarmNodeType;
 use vertex_swarm_redistribution::RedistributionArgs;
 
-use super::NetworkArgs;
+use super::{NetworkArgs, SwarmSpecArgs};
 
 /// CLI argument for node mode selection. Maps to [`SwarmNodeType`].
 #[derive(
@@ -55,12 +55,14 @@ impl From<SwarmNodeType> for NodeTypeArg {
 /// This struct is for CLI parsing and serialization only.
 /// Convert to `ProtocolConfig` for runtime use.
 /// Pricing is nested under `bandwidth` (accessible via `--bandwidth.base-price`).
-#[derive(Debug, Args, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[derive(Args, Clone)]
 pub struct ProtocolArgs {
-    /// Node mode: bootnode, client, or storer.
-    #[arg(long = "mode", value_enum, default_value_t = NodeTypeArg::Client)]
-    pub node_type: NodeTypeArg,
+    /// Swarm network specification and node mode.
+    #[command(flatten)]
+    pub spec: SwarmSpecArgs,
+
+    #[command(flatten)]
+    pub identity: IdentityArgs,
 
     #[command(flatten)]
     pub network: NetworkArgs,
@@ -74,7 +76,4 @@ pub struct ProtocolArgs {
 
     #[command(flatten)]
     pub redistribution: RedistributionArgs,
-
-    #[command(flatten)]
-    pub identity: IdentityArgs,
 }

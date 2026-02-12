@@ -3,11 +3,13 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use hashlink::LruCache;
-use libp2p::Multiaddr;
+use libp2p::{Multiaddr, PeerId};
+use libp2p::multiaddr::Protocol;
 use parking_lot::{Mutex, RwLock};
-use tracing::{debug, info, trace};
+use tracing::{debug, info, warn};
 use vertex_net_local::{AddressScope, LocalCapabilities, NetworkCapability, classify_multiaddr, extract_ip};
 use web_time::Instant;
 
@@ -52,6 +54,7 @@ impl Default for NatDiscoveryConfig {
 /// Wraps LocalCapabilities and adds:
 /// - Static NAT addresses (configured at startup)
 /// - Multi-peer confirmation for peer-observed addresses
+/// - Local PeerId for appending /p2p/ to advertised addresses
 pub struct NatDiscovery {
     local: Arc<LocalCapabilities>,
     nat_addrs: Vec<Multiaddr>,
@@ -60,6 +63,9 @@ pub struct NatDiscovery {
     confirmed: Mutex<LruCache<Multiaddr, ConfirmedEntry>>,
     config: NatDiscoveryConfig,
     enabled: bool,
+    /// Local PeerId for appending /p2p/ to advertised addresses.
+    /// Set via `set_local_peer_id()` after swarm is built.
+    local_peer_id: OnceLock<PeerId>,
 }
 
 impl NatDiscovery {
@@ -76,11 +82,37 @@ impl NatDiscovery {
             confirmed: Mutex::new(LruCache::new(MAX_CONFIRMED_CACHE)),
             config,
             enabled,
+            local_peer_id: OnceLock::new(),
         }
     }
 
+    /// Set the local PeerId for appending /p2p/ to advertised addresses.
+    ///
+    /// Must be called after the libp2p Swarm is built. Can only be set once.
+    /// Addresses returned by `addresses_for_peer()` will include /p2p/{peer_id}.
+    pub fn set_local_peer_id(&self, peer_id: PeerId) {
+        if self.local_peer_id.set(peer_id).is_err() {
+            warn!("local_peer_id already set, ignoring duplicate call");
+        } else {
+            debug!(%peer_id, "Local PeerId set for address advertisement");
+        }
+    }
+
+    /// Get the local PeerId if set.
+    pub fn local_peer_id(&self) -> Option<&PeerId> {
+        self.local_peer_id.get()
+    }
+
     pub fn disabled(local: Arc<LocalCapabilities>) -> Self {
-        Self::new(local, vec![], NatDiscoveryConfig::default(), false)
+        Self {
+            local,
+            nat_addrs: vec![],
+            observed: RwLock::new(HashMap::new()),
+            confirmed: Mutex::new(LruCache::new(MAX_CONFIRMED_CACHE)),
+            config: NatDiscoveryConfig::default(),
+            enabled: false,
+            local_peer_id: OnceLock::new(),
+        }
     }
 
     pub fn local_capabilities(&self) -> &Arc<LocalCapabilities> {
@@ -96,63 +128,36 @@ impl NatDiscovery {
     }
 
     /// Record observed address from peer (requires multi-peer confirmation).
+    ///
+    /// Lock duration bounded by MAX_OBSERVED_ADDRS (10 entries max).
     pub fn on_observed_addr(&self, addr: Multiaddr, from_peer: &Multiaddr) {
-        trace!(
-            observed_addr = %addr,
-            peer_addr = %from_peer,
-            nat_auto = self.enabled,
-            "received observed address from peer"
-        );
-
         if !self.enabled {
-            trace!("nat_auto disabled, ignoring observed address");
             return;
         }
 
-        // Extract the peer's IP for deduplication
-        let peer_ip = match extract_ip(from_peer) {
-            Some(ip) => ip,
-            None => {
-                trace!("could not extract peer IP, ignoring");
-                return;
-            }
+        let Some(peer_ip) = extract_ip(from_peer) else {
+            return;
         };
 
-        // Only trust observed public addresses from public peers
         let peer_scope = classify_multiaddr(from_peer);
         let observed_scope = classify_multiaddr(&addr);
 
-        trace!(?peer_scope, ?observed_scope, "classified scopes");
-
-        // Ignore if we can't classify the addresses
         let (Some(peer_scope), Some(observed_scope)) = (peer_scope, observed_scope) else {
-            trace!("could not classify addresses, ignoring");
             return;
         };
 
         // Only learn public addresses from public peers
         if observed_scope == AddressScope::Public && peer_scope != AddressScope::Public {
-            trace!(
-                observed_addr = %addr,
-                peer_addr = %from_peer,
-                "ignoring public address from non-public peer"
-            );
             return;
         }
 
-        // Check protocol family match (IPv4 observed should be confirmed by IPv4 peers)
-        let observed_ip = extract_ip(&addr);
-        if let Some(obs_ip) = &observed_ip {
+        // Protocol family must match
+        if let Some(obs_ip) = extract_ip(&addr) {
             let same_family = matches!(
-                (obs_ip, &peer_ip),
+                (&obs_ip, &peer_ip),
                 (IpAddr::V4(_), IpAddr::V4(_)) | (IpAddr::V6(_), IpAddr::V6(_))
             );
             if !same_family {
-                trace!(
-                    observed_addr = %addr,
-                    %peer_ip,
-                    "ignoring confirmation from different protocol family"
-                );
                 return;
             }
         }
@@ -160,93 +165,71 @@ impl NatDiscovery {
         let now = Instant::now();
         let ttl = std::time::Duration::from_secs(self.config.confirmed_ttl_secs);
 
-        // Fast path: check confirmed cache first
+        // Fast path: already confirmed
         {
             let mut cache = self.confirmed.lock();
             if let Some(entry) = cache.get(&addr) {
                 if now.duration_since(entry.confirmed_at) < ttl {
-                    trace!(
-                        observed_addr = %addr,
-                        "confirmed address in cache (fast path)"
-                    );
                     return;
-                } else {
-                    debug!(
-                        observed_addr = %addr,
-                        "confirmed address expired, removing from cache"
-                    );
-                    cache.remove(&addr);
                 }
+                cache.remove(&addr);
             }
         }
 
-        // Normal path: track in observed_addrs until confirmed
+        // Track in observed until confirmed
         let mut observed = self.observed.write();
 
         if let Some(entry) = observed.get_mut(&addr) {
             entry.last_seen = now;
 
-            if peer_ip != entry.first_ip {
-                entry.confirmations += 1;
-                info!(
-                    observed_addr = %addr,
-                    confirming_ip = %peer_ip,
-                    confirmations = entry.confirmations,
-                    threshold = self.config.confirmation_threshold,
-                    "confirmed by second unique IP"
-                );
-
-                if entry.confirmations >= self.config.confirmation_threshold {
-                    let addr_to_cache = addr.clone();
-                    observed.remove(&addr);
-                    drop(observed);
-                    self.add_to_confirmed_cache(addr_to_cache, now);
-                }
-            } else {
-                trace!(
-                    observed_addr = %addr,
-                    %peer_ip,
-                    "duplicate confirmation from same IP, ignoring"
-                );
-            }
-        } else {
-            // First observation - check capacity
-            if observed.len() >= MAX_OBSERVED_ADDRS {
-                let evict_candidate = observed
-                    .iter()
-                    .min_by_key(|(_, e)| e.last_seen)
-                    .map(|(a, _)| a.clone());
-
-                if let Some(evicted_addr) = evict_candidate {
-                    debug!(
-                        %evicted_addr,
-                        "evicting oldest observed address to make room"
-                    );
-                    observed.remove(&evicted_addr);
-                }
+            if peer_ip == entry.first_ip {
+                return; // Same IP, no new confirmation
             }
 
-            if self.config.confirmation_threshold <= 1 {
+            entry.confirmations += 1;
+            info!(
+                observed_addr = %addr,
+                confirming_ip = %peer_ip,
+                confirmations = entry.confirmations,
+                "address confirmed by second unique IP"
+            );
+
+            if entry.confirmations >= self.config.confirmation_threshold {
+                let addr_to_cache = addr.clone();
+                observed.remove(&addr);
                 drop(observed);
-                self.add_to_confirmed_cache(addr, now);
-            } else {
-                debug!(
-                    observed_addr = %addr,
-                    first_ip = %peer_ip,
-                    threshold = self.config.confirmation_threshold,
-                    "new observed address pending (1/{} confirmations)",
-                    self.config.confirmation_threshold
-                );
-                observed.insert(
-                    addr,
-                    ObservedEntry {
-                        confirmations: 1,
-                        first_ip: peer_ip,
-                        last_seen: now,
-                    },
-                );
+                self.add_to_confirmed_cache(addr_to_cache, now);
+            }
+            return;
+        }
+
+        // First observation
+        if self.config.confirmation_threshold <= 1 {
+            drop(observed);
+            self.add_to_confirmed_cache(addr, now);
+            return;
+        }
+
+        // Evict oldest if at capacity
+        if observed.len() >= MAX_OBSERVED_ADDRS {
+            if let Some(evict) = observed.iter().min_by_key(|(_, e)| e.last_seen).map(|(a, _)| a.clone()) {
+                debug!(%evict, "evicting oldest observed address");
+                observed.remove(&evict);
             }
         }
+
+        debug!(
+            observed_addr = %addr,
+            first_ip = %peer_ip,
+            threshold = self.config.confirmation_threshold,
+            "new observed address pending"
+        );
+
+        observed.insert(addr, ObservedEntry {
+            confirmations: 1,
+            first_ip: peer_ip,
+            last_seen: now,
+        });
     }
 
     fn add_to_confirmed_cache(&self, addr: Multiaddr, now: Instant) {
@@ -264,6 +247,9 @@ impl NatDiscovery {
     }
 
     /// Select addresses to advertise to peer during handshake.
+    ///
+    /// All returned addresses include `/p2p/{local_peer_id}` if the local
+    /// PeerId has been set via `set_local_peer_id()`.
     pub fn addresses_for_peer(&self, peer_addr: &Multiaddr) -> Vec<Multiaddr> {
         use std::collections::HashSet;
 
@@ -298,11 +284,27 @@ impl NatDiscovery {
 
         // Chain all sources and deduplicate
         let mut seen = HashSet::new();
-        local_addrs
+        let addrs: Vec<Multiaddr> = local_addrs
             .into_iter()
             .chain(nat_addrs)
             .chain(confirmed_addrs)
             .filter(|addr| seen.insert(addr.clone()))
+            .collect();
+
+        // Append /p2p/{local_peer_id} to all addresses
+        self.with_peer_id(addrs)
+    }
+
+    /// Append /p2p/{local_peer_id} to addresses if local PeerId is set.
+    fn with_peer_id(&self, addrs: Vec<Multiaddr>) -> Vec<Multiaddr> {
+        let Some(peer_id) = self.local_peer_id.get() else {
+            warn!("local_peer_id not set, returning addresses without /p2p/");
+            return addrs;
+        };
+
+        addrs
+            .into_iter()
+            .map(|addr| addr.with(Protocol::P2p(*peer_id)))
             .collect()
     }
 

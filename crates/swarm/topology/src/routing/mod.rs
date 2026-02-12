@@ -20,7 +20,7 @@ use vertex_swarm_primitives::OverlayAddress;
 pub trait RoutingCapacity: Send + Sync {
     /// Atomically check capacity and reserve a dial slot.
     /// Returns true if reserved, false if at capacity or already tracking.
-    fn try_reserve_dial(&self, overlay: &OverlayAddress, is_full_node: bool) -> bool;
+    fn try_reserve_dial(&self, overlay: &OverlayAddress, storer: bool) -> bool;
 
     /// Release a dial reservation (dial failed before connection established).
     fn release_dial(&self, overlay: &OverlayAddress);
@@ -38,7 +38,7 @@ pub trait RoutingCapacity: Send + Sync {
     fn disconnected(&self, overlay: &OverlayAddress);
 
     /// Check if we can accept an inbound connection (before overlay is known).
-    fn should_accept_inbound(&self, overlay: &OverlayAddress, is_full_node: bool) -> bool;
+    fn should_accept_inbound(&self, overlay: &OverlayAddress, storer: bool) -> bool;
 
     /// Reserve capacity for an accepted inbound connection.
     fn reserve_inbound(&self, overlay: &OverlayAddress);
@@ -53,7 +53,7 @@ pub trait SwarmRouting<I: SwarmIdentity>: RoutingCapacity {
     fn add_peers(&self, peers: &[OverlayAddress]);
 
     /// Should we accept an inbound connection from this peer?
-    fn should_accept_peer(&self, peer: &OverlayAddress, is_full_node: bool) -> bool;
+    fn should_accept_peer(&self, peer: &OverlayAddress, storer: bool) -> bool;
 
     /// Notify that a peer has connected.
     fn connected(&self, peer: OverlayAddress);

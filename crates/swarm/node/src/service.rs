@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_net_pseudosettle::PaymentAck;
 use vertex_swarm_primitives::OverlayAddress;
-use vertex_tasks::SpawnableTask;
+use vertex_tasks::{GracefulShutdown, SpawnableTask};
 
 // Re-export the types from protocol module
 pub use crate::protocol::{ClientCommand, ClientEvent};
@@ -160,12 +160,29 @@ impl ClientService {
         self.handle.clone()
     }
 
-    /// Run the event processing loop.
-    pub async fn run(mut self) {
-        while let Some(event) = self.event_rx.recv().await {
-            self.process_event(event);
+    /// Run the event processing loop with graceful shutdown support.
+    pub async fn run(mut self, shutdown: GracefulShutdown) {
+        let mut shutdown = std::pin::pin!(shutdown);
+
+        loop {
+            tokio::select! {
+                guard = &mut shutdown => {
+                    debug!("Client service received shutdown signal");
+                    drop(guard);
+                    break;
+                }
+                event = self.event_rx.recv() => {
+                    match event {
+                        Some(event) => self.process_event(event),
+                        None => {
+                            debug!("Client service event channel closed");
+                            break;
+                        }
+                    }
+                }
+            }
         }
-        debug!("Client service shutting down");
+        debug!("Client service shutdown complete");
     }
 
     /// Process a single event.
@@ -351,7 +368,7 @@ impl Default for ClientService {
 }
 
 impl SpawnableTask for ClientService {
-    fn into_task(self) -> impl std::future::Future<Output = ()> + Send {
-        self.run()
+    fn into_task(self, shutdown: GracefulShutdown) -> impl std::future::Future<Output = ()> + Send {
+        self.run(shutdown)
     }
 }

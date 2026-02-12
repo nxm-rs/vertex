@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use tracing::info;
 use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig};
 use vertex_swarm_topology::{KademliaConfig, TopologyCommand, TopologyHandle};
-use vertex_tasks::SpawnableTask;
+use vertex_tasks::GracefulShutdown;
 
 use super::client::{ClientNode, ClientNodeBuilder};
 use crate::protocol::{PseudosettleEvent, SwapEvent};
@@ -84,13 +84,15 @@ impl<I: SwarmIdentity + Clone> StorerNode<I> {
         self.client.start_listening()
     }
 
-    /// Run the network event loop.
+    /// Run the network event loop with graceful shutdown support.
     ///
     /// This runs the client node event loop and any storer-specific tasks.
-    pub async fn run(self) -> Result<()> {
+    /// When the shutdown signal fires, the node will complete its current work
+    /// and exit gracefully.
+    pub async fn run(self, shutdown: GracefulShutdown) -> Result<()> {
         info!("Starting storer node event loop");
         // TODO: spawn chunk sync and redistribution tasks
-        self.client.run().await
+        self.client.run(shutdown).await
     }
 
     /// Get the number of connected peers.
@@ -101,14 +103,6 @@ impl<I: SwarmIdentity + Clone> StorerNode<I> {
     /// Check if we're connected to any peers.
     pub fn is_connected(&self) -> bool {
         self.client.is_connected()
-    }
-}
-
-impl<I: SwarmIdentity + Clone> SpawnableTask for StorerNode<I> {
-    async fn into_task(self) {
-        if let Err(e) = self.run().await {
-            tracing::error!(error = %e, "StorerNode error");
-        }
     }
 }
 

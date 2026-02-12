@@ -92,6 +92,7 @@ impl<S: ChunkStore> LocalStoreImpl<S> {
 
         if bytes.is_empty() {
             return Err(SwarmError::InvalidChunk {
+                address: Some(address),
                 reason: "empty data".to_string(),
             });
         }
@@ -105,12 +106,14 @@ impl<S: ChunkStore> LocalStoreImpl<S> {
                 // TODO: Proper deserialization when chunk format is finalized
                 let chunk = ContentChunk::with_address(data.to_vec(), address).map_err(|e| {
                     SwarmError::InvalidChunk {
+                        address: Some(address),
                         reason: e.to_string(),
                     }
                 })?;
                 Ok(AnyChunk::Content(chunk))
             }
             _ => Err(SwarmError::InvalidChunk {
+                address: Some(address),
                 reason: format!("unknown chunk type: {}", type_byte),
             }),
         }

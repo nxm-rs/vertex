@@ -1,6 +1,6 @@
 //! Swarm-specific peer registry wrapping the generic PeerRegistry.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use libp2p::{Multiaddr, PeerId, swarm::ConnectionId};
 use parking_lot::RwLock;
@@ -12,8 +12,10 @@ use crate::reason::DialReason;
 /// Swarm-specific peer registry with dial reason tracking and gossip disconnect pending.
 pub struct SwarmPeerRegistry {
     inner: PeerRegistry<OverlayAddress>,
-    dial_reasons: RwLock<std::collections::HashMap<OverlayAddress, DialReason>>,
+    dial_reasons: RwLock<HashMap<OverlayAddress, DialReason>>,
     gossip_disconnect_pending: RwLock<HashSet<OverlayAddress>>,
+    /// Agent versions received via libp2p identify (keyed by PeerId).
+    agent_versions: RwLock<HashMap<PeerId, String>>,
 }
 
 impl Default for SwarmPeerRegistry {
@@ -26,8 +28,9 @@ impl SwarmPeerRegistry {
     pub fn new() -> Self {
         Self {
             inner: PeerRegistry::new(),
-            dial_reasons: RwLock::new(std::collections::HashMap::new()),
+            dial_reasons: RwLock::new(HashMap::new()),
             gossip_disconnect_pending: RwLock::new(HashSet::new()),
+            agent_versions: RwLock::new(HashMap::new()),
         }
     }
 
@@ -118,10 +121,13 @@ impl SwarmPeerRegistry {
         connection_id: ConnectionId,
         overlay: OverlayAddress,
     ) -> ActivateResult<OverlayAddress> {
-        // Clean up sentinel dial reason if present
+        // Clean up sentinel dial reason if present.
+        // NOTE: Must extract the reason BEFORE the if block to avoid deadlock.
+        // The write lock from `dial_reasons.write().remove()` would be held
+        // for the entire if body, causing deadlock on the insert.
         let sentinel = sentinel_from_peer_id(&peer_id);
-        if let Some(reason) = self.dial_reasons.write().remove(&sentinel) {
-            // Transfer reason to real overlay
+        let reason = self.dial_reasons.write().remove(&sentinel);
+        if let Some(reason) = reason {
             self.dial_reasons.write().insert(overlay, reason);
         }
 
@@ -147,19 +153,24 @@ impl SwarmPeerRegistry {
         self.gossip_disconnect_pending.read().contains(overlay)
     }
 
-    pub fn get_by_peer_id(&self, peer_id: &PeerId) -> Option<ConnectionState<OverlayAddress>> {
-        self.inner.get_by_peer_id(peer_id)
+    /// Store agent version from libp2p identify protocol.
+    pub fn set_agent_version(&self, peer_id: &PeerId, agent_version: String) {
+        self.agent_versions.write().insert(*peer_id, agent_version);
     }
 
-    pub fn complete_dial_by_peer_id(
-        &self,
-        peer_id: &PeerId,
-    ) -> Option<ConnectionState<OverlayAddress>> {
-        let state = self.inner.complete_dial_by_peer_id(peer_id)?;
-        if let Some(overlay) = state.id() {
-            self.dial_reasons.write().remove(&overlay);
-        }
-        Some(state)
+    /// Get agent version for a peer by PeerId.
+    pub fn agent_version(&self, peer_id: &PeerId) -> Option<String> {
+        self.agent_versions.read().get(peer_id).cloned()
+    }
+
+    /// Get agent version for a peer by overlay address.
+    pub fn agent_version_by_overlay(&self, overlay: &OverlayAddress) -> Option<String> {
+        let peer_id = self.resolve_peer_id(overlay)?;
+        self.agent_versions.read().get(&peer_id).cloned()
+    }
+
+    pub fn get_by_peer_id(&self, peer_id: &PeerId) -> Option<ConnectionState<OverlayAddress>> {
+        self.inner.get_by_peer_id(peer_id)
     }
 
     pub fn active_peers(&self) -> Vec<OverlayAddress> {
@@ -174,12 +185,18 @@ impl SwarmPeerRegistry {
         self.inner.pending_count()
     }
 
+    /// Get PeerIds of pending connections that have exceeded the timeout.
+    pub fn stale_pending(&self, timeout: std::time::Duration) -> Vec<PeerId> {
+        self.inner.stale_pending(timeout)
+    }
+
     pub fn disconnected(&self, peer_id: &PeerId) -> Option<ConnectionState<OverlayAddress>> {
         let state = self.inner.disconnected(peer_id)?;
         if let Some(overlay) = state.id() {
             self.dial_reasons.write().remove(&overlay);
             self.gossip_disconnect_pending.write().remove(&overlay);
         }
+        self.agent_versions.write().remove(peer_id);
         Some(state)
     }
 }

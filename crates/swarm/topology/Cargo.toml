@@ -12,6 +12,7 @@ repository.workspace = true
 ## vertex
 vertex-swarm-primitives.workspace = true
 vertex-swarm-api.workspace = true
+vertex-observability.workspace = true
 vertex-swarm-identity.workspace = true
 vertex-swarm-spec.workspace = true
 vertex-net-local.workspace = true

@@ -26,11 +26,11 @@ use crate::args::{NetworkArgs, NetworkConfig, ProtocolArgs};
 #[serde(default)]
 pub struct ProtocolConfig {
     pub node_type: SwarmNodeType,
+    pub identity: IdentityArgs,
     pub network: NetworkArgs,
     pub bandwidth: BandwidthArgs,
     pub localstore: LocalStoreArgs,
     pub redistribution: RedistributionArgs,
-    pub identity: IdentityArgs,
 }
 
 impl ProtocolConfig {
@@ -60,15 +60,21 @@ impl ProtocolConfig {
     }
 }
 
+impl ProtocolConfig {
+    /// Set the node type.
+    pub fn set_node_type(&mut self, node_type: SwarmNodeType) {
+        self.node_type = node_type;
+    }
+}
+
 impl NodeProtocolConfig for ProtocolConfig {
     type Args = ProtocolArgs;
 
     fn apply_args(&mut self, args: &Self::Args) {
-        self.node_type = args.node_type.into();
+        self.identity = args.identity.clone();
         self.network = args.network.clone();
         self.bandwidth = args.bandwidth.clone();
         self.localstore = args.localstore.clone();
         self.redistribution = args.redistribution.clone();
-        self.identity = args.identity.clone();
     }
 }

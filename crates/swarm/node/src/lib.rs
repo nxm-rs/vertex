@@ -23,7 +23,7 @@ mod stats;
 pub use node::{
     BaseNode, BootNode, BootNodeBuilder, BootnodeBehaviour, BootnodeEvent, BuiltInfrastructure,
     ClientNode, ClientNodeBehaviour, ClientNodeBuilder, ClientNodeEvent, StorerNode,
-    StorerNodeBuilder, TopologyBuildOptions,
+    StorerNodeBuilder,
 };
 
 pub use vertex_swarm_api::SwarmNodeType;

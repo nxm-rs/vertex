@@ -64,8 +64,8 @@ pub enum HandlerCommand {
     Activate {
         /// The peer's overlay address.
         overlay: OverlayAddress,
-        /// Whether the peer is a full node.
-        is_full_node: bool,
+        /// True if the peer is a storer node (full storage commitment).
+        storer: bool,
     },
     /// Announce our payment threshold to the peer.
     AnnouncePricing {
@@ -225,7 +225,7 @@ enum State {
     /// Active and processing protocols.
     Active {
         overlay: OverlayAddress,
-        is_full_node: bool,
+        storer: bool,
     },
     /// Handler is closing.
     Closing,
@@ -324,13 +324,13 @@ impl ClientHandler {
     }
 
     /// Process activation command.
-    fn activate(&mut self, overlay: OverlayAddress, is_full_node: bool) {
+    fn activate(&mut self, overlay: OverlayAddress, storer: bool) {
         match &self.state {
             State::Dormant => {
-                debug!(%overlay, %is_full_node, "Handler activated");
+                debug!(%overlay, %storer, "Handler activated");
                 self.state = State::Active {
                     overlay,
-                    is_full_node,
+                    storer,
                 };
                 self.pending_events
                     .push_back(HandlerEvent::Activated { overlay });
@@ -354,7 +354,12 @@ impl ClientHandler {
                     threshold: threshold.payment_threshold,
                 });
         } else {
-            warn!("Received pricing in dormant state");
+            // This should not happen since we don't advertise pricing in dormant state.
+            // If it does, the peer may be using an outdated protocol cache or race condition.
+            warn!(
+                threshold = %threshold.payment_threshold,
+                "Received pricing in dormant state (peer may have cached old protocol list)"
+            );
         }
     }
 
@@ -374,7 +379,11 @@ impl ClientHandler {
             });
             // TODO: Store responder for later use
         } else {
-            warn!("Received retrieval request in dormant state");
+            // This should not happen since we don't advertise retrieval in dormant state.
+            warn!(
+                address = %request.address,
+                "Received retrieval request in dormant state (peer may have cached old protocol list)"
+            );
         }
     }
 
@@ -397,7 +406,11 @@ impl ClientHandler {
                 });
             // TODO: Store responder for later use
         } else {
-            warn!("Received pushsync delivery in dormant state");
+            // This should not happen since we don't advertise pushsync in dormant state.
+            warn!(
+                address = %delivery.address,
+                "Received pushsync delivery in dormant state (peer may have cached old protocol list)"
+            );
         }
     }
 
@@ -467,7 +480,15 @@ impl ConnectionHandler for ClientHandler {
     type OutboundOpenInfo = ClientOutboundInfo;
 
     fn listen_protocol(&self) -> SubstreamProtocol<Self::InboundProtocol, Self::InboundOpenInfo> {
-        SubstreamProtocol::new(ClientInboundUpgrade::new(), ()).with_timeout(self.config.timeout)
+        // Only advertise client protocols when active (post-handshake).
+        // In dormant state, we don't advertise any protocols to prevent
+        // remote peers from initiating pricing/retrieval/pushsync before
+        // we're ready.
+        let upgrade = match &self.state {
+            State::Active { .. } => ClientInboundUpgrade::active(),
+            State::Dormant | State::Closing => ClientInboundUpgrade::new(),
+        };
+        SubstreamProtocol::new(upgrade, ()).with_timeout(self.config.timeout)
     }
 
     fn poll(
@@ -486,9 +507,9 @@ impl ConnectionHandler for ClientHandler {
             match cmd {
                 HandlerCommand::Activate {
                     overlay,
-                    is_full_node,
+                    storer,
                 } => {
-                    self.activate(overlay, is_full_node);
+                    self.activate(overlay, storer);
                     if let Some(event) = self.pending_events.pop_front() {
                         return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
                     }

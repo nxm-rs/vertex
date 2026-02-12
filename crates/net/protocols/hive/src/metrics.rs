@@ -2,9 +2,9 @@
 
 use metrics::{counter, gauge, histogram};
 use strum::IntoStaticStr;
-use vertex_swarm_observability::{
+use vertex_observability::{
     GaugeGuard,
-    common::{direction, outcome},
+    labels::{direction, outcome},
 };
 
 use crate::error::HiveError;

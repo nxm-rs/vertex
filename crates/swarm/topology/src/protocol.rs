@@ -115,11 +115,11 @@ impl<I: SwarmIdentity> InboundUpgrade<Stream> for TopologyInboundUpgrade<I> {
 
                     debug!(
                         peer_id = %self.peer_id,
-                        observed_addr = %result.observed_multiaddr(),
+                        observed_addr = %result.observed_multiaddr,
                         "Inbound handshake: reporting observed address"
                     );
                     self.nat_discovery.on_observed_addr(
-                        result.observed_multiaddr().clone(),
+                        result.observed_multiaddr.clone(),
                         &self.remote_addr,
                     );
 
@@ -275,11 +275,11 @@ impl<I: SwarmIdentity> OutboundUpgrade<Stream> for TopologyOutboundUpgrade<I> {
 
                     debug!(
                         peer_id = %self.peer_id,
-                        observed_addr = %result.observed_multiaddr(),
+                        observed_addr = %result.observed_multiaddr,
                         "Outbound handshake: reporting observed address"
                     );
                     self.nat_discovery.on_observed_addr(
-                        result.observed_multiaddr().clone(),
+                        result.observed_multiaddr.clone(),
                         &self.remote_addr,
                     );
 

@@ -224,6 +224,7 @@ tokio-stream = "0.1"
 ## grpc
 tonic = "0.12"
 tonic-build = "0.12"
+tonic-reflection = "0.12"
 prost = "0.13"
 
 ## async
@@ -282,3 +283,7 @@ serde_with = { version = "3", default-features = false, features = ["macros"] }
 strum = { version = "0.27", features = ["derive"] }
 thiserror = { version = "2.0", default-features = false }
 vergen-gitcl = "9"
+
+# concurrent data structures
+dashmap = "6.1"
+scopeguard = "1.2"

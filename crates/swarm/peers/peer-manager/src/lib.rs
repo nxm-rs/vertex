@@ -7,6 +7,7 @@ mod data;
 mod entry;
 mod error;
 mod manager;
+mod pruner;
 mod snapshot;
 
 pub use ban::BanInfo;
@@ -38,5 +39,6 @@ pub use entry::PeerEntry;
 pub use manager::{
     DEFAULT_MAX_TRACKED_PEERS, InternalPeerManager, PeerManager, PeerManagerStats,
 };
+pub use pruner::{PruneConfig, spawn_prune_task};
 pub use snapshot::SwarmPeerSnapshot;
 pub use vertex_swarm_peer::SwarmPeer;

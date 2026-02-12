@@ -14,11 +14,11 @@ use libp2p::{
 use nectar_primitives::SwarmAddress;
 use tracing::{debug, info, warn};
 use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig};
-use vertex_swarm_topology::{KademliaConfig, TopologyBehaviour, TopologyCommand, TopologyHandle};
-use vertex_tasks::SpawnableTask;
+use vertex_swarm_topology::{KademliaConfig, TopologyBehaviour, TopologyConfig, TopologyCommand, TopologyHandle};
+use vertex_tasks::GracefulShutdown;
 
 use super::base::BaseNode;
-use super::builder::{BuiltInfrastructure, TopologyBuildOptions};
+use super::builder::BuiltInfrastructure;
 
 /// Network behaviour for a bootnode (topology only, no client protocols).
 #[derive(NetworkBehaviour)]
@@ -93,16 +93,28 @@ impl<I: SwarmIdentity + Clone> BootNode<I> {
         self.base.start_listening()
     }
 
-    async fn start_and_run(mut self) -> Result<()> {
+    /// Start listening and run the event loop with graceful shutdown support.
+    pub async fn start_and_run(mut self, shutdown: GracefulShutdown) -> Result<()> {
         self.start_listening()?;
-        self.run().await
+        self.run(shutdown).await
     }
 
-    pub async fn run(mut self) -> Result<()> {
+    /// Run the event loop with graceful shutdown support.
+    ///
+    /// When the shutdown signal fires, the node will complete its current work
+    /// and exit gracefully.
+    pub async fn run(mut self, shutdown: GracefulShutdown) -> Result<()> {
         info!("Starting bootnode event loop");
+
+        let mut shutdown = std::pin::pin!(shutdown);
 
         loop {
             tokio::select! {
+                guard = &mut shutdown => {
+                    info!("Bootnode shutdown signal received");
+                    drop(guard);
+                    break;
+                }
                 event = self.base.swarm.next() => {
                     if let Some(event) = event {
                         self.handle_swarm_event(event);
@@ -110,6 +122,9 @@ impl<I: SwarmIdentity + Clone> BootNode<I> {
                 }
             }
         }
+
+        info!("Bootnode shutdown complete");
+        Ok(())
     }
 
     fn handle_swarm_event(&mut self, event: SwarmEvent<BootnodeEvent>) {
@@ -123,13 +138,13 @@ impl<I: SwarmIdentity + Clone> BootNode<I> {
     fn handle_behaviour_event(&mut self, event: BootnodeEvent) {
         match event {
             BootnodeEvent::Identify(boxed_event) => {
-                Self::handle_identify_event(*boxed_event);
+                self.handle_identify_event(*boxed_event);
             }
             BootnodeEvent::Topology(_) => {}
         }
     }
 
-    fn handle_identify_event(event: identify::Event) {
+    fn handle_identify_event(&self, event: identify::Event) {
         match event {
             identify::Event::Received { peer_id, info, .. } => {
                 debug!(
@@ -138,6 +153,10 @@ impl<I: SwarmIdentity + Clone> BootNode<I> {
                     agent_version = %info.agent_version,
                     "Received identify info"
                 );
+                // Store agent version for diagnostics
+                self.base
+                    .topology_handle
+                    .set_agent_version(&peer_id, info.agent_version);
             }
             identify::Event::Sent { peer_id, .. } => {
                 debug!(%peer_id, "Sent identify info");
@@ -156,13 +175,6 @@ impl<I: SwarmIdentity + Clone> BootNode<I> {
     }
 }
 
-impl<I: SwarmIdentity + Clone> SpawnableTask for BootNode<I> {
-    async fn into_task(self) {
-        if let Err(e) = self.start_and_run().await {
-            tracing::error!(error = %e, "BootNode error");
-        }
-    }
-}
 
 /// Builder for BootNode.
 pub struct BootNodeBuilder<I: SwarmIdentity> {
@@ -201,11 +213,10 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
         let mut infra = match self.infra {
             Some(infra) => infra,
             None => {
-                let mut options = TopologyBuildOptions::new();
-                if let Some(kademlia) = self.kademlia_config {
-                    options = options.with_kademlia(kademlia);
-                }
-                BuiltInfrastructure::from_config(self.identity, network_config, options)?
+                let topology_config = TopologyConfig::new()
+                    .with_kademlia(self.kademlia_config.unwrap_or_default())
+                    .with_nat_auto(network_config.nat_auto_enabled());
+                BuiltInfrastructure::from_config(self.identity, network_config, topology_config)?
             }
         };
 
@@ -239,6 +250,9 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
         let local_peer_id = *swarm.local_peer_id();
         info!(%local_peer_id, "Bootnode peer ID");
         info!(overlay = %infra.identity.overlay_address(), "Overlay address");
+
+        // Set local PeerId for address advertisement in handshakes
+        swarm.behaviour().topology.set_local_peer_id(local_peer_id);
 
         if infra.topology_handle.connect_bootnodes().await.is_err() {
             warn!("Failed to send connect_bootnodes command");

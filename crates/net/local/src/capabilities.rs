@@ -29,37 +29,45 @@ impl LocalCapabilities {
     /// Handle new listen address from libp2p.
     ///
     /// Returns `true` if this address caused capability to become known
-    /// (transitioned from None to a known capability). Use this to trigger
-    /// immediate peer dialing on first address.
+    /// (transitioned from unknown to known).
     pub fn on_new_listen_addr(&self, addr: Multiaddr) -> bool {
         let mut addrs = self.listen_addrs.write();
-        if !addrs.contains(&addr) {
-            debug!(listen_addr = %addr, "new listen address");
-            let was_unknown = !self.capability.read().is_known();
-            addrs.push(addr);
-            self.update_capability(&addrs);
-            was_unknown && self.capability.read().is_known()
-        } else {
-            false
+        if addrs.contains(&addr) {
+            return false;
         }
+
+        debug!(listen_addr = %addr, "new listen address");
+        addrs.push(addr);
+
+        // Hold write lock across check-update-verify to prevent TOCTOU
+        let mut cap = self.capability.write();
+        let was_unknown = !cap.is_known();
+        let new_cap = NetworkCapability::from_addrs(&*addrs);
+
+        if new_cap != *cap {
+            info!(?cap, ?new_cap, "network capability changed");
+            *cap = new_cap;
+        }
+
+        was_unknown && cap.is_known()
     }
 
     /// Handle expired listen address from libp2p.
     pub fn on_expired_listen_addr(&self, addr: &Multiaddr) {
         let mut addrs = self.listen_addrs.write();
-        if let Some(pos) = addrs.iter().position(|a| a == addr) {
-            debug!(listen_addr = %addr, "expired listen address");
-            addrs.remove(pos);
-            self.update_capability(&addrs);
-        }
-    }
+        let Some(pos) = addrs.iter().position(|a| a == addr) else {
+            return;
+        };
 
-    fn update_capability(&self, listen_addrs: &[Multiaddr]) {
-        let new_cap = NetworkCapability::from_addrs(listen_addrs);
-        let old_cap = self.capability.read().clone();
-        if new_cap != old_cap {
-            info!(?old_cap, ?new_cap, "network capability changed");
-            *self.capability.write() = new_cap;
+        debug!(listen_addr = %addr, "expired listen address");
+        addrs.remove(pos);
+
+        let mut cap = self.capability.write();
+        let new_cap = NetworkCapability::from_addrs(&*addrs);
+
+        if new_cap != *cap {
+            info!(?cap, ?new_cap, "network capability changed");
+            *cap = new_cap;
         }
     }
 

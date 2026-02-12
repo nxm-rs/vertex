@@ -19,14 +19,14 @@ use std::{
 use libp2p::{
     Multiaddr, PeerId,
     swarm::{
-        SubstreamProtocol,
+        StreamUpgradeError, SubstreamProtocol,
         handler::{
             ConnectionEvent, ConnectionHandler, ConnectionHandlerEvent, FullyNegotiatedInbound,
             FullyNegotiatedOutbound,
         },
     },
 };
-use tracing::{debug, trace, warn};
+use tracing::{debug, info_span, trace, warn};
 use vertex_net_handshake::{HANDSHAKE_TIMEOUT, HandshakeError, HandshakeInfo};
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_peer::SwarmPeer;
@@ -35,28 +35,15 @@ use crate::nat_discovery::NatDiscovery;
 
 use crate::protocol::{
     TopologyInboundOutput, TopologyInboundUpgrade, TopologyOutboundInfo, TopologyOutboundOutput,
-    TopologyOutboundUpgrade,
+    TopologyOutboundUpgrade, TopologyUpgradeError,
 };
 
-/// Configuration for topology protocols.
+/// Handler-specific configuration extracted from TopologyConfig.
 #[derive(Debug, Clone)]
-pub struct TopologyConfig {
-    /// Timeout for hive operations.
+pub(crate) struct HandlerConfig {
     pub hive_timeout: Duration,
-    /// Timeout for pingpong operations.
     pub pingpong_timeout: Duration,
-    /// Default greeting for pingpong.
     pub pingpong_greeting: String,
-}
-
-impl Default for TopologyConfig {
-    fn default() -> Self {
-        Self {
-            hive_timeout: Duration::from_secs(60),
-            pingpong_timeout: Duration::from_secs(30),
-            pingpong_greeting: "ping".to_string(),
-        }
-    }
 }
 
 /// Commands from behaviour to handler (internal).
@@ -86,9 +73,17 @@ impl std::fmt::Debug for Command {
 /// Events from handler to behaviour (internal).
 pub enum Event {
     /// Handshake completed.
-    HandshakeCompleted(Box<HandshakeInfo>),
+    HandshakeCompleted {
+        info: Box<HandshakeInfo>,
+        /// Duration from handler creation to handshake completion.
+        handshake_duration: Duration,
+    },
     /// Handshake failed.
-    HandshakeFailed(HandshakeError),
+    HandshakeFailed {
+        error: HandshakeError,
+        /// Duration from handler creation to failure.
+        handshake_duration: Duration,
+    },
     /// Received peers via hive.
     HivePeersReceived(Vec<SwarmPeer>),
     /// Hive broadcast completed.
@@ -106,11 +101,16 @@ pub enum Event {
 impl std::fmt::Debug for Event {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::HandshakeCompleted(info) => f
-                .debug_tuple("HandshakeCompleted")
-                .field(&info.peer_id)
+            Self::HandshakeCompleted { info, handshake_duration } => f
+                .debug_struct("HandshakeCompleted")
+                .field("peer_id", &info.peer_id)
+                .field("duration_ms", &handshake_duration.as_millis())
                 .finish(),
-            Self::HandshakeFailed(e) => f.debug_tuple("HandshakeFailed").field(e).finish(),
+            Self::HandshakeFailed { error, handshake_duration } => f
+                .debug_struct("HandshakeFailed")
+                .field("error", error)
+                .field("duration_ms", &handshake_duration.as_millis())
+                .finish(),
             Self::HivePeersReceived(peers) => f
                 .debug_tuple("HivePeersReceived")
                 .field(&peers.len())
@@ -133,7 +133,7 @@ enum State {
 
 /// Per-connection handler for topology protocols.
 pub struct TopologyHandler<I: SwarmIdentity> {
-    config: TopologyConfig,
+    config: HandlerConfig,
     identity: Arc<I>,
     peer_id: PeerId,
     remote_addr: Multiaddr,
@@ -146,12 +146,14 @@ pub struct TopologyHandler<I: SwarmIdentity> {
     hive_outbound_pending: bool,
     pingpong_outbound_pending: bool,
     pending_ping_command: Option<String>,
+    /// When this handler was created (for handshake duration tracking).
+    created_at: Instant,
 }
 
 impl<I: SwarmIdentity> TopologyHandler<I> {
     /// Create a new handler.
-    pub fn new(
-        config: TopologyConfig,
+    pub(crate) fn new(
+        config: HandlerConfig,
         identity: Arc<I>,
         peer_id: PeerId,
         remote_addr: &Multiaddr,
@@ -171,7 +173,13 @@ impl<I: SwarmIdentity> TopologyHandler<I> {
             hive_outbound_pending: false,
             pingpong_outbound_pending: false,
             pending_ping_command: None,
+            created_at: Instant::now(),
         }
+    }
+
+    /// Returns the duration since this handler was created.
+    pub fn elapsed(&self) -> Duration {
+        self.created_at.elapsed()
     }
 
     fn inbound_upgrade(&self) -> TopologyInboundUpgrade<I> {
@@ -337,10 +345,12 @@ impl<I: SwarmIdentity> ConnectionHandler for TopologyHandler<I> {
                 match error.info {
                     TopologyOutboundInfo::Handshake => {
                         self.handshake_outbound_pending = false;
-                        let handshake_error = HandshakeError::Protocol(error.error.to_string());
+                        let handshake_error = extract_handshake_error(error.error);
                         self.state = State::Failed;
-                        self.pending_events
-                            .push_back(Event::HandshakeFailed(handshake_error));
+                        self.pending_events.push_back(Event::HandshakeFailed {
+                            error: handshake_error,
+                            handshake_duration: self.created_at.elapsed(),
+                        });
                     }
                     TopologyOutboundInfo::Hive => {
                         self.hive_outbound_pending = false;
@@ -358,10 +368,12 @@ impl<I: SwarmIdentity> ConnectionHandler for TopologyHandler<I> {
             ConnectionEvent::ListenUpgradeError(error) => {
                 warn!(peer_id = %self.peer_id, error = %error.error, "Inbound upgrade error");
                 if matches!(self.state, State::Handshaking) {
-                    let handshake_error = HandshakeError::Protocol(error.error.to_string());
+                    let handshake_error = extract_handshake_error_from_topology(error.error);
                     self.state = State::Failed;
-                    self.pending_events
-                        .push_back(Event::HandshakeFailed(handshake_error));
+                    self.pending_events.push_back(Event::HandshakeFailed {
+                        error: handshake_error,
+                        handshake_duration: self.created_at.elapsed(),
+                    });
                 }
             }
 
@@ -374,13 +386,30 @@ impl<I: SwarmIdentity> TopologyHandler<I> {
     fn handle_inbound_output(&mut self, output: TopologyInboundOutput) {
         match output {
             TopologyInboundOutput::Handshake(info) => {
-                debug!(peer_id = %self.peer_id, overlay = %info.swarm_peer.overlay(), "Handshake completed (inbound)");
+                let duration = self.created_at.elapsed();
+                let _span = info_span!(
+                    "handshake_complete",
+                    peer_id = %self.peer_id,
+                    overlay = %info.swarm_peer.overlay(),
+                    direction = "inbound",
+                    duration_ms = duration.as_millis() as u64,
+                )
+                .entered();
+                debug!("Handshake completed");
                 self.state = State::Ready;
-                self.pending_events
-                    .push_back(Event::HandshakeCompleted(info));
+                self.pending_events.push_back(Event::HandshakeCompleted {
+                    info,
+                    handshake_duration: duration,
+                });
             }
             TopologyInboundOutput::Hive(peers) => {
-                debug!(peer_id = %self.peer_id, count = peers.len(), "Received hive peers");
+                let _span = info_span!(
+                    "hive_peers_received",
+                    peer_id = %self.peer_id,
+                    peer_count = peers.len(),
+                )
+                .entered();
+                debug!("Received hive peers");
                 self.pending_events
                     .push_back(Event::HivePeersReceived(peers));
             }
@@ -402,10 +431,21 @@ impl<I: SwarmIdentity> TopologyHandler<I> {
                 TopologyOutboundInfo::Handshake,
             ) => {
                 self.handshake_outbound_pending = false;
-                debug!(peer_id = %self.peer_id, overlay = %handshake_info.swarm_peer.overlay(), "Handshake completed (outbound)");
+                let duration = self.created_at.elapsed();
+                let _span = info_span!(
+                    "handshake_complete",
+                    peer_id = %self.peer_id,
+                    overlay = %handshake_info.swarm_peer.overlay(),
+                    direction = "outbound",
+                    duration_ms = duration.as_millis() as u64,
+                )
+                .entered();
+                debug!("Handshake completed");
                 self.state = State::Ready;
-                self.pending_events
-                    .push_back(Event::HandshakeCompleted(handshake_info));
+                self.pending_events.push_back(Event::HandshakeCompleted {
+                    info: handshake_info,
+                    handshake_duration: duration,
+                });
             }
             (TopologyOutboundOutput::Hive, TopologyOutboundInfo::Hive) => {
                 self.hive_outbound_pending = false;
@@ -418,12 +458,38 @@ impl<I: SwarmIdentity> TopologyHandler<I> {
             ) => {
                 self.pingpong_outbound_pending = false;
                 let rtt = sent_at.elapsed();
-                trace!(peer_id = %self.peer_id, rtt_ms = rtt.as_millis(), response = %pong.response, "Pong received");
+                let _span = info_span!(
+                    "pingpong",
+                    peer_id = %self.peer_id,
+                    rtt_ms = rtt.as_millis() as u64,
+                )
+                .entered();
+                trace!(response = %pong.response, "Pong received");
                 self.pending_events.push_back(Event::PingpongPong { rtt });
             }
             _ => {
                 warn!(peer_id = %self.peer_id, "Mismatched outbound output and info");
             }
         }
+    }
+}
+
+/// Extract HandshakeError from StreamUpgradeError (for dial/outbound errors).
+fn extract_handshake_error(error: StreamUpgradeError<TopologyUpgradeError>) -> HandshakeError {
+    match error {
+        StreamUpgradeError::Timeout => HandshakeError::Timeout,
+        StreamUpgradeError::Io(e) => HandshakeError::Io(e),
+        StreamUpgradeError::Apply(e) => extract_handshake_error_from_topology(e),
+        StreamUpgradeError::NegotiationFailed => {
+            HandshakeError::UpgradeError("protocol negotiation failed".to_string())
+        }
+    }
+}
+
+/// Extract HandshakeError from TopologyUpgradeError (for listen/inbound errors).
+fn extract_handshake_error_from_topology(error: TopologyUpgradeError) -> HandshakeError {
+    match error {
+        TopologyUpgradeError::Handshake(e) => e,
+        other => HandshakeError::UpgradeError(other.to_string()),
     }
 }

@@ -1,10 +1,9 @@
 //! Metrics for the handshake protocol.
 
 use metrics::{counter, gauge, histogram};
-use vertex_swarm_observability::{
+use vertex_observability::{
     GaugeGuard, LabelValue,
-    common::{direction, outcome},
-    labels::node_type,
+    labels::{direction, outcome},
 };
 use vertex_swarm_peer::SwarmNodeType;
 
@@ -43,9 +42,10 @@ impl HandshakeMetrics {
 
     /// Record a successful handshake.
     pub fn record_success(mut self, peer_node_type: SwarmNodeType) {
-        let node_type_label = match peer_node_type {
-            SwarmNodeType::Storer => node_type::STORER,
-            SwarmNodeType::Client | SwarmNodeType::Bootnode => node_type::CLIENT,
+        // Map bootnode to client for metrics (bootnodes behave like clients)
+        let node_type_label: &'static str = match peer_node_type {
+            SwarmNodeType::Storer => SwarmNodeType::Storer.into(),
+            SwarmNodeType::Client | SwarmNodeType::Bootnode => SwarmNodeType::Client.into(),
         };
 
         counter!(

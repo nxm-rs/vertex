@@ -1,10 +1,10 @@
-//! Peer manager with Arc-per-peer pattern.
+//! Peer manager with Arc-per-peer pattern and DashMap for concurrent access.
 
-use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use parking_lot::RwLock;
+use dashmap::DashMap;
 use tracing::{debug, trace, warn};
 use vertex_net_local::IpCapability;
 use vertex_net_peer_store::{FilePeerStore, NetPeerStore, PeerRecord, StoreError};
@@ -16,6 +16,7 @@ use vertex_swarm_primitives::OverlayAddress;
 use crate::data::SwarmPeerData;
 use crate::entry::PeerEntry;
 use crate::error::PeerManagerError;
+use crate::pruner::PruneConfig;
 use crate::snapshot::SwarmPeerSnapshot;
 
 /// Default maximum tracked peers.
@@ -23,17 +24,18 @@ pub const DEFAULT_MAX_TRACKED_PEERS: usize = 10_000;
 
 /// Peer lifecycle manager with Arc-per-peer pattern.
 ///
-/// Stores peer metadata (scoring, addresses, ban info). Connection state and
-/// PeerId ↔ OverlayAddress mapping is tracked by ConnectionRegistry in the topology layer.
+/// Uses DashMap for concurrent peer access without global locks. Connection state
+/// and PeerId ↔ OverlayAddress mapping is tracked by ConnectionRegistry in the topology layer.
 pub struct PeerManager {
-    peers: RwLock<HashMap<OverlayAddress, Arc<PeerEntry>>>,
+    peers: DashMap<OverlayAddress, Arc<PeerEntry>>,
     store: Option<Arc<dyn NetPeerStore<OverlayAddress, SwarmPeerSnapshot>>>,
     scoring_config: Arc<SwarmScoringConfig>,
     max_tracked_peers: Option<usize>,
+    prune_in_progress: AtomicBool,
 }
 
 impl PeerManager {
-    /// Create a new peer manager with default settings.
+    /// Create with default settings.
     pub fn new() -> Self {
         Self::with_config(SwarmScoringConfig::default(), Some(DEFAULT_MAX_TRACKED_PEERS))
     }
@@ -41,18 +43,12 @@ impl PeerManager {
     /// Create with specified scoring config and limits.
     pub fn with_config(scoring_config: SwarmScoringConfig, max_tracked_peers: Option<usize>) -> Self {
         Self {
-            peers: RwLock::new(HashMap::new()),
+            peers: DashMap::new(),
             store: None,
             scoring_config: Arc::new(scoring_config),
             max_tracked_peers,
+            prune_in_progress: AtomicBool::new(false),
         }
-    }
-
-    /// Create with specified limits (uses default scoring config).
-    pub fn with_limits(ban_threshold: f64, max_tracked_peers: Option<usize>) -> Self {
-        let mut config = SwarmScoringConfig::default();
-        config.ban_threshold = ban_threshold;
-        Self::with_config(config, max_tracked_peers)
     }
 
     /// Create with a peer store for persistence.
@@ -76,17 +72,6 @@ impl PeerManager {
         pm.store = Some(store);
         pm.load_from_store()?;
         Ok(pm)
-    }
-
-    /// Create with store and specified limits (legacy API).
-    pub fn with_store_and_limits(
-        store: Arc<dyn NetPeerStore<OverlayAddress, SwarmPeerSnapshot>>,
-        ban_threshold: f64,
-        max_tracked_peers: Option<usize>,
-    ) -> Result<Self, StoreError> {
-        let mut config = SwarmScoringConfig::default();
-        config.ban_threshold = ban_threshold;
-        Self::with_store_and_config(store, config, max_tracked_peers)
     }
 
     /// Create from configuration.
@@ -120,6 +105,11 @@ impl PeerManager {
         self.scoring_config.ban_threshold
     }
 
+    /// Get the maximum tracked peers limit.
+    pub fn max_tracked_peers(&self) -> Option<usize> {
+        self.max_tracked_peers
+    }
+
     fn load_from_store(&self) -> Result<(), StoreError> {
         let Some(store) = &self.store else {
             return Ok(());
@@ -129,7 +119,6 @@ impl PeerManager {
         let count = records.len();
 
         if count > 0 {
-            let mut peers = self.peers.write();
             for record in records {
                 let overlay = *record.id();
                 let snapshot = record.into_data();
@@ -137,7 +126,7 @@ impl PeerManager {
                     snapshot,
                     Arc::clone(&self.scoring_config),
                 ));
-                peers.insert(overlay, entry);
+                self.peers.insert(overlay, entry);
             }
             tracing::info!(count, "loaded peers from store");
         }
@@ -147,7 +136,6 @@ impl PeerManager {
     /// Check if a peer is a full node.
     pub fn is_full_node(&self, overlay: &OverlayAddress) -> bool {
         self.peers
-            .read()
             .get(overlay)
             .map(|e| e.is_full_node())
             .unwrap_or(false)
@@ -156,33 +144,51 @@ impl PeerManager {
     /// Get known peers that are not banned (for seeding routing tables).
     pub fn known_peers(&self) -> Vec<OverlayAddress> {
         self.peers
-            .read()
             .iter()
-            .filter(|(_, e)| !e.is_banned())
-            .map(|(o, _)| *o)
+            .filter(|r| !r.value().is_banned())
+            .map(|r| *r.key())
             .collect()
     }
 
-    /// Count of known peers that are not banned (avoids allocating Vec).
+    /// Count of known peers that are not banned.
     pub fn known_peers_count(&self) -> usize {
         self.peers
-            .read()
             .iter()
-            .filter(|(_, e)| !e.is_banned())
+            .filter(|r| !r.value().is_banned())
             .count()
     }
 
-    /// Get SwarmPeers for candidates that are not banned.
+    /// Get all known full-node peers that aren't banned.
+    pub fn known_full_node_overlays(&self) -> Vec<OverlayAddress> {
+        self.peers
+            .iter()
+            .filter(|r| r.value().is_full_node() && !r.value().is_banned())
+            .map(|r| *r.key())
+            .collect()
+    }
+
+    /// Get SwarmPeer data for multiple overlays.
+    pub fn get_swarm_peers(&self, overlays: &[OverlayAddress]) -> Vec<SwarmPeer> {
+        overlays
+            .iter()
+            .filter_map(|o| self.peers.get(o).map(|r| r.swarm_peer()))
+            .collect()
+    }
+
+    /// Get SwarmPeers for candidates that are not banned and not in backoff.
     ///
     /// Used by topology to get dialable peers. Connection state filtering
     /// should be done by the caller using ConnectionRegistry.
     pub fn get_dialable_peers(&self, candidates: &[OverlayAddress]) -> Vec<SwarmPeer> {
-        let peers = self.peers.read();
         candidates
             .iter()
             .filter_map(|overlay| {
-                let entry = peers.get(overlay)?;
+                let entry = self.peers.get(overlay)?;
                 if entry.is_banned() {
+                    return None;
+                }
+                if entry.is_in_backoff() {
+                    trace!(?overlay, backoff = ?entry.backoff_remaining(), "peer in backoff");
                     return None;
                 }
                 Some(entry.swarm_peer())
@@ -193,19 +199,18 @@ impl PeerManager {
     /// Get multiaddrs for a peer.
     pub fn get_multiaddrs(&self, overlay: &OverlayAddress) -> Option<Vec<libp2p::Multiaddr>> {
         self.peers
-            .read()
             .get(overlay)
-            .map(|e| e.swarm_peer().multiaddrs().to_vec())
+            .map(|r| r.swarm_peer().multiaddrs().to_vec())
     }
 
     /// Get a peer's IP capability.
     pub fn get_peer_capability(&self, overlay: &OverlayAddress) -> Option<IpCapability> {
-        self.peers.read().get(overlay).map(|e| e.ip_capability())
+        self.peers.get(overlay).map(|r| r.ip_capability())
     }
 
     /// Get a peer entry by overlay address.
     pub fn get_peer(&self, overlay: &OverlayAddress) -> Option<Arc<PeerEntry>> {
-        self.peers.read().get(overlay).cloned()
+        self.peers.get(overlay).map(|r| r.value().clone())
     }
 
     /// Store a single discovered peer.
@@ -248,92 +253,121 @@ impl PeerManager {
 
     /// Get a peer snapshot by overlay address.
     pub fn get_peer_snapshot(&self, overlay: &OverlayAddress) -> Option<SwarmPeerSnapshot> {
-        self.peers.read().get(overlay).map(|e| e.snapshot())
+        self.peers.get(overlay).map(|r| r.snapshot())
     }
 
     /// Check if a peer is banned.
     pub fn is_banned(&self, overlay: &OverlayAddress) -> bool {
         self.peers
-            .read()
             .get(overlay)
-            .map(|e| e.is_banned())
+            .map(|r| r.is_banned())
             .unwrap_or(false)
     }
 
     /// Ban a peer.
     pub fn ban(&self, overlay: &OverlayAddress, reason: Option<String>) {
         warn!(?overlay, ?reason, "banning peer");
-        if let Some(entry) = self.peers.read().get(overlay) {
+        if let Some(entry) = self.peers.get(overlay) {
             entry.ban(reason);
-            self.persist_peer(overlay, entry);
+            self.persist_peer(overlay, &entry);
         }
     }
 
     /// Insert or update a peer, returns the entry.
     fn insert_peer(&self, overlay: OverlayAddress, data: SwarmPeerData) -> Arc<PeerEntry> {
-        let mut peers = self.peers.write();
+        use dashmap::mapref::entry::Entry;
 
-        if let Some(existing) = peers.get(&overlay) {
-            existing.update_data(data);
-            return Arc::clone(existing);
+        match self.peers.entry(overlay) {
+            Entry::Occupied(e) => {
+                e.get().update_data(data);
+                Arc::clone(e.get())
+            }
+            Entry::Vacant(e) => {
+                let entry = Arc::new(PeerEntry::with_config(data, Arc::clone(&self.scoring_config)));
+                e.insert(Arc::clone(&entry));
+                entry
+            }
         }
-
-        // Check if we need to prune
-        if let Some(max) = self.max_tracked_peers
-            && peers.len() >= max
-        {
-            self.prune_peers_locked(&mut peers);
-        }
-
-        let entry = Arc::new(PeerEntry::with_config(data, Arc::clone(&self.scoring_config)));
-        peers.insert(overlay, Arc::clone(&entry));
-        entry
     }
 
-    /// Prune peers when at capacity: banned first, then lowest score, then oldest.
-    fn prune_peers_locked(&self, peers: &mut HashMap<OverlayAddress, Arc<PeerEntry>>) {
+    /// Check if pruning should run based on capacity threshold.
+    pub fn should_prune(&self, config: &PruneConfig) -> bool {
+        let Some(max) = self.max_tracked_peers else {
+            return false;
+        };
+        if self.prune_in_progress.load(Ordering::Acquire) {
+            return false;
+        }
+        self.peers.len() >= (max as f64 * config.capacity_threshold) as usize
+    }
+
+    /// Run async pruning. Uses CAS to ensure single pruner.
+    pub async fn prune_async(&self, config: &PruneConfig) {
+        if self
+            .prune_in_progress
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        let _guard = scopeguard::guard((), |_| {
+            self.prune_in_progress.store(false, Ordering::Release);
+        });
+
         let Some(max) = self.max_tracked_peers else {
             return;
         };
 
-        let to_remove = peers.len().saturating_sub(max / 2);
+        let target = (max as f64 * config.target_utilization) as usize;
+        let to_remove = self.peers.len().saturating_sub(target);
+
         if to_remove == 0 {
             return;
         }
 
-        let ban_threshold = self.scoring_config.ban_threshold;
+        let candidates = self.collect_prune_candidates(to_remove);
 
-        // Collect peers with their pruning priority
-        let mut candidates: Vec<_> = peers
+        for batch in candidates.chunks(config.batch_size) {
+            for overlay in batch {
+                self.peers.remove(overlay);
+                if let Some(store) = &self.store {
+                    let _ = store.remove(overlay);
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+
+        debug!(removed = candidates.len(), remaining = self.peers.len(), "pruned peers");
+    }
+
+    fn collect_prune_candidates(&self, count: usize) -> Vec<OverlayAddress> {
+        let ban_threshold = self.scoring_config.ban_threshold;
+        let mut candidates: Vec<_> = self
+            .peers
             .iter()
-            .map(|(o, e)| {
+            .map(|r| {
+                let e = r.value();
                 let priority = if e.is_banned() {
                     0 // Banned peers removed first
+                } else if e.is_stale() {
+                    1 // Stale peers (no connection in 1 week with failures)
                 } else if e.score() < ban_threshold {
-                    1 // Low score peers next
+                    2 // Low score peers next
                 } else {
-                    2 // Normal peers last
+                    3 // Normal peers last
                 };
-                (*o, priority, e.score(), e.last_seen())
+                (*r.key(), priority, e.score(), e.last_seen())
             })
             .collect();
 
-        // Sort by: priority (ascending), score (ascending), last_seen (ascending)
         candidates.sort_by(|a, b| {
             a.1.cmp(&b.1)
                 .then(a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
                 .then(a.3.cmp(&b.3))
         });
 
-        // Remove the first `to_remove` peers
-        for (overlay, _, _, _) in candidates.into_iter().take(to_remove) {
-            peers.remove(&overlay);
-            if let Some(store) = &self.store {
-                let _ = store.remove(&overlay);
-            }
-        }
-
-        debug!(removed = to_remove, remaining = peers.len(), "pruned peers");
+        candidates.into_iter().take(count).map(|(o, ..)| o).collect()
     }
 
     fn persist_peer(&self, overlay: &OverlayAddress, entry: &PeerEntry) {
@@ -367,14 +401,16 @@ impl PeerManager {
         let Some(store) = &self.store else {
             return Ok(0);
         };
-        let peers = self.peers.read();
-        let records: Vec<_> = peers
+
+        let records: Vec<_> = self
+            .peers
             .iter()
-            .map(|(overlay, entry)| {
-                let snapshot = entry.snapshot();
-                PeerRecord::new(*overlay, snapshot, entry.first_seen(), entry.last_seen())
+            .map(|r| {
+                let snapshot = r.value().snapshot();
+                PeerRecord::new(*r.key(), snapshot, r.value().first_seen(), r.value().last_seen())
             })
             .collect();
+
         let count = records.len();
         store.save_batch(&records)?;
         store.flush()?;
@@ -383,17 +419,16 @@ impl PeerManager {
 
     /// Get statistics about the peer manager.
     pub fn stats(&self) -> PeerManagerStats {
-        let peers = self.peers.read();
-        let total = peers.len();
+        let total = self.peers.len();
 
         let mut banned = 0;
         let mut total_score = 0.0;
 
-        for entry in peers.values() {
-            if entry.is_banned() {
+        for r in self.peers.iter() {
+            if r.value().is_banned() {
                 banned += 1;
             }
-            total_score += entry.score();
+            total_score += r.value().score();
         }
 
         let avg_score = if total > 0 {
@@ -447,6 +482,9 @@ pub trait InternalPeerManager: Send + Sync {
 
     /// Record latency for a peer.
     fn record_latency(&self, overlay: &OverlayAddress, rtt: Duration);
+
+    /// Record a dial failure for exponential backoff.
+    fn record_dial_failure(&self, overlay: &OverlayAddress);
 }
 
 impl InternalPeerManager for PeerManager {
@@ -461,9 +499,24 @@ impl InternalPeerManager for PeerManager {
     }
 
     fn record_latency(&self, overlay: &OverlayAddress, rtt: Duration) {
-        if let Some(entry) = self.peers.read().get(overlay) {
+        if let Some(entry) = self.peers.get(overlay) {
             entry.set_latency(rtt);
             trace!(?overlay, ?rtt, "recorded latency");
+        }
+    }
+
+    fn record_dial_failure(&self, overlay: &OverlayAddress) {
+        if let Some(entry) = self.peers.get(overlay) {
+            entry.record_dial_failure();
+            let failures = entry.consecutive_failures();
+            let backoff = entry.backoff_remaining();
+            debug!(
+                ?overlay,
+                failures,
+                backoff_secs = backoff.map(|d| d.as_secs()),
+                "recorded dial failure with backoff"
+            );
+            self.persist_peer(overlay, &entry);
         }
     }
 }
@@ -546,17 +599,29 @@ mod tests {
         assert_eq!(dialable.len(), 4);
     }
 
-    #[test]
-    fn test_pruning() {
-        let pm = PeerManager::with_limits(-100.0, Some(10));
+    #[tokio::test]
+    async fn test_async_pruning() {
+        let pm = PeerManager::with_config(SwarmScoringConfig::default(), Some(10));
 
         // Add more peers than max
         for n in 1..=15 {
             pm.store_discovered_peer(test_swarm_peer(n));
         }
 
-        // Should have pruned down
-        assert!(pm.stats().total_peers <= 10);
+        // Should have all peers (no sync pruning)
+        assert_eq!(pm.stats().total_peers, 15);
+
+        // Now prune async
+        let config = PruneConfig {
+            capacity_threshold: 0.5,
+            target_utilization: 0.5,
+            batch_size: 5,
+            ..Default::default()
+        };
+        pm.prune_async(&config).await;
+
+        // Should have pruned down to target
+        assert!(pm.stats().total_peers <= 5);
     }
 
     #[test]
@@ -565,5 +630,56 @@ mod tests {
         let pm = PeerManager::with_config(config.clone(), None);
 
         assert_eq!(pm.scoring_config().connection_timeout, config.connection_timeout);
+    }
+
+    #[test]
+    fn test_known_full_node_overlays() {
+        let pm = PeerManager::new();
+
+        // Store some peers as full nodes, some as light nodes
+        pm.on_peer_ready(test_swarm_peer(1), true);
+        pm.on_peer_ready(test_swarm_peer(2), false);
+        pm.on_peer_ready(test_swarm_peer(3), true);
+        pm.on_peer_ready(test_swarm_peer(4), false);
+
+        // Ban one full node
+        pm.ban(&test_overlay(1), None);
+
+        let full_nodes = pm.known_full_node_overlays();
+
+        // Should only have one non-banned full node (#3)
+        assert_eq!(full_nodes.len(), 1);
+        assert!(full_nodes.contains(&test_overlay(3)));
+    }
+
+    #[test]
+    fn test_get_swarm_peers() {
+        let pm = PeerManager::new();
+
+        // Store some peers
+        for n in 1..=5 {
+            pm.on_peer_ready(test_swarm_peer(n), true);
+        }
+
+        // Request subset of overlays
+        let overlays = vec![test_overlay(1), test_overlay(3), test_overlay(5)];
+        let peers = pm.get_swarm_peers(&overlays);
+
+        assert_eq!(peers.len(), 3);
+    }
+
+    #[test]
+    fn test_get_swarm_peers_missing() {
+        let pm = PeerManager::new();
+
+        // Store only peer 1
+        pm.on_peer_ready(test_swarm_peer(1), true);
+
+        // Request overlays including non-existent ones
+        let overlays = vec![test_overlay(1), test_overlay(99)];
+        let peers = pm.get_swarm_peers(&overlays);
+
+        // Should only return the existing peer
+        assert_eq!(peers.len(), 1);
     }
 }

@@ -110,13 +110,28 @@ impl std::fmt::Debug for ClientInboundOutput {
 ///
 /// Advertises pricing, retrieval, and pushsync protocols and dispatches
 /// to the appropriate handler based on the negotiated protocol.
+///
+/// # Dormant State
+///
+/// When `is_active` is false, no protocols are advertised. This prevents
+/// remote peers from initiating client protocols before the handshake is
+/// complete. Once the handler is activated (after handshake), protocols
+/// are advertised on subsequent inbound substream requests.
 #[derive(Clone, Debug, Default)]
-pub struct ClientInboundUpgrade;
+pub struct ClientInboundUpgrade {
+    /// Whether the handler is active (post-handshake).
+    is_active: bool,
+}
 
 impl ClientInboundUpgrade {
-    /// Create a new client inbound upgrade.
+    /// Create a new client inbound upgrade in dormant state (no protocols advertised).
     pub fn new() -> Self {
-        Self
+        Self { is_active: false }
+    }
+
+    /// Create a new client inbound upgrade in active state (all protocols advertised).
+    pub fn active() -> Self {
+        Self { is_active: true }
     }
 }
 
@@ -125,14 +140,20 @@ impl UpgradeInfo for ClientInboundUpgrade {
     type InfoIter = std::vec::IntoIter<Self::Info>;
 
     fn protocol_info(&self) -> Self::InfoIter {
-        vec![
-            PRICING_PROTOCOL,
-            RETRIEVAL_PROTOCOL,
-            PUSHSYNC_PROTOCOL,
-            PSEUDOSETTLE_PROTOCOL,
-            SWAP_PROTOCOL,
-        ]
-        .into_iter()
+        if self.is_active {
+            vec![
+                PRICING_PROTOCOL,
+                RETRIEVAL_PROTOCOL,
+                PUSHSYNC_PROTOCOL,
+                PSEUDOSETTLE_PROTOCOL,
+                SWAP_PROTOCOL,
+            ]
+            .into_iter()
+        } else {
+            // In dormant state, don't advertise any client protocols.
+            // This prevents remote peers from initiating protocols before handshake.
+            vec![].into_iter()
+        }
     }
 }
 

@@ -1,8 +1,7 @@
 //! Topology error types.
 
-use std::path::PathBuf;
-
 use libp2p::Multiaddr;
+use vertex_swarm_peer_manager::PeerManagerError;
 use vertex_swarm_primitives::OverlayAddress;
 
 /// Errors that can occur in topology operations.
@@ -12,13 +11,9 @@ pub enum TopologyError {
     #[error("invalid multiaddr '{addr}': {reason}")]
     InvalidMultiaddr { addr: String, reason: String },
 
-    /// Failed to create the peer store.
-    #[error("failed to create peer store at {path}: {reason}")]
-    PeerStoreCreation { path: PathBuf, reason: String },
-
-    /// Failed to load peers from the store.
-    #[error("failed to load peer store: {reason}")]
-    PeerStoreLoad { reason: String },
+    /// Peer manager initialization failed.
+    #[error(transparent)]
+    PeerManager(#[from] PeerManagerError),
 
     /// Failed to resolve a dnsaddr multiaddr.
     #[error("failed to resolve dnsaddr {addr}: {reason}")]

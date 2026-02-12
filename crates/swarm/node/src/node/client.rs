@@ -18,13 +18,13 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig};
 use vertex_swarm_topology::{
-    KademliaConfig, TopologyBehaviour, TopologyCommand, TopologyHandle, TopologyEvent,
+    KademliaConfig, TopologyBehaviour, TopologyCommand, TopologyHandle, TopologyEvent, TopologyConfig,
 };
-use vertex_tasks::SpawnableTask;
+use vertex_tasks::GracefulShutdown;
 use vertex_tasks::TaskExecutor;
 
 use super::base::BaseNode;
-use super::builder::{BuiltInfrastructure, TopologyBuildOptions};
+use super::builder::BuiltInfrastructure;
 use crate::protocol::{
     BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientCommand, ClientEvent,
     PseudosettleEvent, SwapEvent,
@@ -135,18 +135,29 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
         self.base.start_listening()
     }
 
-    async fn start_and_run(mut self) -> Result<()> {
+    /// Start listening and run the event loop with graceful shutdown support.
+    pub async fn start_and_run(mut self, shutdown: GracefulShutdown) -> Result<()> {
         self.start_listening()?;
-        self.run().await
+        self.run(shutdown).await
     }
 
-    pub async fn run(mut self) -> Result<()> {
+    /// Run the event loop with graceful shutdown support.
+    ///
+    /// When the shutdown signal fires, the node will complete its current work
+    /// and exit gracefully.
+    pub async fn run(mut self, shutdown: GracefulShutdown) -> Result<()> {
         info!("Starting client node event loop");
 
         let mut topo_events = self.base.topology_handle.subscribe();
+        let mut shutdown = std::pin::pin!(shutdown);
 
         loop {
             tokio::select! {
+                guard = &mut shutdown => {
+                    info!("Client node shutdown signal received");
+                    drop(guard);
+                    break;
+                }
                 event = self.base.swarm.select_next_some() => {
                     self.handle_swarm_event(event);
                 }
@@ -162,6 +173,9 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
                 }
             }
         }
+
+        info!("Client node shutdown complete");
+        Ok(())
     }
 
     fn handle_swarm_event(&mut self, event: SwarmEvent<ClientNodeEvent>) {
@@ -175,7 +189,7 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
     fn handle_behaviour_event(&mut self, event: ClientNodeEvent) {
         match event {
             ClientNodeEvent::Identify(event) => {
-                Self::handle_identify_event(*event);
+                self.handle_identify_event(*event);
             }
             ClientNodeEvent::Topology(_) => {}
             ClientNodeEvent::Client(event) => {
@@ -184,7 +198,7 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
         }
     }
 
-    fn handle_identify_event(event: identify::Event) {
+    fn handle_identify_event(&self, event: identify::Event) {
         match event {
             identify::Event::Received { peer_id, info, .. } => {
                 debug!(
@@ -193,6 +207,10 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
                     agent_version = %info.agent_version,
                     "Received identify info"
                 );
+                // Store agent version for diagnostics
+                self.base
+                    .topology_handle
+                    .set_agent_version(&peer_id, info.agent_version);
             }
             identify::Event::Sent { peer_id, .. } => {
                 debug!(%peer_id, "Sent identify info");
@@ -211,7 +229,7 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
             TopologyEvent::PeerReady {
                 overlay,
                 peer_id,
-                is_full_node,
+                storer,
                 ..
             } => {
                 self.base
@@ -221,7 +239,7 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
                     .on_command(ClientCommand::ActivatePeer {
                         peer_id,
                         overlay,
-                        is_full_node,
+                        storer,
                     });
             }
             TopologyEvent::PeerDisconnected { .. } => {}
@@ -251,13 +269,6 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
     }
 }
 
-impl<I: SwarmIdentity + Clone> SpawnableTask for ClientNode<I> {
-    async fn into_task(self) {
-        if let Err(e) = self.start_and_run().await {
-            tracing::error!(error = %e, "ClientNode error");
-        }
-    }
-}
 
 /// Builder for ClientNode.
 pub struct ClientNodeBuilder<I: SwarmIdentity> {
@@ -316,11 +327,10 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
         let mut infra = match self.infra {
             Some(infra) => infra,
             None => {
-                let mut options = TopologyBuildOptions::new();
-                if let Some(kademlia) = self.kademlia_config {
-                    options = options.with_kademlia(kademlia);
-                }
-                BuiltInfrastructure::from_config(self.identity, network_config, options)?
+                let topology_config = TopologyConfig::new()
+                    .with_kademlia(self.kademlia_config.unwrap_or_default())
+                    .with_nat_auto(network_config.nat_auto_enabled());
+                BuiltInfrastructure::from_config(self.identity, network_config, topology_config)?
             }
         };
 
@@ -361,6 +371,9 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
         let local_peer_id = *swarm.local_peer_id();
         info!(%local_peer_id, "Client node peer ID");
         info!(overlay = %infra.identity.overlay_address(), "Overlay address");
+
+        // Set local PeerId for address advertisement in handshakes
+        swarm.behaviour().topology.set_local_peer_id(local_peer_id);
 
         if infra.topology_handle.connect_bootnodes().await.is_err() {
             warn!("Failed to send connect_bootnodes command");

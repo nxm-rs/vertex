@@ -20,6 +20,9 @@ vertex-swarm-primitives = { workspace = true }
 vertex-swarm-peer = { workspace = true, features = ["serde"] }
 vertex-swarm-peer-score = { workspace = true }
 
+# Tasks
+vertex-tasks = { workspace = true }
+
 # Core
 libp2p = { workspace = true }
 parking_lot = { workspace = true }
@@ -27,6 +30,11 @@ tracing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { version = "1.0", features = ["std"] }
 thiserror = { workspace = true }
+
+# Concurrency
+dashmap = { workspace = true }
+scopeguard = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }

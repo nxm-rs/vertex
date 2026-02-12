@@ -1,7 +1,7 @@
 //! Arc-per-peer state for lock-free hot paths.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use parking_lot::RwLock;
@@ -14,7 +14,12 @@ use crate::data::SwarmPeerData;
 use crate::snapshot::SwarmPeerSnapshot;
 use crate::IpCapability;
 
-const ORD: Ordering = Ordering::Relaxed;
+/// Base backoff duration in seconds (30 seconds).
+const BASE_BACKOFF_SECS: u64 = 30;
+/// Maximum backoff duration in seconds (1 hour).
+const MAX_BACKOFF_SECS: u64 = 3600;
+/// Stale peer threshold in seconds (1 week).
+const STALE_THRESHOLD_SECS: u64 = 7 * 24 * 3600;
 
 /// Per-peer state with lock-free scoring and atomic timestamps.
 pub struct PeerEntry {
@@ -23,6 +28,12 @@ pub struct PeerEntry {
     config: Arc<SwarmScoringConfig>,
     first_seen: AtomicU64,
     last_seen: AtomicU64,
+    /// Unix timestamp of last dial attempt.
+    last_dial_attempt: AtomicU64,
+    /// Consecutive dial failures (reset on success).
+    consecutive_failures: AtomicU32,
+    /// Lock-free ban status check (detailed info requires RwLock).
+    is_banned_flag: AtomicBool,
     ban_info: RwLock<Option<BanInfo>>,
 }
 
@@ -41,6 +52,9 @@ impl PeerEntry {
             config,
             first_seen: AtomicU64::new(now),
             last_seen: AtomicU64::new(now),
+            last_dial_attempt: AtomicU64::new(0),
+            consecutive_failures: AtomicU32::new(0),
+            is_banned_flag: AtomicBool::new(false),
             ban_info: RwLock::new(None),
         }
     }
@@ -60,12 +74,16 @@ impl PeerEntry {
         let score = Arc::new(PeerScore::new());
         score.restore(&snapshot.scoring);
 
+        let is_banned = snapshot.ban_info.is_some();
         Self {
             data: RwLock::new(data),
             score,
             config,
             first_seen: AtomicU64::new(snapshot.first_seen),
             last_seen: AtomicU64::new(snapshot.last_seen),
+            last_dial_attempt: AtomicU64::new(snapshot.last_dial_attempt),
+            consecutive_failures: AtomicU32::new(snapshot.consecutive_failures),
+            is_banned_flag: AtomicBool::new(is_banned),
             ban_info: RwLock::new(snapshot.ban_info),
         }
     }
@@ -115,6 +133,7 @@ impl PeerEntry {
     pub fn record_success(&self, latency: Duration) {
         self.score.record_success(latency.as_nanos() as u64);
         self.score.add_score(self.config.connection_success);
+        self.reset_failures();
         self.touch();
     }
 
@@ -159,36 +178,38 @@ impl PeerEntry {
 
     /// Unix timestamp when peer was first seen.
     pub fn first_seen(&self) -> u64 {
-        self.first_seen.load(ORD)
+        self.first_seen.load(Ordering::Relaxed)
     }
 
     /// Unix timestamp when peer was last seen.
     pub fn last_seen(&self) -> u64 {
-        self.last_seen.load(ORD)
+        self.last_seen.load(Ordering::Relaxed)
     }
 
     /// Update last_seen to current time.
     pub fn touch(&self) {
-        self.last_seen.store(unix_timestamp_secs(), ORD);
+        self.last_seen.store(unix_timestamp_secs(), Ordering::Relaxed);
     }
 
-    /// Check if peer is banned.
+    /// Check if peer is banned (lock-free).
     pub fn is_banned(&self) -> bool {
-        self.ban_info.read().is_some()
+        self.is_banned_flag.load(Ordering::Acquire)
     }
 
-    /// Get ban info if banned.
+    /// Get ban info if banned (requires lock).
     pub fn ban_info(&self) -> Option<BanInfo> {
         self.ban_info.read().clone()
     }
 
     /// Ban the peer.
     pub fn ban(&self, reason: Option<String>) {
+        self.is_banned_flag.store(true, Ordering::Release);
         *self.ban_info.write() = Some(BanInfo::new(reason));
     }
 
     /// Unban the peer.
     pub fn unban(&self) {
+        self.is_banned_flag.store(false, Ordering::Release);
         *self.ban_info.write() = None;
     }
 
@@ -203,18 +224,82 @@ impl PeerEntry {
             ban_info: self.ban_info.read().clone(),
             first_seen: self.first_seen(),
             last_seen: self.last_seen(),
+            last_dial_attempt: self.last_dial_attempt(),
+            consecutive_failures: self.consecutive_failures(),
         }
     }
-}
 
-impl std::fmt::Debug for PeerEntry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PeerEntry")
-            .field("score", &self.score())
-            .field("first_seen", &self.first_seen())
-            .field("last_seen", &self.last_seen())
-            .field("is_banned", &self.is_banned())
-            .finish_non_exhaustive()
+    /// Record a dial attempt (sets last_dial_attempt to now).
+    pub fn record_dial_attempt(&self) {
+        self.last_dial_attempt.store(unix_timestamp_secs(), Ordering::Relaxed);
+    }
+
+    /// Record a dial failure (increments consecutive_failures).
+    pub fn record_dial_failure(&self) {
+        self.consecutive_failures.fetch_add(1, Ordering::Relaxed);
+        self.record_dial_attempt();
+    }
+
+    /// Reset consecutive failures (called on successful connection).
+    pub fn reset_failures(&self) {
+        self.consecutive_failures.store(0, Ordering::Relaxed);
+    }
+
+    /// Get last dial attempt timestamp.
+    pub fn last_dial_attempt(&self) -> u64 {
+        self.last_dial_attempt.load(Ordering::Relaxed)
+    }
+
+    /// Get consecutive failure count.
+    pub fn consecutive_failures(&self) -> u32 {
+        self.consecutive_failures.load(Ordering::Relaxed)
+    }
+
+    /// Calculate backoff duration based on consecutive failures.
+    /// Returns None if no backoff needed (no failures or backoff expired).
+    pub fn backoff_remaining(&self) -> Option<Duration> {
+        let failures = self.consecutive_failures();
+        if failures == 0 {
+            return None;
+        }
+
+        let last_attempt = self.last_dial_attempt();
+        if last_attempt == 0 {
+            return None;
+        }
+
+        // Exponential backoff: base * 2^(failures-1), capped at max
+        let backoff_secs = BASE_BACKOFF_SECS
+            .saturating_mul(1u64 << (failures - 1).min(10))
+            .min(MAX_BACKOFF_SECS);
+
+        let now = unix_timestamp_secs();
+        let backoff_until = last_attempt.saturating_add(backoff_secs);
+
+        if now >= backoff_until {
+            None
+        } else {
+            Some(Duration::from_secs(backoff_until - now))
+        }
+    }
+
+    /// Check if peer is currently in backoff period.
+    pub fn is_in_backoff(&self) -> bool {
+        self.backoff_remaining().is_some()
+    }
+
+    /// Check if peer is stale (no successful connection in threshold period).
+    /// Only considers peers stale if they have failures and haven't connected recently.
+    pub fn is_stale(&self) -> bool {
+        let failures = self.consecutive_failures();
+        if failures == 0 {
+            return false;
+        }
+
+        let last_seen = self.last_seen();
+        let now = unix_timestamp_secs();
+
+        now.saturating_sub(last_seen) > STALE_THRESHOLD_SECS
     }
 }
 
@@ -317,5 +402,70 @@ mod tests {
 
         assert!((restored.score() - entry.score()).abs() < 0.01);
         assert_eq!(restored.is_full_node(), entry.is_full_node());
+    }
+
+    #[test]
+    fn test_dial_failure_backoff() {
+        let peer = test_swarm_peer(1);
+        let data = SwarmPeerData::new(peer, false);
+        let entry = PeerEntry::new(data);
+
+        // No failures - no backoff
+        assert!(!entry.is_in_backoff());
+        assert_eq!(entry.consecutive_failures(), 0);
+
+        // First failure - 30s backoff
+        entry.record_dial_failure();
+        assert_eq!(entry.consecutive_failures(), 1);
+        assert!(entry.is_in_backoff());
+        let backoff = entry.backoff_remaining().unwrap();
+        assert!(backoff.as_secs() <= 30);
+
+        // Second failure - 60s backoff
+        entry.record_dial_failure();
+        assert_eq!(entry.consecutive_failures(), 2);
+        let backoff = entry.backoff_remaining().unwrap();
+        assert!(backoff.as_secs() <= 60);
+
+        // Third failure - 120s backoff
+        entry.record_dial_failure();
+        assert_eq!(entry.consecutive_failures(), 3);
+        let backoff = entry.backoff_remaining().unwrap();
+        assert!(backoff.as_secs() <= 120);
+    }
+
+    #[test]
+    fn test_success_resets_failures() {
+        let peer = test_swarm_peer(1);
+        let data = SwarmPeerData::new(peer, false);
+        let entry = PeerEntry::new(data);
+
+        // Record some failures
+        entry.record_dial_failure();
+        entry.record_dial_failure();
+        entry.record_dial_failure();
+        assert_eq!(entry.consecutive_failures(), 3);
+
+        // Success resets failures
+        entry.record_success(Duration::from_millis(50));
+        assert_eq!(entry.consecutive_failures(), 0);
+        assert!(!entry.is_in_backoff());
+    }
+
+    #[test]
+    fn test_backoff_snapshot_roundtrip() {
+        let peer = test_swarm_peer(1);
+        let data = SwarmPeerData::new(peer, false);
+        let entry = PeerEntry::new(data);
+
+        entry.record_dial_failure();
+        entry.record_dial_failure();
+
+        let snapshot = entry.snapshot();
+        assert_eq!(snapshot.consecutive_failures, 2);
+        assert!(snapshot.last_dial_attempt > 0);
+
+        let restored = PeerEntry::from_snapshot(snapshot);
+        assert_eq!(restored.consecutive_failures(), 2);
     }
 }

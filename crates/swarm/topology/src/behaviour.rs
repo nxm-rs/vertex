@@ -1,15 +1,15 @@
 //! Network topology behaviour managing peer connections via handshake, hive, and pingpong.
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::VecDeque,
     future::Future,
-    path::PathBuf,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
 
+use rand::seq::SliceRandom;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::Interval;
 
@@ -25,39 +25,106 @@ use libp2p::{
 use tracing::{debug, info, trace, warn};
 use vertex_net_hive::MAX_BATCH_SIZE;
 use vertex_net_local::LocalCapabilities;
-use vertex_swarm_api::{PeerConfigValues, SwarmBootnodeConfig, SwarmIdentity, SwarmTopology};
+use vertex_swarm_api::{SwarmBootnodeConfig, SwarmIdentity};
 use vertex_swarm_peer::SwarmPeer;
-use vertex_swarm_peermanager::{FilePeerStore, InternalPeerManager, PeerManager, PeerReadyResult};
+use vertex_swarm_peer_manager::{InternalPeerManager, PeerManager};
 use vertex_swarm_primitives::OverlayAddress;
 
-use crate::bootnode::BootnodeConnector;
-use crate::dial_tracker::DialTracker;
+use vertex_swarm_peer_registry::{ActivateResult, SwarmPeerRegistry as ConnectionRegistry};
+use crate::DialReason;
 use crate::dns::{is_dnsaddr, resolve_all_dnsaddrs};
 use crate::error::TopologyError;
-use crate::events::TopologyServiceEvent;
-use crate::gossip::GossipAction;
-use crate::gossip_coordinator::{DepthProvider, GossipCoordinator};
+use vertex_net_handshake::HANDSHAKE_TIMEOUT;
+use crate::events::{ConnectionDirection, DisconnectReason, RejectionReason, TopologyEvent};
+use crate::gossip::{Gossip, GossipAction, GossipCommand};
 use crate::handle::TopologyHandle;
-use crate::handler::{Command, Event, TopologyConfig, TopologyHandler};
+use crate::handler::{Command, Event, HandlerConfig, TopologyHandler};
+use crate::metrics::TopologyMetrics;
 use crate::nat_discovery::{NatDiscovery, NatDiscoveryConfig};
-use crate::routing::{KademliaConfig, KademliaRouting, PeerFailureProvider, SwarmRouting};
+use crate::routing::{KademliaConfig, KademliaRouting, RoutingCapacity, SwarmRouting};
 use crate::TopologyCommand;
 
 pub const DEFAULT_DIAL_INTERVAL: Duration = Duration::from_secs(5);
 
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 const COMMAND_CHANNEL_CAPACITY: usize = 64;
+const MIN_BOOTNODE_CONNECTIONS: usize = 1;
 
-/// Configuration for TopologyBehaviour construction.
-#[derive(Debug, Clone, Default)]
-pub struct TopologyBehaviourConfig {
-    pub kademlia: KademliaConfig,
-    pub dial_interval: Option<Duration>,
-    pub nat: NatDiscoveryConfig,
-    pub nat_auto: bool,
+/// Extract PeerId from a multiaddr's /p2p/ component.
+fn extract_peer_id(addr: &Multiaddr) -> Option<PeerId> {
+    addr.iter().find_map(|p| match p {
+        Protocol::P2p(id) => Some(id),
+        _ => None,
+    })
 }
 
-impl TopologyBehaviourConfig {
+/// Target for dialing a peer.
+#[derive(Debug, Clone)]
+pub enum DialTarget {
+    /// Known peer from gossip/store - has overlay for verification during handshake.
+    Known(SwarmPeer),
+
+    /// Unknown peer - overlay learned at handshake.
+    /// Multiaddr must contain /p2p/ component.
+    Unknown(Multiaddr),
+}
+
+impl DialTarget {
+    /// Get the PeerId for this dial target, if present in the multiaddr.
+    pub fn peer_id(&self) -> Option<PeerId> {
+        match self {
+            Self::Known(peer) => peer.multiaddrs().iter().find_map(extract_peer_id),
+            Self::Unknown(addr) => extract_peer_id(addr),
+        }
+    }
+
+    /// Get the overlay address if known.
+    pub fn overlay(&self) -> Option<OverlayAddress> {
+        match self {
+            Self::Known(peer) => Some(OverlayAddress::from(*peer.overlay())),
+            Self::Unknown(_) => None,
+        }
+    }
+
+    /// Get the addresses to dial.
+    pub fn addrs(&self) -> Vec<Multiaddr> {
+        match self {
+            Self::Known(peer) => peer.multiaddrs().to_vec(),
+            Self::Unknown(addr) => vec![addr.clone()],
+        }
+    }
+}
+
+/// Configuration for topology behaviour and handler.
+#[derive(Debug, Clone)]
+pub struct TopologyConfig {
+    // Behaviour settings
+    pub kademlia: KademliaConfig,
+    pub dial_interval: Duration,
+    pub nat: NatDiscoveryConfig,
+    pub nat_auto: bool,
+
+    // Handler/protocol settings
+    pub hive_timeout: Duration,
+    pub pingpong_timeout: Duration,
+    pub pingpong_greeting: String,
+}
+
+impl Default for TopologyConfig {
+    fn default() -> Self {
+        Self {
+            kademlia: KademliaConfig::default(),
+            dial_interval: DEFAULT_DIAL_INTERVAL,
+            nat: NatDiscoveryConfig::default(),
+            nat_auto: false,
+            hive_timeout: Duration::from_secs(60),
+            pingpong_timeout: Duration::from_secs(30),
+            pingpong_greeting: "ping".to_string(),
+        }
+    }
+}
+
+impl TopologyConfig {
     pub fn new() -> Self {
         Self::default()
     }
@@ -68,7 +135,7 @@ impl TopologyBehaviourConfig {
     }
 
     pub fn with_dial_interval(mut self, interval: Duration) -> Self {
-        self.dial_interval = Some(interval);
+        self.dial_interval = interval;
         self
     }
 
@@ -76,16 +143,13 @@ impl TopologyBehaviourConfig {
         self.nat_auto = enabled;
         self
     }
-}
 
-/// Implement PeerFailureProvider for PeerManager to delegate failure tracking.
-impl PeerFailureProvider for PeerManager {
-    fn failure_score(&self, peer: &OverlayAddress) -> f64 {
-        self.peer_score(peer)
-    }
-
-    fn record_failure(&self, peer: &OverlayAddress) {
-        self.adjust_score(peer, -1.0);
+    fn handler_config(&self) -> HandlerConfig {
+        HandlerConfig {
+            hive_timeout: self.hive_timeout,
+            pingpong_timeout: self.pingpong_timeout,
+            pingpong_greeting: self.pingpong_greeting.clone(),
+        }
     }
 }
 
@@ -101,59 +165,49 @@ pub struct TopologyBehaviour<I: SwarmIdentity> {
     routing: Arc<KademliaRouting<I>>,
     peer_manager: Arc<PeerManager>,
 
-    // Owned (internal only, Arc for handler sharing)
-    dial_tracker: DialTracker,
+    // Owned (internal only, Arc for handler sharing and routing integration)
+    connection_registry: Arc<ConnectionRegistry>,
     nat_discovery: Arc<NatDiscovery>,
-    local_capabilities: Arc<LocalCapabilities>,
-    bootnode_connector: BootnodeConnector,
+    bootnodes: Vec<Multiaddr>,
     trusted_peers: Vec<Multiaddr>,
 
     // Channels
     command_rx: mpsc::Receiver<TopologyCommand>,
-    event_tx: broadcast::Sender<TopologyServiceEvent>,
+    event_tx: broadcast::Sender<TopologyEvent>,
 
     // Connection state
-    peer_connections: HashMap<PeerId, Vec<ConnectionId>>,
     pending_actions: VecDeque<ToSwarm<(), Command>>,
 
     // Gossip coordination
-    gossip_coordinator: GossipCoordinator,
+    gossip: Gossip,
 
-    // Timers
+    // Periodic dial interval
     dial_interval: Pin<Box<Interval>>,
-
-    // State flags
-    gossip_disconnect_pending: HashSet<PeerId>,
 
     // Pending dnsaddr resolution for bootnodes
     pending_bootnode_resolution: Option<Pin<Box<dyn Future<Output = Vec<Multiaddr>> + Send>>>,
+
+    // Metrics
+    metrics: TopologyMetrics,
 }
 
 impl<I: SwarmIdentity> TopologyBehaviour<I> {
-    pub fn has_bootnodes(&self) -> bool {
-        self.bootnode_connector.has_bootnodes()
+    /// Set the local PeerId for address advertisement in handshakes.
+    ///
+    /// Must be called after the libp2p Swarm is built. All multiaddrs
+    /// advertised to peers will include `/p2p/{peer_id}`.
+    pub fn set_local_peer_id(&self, peer_id: PeerId) {
+        self.nat_discovery.set_local_peer_id(peer_id);
     }
 
-    pub fn save_peers(&self) -> Result<usize, String> {
-        self.peer_manager
-            .save_all_to_store()
-            .map_err(|e| e.to_string())
+    fn emit_event(&self, event: TopologyEvent) {
+        self.metrics.record_event(&event);
+        let _ = self.event_tx.send(event);
     }
 
-    pub fn set_health_check_delay(&mut self, delay: Duration) {
-        self.gossip_coordinator.set_health_check_delay(delay);
-    }
-
-    pub fn is_connected(&self, overlay: &OverlayAddress) -> bool {
-        self.peer_manager
-            .resolve_peer_id(overlay)
-            .and_then(|peer_id| self.peer_connections.get(&peer_id))
-            .map(|conns| !conns.is_empty())
-            .unwrap_or(false)
-    }
-
-    pub fn connected_peers(&self) -> Vec<OverlayAddress> {
-        self.peer_manager.connected_peers()
+    /// Get the proximity order for a peer relative to our overlay address.
+    fn proximity(&self, peer: &OverlayAddress) -> u8 {
+        self.identity.overlay_address().proximity(peer)
     }
 }
 
@@ -161,37 +215,43 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     /// Create topology behaviour and handle.
     pub fn new(
         identity: I,
-        handler_config: TopologyConfig,
-        behaviour_config: TopologyBehaviourConfig,
+        config: TopologyConfig,
         network_config: &impl SwarmBootnodeConfig,
     ) -> Result<(Self, TopologyHandle<I>), TopologyError> {
         let bootnodes = network_config.bootnodes().to_vec();
         let trusted_peers = network_config.trusted_peers().to_vec();
         let nat_addrs = network_config.nat_addrs().to_vec();
-        let nat_auto = network_config.nat_auto_enabled() || behaviour_config.nat_auto;
-        let peer_store_path = network_config.peers().store_path();
-        let peer_ban_threshold = network_config.peers().ban_threshold();
-        let peer_store_limit = network_config.peers().store_limit();
+        let nat_auto = network_config.nat_auto_enabled() || config.nat_auto;
 
         let (event_tx, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let (command_tx, command_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
 
-        let peer_manager = Self::create_peer_manager(
-            peer_store_path.as_ref(),
-            peer_ban_threshold,
-            peer_store_limit,
-        )?;
+        let peer_manager = Arc::new(PeerManager::from_config(network_config.peers())?);
 
-        let routing = KademliaRouting::with_failure_provider(
-            identity.clone(),
-            behaviour_config.kademlia,
-            peer_manager.clone(),
-        );
+        let connection_registry = Arc::new(ConnectionRegistry::new());
 
-        let known_peers = peer_manager.disconnected_peers();
+        let routing = KademliaRouting::new(identity.clone(), config.kademlia.clone());
+
+        let known_peers = peer_manager.known_peers();
         if !known_peers.is_empty() {
-            info!(count = known_peers.len(), "seeding kademlia with stored peers");
-            routing.add_peers(&known_peers);
+            // Filter out our own overlay to prevent self-dial
+            let local_overlay = identity.overlay_address();
+            let filtered_peers: Vec<_> = known_peers
+                .into_iter()
+                .filter(|peer| {
+                    if *peer == local_overlay {
+                        warn!("Filtered self-overlay from stored peers (corrupted peer store?)");
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .collect();
+
+            if !filtered_peers.is_empty() {
+                info!(count = filtered_peers.len(), "seeding kademlia with stored peers");
+                routing.add_peers(&filtered_peers);
+            }
         }
 
         let local_capabilities = Arc::new(LocalCapabilities::new());
@@ -206,90 +266,54 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             NatDiscovery::new(
                 local_capabilities.clone(),
                 nat_addrs,
-                behaviour_config.nat,
+                config.nat.clone(),
                 nat_auto,
             )
         } else {
             NatDiscovery::disabled(local_capabilities.clone())
         });
 
-        let bootnode_connector = BootnodeConnector::new(bootnodes);
-        let dial_tracker = DialTracker::new();
-        let mut gossip_coordinator = GossipCoordinator::new();
+        let mut gossip =
+            Gossip::new(identity.overlay_address(), peer_manager.clone(), connection_registry.clone());
+        gossip.set_depth(routing.depth());
 
-        let depth_provider: DepthProvider = {
-            let routing_clone = routing.clone();
-            Arc::new(move || routing_clone.depth())
-        };
-
-        gossip_coordinator.enable_gossip(
-            identity.overlay_address(),
-            peer_manager.clone(),
-            depth_provider,
-        );
+        let identity = Arc::new(identity);
 
         let handle = TopologyHandle::new(
+            identity.clone(),
             routing.clone(),
+            connection_registry.clone(),
             peer_manager.clone(),
             command_tx,
             event_tx.clone(),
         );
 
-        let interval_duration = behaviour_config.dial_interval.unwrap_or(DEFAULT_DIAL_INTERVAL);
+        let dial_interval = config.dial_interval;
 
         let behaviour = Self {
-            config: handler_config,
-            identity: Arc::new(identity),
+            config,
+            identity,
             routing,
             peer_manager,
-            dial_tracker,
+            connection_registry,
             nat_discovery,
-            local_capabilities,
-            bootnode_connector,
+            bootnodes,
             trusted_peers,
             command_rx,
             event_tx,
-            peer_connections: HashMap::new(),
             pending_actions: VecDeque::new(),
-            gossip_coordinator,
-            dial_interval: Box::pin(tokio::time::interval(interval_duration)),
-            gossip_disconnect_pending: HashSet::new(),
+            gossip,
+            dial_interval: Box::pin(tokio::time::interval(dial_interval)),
             pending_bootnode_resolution: None,
+            metrics: TopologyMetrics::new(),
         };
 
         Ok((behaviour, handle))
     }
 
-    fn create_peer_manager(
-        store_path: Option<&PathBuf>,
-        ban_threshold: f64,
-        max_peers: Option<usize>,
-    ) -> Result<Arc<PeerManager>, TopologyError> {
-        match store_path {
-            Some(path) => {
-                let store = FilePeerStore::new_with_create_dir(path).map_err(|e| {
-                    TopologyError::PeerStoreCreation {
-                        path: path.clone(),
-                        reason: e.to_string(),
-                    }
-                })?;
-
-                match PeerManager::with_store_and_limits(Arc::new(store), ban_threshold, max_peers) {
-                    Ok(pm) => {
-                        info!(count = pm.stats().total_peers, path = %path.display(), "loaded peers from store");
-                        Ok(Arc::new(pm))
-                    }
-                    Err(e) => Err(TopologyError::PeerStoreLoad {
-                        reason: e.to_string(),
-                    }),
-                }
-            }
-            None => Ok(Arc::new(PeerManager::with_limits(ban_threshold, max_peers))),
-        }
-    }
-
     fn connect_bootnodes(&mut self) {
-        let bootnodes = self.bootnode_connector.shuffled_bootnodes();
+        let mut bootnodes = self.bootnodes.clone();
+        bootnodes.shuffle(&mut rand::rng());
         let trusted_peers = self.trusted_peers.clone();
 
         if bootnodes.is_empty() && trusted_peers.is_empty() {
@@ -323,74 +347,95 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
     /// Dial bootnodes and trusted peers (called after dnsaddr resolution if needed).
     fn dial_bootnodes(&mut self, bootnodes: Vec<Multiaddr>, trusted_peers: Vec<Multiaddr>) {
-        if !bootnodes.is_empty() {
-            info!(count = bootnodes.len(), "Connecting to bootnodes...");
-
-            let min_connections = self.bootnode_connector.min_connections();
-            let mut connected = 0;
-
-            for bootnode in bootnodes {
-                if connected >= min_connections {
-                    info!(connected, "Reached minimum bootnode connections");
-                    break;
-                }
-
-                let peer_id = bootnode.iter().find_map(|p| {
-                    if let Protocol::P2p(id) = p {
-                        Some(id)
-                    } else {
-                        None
-                    }
-                });
-
-                let Some(peer_id) = peer_id else {
-                    debug!(%bootnode, "Bootnode missing /p2p/ component, skipping");
-                    continue;
-                };
-
-                debug!(%bootnode, %peer_id, "Dialing bootnode");
-                let opts = DialOpts::peer_id(peer_id)
-                    .addresses(vec![bootnode])
-                    .build();
-                self.pending_actions.push_back(ToSwarm::Dial { opts });
-                connected += 1;
-            }
+        let bootnode_count = bootnodes.len();
+        if bootnode_count > 0 {
+            info!(count = bootnode_count, "Connecting to bootnodes...");
         }
 
-        // Connect trusted peers
-        for peer in trusted_peers {
-            let peer_id = peer.iter().find_map(|p| {
-                if let Protocol::P2p(id) = p {
-                    Some(id)
-                } else {
-                    None
-                }
-            });
-
-            if let Some(peer_id) = peer_id {
-                debug!(%peer, %peer_id, "Dialing trusted peer");
-                let opts = DialOpts::peer_id(peer_id)
-                    .addresses(vec![peer.clone()])
-                    .build();
-                self.pending_actions.push_back(ToSwarm::Dial { opts });
+        let mut dialed = 0;
+        for addr in bootnodes {
+            if dialed >= MIN_BOOTNODE_CONNECTIONS {
+                info!(dialed, "Reached minimum bootnode connections");
+                break;
             }
+            self.dial(DialTarget::Unknown(addr), DialReason::Bootnode);
+            dialed += 1;
+        }
+
+        for addr in trusted_peers {
+            self.dial(DialTarget::Unknown(addr), DialReason::Trusted);
         }
     }
 
-    pub fn ping(&mut self, overlay: &OverlayAddress) {
-        let Some(peer_id) = self.peer_manager.resolve_peer_id(overlay) else {
-            warn!(%overlay, "Cannot ping: peer not found");
+    /// Dial a peer target.
+    ///
+    /// For Known peers: checks routing capacity, registers with overlay, verifies during handshake.
+    /// For Unknown peers: no capacity check, registers without overlay, learns it at handshake.
+    fn dial(&mut self, target: DialTarget, reason: DialReason) {
+        use vertex_net_local::prepare_dial_addresses;
+
+        let Some(peer_id) = target.peer_id() else {
+            warn!(?target, "Cannot dial: no /p2p/ component in address");
             return;
         };
-        if let Some(connections) = self.peer_connections.get(&peer_id)
-            && let Some(&connection_id) = connections.first()
-        {
-            self.pending_actions.push_back(ToSwarm::NotifyHandler {
-                peer_id,
-                handler: NotifyHandler::One(connection_id),
-                event: Command::Ping { greeting: None },
-            });
+
+        if self.connection_registry.contains_peer(&peer_id) {
+            trace!(%peer_id, "Skipping dial - already connected");
+            return;
         }
+
+        // For Known peers, check routing capacity before dialing
+        if let Some(overlay) = target.overlay() {
+            if !self.routing.try_reserve_dial(&overlay, true) {
+                trace!(%overlay, "Skipping dial - at capacity or already tracking");
+                return;
+            }
+        }
+
+        let capability = self.nat_discovery.capability().ip;
+        let addrs = target.addrs();
+        let dial_prep = prepare_dial_addresses(addrs, capability);
+
+        if dial_prep.is_empty() {
+            // Release reservation if we can't dial
+            if let Some(overlay) = target.overlay() {
+                self.routing.release_dial(&overlay);
+            }
+            debug!(%peer_id, ?capability, "No reachable addresses");
+            return;
+        }
+
+        let concurrency = dial_prep.concurrency_factor();
+        let dial_addrs = dial_prep.into_addrs();
+
+        // Register with connection registry
+        let dial_addrs = match target.overlay() {
+            Some(overlay) => {
+                // Known peer - register with overlay
+                self.connection_registry.start_dial(peer_id, overlay, dial_addrs, reason)
+            }
+            None => {
+                // Unknown peer - register without overlay
+                self.connection_registry.start_dial_unknown_overlay(peer_id, dial_addrs, reason)
+            }
+        };
+
+        let Some(dial_addrs) = dial_addrs else {
+            // Release reservation if registry rejected
+            if let Some(overlay) = target.overlay() {
+                self.routing.release_dial(&overlay);
+            }
+            trace!(%peer_id, "Skipping dial - already tracking");
+            return;
+        };
+
+        debug!(%peer_id, addr_count = dial_addrs.len(), ?reason, "Dialing peer");
+
+        let opts = DialOpts::peer_id(peer_id)
+            .addresses(dial_addrs)
+            .override_dial_concurrency_factor(concurrency)
+            .build();
+        self.pending_actions.push_back(ToSwarm::Dial { opts });
     }
 
     /// Handle a topology command (dial, close connection, etc.).
@@ -399,35 +444,11 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             TopologyCommand::ConnectBootnodes => {
                 self.connect_bootnodes();
             }
-            TopologyCommand::Dial { addr, for_gossip } => {
-                let peer_id = addr.iter().find_map(|p| {
-                    if let Protocol::P2p(id) = p {
-                        Some(id)
-                    } else {
-                        None
-                    }
-                });
-
-                let Some(peer_id) = peer_id else {
-                    warn!(%addr, "Dial command missing /p2p/ component in multiaddr");
-                    return;
-                };
-
-                if self.peer_connections.contains_key(&peer_id) {
-                    debug!(%peer_id, %addr, "Skipping dial command - already connected");
-                    return;
-                }
-
-                self.dial_tracker.start_dial(vec![addr.clone()], for_gossip);
-
-                debug!(%addr, %for_gossip, %peer_id, "Dialing via command");
-                let opts = DialOpts::peer_id(peer_id)
-                    .addresses(vec![addr])
-                    .build();
-                self.pending_actions.push_back(ToSwarm::Dial { opts });
+            TopologyCommand::Dial(addr) => {
+                self.dial(DialTarget::Unknown(addr), DialReason::Command);
             }
             TopologyCommand::CloseConnection(overlay) => {
-                let Some(peer_id) = self.peer_manager.resolve_peer_id(&overlay) else {
+                let Some(peer_id) = self.connection_registry.resolve_peer_id(&overlay) else {
                     warn!(%overlay, "Cannot close connection: peer not found");
                     return;
                 };
@@ -437,17 +458,21 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                     connection: libp2p::swarm::CloseConnection::All,
                 });
             }
+            TopologyCommand::BanPeer { overlay, reason } => {
+                self.peer_manager.ban(&overlay, reason);
+                SwarmRouting::remove_peer(&*self.routing, &overlay);
+                debug!(%overlay, "Banned peer via command");
+            }
         }
     }
 
     fn broadcast_peers(&mut self, to: OverlayAddress, peers: Vec<SwarmPeer>) {
-        let Some(peer_id) = self.peer_manager.resolve_peer_id(&to) else {
+        let Some(state) = self.connection_registry.get(&to) else {
             warn!(%to, "Cannot broadcast: peer not found");
             return;
         };
-        if let Some(connections) = self.peer_connections.get(&peer_id)
-            && let Some(&connection_id) = connections.first()
-        {
+        if let Some(connection_id) = state.connection_id() {
+            let peer_id = state.peer_id();
             for chunk in peers.chunks(MAX_BATCH_SIZE) {
                 self.pending_actions.push_back(ToSwarm::NotifyHandler {
                     peer_id,
@@ -470,7 +495,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             return;
         }
 
-        let dialable = self.peer_manager.get_dialable_peers(&candidates);
+        let mut dialable = self.peer_manager.get_dialable_peers(&candidates);
         let filtered_count = candidates.len() - dialable.len();
         if filtered_count > 0 {
             trace!(
@@ -481,155 +506,128 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             );
         }
 
-        let capability = self.nat_discovery.capability();
+        // Shuffle candidates to add randomness and prevent all nodes from
+        // dialing the same peers in the same order (thundering herd mitigation).
+        dialable.shuffle(&mut rand::rng());
 
         for swarm_peer in dialable {
-            let overlay = OverlayAddress::from(*swarm_peer.overlay());
-            let multiaddrs = swarm_peer.multiaddrs();
-            let original_count = multiaddrs.len();
-
-            let compatible_addrs: Vec<_> = self
-                .nat_discovery
-                .filter_dialable(multiaddrs)
-                .cloned()
-                .collect();
-
-            if compatible_addrs.is_empty() {
-                trace!(
-                    %overlay,
-                    addr_count = original_count,
-                    ?capability,
-                    "No IP-compatible multiaddrs for peer"
-                );
-                continue;
-            }
-
-            let Some(peer_id) = compatible_addrs.iter().find_map(|addr| {
-                addr.iter().find_map(|p| {
-                    if let Protocol::P2p(id) = p {
-                        Some(id)
-                    } else {
-                        None
-                    }
-                })
-            }) else {
-                debug!(%overlay, "No multiaddr with peer_id found");
-                continue;
-            };
-
-            if self.peer_connections.contains_key(&peer_id) {
-                trace!(%overlay, %peer_id, "Skipping dial - already connected");
-                continue;
-            }
-
-            if !self.routing.should_accept_peer(&overlay, true) {
-                trace!(%overlay, "Skipping dial - bin at capacity");
-                continue;
-            }
-
-            let Some(addr) = self.dial_tracker.start_dial(compatible_addrs.clone(), false) else {
-                trace!(%overlay, "Skipping dial - already dialing this address");
-                continue;
-            };
-
-            debug!(
-                %overlay,
-                %addr,
-                %peer_id,
-                total_addrs = compatible_addrs.len(),
-                "Dialing discovered peer"
-            );
-
-            self.routing.mark_pending_dial(overlay);
-
-            let dial_opts = DialOpts::peer_id(peer_id)
-                .addresses(vec![addr])
-                .build();
-            self.pending_actions.push_back(ToSwarm::Dial { opts: dial_opts });
+            self.dial(DialTarget::Known(swarm_peer), DialReason::Discovery);
         }
     }
 
-    fn try_next_dial_addr(&mut self, current_addr: &Multiaddr, overlay: Option<&OverlayAddress>) -> bool {
-        if let Some(next_addr) = self.dial_tracker.try_next_addr(current_addr) {
-            let peer_id = next_addr.iter().find_map(|p| {
-                if let Protocol::P2p(id) = p {
-                    Some(id)
-                } else {
-                    None
-                }
-            });
+    /// Clean up pending connections that have been waiting longer than HANDSHAKE_TIMEOUT.
+    ///
+    /// This includes both:
+    /// - Dials stuck waiting for TCP/QUIC connection (can take 2+ minutes due to OS retries)
+    /// - Handshakes stuck waiting for peer to complete the handshake protocol
+    ///
+    /// This cleanup ensures stuck connections don't block new connection attempts.
+    fn cleanup_stale_pending(&mut self) {
+        let stale_peers = self.connection_registry.stale_pending(HANDSHAKE_TIMEOUT);
 
-            if let Some(peer_id) = peer_id {
-                debug!(?overlay, %next_addr, "Trying next multiaddr for peer");
-                let dial_opts = DialOpts::peer_id(peer_id)
-                    .addresses(vec![next_addr.clone()])
-                    .build();
-                self.pending_actions.push_back(ToSwarm::Dial { opts: dial_opts });
-                return true;
-            } else {
-                debug!(?overlay, %next_addr, "Next addr has no peer_id, trying another");
-                return self.try_next_dial_addr(&next_addr, overlay);
+        for peer_id in stale_peers {
+            if let Some(state) = self.connection_registry.complete_dial(&peer_id) {
+                let overlay = state.id();
+                let is_handshake = state.is_handshaking();
+
+                // Release routing capacity
+                if let Some(overlay) = &overlay {
+                    self.routing.release_dial(overlay);
+                    // Record failure for exponential backoff
+                    self.peer_manager.record_dial_failure(overlay);
+                }
+
+                let error_msg = if is_handshake {
+                    "handshake timeout"
+                } else {
+                    "dial timeout"
+                };
+
+                warn!(
+                    %peer_id,
+                    ?overlay,
+                    timeout = ?HANDSHAKE_TIMEOUT,
+                    state = if is_handshake { "handshaking" } else { "dialing" },
+                    "Cleaning up stale connection attempt"
+                );
+
+                self.emit_event(TopologyEvent::DialFailed {
+                    overlay,
+                    addrs: state.addrs().cloned().unwrap_or_default(),
+                    error: error_msg.to_string(),
+                    dial_duration: state.started_at().map(|t| t.elapsed()),
+                    reason: overlay.and_then(|o| self.connection_registry.dial_reason(&o)),
+                });
             }
         }
-
-        if let Some(overlay) = overlay {
-            self.routing.record_connection_failure(overlay);
-            self.routing.clear_pending_dial(overlay);
-        }
-        false
     }
 
     fn process_handler_event(
         &mut self,
         peer_id: PeerId,
-        _connection_id: ConnectionId,
+        connection_id: ConnectionId,
         event: Event,
     ) {
         match event {
-            Event::HandshakeCompleted(info) => {
+            Event::HandshakeCompleted { info, handshake_duration } => {
                 let overlay = OverlayAddress::from(*info.swarm_peer.overlay());
-                let is_full_node = info.full_node;
-                debug!(%peer_id, %overlay, %is_full_node, "Handshake completed");
+                let storer = info.node_type.requires_storage();
+                debug!(
+                    %peer_id,
+                    %overlay,
+                    %storer,
+                    po = self.proximity(&overlay),
+                    ?handshake_duration,
+                    "Handshake completed"
+                );
 
-                let dial_info = self.dial_tracker.get_by_peer_id(&peer_id);
-                let is_gossip_dial = dial_info.as_ref().map(|i| i.for_gossip).unwrap_or(false);
+                // Get dial info from connection registry before transitioning
+                let current_state = self.connection_registry.get(&overlay)
+                    .or_else(|| self.connection_registry.resolve_overlay(&peer_id)
+                        .and_then(|o| self.connection_registry.get(&o)));
+                let direction = current_state.as_ref()
+                    .and_then(|s| s.direction())
+                    .unwrap_or(ConnectionDirection::Inbound);
 
-                self.dial_tracker.complete_dial_by_peer_id(&peer_id);
-                self.routing.clear_pending_dial(&overlay);
+                // Transition to Active state in connection registry
+                let activate_result = self.connection_registry.handshake_completed(
+                    peer_id,
+                    connection_id,
+                    overlay,
+                );
 
-                let bin_at_capacity = !self.routing.should_accept_peer(&overlay, is_full_node);
+                // Update routing capacity tracking
+                RoutingCapacity::handshake_completed(&*self.routing, &overlay);
+
+                let bin_at_capacity = !self.routing.should_accept_peer(&overlay, storer);
                 if bin_at_capacity {
-                    if is_gossip_dial {
-                        debug!(
-                            %peer_id,
-                            %overlay,
-                            "Gossip dial to saturated bin - will disconnect after peer exchange"
-                        );
-                        self.gossip_disconnect_pending.insert(peer_id);
-                    } else {
-                        debug!(
-                            %peer_id,
-                            %overlay,
-                            %is_full_node,
-                            "Rejecting connection: bin saturated"
-                        );
-                        self.pending_actions.push_back(ToSwarm::CloseConnection {
-                            peer_id,
-                            connection: libp2p::swarm::CloseConnection::All,
-                        });
-                        return;
-                    }
+                    debug!(
+                        %peer_id,
+                        %overlay,
+                        %storer,
+                        ?direction,
+                        "Rejecting connection: bin saturated"
+                    );
+                    self.emit_event(TopologyEvent::PeerRejected {
+                        overlay,
+                        peer_id,
+                        reason: RejectionReason::BinSaturated,
+                        direction,
+                    });
+                    self.pending_actions.push_back(ToSwarm::CloseConnection {
+                        peer_id,
+                        connection: libp2p::swarm::CloseConnection::All,
+                    });
+                    return;
                 }
 
-                let result = self
-                    .peer_manager
-                    .on_peer_ready(peer_id, info.swarm_peer.clone(), is_full_node);
-
-                match result {
-                    PeerReadyResult::Replaced { old_peer_id } => {
+                // Handle the activate result from connection registry
+                match activate_result {
+                    ActivateResult::Replaced { old_peer_id, old_connection_id, .. } => {
                         debug!(
                             %peer_id,
                             %old_peer_id,
+                            ?old_connection_id,
                             %overlay,
                             "Closing old connection, new connection takes over"
                         );
@@ -638,82 +636,80 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                             connection: libp2p::swarm::CloseConnection::All,
                         });
                     }
-                    PeerReadyResult::DuplicateConnection => {
-                        debug!(
-                            %peer_id,
-                            %overlay,
-                            "Duplicate connection from same peer, closing new connection"
-                        );
-                        self.pending_actions.push_back(ToSwarm::CloseConnection {
-                            peer_id,
-                            connection: libp2p::swarm::CloseConnection::All,
-                        });
-                        return;
-                    }
-                    PeerReadyResult::Accepted => {}
+                    ActivateResult::Accepted => {}
                 }
+
+                // Store peer metadata
+                self.peer_manager.on_peer_ready(info.swarm_peer.clone(), storer);
 
                 let old_depth = self.routing.depth();
                 self.routing.connected(overlay);
                 let new_depth = self.routing.depth();
 
                 if new_depth != old_depth {
-                    let _ = self.event_tx.send(TopologyServiceEvent::DepthChanged {
+                    self.gossip.set_depth(new_depth);
+                    self.emit_event(TopologyEvent::DepthChanged {
                         old_depth,
                         new_depth,
                     });
                 }
 
-                let _ = self.event_tx.send(TopologyServiceEvent::PeerReady {
+                self.emit_event(TopologyEvent::PeerReady {
                     overlay,
                     peer_id,
-                    is_full_node,
+                    storer,
+                    handshake_duration,
+                    direction,
                 });
 
-                if let Some(crate::gossip_coordinator::CoordinatorAction::SendPing(ping_peer_id)) =
-                    self.gossip_coordinator.on_handshake_completed(
+                if let Some(GossipCommand::SendPing(ping_peer_id)) =
+                    self.gossip.on_handshake_completed(
                         peer_id,
                         info.swarm_peer,
-                        is_full_node,
+                        storer,
                     )
                 {
-                    if let Some(connections) = self.peer_connections.get(&ping_peer_id)
-                        && let Some(&connection_id) = connections.first()
-                    {
-                        self.pending_actions.push_back(ToSwarm::NotifyHandler {
-                            peer_id: ping_peer_id,
-                            handler: NotifyHandler::One(connection_id),
-                            event: Command::Ping { greeting: None },
-                        });
-                        debug!(%peer_id, %overlay, "Sent immediate health check ping");
-                    }
+                    // Use the connection_id we just established
+                    self.pending_actions.push_back(ToSwarm::NotifyHandler {
+                        peer_id: ping_peer_id,
+                        handler: NotifyHandler::One(connection_id),
+                        event: Command::Ping { greeting: None },
+                    });
+                    debug!(%peer_id, %overlay, "Sent immediate health check ping");
                 } else {
                     debug!(%peer_id, %overlay, "Scheduled delayed health check ping (gossip dial)");
                 }
+
+                // Dial completed successfully - evaluate for more candidates
+                self.routing.evaluate_connections();
+                self.dial_candidates();
             }
-            Event::HandshakeFailed(error) => {
-                warn!(%peer_id, %error, "Handshake failed");
+            Event::HandshakeFailed { error, handshake_duration } => {
+                warn!(%peer_id, %error, ?handshake_duration, "Handshake failed");
 
-                let overlay = self.peer_manager.resolve_overlay(&peer_id);
-                let dial_info = self.dial_tracker.get_by_peer_id(&peer_id);
+                // Get dial info before removing from registry
+                let state = self.connection_registry.complete_dial(&peer_id);
 
-                self.dial_tracker.complete_dial_by_peer_id(&peer_id);
-
-                if let Some(overlay) = overlay {
-                    self.routing.record_connection_failure(&overlay);
-                    self.routing.clear_pending_dial(&overlay);
-                    debug!(%overlay, "Recorded handshake failure");
+                // Release routing capacity for this failed handshake
+                let overlay = state.as_ref().and_then(|s| s.id());
+                if let Some(ref overlay) = overlay {
+                    self.routing.release_handshake(overlay);
+                    // Record failure for exponential backoff
+                    self.peer_manager.record_dial_failure(overlay);
                 }
 
-                let _ = self.event_tx.send(TopologyServiceEvent::DialFailed {
-                    addr: dial_info.map(|i| i.addr).unwrap_or_else(Multiaddr::empty),
+                self.emit_event(TopologyEvent::DialFailed {
+                    overlay: overlay.clone(),
+                    addrs: state.as_ref().and_then(|s| s.addrs().cloned()).unwrap_or_default(),
                     error: error.to_string(),
+                    dial_duration: state.as_ref().and_then(|s| s.started_at()).map(|t| t.elapsed()),
+                    reason: overlay.and_then(|o| self.connection_registry.dial_reason(&o)),
                 });
             }
             Event::HivePeersReceived(peers) => {
                 if !peers.is_empty() {
                     let from = self
-                        .peer_manager
+                        .connection_registry
                         .resolve_overlay(&peer_id)
                         .unwrap_or_else(|| {
                             warn!(%peer_id, "Hive peers from unknown peer");
@@ -730,15 +726,19 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                     }
                 }
 
-                if self.gossip_disconnect_pending.remove(&peer_id) {
-                    debug!(
-                        %peer_id,
-                        "Disconnecting gossip peer after peer exchange (bin at capacity)"
-                    );
-                    self.pending_actions.push_back(ToSwarm::CloseConnection {
-                        peer_id,
-                        connection: libp2p::swarm::CloseConnection::All,
-                    });
+                // Check if we should disconnect after peer exchange (bin at capacity)
+                if let Some(overlay) = self.connection_registry.resolve_overlay(&peer_id) {
+                    if self.connection_registry.is_gossip_disconnect_pending(&overlay) {
+                        debug!(
+                            %peer_id,
+                            %overlay,
+                            "Disconnecting gossip peer after peer exchange (bin at capacity)"
+                        );
+                        self.pending_actions.push_back(ToSwarm::CloseConnection {
+                            peer_id,
+                            connection: libp2p::swarm::CloseConnection::All,
+                        });
+                    }
                 }
             }
             Event::HiveBroadcastComplete => {
@@ -750,12 +750,17 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             Event::PingpongPong { rtt } => {
                 debug!(%peer_id, ?rtt, "Pingpong success");
 
-                if let Some(overlay) = self.peer_manager.resolve_overlay(&peer_id) {
+                if let Some(overlay) = self.connection_registry.resolve_overlay(&peer_id) {
                     self.peer_manager.record_latency(&overlay, rtt);
                     debug!(%peer_id, %overlay, ?rtt, "Connection health verified, triggering gossip");
+
+                    self.emit_event(TopologyEvent::PingCompleted {
+                        overlay,
+                        rtt,
+                    });
                 }
 
-                let gossip_actions = self.gossip_coordinator.on_pong_received(peer_id);
+                let gossip_actions = self.gossip.on_pong_received(peer_id);
                 self.execute_gossip_actions(gossip_actions);
             }
             Event::PingpongPingReceived => {
@@ -764,7 +769,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             Event::PingpongError(error) => {
                 warn!(%peer_id, %error, "Pingpong failed");
 
-                if self.gossip_coordinator.on_ping_error(&peer_id) {
+                if self.gossip.on_ping_error(&peer_id) {
                     debug!(%peer_id, "Cleaned up pending gossip after ping failure");
                 }
             }
@@ -784,7 +789,7 @@ impl<I: SwarmIdentity + Clone> NetworkBehaviour for TopologyBehaviour<I> {
         remote_addr: &Multiaddr,
     ) -> Result<Self::ConnectionHandler, ConnectionDenied> {
         Ok(TopologyHandler::new(
-            self.config.clone(),
+            self.config.handler_config(),
             self.identity.clone(),
             peer,
             remote_addr,
@@ -801,7 +806,7 @@ impl<I: SwarmIdentity + Clone> NetworkBehaviour for TopologyBehaviour<I> {
         _port_use: PortUse,
     ) -> Result<Self::ConnectionHandler, ConnectionDenied> {
         Ok(TopologyHandler::new(
-            self.config.clone(),
+            self.config.handler_config(),
             self.identity.clone(),
             peer,
             addr,
@@ -812,106 +817,123 @@ impl<I: SwarmIdentity + Clone> NetworkBehaviour for TopologyBehaviour<I> {
     fn on_swarm_event(&mut self, event: FromSwarm) {
         match event {
             FromSwarm::ConnectionEstablished(established) => {
-                self.peer_connections
-                    .entry(established.peer_id)
-                    .or_default()
-                    .push(established.connection_id);
-
                 if established.endpoint.is_dialer() {
                     let resolved_addr = established.endpoint.get_remote_address().clone();
 
-                    let for_gossip = self
-                        .dial_tracker
-                        .get(&resolved_addr)
-                        .map(|info| info.for_gossip)
-                        .unwrap_or(false);
-                    if for_gossip {
-                        self.gossip_coordinator.mark_gossip_dial(established.peer_id);
-                    }
+                    // Transition from Dialing to Handshaking in the registry
+                    let state = self.connection_registry.connection_established(
+                        established.peer_id,
+                        established.connection_id,
+                    );
 
-                    self.dial_tracker.associate_peer_id(&resolved_addr, established.peer_id);
+                    // Transition routing capacity from Dialing to Handshaking
+                    if let Some(overlay) = state.as_ref().and_then(|s| s.id()) {
+                        self.routing.dial_connected(&overlay);
+                    }
 
                     self.pending_actions.push_back(ToSwarm::NotifyHandler {
                         peer_id: established.peer_id,
                         handler: NotifyHandler::One(established.connection_id),
                         event: Command::StartHandshake(resolved_addr),
                     });
+                } else {
+                    // Inbound connection - create Handshaking state
+                    self.connection_registry.inbound_connection(
+                        established.peer_id,
+                        established.connection_id,
+                    );
                 }
             }
             FromSwarm::ConnectionClosed(closed) => {
-                if let Some(connections) = self.peer_connections.get_mut(&closed.peer_id) {
-                    connections.retain(|&id| id != closed.connection_id);
-                }
                 if closed.remaining_established == 0 {
-                    self.peer_connections.remove(&closed.peer_id);
+                    // Extract connected_at BEFORE removing from registry
+                    let connected_at = self
+                        .connection_registry
+                        .get_by_peer_id(&closed.peer_id)
+                        .and_then(|s| s.connected_at());
 
-                    self.gossip_disconnect_pending.remove(&closed.peer_id);
-
-                    let overlay = self.peer_manager.on_peer_disconnected(&closed.peer_id);
+                    // Remove from connection registry (sole source of truth for connections)
+                    let removed_state = self.connection_registry.disconnected(&closed.peer_id);
+                    let overlay = removed_state.and_then(|s| s.id());
 
                     let gossip_actions = self
-                        .gossip_coordinator
+                        .gossip
                         .on_connection_closed(&closed.peer_id, overlay.as_ref());
                     self.execute_gossip_actions(gossip_actions);
 
                     if let Some(overlay) = overlay {
-                        debug!(peer_id = %closed.peer_id, %overlay, "Peer disconnected");
+                        let connection_duration = connected_at.map(|t| t.elapsed());
+                        debug!(
+                            peer_id = %closed.peer_id,
+                            %overlay,
+                            ?connection_duration,
+                            "Peer disconnected"
+                        );
 
+                        // Release capacity slot
+                        RoutingCapacity::disconnected(&*self.routing, &overlay);
+
+                        // Capacity freed - evaluate for new dial candidates
+                        self.routing.evaluate_connections();
+                        self.dial_candidates();
+
+                        // Update routing tables
                         let old_depth = self.routing.depth();
-                        self.routing.disconnected(&overlay);
+                        SwarmRouting::on_peer_disconnected(&*self.routing, &overlay);
                         let new_depth = self.routing.depth();
 
-                        let _ = self
-                            .event_tx
-                            .send(TopologyServiceEvent::PeerDisconnected { overlay });
+                        self.emit_event(TopologyEvent::PeerDisconnected {
+                            overlay,
+                            reason: DisconnectReason::Unknown,
+                            connection_duration,
+                        });
 
                         if new_depth != old_depth {
-                            let _ =
-                                self.event_tx.send(TopologyServiceEvent::DepthChanged {
-                                    old_depth,
-                                    new_depth,
-                                });
+                            self.gossip.set_depth(new_depth);
+                            self.emit_event(TopologyEvent::DepthChanged {
+                                old_depth,
+                                new_depth,
+                            });
                         }
                     }
                 }
             }
             FromSwarm::DialFailure(failure) => {
+                // libp2p now handles address iteration via ConcurrentDial.
+                // When we get DialFailure, all addresses have been exhausted.
                 if let Some(peer_id) = failure.peer_id {
-                    if let Some(current_addr) = self.dial_tracker.find_addr_by_peer_id(&peer_id) {
-                        let overlay = self.peer_manager.resolve_overlay(&peer_id);
+                    if let Some(state) = self.connection_registry.complete_dial(&peer_id) {
+                        let overlay = state.id();
+                        let addrs = state.addrs().cloned().unwrap_or_default();
+                        let dial_duration = state.started_at().map(|t| t.elapsed());
+                        let reason = overlay.and_then(|o| self.connection_registry.dial_reason(&o));
 
-                        if self.try_next_dial_addr(&current_addr, overlay.as_ref()) {
-                            debug!(
-                                %peer_id,
-                                ?overlay,
-                                "Dial failed, trying next multiaddr"
-                            );
-                        } else {
-                            warn!(
-                                %peer_id,
-                                ?overlay,
-                                "Dial failed (all addresses exhausted)"
-                            );
-                            let _ = self.event_tx.send(TopologyServiceEvent::DialFailed {
-                                addr: current_addr,
-                                error: format!("All addresses exhausted for {:?}", overlay),
-                            });
+                        // Release routing capacity for this failed dial
+                        if let Some(overlay) = &overlay {
+                            self.routing.release_dial(overlay);
+                            // Record failure for exponential backoff
+                            self.peer_manager.record_dial_failure(overlay);
                         }
+
+                        warn!(
+                            %peer_id,
+                            ?overlay,
+                            addr_count = addrs.len(),
+                            "Dial failed (all addresses exhausted)"
+                        );
+
+                        self.emit_event(TopologyEvent::DialFailed {
+                            overlay,
+                            addrs,
+                            error: format!("{:?}", failure.error),
+                            dial_duration,
+                            reason,
+                        });
                     } else {
-                        if let Some(overlay) = self.peer_manager.resolve_overlay(&peer_id) {
-                            trace!(
-                                %peer_id,
-                                %overlay,
-                                "DialFailure for untracked dial, resetting peer state via routing"
-                            );
-                            self.routing.record_connection_failure(&overlay);
-                            self.routing.clear_pending_dial(&overlay);
-                        } else {
-                            trace!(
-                                %peer_id,
-                                "DialFailure for unknown peer_id (no dial tracking)"
-                            );
-                        }
+                        trace!(
+                            %peer_id,
+                            "DialFailure for unknown/untracked peer_id"
+                        );
                     }
                 } else {
                     trace!("DialFailure without peer_id");
@@ -967,27 +989,30 @@ impl<I: SwarmIdentity + Clone> NetworkBehaviour for TopologyBehaviour<I> {
         }
 
         // Check for expired health check delays and send pings
-        let ready_peers = self.gossip_coordinator.poll_health_check_delays(cx);
+        let ready_peers = self.gossip.poll_health_check_delays(cx);
         for peer_id in ready_peers {
             debug!(%peer_id, "Health check delay expired, sending ping");
 
-            if let Some(connections) = self.peer_connections.get(&peer_id)
-                && let Some(&connection_id) = connections.first()
-            {
-                self.pending_actions.push_back(ToSwarm::NotifyHandler {
-                    peer_id,
-                    handler: NotifyHandler::One(connection_id),
-                    event: Command::Ping { greeting: None },
-                });
+            if let Some(overlay) = self.connection_registry.resolve_overlay(&peer_id) {
+                if let Some(conn_id) = self.connection_registry.active_connection_id(&overlay) {
+                    self.pending_actions.push_back(ToSwarm::NotifyHandler {
+                        peer_id,
+                        handler: NotifyHandler::One(conn_id),
+                        event: Command::Ping { greeting: None },
+                    });
+                }
             }
         }
 
         // Check for periodic gossip tick via interval
-        let gossip_actions = self.gossip_coordinator.poll_gossip_tick(cx);
+        let gossip_actions = self.gossip.poll_tick(cx);
         self.execute_gossip_actions(gossip_actions);
 
-        // Check for periodic dial candidate evaluation
+        // Check for periodic dial candidate evaluation.
         if self.dial_interval.as_mut().poll_tick(cx).is_ready() {
+            // Clean up pending connections stuck waiting for TCP/handshake
+            self.cleanup_stale_pending();
+
             self.routing.evaluate_connections();
             self.dial_candidates();
         }
@@ -1003,103 +1028,17 @@ impl<I: SwarmIdentity + Clone> NetworkBehaviour for TopologyBehaviour<I> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::task::{Context, Poll, Waker, RawWaker, RawWakerVTable};
-
-    use alloy_primitives::B256;
-    use alloy_signer_local::LocalSigner;
-    use libp2p::swarm::ToSwarm;
-    use nectar_primitives::SwarmAddress;
-    use vertex_swarm_spec::Spec;
 
     use crate::routing::KademliaConfig;
 
-    #[derive(Clone)]
-    struct MockIdentity {
-        overlay: SwarmAddress,
-        signer: Arc<LocalSigner<alloy_signer::k256::ecdsa::SigningKey>>,
-        spec: Arc<Spec>,
-    }
-
-    impl std::fmt::Debug for MockIdentity {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("MockIdentity")
-                .field("overlay", &self.overlay)
-                .finish_non_exhaustive()
-        }
-    }
-
-    impl MockIdentity {
-        fn with_overlay(overlay: OverlayAddress) -> Self {
-            let signer = LocalSigner::random();
-            Self {
-                overlay,
-                signer: Arc::new(signer),
-                spec: vertex_swarm_spec::init_testnet(),
-            }
-        }
-    }
-
-    impl SwarmIdentity for MockIdentity {
-        type Spec = Spec;
-        type Signer = LocalSigner<alloy_signer::k256::ecdsa::SigningKey>;
-
-        fn spec(&self) -> &Self::Spec {
-            &self.spec
-        }
-
-        fn nonce(&self) -> B256 {
-            B256::ZERO
-        }
-
-        fn signer(&self) -> Arc<Self::Signer> {
-            self.signer.clone()
-        }
-
-        fn node_type(&self) -> vertex_swarm_api::SwarmNodeType {
-            vertex_swarm_api::SwarmNodeType::Client
-        }
-
-        fn overlay_address(&self) -> SwarmAddress {
-            self.overlay
-        }
-    }
-
-    fn addr_from_byte(b: u8) -> OverlayAddress {
-        let mut bytes = [0u8; 32];
-        bytes[0] = b;
-        OverlayAddress::from(bytes)
-    }
-
-    fn make_swarm_peer(overlay_byte: u8) -> SwarmPeer {
-        use alloy_primitives::{Address, Signature, U256};
-        let overlay = addr_from_byte(overlay_byte);
-        SwarmPeer::from_validated(
-            vec![format!("/ip4/127.0.0.{}/tcp/1634", overlay_byte).parse().unwrap()],
-            Signature::new(U256::ZERO, U256::ZERO, false),
-            B256::from_slice(overlay.as_slice()),
-            B256::ZERO,
-            Address::ZERO,
-        )
-    }
-
-    fn dummy_waker() -> Waker {
-        fn raw_waker() -> RawWaker {
-            fn no_op(_: *const ()) {}
-            fn clone(_: *const ()) -> RawWaker { raw_waker() }
-            static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
-            RawWaker::new(std::ptr::null(), &VTABLE)
-        }
-        unsafe { Waker::from_raw(raw_waker()) }
-    }
-
     #[test]
-    fn test_behaviour_config() {
-        let config = TopologyBehaviourConfig::new()
+    fn test_topology_config() {
+        let config = TopologyConfig::new()
             .with_kademlia(KademliaConfig::default().with_low_watermark(3))
             .with_dial_interval(Duration::from_secs(10))
             .with_nat_auto(true);
 
-        assert_eq!(config.dial_interval, Some(Duration::from_secs(10)));
+        assert_eq!(config.dial_interval, Duration::from_secs(10));
         assert_eq!(config.kademlia.low_watermark, 3);
         assert!(config.nat_auto);
     }

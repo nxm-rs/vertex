@@ -12,6 +12,6 @@ mod storer;
 
 pub use base::BaseNode;
 pub use bootnode::{BootNode, BootNodeBuilder, BootnodeBehaviour, BootnodeEvent};
-pub use builder::{BuiltInfrastructure, TopologyBuildOptions};
+pub use builder::BuiltInfrastructure;
 pub use client::{ClientNode, ClientNodeBehaviour, ClientNodeBuilder, ClientNodeEvent};
 pub use storer::{StorerNode, StorerNodeBuilder};

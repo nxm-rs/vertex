@@ -253,8 +253,8 @@ pub enum ClientCommand {
         peer_id: PeerId,
         /// The peer's Swarm overlay address.
         overlay: OverlayAddress,
-        /// Whether the peer is a full node.
-        is_full_node: bool,
+        /// True if the peer is a storer node (full storage commitment).
+        storer: bool,
     },
 
     // ========================================================================

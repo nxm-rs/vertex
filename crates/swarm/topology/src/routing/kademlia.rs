@@ -131,6 +131,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
     fn connect_neighbours(&self, candidates: &mut Vec<OverlayAddress>, max: usize) {
         let depth = self.depth();
         let saturation = self.config.saturation_peers;
+        let phases = self.connection_phases.read();
 
         for (po, peer) in self.known_peers.iter_by_proximity_desc() {
             if candidates.len() >= max {
@@ -141,12 +142,13 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
                 break;
             }
 
-            if self.connected_peers.exists(&peer) {
+            // Skip peers we're already connected to or currently dialing/handshaking
+            if self.connected_peers.exists(&peer) || phases.contains_key(&peer) {
                 continue;
             }
 
-            let connected = self.connected_peers.bin_size(po);
-            if connected >= saturation {
+            // Check effective capacity (connected + dialing + handshaking)
+            if self.bin_counts.effective_count(po) >= saturation {
                 continue;
             }
 
@@ -157,12 +159,14 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
     fn connect_balanced(&self, candidates: &mut Vec<OverlayAddress>, max: usize) {
         let depth = self.depth();
         let saturation = self.config.saturation_peers;
+        let phases = self.connection_phases.read();
 
         let mut bin_stats: Vec<(u8, usize, usize, usize)> = Vec::new();
         for po in 0..depth {
-            let connected = self.connected_peers.bin_size(po);
+            // Use effective count (connected + dialing + handshaking) for capacity check
+            let effective = self.bin_counts.effective_count(po);
 
-            if connected >= saturation {
+            if effective >= saturation {
                 continue;
             }
 
@@ -171,13 +175,13 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
                 continue;
             }
 
-            let deficit = saturation - connected;
-            bin_stats.push((po, connected, known, deficit));
+            let deficit = saturation - effective;
+            bin_stats.push((po, effective, known, deficit));
         }
 
         bin_stats.sort_by(|a, b| b.0.cmp(&a.0));
 
-        for (po, connected, known, deficit) in bin_stats {
+        for (po, effective, known, deficit) in bin_stats {
             if candidates.len() >= max {
                 break;
             }
@@ -193,7 +197,8 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
                 (deficit / 4).max(1)
             };
 
-            let available_in_pool = known.saturating_sub(connected);
+            // Available peers = known peers minus those already being processed
+            let available_in_pool = known.saturating_sub(effective);
             let peers_to_add = peers_to_add.min(available_in_pool);
 
             let mut added = 0;
@@ -201,7 +206,8 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
                 if candidates.len() >= max || added >= peers_to_add {
                     break;
                 }
-                if !self.connected_peers.exists(&peer) {
+                // Skip peers we're already connected to or currently dialing/handshaking
+                if !self.connected_peers.exists(&peer) && !phases.contains_key(&peer) {
                     candidates.push(peer);
                     added += 1;
                 }
@@ -210,7 +216,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
             if added > 0 {
                 trace!(
                     po,
-                    connected,
+                    effective,
                     known,
                     deficit,
                     added,
@@ -387,8 +393,8 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         debug!(%peer, "removed peer from routing");
     }
 
-    fn capacity_threshold(&self, is_full_node: bool) -> usize {
-        if is_full_node {
+    fn capacity_threshold(&self, storer: bool) -> usize {
+        if storer {
             self.config.high_watermark
         } else {
             self.config.max_peers_per_bin()
@@ -398,9 +404,9 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
 }
 
 impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
-    fn try_reserve_dial(&self, overlay: &OverlayAddress, is_full_node: bool) -> bool {
+    fn try_reserve_dial(&self, overlay: &OverlayAddress, storer: bool) -> bool {
         let po = self.proximity(overlay);
-        let threshold = self.capacity_threshold(is_full_node);
+        let threshold = self.capacity_threshold(storer);
 
         let mut phases = self.connection_phases.write();
 
@@ -471,9 +477,9 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
         }
     }
 
-    fn should_accept_inbound(&self, overlay: &OverlayAddress, is_full_node: bool) -> bool {
+    fn should_accept_inbound(&self, overlay: &OverlayAddress, storer: bool) -> bool {
         let po = self.proximity(overlay);
-        let threshold = self.capacity_threshold(is_full_node);
+        let threshold = self.capacity_threshold(storer);
 
         let phases = self.connection_phases.read();
         !phases.contains_key(overlay) && self.bin_counts.effective_count(po) < threshold
@@ -495,10 +501,10 @@ impl<I: SwarmIdentity> SwarmRouting<I> for KademliaRouting<I> {
         self.add_known_peers(peers);
     }
 
-    fn should_accept_peer(&self, peer: &OverlayAddress, is_full_node: bool) -> bool {
+    fn should_accept_peer(&self, peer: &OverlayAddress, storer: bool) -> bool {
         let po = self.proximity(peer);
         let effective_count = self.bin_counts.effective_count(po);
-        effective_count < self.capacity_threshold(is_full_node)
+        effective_count < self.capacity_threshold(storer)
     }
 
     fn connected(&self, peer: OverlayAddress) {

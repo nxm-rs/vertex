@@ -5,27 +5,11 @@ use std::time::Duration;
 use eyre::{Result, WrapErr};
 use libp2p::Multiaddr;
 use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig};
-use vertex_swarm_topology::{KademliaConfig, SwarmTopologyBuilder, TopologyBehaviour, TopologyHandle};
+use vertex_swarm_topology::{
+    KademliaConfig, TopologyBehaviour, TopologyConfig, TopologyHandle,
+};
 
 use crate::BootnodeProvider;
-
-/// Options for building topology infrastructure.
-#[derive(Debug, Clone, Default)]
-pub struct TopologyBuildOptions {
-    /// Kademlia configuration override (uses defaults if None).
-    pub kademlia_config: Option<KademliaConfig>,
-}
-
-impl TopologyBuildOptions {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_kademlia(mut self, config: KademliaConfig) -> Self {
-        self.kademlia_config = Some(config);
-        self
-    }
-}
 
 /// Pre-built infrastructure components ready for swarm assembly.
 pub struct BuiltInfrastructure<I: SwarmIdentity> {
@@ -51,7 +35,7 @@ impl<I: SwarmIdentity + Clone> BuiltInfrastructure<I> {
     pub fn from_config<C>(
         identity: I,
         network_config: &C,
-        options: TopologyBuildOptions,
+        topology_config: TopologyConfig,
     ) -> Result<Self>
     where
         C: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig<Routing = KademliaConfig>,
@@ -62,18 +46,17 @@ impl<I: SwarmIdentity + Clone> BuiltInfrastructure<I> {
             network_config.bootnodes().to_vec()
         };
 
-        let kademlia_config = options
-            .kademlia_config
-            .unwrap_or_else(|| network_config.routing().clone());
-
         let config_with_bootnodes = ConfigWithBootnodes {
             inner: network_config,
-            bootnodes: bootnodes.clone(),
+            bootnodes,
         };
 
-        let (topology_behaviour, topology_handle) = kademlia_config
-            .build(identity.clone(), &config_with_bootnodes)
-            .wrap_err("failed to create topology behaviour")?;
+        let (topology_behaviour, topology_handle) = TopologyBehaviour::new(
+            identity.clone(),
+            topology_config,
+            &config_with_bootnodes,
+        )
+        .wrap_err("failed to create topology behaviour")?;
 
         Ok(Self {
             identity,

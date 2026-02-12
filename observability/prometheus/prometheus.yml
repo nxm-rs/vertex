@@ -1,0 +1,47 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: vertex-local
+    namespace: default
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9099"]
+
+  # Tempo metrics (Prometheus on host network, Tempo port published to host)
+  - job_name: "tempo"
+    static_configs:
+      - targets: ["localhost:3200"]
+
+  # Vertex node metrics
+  # Uses localhost since Prometheus runs with network_mode: host on Linux
+  - job_name: "vertex"
+    scrape_interval: 10s
+    static_configs:
+      - targets:
+          - "localhost:9191"
+        labels:
+          instance: "vertex-local"
+    # Add more nodes as needed:
+    # - targets:
+    #     - "localhost:9192"
+    #   labels:
+    #     instance: "vertex-local-2"
+
+  # Optional: scrape other services
+  # - job_name: "your-service"
+  #   static_configs:
+  #     - targets: ["host.docker.internal:PORT"]
+
+# Alerting rules (optional)
+# rule_files:
+#   - "alerts/*.yml"
+
+# Alertmanager configuration (optional)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ["alertmanager:9093"]

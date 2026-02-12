@@ -21,7 +21,7 @@ parking_lot.workspace = true
 tokio = { workspace = true, features = ["sync", "rt"] }
 tokio-stream = { workspace = true, features = ["sync"] }
 tonic.workspace = true
-tonic-reflection = "0.12"
+tonic-reflection.workspace = true
 prost.workspace = true
 tracing.workspace = true
 
