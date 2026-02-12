@@ -6,76 +6,51 @@ use vertex_net_peer_score::ScoringPolicy;
 /// Configuration for Swarm peer scoring weights.
 ///
 /// All weights can be customized. Positive values improve score,
-/// negative values decrease it.
+/// negative values decrease it. Use [`SwarmScoringConfigBuilder`] for
+/// ergonomic configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwarmScoringConfig {
-    // Connection events
-    pub connection_success: f64,
-    pub connection_timeout: f64,
-    pub connection_refused: f64,
-    pub handshake_failure: f64,
-    pub protocol_error: f64,
-
-    // Data transfer events
-    pub retrieval_success: f64,
-    pub retrieval_failure: f64,
-    pub push_success: f64,
-    pub push_failure: f64,
-
-    // Data integrity events
-    pub invalid_data: f64,
-    pub malicious_behavior: f64,
-
-    // Accounting events
-    pub accounting_violation: f64,
-    pub rate_limit_exceeded: f64,
-
-    // Ping events
-    pub ping_success: f64,
-    pub ping_timeout: f64,
-
-    // Gossip events
-    pub gossip_useful: f64,
-    pub gossip_stale: f64,
-
-    // Thresholds
-    pub ban_threshold: f64,
-    pub warn_threshold: f64,
+    connection_success: f64,
+    connection_timeout: f64,
+    connection_refused: f64,
+    handshake_failure: f64,
+    protocol_error: f64,
+    retrieval_success: f64,
+    retrieval_failure: f64,
+    push_success: f64,
+    push_failure: f64,
+    invalid_data: f64,
+    malicious_behavior: f64,
+    accounting_violation: f64,
+    rate_limit_exceeded: f64,
+    ping_success: f64,
+    ping_timeout: f64,
+    gossip_useful: f64,
+    gossip_stale: f64,
+    ban_threshold: f64,
+    warn_threshold: f64,
 }
 
 impl Default for SwarmScoringConfig {
     fn default() -> Self {
         Self {
-            // Connection events
             connection_success: 1.0,
             connection_timeout: -1.5,
             connection_refused: -1.0,
             handshake_failure: -5.0,
             protocol_error: -3.0,
-
-            // Data transfer events
             retrieval_success: 0.5,
             retrieval_failure: -2.0,
             push_success: 0.5,
             push_failure: -2.0,
-
-            // Data integrity events
             invalid_data: -10.0,
             malicious_behavior: -50.0,
-
-            // Accounting events
             accounting_violation: -20.0,
             rate_limit_exceeded: -5.0,
-
-            // Ping events
             ping_success: 0.1,
             ping_timeout: -0.5,
-
-            // Gossip events
             gossip_useful: 0.2,
             gossip_stale: -0.1,
-
-            // Thresholds
             ban_threshold: -100.0,
             warn_threshold: -50.0,
         }
@@ -84,49 +59,156 @@ impl Default for SwarmScoringConfig {
 
 impl SwarmScoringConfig {
     /// Create a new config with default values.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Create a builder for custom configuration.
+    #[must_use]
+    pub fn builder() -> SwarmScoringConfigBuilder {
+        SwarmScoringConfigBuilder::new()
+    }
+
     /// Create a lenient config with reduced penalties.
+    #[must_use]
     pub fn lenient() -> Self {
-        Self {
-            connection_timeout: -0.5,
-            connection_refused: -0.3,
-            handshake_failure: -2.0,
-            protocol_error: -1.0,
-            retrieval_failure: -0.5,
-            push_failure: -0.5,
-            ban_threshold: -200.0,
-            ..Self::default()
-        }
+        Self::builder()
+            .connection_timeout(-0.5)
+            .connection_refused(-0.3)
+            .handshake_failure(-2.0)
+            .protocol_error(-1.0)
+            .retrieval_failure(-0.5)
+            .push_failure(-0.5)
+            .ban_threshold(-200.0)
+            .build()
     }
 
     /// Create a strict config with increased penalties.
+    #[must_use]
     pub fn strict() -> Self {
-        Self {
-            connection_timeout: -3.0,
-            connection_refused: -2.0,
-            handshake_failure: -10.0,
-            protocol_error: -5.0,
-            invalid_data: -25.0,
-            malicious_behavior: -100.0,
-            ban_threshold: -50.0,
-            ..Self::default()
-        }
+        Self::builder()
+            .connection_timeout(-3.0)
+            .connection_refused(-2.0)
+            .handshake_failure(-10.0)
+            .protocol_error(-5.0)
+            .invalid_data(-25.0)
+            .malicious_behavior(-100.0)
+            .ban_threshold(-50.0)
+            .build()
+    }
+
+    // Getters for all fields
+
+    #[must_use]
+    pub fn connection_success(&self) -> f64 {
+        self.connection_success
+    }
+
+    #[must_use]
+    pub fn connection_timeout(&self) -> f64 {
+        self.connection_timeout
+    }
+
+    #[must_use]
+    pub fn connection_refused(&self) -> f64 {
+        self.connection_refused
+    }
+
+    #[must_use]
+    pub fn handshake_failure(&self) -> f64 {
+        self.handshake_failure
+    }
+
+    #[must_use]
+    pub fn protocol_error(&self) -> f64 {
+        self.protocol_error
+    }
+
+    #[must_use]
+    pub fn retrieval_success(&self) -> f64 {
+        self.retrieval_success
+    }
+
+    #[must_use]
+    pub fn retrieval_failure(&self) -> f64 {
+        self.retrieval_failure
+    }
+
+    #[must_use]
+    pub fn push_success(&self) -> f64 {
+        self.push_success
+    }
+
+    #[must_use]
+    pub fn push_failure(&self) -> f64 {
+        self.push_failure
+    }
+
+    #[must_use]
+    pub fn invalid_data(&self) -> f64 {
+        self.invalid_data
+    }
+
+    #[must_use]
+    pub fn malicious_behavior(&self) -> f64 {
+        self.malicious_behavior
+    }
+
+    #[must_use]
+    pub fn accounting_violation(&self) -> f64 {
+        self.accounting_violation
+    }
+
+    #[must_use]
+    pub fn rate_limit_exceeded(&self) -> f64 {
+        self.rate_limit_exceeded
+    }
+
+    #[must_use]
+    pub fn ping_success(&self) -> f64 {
+        self.ping_success
+    }
+
+    #[must_use]
+    pub fn ping_timeout(&self) -> f64 {
+        self.ping_timeout
+    }
+
+    #[must_use]
+    pub fn gossip_useful(&self) -> f64 {
+        self.gossip_useful
+    }
+
+    #[must_use]
+    pub fn gossip_stale(&self) -> f64 {
+        self.gossip_stale
+    }
+
+    #[must_use]
+    pub fn ban_threshold(&self) -> f64 {
+        self.ban_threshold
+    }
+
+    #[must_use]
+    pub fn warn_threshold(&self) -> f64 {
+        self.warn_threshold
     }
 
     /// Check if a score should trigger a ban.
+    #[must_use]
     pub fn should_ban(&self, score: f64) -> bool {
         score < self.ban_threshold
     }
 
     /// Check if a score is in warning territory.
+    #[must_use]
     pub fn should_warn(&self, score: f64) -> bool {
         score < self.warn_threshold && score >= self.ban_threshold
     }
 
     /// Get weight for a specific event type.
+    #[must_use]
     pub fn weight_for(&self, event: &super::SwarmScoringEvent) -> f64 {
         use super::SwarmScoringEvent::*;
         match event {
@@ -177,6 +259,167 @@ impl ScoringPolicy for SwarmScoringConfig {
     }
 }
 
+/// Builder for [`SwarmScoringConfig`] with fluent API.
+#[derive(Debug, Clone)]
+pub struct SwarmScoringConfigBuilder {
+    config: SwarmScoringConfig,
+}
+
+impl Default for SwarmScoringConfigBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SwarmScoringConfigBuilder {
+    /// Create a new builder with default values.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            config: SwarmScoringConfig::default(),
+        }
+    }
+
+    /// Build the configuration.
+    #[must_use]
+    pub fn build(self) -> SwarmScoringConfig {
+        self.config
+    }
+
+    /// Set connection success weight.
+    #[must_use]
+    pub fn connection_success(mut self, value: f64) -> Self {
+        self.config.connection_success = value;
+        self
+    }
+
+    /// Set connection timeout penalty.
+    #[must_use]
+    pub fn connection_timeout(mut self, value: f64) -> Self {
+        self.config.connection_timeout = value;
+        self
+    }
+
+    /// Set connection refused penalty.
+    #[must_use]
+    pub fn connection_refused(mut self, value: f64) -> Self {
+        self.config.connection_refused = value;
+        self
+    }
+
+    /// Set handshake failure penalty.
+    #[must_use]
+    pub fn handshake_failure(mut self, value: f64) -> Self {
+        self.config.handshake_failure = value;
+        self
+    }
+
+    /// Set protocol error penalty.
+    #[must_use]
+    pub fn protocol_error(mut self, value: f64) -> Self {
+        self.config.protocol_error = value;
+        self
+    }
+
+    /// Set retrieval success weight.
+    #[must_use]
+    pub fn retrieval_success(mut self, value: f64) -> Self {
+        self.config.retrieval_success = value;
+        self
+    }
+
+    /// Set retrieval failure penalty.
+    #[must_use]
+    pub fn retrieval_failure(mut self, value: f64) -> Self {
+        self.config.retrieval_failure = value;
+        self
+    }
+
+    /// Set push success weight.
+    #[must_use]
+    pub fn push_success(mut self, value: f64) -> Self {
+        self.config.push_success = value;
+        self
+    }
+
+    /// Set push failure penalty.
+    #[must_use]
+    pub fn push_failure(mut self, value: f64) -> Self {
+        self.config.push_failure = value;
+        self
+    }
+
+    /// Set invalid data penalty.
+    #[must_use]
+    pub fn invalid_data(mut self, value: f64) -> Self {
+        self.config.invalid_data = value;
+        self
+    }
+
+    /// Set malicious behavior penalty.
+    #[must_use]
+    pub fn malicious_behavior(mut self, value: f64) -> Self {
+        self.config.malicious_behavior = value;
+        self
+    }
+
+    /// Set accounting violation penalty.
+    #[must_use]
+    pub fn accounting_violation(mut self, value: f64) -> Self {
+        self.config.accounting_violation = value;
+        self
+    }
+
+    /// Set rate limit exceeded penalty.
+    #[must_use]
+    pub fn rate_limit_exceeded(mut self, value: f64) -> Self {
+        self.config.rate_limit_exceeded = value;
+        self
+    }
+
+    /// Set ping success weight.
+    #[must_use]
+    pub fn ping_success(mut self, value: f64) -> Self {
+        self.config.ping_success = value;
+        self
+    }
+
+    /// Set ping timeout penalty.
+    #[must_use]
+    pub fn ping_timeout(mut self, value: f64) -> Self {
+        self.config.ping_timeout = value;
+        self
+    }
+
+    /// Set gossip useful weight.
+    #[must_use]
+    pub fn gossip_useful(mut self, value: f64) -> Self {
+        self.config.gossip_useful = value;
+        self
+    }
+
+    /// Set gossip stale penalty.
+    #[must_use]
+    pub fn gossip_stale(mut self, value: f64) -> Self {
+        self.config.gossip_stale = value;
+        self
+    }
+
+    /// Set ban threshold.
+    #[must_use]
+    pub fn ban_threshold(mut self, value: f64) -> Self {
+        self.config.ban_threshold = value;
+        self
+    }
+
+    /// Set warning threshold.
+    #[must_use]
+    pub fn warn_threshold(mut self, value: f64) -> Self {
+        self.config.warn_threshold = value;
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,9 +427,22 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = SwarmScoringConfig::default();
-        assert!(config.connection_success > 0.0);
-        assert!(config.connection_timeout < 0.0);
-        assert!(config.ban_threshold < 0.0);
+        assert!(config.connection_success() > 0.0);
+        assert!(config.connection_timeout() < 0.0);
+        assert!(config.ban_threshold() < 0.0);
+    }
+
+    #[test]
+    fn test_builder() {
+        let config = SwarmScoringConfig::builder()
+            .connection_success(2.0)
+            .ban_threshold(-150.0)
+            .build();
+
+        assert!((config.connection_success() - 2.0).abs() < 0.001);
+        assert!((config.ban_threshold() - -150.0).abs() < 0.001);
+        // Other fields should have defaults
+        assert!((config.connection_timeout() - -1.5).abs() < 0.001);
     }
 
     #[test]
@@ -195,11 +451,11 @@ mod tests {
         let strict = SwarmScoringConfig::strict();
 
         // Lenient should have smaller penalties
-        assert!(lenient.connection_timeout.abs() < strict.connection_timeout.abs());
-        assert!(lenient.handshake_failure.abs() < strict.handshake_failure.abs());
+        assert!(lenient.connection_timeout().abs() < strict.connection_timeout().abs());
+        assert!(lenient.handshake_failure().abs() < strict.handshake_failure().abs());
 
         // Lenient should have higher (less negative) ban threshold
-        assert!(lenient.ban_threshold < strict.ban_threshold);
+        assert!(lenient.ban_threshold() < strict.ban_threshold());
     }
 
     #[test]
@@ -221,9 +477,9 @@ mod tests {
     #[test]
     fn test_scoring_policy_impl() {
         let config = SwarmScoringConfig::default();
-        assert_eq!(ScoringPolicy::on_success(&config), config.connection_success);
-        assert_eq!(ScoringPolicy::on_timeout(&config), config.connection_timeout);
-        assert_eq!(ScoringPolicy::ban_threshold(&config), config.ban_threshold);
+        assert_eq!(ScoringPolicy::on_success(&config), config.connection_success());
+        assert_eq!(ScoringPolicy::on_timeout(&config), config.connection_timeout());
+        assert_eq!(ScoringPolicy::ban_threshold(&config), config.ban_threshold());
     }
 
     #[test]
@@ -231,6 +487,6 @@ mod tests {
         let config = SwarmScoringConfig::default();
         let json = serde_json::to_string(&config).unwrap();
         let restored: SwarmScoringConfig = serde_json::from_str(&json).unwrap();
-        assert!((config.connection_success - restored.connection_success).abs() < 0.001);
+        assert!((config.connection_success() - restored.connection_success()).abs() < 0.001);
     }
 }

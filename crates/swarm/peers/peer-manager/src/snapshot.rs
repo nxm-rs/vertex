@@ -1,21 +1,19 @@
 //! Persistence snapshot for Swarm peers.
 
 use serde::{Deserialize, Serialize};
-use vertex_net_local::IpCapability;
 use vertex_net_peer_score::PeerScoreSnapshot;
 use vertex_swarm_peer::SwarmPeer;
+use vertex_swarm_primitives::SwarmNodeType;
 
 use crate::ban::BanInfo;
 
 /// Serializable snapshot of peer state for persistence.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SwarmPeerSnapshot {
-    /// Full peer identity.
+    /// Full peer identity (includes multiaddrs for IP capability).
     pub peer: SwarmPeer,
-    /// IP connectivity capability.
-    pub ip_capability: IpCapability,
-    /// Whether this peer runs as a full node.
-    pub full_node: bool,
+    /// Node type (bootnode, client, storer).
+    pub node_type: SwarmNodeType,
     /// Scoring metrics.
     pub scoring: PeerScoreSnapshot,
     /// Ban information if peer is banned.
@@ -36,8 +34,7 @@ impl SwarmPeerSnapshot {
     /// Create a new snapshot.
     pub fn new(
         peer: SwarmPeer,
-        ip_capability: IpCapability,
-        full_node: bool,
+        node_type: SwarmNodeType,
         scoring: PeerScoreSnapshot,
         ban_info: Option<BanInfo>,
         first_seen: u64,
@@ -47,8 +44,7 @@ impl SwarmPeerSnapshot {
     ) -> Self {
         Self {
             peer,
-            ip_capability,
-            full_node,
+            node_type,
             scoring,
             ban_info,
             first_seen,
@@ -68,8 +64,7 @@ mod tests {
     fn test_serialization() {
         let snapshot = SwarmPeerSnapshot {
             peer: test_swarm_peer(1),
-            ip_capability: IpCapability::default(),
-            full_node: true,
+            node_type: SwarmNodeType::Storer,
             scoring: PeerScoreSnapshot::default(),
             ban_info: None,
             first_seen: 100,
@@ -81,7 +76,7 @@ mod tests {
         let json = serde_json::to_string(&snapshot).unwrap();
         let restored: SwarmPeerSnapshot = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(restored.full_node, snapshot.full_node);
+        assert_eq!(restored.node_type, snapshot.node_type);
         assert_eq!(restored.first_seen, snapshot.first_seen);
         assert_eq!(restored.last_seen, snapshot.last_seen);
         assert_eq!(restored.last_dial_attempt, snapshot.last_dial_attempt);
@@ -90,12 +85,9 @@ mod tests {
 
     #[test]
     fn test_backwards_compat_deserialize() {
-        // Test that snapshots without new fields deserialize correctly
-        // Create a snapshot, serialize it, remove the new fields, then deserialize
         let snapshot = SwarmPeerSnapshot {
             peer: test_swarm_peer(1),
-            ip_capability: IpCapability::default(),
-            full_node: true,
+            node_type: SwarmNodeType::Storer,
             scoring: PeerScoreSnapshot::default(),
             ban_info: None,
             first_seen: 100,

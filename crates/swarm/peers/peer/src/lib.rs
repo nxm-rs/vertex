@@ -13,6 +13,8 @@ pub use error::{MultiAddrError, SwarmPeerError};
 pub use serde_multiaddr::{deserialize_multiaddrs, serialize_multiaddrs};
 pub use util::arbitrary_multiaddr;
 
+use std::sync::OnceLock;
+
 use util::generate_sign_message;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_primitives::compute_overlay;
@@ -25,9 +27,12 @@ pub use vertex_swarm_primitives::SwarmNodeType;
 use alloy_primitives::{Address, B256, Signature};
 use alloy_signer::{Signer, SignerSync};
 use libp2p::Multiaddr;
+use vertex_net_local::IpCapability;
+
+// Re-export for consumers
+pub use vertex_net_local::IpCapability as SwarmPeerIpCapability;
 
 /// Verifiable peer identity with multiaddrs, signature, and overlay address.
-#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SwarmPeer {
     multiaddrs: Vec<Multiaddr>,
@@ -35,7 +40,49 @@ pub struct SwarmPeer {
     overlay: SwarmAddress,
     nonce: B256,
     ethereum_address: Address,
+    /// Cached IP capability (computed lazily from multiaddrs).
+    #[cfg_attr(feature = "serde", serde(skip))]
+    ip_capability_cache: OnceLock<IpCapability>,
 }
+
+impl std::fmt::Debug for SwarmPeer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SwarmPeer")
+            .field("multiaddrs", &self.multiaddrs)
+            .field("signature", &self.signature)
+            .field("overlay", &self.overlay)
+            .field("nonce", &self.nonce)
+            .field("ethereum_address", &self.ethereum_address)
+            .finish()
+    }
+}
+
+impl Clone for SwarmPeer {
+    fn clone(&self) -> Self {
+        Self {
+            multiaddrs: self.multiaddrs.clone(),
+            signature: self.signature,
+            overlay: self.overlay,
+            nonce: self.nonce,
+            ethereum_address: self.ethereum_address,
+            // Don't clone cache - will be lazily recomputed
+            ip_capability_cache: OnceLock::new(),
+        }
+    }
+}
+
+impl PartialEq for SwarmPeer {
+    fn eq(&self, other: &Self) -> bool {
+        // Compare only the identity fields, not the cache
+        self.multiaddrs == other.multiaddrs
+            && self.signature == other.signature
+            && self.overlay == other.overlay
+            && self.nonce == other.nonce
+            && self.ethereum_address == other.ethereum_address
+    }
+}
+
+impl Eq for SwarmPeer {}
 
 impl Default for SwarmPeer {
     /// Creates a placeholder SwarmPeer with zero values.
@@ -50,6 +97,7 @@ impl Default for SwarmPeer {
             overlay: SwarmAddress::default(),
             nonce: B256::ZERO,
             ethereum_address: Address::ZERO,
+            ip_capability_cache: OnceLock::new(),
         }
     }
 }
@@ -84,6 +132,7 @@ impl SwarmPeer {
             overlay,
             nonce,
             ethereum_address,
+            ip_capability_cache: OnceLock::new(),
         })
     }
 
@@ -119,6 +168,7 @@ impl SwarmPeer {
             overlay,
             nonce,
             ethereum_address,
+            ip_capability_cache: OnceLock::new(),
         })
     }
 
@@ -136,6 +186,7 @@ impl SwarmPeer {
             overlay: SwarmAddress::from(overlay),
             nonce,
             ethereum_address,
+            ip_capability_cache: OnceLock::new(),
         }
     }
 
@@ -165,6 +216,11 @@ impl SwarmPeer {
 
     pub fn serialize_multiaddrs(&self) -> Vec<u8> {
         serialize_multiaddrs(&self.multiaddrs)
+    }
+
+    /// Get IP capability (cached, computed lazily from multiaddrs).
+    pub fn ip_capability(&self) -> IpCapability {
+        *self.ip_capability_cache.get_or_init(|| IpCapability::from_addrs(&self.multiaddrs))
     }
 }
 
@@ -303,5 +359,90 @@ mod tests {
         );
 
         assert!(matches!(result, Err(SwarmPeerError::NoMultiaddrs)));
+    }
+
+    #[test]
+    fn ip_capability_v4_only() {
+        let spec = init_testnet();
+        let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
+        let v4_addr: Multiaddr = "/ip4/192.168.1.1/tcp/1234".parse().unwrap();
+
+        let peer = SwarmPeer::from_identity(&identity, vec![v4_addr]).unwrap();
+        let cap = peer.ip_capability();
+
+        assert!(cap.supports_ipv4());
+        assert!(!cap.supports_ipv6());
+    }
+
+    #[test]
+    fn ip_capability_dual_stack() {
+        let spec = init_testnet();
+        let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
+        let v4_addr: Multiaddr = "/ip4/192.168.1.1/tcp/1234".parse().unwrap();
+        let v6_addr: Multiaddr = "/ip6/::1/tcp/1234".parse().unwrap();
+
+        let peer = SwarmPeer::from_identity(&identity, vec![v4_addr, v6_addr]).unwrap();
+        let cap = peer.ip_capability();
+
+        assert!(cap.supports_ipv4());
+        assert!(cap.supports_ipv6());
+        assert!(cap.is_dual_stack());
+    }
+
+    #[test]
+    fn ip_capability_cached() {
+        let spec = init_testnet();
+        let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
+        let v4_addr: Multiaddr = "/ip4/192.168.1.1/tcp/1234".parse().unwrap();
+
+        let peer = SwarmPeer::from_identity(&identity, vec![v4_addr]).unwrap();
+
+        // First call computes and caches
+        let cap1 = peer.ip_capability();
+        // Second call returns cached value
+        let cap2 = peer.ip_capability();
+
+        assert_eq!(cap1, cap2);
+        assert!(cap1.supports_ipv4());
+    }
+
+    #[test]
+    fn clone_does_not_share_cache() {
+        let spec = init_testnet();
+        let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
+        let v4_addr: Multiaddr = "/ip4/192.168.1.1/tcp/1234".parse().unwrap();
+
+        let peer1 = SwarmPeer::from_identity(&identity, vec![v4_addr]).unwrap();
+
+        // Compute capability on peer1
+        let _ = peer1.ip_capability();
+
+        // Clone - cache should not be shared
+        let peer2 = peer1.clone();
+
+        // Both should return same capability
+        assert_eq!(peer1.ip_capability(), peer2.ip_capability());
+        // And they should be equal
+        assert_eq!(peer1, peer2);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_roundtrip_recomputes_capability() {
+        let spec = init_testnet();
+        let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
+        let v4_addr: Multiaddr = "/ip4/192.168.1.1/tcp/1234".parse().unwrap();
+
+        let peer1 = SwarmPeer::from_identity(&identity, vec![v4_addr]).unwrap();
+        let cap1 = peer1.ip_capability();
+
+        // Serialize and deserialize
+        let json = serde_json::to_string(&peer1).unwrap();
+        let peer2: SwarmPeer = serde_json::from_str(&json).unwrap();
+
+        // Capability should be recomputed correctly
+        let cap2 = peer2.ip_capability();
+        assert_eq!(cap1, cap2);
+        assert!(cap2.supports_ipv4());
     }
 }

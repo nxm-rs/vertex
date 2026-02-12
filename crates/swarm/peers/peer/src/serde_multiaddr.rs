@@ -15,8 +15,9 @@ const MULTIADDR_LIST_PREFIX: u8 = 0x99;
 /// - Single address: raw bytes (backward compatible)
 /// - Zero or multiple: 0x99 prefix + varint-length-prefixed entries
 pub fn serialize_multiaddrs(addrs: &[Multiaddr]) -> Vec<u8> {
-    if addrs.len() == 1 {
-        return addrs[0].to_vec();
+    // Single address: return raw bytes for backward compatibility
+    if let [single] = addrs {
+        return single.to_vec();
     }
 
     let mut buf = Vec::new();
@@ -37,16 +38,14 @@ pub fn serialize_multiaddrs(addrs: &[Multiaddr]) -> Vec<u8> {
 /// - 0x99 prefix: list format
 /// - Otherwise: single legacy multiaddr
 pub fn deserialize_multiaddrs(data: &[u8]) -> Result<Vec<Multiaddr>, MultiAddrError> {
-    if data.is_empty() {
-        return Ok(Vec::new());
+    match data.first() {
+        None => Ok(Vec::new()),
+        Some(&MULTIADDR_LIST_PREFIX) => deserialize_list(&data[1..]),
+        Some(_) => {
+            let addr = Multiaddr::try_from(data.to_vec())?;
+            Ok(vec![addr])
+        }
     }
-
-    if data[0] == MULTIADDR_LIST_PREFIX {
-        return deserialize_list(&data[1..]);
-    }
-
-    let addr = Multiaddr::try_from(data.to_vec())?;
-    Ok(vec![addr])
 }
 
 fn deserialize_list(data: &[u8]) -> Result<Vec<Multiaddr>, MultiAddrError> {

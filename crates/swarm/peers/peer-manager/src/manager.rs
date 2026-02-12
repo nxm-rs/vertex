@@ -11,9 +11,8 @@ use vertex_net_peer_store::{FilePeerStore, NetPeerStore, PeerRecord, StoreError}
 use vertex_swarm_api::PeerConfigValues;
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_score::SwarmScoringConfig;
-use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
-use crate::data::SwarmPeerData;
 use crate::entry::PeerEntry;
 use crate::error::PeerManagerError;
 use crate::pruner::PruneConfig;
@@ -76,8 +75,9 @@ impl PeerManager {
 
     /// Create from configuration.
     pub fn from_config(config: &impl PeerConfigValues) -> Result<Self, PeerManagerError> {
-        let mut scoring_config = SwarmScoringConfig::default();
-        scoring_config.ban_threshold = config.ban_threshold();
+        let scoring_config = SwarmScoringConfig::builder()
+            .ban_threshold(config.ban_threshold())
+            .build();
         let max_peers = config.store_limit();
 
         match config.store_path() {
@@ -102,7 +102,7 @@ impl PeerManager {
 
     /// Get the ban threshold.
     pub fn ban_threshold(&self) -> f64 {
-        self.scoring_config.ban_threshold
+        self.scoring_config.ban_threshold()
     }
 
     /// Get the maximum tracked peers limit.
@@ -133,15 +133,13 @@ impl PeerManager {
         Ok(())
     }
 
-    /// Check if a peer is a full node.
-    pub fn is_full_node(&self, overlay: &OverlayAddress) -> bool {
-        self.peers
-            .get(overlay)
-            .map(|e| e.is_full_node())
-            .unwrap_or(false)
+    /// Get the node type of a peer.
+    pub fn node_type(&self, overlay: &OverlayAddress) -> Option<SwarmNodeType> {
+        self.peers.get(overlay).map(|e| e.node_type())
     }
 
     /// Get known peers that are not banned (for seeding routing tables).
+    #[must_use]
     pub fn known_peers(&self) -> Vec<OverlayAddress> {
         self.peers
             .iter()
@@ -158,16 +156,18 @@ impl PeerManager {
             .count()
     }
 
-    /// Get all known full-node peers that aren't banned.
-    pub fn known_full_node_overlays(&self) -> Vec<OverlayAddress> {
+    /// Get all known Storer peers that aren't banned.
+    #[must_use]
+    pub fn known_storer_overlays(&self) -> Vec<OverlayAddress> {
         self.peers
             .iter()
-            .filter(|r| r.value().is_full_node() && !r.value().is_banned())
+            .filter(|r| r.value().node_type() == SwarmNodeType::Storer && !r.value().is_banned())
             .map(|r| *r.key())
             .collect()
     }
 
     /// Get SwarmPeer data for multiple overlays.
+    #[must_use]
     pub fn get_swarm_peers(&self, overlays: &[OverlayAddress]) -> Vec<SwarmPeer> {
         overlays
             .iter()
@@ -179,6 +179,7 @@ impl PeerManager {
     ///
     /// Used by topology to get dialable peers. Connection state filtering
     /// should be done by the caller using ConnectionRegistry.
+    #[must_use]
     pub fn get_dialable_peers(&self, candidates: &[OverlayAddress]) -> Vec<SwarmPeer> {
         candidates
             .iter()
@@ -197,6 +198,7 @@ impl PeerManager {
     }
 
     /// Get multiaddrs for a peer.
+    #[must_use]
     pub fn get_multiaddrs(&self, overlay: &OverlayAddress) -> Option<Vec<libp2p::Multiaddr>> {
         self.peers
             .get(overlay)
@@ -204,20 +206,40 @@ impl PeerManager {
     }
 
     /// Get a peer's IP capability.
+    #[must_use]
     pub fn get_peer_capability(&self, overlay: &OverlayAddress) -> Option<IpCapability> {
         self.peers.get(overlay).map(|r| r.ip_capability())
     }
 
-    /// Get a peer entry by overlay address.
-    pub fn get_peer(&self, overlay: &OverlayAddress) -> Option<Arc<PeerEntry>> {
-        self.peers.get(overlay).map(|r| r.value().clone())
+    /// Get a peer's current score.
+    #[must_use]
+    pub fn get_peer_score(&self, overlay: &OverlayAddress) -> Option<f64> {
+        self.peers.get(overlay).map(|r| r.score())
     }
 
-    /// Store a single discovered peer.
+    /// Get a peer's average latency.
+    #[must_use]
+    pub fn get_peer_latency(&self, overlay: &OverlayAddress) -> Option<Duration> {
+        self.peers.get(overlay).and_then(|r| r.latency())
+    }
+
+    /// Check if peer is currently in backoff period.
+    pub fn peer_is_in_backoff(&self, overlay: &OverlayAddress) -> bool {
+        self.peers
+            .get(overlay)
+            .map(|r| r.is_in_backoff())
+            .unwrap_or(false)
+    }
+
+    /// Get remaining backoff duration for a peer.
+    pub fn peer_backoff_remaining(&self, overlay: &OverlayAddress) -> Option<Duration> {
+        self.peers.get(overlay).and_then(|r| r.backoff_remaining())
+    }
+
+    /// Store a single discovered peer (default to Client node type).
     pub fn store_discovered_peer(&self, swarm_peer: SwarmPeer) -> OverlayAddress {
         let overlay = OverlayAddress::from(*swarm_peer.overlay());
-        let data = SwarmPeerData::new(swarm_peer, false);
-        let entry = self.insert_peer(overlay, data);
+        let entry = self.insert_peer(overlay, swarm_peer, SwarmNodeType::Client);
         self.persist_peer(&overlay, &entry);
         overlay
     }
@@ -240,8 +262,7 @@ impl PeerManager {
 
         for swarm_peer in peers {
             let overlay = OverlayAddress::from(*swarm_peer.overlay());
-            let data = SwarmPeerData::new(swarm_peer, false);
-            let entry = self.insert_peer(overlay, data);
+            let entry = self.insert_peer(overlay, swarm_peer, SwarmNodeType::Client);
 
             to_persist.push((overlay, entry));
             stored_overlays.push(overlay);
@@ -252,6 +273,7 @@ impl PeerManager {
     }
 
     /// Get a peer snapshot by overlay address.
+    #[must_use]
     pub fn get_peer_snapshot(&self, overlay: &OverlayAddress) -> Option<SwarmPeerSnapshot> {
         self.peers.get(overlay).map(|r| r.snapshot())
     }
@@ -274,23 +296,24 @@ impl PeerManager {
     }
 
     /// Insert or update a peer, returns the entry.
-    fn insert_peer(&self, overlay: OverlayAddress, data: SwarmPeerData) -> Arc<PeerEntry> {
+    fn insert_peer(&self, overlay: OverlayAddress, peer: SwarmPeer, node_type: SwarmNodeType) -> Arc<PeerEntry> {
         use dashmap::mapref::entry::Entry;
 
         match self.peers.entry(overlay) {
             Entry::Occupied(e) => {
-                e.get().update_data(data);
+                e.get().update_peer(peer);
                 Arc::clone(e.get())
             }
             Entry::Vacant(e) => {
-                let entry = Arc::new(PeerEntry::with_config(data, Arc::clone(&self.scoring_config)));
+                let entry = Arc::new(PeerEntry::with_config(peer, node_type, Arc::clone(&self.scoring_config)));
                 e.insert(Arc::clone(&entry));
                 entry
             }
         }
     }
 
-    /// Check if pruning should run based on capacity threshold.
+    /// Returns true if peer count exceeds capacity threshold and no prune in progress.
+    #[must_use]
     pub fn should_prune(&self, config: &PruneConfig) -> bool {
         let Some(max) = self.max_tracked_peers else {
             return false;
@@ -301,7 +324,7 @@ impl PeerManager {
         self.peers.len() >= (max as f64 * config.capacity_threshold) as usize
     }
 
-    /// Run async pruning. Uses CAS to ensure single pruner.
+    /// Remove low-priority peers (banned, stale, low-score) until target utilization reached.
     pub async fn prune_async(&self, config: &PruneConfig) {
         if self
             .prune_in_progress
@@ -342,7 +365,7 @@ impl PeerManager {
     }
 
     fn collect_prune_candidates(&self, count: usize) -> Vec<OverlayAddress> {
-        let ban_threshold = self.scoring_config.ban_threshold;
+        let ban_threshold = self.scoring_config.ban_threshold();
         let mut candidates: Vec<_> = self
             .peers
             .iter()
@@ -418,6 +441,7 @@ impl PeerManager {
     }
 
     /// Get statistics about the peer manager.
+    #[must_use]
     pub fn stats(&self) -> PeerManagerStats {
         let total = self.peers.len();
 
@@ -475,37 +499,27 @@ pub struct PeerManagerStats {
     pub avg_peer_score: f64,
 }
 
-/// Bridge trait for peer manager operations from topology layer.
-pub trait InternalPeerManager: Send + Sync {
+impl PeerManager {
     /// Called when a peer completes handshake. Stores the SwarmPeer metadata.
-    fn on_peer_ready(&self, swarm_peer: SwarmPeer, is_full_node: bool);
-
-    /// Record latency for a peer.
-    fn record_latency(&self, overlay: &OverlayAddress, rtt: Duration);
-
-    /// Record a dial failure for exponential backoff.
-    fn record_dial_failure(&self, overlay: &OverlayAddress);
-}
-
-impl InternalPeerManager for PeerManager {
-    fn on_peer_ready(&self, swarm_peer: SwarmPeer, is_full_node: bool) {
+    pub fn on_peer_ready(&self, swarm_peer: SwarmPeer, node_type: SwarmNodeType) {
         let overlay = OverlayAddress::from(*swarm_peer.overlay());
-        debug!(?overlay, is_full_node, "storing peer");
+        debug!(?overlay, ?node_type, "storing peer");
 
-        let data = SwarmPeerData::new(swarm_peer, is_full_node);
-        let entry = self.insert_peer(overlay, data);
+        let entry = self.insert_peer(overlay, swarm_peer, node_type);
         entry.record_success(Duration::ZERO);
         self.persist_peer(&overlay, &entry);
     }
 
-    fn record_latency(&self, overlay: &OverlayAddress, rtt: Duration) {
+    /// Record latency for a peer.
+    pub fn record_latency(&self, overlay: &OverlayAddress, rtt: Duration) {
         if let Some(entry) = self.peers.get(overlay) {
             entry.set_latency(rtt);
             trace!(?overlay, ?rtt, "recorded latency");
         }
     }
 
-    fn record_dial_failure(&self, overlay: &OverlayAddress) {
+    /// Record a dial failure for exponential backoff.
+    pub fn record_dial_failure(&self, overlay: &OverlayAddress) {
         if let Some(entry) = self.peers.get(overlay) {
             entry.record_dial_failure();
             let failures = entry.consecutive_failures();
@@ -543,8 +557,8 @@ mod tests {
         let swarm_peer = test_swarm_peer(1);
         let overlay = test_overlay(1);
 
-        pm.on_peer_ready(swarm_peer, true);
-        assert!(pm.is_full_node(&overlay));
+        pm.on_peer_ready(swarm_peer, SwarmNodeType::Storer);
+        assert_eq!(pm.node_type(&overlay), Some(SwarmNodeType::Storer));
     }
 
     #[test]
@@ -560,7 +574,7 @@ mod tests {
         assert!(pm.known_peers().contains(&overlay));
 
         // Store as connected peer
-        pm.on_peer_ready(swarm_peer, false);
+        pm.on_peer_ready(swarm_peer, SwarmNodeType::Client);
 
         // Still in known peers
         assert!(pm.known_peers().contains(&overlay));
@@ -572,7 +586,7 @@ mod tests {
         let swarm_peer = test_swarm_peer(1);
         let overlay = test_overlay(1);
 
-        pm.on_peer_ready(swarm_peer, false);
+        pm.on_peer_ready(swarm_peer, SwarmNodeType::Client);
         pm.ban(&overlay, Some("misbehaving".to_string()));
 
         assert!(pm.is_banned(&overlay));
@@ -629,27 +643,27 @@ mod tests {
         let config = SwarmScoringConfig::lenient();
         let pm = PeerManager::with_config(config.clone(), None);
 
-        assert_eq!(pm.scoring_config().connection_timeout, config.connection_timeout);
+        assert_eq!(pm.scoring_config().connection_timeout(), config.connection_timeout());
     }
 
     #[test]
-    fn test_known_full_node_overlays() {
+    fn test_known_storer_overlays() {
         let pm = PeerManager::new();
 
-        // Store some peers as full nodes, some as light nodes
-        pm.on_peer_ready(test_swarm_peer(1), true);
-        pm.on_peer_ready(test_swarm_peer(2), false);
-        pm.on_peer_ready(test_swarm_peer(3), true);
-        pm.on_peer_ready(test_swarm_peer(4), false);
+        // Store peers with different node types
+        pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Storer);
+        pm.on_peer_ready(test_swarm_peer(2), SwarmNodeType::Client);
+        pm.on_peer_ready(test_swarm_peer(3), SwarmNodeType::Storer);
+        pm.on_peer_ready(test_swarm_peer(4), SwarmNodeType::Client);
 
-        // Ban one full node
+        // Ban one storer
         pm.ban(&test_overlay(1), None);
 
-        let full_nodes = pm.known_full_node_overlays();
+        let storers = pm.known_storer_overlays();
 
-        // Should only have one non-banned full node (#3)
-        assert_eq!(full_nodes.len(), 1);
-        assert!(full_nodes.contains(&test_overlay(3)));
+        // Should only have one non-banned storer (#3)
+        assert_eq!(storers.len(), 1);
+        assert!(storers.contains(&test_overlay(3)));
     }
 
     #[test]
@@ -658,7 +672,7 @@ mod tests {
 
         // Store some peers
         for n in 1..=5 {
-            pm.on_peer_ready(test_swarm_peer(n), true);
+            pm.on_peer_ready(test_swarm_peer(n), SwarmNodeType::Storer);
         }
 
         // Request subset of overlays
@@ -673,7 +687,7 @@ mod tests {
         let pm = PeerManager::new();
 
         // Store only peer 1
-        pm.on_peer_ready(test_swarm_peer(1), true);
+        pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Storer);
 
         // Request overlays including non-existent ones
         let overlays = vec![test_overlay(1), test_overlay(99)];
@@ -681,5 +695,19 @@ mod tests {
 
         // Should only return the existing peer
         assert_eq!(peers.len(), 1);
+    }
+
+    #[test]
+    fn test_node_type_variants() {
+        let pm = PeerManager::new();
+
+        pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Bootnode);
+        pm.on_peer_ready(test_swarm_peer(2), SwarmNodeType::Client);
+        pm.on_peer_ready(test_swarm_peer(3), SwarmNodeType::Storer);
+
+        // Check explicit node types
+        assert_eq!(pm.node_type(&test_overlay(1)), Some(SwarmNodeType::Bootnode));
+        assert_eq!(pm.node_type(&test_overlay(2)), Some(SwarmNodeType::Client));
+        assert_eq!(pm.node_type(&test_overlay(3)), Some(SwarmNodeType::Storer));
     }
 }

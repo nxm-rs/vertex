@@ -51,6 +51,7 @@ impl SwarmPeerScore {
     }
 
     /// Get the current score.
+    #[must_use]
     pub fn score(&self) -> f64 {
         self.score.score()
     }
@@ -190,16 +191,19 @@ impl SwarmPeerScore {
     }
 
     /// Get average latency if samples exist.
+    #[must_use]
     pub fn avg_latency(&self) -> Option<Duration> {
         self.score.avg_latency()
     }
 
     /// Check if peer should be banned based on current score.
+    #[must_use]
     pub fn should_ban(&self) -> bool {
         self.config.should_ban(self.score.score())
     }
 
     /// Create a snapshot for persistence.
+    #[must_use]
     pub fn snapshot(&self) -> PeerScoreSnapshot {
         self.score.snapshot()
     }
@@ -218,15 +222,23 @@ impl SwarmPeerScore {
         }
 
         // Check warning threshold (only warn once)
-        if self.config.should_warn(score) {
+        // Release lock before calling observer to prevent deadlocks
+        let should_warn = if self.config.should_warn(score) {
             let mut warned = self.warned.write();
-            if !*warned {
+            if *warned {
+                false
+            } else {
                 *warned = true;
-                self.observer.on_score_warning(&self.overlay, score);
+                true
             }
         } else {
             // Reset warning flag if score recovered
             *self.warned.write() = false;
+            false
+        };
+
+        if should_warn {
+            self.observer.on_score_warning(&self.overlay, score);
         }
     }
 }
@@ -342,8 +354,7 @@ mod tests {
     #[test]
     fn test_warning_notification() {
         let observer = TestObserver::new();
-        let mut config = SwarmScoringConfig::default();
-        config.warn_threshold = -10.0;
+        let config = SwarmScoringConfig::builder().warn_threshold(-10.0).build();
         let score = SwarmPeerScore::new(test_overlay(1), Arc::new(config), Arc::clone(&observer) as _);
 
         // Drop below warning threshold
@@ -358,8 +369,7 @@ mod tests {
     #[test]
     fn test_ban_notification() {
         let observer = TestObserver::new();
-        let mut config = SwarmScoringConfig::default();
-        config.ban_threshold = -20.0;
+        let config = SwarmScoringConfig::builder().ban_threshold(-20.0).build();
         let score = SwarmPeerScore::new(test_overlay(1), Arc::new(config), Arc::clone(&observer) as _);
 
         // Drop below ban threshold

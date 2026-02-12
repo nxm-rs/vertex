@@ -12,7 +12,7 @@ mod events;
 mod score;
 
 pub use callbacks::{NoOpScoreObserver, ScoreObserver};
-pub use config::SwarmScoringConfig;
+pub use config::{SwarmScoringConfig, SwarmScoringConfigBuilder};
 pub use events::SwarmScoringEvent;
 pub use score::SwarmPeerScore;
 
