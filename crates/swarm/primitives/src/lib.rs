@@ -22,7 +22,10 @@ pub fn compute_overlay(ethereum_address: &Address, network_id: u64, nonce: &B256
 }
 
 /// Swarm node type determining capabilities and protocols.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, strum::Display, strum::FromRepr)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Hash,
+    strum::Display, strum::FromRepr, strum::IntoStaticStr,
+)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
 #[strum(serialize_all = "lowercase")]
