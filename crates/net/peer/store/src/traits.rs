@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::StoreError;
 use crate::record::PeerRecord;
 
-/// Blanket-implemented for any type with Clone + Eq + Hash + Send + Sync + Debug + Serialize + Deserialize.
+/// Peer identifier type.
 pub trait NetPeerId:
     Clone + Eq + Hash + Send + Sync + Debug + Serialize + for<'de> Deserialize<'de> + 'static
 {
@@ -20,7 +20,7 @@ impl<T> NetPeerId for T where
 {
 }
 
-/// Bounds for peer data types used in storage.
+/// Serializable peer data type.
 pub trait DataBounds:
     Clone + Debug + Default + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static
 {
@@ -54,7 +54,6 @@ pub trait NetPeerStore<Id: NetPeerId, Data: DataBounds = ()>: Send + Sync {
     /// Get a peer record by ID.
     fn get(&self, id: &Id) -> Result<Option<PeerRecord<Id, Data>>, StoreError>;
 
-    /// Check if a peer exists.
     fn contains(&self, id: &Id) -> Result<bool, StoreError> {
         Ok(self.get(id)?.is_some())
     }

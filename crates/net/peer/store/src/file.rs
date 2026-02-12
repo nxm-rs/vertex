@@ -5,8 +5,9 @@ use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
 use std::marker::PhantomData;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 
 use crate::error::StoreError;
 use crate::record::PeerRecord;
@@ -16,7 +17,7 @@ use crate::traits::{DataBounds, NetPeerId, NetPeerStore};
 pub struct FilePeerStore<Id: NetPeerId, Data: DataBounds = ()> {
     path: PathBuf,
     peers: RwLock<HashMap<Id, PeerRecord<Id, Data>>>,
-    dirty: Mutex<bool>,
+    dirty: AtomicBool,
     _marker: PhantomData<Data>,
 }
 
@@ -33,7 +34,7 @@ impl<Id: NetPeerId, Data: DataBounds> FilePeerStore<Id, Data> {
         Ok(Self {
             path,
             peers: RwLock::new(peers),
-            dirty: Mutex::new(false),
+            dirty: AtomicBool::new(false),
             _marker: PhantomData,
         })
     }
@@ -97,12 +98,12 @@ impl<Id: NetPeerId, Data: DataBounds> FilePeerStore<Id, Data> {
     }
 
     fn mark_dirty(&self) {
-        *self.dirty.lock() = true;
+        self.dirty.store(true, Ordering::Release);
     }
 
     /// Check if there are unsaved changes.
     pub fn is_dirty(&self) -> bool {
-        *self.dirty.lock()
+        self.dirty.load(Ordering::Acquire)
     }
 
     /// Get the store file path.
@@ -157,7 +158,7 @@ impl<Id: NetPeerId, Data: DataBounds> NetPeerStore<Id, Data> for FilePeerStore<I
     fn flush(&self) -> Result<(), StoreError> {
         if self.is_dirty() {
             self.save_to_file()?;
-            *self.dirty.lock() = false;
+            self.dirty.store(false, Ordering::Release);
         }
         Ok(())
     }

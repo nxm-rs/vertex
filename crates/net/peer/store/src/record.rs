@@ -18,7 +18,6 @@ pub struct PeerRecord<Id: NetPeerId, Data: DataBounds = ()> {
 }
 
 impl<Id: NetPeerId, Data: DataBounds> PeerRecord<Id, Data> {
-    /// Create a new peer record.
     pub fn new(id: Id, data: Data, first_seen: u64, last_seen: u64) -> Self {
         Self {
             id,
@@ -28,63 +27,53 @@ impl<Id: NetPeerId, Data: DataBounds> PeerRecord<Id, Data> {
         }
     }
 
-    /// Create a peer record with current timestamp for both first_seen and last_seen.
+    /// Create with current timestamp for both first_seen and last_seen.
     pub fn new_now(id: Id, data: Data) -> Self {
         let now = unix_timestamp_secs();
         Self::new(id, data, now, now)
     }
 
-    /// Peer identifier.
     pub fn id(&self) -> &Id {
         &self.id
     }
 
-    /// Peer data.
     pub fn data(&self) -> &Data {
         &self.data
     }
 
-    /// Mutable access to peer data.
     pub fn data_mut(&mut self) -> &mut Data {
         &mut self.data
     }
 
-    /// Unix timestamp when peer was first seen.
     pub fn first_seen(&self) -> u64 {
         self.first_seen
     }
 
-    /// Unix timestamp when peer was last seen.
     pub fn last_seen(&self) -> u64 {
         self.last_seen
     }
 
-    /// Update the last_seen timestamp.
+    /// Update last_seen to current time.
     pub fn touch(&mut self) {
         self.last_seen = unix_timestamp_secs();
     }
 
-    /// Update the last_seen timestamp to a specific value.
     pub fn set_last_seen(&mut self, timestamp: u64) {
         self.last_seen = timestamp;
     }
 
-    /// Update the data.
     pub fn set_data(&mut self, data: Data) {
         self.data = data;
     }
 
-    /// Consume and return the ID.
     pub fn into_id(self) -> Id {
         self.id
     }
 
-    /// Consume and return the data.
     pub fn into_data(self) -> Data {
         self.data
     }
 
-    /// Consume and return ID and data.
     pub fn into_parts(self) -> (Id, Data) {
         (self.id, self.data)
     }

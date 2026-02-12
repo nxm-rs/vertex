@@ -1,16 +1,17 @@
 //! Lock-free peer scoring with atomics.
 
-use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering, fence};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::snapshot::PeerScoreSnapshot;
 use crate::traits::NetPeerScoreExt;
 
-/// Fixed-point scaling for score precision without floats in atomics.
+/// Fixed-point multiplier for storing f64 scores as i64 atomics.
 const SCORE_SCALE: f64 = 100_000.0;
+/// Minimum allowed score (prevents unbounded negative drift).
 const MIN_SCORE: f64 = -1_000_000.0;
+/// Maximum allowed score (prevents unbounded positive drift).
 const MAX_SCORE: f64 = 1_000_000.0;
-const ORD: Ordering = Ordering::Relaxed;
 
 /// Lock-free peer scoring using atomics for concurrent access.
 #[derive(Debug)]
@@ -54,14 +55,14 @@ impl<Ext: NetPeerScoreExt> PeerScore<Ext> {
     }
 
     pub fn score(&self) -> f64 {
-        self.score.load(ORD) as f64 / SCORE_SCALE
+        self.score.load(Ordering::Acquire) as f64 / SCORE_SCALE
     }
 
-    /// Atomically adjust score with CAS loop, clamped to bounds.
+    /// Atomically adjust score, clamped to bounds.
     pub fn add_score(&self, delta: f64) {
         let delta_scaled = (delta * SCORE_SCALE) as i64;
         loop {
-            let current = self.score.load(ORD);
+            let current = self.score.load(Ordering::Acquire);
             let new_val = current.saturating_add(delta_scaled);
             let clamped = new_val.clamp(
                 (MIN_SCORE * SCORE_SCALE) as i64,
@@ -69,7 +70,7 @@ impl<Ext: NetPeerScoreExt> PeerScore<Ext> {
             );
             if self
                 .score
-                .compare_exchange_weak(current, clamped, ORD, ORD)
+                .compare_exchange_weak(current, clamped, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
                 self.touch();
@@ -80,7 +81,7 @@ impl<Ext: NetPeerScoreExt> PeerScore<Ext> {
 
     pub fn set_score(&self, score: f64) {
         let clamped = score.clamp(MIN_SCORE, MAX_SCORE);
-        self.score.store((clamped * SCORE_SCALE) as i64, ORD);
+        self.score.store((clamped * SCORE_SCALE) as i64, Ordering::Release);
         self.touch();
     }
 
@@ -89,56 +90,56 @@ impl<Ext: NetPeerScoreExt> PeerScore<Ext> {
     }
 
     pub fn last_updated(&self) -> u64 {
-        self.last_updated.load(ORD)
+        self.last_updated.load(Ordering::Relaxed)
     }
 
     pub fn touch(&self) {
-        self.last_updated.store(unix_timestamp_secs(), ORD);
+        self.last_updated.store(unix_timestamp_secs(), Ordering::Release);
     }
 
     pub fn connection_successes(&self) -> u32 {
-        self.connection_successes.load(ORD)
+        self.connection_successes.load(Ordering::Relaxed)
     }
 
     pub fn connection_timeouts(&self) -> u32 {
-        self.connection_timeouts.load(ORD)
+        self.connection_timeouts.load(Ordering::Relaxed)
     }
 
     pub fn connection_refusals(&self) -> u32 {
-        self.connection_refusals.load(ORD)
+        self.connection_refusals.load(Ordering::Relaxed)
     }
 
     pub fn handshake_failures(&self) -> u32 {
-        self.handshake_failures.load(ORD)
+        self.handshake_failures.load(Ordering::Relaxed)
     }
 
     pub fn protocol_errors(&self) -> u32 {
-        self.protocol_errors.load(ORD)
+        self.protocol_errors.load(Ordering::Relaxed)
     }
 
     pub fn record_success(&self, latency_nanos: u64) {
-        self.connection_successes.fetch_add(1, ORD);
+        self.connection_successes.fetch_add(1, Ordering::Relaxed);
         self.record_latency(latency_nanos);
         self.touch();
     }
 
     pub fn record_timeout(&self) {
-        self.connection_timeouts.fetch_add(1, ORD);
+        self.connection_timeouts.fetch_add(1, Ordering::Relaxed);
         self.touch();
     }
 
     pub fn record_refusal(&self) {
-        self.connection_refusals.fetch_add(1, ORD);
+        self.connection_refusals.fetch_add(1, Ordering::Relaxed);
         self.touch();
     }
 
     pub fn record_handshake_failure(&self) {
-        self.handshake_failures.fetch_add(1, ORD);
+        self.handshake_failures.fetch_add(1, Ordering::Relaxed);
         self.touch();
     }
 
     pub fn record_protocol_error(&self) {
-        self.protocol_errors.fetch_add(1, ORD);
+        self.protocol_errors.fetch_add(1, Ordering::Relaxed);
         self.touch();
     }
 
@@ -159,67 +160,69 @@ impl<Ext: NetPeerScoreExt> PeerScore<Ext> {
     }
 
     pub fn record_latency(&self, latency_nanos: u64) {
-        self.latency_sum_nanos.fetch_add(latency_nanos, ORD);
-        self.latency_samples.fetch_add(1, ORD);
+        // Use Release on samples to synchronize with sum
+        self.latency_sum_nanos.fetch_add(latency_nanos, Ordering::Relaxed);
+        self.latency_samples.fetch_add(1, Ordering::Release);
     }
 
     pub fn latency_sum_nanos(&self) -> u64 {
-        self.latency_sum_nanos.load(ORD)
+        self.latency_sum_nanos.load(Ordering::Relaxed)
     }
 
     pub fn latency_samples(&self) -> u32 {
-        self.latency_samples.load(ORD)
+        self.latency_samples.load(Ordering::Relaxed)
     }
 
+    /// Average latency in nanoseconds, or None if no samples recorded.
     pub fn avg_latency_nanos(&self) -> Option<u64> {
-        let samples = self.latency_samples.load(ORD);
+        // Acquire on samples synchronizes with Release in record_latency
+        let samples = self.latency_samples.load(Ordering::Acquire);
         if samples == 0 {
             return None;
         }
-        Some(self.latency_sum_nanos.load(ORD) / samples as u64)
+        Some(self.latency_sum_nanos.load(Ordering::Relaxed) / samples as u64)
     }
 
     pub fn avg_latency(&self) -> Option<Duration> {
         self.avg_latency_nanos().map(Duration::from_nanos)
     }
 
-    /// Access to protocol-specific scoring extension.
     pub fn ext(&self) -> &Ext {
         &self.ext
     }
 
+    /// Create a point-in-time snapshot for persistence.
     pub fn snapshot(&self) -> PeerScoreSnapshot<Ext::Snapshot> {
+        // Acquire fence ensures we see all prior writes consistently
+        fence(Ordering::Acquire);
         PeerScoreSnapshot::new(
-            self.score(),
-            self.last_updated(),
-            self.connection_successes(),
-            self.connection_timeouts(),
-            self.connection_refusals(),
-            self.handshake_failures(),
-            self.protocol_errors(),
-            self.latency_sum_nanos(),
-            self.latency_samples(),
+            self.score.load(Ordering::Relaxed) as f64 / SCORE_SCALE,
+            self.last_updated.load(Ordering::Relaxed),
+            self.connection_successes.load(Ordering::Relaxed),
+            self.connection_timeouts.load(Ordering::Relaxed),
+            self.connection_refusals.load(Ordering::Relaxed),
+            self.handshake_failures.load(Ordering::Relaxed),
+            self.protocol_errors.load(Ordering::Relaxed),
+            self.latency_sum_nanos.load(Ordering::Relaxed),
+            self.latency_samples.load(Ordering::Relaxed),
             self.ext.snapshot(),
         )
     }
 
+    /// Restore state from a snapshot.
     pub fn restore(&self, snapshot: &PeerScoreSnapshot<Ext::Snapshot>) {
-        self.score
-            .store((snapshot.score() * SCORE_SCALE) as i64, ORD);
-        self.last_updated.store(snapshot.last_updated(), ORD);
-        self.connection_successes
-            .store(snapshot.connection_successes(), ORD);
-        self.connection_timeouts
-            .store(snapshot.connection_timeouts(), ORD);
-        self.connection_refusals
-            .store(snapshot.connection_refusals(), ORD);
-        self.handshake_failures
-            .store(snapshot.handshake_failures(), ORD);
-        self.protocol_errors.store(snapshot.protocol_errors(), ORD);
-        self.latency_sum_nanos
-            .store(snapshot.latency_sum_nanos(), ORD);
-        self.latency_samples.store(snapshot.latency_samples(), ORD);
+        self.score.store((snapshot.score() * SCORE_SCALE) as i64, Ordering::Relaxed);
+        self.last_updated.store(snapshot.last_updated(), Ordering::Relaxed);
+        self.connection_successes.store(snapshot.connection_successes(), Ordering::Relaxed);
+        self.connection_timeouts.store(snapshot.connection_timeouts(), Ordering::Relaxed);
+        self.connection_refusals.store(snapshot.connection_refusals(), Ordering::Relaxed);
+        self.handshake_failures.store(snapshot.handshake_failures(), Ordering::Relaxed);
+        self.protocol_errors.store(snapshot.protocol_errors(), Ordering::Relaxed);
+        self.latency_sum_nanos.store(snapshot.latency_sum_nanos(), Ordering::Relaxed);
+        self.latency_samples.store(snapshot.latency_samples(), Ordering::Relaxed);
         self.ext.restore(snapshot.ext());
+        // Release fence ensures all stores are visible to subsequent reads
+        fence(Ordering::Release);
     }
 }
 
