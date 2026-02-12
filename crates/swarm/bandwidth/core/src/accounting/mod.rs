@@ -206,12 +206,12 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmBandwidthAccounting for Ac
         originated: bool,
     ) -> SwarmResult<ReceiveAction> {
         Accounting::prepare_receive(self, peer, price, originated)
-            .map_err(|e| vertex_swarm_api::SwarmError::Accounting(e.to_string()))
+            .map_err(|e| vertex_swarm_api::SwarmError::Accounting { message: e.to_string() })
     }
 
     fn prepare_provide(&self, peer: OverlayAddress, price: u64) -> SwarmResult<ProvideAction> {
         Accounting::prepare_provide(self, peer, price)
-            .map_err(|e| vertex_swarm_api::SwarmError::Accounting(e.to_string()))
+            .map_err(|e| vertex_swarm_api::SwarmError::Accounting { message: e.to_string() })
     }
 }
 
