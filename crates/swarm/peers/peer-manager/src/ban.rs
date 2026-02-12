@@ -20,12 +20,10 @@ impl BanInfo {
         }
     }
 
-    /// Unix timestamp when the peer was banned.
     pub fn banned_at_unix(&self) -> u64 {
         self.banned_at_unix
     }
 
-    /// Optional reason for the ban.
     pub fn reason(&self) -> Option<&str> {
         self.reason.as_deref()
     }

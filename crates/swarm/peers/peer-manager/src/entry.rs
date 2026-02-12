@@ -132,7 +132,6 @@ impl PeerEntry {
         self.last_seen.store(unix_timestamp_secs(), Ordering::Relaxed);
     }
 
-    /// Check if peer is banned. Uses RwLock read (fast uncontended).
     pub fn is_banned(&self) -> bool {
         self.ban_info.read().is_some()
     }
@@ -156,12 +155,10 @@ impl PeerEntry {
         }
     }
 
-    /// Record a dial attempt (sets last_dial_attempt to now).
     pub fn record_dial_attempt(&self) {
         self.last_dial_attempt.store(unix_timestamp_secs(), Ordering::Relaxed);
     }
 
-    /// Record a dial failure (increments consecutive_failures).
     pub fn record_dial_failure(&self) {
         self.consecutive_failures.fetch_add(1, Ordering::Relaxed);
         self.record_dial_attempt();

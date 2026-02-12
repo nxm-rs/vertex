@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use dashmap::DashMap;
+use tokio::sync::oneshot;
 use tracing::{debug, trace, warn};
 use vertex_net_local::IpCapability;
 use vertex_net_peer_store::{FilePeerStore, NetPeerStore, PeerRecord, StoreError};
@@ -12,6 +13,7 @@ use vertex_swarm_api::PeerConfigValues;
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_score::SwarmScoringConfig;
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
+use vertex_tasks::TaskExecutor;
 
 use crate::entry::PeerEntry;
 use crate::error::PeerManagerError;
@@ -95,17 +97,14 @@ impl PeerManager {
         }
     }
 
-    /// Get the scoring configuration.
     pub fn scoring_config(&self) -> &SwarmScoringConfig {
         &self.scoring_config
     }
 
-    /// Get the ban threshold.
     pub fn ban_threshold(&self) -> f64 {
         self.scoring_config.ban_threshold()
     }
 
-    /// Get the maximum tracked peers limit.
     pub fn max_tracked_peers(&self) -> Option<usize> {
         self.max_tracked_peers
     }
@@ -133,7 +132,6 @@ impl PeerManager {
         Ok(())
     }
 
-    /// Get the node type of a peer.
     pub fn node_type(&self, overlay: &OverlayAddress) -> Option<SwarmNodeType> {
         self.peers.get(overlay).map(|e| e.node_type())
     }
@@ -197,7 +195,6 @@ impl PeerManager {
             .collect()
     }
 
-    /// Get multiaddrs for a peer.
     #[must_use]
     pub fn get_multiaddrs(&self, overlay: &OverlayAddress) -> Option<Vec<libp2p::Multiaddr>> {
         self.peers
@@ -205,33 +202,25 @@ impl PeerManager {
             .map(|r| r.swarm_peer().multiaddrs().to_vec())
     }
 
-    /// Get a peer's IP capability.
     #[must_use]
     pub fn get_peer_capability(&self, overlay: &OverlayAddress) -> Option<IpCapability> {
         self.peers.get(overlay).map(|r| r.ip_capability())
     }
 
-    /// Get a peer's current score.
     #[must_use]
     pub fn get_peer_score(&self, overlay: &OverlayAddress) -> Option<f64> {
         self.peers.get(overlay).map(|r| r.score())
     }
 
-    /// Get a peer's average latency.
     #[must_use]
     pub fn get_peer_latency(&self, overlay: &OverlayAddress) -> Option<Duration> {
         self.peers.get(overlay).and_then(|r| r.latency())
     }
 
-    /// Check if peer is currently in backoff period.
     pub fn peer_is_in_backoff(&self, overlay: &OverlayAddress) -> bool {
-        self.peers
-            .get(overlay)
-            .map(|r| r.is_in_backoff())
-            .unwrap_or(false)
+        self.peers.get(overlay).is_some_and(|r| r.is_in_backoff())
     }
 
-    /// Get remaining backoff duration for a peer.
     pub fn peer_backoff_remaining(&self, overlay: &OverlayAddress) -> Option<Duration> {
         self.peers.get(overlay).and_then(|r| r.backoff_remaining())
     }
@@ -272,21 +261,16 @@ impl PeerManager {
         stored_overlays
     }
 
-    /// Get a peer snapshot by overlay address.
     #[must_use]
     pub fn get_peer_snapshot(&self, overlay: &OverlayAddress) -> Option<SwarmPeerSnapshot> {
         self.peers.get(overlay).map(|r| r.snapshot())
     }
 
-    /// Check if a peer is banned.
     pub fn is_banned(&self, overlay: &OverlayAddress) -> bool {
-        self.peers
-            .get(overlay)
-            .map(|r| r.is_banned())
-            .unwrap_or(false)
+        self.peers.get(overlay).is_some_and(|r| r.is_banned())
     }
 
-    /// Ban a peer.
+    /// Ban a peer (prevents dialing, persists to store).
     pub fn ban(&self, overlay: &OverlayAddress, reason: Option<String>) {
         warn!(?overlay, ?reason, "banning peer");
         if let Some(entry) = self.peers.get(overlay) {
@@ -349,7 +333,7 @@ impl PeerManager {
             return;
         }
 
-        let candidates = self.collect_prune_candidates(to_remove);
+        let candidates = self.collect_prune_candidates(to_remove).await;
 
         for batch in candidates.chunks(config.batch_size) {
             for overlay in batch {
@@ -364,9 +348,12 @@ impl PeerManager {
         debug!(removed = candidates.len(), remaining = self.peers.len(), "pruned peers");
     }
 
-    fn collect_prune_candidates(&self, count: usize) -> Vec<OverlayAddress> {
+    /// Collect and sort prune candidates. Offloads sort to blocking thread pool via TaskExecutor.
+    async fn collect_prune_candidates(&self, count: usize) -> Vec<OverlayAddress> {
         let ban_threshold = self.scoring_config.ban_threshold();
-        let mut candidates: Vec<_> = self
+
+        // Collect candidate data from DashMap
+        let candidates: Vec<_> = self
             .peers
             .iter()
             .map(|r| {
@@ -384,12 +371,30 @@ impl PeerManager {
             })
             .collect();
 
-        candidates.sort_by(|a, b| {
-            a.1.cmp(&b.1)
-                .then(a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
-                .then(a.3.cmp(&b.3))
+        // Offload CPU-intensive sort to blocking thread pool via TaskExecutor
+        let Ok(executor) = TaskExecutor::try_current() else {
+            // No executor available, sort synchronously
+            return Self::sort_candidates(candidates, count);
+        };
+
+        let (tx, rx) = oneshot::channel();
+        executor.spawn_blocking(async move {
+            let result = Self::sort_candidates(candidates, count);
+            let _ = tx.send(result);
         });
 
+        rx.await.unwrap_or_default()
+    }
+
+    fn sort_candidates(
+        mut candidates: Vec<(OverlayAddress, u8, f64, u64)>,
+        count: usize,
+    ) -> Vec<OverlayAddress> {
+        candidates.sort_unstable_by(|a, b| {
+            a.1.cmp(&b.1)
+                .then(a.2.total_cmp(&b.2))
+                .then(a.3.cmp(&b.3))
+        });
         candidates.into_iter().take(count).map(|(o, ..)| o).collect()
     }
 
@@ -510,7 +515,6 @@ impl PeerManager {
         self.persist_peer(&overlay, &entry);
     }
 
-    /// Record latency for a peer.
     pub fn record_latency(&self, overlay: &OverlayAddress, rtt: Duration) {
         if let Some(entry) = self.peers.get(overlay) {
             entry.set_latency(rtt);
@@ -518,7 +522,6 @@ impl PeerManager {
         }
     }
 
-    /// Record a dial failure for exponential backoff.
     pub fn record_dial_failure(&self, overlay: &OverlayAddress) {
         if let Some(entry) = self.peers.get(overlay) {
             entry.record_dial_failure();
