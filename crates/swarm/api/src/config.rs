@@ -5,13 +5,20 @@ use std::future::Future;
 use std::pin::Pin;
 
 use libp2p::Multiaddr;
-use vertex_node_api::NodeContext;
+use vertex_node_api::InfrastructureContext;
+use vertex_tasks::GracefulShutdown;
 
 use crate::components::{SwarmAccountingConfig, SwarmLocalStoreConfig, SwarmPricingConfig};
 use crate::{SwarmClientTypes, SwarmNetworkTypes, SwarmStorerTypes};
 
 /// A boxed future representing the node's main event loop.
 pub type NodeTask = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+/// A function that creates a node task with graceful shutdown support.
+///
+/// Takes a `GracefulShutdown` signal and returns the task future.
+/// When the shutdown signal fires, the task should clean up and exit.
+pub type NodeTaskFn = Box<dyn FnOnce(GracefulShutdown) -> NodeTask + Send>;
 
 /// Configuration for storage incentives (redistribution, postage).
 pub trait SwarmStorageConfig {
@@ -141,10 +148,9 @@ pub trait SwarmIdentityConfig {
 /// Base configuration for all Swarm nodes (bootnode level).
 ///
 /// Provides P2P networking and routing configuration needed by any node that
-/// participates in the Swarm overlay network.
-///
-/// Note: Identity configuration (`SwarmIdentityConfig`) is separate since
-/// identity is created before node building and passed in directly.
+/// participates in the Swarm overlay network. Identity configuration
+/// (`SwarmIdentityConfig`) is separate since identity is created before node
+/// building and passed in directly.
 ///
 /// This is the foundation of the config hierarchy:
 /// - `SwarmBootnodeConfig` - networking + peer management + routing (this trait)
@@ -226,7 +232,7 @@ pub fn estimate_chunks_for_bytes(available_bytes: u64, chunk_size: usize) -> u64
 
 /// Configuration that knows how to launch a Swarm node.
 ///
-/// Build produces a task (the main event loop) and providers for RPC.
+/// Build produces a task function (accepting graceful shutdown) and providers for RPC.
 /// The provider type varies by node capability (client vs storer).
 #[async_trait::async_trait]
 pub trait SwarmLaunchConfig: Send + Sync + 'static {
@@ -240,7 +246,13 @@ pub trait SwarmLaunchConfig: Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
 
     /// Build the node's main event loop and RPC providers.
-    async fn build(self, ctx: &NodeContext) -> Result<(NodeTask, Self::Providers), Self::Error>;
+    ///
+    /// Returns a task function that accepts a `GracefulShutdown` signal.
+    /// When the signal fires, the task should clean up and exit gracefully.
+    async fn build(
+        self,
+        ctx: &dyn InfrastructureContext,
+    ) -> Result<(NodeTaskFn, Self::Providers), Self::Error>;
 }
 
 /// Launch config for client (light) nodes.

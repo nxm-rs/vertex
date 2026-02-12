@@ -4,8 +4,7 @@
 //! A single type works for all capability levels (Bootnode, Client, Storer).
 
 use core::marker::PhantomData;
-use vertex_node_api::{NodeContext, NodeProtocol};
-use vertex_tasks::TaskExecutor;
+use vertex_node_api::{InfrastructureContext, NodeProtocol};
 
 use crate::SwarmLaunchConfig;
 
@@ -31,13 +30,15 @@ where
 
     async fn launch(
         config: Self::Config,
-        ctx: &NodeContext,
-        executor: &TaskExecutor,
+        ctx: &dyn InfrastructureContext,
     ) -> Result<Self::Components, Self::BuildError> {
-        let (task, providers) = config.build(ctx).await?;
+        let (task_fn, providers) = config.build(ctx).await?;
 
-        // Spawn the node's main event loop
-        executor.spawn_critical("swarm", task);
+        // Spawn the node's main event loop with graceful shutdown support
+        ctx.executor().spawn_critical_with_graceful_shutdown_signal(
+            "swarm",
+            move |shutdown| task_fn(shutdown),
+        );
 
         Ok(providers)
     }
