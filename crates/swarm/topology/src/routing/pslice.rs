@@ -25,14 +25,15 @@ pub struct PSlice {
 
 /// A cached sorted peer list with its generation stamp.
 struct CachedList {
-    generation: u64,
+    /// None indicates cache is invalid and needs rebuild.
+    generation: Option<u64>,
     peers: Vec<(u8, OverlayAddress)>,
 }
 
 impl Default for CachedList {
     fn default() -> Self {
         Self {
-            generation: u64::MAX, // Invalid generation forces rebuild on first access
+            generation: None,
             peers: Vec::new(),
         }
     }
@@ -132,7 +133,7 @@ impl PSlice {
         // Fast path: check if cache is valid
         {
             let cache = self.cache_asc.read();
-            if cache.generation == current_gen {
+            if cache.generation == Some(current_gen) {
                 return cache.peers.clone();
             }
         }
@@ -142,7 +143,7 @@ impl PSlice {
 
         // Double-check after acquiring write lock
         let current = self.generation.load(Ordering::Acquire);
-        if cache.generation == current {
+        if cache.generation == Some(current) {
             return cache.peers.clone();
         }
 
@@ -156,7 +157,7 @@ impl PSlice {
         // Already sorted by construction (bins are in PO order)
 
         cache.peers = peers.clone();
-        cache.generation = current;
+        cache.generation = Some(current);
         peers
     }
 
@@ -167,7 +168,7 @@ impl PSlice {
         // Fast path: check if cache is valid
         {
             let cache = self.cache_desc.read();
-            if cache.generation == current_gen {
+            if cache.generation == Some(current_gen) {
                 return cache.peers.clone();
             }
         }
@@ -177,7 +178,7 @@ impl PSlice {
 
         // Double-check after acquiring write lock
         let current = self.generation.load(Ordering::Acquire);
-        if cache.generation == current {
+        if cache.generation == Some(current) {
             return cache.peers.clone();
         }
 
@@ -191,7 +192,7 @@ impl PSlice {
         // Already sorted descending by construction
 
         cache.peers = peers.clone();
-        cache.generation = current;
+        cache.generation = Some(current);
         peers
     }
 }

@@ -11,7 +11,7 @@ Production observability for Vertex nodes: metrics, tracing, and logging.
 
 The [observability stack](../../observability/README.md) provides a Docker Compose environment with:
 
-- **Prometheus** (port 9099) - Metrics collection
+- **Prometheus** (port 9099 on host) - Metrics collection
 - **Tempo** (port 4317/4318) - Distributed tracing via OTLP
 - **Loki** (port 3100) - Log aggregation
 - **Grafana** (port 3000) - Unified dashboards

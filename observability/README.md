@@ -25,7 +25,7 @@ docker compose logs -f
 | Service    | URL                          | Description                    |
 |------------|------------------------------|--------------------------------|
 | Grafana    | http://localhost:3000        | Dashboards (admin/admin)       |
-| Prometheus | http://localhost:9099        | Metrics queries                |
+| Prometheus | http://localhost:9099        | Metrics queries (host:9099→container:9090) |
 | Tempo      | http://localhost:3200        | Trace queries                  |
 | Loki       | http://localhost:3100        | Log queries                    |
 | OTLP gRPC  | localhost:4317               | Trace ingestion (gRPC)         |
@@ -143,8 +143,8 @@ docker compose down -v
 ### No metrics in Prometheus
 
 1. Check vertex is exposing metrics: `curl http://localhost:9191/metrics`
-2. Verify Prometheus can reach host: Check Prometheus targets page
-3. On Linux, you may need `network_mode: host` or proper host networking
+2. Verify Prometheus can reach host: Check Prometheus targets at http://localhost:9099/targets
+3. Ensure vertex binds to `0.0.0.0:9191` (not `127.0.0.1`) for Docker to reach it
 
 ### No traces in Tempo
 

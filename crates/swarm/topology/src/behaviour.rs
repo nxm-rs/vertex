@@ -27,7 +27,7 @@ use vertex_net_hive::MAX_BATCH_SIZE;
 use vertex_net_local::LocalCapabilities;
 use vertex_swarm_api::{SwarmBootnodeConfig, SwarmIdentity};
 use vertex_swarm_peer::SwarmPeer;
-use vertex_swarm_peer_manager::{InternalPeerManager, PeerManager};
+use vertex_swarm_peer_manager::PeerManager;
 use vertex_swarm_primitives::OverlayAddress;
 
 use vertex_swarm_peer_registry::{ActivateResult, SwarmPeerRegistry as ConnectionRegistry};
@@ -640,7 +640,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 }
 
                 // Store peer metadata
-                self.peer_manager.on_peer_ready(info.swarm_peer.clone(), storer);
+                self.peer_manager.on_peer_ready(info.swarm_peer.clone(), info.node_type);
 
                 let old_depth = self.routing.depth();
                 self.routing.connected(overlay);
@@ -723,21 +723,6 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                         self.routing.add_peers(&stored_overlays);
                         self.routing.evaluate_connections();
                         self.dial_candidates();
-                    }
-                }
-
-                // Check if we should disconnect after peer exchange (bin at capacity)
-                if let Some(overlay) = self.connection_registry.resolve_overlay(&peer_id) {
-                    if self.connection_registry.is_gossip_disconnect_pending(&overlay) {
-                        debug!(
-                            %peer_id,
-                            %overlay,
-                            "Disconnecting gossip peer after peer exchange (bin at capacity)"
-                        );
-                        self.pending_actions.push_back(ToSwarm::CloseConnection {
-                            peer_id,
-                            connection: libp2p::swarm::CloseConnection::All,
-                        });
                     }
                 }
             }

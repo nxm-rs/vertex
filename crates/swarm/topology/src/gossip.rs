@@ -14,10 +14,11 @@ use std::{
 use libp2p::PeerId;
 use tokio::time::{Interval, Sleep};
 use tracing::{debug, trace};
+use vertex_net_local::IpCapability;
 use vertex_swarm_peer::SwarmPeer;
-use vertex_swarm_peer_manager::{IpCapability, PeerManager};
+use vertex_swarm_peer_manager::PeerManager;
 use vertex_swarm_peer_registry::SwarmPeerRegistry as ConnectionRegistry;
-use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
 /// Interval for refreshing neighborhood peers.
 const GOSSIP_REFRESH_INTERVAL: Duration = Duration::from_secs(600);
@@ -204,7 +205,7 @@ impl Gossip {
 
             if proximity >= current
                 && proximity < old_depth
-                && self.peer_manager.is_full_node(&overlay)
+                && self.peer_manager.node_type(&overlay) == Some(SwarmNodeType::Storer)
             {
                 debug!(%overlay, proximity, "Peer became neighbor due to depth change");
 
@@ -342,7 +343,7 @@ impl Gossip {
             .into_iter()
             .filter(|overlay| {
                 self.local_overlay.proximity(overlay) >= depth
-                    && self.peer_manager.is_full_node(overlay)
+                    && self.peer_manager.node_type(overlay) == Some(SwarmNodeType::Storer)
             })
             .collect()
     }
@@ -356,7 +357,7 @@ impl Gossip {
     ) -> Vec<SwarmPeer> {
         let overlays: Vec<_> = self
             .peer_manager
-            .known_full_node_overlays()
+            .known_storer_overlays()
             .into_iter()
             .filter(|overlay| {
                 if exclude.map(|e| overlay == e).unwrap_or(false) {
@@ -379,9 +380,9 @@ impl Gossip {
         let mut selected_overlays: HashSet<OverlayAddress> = HashSet::with_capacity(MAX_PEERS_FOR_DISTANT);
         let mut added_bins: HashSet<u8> = HashSet::new();
 
-        let all_full_nodes = self.peer_manager.known_full_node_overlays();
+        let all_storers = self.peer_manager.known_storer_overlays();
 
-        let full_nodes: Vec<_> = all_full_nodes
+        let storers: Vec<_> = all_storers
             .iter()
             .filter_map(|overlay| {
                 let capability = self.get_peer_capability(overlay);
@@ -396,12 +397,12 @@ impl Gossip {
             })
             .collect();
 
-        if full_nodes.is_empty() {
+        if storers.is_empty() {
             return selected;
         }
 
         // Phase 1: Top CLOSE_PEERS_COUNT by proximity to recipient
-        let mut by_proximity = full_nodes.clone();
+        let mut by_proximity = storers.clone();
         by_proximity.sort_by(|a, b| b.2.cmp(&a.2));
 
         for (overlay, peer, _, _) in by_proximity.iter().take(CLOSE_PEERS_COUNT) {
@@ -411,7 +412,7 @@ impl Gossip {
         }
 
         // Phase 2: One peer per bin (routing diversity)
-        for (overlay, peer, _, bin) in &full_nodes {
+        for (overlay, peer, _, bin) in &storers {
             if selected.len() >= MAX_PEERS_FOR_DISTANT {
                 break;
             }
@@ -422,7 +423,7 @@ impl Gossip {
         }
 
         // Phase 3: Fill remaining slots
-        for (overlay, peer, _, _) in &full_nodes {
+        for (overlay, peer, _, _) in &storers {
             if selected.len() >= MAX_PEERS_FOR_DISTANT {
                 break;
             }
@@ -472,6 +473,7 @@ impl Gossip {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vertex_swarm_primitives::SwarmNodeType;
     use vertex_swarm_test_utils::{test_overlay, test_swarm_peer};
 
     fn make_gossip() -> Gossip {
@@ -486,9 +488,8 @@ mod tests {
         let pm = Arc::new(PeerManager::new());
         let cr = Arc::new(ConnectionRegistry::new());
 
-        use vertex_swarm_peer_manager::InternalPeerManager;
         for n in 1..=10 {
-            pm.on_peer_ready(test_swarm_peer(n), true);
+            pm.on_peer_ready(test_swarm_peer(n), SwarmNodeType::Storer);
         }
 
         Gossip::new(local, pm, cr)

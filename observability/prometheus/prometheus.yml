@@ -16,8 +16,7 @@ scrape_configs:
     static_configs:
       - targets: ["localhost:3200"]
 
-  # Vertex node metrics
-  # Uses localhost since Prometheus runs with network_mode: host on Linux
+  # Vertex node metrics (Prometheus on host network can reach localhost directly)
   - job_name: "vertex"
     scrape_interval: 10s
     static_configs:
@@ -31,10 +30,10 @@ scrape_configs:
     #   labels:
     #     instance: "vertex-local-2"
 
-  # Optional: scrape other services
+  # Optional: scrape other services on host
   # - job_name: "your-service"
   #   static_configs:
-  #     - targets: ["host.docker.internal:PORT"]
+  #     - targets: ["localhost:PORT"]
 
 # Alerting rules (optional)
 # rule_files:
