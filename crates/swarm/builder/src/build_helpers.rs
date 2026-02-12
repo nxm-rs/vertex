@@ -3,9 +3,10 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use vertex_swarm_api::NodeTask;
+use vertex_swarm_api::NodeTaskFn;
 use vertex_swarm_bandwidth::{AccountingBuilder, ClientAccounting};
 use vertex_swarm_spec::Spec;
+use vertex_tasks::GracefulShutdown;
 
 /// Build bandwidth accounting from configuration.
 pub(crate) fn build_accounting<A>(
@@ -25,24 +26,11 @@ where
         .build(identity)
 }
 
-/// Wrap a single future as a NodeTask.
-pub(crate) fn single_task<F>(fut: F) -> NodeTask
+/// Wrap a future factory as a NodeTaskFn with graceful shutdown support.
+pub(crate) fn single_task<F, Fut>(f: F) -> NodeTaskFn
 where
-    F: Future<Output = ()> + Send + 'static,
+    F: FnOnce(GracefulShutdown) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
 {
-    Box::pin(fut)
-}
-
-/// Wrap two concurrent futures as a NodeTask using tokio::select!.
-pub(crate) fn dual_task<F1, F2>(label1: &'static str, fut1: F1, label2: &'static str, fut2: F2) -> NodeTask
-where
-    F1: Future<Output = ()> + Send + 'static,
-    F2: Future<Output = ()> + Send + 'static,
-{
-    Box::pin(async move {
-        tokio::select! {
-            () = fut1 => tracing::info!("{} completed", label1),
-            () = fut2 => tracing::info!("{} completed", label2),
-        }
-    })
+    Box::new(move |shutdown| Box::pin(f(shutdown)))
 }

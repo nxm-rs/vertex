@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use vertex_node_api::NodeContext;
+use vertex_node_api::InfrastructureContext;
 use vertex_swarm_api::{
     SwarmAccountingConfig, SwarmIdentity, SwarmLaunchConfig, SwarmLocalStoreConfig,
     SwarmNetworkConfig, SwarmPeerConfig, SwarmPricingConfig, SwarmRoutingConfig,
@@ -208,7 +208,7 @@ impl DefaultNodeBuilder {
     }
 
     /// Build the bootnode. Delegates to SwarmLaunchConfig::build().
-    pub async fn build(self, ctx: &NodeContext) -> Result<BootnodeHandle, SwarmNodeError> {
+    pub async fn build(self, ctx: &dyn InfrastructureContext) -> Result<BootnodeHandle, SwarmNodeError> {
         let config = self.into_config();
         let (task, providers) = config.build(ctx).await?;
         Ok(NodeHandle::new(task, providers))
@@ -240,7 +240,7 @@ impl DefaultClientBuilder {
     }
 
     /// Build the client node. Delegates to SwarmLaunchConfig::build().
-    pub async fn build(self, ctx: &NodeContext) -> Result<ClientHandle, SwarmNodeError> {
+    pub async fn build(self, ctx: &dyn InfrastructureContext) -> Result<ClientHandle, SwarmNodeError> {
         let config = self.into_config();
         let (task, providers) = config.build(ctx).await?;
         Ok(NodeHandle::new(task, providers))
@@ -285,7 +285,7 @@ impl DefaultStorerBuilder {
     }
 
     /// Build the storer node. Delegates to SwarmLaunchConfig::build().
-    pub async fn build(self, ctx: &NodeContext) -> Result<StorerHandle, SwarmNodeError> {
+    pub async fn build(self, ctx: &dyn InfrastructureContext) -> Result<StorerHandle, SwarmNodeError> {
         let config = self.into_config();
         let (task, providers) = config.build(ctx).await?;
         Ok(NodeHandle::new(task, providers))

@@ -1,10 +1,10 @@
 //! RPC provider implementations for Swarm nodes.
 
-use alloy_primitives::hex::FromHex;
 use async_trait::async_trait;
 use nectar_primitives::SwarmAddress;
 use vertex_swarm_api::{
-    ChunkRetrievalError, ChunkRetrievalResult, SwarmChunkProvider, SwarmIdentity, SwarmTopology,
+    ChunkAddress, ChunkRetrievalResult, SwarmChunkProvider, SwarmError, SwarmIdentity,
+    SwarmResult, SwarmTopology,
 };
 use vertex_swarm_node::ClientHandle;
 use vertex_swarm_topology::TopologyHandle;
@@ -27,22 +27,16 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
 
 #[async_trait]
 impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
-    async fn retrieve_chunk(
-        &self,
-        address: &str,
-    ) -> Result<ChunkRetrievalResult, ChunkRetrievalError> {
-        // Parse the hex address into a SwarmAddress
-        let addr_bytes = <[u8; 32]>::from_hex(address)
-            .map_err(|_| ChunkRetrievalError::InvalidAddress(address.to_string()))?;
-        let chunk_address = SwarmAddress::new(addr_bytes);
+    async fn retrieve_chunk(&self, address: &ChunkAddress) -> SwarmResult<ChunkRetrievalResult> {
+        let chunk_address = SwarmAddress::new(address.0.into());
 
         // Get the closest peers to the chunk address (up to 5 candidates)
         let closest_peers = self.topology.closest_to(&chunk_address, 5);
 
         if closest_peers.is_empty() {
-            return Err(ChunkRetrievalError::Network(
-                "No connected peers available for retrieval".to_string(),
-            ));
+            return Err(SwarmError::Network {
+                message: "No connected peers available for retrieval".to_string(),
+            });
         }
 
         // Try each peer in order until one succeeds
@@ -58,7 +52,7 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
                     return Ok(ChunkRetrievalResult {
                         data: result.data,
                         stamp: result.stamp,
-                        served_by: result.peer.to_string(),
+                        served_by: result.peer,
                     });
                 }
                 Err(e) => {
@@ -70,12 +64,16 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
 
         // All peers failed
         match last_error {
-            Some(e) => Err(ChunkRetrievalError::Network(e.to_string())),
-            None => Err(ChunkRetrievalError::NotFound(address.to_string())),
+            Some(e) => Err(SwarmError::Network {
+                message: e.to_string(),
+            }),
+            None => Err(SwarmError::ChunkNotFound {
+                address: *address,
+            }),
         }
     }
 
-    fn has_chunk(&self, _address: &str) -> bool {
+    fn has_chunk(&self, _address: &ChunkAddress) -> bool {
         // Client nodes don't have local storage
         false
     }

@@ -5,16 +5,15 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::info;
 
-use vertex_node_api::NodeContext;
-use vertex_swarm_api::{NodeTask, SwarmLaunchConfig};
+use vertex_node_api::InfrastructureContext;
+use vertex_swarm_api::{NodeTaskFn, SwarmLaunchConfig};
 use vertex_swarm_bandwidth::{Accounting, ClientAccounting, DefaultBandwidthConfig, FixedPricer};
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::{BootNode, ClientNode};
 use vertex_swarm_spec::Spec;
 use vertex_swarm_topology::TopologyHandle;
-use vertex_tasks::SpawnableTask;
 
-use crate::build_helpers::{build_accounting, dual_task, single_task};
+use crate::build_helpers::{build_accounting, single_task};
 use crate::builder_ext::log_build_start;
 use crate::config::{BootnodeConfig, ClientConfig, StorerConfig};
 use crate::error::SwarmNodeError;
@@ -77,7 +76,7 @@ impl SwarmLaunchConfig for BootnodeConfig {
     type Providers = BootnodeRpcProviders<Arc<Identity>>;
     type Error = SwarmNodeError;
 
-    async fn build(self, _ctx: &NodeContext) -> Result<(NodeTask, Self::Providers), Self::Error> {
+    async fn build(self, _ctx: &dyn InfrastructureContext) -> Result<(NodeTaskFn, Self::Providers), Self::Error> {
         log_build_start("Bootnode", self.spec(), self.network());
 
         let node = BootNode::builder(self.identity().clone())
@@ -88,8 +87,10 @@ impl SwarmLaunchConfig for BootnodeConfig {
         let topology = node.topology_handle().clone();
         let providers = BootnodeRpcProviders::new(topology);
 
-        let task = single_task(async move {
-            node.into_task().await;
+        let task = single_task(move |shutdown| async move {
+            if let Err(e) = node.start_and_run(shutdown).await {
+                tracing::error!(error = %e, "BootNode error");
+            }
         });
 
         info!("Bootnode built successfully");
@@ -103,7 +104,7 @@ impl SwarmLaunchConfig for ClientConfig {
     type Providers = ClientRpcProviders<Arc<Identity>, NetworkChunkProvider<Arc<Identity>>>;
     type Error = SwarmNodeError;
 
-    async fn build(self, _ctx: &NodeContext) -> Result<(NodeTask, Self::Providers), Self::Error> {
+    async fn build(self, ctx: &dyn InfrastructureContext) -> Result<(NodeTaskFn, Self::Providers), Self::Error> {
         log_build_start("Client", self.spec(), self.network());
 
         // TODO: wire accounting into node when supported
@@ -118,7 +119,18 @@ impl SwarmLaunchConfig for ClientConfig {
         let chunk_provider = NetworkChunkProvider::new(client_handle, topology.clone());
         let providers = ClientRpcProviders::new(topology, chunk_provider);
 
-        let task = dual_task("Node", node.into_task(), "Client service", client_service.run());
+        // Spawn client service as independent task with graceful shutdown
+        ctx.executor().spawn_critical_with_graceful_shutdown_signal(
+            "client_service",
+            move |shutdown| client_service.run(shutdown),
+        );
+
+        // Return node task - it will be spawned by the caller
+        let task = single_task(move |shutdown| async move {
+            if let Err(e) = node.start_and_run(shutdown).await {
+                tracing::error!(error = %e, "ClientNode error");
+            }
+        });
 
         info!("Client node built successfully");
         Ok((task, providers))
@@ -131,7 +143,7 @@ impl SwarmLaunchConfig for StorerConfig {
     type Providers = StorerRpcProviders<Arc<Identity>>;
     type Error = SwarmNodeError;
 
-    async fn build(self, _ctx: &NodeContext) -> Result<(NodeTask, Self::Providers), Self::Error> {
+    async fn build(self, ctx: &dyn InfrastructureContext) -> Result<(NodeTaskFn, Self::Providers), Self::Error> {
         log_build_start("Storer", self.spec(), self.network());
 
         // TODO: wire accounting into node when supported
@@ -150,7 +162,18 @@ impl SwarmLaunchConfig for StorerConfig {
         let topology = node.topology_handle().clone();
         let providers = StorerRpcProviders::new(topology);
 
-        let task = dual_task("Node", node.into_task(), "Client service", client_service.run());
+        // Spawn client service as independent task with graceful shutdown
+        ctx.executor().spawn_critical_with_graceful_shutdown_signal(
+            "client_service",
+            move |shutdown| client_service.run(shutdown),
+        );
+
+        // Return node task - it will be spawned by the caller
+        let task = single_task(move |shutdown| async move {
+            if let Err(e) = node.start_and_run(shutdown).await {
+                tracing::error!(error = %e, "StorerNode error");
+            }
+        });
 
         info!("Storer node built successfully");
         Ok((task, providers))

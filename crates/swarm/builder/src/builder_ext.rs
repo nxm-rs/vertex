@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use vertex_node_builder::InfrastructureContext;
+use vertex_node_api::InfrastructureContext;
 use vertex_swarm_api::{PeerConfigValues, SwarmPeerConfig};
 use vertex_swarm_spec::Loggable;
 
@@ -32,8 +32,8 @@ pub trait WithInfrastructure<N: SetPeerStorePath>: Sized {
     fn network_mut(&mut self) -> &mut N;
 
     /// Apply infrastructure defaults (peer store path) from launch context.
-    fn with_infrastructure<C: InfrastructureContext>(mut self, ctx: &C) -> Self {
-        let path = ctx.dirs().network.join("state").join("peers.json");
+    fn with_infrastructure(mut self, ctx: &dyn InfrastructureContext) -> Self {
+        let path = ctx.data_dir().join("state").join("peers.json");
         self.network_mut().set_default_peer_store_path(path);
         self
     }
