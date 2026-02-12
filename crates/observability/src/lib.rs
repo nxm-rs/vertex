@@ -17,7 +17,7 @@ pub use guards::{CounterGuard, GaugeGuard, OperationGuard, TimingGuard};
 pub use label_value::LabelValue;
 pub use metrics::{
     Hook, Hooks, HooksBuilder, MetricsServer, PrometheusRecorder, install_prometheus_recorder,
-    install_prometheus_recorder_with_prefix,
+    install_prometheus_recorder_with_prefix, process_metrics_hook,
 };
 pub use tracer::VertexTracer;
 

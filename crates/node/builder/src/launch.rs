@@ -6,7 +6,8 @@ use std::sync::Arc;
 use vertex_node_api::InfrastructureContext;
 use vertex_node_core::dirs::DataDirs;
 use vertex_observability::{
-    install_prometheus_recorder_with_prefix, MetricsServer, MetricsServerConfig, PrometheusRecorder,
+    Hooks, MetricsServer, MetricsServerConfig, PrometheusRecorder,
+    install_prometheus_recorder_with_prefix, process_metrics_hook,
 };
 use vertex_tasks::TaskExecutor;
 
@@ -121,7 +122,10 @@ impl LaunchContextWith<WithMetrics> {
             (self.attachment.config(), self.attachment.recorder())
         {
             tracing::debug!(addr = %config.addr(), "Starting metrics server");
-            let server = MetricsServer::from_config(config, recorder.handle().clone(), Default::default());
+            let hooks = Hooks::builder()
+                .with_hook(process_metrics_hook())
+                .build();
+            let server = MetricsServer::from_config(config, recorder.handle().clone(), hooks);
             server.start(&self.executor).await?;
             tracing::info!(addr = %config.addr(), "Metrics server started");
         } else {
