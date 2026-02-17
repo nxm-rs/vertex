@@ -12,6 +12,17 @@ use crate::direction::ConnectionDirection;
 use crate::result::ActivateResult;
 use crate::state::ConnectionState;
 
+/// Statistics about the peer registry.
+#[derive(Debug, Clone, Copy)]
+pub struct PeerRegistryStats {
+    /// Total entries in the registry.
+    pub total_entries: usize,
+    /// Number of active (connected) peers.
+    pub active_count: usize,
+    /// Number of pending (dialing/handshaking) connections.
+    pub pending_count: usize,
+}
+
 /// Registry key distinguishing known-ID from pending connections.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum RegistryKey<Id> {
@@ -47,15 +58,15 @@ enum Replacement<Id> {
 }
 
 /// Inner maps protected by a single lock.
-struct Maps<Id> {
-    by_key: HashMap<RegistryKey<Id>, ConnectionState<Id>>,
+struct Maps<Id, R> {
+    by_key: HashMap<RegistryKey<Id>, ConnectionState<Id, R>>,
     peer_to_key: HashMap<PeerId, RegistryKey<Id>>,
     conn_to_key: HashMap<ConnectionId, RegistryKey<Id>>,
     /// Pending connections indexed by start time for O(log n + k) stale detection.
     pending_by_time: BTreeMap<Instant, HashSet<RegistryKey<Id>>>,
 }
 
-impl<Id> Default for Maps<Id> {
+impl<Id, R> Default for Maps<Id, R> {
     fn default() -> Self {
         Self {
             by_key: HashMap::new(),
@@ -66,7 +77,7 @@ impl<Id> Default for Maps<Id> {
     }
 }
 
-impl<Id: Clone + Eq + Hash> Maps<Id> {
+impl<Id: Clone + Eq + Hash, R> Maps<Id, R> {
     fn add_pending(&mut self, started_at: Instant, key: RegistryKey<Id>) {
         self.pending_by_time
             .entry(started_at)
@@ -88,34 +99,35 @@ impl<Id: Clone + Eq + Hash> Maps<Id> {
 ///
 /// Tracks connection lifecycle without protocol-specific knowledge.
 /// `Id` is the peer identifier type (e.g., OverlayAddress for Swarm).
-pub struct PeerRegistry<Id> {
-    maps: RwLock<Maps<Id>>,
+/// `R` is the reason type carried inline with each connection state.
+pub struct PeerRegistry<Id, R = ()> {
+    maps: RwLock<Maps<Id, R>>,
 }
 
-impl<Id> Default for PeerRegistry<Id> {
+impl<Id, R> Default for PeerRegistry<Id, R> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<Id> PeerRegistry<Id> {
+impl<Id, R> PeerRegistry<Id, R> {
     pub fn new() -> Self {
         Self {
             maps: RwLock::new(Maps::default()),
         }
     }
 
-    fn read(&self) -> RwLockReadGuard<'_, Maps<Id>> {
+    fn read(&self) -> RwLockReadGuard<'_, Maps<Id, R>> {
         self.maps.read()
     }
 
-    fn write(&self) -> RwLockWriteGuard<'_, Maps<Id>> {
+    fn write(&self) -> RwLockWriteGuard<'_, Maps<Id, R>> {
         self.maps.write()
     }
 }
 
-impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
-    pub fn get(&self, id: &Id) -> Option<ConnectionState<Id>> {
+impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> PeerRegistry<Id, R> {
+    pub fn get(&self, id: &Id) -> Option<ConnectionState<Id, R>> {
         self.read()
             .by_key
             .get(&RegistryKey::Known(id.clone()))
@@ -161,6 +173,7 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
         peer_id: PeerId,
         id: Id,
         addrs: Vec<Multiaddr>,
+        reason: R,
     ) -> Option<Vec<Multiaddr>> {
         if addrs.is_empty() {
             return None;
@@ -179,6 +192,7 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
             id: Some(id),
             addrs: addrs.clone(),
             started_at,
+            reason,
         };
 
         maps.by_key.insert(key.clone(), state);
@@ -194,6 +208,7 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
         &self,
         peer_id: PeerId,
         addrs: Vec<Multiaddr>,
+        reason: R,
     ) -> Option<Vec<Multiaddr>> {
         if addrs.is_empty() {
             return None;
@@ -212,6 +227,7 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
             id: None,
             addrs: addrs.clone(),
             started_at,
+            reason,
         };
 
         maps.by_key.insert(key.clone(), state);
@@ -222,7 +238,7 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
     }
 
     /// Complete a dial attempt (success or failure). Returns state for diagnostics.
-    pub fn complete_dial(&self, peer_id: &PeerId) -> Option<ConnectionState<Id>> {
+    pub fn complete_dial(&self, peer_id: &PeerId) -> Option<ConnectionState<Id, R>> {
         self.disconnected(peer_id)
     }
 
@@ -231,7 +247,7 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
         &self,
         peer_id: PeerId,
         connection_id: ConnectionId,
-    ) -> Option<ConnectionState<Id>> {
+    ) -> Option<ConnectionState<Id, R>> {
         let mut maps = self.write();
 
         let key = maps.peer_to_key.get(&peer_id)?.clone();
@@ -240,6 +256,7 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
         let ConnectionState::Dialing {
             id: dial_id,
             started_at,
+            reason,
             ..
         } = state
         else {
@@ -253,6 +270,7 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
             id: dial_id,
             direction: ConnectionDirection::Outbound,
             started_at,
+            reason,
         };
 
         maps.by_key.insert(key.clone(), new_state.clone());
@@ -266,7 +284,7 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
         &self,
         peer_id: PeerId,
         connection_id: ConnectionId,
-    ) -> ConnectionState<Id> {
+    ) -> ConnectionState<Id, R> {
         let key = RegistryKey::Pending(peer_id);
         let started_at = Instant::now();
 
@@ -276,6 +294,7 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
             id: None,
             direction: ConnectionDirection::Inbound,
             started_at,
+            reason: R::default(),
         };
 
         let mut maps = self.write();
@@ -298,6 +317,13 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
 
         let known_key = RegistryKey::Known(id.clone());
         let pending_key = RegistryKey::Pending(peer_id);
+
+        // Capture reason from current state before any modifications
+        let reason = maps.peer_to_key.get(&peer_id)
+            .and_then(|key| maps.by_key.get(key))
+            .map(|state| state.reason().clone())
+            .unwrap_or_default();
+
         let replacement = Self::find_replacement(&maps, &id, &peer_id);
 
         // Remove pending time index for the known key if it was pending
@@ -362,15 +388,40 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
             id: id.clone(),
             connection_id,
             connected_at: Instant::now(),
+            reason,
         };
         maps.by_key.insert(known_key.clone(), new_state);
         maps.peer_to_key.insert(peer_id, known_key.clone());
-        maps.conn_to_key.insert(connection_id, known_key);
+        maps.conn_to_key.insert(connection_id, known_key.clone());
+
+        // Debug assertions for one-overlay-one-peerid invariant
+        debug_assert!(
+            maps.peer_to_key.get(&peer_id) == Some(&known_key),
+            "Invariant violated: peer_id {:?} should map to known_key {:?}",
+            peer_id,
+            known_key
+        );
+        debug_assert!(
+            matches!(
+                maps.by_key.get(&known_key),
+                Some(ConnectionState::Active { peer_id: p, .. }) if *p == peer_id
+            ),
+            "Invariant violated: known_key {:?} should have peer_id {:?}",
+            known_key,
+            peer_id
+        );
+        // Ensure no duplicate mappings exist for this ID
+        debug_assert_eq!(
+            maps.peer_to_key.values().filter(|k| **k == known_key).count(),
+            1,
+            "Invariant violated: multiple peer_ids map to same overlay {:?}",
+            id
+        );
 
         result
     }
 
-    fn find_replacement(maps: &Maps<Id>, id: &Id, peer_id: &PeerId) -> Replacement<Id> {
+    fn find_replacement(maps: &Maps<Id, R>, id: &Id, peer_id: &PeerId) -> Replacement<Id> {
         let known_key = RegistryKey::Known(id.clone());
         let pending_key = RegistryKey::Pending(*peer_id);
 
@@ -426,7 +477,7 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
         }
     }
 
-    pub fn get_by_peer_id(&self, peer_id: &PeerId) -> Option<ConnectionState<Id>> {
+    pub fn get_by_peer_id(&self, peer_id: &PeerId) -> Option<ConnectionState<Id, R>> {
         let maps = self.read();
         let key = maps.peer_to_key.get(peer_id)?;
         maps.by_key.get(key).cloned()
@@ -470,6 +521,34 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
             .count()
     }
 
+    /// Get statistics about the registry.
+    #[must_use]
+    pub fn stats(&self) -> PeerRegistryStats {
+        let maps = self.read();
+        let total_entries = maps.by_key.len();
+        let active_count = maps
+            .by_key
+            .values()
+            .filter(|s| matches!(s, ConnectionState::Active { .. }))
+            .count();
+        let pending_count = maps
+            .by_key
+            .values()
+            .filter(|s| {
+                matches!(
+                    s,
+                    ConnectionState::Dialing { .. } | ConnectionState::Handshaking { .. }
+                )
+            })
+            .count();
+
+        PeerRegistryStats {
+            total_entries,
+            active_count,
+            pending_count,
+        }
+    }
+
     /// Get PeerIds of pending connections that have exceeded the timeout.
     ///
     /// Uses time-indexed lookup for O(log n + k) complexity where k = stale count.
@@ -488,7 +567,7 @@ impl<Id: Clone + Eq + Hash + Debug> PeerRegistry<Id> {
     }
 
     /// Remove peer from all maps and return final state.
-    pub fn disconnected(&self, peer_id: &PeerId) -> Option<ConnectionState<Id>> {
+    pub fn disconnected(&self, peer_id: &PeerId) -> Option<ConnectionState<Id, R>> {
         let mut maps = self.write();
 
         let key = maps.peer_to_key.remove(peer_id)?;
@@ -537,7 +616,7 @@ mod tests {
         let peer_id = test_peer_id(1);
         let addrs = vec![test_addr(9000), test_addr(9001)];
 
-        let result = registry.start_dial(peer_id, id.clone(), addrs.clone());
+        let result = registry.start_dial(peer_id, id.clone(), addrs.clone(), ());
         assert_eq!(result, Some(addrs));
         assert!(registry.get(&id).is_some());
     }
@@ -549,10 +628,10 @@ mod tests {
         let peer_id = test_peer_id(1);
         let addrs = vec![test_addr(9000)];
 
-        let result1 = registry.start_dial(peer_id, id.clone(), addrs.clone());
+        let result1 = registry.start_dial(peer_id, id.clone(), addrs.clone(), ());
         assert!(result1.is_some());
 
-        let result2 = registry.start_dial(peer_id, id, addrs);
+        let result2 = registry.start_dial(peer_id, id, addrs, ());
         assert!(result2.is_none());
     }
 
@@ -563,7 +642,7 @@ mod tests {
         let peer_id = test_peer_id(1);
         let addrs = vec![test_addr(9000), test_addr(9001), test_addr(9002)];
 
-        let _ = registry.start_dial(peer_id, id.clone(), addrs.clone());
+        let _ = registry.start_dial(peer_id, id.clone(), addrs.clone(), ());
 
         let state = registry.complete_dial(&peer_id);
         assert!(state.is_some());
@@ -581,7 +660,7 @@ mod tests {
         let peer_id = test_peer_id(1);
         let conn_id = test_connection_id(1);
 
-        let _ = registry.start_dial(peer_id, id.clone(), vec![test_addr(9000)]);
+        let _ = registry.start_dial(peer_id, id.clone(), vec![test_addr(9000)], ());
 
         let state = registry.connection_established(peer_id, conn_id);
         assert!(state.is_some());
@@ -600,7 +679,7 @@ mod tests {
         let peer_id = test_peer_id(1);
         let conn_id = test_connection_id(1);
 
-        let _ = registry.start_dial(peer_id, id.clone(), vec![test_addr(9000)]);
+        let _ = registry.start_dial(peer_id, id.clone(), vec![test_addr(9000)], ());
         let _ = registry.connection_established(peer_id, conn_id);
 
         let result = registry.handshake_completed(peer_id, conn_id, id.clone());
@@ -618,7 +697,7 @@ mod tests {
         let conn_id1 = test_connection_id(1);
         let conn_id2 = test_connection_id(2);
 
-        let _ = registry.start_dial(peer_id, id.clone(), vec![test_addr(9000)]);
+        let _ = registry.start_dial(peer_id, id.clone(), vec![test_addr(9000)], ());
         let _ = registry.connection_established(peer_id, conn_id1);
         let result1 = registry.handshake_completed(peer_id, conn_id1, id.clone());
         assert_eq!(result1, ActivateResult::Accepted);
@@ -661,7 +740,7 @@ mod tests {
         let peer_id = test_peer_id(1);
         let conn_id = test_connection_id(1);
 
-        let _ = registry.start_dial(peer_id, id.clone(), vec![test_addr(9000)]);
+        let _ = registry.start_dial(peer_id, id.clone(), vec![test_addr(9000)], ());
         let _ = registry.connection_established(peer_id, conn_id);
         let _ = registry.handshake_completed(peer_id, conn_id, id.clone());
 
@@ -677,12 +756,12 @@ mod tests {
 
         let id1 = TestId(1);
         let peer_id1 = test_peer_id(1);
-        let _ = registry.start_dial(peer_id1, id1.clone(), vec![test_addr(9000)]);
+        let _ = registry.start_dial(peer_id1, id1.clone(), vec![test_addr(9000)], ());
 
         let id2 = TestId(2);
         let peer_id2 = test_peer_id(2);
         let conn_id2 = test_connection_id(2);
-        let _ = registry.start_dial(peer_id2, id2.clone(), vec![test_addr(9001)]);
+        let _ = registry.start_dial(peer_id2, id2.clone(), vec![test_addr(9001)], ());
         let _ = registry.connection_established(peer_id2, conn_id2);
         let _ = registry.handshake_completed(peer_id2, conn_id2, id2);
 
@@ -697,20 +776,20 @@ mod tests {
         // Peer 1: in Dialing state
         let id1 = TestId(1);
         let peer_id1 = test_peer_id(1);
-        let _ = registry.start_dial(peer_id1, id1, vec![test_addr(9000)]);
+        let _ = registry.start_dial(peer_id1, id1, vec![test_addr(9000)], ());
 
         // Peer 2: in Handshaking state
         let id2 = TestId(2);
         let peer_id2 = test_peer_id(2);
         let conn_id2 = test_connection_id(2);
-        let _ = registry.start_dial(peer_id2, id2.clone(), vec![test_addr(9001)]);
+        let _ = registry.start_dial(peer_id2, id2.clone(), vec![test_addr(9001)], ());
         let _ = registry.connection_established(peer_id2, conn_id2);
 
         // Peer 3: in Active state
         let id3 = TestId(3);
         let peer_id3 = test_peer_id(3);
         let conn_id3 = test_connection_id(3);
-        let _ = registry.start_dial(peer_id3, id3.clone(), vec![test_addr(9002)]);
+        let _ = registry.start_dial(peer_id3, id3.clone(), vec![test_addr(9002)], ());
         let _ = registry.connection_established(peer_id3, conn_id3);
         let _ = registry.handshake_completed(peer_id3, conn_id3, id3);
 
@@ -724,5 +803,48 @@ mod tests {
         // With a large timeout, no pending connections should be stale
         let stale = registry.stale_pending(Duration::from_secs(3600));
         assert!(stale.is_empty());
+    }
+
+    #[test]
+    fn test_reason_carried_through_lifecycle() {
+        #[derive(Clone, Debug, Default, PartialEq)]
+        struct TestReason(String);
+
+        let registry = PeerRegistry::<TestId, TestReason>::new();
+        let id = TestId(1);
+        let peer_id = test_peer_id(1);
+        let conn_id = test_connection_id(1);
+        let reason = TestReason("discovery".to_string());
+
+        // Start dial with reason
+        let _ = registry.start_dial(peer_id, id.clone(), vec![test_addr(9000)], reason.clone());
+        let state = registry.get(&id).unwrap();
+        assert_eq!(state.reason(), &reason);
+
+        // Reason carries through connection_established
+        let state = registry.connection_established(peer_id, conn_id).unwrap();
+        assert_eq!(state.reason(), &reason);
+
+        // Reason carries through handshake_completed
+        registry.handshake_completed(peer_id, conn_id, id.clone());
+        let state = registry.get(&id).unwrap();
+        assert_eq!(state.reason(), &reason);
+
+        // Reason available on disconnect
+        let state = registry.disconnected(&peer_id).unwrap();
+        assert_eq!(state.reason(), &reason);
+    }
+
+    #[test]
+    fn test_inbound_uses_default_reason() {
+        #[derive(Clone, Debug, Default, PartialEq)]
+        struct TestReason(Option<String>);
+
+        let registry = PeerRegistry::<TestId, TestReason>::new();
+        let peer_id = test_peer_id(1);
+        let conn_id = test_connection_id(1);
+
+        let state = registry.inbound_connection(peer_id, conn_id);
+        assert_eq!(state.reason(), &TestReason(None));
     }
 }

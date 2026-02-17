@@ -9,7 +9,7 @@ use crate::direction::ConnectionDirection;
 /// Connection state for a peer in the registry.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub enum ConnectionState<Id> {
+pub enum ConnectionState<Id, R = ()> {
     /// Actively dialing (transport connection in progress).
     Dialing {
         peer_id: PeerId,
@@ -18,6 +18,7 @@ pub enum ConnectionState<Id> {
         /// All addresses passed to libp2p (for diagnostics).
         addrs: Vec<Multiaddr>,
         started_at: Instant,
+        reason: R,
     },
     /// Transport connected, handshake in progress.
     Handshaking {
@@ -27,6 +28,7 @@ pub enum ConnectionState<Id> {
         id: Option<Id>,
         direction: ConnectionDirection,
         started_at: Instant,
+        reason: R,
     },
     /// Fully connected and handshake completed.
     Active {
@@ -34,10 +36,19 @@ pub enum ConnectionState<Id> {
         id: Id,
         connection_id: ConnectionId,
         connected_at: Instant,
+        reason: R,
     },
 }
 
-impl<Id: Clone> ConnectionState<Id> {
+impl<Id: Clone, R> ConnectionState<Id, R> {
+    pub fn reason(&self) -> &R {
+        match self {
+            Self::Dialing { reason, .. } => reason,
+            Self::Handshaking { reason, .. } => reason,
+            Self::Active { reason, .. } => reason,
+        }
+    }
+
     pub fn direction(&self) -> Option<ConnectionDirection> {
         match self {
             Self::Handshaking { direction, .. } => Some(*direction),
