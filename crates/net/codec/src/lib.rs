@@ -1,7 +1,15 @@
+//! Codec utilities for protobuf-based network protocols.
+
 mod utils;
 pub use utils::{
     current_unix_timestamp, current_unix_timestamp_nanos, decode_u256_be, encode_u256_be,
 };
+
+/// Direct protobuf codec for types that don't need domain wrapper conversion.
+///
+/// Use this when decoding proto messages directly and converting via functions
+/// rather than through the `ProtoMessage` trait abstraction.
+pub type ProtoCodec<T> = quick_protobuf_codec::Codec<T>;
 
 /// Test helper macro for verifying protobuf roundtrip encoding.
 ///
