@@ -122,9 +122,11 @@ impl LaunchContextWith<WithMetrics> {
             (self.attachment.config(), self.attachment.recorder())
         {
             tracing::debug!(addr = %config.addr(), "Starting metrics server");
-            let hooks = Hooks::builder()
-                .with_hook(process_metrics_hook())
-                .build();
+            let hooks_builder = Hooks::builder()
+                .with_hook(process_metrics_hook());
+            #[cfg(feature = "jemalloc")]
+            let hooks_builder = hooks_builder.with_hook(vertex_observability::jemalloc_metrics_hook());
+            let hooks = hooks_builder.build();
             let server = MetricsServer::from_config(config, recorder.handle().clone(), hooks);
             server.start(&self.executor).await?;
             tracing::info!(addr = %config.addr(), "Metrics server started");
