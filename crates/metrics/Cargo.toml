@@ -1,0 +1,25 @@
+[package]
+name = "vertex-metrics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Lightweight metric primitives for Vertex: RAII guards, lazy macros, and label utilities"
+
+[lints]
+workspace = true
+
+[dependencies]
+# metrics
+metrics = { workspace = true }
+
+# synchronization (for timed lock helpers)
+parking_lot = { workspace = true }
+
+# enum label support
+strum = { workspace = true }
+
+[dev-dependencies]
+strum = { workspace = true }
