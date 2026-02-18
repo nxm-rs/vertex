@@ -11,12 +11,17 @@ description = "Unified observability (logging, tracing, metrics) for Vertex Swar
 [lints]
 workspace = true
 
+[features]
+default = []
+profiling = ["pprof"]
+jemalloc = ["tikv-jemalloc-ctl"]
+heap-profiling = ["jemalloc"]
+tokio-console = ["console-subscriber"]
+
 [dependencies]
 # Internal crates
+vertex-metrics = { workspace = true }
 vertex-tasks = { workspace = true }
-
-# Enum utilities (for LabelValue blanket impl)
-strum = { workspace = true }
 
 # Metrics
 metrics = { workspace = true }
@@ -51,7 +56,13 @@ eyre = { workspace = true }
 parking_lot = { workspace = true }
 
 # Misc
-once_cell = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+# Profiling (optional)
+pprof = { workspace = true, optional = true }
+tikv-jemalloc-ctl = { workspace = true, optional = true }
+console-subscriber = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"

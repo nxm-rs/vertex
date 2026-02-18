@@ -24,11 +24,20 @@ pub(crate) fn build_and_init(
     let (file_layer, file_guard) = build_file_layer(file)?;
     let (otel_layer, provider) = build_otel_layer(otlp)?;
 
+    // Build tokio-console layer if feature enabled.
+    // spawn() returns a layer with its own filter for tokio/runtime spans.
+    #[cfg(feature = "tokio-console")]
+    let tokio_console_layer = Some(console_subscriber::spawn());
+
+    #[cfg(not(feature = "tokio-console"))]
+    let tokio_console_layer: Option<tracing_subscriber::layer::Identity> = None;
+
     tracing_subscriber::registry()
         .with(env_filter)
         .with(console_layer)
         .with(file_layer)
         .with(otel_layer)
+        .with(tokio_console_layer)
         .try_init()
         .map_err(|e| eyre::eyre!("Failed to initialize tracing subscriber: {e}"))?;
 
@@ -49,13 +58,23 @@ fn build_console_layer<S>(
 where
     S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
 {
+    // Base filter from config or environment
+    let base_filter = config
+        .map(|c| c.filter().to_string())
+        .unwrap_or_else(|| "error".to_string());
+
+    // When tokio-console is enabled, we must allow tokio spans through
+    #[cfg(feature = "tokio-console")]
+    let filter_str = format!("{},tokio=trace,runtime=trace", base_filter);
+
+    #[cfg(not(feature = "tokio-console"))]
+    let filter_str = base_filter;
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&filter_str));
+
     let Some(config) = config else {
-        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("error"));
         return (None, filter);
     };
-
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(config.filter()));
 
     let layer = fmt::layer().with_ansi(config.ansi());
 
