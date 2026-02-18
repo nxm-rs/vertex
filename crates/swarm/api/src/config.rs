@@ -1,24 +1,15 @@
 //! Configuration traits for Swarm protocol components.
 
 use core::time::Duration;
-use std::future::Future;
-use std::pin::Pin;
 
 use libp2p::Multiaddr;
 use vertex_node_api::InfrastructureContext;
-use vertex_tasks::GracefulShutdown;
 
 use crate::components::{SwarmAccountingConfig, SwarmLocalStoreConfig, SwarmPricingConfig};
 use crate::{SwarmClientTypes, SwarmNetworkTypes, SwarmStorerTypes};
 
-/// A boxed future representing the node's main event loop.
-pub type NodeTask = Pin<Box<dyn Future<Output = ()> + Send>>;
-
-/// A function that creates a node task with graceful shutdown support.
-///
-/// Takes a `GracefulShutdown` signal and returns the task future.
-/// When the shutdown signal fires, the task should clean up and exit.
-pub type NodeTaskFn = Box<dyn FnOnce(GracefulShutdown) -> NodeTask + Send>;
+// Re-export from vertex-tasks (canonical location)
+pub use vertex_tasks::{NodeTask, NodeTaskFn};
 
 /// Configuration for storage incentives (redistribution, postage).
 pub trait SwarmStorageConfig {
@@ -133,9 +124,9 @@ pub trait SwarmNetworkConfig {
         &[]
     }
 
-    /// Whether auto-NAT discovery from observed addresses is enabled.
+    /// Whether auto-NAT discovery from observed addresses is enabled (default: true).
     fn nat_auto_enabled(&self) -> bool {
-        false
+        true
     }
 }
 
