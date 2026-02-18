@@ -5,38 +5,38 @@ use std::path::PathBuf;
 /// Errors from peer store operations.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
-    #[error("failed to create directory {path}: {source}")]
+    #[error("failed to create directory {}: {source}", path.display())]
     CreateDir {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
 
-    #[error("failed to open {path}: {source}")]
+    #[error("failed to open {}: {source}", path.display())]
     Open {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
 
-    #[error("failed to read {path}: {source}")]
+    #[error("failed to read {}: {source}", path.display())]
     Read {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
 
-    #[error("failed to write {path}: {source}")]
+    #[error("failed to write {}: {source}", path.display())]
     Write {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
 
-    #[error("failed to deserialize {path}: {reason}")]
+    #[error("failed to deserialize {}: {reason}", path.display())]
     Deserialize { path: PathBuf, reason: String },
 
-    #[error("failed to serialize {path}: {reason}")]
+    #[error("failed to serialize {}: {reason}", path.display())]
     Serialize { path: PathBuf, reason: String },
 
     #[error("storage error: {0}")]

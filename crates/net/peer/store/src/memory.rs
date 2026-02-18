@@ -36,14 +36,14 @@ impl<Id: NetPeerId, Data: DataBounds> NetPeerStore<Id, Data> for MemoryPeerStore
     }
 
     fn save(&self, record: &PeerRecord<Id, Data>) -> Result<(), StoreError> {
-        self.peers.write().insert(record.id().clone(), record.clone());
+        self.peers.write().insert(record.id.clone(), record.clone());
         Ok(())
     }
 
     fn save_batch(&self, records: &[PeerRecord<Id, Data>]) -> Result<(), StoreError> {
         let mut store = self.peers.write();
         for record in records {
-            store.insert(record.id().clone(), record.clone());
+            store.insert(record.id.clone(), record.clone());
         }
         Ok(())
     }
@@ -80,7 +80,15 @@ mod tests {
     }
 
     fn test_record(n: u64) -> PeerRecord<TestId, TestData> {
-        PeerRecord::new(TestId(n), TestData { value: n as u32 }, 0, 0)
+        PeerRecord {
+            id: TestId(n),
+            data: TestData { value: n as u32 },
+            first_seen: 0,
+            last_seen: 0,
+            last_dial_attempt: 0,
+            consecutive_failures: 0,
+            is_banned: false,
+        }
     }
 
     #[test]
@@ -97,7 +105,7 @@ mod tests {
         assert!(store.contains(&TestId(1)).unwrap());
 
         let loaded = store.get(&TestId(1)).unwrap().unwrap();
-        assert_eq!(loaded.id(), &TestId(1));
+        assert_eq!(loaded.id, TestId(1));
 
         assert!(store.remove(&TestId(1)).unwrap());
         assert_eq!(store.count().unwrap(), 0);
@@ -122,12 +130,12 @@ mod tests {
         let mut record = test_record(1);
         store.save(&record).unwrap();
 
-        record.set_data(TestData { value: 42 });
+        record.data = TestData { value: 42 };
         store.save(&record).unwrap();
 
         assert_eq!(store.count().unwrap(), 1);
         let loaded = store.get(&TestId(1)).unwrap().unwrap();
-        assert_eq!(loaded.data().value, 42);
+        assert_eq!(loaded.data.value, 42);
     }
 
     #[test]

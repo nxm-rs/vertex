@@ -66,7 +66,7 @@ impl<Id: NetPeerId, Data: DataBounds> FilePeerStore<Id, Data> {
 
         let mut peers = HashMap::with_capacity(records.len());
         for record in records {
-            peers.insert(record.id().clone(), record);
+            peers.insert(record.id.clone(), record);
         }
 
         Ok(peers)
@@ -118,7 +118,7 @@ impl<Id: NetPeerId, Data: DataBounds> NetPeerStore<Id, Data> for FilePeerStore<I
     }
 
     fn save(&self, record: &PeerRecord<Id, Data>) -> Result<(), StoreError> {
-        self.peers.write().insert(record.id().clone(), record.clone());
+        self.peers.write().insert(record.id.clone(), record.clone());
         self.mark_dirty();
         Ok(())
     }
@@ -126,7 +126,7 @@ impl<Id: NetPeerId, Data: DataBounds> NetPeerStore<Id, Data> for FilePeerStore<I
     fn save_batch(&self, records: &[PeerRecord<Id, Data>]) -> Result<(), StoreError> {
         let mut store = self.peers.write();
         for record in records {
-            store.insert(record.id().clone(), record.clone());
+            store.insert(record.id.clone(), record.clone());
         }
         drop(store);
         self.mark_dirty();
@@ -186,7 +186,15 @@ mod tests {
     }
 
     fn test_record(n: u64) -> PeerRecord<TestId, TestData> {
-        PeerRecord::new(TestId(n), TestData { value: n as u32 }, 0, 0)
+        PeerRecord {
+            id: TestId(n),
+            data: TestData { value: n as u32 },
+            first_seen: 0,
+            last_seen: 0,
+            last_dial_attempt: 0,
+            consecutive_failures: 0,
+            is_banned: false,
+        }
     }
 
     #[test]
@@ -208,7 +216,7 @@ mod tests {
         assert!(path.exists());
 
         let loaded = store.get(&TestId(1)).unwrap().unwrap();
-        assert_eq!(loaded.id(), &TestId(1));
+        assert_eq!(loaded.id, TestId(1));
     }
 
     #[test]
@@ -244,13 +252,13 @@ mod tests {
         store.save(&record).unwrap();
         store.flush().unwrap();
 
-        record.set_data(TestData { value: 42 });
+        record.data = TestData { value: 42 };
         store.save(&record).unwrap();
         store.flush().unwrap();
 
         let store2 = FilePeerStore::<TestId, TestData>::new(&path).unwrap();
         let loaded = store2.get(&TestId(1)).unwrap().unwrap();
-        assert_eq!(loaded.data().value, 42);
+        assert_eq!(loaded.data.value, 42);
     }
 
     #[test]
