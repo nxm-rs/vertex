@@ -7,8 +7,12 @@ use futures_util::{
 use std::{
     future::Future,
     pin::Pin,
-    sync::{Arc, atomic::AtomicUsize},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     task::{Context, Poll, ready},
+    time::Duration,
 };
 use tokio::sync::oneshot;
 
@@ -61,22 +65,83 @@ impl Clone for GracefulShutdown {
     }
 }
 
+/// Tracks active graceful shutdown tasks with efficient wake-on-completion.
+#[derive(Debug)]
+pub(crate) struct GracefulShutdownCounter {
+    count: AtomicUsize,
+    mutex: Mutex<()>,
+    condvar: Condvar,
+}
+
+impl GracefulShutdownCounter {
+    pub(crate) fn new() -> Self {
+        Self {
+            count: AtomicUsize::new(0),
+            mutex: Mutex::new(()),
+            condvar: Condvar::new(),
+        }
+    }
+
+    pub(crate) fn increment(&self) {
+        self.count.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn decrement(&self) {
+        let prev = self.count.fetch_sub(1, Ordering::SeqCst);
+        if prev == 1 {
+            self.condvar.notify_all();
+        }
+    }
+
+    pub(crate) fn load(&self) -> usize {
+        self.count.load(Ordering::Relaxed)
+    }
+
+    /// Block until all graceful tasks complete. Returns `true`.
+    pub(crate) fn wait(&self) -> bool {
+        let mut guard = self.mutex.lock().unwrap();
+        while self.count.load(Ordering::SeqCst) > 0 {
+            guard = self.condvar.wait(guard).unwrap();
+        }
+        true
+    }
+
+    /// Block until all graceful tasks complete or timeout expires.
+    /// Returns `true` if all tasks completed, `false` on timeout.
+    pub(crate) fn wait_timeout(&self, timeout: Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut guard = self.mutex.lock().unwrap();
+        while self.count.load(Ordering::SeqCst) > 0 {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (new_guard, result) = self.condvar.wait_timeout(guard, remaining).unwrap();
+            guard = new_guard;
+            if result.timed_out() && self.count.load(Ordering::SeqCst) > 0 {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 /// A guard that fires once dropped to signal the [`TaskManager`](crate::TaskManager) that the
 /// [`GracefulShutdown`] has completed.
 #[derive(Debug)]
 #[must_use = "if unused the task will not be gracefully shutdown"]
-pub struct GracefulShutdownGuard(pub(crate) Arc<AtomicUsize>);
+pub struct GracefulShutdownGuard(pub(crate) Arc<GracefulShutdownCounter>);
 
 impl GracefulShutdownGuard {
-    pub(crate) fn new(counter: Arc<AtomicUsize>) -> Self {
-        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    pub(crate) fn new(counter: Arc<GracefulShutdownCounter>) -> Self {
+        counter.increment();
         Self(counter)
     }
 }
 
 impl Drop for GracefulShutdownGuard {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.0.decrement();
     }
 }
 
@@ -165,5 +230,40 @@ mod tests {
         });
 
         shutdown.await;
+    }
+
+    #[test]
+    fn test_counter_wait_immediate() {
+        let counter = GracefulShutdownCounter::new();
+        assert!(counter.wait());
+    }
+
+    #[test]
+    fn test_counter_wait_timeout_immediate() {
+        let counter = GracefulShutdownCounter::new();
+        assert!(counter.wait_timeout(Duration::from_millis(10)));
+    }
+
+    #[test]
+    fn test_counter_decrement_wakes() {
+        let counter = Arc::new(GracefulShutdownCounter::new());
+        counter.increment();
+
+        let c = Arc::clone(&counter);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            c.decrement();
+        });
+
+        assert!(counter.wait_timeout(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn test_counter_timeout_expires() {
+        let counter = Arc::new(GracefulShutdownCounter::new());
+        counter.increment();
+        assert!(!counter.wait_timeout(Duration::from_millis(50)));
+        // Clean up
+        counter.decrement();
     }
 }

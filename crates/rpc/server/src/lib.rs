@@ -166,9 +166,6 @@ impl GrpcServer {
     }
 }
 
-// Implement node-types marker trait for NodeTypes compatibility
-impl vertex_node_types::NodeRpcServer for GrpcServer {}
-
 #[async_trait]
 impl RpcServer for GrpcServer {
     async fn start(&self) -> eyre::Result<()> {

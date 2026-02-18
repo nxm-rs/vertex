@@ -17,6 +17,7 @@ tokio = { workspace = true, features = ["sync", "rt"] }
 futures-util = { workspace = true, features = ["std"] }
 
 # metrics
+vertex-metrics = { workspace = true }
 metrics.workspace = true
 
 # misc

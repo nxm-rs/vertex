@@ -1,8 +1,5 @@
 //! Configuration traits for node infrastructure.
 //!
-//! These traits define the configuration parameters for node-level infrastructure
-//! such as RPC servers and database storage.
-//!
 //! This module is protocol-agnostic - it knows nothing about specific network
 //! protocols like Swarm. Protocol configuration is handled via the [`NodeProtocolConfig`]
 //! trait which protocols implement to provide their specific configuration.
@@ -17,36 +14,6 @@ pub trait NodeRpcConfig {
 
     /// gRPC server listen port.
     fn grpc_port(&self) -> u16;
-}
-
-/// Configuration for database storage.
-pub trait NodeDatabaseConfig {
-    /// Root data directory for all node data.
-    fn data_dir(&self) -> Option<&str>;
-
-    /// Whether to use an in-memory database (no persistence).
-    fn memory_only(&self) -> bool;
-
-    /// Database cache size in megabytes.
-    fn cache_size_mb(&self) -> Option<u64>;
-}
-
-/// Combined infrastructure configuration.
-///
-/// This trait provides access to all node-level infrastructure configuration.
-/// It is protocol-agnostic - protocol-specific configuration is handled
-/// separately by the protocol layer.
-pub trait NodeConfig {
-    /// RPC server configuration.
-    type Rpc: NodeRpcConfig;
-    /// Database configuration.
-    type Database: NodeDatabaseConfig;
-
-    /// Get RPC server configuration.
-    fn rpc(&self) -> &Self::Rpc;
-
-    /// Get database configuration.
-    fn database(&self) -> &Self::Database;
 }
 
 /// Trait for protocol-specific configuration.
