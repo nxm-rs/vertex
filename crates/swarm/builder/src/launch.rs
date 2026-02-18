@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use tracing::info;
 
 use vertex_node_api::InfrastructureContext;
-use vertex_swarm_api::{NodeTaskFn, SwarmLaunchConfig};
+use vertex_swarm_api::SwarmLaunchConfig;
+use vertex_tasks::NodeTaskFn;
 use vertex_swarm_bandwidth::{Accounting, ClientAccounting, DefaultBandwidthConfig, FixedPricer};
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::{BootNode, ClientNode};
@@ -120,10 +121,7 @@ impl SwarmLaunchConfig for ClientConfig {
         let providers = ClientRpcProviders::new(topology, chunk_provider);
 
         // Spawn client service as independent task with graceful shutdown
-        ctx.executor().spawn_critical_with_graceful_shutdown_signal(
-            "client_service",
-            move |shutdown| client_service.run(shutdown),
-        );
+        ctx.executor().spawn_service("client_service", client_service);
 
         // Return node task - it will be spawned by the caller
         let task = single_task(move |shutdown| async move {
@@ -163,10 +161,7 @@ impl SwarmLaunchConfig for StorerConfig {
         let providers = StorerRpcProviders::new(topology);
 
         // Spawn client service as independent task with graceful shutdown
-        ctx.executor().spawn_critical_with_graceful_shutdown_signal(
-            "client_service",
-            move |shutdown| client_service.run(shutdown),
-        );
+        ctx.executor().spawn_service("client_service", client_service);
 
         // Return node task - it will be spawned by the caller
         let task = single_task(move |shutdown| async move {

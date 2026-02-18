@@ -1,24 +1,25 @@
-//! Generic node handle for all Swarm node types.
+//! Build output for Swarm node types.
 
 use std::sync::Arc;
 
-use vertex_swarm_api::{HasTopology, NodeTask, NodeTaskFn};
+use vertex_swarm_api::HasTopology;
 use vertex_swarm_identity::Identity;
-use vertex_tasks::GracefulShutdown;
+use vertex_tasks::{GracefulShutdown, NodeTask, NodeTaskFn};
 
 use crate::providers::NetworkChunkProvider;
 use crate::rpc::{BootnodeRpcProviders, ClientRpcProviders, StorerRpcProviders};
 
-/// Handle returned from launching any Swarm node.
+/// Build output from launching a Swarm node.
 ///
+/// Contains the node's main event loop task function and RPC providers.
 /// The providers type `P` determines RPC capabilities. All providers
 /// implement `HasTopology` for topology access.
-pub struct NodeHandle<P> {
+pub struct BuiltNode<P> {
     task_fn: NodeTaskFn,
     providers: P,
 }
 
-impl<P> NodeHandle<P> {
+impl<P> BuiltNode<P> {
     pub fn new(task_fn: NodeTaskFn, providers: P) -> Self {
         Self { task_fn, providers }
     }
@@ -46,19 +47,19 @@ impl<P> NodeHandle<P> {
     }
 }
 
-impl<P: HasTopology> NodeHandle<P> {
+impl<P: HasTopology> BuiltNode<P> {
     /// Access the topology handle.
     pub fn topology(&self) -> &P::Topology {
         self.providers.topology()
     }
 }
 
-/// Handle for bootnode (topology only).
-pub type BootnodeHandle = NodeHandle<BootnodeRpcProviders<Arc<Identity>>>;
+/// Built bootnode (topology only).
+pub type BuiltBootnode = BuiltNode<BootnodeRpcProviders<Arc<Identity>>>;
 
-/// Handle for client node (topology + chunk retrieval).
-pub type ClientHandle =
-    NodeHandle<ClientRpcProviders<Arc<Identity>, NetworkChunkProvider<Arc<Identity>>>>;
+/// Built client node (topology + chunk retrieval).
+pub type BuiltClient =
+    BuiltNode<ClientRpcProviders<Arc<Identity>, NetworkChunkProvider<Arc<Identity>>>>;
 
-/// Handle for storer node (topology + storage).
-pub type StorerHandle = NodeHandle<StorerRpcProviders<Arc<Identity>>>;
+/// Built storer node (topology + storage).
+pub type BuiltStorer = BuiltNode<StorerRpcProviders<Arc<Identity>>>;

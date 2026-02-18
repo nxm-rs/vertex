@@ -3,7 +3,7 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use vertex_swarm_api::NodeTaskFn;
+use vertex_tasks::NodeTaskFn;
 use vertex_swarm_bandwidth::{AccountingBuilder, ClientAccounting};
 use vertex_swarm_spec::Spec;
 use vertex_tasks::GracefulShutdown;

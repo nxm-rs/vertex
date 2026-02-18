@@ -22,7 +22,7 @@ use vertex_swarm_topology::KademliaConfig;
 use crate::builder_ext::{BuilderExt, WithInfrastructure};
 use crate::config::{BootnodeConfig, ClientConfig, StorerConfig};
 use crate::error::SwarmNodeError;
-use crate::handle::{BootnodeHandle, ClientHandle, NodeHandle, StorerHandle};
+use crate::handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};
 
 /// Builder for bootnodes.
 pub struct NodeBuilder<I, N>
@@ -208,10 +208,10 @@ impl DefaultNodeBuilder {
     }
 
     /// Build the bootnode. Delegates to SwarmLaunchConfig::build().
-    pub async fn build(self, ctx: &dyn InfrastructureContext) -> Result<BootnodeHandle, SwarmNodeError> {
+    pub async fn build(self, ctx: &dyn InfrastructureContext) -> Result<BuiltBootnode, SwarmNodeError> {
         let config = self.into_config();
         let (task, providers) = config.build(ctx).await?;
-        Ok(NodeHandle::new(task, providers))
+        Ok(BuiltNode::new(task, providers))
     }
 }
 
@@ -240,10 +240,10 @@ impl DefaultClientBuilder {
     }
 
     /// Build the client node. Delegates to SwarmLaunchConfig::build().
-    pub async fn build(self, ctx: &dyn InfrastructureContext) -> Result<ClientHandle, SwarmNodeError> {
+    pub async fn build(self, ctx: &dyn InfrastructureContext) -> Result<BuiltClient, SwarmNodeError> {
         let config = self.into_config();
         let (task, providers) = config.build(ctx).await?;
-        Ok(NodeHandle::new(task, providers))
+        Ok(BuiltNode::new(task, providers))
     }
 }
 
@@ -285,10 +285,10 @@ impl DefaultStorerBuilder {
     }
 
     /// Build the storer node. Delegates to SwarmLaunchConfig::build().
-    pub async fn build(self, ctx: &dyn InfrastructureContext) -> Result<StorerHandle, SwarmNodeError> {
+    pub async fn build(self, ctx: &dyn InfrastructureContext) -> Result<BuiltStorer, SwarmNodeError> {
         let config = self.into_config();
         let (task, providers) = config.build(ctx).await?;
-        Ok(NodeHandle::new(task, providers))
+        Ok(BuiltNode::new(task, providers))
     }
 }
 

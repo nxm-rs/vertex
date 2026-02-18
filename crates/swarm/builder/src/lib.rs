@@ -5,7 +5,7 @@
 //! - [`ClientNodeBuilder`] / [`DefaultClientBuilder`] - Client node builder
 //! - [`StorerNodeBuilder`] / [`DefaultStorerBuilder`] - Storer node builder
 //!
-//! Build returns [`NodeHandle`] which contains the task and RPC providers.
+//! Build returns [`BuiltNode`] which contains the task and RPC providers.
 
 mod build_helpers;
 mod builder_ext;
@@ -26,8 +26,8 @@ pub use node::{
     NodeBuilder, StorerNodeBuilder,
 };
 
-// Handles
-pub use handle::{BootnodeHandle, ClientHandle, NodeHandle, StorerHandle};
+// Build outputs
+pub use handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};
 
 // Providers
 pub use providers::NetworkChunkProvider;
