@@ -33,13 +33,13 @@ impl SwarmSpecParser for DefaultSpecParser {
         // Try as file path
         let path = Path::new(s);
         if path.exists() {
-            return Spec::from_file(path)
+            return Spec::try_from(path)
                 .map(Arc::new)
                 .map_err(|e| eyre::eyre!("failed to load spec from {}: {}", path.display(), e));
         }
 
         // Try as inline JSON
-        Spec::from_json(s)
+        Spec::try_from(s)
             .map(Arc::new)
             .map_err(|e| eyre::eyre!("'{}' is not a valid network, file path, or JSON: {}", s, e))
     }

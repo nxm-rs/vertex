@@ -345,32 +345,9 @@ impl Spec {
     /// Returns the genesis timestamp of the network.
     ///
     /// This is the reference point for hardfork activation timing.
+    #[must_use]
     pub fn genesis_timestamp(&self) -> u64 {
         self.genesis_timestamp
-    }
-
-    /// Load a SwarmSpec from a JSON file.
-    ///
-    /// Example file:
-    /// ```json
-    /// {
-    ///   "network_id": 0,
-    ///   "network_name": "local-kurtosis",
-    ///   "bootnodes": ["/ip4/127.0.0.1/tcp/1634/p2p/QmXxx..."],
-    ///   "genesis_timestamp": 0,
-    ///   "reserve_capacity": 4194304
-    /// }
-    /// ```
-    #[cfg(feature = "std")]
-    pub fn from_file(path: &std::path::Path) -> Result<Self, SwarmSpecFileError> {
-        let content = std::fs::read_to_string(path)?;
-        Self::from_json(&content)
-    }
-
-    /// Parse a SwarmSpec from a JSON string.
-    #[cfg(feature = "std")]
-    pub fn from_json(json: &str) -> Result<Self, SwarmSpecFileError> {
-        Ok(serde_json::from_str(json)?)
     }
 
     /// Serialize this SwarmSpec to a JSON string.
@@ -385,6 +362,37 @@ impl Spec {
         let json = self.to_json()?;
         std::fs::write(path, json)?;
         Ok(())
+    }
+}
+
+/// Parse a [`Spec`] from a JSON string.
+#[cfg(feature = "std")]
+impl TryFrom<&str> for Spec {
+    type Error = SwarmSpecFileError;
+
+    fn try_from(json: &str) -> Result<Self, Self::Error> {
+        Ok(serde_json::from_str(json)?)
+    }
+}
+
+/// Load a [`Spec`] from a JSON file path.
+///
+/// ```json
+/// {
+///   "network_id": 0,
+///   "network_name": "local-kurtosis",
+///   "bootnodes": ["/ip4/127.0.0.1/tcp/1634/p2p/QmXxx..."],
+///   "genesis_timestamp": 0,
+///   "reserve_capacity": 4194304
+/// }
+/// ```
+#[cfg(feature = "std")]
+impl TryFrom<&std::path::Path> for Spec {
+    type Error = SwarmSpecFileError;
+
+    fn try_from(path: &std::path::Path) -> Result<Self, Self::Error> {
+        let content = std::fs::read_to_string(path)?;
+        Self::try_from(content.as_str())
     }
 }
 
