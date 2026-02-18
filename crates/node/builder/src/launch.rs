@@ -6,8 +6,8 @@ use std::sync::Arc;
 use vertex_node_api::InfrastructureContext;
 use vertex_node_core::dirs::DataDirs;
 use vertex_observability::{
-    Hooks, MetricsServer, MetricsServerConfig, PrometheusRecorder,
-    install_prometheus_recorder_with_prefix, process_metrics_hook,
+    HistogramBucketConfig, Hooks, MetricsServer, MetricsServerConfig, PrometheusRecorder,
+    install_prometheus_recorder_with_buckets, process_metrics_hook,
 };
 use vertex_tasks::TaskExecutor;
 
@@ -149,10 +149,14 @@ impl<T: Send + Sync> InfrastructureContext for LaunchContextWith<T> {
 
 /// Extension trait for creating launch contexts with metrics.
 pub trait LaunchContextExt {
-    /// Attach metrics infrastructure.
+    /// Attach metrics infrastructure with custom histogram bucket configs.
+    ///
+    /// Each protocol crate exports its bucket requirements as
+    /// `HISTOGRAM_BUCKETS` constants. Collect them all and pass here.
     fn with_metrics(
         self,
         config: Option<MetricsServerConfig>,
+        histogram_buckets: &[HistogramBucketConfig],
     ) -> eyre::Result<LaunchContextWith<WithMetrics>>;
 }
 
@@ -160,12 +164,13 @@ impl LaunchContextExt for (TaskExecutor, DataDirs) {
     fn with_metrics(
         self,
         config: Option<MetricsServerConfig>,
+        histogram_buckets: &[HistogramBucketConfig],
     ) -> eyre::Result<LaunchContextWith<WithMetrics>> {
         let (executor, dirs) = self;
 
         let recorder = if let Some(ref cfg) = config {
             tracing::debug!(addr = %cfg.addr(), prefix = %cfg.prefix(), "Installing prometheus recorder");
-            let recorder = install_prometheus_recorder_with_prefix(cfg.prefix())?;
+            let recorder = install_prometheus_recorder_with_buckets(cfg.prefix(), histogram_buckets)?;
             recorder.spawn_upkeep(&executor, cfg.upkeep_interval_secs());
             tracing::debug!("Prometheus recorder installed successfully");
             Some(Arc::new(recorder))
