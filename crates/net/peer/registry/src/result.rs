@@ -2,7 +2,7 @@
 
 use libp2p::swarm::ConnectionId;
 
-/// Result of activating a connection (handshake complete).
+/// Result of activating a connection (transitioning to Active state).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActivateResult<Id> {
     /// New peer accepted.

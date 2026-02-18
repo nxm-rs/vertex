@@ -20,17 +20,17 @@ pub enum ConnectionState<Id, R = ()> {
         started_at: Instant,
         reason: R,
     },
-    /// Transport connected, handshake in progress.
-    Handshaking {
+    /// Transport connected, awaiting application-level identity.
+    Connected {
         peer_id: PeerId,
         connection_id: ConnectionId,
-        /// Peer ID if known from dial tracking.
+        /// Application-level ID if known from dial tracking.
         id: Option<Id>,
         direction: ConnectionDirection,
         started_at: Instant,
         reason: R,
     },
-    /// Fully connected and handshake completed.
+    /// Fully active with confirmed application-level identity.
     Active {
         peer_id: PeerId,
         id: Id,
@@ -44,14 +44,14 @@ impl<Id: Clone, R> ConnectionState<Id, R> {
     pub fn reason(&self) -> &R {
         match self {
             Self::Dialing { reason, .. } => reason,
-            Self::Handshaking { reason, .. } => reason,
+            Self::Connected { reason, .. } => reason,
             Self::Active { reason, .. } => reason,
         }
     }
 
     pub fn direction(&self) -> Option<ConnectionDirection> {
         match self {
-            Self::Handshaking { direction, .. } => Some(*direction),
+            Self::Connected { direction, .. } => Some(*direction),
             _ => None,
         }
     }
@@ -59,7 +59,7 @@ impl<Id: Clone, R> ConnectionState<Id, R> {
     pub fn id(&self) -> Option<Id> {
         match self {
             Self::Dialing { id, .. } => id.clone(),
-            Self::Handshaking { id, .. } => id.clone(),
+            Self::Connected { id, .. } => id.clone(),
             Self::Active { id, .. } => Some(id.clone()),
         }
     }
@@ -75,7 +75,7 @@ impl<Id: Clone, R> ConnectionState<Id, R> {
     pub fn started_at(&self) -> Option<Instant> {
         match self {
             Self::Dialing { started_at, .. } => Some(*started_at),
-            Self::Handshaking { started_at, .. } => Some(*started_at),
+            Self::Connected { started_at, .. } => Some(*started_at),
             _ => None,
         }
     }
@@ -83,7 +83,7 @@ impl<Id: Clone, R> ConnectionState<Id, R> {
     pub fn peer_id(&self) -> PeerId {
         match self {
             Self::Dialing { peer_id, .. } => *peer_id,
-            Self::Handshaking { peer_id, .. } => *peer_id,
+            Self::Connected { peer_id, .. } => *peer_id,
             Self::Active { peer_id, .. } => *peer_id,
         }
     }
@@ -91,7 +91,7 @@ impl<Id: Clone, R> ConnectionState<Id, R> {
     pub fn connection_id(&self) -> Option<ConnectionId> {
         match self {
             Self::Dialing { .. } => None,
-            Self::Handshaking { connection_id, .. } => Some(*connection_id),
+            Self::Connected { connection_id, .. } => Some(*connection_id),
             Self::Active { connection_id, .. } => Some(*connection_id),
         }
     }
@@ -107,8 +107,8 @@ impl<Id: Clone, R> ConnectionState<Id, R> {
         matches!(self, Self::Dialing { .. })
     }
 
-    pub fn is_handshaking(&self) -> bool {
-        matches!(self, Self::Handshaking { .. })
+    pub fn is_connected(&self) -> bool {
+        matches!(self, Self::Connected { .. })
     }
 
     pub fn is_active(&self) -> bool {
@@ -116,6 +116,6 @@ impl<Id: Clone, R> ConnectionState<Id, R> {
     }
 
     pub fn is_pending(&self) -> bool {
-        self.is_dialing() || self.is_handshaking()
+        self.is_dialing() || self.is_connected()
     }
 }

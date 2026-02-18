@@ -1,9 +1,10 @@
 //! Dial reason for Swarm connections.
 
 /// Reason for initiating a dial.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, strum::IntoStaticStr)]
+#[strum(serialize_all = "lowercase")]
 pub enum DialReason {
-    /// Peer discovered via Hive protocol.
+    /// Peer discovered via Hive protocol (already verified or from peer store).
     Discovery,
     /// Connecting to a bootnode.
     Bootnode,
@@ -11,21 +12,6 @@ pub enum DialReason {
     Trusted,
     /// User-initiated dial command.
     Command,
-}
-
-impl DialReason {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            DialReason::Discovery => "discovery",
-            DialReason::Bootnode => "bootnode",
-            DialReason::Trusted => "trusted",
-            DialReason::Command => "command",
-        }
-    }
-}
-
-impl std::fmt::Display for DialReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
+    /// Gossip verification dial (temporary handshake to validate gossiped peer).
+    Verification,
 }

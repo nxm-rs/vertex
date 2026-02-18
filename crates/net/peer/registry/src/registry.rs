@@ -28,7 +28,7 @@ pub struct PeerRegistryStats {
 enum RegistryKey<Id> {
     /// Peer with known application-level ID.
     Known(Id),
-    /// Pending connection (inbound or bootnode dial) awaiting ID from handshake.
+    /// Pending connection (inbound or bootnode dial) awaiting application-level ID.
     Pending(PeerId),
 }
 
@@ -38,7 +38,7 @@ struct PendingEntry<Id> {
     started_at: Instant,
 }
 
-/// What existing state to replace during handshake completion.
+/// What existing state to replace during activation.
 enum Replacement<Id> {
     /// ID already has active connection - replace it.
     ById {
@@ -51,7 +51,7 @@ enum Replacement<Id> {
         existing_id: Id,
         old_conn_id: ConnectionId,
     },
-    /// Normal case - just clean up pending entry if any.
+    /// Normal activation - just clean up pending entry if any.
     None {
         pending_entry: Option<PendingEntry<Id>>,
     },
@@ -242,7 +242,7 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
         self.disconnected(peer_id)
     }
 
-    /// Transition from Dialing to Handshaking after connection established.
+    /// Transition from Dialing to Connected after transport connection established.
     pub fn connection_established(
         &self,
         peer_id: PeerId,
@@ -264,7 +264,7 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
             return None;
         };
 
-        let new_state = ConnectionState::Handshaking {
+        let new_state = ConnectionState::Connected {
             peer_id,
             connection_id,
             id: dial_id,
@@ -279,7 +279,7 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
         Some(new_state)
     }
 
-    /// Register inbound connection in Handshaking state.
+    /// Register inbound connection in Connected state (awaiting identity).
     pub fn inbound_connection(
         &self,
         peer_id: PeerId,
@@ -288,7 +288,7 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
         let key = RegistryKey::Pending(peer_id);
         let started_at = Instant::now();
 
-        let state = ConnectionState::Handshaking {
+        let state = ConnectionState::Connected {
             peer_id,
             connection_id,
             id: None,
@@ -306,8 +306,8 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
         state
     }
 
-    /// Transition to Active state, replacing existing connection if present.
-    pub fn handshake_completed(
+    /// Activate a connection: transition to Active with confirmed application-level ID.
+    pub fn activate(
         &self,
         peer_id: PeerId,
         connection_id: ConnectionId,
@@ -470,7 +470,7 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
             }
         }
 
-        // Case 3: Normal handshake, clean up pending entry
+        // Case 3: Normal activation, clean up pending entry
         let entry = pending_entry(&pending_key);
         Replacement::None {
             pending_entry: entry,
@@ -515,7 +515,7 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
             .filter(|state| {
                 matches!(
                     state,
-                    ConnectionState::Dialing { .. } | ConnectionState::Handshaking { .. }
+                    ConnectionState::Dialing { .. } | ConnectionState::Connected { .. }
                 )
             })
             .count()
@@ -537,7 +537,7 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
             .filter(|s| {
                 matches!(
                     s,
-                    ConnectionState::Dialing { .. } | ConnectionState::Handshaking { .. }
+                    ConnectionState::Dialing { .. } | ConnectionState::Connected { .. }
                 )
             })
             .count();
@@ -667,13 +667,13 @@ mod tests {
 
         let state = state.unwrap();
         assert_eq!(state.peer_id(), peer_id);
-        assert!(matches!(state, ConnectionState::Handshaking { .. }));
+        assert!(matches!(state, ConnectionState::Connected { .. }));
 
         assert_eq!(registry.resolve_id(&peer_id), Some(id));
     }
 
     #[test]
-    fn test_handshake_completed_new_peer() {
+    fn test_activate_new_peer() {
         let registry = PeerRegistry::<TestId>::new();
         let id = TestId(1);
         let peer_id = test_peer_id(1);
@@ -682,7 +682,7 @@ mod tests {
         let _ = registry.start_dial(peer_id, id.clone(), vec![test_addr(9000)], ());
         let _ = registry.connection_established(peer_id, conn_id);
 
-        let result = registry.handshake_completed(peer_id, conn_id, id.clone());
+        let result = registry.activate(peer_id, conn_id, id.clone());
         assert_eq!(result, ActivateResult::Accepted);
 
         let state = registry.get(&id).unwrap();
@@ -690,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn test_handshake_replaces_old_connection() {
+    fn test_activate_replaces_old_connection() {
         let registry = PeerRegistry::<TestId>::new();
         let id = TestId(1);
         let peer_id = test_peer_id(1);
@@ -699,10 +699,10 @@ mod tests {
 
         let _ = registry.start_dial(peer_id, id.clone(), vec![test_addr(9000)], ());
         let _ = registry.connection_established(peer_id, conn_id1);
-        let result1 = registry.handshake_completed(peer_id, conn_id1, id.clone());
+        let result1 = registry.activate(peer_id, conn_id1, id.clone());
         assert_eq!(result1, ActivateResult::Accepted);
 
-        let result2 = registry.handshake_completed(peer_id, conn_id2, id);
+        let result2 = registry.activate(peer_id, conn_id2, id);
         assert!(matches!(
             result2,
             ActivateResult::Replaced {
@@ -721,7 +721,7 @@ mod tests {
         let state = registry.inbound_connection(peer_id, conn_id);
         assert!(matches!(
             state,
-            ConnectionState::Handshaking {
+            ConnectionState::Connected {
                 direction: ConnectionDirection::Inbound,
                 ..
             }
@@ -742,7 +742,7 @@ mod tests {
 
         let _ = registry.start_dial(peer_id, id.clone(), vec![test_addr(9000)], ());
         let _ = registry.connection_established(peer_id, conn_id);
-        let _ = registry.handshake_completed(peer_id, conn_id, id.clone());
+        let _ = registry.activate(peer_id, conn_id, id.clone());
 
         let state = registry.disconnected(&peer_id);
         assert!(state.is_some());
@@ -763,7 +763,7 @@ mod tests {
         let conn_id2 = test_connection_id(2);
         let _ = registry.start_dial(peer_id2, id2.clone(), vec![test_addr(9001)], ());
         let _ = registry.connection_established(peer_id2, conn_id2);
-        let _ = registry.handshake_completed(peer_id2, conn_id2, id2);
+        let _ = registry.activate(peer_id2, conn_id2, id2);
 
         assert_eq!(registry.pending_count(), 1);
         assert_eq!(registry.active_count(), 1);
@@ -791,7 +791,7 @@ mod tests {
         let conn_id3 = test_connection_id(3);
         let _ = registry.start_dial(peer_id3, id3.clone(), vec![test_addr(9002)], ());
         let _ = registry.connection_established(peer_id3, conn_id3);
-        let _ = registry.handshake_completed(peer_id3, conn_id3, id3);
+        let _ = registry.activate(peer_id3, conn_id3, id3);
 
         // With zero timeout, both dialing and handshaking should be stale
         let stale = registry.stale_pending(Duration::from_secs(0));
@@ -825,8 +825,8 @@ mod tests {
         let state = registry.connection_established(peer_id, conn_id).unwrap();
         assert_eq!(state.reason(), &reason);
 
-        // Reason carries through handshake_completed
-        registry.handshake_completed(peer_id, conn_id, id.clone());
+        // Reason carries through activate
+        registry.activate(peer_id, conn_id, id.clone());
         let state = registry.get(&id).unwrap();
         assert_eq!(state.reason(), &reason);
 
