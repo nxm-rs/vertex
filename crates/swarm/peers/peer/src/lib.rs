@@ -27,10 +27,11 @@ pub use vertex_swarm_primitives::SwarmNodeType;
 use alloy_primitives::{Address, B256, Signature};
 use alloy_signer::{Signer, SignerSync};
 use libp2p::Multiaddr;
-use vertex_net_local::IpCapability;
+use vertex_net_local::{IpCapability, classify_multiaddr};
 
 // Re-export for consumers
 pub use vertex_net_local::IpCapability as SwarmPeerIpCapability;
+pub use vertex_net_local::AddressScope;
 
 /// Verifiable peer identity with multiaddrs, signature, and overlay address.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -221,6 +222,39 @@ impl SwarmPeer {
     /// Get IP capability (cached, computed lazily from multiaddrs).
     pub fn ip_capability(&self) -> IpCapability {
         *self.ip_capability_cache.get_or_init(|| IpCapability::from_addrs(&self.multiaddrs))
+    }
+
+    /// Filter addresses by scope.
+    pub fn addrs_by_scope(&self, scope: AddressScope) -> Vec<Multiaddr> {
+        self.multiaddrs
+            .iter()
+            .filter(|addr| classify_multiaddr(addr) == Some(scope))
+            .cloned()
+            .collect()
+    }
+
+    /// Check if peer has any addresses of the given scope.
+    pub fn has_scope(&self, scope: AddressScope) -> bool {
+        self.multiaddrs
+            .iter()
+            .any(|addr| classify_multiaddr(addr) == Some(scope))
+    }
+
+    /// Get the highest scope (Public > LinkLocal > Private > Loopback).
+    pub fn max_scope(&self) -> Option<AddressScope> {
+        self.multiaddrs
+            .iter()
+            .filter_map(classify_multiaddr)
+            .max_by_key(scope_rank)
+    }
+}
+
+fn scope_rank(scope: &AddressScope) -> u8 {
+    match scope {
+        AddressScope::Public => 3,
+        AddressScope::LinkLocal => 2,
+        AddressScope::Private => 1,
+        AddressScope::Loopback => 0,
     }
 }
 
@@ -444,5 +478,81 @@ mod tests {
         let cap2 = peer2.ip_capability();
         assert_eq!(cap1, cap2);
         assert!(cap2.supports_ipv4());
+    }
+
+    #[test]
+    fn max_scope_public() {
+        let spec = init_testnet();
+        let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
+        let addrs = vec![
+            "/ip4/127.0.0.1/tcp/1234".parse().unwrap(),
+            "/ip4/192.168.1.1/tcp/1234".parse().unwrap(),
+            "/ip4/8.8.8.8/tcp/1234".parse().unwrap(),
+        ];
+
+        let peer = SwarmPeer::from_identity(&identity, addrs).unwrap();
+        assert_eq!(peer.max_scope(), Some(AddressScope::Public));
+    }
+
+    #[test]
+    fn max_scope_private() {
+        let spec = init_testnet();
+        let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
+        let addrs = vec![
+            "/ip4/127.0.0.1/tcp/1234".parse().unwrap(),
+            "/ip4/192.168.1.1/tcp/1234".parse().unwrap(),
+        ];
+
+        let peer = SwarmPeer::from_identity(&identity, addrs).unwrap();
+        assert_eq!(peer.max_scope(), Some(AddressScope::Private));
+    }
+
+    #[test]
+    fn max_scope_loopback_only() {
+        let spec = init_testnet();
+        let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
+        let addrs = vec!["/ip4/127.0.0.1/tcp/1234".parse().unwrap()];
+
+        let peer = SwarmPeer::from_identity(&identity, addrs).unwrap();
+        assert_eq!(peer.max_scope(), Some(AddressScope::Loopback));
+    }
+
+    #[test]
+    fn has_scope_mixed() {
+        let spec = init_testnet();
+        let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
+        let addrs = vec![
+            "/ip4/127.0.0.1/tcp/1234".parse().unwrap(),
+            "/ip4/192.168.1.1/tcp/1234".parse().unwrap(),
+        ];
+
+        let peer = SwarmPeer::from_identity(&identity, addrs).unwrap();
+        assert!(peer.has_scope(AddressScope::Loopback));
+        assert!(peer.has_scope(AddressScope::Private));
+        assert!(!peer.has_scope(AddressScope::Public));
+    }
+
+    #[test]
+    fn addrs_by_scope_filters() {
+        let spec = init_testnet();
+        let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
+        let loopback: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
+        let private: Multiaddr = "/ip4/192.168.1.1/tcp/1234".parse().unwrap();
+        let public: Multiaddr = "/ip4/8.8.8.8/tcp/1234".parse().unwrap();
+        let addrs = vec![loopback.clone(), private.clone(), public.clone()];
+
+        let peer = SwarmPeer::from_identity(&identity, addrs).unwrap();
+
+        let loopback_addrs = peer.addrs_by_scope(AddressScope::Loopback);
+        assert_eq!(loopback_addrs.len(), 1);
+        assert_eq!(loopback_addrs[0], loopback);
+
+        let private_addrs = peer.addrs_by_scope(AddressScope::Private);
+        assert_eq!(private_addrs.len(), 1);
+        assert_eq!(private_addrs[0], private);
+
+        let public_addrs = peer.addrs_by_scope(AddressScope::Public);
+        assert_eq!(public_addrs.len(), 1);
+        assert_eq!(public_addrs[0], public);
     }
 }
