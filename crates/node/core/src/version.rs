@@ -31,8 +31,8 @@ pub const CARGO_FEATURES: &str = {
 };
 
 /// The long version information for Vertex (lazy static for runtime access).
-pub static LONG_VERSION: once_cell::sync::Lazy<String> =
-    once_cell::sync::Lazy::new(|| format!("Version: {}\nCommit SHA: {}", VERSION, GIT_SHA));
+pub static LONG_VERSION: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| format!("Version: {}\nCommit SHA: {}", VERSION, GIT_SHA));
 
 /// The user agent string for network communication.
 pub const USER_AGENT: &str = concat!("vertex/", env!("CARGO_PKG_VERSION"));

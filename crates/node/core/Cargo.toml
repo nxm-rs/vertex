@@ -48,7 +48,6 @@ toml = "0.7"
 figment = { version = "0.10", features = ["toml", "env"] }
 
 # Misc
-once_cell = "1.17"
 humantime = "2.1"
 chrono = "0.4"
 rand.workspace = true
