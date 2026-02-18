@@ -8,10 +8,10 @@ use crate::traits::NetPeerScoreExt;
 
 /// Fixed-point multiplier for storing f64 scores as i64 atomics.
 const SCORE_SCALE: f64 = 100_000.0;
-/// Minimum allowed score (prevents unbounded negative drift).
-const MIN_SCORE: f64 = -1_000_000.0;
-/// Maximum allowed score (prevents unbounded positive drift).
-const MAX_SCORE: f64 = 1_000_000.0;
+/// Minimum allowed score (matches ban threshold scale).
+const MIN_SCORE: f64 = -100.0;
+/// Maximum allowed score (symmetric with minimum).
+const MAX_SCORE: f64 = 100.0;
 
 /// Lock-free peer scoring using atomics for concurrent access.
 #[derive(Debug)]
@@ -257,10 +257,10 @@ mod tests {
         score.add_score(-5.0);
         assert!((score.score() - 5.0).abs() < 0.001);
 
-        score.set_score(2_000_000.0);
+        score.set_score(200.0);
         assert!((score.score() - MAX_SCORE).abs() < 0.001);
 
-        score.set_score(-2_000_000.0);
+        score.set_score(-200.0);
         assert!((score.score() - MIN_SCORE).abs() < 0.001);
     }
 
@@ -362,7 +362,8 @@ mod tests {
             handle.join().unwrap();
         }
 
-        assert!((score.score() - 1000.0).abs() < 1.0);
+        // Score clamps to MAX_SCORE (100.0), but all 1000 successes are counted
+        assert!((score.score() - MAX_SCORE).abs() < 0.01);
         assert_eq!(score.connection_successes(), 1000);
     }
 
