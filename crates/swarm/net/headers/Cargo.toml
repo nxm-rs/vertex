@@ -1,19 +1,20 @@
 [package]
-name = "vertex-net-headers"
+name = "vertex-swarm-net-headers"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-build = "build.rs"
 
 [lints]
 workspace = true
 
 [dependencies]
 ## vertex
+vertex-metrics.workspace = true
 vertex-net-codec.workspace = true
+vertex-swarm-net-proto.workspace = true
 
 ## async
 futures.workspace = true
@@ -33,7 +34,3 @@ thiserror.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
 opentelemetry.workspace = true
-
-[build-dependencies]
-pb-rs.workspace = true
-walkdir.workspace = true

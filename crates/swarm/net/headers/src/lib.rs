@@ -1,11 +1,5 @@
 //! Protocol headers for Swarm P2P communication with distributed tracing.
 
-// Internal modules
-#[allow(unreachable_pub)]
-mod proto {
-    include!(concat!(env!("OUT_DIR"), "/proto/mod.rs"));
-}
-
 mod codec;
 mod error;
 mod stream;

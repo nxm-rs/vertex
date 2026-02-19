@@ -29,16 +29,16 @@ impl Headers {
 }
 
 impl ProtoMessage for Headers {
-    type Proto = crate::proto::headers::Headers;
+    type Proto = vertex_swarm_net_proto::headers::Headers;
     type EncodeError = std::convert::Infallible;
     type DecodeError = HeadersError;
 
     fn into_proto(self) -> Result<Self::Proto, Self::EncodeError> {
-        Ok(crate::proto::headers::Headers {
+        Ok(vertex_swarm_net_proto::headers::Headers {
             headers: self
                 .inner
                 .into_iter()
-                .map(|(k, v)| crate::proto::headers::Header {
+                .map(|(k, v)| vertex_swarm_net_proto::headers::Header {
                     key: k,
                     value: v.into(),
                 })

@@ -4,6 +4,7 @@ use asynchronous_codec::Framed;
 use futures::{SinkExt, TryStreamExt, future::BoxFuture};
 use libp2p::{InboundUpgrade, OutboundUpgrade, Stream, core::UpgradeInfo};
 use tracing::{Instrument, debug};
+use vertex_metrics::{StreamGuard, labels};
 
 use crate::{
     MAX_HEADERS_SIZE,
@@ -13,6 +14,15 @@ use crate::{
     tracing::{inject_trace_context, span_from_headers},
     traits::{HeaderedInbound, HeaderedOutbound},
 };
+
+/// Extract the short protocol name from a Swarm protocol path.
+///
+/// Given "/swarm/hive/1.1.0/peers", returns "hive".
+/// Falls back to the full string if the path doesn't match the convention.
+fn protocol_short_name(protocol: &'static str) -> &'static str {
+    let trimmed = protocol.strip_prefix('/').unwrap_or(protocol);
+    trimmed.split('/').nth(1).unwrap_or(protocol)
+}
 
 /// Inbound wrapper - wraps `HeaderedInbound` into `InboundUpgrade<Stream>`.
 ///
@@ -52,6 +62,9 @@ impl<P: HeaderedInbound> InboundUpgrade<Stream> for Inbound<P> {
         let protocol_name = self.inner.protocol_name();
 
         Box::pin(async move {
+            let _stream_guard =
+                StreamGuard::new(protocol_short_name(protocol_name), labels::direction::INBOUND);
+
             let codec = HeadersCodec::new(MAX_HEADERS_SIZE);
             let mut framed = Framed::new(socket, codec);
 
@@ -134,6 +147,9 @@ impl<P: HeaderedOutbound> OutboundUpgrade<Stream> for Outbound<P> {
         let protocol_name = self.inner.protocol_name();
 
         Box::pin(async move {
+            let _stream_guard =
+                StreamGuard::new(protocol_short_name(protocol_name), labels::direction::OUTBOUND);
+
             let codec = HeadersCodec::new(MAX_HEADERS_SIZE);
             let mut framed = Framed::new(socket, codec);
 
