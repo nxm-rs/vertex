@@ -8,12 +8,11 @@ use vertex_net_peer_score::{PeerScore, PeerScoreSnapshot};
 use vertex_swarm_primitives::OverlayAddress;
 
 use crate::callbacks::ScoreObserver;
-use crate::config::SwarmScoringConfig;
-use crate::events::SwarmScoringEvent;
+use crate::config::{SwarmScoringConfig, SwarmScoringEvent};
 
 /// Swarm-specific peer score with configurable policy and observer support.
 ///
-/// Wraps the generic `PeerScore` and adds:
+/// Wraps `PeerScore` and adds:
 /// - Configurable scoring weights via `SwarmScoringConfig`
 /// - Observer callbacks for score changes
 /// - Swarm-specific event handling
@@ -29,12 +28,13 @@ impl SwarmPeerScore {
     /// Create a new score tracker for a peer.
     pub fn new(
         overlay: OverlayAddress,
+        score: PeerScore,
         config: Arc<SwarmScoringConfig>,
         observer: Arc<dyn ScoreObserver>,
     ) -> Self {
         Self {
             overlay,
-            score: Arc::new(PeerScore::new()),
+            score: Arc::new(score),
             config,
             observer,
             warned: RwLock::new(false),
@@ -45,6 +45,7 @@ impl SwarmPeerScore {
     pub fn with_defaults(overlay: OverlayAddress) -> Self {
         Self::new(
             overlay,
+            PeerScore::new(),
             Arc::new(SwarmScoringConfig::default()),
             Arc::new(crate::callbacks::NoOpScoreObserver),
         )
@@ -61,6 +62,11 @@ impl SwarmPeerScore {
         Arc::clone(&self.score)
     }
 
+    /// Access the scoring config.
+    pub fn config(&self) -> &SwarmScoringConfig {
+        &self.config
+    }
+
     /// Record a scoring event.
     ///
     /// Applies the configured weight for the event type, updates latency
@@ -69,31 +75,21 @@ impl SwarmPeerScore {
         let old_score = self.score.score();
         let weight = self.config.weight_for(&event);
 
-        // Record latency if present
-        if let Some(latency) = event.latency() {
-            self.score.record_latency(latency.as_nanos() as u64);
-        }
-
-        // Update counters based on event type
+        // Update counters and latency based on event type
         match &event {
             SwarmScoringEvent::ConnectionSuccess { latency } => {
                 let latency_nanos = latency.map(|d| d.as_nanos() as u64).unwrap_or(0);
-                self.score.record_success(latency_nanos);
+                self.score.record_success(latency_nanos); // handles counter + latency + touch
             }
-            SwarmScoringEvent::ConnectionTimeout => {
-                self.score.record_timeout();
-            }
-            SwarmScoringEvent::ConnectionRefused => {
-                self.score.record_refusal();
-            }
-            SwarmScoringEvent::HandshakeFailure => {
-                self.score.record_handshake_failure();
-            }
-            SwarmScoringEvent::ProtocolError => {
-                self.score.record_protocol_error();
-            }
+            SwarmScoringEvent::ConnectionTimeout => self.score.record_timeout(),
+            SwarmScoringEvent::ConnectionRefused => self.score.record_refusal(),
+            SwarmScoringEvent::HandshakeFailure => self.score.record_handshake_failure(),
+            SwarmScoringEvent::ProtocolError => self.score.record_protocol_error(),
             _ => {
-                // Other events just affect score
+                // Non-connection events: record latency if present
+                if let Some(latency) = event.latency() {
+                    self.score.record_latency(latency.as_nanos() as u64);
+                }
             }
         }
 
@@ -205,12 +201,7 @@ impl SwarmPeerScore {
     /// Create a snapshot for persistence.
     #[must_use]
     pub fn snapshot(&self) -> PeerScoreSnapshot {
-        self.score.snapshot()
-    }
-
-    /// Restore from a snapshot.
-    pub fn restore(&self, snapshot: &PeerScoreSnapshot) {
-        self.score.restore(snapshot);
+        PeerScoreSnapshot::from(&self.score)
     }
 
     fn check_thresholds(&self, score: f64, event: &SwarmScoringEvent) {
@@ -240,16 +231,6 @@ impl SwarmPeerScore {
         if should_warn {
             self.observer.on_score_warning(&self.overlay, score);
         }
-    }
-}
-
-impl std::fmt::Debug for SwarmPeerScore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SwarmPeerScore")
-            .field("overlay", &self.overlay)
-            .field("score", &self.score.score())
-            .field("warned", &*self.warned.read())
-            .finish_non_exhaustive()
     }
 }
 
@@ -332,7 +313,7 @@ mod tests {
     fn test_observer_notifications() {
         let observer = TestObserver::new();
         let config = Arc::new(SwarmScoringConfig::default());
-        let score = SwarmPeerScore::new(test_overlay(1), config, Arc::clone(&observer) as _);
+        let score = SwarmPeerScore::new(test_overlay(1), PeerScore::new(), config, Arc::clone(&observer) as _);
 
         score.record_success(None);
         score.record_timeout();
@@ -344,7 +325,7 @@ mod tests {
     fn test_severe_event_notification() {
         let observer = TestObserver::new();
         let config = Arc::new(SwarmScoringConfig::default());
-        let score = SwarmPeerScore::new(test_overlay(1), config, Arc::clone(&observer) as _);
+        let score = SwarmPeerScore::new(test_overlay(1), PeerScore::new(), config, Arc::clone(&observer) as _);
 
         score.record_malicious_behavior();
 
@@ -355,7 +336,7 @@ mod tests {
     fn test_warning_notification() {
         let observer = TestObserver::new();
         let config = SwarmScoringConfig::builder().warn_threshold(-10.0).build();
-        let score = SwarmPeerScore::new(test_overlay(1), Arc::new(config), Arc::clone(&observer) as _);
+        let score = SwarmPeerScore::new(test_overlay(1), PeerScore::new(), Arc::new(config), Arc::clone(&observer) as _);
 
         // Drop below warning threshold
         for _ in 0..10 {
@@ -370,7 +351,7 @@ mod tests {
     fn test_ban_notification() {
         let observer = TestObserver::new();
         let config = SwarmScoringConfig::builder().ban_threshold(-20.0).build();
-        let score = SwarmPeerScore::new(test_overlay(1), Arc::new(config), Arc::clone(&observer) as _);
+        let score = SwarmPeerScore::new(test_overlay(1), PeerScore::new(), Arc::new(config), Arc::clone(&observer) as _);
 
         // Drop below ban threshold
         for _ in 0..15 {
@@ -382,15 +363,19 @@ mod tests {
     }
 
     #[test]
-    fn test_snapshot_restore() {
+    fn test_snapshot_roundtrip() {
         let score = SwarmPeerScore::with_defaults(test_overlay(1));
         score.record_success(Some(Duration::from_millis(100)));
         score.record_success(Some(Duration::from_millis(50)));
 
         let snapshot = score.snapshot();
 
-        let score2 = SwarmPeerScore::with_defaults(test_overlay(2));
-        score2.restore(&snapshot);
+        let score2 = SwarmPeerScore::new(
+            test_overlay(2),
+            PeerScore::from(&snapshot),
+            Arc::new(SwarmScoringConfig::default()),
+            Arc::new(crate::callbacks::NoOpScoreObserver),
+        );
 
         assert!((score.score() - score2.score()).abs() < 0.01);
     }

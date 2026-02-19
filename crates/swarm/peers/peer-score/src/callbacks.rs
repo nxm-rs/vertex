@@ -27,26 +27,20 @@ pub trait ScoreObserver: Send + Sync {
     ///
     /// This is called once when the score first drops below the threshold,
     /// not on every score change while below.
-    fn on_score_warning(&self, overlay: &OverlayAddress, score: f64) {
-        let _ = (overlay, score);
-    }
+    fn on_score_warning(&self, overlay: &OverlayAddress, score: f64);
 
     /// Called when a peer should be banned based on score.
     ///
     /// The implementation should trigger disconnection and prevent
     /// future connections to this peer.
-    fn on_should_ban(&self, overlay: &OverlayAddress, score: f64, reason: &str) {
-        let _ = (overlay, score, reason);
-    }
+    fn on_should_ban(&self, overlay: &OverlayAddress, score: f64, reason: &str);
 
     /// Called when a severe event occurs that may require immediate action.
     ///
     /// Severe events include malicious behavior, invalid data, or accounting
     /// violations. The observer may want to take action even if the score
     /// hasn't crossed the ban threshold.
-    fn on_severe_event(&self, overlay: &OverlayAddress, event: &SwarmScoringEvent) {
-        let _ = (overlay, event);
-    }
+    fn on_severe_event(&self, overlay: &OverlayAddress, event: &SwarmScoringEvent);
 }
 
 /// No-op implementation of ScoreObserver.
@@ -64,6 +58,12 @@ impl ScoreObserver for NoOpScoreObserver {
         _event: &SwarmScoringEvent,
     ) {
     }
+
+    fn on_score_warning(&self, _overlay: &OverlayAddress, _score: f64) {}
+
+    fn on_should_ban(&self, _overlay: &OverlayAddress, _score: f64, _reason: &str) {}
+
+    fn on_severe_event(&self, _overlay: &OverlayAddress, _event: &SwarmScoringEvent) {}
 }
 
 #[cfg(test)]
@@ -107,6 +107,8 @@ mod tests {
         fn on_should_ban(&self, _overlay: &OverlayAddress, _score: f64, _reason: &str) {
             self.bans.fetch_add(1, Ordering::Relaxed);
         }
+
+        fn on_severe_event(&self, _overlay: &OverlayAddress, _event: &SwarmScoringEvent) {}
     }
 
     fn test_overlay() -> OverlayAddress {

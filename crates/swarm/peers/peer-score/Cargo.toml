@@ -12,6 +12,9 @@ repository.workspace = true
 # Generic scoring primitives
 vertex-net-peer-score = { workspace = true }
 
+# Swarm API (canonical default constants)
+vertex-swarm-api = { workspace = true }
+
 # Swarm primitives
 vertex-swarm-primitives = { workspace = true }
 

@@ -32,6 +32,9 @@ pub trait SwarmRoutingConfig {
 /// Default ban threshold for peer scoring (-100.0).
 pub const DEFAULT_PEER_BAN_THRESHOLD: f64 = -100.0;
 
+/// Default warn threshold for peer scoring (-50.0).
+pub const DEFAULT_PEER_WARN_THRESHOLD: f64 = -50.0;
+
 /// Default maximum number of tracked peers (10,000).
 pub const DEFAULT_PEER_STORE_LIMIT: usize = 10_000;
 
@@ -49,6 +52,11 @@ pub trait PeerConfigValues {
     /// Score threshold below which peers are banned.
     fn ban_threshold(&self) -> f64;
 
+    /// Score threshold below which a warning is emitted.
+    fn warn_threshold(&self) -> f64 {
+        DEFAULT_PEER_WARN_THRESHOLD
+    }
+
     /// Maximum number of peers to track. None for unlimited.
     fn store_limit(&self) -> Option<usize>;
 
@@ -63,6 +71,8 @@ pub trait PeerConfigValues {
 pub struct DefaultPeerConfig {
     /// Score threshold for banning peers.
     pub ban_threshold: f64,
+    /// Score threshold for warning about peers.
+    pub warn_threshold: f64,
     /// Maximum peers to track (None = unlimited).
     pub store_limit: Option<usize>,
     /// Path for peer store persistence.
@@ -73,6 +83,7 @@ impl Default for DefaultPeerConfig {
     fn default() -> Self {
         Self {
             ban_threshold: DEFAULT_PEER_BAN_THRESHOLD,
+            warn_threshold: DEFAULT_PEER_WARN_THRESHOLD,
             store_limit: Some(DEFAULT_PEER_STORE_LIMIT),
             store_path: None,
         }
@@ -82,6 +93,10 @@ impl Default for DefaultPeerConfig {
 impl PeerConfigValues for DefaultPeerConfig {
     fn ban_threshold(&self) -> f64 {
         self.ban_threshold
+    }
+
+    fn warn_threshold(&self) -> f64 {
+        self.warn_threshold
     }
 
     fn store_limit(&self) -> Option<usize> {

@@ -1,10 +1,10 @@
 //! Lock-free peer scoring with atomics.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering, fence};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::snapshot::PeerScoreSnapshot;
-use crate::traits::NetPeerScoreExt;
 
 /// Fixed-point multiplier for storing f64 scores as i64 atomics.
 const SCORE_SCALE: f64 = 100_000.0;
@@ -14,8 +14,7 @@ const MIN_SCORE: f64 = -100.0;
 const MAX_SCORE: f64 = 100.0;
 
 /// Lock-free peer scoring using atomics for concurrent access.
-#[derive(Debug)]
-pub struct PeerScore<Ext: NetPeerScoreExt = ()> {
+pub struct PeerScore {
     score: AtomicI64,
     last_updated: AtomicU64,
     connection_successes: AtomicU32,
@@ -25,16 +24,15 @@ pub struct PeerScore<Ext: NetPeerScoreExt = ()> {
     protocol_errors: AtomicU32,
     latency_sum_nanos: AtomicU64,
     latency_samples: AtomicU32,
-    ext: Ext,
 }
 
-impl<Ext: NetPeerScoreExt> Default for PeerScore<Ext> {
+impl Default for PeerScore {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<Ext: NetPeerScoreExt> PeerScore<Ext> {
+impl PeerScore {
     pub fn new() -> Self {
         Self {
             score: AtomicI64::new(0),
@@ -46,12 +44,7 @@ impl<Ext: NetPeerScoreExt> PeerScore<Ext> {
             protocol_errors: AtomicU32::new(0),
             latency_sum_nanos: AtomicU64::new(0),
             latency_samples: AtomicU32::new(0),
-            ext: Ext::default(),
         }
-    }
-
-    pub fn with_ext(ext: Ext) -> Self {
-        Self { ext, ..Self::new() }
     }
 
     pub fn score(&self) -> f64 {
@@ -186,43 +179,51 @@ impl<Ext: NetPeerScoreExt> PeerScore<Ext> {
     pub fn avg_latency(&self) -> Option<Duration> {
         self.avg_latency_nanos().map(Duration::from_nanos)
     }
+}
 
-    pub fn ext(&self) -> &Ext {
-        &self.ext
-    }
-
-    /// Create a point-in-time snapshot for persistence.
-    pub fn snapshot(&self) -> PeerScoreSnapshot<Ext::Snapshot> {
+impl From<&PeerScore> for PeerScoreSnapshot {
+    fn from(score: &PeerScore) -> Self {
         // Acquire fence ensures we see all prior writes consistently
         fence(Ordering::Acquire);
-        PeerScoreSnapshot::new(
-            self.score.load(Ordering::Relaxed) as f64 / SCORE_SCALE,
-            self.last_updated.load(Ordering::Relaxed),
-            self.connection_successes.load(Ordering::Relaxed),
-            self.connection_timeouts.load(Ordering::Relaxed),
-            self.connection_refusals.load(Ordering::Relaxed),
-            self.handshake_failures.load(Ordering::Relaxed),
-            self.protocol_errors.load(Ordering::Relaxed),
-            self.latency_sum_nanos.load(Ordering::Relaxed),
-            self.latency_samples.load(Ordering::Relaxed),
-            self.ext.snapshot(),
-        )
+        Self {
+            score: score.score.load(Ordering::Relaxed) as f64 / SCORE_SCALE,
+            last_updated: score.last_updated.load(Ordering::Relaxed),
+            connection_successes: score.connection_successes.load(Ordering::Relaxed),
+            connection_timeouts: score.connection_timeouts.load(Ordering::Relaxed),
+            connection_refusals: score.connection_refusals.load(Ordering::Relaxed),
+            handshake_failures: score.handshake_failures.load(Ordering::Relaxed),
+            protocol_errors: score.protocol_errors.load(Ordering::Relaxed),
+            latency_sum_nanos: score.latency_sum_nanos.load(Ordering::Relaxed),
+            latency_samples: score.latency_samples.load(Ordering::Relaxed),
+        }
     }
+}
 
-    /// Restore state from a snapshot.
-    pub fn restore(&self, snapshot: &PeerScoreSnapshot<Ext::Snapshot>) {
-        self.score.store((snapshot.score() * SCORE_SCALE) as i64, Ordering::Relaxed);
-        self.last_updated.store(snapshot.last_updated(), Ordering::Relaxed);
-        self.connection_successes.store(snapshot.connection_successes(), Ordering::Relaxed);
-        self.connection_timeouts.store(snapshot.connection_timeouts(), Ordering::Relaxed);
-        self.connection_refusals.store(snapshot.connection_refusals(), Ordering::Relaxed);
-        self.handshake_failures.store(snapshot.handshake_failures(), Ordering::Relaxed);
-        self.protocol_errors.store(snapshot.protocol_errors(), Ordering::Relaxed);
-        self.latency_sum_nanos.store(snapshot.latency_sum_nanos(), Ordering::Relaxed);
-        self.latency_samples.store(snapshot.latency_samples(), Ordering::Relaxed);
-        self.ext.restore(snapshot.ext());
-        // Release fence ensures all stores are visible to subsequent reads
-        fence(Ordering::Release);
+impl From<&Arc<PeerScore>> for PeerScoreSnapshot {
+    fn from(score: &Arc<PeerScore>) -> Self {
+        Self::from(score.as_ref())
+    }
+}
+
+impl From<&PeerScoreSnapshot> for PeerScore {
+    fn from(snapshot: &PeerScoreSnapshot) -> Self {
+        Self {
+            score: AtomicI64::new((snapshot.score * SCORE_SCALE) as i64),
+            last_updated: AtomicU64::new(snapshot.last_updated),
+            connection_successes: AtomicU32::new(snapshot.connection_successes),
+            connection_timeouts: AtomicU32::new(snapshot.connection_timeouts),
+            connection_refusals: AtomicU32::new(snapshot.connection_refusals),
+            handshake_failures: AtomicU32::new(snapshot.handshake_failures),
+            protocol_errors: AtomicU32::new(snapshot.protocol_errors),
+            latency_sum_nanos: AtomicU64::new(snapshot.latency_sum_nanos),
+            latency_samples: AtomicU32::new(snapshot.latency_samples),
+        }
+    }
+}
+
+impl From<PeerScoreSnapshot> for PeerScore {
+    fn from(snapshot: PeerScoreSnapshot) -> Self {
+        Self::from(&snapshot)
     }
 }
 
@@ -319,7 +320,7 @@ mod tests {
 
     #[test]
     fn test_snapshot_roundtrip() {
-        let score: PeerScore = PeerScore::new();
+        let score = PeerScore::new();
 
         score.set_score(75.5);
         score.record_success(100_000_000);
@@ -328,15 +329,14 @@ mod tests {
         score.record_refusal();
         score.record_protocol_error();
 
-        let snapshot = score.snapshot();
-        assert!((snapshot.score() - 75.5).abs() < 0.01);
-        assert_eq!(snapshot.connection_successes(), 2);
-        assert_eq!(snapshot.connection_timeouts(), 1);
-        assert_eq!(snapshot.connection_refusals(), 1);
-        assert_eq!(snapshot.protocol_errors(), 1);
+        let snapshot = PeerScoreSnapshot::from(&score);
+        assert!((snapshot.score - 75.5).abs() < 0.01);
+        assert_eq!(snapshot.connection_successes, 2);
+        assert_eq!(snapshot.connection_timeouts, 1);
+        assert_eq!(snapshot.connection_refusals, 1);
+        assert_eq!(snapshot.protocol_errors, 1);
 
-        let score2: PeerScore = PeerScore::new();
-        score2.restore(&snapshot);
+        let score2 = PeerScore::from(&snapshot);
 
         assert!((score2.score() - 75.5).abs() < 0.01);
         assert_eq!(score2.connection_successes(), 2);
