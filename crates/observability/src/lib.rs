@@ -29,7 +29,7 @@ pub use tracer::VertexTracer;
 // Re-export all metric primitives from vertex-metrics.
 pub use vertex_metrics::{
     // RAII guards
-    CounterGuard, GaugeGuard, LabelValue, OperationGuard, TimingGuard,
+    CounterGuard, GaugeGuard, LabelValue, OperationGuard, StreamGuard, TimingGuard,
     // Lazy metric macros
     lazy_counter, lazy_gauge, lazy_histogram,
     // Lock timing helpers
