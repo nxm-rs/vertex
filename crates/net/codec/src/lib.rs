@@ -1,15 +1,13 @@
 //! Codec utilities for protobuf-based network protocols.
 
+mod framed;
+pub use framed::{FramedProto, StreamClosed};
+
 mod utils;
-pub use utils::{
-    current_unix_timestamp, current_unix_timestamp_nanos, decode_u256_be, encode_u256_be,
-};
+pub use utils::{current_unix_timestamp_nanos, decode_u256_be, encode_u256_be};
 
 /// Direct protobuf codec for types that don't need domain wrapper conversion.
-///
-/// Use this when decoding proto messages directly and converting via functions
-/// rather than through the `ProtoMessage` trait abstraction.
-pub type ProtoCodec<T> = quick_protobuf_codec::Codec<T>;
+pub(crate) type ProtoCodec<T> = quick_protobuf_codec::Codec<T>;
 
 /// Test helper macro for verifying protobuf roundtrip encoding.
 ///
@@ -58,27 +56,6 @@ pub trait ProtoMessage: Sized {
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError>;
 }
 
-/// A message type requiring runtime context for encoding and decoding.
-///
-/// Used for protocols where encoding/decoding requires runtime information
-/// not available in the domain type itself (e.g., `network_id`).
-pub trait ProtoMessageWithContext<Ctx>: Sized {
-    /// The protobuf message type for wire serialization.
-    type Proto: quick_protobuf::MessageWrite + for<'a> quick_protobuf::MessageRead<'a>;
-
-    /// The error type when encoding fails. Use `std::convert::Infallible` for infallible encoding.
-    type EncodeError;
-
-    /// The error type when decoding fails.
-    type DecodeError;
-
-    /// Convert to protobuf wire format for encoding with the given context.
-    fn into_proto_with_context(self, ctx: &Ctx) -> Result<Self::Proto, Self::EncodeError>;
-
-    /// Convert from protobuf wire format with the given context.
-    fn from_proto_with_context(proto: Self::Proto, ctx: &Ctx) -> Result<Self, Self::DecodeError>;
-}
-
 /// A codec for protobuf-based protocol messages.
 ///
 /// This codec handles encoding/decoding for types implementing [`ProtoMessage`].
@@ -91,9 +68,9 @@ pub trait ProtoMessageWithContext<Ctx>: Sized {
 /// # Example
 ///
 /// ```ignore
-/// pub type PingCodec = Codec<Ping, PingpongCodecError>;
+/// pub type DeliveryCodec = Codec<Delivery, PushsyncError>;
 ///
-/// let codec = PingCodec::new(1024);
+/// let codec = DeliveryCodec::new(1024);
 /// ```
 pub struct Codec<M: ProtoMessage, E> {
     inner: quick_protobuf_codec::Codec<M::Proto>,
@@ -147,86 +124,3 @@ where
     }
 }
 
-/// A codec that carries validation context for decoding.
-///
-/// This is useful for protocols where decoding requires runtime information
-/// that isn't available in the protobuf message itself (e.g., expected `network_id`).
-///
-/// # Type Parameters
-///
-/// - `M`: The domain message type (must implement `ProtoMessageWithContext<Ctx>`)
-/// - `E`: The error type for the codec
-/// - `Ctx`: The validation context type (e.g., `u64` for network_id)
-///
-/// # Example
-///
-/// ```ignore
-/// pub type AckCodec = ValidatedCodec<Ack, CodecError, u64>;
-///
-/// let codec = AckCodec::new(1024, expected_network_id);
-/// ```
-pub struct ValidatedCodec<M, E, Ctx>
-where
-    M: ProtoMessageWithContext<Ctx>,
-{
-    inner: quick_protobuf_codec::Codec<M::Proto>,
-    context: Ctx,
-    _phantom: PhantomData<E>,
-}
-
-impl<M, E, Ctx> ValidatedCodec<M, E, Ctx>
-where
-    M: ProtoMessageWithContext<Ctx>,
-{
-    /// Create a new validated codec with the given context.
-    pub fn new(max_packet_size: usize, context: Ctx) -> Self {
-        Self {
-            inner: quick_protobuf_codec::Codec::new(max_packet_size),
-            context,
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Returns a reference to the validation context.
-    pub fn context(&self) -> &Ctx {
-        &self.context
-    }
-}
-
-impl<M, E, Ctx> asynchronous_codec::Encoder for ValidatedCodec<M, E, Ctx>
-where
-    M: ProtoMessageWithContext<Ctx>,
-    M::EncodeError: Into<E>,
-    quick_protobuf_codec::Error: Into<E>,
-    E: From<std::io::Error>,
-{
-    type Item<'a> = M;
-    type Error = E;
-
-    fn encode(&mut self, item: Self::Item<'_>, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let proto = item.into_proto_with_context(&self.context).map_err(Into::into)?;
-        self.inner.encode(proto, dst).map_err(Into::into)
-    }
-}
-
-impl<M, E, Ctx> asynchronous_codec::Decoder for ValidatedCodec<M, E, Ctx>
-where
-    M: ProtoMessageWithContext<Ctx>,
-    M::DecodeError: Into<E>,
-    quick_protobuf_codec::Error: Into<E>,
-    E: From<std::io::Error>,
-{
-    type Item = M;
-    type Error = E;
-
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        match self.inner.decode(src).map_err(Into::into)? {
-            Some(proto) => {
-                let message =
-                    M::from_proto_with_context(proto, &self.context).map_err(Into::into)?;
-                Ok(Some(message))
-            }
-            None => Ok(None),
-        }
-    }
-}

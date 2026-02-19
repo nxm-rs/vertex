@@ -28,15 +28,6 @@ pub fn decode_u256_be(bytes: &[u8]) -> U256 {
     }
 }
 
-/// Returns the current Unix timestamp in seconds (0 if clock is before epoch).
-#[inline]
-pub fn current_unix_timestamp() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(std::time::Duration::ZERO)
-        .as_secs()
-}
-
 /// Returns the current Unix timestamp in nanoseconds (0 if clock is before epoch).
 #[inline]
 pub fn current_unix_timestamp_nanos() -> i64 {
@@ -78,12 +69,6 @@ mod tests {
         let encoded = encode_u256_be(value);
         assert_eq!(encoded.len(), 32);
         assert_eq!(decode_u256_be(&encoded), value);
-    }
-
-    #[test]
-    fn test_timestamp_seconds() {
-        let ts = current_unix_timestamp();
-        assert!(ts > 1700000000); // After 2023
     }
 
     #[test]
