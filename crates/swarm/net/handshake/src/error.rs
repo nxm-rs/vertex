@@ -17,19 +17,6 @@ pub enum HandshakeError {
     #[error("connection closed")]
     ConnectionClosed,
 
-    /// Peer rejected by admission policy.
-    ///
-    /// This error is returned when a peer passes protocol validation but is rejected
-    /// by application-level policy. Common rejection reasons include:
-    /// - Peer is banned
-    /// - Peer's overlay falls in a saturated Kademlia bin
-    /// - Maximum peer limit reached
-    /// - Duplicate connection to same overlay
-    ///
-    /// The reason string should be a static label suitable for metrics.
-    #[error("rejected: {0}")]
-    Rejected(&'static str),
-
     /// Network ID mismatch between peers.
     #[error("network ID mismatch")]
     NetworkIdMismatch,
@@ -72,6 +59,10 @@ pub enum HandshakeError {
     #[error("invalid overlay")]
     InvalidOverlay,
 
+    /// Observed address has wrong or missing peer ID.
+    #[error("invalid observed address")]
+    InvalidObservedAddress,
+
     /// Protobuf encoding/decoding error.
     #[error("protobuf error: {0}")]
     #[strum(serialize = "protobuf_error")]
@@ -91,5 +82,11 @@ pub enum HandshakeError {
 impl From<Infallible> for HandshakeError {
     fn from(never: Infallible) -> Self {
         match never {}
+    }
+}
+
+impl From<vertex_net_codec::StreamClosed> for HandshakeError {
+    fn from(_: vertex_net_codec::StreamClosed) -> Self {
+        Self::ConnectionClosed
     }
 }

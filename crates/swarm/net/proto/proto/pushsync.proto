@@ -1,0 +1,22 @@
+// Copyright 2026 Nexum Contributors
+// SPDX-License-Identifier: AGPL-3.0-only
+
+syntax = "proto3";
+
+package pushsync;
+
+// Delivery of a chunk to be stored.
+message Delivery {
+  bytes address = 1;
+  bytes data = 2;
+  bytes stamp = 3;
+}
+
+// Receipt acknowledging chunk storage.
+message Receipt {
+  bytes address = 1;
+  bytes signature = 2;
+  bytes nonce = 3;
+  string err = 4;
+  uint32 storage_radius = 5;
+}

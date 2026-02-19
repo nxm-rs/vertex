@@ -1,0 +1,18 @@
+// Copyright 2026 Nexum Contributors
+// SPDX-License-Identifier: AGPL-3.0-only
+
+syntax = "proto3";
+
+package retrieval;
+
+// Request for a chunk by address.
+message Request {
+  bytes addr = 1;
+}
+
+// Delivery of a chunk with optional error.
+message Delivery {
+  bytes data = 1;
+  bytes stamp = 2;
+  string err = 3;
+}

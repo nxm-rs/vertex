@@ -1,0 +1,17 @@
+[package]
+name = "vertex-swarm-net-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+quick-protobuf.workspace = true
+
+[build-dependencies]
+pb-rs.workspace = true
+walkdir.workspace = true

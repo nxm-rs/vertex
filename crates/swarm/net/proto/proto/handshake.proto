@@ -1,0 +1,31 @@
+// Copyright 2026 Nexum Contributors
+// SPDX-License-Identifier: AGPL-3.0-only
+
+syntax = "proto3";
+
+package handshake;
+
+message Syn {
+  bytes observed_multiaddr = 1;
+}
+
+message Ack {
+  PeerAddress peer = 1;
+  uint64 network_id = 2;
+  bool storer = 3;
+  bytes nonce = 4;
+  string welcome_message = 99;
+}
+
+message SynAck {
+  Syn syn = 1;
+  Ack ack = 2;
+}
+
+// Partial peer address - missing nonce (which is at Ack level).
+// Used for wire format only; convert to SwarmPeer for full representation.
+message PeerAddress {
+  bytes multiaddrs = 1;
+  bytes signature = 2;
+  bytes overlay = 3;
+}

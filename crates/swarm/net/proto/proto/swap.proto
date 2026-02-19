@@ -1,0 +1,17 @@
+// Copyright 2026 Nexum Contributors
+// SPDX-License-Identifier: AGPL-3.0-only
+
+syntax = "proto3";
+
+package swap;
+
+// EmitCheque is sent when a node issues a cheque to a peer.
+// The cheque field contains a JSON-encoded SignedCheque.
+message EmitCheque {
+  bytes cheque = 1;
+}
+
+// Handshake is sent to exchange beneficiary addresses.
+message Handshake {
+  bytes beneficiary = 1;
+}
