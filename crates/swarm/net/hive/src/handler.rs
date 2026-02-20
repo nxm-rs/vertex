@@ -1,4 +1,10 @@
 //! Per-connection handler for hive protocol.
+//!
+//! Uses `FuturesSet` for bounded inbound stream concurrency, following the
+//! same pattern as the identify handler. Inbound streams are accepted via
+//! `ReadyUpgrade` (protocol negotiation only), then the actual protocol work
+//! (headers exchange + protobuf recv + peer validation) runs inside the
+//! bounded set with a per-stream timeout.
 
 use std::{
     collections::VecDeque,
@@ -7,25 +13,46 @@ use std::{
     time::Duration,
 };
 
-use libp2p::swarm::{
-    SubstreamProtocol,
-    handler::{
-        ConnectionEvent, ConnectionHandler, ConnectionHandlerEvent, FullyNegotiatedInbound,
-        FullyNegotiatedOutbound,
+use futures_bounded::Timeout;
+use libp2p::{
+    InboundUpgrade, PeerId,
+    core::upgrade::ReadyUpgrade,
+    swarm::{
+        StreamProtocol, SubstreamProtocol,
+        handler::{
+            ConnectionEvent, ConnectionHandler, ConnectionHandlerEvent, FullyNegotiatedInbound,
+            FullyNegotiatedOutbound,
+        },
     },
 };
+use metrics::counter;
 use tracing::{debug, trace, warn};
 use vertex_observability::labels::direction;
 use vertex_swarm_api::SwarmIdentity;
-use vertex_swarm_net_headers::{ProtocolStreamError, UpgradeError};
+use vertex_net_ratelimiter::RateLimiter;
+use vertex_swarm_net_headers::{Inbound, ProtocolError, ProtocolStreamError, UpgradeError};
 use vertex_swarm_peer::SwarmPeer;
 
-use crate::{HiveInboundProtocol, HiveOutboundProtocol, inbound, outbound};
+use crate::{HiveOutboundProtocol, PROTOCOL_NAME, outbound, protocol::HiveInner};
+
+/// Timeout for inbound stream processing (headers exchange + recv + validation).
+const STREAM_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Maximum concurrent inbound hive streams per connection.
+const MAX_CONCURRENT_STREAMS_PER_CONNECTION: usize = 4;
+
+/// Rate limiter: burst of 4 streams, refill 1 token every 5 seconds.
+/// Sustains ~12 inbound streams per minute, which is generous for topology updates.
+const RATE_LIMIT_BURST: u32 = 4;
+const RATE_LIMIT_REFILL: Duration = Duration::from_secs(5);
+
+/// StreamProtocol for multistream-select negotiation.
+const HIVE_STREAM_PROTOCOL: StreamProtocol = StreamProtocol::new(PROTOCOL_NAME);
 
 /// Configuration for hive handler.
 #[derive(Debug, Clone)]
 pub struct HiveConfig {
-    /// Timeout for hive protocol.
+    /// Timeout for hive outbound protocol.
     pub timeout: Duration,
 }
 
@@ -58,7 +85,12 @@ pub enum HiveHandlerOut {
 /// Per-connection handler for hive protocol.
 pub struct HiveHandler<I> {
     config: HiveConfig,
+    remote_peer_id: PeerId,
     identity: Arc<I>,
+    /// Bounded set of active inbound streams for backpressure.
+    active_streams: futures_bounded::FuturesSet<Result<Vec<SwarmPeer>, ProtocolError>>,
+    /// Token bucket to prevent rapid stream cycling.
+    rate_limiter: RateLimiter,
     pending_events: VecDeque<HiveHandlerOut>,
     pending_broadcasts: VecDeque<Vec<SwarmPeer>>,
     outbound_pending: bool,
@@ -69,9 +101,15 @@ where
     I: SwarmIdentity + 'static,
 {
     /// Create a new hive handler.
-    pub fn new(config: HiveConfig, identity: Arc<I>) -> Self {
+    pub fn new(config: HiveConfig, identity: Arc<I>, remote_peer_id: PeerId) -> Self {
         Self {
+            active_streams: futures_bounded::FuturesSet::new(
+                STREAM_TIMEOUT,
+                MAX_CONCURRENT_STREAMS_PER_CONNECTION,
+            ),
+            rate_limiter: RateLimiter::new(RATE_LIMIT_BURST, RATE_LIMIT_REFILL),
             config,
+            remote_peer_id,
             identity,
             pending_events: VecDeque::new(),
             pending_broadcasts: VecDeque::new(),
@@ -86,14 +124,13 @@ where
 {
     type FromBehaviour = HiveHandlerIn;
     type ToBehaviour = HiveHandlerOut;
-    type InboundProtocol = HiveInboundProtocol<I>;
+    type InboundProtocol = ReadyUpgrade<StreamProtocol>;
     type OutboundProtocol = HiveOutboundProtocol;
     type InboundOpenInfo = ();
     type OutboundOpenInfo = ();
 
     fn listen_protocol(&self) -> SubstreamProtocol<Self::InboundProtocol, Self::InboundOpenInfo> {
-        SubstreamProtocol::new(inbound(self.identity.clone()), ())
-            .with_timeout(self.config.timeout)
+        SubstreamProtocol::new(ReadyUpgrade::new(HIVE_STREAM_PROTOCOL), ())
     }
 
     fn connection_keep_alive(&self) -> bool {
@@ -102,13 +139,39 @@ where
 
     fn poll(
         &mut self,
-        _cx: &mut Context<'_>,
+        cx: &mut Context<'_>,
     ) -> Poll<
         ConnectionHandlerEvent<Self::OutboundProtocol, Self::OutboundOpenInfo, Self::ToBehaviour>,
     > {
         // Emit pending events
         if let Some(event) = self.pending_events.pop_front() {
             return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
+        }
+
+        // Drain completed inbound streams
+        while let Poll::Ready(result) = self.active_streams.poll_unpin(cx) {
+            match result {
+                Ok(Ok(peers)) => {
+                    return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
+                        HiveHandlerOut::PeersReceived(peers),
+                    ));
+                }
+                Ok(Err(err)) => {
+                    let upgrade_error = UpgradeError::from(err);
+                    upgrade_error.record_if_untracked("hive", direction::INBOUND);
+                    let hive_error = ProtocolStreamError::from(upgrade_error);
+                    warn!(error = %hive_error, "Hive inbound stream error");
+                    return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
+                        HiveHandlerOut::Error(hive_error),
+                    ));
+                }
+                Err(Timeout { .. }) => {
+                    warn!("Hive inbound stream timed out");
+                    return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
+                        HiveHandlerOut::Error(ProtocolStreamError::Timeout),
+                    ));
+                }
+            }
         }
 
         // Process pending broadcasts
@@ -145,12 +208,28 @@ where
     ) {
         match event {
             ConnectionEvent::FullyNegotiatedInbound(FullyNegotiatedInbound {
-                protocol: validated,
+                protocol: stream,
                 ..
             }) => {
-                debug!(peer_count = validated.peers.len(), "Received hive peers");
-                self.pending_events
-                    .push_back(HiveHandlerOut::PeersReceived(validated.peers));
+                if !self.rate_limiter.try_acquire() {
+                    warn!(peer_id = %self.remote_peer_id, "Rate limiting inbound hive stream");
+                    counter!("hive_rate_limited_total").increment(1);
+                    return;
+                }
+                let identity = self.identity.clone();
+                if self
+                    .active_streams
+                    .try_push(async move {
+                        let upgrade = Inbound::new(HiveInner::new(identity));
+                        upgrade
+                            .upgrade_inbound(stream, PROTOCOL_NAME)
+                            .await
+                            .map(|v| v.peers)
+                    })
+                    .is_err()
+                {
+                    warn!("Dropping inbound hive stream because we are at capacity");
+                }
             }
 
             ConnectionEvent::FullyNegotiatedOutbound(FullyNegotiatedOutbound { .. }) => {
@@ -165,15 +244,6 @@ where
                 upgrade_error.record_if_untracked("hive", direction::OUTBOUND);
                 let hive_error = ProtocolStreamError::from(upgrade_error);
                 warn!(error = %hive_error, "Hive outbound error");
-                self.pending_events
-                    .push_back(HiveHandlerOut::Error(hive_error));
-            }
-
-            ConnectionEvent::ListenUpgradeError(error) => {
-                let upgrade_error = UpgradeError::from(error.error);
-                upgrade_error.record_if_untracked("hive", direction::INBOUND);
-                let hive_error = ProtocolStreamError::from(upgrade_error);
-                warn!(error = %hive_error, "Hive inbound error");
                 self.pending_events
                     .push_back(HiveHandlerOut::Error(hive_error));
             }

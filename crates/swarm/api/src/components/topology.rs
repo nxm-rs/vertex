@@ -45,6 +45,11 @@ pub trait SwarmTopology: Send + Sync {
     /// Get connected peer overlay addresses in a specific bin (hex-encoded).
     fn connected_peers_in_bin(&self, po: u8) -> Vec<String>;
 
+    /// Get connected peer details in a specific bin.
+    ///
+    /// Returns `(overlay_hex, multiaddrs)` for each connected peer in the bin.
+    fn connected_peer_details_in_bin(&self, po: u8) -> Vec<(String, Vec<String>)>;
+
     /// Get the node's overlay address (hex-encoded).
     fn overlay_address(&self) -> String {
         self.identity().overlay_address().to_string()

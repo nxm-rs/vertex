@@ -1,4 +1,10 @@
 //! Per-connection handler for pingpong protocol.
+//!
+//! Uses `FuturesSet` for bounded inbound stream concurrency, following the
+//! same pattern as the identify and hive handlers. Inbound streams are accepted
+//! via `ReadyUpgrade` (protocol negotiation only), then the actual protocol
+//! work (headers exchange + ping recv + pong send) runs inside the bounded set
+//! with a per-stream timeout.
 
 use std::{
     collections::VecDeque,
@@ -6,22 +12,44 @@ use std::{
     time::{Duration, Instant},
 };
 
-use libp2p::swarm::{
-    SubstreamProtocol,
-    handler::{
-        ConnectionEvent, ConnectionHandler, ConnectionHandlerEvent, FullyNegotiatedInbound,
-        FullyNegotiatedOutbound,
+use futures_bounded::Timeout;
+use libp2p::{
+    InboundUpgrade, PeerId,
+    core::upgrade::ReadyUpgrade,
+    swarm::{
+        StreamProtocol, SubstreamProtocol,
+        handler::{
+            ConnectionEvent, ConnectionHandler, ConnectionHandlerEvent, FullyNegotiatedInbound,
+            FullyNegotiatedOutbound,
+        },
     },
 };
+use metrics::counter;
 use tracing::{debug, trace, warn};
 use vertex_observability::labels::direction;
-use vertex_swarm_net_headers::{ProtocolStreamError, UpgradeError};
-use crate::{PingpongInboundProtocol, PingpongOutboundProtocol, inbound, outbound};
+use vertex_net_ratelimiter::RateLimiter;
+use vertex_swarm_net_headers::{Inbound, ProtocolError, ProtocolStreamError, UpgradeError};
+
+use crate::{PROTOCOL_NAME, PingpongOutboundProtocol, outbound, protocol::PingpongInboundInner};
+
+/// Timeout for inbound stream processing (headers exchange + ping/pong).
+const STREAM_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Maximum concurrent inbound pingpong streams per connection.
+const MAX_CONCURRENT_STREAMS_PER_CONNECTION: usize = 2;
+
+/// Rate limiter: burst of 2 streams, refill 1 token every 2 seconds.
+/// Sustains ~30 inbound pings per minute, generous for liveness checks.
+const RATE_LIMIT_BURST: u32 = 2;
+const RATE_LIMIT_REFILL: Duration = Duration::from_secs(2);
+
+/// StreamProtocol for multistream-select negotiation.
+const PINGPONG_STREAM_PROTOCOL: StreamProtocol = StreamProtocol::new(PROTOCOL_NAME);
 
 /// Configuration for pingpong handler.
 #[derive(Debug, Clone)]
 pub struct PingpongConfig {
-    /// Timeout for pingpong protocol.
+    /// Timeout for pingpong outbound protocol.
     pub timeout: Duration,
     /// Default greeting for pings.
     pub greeting: String,
@@ -68,15 +96,26 @@ pub struct PingpongOutboundInfo {
 /// Per-connection handler for pingpong protocol.
 pub struct PingpongHandler {
     config: PingpongConfig,
+    remote_peer_id: PeerId,
+    /// Bounded set of active inbound streams for backpressure.
+    active_streams: futures_bounded::FuturesSet<Result<(), ProtocolError>>,
+    /// Token bucket to prevent rapid stream cycling.
+    rate_limiter: RateLimiter,
     pending_events: VecDeque<PingpongHandlerOut>,
     pending_pings: VecDeque<String>,
     outbound_pending: bool,
 }
 
 impl PingpongHandler {
-    pub fn new(config: PingpongConfig) -> Self {
+    pub fn new(config: PingpongConfig, remote_peer_id: PeerId) -> Self {
         Self {
+            active_streams: futures_bounded::FuturesSet::new(
+                STREAM_TIMEOUT,
+                MAX_CONCURRENT_STREAMS_PER_CONNECTION,
+            ),
+            rate_limiter: RateLimiter::new(RATE_LIMIT_BURST, RATE_LIMIT_REFILL),
             config,
+            remote_peer_id,
             pending_events: VecDeque::new(),
             pending_pings: VecDeque::new(),
             outbound_pending: false,
@@ -87,13 +126,13 @@ impl PingpongHandler {
 impl ConnectionHandler for PingpongHandler {
     type FromBehaviour = PingpongHandlerIn;
     type ToBehaviour = PingpongHandlerOut;
-    type InboundProtocol = PingpongInboundProtocol;
+    type InboundProtocol = ReadyUpgrade<StreamProtocol>;
     type OutboundProtocol = PingpongOutboundProtocol;
     type InboundOpenInfo = ();
     type OutboundOpenInfo = PingpongOutboundInfo;
 
     fn listen_protocol(&self) -> SubstreamProtocol<Self::InboundProtocol, Self::InboundOpenInfo> {
-        SubstreamProtocol::new(inbound(), ()).with_timeout(self.config.timeout)
+        SubstreamProtocol::new(ReadyUpgrade::new(PINGPONG_STREAM_PROTOCOL), ())
     }
 
     fn connection_keep_alive(&self) -> bool {
@@ -102,12 +141,39 @@ impl ConnectionHandler for PingpongHandler {
 
     fn poll(
         &mut self,
-        _cx: &mut Context<'_>,
+        cx: &mut Context<'_>,
     ) -> Poll<
         ConnectionHandlerEvent<Self::OutboundProtocol, Self::OutboundOpenInfo, Self::ToBehaviour>,
     > {
         if let Some(event) = self.pending_events.pop_front() {
             return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
+        }
+
+        // Drain completed inbound streams
+        while let Poll::Ready(result) = self.active_streams.poll_unpin(cx) {
+            match result {
+                Ok(Ok(())) => {
+                    trace!("Responded to ping");
+                    return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
+                        PingpongHandlerOut::PingReceived,
+                    ));
+                }
+                Ok(Err(err)) => {
+                    let upgrade_error = UpgradeError::from(err);
+                    upgrade_error.record("pingpong", direction::INBOUND);
+                    let pingpong_error = ProtocolStreamError::from(upgrade_error);
+                    warn!(error = %pingpong_error, "Pingpong inbound stream error");
+                    return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
+                        PingpongHandlerOut::Error(pingpong_error),
+                    ));
+                }
+                Err(Timeout { .. }) => {
+                    warn!("Pingpong inbound stream timed out");
+                    return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
+                        PingpongHandlerOut::Error(ProtocolStreamError::Timeout),
+                    ));
+                }
+            }
         }
 
         if !self.outbound_pending {
@@ -147,10 +213,25 @@ impl ConnectionHandler for PingpongHandler {
         >,
     ) {
         match event {
-            ConnectionEvent::FullyNegotiatedInbound(FullyNegotiatedInbound { .. }) => {
-                trace!("Responded to ping");
-                self.pending_events
-                    .push_back(PingpongHandlerOut::PingReceived);
+            ConnectionEvent::FullyNegotiatedInbound(FullyNegotiatedInbound {
+                protocol: stream,
+                ..
+            }) => {
+                if !self.rate_limiter.try_acquire() {
+                    warn!(peer_id = %self.remote_peer_id, "Rate limiting inbound pingpong stream");
+                    counter!("pingpong_rate_limited_total").increment(1);
+                    return;
+                }
+                if self
+                    .active_streams
+                    .try_push(async move {
+                        let upgrade = Inbound::new(PingpongInboundInner);
+                        upgrade.upgrade_inbound(stream, PROTOCOL_NAME).await
+                    })
+                    .is_err()
+                {
+                    warn!("Dropping inbound pingpong stream because we are at capacity");
+                }
             }
 
             ConnectionEvent::FullyNegotiatedOutbound(FullyNegotiatedOutbound {
@@ -171,15 +252,6 @@ impl ConnectionHandler for PingpongHandler {
                 upgrade_error.record("pingpong", direction::OUTBOUND);
                 let pingpong_error = ProtocolStreamError::from(upgrade_error);
                 warn!(error = %pingpong_error, "Pingpong outbound error");
-                self.pending_events
-                    .push_back(PingpongHandlerOut::Error(pingpong_error));
-            }
-
-            ConnectionEvent::ListenUpgradeError(error) => {
-                let upgrade_error = UpgradeError::from(error.error);
-                upgrade_error.record("pingpong", direction::INBOUND);
-                let pingpong_error = ProtocolStreamError::from(upgrade_error);
-                warn!(error = %pingpong_error, "Pingpong inbound error");
                 self.pending_events
                     .push_back(PingpongHandlerOut::Error(pingpong_error));
             }

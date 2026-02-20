@@ -98,22 +98,22 @@ impl NetworkBehaviour for PingpongBehaviour {
     fn handle_established_inbound_connection(
         &mut self,
         _connection_id: ConnectionId,
-        _peer: PeerId,
+        peer: PeerId,
         _local_addr: &Multiaddr,
         _remote_addr: &Multiaddr,
     ) -> Result<THandler<Self>, libp2p::swarm::ConnectionDenied> {
-        Ok(PingpongHandler::new(self.config.clone()))
+        Ok(PingpongHandler::new(self.config.clone(), peer))
     }
 
     fn handle_established_outbound_connection(
         &mut self,
         _connection_id: ConnectionId,
-        _peer: PeerId,
+        peer: PeerId,
         _addr: &Multiaddr,
         _role_override: libp2p::core::Endpoint,
         _port_use: libp2p::core::transport::PortUse,
     ) -> Result<THandler<Self>, libp2p::swarm::ConnectionDenied> {
-        Ok(PingpongHandler::new(self.config.clone()))
+        Ok(PingpongHandler::new(self.config.clone(), peer))
     }
 
     fn on_swarm_event(&mut self, event: FromSwarm) {

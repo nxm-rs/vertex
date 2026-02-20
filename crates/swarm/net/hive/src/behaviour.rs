@@ -98,22 +98,22 @@ where
     fn handle_established_inbound_connection(
         &mut self,
         _connection_id: ConnectionId,
-        _peer: PeerId,
+        peer: PeerId,
         _local_addr: &Multiaddr,
         _remote_addr: &Multiaddr,
     ) -> Result<THandler<Self>, libp2p::swarm::ConnectionDenied> {
-        Ok(HiveHandler::new(self.config.clone(), self.identity.clone()))
+        Ok(HiveHandler::new(self.config.clone(), self.identity.clone(), peer))
     }
 
     fn handle_established_outbound_connection(
         &mut self,
         _connection_id: ConnectionId,
-        _peer: PeerId,
+        peer: PeerId,
         _addr: &Multiaddr,
         _role_override: libp2p::core::Endpoint,
         _port_use: libp2p::core::transport::PortUse,
     ) -> Result<THandler<Self>, libp2p::swarm::ConnectionDenied> {
-        Ok(HiveHandler::new(self.config.clone(), self.identity.clone()))
+        Ok(HiveHandler::new(self.config.clone(), self.identity.clone(), peer))
     }
 
     fn on_swarm_event(&mut self, event: FromSwarm) {

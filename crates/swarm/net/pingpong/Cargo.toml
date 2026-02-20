@@ -13,12 +13,14 @@ workspace = true
 [dependencies]
 ## vertex
 vertex-net-codec.workspace = true
+vertex-net-ratelimiter.workspace = true
 vertex-observability.workspace = true
 vertex-swarm-net-headers.workspace = true
 vertex-swarm-net-proto.workspace = true
 
 ## async
 futures.workspace = true
+futures-bounded = "0.2"
 
 ## p2p
 libp2p.workspace = true
