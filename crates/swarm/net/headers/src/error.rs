@@ -132,3 +132,63 @@ impl From<ProtocolError> for UpgradeError {
         }
     }
 }
+
+/// Unified error for headered protocols using [`FramedProto`](vertex_net_codec::FramedProto).
+///
+/// Covers codec-level errors (`ConnectionClosed`, `Protobuf`, `Io`) used in
+/// `read()`/`write()`, and upgrade-level errors (`Timeout`, `NegotiationFailed`,
+/// `Upgrade`) surfaced by the connection handler via `From<UpgradeError>`.
+#[derive(Debug, thiserror::Error, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum ProtocolStreamError {
+    /// Connection closed before message was received.
+    #[error("connection closed")]
+    ConnectionClosed,
+
+    /// Protobuf encoding/decoding error.
+    #[error("protobuf error: {0}")]
+    #[strum(serialize = "protobuf_error")]
+    Protobuf(#[from] quick_protobuf_codec::Error),
+
+    /// I/O error during stream operations.
+    #[error("io error: {0}")]
+    #[strum(serialize = "io_error")]
+    Io(#[from] std::io::Error),
+
+    /// Protocol negotiation timed out.
+    #[error("timeout")]
+    Timeout,
+
+    /// Remote peer does not support the protocol.
+    #[error("protocol negotiation failed")]
+    NegotiationFailed,
+
+    /// Protocol upgrade failed (headers or transport error).
+    #[error("upgrade error: {0}")]
+    #[strum(serialize = "upgrade_error")]
+    Upgrade(String),
+}
+
+impl From<Infallible> for ProtocolStreamError {
+    fn from(never: Infallible) -> Self {
+        match never {}
+    }
+}
+
+impl From<vertex_net_codec::StreamClosed> for ProtocolStreamError {
+    fn from(_: vertex_net_codec::StreamClosed) -> Self {
+        Self::ConnectionClosed
+    }
+}
+
+impl From<UpgradeError> for ProtocolStreamError {
+    fn from(err: UpgradeError) -> Self {
+        match err {
+            UpgradeError::Timeout => Self::Timeout,
+            UpgradeError::NegotiationFailed => Self::NegotiationFailed,
+            UpgradeError::Io(e) => Self::Io(e),
+            UpgradeError::Headers(e) => Self::Upgrade(e.to_string()),
+            UpgradeError::Protocol(e) => Self::Upgrade(e.to_string()),
+        }
+    }
+}
