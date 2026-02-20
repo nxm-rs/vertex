@@ -25,6 +25,9 @@ quick-protobuf.workspace = true
 quick-protobuf-codec.workspace = true
 libp2p.workspace = true
 
+## metrics
+metrics.workspace = true
+
 ## misc
 bytes.workspace = true
 strum.workspace = true
