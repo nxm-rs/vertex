@@ -3,14 +3,35 @@
 use metrics::{counter, gauge, histogram};
 use strum::IntoStaticStr;
 use vertex_observability::{
-    GaugeGuard,
+    DURATION_FINE, DURATION_NETWORK, GaugeGuard, HistogramBucketConfig, LabelValue,
     labels::{direction, outcome},
 };
 
-use crate::error::HiveError;
+use vertex_swarm_net_headers::ProtocolStreamError;
+
+/// Histogram bucket configurations for hive metrics.
+///
+/// Collect these at recorder install time via
+/// [`vertex_observability::install_prometheus_recorder_with_buckets`].
+pub const HISTOGRAM_BUCKETS: &[HistogramBucketConfig] = &[
+    HistogramBucketConfig {
+        suffix: "hive_exchange_duration_seconds",
+        buckets: DURATION_NETWORK,
+    },
+    // Per-phase timing (validation, encoding).
+    HistogramBucketConfig {
+        suffix: "hive_validation_duration_seconds",
+        buckets: DURATION_FINE,
+    },
+    // Peers per exchange: integer counts (no matching preset).
+    HistogramBucketConfig {
+        suffix: "hive_peers_per_exchange",
+        buckets: &[1.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0, 50.0, 100.0],
+    },
+];
 
 /// Peer validation failure reasons.
-#[derive(Debug, Clone, Copy, IntoStaticStr)]
+#[derive(Debug, Clone, Copy, strum::Display, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum ValidationFailure {
     OverlayLength,
@@ -23,10 +44,12 @@ pub enum ValidationFailure {
     MissingPeerId,
 }
 
-/// Peer validation outcome labels.
-mod peer_outcome {
-    pub(super) const VALID: &str = "valid";
-    pub(super) const INVALID: &str = "invalid";
+/// Peer validation outcome for metrics labels.
+#[derive(Debug, Clone, Copy, strum::Display, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+enum PeerOutcome {
+    Valid,
+    Invalid,
 }
 
 /// Tracks metrics for a single hive exchange.
@@ -66,8 +89,8 @@ impl HiveMetrics {
 
     /// Record a peer validation failure.
     pub fn record_validation_failure(&mut self, reason: ValidationFailure) {
-        let label: &'static str = (&reason).into();
-        counter!("hive_peer_validation_failures_total", "reason" => label).increment(1);
+        counter!("hive_peer_validation_failures_total", "reason" => reason.label_value())
+            .increment(1);
         self.peers_invalid += 1;
     }
 
@@ -80,9 +103,9 @@ impl HiveMetrics {
     pub fn record_success(mut self) {
         // Record peer counts
         if self.direction == direction::INBOUND {
-            counter!("hive_peers_received_total", "outcome" => peer_outcome::VALID)
+            counter!("hive_peers_received_total", "outcome" => PeerOutcome::Valid.label_value())
                 .increment(self.peers_valid);
-            counter!("hive_peers_received_total", "outcome" => peer_outcome::INVALID)
+            counter!("hive_peers_received_total", "outcome" => PeerOutcome::Invalid.label_value())
                 .increment(self.peers_invalid);
         } else {
             counter!("hive_peers_sent_total").increment(self.peers_valid);
@@ -136,8 +159,8 @@ impl HiveMetrics {
     }
 
     /// Record an error that caused the exchange to fail.
-    pub fn record_error(mut self, err: &HiveError) {
-        self.record_failure(err.label());
+    pub fn record_error(mut self, err: &ProtocolStreamError) {
+        self.record_failure(err.label_value());
     }
 }
 

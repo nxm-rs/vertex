@@ -2,29 +2,32 @@
 
 use std::sync::Arc;
 
+use std::time::Instant;
+
 use alloy_primitives::{B256, Signature};
-use asynchronous_codec::Framed;
-use futures::{SinkExt, TryStreamExt, future::BoxFuture};
+use futures::future::BoxFuture;
 use libp2p::multiaddr::Protocol;
-use tracing::{Instrument, debug, warn};
-use vertex_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound};
+use metrics::histogram;
+use tracing::{debug, warn};
+use vertex_net_codec::FramedProto;
 use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
+use vertex_swarm_net_headers::{
+    HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound, ProtocolStreamError,
+};
 use vertex_swarm_peer::{SwarmAddress, SwarmPeer};
 
-use crate::{
-    PROTOCOL_NAME,
-    codec::{HiveCodec, Peers},
-    error::HiveError,
-    metrics::{HiveMetrics, ValidationFailure},
-};
+use crate::codec::encode_peers;
+use crate::metrics::{HiveMetrics, ValidationFailure};
+use crate::PROTOCOL_NAME;
 
 /// 32 KiB frame limit (fits ~100 peers at typical size).
 const MAX_MESSAGE_SIZE: usize = 32 * 1024;
 
+type Framed = FramedProto<MAX_MESSAGE_SIZE>;
+
 /// Result of inbound peer validation.
 #[derive(Debug)]
 pub struct ValidatedPeers {
-    /// Peers that passed signature and format validation.
     pub peers: Vec<SwarmPeer>,
 }
 
@@ -42,7 +45,7 @@ impl<I: SwarmIdentity> HiveInner<I> {
 
 impl<I: SwarmIdentity> HeaderedInbound for HiveInner<I> {
     type Output = ValidatedPeers;
-    type Error = HiveError;
+    type Error = ProtocolStreamError;
 
     fn protocol_name(&self) -> &'static str {
         PROTOCOL_NAME
@@ -51,51 +54,43 @@ impl<I: SwarmIdentity> HeaderedInbound for HiveInner<I> {
     fn read(self, stream: HeaderedStream) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
         let network_id = self.identity.spec().network_id();
         let local_overlay = self.identity.overlay_address();
-        let span = tracing::info_span!("hive_receive", network_id = network_id);
-        Box::pin(
-            async move {
-                let mut metrics = HiveMetrics::inbound();
+        Box::pin(async move {
+            use vertex_swarm_net_proto::hive::Peers;
 
-                let codec = HiveCodec::new(MAX_MESSAGE_SIZE);
-                let mut framed = Framed::new(stream.into_inner(), codec);
+            let mut metrics = HiveMetrics::inbound();
 
-                debug!("Hive: reading peers");
-                let inbound = match framed.try_next().await {
-                    Ok(Some(msg)) => msg,
-                    Ok(None) => {
-                        let err = HiveError::ConnectionClosed;
-                        metrics.record_error(&err);
-                        return Err(err);
-                    }
+            debug!(network_id, "Hive: reading peers");
+            let (proto, _) =
+                match Framed::recv::<Peers, ProtocolStreamError, _>(stream.into_inner()).await {
+                    Ok(result) => result,
                     Err(e) => {
                         metrics.record_error(&e);
                         return Err(e);
                     }
                 };
 
-                let proto_peers = inbound.into_proto_peers();
-                let peers: Vec<SwarmPeer> = proto_peers
-                    .into_iter()
-                    .filter_map(|p| {
-                        proto_to_swarm_peer_with_metrics(p, network_id, &local_overlay, &mut metrics)
-                    })
-                    .collect();
+            let validation_start = Instant::now();
+            let peers: Vec<SwarmPeer> = proto
+                .peers
+                .into_iter()
+                .filter_map(|p| {
+                    validate_proto_peer(p, network_id, &local_overlay, &mut metrics)
+                })
+                .collect();
+            histogram!("hive_validation_duration_seconds", "direction" => "inbound")
+                .record(validation_start.elapsed().as_secs_f64());
 
-                metrics.add_valid_peers(peers.len() as u64);
-                metrics.record_success();
+            metrics.add_valid_peers(peers.len() as u64);
+            metrics.record_success();
 
-                Ok(ValidatedPeers { peers })
-            }
-            .instrument(span),
-        )
+            Ok(ValidatedPeers { peers })
+        })
     }
 }
 
 /// Validate and convert proto peer with metrics tracking.
-///
-/// Filters out our own overlay address to prevent self-dial attempts.
-fn proto_to_swarm_peer_with_metrics(
-    p: crate::proto::hive::Peer,
+fn validate_proto_peer(
+    p: vertex_swarm_net_proto::hive::Peer,
     network_id: u64,
     local_overlay: &SwarmAddress,
     metrics: &mut HiveMetrics,
@@ -133,16 +128,16 @@ fn proto_to_swarm_peer_with_metrics(
         return None;
     };
 
+    // NOTE: validate_overlay disabled due to Bee multiaddr re-serialization bug
     match SwarmPeer::from_signed(
         &p.multiaddrs,
         signature,
         peer_overlay,
         nonce,
         network_id,
-        true,
+        false,
     ) {
         Ok(peer) => {
-            // Validate that all multiaddrs contain /p2p/ component
             if !peer.multiaddrs().iter().all(has_p2p_component) {
                 warn!(
                     overlay = %overlay,
@@ -161,7 +156,6 @@ fn proto_to_swarm_peer_with_metrics(
     }
 }
 
-/// Check if a multiaddr contains a /p2p/ component.
 fn has_p2p_component(addr: &libp2p::Multiaddr) -> bool {
     addr.iter().any(|p| matches!(p, Protocol::P2p(_)))
 }
@@ -169,20 +163,22 @@ fn has_p2p_component(addr: &libp2p::Multiaddr) -> bool {
 /// Outbound handler that sends peers to remote.
 #[derive(Debug, Clone)]
 pub struct HiveOutboundInner {
-    peers: Peers,
+    proto: vertex_swarm_net_proto::hive::Peers,
+    peer_count: usize,
 }
 
 impl HiveOutboundInner {
     pub fn new(peers: &[SwarmPeer]) -> Self {
         Self {
-            peers: Peers::from_swarm_peers(peers),
+            proto: encode_peers(peers),
+            peer_count: peers.len(),
         }
     }
 }
 
 impl HeaderedOutbound for HiveOutboundInner {
     type Output = ();
-    type Error = HiveError;
+    type Error = ProtocolStreamError;
 
     fn protocol_name(&self) -> &'static str {
         PROTOCOL_NAME
@@ -192,27 +188,22 @@ impl HeaderedOutbound for HiveOutboundInner {
         self,
         stream: HeaderedStream,
     ) -> BoxFuture<'static, Result<Self::Output, Self::Error>> {
-        let peer_count = self.peers.len() as u64;
-        let span = tracing::info_span!("hive_send", peer_count = peer_count);
-        Box::pin(
-            async move {
-                let mut metrics = HiveMetrics::outbound();
-                metrics.add_valid_peers(peer_count);
+        let peer_count = self.peer_count as u64;
+        Box::pin(async move {
+            let mut metrics = HiveMetrics::outbound();
+            metrics.add_valid_peers(peer_count);
 
-                let codec = HiveCodec::new(MAX_MESSAGE_SIZE);
-                let mut framed = Framed::new(stream.into_inner(), codec);
-
-                debug!("Hive: sending {} peers", peer_count);
-                if let Err(e) = framed.send(self.peers).await {
-                    metrics.record_error(&e);
-                    return Err(e);
-                }
-
-                metrics.record_success();
-                Ok(())
+            debug!(peer_count, "Hive: sending peers");
+            if let Err(e) =
+                Framed::send::<_, ProtocolStreamError, _>(stream.into_inner(), self.proto).await
+            {
+                metrics.record_error(&e);
+                return Err(e);
             }
-            .instrument(span),
-        )
+
+            metrics.record_success();
+            Ok(())
+        })
     }
 }
 

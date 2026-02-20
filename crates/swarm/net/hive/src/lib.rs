@@ -1,17 +1,14 @@
 //! Hive protocol for Swarm peer gossip and network bootstrapping.
 
+mod behaviour;
 mod codec;
-pub mod error;
+mod handler;
 pub mod metrics;
 mod protocol;
 
-pub use error::HiveError;
+pub use behaviour::{HiveBehaviour, HiveEvent};
+pub use handler::{HiveConfig, HiveHandler, HiveHandlerIn, HiveHandlerOut};
 pub use protocol::{HiveInboundProtocol, HiveOutboundProtocol, ValidatedPeers, inbound, outbound};
-
-#[allow(unreachable_pub)]
-mod proto {
-    include!(concat!(env!("OUT_DIR"), "/proto/mod.rs"));
-}
 
 /// Protocol name for hive.
 pub const PROTOCOL_NAME: &str = "/swarm/hive/1.1.0/peers";
