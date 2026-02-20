@@ -1,9 +1,9 @@
 //! Metrics for the hive protocol.
 
-use metrics::{counter, gauge, histogram};
+use metrics::{counter, histogram};
 use strum::IntoStaticStr;
 use vertex_observability::{
-    DURATION_FINE, DURATION_NETWORK, GaugeGuard, HistogramBucketConfig, LabelValue,
+    DURATION_FINE, DURATION_NETWORK, HistogramBucketConfig, LabelValue,
     labels::{direction, outcome},
 };
 
@@ -56,7 +56,6 @@ enum PeerOutcome {
 pub struct HiveMetrics {
     direction: &'static str,
     start: std::time::Instant,
-    _active: GaugeGuard,
     peers_valid: u64,
     peers_invalid: u64,
     outcome_recorded: bool,
@@ -70,7 +69,6 @@ impl HiveMetrics {
         Self {
             direction: dir,
             start: std::time::Instant::now(),
-            _active: GaugeGuard::increment(gauge!("hive_exchanges_active", "direction" => dir)),
             peers_valid: 0,
             peers_invalid: 0,
             outcome_recorded: false,
