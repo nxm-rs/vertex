@@ -11,30 +11,37 @@ repository = "https://nxm-rs.github.io/vertex"
 members = [
     "bin/vertex",
 
-    # Observability (logging, tracing, metrics)
+    # Metrics (lightweight leaf crate: guards, macros, labels)
+    "crates/metrics",
+
+    # Observability (logging, tracing, metrics infrastructure)
     "crates/observability",
 
     # Tasks
     "crates/tasks",
 
-    # Network
+    # Network (protocol-agnostic utilities)
     "crates/net/local",
     "crates/net/peer/store",
     "crates/net/peer/score",
     "crates/net/peer/registry",
     "crates/net/codec",
-    "crates/net/protocols/handshake",
-    "crates/net/protocols/headers",
-    "crates/net/protocols/hive",
-    "crates/net/protocols/pricing",
-    "crates/net/protocols/pingpong",
-    "crates/net/protocols/pseudosettle",
-    "crates/net/protocols/pushsync",
-    "crates/net/protocols/retrieval",
-    "crates/net/protocols/swap",
+    "crates/net/ratelimiter",
+
+    # Swarm Network Protocols (crates/swarm/net/)
+    "crates/swarm/net/proto",
+    "crates/swarm/net/handshake",
+    "crates/swarm/net/headers",
+    "crates/swarm/net/hive",
+    "crates/swarm/net/pingpong",
+    "crates/swarm/net/identify",
+    "crates/swarm/net/pricing",
+    "crates/swarm/net/pseudosettle",
+    "crates/swarm/net/pushsync",
+    "crates/swarm/net/retrieval",
+    "crates/swarm/net/swap",
 
     # Node
-    "crates/node/types",
     "crates/node/api",
     "crates/node/core",
     "crates/node/builder",
@@ -110,22 +117,29 @@ vertex-net-peer-store = { path = "crates/net/peer/store" }
 vertex-net-peer-score = { path = "crates/net/peer/score" }
 vertex-net-peer-registry = { path = "crates/net/peer/registry" }
 vertex-net-codec = { path = "crates/net/codec" }
-vertex-net-handshake = { path = "crates/net/protocols/handshake" }
-vertex-net-headers = { path = "crates/net/protocols/headers" }
-vertex-net-hive = { path = "crates/net/protocols/hive" }
-vertex-net-pricing = { path = "crates/net/protocols/pricing" }
-vertex-net-pseudosettle = { path = "crates/net/protocols/pseudosettle" }
-vertex-net-pingpong = { path = "crates/net/protocols/pingpong" }
-vertex-net-pushsync = { path = "crates/net/protocols/pushsync" }
-vertex-net-retrieval = { path = "crates/net/protocols/retrieval" }
-vertex-net-swap = { path = "crates/net/protocols/swap" }
+vertex-net-ratelimiter = { path = "crates/net/ratelimiter" }
+
+# Swarm network protocols (crates/swarm/net/)
+vertex-swarm-net-proto = { path = "crates/swarm/net/proto" }
+vertex-swarm-net-handshake = { path = "crates/swarm/net/handshake" }
+vertex-swarm-net-headers = { path = "crates/swarm/net/headers" }
+vertex-swarm-net-hive = { path = "crates/swarm/net/hive" }
+vertex-swarm-net-identify = { path = "crates/swarm/net/identify" }
+vertex-swarm-net-pricing = { path = "crates/swarm/net/pricing" }
+vertex-swarm-net-pseudosettle = { path = "crates/swarm/net/pseudosettle" }
+vertex-swarm-net-pingpong = { path = "crates/swarm/net/pingpong" }
+vertex-swarm-net-pushsync = { path = "crates/swarm/net/pushsync" }
+vertex-swarm-net-retrieval = { path = "crates/swarm/net/retrieval" }
+vertex-swarm-net-swap = { path = "crates/swarm/net/swap" }
 
 # node
-vertex-node-types = { path = "crates/node/types" }
 vertex-node-api = { path = "crates/node/api" }
 vertex-node-core = { path = "crates/node/core" }
 vertex-node-builder = { path = "crates/node/builder" }
 vertex-node-commands = { path = "crates/node/commands" }
+
+# metrics (leaf crate)
+vertex-metrics = { path = "crates/metrics" }
 
 # observability
 vertex-observability = { path = "crates/observability" }
@@ -235,15 +249,20 @@ futures-util = "0.3"
 rayon = "1.10"
 thread_local = "1.1"
 
+## profiling (optional)
+pprof = { version = "0.15", features = ["flamegraph", "prost-codec"] }
+console-subscriber = "0.5"
+tikv-jemallocator = { version = "0.6", features = [] }
+tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
+tikv-jemalloc-sys = { version = "0.6", features = [] }
+
 ## misc testing
 arbitrary = "1.4"
 assert_matches = "1.5.0"
 criterion = { package = "codspeed-criterion-compat", version = "2.10.1" }
-# pprof = "0.14"
 proptest = "1.6"
 proptest-arbitrary-interop = "0.1"
 proptest-derive = "0.5"
-# test-fuzz = "7"
 
 # metrics
 metrics = "0.24"
@@ -287,3 +306,13 @@ vergen-gitcl = "9"
 # concurrent data structures
 dashmap = "6.1"
 scopeguard = "1.2"
+
+# Release profile with frame pointers for CPU profiling
+[profile.release]
+debug = 1  # Include debug symbols for better stack traces
+strip = false  # Don't strip symbols
+
+# Profile for profiling (release + frame pointers)
+[profile.profiling]
+inherits = "release"
+debug = 2  # Full debug info for profiling
