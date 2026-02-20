@@ -1,17 +1,13 @@
 //! Pingpong protocol for Swarm connection liveness and RTT measurement.
 
+mod behaviour;
 mod codec;
-mod error;
+mod handler;
+pub mod metrics;
 mod protocol;
 
-// Include generated protobuf code
-#[allow(unreachable_pub)]
-mod proto {
-    include!(concat!(env!("OUT_DIR"), "/proto/mod.rs"));
-}
-
-pub use codec::{Ping, Pong};
-pub use error::PingpongError;
+pub use behaviour::{PingpongBehaviour, PingpongEvent};
+pub use handler::{PingpongConfig, PingpongHandler, PingpongHandlerIn, PingpongHandlerOut};
 pub use protocol::{PingpongInboundProtocol, PingpongOutboundProtocol, inbound, outbound};
 
 /// Protocol name for pingpong.
