@@ -6,6 +6,6 @@ mod result;
 mod state;
 
 pub use direction::ConnectionDirection;
-pub use registry::{PeerRegistry, PeerRegistryStats};
+pub use registry::{PeerIdentityResolver, PeerRegistry, PeerRegistryStats};
 pub use result::ActivateResult;
 pub use state::ConnectionState;

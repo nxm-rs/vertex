@@ -12,6 +12,20 @@ use crate::direction::ConnectionDirection;
 use crate::result::ActivateResult;
 use crate::state::ConnectionState;
 
+/// Read-only peer identity resolution (PeerId ↔ application-level Id).
+///
+/// Provides a narrow, read-only view into the registry for consumers
+/// that only need identity lookups without mutation access.
+pub trait PeerIdentityResolver: Send + Sync + 'static {
+    type Id;
+
+    /// Resolve a PeerId to its application-level Id (only if handshake is complete).
+    fn resolve_id(&self, peer_id: &PeerId) -> Option<Self::Id>;
+
+    /// Resolve an application-level Id back to its PeerId.
+    fn resolve_peer_id(&self, id: &Self::Id) -> Option<PeerId>;
+}
+
 /// Statistics about the peer registry.
 #[derive(Debug, Clone, Copy)]
 pub struct PeerRegistryStats {
@@ -582,6 +596,28 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
         }
 
         Some(state)
+    }
+}
+
+impl<Id, R> PeerIdentityResolver for PeerRegistry<Id, R>
+where
+    Id: Clone + Eq + Hash + Debug + Send + Sync + 'static,
+    R: Clone + Default + Send + Sync + 'static,
+{
+    type Id = Id;
+
+    fn resolve_id(&self, peer_id: &PeerId) -> Option<Id> {
+        match self.read().peer_to_key.get(peer_id)? {
+            RegistryKey::Known(id) => Some(id.clone()),
+            RegistryKey::Pending(_) => None,
+        }
+    }
+
+    fn resolve_peer_id(&self, id: &Id) -> Option<PeerId> {
+        self.read()
+            .by_key
+            .get(&RegistryKey::Known(id.clone()))
+            .map(|s| s.peer_id())
     }
 }
 
