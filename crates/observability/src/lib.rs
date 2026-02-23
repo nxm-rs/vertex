@@ -18,7 +18,8 @@ pub use format::LogFormat;
 pub use guard::TracingGuard;
 pub use metrics::{
     CONNECTION_LIFETIME, DURATION_FINE, DURATION_NETWORK, DURATION_SECONDS, HistogramBucketConfig,
-    HistogramRegistry, Hook, Hooks, HooksBuilder, LOCK_CONTENTION, MetricsServer, POLL_DURATION,
+    HistogramRegistry, Hook, Hooks, HooksBuilder, LOCK_CONTENTION, MetricsServer, PEER_SCORE,
+    POLL_DURATION,
     PrometheusRecorder, install_prometheus_recorder, install_prometheus_recorder_with_buckets,
     install_prometheus_recorder_with_prefix, process_metrics_hook,
 };
