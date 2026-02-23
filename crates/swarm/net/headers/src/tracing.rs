@@ -18,12 +18,24 @@
 use std::collections::HashMap;
 
 use bytes::Bytes;
+use libp2p::PeerId;
 use opentelemetry::{
     global,
     propagation::{Extractor, Injector},
 };
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+use vertex_swarm_primitives::OverlayAddress;
+
+/// Peer identity context for enriching protocol spans.
+///
+/// Carried by headered streams so all protocol spans automatically
+/// include the remote peer's identity (PeerId + overlay address).
+#[derive(Debug, Clone)]
+pub struct PeerContext {
+    pub remote_peer_id: PeerId,
+    pub remote_overlay: OverlayAddress,
+}
 
 /// Header name for tracing span context propagation.
 ///
@@ -138,6 +150,31 @@ pub fn span_from_headers(
     let span = tracing::info_span!("protocol", protocol = protocol, direction = direction,);
 
     // Extract and set parent context within the span
+    let _guard = span.enter();
+    extract_trace_context(headers);
+    drop(_guard);
+
+    span
+}
+
+/// Create a span with peer identity context, extracting parent context from headers.
+///
+/// Like [`span_from_headers`] but adds `remote_peer_id` and `remote_overlay`
+/// fields so per-peer correlation is possible in tracing backends (e.g. Tempo).
+pub(crate) fn span_from_headers_with_context(
+    protocol: &str,
+    direction: &str,
+    headers: &HashMap<String, Bytes>,
+    ctx: &PeerContext,
+) -> Span {
+    let span = tracing::info_span!(
+        "protocol",
+        protocol = protocol,
+        direction = direction,
+        remote_peer_id = %ctx.remote_peer_id,
+        remote_overlay = %ctx.remote_overlay,
+    );
+
     let _guard = span.enter();
     extract_trace_context(headers);
     drop(_guard);

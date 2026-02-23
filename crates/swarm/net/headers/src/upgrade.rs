@@ -11,7 +11,7 @@ use crate::{
     codec::{Headers, HeadersCodec},
     error::{HeadersError, ProtocolError},
     stream::HeaderedStream,
-    tracing::{inject_trace_context, span_from_headers},
+    tracing::{PeerContext, inject_trace_context, span_from_headers, span_from_headers_with_context},
     traits::{HeaderedInbound, HeaderedOutbound},
 };
 
@@ -35,12 +35,19 @@ fn protocol_short_name(protocol: &'static str) -> &'static str {
 #[derive(Debug, Clone)]
 pub struct Inbound<P> {
     inner: P,
+    peer_context: Option<PeerContext>,
 }
 
 impl<P> Inbound<P> {
     /// Create a new inbound protocol wrapper.
     pub fn new(inner: P) -> Self {
-        Self { inner }
+        Self { inner, peer_context: None }
+    }
+
+    /// Attach peer identity context so protocol spans include peer_id and overlay.
+    pub fn with_peer_context(mut self, ctx: PeerContext) -> Self {
+        self.peer_context = Some(ctx);
+        self
     }
 }
 
@@ -78,7 +85,10 @@ impl<P: HeaderedInbound> InboundUpgrade<Stream> for Inbound<P> {
                 .into_inner();
 
             // Create tracing span from received headers (may contain remote trace context)
-            let span = span_from_headers(protocol_name, "inbound", &peer_headers);
+            let span = match &self.peer_context {
+                Some(ctx) => span_from_headers_with_context(protocol_name, "inbound", &peer_headers, ctx),
+                None => span_from_headers(protocol_name, "inbound", &peer_headers),
+            };
 
             // Run remaining work within the span
             async {
@@ -120,12 +130,19 @@ impl<P: HeaderedInbound> InboundUpgrade<Stream> for Inbound<P> {
 #[derive(Debug, Clone)]
 pub struct Outbound<P> {
     inner: P,
+    peer_context: Option<PeerContext>,
 }
 
 impl<P> Outbound<P> {
     /// Create a new outbound protocol wrapper.
     pub fn new(inner: P) -> Self {
-        Self { inner }
+        Self { inner, peer_context: None }
+    }
+
+    /// Attach peer identity context so protocol spans include peer_id and overlay.
+    pub fn with_peer_context(mut self, ctx: PeerContext) -> Self {
+        self.peer_context = Some(ctx);
+        self
     }
 }
 
@@ -177,7 +194,10 @@ impl<P: HeaderedOutbound> OutboundUpgrade<Stream> for Outbound<P> {
                 .into_inner();
 
             // Create tracing span and run inner protocol within it
-            let span = span_from_headers(protocol_name, "outbound", &peer_headers);
+            let span = match &self.peer_context {
+                Some(ctx) => span_from_headers_with_context(protocol_name, "outbound", &peer_headers, ctx),
+                None => span_from_headers(protocol_name, "outbound", &peer_headers),
+            };
 
             async {
                 let headered = HeaderedStream::new(framed.into_inner(), peer_headers);

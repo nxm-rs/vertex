@@ -15,6 +15,7 @@ workspace = true
 vertex-metrics.workspace = true
 vertex-net-codec.workspace = true
 vertex-swarm-net-proto.workspace = true
+vertex-swarm-primitives.workspace = true
 
 ## async
 futures.workspace = true
