@@ -1,6 +1,6 @@
 use libp2p::multiaddr::Protocol;
 use libp2p::{Multiaddr, PeerId, Stream};
-use tracing::{Instrument, debug_span, instrument, warn};
+use tracing::{Instrument, Span, debug_span, instrument, warn};
 use vertex_net_codec::FramedProto;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_peer::SwarmPeer;
@@ -92,12 +92,20 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
     #[instrument(
         name = "handshake",
         skip(self, stream),
-        fields(direction = "inbound", peer_id = %self.peer_id, remote_addr = %self.remote_addr)
+        fields(
+            direction = "inbound",
+            peer_id = %self.peer_id,
+            remote_addr = %self.remote_addr,
+            remote_overlay = tracing::field::Empty,
+        )
     )]
     pub(crate) async fn handle_inbound(self, stream: Stream) -> Result<HandshakeInfo, HandshakeError> {
         let mut metrics = HandshakeMetrics::inbound();
         metrics.initiated();
         let result = self.do_inbound_exchange(stream, &mut metrics).await;
+        if let Ok(ref info) = result {
+            Span::current().record("remote_overlay", tracing::field::display(info.swarm_peer.overlay()));
+        }
         metrics.record(&result);
         result
     }
@@ -159,12 +167,20 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
     #[instrument(
         name = "handshake",
         skip(self, stream),
-        fields(direction = "outbound", peer_id = %self.peer_id, remote_addr = %self.remote_addr)
+        fields(
+            direction = "outbound",
+            peer_id = %self.peer_id,
+            remote_addr = %self.remote_addr,
+            remote_overlay = tracing::field::Empty,
+        )
     )]
     pub(crate) async fn handle_outbound(self, stream: Stream) -> Result<HandshakeInfo, HandshakeError> {
         let mut metrics = HandshakeMetrics::outbound();
         metrics.initiated();
         let result = self.do_outbound_exchange(stream, &mut metrics).await;
+        if let Ok(ref info) = result {
+            Span::current().record("remote_overlay", tracing::field::display(info.swarm_peer.overlay()));
+        }
         metrics.record(&result);
         result
     }
