@@ -10,6 +10,7 @@ use crate::{
     MAX_HEADERS_SIZE,
     codec::{Headers, HeadersCodec},
     error::{HeadersError, ProtocolError},
+    metrics::ProtocolMetrics,
     stream::HeaderedStream,
     tracing::{PeerContext, inject_trace_context, span_from_headers, span_from_headers_with_context},
     traits::{HeaderedInbound, HeaderedOutbound},
@@ -107,10 +108,18 @@ impl<P: HeaderedInbound> InboundUpgrade<Stream> for Inbound<P> {
                 // Phase 3: Create HeaderedStream and call inner protocol
                 let headered = HeaderedStream::new(framed.into_inner(), peer_headers);
 
-                self.inner
-                    .read(headered)
-                    .await
-                    .map_err(|e| ProtocolError::Protocol(e.into()))
+                let mut metrics =
+                    ProtocolMetrics::inbound(protocol_short_name(protocol_name));
+                match self.inner.read(headered).await {
+                    Ok(output) => {
+                        metrics.record_success();
+                        Ok(output)
+                    }
+                    Err(e) => {
+                        metrics.record_error();
+                        Err(ProtocolError::Protocol(e.into()))
+                    }
+                }
             }
             .instrument(span)
             .await
@@ -202,10 +211,18 @@ impl<P: HeaderedOutbound> OutboundUpgrade<Stream> for Outbound<P> {
             async {
                 let headered = HeaderedStream::new(framed.into_inner(), peer_headers);
 
-                self.inner
-                    .write(headered)
-                    .await
-                    .map_err(|e| ProtocolError::Protocol(e.into()))
+                let mut metrics =
+                    ProtocolMetrics::outbound(protocol_short_name(protocol_name));
+                match self.inner.write(headered).await {
+                    Ok(output) => {
+                        metrics.record_success();
+                        Ok(output)
+                    }
+                    Err(e) => {
+                        metrics.record_error();
+                        Err(ProtocolError::Protocol(e.into()))
+                    }
+                }
             }
             .instrument(span)
             .await

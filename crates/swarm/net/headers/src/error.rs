@@ -78,16 +78,15 @@ pub enum UpgradeError {
 impl UpgradeError {
     /// Whether this error originated from the inner protocol.
     ///
-    /// Protocol-level errors are typically already tracked by the protocol's
-    /// own metrics (e.g., `HiveMetrics`). Handler-level metrics should skip
-    /// these to avoid double-counting.
+    /// Protocol-level errors are already tracked by `ProtocolMetrics` in the
+    /// headers crate. Handler-level metrics should skip these to avoid
+    /// double-counting.
     pub fn is_protocol_error(&self) -> bool {
         matches!(self, Self::Protocol(_))
     }
 
-    /// Record this error in unified handler-level metrics unconditionally.
+    /// Record this error in handler-level metrics unconditionally.
     ///
-    /// Use this for protocols that have no internal metrics (e.g., pingpong).
     /// Emits `protocol_upgrade_errors_total{protocol, direction, reason}`.
     pub fn record(&self, protocol: &'static str, direction: &'static str) {
         counter!(
@@ -99,11 +98,9 @@ impl UpgradeError {
         .increment(1);
     }
 
-    /// Record this error in unified handler-level metrics if it wasn't already
-    /// tracked by the protocol's own metrics.
+    /// Record this error in handler-level metrics, skipping protocol errors
+    /// (which are already tracked by `ProtocolMetrics`).
     ///
-    /// Use this for protocols with their own metrics (e.g., hive) to avoid
-    /// double-counting protocol-level errors.
     /// Emits `protocol_upgrade_errors_total{protocol, direction, reason}`.
     pub fn record_if_untracked(&self, protocol: &'static str, direction: &'static str) {
         if !self.is_protocol_error() {

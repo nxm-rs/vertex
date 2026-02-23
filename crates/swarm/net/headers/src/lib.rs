@@ -2,6 +2,7 @@
 
 mod codec;
 mod error;
+pub mod metrics;
 mod stream;
 mod tracing;
 mod traits;
