@@ -12,11 +12,11 @@ use crate::direction::ConnectionDirection;
 use crate::result::ActivateResult;
 use crate::state::ConnectionState;
 
-/// Read-only peer identity resolution (PeerId ↔ application-level Id).
+/// Read-only peer resolution (PeerId ↔ application-level Id).
 ///
 /// Provides a narrow, read-only view into the registry for consumers
-/// that only need identity lookups without mutation access.
-pub trait PeerIdentityResolver: Send + Sync + 'static {
+/// that only need peer lookups without mutation access.
+pub trait PeerResolver: Send + Sync + 'static {
     type Id;
 
     /// Resolve a PeerId to its application-level Id (only if handshake is complete).
@@ -599,7 +599,7 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
     }
 }
 
-impl<Id, R> PeerIdentityResolver for PeerRegistry<Id, R>
+impl<Id, R> PeerResolver for PeerRegistry<Id, R>
 where
     Id: Clone + Eq + Hash + Debug + Send + Sync + 'static,
     R: Clone + Default + Send + Sync + 'static,
