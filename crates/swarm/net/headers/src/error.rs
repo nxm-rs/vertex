@@ -107,6 +107,17 @@ impl UpgradeError {
             self.record(protocol, direction);
         }
     }
+
+    /// Convert from a stream upgrade error, record metrics, and flatten to `ProtocolStreamError`.
+    pub fn record_and_convert(
+        error: impl Into<UpgradeError>,
+        protocol: &'static str,
+        direction: &'static str,
+    ) -> ProtocolStreamError {
+        let upgrade_error = error.into();
+        upgrade_error.record_if_untracked(protocol, direction);
+        ProtocolStreamError::from(upgrade_error)
+    }
 }
 
 impl From<StreamUpgradeError<ProtocolError>> for UpgradeError {
