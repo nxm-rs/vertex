@@ -1,15 +1,17 @@
 //! VertexTracer builder for unified observability initialization.
 
-use crate::{layers, FileConfig, OtlpConfig, StdoutConfig, TracingGuard};
+use crate::{OtlpLogsConfig, layers, FileConfig, OtlpConfig, StdoutConfig, TracingGuard};
 
 /// Builder for initializing the tracing/logging stack.
 ///
-/// Configures stdout, file, and OTLP layers, then initializes them as a unified subscriber.
+/// Configures stdout, file, OTLP trace, and OTLP log layers, then initializes
+/// them as a unified subscriber.
 #[derive(Debug, Default)]
 pub struct VertexTracer {
     stdout: Option<StdoutConfig>,
     file: Option<FileConfig>,
     otlp: Option<OtlpConfig>,
+    otlp_logs: Option<OtlpLogsConfig>,
 }
 
 impl VertexTracer {
@@ -36,10 +38,21 @@ impl VertexTracer {
         self
     }
 
+    /// Configure OTLP log export (e.g., to Loki).
+    pub fn with_otlp_logs(mut self, config: OtlpLogsConfig) -> Self {
+        self.otlp_logs = Some(config);
+        self
+    }
+
     /// Initialize the tracing subscriber with configured layers.
     ///
     /// Returns a guard that must be held for the program's lifetime.
     pub fn init(self) -> eyre::Result<TracingGuard> {
-        layers::build_and_init(self.stdout.as_ref(), self.file.as_ref(), self.otlp.as_ref())
+        layers::build_and_init(
+            self.stdout.as_ref(),
+            self.file.as_ref(),
+            self.otlp.as_ref(),
+            self.otlp_logs.as_ref(),
+        )
     }
 }

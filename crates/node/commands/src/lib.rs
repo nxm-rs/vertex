@@ -48,6 +48,9 @@ where
     if let Some(otlp) = cli.tracing().otlp_config() {
         tracer = tracer.with_otlp(otlp);
     }
+    if let Some(otlp_logs) = cli.tracing().otlp_logs_config() {
+        tracer = tracer.with_otlp_logs(otlp_logs);
+    }
 
     let _guard = tracer.init()?;
     info!("Starting Vertex {}", version::VERSION);

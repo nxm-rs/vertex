@@ -127,6 +127,31 @@ impl OtlpConfig {
     }
 }
 
+/// OTLP log export configuration (e.g., to Loki).
+#[derive(Debug, Clone)]
+pub struct OtlpLogsConfig {
+    endpoint: String,
+    service_name: String,
+}
+
+impl OtlpLogsConfig {
+    /// Create OTLP log export configuration.
+    pub fn new(endpoint: impl Into<String>, service_name: impl Into<String>) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            service_name: service_name.into(),
+        }
+    }
+
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
+    pub fn service_name(&self) -> &str {
+        &self.service_name
+    }
+}
+
 /// Prometheus metrics server configuration.
 #[derive(Debug, Clone)]
 pub struct MetricsServerConfig {

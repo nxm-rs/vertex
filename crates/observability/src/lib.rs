@@ -13,7 +13,7 @@ pub mod metrics;
 pub mod profiling;
 mod tracer;
 
-pub use config::{FileConfig, MetricsServerConfig, OtlpConfig, StdoutConfig};
+pub use config::{FileConfig, MetricsServerConfig, OtlpConfig, OtlpLogsConfig, StdoutConfig};
 pub use format::LogFormat;
 pub use guard::TracingGuard;
 pub use metrics::{
