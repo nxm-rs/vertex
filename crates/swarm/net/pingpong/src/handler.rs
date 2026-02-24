@@ -66,14 +66,14 @@ impl Default for PingpongConfig {
 
 /// Commands from behaviour to handler.
 #[derive(Debug)]
-pub enum PingpongHandlerIn {
+pub enum PingpongCommand {
     /// Send a ping with optional custom greeting.
     Ping { greeting: Option<String> },
 }
 
 /// Events from handler to behaviour.
 #[derive(Debug)]
-pub enum PingpongHandlerOut {
+pub enum PingpongHandlerEvent {
     /// Pong received with RTT.
     Pong {
         /// The pong response string.
@@ -101,7 +101,7 @@ pub struct PingpongHandler {
     active_streams: futures_bounded::FuturesSet<Result<(), ProtocolError>>,
     /// Token bucket to prevent rapid stream cycling.
     rate_limiter: RateLimiter,
-    pending_events: VecDeque<PingpongHandlerOut>,
+    pending_events: VecDeque<PingpongHandlerEvent>,
     pending_pings: VecDeque<String>,
     outbound_pending: bool,
 }
@@ -124,8 +124,8 @@ impl PingpongHandler {
 }
 
 impl ConnectionHandler for PingpongHandler {
-    type FromBehaviour = PingpongHandlerIn;
-    type ToBehaviour = PingpongHandlerOut;
+    type FromBehaviour = PingpongCommand;
+    type ToBehaviour = PingpongHandlerEvent;
     type InboundProtocol = ReadyUpgrade<StreamProtocol>;
     type OutboundProtocol = PingpongOutboundProtocol;
     type InboundOpenInfo = ();
@@ -155,22 +155,21 @@ impl ConnectionHandler for PingpongHandler {
                 Ok(Ok(())) => {
                     trace!("Responded to ping");
                     return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
-                        PingpongHandlerOut::PingReceived,
+                        PingpongHandlerEvent::PingReceived,
                     ));
                 }
                 Ok(Err(err)) => {
-                    let upgrade_error = UpgradeError::from(err);
-                    upgrade_error.record("pingpong", direction::INBOUND);
-                    let pingpong_error = ProtocolStreamError::from(upgrade_error);
+                    let pingpong_error =
+                        UpgradeError::record_and_convert(err, "pingpong", direction::INBOUND);
                     warn!(error = %pingpong_error, "Pingpong inbound stream error");
                     return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
-                        PingpongHandlerOut::Error(pingpong_error),
+                        PingpongHandlerEvent::Error(pingpong_error),
                     ));
                 }
                 Err(Timeout { .. }) => {
                     warn!("Pingpong inbound stream timed out");
                     return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
-                        PingpongHandlerOut::Error(ProtocolStreamError::Timeout),
+                        PingpongHandlerEvent::Error(ProtocolStreamError::Timeout),
                     ));
                 }
             }
@@ -196,7 +195,7 @@ impl ConnectionHandler for PingpongHandler {
 
     fn on_behaviour_event(&mut self, event: Self::FromBehaviour) {
         match event {
-            PingpongHandlerIn::Ping { greeting } => {
+            PingpongCommand::Ping { greeting } => {
                 let greeting = greeting.unwrap_or_else(|| self.config.greeting.clone());
                 self.pending_pings.push_back(greeting);
             }
@@ -240,20 +239,22 @@ impl ConnectionHandler for PingpongHandler {
                 ..
             }) => {
                 self.outbound_pending = false;
+                // Handler-level RTT: substream request → upgrade completion (includes
+                // protocol negotiation + headers exchange). The protocol-level RTT in
+                // protocol.rs measures only ping-send → pong-receive within the stream.
                 let rtt = info.sent_at.elapsed();
                 trace!(?rtt, "Pong received");
                 self.pending_events
-                    .push_back(PingpongHandlerOut::Pong { response, rtt });
+                    .push_back(PingpongHandlerEvent::Pong { response, rtt });
             }
 
             ConnectionEvent::DialUpgradeError(error) => {
                 self.outbound_pending = false;
-                let upgrade_error = UpgradeError::from(error.error);
-                upgrade_error.record("pingpong", direction::OUTBOUND);
-                let pingpong_error = ProtocolStreamError::from(upgrade_error);
+                let pingpong_error =
+                    UpgradeError::record_and_convert(error.error, "pingpong", direction::OUTBOUND);
                 warn!(error = %pingpong_error, "Pingpong outbound error");
                 self.pending_events
-                    .push_back(PingpongHandlerOut::Error(pingpong_error));
+                    .push_back(PingpongHandlerEvent::Error(pingpong_error));
             }
 
             _ => {}

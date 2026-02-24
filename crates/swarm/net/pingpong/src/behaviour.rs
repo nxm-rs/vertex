@@ -17,7 +17,7 @@ use strum::IntoStaticStr;
 use tracing::{debug, trace};
 
 use vertex_swarm_net_headers::ProtocolStreamError;
-use crate::handler::{PingpongConfig, PingpongHandler, PingpongHandlerIn, PingpongHandlerOut};
+use crate::handler::{PingpongCommand, PingpongConfig, PingpongHandler, PingpongHandlerEvent};
 
 /// Events emitted by PingpongBehaviour.
 #[derive(Debug, IntoStaticStr)]
@@ -48,7 +48,7 @@ pub enum PingpongEvent {
 /// Behaviour for the Swarm pingpong protocol.
 pub struct PingpongBehaviour {
     config: PingpongConfig,
-    events: VecDeque<ToSwarm<PingpongEvent, PingpongHandlerIn>>,
+    events: VecDeque<ToSwarm<PingpongEvent, PingpongCommand>>,
 }
 
 impl PingpongBehaviour {
@@ -71,7 +71,7 @@ impl PingpongBehaviour {
         self.events.push_back(ToSwarm::NotifyHandler {
             peer_id,
             handler: NotifyHandler::One(connection_id),
-            event: PingpongHandlerIn::Ping { greeting },
+            event: PingpongCommand::Ping { greeting },
         });
     }
 
@@ -80,7 +80,7 @@ impl PingpongBehaviour {
         self.events.push_back(ToSwarm::NotifyHandler {
             peer_id,
             handler: NotifyHandler::Any,
-            event: PingpongHandlerIn::Ping { greeting },
+            event: PingpongCommand::Ping { greeting },
         });
     }
 }
@@ -129,7 +129,7 @@ impl NetworkBehaviour for PingpongBehaviour {
         event: THandlerOutEvent<Self>,
     ) {
         match event {
-            PingpongHandlerOut::Pong { response, rtt } => {
+            PingpongHandlerEvent::Pong { response, rtt } => {
                 debug!(%peer_id, ?rtt, "Pingpong: pong received");
                 self.events
                     .push_back(ToSwarm::GenerateEvent(PingpongEvent::Pong {
@@ -139,7 +139,7 @@ impl NetworkBehaviour for PingpongBehaviour {
                         rtt,
                     }));
             }
-            PingpongHandlerOut::PingReceived => {
+            PingpongHandlerEvent::PingReceived => {
                 trace!(%peer_id, "Pingpong: responded to ping");
                 self.events
                     .push_back(ToSwarm::GenerateEvent(PingpongEvent::PingReceived {
@@ -147,7 +147,7 @@ impl NetworkBehaviour for PingpongBehaviour {
                         connection_id,
                     }));
             }
-            PingpongHandlerOut::Error(error) => {
+            PingpongHandlerEvent::Error(error) => {
                 debug!(%peer_id, %error, "Pingpong: error");
                 self.events
                     .push_back(ToSwarm::GenerateEvent(PingpongEvent::Error {
