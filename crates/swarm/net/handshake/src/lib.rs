@@ -18,7 +18,7 @@ mod error;
 pub use error::HandshakeError;
 
 mod handler;
-pub use handler::{HandshakeConfig, HandshakeHandler, HandshakeHandlerIn, HandshakeHandlerOut};
+pub use handler::{HandshakeCommand, HandshakeConfig, HandshakeHandler, HandshakeHandlerEvent};
 
 pub mod metrics;
 pub use metrics::HandshakeStage;

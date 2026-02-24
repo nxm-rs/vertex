@@ -20,7 +20,7 @@ use vertex_net_peer_registry::ConnectionDirection;
 
 use crate::{
     AddressProvider, HandshakeError, HandshakeInfo,
-    handler::{HandshakeConfig, HandshakeHandler, HandshakeHandlerIn, HandshakeHandlerOut},
+    handler::{HandshakeConfig, HandshakeHandler, HandshakeCommand, HandshakeHandlerEvent},
 };
 
 /// Events emitted by HandshakeBehaviour.
@@ -47,7 +47,7 @@ pub struct HandshakeBehaviour<I, A> {
     config: Arc<HandshakeConfig>,
     identity: Arc<I>,
     address_provider: Arc<A>,
-    events: VecDeque<ToSwarm<HandshakeEvent, HandshakeHandlerIn>>,
+    events: VecDeque<ToSwarm<HandshakeEvent, HandshakeCommand>>,
     /// Track direction per connection for event attribution.
     connection_directions: std::collections::HashMap<ConnectionId, ConnectionDirection>,
 }
@@ -79,7 +79,7 @@ where
         self.events.push_back(ToSwarm::NotifyHandler {
             peer_id,
             handler: NotifyHandler::One(connection_id),
-            event: HandshakeHandlerIn::Initiate(addr),
+            event: HandshakeCommand::Initiate(addr),
         });
     }
 }
@@ -151,7 +151,7 @@ where
             .unwrap_or(ConnectionDirection::Inbound);
 
         match event {
-            HandshakeHandlerOut::Completed { info } => {
+            HandshakeHandlerEvent::Completed { info } => {
                 debug!(%peer_id, ?connection_id, ?direction, "Handshake completed");
                 self.events.push_back(ToSwarm::GenerateEvent(HandshakeEvent::Completed {
                     peer_id,
@@ -160,7 +160,7 @@ where
                     info,
                 }));
             }
-            HandshakeHandlerOut::Failed { error } => {
+            HandshakeHandlerEvent::Failed { error } => {
                 debug!(%peer_id, ?connection_id, ?direction, ?error, "Handshake failed");
                 self.events.push_back(ToSwarm::GenerateEvent(HandshakeEvent::Failed {
                     peer_id,

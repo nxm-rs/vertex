@@ -44,20 +44,20 @@ impl Default for HandshakeConfig {
 
 /// Commands from behaviour to handler.
 #[derive(Debug)]
-pub enum HandshakeHandlerIn {
+pub enum HandshakeCommand {
     /// Initiate outbound handshake with resolved address.
     Initiate(Multiaddr),
 }
 
 /// Events from handler to behaviour.
-pub enum HandshakeHandlerOut {
+pub enum HandshakeHandlerEvent {
     /// Handshake completed successfully.
     Completed { info: Box<HandshakeInfo> },
     /// Handshake failed.
     Failed { error: HandshakeError },
 }
 
-impl std::fmt::Debug for HandshakeHandlerOut {
+impl std::fmt::Debug for HandshakeHandlerEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Completed { .. } => f.debug_struct("Completed").finish_non_exhaustive(),
@@ -90,7 +90,7 @@ pub struct HandshakeHandler<I, A> {
     remote_addr: Multiaddr,
     address_provider: Arc<A>,
     state: State,
-    pending_event: Option<HandshakeHandlerOut>,
+    pending_event: Option<HandshakeHandlerEvent>,
     should_initiate: bool,
     outbound_pending: bool,
 }
@@ -157,8 +157,8 @@ where
     I: SwarmIdentity + 'static,
     A: AddressProvider + 'static,
 {
-    type FromBehaviour = HandshakeHandlerIn;
-    type ToBehaviour = HandshakeHandlerOut;
+    type FromBehaviour = HandshakeCommand;
+    type ToBehaviour = HandshakeHandlerEvent;
     type InboundProtocol = HandshakeUpgrade<I, A>;
     type OutboundProtocol = HandshakeUpgrade<I, A>;
     type InboundOpenInfo = ();
@@ -198,7 +198,7 @@ where
 
     fn on_behaviour_event(&mut self, event: Self::FromBehaviour) {
         match event {
-            HandshakeHandlerIn::Initiate(addr) => {
+            HandshakeCommand::Initiate(addr) => {
                 if matches!(self.state, State::Pending) && !self.outbound_pending {
                     self.remote_addr = addr;
                     self.should_initiate = true;
@@ -224,7 +224,7 @@ where
             }) => {
                 debug!(peer_id = %self.peer_id, "Inbound handshake completed");
                 self.state = State::Completed;
-                self.pending_event = Some(HandshakeHandlerOut::Completed {
+                self.pending_event = Some(HandshakeHandlerEvent::Completed {
                     info: Box::new(info),
                 });
             }
@@ -236,7 +236,7 @@ where
                 self.outbound_pending = false;
                 debug!(peer_id = %self.peer_id, "Outbound handshake completed");
                 self.state = State::Completed;
-                self.pending_event = Some(HandshakeHandlerOut::Completed {
+                self.pending_event = Some(HandshakeHandlerEvent::Completed {
                     info: Box::new(info),
                 });
             }
@@ -246,13 +246,13 @@ where
                 warn!(peer_id = %self.peer_id, "Outbound handshake failed: {}", error.error);
                 self.state = State::Failed;
                 let error = extract_error(error.error);
-                self.pending_event = Some(HandshakeHandlerOut::Failed { error });
+                self.pending_event = Some(HandshakeHandlerEvent::Failed { error });
             }
 
             ConnectionEvent::ListenUpgradeError(error) => {
                 warn!(peer_id = %self.peer_id, "Inbound handshake failed: {}", error.error);
                 self.state = State::Failed;
-                self.pending_event = Some(HandshakeHandlerOut::Failed { error: error.error });
+                self.pending_event = Some(HandshakeHandlerEvent::Failed { error: error.error });
             }
 
             _ => {}
