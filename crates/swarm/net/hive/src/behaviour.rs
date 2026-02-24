@@ -9,7 +9,7 @@ use std::{
 use libp2p::{
     Multiaddr, PeerId,
     swarm::{
-        ConnectionClosed, ConnectionId, FromSwarm, NetworkBehaviour, NotifyHandler, THandler,
+        ConnectionId, FromSwarm, NetworkBehaviour, NotifyHandler, THandler,
         THandlerInEvent, THandlerOutEvent, ToSwarm,
     },
 };
@@ -18,7 +18,8 @@ use tracing::debug;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_net_headers::ProtocolStreamError;
 use vertex_swarm_peer::SwarmPeer;
-use crate::handler::{HiveConfig, HiveHandler, HiveHandlerIn, HiveHandlerOut};
+use crate::handler::{HiveCommand, HiveHandler, HiveHandlerEvent};
+use crate::protocol::{PeerCache, new_peer_cache};
 
 /// Events emitted by HiveBehaviour.
 #[derive(Debug, IntoStaticStr)]
@@ -30,11 +31,6 @@ pub enum HiveEvent {
         connection_id: ConnectionId,
         peers: Vec<SwarmPeer>,
     },
-    /// Broadcast completed successfully.
-    BroadcastComplete {
-        peer_id: PeerId,
-        connection_id: ConnectionId,
-    },
     /// Error occurred.
     Error {
         peer_id: PeerId,
@@ -45,9 +41,9 @@ pub enum HiveEvent {
 
 /// Behaviour for the Swarm hive protocol.
 pub struct HiveBehaviour<I> {
-    config: HiveConfig,
     identity: Arc<I>,
-    events: VecDeque<ToSwarm<HiveEvent, HiveHandlerIn>>,
+    cache: PeerCache,
+    events: VecDeque<ToSwarm<HiveEvent, HiveCommand>>,
 }
 
 impl<I> HiveBehaviour<I>
@@ -57,16 +53,10 @@ where
     /// Create a new hive behaviour.
     pub fn new(identity: Arc<I>) -> Self {
         Self {
-            config: HiveConfig::default(),
             identity,
+            cache: new_peer_cache(),
             events: VecDeque::new(),
         }
-    }
-
-    /// Create with custom config.
-    pub fn with_config(mut self, config: HiveConfig) -> Self {
-        self.config = config;
-        self
     }
 
     /// Broadcast peers to a specific connection.
@@ -74,16 +64,7 @@ where
         self.events.push_back(ToSwarm::NotifyHandler {
             peer_id,
             handler: NotifyHandler::One(connection_id),
-            event: HiveHandlerIn::BroadcastPeers(peers),
-        });
-    }
-
-    /// Broadcast peers to all connections with a peer.
-    pub fn broadcast_to_peer(&mut self, peer_id: PeerId, peers: Vec<SwarmPeer>) {
-        self.events.push_back(ToSwarm::NotifyHandler {
-            peer_id,
-            handler: NotifyHandler::Any,
-            event: HiveHandlerIn::BroadcastPeers(peers),
+            event: HiveCommand::BroadcastPeers(peers),
         });
     }
 }
@@ -102,7 +83,11 @@ where
         _local_addr: &Multiaddr,
         _remote_addr: &Multiaddr,
     ) -> Result<THandler<Self>, libp2p::swarm::ConnectionDenied> {
-        Ok(HiveHandler::new(self.config.clone(), self.identity.clone(), peer))
+        Ok(HiveHandler::new(
+            self.identity.clone(),
+            peer,
+            self.cache.clone(),
+        ))
     }
 
     fn handle_established_outbound_connection(
@@ -113,17 +98,14 @@ where
         _role_override: libp2p::core::Endpoint,
         _port_use: libp2p::core::transport::PortUse,
     ) -> Result<THandler<Self>, libp2p::swarm::ConnectionDenied> {
-        Ok(HiveHandler::new(self.config.clone(), self.identity.clone(), peer))
+        Ok(HiveHandler::new(
+            self.identity.clone(),
+            peer,
+            self.cache.clone(),
+        ))
     }
 
-    fn on_swarm_event(&mut self, event: FromSwarm) {
-        match event {
-            FromSwarm::ConnectionClosed(ConnectionClosed { peer_id, .. }) => {
-                debug!(%peer_id, "Hive: connection closed");
-            }
-            _ => {}
-        }
-    }
+    fn on_swarm_event(&mut self, _event: FromSwarm) {}
 
     fn on_connection_handler_event(
         &mut self,
@@ -132,7 +114,7 @@ where
         event: THandlerOutEvent<Self>,
     ) {
         match event {
-            HiveHandlerOut::PeersReceived(peers) => {
+            HiveHandlerEvent::PeersReceived(peers) => {
                 debug!(%peer_id, peer_count = peers.len(), "Hive: received peers");
                 self.events.push_back(ToSwarm::GenerateEvent(HiveEvent::PeersReceived {
                     peer_id,
@@ -140,14 +122,7 @@ where
                     peers,
                 }));
             }
-            HiveHandlerOut::BroadcastComplete => {
-                debug!(%peer_id, "Hive: broadcast complete");
-                self.events.push_back(ToSwarm::GenerateEvent(HiveEvent::BroadcastComplete {
-                    peer_id,
-                    connection_id,
-                }));
-            }
-            HiveHandlerOut::Error(error) => {
+            HiveHandlerEvent::Error(error) => {
                 debug!(%peer_id, %error, "Hive: error");
                 self.events.push_back(ToSwarm::GenerateEvent(HiveEvent::Error {
                     peer_id,

@@ -17,12 +17,14 @@ vertex-net-ratelimiter.workspace = true
 vertex-swarm-net-headers.workspace = true
 vertex-swarm-net-proto.workspace = true
 vertex-swarm-peer.workspace = true
+vertex-swarm-primitives.workspace = true
 vertex-swarm-api.workspace = true
 vertex-swarm-spec.workspace = true
+vertex-tasks.workspace = true
 
 ## async
 futures.workspace = true
-futures-bounded = "0.2"
+tokio = { workspace = true, features = ["sync"] }
 
 ## p2p
 quick-protobuf-codec.workspace = true
@@ -31,10 +33,16 @@ libp2p.workspace = true
 ## crypto
 alloy-primitives.workspace = true
 
+## cache
+hashlink.workspace = true
+
 ## tracing & metrics
 tracing.workspace = true
 metrics.workspace = true
 vertex-observability.workspace = true
 strum.workspace = true
+
+## error handling
+thiserror.workspace = true
 
 [dev-dependencies]

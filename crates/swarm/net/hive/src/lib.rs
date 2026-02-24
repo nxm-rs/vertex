@@ -2,13 +2,13 @@
 
 mod behaviour;
 mod codec;
+mod error;
 mod handler;
 pub mod metrics;
 mod protocol;
 
 pub use behaviour::{HiveBehaviour, HiveEvent};
-pub use handler::{HiveConfig, HiveHandler, HiveHandlerIn, HiveHandlerOut};
-pub use protocol::{HiveInboundProtocol, HiveOutboundProtocol, ValidatedPeers, inbound, outbound};
+pub use error::ValidationFailure;
 
 /// Protocol name for hive.
 pub const PROTOCOL_NAME: &str = "/swarm/hive/1.1.0/peers";
