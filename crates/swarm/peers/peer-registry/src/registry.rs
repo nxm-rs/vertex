@@ -191,6 +191,18 @@ impl SwarmPeerRegistry {
     }
 }
 
+impl vertex_net_peer_registry::PeerResolver for SwarmPeerRegistry {
+    type Id = OverlayAddress;
+
+    fn resolve_id(&self, peer_id: &PeerId) -> Option<OverlayAddress> {
+        self.inner.resolve_id(peer_id)
+    }
+
+    fn resolve_peer_id(&self, overlay: &OverlayAddress) -> Option<PeerId> {
+        self.inner.resolve_peer_id(overlay)
+    }
+}
+
 /// Statistics about the connection registry state.
 #[derive(Debug, Clone, Copy)]
 pub struct SwarmPeerRegistryStats {
