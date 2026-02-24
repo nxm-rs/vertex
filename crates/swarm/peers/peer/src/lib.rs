@@ -33,6 +33,11 @@ use vertex_net_local::{IpCapability, classify_multiaddr};
 pub use vertex_net_local::IpCapability as SwarmPeerIpCapability;
 pub use vertex_net_local::AddressScope;
 
+/// Resolve an overlay address to a previously verified SwarmPeer.
+pub trait SwarmPeerResolver: Send + Sync + 'static {
+    fn get_swarm_peer(&self, overlay: &SwarmAddress) -> Option<SwarmPeer>;
+}
+
 /// Verifiable peer identity with multiaddrs, signature, and overlay address.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SwarmPeer {
