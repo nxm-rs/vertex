@@ -1,0 +1,21 @@
+[package]
+name = "vertex-net-dnsaddr"
+description = "DNS resolution for /dnsaddr/ multiaddrs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+libp2p.workspace = true
+hickory-resolver.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true
