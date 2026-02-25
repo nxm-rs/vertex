@@ -1,95 +1,55 @@
-//! Swarm-specific NAT auto-discovery via peer-observed addresses.
+//! Local address management for handshake advertisement.
 
-use std::collections::HashMap;
-use std::net::IpAddr;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use hashlink::LruCache;
 use libp2p::{Multiaddr, PeerId};
 use libp2p::multiaddr::Protocol;
-use parking_lot::{Mutex, RwLock};
 use tracing::{debug, info, warn};
-use vertex_net_local::{AddressScope, LocalCapabilities, NetworkCapability, classify_multiaddr, extract_ip};
-use web_time::Instant;
+use vertex_net_local::{AddressScope, LocalCapabilities, NetworkCapability, classify_multiaddr};
+use vertex_swarm_net_handshake::AddressProvider;
 
-/// Require 2 unique IPs to confirm an observed address (prevents single-peer spoofing).
-const DEFAULT_CONFIRMATION_THRESHOLD: usize = 2;
-/// Max pending observed addresses (bounds memory from adversarial peers).
-const MAX_OBSERVED_ADDRS: usize = 10;
-const MAX_CONFIRMED_CACHE: usize = 20;
-/// 1 hour TTL for confirmed addresses.
-const CONFIRMED_CACHE_TTL_SECS: u64 = 3600;
-
-#[derive(Debug, Clone)]
-struct ObservedEntry {
-    confirmations: usize,
-    first_ip: IpAddr,
-    last_seen: Instant,
+fn strip_peer_id(addr: &Multiaddr) -> Multiaddr {
+    addr.iter()
+        .filter(|p| !matches!(p, Protocol::P2p(_)))
+        .collect()
 }
 
-#[derive(Debug, Clone)]
-struct ConfirmedEntry {
-    confirmed_at: Instant,
-}
-
-/// Configuration for NAT auto-discovery.
-#[derive(Debug, Clone)]
-pub struct NatDiscoveryConfig {
-    pub confirmation_threshold: usize,
-    pub confirmed_ttl_secs: u64,
-}
-
-impl Default for NatDiscoveryConfig {
-    fn default() -> Self {
-        Self {
-            confirmation_threshold: DEFAULT_CONFIRMATION_THRESHOLD,
-            confirmed_ttl_secs: CONFIRMED_CACHE_TTL_SECS,
-        }
-    }
-}
-
-/// Swarm-specific NAT discovery via peer-observed addresses.
+/// Manages local addresses for advertisement during handshake.
 ///
 /// Wraps LocalCapabilities and adds:
-/// - Static NAT addresses (configured at startup)
-/// - Multi-peer confirmation for peer-observed addresses
+/// - Static NAT addresses (configured at startup via --nat-addr)
+/// - Public connectivity status (confirmed via peer observation)
 /// - Local PeerId for appending /p2p/ to advertised addresses
-pub struct NatDiscovery {
+pub struct LocalAddressManager {
     local: Arc<LocalCapabilities>,
     nat_addrs: Vec<Multiaddr>,
-    observed: RwLock<HashMap<Multiaddr, ObservedEntry>>,
-    /// Mutex because LruCache::get mutates internal ordering.
-    confirmed: Mutex<LruCache<Multiaddr, ConfirmedEntry>>,
-    config: NatDiscoveryConfig,
-    enabled: bool,
     /// Local PeerId for appending /p2p/ to advertised addresses.
-    /// Set via `set_local_peer_id()` after swarm is built.
     local_peer_id: OnceLock<PeerId>,
+    /// Whether we've confirmed public connectivity (peer observed us from public IP).
+    has_public_connectivity: AtomicBool,
 }
 
-impl NatDiscovery {
-    pub fn new(
-        local: Arc<LocalCapabilities>,
-        nat_addrs: Vec<Multiaddr>,
-        config: NatDiscoveryConfig,
-        enabled: bool,
-    ) -> Self {
+impl LocalAddressManager {
+    pub fn new(local: Arc<LocalCapabilities>, nat_addrs: Vec<Multiaddr>) -> Self {
         Self {
             local,
             nat_addrs,
-            observed: RwLock::new(HashMap::new()),
-            confirmed: Mutex::new(LruCache::new(MAX_CONFIRMED_CACHE)),
-            config,
-            enabled,
             local_peer_id: OnceLock::new(),
+            has_public_connectivity: AtomicBool::new(false),
         }
+    }
+
+    /// Create a disabled manager (no NAT addresses).
+    pub fn disabled(local: Arc<LocalCapabilities>) -> Self {
+        Self::new(local, vec![])
     }
 
     /// Set the local PeerId for appending /p2p/ to advertised addresses.
     ///
     /// Must be called after the libp2p Swarm is built. Can only be set once.
-    /// Addresses returned by `addresses_for_peer()` will include /p2p/{peer_id}.
     pub fn set_local_peer_id(&self, peer_id: PeerId) {
         if self.local_peer_id.set(peer_id).is_err() {
             warn!("local_peer_id already set, ignoring duplicate call");
@@ -101,18 +61,6 @@ impl NatDiscovery {
     /// Get the local PeerId if set.
     pub fn local_peer_id(&self) -> Option<&PeerId> {
         self.local_peer_id.get()
-    }
-
-    pub fn disabled(local: Arc<LocalCapabilities>) -> Self {
-        Self {
-            local,
-            nat_addrs: vec![],
-            observed: RwLock::new(HashMap::new()),
-            confirmed: Mutex::new(LruCache::new(MAX_CONFIRMED_CACHE)),
-            config: NatDiscoveryConfig::default(),
-            enabled: false,
-            local_peer_id: OnceLock::new(),
-        }
     }
 
     pub fn local_capabilities(&self) -> &Arc<LocalCapabilities> {
@@ -127,132 +75,59 @@ impl NatDiscovery {
         self.local.capability()
     }
 
-    /// Record observed address from peer (requires multi-peer confirmation).
+    /// Check if we have any public addresses to advertise.
     ///
-    /// Lock duration bounded by MAX_OBSERVED_ADDRS (10 entries max).
-    pub fn on_observed_addr(&self, addr: Multiaddr, from_peer: &Multiaddr) {
-        if !self.enabled {
-            return;
+    /// Returns true if any of:
+    /// - NAT addresses are configured (static public addresses)
+    /// - Local listen addresses include public IPs
+    /// - Confirmed public connectivity via peer observation
+    pub fn has_public_addresses(&self) -> bool {
+        // Check static NAT addresses
+        if self.nat_addrs.iter().any(|a| classify_multiaddr(a) == Some(AddressScope::Public)) {
+            return true;
         }
 
-        let Some(peer_ip) = extract_ip(from_peer) else {
-            return;
-        };
-
-        let peer_scope = classify_multiaddr(from_peer);
-        let observed_scope = classify_multiaddr(&addr);
-
-        let (Some(peer_scope), Some(observed_scope)) = (peer_scope, observed_scope) else {
-            return;
-        };
-
-        // Only learn public addresses from public peers
-        if observed_scope == AddressScope::Public && peer_scope != AddressScope::Public {
-            return;
+        // Check local listen addresses
+        if self.local.listen_addrs().iter()
+            .any(|addr| classify_multiaddr(addr) == Some(AddressScope::Public)) {
+            return true;
         }
 
-        // Protocol family must match
-        if let Some(obs_ip) = extract_ip(&addr) {
-            let same_family = matches!(
-                (&obs_ip, &peer_ip),
-                (IpAddr::V4(_), IpAddr::V4(_)) | (IpAddr::V6(_), IpAddr::V6(_))
-            );
-            if !same_family {
-                return;
-            }
-        }
-
-        let now = Instant::now();
-        let ttl = std::time::Duration::from_secs(self.config.confirmed_ttl_secs);
-
-        // Fast path: already confirmed
-        {
-            let mut cache = self.confirmed.lock();
-            if let Some(entry) = cache.get(&addr) {
-                if now.duration_since(entry.confirmed_at) < ttl {
-                    return;
-                }
-                cache.remove(&addr);
-            }
-        }
-
-        // Track in observed until confirmed
-        let mut observed = self.observed.write();
-
-        if let Some(entry) = observed.get_mut(&addr) {
-            entry.last_seen = now;
-
-            if peer_ip == entry.first_ip {
-                return; // Same IP, no new confirmation
-            }
-
-            entry.confirmations += 1;
-            info!(
-                observed_addr = %addr,
-                confirming_ip = %peer_ip,
-                confirmations = entry.confirmations,
-                "address confirmed by second unique IP"
-            );
-
-            if entry.confirmations >= self.config.confirmation_threshold {
-                let addr_to_cache = addr.clone();
-                observed.remove(&addr);
-                drop(observed);
-                self.add_to_confirmed_cache(addr_to_cache, now);
-            }
-            return;
-        }
-
-        // First observation
-        if self.config.confirmation_threshold <= 1 {
-            drop(observed);
-            self.add_to_confirmed_cache(addr, now);
-            return;
-        }
-
-        // Evict oldest if at capacity
-        if observed.len() >= MAX_OBSERVED_ADDRS {
-            if let Some(evict) = observed.iter().min_by_key(|(_, e)| e.last_seen).map(|(a, _)| a.clone()) {
-                debug!(%evict, "evicting oldest observed address");
-                observed.remove(&evict);
-            }
-        }
-
-        debug!(
-            observed_addr = %addr,
-            first_ip = %peer_ip,
-            threshold = self.config.confirmation_threshold,
-            "new observed address pending"
-        );
-
-        observed.insert(addr, ObservedEntry {
-            confirmations: 1,
-            first_ip: peer_ip,
-            last_seen: now,
-        });
+        // Check if we've confirmed public connectivity
+        self.has_public_connectivity.load(Ordering::Relaxed)
     }
 
-    fn add_to_confirmed_cache(&self, addr: Multiaddr, now: Instant) {
-        let mut cache = self.confirmed.lock();
+    /// Record an observed address reported by a peer.
+    ///
+    /// If the address is public, sets the public connectivity flag to indicate
+    /// we can reach the public internet. This enables dialing other public peers.
+    pub fn on_observed_addr(&self, addr: &Multiaddr) {
+        // Strip /p2p/ suffix if present for classification
+        let addr_for_classify = strip_peer_id(addr);
 
-        info!(
-            observed_addr = %addr,
-            ttl_secs = self.config.confirmed_ttl_secs,
-            cache_size = cache.len(),
-            cache_cap = cache.capacity(),
-            "address added to confirmed cache"
-        );
+        if classify_multiaddr(&addr_for_classify) == Some(AddressScope::Public) {
+            if !self.has_public_connectivity.swap(true, Ordering::Relaxed) {
+                info!("Confirmed public connectivity via peer observation");
+            }
+        }
+    }
 
-        cache.insert(addr, ConfirmedEntry { confirmed_at: now });
+    /// Check if public connectivity has been confirmed.
+    pub fn has_confirmed_public_connectivity(&self) -> bool {
+        self.has_public_connectivity.load(Ordering::Relaxed)
     }
 
     /// Select addresses to advertise to peer during handshake.
     ///
-    /// All returned addresses include `/p2p/{local_peer_id}` if the local
-    /// PeerId has been set via `set_local_peer_id()`.
+    /// Returns addresses appropriate for the peer's scope:
+    /// - NAT addresses for non-loopback peers
+    /// - Local listen addresses filtered by scope
+    ///
+    /// All returned addresses include `/p2p/{local_peer_id}` if set.
+    ///
+    /// NOTE: Does NOT include observed addresses. The handshake protocol
+    /// adds the peer-reported observed address as the LAST element.
     pub fn addresses_for_peer(&self, peer_addr: &Multiaddr) -> Vec<Multiaddr> {
-        use std::collections::HashSet;
-
         let peer_scope = classify_multiaddr(peer_addr).unwrap_or(AddressScope::Public);
 
         // Start with addresses from local capabilities
@@ -265,29 +140,11 @@ impl NatDiscovery {
             .filter(|_| peer_scope != AddressScope::Loopback)
             .cloned();
 
-        // Confirmed observed addresses for public peers
-        let ttl = std::time::Duration::from_secs(self.config.confirmed_ttl_secs);
-        let now = Instant::now();
-        let confirmed_addrs = if self.enabled && peer_scope == AddressScope::Public {
-            let cache = self.confirmed.lock();
-            cache
-                .iter()
-                .filter(|(addr, entry)| {
-                    now.duration_since(entry.confirmed_at) < ttl
-                        && classify_multiaddr(addr) == Some(AddressScope::Public)
-                })
-                .map(|(addr, _)| addr.clone())
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-
-        // Chain all sources and deduplicate
+        // Deduplicate
         let mut seen = HashSet::new();
         let addrs: Vec<Multiaddr> = local_addrs
             .into_iter()
             .chain(nat_addrs)
-            .chain(confirmed_addrs)
             .filter(|addr| seen.insert(addr.clone()))
             .collect();
 
@@ -308,37 +165,21 @@ impl NatDiscovery {
             .collect()
     }
 
-    /// All known addresses (listen + NAT + confirmed observed).
+    /// All known addresses (listen + NAT).
     pub fn all_addresses(&self) -> Vec<Multiaddr> {
-        use std::collections::HashSet;
-
         let listen_addrs = self.local.listen_addrs();
         let nat_addrs = self.nat_addrs.iter().cloned();
-
-        let confirmed_addrs = if self.enabled {
-            let ttl = std::time::Duration::from_secs(self.config.confirmed_ttl_secs);
-            let now = Instant::now();
-            let cache = self.confirmed.lock();
-            cache
-                .iter()
-                .filter(|(_, entry)| now.duration_since(entry.confirmed_at) < ttl)
-                .map(|(addr, _)| addr.clone())
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
 
         // Deduplicate
         let mut seen = HashSet::new();
         listen_addrs
             .into_iter()
             .chain(nat_addrs)
-            .chain(confirmed_addrs.into_iter())
             .filter(|addr| seen.insert(addr.clone()))
             .collect()
     }
 
-    // Delegate to local capabilities
+    /// Filter addresses that are dialable from our perspective.
     pub fn filter_dialable<'a>(
         &self,
         addrs: &'a [Multiaddr],
@@ -358,30 +199,15 @@ impl NatDiscovery {
     pub fn listen_addrs(&self) -> Vec<Multiaddr> {
         self.local.listen_addrs()
     }
+}
 
-    // Diagnostic methods
-    pub fn pending_observed_count(&self) -> usize {
-        self.observed.read().len()
+impl AddressProvider for LocalAddressManager {
+    fn addresses_for_peer(&self, peer_addr: &Multiaddr) -> Vec<Multiaddr> {
+        self.addresses_for_peer(peer_addr)
     }
 
-    pub fn confirmed_cache_count(&self) -> usize {
-        self.confirmed.lock().len()
-    }
-
-    pub fn nat_auto_enabled(&self) -> bool {
-        self.enabled
-    }
-
-    pub fn confirmed_observed_addrs(&self) -> Vec<Multiaddr> {
-        let cache = self.confirmed.lock();
-        let now = Instant::now();
-        let ttl = std::time::Duration::from_secs(self.config.confirmed_ttl_secs);
-
-        cache
-            .iter()
-            .filter(|(_, entry)| now.duration_since(entry.confirmed_at) < ttl)
-            .map(|(addr, _)| addr.clone())
-            .collect()
+    fn local_peer_id(&self) -> Option<&PeerId> {
+        self.local_peer_id()
     }
 }
 
@@ -393,101 +219,51 @@ mod tests {
         s.parse().unwrap()
     }
 
-    fn create_discovery(nat_auto: bool, threshold: usize) -> NatDiscovery {
+    fn create_manager(nat_addrs: Vec<Multiaddr>) -> LocalAddressManager {
         let local = Arc::new(LocalCapabilities::new());
-        let config = NatDiscoveryConfig {
-            confirmation_threshold: threshold,
-            ..Default::default()
-        };
-        NatDiscovery::new(local, vec![], config, nat_auto)
+        LocalAddressManager::new(local, nat_addrs)
     }
 
     #[test]
-    fn test_disabled_ignores_observed() {
-        let discovery = create_discovery(false, 2);
+    fn test_has_public_addresses_with_nat() {
+        let nat_addr = parse_addr("/ip4/203.0.113.50/tcp/1634");
+        let manager = create_manager(vec![nat_addr]);
 
-        let observed = parse_addr("/ip4/203.0.113.100/tcp/1634");
-        let peer = parse_addr("/ip4/8.8.8.8/tcp/5000");
-
-        discovery.on_observed_addr(observed.clone(), &peer);
-
-        assert_eq!(discovery.pending_observed_count(), 0);
-        assert_eq!(discovery.confirmed_cache_count(), 0);
+        assert!(manager.has_public_addresses());
     }
 
     #[test]
-    fn test_observed_addr_confirmation() {
-        let discovery = create_discovery(true, 2);
+    fn test_has_public_addresses_with_public_listen() {
+        let local = Arc::new(LocalCapabilities::new());
+        local.on_new_listen_addr(parse_addr("/ip4/8.8.8.8/tcp/1634"));
+        let manager = LocalAddressManager::new(local, vec![]);
 
-        let observed = parse_addr("/ip4/203.0.113.100/tcp/1634");
-        let peer1 = parse_addr("/ip4/8.8.8.8/tcp/5000");
-        let peer2 = parse_addr("/ip4/1.1.1.1/tcp/5000");
-
-        // First observation - not yet confirmed
-        discovery.on_observed_addr(observed.clone(), &peer1);
-        assert_eq!(discovery.pending_observed_count(), 1);
-        assert_eq!(discovery.confirmed_cache_count(), 0);
-
-        // Second observation from different IP - now confirmed
-        discovery.on_observed_addr(observed.clone(), &peer2);
-        assert_eq!(discovery.pending_observed_count(), 0);
-        assert_eq!(discovery.confirmed_cache_count(), 1);
-
-        let confirmed = discovery.confirmed_observed_addrs();
-        assert_eq!(confirmed.len(), 1);
-        assert!(confirmed.contains(&observed));
+        assert!(manager.has_public_addresses());
     }
 
     #[test]
-    fn test_threshold_one_immediate_confirmation() {
-        let discovery = create_discovery(true, 1);
+    fn test_has_public_addresses_none() {
+        let local = Arc::new(LocalCapabilities::new());
+        local.on_new_listen_addr(parse_addr("/ip4/192.168.1.1/tcp/1634"));
+        let manager = LocalAddressManager::new(local, vec![]);
 
-        let observed = parse_addr("/ip4/203.0.113.100/tcp/1634");
-        let peer = parse_addr("/ip4/8.8.8.8/tcp/5000");
-
-        discovery.on_observed_addr(observed.clone(), &peer);
-
-        // With threshold=1, single confirmation is enough
-        assert_eq!(discovery.pending_observed_count(), 0);
-        assert_eq!(discovery.confirmed_cache_count(), 1);
+        assert!(!manager.has_public_addresses());
     }
 
     #[test]
-    fn test_ignore_public_from_private_peer() {
-        let discovery = create_discovery(true, 1);
-
-        let observed = parse_addr("/ip4/203.0.113.100/tcp/1634");
-        let private_peer = parse_addr("/ip4/192.168.1.50/tcp/5000");
-
-        discovery.on_observed_addr(observed.clone(), &private_peer);
-
-        // Should be ignored - private peer claiming public address
-        assert_eq!(discovery.confirmed_cache_count(), 0);
-    }
-
-    #[test]
-    fn test_addresses_for_peer_includes_nat_and_confirmed() {
+    fn test_addresses_for_peer_includes_nat() {
         let local = Arc::new(LocalCapabilities::new());
         local.on_new_listen_addr(parse_addr("/ip4/8.8.4.4/tcp/1634"));
 
         let nat_addr = parse_addr("/ip4/203.0.113.50/tcp/1634");
-        let config = NatDiscoveryConfig {
-            confirmation_threshold: 1,
-            ..Default::default()
-        };
-        let discovery = NatDiscovery::new(local, vec![nat_addr.clone()], config, true);
+        let manager = LocalAddressManager::new(local, vec![nat_addr.clone()]);
 
-        // Add confirmed observed address
-        let observed = parse_addr("/ip4/198.51.100.10/tcp/1634");
         let public_peer = parse_addr("/ip4/8.8.8.8/tcp/5000");
-        discovery.on_observed_addr(observed.clone(), &public_peer);
+        let addrs = manager.addresses_for_peer(&public_peer);
 
-        let addrs = discovery.addresses_for_peer(&public_peer);
-
-        // Should include listen address, NAT address, and confirmed observed
+        // Should include listen address and NAT address
         assert!(addrs.iter().any(|a| a.to_string().contains("8.8.4.4")));
-        assert!(addrs.contains(&nat_addr));
-        assert!(addrs.contains(&observed));
+        assert!(addrs.iter().any(|a| a.to_string().contains("203.0.113.50")));
     }
 
     #[test]
@@ -496,18 +272,98 @@ mod tests {
         local.on_new_listen_addr(parse_addr("/ip4/127.0.0.1/tcp/1634"));
 
         let nat_addr = parse_addr("/ip4/203.0.113.50/tcp/1634");
-        let discovery = NatDiscovery::new(
-            local,
-            vec![nat_addr.clone()],
-            NatDiscoveryConfig::default(),
-            false,
-        );
+        let manager = LocalAddressManager::new(local, vec![nat_addr.clone()]);
 
         let loopback_peer = parse_addr("/ip4/127.0.0.2/tcp/5000");
-        let addrs = discovery.addresses_for_peer(&loopback_peer);
+        let addrs = manager.addresses_for_peer(&loopback_peer);
 
         // Loopback peer should NOT see NAT address
-        assert!(!addrs.contains(&nat_addr));
+        assert!(!addrs.iter().any(|a| a.to_string().contains("203.0.113.50")));
         assert!(addrs.iter().any(|a| a.to_string().contains("127.0.0.1")));
+    }
+
+    #[test]
+    fn test_all_addresses_deduplicates() {
+        let local = Arc::new(LocalCapabilities::new());
+        let addr = parse_addr("/ip4/8.8.8.8/tcp/1634");
+        local.on_new_listen_addr(addr.clone());
+
+        // Add same addr as NAT (shouldn't duplicate)
+        let manager = LocalAddressManager::new(local, vec![addr.clone()]);
+
+        let all = manager.all_addresses();
+        assert_eq!(all.len(), 1);
+    }
+
+    #[test]
+    fn test_with_peer_id_appends() {
+        let manager = create_manager(vec![]);
+        let peer_id = PeerId::random();
+        manager.set_local_peer_id(peer_id);
+
+        let addr = parse_addr("/ip4/8.8.8.8/tcp/1634");
+        let with_peer_id = manager.with_peer_id(vec![addr]);
+
+        assert_eq!(with_peer_id.len(), 1);
+        assert!(with_peer_id[0].to_string().contains(&peer_id.to_string()));
+    }
+
+    #[test]
+    fn test_observed_public_address_enables_has_public() {
+        // Start with no public addresses
+        let local = Arc::new(LocalCapabilities::new());
+        local.on_new_listen_addr(parse_addr("/ip4/192.168.1.1/tcp/1634"));
+        let manager = LocalAddressManager::new(local, vec![]);
+
+        // Initially no public connectivity
+        assert!(!manager.has_public_addresses());
+        assert!(!manager.has_confirmed_public_connectivity());
+
+        // Simulate peer reporting our public address
+        let observed = parse_addr("/ip4/91.189.35.149/tcp/1634");
+        manager.on_observed_addr(&observed);
+
+        // Now we have confirmed public connectivity
+        assert!(manager.has_public_addresses());
+        assert!(manager.has_confirmed_public_connectivity());
+    }
+
+    #[test]
+    fn test_observed_private_address_ignored() {
+        let manager = create_manager(vec![]);
+
+        // Private address shouldn't enable public connectivity
+        let private_observed = parse_addr("/ip4/192.168.1.100/tcp/1634");
+        manager.on_observed_addr(&private_observed);
+
+        assert!(!manager.has_public_addresses());
+        assert!(!manager.has_confirmed_public_connectivity());
+    }
+
+    #[test]
+    fn test_observed_address_with_peer_id_works() {
+        let manager = create_manager(vec![]);
+        let peer_id = PeerId::random();
+
+        // Observed address often includes /p2p/{peer_id} - should still work
+        let observed_with_peer = parse_addr(&format!("/ip4/91.189.35.149/tcp/1634/p2p/{}", peer_id));
+        manager.on_observed_addr(&observed_with_peer);
+
+        assert!(manager.has_public_addresses());
+        assert!(manager.has_confirmed_public_connectivity());
+    }
+
+    #[test]
+    fn test_multiple_observations_idempotent() {
+        let manager = create_manager(vec![]);
+
+        let observed = parse_addr("/ip4/91.189.35.149/tcp/1634");
+        manager.on_observed_addr(&observed);
+        manager.on_observed_addr(&observed);
+        manager.on_observed_addr(&observed);
+
+        // Multiple observations still just mean we have public connectivity
+        assert!(manager.has_public_addresses());
+        assert!(manager.has_confirmed_public_connectivity());
     }
 }

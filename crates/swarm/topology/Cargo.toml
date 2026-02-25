@@ -16,14 +16,17 @@ vertex-observability.workspace = true
 vertex-swarm-identity.workspace = true
 vertex-swarm-spec.workspace = true
 vertex-net-local.workspace = true
-vertex-net-handshake.workspace = true
-vertex-net-headers.workspace = true
-vertex-net-hive.workspace = true
-vertex-net-pingpong.workspace = true
+vertex-net-peer-store.workspace = true
+vertex-tasks.workspace = true
+vertex-swarm-net-handshake.workspace = true
+vertex-swarm-net-identify.workspace = true
+vertex-swarm-net-headers.workspace = true
+vertex-swarm-net-hive.workspace = true
+vertex-swarm-net-pingpong.workspace = true
 vertex-swarm-peer.workspace = true
 vertex-swarm-peer-manager.workspace = true
 vertex-swarm-peer-registry.workspace = true
-vertex-tasks.workspace = true
+vertex-swarm-peer-score.workspace = true
 nectar-primitives.workspace = true
 
 ## p2p
@@ -42,6 +45,7 @@ thiserror.workspace = true
 rand.workspace = true
 parking_lot.workspace = true
 hashlink.workspace = true
+strum.workspace = true
 web-time.workspace = true
 hex = "0.4"
 
@@ -54,12 +58,17 @@ tracing.workspace = true
 metrics.workspace = true
 
 # DNS resolution (for bootnode dnsaddr resolution)
-hickory-resolver = { version = "0.25", features = ["tokio", "system-config"] }
+vertex-net-dnsaddr.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
 tracing-subscriber.workspace = true
 vertex-swarm-test-utils = { workspace = true }
+criterion.workspace = true
+
+[[bench]]
+name = "topology_benchmarks"
+harness = false
 
 [lints]
 workspace = true

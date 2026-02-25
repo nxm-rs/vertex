@@ -9,7 +9,6 @@ edition = "2021"
 path = "src/main.rs"
 
 [dependencies]
-once_cell = { workspace = true }
 dotenv = { workspace = true }
 clap = { workspace = true }
 chrono = { workspace = true }

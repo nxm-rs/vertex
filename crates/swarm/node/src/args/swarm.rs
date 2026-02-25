@@ -40,13 +40,21 @@ pub enum NodeTypeArg {
 
 impl From<NodeTypeArg> for SwarmNodeType {
     fn from(arg: NodeTypeArg) -> Self {
-        SwarmNodeType::from_repr(arg as u8).expect("matching repr")
+        match arg {
+            NodeTypeArg::Bootnode => SwarmNodeType::Bootnode,
+            NodeTypeArg::Client => SwarmNodeType::Client,
+            NodeTypeArg::Storer => SwarmNodeType::Storer,
+        }
     }
 }
 
 impl From<SwarmNodeType> for NodeTypeArg {
     fn from(node_type: SwarmNodeType) -> Self {
-        NodeTypeArg::from_repr(node_type as u8).expect("matching repr")
+        match node_type {
+            SwarmNodeType::Bootnode => NodeTypeArg::Bootnode,
+            SwarmNodeType::Client => NodeTypeArg::Client,
+            SwarmNodeType::Storer => NodeTypeArg::Storer,
+        }
     }
 }
 

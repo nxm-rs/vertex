@@ -11,6 +11,13 @@ description = "Vertex Swarm node binary"
 name = "vertex"
 path = "src/main.rs"
 
+[features]
+default = []
+jemalloc = ["tikv-jemallocator", "vertex-observability/jemalloc", "vertex-node-builder/jemalloc"]
+heap-profiling = ["jemalloc", "tikv-jemallocator/profiling", "vertex-observability/heap-profiling"]
+profiling = ["vertex-observability/profiling"]
+tokio-console = ["console-subscriber", "vertex-observability/tokio-console", "tokio/tracing"]
+
 [dependencies]
 # vertex - node infrastructure
 vertex-observability.workspace = true
@@ -27,9 +34,13 @@ vertex-swarm-bandwidth.workspace = true
 vertex-swarm-builder.workspace = true
 vertex-swarm-node = { workspace = true, features = ["cli"] }
 vertex-swarm-identity.workspace = true
+vertex-swarm-net-handshake.workspace = true
+vertex-swarm-net-headers.workspace = true
+vertex-swarm-net-hive.workspace = true
 vertex-swarm-peer-manager.workspace = true
 vertex-swarm-primitives.workspace = true
 vertex-swarm-spec.workspace = true
+vertex-swarm-topology.workspace = true
 
 # alloy
 alloy-primitives.workspace = true
@@ -40,3 +51,7 @@ eyre.workspace = true
 rand.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
+
+# profiling (optional)
+tikv-jemallocator = { workspace = true, optional = true }
+console-subscriber = { workspace = true, optional = true }

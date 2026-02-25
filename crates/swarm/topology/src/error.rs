@@ -1,7 +1,6 @@
 //! Topology error types.
 
 use libp2p::Multiaddr;
-use vertex_swarm_peer_manager::PeerManagerError;
 use vertex_swarm_primitives::OverlayAddress;
 
 /// Errors that can occur in topology operations.
@@ -10,10 +9,6 @@ pub enum TopologyError {
     /// Failed to parse a multiaddr string.
     #[error("invalid multiaddr '{addr}': {reason}")]
     InvalidMultiaddr { addr: String, reason: String },
-
-    /// Peer manager initialization failed.
-    #[error(transparent)]
-    PeerManager(#[from] PeerManagerError),
 
     /// Failed to resolve a dnsaddr multiaddr.
     #[error("failed to resolve dnsaddr {addr}: {reason}")]
@@ -42,6 +37,10 @@ pub enum TopologyError {
     /// The topology service has shut down.
     #[error("topology service has shut down")]
     ServiceShutdown,
+
+    /// Failed to spawn the gossip verifier task.
+    #[error("failed to spawn gossip verifier: {0}")]
+    VerifierSpawn(String),
 }
 
 /// Result type for topology operations.

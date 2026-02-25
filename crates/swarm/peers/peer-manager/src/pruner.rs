@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use vertex_tasks::TaskSpawnerExt;
+use vertex_tasks::TaskExecutor;
 
 use crate::PeerManager;
 
@@ -35,7 +35,7 @@ impl Default for PruneConfig {
 pub fn spawn_prune_task(
     manager: Arc<PeerManager>,
     config: PruneConfig,
-    executor: &impl TaskSpawnerExt,
+    executor: &TaskExecutor,
 ) {
     executor.spawn_with_graceful_shutdown_signal("peer_pruner", move |shutdown| async move {
         let mut shutdown = std::pin::pin!(shutdown);

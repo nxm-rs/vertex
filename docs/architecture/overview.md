@@ -101,7 +101,6 @@ Following the reth pattern, we define stateless traits that carry associated typ
 pub trait NodeTypes: Send + Sync + 'static {
     type Database: NodeDatabaseProvider;
     type Rpc: NodeRpcServer;
-    type Executor: NodeTaskExecutor;
 }
 
 // Swarm capability traits (swarm/api)

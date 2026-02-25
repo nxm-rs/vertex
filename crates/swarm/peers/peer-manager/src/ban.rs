@@ -1,8 +1,7 @@
 //! Ban information for peers.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use serde::{Deserialize, Serialize};
+use vertex_net_peer_store::unix_timestamp_secs;
 
 /// Ban metadata for a peer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,13 +26,6 @@ impl BanInfo {
     pub fn reason(&self) -> Option<&str> {
         self.reason.as_deref()
     }
-}
-
-fn unix_timestamp_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

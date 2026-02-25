@@ -42,6 +42,7 @@ impl<I: SwarmIdentity, B: NetworkBehaviour> BaseNode<I, B> {
         self.connected_peers() > 0
     }
 
+    #[must_use = "listen failures should be checked"]
     pub fn start_listening(&mut self) -> Result<()> {
         for addr in &self.listen_addrs {
             match self.swarm.listen_on(addr.clone()) {
@@ -52,7 +53,7 @@ impl<I: SwarmIdentity, B: NetworkBehaviour> BaseNode<I, B> {
         Ok(())
     }
 
-    /// Handle common swarm events. Returns `Some` for behaviour events needing node-specific handling.
+    /// Handle common swarm events. Returns `Some(Behaviour)` for behaviour events.
     ///
     /// Listen address events (NewListenAddr, ExpiredListenAddr) are handled by TopologyBehaviour.
     pub(crate) fn handle_swarm_event_common<E>(
@@ -90,7 +91,7 @@ impl<I: SwarmIdentity, B: NetworkBehaviour> BaseNode<I, B> {
                 num_established,
                 ..
             } => {
-                info!(
+                debug!(
                     %peer_id,
                     num_established,
                     cause = ?cause,

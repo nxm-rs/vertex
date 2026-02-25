@@ -9,7 +9,8 @@ use vertex_swarm_primitives::OverlayAddress;
 pub use vertex_swarm_peer_registry::{ConnectionDirection, DialReason};
 
 /// Reason for peer disconnection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum DisconnectReason {
     /// Remote peer initiated the disconnect.
     Remote,
@@ -19,24 +20,52 @@ pub enum DisconnectReason {
     ConnectionError,
     /// Graceful shutdown in progress.
     Shutdown,
+    /// Evicted because bin exceeded target after depth change.
+    BinTrimmed,
     /// Unknown or unclassified reason.
     Unknown,
 }
 
-impl DisconnectReason {
-    pub fn as_str(&self) -> &'static str {
+/// Dial failure reasons for structured error handling.
+#[derive(Debug, Clone, PartialEq, Eq, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum DialError {
+    /// Dial timed out waiting for connection.
+    Timeout,
+    /// Handshake protocol failed.
+    HandshakeFailed(String),
+    /// Connection actively refused by peer.
+    ConnectionRefused,
+    /// No route to peer address.
+    NoRoute,
+    /// Address unreachable (network layer).
+    Unreachable,
+    /// Protocol negotiation failed (no common protocols).
+    NegotiationFailed,
+    /// Stale connection attempt cleaned up.
+    Stale,
+    /// Other error with description.
+    Other(String),
+}
+
+impl std::fmt::Display for DialError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DisconnectReason::Remote => "remote",
-            DisconnectReason::LocalClose => "local_close",
-            DisconnectReason::ConnectionError => "connection_error",
-            DisconnectReason::Shutdown => "shutdown",
-            DisconnectReason::Unknown => "unknown",
+            DialError::Timeout => write!(f, "dial timed out"),
+            DialError::HandshakeFailed(msg) => write!(f, "handshake failed: {}", msg),
+            DialError::ConnectionRefused => write!(f, "connection refused"),
+            DialError::NoRoute => write!(f, "no route to host"),
+            DialError::Unreachable => write!(f, "address unreachable"),
+            DialError::NegotiationFailed => write!(f, "protocol negotiation failed"),
+            DialError::Stale => write!(f, "stale connection attempt"),
+            DialError::Other(msg) => write!(f, "{}", msg),
         }
     }
 }
 
 /// Reason for rejecting a peer connection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum RejectionReason {
     /// Kademlia bin is saturated.
     BinSaturated,
@@ -48,17 +77,6 @@ pub enum RejectionReason {
     HandshakeFailed,
 }
 
-impl RejectionReason {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            RejectionReason::BinSaturated => "bin_saturated",
-            RejectionReason::Banned => "banned",
-            RejectionReason::DuplicateConnection => "duplicate_connection",
-            RejectionReason::HandshakeFailed => "handshake_failed",
-        }
-    }
-}
-
 /// Events emitted by TopologyService for external consumers.
 #[derive(Debug, Clone)]
 pub enum TopologyEvent {
@@ -68,8 +86,6 @@ pub enum TopologyEvent {
         peer_id: PeerId,
         /// True if peer is a storer node (full storage commitment).
         storer: bool,
-        /// Duration from connection establishment to handshake completion.
-        handshake_duration: Duration,
         /// Whether we dialed or they dialed us.
         direction: ConnectionDirection,
     },
@@ -87,6 +103,8 @@ pub enum TopologyEvent {
         reason: DisconnectReason,
         /// How long the peer was connected before disconnecting.
         connection_duration: Option<Duration>,
+        /// Whether the disconnected peer was a storer node.
+        storer: bool,
     },
     /// Neighborhood depth changed.
     DepthChanged { old_depth: u8, new_depth: u8 },
@@ -96,8 +114,8 @@ pub enum TopologyEvent {
         overlay: Option<OverlayAddress>,
         /// All addresses that were attempted.
         addrs: Vec<Multiaddr>,
-        /// Error description.
-        error: String,
+        /// Typed error reason.
+        error: DialError,
         /// Duration of the entire dial attempt.
         dial_duration: Option<Duration>,
         /// Dial reason.

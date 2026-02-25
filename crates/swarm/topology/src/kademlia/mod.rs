@@ -1,14 +1,22 @@
 //! Kademlia-based peer routing for Swarm overlay network.
 
 pub mod args;
+mod candidate_queues;
+mod candidates;
 mod config;
-mod kademlia;
-mod pslice;
+mod evaluator_task;
+mod routing;
+mod limits;
 
 pub use args::RoutingArgs;
+pub use candidates::{
+    CandidateSelector, CandidateSnapshot, select_balanced_candidates,
+    select_neighborhood_candidates,
+};
 pub use config::KademliaConfig;
-pub use kademlia::KademliaRouting;
-pub use pslice::PSlice;
+pub(crate) use evaluator_task::RoutingEvaluatorHandle;
+pub use routing::{EvictionCandidate, EvictionPhase, KademliaRouting};
+pub use limits::{DepthAwareLimits, LimitsSnapshot, DEFAULT_NOMINAL, DEFAULT_TOTAL_TARGET};
 
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_primitives::OverlayAddress;
@@ -46,12 +54,9 @@ pub trait RoutingCapacity: Send + Sync {
 
 /// Internal routing operations for topology behaviour.
 ///
-/// Extends SwarmTopology with mutation and connection management.
+/// Extends RoutingCapacity with peer connection/disconnection notifications.
 /// Implemented by routing algorithms (e.g., Kademlia).
 pub trait SwarmRouting<I: SwarmIdentity>: RoutingCapacity {
-    /// Add discovered peers (from Hive). May trigger connection evaluation.
-    fn add_peers(&self, peers: &[OverlayAddress]);
-
     /// Should we accept an inbound connection from this peer?
     fn should_accept_peer(&self, peer: &OverlayAddress, storer: bool) -> bool;
 
@@ -61,12 +66,6 @@ pub trait SwarmRouting<I: SwarmIdentity>: RoutingCapacity {
     /// Update routing tables for a disconnected peer.
     fn on_peer_disconnected(&self, peer: &OverlayAddress);
 
-    /// Get peers we should try to connect to.
-    fn peers_to_connect(&self) -> Vec<OverlayAddress>;
-
     /// Remove a peer from all routing state (for banning).
     fn remove_peer(&self, peer: &OverlayAddress);
-
-    /// Evaluate and update connection candidates based on routing needs.
-    fn evaluate_connections(&self);
 }

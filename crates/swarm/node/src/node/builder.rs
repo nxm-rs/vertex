@@ -5,6 +5,7 @@ use std::time::Duration;
 use eyre::{Result, WrapErr};
 use libp2p::Multiaddr;
 use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig};
+use vertex_swarm_spec::HasSpec;
 use vertex_swarm_topology::{
     KademliaConfig, TopologyBehaviour, TopologyConfig, TopologyHandle,
 };
@@ -12,13 +13,13 @@ use vertex_swarm_topology::{
 use crate::BootnodeProvider;
 
 /// Pre-built infrastructure components ready for swarm assembly.
-pub struct BuiltInfrastructure<I: SwarmIdentity> {
+pub struct BuiltInfrastructure<I: SwarmIdentity + Clone> {
     pub(crate) identity: I,
     pub(crate) topology_behaviour: Option<TopologyBehaviour<I>>,
     pub(crate) topology_handle: TopologyHandle<I>,
 }
 
-impl<I: SwarmIdentity> BuiltInfrastructure<I> {
+impl<I: SwarmIdentity + Clone> BuiltInfrastructure<I> {
     /// Get the topology handle.
     pub fn topology_handle(&self) -> &TopologyHandle<I> {
         &self.topology_handle
@@ -38,10 +39,11 @@ impl<I: SwarmIdentity + Clone> BuiltInfrastructure<I> {
         topology_config: TopologyConfig,
     ) -> Result<Self>
     where
+        I: HasSpec,
         C: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig<Routing = KademliaConfig>,
     {
         let bootnodes = if network_config.bootnodes().is_empty() {
-            BootnodeProvider::bootnodes(identity.spec())
+            BootnodeProvider::bootnodes(<I as SwarmIdentity>::spec(&identity))
         } else {
             network_config.bootnodes().to_vec()
         };

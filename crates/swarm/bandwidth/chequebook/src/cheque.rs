@@ -114,6 +114,7 @@ impl SignedCheque {
     }
 
     /// Recover the signer address from the signature.
+    #[must_use = "signature recovery result should be checked"]
     pub fn recover_signer(&self, spec: &impl SwarmSpec) -> Result<Address, ChequeError> {
         let sig = self.parse_signature()?;
         let hash = self.cheque.signing_hash(spec);
@@ -123,6 +124,7 @@ impl SignedCheque {
     }
 
     /// Verify that this cheque was signed by the expected owner.
+    #[must_use = "cheque verification result should be checked"]
     pub fn verify(&self, owner: Address, spec: &impl SwarmSpec) -> Result<(), ChequeError> {
         let signer = self.recover_signer(spec)?;
         if signer != owner {
@@ -135,6 +137,7 @@ impl SignedCheque {
     }
 
     /// Serialize to JSON bytes for SWAP protocol transmission.
+    #[must_use = "serialization result should be checked"]
     pub fn to_json(&self) -> Result<Bytes, ChequeError> {
         serde_json::to_vec(self)
             .map(Bytes::from)
@@ -142,6 +145,7 @@ impl SignedCheque {
     }
 
     /// Deserialize from JSON bytes.
+    #[must_use = "deserialization result should be checked"]
     pub fn from_json(data: &[u8]) -> Result<Self, ChequeError> {
         serde_json::from_slice(data).map_err(|e| ChequeError::Serialization(e.to_string()))
     }

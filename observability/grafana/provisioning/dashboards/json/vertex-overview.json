@@ -1983,11 +1983,277 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 70
+      },
+      "id": 200,
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (protocol, direction) (rate(vertex_protocol_exchanges_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "{{protocol}} ({{direction}})",
+          "refId": "A"
+        }
+      ],
+      "title": "Protocol Exchange Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 70
+      },
+      "id": 201,
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (protocol, direction, outcome) (rate(vertex_protocol_exchange_outcomes_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "{{protocol}} {{direction}} ({{outcome}})",
+          "refId": "A"
+        }
+      ],
+      "title": "Protocol Exchange Outcomes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 78
+      },
+      "id": 202,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (protocol, direction) (rate(vertex_protocol_exchange_duration_seconds_sum{instance=~\"$instance\"}[$rate_window])) / sum by (protocol, direction) (rate(vertex_protocol_exchange_duration_seconds_count{instance=~\"$instance\"}[$rate_window]))",
+          "legendFormat": "{{protocol}} ({{direction}}) avg",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, protocol, direction) (rate(vertex_protocol_exchange_duration_seconds_bucket{instance=~\"$instance\"}[$rate_window])))",
+          "legendFormat": "{{protocol}} ({{direction}}) p99",
+          "refId": "B"
+        }
+      ],
+      "title": "Protocol Exchange Duration",
+      "type": "timeseries"
+    },
+    {
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 70
+        "y": 86
       },
       "id": 105,
       "title": "Handshake",
@@ -2020,7 +2286,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 71
+        "y": 87
       },
       "id": 22,
       "options": {
@@ -2082,7 +2348,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 71
+        "y": 87
       },
       "id": 23,
       "options": {
@@ -2136,7 +2402,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 71
+        "y": 87
       },
       "id": 24,
       "options": {
@@ -2155,7 +2421,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(vertex_handshake_duration_seconds_sum{instance=~\"$instance\"}[5m])) / sum(rate(vertex_handshake_duration_seconds_count{instance=~\"$instance\"}[5m]))",
+          "expr": "sum(rate(vertex_handshake_duration_seconds_sum{instance=~\"$instance\"}[$rate_window])) / sum(rate(vertex_handshake_duration_seconds_count{instance=~\"$instance\"}[$rate_window]))",
           "legendFormat": "Avg Duration",
           "refId": "A"
         }
@@ -2190,7 +2456,7 @@
         "h": 4,
         "w": 4,
         "x": 12,
-        "y": 71
+        "y": 87
       },
       "id": 25,
       "options": {
@@ -2252,7 +2518,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 71
+        "y": 87
       },
       "id": 30,
       "options": {
@@ -2338,7 +2604,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 75
+        "y": 91
       },
       "id": 26,
       "options": {
@@ -2424,7 +2690,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 75
+        "y": 91
       },
       "id": 27,
       "options": {
@@ -2515,7 +2781,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 83
+        "y": 99
       },
       "id": 28,
       "options": {
@@ -2535,12 +2801,12 @@
       },
       "targets": [
         {
-          "expr": "sum by (direction) (rate(vertex_handshake_duration_seconds_sum{instance=~\"$instance\"}[5m])) / sum by (direction) (rate(vertex_handshake_duration_seconds_count{instance=~\"$instance\"}[5m]))",
+          "expr": "sum by (direction) (rate(vertex_handshake_duration_seconds_sum{instance=~\"$instance\"}[$rate_window])) / sum by (direction) (rate(vertex_handshake_duration_seconds_count{instance=~\"$instance\"}[$rate_window]))",
           "legendFormat": "{{direction}} avg",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le, direction) (rate(vertex_handshake_duration_seconds_bucket{instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le, direction) (rate(vertex_handshake_duration_seconds_bucket{instance=~\"$instance\"}[$rate_window])))",
           "legendFormat": "{{direction}} p99",
           "refId": "B"
         }
@@ -2607,7 +2873,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 83
+        "y": 99
       },
       "id": 29,
       "options": {
@@ -2627,12 +2893,12 @@
       },
       "targets": [
         {
-          "expr": "sum by (stage) (rate(vertex_handshake_stage_duration_seconds_sum{instance=~\"$instance\"}[5m])) / sum by (stage) (rate(vertex_handshake_stage_duration_seconds_count{instance=~\"$instance\"}[5m]))",
+          "expr": "sum by (stage) (rate(vertex_handshake_stage_duration_seconds_sum{instance=~\"$instance\"}[$rate_window])) / sum by (stage) (rate(vertex_handshake_stage_duration_seconds_count{instance=~\"$instance\"}[$rate_window]))",
           "legendFormat": "{{stage}} avg",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le, stage) (rate(vertex_handshake_stage_duration_seconds_bucket{instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le, stage) (rate(vertex_handshake_stage_duration_seconds_bucket{instance=~\"$instance\"}[$rate_window])))",
           "legendFormat": "{{stage}} p99",
           "refId": "B"
         }
@@ -2699,7 +2965,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 91
+        "y": 107
       },
       "id": 8,
       "options": {
@@ -2719,17 +2985,17 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(vertex_handshake_duration_seconds_sum{instance=~\"$instance\"}[5m])) / sum(rate(vertex_handshake_duration_seconds_count{instance=~\"$instance\"}[5m]))",
+          "expr": "sum(rate(vertex_handshake_duration_seconds_sum{instance=~\"$instance\"}[$rate_window])) / sum(rate(vertex_handshake_duration_seconds_count{instance=~\"$instance\"}[$rate_window]))",
           "legendFormat": "Handshake avg",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(vertex_handshake_duration_seconds_bucket{instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(vertex_handshake_duration_seconds_bucket{instance=~\"$instance\"}[$rate_window])))",
           "legendFormat": "Handshake p99",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(vertex_topology_ping_rtt_seconds_bucket{instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(vertex_topology_ping_rtt_seconds_bucket{instance=~\"$instance\"}[$rate_window])))",
           "legendFormat": "Ping RTT p99",
           "refId": "C"
         }
@@ -2766,7 +3032,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 91
+        "y": 107
       },
       "id": 31,
       "options": {
@@ -2823,103 +3089,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 99
+        "y": 115
       },
       "id": 110,
       "title": "Hive",
       "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "s"
-        }
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 100
-      },
-      "id": 35,
-      "options": {
-        "legend": {
-          "calcs": [
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum by (direction) (rate(vertex_hive_exchange_duration_seconds_sum{instance=~\"$instance\"}[5m])) / sum by (direction) (rate(vertex_hive_exchange_duration_seconds_count{instance=~\"$instance\"}[5m]))",
-          "legendFormat": "{{direction}} avg",
-          "refId": "A"
-        },
-        {
-          "expr": "histogram_quantile(0.99, sum by (le, direction) (rate(vertex_hive_exchange_duration_seconds_bucket{instance=~\"$instance\"}[5m])))",
-          "legendFormat": "{{direction}} p99",
-          "refId": "B"
-        }
-      ],
-      "title": "Hive Exchange Duration",
-      "type": "timeseries"
     },
     {
       "datasource": {
@@ -2979,8 +3153,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 100
+        "x": 0,
+        "y": 116
       },
       "id": 36,
       "options": {
@@ -3000,283 +3174,22 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le, direction) (rate(vertex_hive_peers_per_exchange_bucket{instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.50, sum by (le, direction) (rate(vertex_hive_peers_per_exchange_bucket{instance=~\"$instance\"}[$rate_window])))",
           "legendFormat": "{{direction}} p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le, direction) (rate(vertex_hive_peers_per_exchange_bucket{instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le, direction) (rate(vertex_hive_peers_per_exchange_bucket{instance=~\"$instance\"}[$rate_window])))",
           "legendFormat": "{{direction}} p99",
           "refId": "B"
         },
         {
-          "expr": "sum by (direction) (rate(vertex_hive_peers_per_exchange_sum{instance=~\"$instance\"}[5m])) / sum by (direction) (rate(vertex_hive_peers_per_exchange_count{instance=~\"$instance\"}[5m]))",
+          "expr": "sum by (direction) (rate(vertex_hive_peers_per_exchange_sum{instance=~\"$instance\"}[$rate_window])) / sum by (direction) (rate(vertex_hive_peers_per_exchange_count{instance=~\"$instance\"}[$rate_window]))",
           "legendFormat": "{{direction}} avg",
           "refId": "C"
         }
       ],
       "title": "Peers per Hive Exchange",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ops"
-        }
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 108
-      },
-      "id": 112,
-      "options": {
-        "legend": {
-          "calcs": [
-            "sum",
-            "mean"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum by (direction) (rate(vertex_hive_exchanges_total{instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "{{direction}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Hive Exchange Rate",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 30,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "normal"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ops"
-        }
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 108
-      },
-      "id": 113,
-      "options": {
-        "legend": {
-          "calcs": [
-            "sum",
-            "mean"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum by (direction, outcome) (rate(vertex_hive_exchange_outcomes_total{instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "{{direction}} ({{outcome}})",
-          "refId": "A"
-        }
-      ],
-      "title": "Hive Exchange Outcomes",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "normal"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ops"
-        }
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 116
-      },
-      "id": 114,
-      "options": {
-        "legend": {
-          "calcs": [
-            "sum",
-            "mean"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum by (direction, reason) (rate(vertex_hive_errors_total{instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "{{direction}} ({{reason}})",
-          "refId": "A"
-        }
-      ],
-      "title": "Hive Errors",
       "type": "timeseries"
     },
     {
@@ -3537,17 +3450,17 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le, direction) (rate(vertex_hive_validation_duration_seconds_bucket{instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.50, sum by (le, direction) (rate(vertex_hive_validation_duration_seconds_bucket{instance=~\"$instance\"}[$rate_window])))",
           "legendFormat": "{{direction}} p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le, direction) (rate(vertex_hive_validation_duration_seconds_bucket{instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le, direction) (rate(vertex_hive_validation_duration_seconds_bucket{instance=~\"$instance\"}[$rate_window])))",
           "legendFormat": "{{direction}} p99",
           "refId": "B"
         },
         {
-          "expr": "sum by (direction) (rate(vertex_hive_validation_duration_seconds_sum{instance=~\"$instance\"}[5m])) / sum by (direction) (rate(vertex_hive_validation_duration_seconds_count{instance=~\"$instance\"}[5m]))",
+          "expr": "sum by (direction) (rate(vertex_hive_validation_duration_seconds_sum{instance=~\"$instance\"}[$rate_window])) / sum by (direction) (rate(vertex_hive_validation_duration_seconds_count{instance=~\"$instance\"}[$rate_window]))",
           "legendFormat": "{{direction}} avg",
           "refId": "C"
         }
@@ -3645,17 +3558,17 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(vertex_pingpong_rtt_seconds_bucket{instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(vertex_pingpong_rtt_seconds_bucket{instance=~\"$instance\"}[$rate_window])))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(vertex_pingpong_rtt_seconds_bucket{instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(vertex_pingpong_rtt_seconds_bucket{instance=~\"$instance\"}[$rate_window])))",
           "legendFormat": "p99",
           "refId": "B"
         },
         {
-          "expr": "sum(rate(vertex_pingpong_rtt_seconds_sum{instance=~\"$instance\"}[5m])) / sum(rate(vertex_pingpong_rtt_seconds_count{instance=~\"$instance\"}[5m]))",
+          "expr": "sum(rate(vertex_pingpong_rtt_seconds_sum{instance=~\"$instance\"}[$rate_window])) / sum(rate(vertex_pingpong_rtt_seconds_count{instance=~\"$instance\"}[$rate_window]))",
           "legendFormat": "avg",
           "refId": "C"
         }
@@ -3664,185 +3577,11 @@
       "type": "timeseries"
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 30,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "normal"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ops"
-        }
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 133
-      },
-      "id": 120,
-      "options": {
-        "legend": {
-          "calcs": [
-            "sum",
-            "mean"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum by (direction, outcome) (rate(vertex_pingpong_exchange_outcomes_total{instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "{{direction}} ({{outcome}})",
-          "refId": "A"
-        }
-      ],
-      "title": "Pingpong Exchange Outcomes",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "normal"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ops"
-        }
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 141
-      },
-      "id": 121,
-      "options": {
-        "legend": {
-          "calcs": [
-            "sum",
-            "mean"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum by (direction, reason) (rate(vertex_pingpong_errors_total{instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "{{direction}} ({{reason}})",
-          "refId": "A"
-        }
-      ],
-      "title": "Pingpong Errors",
-      "type": "timeseries"
-    },
-    {
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 149
+        "y": 141
       },
       "id": 106,
       "title": "Topology",
@@ -3911,7 +3650,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 150
+        "y": 142
       },
       "id": 37,
       "options": {
@@ -3931,17 +3670,17 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, rate(vertex_topology_poll_duration_seconds_bucket{instance=~\"$instance\"}[5m]))",
+          "expr": "histogram_quantile(0.50, rate(vertex_topology_poll_duration_seconds_bucket{instance=~\"$instance\"}[$rate_window]))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.99, rate(vertex_topology_poll_duration_seconds_bucket{instance=~\"$instance\"}[5m]))",
+          "expr": "histogram_quantile(0.99, rate(vertex_topology_poll_duration_seconds_bucket{instance=~\"$instance\"}[$rate_window]))",
           "legendFormat": "p99",
           "refId": "B"
         },
         {
-          "expr": "rate(vertex_topology_poll_duration_seconds_sum{instance=~\"$instance\"}[5m]) / rate(vertex_topology_poll_duration_seconds_count{instance=~\"$instance\"}[5m])",
+          "expr": "rate(vertex_topology_poll_duration_seconds_sum{instance=~\"$instance\"}[$rate_window]) / rate(vertex_topology_poll_duration_seconds_count{instance=~\"$instance\"}[$rate_window])",
           "legendFormat": "avg",
           "refId": "C"
         }
@@ -4012,7 +3751,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 150
+        "y": 142
       },
       "id": 38,
       "options": {
@@ -4032,22 +3771,22 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, rate(vertex_topology_routing_phases_lock_seconds_bucket{instance=~\"$instance\"}[5m]))",
+          "expr": "histogram_quantile(0.99, rate(vertex_topology_routing_phases_lock_seconds_bucket{instance=~\"$instance\"}[$rate_window]))",
           "legendFormat": "Phases RwLock p99",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.99, rate(vertex_topology_routing_candidates_lock_seconds_bucket{instance=~\"$instance\"}[5m]))",
+          "expr": "histogram_quantile(0.99, rate(vertex_topology_routing_candidates_lock_seconds_bucket{instance=~\"$instance\"}[$rate_window]))",
           "legendFormat": "Candidates Mutex p99",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.50, rate(vertex_topology_routing_phases_lock_seconds_bucket{instance=~\"$instance\"}[5m]))",
+          "expr": "histogram_quantile(0.50, rate(vertex_topology_routing_phases_lock_seconds_bucket{instance=~\"$instance\"}[$rate_window]))",
           "legendFormat": "Phases RwLock p50",
           "refId": "C"
         },
         {
-          "expr": "histogram_quantile(0.50, rate(vertex_topology_routing_candidates_lock_seconds_bucket{instance=~\"$instance\"}[5m]))",
+          "expr": "histogram_quantile(0.50, rate(vertex_topology_routing_candidates_lock_seconds_bucket{instance=~\"$instance\"}[$rate_window]))",
           "legendFormat": "Candidates Mutex p50",
           "refId": "D"
         }
@@ -4060,7 +3799,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 158
+        "y": 150
       },
       "id": 107,
       "title": "Task Executor",
@@ -4177,7 +3916,7 @@
         "h": 8,
         "w": 16,
         "x": 0,
-        "y": 159
+        "y": 151
       },
       "id": 42,
       "options": {
@@ -4274,7 +4013,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 159
+        "y": 151
       },
       "id": 39,
       "options": {
@@ -4334,7 +4073,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 167
+        "y": 159
       },
       "id": 102,
       "title": "Resources & Memory",
@@ -4399,7 +4138,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 168
+        "y": 160
       },
       "id": 9,
       "options": {
@@ -4506,7 +4245,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 168
+        "y": 160
       },
       "id": 10,
       "options": {
@@ -4597,7 +4336,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 176
+        "y": 168
       },
       "id": 19,
       "options": {
@@ -4688,7 +4427,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 176
+        "y": 168
       },
       "id": 20,
       "options": {
@@ -4771,6 +4510,54 @@
         "skipUrlSync": false,
         "sort": 1,
         "type": "query"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "5m",
+          "value": "5m"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Rate Window",
+        "multi": false,
+        "name": "rate_window",
+        "options": [
+          {
+            "selected": false,
+            "text": "1m",
+            "value": "1m"
+          },
+          {
+            "selected": true,
+            "text": "5m",
+            "value": "5m"
+          },
+          {
+            "selected": false,
+            "text": "10m",
+            "value": "10m"
+          },
+          {
+            "selected": false,
+            "text": "15m",
+            "value": "15m"
+          },
+          {
+            "selected": false,
+            "text": "30m",
+            "value": "30m"
+          },
+          {
+            "selected": false,
+            "text": "1h",
+            "value": "1h"
+          }
+        ],
+        "query": "1m,5m,10m,15m,30m,1h",
+        "queryValue": "",
+        "skipUrlSync": false,
+        "type": "custom"
       }
     ]
   },

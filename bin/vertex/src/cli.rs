@@ -93,10 +93,19 @@ pub async fn run() -> Result<()> {
         // Build metrics config from CLI args
         let metrics_config = args.infra.observability.metrics.metrics_config();
 
+        // Collect histogram bucket configs from protocol crates
+        let histogram_buckets = vertex_observability::HistogramRegistry::new()
+            .register_all(vertex_swarm_net_headers::metrics::HISTOGRAM_BUCKETS)
+            .register_all(vertex_swarm_topology::metrics::HISTOGRAM_BUCKETS)
+            .register_all(vertex_swarm_net_handshake::metrics::HISTOGRAM_BUCKETS)
+            .register_all(vertex_swarm_net_hive::metrics::HISTOGRAM_BUCKETS)
+            .register_all(vertex_swarm_peer_manager::HISTOGRAM_BUCKETS)
+            .build();
+
         // Initialize metrics via launch context
         let executor = TaskExecutor::current();
         let launch_ctx = (executor.clone(), dirs.clone())
-            .with_metrics(metrics_config)?
+            .with_metrics(metrics_config, &histogram_buckets)?
             .start_metrics_server()
             .await?;
 
@@ -163,7 +172,7 @@ pub async fn run() -> Result<()> {
 /// Uses the executor's shutdown signal for graceful shutdown coordination.
 /// The caller (run_cli) handles Ctrl+C and fires the shutdown signal.
 async fn run_with_grpc<P: RegistersGrpcServices + Send + Sync + 'static>(
-    task_fn: vertex_swarm_api::NodeTaskFn,
+    task_fn: vertex_tasks::NodeTaskFn,
     providers: P,
     grpc_addr: SocketAddr,
 ) -> Result<()> {

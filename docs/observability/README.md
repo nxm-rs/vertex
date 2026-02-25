@@ -6,6 +6,7 @@ Production observability for Vertex nodes: metrics, tracing, and logging.
 
 - [**Design**](design.md) - Observability methodology, span boundaries, metrics patterns, naming conventions
 - [**Helpers**](helpers.md) - LabelValue trait, guards, macros, common labels
+- [**Profiling**](profiling.md) - CPU/memory profiling, async inspection, complete metrics reference
 
 ## Local Development Stack
 

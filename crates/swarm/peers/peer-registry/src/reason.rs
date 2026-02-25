@@ -12,6 +12,4 @@ pub enum DialReason {
     Trusted,
     /// User-initiated dial command.
     Command,
-    /// Gossip verification dial (temporary handshake to validate gossiped peer).
-    Verification,
 }

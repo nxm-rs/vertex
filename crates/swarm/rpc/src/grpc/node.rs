@@ -5,7 +5,7 @@ use vertex_swarm_api::{SwarmTopology, TopologyStats};
 
 use crate::proto::node::{
     BinInfo, GetStatusRequest, GetStatusResponse, GetTopologyRequest, GetTopologyResponse,
-    node_server::Node,
+    PeerInfo, node_server::Node,
 };
 
 /// Node service implementation.
@@ -45,10 +45,16 @@ impl<T: SwarmTopology + TopologyStats + Send + Sync + 'static> Node for NodeServ
             .iter()
             .enumerate()
             .map(|(po, (connected, known))| {
-                let connected_addrs = if *connected > 0 {
-                    self.topology.connected_peers_in_bin(po as u8)
+                let (connected_addrs, peer_info) = if *connected > 0 {
+                    let details = self.topology.connected_peer_details_in_bin(po as u8);
+                    let addrs = details.iter().map(|(hex, _)| hex.clone()).collect();
+                    let info = details
+                        .into_iter()
+                        .map(|(overlay, multiaddrs)| PeerInfo { overlay, multiaddrs })
+                        .collect();
+                    (addrs, info)
                 } else {
-                    Vec::new()
+                    (Vec::new(), Vec::new())
                 };
 
                 BinInfo {
@@ -56,6 +62,7 @@ impl<T: SwarmTopology + TopologyStats + Send + Sync + 'static> Node for NodeServ
                     connected_peers: *connected as u32,
                     known_peers: *known as u32,
                     connected_peer_addresses: connected_addrs,
+                    connected_peer_info: peer_info,
                 }
             })
             .collect();

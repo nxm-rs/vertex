@@ -11,7 +11,7 @@ use nectar_primitives::ChunkAddress;
 use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
-use vertex_net_pseudosettle::PaymentAck;
+use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
 

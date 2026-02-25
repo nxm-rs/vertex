@@ -19,20 +19,13 @@ use alloy_primitives::U256;
 use bytes::Bytes;
 use libp2p::PeerId;
 use nectar_primitives::ChunkAddress;
-use vertex_net_pseudosettle::PaymentAck;
+use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_bandwidth_chequebook::SignedCheque;
 use vertex_swarm_primitives::OverlayAddress;
-
-// ============================================================================
-// Client Events
-// ============================================================================
 
 /// Events emitted by the client behaviour.
 #[derive(Debug, Clone)]
 pub enum ClientEvent {
-    // ========================================================================
-    // Pricing Protocol
-    // ========================================================================
     /// Received a payment threshold from a peer.
     ///
     /// Validate this threshold and decide whether to continue or disconnect.
@@ -51,9 +44,6 @@ pub enum ClientEvent {
         peer: OverlayAddress,
     },
 
-    // ========================================================================
-    // Retrieval Protocol
-    // ========================================================================
     /// A peer is requesting a chunk from us.
     ///
     /// Check if we have the chunk, verify accounting, then respond with
@@ -93,9 +83,6 @@ pub enum ClientEvent {
         error: String,
     },
 
-    // ========================================================================
-    // PushSync Protocol
-    // ========================================================================
     /// A peer is pushing a chunk to us.
     ///
     /// Validate the stamp, decide whether to store or forward, then respond
@@ -139,9 +126,6 @@ pub enum ClientEvent {
         error: String,
     },
 
-    // ========================================================================
-    // Settlement
-    // ========================================================================
     /// A settlement is needed with a peer.
     ///
     /// Emitted when the balance crosses the payment threshold. Initiate
@@ -197,9 +181,6 @@ pub enum ClientEvent {
         ack: PaymentAck,
     },
 
-    // ========================================================================
-    // Connection Lifecycle
-    // ========================================================================
     /// A peer's handler has been activated.
     ///
     /// This is emitted after the ActivatePeer command is processed.
@@ -218,9 +199,6 @@ pub enum ClientEvent {
         overlay: OverlayAddress,
     },
 
-    // ========================================================================
-    // Errors
-    // ========================================================================
     /// A protocol error occurred.
     ProtocolError {
         /// The peer involved (if known).
@@ -234,16 +212,9 @@ pub enum ClientEvent {
     },
 }
 
-// ============================================================================
-// Client Commands
-// ============================================================================
-
 /// Commands accepted by the client behaviour.
 #[derive(Debug, Clone)]
 pub enum ClientCommand {
-    // ========================================================================
-    // Handler Lifecycle
-    // ========================================================================
     /// Activate the handler for a peer after handshake completes.
     ///
     /// This is sent by the node when TopologyEvent::PeerAuthenticated is received.
@@ -257,9 +228,6 @@ pub enum ClientCommand {
         storer: bool,
     },
 
-    // ========================================================================
-    // Pricing Protocol
-    // ========================================================================
     /// Announce our payment threshold to a peer.
     ///
     /// The threshold value depends on peer type (full vs light) and configuration.
@@ -270,9 +238,6 @@ pub enum ClientCommand {
         threshold: U256,
     },
 
-    // ========================================================================
-    // Retrieval Protocol
-    // ========================================================================
     /// Request a chunk from a peer.
     RetrieveChunk {
         /// The peer to request from.
@@ -293,9 +258,6 @@ pub enum ClientCommand {
         stamp: Bytes,
     },
 
-    // ========================================================================
-    // PushSync Protocol
-    // ========================================================================
     /// Push a chunk to a peer.
     PushChunk {
         /// The peer to push to.
@@ -322,9 +284,6 @@ pub enum ClientCommand {
         storage_radius: u8,
     },
 
-    // ========================================================================
-    // Settlement
-    // ========================================================================
     /// Send a cheque to a peer (SWAP settlement).
     SendCheque {
         /// The peer to send the cheque to.

@@ -19,15 +19,16 @@ nectar-primitives.workspace = true
 vertex-swarm-primitives.workspace = true
 
 ## vertex - network (libp2p layer)
-vertex-net-headers.workspace = true
-vertex-net-pricing.workspace = true
-vertex-net-pseudosettle.workspace = true
+vertex-swarm-net-headers.workspace = true
+vertex-swarm-net-identify.workspace = true
+vertex-swarm-net-pricing.workspace = true
+vertex-swarm-net-pseudosettle.workspace = true
 
 ## vertex - identity
 vertex-swarm-peer.workspace = true
-vertex-net-pushsync.workspace = true
-vertex-net-retrieval.workspace = true
-vertex-net-swap.workspace = true
+vertex-swarm-net-pushsync.workspace = true
+vertex-swarm-net-retrieval.workspace = true
+vertex-swarm-net-swap.workspace = true
 
 ## vertex - bandwidth (chequebook types)
 vertex-swarm-bandwidth-chequebook.workspace = true
@@ -36,6 +37,9 @@ vertex-swarm-bandwidth-chequebook.workspace = true
 vertex-swarm-topology.workspace = true
 vertex-swarm-peer-manager.workspace = true
 
+## vertex - net utilities
+vertex-net-local.workspace = true
+
 ## vertex - swarm (libp2p-free abstractions)
 vertex-swarm-api.workspace = true
 vertex-swarm-identity.workspace = true
@@ -43,7 +47,6 @@ vertex-swarm-spec.workspace = true
 
 ## vertex - infrastructure
 vertex-swarm-bandwidth.workspace = true
-vertex-node-types.workspace = true
 vertex-tasks.workspace = true
 
 ## p2p
@@ -56,6 +59,9 @@ alloy-primitives.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 tokio = { workspace = true, features = ["sync"] }
+
+## observability
+metrics.workspace = true
 
 ## misc
 bytes.workspace = true

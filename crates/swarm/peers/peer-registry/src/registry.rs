@@ -46,14 +46,6 @@ impl SwarmPeerRegistry {
         self.inner.contains_peer(peer_id)
     }
 
-    /// Check if a peer's dial reason is Verification.
-    pub fn is_verification(&self, peer_id: &PeerId) -> bool {
-        self.inner
-            .get_by_peer_id(peer_id)
-            .and_then(|s| *s.reason())
-            == Some(DialReason::Verification)
-    }
-
     pub fn resolve_peer_id(&self, overlay: &OverlayAddress) -> Option<PeerId> {
         self.inner.resolve_peer_id(overlay)
     }
@@ -258,31 +250,6 @@ mod tests {
 
         registry.disconnected(&peer_id);
         assert_eq!(registry.dial_reason(&overlay), None);
-    }
-
-    #[test]
-    fn test_is_verification() {
-        let registry = SwarmPeerRegistry::new();
-        let overlay = test_overlay(1);
-        let peer_id = test_peer_id(1);
-
-        // Not in registry -> false
-        assert!(!registry.is_verification(&peer_id));
-
-        // Discovery dial -> false
-        let _ = registry.start_dial(peer_id, overlay, vec![test_addr(9000)], DialReason::Discovery);
-        assert!(!registry.is_verification(&peer_id));
-        registry.disconnected(&peer_id);
-
-        // Verification dial -> true
-        let peer_id2 = test_peer_id(2);
-        let overlay2 = test_overlay(2);
-        let _ = registry.start_dial(peer_id2, overlay2, vec![test_addr(9001)], DialReason::Verification);
-        assert!(registry.is_verification(&peer_id2));
-
-        // After disconnect -> false
-        registry.disconnected(&peer_id2);
-        assert!(!registry.is_verification(&peer_id2));
     }
 
     #[test]

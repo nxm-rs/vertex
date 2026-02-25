@@ -11,7 +11,7 @@ use vertex_swarm_primitives::OverlayAddress;
 
 use vertex_swarm_peer_registry::SwarmPeerRegistry as ConnectionRegistry;
 use crate::events::TopologyEvent;
-use crate::routing::KademliaRouting;
+use crate::kademlia::KademliaRouting;
 use crate::{TopologyCommand, TopologyError};
 
 /// Handle for querying topology state. Cheap to clone.
@@ -57,6 +57,7 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
     }
 
     /// Trigger connection to bootnodes and trusted peers.
+    #[must_use = "connection failures should be handled"]
     pub async fn connect_bootnodes(&self) -> Result<(), TopologyError> {
         self.command_tx
             .send(TopologyCommand::ConnectBootnodes)
@@ -64,6 +65,8 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
             .map_err(|_| TopologyError::ServiceShutdown)
     }
 
+    /// Initiate dial to peer address, queuing connection attempt.
+    #[must_use = "dial failures should be handled"]
     pub async fn dial(&self, addr: Multiaddr) -> Result<(), TopologyError> {
         self.command_tx
             .send(TopologyCommand::Dial(addr))
@@ -71,6 +74,8 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
             .map_err(|_| TopologyError::ServiceShutdown)
     }
 
+    /// Disconnect from peer, closing all connections.
+    #[must_use = "disconnect failures should be handled"]
     pub async fn disconnect(&self, peer: OverlayAddress) -> Result<(), TopologyError> {
         self.command_tx
             .send(TopologyCommand::CloseConnection(peer))
@@ -144,6 +149,22 @@ impl<I: SwarmIdentity> SwarmTopology for TopologyHandle<I> {
     fn connected_peers_in_bin(&self, po: u8) -> Vec<String> {
         self.routing.connected_peers_in_bin(po)
     }
+
+    fn connected_peer_details_in_bin(&self, po: u8) -> Vec<(String, Vec<String>)> {
+        self.routing
+            .connected_overlays_in_bin(po)
+            .into_iter()
+            .map(|overlay| {
+                let hex = hex::encode(overlay.as_slice());
+                let multiaddrs = self
+                    .peer_manager
+                    .get_swarm_peer(&overlay)
+                    .map(|p| p.multiaddrs().iter().map(|m| m.to_string()).collect())
+                    .unwrap_or_default();
+                (hex, multiaddrs)
+            })
+            .collect()
+    }
 }
 
 impl<I: SwarmIdentity> TopologyStats for TopologyHandle<I> {
@@ -152,10 +173,95 @@ impl<I: SwarmIdentity> TopologyStats for TopologyHandle<I> {
     }
 
     fn known_peers_count(&self) -> usize {
-        self.peer_manager.known_peers_count()
+        self.peer_manager.len()
     }
 
     fn pending_connections_count(&self) -> usize {
         self.connection_registry.pending_count()
+    }
+}
+
+/// Detailed routing statistics for metrics.
+#[derive(Debug, Clone)]
+pub struct RoutingStats {
+    /// Per-bin statistics: (po, connected, known, dialing, handshaking, active).
+    pub bins: Vec<BinStats>,
+    /// Current routing depth.
+    pub depth: u8,
+    /// Total known peers in routing table (candidate pool).
+    pub known_peers_total: usize,
+    /// Total connected peers in routing table.
+    pub connected_peers_total: usize,
+    /// Total peers tracked by peer manager (in-memory).
+    pub peer_manager_total: usize,
+    /// Banned peers count.
+    pub peer_manager_banned: usize,
+    /// Average peer score.
+    pub peer_manager_avg_score: f64,
+}
+
+/// Per-bin statistics.
+#[derive(Debug, Clone)]
+pub struct BinStats {
+    pub po: u8,
+    pub connected: usize,
+    pub known: usize,
+    pub dialing: usize,
+    pub handshaking: usize,
+    pub active: usize,
+    /// Target allocation from linear taper formula. `usize::MAX` for neighborhood bins.
+    pub target: usize,
+    /// Target + inbound headroom (max before rejecting inbound). `usize::MAX` for neighborhood bins.
+    pub ceiling: usize,
+    /// Nominal floor (constant across bins).
+    pub nominal: usize,
+}
+
+impl<I: SwarmIdentity> TopologyHandle<I> {
+    /// Get detailed routing statistics for metrics.
+    pub fn routing_stats(&self) -> RoutingStats {
+        let bin_sizes = self.routing.bin_sizes();
+        let bin_phases = self.routing.all_bin_phases();
+        let pm_stats = self.peer_manager.stats();
+        let limits = self.routing.limits();
+        let depth = self.routing.depth();
+
+        let bins: Vec<BinStats> = bin_sizes
+            .iter()
+            .enumerate()
+            .map(|(po, (connected, known))| {
+                let (dialing, handshaking, active) = bin_phases
+                    .get(po)
+                    .map(|(_, d, h, a)| (*d, *h, *a))
+                    .unwrap_or((0, 0, 0));
+                let target = limits.target(po as u8, depth);
+                let ceiling = if target == usize::MAX {
+                    usize::MAX
+                } else {
+                    target + limits.inbound_headroom()
+                };
+                BinStats {
+                    po: po as u8,
+                    connected: *connected,
+                    known: *known,
+                    dialing,
+                    handshaking,
+                    active,
+                    target,
+                    ceiling,
+                    nominal: limits.nominal(),
+                }
+            })
+            .collect();
+
+        RoutingStats {
+            bins,
+            depth,
+            known_peers_total: self.routing.known_peers_total(),
+            connected_peers_total: self.routing.connected_peers_total(),
+            peer_manager_total: pm_stats.total_peers,
+            peer_manager_banned: pm_stats.banned_peers,
+            peer_manager_avg_score: pm_stats.avg_peer_score,
+        }
     }
 }

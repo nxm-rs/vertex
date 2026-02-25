@@ -143,7 +143,10 @@ impl SwarmTopology for MockTopology {
     }
 
     fn connected_peers_in_bin(&self, _po: u8) -> Vec<String> {
-        // Mock returns empty - no actual peers
+        Vec::new()
+    }
+
+    fn connected_peer_details_in_bin(&self, _po: u8) -> Vec<(String, Vec<String>)> {
         Vec::new()
     }
 }

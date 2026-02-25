@@ -107,14 +107,14 @@ impl<I: SwarmIdentity + Clone> StorerNode<I> {
 }
 
 /// Builder for StorerNode.
-pub struct StorerNodeBuilder<I: SwarmIdentity> {
+pub struct StorerNodeBuilder<I: SwarmIdentity + Clone> {
     identity: I,
     kademlia_config: Option<KademliaConfig>,
     pseudosettle_event_tx: Option<mpsc::UnboundedSender<PseudosettleEvent>>,
     swap_event_tx: Option<mpsc::UnboundedSender<SwapEvent>>,
 }
 
-impl<I: SwarmIdentity> StorerNodeBuilder<I> {
+impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
     /// Create a new builder.
     pub fn new(identity: I) -> Self {
         Self {
@@ -154,6 +154,7 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
         network_config: &C,
     ) -> Result<(StorerNode<I>, ClientService, ClientHandle)>
     where
+        I: vertex_swarm_spec::HasSpec,
         C: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig<Routing = KademliaConfig>,
     {
         info!("Initializing storer P2P network...");

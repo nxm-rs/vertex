@@ -6,31 +6,32 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 pub mod behaviour;
-pub mod dns;
 pub mod events;
 pub mod handle;
 pub mod metrics;
 pub mod nat_discovery;
-pub mod routing;
+pub mod kademlia;
 
+mod composed;
 mod error;
 mod gossip;
-pub(crate) mod handler;
-pub(crate) mod protocol;
 
 pub use behaviour::{TopologyBehaviour, TopologyConfig, DEFAULT_DIAL_INTERVAL};
-pub use dns::{DnsaddrResolveError, is_dnsaddr, resolve_all_dnsaddrs, resolve_dnsaddr};
+pub use vertex_net_dnsaddr::{is_dnsaddr, resolve_all};
 pub use error::{TopologyError, TopologyResult};
 pub use events::{
     ConnectionDirection, DisconnectReason, RejectionReason, TopologyCommand, TopologyEvent,
 };
-pub use metrics::{TopologyMetrics, record_event as record_topology_event};
-pub use handle::TopologyHandle;
-pub use nat_discovery::{NatDiscovery, NatDiscoveryConfig};
+pub use metrics::TopologyMetrics;
+pub use handle::{TopologyHandle, RoutingStats, BinStats};
+pub use nat_discovery::LocalAddressManager;
 
 // Re-export from peer registry crate
 pub use vertex_swarm_peer_registry::DialReason;
 
-pub use routing::{KademliaConfig, KademliaRouting, RoutingArgs, SwarmRouting};
+pub use kademlia::{
+    CandidateSelector, CandidateSnapshot, DepthAwareLimits, KademliaConfig,
+    KademliaRouting, LimitsSnapshot, RoutingArgs, DEFAULT_NOMINAL, DEFAULT_TOTAL_TARGET,
+};
 
 pub use libp2p::Multiaddr;

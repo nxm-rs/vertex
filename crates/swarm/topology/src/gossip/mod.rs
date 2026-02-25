@@ -3,6 +3,9 @@
 //! Manages the health check and gossip lifecycle:
 //! connection → handshake → health check delay → ping → pong → gossip.
 
+pub(crate) mod verifier;
+pub(crate) mod verifier_task;
+
 use std::{
     collections::{HashMap, HashSet},
     pin::Pin,
@@ -15,7 +18,7 @@ use libp2p::PeerId;
 use tokio::time::{Interval, Sleep};
 use tracing::{debug, trace};
 use vertex_net_local::IpCapability;
-use vertex_swarm_peer::SwarmPeer;
+use vertex_swarm_peer::{AddressScope, SwarmPeer};
 use vertex_swarm_peer_manager::PeerManager;
 use vertex_swarm_peer_registry::SwarmPeerRegistry as ConnectionRegistry;
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
@@ -91,7 +94,6 @@ impl Gossip {
         self.current_depth = depth;
     }
 
-    #[allow(dead_code)]
     pub(crate) fn mark_gossip_dial(&mut self, peer_id: PeerId) {
         self.gossip_dial_peers.insert(peer_id);
     }
@@ -209,8 +211,8 @@ impl Gossip {
             {
                 debug!(%overlay, proximity, "Peer became neighbor due to depth change");
 
-                if let Some(snapshot) = self.peer_manager.get_peer_snapshot(&overlay) {
-                    actions.extend(self.handle_new_neighbor(overlay, snapshot.peer, current));
+                if let Some(peer) = self.peer_manager.get_swarm_peer(&overlay) {
+                    actions.extend(self.handle_new_neighbor(overlay, peer, current));
                 }
             }
         }
@@ -258,9 +260,11 @@ impl Gossip {
 
             if is_stale {
                 let neighbor_capability = self.get_peer_capability(&neighbor);
+                let neighbor_scope = self.get_peer_scope(&neighbor);
                 // Content can include KNOWN peers (not just connected)
                 let peers = self.get_known_neighborhood_peers(depth, Some(&neighbor));
-                let filtered_peers = self.filter_peers_for_recipient(&peers, neighbor_capability);
+                let filtered_peers =
+                    self.filter_peers_for_recipient(&peers, neighbor_capability, neighbor_scope);
 
                 if !filtered_peers.is_empty() {
                     trace!(to = %neighbor, count = filtered_peers.len(), "Refreshing neighborhood peers");
@@ -287,10 +291,12 @@ impl Gossip {
         debug!(%new_peer, depth, "New neighbor joined - initiating neighborhood exchange");
 
         let new_peer_capability = self.get_peer_capability(&new_peer);
+        let new_peer_scope = self.get_peer_scope(&new_peer);
 
         // Send new peer all KNOWN neighborhood peers (content)
         let neighborhood_peers = self.get_known_neighborhood_peers(depth, Some(&new_peer));
-        let filtered_peers = self.filter_peers_for_recipient(&neighborhood_peers, new_peer_capability);
+        let filtered_peers =
+            self.filter_peers_for_recipient(&neighborhood_peers, new_peer_capability, new_peer_scope);
 
         if !filtered_peers.is_empty() {
             debug!(to = %new_peer, count = filtered_peers.len(), "Sending known neighborhood peers");
@@ -305,12 +311,17 @@ impl Gossip {
         for neighbor in existing_neighbors {
             if neighbor != new_peer {
                 let neighbor_capability = self.get_peer_capability(&neighbor);
+                let neighbor_scope = self.get_peer_scope(&neighbor);
 
-                if Self::capabilities_compatible(neighbor_capability, new_peer_capability) {
+                // Filter the new peer for this neighbor (checks capability + scope)
+                let filtered =
+                    self.filter_peers_for_recipient(&[new_peer_info.clone()], neighbor_capability, neighbor_scope);
+
+                if !filtered.is_empty() {
                     trace!(to = %neighbor, about = %new_peer, "Notifying neighbor about new peer");
                     actions.push(GossipAction {
                         to: neighbor,
-                        peers: vec![new_peer_info.clone()],
+                        peers: filtered,
                     });
                 }
             }
@@ -322,8 +333,9 @@ impl Gossip {
 
     fn handle_new_distant_peer(&mut self, peer: OverlayAddress) -> Vec<GossipAction> {
         let recipient_capability = self.get_peer_capability(&peer);
+        let recipient_scope = self.get_peer_scope(&peer);
         // Select from KNOWN peers to send to this distant peer
-        let peers = self.select_peers_for_distant(peer, recipient_capability);
+        let peers = self.select_peers_for_distant(peer, recipient_capability, recipient_scope);
 
         if peers.is_empty() {
             return Vec::new();
@@ -371,17 +383,20 @@ impl Gossip {
     }
 
     /// Select KNOWN peers to send to a distant peer (bootstrap help).
+    #[tracing::instrument(skip(self), level = "trace", fields(%recipient))]
     fn select_peers_for_distant(
         &self,
         recipient: OverlayAddress,
         recipient_capability: IpCapability,
+        recipient_scope: AddressScope,
     ) -> Vec<SwarmPeer> {
         let mut selected = Vec::with_capacity(MAX_PEERS_FOR_DISTANT);
-        let mut selected_overlays: HashSet<OverlayAddress> = HashSet::with_capacity(MAX_PEERS_FOR_DISTANT);
+        let mut selected_indices: HashSet<usize> = HashSet::with_capacity(MAX_PEERS_FOR_DISTANT);
         let mut added_bins: HashSet<u8> = HashSet::new();
 
         let all_storers = self.peer_manager.known_storer_overlays();
 
+        // Build candidate list with index-based tracking (avoids clone for sorting)
         let storers: Vec<_> = all_storers
             .iter()
             .filter_map(|overlay| {
@@ -390,10 +405,21 @@ impl Gossip {
                     return None;
                 }
 
-                let snapshot = self.peer_manager.get_peer_snapshot(overlay)?;
+                let peer = self.peer_manager.get_swarm_peer(overlay)?;
+
+                // Strict scope check for public recipients
+                if recipient_scope == AddressScope::Public {
+                    let has_non_public = peer.has_scope(AddressScope::Private)
+                        || peer.has_scope(AddressScope::LinkLocal)
+                        || peer.has_scope(AddressScope::Loopback);
+                    if has_non_public || !peer.has_scope(AddressScope::Public) {
+                        return None;
+                    }
+                }
+
                 let proximity_to_recipient = recipient.proximity(overlay);
                 let bin = self.local_overlay.proximity(overlay);
-                Some((*overlay, snapshot.peer, proximity_to_recipient, bin))
+                Some((peer, proximity_to_recipient, bin))
             })
             .collect();
 
@@ -401,33 +427,33 @@ impl Gossip {
             return selected;
         }
 
-        // Phase 1: Top CLOSE_PEERS_COUNT by proximity to recipient
-        let mut by_proximity = storers.clone();
-        by_proximity.sort_by(|a, b| b.2.cmp(&a.2));
+        // Phase 1: Top CLOSE_PEERS_COUNT by proximity to recipient (sort indices, not data)
+        let mut indices: Vec<usize> = (0..storers.len()).collect();
+        indices.sort_by(|&a, &b| storers[b].1.cmp(&storers[a].1));
 
-        for (overlay, peer, _, _) in by_proximity.iter().take(CLOSE_PEERS_COUNT) {
-            if selected_overlays.insert(*overlay) {
-                selected.push(peer.clone());
+        for &idx in indices.iter().take(CLOSE_PEERS_COUNT) {
+            if selected_indices.insert(idx) {
+                selected.push(storers[idx].0.clone());
             }
         }
 
         // Phase 2: One peer per bin (routing diversity)
-        for (overlay, peer, _, bin) in &storers {
+        for (idx, (peer, _, bin)) in storers.iter().enumerate() {
             if selected.len() >= MAX_PEERS_FOR_DISTANT {
                 break;
             }
-            if !selected_overlays.contains(overlay) && added_bins.insert(*bin) {
-                selected_overlays.insert(*overlay);
+            if !selected_indices.contains(&idx) && added_bins.insert(*bin) {
+                selected_indices.insert(idx);
                 selected.push(peer.clone());
             }
         }
 
         // Phase 3: Fill remaining slots
-        for (overlay, peer, _, _) in &storers {
+        for (idx, (peer, _, _)) in storers.iter().enumerate() {
             if selected.len() >= MAX_PEERS_FOR_DISTANT {
                 break;
             }
-            if selected_overlays.insert(*overlay) {
+            if selected_indices.insert(idx) {
                 selected.push(peer.clone());
             }
         }
@@ -441,21 +467,48 @@ impl Gossip {
             .unwrap_or_else(IpCapability::dual_stack)
     }
 
+    fn get_peer_scope(&self, overlay: &OverlayAddress) -> AddressScope {
+        self.peer_manager
+            .get_swarm_peer(overlay)
+            .and_then(|p| p.max_scope())
+            .unwrap_or(AddressScope::Public)
+    }
+
+    /// Filter peers for gossiping to a recipient.
+    ///
+    /// For public recipients: excludes peers with ANY private/loopback addresses entirely.
+    /// SwarmPeer is cryptographically signed over all multiaddrs, so we cannot filter
+    /// individual addresses - the entire peer must be excluded if it contains private IPs.
     fn filter_peers_for_recipient(
         &self,
         peers: &[SwarmPeer],
         recipient_capability: IpCapability,
+        recipient_scope: AddressScope,
     ) -> Vec<SwarmPeer> {
-        if recipient_capability.is_dual_stack() {
-            return peers.to_vec();
-        }
-
         peers
             .iter()
             .filter(|peer| {
+                // IP capability check
                 let peer_overlay = OverlayAddress::from(*peer.overlay());
                 let peer_capability = self.get_peer_capability(&peer_overlay);
-                Self::capabilities_compatible(recipient_capability, peer_capability)
+                if !Self::capabilities_compatible(recipient_capability, peer_capability) {
+                    return false;
+                }
+
+                // Strict scope check for public recipients
+                if recipient_scope == AddressScope::Public {
+                    // If peer has ANY private/loopback addresses, exclude entirely
+                    // (signed SwarmPeer can't have addresses removed)
+                    let has_non_public = peer.has_scope(AddressScope::Private)
+                        || peer.has_scope(AddressScope::LinkLocal)
+                        || peer.has_scope(AddressScope::Loopback);
+
+                    // Only include if ONLY public addresses
+                    !has_non_public && peer.has_scope(AddressScope::Public)
+                } else {
+                    // Private/loopback recipient - any addresses ok
+                    true
+                }
             })
             .cloned()
             .collect()
@@ -478,14 +531,14 @@ mod tests {
 
     fn make_gossip() -> Gossip {
         let local = test_overlay(0);
-        let pm = Arc::new(PeerManager::new());
+        let pm = PeerManager::new(local, 31);
         let cr = Arc::new(ConnectionRegistry::new());
         Gossip::new(local, pm, cr)
     }
 
     fn make_gossip_with_peers() -> Gossip {
         let local = test_overlay(0);
-        let pm = Arc::new(PeerManager::new());
+        let pm = PeerManager::new(local, 31);
         let cr = Arc::new(ConnectionRegistry::new());
 
         for n in 1..=10 {
@@ -598,8 +651,10 @@ mod tests {
         let gossip = make_gossip_with_peers();
         let recipient = test_overlay(0xFF);
         let capability = IpCapability::dual_stack();
+        // Use Loopback scope since test peers have loopback addresses
+        let scope = AddressScope::Loopback;
 
-        let selected = gossip.select_peers_for_distant(recipient, capability);
+        let selected = gossip.select_peers_for_distant(recipient, capability, scope);
 
         let unique: HashSet<_> = selected.iter().map(|p| *p.overlay()).collect();
         assert_eq!(unique.len(), selected.len());
@@ -620,7 +675,21 @@ mod tests {
         let gossip = make_gossip_with_peers();
         let peers = vec![test_swarm_peer(1), test_swarm_peer(2)];
 
-        let filtered = gossip.filter_peers_for_recipient(&peers, IpCapability::dual_stack());
+        // Use Loopback scope since test peers have loopback addresses
+        let filtered =
+            gossip.filter_peers_for_recipient(&peers, IpCapability::dual_stack(), AddressScope::Loopback);
         assert_eq!(filtered.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_filter_peers_public_recipient_excludes_loopback() {
+        let gossip = make_gossip_with_peers();
+        // test_swarm_peer creates peers with loopback addresses (127.0.0.1)
+        let peers = vec![test_swarm_peer(1), test_swarm_peer(2)];
+
+        // Public recipient should exclude peers with ANY non-public addresses
+        let filtered =
+            gossip.filter_peers_for_recipient(&peers, IpCapability::dual_stack(), AddressScope::Public);
+        assert!(filtered.is_empty(), "Loopback peers should be excluded for public recipients");
     }
 }

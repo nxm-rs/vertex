@@ -45,6 +45,16 @@ limits_config:
   ingestion_burst_size_mb: 32
   max_streams_per_user: 10000
   max_line_size: 256kb
+  allow_structured_metadata: true
+  otlp_config:
+    resource_attributes:
+      attributes_config:
+        - action: index_label
+          attributes:
+            - service.name
+    log_attributes:
+      - action: structured_metadata
+        regex: ".*"
 
 compactor:
   working_directory: /loki/compactor

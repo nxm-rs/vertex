@@ -33,7 +33,7 @@ use libp2p::swarm::{
 };
 use nectar_primitives::ChunkAddress;
 use tracing::{debug, warn};
-use vertex_net_pseudosettle::PaymentAck;
+use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_bandwidth_chequebook::SignedCheque;
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -235,34 +235,34 @@ enum State {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub(super) enum OutboundProtocol {
-    Pricing(vertex_net_pricing::PricingOutboundProtocol),
-    Retrieval(vertex_net_retrieval::RetrievalOutboundProtocol),
-    PushSync(vertex_net_pushsync::PushsyncOutboundProtocol),
+    Pricing(vertex_swarm_net_pricing::PricingOutboundProtocol),
+    Retrieval(vertex_swarm_net_retrieval::RetrievalOutboundProtocol),
+    PushSync(vertex_swarm_net_pushsync::PushsyncOutboundProtocol),
 }
 
 /// Inbound protocol selection.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub(super) enum InboundProtocol {
-    Pricing(vertex_net_pricing::PricingInboundProtocol),
-    Retrieval(vertex_net_retrieval::RetrievalInboundProtocol),
-    PushSync(vertex_net_pushsync::PushsyncInboundProtocol),
+    Pricing(vertex_swarm_net_pricing::PricingInboundProtocol),
+    Retrieval(vertex_swarm_net_retrieval::RetrievalInboundProtocol),
+    PushSync(vertex_swarm_net_pushsync::PushsyncInboundProtocol),
 }
 
 /// Inbound protocol output after negotiation.
 #[allow(dead_code)]
 pub(super) enum InboundOutput {
-    Pricing(vertex_net_pricing::AnnouncePaymentThreshold),
+    Pricing(vertex_swarm_net_pricing::AnnouncePaymentThreshold),
     Retrieval(
         (
-            vertex_net_retrieval::Request,
-            vertex_net_retrieval::RetrievalResponder,
+            vertex_swarm_net_retrieval::Request,
+            vertex_swarm_net_retrieval::RetrievalResponder,
         ),
     ),
     PushSync(
         (
-            vertex_net_pushsync::Delivery,
-            vertex_net_pushsync::PushsyncResponder,
+            vertex_swarm_net_pushsync::Delivery,
+            vertex_swarm_net_pushsync::PushsyncResponder,
         ),
     ),
 }
@@ -271,8 +271,8 @@ pub(super) enum InboundOutput {
 #[allow(dead_code)]
 pub(super) enum OutboundOutput {
     Pricing,
-    Retrieval(vertex_net_retrieval::Delivery),
-    PushSync(vertex_net_pushsync::Receipt),
+    Retrieval(vertex_swarm_net_retrieval::Delivery),
+    PushSync(vertex_swarm_net_pushsync::Receipt),
 }
 
 /// Swarm client connection handler.
@@ -345,7 +345,7 @@ impl ClientHandler {
     }
 
     /// Handle incoming pricing threshold.
-    fn on_pricing_received(&mut self, threshold: vertex_net_pricing::AnnouncePaymentThreshold) {
+    fn on_pricing_received(&mut self, threshold: vertex_swarm_net_pricing::AnnouncePaymentThreshold) {
         if let Some(overlay) = self.overlay() {
             debug!(%overlay, threshold = %threshold.payment_threshold, "Received pricing");
             self.pending_events
@@ -366,8 +366,8 @@ impl ClientHandler {
     /// Handle incoming retrieval request.
     fn on_retrieval_request(
         &mut self,
-        request: vertex_net_retrieval::Request,
-        _responder: vertex_net_retrieval::RetrievalResponder,
+        request: vertex_swarm_net_retrieval::Request,
+        _responder: vertex_swarm_net_retrieval::RetrievalResponder,
     ) {
         if let Some(overlay) = self.overlay() {
             let request_id = self.next_request_id();
@@ -390,8 +390,8 @@ impl ClientHandler {
     /// Handle incoming pushsync delivery.
     fn on_pushsync_delivery(
         &mut self,
-        delivery: vertex_net_pushsync::Delivery,
-        _responder: vertex_net_pushsync::PushsyncResponder,
+        delivery: vertex_swarm_net_pushsync::Delivery,
+        _responder: vertex_swarm_net_pushsync::PushsyncResponder,
     ) {
         if let Some(overlay) = self.overlay() {
             let request_id = self.next_request_id();
@@ -417,7 +417,7 @@ impl ClientHandler {
     /// Handle retrieval response.
     fn on_retrieval_response(
         &mut self,
-        delivery: vertex_net_retrieval::Delivery,
+        delivery: vertex_swarm_net_retrieval::Delivery,
         address: ChunkAddress,
     ) {
         if let Some(overlay) = self.overlay() {
@@ -441,7 +441,7 @@ impl ClientHandler {
     }
 
     /// Handle pushsync receipt.
-    fn on_pushsync_receipt(&mut self, receipt: vertex_net_pushsync::Receipt) {
+    fn on_pushsync_receipt(&mut self, receipt: vertex_swarm_net_pushsync::Receipt) {
         if let Some(overlay) = self.overlay() {
             if let Some(ref err) = receipt.error {
                 debug!(%overlay, error = %err, "Pushsync failed");
@@ -517,7 +517,7 @@ impl ConnectionHandler for ClientHandler {
                 HandlerCommand::AnnouncePricing { threshold } => {
                     if !self.pricing_sent && !self.pricing_outbound_pending {
                         self.pricing_outbound_pending = true;
-                        let announce = vertex_net_pricing::AnnouncePaymentThreshold::new(threshold);
+                        let announce = vertex_swarm_net_pricing::AnnouncePaymentThreshold::new(threshold);
                         let upgrade = ClientOutboundUpgrade::pricing(announce);
                         return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
                             protocol: SubstreamProtocol::new(upgrade, ClientOutboundInfo::Pricing)
@@ -542,7 +542,7 @@ impl ConnectionHandler for ClientHandler {
                     stamp,
                 } => {
                     // Create pushsync outbound request
-                    let delivery = vertex_net_pushsync::Delivery::new(address, data, stamp);
+                    let delivery = vertex_swarm_net_pushsync::Delivery::new(address, data, stamp);
                     let upgrade = ClientOutboundUpgrade::pushsync(delivery);
                     return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
                         protocol: SubstreamProtocol::new(
@@ -553,7 +553,7 @@ impl ConnectionHandler for ClientHandler {
                     });
                 }
                 HandlerCommand::SendPseudosettle { amount } => {
-                    let payment = vertex_net_pseudosettle::Payment::new(amount);
+                    let payment = vertex_swarm_net_pseudosettle::Payment::new(amount);
                     let upgrade = ClientOutboundUpgrade::pseudosettle(payment);
                     return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
                         protocol: SubstreamProtocol::new(

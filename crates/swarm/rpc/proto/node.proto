@@ -54,4 +54,15 @@ message BinInfo {
 
   // Connected peer overlay addresses (hex encoded).
   repeated string connected_peer_addresses = 4;
+
+  // Connected peer details including multiaddrs.
+  repeated PeerInfo connected_peer_info = 5;
+}
+
+message PeerInfo {
+  // Overlay address (hex encoded).
+  string overlay = 1;
+
+  // Multiaddrs (including /p2p/<peer_id> suffix).
+  repeated string multiaddrs = 2;
 }

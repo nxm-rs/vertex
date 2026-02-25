@@ -4426,9 +4426,11 @@ dependencies = [
  "parking_lot",
  "rayon",
  "serde",
+ "subtle",
  "thiserror 2.0.18",
  "wasm-bindgen",
  "wasm-bindgen-rayon",
+ "zeroize",
 ]
 
 [[package]]
@@ -4809,6 +4811,19 @@ dependencies = [
  "pin-project-lite",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "opentelemetry-appender-tracing"
+version = "0.31.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef6a1ac5ca3accf562b8c306fa8483c85f4390f768185ab775f242f7fe8fdcc2"
+dependencies = [
+ "opentelemetry",
+ "tracing",
+ "tracing-core",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -7692,6 +7707,7 @@ dependencies = [
  "vertex-swarm-builder",
  "vertex-swarm-identity",
  "vertex-swarm-net-handshake",
+ "vertex-swarm-net-headers",
  "vertex-swarm-net-hive",
  "vertex-swarm-node",
  "vertex-swarm-peer-manager",
@@ -7720,6 +7736,17 @@ dependencies = [
  "futures",
  "quick-protobuf",
  "quick-protobuf-codec",
+]
+
+[[package]]
+name = "vertex-net-dnsaddr"
+version = "0.1.0"
+dependencies = [
+ "hickory-resolver",
+ "libp2p",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -7856,6 +7883,7 @@ dependencies = [
  "metrics-process",
  "metrics-util 0.19.1",
  "opentelemetry",
+ "opentelemetry-appender-tracing",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "parking_lot",
@@ -8154,7 +8182,9 @@ dependencies = [
  "tracing-opentelemetry",
  "vertex-metrics",
  "vertex-net-codec",
+ "vertex-observability",
  "vertex-swarm-net-proto",
+ "vertex-swarm-primitives",
 ]
 
 [[package]]
@@ -8163,11 +8193,13 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "futures",
- "futures-bounded",
+ "hashlink",
  "libp2p",
  "metrics",
  "quick-protobuf-codec",
  "strum",
+ "thiserror 2.0.18",
+ "tokio",
  "tracing",
  "vertex-net-codec",
  "vertex-net-ratelimiter",
@@ -8176,7 +8208,9 @@ dependencies = [
  "vertex-swarm-net-headers",
  "vertex-swarm-net-proto",
  "vertex-swarm-peer",
+ "vertex-swarm-primitives",
  "vertex-swarm-spec",
+ "vertex-tasks",
 ]
 
 [[package]]
@@ -8339,6 +8373,7 @@ dependencies = [
  "eyre",
  "futures",
  "libp2p",
+ "metrics",
  "nectar-primitives",
  "parking_lot",
  "serde",
@@ -8554,7 +8589,6 @@ dependencies = [
  "futures",
  "hashlink",
  "hex",
- "hickory-resolver",
  "libp2p",
  "metrics",
  "nectar-primitives",
@@ -8566,13 +8600,16 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "vertex-net-dnsaddr",
  "vertex-net-local",
+ "vertex-net-peer-store",
  "vertex-observability",
  "vertex-swarm-api",
  "vertex-swarm-identity",
  "vertex-swarm-net-handshake",
  "vertex-swarm-net-headers",
  "vertex-swarm-net-hive",
+ "vertex-swarm-net-identify",
  "vertex-swarm-net-pingpong",
  "vertex-swarm-peer",
  "vertex-swarm-peer-manager",
@@ -8581,6 +8618,7 @@ dependencies = [
  "vertex-swarm-primitives",
  "vertex-swarm-spec",
  "vertex-swarm-test-utils",
+ "vertex-tasks",
  "web-time",
 ]
 

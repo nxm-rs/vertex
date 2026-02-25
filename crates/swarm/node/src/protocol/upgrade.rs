@@ -18,24 +18,24 @@ use futures::future::BoxFuture;
 use libp2p::{InboundUpgrade, OutboundUpgrade, Stream, core::UpgradeInfo};
 use nectar_primitives::ChunkAddress;
 use thiserror::Error;
-use vertex_net_headers::ProtocolError;
-use vertex_net_pricing::{
+use vertex_swarm_net_headers::ProtocolError;
+use vertex_swarm_net_pricing::{
     AnnouncePaymentThreshold, PROTOCOL_NAME as PRICING_PROTOCOL, PricingInboundProtocol,
     PricingOutboundProtocol,
 };
-use vertex_net_pseudosettle::{
+use vertex_swarm_net_pseudosettle::{
     PROTOCOL_NAME as PSEUDOSETTLE_PROTOCOL, Payment, PaymentAck, PseudosettleInboundResult,
 };
-use vertex_net_pushsync::{
+use vertex_swarm_net_pushsync::{
     Delivery as PushsyncDelivery, PROTOCOL_NAME as PUSHSYNC_PROTOCOL, PushsyncInboundProtocol,
     PushsyncOutboundProtocol, PushsyncResponder, Receipt as PushsyncReceipt,
 };
-use vertex_net_retrieval::{
+use vertex_swarm_net_retrieval::{
     Delivery as RetrievalDelivery, PROTOCOL_NAME as RETRIEVAL_PROTOCOL,
     Request as RetrievalRequest, RetrievalInboundProtocol, RetrievalOutboundProtocol,
     RetrievalResponder,
 };
-use vertex_net_swap::{PROTOCOL_NAME as SWAP_PROTOCOL, SettlementHeaders};
+use vertex_swarm_net_swap::{PROTOCOL_NAME as SWAP_PROTOCOL, SettlementHeaders};
 use vertex_swarm_bandwidth_chequebook::SignedCheque;
 
 /// Errors from client protocol upgrades.
@@ -166,7 +166,7 @@ impl InboundUpgrade<Stream> for ClientInboundUpgrade {
         Box::pin(async move {
             match info {
                 PRICING_PROTOCOL => {
-                    let pricing: PricingInboundProtocol = vertex_net_pricing::inbound();
+                    let pricing: PricingInboundProtocol = vertex_swarm_net_pricing::inbound();
                     let threshold = pricing
                         .upgrade_inbound(socket, info)
                         .await
@@ -174,7 +174,7 @@ impl InboundUpgrade<Stream> for ClientInboundUpgrade {
                     Ok(ClientInboundOutput::Pricing(threshold))
                 }
                 RETRIEVAL_PROTOCOL => {
-                    let retrieval: RetrievalInboundProtocol = vertex_net_retrieval::inbound();
+                    let retrieval: RetrievalInboundProtocol = vertex_swarm_net_retrieval::inbound();
                     let (request, responder) = retrieval
                         .upgrade_inbound(socket, info)
                         .await
@@ -182,7 +182,7 @@ impl InboundUpgrade<Stream> for ClientInboundUpgrade {
                     Ok(ClientInboundOutput::Retrieval(request, responder))
                 }
                 PUSHSYNC_PROTOCOL => {
-                    let pushsync: PushsyncInboundProtocol = vertex_net_pushsync::inbound();
+                    let pushsync: PushsyncInboundProtocol = vertex_swarm_net_pushsync::inbound();
                     let (delivery, responder) = pushsync
                         .upgrade_inbound(socket, info)
                         .await
@@ -190,7 +190,7 @@ impl InboundUpgrade<Stream> for ClientInboundUpgrade {
                     Ok(ClientInboundOutput::Pushsync(delivery, responder))
                 }
                 PSEUDOSETTLE_PROTOCOL => {
-                    let protocol = vertex_net_pseudosettle::inbound();
+                    let protocol = vertex_swarm_net_pseudosettle::inbound();
                     let result = protocol
                         .upgrade_inbound(socket, info)
                         .await
@@ -200,7 +200,7 @@ impl InboundUpgrade<Stream> for ClientInboundUpgrade {
                 SWAP_PROTOCOL => {
                     // Use a default rate for inbound - actual rate comes from handler config
                     let our_rate = U256::ZERO;
-                    let protocol = vertex_net_swap::inbound(our_rate);
+                    let protocol = vertex_swarm_net_swap::inbound(our_rate);
                     let (cheque, headers) = protocol
                         .upgrade_inbound(socket, info)
                         .await
@@ -320,7 +320,7 @@ impl OutboundUpgrade<Stream> for ClientOutboundUpgrade {
         Box::pin(async move {
             match self.request {
                 ClientOutboundRequest::Pricing(threshold) => {
-                    let pricing: PricingOutboundProtocol = vertex_net_pricing::outbound(threshold);
+                    let pricing: PricingOutboundProtocol = vertex_swarm_net_pricing::outbound(threshold);
                     pricing
                         .upgrade_outbound(socket, info)
                         .await
@@ -329,7 +329,7 @@ impl OutboundUpgrade<Stream> for ClientOutboundUpgrade {
                 }
                 ClientOutboundRequest::Retrieval(address) => {
                     let retrieval: RetrievalOutboundProtocol =
-                        vertex_net_retrieval::outbound(address);
+                        vertex_swarm_net_retrieval::outbound(address);
                     let delivery = retrieval
                         .upgrade_outbound(socket, info)
                         .await
@@ -338,7 +338,7 @@ impl OutboundUpgrade<Stream> for ClientOutboundUpgrade {
                 }
                 ClientOutboundRequest::Pushsync(delivery) => {
                     let pushsync: PushsyncOutboundProtocol =
-                        vertex_net_pushsync::outbound(delivery);
+                        vertex_swarm_net_pushsync::outbound(delivery);
                     let receipt = pushsync
                         .upgrade_outbound(socket, info)
                         .await
@@ -346,7 +346,7 @@ impl OutboundUpgrade<Stream> for ClientOutboundUpgrade {
                     Ok(ClientOutboundOutput::Pushsync(receipt))
                 }
                 ClientOutboundRequest::Pseudosettle(payment) => {
-                    let protocol = vertex_net_pseudosettle::outbound(payment);
+                    let protocol = vertex_swarm_net_pseudosettle::outbound(payment);
                     let ack = protocol
                         .upgrade_outbound(socket, info)
                         .await
@@ -354,7 +354,7 @@ impl OutboundUpgrade<Stream> for ClientOutboundUpgrade {
                     Ok(ClientOutboundOutput::Pseudosettle(ack))
                 }
                 ClientOutboundRequest::Swap { cheque, our_rate } => {
-                    let protocol = vertex_net_swap::outbound(cheque, our_rate);
+                    let protocol = vertex_swarm_net_swap::outbound(cheque, our_rate);
                     let headers = protocol
                         .upgrade_outbound(socket, info)
                         .await

@@ -21,6 +21,7 @@ members = [
     "crates/tasks",
 
     # Network (protocol-agnostic utilities)
+    "crates/net/dnsaddr",
     "crates/net/local",
     "crates/net/peer/store",
     "crates/net/peer/score",
@@ -112,6 +113,7 @@ vertex-swarm-primitives = { path = "crates/swarm/primitives" }
 vertex-swarm-peer = { path = "crates/swarm/peers/peer" }
 
 # network
+vertex-net-dnsaddr = { path = "crates/net/dnsaddr" }
 vertex-net-local = { path = "crates/net/local" }
 vertex-net-peer-store = { path = "crates/net/peer/store" }
 vertex-net-peer-score = { path = "crates/net/peer/score" }
@@ -206,7 +208,8 @@ tracing-subscriber = { version = "0.3", features = [
 tracing-opentelemetry = "0.32"
 opentelemetry = "0.31"
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
+opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "http-proto", "reqwest"] }
+opentelemetry-appender-tracing = { version = "0.31", features = ["experimental_use_tracing_span_context"] }
 
 ## p2p
 libp2p = { version = "0.56.0", features = [
@@ -274,6 +277,7 @@ web-time = "1.1"
 # networking
 netdev = "0.40"
 ipnet = "2.11"
+hickory-resolver = { version = "0.25", features = ["tokio", "system-config"] }
 
 # misc
 anyhow = "1.0"

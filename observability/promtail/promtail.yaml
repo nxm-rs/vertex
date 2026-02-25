@@ -6,7 +6,7 @@ positions:
   filename: /tmp/positions.yaml
 
 clients:
-  - url: http://loki:3100/loki/api/v1/push
+  - url: http://localhost:3100/loki/api/v1/push
 
 scrape_configs:
   # Scrape vertex log files from mounted host directory
@@ -18,17 +18,24 @@ scrape_configs:
           job: vertex
           __path__: /vertex-logs/vertex.log*
     pipeline_stages:
+      # Extract top-level fields from tracing-subscriber JSON format
       - json:
           expressions:
             level: level
-            message: message
             target: target
             timestamp: timestamp
-            trace_id: trace_id
-            span_id: span_id
+            message: 'fields.message'
+      # Derive a short crate label from the full target path
+      # e.g. "vertex_swarm_net_hive::protocol" -> "vertex_swarm_net_hive"
+      - regex:
+          source: target
+          expression: '^(?P<crate>[^:]+)'
+      # Only promote low-cardinality labels to stream labels.
+      # target (23+ values) stays as extracted metadata for filtering,
+      # but not as a stream label to avoid stream churn.
       - labels:
           level:
-          target:
+          crate:
       - timestamp:
           source: timestamp
           format: RFC3339Nano
@@ -50,14 +57,10 @@ scrape_configs:
       - json:
           expressions:
             level: level
-            message: message
             target: target
             timestamp: timestamp
-            trace_id: trace_id
-            span_id: span_id
       - labels:
           level:
-          target:
       - timestamp:
           source: timestamp
           format: RFC3339Nano

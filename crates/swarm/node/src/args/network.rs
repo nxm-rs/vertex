@@ -24,6 +24,11 @@ const DEFAULT_MAX_PEERS: usize = 50;
 /// Default idle timeout in seconds.
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 60;
 
+/// Default for nat_auto (enabled by default for peer discovery).
+fn default_nat_auto() -> bool {
+    true
+}
+
 /// P2P network CLI arguments.
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
 #[command(next_help_heading = "Networking")]
@@ -57,9 +62,9 @@ pub struct NetworkArgs {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nat_addrs_raw: Vec<String>,
 
-    /// Enable auto-NAT discovery from peer-observed addresses.
-    #[arg(long = "network.nat-auto")]
-    #[serde(default)]
+    /// Enable auto-NAT discovery from peer-observed addresses (enabled by default).
+    #[arg(long = "network.nat-auto", default_value_t = true)]
+    #[serde(default = "default_nat_auto")]
     pub nat_auto: bool,
 
     /// Maximum number of peers.
@@ -90,7 +95,7 @@ impl Default for NetworkArgs {
             port: DEFAULT_P2P_PORT,
             addr: DEFAULT_LISTEN_ADDR.to_string(),
             nat_addrs_raw: Vec::new(),
-            nat_auto: false,
+            nat_auto: true,
             max_peers: DEFAULT_MAX_PEERS,
             idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
             peer: PeerArgs::default(),
@@ -197,7 +202,7 @@ impl Default for NetworkConfig<KademliaConfig> {
             bootnodes: Vec::new(),
             trusted_peers: Vec::new(),
             nat_addrs: Vec::new(),
-            nat_auto: false,
+            nat_auto: true,
             discovery_enabled: true,
             max_peers: DEFAULT_MAX_PEERS,
             idle_timeout: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS),
