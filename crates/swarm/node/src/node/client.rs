@@ -254,7 +254,7 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
             TopologyEvent::PeerReady {
                 overlay,
                 peer_id,
-                storer,
+                node_type,
                 ..
             } => {
                 self.base
@@ -264,7 +264,7 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
                     .on_command(ClientCommand::ActivatePeer {
                         peer_id,
                         overlay,
-                        storer,
+                        node_type,
                     });
             }
             TopologyEvent::PeerDisconnected { .. } => {}

@@ -35,7 +35,7 @@ use nectar_primitives::ChunkAddress;
 use tracing::{debug, warn};
 use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_bandwidth_chequebook::SignedCheque;
-use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
 use super::upgrade::{
     ClientInboundOutput, ClientInboundUpgrade, ClientOutboundInfo, ClientOutboundOutput,
@@ -64,8 +64,8 @@ pub enum HandlerCommand {
     Activate {
         /// The peer's overlay address.
         overlay: OverlayAddress,
-        /// True if the peer is a storer node (full storage commitment).
-        storer: bool,
+        /// The peer's node type.
+        node_type: SwarmNodeType,
     },
     /// Announce our payment threshold to the peer.
     AnnouncePricing {
@@ -225,7 +225,7 @@ enum State {
     /// Active and processing protocols.
     Active {
         overlay: OverlayAddress,
-        storer: bool,
+        node_type: SwarmNodeType,
     },
     /// Handler is closing.
     Closing,
@@ -324,13 +324,13 @@ impl ClientHandler {
     }
 
     /// Process activation command.
-    fn activate(&mut self, overlay: OverlayAddress, storer: bool) {
+    fn activate(&mut self, overlay: OverlayAddress, node_type: SwarmNodeType) {
         match &self.state {
             State::Dormant => {
-                debug!(%overlay, %storer, "Handler activated");
+                debug!(%overlay, ?node_type, "Handler activated");
                 self.state = State::Active {
                     overlay,
-                    storer,
+                    node_type,
                 };
                 self.pending_events
                     .push_back(HandlerEvent::Activated { overlay });
@@ -507,9 +507,9 @@ impl ConnectionHandler for ClientHandler {
             match cmd {
                 HandlerCommand::Activate {
                     overlay,
-                    storer,
+                    node_type,
                 } => {
-                    self.activate(overlay, storer);
+                    self.activate(overlay, node_type);
                     if let Some(event) = self.pending_events.pop_front() {
                         return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
                     }

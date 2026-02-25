@@ -2,8 +2,6 @@
 
 use super::limits::DepthAwareLimits;
 
-const DEFAULT_MAX_CONNECT_ATTEMPTS: usize = 4;
-const DEFAULT_MAX_NEIGHBOR_ATTEMPTS: usize = 6;
 const DEFAULT_MAX_NEIGHBOR_CANDIDATES: usize = 16;
 const DEFAULT_MAX_BALANCED_CANDIDATES: usize = 16;
 
@@ -12,10 +10,6 @@ const DEFAULT_MAX_BALANCED_CANDIDATES: usize = 16;
 pub struct KademliaConfig {
     /// Depth-aware per-bin capacity limits.
     pub limits: DepthAwareLimits,
-    /// Maximum failed connection attempts before removing a peer.
-    pub max_connect_attempts: usize,
-    /// Maximum failed connection attempts for neighbor peers.
-    pub max_neighbor_attempts: usize,
     /// Maximum concurrent pending candidates for neighbor (depth) bins.
     pub max_neighbor_candidates: usize,
     /// Maximum concurrent pending candidates for balanced (non-depth) bins.
@@ -26,8 +20,6 @@ impl Default for KademliaConfig {
     fn default() -> Self {
         Self {
             limits: DepthAwareLimits::default(),
-            max_connect_attempts: DEFAULT_MAX_CONNECT_ATTEMPTS,
-            max_neighbor_attempts: DEFAULT_MAX_NEIGHBOR_ATTEMPTS,
             max_neighbor_candidates: DEFAULT_MAX_NEIGHBOR_CANDIDATES,
             max_balanced_candidates: DEFAULT_MAX_BALANCED_CANDIDATES,
         }
@@ -68,7 +60,6 @@ mod tests {
         let config = KademliaConfig::default();
         assert_eq!(config.limits.nominal(), 3);
         assert_eq!(config.limits.total_target(), 160);
-        assert_eq!(config.max_connect_attempts, 4);
     }
 
     #[test]

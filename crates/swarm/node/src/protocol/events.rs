@@ -21,7 +21,7 @@ use libp2p::PeerId;
 use nectar_primitives::ChunkAddress;
 use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_bandwidth_chequebook::SignedCheque;
-use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
 /// Events emitted by the client behaviour.
 #[derive(Debug, Clone)]
@@ -224,8 +224,8 @@ pub enum ClientCommand {
         peer_id: PeerId,
         /// The peer's Swarm overlay address.
         overlay: OverlayAddress,
-        /// True if the peer is a storer node (full storage commitment).
-        storer: bool,
+        /// The peer's node type.
+        node_type: SwarmNodeType,
     },
 
     /// Announce our payment threshold to a peer.

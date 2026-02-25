@@ -50,7 +50,7 @@ pub(crate) enum GossipCommand {
 
 struct PendingHealthCheck {
     swarm_peer: SwarmPeer,
-    storer: bool,
+    node_type: SwarmNodeType,
     delay: Pin<Box<Sleep>>,
 }
 
@@ -64,7 +64,7 @@ pub(crate) struct Gossip {
     last_broadcast: HashMap<OverlayAddress, Instant>,
     gossip_dial_peers: HashSet<PeerId>,
     pending_health_checks: HashMap<PeerId, PendingHealthCheck>,
-    pending_gossip: HashMap<PeerId, (SwarmPeer, bool)>,
+    pending_gossip: HashMap<PeerId, (SwarmPeer, SwarmNodeType)>,
     health_check_delay: Duration,
     gossip_interval: Pin<Box<Interval>>,
 }
@@ -106,7 +106,7 @@ impl Gossip {
         &mut self,
         peer_id: PeerId,
         swarm_peer: SwarmPeer,
-        storer: bool,
+        node_type: SwarmNodeType,
     ) -> Option<GossipCommand> {
         if self.gossip_dial_peers.remove(&peer_id) {
             let delay = Box::pin(tokio::time::sleep(self.health_check_delay));
@@ -114,25 +114,25 @@ impl Gossip {
                 peer_id,
                 PendingHealthCheck {
                     swarm_peer,
-                    storer,
+                    node_type,
                     delay,
                 },
             );
             None
         } else {
             self.pending_gossip
-                .insert(peer_id, (swarm_peer, storer));
+                .insert(peer_id, (swarm_peer, node_type));
             Some(GossipCommand::SendPing(peer_id))
         }
     }
 
     pub(crate) fn on_pong_received(&mut self, peer_id: PeerId) -> Vec<GossipAction> {
-        let Some((swarm_peer, storer)) = self.pending_gossip.remove(&peer_id) else {
+        let Some((swarm_peer, node_type)) = self.pending_gossip.remove(&peer_id) else {
             return Vec::new();
         };
 
         let depth = self.current_depth;
-        let mut actions = self.on_peer_authenticated(&swarm_peer, storer, depth);
+        let mut actions = self.on_peer_authenticated(&swarm_peer, node_type, depth);
         actions.extend(self.check_depth_change());
         actions
     }
@@ -170,7 +170,7 @@ impl Gossip {
         for peer_id in &ready_peers {
             if let Some(check) = self.pending_health_checks.remove(peer_id) {
                 self.pending_gossip
-                    .insert(*peer_id, (check.swarm_peer, check.storer));
+                    .insert(*peer_id, (check.swarm_peer, check.node_type));
             }
         }
 
@@ -223,13 +223,13 @@ impl Gossip {
     fn on_peer_authenticated(
         &mut self,
         peer: &SwarmPeer,
-        storer: bool,
+        node_type: SwarmNodeType,
         depth: u8,
     ) -> Vec<GossipAction> {
         self.last_depth = depth;
 
-        if !storer {
-            trace!(overlay = %peer.overlay(), "Skipping gossip for client node");
+        if !node_type.requires_storage() {
+            trace!(overlay = %peer.overlay(), "Skipping gossip for non-storer node");
             return Vec::new();
         }
 
@@ -568,7 +568,7 @@ mod tests {
         let peer_id = PeerId::random();
         let swarm_peer = test_swarm_peer(0x80);
 
-        let cmd = gossip.on_handshake_completed(peer_id, swarm_peer, true);
+        let cmd = gossip.on_handshake_completed(peer_id, swarm_peer, SwarmNodeType::Storer);
 
         assert!(cmd.is_some());
         match cmd.unwrap() {
@@ -584,7 +584,7 @@ mod tests {
         let swarm_peer = test_swarm_peer(0x80);
 
         gossip.mark_gossip_dial(peer_id);
-        let cmd = gossip.on_handshake_completed(peer_id, swarm_peer, true);
+        let cmd = gossip.on_handshake_completed(peer_id, swarm_peer, SwarmNodeType::Storer);
         assert!(cmd.is_none());
     }
 
@@ -595,7 +595,7 @@ mod tests {
         let peer_id = PeerId::random();
         let swarm_peer = test_swarm_peer(0x80);
 
-        gossip.on_handshake_completed(peer_id, swarm_peer, true);
+        gossip.on_handshake_completed(peer_id, swarm_peer, SwarmNodeType::Storer);
         gossip.on_pong_received(peer_id);
 
         let actions = gossip.on_pong_received(peer_id);
@@ -609,7 +609,7 @@ mod tests {
         let peer_id = PeerId::random();
         let swarm_peer = test_swarm_peer(0x80);
 
-        gossip.on_handshake_completed(peer_id, swarm_peer, true);
+        gossip.on_handshake_completed(peer_id, swarm_peer, SwarmNodeType::Storer);
 
         assert!(gossip.on_ping_error(&peer_id));
         assert!(!gossip.on_ping_error(&peer_id));
@@ -624,7 +624,7 @@ mod tests {
         let swarm_peer = test_swarm_peer(0x80);
 
         gossip.mark_gossip_dial(peer_id);
-        gossip.on_handshake_completed(peer_id, swarm_peer, true);
+        gossip.on_handshake_completed(peer_id, swarm_peer, SwarmNodeType::Storer);
 
         gossip.on_connection_closed(&peer_id, Some(&overlay));
         assert!(!gossip.on_ping_error(&peer_id));

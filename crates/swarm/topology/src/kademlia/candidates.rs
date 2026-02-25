@@ -9,7 +9,6 @@ use vertex_swarm_peer_manager::{PeerManager, ProximityIndex};
 use vertex_swarm_primitives::OverlayAddress;
 
 use super::limits::LimitsSnapshot;
-use super::DepthAwareLimits;
 
 /// Captured state for consistent candidate selection.
 ///
@@ -38,56 +37,6 @@ pub struct CandidateSnapshot {
 }
 
 impl CandidateSnapshot {
-    /// Capture current state atomically.
-    ///
-    /// Note: This captures the state at a point in time. The captured state
-    /// may become stale, but decisions made using this snapshot will be
-    /// internally consistent.
-    pub fn capture<F, Q>(
-        limits: &DepthAwareLimits,
-        depth: u8,
-        peer_manager: &PeerManager,
-        get_in_progress: F,
-        get_queued: Q,
-    ) -> Self
-    where
-        F: FnOnce() -> HashSet<OverlayAddress>,
-        Q: FnOnce() -> HashSet<OverlayAddress>,
-    {
-        let limits_snapshot = LimitsSnapshot::capture(limits, depth);
-        let in_progress = get_in_progress();
-        let queued = get_queued();
-
-        // Snapshot banned/backoff from DashMap (iterates PeerEntry atomics)
-        let banned = peer_manager.banned_set();
-        let in_backoff = peer_manager.peers_in_backoff();
-
-        Self {
-            limits: limits_snapshot,
-            in_progress,
-            queued,
-            banned,
-            in_backoff,
-        }
-    }
-
-    /// Lightweight capture that only snapshots limits and in-progress.
-    ///
-    /// Use when you'll check ban/backoff status individually (acceptable
-    /// for small candidate sets where O(1) lookups are fine).
-    pub fn capture_lightweight<F>(limits: &DepthAwareLimits, depth: u8, get_in_progress: F) -> Self
-    where
-        F: FnOnce() -> HashSet<OverlayAddress>,
-    {
-        Self {
-            limits: LimitsSnapshot::capture(limits, depth),
-            in_progress: get_in_progress(),
-            queued: HashSet::new(),
-            banned: HashSet::new(),
-            in_backoff: HashSet::new(),
-        }
-    }
-
     /// Check if peer is eligible for dialing based on snapshot.
     ///
     /// Returns true if:
@@ -377,6 +326,7 @@ pub fn select_balanced_candidates(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::DepthAwareLimits;
 
     fn test_overlay(n: u8) -> OverlayAddress {
         let mut bytes = [0u8; 32];

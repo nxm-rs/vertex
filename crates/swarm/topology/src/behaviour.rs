@@ -16,7 +16,6 @@ use tokio::time::Interval;
 use libp2p::{
     Multiaddr, PeerId,
     core::{Endpoint, transport::PortUse},
-    multiaddr::Protocol,
     swarm::{
         ConnectionDenied, ConnectionError, ConnectionId, FromSwarm, NetworkBehaviour,
         THandlerInEvent, THandlerOutEvent, ToSwarm, dial_opts::DialOpts,
@@ -33,14 +32,15 @@ use vertex_swarm_spec::HasSpec;
 use vertex_net_peer_store::FilePeerStore;
 use vertex_swarm_peer_manager::{PeerManager, SwarmPeerData, SwarmScoringConfig};
 use vertex_swarm_peer_score::SwarmScoringEvent;
-use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
 use vertex_swarm_peer_registry::{ActivateResult, SwarmPeerRegistry as ConnectionRegistry};
 use crate::DialReason;
+use crate::extract_peer_id;
 use crate::composed::{ProtocolBehaviours, ProtocolEvent};
 use vertex_net_dnsaddr::{is_dnsaddr, resolve_all};
-use crate::error::TopologyError;
-use crate::events::{ConnectionDirection, DisconnectReason, RejectionReason, TopologyEvent};
+use crate::error::{DialError, DisconnectReason, RejectionReason, TopologyError};
+use crate::events::{ConnectionDirection, TopologyEvent};
 use crate::gossip::{Gossip, GossipAction, GossipCommand};
 use crate::gossip::verifier_task::{
     VerificationEvent, VerificationRequest, VerifierMetrics, spawn_gossip_verifier,
@@ -59,14 +59,6 @@ const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 /// Command buffer (64 is sufficient for typical dial/disconnect rate).
 const COMMAND_CHANNEL_CAPACITY: usize = 64;
-
-/// Extract PeerId from a multiaddr's /p2p/ component.
-fn extract_peer_id(addr: &Multiaddr) -> Option<PeerId> {
-    addr.iter().find_map(|p| match p {
-        Protocol::P2p(id) => Some(id),
-        _ => None,
-    })
-}
 
 /// Target for dialing a peer (internal).
 #[derive(Debug, Clone)]
@@ -263,11 +255,8 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             let po_str = po_label(po as u8);
             let target = limits.target(po as u8, depth);
             let target_val = if target == usize::MAX { -1.0 } else { target as f64 };
-            let ceiling = if target == usize::MAX {
-                -1.0
-            } else {
-                (target + limits.inbound_headroom()) as f64
-            };
+            let ceiling_val = limits.ceiling(po as u8, depth);
+            let ceiling = if ceiling_val == usize::MAX { -1.0 } else { ceiling_val as f64 };
 
             metrics::gauge!("topology_bin_target_peers", "po" => po_str).set(target_val);
             metrics::gauge!("topology_bin_ceiling_peers", "po" => po_str).set(ceiling);
@@ -591,7 +580,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
         // For Known peers, check routing capacity before dialing
         if let Some(overlay) = target.overlay() {
-            if !self.routing.try_reserve_dial(&overlay, true) {
+            if !self.routing.try_reserve_dial(&overlay, SwarmNodeType::Storer) {
                 trace!(%overlay, "Skipping dial - at capacity or already tracking");
                 return;
             }
@@ -783,7 +772,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 self.emit_event(TopologyEvent::DialFailed {
                     overlay,
                     addrs: state.addrs().cloned().unwrap_or_default(),
-                    error: crate::events::DialError::Stale,
+                    error: DialError::Stale,
                     dial_duration: state.started_at().map(|t| t.elapsed()),
                     reason,
                 });
@@ -834,12 +823,12 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         info: vertex_swarm_net_handshake::HandshakeInfo,
     ) {
         let overlay = OverlayAddress::from(*info.swarm_peer.overlay());
-        let storer = info.node_type.requires_storage();
+        let node_type = info.node_type;
 
         debug!(
             %peer_id,
             %overlay,
-            %storer,
+            ?node_type,
             po = self.proximity(&overlay),
             "Handshake completed"
         );
@@ -877,12 +866,12 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         // transitioning to active. Outbound connections already reserved capacity
         // at dial time via try_reserve_dial.
         if direction == ConnectionDirection::Inbound {
-            let bin_at_capacity = !RoutingCapacity::should_accept_inbound(&*self.routing, &overlay, storer);
+            let bin_at_capacity = !RoutingCapacity::should_accept_inbound(&*self.routing, &overlay, node_type);
             if bin_at_capacity {
                 debug!(
                     %peer_id,
                     %overlay,
-                    %storer,
+                    ?node_type,
                     ?direction,
                     "Rejecting inbound connection: bin saturated"
                 );
@@ -966,7 +955,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         self.emit_event(TopologyEvent::PeerReady {
             overlay,
             peer_id,
-            storer,
+            node_type,
             direction,
         });
 
@@ -974,7 +963,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             self.gossip.on_handshake_completed(
                 peer_id,
                 info.swarm_peer,
-                storer,
+                node_type,
             )
         {
             // Use the connection_id we just established
@@ -1008,7 +997,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         self.emit_event(TopologyEvent::DialFailed {
             overlay: overlay.clone(),
             addrs: state.as_ref().and_then(|s| s.addrs().cloned()).unwrap_or_default(),
-            error: crate::events::DialError::HandshakeFailed(error.to_string()),
+            error: DialError::HandshakeFailed(error.to_string()),
             dial_duration: state.as_ref().and_then(|s| s.started_at()).map(|t| t.elapsed()),
             reason,
         });
@@ -1115,15 +1104,14 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         };
 
         // Query peer_manager for node type BEFORE removing from routing
-        let storer = self.peer_manager.node_type(&overlay)
-            .map(|nt| nt.requires_storage())
-            .unwrap_or(false);
+        let node_type = self.peer_manager.node_type(&overlay)
+            .unwrap_or(SwarmNodeType::Client);
 
         let connection_duration = connected_at.map(|t| t.elapsed());
         debug!(
             peer_id = %closed.peer_id,
             %overlay,
-            %storer,
+            ?node_type,
             ?connection_duration,
             cause = ?closed.cause,
             "Peer disconnected"
@@ -1160,7 +1148,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             overlay,
             reason: disconnect_reason,
             connection_duration,
-            storer,
+            node_type,
         });
 
         if new_depth != old_depth {
@@ -1208,7 +1196,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         self.emit_event(TopologyEvent::DialFailed {
             overlay,
             addrs,
-            error: crate::events::DialError::Other(format!("{:?}", failure.error)),
+            error: DialError::Other(format!("{:?}", failure.error)),
             dial_duration,
             reason,
         });

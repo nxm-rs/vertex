@@ -8,9 +8,11 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use hashlink::{LinkedHashMap, LruCache};
-use libp2p::{Multiaddr, PeerId, multiaddr::Protocol};
+use libp2p::{Multiaddr, PeerId};
 use tracing::{debug, trace, warn};
 use vertex_swarm_peer::{SwarmAddress, SwarmPeer};
+
+use crate::extract_peer_id;
 
 pub(crate) type OverlayAddress = SwarmAddress;
 
@@ -50,12 +52,6 @@ impl PendingVerification {
         self.queued_at.elapsed() > PENDING_EXPIRY
     }
 
-    /// Get the overlay address of the gossiped peer.
-    #[allow(dead_code)] // Used by GossipVerifierTask in gossip_verifier_task.rs
-    pub(crate) fn overlay(&self) -> OverlayAddress {
-        OverlayAddress::from(*self.gossiped_peer.overlay())
-    }
-
     /// Get the dial address (first multiaddr from gossiped peer).
     pub(crate) fn dial_addr(&self) -> &Multiaddr {
         // Safe: check_gossip validates multiaddrs is non-empty before creating PendingVerification
@@ -65,7 +61,6 @@ impl PendingVerification {
 
 /// Result of checking a gossiped peer against existing data.
 #[derive(Debug)]
-#[allow(dead_code)] // Variants/fields read by GossipVerifierTask in gossip_verifier_task.rs
 pub(crate) enum GossipCheckResult {
     /// Peer already exists with matching signature - skip verification.
     AlreadyKnown,
@@ -168,14 +163,6 @@ pub(crate) struct GossipVerifier {
     per_gossiper_count: LruCache<OverlayAddress, usize>,
     local_overlay: OverlayAddress,
     last_cleanup: Instant,
-}
-
-/// Extract PeerId from a multiaddr's /p2p/ component.
-fn extract_peer_id(addr: &Multiaddr) -> Option<PeerId> {
-    addr.iter().find_map(|p| match p {
-        Protocol::P2p(id) => Some(id),
-        _ => None,
-    })
 }
 
 impl GossipVerifier {

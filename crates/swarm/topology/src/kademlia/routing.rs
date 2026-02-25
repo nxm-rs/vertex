@@ -14,7 +14,7 @@ use tracing::{debug, info, trace};
 use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 use vertex_swarm_peer_manager::PeerManager;
 use vertex_swarm_peer_manager::ProximityIndex;
-use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
 use super::{
     CandidateSnapshot, CandidateSelector, DepthAwareLimits, KademliaConfig, LimitsSnapshot,
@@ -348,8 +348,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         let known = self.peer_manager.bin_sizes();
         connected
             .into_iter()
-            .zip(known.into_iter())
-            .map(|(c, k)| (c, k))
+            .zip(known)
             .collect()
     }
 
@@ -458,15 +457,10 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         }
     }
 
-    fn do_remove_peer(&self, peer: &OverlayAddress) {
-        // Only remove from connected_peers; PeerManager handles banning
-        self.connected_peers.remove(peer);
-        debug!(%peer, "removed peer from routing");
-    }
 }
 
 impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
-    fn try_reserve_dial(&self, overlay: &OverlayAddress, _storer: bool) -> bool {
+    fn try_reserve_dial(&self, overlay: &OverlayAddress, _node_type: SwarmNodeType) -> bool {
         let po = self.proximity(overlay);
         let effective = self.bin_counts.effective_count(po);
 
@@ -554,7 +548,7 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
         }
     }
 
-    fn should_accept_inbound(&self, overlay: &OverlayAddress, _storer: bool) -> bool {
+    fn should_accept_inbound(&self, overlay: &OverlayAddress, _node_type: SwarmNodeType) -> bool {
         let po = self.proximity(overlay);
         let effective = self.bin_counts.effective_count(po);
 
@@ -579,7 +573,7 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
 }
 
 impl<I: SwarmIdentity> SwarmRouting<I> for KademliaRouting<I> {
-    fn should_accept_peer(&self, peer: &OverlayAddress, _storer: bool) -> bool {
+    fn should_accept_peer(&self, peer: &OverlayAddress, _node_type: SwarmNodeType) -> bool {
         let po = self.proximity(peer);
         let effective_count = self.bin_counts.effective_count(po);
         // Use depth-aware limits for peer acceptance
@@ -595,7 +589,8 @@ impl<I: SwarmIdentity> SwarmRouting<I> for KademliaRouting<I> {
     }
 
     fn remove_peer(&self, peer: &OverlayAddress) {
-        self.do_remove_peer(peer);
+        self.connected_peers.remove(peer);
+        debug!(%peer, "removed peer from routing");
     }
 }
 
@@ -737,19 +732,19 @@ mod tests {
         let peer3 = SwarmAddress::with_first_byte(0xa0); // po=0
 
         // First reserve succeeds (effective=0 < nominal=2)
-        assert!(routing.try_reserve_dial(&peer1, true));
+        assert!(routing.try_reserve_dial(&peer1, SwarmNodeType::Storer));
 
         // Second reserve succeeds (effective=1 < nominal=2)
-        assert!(routing.try_reserve_dial(&peer2, true));
+        assert!(routing.try_reserve_dial(&peer2, SwarmNodeType::Storer));
 
         // Third fails (effective=2 >= nominal=2)
-        assert!(!routing.try_reserve_dial(&peer3, true));
+        assert!(!routing.try_reserve_dial(&peer3, SwarmNodeType::Storer));
 
         // Release one
         routing.release_dial(&peer1);
 
         // Now third succeeds (effective=1 < nominal=2)
-        assert!(routing.try_reserve_dial(&peer3, true));
+        assert!(routing.try_reserve_dial(&peer3, SwarmNodeType::Storer));
     }
 
     #[test]
@@ -761,7 +756,7 @@ mod tests {
         let peer = SwarmAddress::with_first_byte(0x80); // po=0
 
         // Reserve dial
-        assert!(routing.try_reserve_dial(&peer, true));
+        assert!(routing.try_reserve_dial(&peer, SwarmNodeType::Storer));
         assert_eq!(routing.bin_counts.effective_count(0), 1);
 
         // Transition to handshaking
@@ -788,22 +783,22 @@ mod tests {
         let peer2 = SwarmAddress::with_first_byte(0xc0);
         let peer3 = SwarmAddress::with_first_byte(0xa0);
 
-        assert!(SwarmRouting::should_accept_peer(&*routing, &peer1, true));
+        assert!(SwarmRouting::should_accept_peer(&*routing, &peer1, SwarmNodeType::Storer));
 
         // Reserve and activate peer1
-        routing.try_reserve_dial(&peer1, true);
+        routing.try_reserve_dial(&peer1, SwarmNodeType::Storer);
         routing.dial_connected(&peer1);
         routing.handshake_completed(&peer1);
 
-        assert!(SwarmRouting::should_accept_peer(&*routing, &peer2, true));
+        assert!(SwarmRouting::should_accept_peer(&*routing, &peer2, SwarmNodeType::Storer));
 
         // Reserve and activate peer2
-        routing.try_reserve_dial(&peer2, true);
+        routing.try_reserve_dial(&peer2, SwarmNodeType::Storer);
         routing.dial_connected(&peer2);
         routing.handshake_completed(&peer2);
 
         // At capacity (effective=2 >= nominal=2)
-        assert!(!SwarmRouting::should_accept_peer(&*routing, &peer3, true));
+        assert!(!SwarmRouting::should_accept_peer(&*routing, &peer3, SwarmNodeType::Storer));
     }
 
     #[test]
@@ -913,27 +908,27 @@ mod tests {
         let peer3 = SwarmAddress::with_first_byte(0xa0);
 
         // Can accept first inbound
-        assert!(routing.should_accept_inbound(&peer1, true));
+        assert!(routing.should_accept_inbound(&peer1, SwarmNodeType::Storer));
         routing.reserve_inbound(&peer1);
 
         // Can accept second inbound
-        assert!(routing.should_accept_inbound(&peer2, true));
+        assert!(routing.should_accept_inbound(&peer2, SwarmNodeType::Storer));
         routing.reserve_inbound(&peer2);
 
         // At capacity (effective=2 >= target+headroom=2)
-        assert!(!routing.should_accept_inbound(&peer3, true));
+        assert!(!routing.should_accept_inbound(&peer3, SwarmNodeType::Storer));
 
         // Complete one handshake
         routing.handshake_completed(&peer1);
 
         // Still at capacity (peer1 now active)
-        assert!(!routing.should_accept_inbound(&peer3, true));
+        assert!(!routing.should_accept_inbound(&peer3, SwarmNodeType::Storer));
 
         // Disconnect peer1
         RoutingCapacity::disconnected(&*routing, &peer1);
 
         // Now can accept
-        assert!(routing.should_accept_inbound(&peer3, true));
+        assert!(routing.should_accept_inbound(&peer3, SwarmNodeType::Storer));
     }
 
     #[test]
@@ -1074,7 +1069,7 @@ mod tests {
         };
 
         for peer in [peer1, peer2, peer3] {
-            routing.try_reserve_dial(&peer, true);
+            routing.try_reserve_dial(&peer, SwarmNodeType::Storer);
             routing.dial_connected(&peer);
             routing.handshake_completed(&peer);
             SwarmRouting::connected(&*routing, peer);

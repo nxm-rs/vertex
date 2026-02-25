@@ -12,7 +12,8 @@ use vertex_observability::labels::outcome;
 use vertex_swarm_primitives::SwarmNodeType;
 
 use crate::DialReason;
-use crate::events::{ConnectionDirection, DisconnectReason, RejectionReason, TopologyEvent};
+use crate::error::{DisconnectReason, RejectionReason};
+use crate::events::{ConnectionDirection, TopologyEvent};
 
 /// Pre-computed proximity order labels (`&'static str`) to avoid per-call allocation.
 /// Covers bins 0-31 which is the full practical range for Kademlia routing.
@@ -97,11 +98,11 @@ impl TopologyMetrics {
     pub fn record_event(&self, event: &TopologyEvent) {
         match event {
             TopologyEvent::PeerReady {
-                storer,
+                node_type,
                 direction: dir,
                 ..
             } => {
-                self.record_peer_ready(*storer, *dir);
+                self.record_peer_ready(*node_type, *dir);
             }
             TopologyEvent::PeerRejected { reason, direction: dir, .. } => {
                 self.record_peer_rejected(*reason, *dir);
@@ -109,10 +110,10 @@ impl TopologyMetrics {
             TopologyEvent::PeerDisconnected {
                 reason,
                 connection_duration,
-                storer,
+                node_type,
                 ..
             } => {
-                self.record_peer_disconnected(*reason, *connection_duration, *storer);
+                self.record_peer_disconnected(*reason, *connection_duration, *node_type);
             }
             TopologyEvent::DepthChanged { old_depth, new_depth } => {
                 self.record_depth_changed(*old_depth, *new_depth);
@@ -132,8 +133,8 @@ impl TopologyMetrics {
     }
 
     /// Record a successful peer connection.
-    fn record_peer_ready(&self, storer: bool, dir: ConnectionDirection) {
-        let node_type_label: &'static str = if storer {
+    fn record_peer_ready(&self, node_type: SwarmNodeType, dir: ConnectionDirection) {
+        let node_type_label: &'static str = if node_type.requires_storage() {
             self.connected_storers.fetch_add(1, Ordering::Relaxed);
             SwarmNodeType::Storer.into()
         } else {
@@ -170,10 +171,10 @@ impl TopologyMetrics {
         &self,
         reason: DisconnectReason,
         connection_duration: Option<Duration>,
-        storer: bool,
+        node_type: SwarmNodeType,
     ) {
         let reason_label = reason.label_value();
-        let node_type_label: &'static str = if storer {
+        let node_type_label: &'static str = if node_type.requires_storage() {
             saturating_decrement(&self.connected_storers);
             SwarmNodeType::Storer.into()
         } else {
@@ -351,6 +352,7 @@ impl Default for TopologyMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::DialError;
     use crate::events::ConnectionDirection;
     use libp2p::{Multiaddr, PeerId};
     use vertex_swarm_primitives::OverlayAddress;
@@ -382,7 +384,7 @@ mod tests {
         let event = TopologyEvent::PeerReady {
             overlay: test_overlay(),
             peer_id: test_peer_id(),
-            storer: true,
+            node_type: SwarmNodeType::Storer,
             direction: ConnectionDirection::Outbound,
         };
 
@@ -393,7 +395,7 @@ mod tests {
         let event = TopologyEvent::PeerReady {
             overlay: test_overlay(),
             peer_id: test_peer_id(),
-            storer: false,
+            node_type: SwarmNodeType::Client,
             direction: ConnectionDirection::Inbound,
         };
 
@@ -432,7 +434,7 @@ mod tests {
         let event = TopologyEvent::DialFailed {
             overlay: Some(test_overlay()),
             addrs: vec![test_addr()],
-            error: crate::events::DialError::ConnectionRefused,
+            error: DialError::ConnectionRefused,
             dial_duration: Some(Duration::from_secs(5)),
             reason: Some(DialReason::Discovery),
         };
@@ -449,9 +451,9 @@ mod tests {
         // Disconnect a client that was never connected — must not wrap to u64::MAX.
         let event = TopologyEvent::PeerDisconnected {
             overlay: test_overlay(),
-            reason: DisconnectReason::Remote,
+            reason: DisconnectReason::ConnectionError,
             connection_duration: None,
-            storer: false,
+            node_type: SwarmNodeType::Client,
         };
 
         metrics.record_event(&event);

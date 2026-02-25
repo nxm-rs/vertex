@@ -19,7 +19,7 @@ pub use routing::{EvictionCandidate, EvictionPhase, KademliaRouting};
 pub use limits::{DepthAwareLimits, LimitsSnapshot, DEFAULT_NOMINAL, DEFAULT_TOTAL_TARGET};
 
 use vertex_swarm_api::SwarmIdentity;
-use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
 /// Connection capacity management for routing algorithms.
 ///
@@ -28,7 +28,7 @@ use vertex_swarm_primitives::OverlayAddress;
 pub trait RoutingCapacity: Send + Sync {
     /// Atomically check capacity and reserve a dial slot.
     /// Returns true if reserved, false if at capacity or already tracking.
-    fn try_reserve_dial(&self, overlay: &OverlayAddress, storer: bool) -> bool;
+    fn try_reserve_dial(&self, overlay: &OverlayAddress, node_type: SwarmNodeType) -> bool;
 
     /// Release a dial reservation (dial failed before connection established).
     fn release_dial(&self, overlay: &OverlayAddress);
@@ -46,7 +46,7 @@ pub trait RoutingCapacity: Send + Sync {
     fn disconnected(&self, overlay: &OverlayAddress);
 
     /// Check if we can accept an inbound connection (before overlay is known).
-    fn should_accept_inbound(&self, overlay: &OverlayAddress, storer: bool) -> bool;
+    fn should_accept_inbound(&self, overlay: &OverlayAddress, node_type: SwarmNodeType) -> bool;
 
     /// Reserve capacity for an accepted inbound connection.
     fn reserve_inbound(&self, overlay: &OverlayAddress);
@@ -58,7 +58,7 @@ pub trait RoutingCapacity: Send + Sync {
 /// Implemented by routing algorithms (e.g., Kademlia).
 pub trait SwarmRouting<I: SwarmIdentity>: RoutingCapacity {
     /// Should we accept an inbound connection from this peer?
-    fn should_accept_peer(&self, peer: &OverlayAddress, storer: bool) -> bool;
+    fn should_accept_peer(&self, peer: &OverlayAddress, node_type: SwarmNodeType) -> bool;
 
     /// Notify that a peer has connected.
     fn connected(&self, peer: OverlayAddress);

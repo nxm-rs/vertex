@@ -235,11 +235,7 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
                     .map(|(_, d, h, a)| (*d, *h, *a))
                     .unwrap_or((0, 0, 0));
                 let target = limits.target(po as u8, depth);
-                let ceiling = if target == usize::MAX {
-                    usize::MAX
-                } else {
-                    target + limits.inbound_headroom()
-                };
+                let ceiling = limits.ceiling(po as u8, depth);
                 BinStats {
                     po: po as u8,
                     connected: *connected,

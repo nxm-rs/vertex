@@ -130,6 +130,12 @@ impl DepthAwareLimits {
         }
     }
 
+    /// Target + inbound headroom (max before rejecting inbound). `usize::MAX` for neighborhood.
+    pub fn ceiling(&self, bin: u8, depth: u8) -> usize {
+        let target = self.target(bin, depth);
+        if target == usize::MAX { usize::MAX } else { target + self.inbound_headroom }
+    }
+
     /// Check if bin should accept inbound connection at specified depth.
     ///
     /// More permissive than outbound - allows headroom above target.

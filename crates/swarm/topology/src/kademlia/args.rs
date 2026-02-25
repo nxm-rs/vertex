@@ -24,16 +24,6 @@ pub struct RoutingArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inbound_headroom: Option<usize>,
 
-    /// Max connection attempts before peer removal.
-    #[arg(long = "network.routing.max-connect-attempts")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_connect_attempts: Option<usize>,
-
-    /// Max connection attempts for neighbor peers.
-    #[arg(long = "network.routing.max-neighbor-attempts")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_neighbor_attempts: Option<usize>,
-
     /// Max pending connections for neighbor bins.
     #[arg(long = "network.routing.max-neighbor-candidates")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,12 +50,6 @@ impl RoutingArgs {
 
         KademliaConfig {
             limits,
-            max_connect_attempts: self
-                .max_connect_attempts
-                .unwrap_or(defaults.max_connect_attempts),
-            max_neighbor_attempts: self
-                .max_neighbor_attempts
-                .unwrap_or(defaults.max_neighbor_attempts),
             max_neighbor_candidates: self
                 .max_neighbor_candidates
                 .unwrap_or(defaults.max_neighbor_candidates),

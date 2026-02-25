@@ -94,9 +94,9 @@ impl ClientBehaviour {
             ClientCommand::ActivatePeer {
                 peer_id,
                 overlay,
-                storer,
+                node_type,
             } => {
-                debug!(%peer_id, %overlay, %storer, "Activating peer");
+                debug!(%peer_id, %overlay, ?node_type, "Activating peer");
                 self.peer_overlays.insert(peer_id, overlay);
                 self.overlay_peers.insert(overlay, peer_id);
                 self.pending_events.push_back(ToSwarm::NotifyHandler {
@@ -104,7 +104,7 @@ impl ClientBehaviour {
                     handler: libp2p::swarm::NotifyHandler::Any,
                     event: HandlerCommand::Activate {
                         overlay,
-                        storer,
+                        node_type,
                     },
                 });
             }
