@@ -6,8 +6,8 @@ use std::time::Instant;
 use alloy_primitives::{B256, Signature};
 use futures::future::BoxFuture;
 use hashlink::LruCache;
-use libp2p::multiaddr::Protocol;
 use metrics::{counter, histogram};
+use vertex_net_utils::extract_peer_id;
 use tracing::{debug, warn};
 use vertex_net_codec::FramedProto;
 use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
@@ -212,7 +212,7 @@ fn validate_proto_peer(
         false,
     )?;
 
-    if !peer.multiaddrs().iter().all(has_p2p_component) {
+    if !peer.multiaddrs().iter().all(|addr| extract_peer_id(addr).is_some()) {
         warn!(
             overlay = %overlay,
             "rejecting peer: multiaddrs missing /p2p/ component"
@@ -226,10 +226,6 @@ fn validate_proto_peer(
     }
 
     Ok(peer)
-}
-
-fn has_p2p_component(addr: &libp2p::Multiaddr) -> bool {
-    addr.iter().any(|p| matches!(p, Protocol::P2p(_)))
 }
 
 /// Outbound handler that sends peers to remote.

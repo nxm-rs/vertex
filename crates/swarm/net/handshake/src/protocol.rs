@@ -2,6 +2,7 @@ use libp2p::multiaddr::Protocol;
 use libp2p::{Multiaddr, PeerId, Stream};
 use tracing::{Instrument, Span, debug_span, instrument, warn};
 use vertex_net_codec::FramedProto;
+use vertex_net_utils::extract_peer_id;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_spec::SwarmSpec;
@@ -20,9 +21,7 @@ fn validate_observed_addr(
     observed: &Multiaddr,
     expected_peer_id: &PeerId,
 ) -> Result<(), HandshakeError> {
-    let peer_id_from_addr = observed
-        .iter()
-        .find_map(|p| if let Protocol::P2p(pid) = p { Some(pid) } else { None });
+    let peer_id_from_addr = extract_peer_id(observed);
 
     match peer_id_from_addr {
         Some(pid) if &pid == expected_peer_id => Ok(()),
@@ -197,7 +196,7 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
         // Build the observed address we'll report to the remote peer.
         let mut their_observed_multiaddr = self.remote_addr.clone();
         // Strip existing /p2p/ suffix to prevent duplication (libp2p dial addresses include it).
-        if matches!(their_observed_multiaddr.iter().last(), Some(Protocol::P2p(_))) {
+        if extract_peer_id(&their_observed_multiaddr).is_some() {
             their_observed_multiaddr.pop();
         }
         let their_observed_multiaddr =

@@ -18,6 +18,7 @@ vertex-swarm-api.workspace = true
 vertex-swarm-identity.workspace = true
 vertex-swarm-net-proto.workspace = true
 vertex-swarm-peer.workspace = true
+vertex-net-utils.workspace = true
 vertex-swarm-spec.workspace = true
 
 ## alloy

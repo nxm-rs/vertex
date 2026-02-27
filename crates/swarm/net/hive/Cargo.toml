@@ -19,6 +19,7 @@ vertex-swarm-net-proto.workspace = true
 vertex-swarm-peer.workspace = true
 vertex-swarm-primitives.workspace = true
 vertex-swarm-api.workspace = true
+vertex-net-utils.workspace = true
 vertex-swarm-spec.workspace = true
 vertex-tasks.workspace = true
 
