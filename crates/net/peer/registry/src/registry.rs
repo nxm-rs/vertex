@@ -5,45 +5,26 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::time::Instant;
 
-use libp2p::{Multiaddr, PeerId, swarm::ConnectionId};
+use libp2p::{PeerId, swarm::ConnectionId};
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::direction::ConnectionDirection;
 use crate::result::ActivateResult;
 use crate::state::ConnectionState;
 
-/// Read-only peer resolution (PeerId ↔ application-level Id).
-///
-/// Provides a narrow, read-only view into the registry for consumers
-/// that only need peer lookups without mutation access.
-pub trait PeerResolver: Send + Sync + 'static {
-    type Id;
-
-    /// Resolve a PeerId to its application-level Id (only if handshake is complete).
-    fn resolve_id(&self, peer_id: &PeerId) -> Option<Self::Id>;
-
-    /// Resolve an application-level Id back to its PeerId.
-    fn resolve_peer_id(&self, id: &Self::Id) -> Option<PeerId>;
-}
-
-/// Statistics about the peer registry.
-#[derive(Debug, Clone, Copy)]
-pub struct PeerRegistryStats {
-    /// Total entries in the registry.
-    pub total_entries: usize,
-    /// Number of active (connected) peers.
-    pub active_count: usize,
-    /// Number of pending (dialing/handshaking) connections.
-    pub pending_count: usize,
-}
-
 /// Registry key distinguishing known-ID from pending connections.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum RegistryKey<Id> {
     /// Peer with known application-level ID.
     Known(Id),
-    /// Pending connection (inbound or bootnode dial) awaiting application-level ID.
+    /// Pending connection (inbound or outbound without ID) awaiting application-level ID.
     Pending(PeerId),
+}
+
+impl<Id> From<Id> for RegistryKey<Id> {
+    fn from(id: Id) -> Self {
+        Self::Known(id)
+    }
 }
 
 /// Entry in the pending time index to be removed.
@@ -114,6 +95,9 @@ impl<Id: Clone + Eq + Hash, R> Maps<Id, R> {
 /// Tracks connection lifecycle without protocol-specific knowledge.
 /// `Id` is the peer identifier type (e.g., OverlayAddress for Swarm).
 /// `R` is the reason type carried inline with each connection state.
+///
+/// Lifecycle: Connected → Active (via `activate()`).
+/// Dial tracking is handled externally by a `DialTracker`.
 pub struct PeerRegistry<Id, R = ()> {
     maps: RwLock<Maps<Id, R>>,
 }
@@ -144,14 +128,14 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
     pub fn get(&self, id: &Id) -> Option<ConnectionState<Id, R>> {
         self.read()
             .by_key
-            .get(&RegistryKey::Known(id.clone()))
+            .get(&id.clone().into())
             .cloned()
     }
 
     pub fn active_connection_id(&self, id: &Id) -> Option<ConnectionId> {
         self.read()
             .by_key
-            .get(&RegistryKey::Known(id.clone()))
+            .get(&id.clone().into())
             .and_then(|s| {
                 if let ConnectionState::Active { connection_id, .. } = s {
                     Some(*connection_id)
@@ -176,125 +160,58 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
     pub fn resolve_peer_id(&self, id: &Id) -> Option<PeerId> {
         self.read()
             .by_key
-            .get(&RegistryKey::Known(id.clone()))
+            .get(&id.clone().into())
             .map(|s| s.peer_id())
     }
 
-    /// Start dialing a peer with known ID. Returns addresses for DialOpts.
-    #[must_use]
-    pub fn start_dial(
+    /// Register an outbound connection directly in Connected state.
+    ///
+    /// Used after dial tracking resolves externally (e.g., by a DialTracker).
+    /// Returns the new state, or None if the peer_id or id is already tracked.
+    pub fn connected_outbound(
         &self,
         peer_id: PeerId,
-        id: Id,
-        addrs: Vec<Multiaddr>,
+        connection_id: ConnectionId,
+        id: Option<Id>,
+        started_at: Instant,
         reason: R,
-    ) -> Option<Vec<Multiaddr>> {
-        if addrs.is_empty() {
-            return None;
-        }
-
-        let mut maps = self.write();
-        let key = RegistryKey::Known(id.clone());
-
-        if maps.by_key.contains_key(&key) || maps.peer_to_key.contains_key(&peer_id) {
-            return None;
-        }
-
-        let started_at = Instant::now();
-        let state = ConnectionState::Dialing {
-            peer_id,
-            id: Some(id),
-            addrs: addrs.clone(),
-            started_at,
-            reason,
-        };
-
-        maps.by_key.insert(key.clone(), state);
-        maps.peer_to_key.insert(peer_id, key.clone());
-        maps.add_pending(started_at, key);
-
-        Some(addrs)
-    }
-
-    /// Start dialing without known ID (for bootnodes/commands).
-    #[must_use]
-    pub fn start_dial_unknown_id(
-        &self,
-        peer_id: PeerId,
-        addrs: Vec<Multiaddr>,
-        reason: R,
-    ) -> Option<Vec<Multiaddr>> {
-        if addrs.is_empty() {
-            return None;
-        }
-
+    ) -> Option<ConnectionState<Id, R>> {
         let mut maps = self.write();
 
         if maps.peer_to_key.contains_key(&peer_id) {
             return None;
         }
 
-        let key = RegistryKey::Pending(peer_id);
-        let started_at = Instant::now();
-        let state = ConnectionState::Dialing {
-            peer_id,
-            id: None,
-            addrs: addrs.clone(),
-            started_at,
-            reason,
+        let key = match &id {
+            Some(known_id) => {
+                let k = known_id.clone().into();
+                if maps.by_key.contains_key(&k) {
+                    return None;
+                }
+                k
+            }
+            None => RegistryKey::Pending(peer_id),
         };
 
-        maps.by_key.insert(key.clone(), state);
-        maps.peer_to_key.insert(peer_id, key.clone());
-        maps.add_pending(started_at, key);
-
-        Some(addrs)
-    }
-
-    /// Complete a dial attempt (success or failure). Returns state for diagnostics.
-    pub fn complete_dial(&self, peer_id: &PeerId) -> Option<ConnectionState<Id, R>> {
-        self.disconnected(peer_id)
-    }
-
-    /// Transition from Dialing to Connected after transport connection established.
-    pub fn connection_established(
-        &self,
-        peer_id: PeerId,
-        connection_id: ConnectionId,
-    ) -> Option<ConnectionState<Id, R>> {
-        let mut maps = self.write();
-
-        let key = maps.peer_to_key.get(&peer_id)?.clone();
-        let state = maps.by_key.remove(&key)?;
-
-        let ConnectionState::Dialing {
-            id: dial_id,
-            started_at,
-            reason,
-            ..
-        } = state
-        else {
-            maps.by_key.insert(key, state);
-            return None;
-        };
-
-        let new_state = ConnectionState::Connected {
+        let state = ConnectionState::Connected {
             peer_id,
             connection_id,
-            id: dial_id,
+            id,
             direction: ConnectionDirection::Outbound,
             started_at,
             reason,
         };
 
-        maps.by_key.insert(key.clone(), new_state.clone());
-        maps.conn_to_key.insert(connection_id, key);
+        maps.by_key.insert(key.clone(), state.clone());
+        maps.peer_to_key.insert(peer_id, key.clone());
+        maps.conn_to_key.insert(connection_id, key.clone());
+        maps.add_pending(started_at, key);
 
-        Some(new_state)
+        Some(state)
     }
 
     /// Register inbound connection in Connected state (awaiting identity).
-    pub fn inbound_connection(
+    pub fn connected_inbound(
         &self,
         peer_id: PeerId,
         connection_id: ConnectionId,
@@ -329,7 +246,7 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
     ) -> ActivateResult<Id> {
         let mut maps = self.write();
 
-        let known_key = RegistryKey::Known(id.clone());
+        let known_key = id.clone().into();
         let pending_key = RegistryKey::Pending(peer_id);
 
         // Capture reason from current state before any modifications
@@ -367,7 +284,7 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
                 existing_id,
                 old_conn_id,
             } => {
-                maps.by_key.remove(&RegistryKey::Known(existing_id.clone()));
+                maps.by_key.remove(&existing_id.clone().into());
                 maps.conn_to_key.remove(&old_conn_id);
                 maps.peer_to_key.remove(&peer_id);
                 ActivateResult::Replaced {
@@ -386,11 +303,9 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
                     maps.remove_pending(entry.started_at, &entry.key);
                 }
                 // Also clean up the pending key entry if it exists
-                if maps.by_key.contains_key(&pending_key) {
-                    if let Some(state) = maps.by_key.remove(&pending_key) {
-                        if let Some(started_at) = state.started_at() {
-                            maps.remove_pending(started_at, &pending_key);
-                        }
+                if let Some(state) = maps.by_key.remove(&pending_key) {
+                    if let Some(started_at) = state.started_at() {
+                        maps.remove_pending(started_at, &pending_key);
                     }
                 }
                 ActivateResult::Accepted
@@ -408,7 +323,7 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
         maps.peer_to_key.insert(peer_id, known_key.clone());
         maps.conn_to_key.insert(connection_id, known_key.clone());
 
-        // Debug assertions for one-overlay-one-peerid invariant
+        // Debug assertions for one-overlay-one-peerid invariant (O(1) checks)
         debug_assert!(
             maps.peer_to_key.get(&peer_id) == Some(&known_key),
             "Invariant violated: peer_id {:?} should map to known_key {:?}",
@@ -424,19 +339,12 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
             known_key,
             peer_id
         );
-        // Ensure no duplicate mappings exist for this ID
-        debug_assert_eq!(
-            maps.peer_to_key.values().filter(|k| **k == known_key).count(),
-            1,
-            "Invariant violated: multiple peer_ids map to same overlay {:?}",
-            id
-        );
 
         result
     }
 
     fn find_replacement(maps: &Maps<Id, R>, id: &Id, peer_id: &PeerId) -> Replacement<Id> {
-        let known_key = RegistryKey::Known(id.clone());
+        let known_key = id.clone().into();
         let pending_key = RegistryKey::Pending(*peer_id);
 
         // Helper to create PendingEntry from a key if state is pending
@@ -512,7 +420,7 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
             .collect()
     }
 
-    /// Count of active connections.
+    /// Count of active connections (acquires read lock, O(n) scan).
     pub fn active_count(&self) -> usize {
         self.read()
             .by_key
@@ -521,46 +429,13 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
             .count()
     }
 
-    /// Count of pending connections (dialing + handshaking).
+    /// Count of pending connections (acquires read lock, O(n) scan).
     pub fn pending_count(&self) -> usize {
         self.read()
             .by_key
             .values()
-            .filter(|state| {
-                matches!(
-                    state,
-                    ConnectionState::Dialing { .. } | ConnectionState::Connected { .. }
-                )
-            })
+            .filter(|state| matches!(state, ConnectionState::Connected { .. }))
             .count()
-    }
-
-    /// Get statistics about the registry.
-    #[must_use]
-    pub fn stats(&self) -> PeerRegistryStats {
-        let maps = self.read();
-        let total_entries = maps.by_key.len();
-        let active_count = maps
-            .by_key
-            .values()
-            .filter(|s| matches!(s, ConnectionState::Active { .. }))
-            .count();
-        let pending_count = maps
-            .by_key
-            .values()
-            .filter(|s| {
-                matches!(
-                    s,
-                    ConnectionState::Dialing { .. } | ConnectionState::Connected { .. }
-                )
-            })
-            .count();
-
-        PeerRegistryStats {
-            total_entries,
-            active_count,
-            pending_count,
-        }
     }
 
     /// Get PeerIds of pending connections that have exceeded the timeout.
@@ -599,7 +474,7 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
     }
 }
 
-impl<Id, R> PeerResolver for PeerRegistry<Id, R>
+impl<Id, R> crate::resolver::PeerResolver for PeerRegistry<Id, R>
 where
     Id: Clone + Eq + Hash + Debug + Send + Sync + 'static,
     R: Clone + Default + Send + Sync + 'static,
@@ -616,7 +491,7 @@ where
     fn resolve_peer_id(&self, id: &Id) -> Option<PeerId> {
         self.read()
             .by_key
-            .get(&RegistryKey::Known(id.clone()))
+            .get(&id.clone().into())
             .map(|s| s.peer_id())
     }
 }
@@ -637,75 +512,56 @@ mod tests {
         keypair.public().to_peer_id()
     }
 
-    fn test_addr(port: u16) -> Multiaddr {
-        format!("/ip4/127.0.0.1/tcp/{}", port).parse().unwrap()
-    }
-
     fn test_connection_id(n: u8) -> ConnectionId {
         ConnectionId::new_unchecked(n as usize)
     }
 
     #[test]
-    fn test_start_dial() {
-        let registry = PeerRegistry::<TestId>::new();
-        let id = TestId(1);
-        let peer_id = test_peer_id(1);
-        let addrs = vec![test_addr(9000), test_addr(9001)];
-
-        let result = registry.start_dial(peer_id, id.clone(), addrs.clone(), ());
-        assert_eq!(result, Some(addrs));
-        assert!(registry.get(&id).is_some());
-    }
-
-    #[test]
-    fn test_start_dial_duplicate() {
-        let registry = PeerRegistry::<TestId>::new();
-        let id = TestId(1);
-        let peer_id = test_peer_id(1);
-        let addrs = vec![test_addr(9000)];
-
-        let result1 = registry.start_dial(peer_id, id.clone(), addrs.clone(), ());
-        assert!(result1.is_some());
-
-        let result2 = registry.start_dial(peer_id, id, addrs, ());
-        assert!(result2.is_none());
-    }
-
-    #[test]
-    fn test_complete_dial() {
-        let registry = PeerRegistry::<TestId>::new();
-        let id = TestId(1);
-        let peer_id = test_peer_id(1);
-        let addrs = vec![test_addr(9000), test_addr(9001), test_addr(9002)];
-
-        let _ = registry.start_dial(peer_id, id.clone(), addrs.clone(), ());
-
-        let state = registry.complete_dial(&peer_id);
-        assert!(state.is_some());
-        let state = state.unwrap();
-        assert_eq!(state.addrs(), Some(&addrs));
-
-        assert!(registry.get(&id).is_none());
-        assert!(registry.resolve_id(&peer_id).is_none());
-    }
-
-    #[test]
-    fn test_connection_established() {
+    fn test_connected_outbound() {
         let registry = PeerRegistry::<TestId>::new();
         let id = TestId(1);
         let peer_id = test_peer_id(1);
         let conn_id = test_connection_id(1);
 
-        let _ = registry.start_dial(peer_id, id.clone(), vec![test_addr(9000)], ());
-
-        let state = registry.connection_established(peer_id, conn_id);
+        let state = registry.connected_outbound(
+            peer_id, conn_id, Some(id.clone()), Instant::now(), (),
+        );
         assert!(state.is_some());
+        assert!(matches!(state.unwrap(), ConnectionState::Connected { direction: ConnectionDirection::Outbound, .. }));
+        assert!(registry.contains_peer(&peer_id));
+    }
 
-        let state = state.unwrap();
-        assert_eq!(state.peer_id(), peer_id);
-        assert!(matches!(state, ConnectionState::Connected { .. }));
+    #[test]
+    fn test_register_outbound_duplicate() {
+        let registry = PeerRegistry::<TestId>::new();
+        let peer_id = test_peer_id(1);
+        let conn_id1 = test_connection_id(1);
+        let conn_id2 = test_connection_id(2);
 
-        assert_eq!(registry.resolve_id(&peer_id), Some(id));
+        let result1 = registry.connected_outbound(
+            peer_id, conn_id1, Some(TestId(1)), Instant::now(), (),
+        );
+        assert!(result1.is_some());
+
+        let result2 = registry.connected_outbound(
+            peer_id, conn_id2, Some(TestId(2)), Instant::now(), (),
+        );
+        assert!(result2.is_none());
+    }
+
+    #[test]
+    fn test_register_outbound_without_id() {
+        let registry = PeerRegistry::<TestId>::new();
+        let peer_id = test_peer_id(1);
+        let conn_id = test_connection_id(1);
+
+        let state = registry.connected_outbound(
+            peer_id, conn_id, None, Instant::now(), (),
+        );
+        assert!(state.is_some());
+        assert!(registry.contains_peer(&peer_id));
+        // No Id known yet
+        assert!(registry.resolve_id(&peer_id).is_none());
     }
 
     #[test]
@@ -715,8 +571,9 @@ mod tests {
         let peer_id = test_peer_id(1);
         let conn_id = test_connection_id(1);
 
-        let _ = registry.start_dial(peer_id, id.clone(), vec![test_addr(9000)], ());
-        let _ = registry.connection_established(peer_id, conn_id);
+        registry.connected_outbound(
+            peer_id, conn_id, Some(id.clone()), Instant::now(), (),
+        );
 
         let result = registry.activate(peer_id, conn_id, id.clone());
         assert_eq!(result, ActivateResult::Accepted);
@@ -733,8 +590,9 @@ mod tests {
         let conn_id1 = test_connection_id(1);
         let conn_id2 = test_connection_id(2);
 
-        let _ = registry.start_dial(peer_id, id.clone(), vec![test_addr(9000)], ());
-        let _ = registry.connection_established(peer_id, conn_id1);
+        registry.connected_outbound(
+            peer_id, conn_id1, Some(id.clone()), Instant::now(), (),
+        );
         let result1 = registry.activate(peer_id, conn_id1, id.clone());
         assert_eq!(result1, ActivateResult::Accepted);
 
@@ -749,12 +607,12 @@ mod tests {
     }
 
     #[test]
-    fn test_inbound_connection() {
+    fn test_connected_inbound() {
         let registry = PeerRegistry::<TestId>::new();
         let peer_id = test_peer_id(1);
         let conn_id = test_connection_id(1);
 
-        let state = registry.inbound_connection(peer_id, conn_id);
+        let state = registry.connected_inbound(peer_id, conn_id);
         assert!(matches!(
             state,
             ConnectionState::Connected {
@@ -763,9 +621,7 @@ mod tests {
             }
         ));
 
-        // resolve_id returns None for pending connections (ID not yet known)
         assert!(registry.resolve_id(&peer_id).is_none());
-        // But the peer is tracked
         assert!(registry.contains_peer(&peer_id));
     }
 
@@ -776,9 +632,10 @@ mod tests {
         let peer_id = test_peer_id(1);
         let conn_id = test_connection_id(1);
 
-        let _ = registry.start_dial(peer_id, id.clone(), vec![test_addr(9000)], ());
-        let _ = registry.connection_established(peer_id, conn_id);
-        let _ = registry.activate(peer_id, conn_id, id.clone());
+        registry.connected_outbound(
+            peer_id, conn_id, Some(id.clone()), Instant::now(), (),
+        );
+        registry.activate(peer_id, conn_id, id.clone());
 
         let state = registry.disconnected(&peer_id);
         assert!(state.is_some());
@@ -790,16 +647,20 @@ mod tests {
     fn test_active_count() {
         let registry = PeerRegistry::<TestId>::new();
 
-        let id1 = TestId(1);
+        // Peer 1: Connected (pending handshake)
         let peer_id1 = test_peer_id(1);
-        let _ = registry.start_dial(peer_id1, id1.clone(), vec![test_addr(9000)], ());
+        let conn_id1 = test_connection_id(1);
+        registry.connected_outbound(
+            peer_id1, conn_id1, Some(TestId(1)), Instant::now(), (),
+        );
 
-        let id2 = TestId(2);
+        // Peer 2: Active
         let peer_id2 = test_peer_id(2);
         let conn_id2 = test_connection_id(2);
-        let _ = registry.start_dial(peer_id2, id2.clone(), vec![test_addr(9001)], ());
-        let _ = registry.connection_established(peer_id2, conn_id2);
-        let _ = registry.activate(peer_id2, conn_id2, id2);
+        registry.connected_outbound(
+            peer_id2, conn_id2, Some(TestId(2)), Instant::now(), (),
+        );
+        registry.activate(peer_id2, conn_id2, TestId(2));
 
         assert_eq!(registry.pending_count(), 1);
         assert_eq!(registry.active_count(), 1);
@@ -809,34 +670,33 @@ mod tests {
     fn test_stale_pending() {
         let registry = PeerRegistry::<TestId>::new();
 
-        // Peer 1: in Dialing state
-        let id1 = TestId(1);
+        // Peer 1: Connected (handshaking)
         let peer_id1 = test_peer_id(1);
-        let _ = registry.start_dial(peer_id1, id1, vec![test_addr(9000)], ());
+        let conn_id1 = test_connection_id(1);
+        registry.connected_outbound(
+            peer_id1, conn_id1, Some(TestId(1)), Instant::now(), (),
+        );
 
-        // Peer 2: in Handshaking state
-        let id2 = TestId(2);
+        // Peer 2: Inbound connected
         let peer_id2 = test_peer_id(2);
         let conn_id2 = test_connection_id(2);
-        let _ = registry.start_dial(peer_id2, id2.clone(), vec![test_addr(9001)], ());
-        let _ = registry.connection_established(peer_id2, conn_id2);
+        registry.connected_inbound(peer_id2, conn_id2);
 
-        // Peer 3: in Active state
-        let id3 = TestId(3);
+        // Peer 3: Active
         let peer_id3 = test_peer_id(3);
         let conn_id3 = test_connection_id(3);
-        let _ = registry.start_dial(peer_id3, id3.clone(), vec![test_addr(9002)], ());
-        let _ = registry.connection_established(peer_id3, conn_id3);
-        let _ = registry.activate(peer_id3, conn_id3, id3);
+        registry.connected_outbound(
+            peer_id3, conn_id3, Some(TestId(3)), Instant::now(), (),
+        );
+        registry.activate(peer_id3, conn_id3, TestId(3));
 
-        // With zero timeout, both dialing and handshaking should be stale
+        // With zero timeout, both handshaking peers should be stale
         let stale = registry.stale_pending(Duration::from_secs(0));
         assert_eq!(stale.len(), 2);
         assert!(stale.contains(&peer_id1));
         assert!(stale.contains(&peer_id2));
-        assert!(!stale.contains(&peer_id3)); // Active connection not included
+        assert!(!stale.contains(&peer_id3));
 
-        // With a large timeout, no pending connections should be stale
         let stale = registry.stale_pending(Duration::from_secs(3600));
         assert!(stale.is_empty());
     }
@@ -852,13 +712,10 @@ mod tests {
         let conn_id = test_connection_id(1);
         let reason = TestReason("discovery".to_string());
 
-        // Start dial with reason
-        let _ = registry.start_dial(peer_id, id.clone(), vec![test_addr(9000)], reason.clone());
-        let state = registry.get(&id).unwrap();
-        assert_eq!(state.reason(), &reason);
-
-        // Reason carries through connection_established
-        let state = registry.connection_established(peer_id, conn_id).unwrap();
+        // Register outbound connected with reason
+        let state = registry.connected_outbound(
+            peer_id, conn_id, Some(id.clone()), Instant::now(), reason.clone(),
+        ).unwrap();
         assert_eq!(state.reason(), &reason);
 
         // Reason carries through activate
@@ -880,7 +737,7 @@ mod tests {
         let peer_id = test_peer_id(1);
         let conn_id = test_connection_id(1);
 
-        let state = registry.inbound_connection(peer_id, conn_id);
+        let state = registry.connected_inbound(peer_id, conn_id);
         assert_eq!(state.reason(), &TestReason(None));
     }
 }
