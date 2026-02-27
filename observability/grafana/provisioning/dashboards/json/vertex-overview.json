@@ -677,6 +677,217 @@
       "type": "timeseries"
     },
     {
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
+      "id": 104,
+      "title": "Gossip",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 22
+      },
+      "id": 17,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "vertex_topology_gossip_pending{instance=~\"$instance\"}",
+          "legendFormat": "Pending Verification",
+          "refId": "A"
+        },
+        {
+          "expr": "vertex_topology_gossip_in_flight{instance=~\"$instance\"}",
+          "legendFormat": "In-Flight Dials",
+          "refId": "B"
+        },
+        {
+          "expr": "vertex_topology_gossip_tracked_gossipers{instance=~\"$instance\"}",
+          "legendFormat": "Tracked Gossipers",
+          "refId": "C"
+        }
+      ],
+      "title": "Gossip Verifier State",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "cps"
+        }
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 22
+      },
+      "id": 18,
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate(vertex_topology_gossip_rejected_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "Rejected: {{reason}}",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(vertex_topology_gossip_verification_failed_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "Verification Failed: {{reason}}",
+          "refId": "B"
+        }
+      ],
+      "title": "Gossip Rejection & Failure Rate",
+      "type": "timeseries"
+    },
+    {
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "id": 120,
+      "title": "Dialer",
+      "type": "row"
+    },
+    {
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -735,7 +946,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 21
+        "y": 29
       },
       "id": 5,
       "options": {
@@ -831,7 +1042,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 21
+        "y": 29
       },
       "id": 6,
       "options": {
@@ -872,17 +1083,6 @@
       "type": "timeseries"
     },
     {
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 29
-      },
-      "id": 104,
-      "title": "Gossip Verification",
-      "type": "row"
-    },
-    {
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -941,106 +1141,9 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 30
+        "y": 37
       },
-      "id": 17,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "expr": "vertex_topology_gossip_pending{instance=~\"$instance\"}",
-          "legendFormat": "Pending Verification",
-          "refId": "A"
-        },
-        {
-          "expr": "vertex_topology_gossip_in_flight{instance=~\"$instance\"}",
-          "legendFormat": "In-Flight Dials",
-          "refId": "B"
-        },
-        {
-          "expr": "vertex_topology_gossip_tracked_gossipers{instance=~\"$instance\"}",
-          "legendFormat": "Tracked Gossipers",
-          "refId": "C"
-        }
-      ],
-      "title": "Gossip Verifier State",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        }
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 12,
-        "x": 12,
-        "y": 30
-      },
-      "id": 18,
+      "id": 204,
       "options": {
         "legend": {
           "calcs": [
@@ -1082,11 +1185,98 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "cps"
+        }
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 37
+      },
+      "id": 205,
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate(vertex_topology_dial_failures_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Dial Failure Rate",
+      "type": "timeseries"
+    },
+    {
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 36
+        "y": 43
       },
       "id": 103,
       "title": "Peer Manager",
@@ -1151,7 +1341,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 37
+        "y": 44
       },
       "id": 15,
       "options": {
@@ -1381,7 +1571,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 37
+        "y": 44
       },
       "id": 16,
       "options": {
@@ -1569,7 +1759,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 45
+        "y": 52
       },
       "id": 33,
       "options": {
@@ -1657,7 +1847,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 45
+        "y": 52
       },
       "id": 34,
       "options": {
@@ -1714,7 +1904,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 53
+        "y": 60
       },
       "id": 109,
       "title": "libp2p Streams",
@@ -1779,7 +1969,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 54
+        "y": 61
       },
       "id": 7,
       "options": {
@@ -1866,7 +2056,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 54
+        "y": 61
       },
       "id": 108,
       "options": {
@@ -1954,7 +2144,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 62
+        "y": 69
       },
       "id": 111,
       "options": {
@@ -2041,7 +2231,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 70
+        "y": 77
       },
       "id": 200,
       "options": {
@@ -2128,7 +2318,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 70
+        "y": 77
       },
       "id": 201,
       "options": {
@@ -2215,7 +2405,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 78
+        "y": 85
       },
       "id": 202,
       "options": {
@@ -2253,7 +2443,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 86
+        "y": 93
       },
       "id": 105,
       "title": "Handshake",
@@ -2286,7 +2476,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 87
+        "y": 94
       },
       "id": 22,
       "options": {
@@ -2348,7 +2538,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 87
+        "y": 94
       },
       "id": 23,
       "options": {
@@ -2402,7 +2592,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 87
+        "y": 94
       },
       "id": 24,
       "options": {
@@ -2456,7 +2646,7 @@
         "h": 4,
         "w": 4,
         "x": 12,
-        "y": 87
+        "y": 94
       },
       "id": 25,
       "options": {
@@ -2518,7 +2708,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 87
+        "y": 94
       },
       "id": 30,
       "options": {
@@ -2604,7 +2794,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 91
+        "y": 98
       },
       "id": 26,
       "options": {
@@ -2690,7 +2880,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 91
+        "y": 98
       },
       "id": 27,
       "options": {
@@ -2781,7 +2971,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 99
+        "y": 106
       },
       "id": 28,
       "options": {
@@ -2873,7 +3063,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 99
+        "y": 106
       },
       "id": 29,
       "options": {
@@ -2965,7 +3155,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 107
+        "y": 114
       },
       "id": 8,
       "options": {
@@ -3032,7 +3222,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 107
+        "y": 114
       },
       "id": 31,
       "options": {
@@ -3089,7 +3279,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 115
+        "y": 122
       },
       "id": 110,
       "title": "Hive",
@@ -3154,7 +3344,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 116
+        "y": 123
       },
       "id": 36,
       "options": {
@@ -3251,7 +3441,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 116
+        "y": 123
       },
       "id": 115,
       "options": {
@@ -3338,7 +3528,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 124
+        "y": 131
       },
       "id": 116,
       "options": {
@@ -3430,7 +3620,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 124
+        "y": 131
       },
       "id": 117,
       "options": {
@@ -3473,7 +3663,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 132
+        "y": 139
       },
       "id": 118,
       "title": "Pingpong",
@@ -3538,7 +3728,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 133
+        "y": 140
       },
       "id": 119,
       "options": {
@@ -3581,7 +3771,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 141
+        "y": 148
       },
       "id": 106,
       "title": "Topology",
@@ -3650,7 +3840,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 142
+        "y": 149
       },
       "id": 37,
       "options": {
@@ -3751,7 +3941,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 142
+        "y": 149
       },
       "id": 38,
       "options": {
@@ -3799,7 +3989,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 150
+        "y": 157
       },
       "id": 107,
       "title": "Task Executor",
@@ -3916,7 +4106,7 @@
         "h": 8,
         "w": 16,
         "x": 0,
-        "y": 151
+        "y": 158
       },
       "id": 42,
       "options": {
@@ -4013,7 +4203,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 151
+        "y": 158
       },
       "id": 39,
       "options": {
@@ -4073,7 +4263,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 159
+        "y": 166
       },
       "id": 102,
       "title": "Resources & Memory",
@@ -4138,7 +4328,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 160
+        "y": 167
       },
       "id": 9,
       "options": {
@@ -4245,7 +4435,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 160
+        "y": 167
       },
       "id": 10,
       "options": {
@@ -4336,7 +4526,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 168
+        "y": 175
       },
       "id": 19,
       "options": {
@@ -4427,7 +4617,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 168
+        "y": 175
       },
       "id": 20,
       "options": {
