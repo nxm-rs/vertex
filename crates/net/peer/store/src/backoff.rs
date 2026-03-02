@@ -9,8 +9,11 @@ use serde::{Deserialize, Serialize};
 
 /// Base backoff duration in seconds (30 seconds).
 pub const DEFAULT_BASE_BACKOFF_SECS: u64 = 30;
-/// Maximum backoff duration in seconds (5 minutes).
-pub const DEFAULT_MAX_BACKOFF_SECS: u64 = 300;
+/// Maximum backoff duration in seconds (1 hour).
+///
+/// Exponential growth: 30s → 60s → 120s → 240s → 480s → 960s → 1920s → 3600s (cap at failure #8).
+/// With ±25% jitter, peers at max backoff retry every 45-75 minutes.
+pub const DEFAULT_MAX_BACKOFF_SECS: u64 = 3600;
 
 /// Per-peer backoff state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,7 +137,7 @@ mod tests {
         let base = DEFAULT_BASE_BACKOFF_SECS;
         let max = DEFAULT_MAX_BACKOFF_SECS;
 
-        // Many failures should cap at max (now 300s)
+        // Many failures should cap at max (3600s)
         let state = BackoffState::new(1000, 20);
         let remaining = state.remaining(1000, base, max).unwrap();
         assert_eq!(remaining.as_secs(), max);
@@ -220,10 +223,10 @@ mod tests {
             let state = BackoffState::new(1000, 20);
             let remaining = state.remaining_jittered(1000, base, max, seed).unwrap();
             let secs = remaining.as_secs();
-            // max=300, ±25% → [225, 375]
+            // max=3600, ±25% → [2700, 4500]
             assert!(
-                secs >= 225 && secs <= 375,
-                "seed {seed}: capped backoff {secs}s outside [225, 375]"
+                secs >= 2700 && secs <= 4500,
+                "seed {seed}: capped backoff {secs}s outside [2700, 4500]"
             );
         }
     }
