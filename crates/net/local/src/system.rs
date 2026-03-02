@@ -1,191 +1,168 @@
-//! Local subnet detection via system interface queries.
+//! Local subnet detection via push-based interface watching.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::OnceLock;
 
-use ipnet::{Ipv4Net, Ipv6Net};
+use ipnet::{IpNet, Ipv4Net, Ipv6Net};
+use libp2p::Multiaddr;
 use parking_lot::RwLock;
-use tracing::{debug, trace, warn};
-use web_time::Instant;
-
-/// How long to cache network interface information before refreshing.
-const SUBNET_CACHE_TTL_SECS: u64 = 60;
+use tracing::debug;
 
 /// Cached information about local network subnets.
 #[derive(Debug, Clone)]
-pub struct LocalSubnets {
+pub(crate) struct LocalSubnets {
     ipv4: Vec<Ipv4Net>,
     ipv6: Vec<Ipv6Net>,
-    last_refresh: Instant,
 }
 
 impl LocalSubnets {
-    /// Create by querying system interfaces.
-    pub fn from_system() -> Self {
-        let interfaces = netdev::get_interfaces();
-
-        let ipv4: Vec<_> = interfaces
-            .iter()
-            .filter(|iface| iface.is_up())
-            .flat_map(|iface| {
-                iface.ipv4.iter().filter_map(|net| {
-                    let addr = net.addr();
-                    if addr.is_loopback() || addr.is_link_local() {
-                        None
-                    } else {
-                        debug!(interface = %iface.name, network = %net, "discovered IPv4 subnet");
-                        Some(*net)
-                    }
-                })
-            })
-            .collect();
-
-        let ipv6: Vec<_> = interfaces
-            .iter()
-            .filter(|iface| iface.is_up())
-            .flat_map(|iface| {
-                iface.ipv6.iter().filter_map(|net| {
-                    let addr = net.addr();
-                    if addr.is_loopback() || addr.is_unicast_link_local() {
-                        None
-                    } else {
-                        debug!(interface = %iface.name, network = %net, "discovered IPv6 subnet");
-                        Some(*net)
-                    }
-                })
-            })
-            .collect();
-
-        if ipv4.is_empty() && ipv6.is_empty() {
-            warn!("no local subnets discovered - interface query may have failed");
-        }
-
+    fn empty() -> Self {
         Self {
-            ipv4,
-            ipv6,
-            last_refresh: Instant::now(),
+            ipv4: Vec::new(),
+            ipv6: Vec::new(),
         }
     }
 
-    /// Iterate over IPv4 subnets.
-    pub fn ipv4_subnets(&self) -> impl Iterator<Item = &Ipv4Net> {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn ipv4_subnets(&self) -> impl Iterator<Item = &Ipv4Net> {
         self.ipv4.iter()
     }
 
-    /// Iterate over IPv6 subnets.
-    pub fn ipv6_subnets(&self) -> impl Iterator<Item = &Ipv6Net> {
-        self.ipv6.iter()
-    }
-
-    /// Number of IPv4 subnets.
-    pub fn ipv4_count(&self) -> usize {
-        self.ipv4.len()
-    }
-
-    /// Number of IPv6 subnets.
-    pub fn ipv6_count(&self) -> usize {
-        self.ipv6.len()
-    }
-
-    /// Check if we have no subnets.
-    pub fn is_empty(&self) -> bool {
-        self.ipv4.is_empty() && self.ipv6.is_empty()
-    }
-
-    pub fn contains_ipv4(&self, ip: Ipv4Addr) -> bool {
+    pub(crate) fn contains_ipv4(&self, ip: Ipv4Addr) -> bool {
         self.ipv4.iter().any(|net| net.contains(&ip))
     }
 
-    pub fn contains_ipv6(&self, ip: Ipv6Addr) -> bool {
-        self.ipv6.iter().any(|net| net.contains(&ip))
-    }
-
-    pub fn contains(&self, ip: IpAddr) -> bool {
+    pub(crate) fn contains(&self, ip: IpAddr) -> bool {
         match ip {
             IpAddr::V4(v4) => self.contains_ipv4(v4),
-            IpAddr::V6(v6) => self.contains_ipv6(v6),
+            IpAddr::V6(v6) => self.ipv6.iter().any(|net| net.contains(&v6)),
         }
     }
 
-    fn is_expired(&self) -> bool {
-        self.last_refresh.elapsed().as_secs() >= SUBNET_CACHE_TTL_SECS
+    /// Check if two IPs belong to the same cached subnet.
+    fn contains_pair(&self, a: IpAddr, b: IpAddr) -> bool {
+        match (a, b) {
+            (IpAddr::V4(a4), IpAddr::V4(b4)) => self
+                .ipv4
+                .iter()
+                .any(|net| net.contains(&a4) && net.contains(&b4)),
+            (IpAddr::V6(a6), IpAddr::V6(b6)) => self
+                .ipv6
+                .iter()
+                .any(|net| net.contains(&a6) && net.contains(&b6)),
+            _ => false,
+        }
     }
 }
 
-/// Global cached subnets with auto-refresh.
+/// Global cached subnets, populated incrementally by if-watch events.
 static SUBNET_CACHE: OnceLock<RwLock<LocalSubnets>> = OnceLock::new();
 
 fn get_cached_subnets() -> LocalSubnets {
-    let cache = SUBNET_CACHE.get_or_init(|| RwLock::new(LocalSubnets::from_system()));
+    let cache = SUBNET_CACHE.get_or_init(|| RwLock::new(LocalSubnets::empty()));
+    cache.read().clone()
+}
 
-    {
-        let info = cache.read();
-        if !info.is_expired() {
-            return info.clone();
+/// Returns true if the address should be filtered out (loopback or link-local).
+fn should_filter(net: &IpNet) -> bool {
+    match net {
+        IpNet::V4(v4) => {
+            let addr = v4.addr();
+            addr.is_loopback() || addr.is_link_local()
+        }
+        IpNet::V6(v6) => {
+            let addr = v6.addr();
+            addr.is_loopback() || addr.is_unicast_link_local()
         }
     }
+}
 
-    let mut info = cache.write();
-    if info.is_expired() {
-        debug!("refreshing local subnet cache");
-        *info = LocalSubnets::from_system();
+/// Add a subnet to the cache (called on `IfEvent::Up`).
+///
+/// Filters loopback and link-local addresses. Returns true if the subnet was added.
+pub fn add_subnet(net: IpNet) {
+    if should_filter(&net) {
+        return;
     }
-    info.clone()
+
+    let cache = SUBNET_CACHE.get_or_init(|| RwLock::new(LocalSubnets::empty()));
+    let mut subnets = cache.write();
+
+    match net {
+        IpNet::V4(v4) => {
+            if !subnets.ipv4.contains(&v4) {
+                debug!(network = %v4, "subnet added");
+                subnets.ipv4.push(v4);
+            }
+        }
+        IpNet::V6(v6) => {
+            if !subnets.ipv6.contains(&v6) {
+                debug!(network = %v6, "subnet added");
+                subnets.ipv6.push(v6);
+            }
+        }
+    }
+}
+
+/// Remove a subnet from the cache (called on `IfEvent::Down`).
+pub fn remove_subnet(net: IpNet) {
+    if should_filter(&net) {
+        return;
+    }
+
+    let Some(cache) = SUBNET_CACHE.get() else {
+        return;
+    };
+    let mut subnets = cache.write();
+
+    match net {
+        IpNet::V4(v4) => {
+            if let Some(pos) = subnets.ipv4.iter().position(|n| *n == v4) {
+                subnets.ipv4.remove(pos);
+                debug!(network = %v4, "subnet removed");
+            }
+        }
+        IpNet::V6(v6) => {
+            if let Some(pos) = subnets.ipv6.iter().position(|n| *n == v6) {
+                subnets.ipv6.remove(pos);
+                debug!(network = %v6, "subnet removed");
+            }
+        }
+    }
+}
+
+/// Check if two multiaddrs are on the same directly-connected subnet.
+pub fn same_subnet(addr1: &Multiaddr, addr2: &Multiaddr) -> bool {
+    let (Some(ip1), Some(ip2)) = (crate::scope::extract_ip(addr1), crate::scope::extract_ip(addr2)) else {
+        return false;
+    };
+    is_on_same_subnet(ip1, ip2)
+}
+
+fn is_link_local(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_link_local(),
+        IpAddr::V6(v6) => v6.is_unicast_link_local(),
+    }
 }
 
 /// Check if two IPs are on the same directly-connected subnet.
-pub fn is_on_same_subnet(our_ip: IpAddr, target_ip: IpAddr) -> bool {
-    match (our_ip, target_ip) {
-        (IpAddr::V4(our), IpAddr::V4(target)) => is_on_same_subnet_v4(our, target),
-        (IpAddr::V6(our), IpAddr::V6(target)) => is_on_same_subnet_v6(our, target),
-        _ => false,
-    }
-}
-
-fn is_on_same_subnet_v4(our_ip: Ipv4Addr, target_ip: Ipv4Addr) -> bool {
-    if our_ip.is_unspecified() || target_ip.is_unspecified() {
+pub(crate) fn is_on_same_subnet(a: IpAddr, b: IpAddr) -> bool {
+    if a.is_unspecified() || b.is_unspecified() {
         return false;
     }
-    if our_ip.is_loopback() && target_ip.is_loopback() {
+    if a.is_loopback() && b.is_loopback() {
         return true;
     }
-    if our_ip.is_link_local() && target_ip.is_link_local() {
-        return true;
-    }
-
-    let subnets = get_cached_subnets();
-    for subnet in &subnets.ipv4 {
-        if subnet.contains(&our_ip) && subnet.contains(&target_ip) {
-            trace!(%our_ip, %target_ip, %subnet, "IPs are on same local subnet");
-            return true;
-        }
-    }
-    false
-}
-
-fn is_on_same_subnet_v6(our_ip: Ipv6Addr, target_ip: Ipv6Addr) -> bool {
-    if our_ip.is_unspecified() || target_ip.is_unspecified() {
-        return false;
-    }
-    if our_ip.is_loopback() && target_ip.is_loopback() {
-        return true;
-    }
-    if our_ip.is_unicast_link_local() && target_ip.is_unicast_link_local() {
+    if is_link_local(a) && is_link_local(b) {
         return true;
     }
 
-    let subnets = get_cached_subnets();
-    for subnet in &subnets.ipv6 {
-        if subnet.contains(&our_ip) && subnet.contains(&target_ip) {
-            trace!(%our_ip, %target_ip, %subnet, "IPs are on same local subnet");
-            return true;
-        }
-    }
-    false
+    get_cached_subnets().contains_pair(a, b)
 }
 
 /// Check if a target IP is on a directly-connected subnet.
-pub fn is_directly_reachable(target_ip: IpAddr) -> bool {
+pub(crate) fn is_directly_reachable(target_ip: IpAddr) -> bool {
     if target_ip.is_loopback() {
         return true;
     }
@@ -201,17 +178,9 @@ pub fn is_directly_reachable(target_ip: IpAddr) -> bool {
     get_cached_subnets().contains(target_ip)
 }
 
-/// Force a refresh of the cached subnet information.
-pub fn refresh_subnets() {
-    if let Some(cache) = SUBNET_CACHE.get() {
-        let mut info = cache.write();
-        *info = LocalSubnets::from_system();
-        debug!("forced refresh of local subnet cache");
-    }
-}
-
-/// Get a snapshot of local subnets (for diagnostics).
-pub fn query_local_subnets() -> LocalSubnets {
+/// Get a snapshot of local subnets (used by sibling module tests).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn query_local_subnets() -> LocalSubnets {
     get_cached_subnets()
 }
 
@@ -221,35 +190,35 @@ mod tests {
 
     #[test]
     fn test_loopback_same_subnet() {
-        let lo1: Ipv4Addr = "127.0.0.1".parse().unwrap();
-        let lo2: Ipv4Addr = "127.0.0.2".parse().unwrap();
-        assert!(is_on_same_subnet_v4(lo1, lo2));
+        let lo1: IpAddr = "127.0.0.1".parse().unwrap();
+        let lo2: IpAddr = "127.0.0.2".parse().unwrap();
+        assert!(is_on_same_subnet(lo1, lo2));
 
-        let lo6_1: Ipv6Addr = "::1".parse().unwrap();
-        let lo6_2: Ipv6Addr = "::1".parse().unwrap();
-        assert!(is_on_same_subnet_v6(lo6_1, lo6_2));
+        let lo6_1: IpAddr = "::1".parse().unwrap();
+        let lo6_2: IpAddr = "::1".parse().unwrap();
+        assert!(is_on_same_subnet(lo6_1, lo6_2));
     }
 
     #[test]
     fn test_link_local_same_subnet() {
-        let ll1: Ipv4Addr = "169.254.1.1".parse().unwrap();
-        let ll2: Ipv4Addr = "169.254.2.2".parse().unwrap();
-        assert!(is_on_same_subnet_v4(ll1, ll2));
+        let ll1: IpAddr = "169.254.1.1".parse().unwrap();
+        let ll2: IpAddr = "169.254.2.2".parse().unwrap();
+        assert!(is_on_same_subnet(ll1, ll2));
 
-        let ll6_1: Ipv6Addr = "fe80::1".parse().unwrap();
-        let ll6_2: Ipv6Addr = "fe80::2".parse().unwrap();
-        assert!(is_on_same_subnet_v6(ll6_1, ll6_2));
+        let ll6_1: IpAddr = "fe80::1".parse().unwrap();
+        let ll6_2: IpAddr = "fe80::2".parse().unwrap();
+        assert!(is_on_same_subnet(ll6_1, ll6_2));
     }
 
     #[test]
     fn test_unspecified_not_on_subnet() {
-        let unspec: Ipv4Addr = "0.0.0.0".parse().unwrap();
-        let private: Ipv4Addr = "192.168.1.1".parse().unwrap();
-        assert!(!is_on_same_subnet_v4(unspec, private));
+        let unspec: IpAddr = "0.0.0.0".parse().unwrap();
+        let private: IpAddr = "192.168.1.1".parse().unwrap();
+        assert!(!is_on_same_subnet(unspec, private));
 
-        let unspec6: Ipv6Addr = "::".parse().unwrap();
-        let global: Ipv6Addr = "2001:db8::1".parse().unwrap();
-        assert!(!is_on_same_subnet_v6(unspec6, global));
+        let unspec6: IpAddr = "::".parse().unwrap();
+        let global: IpAddr = "2001:db8::1".parse().unwrap();
+        assert!(!is_on_same_subnet(unspec6, global));
     }
 
     #[test]
@@ -271,13 +240,46 @@ mod tests {
     }
 
     #[test]
-    fn test_subnets_from_system() {
-        let subnets = LocalSubnets::from_system();
-        println!(
-            "Discovered {} IPv4 subnets, {} IPv6 subnets",
-            subnets.ipv4_count(),
-            subnets.ipv6_count()
-        );
+    fn test_empty_subnets() {
+        let subnets = LocalSubnets::empty();
+        assert!(subnets.ipv4.is_empty());
+        assert!(subnets.ipv6.is_empty());
+    }
+
+    #[test]
+    fn test_add_remove_subnet() {
+        // Add a subnet
+        let net: IpNet = "10.0.0.0/24".parse().unwrap();
+        add_subnet(net);
+
+        let subnets = query_local_subnets();
+        assert!(subnets.contains("10.0.0.1".parse().unwrap()));
+
+        // Remove it
+        remove_subnet(net);
+        let subnets = query_local_subnets();
+        assert!(!subnets.contains("10.0.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_add_subnet_filters_loopback() {
+        let net: IpNet = "127.0.0.0/8".parse().unwrap();
+        add_subnet(net);
+
+        // Loopback subnets should not be added to the cache
+        // (they're handled by special-case logic in is_on_same_subnet)
+        let subnets = query_local_subnets();
+        // The loopback subnet should have been filtered
+        assert!(subnets.ipv4.iter().all(|n| !n.addr().is_loopback()));
+    }
+
+    #[test]
+    fn test_add_subnet_filters_link_local() {
+        let net: IpNet = "169.254.0.0/16".parse().unwrap();
+        add_subnet(net);
+
+        let subnets = query_local_subnets();
+        assert!(subnets.ipv4.iter().all(|n| !n.addr().is_link_local()));
     }
 
     #[test]

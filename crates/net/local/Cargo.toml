@@ -15,11 +15,5 @@ workspace = true
 libp2p = { workspace = true }
 parking_lot = { workspace = true }
 tracing = { workspace = true }
-web-time = { workspace = true }
-netdev = { workspace = true }
 ipnet = { workspace = true }
-hashlink = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "time"] }
