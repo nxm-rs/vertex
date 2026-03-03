@@ -20,6 +20,9 @@ scoring_events! {
     /// Protocol-level error during communication.
     ProtocolError
         => protocol_error = -3.0,
+    /// Peer disconnected shortly after completing handshake (connection instability).
+    EarlyDisconnect { duration: Duration }
+        => early_disconnect = -3.0,
     /// Successful chunk retrieval.
     RetrievalSuccess { latency: Duration }
         => retrieval_success = 0.5,
@@ -130,6 +133,7 @@ impl SwarmScoringConfig {
             .connection_refused(-0.3)
             .handshake_failure(-2.0)
             .protocol_error(-1.0)
+            .early_disconnect(-1.5)
             .retrieval_failure(-0.5)
             .push_failure(-0.5)
             .ban_threshold(-200.0)
@@ -144,6 +148,7 @@ impl SwarmScoringConfig {
             .connection_refused(-2.0)
             .handshake_failure(-10.0)
             .protocol_error(-5.0)
+            .early_disconnect(-5.0)
             .invalid_data(-25.0)
             .malicious_behavior(-100.0)
             .ban_threshold(-50.0)

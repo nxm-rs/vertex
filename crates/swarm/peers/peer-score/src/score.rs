@@ -136,6 +136,11 @@ impl SwarmPeerScore {
         self.record_event(SwarmScoringEvent::ProtocolError);
     }
 
+    /// Record an early disconnect (post-handshake connection that failed quickly).
+    pub fn record_early_disconnect(&self, duration: Duration) {
+        self.record_event(SwarmScoringEvent::EarlyDisconnect { duration });
+    }
+
     /// Record successful retrieval.
     pub fn record_retrieval_success(&self, latency: Duration) {
         self.record_event(SwarmScoringEvent::RetrievalSuccess { latency });
