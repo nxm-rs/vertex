@@ -7,6 +7,7 @@ mod behaviour;
 mod config;
 mod generated;
 mod handler;
+pub mod metrics;
 mod protocol;
 
 pub use behaviour::{Behaviour, Event};

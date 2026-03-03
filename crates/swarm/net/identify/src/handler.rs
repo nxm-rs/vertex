@@ -47,9 +47,11 @@ pub struct Handler {
         >; 4],
     >,
     active_streams: futures_bounded::FuturesSet<Result<Success, UpgradeError>>,
-    trigger_next_identify: futures_timer::Delay,
+    /// Timer for the initial identify (fires immediately) and optional periodic re-identification.
+    trigger_next_identify: Option<futures_timer::Delay>,
     exchanged_one_periodic_identify: bool,
-    interval: Duration,
+    /// `None` means no periodic re-identification after the initial exchange.
+    interval: Option<Duration>,
     local_key: Arc<KeyType>,
     protocol_version: String,
     agent_version: String,
@@ -89,7 +91,7 @@ pub enum Event {
 
 impl Handler {
     pub(crate) fn new(
-        interval: Duration,
+        interval: Option<Duration>,
         remote_peer_id: PeerId,
         local_key: Arc<KeyType>,
         protocol_version: String,
@@ -104,7 +106,8 @@ impl Handler {
                 STREAM_TIMEOUT,
                 MAX_CONCURRENT_STREAMS_PER_CONNECTION,
             ),
-            trigger_next_identify: futures_timer::Delay::new(Duration::ZERO),
+            // Fires immediately to trigger the initial identify exchange.
+            trigger_next_identify: Some(futures_timer::Delay::new(Duration::ZERO)),
             exchanged_one_periodic_identify: false,
             interval,
             local_key,
@@ -346,15 +349,21 @@ impl ConnectionHandler for Handler {
             return Poll::Ready(event);
         }
 
-        if let Poll::Ready(()) = self.trigger_next_identify.poll_unpin(cx) {
-            self.trigger_next_identify.reset(self.interval);
-            let event = ConnectionHandlerEvent::OutboundSubstreamRequest {
-                protocol: SubstreamProtocol::new(
-                    Either::Left(ReadyUpgrade::new(PROTOCOL_NAME)),
-                    (),
-                ),
-            };
-            return Poll::Ready(event);
+        if let Some(delay) = self.trigger_next_identify.as_mut() {
+            if let Poll::Ready(()) = delay.poll_unpin(cx) {
+                // After the initial identify, only schedule another if periodic is enabled.
+                match self.interval {
+                    Some(interval) => delay.reset(interval),
+                    None => self.trigger_next_identify = None,
+                }
+                let event = ConnectionHandlerEvent::OutboundSubstreamRequest {
+                    protocol: SubstreamProtocol::new(
+                        Either::Left(ReadyUpgrade::new(PROTOCOL_NAME)),
+                        (),
+                    ),
+                };
+                return Poll::Ready(event);
+            }
         }
 
         while let Poll::Ready(ready) = self.active_streams.poll_unpin(cx) {
@@ -434,7 +443,10 @@ impl ConnectionHandler for Handler {
                         error.map_upgrade_err(|e| libp2p::core::util::unreachable(e.into_inner())),
                     ),
                 ));
-                self.trigger_next_identify.reset(self.interval);
+                // Retry after error only if periodic is enabled.
+                if let Some(interval) = self.interval {
+                    self.trigger_next_identify = Some(futures_timer::Delay::new(interval));
+                }
             }
             ConnectionEvent::LocalProtocolsChange(change) => {
                 let before = tracing::enabled!(Level::DEBUG)

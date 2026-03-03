@@ -9,23 +9,32 @@ pub struct Config {
     pub(crate) local_public_key: PublicKey,
     pub(crate) protocol_version: String,
     pub(crate) agent_version: String,
-    pub(crate) interval: Duration,
+    /// Interval between periodic identify exchanges. `None` disables periodic
+    /// re-identification (initial exchange on connection still happens).
+    pub(crate) interval: Option<Duration>,
     pub(crate) push_listen_addr_updates: bool,
     pub(crate) hide_listen_addrs: bool,
     pub(crate) cache_size: usize,
+    /// Metrics label identifying which swarm this behaviour belongs to.
+    pub(crate) purpose: &'static str,
 }
 
 impl Config {
     /// Create a new config with the given public key.
+    ///
+    /// Periodic re-identification is disabled by default. The initial identify
+    /// exchange still happens on every new connection. Reactive pushes (protocol
+    /// changes, targeted address push) are unaffected.
     pub fn new(local_public_key: PublicKey) -> Self {
         Self {
             local_public_key,
             protocol_version: crate::PROTOCOL_VERSION.to_string(),
             agent_version: crate::AGENT_VERSION.to_string(),
-            interval: Duration::from_secs(5 * 60),
+            interval: None,
             push_listen_addr_updates: false,
             hide_listen_addrs: false,
             cache_size: 100,
+            purpose: "topology",
         }
     }
 
@@ -42,7 +51,10 @@ impl Config {
     }
 
     /// Set the interval between periodic identify exchanges.
-    pub fn with_interval(mut self, interval: Duration) -> Self {
+    ///
+    /// `None` disables periodic re-identification (default). The initial
+    /// exchange on connection and reactive pushes still function normally.
+    pub fn with_interval(mut self, interval: Option<Duration>) -> Self {
         self.interval = interval;
         self
     }
@@ -62,6 +74,12 @@ impl Config {
     /// Set the peer address cache size.
     pub fn with_cache_size(mut self, size: usize) -> Self {
         self.cache_size = size;
+        self
+    }
+
+    /// Set the metrics purpose label (e.g., "topology", "verifier").
+    pub fn with_purpose(mut self, purpose: &'static str) -> Self {
+        self.purpose = purpose;
         self
     }
 }

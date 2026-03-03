@@ -27,6 +27,9 @@ quick-protobuf-codec = "0.3"
 
 ## metrics
 vertex-metrics.workspace = true
+vertex-observability.workspace = true
+metrics.workspace = true
+strum.workspace = true
 
 ## misc
 either = "1.13"

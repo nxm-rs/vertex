@@ -22,6 +22,7 @@ use libp2p::swarm::{
 
 use crate::{
     handler::{self, Handler, InEvent},
+    metrics::{self, IdentifyErrorKind},
     protocol::{Info, UpgradeError},
     Config,
 };
@@ -79,6 +80,8 @@ pub struct Behaviour {
     discovered_peers: PeerCache,
     listen_addresses: ListenAddresses,
     external_addresses: ExternalAddresses,
+    /// Per-connection start times for measuring identify exchange duration.
+    connection_timers: HashMap<ConnectionId, std::time::Instant>,
 }
 
 /// Event emitted by the identify behaviour.
@@ -141,6 +144,7 @@ impl Behaviour {
             discovered_peers,
             listen_addresses: Default::default(),
             external_addresses: Default::default(),
+            connection_timers: HashMap::new(),
         }
     }
 
@@ -166,6 +170,7 @@ impl Behaviour {
             discovered_peers,
             listen_addresses: Default::default(),
             external_addresses: Default::default(),
+            connection_timers: HashMap::new(),
         }
     }
 
@@ -231,6 +236,8 @@ impl Behaviour {
             .entry(peer_id)
             .or_default()
             .insert(conn, addr);
+
+        self.connection_timers.insert(conn, std::time::Instant::now());
 
         if let Some(cache) = self.discovered_peers.0.as_mut() {
             for addr in failed_addresses {
@@ -356,6 +363,14 @@ impl NetworkBehaviour for Behaviour {
                 info.listen_addrs
                     .retain(|addr| multiaddr_matches_peer_id(addr, &peer_id));
 
+                // Record metrics with the remote peer's agent version.
+                let duration = self
+                    .connection_timers
+                    .remove(&connection_id)
+                    .map(|t| t.elapsed())
+                    .unwrap_or_default();
+                metrics::record_received(self.config.purpose, &info.agent_version, duration);
+
                 let observed = info.observed_addr.clone();
                 self.events
                     .push_back(ToSwarm::GenerateEvent(Event::Received {
@@ -394,12 +409,14 @@ impl NetworkBehaviour for Behaviour {
                 }
             }
             handler::Event::Identification => {
+                metrics::record_sent(self.config.purpose);
                 self.events.push_back(ToSwarm::GenerateEvent(Event::Sent {
                     connection_id,
                     peer_id,
                 }));
             }
             handler::Event::IdentificationPushed(info) => {
+                metrics::record_pushed(self.config.purpose);
                 self.events.push_back(ToSwarm::GenerateEvent(Event::Pushed {
                     connection_id,
                     peer_id,
@@ -407,6 +424,16 @@ impl NetworkBehaviour for Behaviour {
                 }));
             }
             handler::Event::IdentificationError(error) => {
+                let duration = self
+                    .connection_timers
+                    .remove(&connection_id)
+                    .map(|t| t.elapsed())
+                    .unwrap_or_default();
+                let kind = match &error {
+                    StreamUpgradeError::Timeout => IdentifyErrorKind::Timeout,
+                    _ => IdentifyErrorKind::Apply,
+                };
+                metrics::record_error(self.config.purpose, kind, duration);
                 self.events.push_back(ToSwarm::GenerateEvent(Event::Error {
                     connection_id,
                     peer_id,
@@ -485,6 +512,7 @@ impl NetworkBehaviour for Behaviour {
                 }
 
                 self.our_observed_addresses.remove(&connection_id);
+                self.connection_timers.remove(&connection_id);
                 self.outbound_connections_with_ephemeral_port
                     .remove(&connection_id);
             }
