@@ -30,11 +30,6 @@ pub const POLL_DURATION: &[f64] = &[
     0.00001, 0.0001, 0.0005, 0.001, 0.005, 0.010, 0.050, 0.100, 0.500, 1.0,
 ];
 
-/// Peer score distribution over clamped [-100, 100] range (12 buckets).
-pub const PEER_SCORE: &[f64] = &[
-    -100.0, -50.0, -10.0, -1.0, 0.0, 1.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0,
-];
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,6 +53,5 @@ mod tests {
         assert_sorted("LOCK_CONTENTION", LOCK_CONTENTION);
         assert_sorted("CONNECTION_LIFETIME", CONNECTION_LIFETIME);
         assert_sorted("POLL_DURATION", POLL_DURATION);
-        assert_sorted("PEER_SCORE", PEER_SCORE);
     }
 }

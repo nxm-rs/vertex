@@ -28,8 +28,6 @@ shellexpand = "3.1"
 # Tracing
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tracing-appender = "0.2"
-
 # Async runtime
 tokio = { workspace = true, features = ["macros"] }
 futures.workspace = true

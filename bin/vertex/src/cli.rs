@@ -27,6 +27,10 @@ pub struct SwarmCli {
     #[command(flatten)]
     pub logs: LogArgs,
 
+    /// OpenTelemetry tracing configuration (applies to all subcommands).
+    #[command(flatten)]
+    pub tracing: TracingArgs,
+
     /// Subcommand to execute.
     #[command(subcommand)]
     pub command: SwarmCommands,
@@ -40,11 +44,7 @@ impl HasLogs for SwarmCli {
 
 impl HasTracing for SwarmCli {
     fn tracing(&self) -> &TracingArgs {
-        // Tracing args are inside the node subcommand's infra args.
-        // For top-level tracing init, we need to access via the subcommand.
-        match &self.command {
-            SwarmCommands::Node(args) => &args.infra.observability.tracing,
-        }
+        &self.tracing
     }
 }
 
@@ -99,7 +99,7 @@ pub async fn run() -> Result<()> {
             .register_all(vertex_swarm_topology::metrics::HISTOGRAM_BUCKETS)
             .register_all(vertex_swarm_net_handshake::metrics::HISTOGRAM_BUCKETS)
             .register_all(vertex_swarm_net_hive::metrics::HISTOGRAM_BUCKETS)
-            .register_all(vertex_swarm_peer_manager::HISTOGRAM_BUCKETS)
+            .register_all(vertex_swarm_net_identify::metrics::HISTOGRAM_BUCKETS)
             .build();
 
         // Initialize metrics via launch context

@@ -85,11 +85,11 @@ pub struct InfraArgs {
     pub observability: ObservabilityArgs,
 }
 
-/// Full node infrastructure arguments including logging.
+/// Full node infrastructure arguments including logging and tracing.
 ///
 /// This struct combines all generic infrastructure CLI arguments including
-/// logging. Use [`InfraArgs`] if logging is handled separately at the CLI
-/// top level.
+/// logging and tracing. Use [`InfraArgs`] if logging/tracing are handled
+/// separately at the CLI top level.
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
 #[serde(default)]
 #[derive(Default)]
@@ -97,6 +97,10 @@ pub struct NodeArgs {
     /// Logging configuration.
     #[command(flatten)]
     pub logs: LogArgs,
+
+    /// OpenTelemetry tracing configuration.
+    #[command(flatten)]
+    pub tracing: TracingArgs,
 
     /// Infrastructure configuration (API, database, data directory).
     #[command(flatten)]

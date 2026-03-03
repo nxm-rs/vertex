@@ -42,9 +42,6 @@ where
     if let Some(stdout) = cli.logs().stdout_config() {
         tracer = tracer.with_stdout(stdout);
     }
-    if let Some(file) = cli.logs().file_config_from_args() {
-        tracer = tracer.with_file(file);
-    }
     if let Some(otlp) = cli.tracing().otlp_config() {
         tracer = tracer.with_otlp(otlp);
     }

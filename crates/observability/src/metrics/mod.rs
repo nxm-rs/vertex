@@ -8,7 +8,7 @@ mod server;
 
 pub use buckets::{
     CONNECTION_LIFETIME, DURATION_FINE, DURATION_NETWORK, DURATION_SECONDS, LOCK_CONTENTION,
-    PEER_SCORE, POLL_DURATION,
+    POLL_DURATION,
 };
 pub use hooks::{Hook, Hooks, HooksBuilder};
 pub use process::process_metrics_hook;

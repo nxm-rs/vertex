@@ -37,6 +37,7 @@ vertex-swarm-identity.workspace = true
 vertex-swarm-net-handshake.workspace = true
 vertex-swarm-net-headers.workspace = true
 vertex-swarm-net-hive.workspace = true
+vertex-swarm-net-identify.workspace = true
 vertex-swarm-peer-manager.workspace = true
 vertex-swarm-primitives.workspace = true
 vertex-swarm-spec.workspace = true

@@ -32,8 +32,6 @@ metrics-util = "0.19"
 # Tracing
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-tracing-appender = "0.2"
-
 # OpenTelemetry for distributed tracing
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }

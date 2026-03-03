@@ -1,7 +1,6 @@
 //! Configuration structs for observability components.
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
 
 use crate::LogFormat;
 
@@ -33,62 +32,6 @@ impl StdoutConfig {
 
     pub fn ansi(&self) -> bool {
         self.ansi
-    }
-}
-
-/// File logging configuration.
-#[derive(Debug, Clone)]
-pub struct FileConfig {
-    directory: PathBuf,
-    filename: String,
-    format: LogFormat,
-    filter: String,
-    max_size_mb: u64,
-    max_files: usize,
-}
-
-impl FileConfig {
-    /// Create file logging configuration.
-    pub fn new(
-        directory: PathBuf,
-        filename: impl Into<String>,
-        format: LogFormat,
-        filter: impl Into<String>,
-        max_size_mb: u64,
-        max_files: usize,
-    ) -> Self {
-        Self {
-            directory,
-            filename: filename.into(),
-            format,
-            filter: filter.into(),
-            max_size_mb,
-            max_files,
-        }
-    }
-
-    pub fn directory(&self) -> &PathBuf {
-        &self.directory
-    }
-
-    pub fn filename(&self) -> &str {
-        &self.filename
-    }
-
-    pub fn format(&self) -> LogFormat {
-        self.format
-    }
-
-    pub fn filter(&self) -> &str {
-        &self.filter
-    }
-
-    pub fn max_size_mb(&self) -> u64 {
-        self.max_size_mb
-    }
-
-    pub fn max_files(&self) -> usize {
-        self.max_files
     }
 }
 

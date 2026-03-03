@@ -7,10 +7,9 @@ use opentelemetry_sdk::{
     trace::{RandomIdGenerator, Sampler, SdkTracerProvider},
     Resource,
 };
-use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
-use crate::{FileConfig, LogFormat, OtlpConfig, OtlpLogsConfig, StdoutConfig, TracingGuard};
+use crate::{LogFormat, OtlpConfig, OtlpLogsConfig, StdoutConfig, TracingGuard};
 
 /// Boxed tracing layer, used in return types to reduce complexity.
 type BoxedLayer<S> = Box<dyn Layer<S> + Send + Sync + 'static>;
@@ -18,12 +17,10 @@ type BoxedLayer<S> = Box<dyn Layer<S> + Send + Sync + 'static>;
 /// Build the complete subscriber from configs and initialize it.
 pub(crate) fn build_and_init(
     stdout: Option<&StdoutConfig>,
-    file: Option<&FileConfig>,
     otlp: Option<&OtlpConfig>,
     otlp_logs: Option<&OtlpLogsConfig>,
 ) -> eyre::Result<TracingGuard> {
     let (console_layer, env_filter) = build_console_layer(stdout);
-    let (file_layer, file_guard) = build_file_layer(file)?;
     let (otel_layer, tracer_provider) = build_otel_layer(otlp)?;
     let (otel_logs_layer, logger_provider) = build_otel_logs_layer(otlp_logs)?;
 
@@ -38,7 +35,6 @@ pub(crate) fn build_and_init(
     tracing_subscriber::registry()
         .with(env_filter)
         .with(console_layer)
-        .with(file_layer)
         .with(otel_layer)
         .with(otel_logs_layer)
         .with(tokio_console_layer)
@@ -60,7 +56,7 @@ pub(crate) fn build_and_init(
         );
     }
 
-    Ok(TracingGuard::new(tracer_provider, logger_provider, file_guard))
+    Ok(TracingGuard::new(tracer_provider, logger_provider))
 }
 
 fn build_console_layer<S>(
@@ -95,31 +91,6 @@ where
     };
 
     (Some(layer), filter)
-}
-
-fn build_file_layer<S>(
-    config: Option<&FileConfig>,
-) -> eyre::Result<(Option<BoxedLayer<S>>, Option<WorkerGuard>)>
-where
-    S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
-{
-    let Some(config) = config else {
-        return Ok((None, None));
-    };
-
-    std::fs::create_dir_all(config.directory())?;
-
-    let file_appender = tracing_appender::rolling::daily(config.directory(), config.filename());
-    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-
-    let layer = fmt::layer().with_ansi(false).with_writer(non_blocking);
-
-    let layer: BoxedLayer<S> = match config.format() {
-        LogFormat::Terminal => Box::new(layer),
-        LogFormat::Json => Box::new(layer.json()),
-    };
-
-    Ok((Some(layer), Some(guard)))
 }
 
 fn build_otel_layer<S>(

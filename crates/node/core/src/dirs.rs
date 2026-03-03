@@ -57,9 +57,4 @@ impl DataDirs {
     pub fn config_file(&self) -> PathBuf {
         self.network.join("config.toml")
     }
-
-    /// Returns the path to the logs directory.
-    pub fn logs_dir(&self) -> PathBuf {
-        self.network.join("logs")
-    }
 }
