@@ -425,7 +425,7 @@ mod tests {
 
         assert!(cap.supports_ipv4());
         assert!(cap.supports_ipv6());
-        assert!(cap.is_dual_stack());
+        assert_eq!(cap, IpCapability::Dual);
     }
 
     #[test]
