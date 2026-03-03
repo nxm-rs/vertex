@@ -57,10 +57,10 @@ where
     I: SwarmIdentity + 'static,
     A: AddressProvider + 'static,
 {
-    /// Create a new handshake behaviour.
-    pub fn new(identity: Arc<I>, address_provider: Arc<A>) -> Self {
+    /// Create a new handshake behaviour with the given purpose label for metrics.
+    pub fn new(identity: Arc<I>, address_provider: Arc<A>, purpose: &'static str) -> Self {
         Self {
-            config: Arc::new(HandshakeConfig::default()),
+            config: Arc::new(HandshakeConfig::new(purpose)),
             identity,
             address_provider,
             events: VecDeque::new(),

@@ -32,12 +32,16 @@ use crate::{
 pub struct HandshakeConfig {
     /// Timeout for handshake protocol.
     pub timeout: Duration,
+    /// Label for metrics to distinguish handshake contexts (e.g. "topology" vs "verifier").
+    pub purpose: &'static str,
 }
 
-impl Default for HandshakeConfig {
-    fn default() -> Self {
+impl HandshakeConfig {
+    /// Create a new config with the given purpose label.
+    pub fn new(purpose: &'static str) -> Self {
         Self {
             timeout: HANDSHAKE_TIMEOUT,
+            purpose,
         }
     }
 }
@@ -148,6 +152,7 @@ where
             peer_id: self.peer_id,
             remote_addr: self.remote_addr.clone(),
             address_provider: self.address_provider.clone(),
+            purpose: self.config.purpose,
         }
     }
 }
@@ -279,6 +284,7 @@ pub struct HandshakeUpgrade<I, A> {
     peer_id: PeerId,
     remote_addr: Multiaddr,
     address_provider: Arc<A>,
+    purpose: &'static str,
 }
 
 impl<I, A> Clone for HandshakeUpgrade<I, A> {
@@ -288,6 +294,7 @@ impl<I, A> Clone for HandshakeUpgrade<I, A> {
             peer_id: self.peer_id,
             remote_addr: self.remote_addr.clone(),
             address_provider: self.address_provider.clone(),
+            purpose: self.purpose,
         }
     }
 }
@@ -319,6 +326,7 @@ where
             self.peer_id,
             self.remote_addr,
             additional_addrs,
+            self.purpose,
         );
         if let Some(local_peer_id) = local_peer_id {
             protocol = protocol.with_local_peer_id(local_peer_id);

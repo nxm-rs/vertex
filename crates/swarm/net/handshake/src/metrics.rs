@@ -47,6 +47,7 @@ pub enum HandshakeStage {
 /// Tracks metrics for a single handshake operation with stage transitions.
 pub struct HandshakeMetrics {
     direction: &'static str,
+    purpose: &'static str,
     start: Instant,
     stage: HandshakeStage,
     stage_start: Instant,
@@ -56,12 +57,13 @@ pub struct HandshakeMetrics {
 
 impl HandshakeMetrics {
     /// Start tracking a new handshake.
-    pub fn new(dir: &'static str) -> Self {
-        counter!("handshake_total", "direction" => dir).increment(1);
-        gauge!("handshake_stage", "direction" => dir, "stage" => "pending").increment(1.0);
+    pub fn new(dir: &'static str, purpose: &'static str) -> Self {
+        counter!("handshake_total", "direction" => dir, "purpose" => purpose).increment(1);
+        gauge!("handshake_stage", "direction" => dir, "purpose" => purpose, "stage" => "pending").increment(1.0);
 
         Self {
             direction: dir,
+            purpose,
             start: Instant::now(),
             stage: HandshakeStage::Pending,
             stage_start: Instant::now(),
@@ -71,13 +73,13 @@ impl HandshakeMetrics {
     }
 
     /// Start tracking an inbound handshake.
-    pub fn inbound() -> Self {
-        Self::new(direction::INBOUND)
+    pub fn inbound(purpose: &'static str) -> Self {
+        Self::new(direction::INBOUND, purpose)
     }
 
     /// Start tracking an outbound handshake.
-    pub fn outbound() -> Self {
-        Self::new(direction::OUTBOUND)
+    pub fn outbound(purpose: &'static str) -> Self {
+        Self::new(direction::OUTBOUND, purpose)
     }
 
     /// Transition to a new stage, recording timing for the previous stage.
@@ -92,6 +94,7 @@ impl HandshakeMetrics {
         histogram!(
             "handshake_stage_duration_seconds",
             "direction" => self.direction,
+            "purpose" => self.purpose,
             "stage" => self.stage.label_value()
         )
         .record(stage_duration.as_secs_f64());
@@ -100,6 +103,7 @@ impl HandshakeMetrics {
         gauge!(
             "handshake_stage",
             "direction" => self.direction,
+            "purpose" => self.purpose,
             "stage" => self.stage.label_value()
         )
         .decrement(1.0);
@@ -109,6 +113,7 @@ impl HandshakeMetrics {
             gauge!(
                 "handshake_stage",
                 "direction" => self.direction,
+                "purpose" => self.purpose,
                 "stage" => new_stage.label_value()
             )
             .increment(1.0);
@@ -151,6 +156,7 @@ impl HandshakeMetrics {
                 counter!(
                     "handshake_success_total",
                     "direction" => self.direction,
+                    "purpose" => self.purpose,
                     "node_type" => node_type_label
                 )
                 .increment(1);
@@ -158,6 +164,7 @@ impl HandshakeMetrics {
                 histogram!(
                     "handshake_duration_seconds",
                     "direction" => self.direction,
+                    "purpose" => self.purpose,
                     "outcome" => outcome::SUCCESS,
                     "node_type" => node_type_label
                 )
@@ -171,6 +178,7 @@ impl HandshakeMetrics {
                 counter!(
                     "handshake_failure_total",
                     "direction" => self.direction,
+                    "purpose" => self.purpose,
                     "reason" => error.label_value(),
                     "stage" => failed_at
                 )
@@ -179,6 +187,7 @@ impl HandshakeMetrics {
                 histogram!(
                     "handshake_duration_seconds",
                     "direction" => self.direction,
+                    "purpose" => self.purpose,
                     "outcome" => outcome::FAILURE
                 )
                 .record(self.start.elapsed().as_secs_f64());
@@ -206,6 +215,7 @@ impl Drop for HandshakeMetrics {
             gauge!(
                 "handshake_stage",
                 "direction" => self.direction,
+                "purpose" => self.purpose,
                 "stage" => self.stage.label_value()
             )
             .decrement(1.0);
@@ -215,6 +225,7 @@ impl Drop for HandshakeMetrics {
             counter!(
                 "handshake_failure_total",
                 "direction" => self.direction,
+                "purpose" => self.purpose,
                 "reason" => "dropped",
                 "stage" => self.stage.label_value()
             )
@@ -223,6 +234,7 @@ impl Drop for HandshakeMetrics {
             histogram!(
                 "handshake_duration_seconds",
                 "direction" => self.direction,
+                "purpose" => self.purpose,
                 "outcome" => outcome::FAILURE
             )
             .record(self.start.elapsed().as_secs_f64());

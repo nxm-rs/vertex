@@ -64,6 +64,7 @@ pub(crate) struct HandshakeProtocol<I: SwarmIdentity> {
     local_peer_id: Option<PeerId>,
     remote_addr: Multiaddr,
     additional_addrs: Vec<Multiaddr>,
+    purpose: &'static str,
 }
 
 impl<I: SwarmIdentity> HandshakeProtocol<I> {
@@ -72,6 +73,7 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
         peer_id: PeerId,
         remote_addr: Multiaddr,
         additional_addrs: Vec<Multiaddr>,
+        purpose: &'static str,
     ) -> Self {
         Self {
             identity,
@@ -79,6 +81,7 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
             local_peer_id: None,
             remote_addr,
             additional_addrs,
+            purpose,
         }
     }
 
@@ -99,7 +102,7 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
         )
     )]
     pub(crate) async fn handle_inbound(self, stream: Stream) -> Result<HandshakeInfo, HandshakeError> {
-        let mut metrics = HandshakeMetrics::inbound();
+        let mut metrics = HandshakeMetrics::inbound(self.purpose);
         metrics.initiated();
         let result = self.do_inbound_exchange(stream, &mut metrics).await;
         if let Ok(ref info) = result {
@@ -174,7 +177,7 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
         )
     )]
     pub(crate) async fn handle_outbound(self, stream: Stream) -> Result<HandshakeInfo, HandshakeError> {
-        let mut metrics = HandshakeMetrics::outbound();
+        let mut metrics = HandshakeMetrics::outbound(self.purpose);
         metrics.initiated();
         let result = self.do_outbound_exchange(stream, &mut metrics).await;
         if let Ok(ref info) = result {
