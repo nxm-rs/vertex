@@ -32,6 +32,7 @@ metrics.workspace = true
 strum.workspace = true
 
 ## misc
+parking_lot.workspace = true
 either = "1.13"
 lru = "0.12"
 smallvec = "1.13"

@@ -7,6 +7,8 @@ use std::{
     task::{Context, Poll},
 };
 
+use parking_lot::RwLock;
+
 use libp2p::core::{
     multiaddr::{self, Protocol},
     transport::PortUse,
@@ -69,6 +71,9 @@ fn is_tcp_addr(addr: &Multiaddr) -> bool {
     matches!(first, Ip4(_) | Ip6(_) | Dns(_) | Dns4(_) | Dns6(_)) && matches!(second, Tcp(_))
 }
 
+/// Shared agent version map populated by identify exchanges.
+pub type AgentVersions = Arc<RwLock<HashMap<PeerId, String>>>;
+
 /// Network behaviour for identify protocol with targeted push support.
 pub struct Behaviour {
     config: Config,
@@ -82,6 +87,8 @@ pub struct Behaviour {
     external_addresses: ExternalAddresses,
     /// Per-connection start times for measuring identify exchange duration.
     connection_timers: HashMap<ConnectionId, std::time::Instant>,
+    /// Agent versions received via identify, shared with topology.
+    agent_versions: AgentVersions,
 }
 
 /// Event emitted by the identify behaviour.
@@ -126,7 +133,7 @@ impl Event {
 
 impl Behaviour {
     /// Create a new identify behaviour with the given public key.
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: Config, agent_versions: AgentVersions) -> Self {
         let discovered_peers = match NonZeroUsize::new(config.cache_size) {
             None => PeerCache::disabled(),
             Some(size) => PeerCache::enabled(size),
@@ -145,11 +152,12 @@ impl Behaviour {
             listen_addresses: Default::default(),
             external_addresses: Default::default(),
             connection_timers: HashMap::new(),
+            agent_versions,
         }
     }
 
     /// Create a new identify behaviour with a keypair for signed peer records.
-    pub fn new_with_keypair(config: Config, keypair: &Keypair) -> Self {
+    pub fn new_with_keypair(config: Config, keypair: &Keypair, agent_versions: AgentVersions) -> Self {
         let discovered_peers = match NonZeroUsize::new(config.cache_size) {
             None => PeerCache::disabled(),
             Some(size) => PeerCache::enabled(size),
@@ -171,6 +179,7 @@ impl Behaviour {
             listen_addresses: Default::default(),
             external_addresses: Default::default(),
             connection_timers: HashMap::new(),
+            agent_versions,
         }
     }
 
@@ -363,6 +372,9 @@ impl NetworkBehaviour for Behaviour {
                 info.listen_addrs
                     .retain(|addr| multiaddr_matches_peer_id(addr, &peer_id));
 
+                // Store agent version for shared access by topology.
+                self.agent_versions.write().insert(peer_id, info.agent_version.clone());
+
                 // Record metrics with the remote peer's agent version.
                 let duration = self
                     .connection_timers
@@ -507,6 +519,7 @@ impl NetworkBehaviour for Behaviour {
             }) => {
                 if remaining_established == 0 {
                     self.connected.remove(&peer_id);
+                    self.agent_versions.write().remove(&peer_id);
                 } else if let Some(addrs) = self.connected.get_mut(&peer_id) {
                     addrs.remove(&connection_id);
                 }
