@@ -121,5 +121,17 @@ macro_rules! scoring_events {
                 }
             )*
         }
+
+        // Auto-generated convenience methods on SwarmPeerScore.
+        paste::paste! {
+            impl crate::score::SwarmPeerScore {
+                $(
+                    $(#[doc = $doc])*
+                    pub fn [<record_ $config_field>](&self $(, $($field: $fty),*)?) {
+                        self.record_event(SwarmScoringEvent::$variant $({ $($field),* })?);
+                    }
+                )*
+            }
+        }
     };
 }

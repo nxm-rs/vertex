@@ -75,22 +75,9 @@ impl SwarmPeerScore {
         let old_score = self.score.score();
         let weight = self.config.weight_for(&event);
 
-        // Update counters and latency based on event type
-        match &event {
-            SwarmScoringEvent::ConnectionSuccess { latency } => {
-                let latency_nanos = latency.map(|d| d.as_nanos() as u64).unwrap_or(0);
-                self.score.record_success(latency_nanos); // handles counter + latency + touch
-            }
-            SwarmScoringEvent::ConnectionTimeout => self.score.record_timeout(),
-            SwarmScoringEvent::ConnectionRefused => self.score.record_refusal(),
-            SwarmScoringEvent::HandshakeFailure => self.score.record_handshake_failure(),
-            SwarmScoringEvent::ProtocolError => self.score.record_protocol_error(),
-            _ => {
-                // Non-connection events: record latency if present
-                if let Some(latency) = event.latency() {
-                    self.score.record_latency(latency.as_nanos() as u64);
-                }
-            }
+        // Record latency if present
+        if let Some(latency) = event.latency() {
+            self.score.record_latency(latency.as_nanos() as u64);
         }
 
         // Apply weight
@@ -109,81 +96,6 @@ impl SwarmPeerScore {
 
         // Check thresholds
         self.check_thresholds(new_score, &event);
-    }
-
-    /// Record a connection success with optional latency.
-    pub fn record_success(&self, latency: Option<Duration>) {
-        self.record_event(SwarmScoringEvent::ConnectionSuccess { latency });
-    }
-
-    /// Record a connection timeout.
-    pub fn record_timeout(&self) {
-        self.record_event(SwarmScoringEvent::ConnectionTimeout);
-    }
-
-    /// Record a connection refusal.
-    pub fn record_refusal(&self) {
-        self.record_event(SwarmScoringEvent::ConnectionRefused);
-    }
-
-    /// Record a handshake failure.
-    pub fn record_handshake_failure(&self) {
-        self.record_event(SwarmScoringEvent::HandshakeFailure);
-    }
-
-    /// Record a protocol error.
-    pub fn record_protocol_error(&self) {
-        self.record_event(SwarmScoringEvent::ProtocolError);
-    }
-
-    /// Record an early disconnect (post-handshake connection that failed quickly).
-    pub fn record_early_disconnect(&self, duration: Duration) {
-        self.record_event(SwarmScoringEvent::EarlyDisconnect { duration });
-    }
-
-    /// Record successful retrieval.
-    pub fn record_retrieval_success(&self, latency: Duration) {
-        self.record_event(SwarmScoringEvent::RetrievalSuccess { latency });
-    }
-
-    /// Record retrieval failure.
-    pub fn record_retrieval_failure(&self) {
-        self.record_event(SwarmScoringEvent::RetrievalFailure);
-    }
-
-    /// Record successful push.
-    pub fn record_push_success(&self, latency: Duration) {
-        self.record_event(SwarmScoringEvent::PushSuccess { latency });
-    }
-
-    /// Record push failure.
-    pub fn record_push_failure(&self) {
-        self.record_event(SwarmScoringEvent::PushFailure);
-    }
-
-    /// Record invalid data received from peer.
-    pub fn record_invalid_data(&self) {
-        self.record_event(SwarmScoringEvent::InvalidData);
-    }
-
-    /// Record malicious behavior detected.
-    pub fn record_malicious_behavior(&self) {
-        self.record_event(SwarmScoringEvent::MaliciousBehavior);
-    }
-
-    /// Record accounting violation.
-    pub fn record_accounting_violation(&self) {
-        self.record_event(SwarmScoringEvent::AccountingViolation);
-    }
-
-    /// Record successful ping.
-    pub fn record_ping_success(&self, latency: Duration) {
-        self.record_event(SwarmScoringEvent::PingSuccess { latency });
-    }
-
-    /// Record ping timeout.
-    pub fn record_ping_timeout(&self) {
-        self.record_event(SwarmScoringEvent::PingTimeout);
     }
 
     /// Set latency without affecting score (for latency-only measurements).
@@ -298,18 +210,18 @@ mod tests {
     }
 
     #[test]
-    fn test_record_success() {
+    fn test_record_connection_success() {
         let score = SwarmPeerScore::with_defaults(test_overlay(1));
-        score.record_success(Some(Duration::from_millis(50)));
+        score.record_connection_success(Some(Duration::from_millis(50)));
 
         assert!(score.score() > 0.0);
         assert!(score.avg_latency().is_some());
     }
 
     #[test]
-    fn test_record_timeout() {
+    fn test_record_connection_timeout() {
         let score = SwarmPeerScore::with_defaults(test_overlay(1));
-        score.record_timeout();
+        score.record_connection_timeout();
 
         assert!(score.score() < 0.0);
     }
@@ -320,8 +232,8 @@ mod tests {
         let config = Arc::new(SwarmScoringConfig::default());
         let score = SwarmPeerScore::new(test_overlay(1), PeerScore::new(), config, Arc::clone(&observer) as _);
 
-        score.record_success(None);
-        score.record_timeout();
+        score.record_connection_success(None);
+        score.record_connection_timeout();
 
         assert_eq!(observer.changes.load(Ordering::Relaxed), 2);
     }
@@ -345,7 +257,7 @@ mod tests {
 
         // Drop below warning threshold
         for _ in 0..10 {
-            score.record_timeout();
+            score.record_connection_timeout();
         }
 
         // Should only warn once
@@ -360,7 +272,7 @@ mod tests {
 
         // Drop below ban threshold
         for _ in 0..15 {
-            score.record_timeout();
+            score.record_connection_timeout();
         }
 
         assert!(observer.bans.load(Ordering::Relaxed) >= 1);
@@ -370,8 +282,8 @@ mod tests {
     #[test]
     fn test_snapshot_roundtrip() {
         let score = SwarmPeerScore::with_defaults(test_overlay(1));
-        score.record_success(Some(Duration::from_millis(100)));
-        score.record_success(Some(Duration::from_millis(50)));
+        score.record_connection_success(Some(Duration::from_millis(100)));
+        score.record_connection_success(Some(Duration::from_millis(50)));
 
         let snapshot = score.snapshot();
 
