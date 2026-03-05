@@ -7,7 +7,6 @@ use auto_impl::auto_impl;
 use serde::{Deserialize, Serialize};
 
 use crate::error::StoreError;
-use crate::record::PeerRecord;
 
 /// Peer identifier type.
 pub trait NetPeerId:
@@ -20,28 +19,25 @@ impl<T> NetPeerId for T where
 {
 }
 
-/// Serializable peer data type.
-pub trait DataBounds:
-    Clone + Debug + Default + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static
+/// Serializable peer record with an associated ID.
+pub trait NetRecord:
+    Clone + Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static
 {
-}
-
-impl<T> DataBounds for T where
-    T: Clone + Debug + Default + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static
-{
+    type Id: NetPeerId;
+    fn id(&self) -> &Self::Id;
 }
 
 /// Peer persistence trait with auto-impl for &, Box, Arc.
 #[auto_impl(&, Box, Arc)]
-pub trait NetPeerStore<Id: NetPeerId, Data: DataBounds = ()>: Send + Sync {
+pub trait NetPeerStore<R: NetRecord>: Send + Sync {
     /// Load all peer records.
-    fn load_all(&self) -> Result<Vec<PeerRecord<Id, Data>>, StoreError>;
+    fn load_all(&self) -> Result<Vec<R>, StoreError>;
 
     /// Save a peer record (insert or update).
-    fn save(&self, record: &PeerRecord<Id, Data>) -> Result<(), StoreError>;
+    fn save(&self, record: &R) -> Result<(), StoreError>;
 
     /// Save multiple peer records.
-    fn save_batch(&self, records: &[PeerRecord<Id, Data>]) -> Result<(), StoreError> {
+    fn save_batch(&self, records: &[R]) -> Result<(), StoreError> {
         for record in records {
             self.save(record)?;
         }
@@ -49,12 +45,12 @@ pub trait NetPeerStore<Id: NetPeerId, Data: DataBounds = ()>: Send + Sync {
     }
 
     /// Remove a peer by ID. Returns true if a record was removed.
-    fn remove(&self, id: &Id) -> Result<bool, StoreError>;
+    fn remove(&self, id: &R::Id) -> Result<bool, StoreError>;
 
     /// Get a peer record by ID.
-    fn get(&self, id: &Id) -> Result<Option<PeerRecord<Id, Data>>, StoreError>;
+    fn get(&self, id: &R::Id) -> Result<Option<R>, StoreError>;
 
-    fn contains(&self, id: &Id) -> Result<bool, StoreError> {
+    fn contains(&self, id: &R::Id) -> Result<bool, StoreError> {
         Ok(self.get(id)?.is_some())
     }
 

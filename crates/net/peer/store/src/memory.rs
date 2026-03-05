@@ -1,58 +1,54 @@
 //! In-memory peer store (does not persist across restarts).
 
 use std::collections::HashMap;
-use std::marker::PhantomData;
 
 use parking_lot::RwLock;
 
 use crate::error::StoreError;
-use crate::record::PeerRecord;
-use crate::traits::{DataBounds, NetPeerId, NetPeerStore};
+use crate::traits::{NetPeerStore, NetRecord};
 
 /// In-memory peer store for testing or ephemeral storage.
-pub struct MemoryPeerStore<Id: NetPeerId, Data: DataBounds = ()> {
-    peers: RwLock<HashMap<Id, PeerRecord<Id, Data>>>,
-    _marker: PhantomData<Data>,
+pub struct MemoryPeerStore<R: NetRecord> {
+    peers: RwLock<HashMap<R::Id, R>>,
 }
 
-impl<Id: NetPeerId, Data: DataBounds> Default for MemoryPeerStore<Id, Data> {
+impl<R: NetRecord> Default for MemoryPeerStore<R> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<Id: NetPeerId, Data: DataBounds> MemoryPeerStore<Id, Data> {
+impl<R: NetRecord> MemoryPeerStore<R> {
     pub fn new() -> Self {
         Self {
             peers: RwLock::new(HashMap::new()),
-            _marker: PhantomData,
         }
     }
 }
 
-impl<Id: NetPeerId, Data: DataBounds> NetPeerStore<Id, Data> for MemoryPeerStore<Id, Data> {
-    fn load_all(&self) -> Result<Vec<PeerRecord<Id, Data>>, StoreError> {
+impl<R: NetRecord> NetPeerStore<R> for MemoryPeerStore<R> {
+    fn load_all(&self) -> Result<Vec<R>, StoreError> {
         Ok(self.peers.read().values().cloned().collect())
     }
 
-    fn save(&self, record: &PeerRecord<Id, Data>) -> Result<(), StoreError> {
-        self.peers.write().insert(record.id.clone(), record.clone());
+    fn save(&self, record: &R) -> Result<(), StoreError> {
+        self.peers.write().insert(record.id().clone(), record.clone());
         Ok(())
     }
 
-    fn save_batch(&self, records: &[PeerRecord<Id, Data>]) -> Result<(), StoreError> {
+    fn save_batch(&self, records: &[R]) -> Result<(), StoreError> {
         let mut store = self.peers.write();
         for record in records {
-            store.insert(record.id.clone(), record.clone());
+            store.insert(record.id().clone(), record.clone());
         }
         Ok(())
     }
 
-    fn remove(&self, id: &Id) -> Result<bool, StoreError> {
+    fn remove(&self, id: &R::Id) -> Result<bool, StoreError> {
         Ok(self.peers.write().remove(id).is_some())
     }
 
-    fn get(&self, id: &Id) -> Result<Option<PeerRecord<Id, Data>>, StoreError> {
+    fn get(&self, id: &R::Id) -> Result<Option<R>, StoreError> {
         Ok(self.peers.read().get(id).cloned())
     }
 
@@ -74,26 +70,27 @@ mod tests {
     #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
     struct TestId(u64);
 
-    #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-    struct TestData {
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    struct TestRecord {
+        id: TestId,
         value: u32,
     }
 
-    fn test_record(n: u64) -> PeerRecord<TestId, TestData> {
-        PeerRecord {
+    impl NetRecord for TestRecord {
+        type Id = TestId;
+        fn id(&self) -> &TestId { &self.id }
+    }
+
+    fn test_record(n: u64) -> TestRecord {
+        TestRecord {
             id: TestId(n),
-            data: TestData { value: n as u32 },
-            first_seen: 0,
-            last_seen: 0,
-            last_dial_attempt: 0,
-            consecutive_failures: 0,
-            is_banned: false,
+            value: n as u32,
         }
     }
 
     #[test]
     fn test_basic() {
-        let store = MemoryPeerStore::<TestId, TestData>::new();
+        let store = MemoryPeerStore::<TestRecord>::new();
 
         assert_eq!(store.count().unwrap(), 0);
         assert!(store.load_all().unwrap().is_empty());
@@ -114,7 +111,7 @@ mod tests {
 
     #[test]
     fn test_batch() {
-        let store = MemoryPeerStore::<TestId, TestData>::new();
+        let store = MemoryPeerStore::<TestRecord>::new();
 
         let records: Vec<_> = (1..=5).map(test_record).collect();
         store.save_batch(&records).unwrap();
@@ -125,22 +122,22 @@ mod tests {
 
     #[test]
     fn test_update() {
-        let store = MemoryPeerStore::<TestId, TestData>::new();
+        let store = MemoryPeerStore::<TestRecord>::new();
 
         let mut record = test_record(1);
         store.save(&record).unwrap();
 
-        record.data = TestData { value: 42 };
+        record.value = 42;
         store.save(&record).unwrap();
 
         assert_eq!(store.count().unwrap(), 1);
         let loaded = store.get(&TestId(1)).unwrap().unwrap();
-        assert_eq!(loaded.data.value, 42);
+        assert_eq!(loaded.value, 42);
     }
 
     #[test]
     fn test_clear() {
-        let store = MemoryPeerStore::<TestId, TestData>::new();
+        let store = MemoryPeerStore::<TestRecord>::new();
 
         let records: Vec<_> = (1..=5).map(test_record).collect();
         store.save_batch(&records).unwrap();

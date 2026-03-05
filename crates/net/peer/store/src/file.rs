@@ -3,25 +3,22 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
-use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::RwLock;
 
 use crate::error::StoreError;
-use crate::record::PeerRecord;
-use crate::traits::{DataBounds, NetPeerId, NetPeerStore};
+use crate::traits::{NetPeerStore, NetRecord};
 
 /// JSON file store. Loaded to memory on startup, written back on flush.
-pub struct FilePeerStore<Id: NetPeerId, Data: DataBounds = ()> {
+pub struct FilePeerStore<R: NetRecord> {
     path: PathBuf,
-    peers: RwLock<HashMap<Id, PeerRecord<Id, Data>>>,
+    peers: RwLock<HashMap<R::Id, R>>,
     dirty: AtomicBool,
-    _marker: PhantomData<Data>,
 }
 
-impl<Id: NetPeerId, Data: DataBounds> FilePeerStore<Id, Data> {
+impl<R: NetRecord> FilePeerStore<R> {
     /// Load existing file or create empty store.
     pub fn new(path: impl Into<PathBuf>) -> Result<Self, StoreError> {
         let path = path.into();
@@ -35,7 +32,6 @@ impl<Id: NetPeerId, Data: DataBounds> FilePeerStore<Id, Data> {
             path,
             peers: RwLock::new(peers),
             dirty: AtomicBool::new(false),
-            _marker: PhantomData,
         })
     }
 
@@ -51,14 +47,14 @@ impl<Id: NetPeerId, Data: DataBounds> FilePeerStore<Id, Data> {
         Self::new(path)
     }
 
-    fn load_from_file(path: &PathBuf) -> Result<HashMap<Id, PeerRecord<Id, Data>>, StoreError> {
+    fn load_from_file(path: &PathBuf) -> Result<HashMap<R::Id, R>, StoreError> {
         let file = File::open(path).map_err(|e| StoreError::Open {
             path: path.clone(),
             source: e,
         })?;
         let reader = BufReader::new(file);
 
-        let records: Vec<PeerRecord<Id, Data>> =
+        let records: Vec<R> =
             serde_json::from_reader(reader).map_err(|e| StoreError::Deserialize {
                 path: path.clone(),
                 reason: e.to_string(),
@@ -66,7 +62,7 @@ impl<Id: NetPeerId, Data: DataBounds> FilePeerStore<Id, Data> {
 
         let mut peers = HashMap::with_capacity(records.len());
         for record in records {
-            peers.insert(record.id.clone(), record);
+            peers.insert(record.id().clone(), record);
         }
 
         Ok(peers)
@@ -74,7 +70,7 @@ impl<Id: NetPeerId, Data: DataBounds> FilePeerStore<Id, Data> {
 
     fn save_to_file(&self) -> Result<(), StoreError> {
         let peers = self.peers.read();
-        let records: Vec<&PeerRecord<Id, Data>> = peers.values().collect();
+        let records: Vec<&R> = peers.values().collect();
 
         // Write to temp file first, then rename (atomic)
         let tmp_path = self.path.with_extension("json.tmp");
@@ -112,28 +108,28 @@ impl<Id: NetPeerId, Data: DataBounds> FilePeerStore<Id, Data> {
     }
 }
 
-impl<Id: NetPeerId, Data: DataBounds> NetPeerStore<Id, Data> for FilePeerStore<Id, Data> {
-    fn load_all(&self) -> Result<Vec<PeerRecord<Id, Data>>, StoreError> {
+impl<R: NetRecord> NetPeerStore<R> for FilePeerStore<R> {
+    fn load_all(&self) -> Result<Vec<R>, StoreError> {
         Ok(self.peers.read().values().cloned().collect())
     }
 
-    fn save(&self, record: &PeerRecord<Id, Data>) -> Result<(), StoreError> {
-        self.peers.write().insert(record.id.clone(), record.clone());
+    fn save(&self, record: &R) -> Result<(), StoreError> {
+        self.peers.write().insert(record.id().clone(), record.clone());
         self.mark_dirty();
         Ok(())
     }
 
-    fn save_batch(&self, records: &[PeerRecord<Id, Data>]) -> Result<(), StoreError> {
+    fn save_batch(&self, records: &[R]) -> Result<(), StoreError> {
         let mut store = self.peers.write();
         for record in records {
-            store.insert(record.id.clone(), record.clone());
+            store.insert(record.id().clone(), record.clone());
         }
         drop(store);
         self.mark_dirty();
         Ok(())
     }
 
-    fn remove(&self, id: &Id) -> Result<bool, StoreError> {
+    fn remove(&self, id: &R::Id) -> Result<bool, StoreError> {
         let removed = self.peers.write().remove(id).is_some();
         if removed {
             self.mark_dirty();
@@ -141,7 +137,7 @@ impl<Id: NetPeerId, Data: DataBounds> NetPeerStore<Id, Data> for FilePeerStore<I
         Ok(removed)
     }
 
-    fn get(&self, id: &Id) -> Result<Option<PeerRecord<Id, Data>>, StoreError> {
+    fn get(&self, id: &R::Id) -> Result<Option<R>, StoreError> {
         Ok(self.peers.read().get(id).cloned())
     }
 
@@ -164,7 +160,7 @@ impl<Id: NetPeerId, Data: DataBounds> NetPeerStore<Id, Data> for FilePeerStore<I
     }
 }
 
-impl<Id: NetPeerId, Data: DataBounds> Drop for FilePeerStore<Id, Data> {
+impl<R: NetRecord> Drop for FilePeerStore<R> {
     fn drop(&mut self) {
         if self.is_dirty() {
             let _ = self.save_to_file();
@@ -180,20 +176,21 @@ mod tests {
     #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
     struct TestId(u64);
 
-    #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-    struct TestData {
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    struct TestRecord {
+        id: TestId,
         value: u32,
     }
 
-    fn test_record(n: u64) -> PeerRecord<TestId, TestData> {
-        PeerRecord {
+    impl NetRecord for TestRecord {
+        type Id = TestId;
+        fn id(&self) -> &TestId { &self.id }
+    }
+
+    fn test_record(n: u64) -> TestRecord {
+        TestRecord {
             id: TestId(n),
-            data: TestData { value: n as u32 },
-            first_seen: 0,
-            last_seen: 0,
-            last_dial_attempt: 0,
-            consecutive_failures: 0,
-            is_banned: false,
+            value: n as u32,
         }
     }
 
@@ -202,7 +199,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("peers.json");
 
-        let store = FilePeerStore::<TestId, TestData>::new(&path).unwrap();
+        let store = FilePeerStore::<TestRecord>::new(&path).unwrap();
 
         assert_eq!(store.count().unwrap(), 0);
         assert!(!path.exists());
@@ -225,14 +222,14 @@ mod tests {
         let path = dir.path().join("peers.json");
 
         {
-            let store = FilePeerStore::<TestId, TestData>::new(&path).unwrap();
+            let store = FilePeerStore::<TestRecord>::new(&path).unwrap();
             let records: Vec<_> = (1..=5).map(test_record).collect();
             store.save_batch(&records).unwrap();
             store.flush().unwrap();
         }
 
         {
-            let store = FilePeerStore::<TestId, TestData>::new(&path).unwrap();
+            let store = FilePeerStore::<TestRecord>::new(&path).unwrap();
             assert_eq!(store.count().unwrap(), 5);
 
             for i in 1..=5 {
@@ -246,19 +243,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("peers.json");
 
-        let store = FilePeerStore::<TestId, TestData>::new(&path).unwrap();
+        let store = FilePeerStore::<TestRecord>::new(&path).unwrap();
 
         let mut record = test_record(1);
         store.save(&record).unwrap();
         store.flush().unwrap();
 
-        record.data = TestData { value: 42 };
+        record.value = 42;
         store.save(&record).unwrap();
         store.flush().unwrap();
 
-        let store2 = FilePeerStore::<TestId, TestData>::new(&path).unwrap();
+        let store2 = FilePeerStore::<TestRecord>::new(&path).unwrap();
         let loaded = store2.get(&TestId(1)).unwrap().unwrap();
-        assert_eq!(loaded.data.value, 42);
+        assert_eq!(loaded.value, 42);
     }
 
     #[test]
@@ -266,7 +263,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("peers.json");
 
-        let store = FilePeerStore::<TestId, TestData>::new(&path).unwrap();
+        let store = FilePeerStore::<TestRecord>::new(&path).unwrap();
         store.save(&test_record(1)).unwrap();
         store.save(&test_record(2)).unwrap();
         store.flush().unwrap();
@@ -277,7 +274,7 @@ mod tests {
 
         store.flush().unwrap();
 
-        let store2 = FilePeerStore::<TestId, TestData>::new(&path).unwrap();
+        let store2 = FilePeerStore::<TestRecord>::new(&path).unwrap();
         assert_eq!(store2.count().unwrap(), 1);
         assert!(!store2.contains(&TestId(1)).unwrap());
         assert!(store2.contains(&TestId(2)).unwrap());
