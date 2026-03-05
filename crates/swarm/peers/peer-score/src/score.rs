@@ -17,6 +17,8 @@ use crate::config::{SwarmScoringConfig, SwarmScoringEvent};
 /// - Observer callbacks for score changes
 /// - Swarm-specific event handling
 pub struct SwarmPeerScore {
+    /// Stored here so observer callbacks can identify which peer triggered the event,
+    /// without threading overlay through every scoring method call.
     overlay: OverlayAddress,
     score: Arc<PeerScore>,
     config: Arc<SwarmScoringConfig>,
