@@ -3,10 +3,11 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use libp2p::{PeerId, swarm::ConnectionId};
-use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use parking_lot::RwLock;
 
 use crate::direction::ConnectionDirection;
 use crate::result::ActivateResult;
@@ -27,19 +28,14 @@ impl<Id> From<Id> for RegistryKey<Id> {
     }
 }
 
-/// Entry in the pending time index to be removed.
-struct PendingEntry<Id> {
-    key: RegistryKey<Id>,
-    started_at: Instant,
-}
-
 /// What existing state to replace during activation.
 enum Replacement<Id> {
     /// ID already has active connection - replace it.
     ById {
         old_peer_id: PeerId,
         old_conn_id: ConnectionId,
-        pending_entry: Option<PendingEntry<Id>>,
+        /// Caller's pending key (if registered under a different key).
+        pending_key: Option<RegistryKey<Id>>,
     },
     /// PeerId active with different ID - replace it.
     ByPeerId {
@@ -48,7 +44,8 @@ enum Replacement<Id> {
     },
     /// Normal activation - just clean up pending entry if any.
     None {
-        pending_entry: Option<PendingEntry<Id>>,
+        /// Caller's pending key to clean up.
+        pending_key: Option<RegistryKey<Id>>,
     },
 }
 
@@ -88,6 +85,54 @@ impl<Id: Clone + Eq + Hash, R> Maps<Id, R> {
             }
         }
     }
+
+    /// Insert a state into all relevant indices.
+    ///
+    /// Updates peer_to_key, conn_to_key, and by_key for all states.
+    /// Additionally adds to pending_by_time for Connected states.
+    fn insert(&mut self, key: RegistryKey<Id>, state: ConnectionState<Id, R>) {
+        self.peer_to_key.insert(state.peer_id(), key.clone());
+        if let Some(conn_id) = state.connection_id() {
+            self.conn_to_key.insert(conn_id, key.clone());
+        }
+        if let Some(started_at) = state.started_at() {
+            self.add_pending(started_at, key.clone());
+        }
+        self.by_key.insert(key, state);
+    }
+
+    /// Remove all index entries for a RegistryKey.
+    ///
+    /// Only removes secondary indices if they still point to this key,
+    /// guarding against inconsistencies from overwritten entries.
+    fn remove_by_key(&mut self, key: &RegistryKey<Id>) -> Option<ConnectionState<Id, R>> {
+        let state = self.by_key.remove(key)?;
+        if self.peer_to_key.get(&state.peer_id()) == Some(key) {
+            self.peer_to_key.remove(&state.peer_id());
+        }
+        if let Some(conn_id) = state.connection_id()
+            && self.conn_to_key.get(&conn_id) == Some(key)
+        {
+            self.conn_to_key.remove(&conn_id);
+        }
+        if let Some(started_at) = state.started_at() {
+            self.remove_pending(started_at, key);
+        }
+        Some(state)
+    }
+
+    /// Remove all index entries for a PeerId.
+    fn remove_by_peer(&mut self, peer_id: &PeerId) -> Option<ConnectionState<Id, R>> {
+        let key = self.peer_to_key.remove(peer_id)?;
+        let state = self.by_key.remove(&key)?;
+        if let Some(conn_id) = state.connection_id() {
+            self.conn_to_key.remove(&conn_id);
+        }
+        if let Some(started_at) = state.started_at() {
+            self.remove_pending(started_at, &key);
+        }
+        Some(state)
+    }
 }
 
 /// Generic peer connection registry.
@@ -100,6 +145,10 @@ impl<Id: Clone + Eq + Hash, R> Maps<Id, R> {
 /// Dial tracking is handled externally by a `DialTracker`.
 pub struct PeerRegistry<Id, R = ()> {
     maps: RwLock<Maps<Id, R>>,
+    /// O(1) counter of active (post-handshake) connections.
+    num_active: AtomicUsize,
+    /// O(1) counter of pending (pre-handshake) connections.
+    num_pending: AtomicUsize,
 }
 
 impl<Id, R> Default for PeerRegistry<Id, R> {
@@ -112,28 +161,22 @@ impl<Id, R> PeerRegistry<Id, R> {
     pub fn new() -> Self {
         Self {
             maps: RwLock::new(Maps::default()),
+            num_active: AtomicUsize::new(0),
+            num_pending: AtomicUsize::new(0),
         }
-    }
-
-    fn read(&self) -> RwLockReadGuard<'_, Maps<Id, R>> {
-        self.maps.read()
-    }
-
-    fn write(&self) -> RwLockWriteGuard<'_, Maps<Id, R>> {
-        self.maps.write()
     }
 }
 
 impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> PeerRegistry<Id, R> {
     pub fn get(&self, id: &Id) -> Option<ConnectionState<Id, R>> {
-        self.read()
+        self.maps.read()
             .by_key
             .get(&id.clone().into())
             .cloned()
     }
 
     pub fn active_connection_id(&self, id: &Id) -> Option<ConnectionId> {
-        self.read()
+        self.maps.read()
             .by_key
             .get(&id.clone().into())
             .and_then(|s| {
@@ -147,18 +190,18 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
 
     /// Resolve a PeerId to its application-level ID (only if known).
     pub fn resolve_id(&self, peer_id: &PeerId) -> Option<Id> {
-        match self.read().peer_to_key.get(peer_id)? {
+        match self.maps.read().peer_to_key.get(peer_id)? {
             RegistryKey::Known(id) => Some(id.clone()),
             RegistryKey::Pending(_) => None,
         }
     }
 
     pub fn contains_peer(&self, peer_id: &PeerId) -> bool {
-        self.read().peer_to_key.contains_key(peer_id)
+        self.maps.read().peer_to_key.contains_key(peer_id)
     }
 
     pub fn resolve_peer_id(&self, id: &Id) -> Option<PeerId> {
-        self.read()
+        self.maps.read()
             .by_key
             .get(&id.clone().into())
             .map(|s| s.peer_id())
@@ -176,38 +219,40 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
         started_at: Instant,
         reason: R,
     ) -> Option<ConnectionState<Id, R>> {
-        let mut maps = self.write();
-
-        if maps.peer_to_key.contains_key(&peer_id) {
-            return None;
-        }
-
-        let key = match &id {
-            Some(known_id) => {
-                let k = known_id.clone().into();
-                if maps.by_key.contains_key(&k) {
-                    return None;
-                }
-                k
+        let state = self.with_maps(|maps| {
+            if maps.peer_to_key.contains_key(&peer_id) {
+                return None;
             }
-            None => RegistryKey::Pending(peer_id),
-        };
 
-        let state = ConnectionState::Connected {
-            peer_id,
-            connection_id,
-            id,
-            direction: ConnectionDirection::Outbound,
-            started_at,
-            reason,
-        };
+            let key = match &id {
+                Some(known_id) => {
+                    let k = known_id.clone().into();
+                    if maps.by_key.contains_key(&k) {
+                        return None;
+                    }
+                    k
+                }
+                None => RegistryKey::Pending(peer_id),
+            };
 
-        maps.by_key.insert(key.clone(), state.clone());
-        maps.peer_to_key.insert(peer_id, key.clone());
-        maps.conn_to_key.insert(connection_id, key.clone());
-        maps.add_pending(started_at, key);
+            let state = ConnectionState::Connected {
+                peer_id,
+                connection_id,
+                id,
+                direction: ConnectionDirection::Outbound,
+                started_at,
+                reason,
+            };
 
-        Some(state)
+            let returned = state.clone();
+            maps.insert(key, state);
+            Some(returned)
+        });
+
+        if state.is_some() {
+            self.num_pending.fetch_add(1, Ordering::Relaxed);
+        }
+        state
     }
 
     /// Register inbound connection in Connected state (awaiting identity).
@@ -228,13 +273,10 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
             reason: R::default(),
         };
 
-        let mut maps = self.write();
-        maps.by_key.insert(key.clone(), state.clone());
-        maps.peer_to_key.insert(peer_id, key.clone());
-        maps.conn_to_key.insert(connection_id, key.clone());
-        maps.add_pending(started_at, key);
-
-        state
+        let returned = state.clone();
+        self.with_maps(|maps| maps.insert(key, state));
+        self.num_pending.fetch_add(1, Ordering::Relaxed);
+        returned
     }
 
     /// Activate a connection: transition to Active with confirmed application-level ID.
@@ -244,117 +286,131 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
         connection_id: ConnectionId,
         id: Id,
     ) -> ActivateResult<Id> {
-        let mut maps = self.write();
+        let (result, pending_removed, active_removed) = self.with_maps(|maps| {
+            let known_key: RegistryKey<Id> = id.clone().into();
 
-        let known_key = id.clone().into();
-        let pending_key = RegistryKey::Pending(peer_id);
+            // Capture reason from current state before any modifications
+            let reason = maps
+                .peer_to_key
+                .get(&peer_id)
+                .and_then(|key| maps.by_key.get(key))
+                .map(|state| state.reason().clone())
+                .unwrap_or_default();
 
-        // Capture reason from current state before any modifications
-        let reason = maps.peer_to_key.get(&peer_id)
-            .and_then(|key| maps.by_key.get(key))
-            .map(|state| state.reason().clone())
-            .unwrap_or_default();
+            let replacement = Self::find_replacement(maps, &id, &peer_id);
 
-        let replacement = Self::find_replacement(&maps, &id, &peer_id);
+            let mut pending_removed: usize = 0;
+            let mut active_removed: usize = 0;
 
-        // Remove pending time index for the known key if it was pending
-        if let Some(started_at) = maps.by_key.get(&known_key).and_then(|s| s.started_at()) {
-            maps.remove_pending(started_at, &known_key);
-        }
-
-        let result = match replacement {
-            Replacement::ById {
-                old_peer_id,
-                old_conn_id,
-                pending_entry,
-            } => {
-                maps.peer_to_key.remove(&old_peer_id);
-                maps.conn_to_key.remove(&old_conn_id);
-                if let Some(entry) = pending_entry {
-                    maps.by_key.remove(&entry.key);
-                    maps.remove_pending(entry.started_at, &entry.key);
+            // Always clean up any existing entry under known_key (Connected or Active).
+            // Using remove_by_key ensures all secondary indices are cleaned, fixing a
+            // latent bug where stale peer_to_key/conn_to_key entries were left behind
+            // for Connected entries under the target key.
+            if let Some(state) = maps.remove_by_key(&known_key) {
+                if state.is_active() {
+                    active_removed += 1;
+                } else {
+                    pending_removed += 1;
                 }
-                ActivateResult::Replaced {
+            }
+
+            let result = match replacement {
+                Replacement::ById {
                     old_peer_id,
-                    old_connection_id: old_conn_id,
-                    old_id: None,
-                }
-            }
-            Replacement::ByPeerId {
-                existing_id,
-                old_conn_id,
-            } => {
-                maps.by_key.remove(&existing_id.clone().into());
-                maps.conn_to_key.remove(&old_conn_id);
-                maps.peer_to_key.remove(&peer_id);
-                ActivateResult::Replaced {
-                    old_peer_id: peer_id,
-                    old_connection_id: old_conn_id,
-                    old_id: Some(existing_id),
-                }
-            }
-            Replacement::None { pending_entry } => {
-                if let Some(entry) = pending_entry {
-                    if let Some(state) = maps.by_key.remove(&entry.key) {
-                        if let Some(old_conn_id) = state.connection_id() {
-                            maps.conn_to_key.remove(&old_conn_id);
-                        }
+                    old_conn_id,
+                    pending_key,
+                } => {
+                    // Active entry under known_key already removed above.
+                    // Remove caller's pending entry if under a different key.
+                    if let Some(key) = pending_key
+                        && maps.remove_by_key(&key).is_some()
+                    {
+                        pending_removed += 1;
                     }
-                    maps.remove_pending(entry.started_at, &entry.key);
-                }
-                // Also clean up the pending key entry if it exists
-                if let Some(state) = maps.by_key.remove(&pending_key) {
-                    if let Some(started_at) = state.started_at() {
-                        maps.remove_pending(started_at, &pending_key);
+                    ActivateResult::Replaced {
+                        old_peer_id,
+                        old_connection_id: old_conn_id,
+                        old_id: None,
                     }
                 }
-                ActivateResult::Accepted
-            }
-        };
+                Replacement::ByPeerId {
+                    existing_id,
+                    old_conn_id,
+                } => {
+                    // Remove old Active for the different ID.
+                    // Any Connected entry under known_key was already removed above.
+                    if maps.remove_by_key(&existing_id.clone().into()).is_some() {
+                        active_removed += 1;
+                    }
+                    ActivateResult::Replaced {
+                        old_peer_id: peer_id,
+                        old_connection_id: old_conn_id,
+                        old_id: Some(existing_id),
+                    }
+                }
+                Replacement::None { pending_key } => {
+                    // Any Connected entry under known_key was already removed above.
+                    // Remove caller's pending entry.
+                    if let Some(key) = pending_key
+                        && maps.remove_by_key(&key).is_some()
+                    {
+                        pending_removed += 1;
+                    }
+                    ActivateResult::Accepted
+                }
+            };
 
-        let new_state = ConnectionState::Active {
-            peer_id,
-            id: id.clone(),
-            connection_id,
-            connected_at: Instant::now(),
-            reason,
-        };
-        maps.by_key.insert(known_key.clone(), new_state);
-        maps.peer_to_key.insert(peer_id, known_key.clone());
-        maps.conn_to_key.insert(connection_id, known_key.clone());
+            let new_state = ConnectionState::Active {
+                peer_id,
+                id: id.clone(),
+                connection_id,
+                connected_at: Instant::now(),
+                reason,
+            };
+            maps.insert(known_key.clone(), new_state);
 
-        // Debug assertions for one-overlay-one-peerid invariant (O(1) checks)
-        debug_assert!(
-            maps.peer_to_key.get(&peer_id) == Some(&known_key),
-            "Invariant violated: peer_id {:?} should map to known_key {:?}",
-            peer_id,
-            known_key
-        );
-        debug_assert!(
-            matches!(
-                maps.by_key.get(&known_key),
-                Some(ConnectionState::Active { peer_id: p, .. }) if *p == peer_id
-            ),
-            "Invariant violated: known_key {:?} should have peer_id {:?}",
-            known_key,
-            peer_id
-        );
+            // Debug assertions for one-overlay-one-peerid invariant (O(1) checks)
+            debug_assert!(
+                maps.peer_to_key.get(&peer_id) == Some(&known_key),
+                "Invariant violated: peer_id {:?} should map to known_key {:?}",
+                peer_id,
+                known_key
+            );
+            debug_assert!(
+                matches!(
+                    maps.by_key.get(&known_key),
+                    Some(ConnectionState::Active { peer_id: p, .. }) if *p == peer_id
+                ),
+                "Invariant violated: known_key {:?} should have peer_id {:?}",
+                known_key,
+                peer_id
+            );
+
+            (result, pending_removed, active_removed)
+        });
+
+        // Update O(1) counters outside the lock
+        self.num_active.fetch_add(1, Ordering::Relaxed);
+        if active_removed > 0 {
+            self.num_active.fetch_sub(active_removed, Ordering::Relaxed);
+        }
+        if pending_removed > 0 {
+            self.num_pending.fetch_sub(pending_removed, Ordering::Relaxed);
+        }
 
         result
     }
 
     fn find_replacement(maps: &Maps<Id, R>, id: &Id, peer_id: &PeerId) -> Replacement<Id> {
-        let known_key = id.clone().into();
+        let known_key: RegistryKey<Id> = id.clone().into();
         let pending_key = RegistryKey::Pending(*peer_id);
 
-        // Helper to create PendingEntry from a key if state is pending
-        let pending_entry = |key: &RegistryKey<Id>| -> Option<PendingEntry<Id>> {
-            maps.by_key.get(key).and_then(|state| {
-                state.started_at().map(|started_at| PendingEntry {
-                    key: key.clone(),
-                    started_at,
-                })
-            })
+        // Returns the key if it has a pending (Connected) entry.
+        let is_pending_key = |key: &RegistryKey<Id>| -> Option<RegistryKey<Id>> {
+            maps.by_key
+                .get(key)
+                .filter(|state| state.is_pending())
+                .map(|_| key.clone())
         };
 
         // Case 1: ID already has an active connection
@@ -364,50 +420,46 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
             ..
         }) = maps.by_key.get(&known_key)
         {
-            let entry = maps
+            let pending = maps
                 .peer_to_key
                 .get(peer_id)
                 .filter(|k| **k != known_key)
-                .and_then(pending_entry);
+                .and_then(is_pending_key);
             return Replacement::ById {
                 old_peer_id: *active_peer_id,
                 old_conn_id: *active_conn_id,
-                pending_entry: entry,
+                pending_key: pending,
             };
         }
 
         // Case 2: PeerId already active with different ID
-        if let Some(key) = maps.peer_to_key.get(peer_id) {
-            if let RegistryKey::Known(existing_id) = key {
-                if existing_id != id {
-                    if let Some(ConnectionState::Active { connection_id, .. }) =
-                        maps.by_key.get(key)
-                    {
-                        return Replacement::ByPeerId {
-                            existing_id: existing_id.clone(),
-                            old_conn_id: *connection_id,
-                        };
-                    }
-                }
-            }
+        if let Some(key) = maps.peer_to_key.get(peer_id)
+            && let RegistryKey::Known(existing_id) = key
+            && existing_id != id
+            && let Some(ConnectionState::Active { connection_id, .. }) = maps.by_key.get(key)
+        {
+            return Replacement::ByPeerId {
+                existing_id: existing_id.clone(),
+                old_conn_id: *connection_id,
+            };
         }
 
         // Case 3: Normal activation, clean up pending entry
-        let entry = pending_entry(&pending_key);
+        let pending = is_pending_key(&pending_key);
         Replacement::None {
-            pending_entry: entry,
+            pending_key: pending,
         }
     }
 
     pub fn get_by_peer_id(&self, peer_id: &PeerId) -> Option<ConnectionState<Id, R>> {
-        let maps = self.read();
+        let maps = self.maps.read();
         let key = maps.peer_to_key.get(peer_id)?;
         maps.by_key.get(key).cloned()
     }
 
     #[must_use]
     pub fn active_ids(&self) -> Vec<Id> {
-        self.read()
+        self.maps.read()
             .by_key
             .iter()
             .filter_map(|(key, state)| {
@@ -420,22 +472,14 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
             .collect()
     }
 
-    /// Count of active connections (acquires read lock, O(n) scan).
+    /// Count of active connections (O(1) atomic load).
     pub fn active_count(&self) -> usize {
-        self.read()
-            .by_key
-            .values()
-            .filter(|state| matches!(state, ConnectionState::Active { .. }))
-            .count()
+        self.num_active.load(Ordering::Relaxed)
     }
 
-    /// Count of pending connections (acquires read lock, O(n) scan).
+    /// Count of pending connections (O(1) atomic load).
     pub fn pending_count(&self) -> usize {
-        self.read()
-            .by_key
-            .values()
-            .filter(|state| matches!(state, ConnectionState::Connected { .. }))
-            .count()
+        self.num_pending.load(Ordering::Relaxed)
     }
 
     /// Get PeerIds of pending connections that have exceeded the timeout.
@@ -446,7 +490,7 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
         let Some(cutoff) = Instant::now().checked_sub(timeout) else {
             return Vec::new();
         };
-        let maps = self.read();
+        let maps = self.maps.read();
 
         maps.pending_by_time
             .range(..=cutoff)
@@ -457,42 +501,26 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
 
     /// Remove peer from all maps and return final state.
     pub fn disconnected(&self, peer_id: &PeerId) -> Option<ConnectionState<Id, R>> {
-        let mut maps = self.write();
+        let state = self.with_maps(|maps| maps.remove_by_peer(peer_id));
 
-        let key = maps.peer_to_key.remove(peer_id)?;
-        let state = maps.by_key.remove(&key)?;
-
-        if let Some(conn_id) = state.connection_id() {
-            maps.conn_to_key.remove(&conn_id);
+        if let Some(ref s) = state {
+            match s {
+                ConnectionState::Active { .. } => {
+                    self.num_active.fetch_sub(1, Ordering::Relaxed);
+                }
+                ConnectionState::Connected { .. } => {
+                    self.num_pending.fetch_sub(1, Ordering::Relaxed);
+                }
+            }
         }
 
-        if let Some(started_at) = state.started_at() {
-            maps.remove_pending(started_at, &key);
-        }
-
-        Some(state)
-    }
-}
-
-impl<Id, R> crate::resolver::PeerResolver for PeerRegistry<Id, R>
-where
-    Id: Clone + Eq + Hash + Debug + Send + Sync + 'static,
-    R: Clone + Default + Send + Sync + 'static,
-{
-    type Id = Id;
-
-    fn resolve_id(&self, peer_id: &PeerId) -> Option<Id> {
-        match self.read().peer_to_key.get(peer_id)? {
-            RegistryKey::Known(id) => Some(id.clone()),
-            RegistryKey::Pending(_) => None,
-        }
+        state
     }
 
-    fn resolve_peer_id(&self, id: &Id) -> Option<PeerId> {
-        self.read()
-            .by_key
-            .get(&id.clone().into())
-            .map(|s| s.peer_id())
+    /// Run a write transaction on the inner maps.
+    fn with_maps<T>(&self, f: impl FnOnce(&mut Maps<Id, R>) -> T) -> T {
+        let mut maps = self.maps.write();
+        f(&mut maps)
     }
 }
 
@@ -504,115 +532,118 @@ mod tests {
     #[derive(Clone, Debug, PartialEq, Eq, Hash)]
     struct TestId(u64);
 
-    fn test_peer_id(n: u8) -> PeerId {
+    type Registry = PeerRegistry<TestId>;
+
+    fn registry() -> Registry {
+        Registry::new()
+    }
+
+    fn peer(n: u8) -> PeerId {
         let bytes = [n; 32];
         let key = libp2p::identity::ed25519::SecretKey::try_from_bytes(bytes)
             .expect("32 bytes is valid ed25519 secret key");
-        let keypair = libp2p::identity::Keypair::from(libp2p::identity::ed25519::Keypair::from(key));
+        let keypair =
+            libp2p::identity::Keypair::from(libp2p::identity::ed25519::Keypair::from(key));
         keypair.public().to_peer_id()
     }
 
-    fn test_connection_id(n: u8) -> ConnectionId {
+    fn conn(n: u8) -> ConnectionId {
         ConnectionId::new_unchecked(n as usize)
+    }
+
+    fn assert_counts(r: &Registry, pending: usize, active: usize) {
+        assert_eq!(
+            r.pending_count(),
+            pending,
+            "pending: expected {pending}, got {}",
+            r.pending_count()
+        );
+        assert_eq!(
+            r.active_count(),
+            active,
+            "active: expected {active}, got {}",
+            r.active_count()
+        );
     }
 
     #[test]
     fn test_connected_outbound() {
-        let registry = PeerRegistry::<TestId>::new();
-        let id = TestId(1);
-        let peer_id = test_peer_id(1);
-        let conn_id = test_connection_id(1);
+        let r = registry();
+        let p = peer(1);
 
-        let state = registry.connected_outbound(
-            peer_id, conn_id, Some(id.clone()), Instant::now(), (),
-        );
-        assert!(state.is_some());
-        assert!(matches!(state.unwrap(), ConnectionState::Connected { direction: ConnectionDirection::Outbound, .. }));
-        assert!(registry.contains_peer(&peer_id));
+        let state = r
+            .connected_outbound(p, conn(1), Some(TestId(1)), Instant::now(), ())
+            .unwrap();
+        assert!(matches!(
+            state,
+            ConnectionState::Connected {
+                direction: ConnectionDirection::Outbound,
+                ..
+            }
+        ));
+        assert!(r.contains_peer(&p));
     }
 
     #[test]
     fn test_register_outbound_duplicate() {
-        let registry = PeerRegistry::<TestId>::new();
-        let peer_id = test_peer_id(1);
-        let conn_id1 = test_connection_id(1);
-        let conn_id2 = test_connection_id(2);
+        let r = registry();
+        let p = peer(1);
 
-        let result1 = registry.connected_outbound(
-            peer_id, conn_id1, Some(TestId(1)), Instant::now(), (),
-        );
-        assert!(result1.is_some());
-
-        let result2 = registry.connected_outbound(
-            peer_id, conn_id2, Some(TestId(2)), Instant::now(), (),
-        );
-        assert!(result2.is_none());
+        assert!(r
+            .connected_outbound(p, conn(1), Some(TestId(1)), Instant::now(), ())
+            .is_some());
+        assert!(r
+            .connected_outbound(p, conn(2), Some(TestId(2)), Instant::now(), ())
+            .is_none());
     }
 
     #[test]
     fn test_register_outbound_without_id() {
-        let registry = PeerRegistry::<TestId>::new();
-        let peer_id = test_peer_id(1);
-        let conn_id = test_connection_id(1);
+        let r = registry();
+        let p = peer(1);
 
-        let state = registry.connected_outbound(
-            peer_id, conn_id, None, Instant::now(), (),
-        );
-        assert!(state.is_some());
-        assert!(registry.contains_peer(&peer_id));
-        // No Id known yet
-        assert!(registry.resolve_id(&peer_id).is_none());
+        assert!(r
+            .connected_outbound(p, conn(1), None, Instant::now(), ())
+            .is_some());
+        assert!(r.contains_peer(&p));
+        assert!(r.resolve_id(&p).is_none());
     }
 
     #[test]
     fn test_activate_new_peer() {
-        let registry = PeerRegistry::<TestId>::new();
+        let r = registry();
+        let p = peer(1);
         let id = TestId(1);
-        let peer_id = test_peer_id(1);
-        let conn_id = test_connection_id(1);
 
-        registry.connected_outbound(
-            peer_id, conn_id, Some(id.clone()), Instant::now(), (),
-        );
-
-        let result = registry.activate(peer_id, conn_id, id.clone());
-        assert_eq!(result, ActivateResult::Accepted);
-
-        let state = registry.get(&id).unwrap();
-        assert!(matches!(state, ConnectionState::Active { .. }));
+        r.connected_outbound(p, conn(1), Some(id.clone()), Instant::now(), ());
+        assert_eq!(r.activate(p, conn(1), id.clone()), ActivateResult::Accepted);
+        assert!(r.get(&id).unwrap().is_active());
     }
 
     #[test]
     fn test_activate_replaces_old_connection() {
-        let registry = PeerRegistry::<TestId>::new();
+        let r = registry();
+        let p = peer(1);
         let id = TestId(1);
-        let peer_id = test_peer_id(1);
-        let conn_id1 = test_connection_id(1);
-        let conn_id2 = test_connection_id(2);
 
-        registry.connected_outbound(
-            peer_id, conn_id1, Some(id.clone()), Instant::now(), (),
-        );
-        let result1 = registry.activate(peer_id, conn_id1, id.clone());
-        assert_eq!(result1, ActivateResult::Accepted);
+        r.connected_outbound(p, conn(1), Some(id.clone()), Instant::now(), ());
+        assert_eq!(r.activate(p, conn(1), id.clone()), ActivateResult::Accepted);
 
-        let result2 = registry.activate(peer_id, conn_id2, id);
         assert!(matches!(
-            result2,
+            r.activate(p, conn(2), id),
             ActivateResult::Replaced {
                 old_connection_id,
                 ..
-            } if old_connection_id == conn_id1
+            } if old_connection_id == conn(1)
         ));
     }
 
     #[test]
     fn test_connected_inbound() {
-        let registry = PeerRegistry::<TestId>::new();
-        let peer_id = test_peer_id(1);
-        let conn_id = test_connection_id(1);
+        let r = registry();
+        let p = peer(1);
 
-        let state = registry.connected_inbound(peer_id, conn_id);
+        let state = r.connected_inbound(p, conn(1));
         assert!(matches!(
             state,
             ConnectionState::Connected {
@@ -620,85 +651,52 @@ mod tests {
                 ..
             }
         ));
-
-        assert!(registry.resolve_id(&peer_id).is_none());
-        assert!(registry.contains_peer(&peer_id));
+        assert!(r.resolve_id(&p).is_none());
+        assert!(r.contains_peer(&p));
     }
 
     #[test]
     fn test_disconnected() {
-        let registry = PeerRegistry::<TestId>::new();
+        let r = registry();
+        let p = peer(1);
         let id = TestId(1);
-        let peer_id = test_peer_id(1);
-        let conn_id = test_connection_id(1);
 
-        registry.connected_outbound(
-            peer_id, conn_id, Some(id.clone()), Instant::now(), (),
-        );
-        registry.activate(peer_id, conn_id, id.clone());
+        r.connected_outbound(p, conn(1), Some(id.clone()), Instant::now(), ());
+        r.activate(p, conn(1), id.clone());
 
-        let state = registry.disconnected(&peer_id);
-        assert!(state.is_some());
-        assert!(registry.get(&id).is_none());
-        assert_eq!(registry.resolve_id(&peer_id), None);
+        assert!(r.disconnected(&p).is_some());
+        assert!(r.get(&id).is_none());
+        assert_eq!(r.resolve_id(&p), None);
     }
 
     #[test]
     fn test_active_count() {
-        let registry = PeerRegistry::<TestId>::new();
+        let r = registry();
 
-        // Peer 1: Connected (pending handshake)
-        let peer_id1 = test_peer_id(1);
-        let conn_id1 = test_connection_id(1);
-        registry.connected_outbound(
-            peer_id1, conn_id1, Some(TestId(1)), Instant::now(), (),
-        );
+        r.connected_outbound(peer(1), conn(1), Some(TestId(1)), Instant::now(), ());
+        r.connected_outbound(peer(2), conn(2), Some(TestId(2)), Instant::now(), ());
+        r.activate(peer(2), conn(2), TestId(2));
 
-        // Peer 2: Active
-        let peer_id2 = test_peer_id(2);
-        let conn_id2 = test_connection_id(2);
-        registry.connected_outbound(
-            peer_id2, conn_id2, Some(TestId(2)), Instant::now(), (),
-        );
-        registry.activate(peer_id2, conn_id2, TestId(2));
-
-        assert_eq!(registry.pending_count(), 1);
-        assert_eq!(registry.active_count(), 1);
+        assert_counts(&r, 1, 1);
     }
 
     #[test]
     fn test_stale_pending() {
-        let registry = PeerRegistry::<TestId>::new();
+        let r = registry();
+        let p1 = peer(1);
+        let p2 = peer(2);
 
-        // Peer 1: Connected (handshaking)
-        let peer_id1 = test_peer_id(1);
-        let conn_id1 = test_connection_id(1);
-        registry.connected_outbound(
-            peer_id1, conn_id1, Some(TestId(1)), Instant::now(), (),
-        );
+        r.connected_outbound(p1, conn(1), Some(TestId(1)), Instant::now(), ());
+        r.connected_inbound(p2, conn(2));
+        r.connected_outbound(peer(3), conn(3), Some(TestId(3)), Instant::now(), ());
+        r.activate(peer(3), conn(3), TestId(3));
 
-        // Peer 2: Inbound connected
-        let peer_id2 = test_peer_id(2);
-        let conn_id2 = test_connection_id(2);
-        registry.connected_inbound(peer_id2, conn_id2);
-
-        // Peer 3: Active
-        let peer_id3 = test_peer_id(3);
-        let conn_id3 = test_connection_id(3);
-        registry.connected_outbound(
-            peer_id3, conn_id3, Some(TestId(3)), Instant::now(), (),
-        );
-        registry.activate(peer_id3, conn_id3, TestId(3));
-
-        // With zero timeout, both handshaking peers should be stale
-        let stale = registry.stale_pending(Duration::from_secs(0));
+        let stale = r.stale_pending(Duration::ZERO);
         assert_eq!(stale.len(), 2);
-        assert!(stale.contains(&peer_id1));
-        assert!(stale.contains(&peer_id2));
-        assert!(!stale.contains(&peer_id3));
+        assert!(stale.contains(&p1));
+        assert!(stale.contains(&p2));
 
-        let stale = registry.stale_pending(Duration::from_secs(3600));
-        assert!(stale.is_empty());
+        assert!(r.stale_pending(Duration::from_secs(3600)).is_empty());
     }
 
     #[test]
@@ -706,26 +704,19 @@ mod tests {
         #[derive(Clone, Debug, Default, PartialEq)]
         struct TestReason(String);
 
-        let registry = PeerRegistry::<TestId, TestReason>::new();
+        let r = PeerRegistry::<TestId, TestReason>::new();
+        let p = peer(1);
         let id = TestId(1);
-        let peer_id = test_peer_id(1);
-        let conn_id = test_connection_id(1);
         let reason = TestReason("discovery".to_string());
 
-        // Register outbound connected with reason
-        let state = registry.connected_outbound(
-            peer_id, conn_id, Some(id.clone()), Instant::now(), reason.clone(),
-        ).unwrap();
+        let state = r
+            .connected_outbound(p, conn(1), Some(id.clone()), Instant::now(), reason.clone())
+            .unwrap();
         assert_eq!(state.reason(), &reason);
 
-        // Reason carries through activate
-        registry.activate(peer_id, conn_id, id.clone());
-        let state = registry.get(&id).unwrap();
-        assert_eq!(state.reason(), &reason);
-
-        // Reason available on disconnect
-        let state = registry.disconnected(&peer_id).unwrap();
-        assert_eq!(state.reason(), &reason);
+        r.activate(p, conn(1), id.clone());
+        assert_eq!(r.get(&id).unwrap().reason(), &reason);
+        assert_eq!(r.disconnected(&p).unwrap().reason(), &reason);
     }
 
     #[test]
@@ -733,11 +724,87 @@ mod tests {
         #[derive(Clone, Debug, Default, PartialEq)]
         struct TestReason(Option<String>);
 
-        let registry = PeerRegistry::<TestId, TestReason>::new();
-        let peer_id = test_peer_id(1);
-        let conn_id = test_connection_id(1);
-
-        let state = registry.connected_inbound(peer_id, conn_id);
+        let r = PeerRegistry::<TestId, TestReason>::new();
+        let state = r.connected_inbound(peer(1), conn(1));
         assert_eq!(state.reason(), &TestReason(None));
+    }
+
+    #[test]
+    fn test_counters_through_lifecycle() {
+        let r = registry();
+        assert_counts(&r, 0, 0);
+
+        r.connected_outbound(peer(1), conn(1), Some(TestId(1)), Instant::now(), ());
+        assert_counts(&r, 1, 0);
+
+        r.connected_inbound(peer(2), conn(2));
+        assert_counts(&r, 2, 0);
+
+        r.activate(peer(1), conn(1), TestId(1));
+        assert_counts(&r, 1, 1);
+
+        r.activate(peer(2), conn(2), TestId(2));
+        assert_counts(&r, 0, 2);
+
+        r.disconnected(&peer(1));
+        assert_counts(&r, 0, 1);
+
+        r.disconnected(&peer(2));
+        assert_counts(&r, 0, 0);
+    }
+
+    #[test]
+    fn test_counters_on_replacement() {
+        let r = registry();
+
+        r.connected_outbound(peer(1), conn(1), Some(TestId(1)), Instant::now(), ());
+        r.activate(peer(1), conn(1), TestId(1));
+        assert_counts(&r, 0, 1);
+
+        assert!(r.activate(peer(1), conn(2), TestId(1)).is_replaced());
+        assert_counts(&r, 0, 1);
+    }
+
+    #[test]
+    fn test_counters_disconnect_pending() {
+        let r = registry();
+
+        r.connected_inbound(peer(1), conn(1));
+        assert_counts(&r, 1, 0);
+
+        r.disconnected(&peer(1));
+        assert_counts(&r, 0, 0);
+    }
+
+    /// Regression: ByPeerId replacement must clean up Connected entries under the
+    /// target key. Previously, stale peer_to_key and conn_to_key entries were left behind.
+    #[test]
+    fn test_activate_by_peer_id_cleans_connected_entry() {
+        let r = registry();
+
+        r.connected_outbound(peer(1), conn(1), Some(TestId(1)), Instant::now(), ());
+        r.activate(peer(1), conn(1), TestId(1));
+
+        r.connected_outbound(peer(2), conn(2), Some(TestId(2)), Instant::now(), ());
+        assert_counts(&r, 1, 1);
+
+        // Activate peer(1) with TestId(2) → ByPeerId replacement.
+        // Must also clean up peer(2)'s Connected entry under Known(TestId(2)).
+        let result = r.activate(peer(1), conn(3), TestId(2));
+        assert!(matches!(
+            result,
+            ActivateResult::Replaced {
+                old_id: Some(TestId(1)),
+                ..
+            }
+        ));
+
+        let state = r.get(&TestId(2)).unwrap();
+        assert!(state.is_active());
+        assert_eq!(state.peer_id(), peer(1));
+
+        assert!(r.get(&TestId(1)).is_none());
+        assert!(!r.contains_peer(&peer(2)));
+        assert_counts(&r, 0, 1);
     }
 }

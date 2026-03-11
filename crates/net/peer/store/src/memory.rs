@@ -81,7 +81,7 @@ mod tests {
         fn id(&self) -> &TestId { &self.id }
     }
 
-    fn test_record(n: u64) -> TestRecord {
+    fn record(n: u64) -> TestRecord {
         TestRecord {
             id: TestId(n),
             value: n as u32,
@@ -95,7 +95,7 @@ mod tests {
         assert_eq!(store.count().unwrap(), 0);
         assert!(store.load_all().unwrap().is_empty());
 
-        let record = test_record(1);
+        let record = record(1);
         store.save(&record).unwrap();
 
         assert_eq!(store.count().unwrap(), 1);
@@ -113,7 +113,7 @@ mod tests {
     fn test_batch() {
         let store = MemoryPeerStore::<TestRecord>::new();
 
-        let records: Vec<_> = (1..=5).map(test_record).collect();
+        let records: Vec<_> = (1..=5).map(record).collect();
         store.save_batch(&records).unwrap();
 
         assert_eq!(store.count().unwrap(), 5);
@@ -124,7 +124,7 @@ mod tests {
     fn test_update() {
         let store = MemoryPeerStore::<TestRecord>::new();
 
-        let mut record = test_record(1);
+        let mut record = record(1);
         store.save(&record).unwrap();
 
         record.value = 42;
@@ -139,7 +139,7 @@ mod tests {
     fn test_clear() {
         let store = MemoryPeerStore::<TestRecord>::new();
 
-        let records: Vec<_> = (1..=5).map(test_record).collect();
+        let records: Vec<_> = (1..=5).map(record).collect();
         store.save_batch(&records).unwrap();
         assert_eq!(store.count().unwrap(), 5);
 

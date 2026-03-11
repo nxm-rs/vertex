@@ -106,6 +106,18 @@ impl<R: NetRecord> FilePeerStore<R> {
     pub fn path(&self) -> &PathBuf {
         &self.path
     }
+
+    /// Run a write transaction, marking dirty if the closure indicates changes.
+    fn with_write<T>(&self, f: impl FnOnce(&mut HashMap<R::Id, R>) -> (T, bool)) -> T {
+        let (result, changed) = {
+            let mut guard = self.peers.write();
+            f(&mut guard)
+        };
+        if changed {
+            self.mark_dirty();
+        }
+        result
+    }
 }
 
 impl<R: NetRecord> NetPeerStore<R> for FilePeerStore<R> {
@@ -114,27 +126,28 @@ impl<R: NetRecord> NetPeerStore<R> for FilePeerStore<R> {
     }
 
     fn save(&self, record: &R) -> Result<(), StoreError> {
-        self.peers.write().insert(record.id().clone(), record.clone());
-        self.mark_dirty();
+        self.with_write(|peers| {
+            peers.insert(record.id().clone(), record.clone());
+            ((), true)
+        });
         Ok(())
     }
 
     fn save_batch(&self, records: &[R]) -> Result<(), StoreError> {
-        let mut store = self.peers.write();
-        for record in records {
-            store.insert(record.id().clone(), record.clone());
-        }
-        drop(store);
-        self.mark_dirty();
+        self.with_write(|peers| {
+            for record in records {
+                peers.insert(record.id().clone(), record.clone());
+            }
+            ((), true)
+        });
         Ok(())
     }
 
     fn remove(&self, id: &R::Id) -> Result<bool, StoreError> {
-        let removed = self.peers.write().remove(id).is_some();
-        if removed {
-            self.mark_dirty();
-        }
-        Ok(removed)
+        Ok(self.with_write(|peers| {
+            let removed = peers.remove(id).is_some();
+            (removed, removed)
+        }))
     }
 
     fn get(&self, id: &R::Id) -> Result<Option<R>, StoreError> {
@@ -146,8 +159,10 @@ impl<R: NetRecord> NetPeerStore<R> for FilePeerStore<R> {
     }
 
     fn clear(&self) -> Result<(), StoreError> {
-        self.peers.write().clear();
-        self.mark_dirty();
+        self.with_write(|peers| {
+            peers.clear();
+            ((), true)
+        });
         Ok(())
     }
 
@@ -187,7 +202,7 @@ mod tests {
         fn id(&self) -> &TestId { &self.id }
     }
 
-    fn test_record(n: u64) -> TestRecord {
+    fn record(n: u64) -> TestRecord {
         TestRecord {
             id: TestId(n),
             value: n as u32,
@@ -204,7 +219,7 @@ mod tests {
         assert_eq!(store.count().unwrap(), 0);
         assert!(!path.exists());
 
-        let record = test_record(1);
+        let record = record(1);
         store.save(&record).unwrap();
         assert!(store.is_dirty());
 
@@ -223,7 +238,7 @@ mod tests {
 
         {
             let store = FilePeerStore::<TestRecord>::new(&path).unwrap();
-            let records: Vec<_> = (1..=5).map(test_record).collect();
+            let records: Vec<_> = (1..=5).map(record).collect();
             store.save_batch(&records).unwrap();
             store.flush().unwrap();
         }
@@ -245,7 +260,7 @@ mod tests {
 
         let store = FilePeerStore::<TestRecord>::new(&path).unwrap();
 
-        let mut record = test_record(1);
+        let mut record = record(1);
         store.save(&record).unwrap();
         store.flush().unwrap();
 
@@ -264,8 +279,8 @@ mod tests {
         let path = dir.path().join("peers.json");
 
         let store = FilePeerStore::<TestRecord>::new(&path).unwrap();
-        store.save(&test_record(1)).unwrap();
-        store.save(&test_record(2)).unwrap();
+        store.save(&record(1)).unwrap();
+        store.save(&record(2)).unwrap();
         store.flush().unwrap();
 
         assert!(store.remove(&TestId(1)).unwrap());
