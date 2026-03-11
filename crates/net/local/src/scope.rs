@@ -92,113 +92,35 @@ pub(crate) enum IpVersion {
     V6,
 }
 
-/// Addresses prepared for dialing with Happy Eyeballs ordering.
-#[derive(Debug, Clone)]
-pub struct DialAddresses {
-    addrs: Vec<Multiaddr>,
-    ipv6_count: usize,
-    ipv4_count: usize,
-}
-
-impl DialAddresses {
-    /// Sorted addresses: IPv6 first, then IPv4, then DNS/other.
-    pub fn addrs(&self) -> &[Multiaddr] {
-        &self.addrs
-    }
-
-    /// Consume and return sorted addresses.
-    pub fn into_addrs(self) -> Vec<Multiaddr> {
-        self.addrs
-    }
-
-    /// Number of IPv6 addresses.
-    pub fn ipv6_count(&self) -> usize {
-        self.ipv6_count
-    }
-
-    /// Number of IPv4 addresses.
-    pub fn ipv4_count(&self) -> usize {
-        self.ipv4_count
-    }
-
-    /// Concurrency factor ensuring IPv6 addresses race first.
-    ///
-    /// Returns IPv6 count (capped at 8) so all IPv6 race in first batch.
-    /// IPv4 addresses only start after an IPv6 slot frees up.
-    pub fn concurrency_factor(&self) -> std::num::NonZeroU8 {
-        use std::num::NonZeroU8;
-        let factor = if self.ipv6_count > 0 {
-            self.ipv6_count.min(8) as u8
-        } else {
-            self.ipv4_count.min(4).max(1) as u8
-        };
-        NonZeroU8::new(factor).unwrap_or(NonZeroU8::MIN)
-    }
-
-    /// Check if peer has both IPv6 and IPv4 addresses.
-    pub fn is_dual_stack(&self) -> bool {
-        self.ipv6_count > 0 && self.ipv4_count > 0
-    }
-
-    /// Check if there are any addresses.
-    pub fn is_empty(&self) -> bool {
-        self.addrs.is_empty()
-    }
-
-    /// Total address count.
-    pub fn len(&self) -> usize {
-        self.addrs.len()
-    }
-}
-
-/// Prepare multiaddrs for dialing with Happy Eyeballs ordering.
+/// Check if a multiaddr is dialable given local IP capability.
 ///
-/// Filters addresses based on local IP capability, then sorts IPv6 first.
-/// This ensures we only attempt addresses we can actually reach, and
-/// the concurrency factor accurately reflects dialable addresses.
-pub fn prepare_dial_addresses(addrs: Vec<Multiaddr>, capability: IpCapability) -> DialAddresses {
-    let mut v6 = Vec::new();
-    let mut v4 = Vec::new();
-    let mut other = Vec::new();
+/// Filters by IP version reachability and non-public subnet reachability.
+/// Public addresses and DNS addresses always pass. Non-public addresses
+/// (private, link-local) must be on a directly reachable local subnet.
+pub fn is_dialable(addr: &Multiaddr, capability: IpCapability) -> bool {
+    // Skip addresses we can't reach based on our IP capability
+    if !capability.can_reach_addr(addr) {
+        return false;
+    }
 
-    for addr in addrs {
-        // Skip addresses we can't reach based on our IP capability
-        if !capability.can_reach_addr(&addr) {
-            continue;
-        }
-
-        // Skip non-public addresses that aren't on a directly reachable local subnet
-        if let Some(ip) = extract_ip(&addr) {
-            match classify_ip(ip) {
-                Some(AddressScope::Public) => {}
-                Some(scope) => {
-                    if !crate::system::is_directly_reachable(ip) {
-                        trace!(%addr, ?scope, "skipping non-routable address");
-                        continue;
-                    }
-                }
-                None => {
-                    trace!(%addr, "skipping unspecified/broadcast address");
-                    continue;
+    // Check non-public addresses for local subnet reachability
+    if let Some(ip) = extract_ip(addr) {
+        match classify_ip(ip) {
+            Some(AddressScope::Public) => {}
+            Some(scope) => {
+                if !crate::system::is_directly_reachable(ip) {
+                    trace!(%addr, ?scope, "skipping non-routable address");
+                    return false;
                 }
             }
-        }
-
-        match IpVersion::from_multiaddr(&addr) {
-            Some(IpVersion::V6) => v6.push(addr),
-            Some(IpVersion::V4) => v4.push(addr),
-            None => other.push(addr),
+            None => {
+                trace!(%addr, "skipping unspecified/broadcast address");
+                return false;
+            }
         }
     }
 
-    let ipv6_count = v6.len();
-    let ipv4_count = v4.len();
-
-    DialAddresses {
-        addrs: v6.into_iter().chain(v4).chain(other).collect(),
-        ipv6_count,
-        ipv4_count,
-    }
+    true
 }
 
 impl IpVersion {
@@ -541,121 +463,69 @@ mod tests {
     }
 
     #[test]
-    fn test_prepare_dial_addresses_ipv6_first() {
-        let addrs = vec![
-            "/ip4/1.2.3.4/tcp/1234".parse().unwrap(),
-            "/ip6/::1/tcp/1234".parse().unwrap(),
-            "/ip4/5.6.7.8/tcp/1234".parse().unwrap(),
-            "/ip6/2001:db8::1/tcp/1234".parse().unwrap(),
-        ];
-
-        let result = super::prepare_dial_addresses(addrs, IpCapability::Dual);
-
-        assert_eq!(result.ipv6_count(), 2);
-        assert_eq!(result.ipv4_count(), 2);
-        assert!(result.addrs()[0].to_string().contains("ip6"));
-        assert!(result.addrs()[1].to_string().contains("ip6"));
-        assert!(result.addrs()[2].to_string().contains("ip4"));
-        assert!(result.addrs()[3].to_string().contains("ip4"));
+    fn test_is_dialable_public_with_dual() {
+        let addr: Multiaddr = "/ip4/8.8.8.8/tcp/1234".parse().unwrap();
+        assert!(super::is_dialable(&addr, IpCapability::Dual));
     }
 
     #[test]
-    fn test_concurrency_factor_dual_stack() {
-        let addrs = vec![
-            "/ip6/::1/tcp/1234".parse().unwrap(),
-            "/ip6/::2/tcp/1234".parse().unwrap(),
-            "/ip6/::3/tcp/1234".parse().unwrap(),
-            "/ip4/1.2.3.4/tcp/1234".parse().unwrap(),
-            "/ip4/5.6.7.8/tcp/1234".parse().unwrap(),
-        ];
-
-        let result = super::prepare_dial_addresses(addrs, IpCapability::Dual);
-        // 3 IPv6 addresses → concurrency factor = 3
-        assert_eq!(result.concurrency_factor().get(), 3);
-        assert!(result.is_dual_stack());
+    fn test_is_dialable_ipv6_with_dual() {
+        let addr: Multiaddr = "/ip6/2001:db8::1/tcp/1234".parse().unwrap();
+        assert!(super::is_dialable(&addr, IpCapability::Dual));
     }
 
     #[test]
-    fn test_concurrency_factor_ipv4_only() {
-        let addrs = vec![
-            "/ip4/1.2.3.4/tcp/1234".parse().unwrap(),
-            "/ip4/5.6.7.8/tcp/1234".parse().unwrap(),
-        ];
+    fn test_is_dialable_filters_by_capability() {
+        let v6: Multiaddr = "/ip6/2001:db8::1/tcp/1234".parse().unwrap();
+        let v4: Multiaddr = "/ip4/8.8.8.8/tcp/1234".parse().unwrap();
 
-        let result = super::prepare_dial_addresses(addrs, IpCapability::Dual);
-        // No IPv6 → use IPv4 count (capped at 4)
-        assert_eq!(result.concurrency_factor().get(), 2);
-        assert!(!result.is_dual_stack());
+        // IPv4-only should reject IPv6
+        assert!(!super::is_dialable(&v6, IpCapability::V4Only));
+        assert!(super::is_dialable(&v4, IpCapability::V4Only));
+
+        // IPv6-only should reject IPv4
+        assert!(super::is_dialable(&v6, IpCapability::V6Only));
+        assert!(!super::is_dialable(&v4, IpCapability::V6Only));
     }
 
     #[test]
-    fn test_concurrency_factor_capped_at_8() {
-        let addrs: Vec<_> = (0..12)
-            .map(|i| format!("/ip6/2001:db8::{}/tcp/1234", i).parse().unwrap())
-            .collect();
+    fn test_is_dialable_none_capability() {
+        let v6: Multiaddr = "/ip6/2001:db8::1/tcp/1234".parse().unwrap();
+        let v4: Multiaddr = "/ip4/8.8.8.8/tcp/1234".parse().unwrap();
 
-        let result = super::prepare_dial_addresses(addrs, IpCapability::Dual);
-        // 12 IPv6 addresses → capped at 8
-        assert_eq!(result.concurrency_factor().get(), 8);
+        assert!(!super::is_dialable(&v6, IpCapability::None));
+        assert!(!super::is_dialable(&v4, IpCapability::None));
     }
 
     #[test]
-    fn test_dial_addresses_empty() {
-        let result = super::prepare_dial_addresses(Vec::new(), IpCapability::Dual);
-        assert!(result.is_empty());
-        assert_eq!(result.len(), 0);
-        // Empty should still return a valid concurrency factor (1)
-        assert_eq!(result.concurrency_factor().get(), 1);
+    fn test_is_dialable_dns_always_passes() {
+        let addr: Multiaddr = "/dnsaddr/example.com/tcp/1234".parse().unwrap();
+        assert!(super::is_dialable(&addr, IpCapability::Dual));
     }
 
     #[test]
-    fn test_dial_addresses_dns_sorted_with_ip_version() {
-        // dns4 is treated as IPv4, dns6 as IPv6
-        let addrs = vec![
-            "/dns4/example.com/tcp/1234".parse().unwrap(),
-            "/ip6/::1/tcp/1234".parse().unwrap(),
-            "/ip4/1.2.3.4/tcp/1234".parse().unwrap(),
-        ];
-
-        let result = super::prepare_dial_addresses(addrs, IpCapability::Dual);
-        // IPv6 first (ip6), then IPv4 (ip4 and dns4 since dns4 → V4)
-        assert_eq!(result.ipv6_count(), 1);
-        assert_eq!(result.ipv4_count(), 2); // ip4 + dns4
-        assert!(result.addrs()[0].to_string().contains("ip6"));
+    fn test_is_dialable_loopback() {
+        let addr: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
+        assert!(super::is_dialable(&addr, IpCapability::Dual));
     }
 
     #[test]
-    fn test_prepare_dial_addresses_filters_by_capability() {
-        let addrs = vec![
-            "/ip6/::1/tcp/1234".parse().unwrap(),
-            "/ip6/::2/tcp/1234".parse().unwrap(),
-            "/ip4/1.2.3.4/tcp/1234".parse().unwrap(),
-            "/ip4/5.6.7.8/tcp/1234".parse().unwrap(),
-        ];
-
-        // IPv4-only capability should filter out IPv6
-        let result = super::prepare_dial_addresses(addrs.clone(), IpCapability::V4Only);
-        assert_eq!(result.ipv6_count(), 0);
-        assert_eq!(result.ipv4_count(), 2);
-        assert_eq!(result.len(), 2);
-
-        // IPv6-only capability should filter out IPv4
-        let result = super::prepare_dial_addresses(addrs, IpCapability::V6Only);
-        assert_eq!(result.ipv6_count(), 2);
-        assert_eq!(result.ipv4_count(), 0);
-        assert_eq!(result.len(), 2);
+    fn test_is_dialable_unspecified() {
+        let addr: Multiaddr = "/ip4/0.0.0.0/tcp/1234".parse().unwrap();
+        assert!(!super::is_dialable(&addr, IpCapability::Dual));
     }
 
     #[test]
-    fn test_prepare_dial_addresses_none_capability() {
-        let addrs = vec![
-            "/ip6/::1/tcp/1234".parse().unwrap(),
-            "/ip4/1.2.3.4/tcp/1234".parse().unwrap(),
-        ];
-
-        // None capability should filter out all IP addresses
-        let result = super::prepare_dial_addresses(addrs, IpCapability::None);
-        assert!(result.is_empty());
+    fn test_is_dialable_unreachable_private() {
+        let addr: Multiaddr = "/ip4/10.233.69.255/tcp/1634".parse().unwrap();
+        let subnets = crate::system::query_local_subnets();
+        let target: std::net::Ipv4Addr = "10.233.69.255".parse().unwrap();
+        if !subnets.contains_ipv4(target) {
+            assert!(
+                !super::is_dialable(&addr, IpCapability::Dual),
+                "private IP not on local subnet should not be dialable"
+            );
+        }
     }
 
     #[test]
@@ -721,55 +591,4 @@ mod tests {
         assert!(IpCapability::Dual.can_reach(&IpCapability::Dual));
     }
 
-    #[test]
-    fn test_prepare_dial_filters_unreachable_private() {
-        // Private IP not on any local subnet should be filtered
-        let addrs = vec!["/ip4/10.233.69.255/tcp/1634".parse().unwrap()];
-
-        let subnets = crate::system::query_local_subnets();
-        let target: std::net::Ipv4Addr = "10.233.69.255".parse().unwrap();
-        if !subnets.contains_ipv4(target) {
-            let result = super::prepare_dial_addresses(addrs, IpCapability::Dual);
-            assert!(
-                result.is_empty(),
-                "private IP not on local subnet should be filtered"
-            );
-        }
-    }
-
-    #[test]
-    fn test_prepare_dial_keeps_loopback() {
-        // Loopback is always directly reachable
-        let addrs = vec!["/ip4/127.0.0.1/tcp/1234".parse().unwrap()];
-
-        let result = super::prepare_dial_addresses(addrs, IpCapability::Dual);
-        assert_eq!(result.len(), 1, "loopback should be kept");
-    }
-
-    #[test]
-    fn test_prepare_dial_keeps_public() {
-        // Public IPs are always kept regardless of subnet
-        let addrs = vec!["/ip4/8.8.8.8/tcp/1234".parse().unwrap()];
-
-        let result = super::prepare_dial_addresses(addrs, IpCapability::Dual);
-        assert_eq!(result.len(), 1, "public IP should always be kept");
-    }
-
-    #[test]
-    fn test_prepare_dial_keeps_dns() {
-        // DNS addresses have no IP to classify, so they pass through
-        let addrs = vec!["/dnsaddr/example.com/tcp/1234".parse().unwrap()];
-
-        let result = super::prepare_dial_addresses(addrs, IpCapability::Dual);
-        assert_eq!(result.len(), 1, "DNS address should be kept");
-    }
-
-    #[test]
-    fn test_prepare_dial_filters_unspecified() {
-        // 0.0.0.0 should be filtered (classify_ip returns None)
-        let addrs = vec!["/ip4/0.0.0.0/tcp/1234".parse().unwrap()];
-
-        let result = super::prepare_dial_addresses(addrs, IpCapability::Dual);
-        assert!(result.is_empty(), "unspecified address should be filtered");
-    }
 }

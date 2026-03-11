@@ -9,5 +9,5 @@ pub mod scope;
 pub mod system;
 
 pub use capabilities::LocalCapabilities;
-pub use scope::{AddressScope, DialAddresses, IpCapability, classify_multiaddr, prepare_dial_addresses};
+pub use scope::{AddressScope, IpCapability, classify_multiaddr, is_dialable};
 pub use system::{add_subnet, remove_subnet, same_subnet};
