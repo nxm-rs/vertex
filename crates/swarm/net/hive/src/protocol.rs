@@ -1,6 +1,8 @@
 //! Inbound and outbound protocol handlers for hive peer exchange.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use std::time::Instant;
 
 use alloy_primitives::{B256, Signature};
@@ -118,7 +120,7 @@ async fn validate_batch_blocking(
     };
 
     let (tx, rx) = tokio::sync::oneshot::channel();
-    executor.spawn_blocking(async move {
+    executor.spawn_blocking("hive_peer_validation", async move {
         let result =
             validate_batch(raw_peers, network_id, &local_overlay, &cache);
         let _ = tx.send(result);
@@ -187,7 +189,8 @@ fn validate_proto_peer(
     let signature = Signature::try_from(p.signature.as_slice())?;
 
     // Tier 1: Check LRU cache — validated earlier in this session.
-    if let Ok(mut guard) = cache.lock() {
+    {
+        let mut guard = cache.lock();
         if let Some(cached) = guard.get(&peer_overlay) {
             if *cached.signature() == signature {
                 counter!("hive_validation_cache_total", "outcome" => "cache_hit").increment(1);
@@ -221,9 +224,7 @@ fn validate_proto_peer(
     }
 
     // Store validated peer in LRU cache.
-    if let Ok(mut guard) = cache.lock() {
-        guard.insert(peer_overlay, peer.clone());
-    }
+    cache.lock().insert(peer_overlay, peer.clone());
 
     Ok(peer)
 }

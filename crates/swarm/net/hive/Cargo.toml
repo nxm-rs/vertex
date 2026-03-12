@@ -36,6 +36,7 @@ alloy-primitives.workspace = true
 
 ## cache
 hashlink.workspace = true
+parking_lot.workspace = true
 
 ## tracing & metrics
 tracing.workspace = true

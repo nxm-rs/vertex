@@ -7,6 +7,8 @@ use std::{
     task::{Context, Poll},
 };
 
+use lru::LruCache;
+
 use parking_lot::RwLock;
 
 use libp2p::core::{
@@ -71,8 +73,18 @@ fn is_tcp_addr(addr: &Multiaddr) -> bool {
     matches!(first, Ip4(_) | Ip6(_) | Dns(_) | Dns4(_) | Dns6(_)) && matches!(second, Tcp(_))
 }
 
+/// Maximum cached agent versions (bounds memory from peer churn).
+const MAX_AGENT_VERSIONS: usize = 1024;
+
 /// Shared agent version map populated by identify exchanges.
-pub type AgentVersions = Arc<RwLock<HashMap<PeerId, String>>>;
+pub type AgentVersions = Arc<RwLock<LruCache<PeerId, String>>>;
+
+/// Create a new bounded agent version cache.
+pub fn new_agent_versions() -> AgentVersions {
+    Arc::new(RwLock::new(LruCache::new(
+        NonZeroUsize::new(MAX_AGENT_VERSIONS).unwrap(),
+    )))
+}
 
 /// Network behaviour for identify protocol with targeted push support.
 pub struct Behaviour {
@@ -373,7 +385,7 @@ impl NetworkBehaviour for Behaviour {
                     .retain(|addr| multiaddr_matches_peer_id(addr, &peer_id));
 
                 // Store agent version for shared access by topology.
-                self.agent_versions.write().insert(peer_id, info.agent_version.clone());
+                self.agent_versions.write().put(peer_id, info.agent_version.clone());
 
                 // Record metrics with the remote peer's agent version.
                 let duration = self
@@ -519,7 +531,7 @@ impl NetworkBehaviour for Behaviour {
             }) => {
                 if remaining_established == 0 {
                     self.connected.remove(&peer_id);
-                    self.agent_versions.write().remove(&peer_id);
+                    self.agent_versions.write().pop(&peer_id);
                 } else if let Some(addrs) = self.connected.get_mut(&peer_id) {
                     addrs.remove(&connection_id);
                 }
