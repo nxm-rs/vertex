@@ -415,6 +415,11 @@ impl<Id: Clone + Eq + Hash + Debug, D: Debug> DialTracker<Id, D> {
         };
         let now_secs = self.epoch.elapsed().as_secs();
         let seed = jitter_seed_for(id);
+        // Don't remove expired entries here — the BackoffEntry holds the
+        // consecutive_failures counter needed for ban promotion. Removing it
+        // would reset the counter and prevent peers from ever reaching the ban
+        // threshold. Expired entries are harmless in the LRU (bounded capacity)
+        // and record_backoff_metrics() counts only active entries.
         backoff_remaining(
             &entry,
             now_secs,
@@ -436,15 +441,41 @@ impl<Id: Clone + Eq + Hash + Debug, D: Debug> DialTracker<Id, D> {
 
     fn record_backoff_metrics(&self) {
         if let Some(purpose) = self.metrics_label {
-            let len = self.backoff.as_ref().map_or(0, |c| c.len());
-            gauge!("dial_tracker_backoff_peers", "purpose" => purpose).set(len as f64);
+            let now_secs = self.epoch.elapsed().as_secs();
+            let active = self.backoff.as_ref().map_or(0, |cache| {
+                cache
+                    .iter()
+                    .filter(|(id, entry)| {
+                        backoff_remaining(
+                            entry,
+                            now_secs,
+                            self.config.backoff_base_secs,
+                            self.config.backoff_max_secs,
+                            jitter_seed_for(*id),
+                        )
+                        .is_some()
+                    })
+                    .count()
+            });
+            gauge!("dial_tracker_backoff_peers", "purpose" => purpose).set(active as f64);
         }
     }
 
     fn record_ban_metrics(&self) {
         if let Some(purpose) = self.metrics_label {
-            let len = self.banned.as_ref().map_or(0, |c| c.len());
-            gauge!("dial_tracker_banned_peers", "purpose" => purpose).set(len as f64);
+            let active = self.banned.as_ref().map_or(0, |cache| {
+                if self.config.ban_ttl_secs == 0 {
+                    return cache.len();
+                }
+                let now_secs = self.epoch.elapsed().as_secs();
+                cache
+                    .iter()
+                    .filter(|(_, ban_time)| {
+                        now_secs.saturating_sub(**ban_time) < self.config.ban_ttl_secs
+                    })
+                    .count()
+            });
+            gauge!("dial_tracker_banned_peers", "purpose" => purpose).set(active as f64);
         }
     }
 }
