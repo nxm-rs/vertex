@@ -13,6 +13,10 @@ pub enum PrepareError {
     NoReachableAddresses,
     #[error("peer already pending or in-flight")]
     AlreadyTracked,
+    #[error("peer in backoff")]
+    InBackoff,
+    #[error("peer is banned")]
+    Banned,
 }
 
 /// IP version extracted from a multiaddr protocol component.

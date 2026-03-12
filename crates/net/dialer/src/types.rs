@@ -5,17 +5,20 @@ use std::time::Instant;
 
 use libp2p::{Multiaddr, PeerId};
 
-/// Result of trying to enqueue a dial request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EnqueueResult {
-    /// Request was successfully enqueued.
-    Enqueued,
-    /// An entry with this PeerId is already pending.
+/// Why a dial request could not be enqueued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum EnqueueError {
+    #[error("already pending")]
     AlreadyPending,
-    /// An entry with this PeerId is already in-flight.
+    #[error("already in-flight")]
     AlreadyInFlight,
-    /// The pending queue is full.
+    #[error("queue full")]
     QueueFull,
+    #[error("in backoff")]
+    InBackoff,
+    #[error("banned")]
+    Banned,
 }
 
 /// A dial request queued in the tracker.
