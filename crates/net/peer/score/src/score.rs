@@ -1,23 +1,31 @@
 //! Lock-free peer scoring with atomics.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering, fence};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering, fence};
 use std::time::Duration;
 
-use crate::snapshot::PeerScoreSnapshot;
+use portable_atomic::AtomicF64;
+use serde::{Deserialize, Serialize};
 
-/// Fixed-point multiplier for storing f64 scores as i64 atomics.
-const SCORE_SCALE: f64 = 100_000.0;
-/// Minimum allowed score (matches ban threshold scale).
 const MIN_SCORE: f64 = -100.0;
-/// Maximum allowed score (symmetric with minimum).
 const MAX_SCORE: f64 = 100.0;
 
 /// Lock-free peer scoring using atomics for concurrent access.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PeerScore {
-    score: AtomicI64,
+    score: AtomicF64,
     latency_sum_nanos: AtomicU64,
     latency_samples: AtomicU32,
+}
+
+impl Clone for PeerScore {
+    fn clone(&self) -> Self {
+        fence(Ordering::Acquire);
+        Self {
+            score: AtomicF64::new(self.score.load(Ordering::Relaxed)),
+            latency_sum_nanos: AtomicU64::new(self.latency_sum_nanos.load(Ordering::Relaxed)),
+            latency_samples: AtomicU32::new(self.latency_samples.load(Ordering::Relaxed)),
+        }
+    }
 }
 
 impl Default for PeerScore {
@@ -29,29 +37,24 @@ impl Default for PeerScore {
 impl PeerScore {
     pub fn new() -> Self {
         Self {
-            score: AtomicI64::new(0),
+            score: AtomicF64::new(0.0),
             latency_sum_nanos: AtomicU64::new(0),
             latency_samples: AtomicU32::new(0),
         }
     }
 
     pub fn score(&self) -> f64 {
-        self.score.load(Ordering::Acquire) as f64 / SCORE_SCALE
+        self.score.load(Ordering::Acquire)
     }
 
     /// Atomically adjust score, clamped to bounds.
     pub fn add_score(&self, delta: f64) {
-        let delta_scaled = (delta * SCORE_SCALE) as i64;
         loop {
             let current = self.score.load(Ordering::Acquire);
-            let new_val = current.saturating_add(delta_scaled);
-            let clamped = new_val.clamp(
-                (MIN_SCORE * SCORE_SCALE) as i64,
-                (MAX_SCORE * SCORE_SCALE) as i64,
-            );
+            let new_val = (current + delta).clamp(MIN_SCORE, MAX_SCORE);
             if self
                 .score
-                .compare_exchange_weak(current, clamped, Ordering::AcqRel, Ordering::Acquire)
+                .compare_exchange_weak(current, new_val, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
                 break;
@@ -61,7 +64,7 @@ impl PeerScore {
 
     pub fn set_score(&self, score: f64) {
         let clamped = score.clamp(MIN_SCORE, MAX_SCORE);
-        self.score.store((clamped * SCORE_SCALE) as i64, Ordering::Release);
+        self.score.store(clamped, Ordering::Release);
     }
 
     pub fn should_ban(&self, threshold: f64) -> bool {
@@ -84,39 +87,6 @@ impl PeerScore {
 
     pub fn avg_latency(&self) -> Option<Duration> {
         self.avg_latency_nanos().map(Duration::from_nanos)
-    }
-}
-
-impl From<&PeerScore> for PeerScoreSnapshot {
-    fn from(score: &PeerScore) -> Self {
-        fence(Ordering::Acquire);
-        Self {
-            score: score.score.load(Ordering::Relaxed) as f64 / SCORE_SCALE,
-            latency_sum_nanos: score.latency_sum_nanos.load(Ordering::Relaxed),
-            latency_samples: score.latency_samples.load(Ordering::Relaxed),
-        }
-    }
-}
-
-impl From<&Arc<PeerScore>> for PeerScoreSnapshot {
-    fn from(score: &Arc<PeerScore>) -> Self {
-        Self::from(score.as_ref())
-    }
-}
-
-impl From<&PeerScoreSnapshot> for PeerScore {
-    fn from(snapshot: &PeerScoreSnapshot) -> Self {
-        Self {
-            score: AtomicI64::new((snapshot.score * SCORE_SCALE) as i64),
-            latency_sum_nanos: AtomicU64::new(snapshot.latency_sum_nanos),
-            latency_samples: AtomicU32::new(snapshot.latency_samples),
-        }
-    }
-}
-
-impl From<PeerScoreSnapshot> for PeerScore {
-    fn from(snapshot: PeerScoreSnapshot) -> Self {
-        Self::from(&snapshot)
     }
 }
 
@@ -166,19 +136,50 @@ mod tests {
     }
 
     #[test]
-    fn test_snapshot_roundtrip() {
+    fn test_clone_roundtrip() {
         let score = PeerScore::new();
 
         score.set_score(75.5);
         score.record_latency(100_000_000);
         score.record_latency(200_000_000);
 
-        let snapshot = PeerScoreSnapshot::from(&score);
-        assert!((snapshot.score - 75.5).abs() < 0.01);
-
-        let score2 = PeerScore::from(&snapshot);
+        let score2 = score.clone();
         assert!((score2.score() - 75.5).abs() < 0.01);
         assert_eq!(score2.avg_latency_nanos(), Some(150_000_000));
+    }
+
+    #[test]
+    fn test_serde_roundtrip() {
+        let score = PeerScore::new();
+        score.set_score(75.5);
+        score.record_latency(100_000_000);
+        score.record_latency(200_000_000);
+
+        let bytes = postcard::to_allocvec(&score).unwrap();
+        let restored: PeerScore = postcard::from_bytes(&bytes).unwrap();
+        assert!((restored.score() - 75.5).abs() < 0.01);
+        assert_eq!(restored.avg_latency_nanos(), Some(150_000_000));
+    }
+
+    #[test]
+    fn test_backward_compat() {
+        // Legacy format: f64, u64, u32 — identical wire layout to AtomicF64, AtomicU64, AtomicU32.
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct Legacy {
+            score: f64,
+            latency_sum_nanos: u64,
+            latency_samples: u32,
+        }
+
+        let legacy = Legacy {
+            score: 42.5,
+            latency_sum_nanos: 300_000_000,
+            latency_samples: 3,
+        };
+        let bytes = postcard::to_allocvec(&legacy).unwrap();
+        let restored: PeerScore = postcard::from_bytes(&bytes).unwrap();
+        assert!((restored.score() - 42.5).abs() < 0.01);
+        assert_eq!(restored.avg_latency_nanos(), Some(100_000_000));
     }
 
     #[test]

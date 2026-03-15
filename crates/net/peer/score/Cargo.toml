@@ -12,8 +12,9 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+portable-atomic = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
-serde_json = { workspace = true }
+postcard = { workspace = true }
