@@ -144,7 +144,7 @@ mod tests {
             mapped: 8192,
             retained: 512,
         };
-        let json = serde_json::to_string(&stats).unwrap();
-        assert!(json.contains("1024"));
+        let debug = format!("{:?}", stats);
+        assert!(debug.contains("1024"));
     }
 }

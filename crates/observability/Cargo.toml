@@ -56,7 +56,6 @@ parking_lot = { workspace = true }
 
 # Misc
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
 
 # Profiling (optional)
 pprof = { workspace = true, optional = true }
