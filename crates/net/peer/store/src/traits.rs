@@ -33,6 +33,11 @@ pub trait NetPeerStore<R: NetRecord>: Send + Sync {
     /// Load all peer records.
     fn load_all(&self) -> Result<Vec<R>, StoreError>;
 
+    /// Load only the IDs of all stored records (no value deserialization).
+    fn load_ids(&self) -> Result<Vec<R::Id>, StoreError> {
+        Ok(self.load_all()?.into_iter().map(|r| r.id().clone()).collect())
+    }
+
     /// Save a peer record (insert or update).
     fn save(&self, record: &R) -> Result<(), StoreError>;
 

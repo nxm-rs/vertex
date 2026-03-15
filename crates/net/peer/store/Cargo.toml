@@ -14,9 +14,5 @@ workspace = true
 [dependencies]
 parking_lot = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_json = { version = "1.0", features = ["std"] }
 thiserror = { workspace = true }
 auto_impl = { workspace = true }
-
-[dev-dependencies]
-tempfile = "3"
