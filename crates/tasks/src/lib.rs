@@ -106,7 +106,7 @@ pub trait TaskSpawner: Send + Sync + Unpin + std::fmt::Debug + DynClone {
     fn spawn_critical(&self, name: &'static str, fut: BoxFuture<'static, ()>) -> JoinHandle<()>;
 
     /// Spawns a blocking task onto the runtime.
-    fn spawn_blocking(&self, fut: BoxFuture<'static, ()>) -> JoinHandle<()>;
+    fn spawn_blocking(&self, name: &'static str, fut: BoxFuture<'static, ()>) -> JoinHandle<()>;
 
     /// This spawns a critical blocking task onto the runtime.
     fn spawn_critical_blocking(
@@ -139,7 +139,7 @@ impl TaskSpawner for TokioTaskExecutor {
         tokio::task::spawn(fut)
     }
 
-    fn spawn_blocking(&self, fut: BoxFuture<'static, ()>) -> JoinHandle<()> {
+    fn spawn_blocking(&self, _name: &'static str, fut: BoxFuture<'static, ()>) -> JoinHandle<()> {
         tokio::task::spawn_blocking(move || tokio::runtime::Handle::current().block_on(fut))
     }
 
@@ -490,7 +490,7 @@ impl TaskExecutor {
     /// The given future resolves as soon as the [Shutdown] signal is received.
     ///
     /// See also [`Handle::spawn_blocking`].
-    pub fn spawn_blocking<F>(&self, fut: F) -> JoinHandle<()>
+    pub fn spawn_blocking<F>(&self, name: &'static str, fut: F) -> JoinHandle<()>
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -499,7 +499,7 @@ impl TaskExecutor {
             let fut = pin!(fut);
             let _ = select(on_shutdown, fut).await;
         };
-        self.spawn_task_as(fut, TaskKind::Blocking, "<unnamed>", false)
+        self.spawn_task_as(fut, TaskKind::Blocking, name, false)
     }
 
     /// This spawns a critical task onto the runtime.
@@ -644,8 +644,8 @@ impl TaskSpawner for TaskExecutor {
         Self::spawn_critical(self, name, fut)
     }
 
-    fn spawn_blocking(&self, fut: BoxFuture<'static, ()>) -> JoinHandle<()> {
-        Self::spawn_blocking(self, fut)
+    fn spawn_blocking(&self, name: &'static str, fut: BoxFuture<'static, ()>) -> JoinHandle<()> {
+        Self::spawn_blocking(self, name, fut)
     }
 
     fn spawn_critical_blocking(
