@@ -50,7 +50,7 @@ mod observability;
 mod tracing;
 
 pub use api::ApiArgs;
-pub use database::DatabaseArgs;
+pub use database::{DatabaseArgs, DatabaseConfig};
 pub use datadir::DataDirArgs;
 pub use log::LogArgs;
 pub use metrics::MetricsArgs;

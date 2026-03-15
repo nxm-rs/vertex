@@ -41,7 +41,6 @@ async-trait.workspace = true
 
 # Serialization
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
 toml = "0.7"
 figment = { version = "0.10", features = ["toml", "env"] }
 
