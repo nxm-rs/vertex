@@ -77,8 +77,7 @@ impl PrometheusRecorder {
                 .set_buckets_for_metric(
                     Matcher::Suffix(config.suffix.to_string()),
                     config.buckets,
-                )
-                .expect("valid bucket config");
+                )?;
         }
         let recorder = builder.build_recorder();
 

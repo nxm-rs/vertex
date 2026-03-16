@@ -2,8 +2,10 @@
 
 use std::collections::HashSet;
 use std::mem::ManuallyDrop;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::Instant;
+
+use parking_lot::Mutex;
 
 use metrics::{counter, histogram};
 use redb::{ReadableTable, ReadableTableMetadata, TableDefinition};
@@ -28,7 +30,7 @@ fn table_def(name: &str) -> TableDefinition<'_, &[u8], &[u8]> {
 fn intern_table_name(name: &str) -> &'static str {
     static INTERNED: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
     let set = INTERNED.get_or_init(|| Mutex::new(HashSet::new()));
-    let mut guard = set.lock().unwrap();
+    let mut guard = set.lock();
     if let Some(&existing) = guard.get(name) {
         return existing;
     }
