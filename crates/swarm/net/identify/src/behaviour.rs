@@ -74,16 +74,17 @@ fn is_tcp_addr(addr: &Multiaddr) -> bool {
 }
 
 /// Maximum cached agent versions (bounds memory from peer churn).
-const MAX_AGENT_VERSIONS: usize = 1024;
+const MAX_AGENT_VERSIONS: NonZeroUsize = match NonZeroUsize::new(1024) {
+    Some(v) => v,
+    None => unreachable!(),
+};
 
 /// Shared agent version map populated by identify exchanges.
 pub type AgentVersions = Arc<RwLock<LruCache<PeerId, String>>>;
 
 /// Create a new bounded agent version cache.
 pub fn new_agent_versions() -> AgentVersions {
-    Arc::new(RwLock::new(LruCache::new(
-        NonZeroUsize::new(MAX_AGENT_VERSIONS).unwrap(),
-    )))
+    Arc::new(RwLock::new(LruCache::new(MAX_AGENT_VERSIONS)))
 }
 
 /// Network behaviour for identify protocol with targeted push support.

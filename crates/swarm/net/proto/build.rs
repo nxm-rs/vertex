@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use pb_rs::{ConfigBuilder, types::FileDescriptor};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
