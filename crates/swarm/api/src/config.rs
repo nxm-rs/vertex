@@ -35,8 +35,8 @@ pub const DEFAULT_PEER_BAN_THRESHOLD: f64 = -100.0;
 /// Default warn threshold for peer scoring (-50.0).
 pub const DEFAULT_PEER_WARN_THRESHOLD: f64 = -50.0;
 
-/// Default maximum number of tracked peers (10,000).
-pub const DEFAULT_PEER_STORE_LIMIT: usize = 10_000;
+/// Default maximum peers per proximity bin in the index.
+pub const DEFAULT_PEER_MAX_PER_BIN: usize = 128;
 
 /// Configuration for peer management (scoring, limits).
 pub trait SwarmPeerConfig {
@@ -57,8 +57,10 @@ pub trait PeerConfigValues {
         DEFAULT_PEER_WARN_THRESHOLD
     }
 
-    /// Maximum number of peers to track. None for unlimited.
-    fn store_limit(&self) -> Option<usize>;
+    /// Maximum peers per proximity bin in the index.
+    fn max_per_bin(&self) -> usize {
+        DEFAULT_PEER_MAX_PER_BIN
+    }
 
     /// Path for peer store persistence. None uses ephemeral in-memory storage.
     fn store_path(&self) -> Option<std::path::PathBuf> {
@@ -73,8 +75,8 @@ pub struct DefaultPeerConfig {
     pub ban_threshold: f64,
     /// Score threshold for warning about peers.
     pub warn_threshold: f64,
-    /// Maximum peers to track (None = unlimited).
-    pub store_limit: Option<usize>,
+    /// Maximum peers per proximity bin.
+    pub max_per_bin: usize,
     /// Path for peer store persistence.
     pub store_path: Option<std::path::PathBuf>,
 }
@@ -84,7 +86,7 @@ impl Default for DefaultPeerConfig {
         Self {
             ban_threshold: DEFAULT_PEER_BAN_THRESHOLD,
             warn_threshold: DEFAULT_PEER_WARN_THRESHOLD,
-            store_limit: Some(DEFAULT_PEER_STORE_LIMIT),
+            max_per_bin: DEFAULT_PEER_MAX_PER_BIN,
             store_path: None,
         }
     }
@@ -99,8 +101,8 @@ impl PeerConfigValues for DefaultPeerConfig {
         self.warn_threshold
     }
 
-    fn store_limit(&self) -> Option<usize> {
-        self.store_limit
+    fn max_per_bin(&self) -> usize {
+        self.max_per_bin
     }
 
     fn store_path(&self) -> Option<std::path::PathBuf> {

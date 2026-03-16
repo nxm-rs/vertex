@@ -1,7 +1,5 @@
 //! RPC providers container for Swarm protocol.
 
-use crate::{SwarmChunkProvider, SwarmTopology};
-
 /// RPC providers container for the Swarm protocol.
 #[derive(Debug, Clone)]
 pub struct RpcProviders<Topo, Chunk> {
@@ -14,9 +12,7 @@ impl<Topo, Chunk> RpcProviders<Topo, Chunk> {
     pub fn new(topology: Topo, chunk: Chunk) -> Self {
         Self { topology, chunk }
     }
-}
 
-impl<Topo: SwarmTopology, Chunk: SwarmChunkProvider> RpcProviders<Topo, Chunk> {
     /// Get reference to the topology provider.
     pub fn topology(&self) -> &Topo {
         &self.topology

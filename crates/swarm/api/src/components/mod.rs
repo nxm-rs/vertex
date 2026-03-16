@@ -2,11 +2,13 @@
 
 mod bandwidth;
 mod localstore;
+mod peers;
 mod pricing;
 mod topology;
 
 pub use bandwidth::*;
 pub use localstore::*;
+pub use peers::*;
 pub use pricing::*;
 pub use topology::*;
 
@@ -16,7 +18,7 @@ use crate::SwarmIdentity;
 #[auto_impl::auto_impl(&, Arc, Box)]
 pub trait HasTopology: Send + Sync {
     /// The topology type.
-    type Topology: topology::SwarmTopology;
+    type Topology: Send + Sync;
 
     /// Get the topology.
     fn topology(&self) -> &Self::Topology;
@@ -64,7 +66,7 @@ impl<T> BootnodeComponents<T> {
     }
 }
 
-impl<T: topology::SwarmTopology> HasTopology for BootnodeComponents<T> {
+impl<T: Send + Sync> HasTopology for BootnodeComponents<T> {
     type Topology = T;
 
     fn topology(&self) -> &T {
@@ -94,7 +96,7 @@ impl<T, A> ClientComponents<T, A> {
     }
 }
 
-impl<T: topology::SwarmTopology, A: Send + Sync> HasTopology for ClientComponents<T, A> {
+impl<T: Send + Sync, A: Send + Sync> HasTopology for ClientComponents<T, A> {
     type Topology = T;
 
     fn topology(&self) -> &T {
@@ -132,7 +134,7 @@ impl<T, A, S> StorerComponents<T, A, S> {
     }
 }
 
-impl<T: topology::SwarmTopology, A: Send + Sync, S: Send + Sync> HasTopology
+impl<T: Send + Sync, A: Send + Sync, S: Send + Sync> HasTopology
     for StorerComponents<T, A, S>
 {
     type Topology = T;

@@ -4,7 +4,7 @@
 
 use crate::{
     SwarmBandwidthAccounting, SwarmClientAccounting, SwarmIdentity, SwarmLocalStore, SwarmSpec,
-    SwarmTopology,
+    SwarmTopologyPeers, SwarmTopologyRouting, SwarmTopologyState, SwarmTopologyStats,
 };
 
 pub use vertex_swarm_primitives::SwarmNodeType;
@@ -26,7 +26,10 @@ pub trait SwarmPrimitives: Send + Sync + 'static {
 /// Extends primitives with topology (peer discovery service).
 pub trait SwarmNetworkTypes: SwarmPrimitives {
     /// Peer discovery and routing.
-    type Topology: SwarmTopology<Identity = <Self as SwarmPrimitives>::Identity>;
+    type Topology: SwarmTopologyState<Identity = <Self as SwarmPrimitives>::Identity>
+        + SwarmTopologyRouting
+        + SwarmTopologyPeers
+        + SwarmTopologyStats;
 }
 
 /// Types for client nodes that can retrieve and upload chunks.
