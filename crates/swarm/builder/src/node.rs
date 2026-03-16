@@ -19,10 +19,30 @@ use vertex_swarm_redistribution::StorageConfig;
 use vertex_swarm_spec::Spec;
 use vertex_swarm_topology::KademliaConfig;
 
-use crate::builder_ext::{BuilderExt, WithInfrastructure};
 use crate::config::{BootnodeConfig, ClientConfig, StorerConfig};
 use crate::error::SwarmNodeError;
 use crate::handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};
+
+/// Fluent transformation API for builders.
+pub trait BuilderExt: Sized {
+    fn apply<F>(self, f: F) -> Self
+    where
+        F: FnOnce(Self) -> Self,
+    {
+        f(self)
+    }
+
+    fn apply_if<F>(self, cond: bool, f: F) -> Self
+    where
+        F: FnOnce(Self) -> Self,
+    {
+        if cond {
+            f(self)
+        } else {
+            self
+        }
+    }
+}
 
 /// Builder for bootnodes.
 pub struct NodeBuilder<I, N>
@@ -72,15 +92,6 @@ where
     }
 }
 
-impl<I, R: Default> WithInfrastructure<NetworkConfig<R>> for NodeBuilder<I, NetworkConfig<R>>
-where
-    I: SwarmIdentity,
-{
-    fn network_mut(&mut self) -> &mut NetworkConfig<R> {
-        &mut self.network
-    }
-}
-
 /// Builder for client nodes.
 pub struct ClientNodeBuilder<I, N, A>
 where
@@ -120,17 +131,6 @@ where
     }
 }
 
-impl<I, R: Default, A> WithInfrastructure<NetworkConfig<R>>
-    for ClientNodeBuilder<I, NetworkConfig<R>, A>
-where
-    I: SwarmIdentity,
-    A: SwarmAccountingConfig + SwarmPricingConfig,
-{
-    fn network_mut(&mut self) -> &mut NetworkConfig<R> {
-        &mut self.base.network
-    }
-}
-
 /// Builder for storer nodes.
 pub struct StorerNodeBuilder<I, N, A, S, St>
 where
@@ -165,19 +165,6 @@ where
 {
     pub fn spec(&self) -> &Arc<Spec> {
         self.client.spec()
-    }
-}
-
-impl<I, R: Default, A, S, St> WithInfrastructure<NetworkConfig<R>>
-    for StorerNodeBuilder<I, NetworkConfig<R>, A, S, St>
-where
-    I: SwarmIdentity,
-    A: SwarmAccountingConfig + SwarmPricingConfig,
-    S: SwarmLocalStoreConfig,
-    St: SwarmStorageConfig,
-{
-    fn network_mut(&mut self) -> &mut NetworkConfig<R> {
-        &mut self.client.base.network
     }
 }
 

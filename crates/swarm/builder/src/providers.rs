@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use nectar_primitives::SwarmAddress;
 use vertex_swarm_api::{
-    ChunkAddress, ChunkRetrievalResult, SwarmChunkProvider, SwarmError, SwarmIdentity,
-    SwarmResult, SwarmTopology,
+    ChunkAddress, ChunkRetrievalResult, SwarmChunkProvider, SwarmError, SwarmIdentity, SwarmResult,
+    SwarmTopologyRouting,
 };
 use vertex_swarm_node::ClientHandle;
 use vertex_swarm_topology::TopologyHandle;

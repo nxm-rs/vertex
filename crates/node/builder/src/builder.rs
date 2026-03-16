@@ -163,7 +163,7 @@ where
             .map_err(InfrastructureError::GrpcReflection)?;
 
         let shutdown = self.ctx.executor.on_shutdown_signal().clone();
-        self.ctx.executor.spawn_critical("grpc_server", async move {
+        self.ctx.executor.spawn_critical("grpc.server", async move {
             if let Err(e) = grpc_handle.serve_with_shutdown(shutdown).await {
                 tracing::error!(error = %e, "gRPC server error");
             }

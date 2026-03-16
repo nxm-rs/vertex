@@ -113,7 +113,7 @@ impl PrometheusRecorder {
         }
 
         let handle = self.handle.clone();
-        executor.spawn_with_graceful_shutdown_signal("metrics_upkeep", move |shutdown| async move {
+        executor.spawn_with_graceful_shutdown_signal("metrics.upkeep", move |shutdown| async move {
             let mut shutdown = std::pin::pin!(shutdown);
             let interval = std::time::Duration::from_secs(interval_secs);
 

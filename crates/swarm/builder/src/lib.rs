@@ -7,8 +7,6 @@
 //!
 //! Build returns [`BuiltNode`] which contains the task and RPC providers.
 
-mod build_helpers;
-mod builder_ext;
 pub mod config;
 mod error;
 mod handle;
@@ -18,7 +16,7 @@ mod providers;
 mod rpc;
 
 // Traits
-pub use builder_ext::{BuilderExt, SetPeerStorePath, WithInfrastructure};
+pub use node::BuilderExt;
 
 // Builders
 pub use node::{

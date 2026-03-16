@@ -62,7 +62,7 @@ impl MetricsServer {
         tracing::info!("Metrics server listening on {addr}");
 
         // Use the executor's shutdown signal for graceful shutdown
-        executor.spawn_critical_with_graceful_shutdown_signal("metrics_server", move |shutdown| async move {
+        executor.spawn_critical_with_graceful_shutdown_signal("metrics.server", move |shutdown| async move {
             tracing::debug!("Metrics server task started, beginning to serve");
             let server = axum::serve(listener, app).with_graceful_shutdown(shutdown.ignore_guard());
 
