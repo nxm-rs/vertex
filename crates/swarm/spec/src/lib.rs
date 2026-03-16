@@ -73,7 +73,9 @@ pub use error::SwarmSpecFileError;
 pub use nectar_primitives::{ChunkTypeSet, StandardChunkSet};
 #[cfg(feature = "std")]
 pub use parser::DefaultSpecParser;
-pub use spec::{DEV, MAINNET, Spec, SpecBuilder, TESTNET};
+#[cfg(feature = "std")]
+pub use spec::{DEV, MAINNET, TESTNET};
+pub use spec::{Spec, SpecBuilder};
 pub use token::Token;
 
 // HasSpec trait is defined in this module and exported directly
@@ -98,13 +100,14 @@ static DEV_NETWORK_ID_COUNTER: AtomicU64 = AtomicU64::new(1337);
 ///
 /// Ensures development/test networks don't clash with each other.
 pub fn generate_dev_network_id() -> u64 {
-    DEV_NETWORK_ID_COUNTER.fetch_add(1, Ordering::SeqCst)
+    DEV_NETWORK_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Initialize and return the mainnet specification.
 ///
 /// This lazily initializes the mainnet spec on first call and returns
 /// a clone of the Arc on subsequent calls.
+#[cfg(feature = "std")]
 pub fn init_mainnet() -> Arc<Spec> {
     spec::init_mainnet()
 }
@@ -113,6 +116,7 @@ pub fn init_mainnet() -> Arc<Spec> {
 ///
 /// This lazily initializes the testnet spec on first call and returns
 /// a clone of the Arc on subsequent calls.
+#[cfg(feature = "std")]
 pub fn init_testnet() -> Arc<Spec> {
     spec::init_testnet()
 }
@@ -121,6 +125,7 @@ pub fn init_testnet() -> Arc<Spec> {
 ///
 /// This lazily initializes the dev spec on first call and returns
 /// a clone of the Arc on subsequent calls.
+#[cfg(feature = "std")]
 pub fn init_dev() -> Arc<Spec> {
     spec::init_dev()
 }
@@ -135,14 +140,10 @@ pub mod prelude {
         SwarmSpec,
         SwarmSpecParser,
         SwarmSpecProvider,
-        // Initialization
-        init_dev,
-        init_mainnet,
-        init_testnet,
     };
 
     #[cfg(feature = "std")]
-    pub use super::DefaultSpecParser;
+    pub use super::{DefaultSpecParser, init_dev, init_mainnet, init_testnet};
 }
 
 #[cfg(test)]

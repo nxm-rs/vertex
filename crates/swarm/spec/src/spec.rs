@@ -3,8 +3,9 @@
 //! This module provides [`Spec`], the standard implementation of [`SwarmSpec`]
 //! used for mainnet, testnet, development, and custom networks.
 //!
-//! Pre-built specifications are available via [`init_mainnet`], [`init_testnet`],
-//! and [`init_dev`]. Custom specifications can be constructed with [`SpecBuilder`].
+//! Pre-built specifications are available via [`crate::init_mainnet`], [`crate::init_testnet`],
+//! and [`crate::init_dev`] (requires `std` feature). Custom specifications can be
+//! constructed with [`SpecBuilder`].
 
 #[cfg(feature = "std")]
 use crate::error::SwarmSpecFileError;
@@ -14,12 +15,16 @@ use crate::{
     generate_dev_network_id,
 };
 use alloc::{
+    format,
     string::{String, ToString},
-    sync::Arc,
-    vec,
     vec::Vec,
 };
+#[cfg(feature = "std")]
+use alloc::vec;
+#[cfg(feature = "std")]
+use alloc::sync::Arc;
 use alloy_chains::{Chain, NamedChain};
+#[cfg(feature = "std")]
 use std::sync::OnceLock;
 use vertex_swarm_forks::{ForkCondition, SwarmHardfork, SwarmHardforks, SwarmHardforksTrait};
 
@@ -36,7 +41,7 @@ use vertex_swarm_forks::{ForkCondition, SwarmHardfork, SwarmHardforks, SwarmHard
 /// - [`crate::init_testnet()`] - Test network on Sepolia
 /// - [`crate::init_dev()`] - Local development with auto-generated network ID
 ///
-/// For custom networks, use [`SpecBuilder`] or load from a JSON file with [`Spec::from_file`].
+/// For custom networks, use [`SpecBuilder`] or load from a TOML file with `TryFrom<&Path>`.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Spec {
     /// Underlying blockchain
@@ -105,9 +110,11 @@ impl Default for Spec {
 }
 
 /// The Swarm mainnet specification
+#[cfg(feature = "std")]
 pub static MAINNET: OnceLock<Arc<Spec>> = OnceLock::new();
 
 /// Initialize the mainnet specification
+#[cfg(feature = "std")]
 pub(crate) fn init_mainnet() -> Arc<Spec> {
     MAINNET
         .get_or_init(|| {
@@ -128,9 +135,11 @@ pub(crate) fn init_mainnet() -> Arc<Spec> {
 }
 
 /// The Swarm testnet specification
+#[cfg(feature = "std")]
 pub static TESTNET: OnceLock<Arc<Spec>> = OnceLock::new();
 
 /// Initialize the testnet specification
+#[cfg(feature = "std")]
 pub(crate) fn init_testnet() -> Arc<Spec> {
     TESTNET
         .get_or_init(|| {
@@ -151,9 +160,11 @@ pub(crate) fn init_testnet() -> Arc<Spec> {
 }
 
 /// The Swarm development network specification
+#[cfg(feature = "std")]
 pub static DEV: OnceLock<Arc<Spec>> = OnceLock::new();
 
 /// Initialize the dev specification
+#[cfg(feature = "std")]
 pub(crate) fn init_dev() -> Arc<Spec> {
     DEV.get_or_init(|| Arc::new(Spec::default())).clone()
 }
@@ -294,16 +305,19 @@ impl SpecBuilder {
     }
 
     /// Create a builder initialized with mainnet settings
+    #[cfg(feature = "std")]
     pub fn mainnet() -> Self {
         Self::from(init_mainnet().as_ref())
     }
 
     /// Create a builder initialized with testnet settings
+    #[cfg(feature = "std")]
     pub fn testnet() -> Self {
         Self::from(init_testnet().as_ref())
     }
 
     /// Create a builder initialized with development network settings
+    #[cfg(feature = "std")]
     pub fn dev() -> Self {
         Self::from(init_dev().as_ref())
     }
@@ -329,6 +343,7 @@ impl From<&Spec> for SpecBuilder {
 /// The `/dnsaddr/mainnet.ethswarm.org` multiaddr is resolved at runtime via DNS TXT
 /// records, allowing the Swarm team to update bootnode IPs without client changes.
 /// Resolution should happen in the networking layer.
+#[cfg(feature = "std")]
 fn mainnet_bootnodes() -> Vec<String> {
     vec!["/dnsaddr/mainnet.ethswarm.org".to_string()]
 }
@@ -337,6 +352,7 @@ fn mainnet_bootnodes() -> Vec<String> {
 ///
 /// The `/dnsaddr/testnet.ethswarm.org` multiaddr is resolved at runtime via DNS TXT
 /// records. Resolution should happen in the networking layer.
+#[cfg(feature = "std")]
 fn testnet_bootnodes() -> Vec<String> {
     vec!["/dnsaddr/testnet.ethswarm.org".to_string()]
 }
@@ -350,41 +366,39 @@ impl Spec {
         self.genesis_timestamp
     }
 
-    /// Serialize this SwarmSpec to a JSON string.
+    /// Serialize this SwarmSpec to a TOML string.
     #[cfg(feature = "std")]
-    pub fn to_json(&self) -> Result<String, SwarmSpecFileError> {
-        Ok(serde_json::to_string_pretty(self)?)
+    pub fn to_toml(&self) -> Result<String, SwarmSpecFileError> {
+        Ok(toml::to_string_pretty(self)?)
     }
 
-    /// Write this SwarmSpec to a JSON file.
+    /// Write this SwarmSpec to a TOML file.
     #[cfg(feature = "std")]
     pub fn to_file(&self, path: &std::path::Path) -> Result<(), SwarmSpecFileError> {
-        let json = self.to_json()?;
-        std::fs::write(path, json)?;
+        let toml = self.to_toml()?;
+        std::fs::write(path, toml)?;
         Ok(())
     }
 }
 
-/// Parse a [`Spec`] from a JSON string.
+/// Parse a [`Spec`] from a TOML string.
 #[cfg(feature = "std")]
 impl TryFrom<&str> for Spec {
     type Error = SwarmSpecFileError;
 
-    fn try_from(json: &str) -> Result<Self, Self::Error> {
-        Ok(serde_json::from_str(json)?)
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        Ok(toml::from_str(s)?)
     }
 }
 
-/// Load a [`Spec`] from a JSON file path.
+/// Load a [`Spec`] from a TOML file path.
 ///
-/// ```json
-/// {
-///   "network_id": 0,
-///   "network_name": "local-kurtosis",
-///   "bootnodes": ["/ip4/127.0.0.1/tcp/1634/p2p/QmXxx..."],
-///   "genesis_timestamp": 0,
-///   "reserve_capacity": 4194304
-/// }
+/// ```toml
+/// network_id = 0
+/// network_name = "local-kurtosis"
+/// bootnodes = ["/ip4/127.0.0.1/tcp/1634/p2p/QmXxx..."]
+/// genesis_timestamp = 0
+/// reserve_capacity = 4194304
 /// ```
 #[cfg(feature = "std")]
 impl TryFrom<&std::path::Path> for Spec {

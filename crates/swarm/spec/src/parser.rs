@@ -38,10 +38,10 @@ impl SwarmSpecParser for DefaultSpecParser {
                 .map_err(|e| eyre::eyre!("failed to load spec from {}: {}", path.display(), e));
         }
 
-        // Try as inline JSON
+        // Try as inline TOML
         Spec::try_from(s)
             .map(Arc::new)
-            .map_err(|e| eyre::eyre!("'{}' is not a valid network, file path, or JSON: {}", s, e))
+            .map_err(|e| eyre::eyre!("'{}' is not a valid network, file path, or TOML: {}", s, e))
     }
 }
 
@@ -49,7 +49,7 @@ impl SwarmSpecParser for DefaultSpecParser {
 impl DefaultSpecParser {
     /// Clap value parser for CLI integration.
     ///
-    /// Accepts "mainnet", "testnet", "dev", a file path, or inline JSON.
+    /// Accepts "mainnet", "testnet", "dev", a file path, or inline TOML.
     pub fn parser() -> impl TypedValueParser<Value = Arc<Spec>> {
         StringValueParser::new().try_map(|s| Self::parse(&s))
     }
@@ -85,9 +85,9 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_json() {
-        let json = r#"{"network_id": 999, "network_name": "test"}"#;
-        let spec = DefaultSpecParser::parse(json).unwrap();
+    fn test_parse_toml() {
+        let toml = "network_id = 999\nnetwork_name = \"test\"";
+        let spec = DefaultSpecParser::parse(toml).unwrap();
         assert_eq!(spec.network_id, 999);
         assert_eq!(spec.network_name, "test");
     }

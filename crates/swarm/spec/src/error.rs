@@ -8,7 +8,11 @@ pub enum SwarmSpecFileError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// JSON parsing/serialization error.
-    #[error("JSON error: {0}")]
-    Json(#[from] serde_json::Error),
+    /// TOML deserialization error.
+    #[error("TOML parse error: {0}")]
+    TomlDeserialize(#[from] toml::de::Error),
+
+    /// TOML serialization error.
+    #[error("TOML serialize error: {0}")]
+    TomlSerialize(#[from] toml::ser::Error),
 }

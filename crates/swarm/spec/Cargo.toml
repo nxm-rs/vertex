@@ -34,7 +34,7 @@ clap = { workspace = true, optional = true }
 eyre = { workspace = true }
 humansize = "2.1"
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
 strum = { workspace = true }
 thiserror.workspace = true
 tracing = { workspace = true, optional = true }
@@ -52,11 +52,11 @@ std = [
     "nectar-contracts/std",
     "vertex-swarm-forks/std",
     "serde/std",
-    "serde_json",
+    "toml",
     "tracing",
     "clap",
 ]
-serde_json = ["dep:serde_json"]
+toml = ["dep:toml"]
 arbitrary = [
     "alloy-chains/arbitrary",
     "alloy-primitives/arbitrary",
