@@ -23,7 +23,7 @@ use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
     task::JoinHandle,
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use vertex_metrics::OperationGuard;
 
 pub mod metrics;
@@ -85,7 +85,7 @@ static GLOBAL_EXECUTOR: OnceLock<TaskExecutor> = OnceLock::new();
 /// # use vertex_tasks::TaskManager;
 /// fn t() {
 ///  use vertex_tasks::TaskSpawner;
-/// let rt = tokio::runtime::Runtime::new().unwrap();
+/// let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
 /// let manager = TaskManager::new(rt.handle().clone());
 /// let executor = manager.executor();
 /// let task = TaskSpawner::spawn(&executor, Box::pin(async {
@@ -215,7 +215,7 @@ impl TaskManager {
 
         let _ = GLOBAL_EXECUTOR
             .set(manager.executor())
-            .inspect_err(|_| error!("Global executor already set"));
+            .inspect_err(|_| warn!("Global executor already set; TaskExecutor::current() will return the first instance"));
 
         info!("TaskManager initialized");
         manager
@@ -457,7 +457,7 @@ impl TaskExecutor {
                 let task_error = PanickedTaskError::new(name, error);
                 error!("{task_error}");
                 if panicked_tasks_tx.send(TaskEvent::Panic(task_error)).is_err() {
-                    debug!(task = name, "failed to notify TaskManager of panic (already shut down)");
+                    warn!(task = name, "failed to notify TaskManager of panic (already shut down)");
                 }
             })
             .map(drop);
@@ -695,7 +695,7 @@ mod tests {
 
     #[test]
     fn test_critical() {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
         let handle = runtime.handle().clone();
         let manager = TaskManager::new(handle);
         let executor = manager.executor();
@@ -720,7 +720,7 @@ mod tests {
     // Tests that spawned tasks are terminated if the `TaskManager` drops
     #[test]
     fn test_manager_shutdown_critical() {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
         let handle = runtime.handle().clone();
         let manager = TaskManager::new(handle.clone());
         let executor = manager.executor();
@@ -740,7 +740,7 @@ mod tests {
     // Tests that spawned tasks are terminated if the `TaskManager` drops
     #[test]
     fn test_manager_shutdown() {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
         let handle = runtime.handle().clone();
         let manager = TaskManager::new(handle.clone());
         let executor = manager.executor();
@@ -759,7 +759,7 @@ mod tests {
 
     #[test]
     fn test_manager_graceful_shutdown() {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
         let handle = runtime.handle().clone();
         let manager = TaskManager::new(handle);
         let executor = manager.executor();
@@ -778,7 +778,7 @@ mod tests {
 
     #[test]
     fn test_manager_graceful_shutdown_many() {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
         let handle = runtime.handle().clone();
         let manager = TaskManager::new(handle);
         let executor = manager.executor();
@@ -803,7 +803,7 @@ mod tests {
 
     #[test]
     fn test_manager_graceful_shutdown_timeout() {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
         let handle = runtime.handle().clone();
         let manager = TaskManager::new(handle);
         let executor = manager.executor();
@@ -815,7 +815,6 @@ mod tests {
             let _guard = shutdown.await;
             tokio::time::sleep(timeout * 3).await;
             val2.store(true, Ordering::Relaxed);
-            unreachable!("should not be reached");
         });
 
         manager.graceful_shutdown_with_timeout(timeout);
@@ -824,7 +823,7 @@ mod tests {
 
     #[test]
     fn test_graceful_shutdown_triggered_by_executor() {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
         let task_manager = TaskManager::new(runtime.handle().clone());
         let executor = task_manager.executor();
 

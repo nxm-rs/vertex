@@ -4,11 +4,12 @@ use futures_util::{
     FutureExt,
     future::{FusedFuture, Shared},
 };
+use parking_lot::{Condvar, Mutex};
 use std::{
     future::Future,
     pin::Pin,
     sync::{
-        Arc, Condvar, Mutex,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
     task::{Context, Poll, ready},
@@ -44,12 +45,17 @@ impl Future for GracefulShutdown {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         ready!(self.shutdown.poll_unpin(cx));
-        Poll::Ready(
-            self.get_mut()
-                .guard
-                .take()
-                .expect("Future polled after completion"),
-        )
+        match self.get_mut().guard.take() {
+            Some(guard) => Poll::Ready(guard),
+            // Already completed — safe idle if re-polled.
+            None => Poll::Pending,
+        }
+    }
+}
+
+impl FusedFuture for GracefulShutdown {
+    fn is_terminated(&self) -> bool {
+        self.guard.is_none()
     }
 }
 
@@ -99,9 +105,9 @@ impl GracefulShutdownCounter {
 
     /// Block until all graceful tasks complete. Returns `true`.
     pub(crate) fn wait(&self) -> bool {
-        let mut guard = self.mutex.lock().unwrap();
+        let mut guard = self.mutex.lock();
         while self.count.load(Ordering::SeqCst) > 0 {
-            guard = self.condvar.wait(guard).unwrap();
+            self.condvar.wait(&mut guard);
         }
         true
     }
@@ -110,14 +116,13 @@ impl GracefulShutdownCounter {
     /// Returns `true` if all tasks completed, `false` on timeout.
     pub(crate) fn wait_timeout(&self, timeout: Duration) -> bool {
         let deadline = std::time::Instant::now() + timeout;
-        let mut guard = self.mutex.lock().unwrap();
+        let mut guard = self.mutex.lock();
         while self.count.load(Ordering::SeqCst) > 0 {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
                 return false;
             }
-            let (new_guard, result) = self.condvar.wait_timeout(guard, remaining).unwrap();
-            guard = new_guard;
+            let result = self.condvar.wait_for(&mut guard, remaining);
             if result.timed_out() && self.count.load(Ordering::SeqCst) > 0 {
                 return false;
             }
@@ -256,6 +261,32 @@ mod tests {
         });
 
         assert!(counter.wait_timeout(Duration::from_secs(5)));
+    }
+
+    #[tokio::test]
+    async fn test_graceful_shutdown_is_fused() {
+        let (signal, shutdown) = signal();
+        let counter = Arc::new(GracefulShutdownCounter::new());
+        let gs = GracefulShutdown::new(
+            shutdown,
+            GracefulShutdownGuard::new(Arc::clone(&counter)),
+        );
+
+        assert!(!gs.is_terminated(), "should not be terminated before completion");
+
+        // Pin and poll to completion
+        let mut gs = gs;
+        signal.fire();
+        let guard = (&mut gs).await;
+        assert!(gs.is_terminated(), "should be terminated after completion");
+
+        // Re-polling after completion should not panic (returns Pending safely)
+        let waker = futures_util::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let poll = Pin::new(&mut gs).poll(&mut cx);
+        assert!(poll.is_pending(), "re-polling a completed GracefulShutdown should return Pending");
+
+        drop(guard);
     }
 
     #[test]
