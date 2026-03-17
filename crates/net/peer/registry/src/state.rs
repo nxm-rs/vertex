@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use libp2p::{PeerId, swarm::ConnectionId};
 
-use crate::direction::ConnectionDirection;
+use crate::ConnectionDirection;
 
 /// Connection state for a peer in the registry.
 #[derive(Debug, Clone)]
@@ -80,16 +80,12 @@ impl<Id: Clone, R> ConnectionState<Id, R> {
         }
     }
 
-    pub fn is_connected(&self) -> bool {
-        matches!(self, Self::Connected { .. })
-    }
-
     pub fn is_active(&self) -> bool {
         matches!(self, Self::Active { .. })
     }
 
     /// Whether this connection is pending (awaiting handshake completion).
     pub fn is_pending(&self) -> bool {
-        self.is_connected()
+        matches!(self, Self::Connected { .. })
     }
 }

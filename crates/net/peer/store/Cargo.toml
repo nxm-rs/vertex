@@ -11,8 +11,15 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+test-utils = ["dep:parking_lot"]
+
 [dependencies]
-parking_lot = { workspace = true }
+parking_lot = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 auto_impl = { workspace = true }
+
+[dev-dependencies]
+parking_lot = { workspace = true }

@@ -9,9 +9,9 @@ use std::time::Instant;
 use libp2p::{PeerId, swarm::ConnectionId};
 use parking_lot::RwLock;
 
-use crate::direction::ConnectionDirection;
-use crate::result::ActivateResult;
-use crate::state::ConnectionState;
+use crate::ActivateResult;
+use crate::ConnectionDirection;
+use crate::ConnectionState;
 
 /// Registry key distinguishing known-ID from pending connections.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
