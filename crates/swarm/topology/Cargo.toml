@@ -15,7 +15,9 @@ vertex-swarm-api.workspace = true
 vertex-observability.workspace = true
 vertex-swarm-identity.workspace = true
 vertex-swarm-spec.workspace = true
+vertex-net-dialer.workspace = true
 vertex-net-local.workspace = true
+vertex-net-utils.workspace = true
 vertex-net-peer-store.workspace = true
 vertex-tasks.workspace = true
 vertex-swarm-net-handshake.workspace = true
@@ -25,7 +27,7 @@ vertex-swarm-net-hive.workspace = true
 vertex-swarm-net-pingpong.workspace = true
 vertex-swarm-peer.workspace = true
 vertex-swarm-peer-manager.workspace = true
-vertex-swarm-peer-registry.workspace = true
+vertex-net-peer-registry.workspace = true
 vertex-swarm-peer-score.workspace = true
 nectar-primitives.workspace = true
 
@@ -35,12 +37,14 @@ libp2p.workspace = true
 ## async
 futures.workspace = true
 tokio.workspace = true
+if-watch.workspace = true
 
 ## crypto/primitives
 alloy-primitives.workspace = true
 bytes.workspace = true
 
 ## misc
+async-trait = "0.1"
 thiserror.workspace = true
 rand.workspace = true
 parking_lot.workspace = true

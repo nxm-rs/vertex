@@ -25,7 +25,7 @@ use super::{
 use crate::metrics::{phase, record_phase_transition};
 
 /// Connection phase for capacity tracking.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 enum ConnectionPhase {
     Dialing,
     Handshaking,
@@ -33,108 +33,56 @@ enum ConnectionPhase {
 }
 
 /// Phase of a connection being considered for eviction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EvictionPhase {
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum EvictionPhase {
     Handshaking,
     Active,
 }
 
 /// A peer identified for eviction due to bin overpopulation.
-#[derive(Debug, Clone)]
-pub struct EvictionCandidate {
-    pub overlay: OverlayAddress,
-    pub bin: u8,
-    pub phase: EvictionPhase,
+pub(crate) struct EvictionCandidate {
+    pub(crate) overlay: OverlayAddress,
+    pub(crate) bin: u8,
+    pub(crate) phase: EvictionPhase,
 }
 
-/// Per-bin atomic counters for connection phases.
-struct BinCounts {
-    dialing: Vec<AtomicUsize>,
-    handshaking: Vec<AtomicUsize>,
-    active: Vec<AtomicUsize>,
+fn atomic_inc(vec: &[AtomicUsize], po: u8) {
+    if let Some(c) = vec.get(po as usize) {
+        c.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
-impl BinCounts {
-    fn new(num_bins: usize) -> Self {
-        Self {
-            dialing: (0..num_bins).map(|_| AtomicUsize::new(0)).collect(),
-            handshaking: (0..num_bins).map(|_| AtomicUsize::new(0)).collect(),
-            active: (0..num_bins).map(|_| AtomicUsize::new(0)).collect(),
-        }
+fn atomic_dec(vec: &[AtomicUsize], po: u8) {
+    if let Some(c) = vec.get(po as usize) {
+        c.fetch_sub(1, Ordering::Relaxed);
     }
+}
 
-    fn effective_count(&self, po: u8) -> usize {
-        let idx = po as usize;
-        self.dialing.get(idx).map_or(0, |c| c.load(Ordering::Relaxed))
-            + self.handshaking.get(idx).map_or(0, |c| c.load(Ordering::Relaxed))
-            + self.active.get(idx).map_or(0, |c| c.load(Ordering::Relaxed))
-    }
+fn atomic_load(vec: &[AtomicUsize], po: u8) -> usize {
+    vec.get(po as usize).map_or(0, |c| c.load(Ordering::Relaxed))
+}
 
-    fn inc_dialing(&self, po: u8) {
-        if let Some(c) = self.dialing.get(po as usize) {
-            c.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    fn dec_dialing(&self, po: u8) {
-        if let Some(c) = self.dialing.get(po as usize) {
-            c.fetch_sub(1, Ordering::Relaxed);
-        }
-    }
-
-    fn inc_handshaking(&self, po: u8) {
-        if let Some(c) = self.handshaking.get(po as usize) {
-            c.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    fn dec_handshaking(&self, po: u8) {
-        if let Some(c) = self.handshaking.get(po as usize) {
-            c.fetch_sub(1, Ordering::Relaxed);
-        }
-    }
-
-    fn inc_active(&self, po: u8) {
-        if let Some(c) = self.active.get(po as usize) {
-            c.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    fn dec_active(&self, po: u8) {
-        if let Some(c) = self.active.get(po as usize) {
-            c.fetch_sub(1, Ordering::Relaxed);
-        }
-    }
-
-    #[cfg(test)]
-    fn active_count(&self, po: u8) -> usize {
-        self.active.get(po as usize).map_or(0, |c| c.load(Ordering::Relaxed))
-    }
+fn make_atomic_vec(n: usize) -> Vec<AtomicUsize> {
+    (0..n).map(|_| AtomicUsize::new(0)).collect()
 }
 
 /// Kademlia-based peer routing table.
-///
-/// Maintains connected peer set and provides connection decisions
-/// based on Kademlia distance metrics. Known peers are tracked by PeerManager.
 pub struct KademliaRouting<I: SwarmIdentity> {
     identity: I,
-    /// Maximum proximity order from the network spec.
     max_po: u8,
-    /// Connected peers tracked by proximity bin.
     pub(crate) connected_peers: ProximityIndex,
-    /// All known peers - source of truth for dial candidates.
-    peer_manager: Arc<PeerManager>,
+    peer_manager: Arc<PeerManager<I>>,
     depth: AtomicU8,
     config: KademliaConfig,
-    /// Per-bin FIFO candidate queues with dedup.
     candidate_queues: CandidateQueues,
-    bin_counts: BinCounts,
-    /// Tracks overlay → connection phase for state transitions.
+    dialing_counts: Vec<AtomicUsize>,
+    handshaking_counts: Vec<AtomicUsize>,
+    active_counts: Vec<AtomicUsize>,
     connection_phases: RwLock<HashMap<OverlayAddress, ConnectionPhase>>,
 }
 
 impl<I: SwarmIdentity> KademliaRouting<I> {
-    pub fn new(identity: I, config: KademliaConfig, peer_manager: Arc<PeerManager>) -> Arc<Self> {
+    pub fn new(identity: I, config: KademliaConfig, peer_manager: Arc<PeerManager<I>>) -> Arc<Self> {
         let max_po = identity.spec().max_po();
         let local_overlay = identity.overlay_address();
         let num_bins = (max_po as usize) + 1;
@@ -148,7 +96,9 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
             depth: AtomicU8::new(0),
             config,
             candidate_queues: CandidateQueues::new(num_bins, 16),
-            bin_counts: BinCounts::new(num_bins),
+            dialing_counts: make_atomic_vec(num_bins),
+            handshaking_counts: make_atomic_vec(num_bins),
+            active_counts: make_atomic_vec(num_bins),
             connection_phases: RwLock::new(HashMap::new()),
         })
     }
@@ -163,6 +113,12 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         &self.config.limits
     }
 
+    fn effective_count(&self, po: u8) -> usize {
+        atomic_load(&self.dialing_counts, po)
+            + atomic_load(&self.handshaking_counts, po)
+            + atomic_load(&self.active_counts, po)
+    }
+
     fn base(&self) -> OverlayAddress {
         self.identity.overlay_address()
     }
@@ -171,12 +127,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         self.base().proximity(peer).min(self.max_po)
     }
 
-    /// Capture state once for both neighbor and balanced candidate selection.
-    ///
-    /// Uses lightweight capture: banned/in_backoff sets are left empty because
-    /// candidate selection uses `is_eligible_live()` with O(1) DashMap lookups
-    /// instead of consulting snapshot sets. This avoids two full DashMap scans
-    /// per tick.
+    /// Capture state for candidate selection (lightweight: banned/backoff checked live).
     #[tracing::instrument(skip(self), level = "trace")]
     fn capture_candidate_state(&self, effective_depth: u8) -> CandidateSnapshot {
         let queued_set = self.candidate_queues.snapshot_queued();
@@ -192,8 +143,6 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
             limits: LimitsSnapshot::capture(&self.config.limits, effective_depth),
             in_progress,
             queued: queued_set,
-            banned: HashSet::new(),
-            in_backoff: HashSet::new(),
         }
     }
 
@@ -211,7 +160,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         use std::fmt::Write;
 
         let connected_bins = self.connected_peers.bin_sizes();
-        let known_bins = self.peer_manager.bin_sizes();
+        let known_bins = self.peer_manager.index().bin_sizes();
         let depth = self.depth();
 
         let mut bin_status = String::with_capacity(128);
@@ -247,20 +196,25 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         );
     }
 
-    /// Identify peers to evict from overpopulated bins.
-    ///
-    /// For each bin below depth where effective_count > target:
-    /// 1. Select Handshaking peers first (cheaper to close)
-    /// 2. Then Active peers sorted by score ascending (lowest score first)
-    ///
-    /// Caller filters protected peers (Bootnode/Trusted) and issues disconnects.
+    /// Identify peers to evict from overpopulated bins (handshaking first, then lowest-score active).
     pub fn eviction_candidates(&self) -> Vec<EvictionCandidate> {
         let depth = self.depth.load(Ordering::Relaxed);
         let phases = self.connection_phases.read();
         let mut candidates = Vec::new();
 
+        // Pre-group handshaking peers by bin: O(in_progress) total
+        let mut handshaking_by_bin: HashMap<u8, Vec<OverlayAddress>> = HashMap::new();
+        for (overlay, phase) in phases.iter() {
+            if *phase == ConnectionPhase::Handshaking {
+                handshaking_by_bin
+                    .entry(self.proximity(overlay))
+                    .or_default()
+                    .push(*overlay);
+            }
+        }
+
         for bin in 0..depth {
-            let effective = self.bin_counts.effective_count(bin);
+            let effective = self.effective_count(bin);
             let surplus = self.config.limits.surplus(bin, depth, effective);
             if surplus == 0 {
                 continue;
@@ -268,12 +222,9 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
 
             let mut remaining = surplus;
 
-            // Phase 1: Handshaking peers in this bin
-            for (overlay, phase) in phases.iter() {
-                if remaining == 0 {
-                    break;
-                }
-                if *phase == ConnectionPhase::Handshaking && self.proximity(overlay) == bin {
+            // Phase 1: Handshaking peers in this bin (O(1) lookup)
+            if let Some(handshaking) = handshaking_by_bin.get(&bin) {
+                for overlay in handshaking.iter().take(remaining) {
                     candidates.push(EvictionCandidate {
                         overlay: *overlay,
                         bin,
@@ -283,7 +234,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
                 }
             }
 
-            // Phase 2: Active peers sorted by score ascending
+            // Phase 2: Active peers with lowest scores (O(n) partial selection)
             if remaining > 0 {
                 let mut active_in_bin: Vec<_> = self
                     .connected_peers
@@ -295,10 +246,14 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
                     })
                     .collect();
 
-                active_in_bin
-                    .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                if remaining < active_in_bin.len() {
+                    active_in_bin.select_nth_unstable_by(remaining, |a, b| {
+                        a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    active_in_bin.truncate(remaining);
+                }
 
-                for (overlay, _) in active_in_bin.into_iter().take(remaining) {
+                for (overlay, _) in active_in_bin {
                     candidates.push(EvictionCandidate {
                         overlay,
                         bin,
@@ -315,14 +270,16 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         self.depth.load(Ordering::Relaxed)
     }
 
+    /// Connected peers in the neighborhood (bins >= depth).
     pub fn neighbors(&self, depth: u8) -> Vec<OverlayAddress> {
-        self.connected_peers
-            .iter_by_proximity()
-            .filter(|(po, _)| *po >= depth)
-            .map(|(_, peer)| peer)
-            .collect()
+        let mut result = Vec::new();
+        for po in depth..=self.max_po {
+            result.extend(self.connected_peers.peers_in_bin(po));
+        }
+        result
     }
 
+    /// Top `count` connected peers closest to `address` by proximity.
     pub fn closest_to(&self, address: &ChunkAddress, count: usize) -> Vec<OverlayAddress> {
         let mut peers_with_distance: Vec<_> = self
             .connected_peers
@@ -334,18 +291,23 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
             })
             .collect();
 
+        if count < peers_with_distance.len() {
+            // O(n) partition to find the top-k elements
+            peers_with_distance.select_nth_unstable_by(count, |a, b| b.1.cmp(&a.1));
+            peers_with_distance.truncate(count);
+        }
+        // Sort just the top-k: O(k log k)
         peers_with_distance.sort_by(|a, b| b.1.cmp(&a.1));
 
         peers_with_distance
             .into_iter()
-            .take(count)
             .map(|(peer, _)| peer)
             .collect()
     }
 
     pub fn bin_sizes(&self) -> Vec<(usize, usize)> {
         let connected = self.connected_peers.bin_sizes();
-        let known = self.peer_manager.bin_sizes();
+        let known = self.peer_manager.index().bin_sizes();
         connected
             .into_iter()
             .zip(known)
@@ -356,25 +318,20 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
     pub fn bin_peer_counts(&self, po: u8) -> (usize, usize) {
         (
             self.connected_peers.bin_size(po),
-            self.peer_manager.bin_size(po),
+            self.peer_manager.index().bin_size(po),
         )
     }
 
-    /// Get connection phase counts for a specific bin.
-    ///
-    /// Returns (dialing, handshaking, active) counts for the given proximity order.
+    /// Returns (dialing, handshaking, active) counts for bin.
     pub fn bin_phase_counts(&self, po: u8) -> (usize, usize, usize) {
-        let idx = po as usize;
         (
-            self.bin_counts.dialing.get(idx).map_or(0, |c| c.load(Ordering::Relaxed)),
-            self.bin_counts.handshaking.get(idx).map_or(0, |c| c.load(Ordering::Relaxed)),
-            self.bin_counts.active.get(idx).map_or(0, |c| c.load(Ordering::Relaxed)),
+            atomic_load(&self.dialing_counts, po),
+            atomic_load(&self.handshaking_counts, po),
+            atomic_load(&self.active_counts, po),
         )
     }
 
-    /// Get connection phase counts for all bins.
-    ///
-    /// Returns a vector of (po, dialing, handshaking, active) for each bin.
+    /// Phase counts for all bins: (po, dialing, handshaking, active).
     pub fn all_bin_phases(&self) -> Vec<(u8, usize, usize, usize)> {
         (0..=self.max_po)
             .map(|po| {
@@ -386,25 +343,12 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
 
     /// Get total known peers count (from PeerManager).
     pub fn known_peers_total(&self) -> usize {
-        self.peer_manager.len()
+        self.peer_manager.index().len()
     }
 
     /// Get total connected peers count.
     pub fn connected_peers_total(&self) -> usize {
         self.connected_peers.len()
-    }
-
-    /// Get proximity index cache statistics.
-    pub fn proximity_cache_stats(&self) -> vertex_swarm_peer_manager::ProximityIndexCacheStats {
-        self.connected_peers.cache_stats()
-    }
-
-    pub fn connected_peers_in_bin(&self, po: u8) -> Vec<String> {
-        self.connected_peers
-            .peers_in_bin(po)
-            .iter()
-            .map(|addr| hex::encode(addr.as_slice()))
-            .collect()
     }
 
     pub fn connected_overlays_in_bin(&self, po: u8) -> Vec<OverlayAddress> {
@@ -414,7 +358,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
     fn peer_connected(&self, peer: OverlayAddress) {
         let po = self.proximity(&peer);
 
-        if self.connected_peers.add(peer) {
+        if self.connected_peers.add(peer).is_ok() {
             let old_depth = self.depth.load(Ordering::Relaxed);
             let new_depth = self.recalc_depth();
             self.depth.store(new_depth, Ordering::Relaxed);
@@ -462,7 +406,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
 impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
     fn try_reserve_dial(&self, overlay: &OverlayAddress, _node_type: SwarmNodeType) -> bool {
         let po = self.proximity(overlay);
-        let effective = self.bin_counts.effective_count(po);
+        let effective = self.effective_count(po);
 
         let mut phases = self.connection_phases.write();
 
@@ -475,7 +419,7 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
             return false;
         }
 
-        self.bin_counts.inc_dialing(po);
+        atomic_inc(&self.dialing_counts, po);
         phases.insert(*overlay, ConnectionPhase::Dialing);
         record_phase_transition(phase::NONE, phase::DIALING);
         true
@@ -485,7 +429,7 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
         let mut phases = self.connection_phases.write();
         if let Some(ConnectionPhase::Dialing) = phases.remove(overlay) {
             let po = self.proximity(overlay);
-            self.bin_counts.dec_dialing(po);
+            atomic_dec(&self.dialing_counts, po);
             record_phase_transition(phase::DIALING, phase::NONE);
         }
     }
@@ -496,8 +440,8 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
 
         if let Some(phase) = phases.get_mut(overlay) {
             if *phase == ConnectionPhase::Dialing {
-                self.bin_counts.dec_dialing(po);
-                self.bin_counts.inc_handshaking(po);
+                atomic_dec(&self.dialing_counts, po);
+                atomic_inc(&self.handshaking_counts, po);
                 *phase = ConnectionPhase::Handshaking;
                 record_phase_transition(phase::DIALING, phase::HANDSHAKING);
             }
@@ -510,8 +454,8 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
 
         if let Some(phase) = phases.get_mut(overlay) {
             if *phase == ConnectionPhase::Handshaking {
-                self.bin_counts.dec_handshaking(po);
-                self.bin_counts.inc_active(po);
+                atomic_dec(&self.handshaking_counts, po);
+                atomic_inc(&self.active_counts, po);
                 *phase = ConnectionPhase::Active;
                 record_phase_transition(phase::HANDSHAKING, phase::ACTIVE);
             }
@@ -522,7 +466,7 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
         let mut phases = self.connection_phases.write();
         if let Some(ConnectionPhase::Handshaking) = phases.remove(overlay) {
             let po = self.proximity(overlay);
-            self.bin_counts.dec_handshaking(po);
+            atomic_dec(&self.handshaking_counts, po);
             record_phase_transition(phase::HANDSHAKING, phase::NONE);
         }
     }
@@ -533,15 +477,15 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
             let po = self.proximity(overlay);
             match phase {
                 ConnectionPhase::Dialing => {
-                    self.bin_counts.dec_dialing(po);
+                    atomic_dec(&self.dialing_counts, po);
                     record_phase_transition(phase::DIALING, phase::NONE);
                 }
                 ConnectionPhase::Handshaking => {
-                    self.bin_counts.dec_handshaking(po);
+                    atomic_dec(&self.handshaking_counts, po);
                     record_phase_transition(phase::HANDSHAKING, phase::NONE);
                 }
                 ConnectionPhase::Active => {
-                    self.bin_counts.dec_active(po);
+                    atomic_dec(&self.active_counts, po);
                     record_phase_transition(phase::ACTIVE, phase::NONE);
                 }
             }
@@ -550,7 +494,7 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
 
     fn should_accept_inbound(&self, overlay: &OverlayAddress, _node_type: SwarmNodeType) -> bool {
         let po = self.proximity(overlay);
-        let effective = self.bin_counts.effective_count(po);
+        let effective = self.effective_count(po);
 
         let phases = vertex_observability::timed_read(
             &self.connection_phases,
@@ -565,7 +509,7 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
         let mut phases = self.connection_phases.write();
 
         if !phases.contains_key(overlay) {
-            self.bin_counts.inc_handshaking(po);
+            atomic_inc(&self.handshaking_counts, po);
             phases.insert(*overlay, ConnectionPhase::Handshaking);
             record_phase_transition(phase::NONE, phase::HANDSHAKING);
         }
@@ -575,7 +519,7 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
 impl<I: SwarmIdentity> SwarmRouting<I> for KademliaRouting<I> {
     fn should_accept_peer(&self, peer: &OverlayAddress, _node_type: SwarmNodeType) -> bool {
         let po = self.proximity(peer);
-        let effective_count = self.bin_counts.effective_count(po);
+        let effective_count = self.effective_count(po);
         // Use depth-aware limits for peer acceptance
         self.config.limits.needs_more(po, self.depth(), effective_count)
     }
@@ -608,14 +552,11 @@ impl<I: SwarmIdentity + 'static> KademliaRouting<I> {
     }
 
     /// Evaluate connections and enqueue candidates into per-bin queues.
-    ///
-    /// Uses effective depth (without mutating shared limits) for allocation.
-    /// Called by the background evaluator task.
     #[tracing::instrument(skip(self), level = "debug")]
     pub(crate) fn evaluate_connections(&self) {
         // Use effective depth (max of connected and estimated) for allocation
         let connected_depth = self.depth.load(Ordering::Relaxed);
-        let known_bin_sizes = self.peer_manager.bin_sizes();
+        let known_bin_sizes = self.peer_manager.index().bin_sizes();
         let effective_depth = self.config.limits.effective_depth(connected_depth, &known_bin_sizes);
 
         if effective_depth != connected_depth {
@@ -637,7 +578,7 @@ impl<I: SwarmIdentity + 'static> KademliaRouting<I> {
         select_neighborhood_candidates(
             &mut selector,
             &self.peer_manager,
-            |po| self.bin_counts.effective_count(po),
+            |po| self.effective_count(po),
             self.max_po,
         );
         let neighbor_candidates = selector.len();
@@ -645,7 +586,7 @@ impl<I: SwarmIdentity + 'static> KademliaRouting<I> {
         select_balanced_candidates(
             &mut selector,
             &self.peer_manager,
-            |po| self.bin_counts.effective_count(po),
+            |po| self.effective_count(po),
         );
         let balanced_candidates = selector.len() - neighbor_candidates;
 
@@ -681,9 +622,9 @@ mod tests {
     fn make_routing(
         base: OverlayAddress,
         config: KademliaConfig,
-    ) -> (Arc<KademliaRouting<MockIdentity>>, Arc<PeerManager>) {
+    ) -> (Arc<KademliaRouting<MockIdentity>>, Arc<PeerManager<MockIdentity>>) {
         let identity = MockIdentity::with_overlay(base);
-        let peer_manager = PeerManager::new(base, 31);
+        let peer_manager = PeerManager::new(&identity);
         let routing = KademliaRouting::new(identity, config, peer_manager.clone());
         (routing, peer_manager)
     }
@@ -710,7 +651,7 @@ mod tests {
         // Add peers via PeerManager (not routing.add_peers which is now no-op)
         pm.store_discovered_peer(make_swarm_peer_minimal(0x80));
         pm.store_discovered_peer(make_swarm_peer_minimal(0x40));
-        assert_eq!(pm.stats().total_peers, 2);
+        assert_eq!(pm.index().len(), 2);
         assert_eq!(routing.connected_peers.len(), 0);
 
         SwarmRouting::connected(&*routing, peer1);
@@ -757,20 +698,20 @@ mod tests {
 
         // Reserve dial
         assert!(routing.try_reserve_dial(&peer, SwarmNodeType::Storer));
-        assert_eq!(routing.bin_counts.effective_count(0), 1);
+        assert_eq!(routing.effective_count(0), 1);
 
         // Transition to handshaking
         routing.dial_connected(&peer);
-        assert_eq!(routing.bin_counts.effective_count(0), 1);
+        assert_eq!(routing.effective_count(0), 1);
 
         // Transition to active
         routing.handshake_completed(&peer);
-        assert_eq!(routing.bin_counts.effective_count(0), 1);
-        assert_eq!(routing.bin_counts.active_count(0), 1);
+        assert_eq!(routing.effective_count(0), 1);
+        assert_eq!(atomic_load(&routing.active_counts, 0), 1);
 
         // Disconnect
         RoutingCapacity::disconnected(&*routing, &peer);
-        assert_eq!(routing.bin_counts.effective_count(0), 0);
+        assert_eq!(routing.effective_count(0), 0);
     }
 
     #[test]
@@ -815,12 +756,12 @@ mod tests {
         SwarmRouting::connected(&*routing, peer);
         assert!(routing.connected_peers.exists(&peer));
         // Peer still in PeerManager
-        assert!(pm.contains(&peer));
+        assert!(pm.index().exists(&peer));
 
         SwarmRouting::on_peer_disconnected(&*routing, &peer);
         assert!(!routing.connected_peers.exists(&peer));
         // Peer still in PeerManager after disconnect
-        assert!(pm.contains(&peer));
+        assert!(pm.index().exists(&peer));
     }
 
     #[test]
@@ -970,15 +911,15 @@ mod tests {
     /// Helper to directly place a peer as Active in routing state (bypasses capacity checks).
     fn force_active(routing: &KademliaRouting<MockIdentity>, peer: OverlayAddress) {
         let po = routing.proximity(&peer);
-        routing.bin_counts.inc_active(po);
+        atomic_inc(&routing.active_counts, po);
         routing.connection_phases.write().insert(peer, ConnectionPhase::Active);
-        routing.connected_peers.add(peer);
+        let _ = routing.connected_peers.add(peer);
     }
 
     /// Helper to directly place a peer as Handshaking in routing state.
     fn force_handshaking(routing: &KademliaRouting<MockIdentity>, peer: OverlayAddress) {
         let po = routing.proximity(&peer);
-        routing.bin_counts.inc_handshaking(po);
+        atomic_inc(&routing.handshaking_counts, po);
         routing.connection_phases.write().insert(peer, ConnectionPhase::Handshaking);
     }
 

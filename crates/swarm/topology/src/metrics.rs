@@ -12,7 +12,7 @@ use vertex_observability::labels::outcome;
 use vertex_swarm_primitives::SwarmNodeType;
 
 use crate::DialReason;
-use crate::error::{DisconnectReason, RejectionReason};
+use crate::error::{DialError, DisconnectReason, RejectionReason};
 use crate::events::{ConnectionDirection, TopologyEvent};
 
 /// Pre-computed proximity order labels (`&'static str`) to avoid per-call allocation.
@@ -29,9 +29,6 @@ pub(crate) fn po_label(po: u8) -> &'static str {
 }
 
 /// Histogram bucket configurations for topology metrics.
-///
-/// Collect these at recorder install time via
-/// [`vertex_observability::install_prometheus_recorder_with_buckets`].
 pub const HISTOGRAM_BUCKETS: &[HistogramBucketConfig] = &[
     HistogramBucketConfig {
         suffix: "topology_connection_duration_seconds",
@@ -75,9 +72,6 @@ fn saturating_decrement(counter: &AtomicU64) {
 }
 
 /// Metrics recorder for topology events.
-///
-/// Maintains gauges for current state and records counters/histograms
-/// for events as they occur.
 pub struct TopologyMetrics {
     connected_storers: AtomicU64,
     connected_clients: AtomicU64,
@@ -122,9 +116,10 @@ impl TopologyMetrics {
                 dial_duration,
                 addrs,
                 reason,
+                error,
                 ..
             } => {
-                self.record_dial_failed(*dial_duration, addrs.len(), *reason);
+                self.record_dial_failed(*dial_duration, addrs.len(), *reason, error);
             }
             TopologyEvent::PingCompleted { rtt, .. } => {
                 self.record_ping_completed(*rtt);
@@ -143,14 +138,7 @@ impl TopologyMetrics {
         };
 
         let dir_label = dir.label_value();
-        let storer_label: &'static str = SwarmNodeType::Storer.into();
-        let client_label: &'static str = SwarmNodeType::Client.into();
-
-        // Update gauges
-        gauge!("topology_connected_peers", "node_type" => storer_label)
-            .set(self.connected_storers.load(Ordering::Relaxed) as f64);
-        gauge!("topology_connected_peers", "node_type" => client_label)
-            .set(self.connected_clients.load(Ordering::Relaxed) as f64);
+        self.push_connected_peer_gauges();
 
         // Record connection event with direction
         counter!("topology_connections_total", "node_type" => node_type_label, "direction" => dir_label, "outcome" => outcome::SUCCESS)
@@ -182,14 +170,7 @@ impl TopologyMetrics {
             SwarmNodeType::Client.into()
         };
 
-        let storer_label: &'static str = SwarmNodeType::Storer.into();
-        let client_label: &'static str = SwarmNodeType::Client.into();
-
-        // Update gauges
-        gauge!("topology_connected_peers", "node_type" => storer_label)
-            .set(self.connected_storers.load(Ordering::Relaxed) as f64);
-        gauge!("topology_connected_peers", "node_type" => client_label)
-            .set(self.connected_clients.load(Ordering::Relaxed) as f64);
+        self.push_connected_peer_gauges();
 
         // Record disconnection counter with connection type and reason
         counter!(
@@ -224,12 +205,14 @@ impl TopologyMetrics {
         dial_duration: Option<Duration>,
         addr_count: usize,
         reason: Option<DialReason>,
+        error: &DialError,
     ) {
         let reason_label = reason
             .map(|r| r.label_value())
             .unwrap_or("unknown");
+        let error_label = error.label_value();
 
-        counter!("topology_dial_failures_total", "reason" => reason_label).increment(1);
+        counter!("topology_dial_failures_total", "reason" => reason_label, "error_type" => error_label).increment(1);
 
         if let Some(duration) = dial_duration {
             histogram!("topology_dial_duration_seconds", "outcome" => outcome::FAILURE)
@@ -249,18 +232,14 @@ impl TopologyMetrics {
         histogram!("topology_ping_rtt_seconds").record(rtt.as_secs_f64());
     }
 
-    /// Record total connected peers (for periodic gauge updates).
-    pub fn set_connected_peers(&self, storers: u64, clients: u64) {
-        self.connected_storers.store(storers, Ordering::Relaxed);
-        self.connected_clients.store(clients, Ordering::Relaxed);
-
+    /// Push both `topology_connected_peers` gauge variants from current atomics.
+    fn push_connected_peer_gauges(&self) {
         let storer_label: &'static str = SwarmNodeType::Storer.into();
         let client_label: &'static str = SwarmNodeType::Client.into();
-
         gauge!("topology_connected_peers", "node_type" => storer_label)
-            .set(storers as f64);
+            .set(self.connected_storers.load(Ordering::Relaxed) as f64);
         gauge!("topology_connected_peers", "node_type" => client_label)
-            .set(clients as f64);
+            .set(self.connected_clients.load(Ordering::Relaxed) as f64);
     }
 
     /// Record a disconnect for a connection with unknown overlay address.
@@ -269,6 +248,15 @@ impl TopologyMetrics {
             "topology_disconnections_total",
             "connection_type" => "unknown",
             "reason" => "no_overlay",
+        )
+        .increment(1);
+    }
+
+    /// Record an early disconnect (post-handshake connection that failed quickly).
+    pub fn record_early_disconnect(&self, reason: DisconnectReason) {
+        counter!(
+            "topology_early_disconnects_total",
+            "reason" => reason.label_value(),
         )
         .increment(1);
     }
@@ -288,54 +276,28 @@ impl TopologyMetrics {
         self.connected_clients.load(Ordering::Relaxed)
     }
 
-    /// Record gossip verifier statistics.
-    pub fn record_gossip_verifier_stats(
-        &self,
-        pending: usize,
-        in_flight: usize,
-        gossipers: usize,
-        estimated_memory_bytes: usize,
-    ) {
-        gauge!("topology_gossip_pending").set(pending as f64);
-        gauge!("topology_gossip_in_flight").set(in_flight as f64);
-        gauge!("topology_gossip_tracked_gossipers").set(gossipers as f64);
-        gauge!("topology_memory_gossip_verifier_bytes").set(estimated_memory_bytes as f64);
-    }
-
-    /// Record proximity index cache statistics.
-    pub fn record_proximity_cache_stats(&self, cached_items: usize, cache_valid: bool, generation: u64) {
-        gauge!("topology_proximity_cached_items").set(cached_items as f64);
-        gauge!("topology_proximity_cache_valid").set(if cache_valid { 1.0 } else { 0.0 });
-        gauge!("topology_proximity_generation").set(generation as f64);
-    }
-
-    /// Record peer manager memory statistics.
-    pub fn record_peer_manager_stats(
-        &self,
-        total_peers: usize,
-        banned_peers: usize,
-        estimated_entries_bytes: usize,
-        estimated_bin_index_bytes: usize,
-    ) {
-        gauge!("topology_known_peers_total").set(total_peers as f64);
-        gauge!("topology_banned_peers").set(banned_peers as f64);
-        gauge!("topology_memory_peer_entries_bytes").set(estimated_entries_bytes as f64);
-        gauge!("topology_memory_bin_index_bytes").set(estimated_bin_index_bytes as f64);
-    }
-
-    /// Record connection registry statistics.
-    pub fn record_connection_registry_stats(&self, estimated_memory_bytes: usize) {
-        gauge!("topology_memory_connection_registry_bytes").set(estimated_memory_bytes as f64);
+    /// Decrement the connected counter for a replaced connection and push gauges.
+    ///
+    /// Called when `ActivateResult::Replaced` occurs — the old connection's `PeerReady`
+    /// increment will never be balanced by a `PeerDisconnected` because the registry
+    /// entry was already overwritten.
+    pub fn decrement_connected(&self, node_type: SwarmNodeType) {
+        if node_type.requires_storage() {
+            saturating_decrement(&self.connected_storers);
+        } else {
+            saturating_decrement(&self.connected_clients);
+        }
+        self.push_connected_peer_gauges();
     }
 }
 
 /// Record connection phase transition metrics.
-pub fn record_phase_transition(from: &'static str, to: &'static str) {
+pub(crate) fn record_phase_transition(from: &'static str, to: &'static str) {
     counter!("topology_phase_transitions_total", "from" => from, "to" => to).increment(1);
 }
 
 /// Phase transition labels.
-pub mod phase {
+pub(crate) mod phase {
     pub const NONE: &str = "none";
     pub const DIALING: &str = "dialing";
     pub const HANDSHAKING: &str = "handshaking";
@@ -354,20 +316,8 @@ mod tests {
     use super::*;
     use crate::error::DialError;
     use crate::events::ConnectionDirection;
-    use libp2p::{Multiaddr, PeerId};
-    use vertex_swarm_primitives::OverlayAddress;
-
-    fn test_overlay() -> OverlayAddress {
-        OverlayAddress::default()
-    }
-
-    fn test_peer_id() -> PeerId {
-        PeerId::random()
-    }
-
-    fn test_addr() -> Multiaddr {
-        "/ip4/127.0.0.1/tcp/1634".parse().unwrap()
-    }
+    use libp2p::Multiaddr;
+    use vertex_swarm_test_utils::{test_overlay, test_peer_id};
 
     #[test]
     fn test_metrics_new() {
@@ -382,8 +332,8 @@ mod tests {
         let metrics = TopologyMetrics::new();
 
         let event = TopologyEvent::PeerReady {
-            overlay: test_overlay(),
-            peer_id: test_peer_id(),
+            overlay: test_overlay(0),
+            peer_id: test_peer_id(1),
             node_type: SwarmNodeType::Storer,
             direction: ConnectionDirection::Outbound,
         };
@@ -393,8 +343,8 @@ mod tests {
         assert_eq!(metrics.connected_clients(), 0);
 
         let event = TopologyEvent::PeerReady {
-            overlay: test_overlay(),
-            peer_id: test_peer_id(),
+            overlay: test_overlay(0),
+            peer_id: test_peer_id(2),
             node_type: SwarmNodeType::Client,
             direction: ConnectionDirection::Inbound,
         };
@@ -432,8 +382,8 @@ mod tests {
         let metrics = TopologyMetrics::new();
 
         let event = TopologyEvent::DialFailed {
-            overlay: Some(test_overlay()),
-            addrs: vec![test_addr()],
+            overlay: Some(test_overlay(0)),
+            addrs: vec!["/ip4/127.0.0.1/tcp/1634".parse::<Multiaddr>().unwrap()],
             error: DialError::ConnectionRefused,
             dial_duration: Some(Duration::from_secs(5)),
             reason: Some(DialReason::Discovery),
@@ -450,7 +400,7 @@ mod tests {
 
         // Disconnect a client that was never connected — must not wrap to u64::MAX.
         let event = TopologyEvent::PeerDisconnected {
-            overlay: test_overlay(),
+            overlay: test_overlay(0),
             reason: DisconnectReason::ConnectionError,
             connection_duration: None,
             node_type: SwarmNodeType::Client,
@@ -462,11 +412,122 @@ mod tests {
     }
 
     #[test]
+    fn test_decrement_connected() {
+        let metrics = TopologyMetrics::new();
+
+        // Connect a storer and a client
+        metrics.record_event(&TopologyEvent::PeerReady {
+            overlay: test_overlay(1),
+            peer_id: test_peer_id(1),
+            node_type: SwarmNodeType::Storer,
+            direction: ConnectionDirection::Outbound,
+        });
+        metrics.record_event(&TopologyEvent::PeerReady {
+            overlay: test_overlay(2),
+            peer_id: test_peer_id(2),
+            node_type: SwarmNodeType::Client,
+            direction: ConnectionDirection::Outbound,
+        });
+        assert_eq!(metrics.connected_storers(), 1);
+        assert_eq!(metrics.connected_clients(), 1);
+
+        // Simulate connection replacement — decrement for replaced storer
+        metrics.decrement_connected(SwarmNodeType::Storer);
+        assert_eq!(metrics.connected_storers(), 0);
+        assert_eq!(metrics.connected_clients(), 1);
+
+        // Decrement for replaced client
+        metrics.decrement_connected(SwarmNodeType::Client);
+        assert_eq!(metrics.connected_clients(), 0);
+
+        // Saturates at zero
+        metrics.decrement_connected(SwarmNodeType::Storer);
+        assert_eq!(metrics.connected_storers(), 0);
+    }
+
+    /// Symmetric connect/disconnect with matching node types returns counters to zero.
+    #[test]
+    fn test_symmetric_connect_disconnect_returns_to_zero() {
+        let metrics = TopologyMetrics::new();
+
+        // Connect 3 storers and 2 clients
+        for i in 0..3 {
+            metrics.record_event(&TopologyEvent::PeerReady {
+                overlay: test_overlay(i),
+                peer_id: test_peer_id(i),
+                node_type: SwarmNodeType::Storer,
+                direction: ConnectionDirection::Outbound,
+            });
+        }
+        for i in 10..12 {
+            metrics.record_event(&TopologyEvent::PeerReady {
+                overlay: test_overlay(i),
+                peer_id: test_peer_id(i),
+                node_type: SwarmNodeType::Client,
+                direction: ConnectionDirection::Inbound,
+            });
+        }
+        assert_eq!(metrics.connected_storers(), 3);
+        assert_eq!(metrics.connected_clients(), 2);
+
+        // Disconnect all with matching types
+        for i in 0..3 {
+            metrics.record_event(&TopologyEvent::PeerDisconnected {
+                overlay: test_overlay(i),
+                reason: DisconnectReason::LocalClose,
+                connection_duration: Some(Duration::from_secs(60)),
+                node_type: SwarmNodeType::Storer,
+            });
+        }
+        for i in 10..12 {
+            metrics.record_event(&TopologyEvent::PeerDisconnected {
+                overlay: test_overlay(i),
+                reason: DisconnectReason::ConnectionError,
+                connection_duration: None,
+                node_type: SwarmNodeType::Client,
+            });
+        }
+        assert_eq!(metrics.connected_storers(), 0);
+        assert_eq!(metrics.connected_clients(), 0);
+    }
+
+    /// Demonstrates the bug scenario: connect as Storer, disconnect as Client causes drift.
+    /// The fix is in TopologyBehaviour which records node_type at PeerReady time.
+    #[test]
+    fn test_asymmetric_node_type_causes_drift() {
+        let metrics = TopologyMetrics::new();
+
+        // Peer connects as Storer (from handshake)
+        metrics.record_event(&TopologyEvent::PeerReady {
+            overlay: test_overlay(1),
+            peer_id: test_peer_id(1),
+            node_type: SwarmNodeType::Storer,
+            direction: ConnectionDirection::Outbound,
+        });
+        assert_eq!(metrics.connected_storers(), 1);
+        assert_eq!(metrics.connected_clients(), 0);
+
+        // BUG SCENARIO: If gossip overwrites node_type to Client in PeerManager,
+        // disconnect would decrement clients instead of storers.
+        // This test documents the asymmetry — TopologyBehaviour's connected_node_types
+        // HashMap prevents this by recording the type at connect time.
+        metrics.record_event(&TopologyEvent::PeerDisconnected {
+            overlay: test_overlay(1),
+            reason: DisconnectReason::ConnectionError,
+            connection_duration: Some(Duration::from_secs(120)),
+            node_type: SwarmNodeType::Client, // Wrong type!
+        });
+        // Storer counter is now stuck at 1 (drift), client saturated at 0
+        assert_eq!(metrics.connected_storers(), 1);
+        assert_eq!(metrics.connected_clients(), 0);
+    }
+
+    #[test]
     fn test_record_ping_completed() {
         let metrics = TopologyMetrics::new();
 
         let event = TopologyEvent::PingCompleted {
-            overlay: test_overlay(),
+            overlay: test_overlay(0),
             rtt: Duration::from_millis(50),
         };
 

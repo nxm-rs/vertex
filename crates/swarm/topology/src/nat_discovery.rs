@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use libp2p::{Multiaddr, PeerId};
 use libp2p::multiaddr::Protocol;
 use tracing::{debug, info, warn};
-use vertex_net_local::{AddressScope, LocalCapabilities, NetworkCapability, classify_multiaddr};
+use vertex_net_local::{AddressScope, IpCapability, LocalCapabilities, classify_multiaddr};
 use vertex_swarm_net_handshake::AddressProvider;
 
 fn strip_peer_id(addr: &Multiaddr) -> Multiaddr {
@@ -19,10 +19,8 @@ fn strip_peer_id(addr: &Multiaddr) -> Multiaddr {
 
 /// Manages local addresses for advertisement during handshake.
 ///
-/// Wraps LocalCapabilities and adds:
-/// - Static NAT addresses (configured at startup via --nat-addr)
-/// - Public connectivity status (confirmed via peer observation)
-/// - Local PeerId for appending /p2p/ to advertised addresses
+/// Wraps LocalCapabilities with static NAT addresses, public connectivity
+/// tracking, and local PeerId for advertised addresses.
 pub struct LocalAddressManager {
     local: Arc<LocalCapabilities>,
     nat_addrs: Vec<Multiaddr>,
@@ -71,16 +69,11 @@ impl LocalAddressManager {
         &self.nat_addrs
     }
 
-    pub fn capability(&self) -> NetworkCapability {
+    pub fn capability(&self) -> IpCapability {
         self.local.capability()
     }
 
     /// Check if we have any public addresses to advertise.
-    ///
-    /// Returns true if any of:
-    /// - NAT addresses are configured (static public addresses)
-    /// - Local listen addresses include public IPs
-    /// - Confirmed public connectivity via peer observation
     pub fn has_public_addresses(&self) -> bool {
         // Check static NAT addresses
         if self.nat_addrs.iter().any(|a| classify_multiaddr(a) == Some(AddressScope::Public)) {
@@ -97,10 +90,7 @@ impl LocalAddressManager {
         self.has_public_connectivity.load(Ordering::Relaxed)
     }
 
-    /// Record an observed address reported by a peer.
-    ///
-    /// If the address is public, sets the public connectivity flag to indicate
-    /// we can reach the public internet. This enables dialing other public peers.
+    /// Record an observed address; sets public connectivity flag if address is public.
     pub fn on_observed_addr(&self, addr: &Multiaddr) {
         // Strip /p2p/ suffix if present for classification
         let addr_for_classify = strip_peer_id(addr);
@@ -117,16 +107,9 @@ impl LocalAddressManager {
         self.has_public_connectivity.load(Ordering::Relaxed)
     }
 
-    /// Select addresses to advertise to peer during handshake.
+    /// Select addresses to advertise to peer during handshake, filtered by peer scope.
     ///
-    /// Returns addresses appropriate for the peer's scope:
-    /// - NAT addresses for non-loopback peers
-    /// - Local listen addresses filtered by scope
-    ///
-    /// All returned addresses include `/p2p/{local_peer_id}` if set.
-    ///
-    /// NOTE: Does NOT include observed addresses. The handshake protocol
-    /// adds the peer-reported observed address as the LAST element.
+    /// Does NOT include observed addresses (handshake adds those separately).
     pub fn addresses_for_peer(&self, peer_addr: &Multiaddr) -> Vec<Multiaddr> {
         let peer_scope = classify_multiaddr(peer_addr).unwrap_or(AddressScope::Public);
 
@@ -177,14 +160,6 @@ impl LocalAddressManager {
             .chain(nat_addrs)
             .filter(|addr| seen.insert(addr.clone()))
             .collect()
-    }
-
-    /// Filter addresses that are dialable from our perspective.
-    pub fn filter_dialable<'a>(
-        &self,
-        addrs: &'a [Multiaddr],
-    ) -> impl Iterator<Item = &'a Multiaddr> {
-        self.local.filter_dialable(addrs)
     }
 
     /// Returns `true` if this address caused capability to become known.

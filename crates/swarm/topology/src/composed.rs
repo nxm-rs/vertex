@@ -23,7 +23,7 @@ pub enum ProtocolEvent {
 
 impl ProtocolEvent {
     /// Extract peer_id and connection_id from any protocol event.
-    pub fn peer_connection(&self) -> (libp2p::PeerId, libp2p::swarm::ConnectionId) {
+    pub(crate) fn peer_connection(&self) -> (libp2p::PeerId, libp2p::swarm::ConnectionId) {
         match self {
             Self::Handshake(HandshakeEvent::Completed { peer_id, connection_id, .. }) => (*peer_id, *connection_id),
             Self::Handshake(HandshakeEvent::Failed { peer_id, connection_id, .. }) => (*peer_id, *connection_id),
@@ -64,9 +64,9 @@ pub struct ProtocolBehaviours<I>
 where
     I: SwarmIdentity + Clone + 'static,
 {
-    pub handshake: HandshakeBehaviour<I, LocalAddressManager>,
-    pub hive: HiveBehaviour<I>,
-    pub pingpong: PingpongBehaviour,
+    pub(crate) handshake: HandshakeBehaviour<I, LocalAddressManager>,
+    pub(crate) hive: HiveBehaviour<I>,
+    pub(crate) pingpong: PingpongBehaviour,
 }
 
 impl<I> ProtocolBehaviours<I>
@@ -74,12 +74,12 @@ where
     I: SwarmIdentity + Clone + 'static,
 {
     /// Create new composed protocol behaviours.
-    pub fn new(
+    pub(crate) fn new(
         identity: Arc<I>,
         address_provider: Arc<LocalAddressManager>,
     ) -> Self {
         Self {
-            handshake: HandshakeBehaviour::new(identity.clone(), address_provider),
+            handshake: HandshakeBehaviour::new(identity.clone(), address_provider, "topology"),
             hive: HiveBehaviour::new(identity),
             pingpong: PingpongBehaviour::new(),
         }

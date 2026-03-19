@@ -1,31 +1,30 @@
 //! Kademlia-based peer routing for Swarm overlay network.
 
-pub mod args;
+mod args;
 mod candidate_queues;
 mod candidates;
 mod config;
 mod evaluator_task;
 mod routing;
 mod limits;
+pub(crate) mod peer_selection;
 
 pub use args::RoutingArgs;
-pub use candidates::{
+pub(crate) use candidates::{
     CandidateSelector, CandidateSnapshot, select_balanced_candidates,
     select_neighborhood_candidates,
 };
 pub use config::KademliaConfig;
 pub(crate) use evaluator_task::RoutingEvaluatorHandle;
-pub use routing::{EvictionCandidate, EvictionPhase, KademliaRouting};
-pub use limits::{DepthAwareLimits, LimitsSnapshot, DEFAULT_NOMINAL, DEFAULT_TOTAL_TARGET};
+pub(crate) use routing::KademliaRouting;
+pub(crate) use limits::DepthAwareLimits;
+pub(crate) use limits::LimitsSnapshot;
 
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
-/// Connection capacity management for routing algorithms.
-///
-/// Provides atomic capacity reservation to prevent TOCTOU races between
-/// checking bin availability and starting a connection.
-pub trait RoutingCapacity: Send + Sync {
+/// Connection capacity management with atomic reservation to prevent TOCTOU races.
+pub(crate) trait RoutingCapacity: Send + Sync {
     /// Atomically check capacity and reserve a dial slot.
     /// Returns true if reserved, false if at capacity or already tracking.
     fn try_reserve_dial(&self, overlay: &OverlayAddress, node_type: SwarmNodeType) -> bool;
@@ -52,11 +51,8 @@ pub trait RoutingCapacity: Send + Sync {
     fn reserve_inbound(&self, overlay: &OverlayAddress);
 }
 
-/// Internal routing operations for topology behaviour.
-///
-/// Extends RoutingCapacity with peer connection/disconnection notifications.
-/// Implemented by routing algorithms (e.g., Kademlia).
-pub trait SwarmRouting<I: SwarmIdentity>: RoutingCapacity {
+/// Routing operations: extends RoutingCapacity with peer connection/disconnection notifications.
+pub(crate) trait SwarmRouting<I: SwarmIdentity>: RoutingCapacity {
     /// Should we accept an inbound connection from this peer?
     fn should_accept_peer(&self, peer: &OverlayAddress, node_type: SwarmNodeType) -> bool;
 

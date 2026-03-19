@@ -1,10 +1,8 @@
 //! TOCTOU-safe candidate selection for peer dialing.
-//!
-//! Provides atomic state capture to prevent race conditions between
-//! checking peer eligibility and adding to candidates.
 
 use std::collections::{HashMap, HashSet};
 
+use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_peer_manager::{PeerManager, ProximityIndex};
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -12,85 +10,31 @@ use super::limits::LimitsSnapshot;
 
 /// Captured state for consistent candidate selection.
 ///
-/// Solves TOCTOU by capturing all relevant state at a single point in time:
-/// - Current depth and limits
-/// - Peers already in-progress (dialing/handshaking)
-/// - Peers already queued for dialing
-/// - Banned peers
-/// - Peers in backoff
-///
-/// Connected peers are checked live via `ProximityIndex::exists()` in the
-/// selector rather than being snapshotted, avoiding a full iteration of all
-/// bins to build a `HashSet`.
-#[derive(Clone)]
-pub struct CandidateSnapshot {
+/// Ban/backoff status is checked live via `PeerManager` rather than snapshotted,
+/// keeping this struct lightweight.
+pub(crate) struct CandidateSnapshot {
     /// Limits snapshot (includes depth at capture time).
-    pub limits: LimitsSnapshot,
+    pub(crate) limits: LimitsSnapshot,
     /// Peers currently in connection phases (dialing or handshaking).
-    pub in_progress: HashSet<OverlayAddress>,
+    pub(crate) in_progress: HashSet<OverlayAddress>,
     /// Peers already queued for dialing (not yet reserved).
-    pub queued: HashSet<OverlayAddress>,
-    /// Banned peers at snapshot time.
-    pub banned: HashSet<OverlayAddress>,
-    /// Peers in backoff at snapshot time.
-    pub in_backoff: HashSet<OverlayAddress>,
+    pub(crate) queued: HashSet<OverlayAddress>,
 }
 
 impl CandidateSnapshot {
-    /// Check if peer is eligible for dialing based on snapshot.
+    /// Check if peer is eligible for dialing (not in-progress, queued, banned, or in backoff).
     ///
-    /// Returns true if:
-    /// - Not in-progress (dialing/handshaking)
-    /// - Not already queued for dialing
-    /// - Not banned (in snapshot)
-    /// - Not in backoff (in snapshot)
-    ///
-    /// Note: Connected peer check is performed by `CandidateSelector` via
-    /// live `ProximityIndex::exists()` lookups.
-    pub fn is_eligible(&self, peer: &OverlayAddress) -> bool {
-        !self.in_progress.contains(peer)
-            && !self.queued.contains(peer)
-            && !self.banned.contains(peer)
-            && !self.in_backoff.contains(peer)
-    }
-
-    /// Check eligibility with live ban/backoff check.
-    ///
-    /// Use when snapshot was created with `capture_lightweight`.
-    pub fn is_eligible_live(&self, peer: &OverlayAddress, peer_manager: &PeerManager) -> bool {
+    /// Ban/backoff status is checked live via `PeerManager`.
+    pub fn is_eligible<I: SwarmIdentity>(&self, peer: &OverlayAddress, peer_manager: &PeerManager<I>) -> bool {
         !self.in_progress.contains(peer)
             && !self.queued.contains(peer)
             && !peer_manager.is_banned(peer)
             && !peer_manager.peer_is_in_backoff(peer)
     }
-
-    /// Current depth from snapshot.
-    pub fn depth(&self) -> u8 {
-        self.limits.depth
-    }
-
-    /// Check if bin needs more peers.
-    pub fn needs_more(&self, bin: u8, connected: usize) -> bool {
-        self.limits.needs_more(bin, connected)
-    }
-
-    /// Get deficit for bin.
-    pub fn deficit(&self, bin: u8, connected: usize) -> usize {
-        self.limits.deficit(bin, connected)
-    }
-
-    /// Check if bin is in neighborhood.
-    pub fn is_neighborhood(&self, bin: u8) -> bool {
-        self.limits.is_neighborhood(bin)
-    }
 }
 
 /// Builder for selecting dial candidates with TOCTOU safety and per-bin capacity tracking.
-///
-/// Borrows a `CandidateSnapshot` and a `ProximityIndex` (for live connected-peer
-/// checks) to avoid cloning the snapshot and building a full `HashSet` of
-/// connected peers each tick.
-pub struct CandidateSelector<'a> {
+pub(crate) struct CandidateSelector<'a> {
     snapshot: &'a CandidateSnapshot,
     connected_peers: &'a ProximityIndex,
     candidates: Vec<OverlayAddress>,
@@ -135,9 +79,10 @@ impl<'a> CandidateSelector<'a> {
         self.bin_selections.get(&bin).copied().unwrap_or(0)
     }
 
-    /// Try to add a peer as candidate.
+    /// Try to add a peer as candidate (test-only, no ban/backoff check).
     ///
     /// Returns true if added, false if ineligible or at capacity.
+    #[cfg(test)]
     pub fn try_add(&mut self, peer: OverlayAddress) -> bool {
         if self.is_full() {
             return false;
@@ -147,7 +92,7 @@ impl<'a> CandidateSelector<'a> {
             return false;
         }
 
-        if !self.snapshot.is_eligible(&peer) {
+        if self.snapshot.in_progress.contains(&peer) || self.snapshot.queued.contains(&peer) {
             return false;
         }
 
@@ -160,38 +105,13 @@ impl<'a> CandidateSelector<'a> {
         true
     }
 
-    /// Try to add with live eligibility check and bin capacity enforcement.
-    pub fn try_add_live(&mut self, peer: OverlayAddress, peer_manager: &PeerManager) -> bool {
-        if self.is_full() {
-            return false;
-        }
-
-        if self.connected_peers.exists(&peer) {
-            return false;
-        }
-
-        if !self.snapshot.is_eligible_live(&peer, peer_manager) {
-            return false;
-        }
-
-        if self.candidates.contains(&peer) {
-            return false;
-        }
-
-        self.candidates.push(peer);
-        true
-    }
-
     /// Try to add with bin capacity enforcement.
-    ///
-    /// Takes the peer's bin and current effective count for that bin.
-    /// Only adds if the bin still has capacity after accounting for already-selected candidates.
-    pub fn try_add_with_bin_capacity(
+    pub fn try_add_with_bin_capacity<I: SwarmIdentity>(
         &mut self,
         peer: OverlayAddress,
         bin: u8,
         effective_count: usize,
-        peer_manager: &PeerManager,
+        peer_manager: &PeerManager<I>,
     ) -> bool {
         if self.is_full() {
             return false;
@@ -201,7 +121,7 @@ impl<'a> CandidateSelector<'a> {
             return false;
         }
 
-        if !self.snapshot.is_eligible_live(&peer, peer_manager) {
+        if !self.snapshot.is_eligible(&peer, peer_manager) {
             return false;
         }
 
@@ -213,7 +133,7 @@ impl<'a> CandidateSelector<'a> {
         let already_selected = self.bin_selected(bin);
         let projected_count = effective_count + already_selected;
 
-        if !self.snapshot.needs_more(bin, projected_count) {
+        if !self.snapshot.limits.needs_more(bin, projected_count) {
             return false;
         }
 
@@ -233,17 +153,14 @@ impl<'a> CandidateSelector<'a> {
     }
 }
 
-/// Select candidates for neighborhood bins (high PO, >= depth).
-///
-/// Prioritizes bins from highest to depth, connecting to all available.
-/// Enforces per-bin capacity to prevent selecting more candidates than can be dialed.
-pub fn select_neighborhood_candidates(
+/// Select candidates for neighborhood bins (>= depth), highest PO first.
+pub(crate) fn select_neighborhood_candidates<I: SwarmIdentity>(
     selector: &mut CandidateSelector<'_>,
-    peer_manager: &PeerManager,
+    peer_manager: &PeerManager<I>,
     connected_counts: impl Fn(u8) -> usize,
     max_po: u8,
 ) {
-    let depth = selector.snapshot().depth();
+    let depth = selector.snapshot().limits.depth;
 
     // Iterate from highest PO down to depth
     for po in (depth..=max_po).rev() {
@@ -254,8 +171,7 @@ pub fn select_neighborhood_candidates(
         let effective = connected_counts(po);
         let already_selected = selector.bin_selected(po);
 
-        // Check if bin still needs more (accounting for pending selections)
-        if !selector.snapshot().needs_more(po, effective + already_selected) {
+        if !selector.snapshot().limits.needs_more(po, effective + already_selected) {
             continue;
         }
 
@@ -268,16 +184,13 @@ pub fn select_neighborhood_candidates(
     }
 }
 
-/// Select candidates for balanced bins (lower PO, < depth).
-///
-/// Uses linear tapering - higher bins get more allocation.
-/// Enforces per-bin capacity to prevent selecting more candidates than can be dialed.
-pub fn select_balanced_candidates(
+/// Select candidates for balanced bins (< depth) using linear tapering.
+pub(crate) fn select_balanced_candidates<I: SwarmIdentity>(
     selector: &mut CandidateSelector<'_>,
-    peer_manager: &PeerManager,
+    peer_manager: &PeerManager<I>,
     connected_counts: impl Fn(u8) -> usize,
 ) {
-    let depth = selector.snapshot().depth();
+    let depth = selector.snapshot().limits.depth;
     if depth == 0 {
         return;
     }
@@ -289,12 +202,11 @@ pub fn select_balanced_candidates(
         let effective = connected_counts(po);
         let already_selected = selector.bin_selected(po);
 
-        // Account for pending selections when checking
-        if !selector.snapshot().needs_more(po, effective + already_selected) {
+        if !selector.snapshot().limits.needs_more(po, effective + already_selected) {
             continue;
         }
 
-        let deficit = selector.snapshot().deficit(po, effective + already_selected);
+        let deficit = selector.snapshot().limits.deficit(po, effective + already_selected);
         if deficit > 0 {
             bin_stats.push((po, effective, deficit));
         }
@@ -327,12 +239,7 @@ pub fn select_balanced_candidates(
 mod tests {
     use super::*;
     use super::super::DepthAwareLimits;
-
-    fn test_overlay(n: u8) -> OverlayAddress {
-        let mut bytes = [0u8; 32];
-        bytes[0] = n;
-        OverlayAddress::from(bytes)
-    }
+    use vertex_swarm_test_utils::make_overlay;
 
     fn test_proximity_index() -> ProximityIndex {
         ProximityIndex::new(OverlayAddress::from([0u8; 32]), 31, 0)
@@ -340,17 +247,16 @@ mod tests {
 
     #[test]
     fn test_snapshot_eligibility() {
+        use vertex_swarm_test_utils::{MockIdentity, make_swarm_peer_minimal};
+
+        let identity = MockIdentity::with_first_byte(0x00);
+        let peer_manager = PeerManager::new(&identity);
+
         let mut in_progress = HashSet::new();
-        in_progress.insert(test_overlay(1));
+        in_progress.insert(make_overlay(1));
 
         let mut queued = HashSet::new();
-        queued.insert(test_overlay(5));
-
-        let mut banned = HashSet::new();
-        banned.insert(test_overlay(2));
-
-        let mut in_backoff = HashSet::new();
-        in_backoff.insert(test_overlay(3));
+        queued.insert(make_overlay(5));
 
         let limits = DepthAwareLimits::new(160, 3);
 
@@ -358,24 +264,21 @@ mod tests {
             limits: LimitsSnapshot::capture(&limits, 8),
             in_progress,
             queued,
-            banned,
-            in_backoff,
         };
 
         // Eligible peer
-        assert!(snapshot.is_eligible(&test_overlay(6)));
+        assert!(snapshot.is_eligible(&make_overlay(6), &peer_manager));
 
         // In-progress
-        assert!(!snapshot.is_eligible(&test_overlay(1)));
-
-        // Banned
-        assert!(!snapshot.is_eligible(&test_overlay(2)));
-
-        // In backoff
-        assert!(!snapshot.is_eligible(&test_overlay(3)));
+        assert!(!snapshot.is_eligible(&make_overlay(1), &peer_manager));
 
         // Queued
-        assert!(!snapshot.is_eligible(&test_overlay(5)));
+        assert!(!snapshot.is_eligible(&make_overlay(5), &peer_manager));
+
+        // Banned peer (via PeerManager)
+        peer_manager.store_discovered_peer(make_swarm_peer_minimal(2));
+        peer_manager.ban(&make_overlay(2), Some("test".into()));
+        assert!(!snapshot.is_eligible(&make_overlay(2), &peer_manager));
     }
 
     #[test]
@@ -385,13 +288,11 @@ mod tests {
             limits: LimitsSnapshot::capture(&limits, 0),
             in_progress: HashSet::new(),
             queued: HashSet::new(),
-            banned: HashSet::new(),
-            in_backoff: HashSet::new(),
         };
 
         let connected = test_proximity_index();
-        let peer = test_overlay(4);
-        connected.add(peer);
+        let peer = make_overlay(4);
+        let _ = connected.add(peer);
 
         let mut selector = CandidateSelector::new(&snapshot, &connected, 10);
 
@@ -400,7 +301,7 @@ mod tests {
         assert_eq!(selector.len(), 0);
 
         // Non-connected peer should be accepted
-        assert!(selector.try_add(test_overlay(6)));
+        assert!(selector.try_add(make_overlay(6)));
         assert_eq!(selector.len(), 1);
     }
 
@@ -411,14 +312,12 @@ mod tests {
             limits: LimitsSnapshot::capture(&limits, 0),
             in_progress: HashSet::new(),
             queued: HashSet::new(),
-            banned: HashSet::new(),
-            in_backoff: HashSet::new(),
         };
 
         let connected = test_proximity_index();
         let mut selector = CandidateSelector::new(&snapshot, &connected, 10);
 
-        let peer = test_overlay(1);
+        let peer = make_overlay(1);
         assert!(selector.try_add(peer));
         assert!(!selector.try_add(peer)); // Duplicate
 
@@ -432,16 +331,14 @@ mod tests {
             limits: LimitsSnapshot::capture(&limits, 0),
             in_progress: HashSet::new(),
             queued: HashSet::new(),
-            banned: HashSet::new(),
-            in_backoff: HashSet::new(),
         };
 
         let connected = test_proximity_index();
         let mut selector = CandidateSelector::new(&snapshot, &connected, 2);
 
-        assert!(selector.try_add(test_overlay(1)));
-        assert!(selector.try_add(test_overlay(2)));
-        assert!(!selector.try_add(test_overlay(3))); // At capacity
+        assert!(selector.try_add(make_overlay(1)));
+        assert!(selector.try_add(make_overlay(2)));
+        assert!(!selector.try_add(make_overlay(3))); // At capacity
 
         assert!(selector.is_full());
         assert_eq!(selector.remaining(), 0);
@@ -454,8 +351,6 @@ mod tests {
             limits: LimitsSnapshot::capture(&limits, 0),
             in_progress: HashSet::new(),
             queued: HashSet::new(),
-            banned: HashSet::new(),
-            in_backoff: HashSet::new(),
         };
 
         let connected = test_proximity_index();
@@ -466,7 +361,7 @@ mod tests {
 
         // After adding peers, bin counts should update
         // Note: try_add doesn't track bin (use try_add_with_bin_capacity for that)
-        selector.try_add(test_overlay(1));
+        selector.try_add(make_overlay(1));
         assert_eq!(selector.bin_selected(0), 0); // try_add doesn't track bins
 
         // We'd need a PeerManager to test try_add_with_bin_capacity

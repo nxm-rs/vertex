@@ -9,11 +9,11 @@ const DEFAULT_MAX_BALANCED_CANDIDATES: usize = 16;
 #[derive(Debug, Clone)]
 pub struct KademliaConfig {
     /// Depth-aware per-bin capacity limits.
-    pub limits: DepthAwareLimits,
+    pub(crate) limits: DepthAwareLimits,
     /// Maximum concurrent pending candidates for neighbor (depth) bins.
-    pub max_neighbor_candidates: usize,
+    pub(crate) max_neighbor_candidates: usize,
     /// Maximum concurrent pending candidates for balanced (non-depth) bins.
-    pub max_balanced_candidates: usize,
+    pub(crate) max_balanced_candidates: usize,
 }
 
 impl Default for KademliaConfig {
@@ -28,7 +28,7 @@ impl Default for KademliaConfig {
 
 impl KademliaConfig {
     /// Create with custom depth-aware limits.
-    pub fn with_limits(limits: DepthAwareLimits) -> Self {
+    pub(crate) fn with_limits(limits: DepthAwareLimits) -> Self {
         Self { limits, ..Default::default() }
     }
 

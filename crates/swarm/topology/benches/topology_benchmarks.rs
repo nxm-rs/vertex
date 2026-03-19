@@ -74,7 +74,7 @@ fn bench_proximity_index(c: &mut Criterion) {
 
         // Populate the index
         for overlay in &overlays {
-            index.add(*overlay);
+            let _ = index.add(*overlay);
         }
 
         // Benchmark all_peers() - now optimized with pre-allocation

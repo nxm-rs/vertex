@@ -5,43 +5,29 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-use libp2p::{PeerId, multiaddr::Protocol};
+pub(crate) use vertex_net_utils::extract_peer_id;
 
-/// Extract PeerId from a multiaddr's /p2p/ component.
-pub(crate) fn extract_peer_id(addr: &libp2p::Multiaddr) -> Option<PeerId> {
-    addr.iter().find_map(|p| match p {
-        Protocol::P2p(id) => Some(id),
-        _ => None,
-    })
-}
-
-pub mod behaviour;
-pub mod events;
-pub mod handle;
+mod behaviour;
+mod events;
+mod handle;
 pub mod metrics;
-pub mod nat_discovery;
-pub mod kademlia;
+mod nat_discovery;
+mod kademlia;
 
 mod composed;
 mod error;
 mod gossip;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 pub use behaviour::{TopologyBehaviour, TopologyConfig, DEFAULT_DIAL_INTERVAL};
-pub use vertex_net_dnsaddr::{is_dnsaddr, resolve_all};
 pub use error::{
     DialError, DisconnectReason, RejectionReason, TopologyError, TopologyResult,
 };
-pub use events::{ConnectionDirection, TopologyCommand, TopologyEvent};
-pub use metrics::TopologyMetrics;
+pub use events::{ConnectionDirection, DialReason, TopologyCommand, TopologyEvent};
 pub use handle::{TopologyHandle, RoutingStats, BinStats};
-pub use nat_discovery::LocalAddressManager;
 
-// Re-export from peer registry crate
-pub use vertex_swarm_peer_registry::DialReason;
-
-pub use kademlia::{
-    CandidateSelector, CandidateSnapshot, DepthAwareLimits, KademliaConfig,
-    KademliaRouting, LimitsSnapshot, RoutingArgs, DEFAULT_NOMINAL, DEFAULT_TOTAL_TARGET,
-};
+pub use kademlia::{KademliaConfig, RoutingArgs};
 
 pub use libp2p::Multiaddr;

@@ -5,10 +5,23 @@ use std::time::Duration;
 use libp2p::{Multiaddr, PeerId};
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
-// Re-export from the peer registry crate
-pub use vertex_swarm_peer_registry::{ConnectionDirection, DialReason};
+pub use vertex_net_peer_registry::ConnectionDirection;
 
 pub use crate::error::{DialError, DisconnectReason, RejectionReason};
+
+/// Reason for initiating a dial.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, strum::IntoStaticStr)]
+#[strum(serialize_all = "lowercase")]
+pub enum DialReason {
+    /// Peer discovered via Hive protocol (already verified or from peer store).
+    Discovery,
+    /// Connecting to a bootnode.
+    Bootnode,
+    /// Connecting to a trusted peer.
+    Trusted,
+    /// User-initiated dial command.
+    Command,
+}
 
 /// Events emitted by TopologyService for external consumers.
 #[derive(Debug, Clone)]
@@ -75,4 +88,6 @@ pub enum TopologyCommand {
         overlay: OverlayAddress,
         reason: Option<String>,
     },
+    /// Flush known peers to persistent storage.
+    SavePeers,
 }
