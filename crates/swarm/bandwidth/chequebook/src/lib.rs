@@ -1,3 +1,5 @@
+compile_error!("vertex-swarm-bandwidth-chequebook is disabled: depends on serde_json which has been removed from the workspace. Remove serde_json dependency before re-enabling.");
+
 //! Chequebook types and signing for SWAP settlement.
 //!
 //! This crate provides the core types for SWAP chequebook-based settlement:

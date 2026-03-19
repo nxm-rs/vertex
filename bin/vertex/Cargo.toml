@@ -28,6 +28,9 @@ vertex-node-core.workspace = true
 vertex-rpc-server.workspace = true
 vertex-tasks.workspace = true
 
+# vertex - storage
+vertex-storage-redb.workspace = true
+
 # vertex - swarm protocol
 vertex-swarm-api.workspace = true
 vertex-swarm-bandwidth.workspace = true

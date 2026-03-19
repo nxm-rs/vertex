@@ -28,14 +28,11 @@ vertex-swarm-net-pseudosettle.workspace = true
 vertex-swarm-peer.workspace = true
 vertex-swarm-net-pushsync.workspace = true
 vertex-swarm-net-retrieval.workspace = true
-vertex-swarm-net-swap.workspace = true
-
-## vertex - bandwidth (chequebook types)
-vertex-swarm-bandwidth-chequebook.workspace = true
 
 ## vertex - topology
 vertex-swarm-topology.workspace = true
 vertex-swarm-peer-manager.workspace = true
+vertex-swarm-peer-score.workspace = true
 
 ## vertex - net utilities
 vertex-net-local.workspace = true
@@ -62,6 +59,7 @@ tokio = { workspace = true, features = ["sync"] }
 
 ## observability
 metrics.workspace = true
+vertex-net-peer-store.workspace = true
 
 ## misc
 bytes.workspace = true

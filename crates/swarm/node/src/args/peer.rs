@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 use vertex_swarm_api::{
-    PeerConfigValues, DEFAULT_PEER_BAN_THRESHOLD, DEFAULT_PEER_STORE_LIMIT,
+    PeerConfigValues, DEFAULT_PEER_BAN_THRESHOLD, DEFAULT_PEER_MAX_PER_BIN,
     DEFAULT_PEER_WARN_THRESHOLD,
 };
 
@@ -14,7 +14,7 @@ use vertex_swarm_api::{
 pub struct PeerConfig {
     ban_threshold: f64,
     warn_threshold: f64,
-    store_limit: Option<usize>,
+    max_per_bin: usize,
     store_path: Option<PathBuf>,
 }
 
@@ -23,7 +23,7 @@ impl Default for PeerConfig {
         Self {
             ban_threshold: DEFAULT_PEER_BAN_THRESHOLD,
             warn_threshold: DEFAULT_PEER_WARN_THRESHOLD,
-            store_limit: Some(DEFAULT_PEER_STORE_LIMIT),
+            max_per_bin: DEFAULT_PEER_MAX_PER_BIN,
             store_path: None,
         }
     }
@@ -34,10 +34,10 @@ impl From<&PeerArgs> for PeerConfig {
         Self {
             ban_threshold: args.ban_threshold,
             warn_threshold: args.warn_threshold,
-            store_limit: if args.store_limit == 0 {
-                None
+            max_per_bin: if args.max_per_bin == 0 {
+                DEFAULT_PEER_MAX_PER_BIN
             } else {
-                Some(args.store_limit)
+                args.max_per_bin
             },
             store_path: args.store_path.clone(),
         }
@@ -62,8 +62,8 @@ impl PeerConfigValues for PeerConfig {
         self.warn_threshold
     }
 
-    fn store_limit(&self) -> Option<usize> {
-        self.store_limit
+    fn max_per_bin(&self) -> usize {
+        self.max_per_bin
     }
 
     fn store_path(&self) -> Option<PathBuf> {
@@ -83,9 +83,9 @@ pub struct PeerArgs {
     #[arg(long = "network.peer.warn-threshold", default_value_t = DEFAULT_PEER_WARN_THRESHOLD)]
     pub warn_threshold: f64,
 
-    /// Maximum peers to track (0 = unlimited).
-    #[arg(long = "network.peer.store-limit", default_value_t = DEFAULT_PEER_STORE_LIMIT)]
-    pub store_limit: usize,
+    /// Maximum peers per proximity bin (0 = default 128).
+    #[arg(long = "network.peer.max-per-bin", default_value_t = DEFAULT_PEER_MAX_PER_BIN)]
+    pub max_per_bin: usize,
 
     /// Path for peer store persistence.
     #[arg(long = "network.peer.store-path", value_name = "PATH")]
@@ -98,7 +98,7 @@ impl Default for PeerArgs {
         Self {
             ban_threshold: DEFAULT_PEER_BAN_THRESHOLD,
             warn_threshold: DEFAULT_PEER_WARN_THRESHOLD,
-            store_limit: DEFAULT_PEER_STORE_LIMIT,
+            max_per_bin: DEFAULT_PEER_MAX_PER_BIN,
             store_path: None,
         }
     }
@@ -113,11 +113,11 @@ impl PeerConfigValues for PeerArgs {
         self.warn_threshold
     }
 
-    fn store_limit(&self) -> Option<usize> {
-        if self.store_limit == 0 {
-            None
+    fn max_per_bin(&self) -> usize {
+        if self.max_per_bin == 0 {
+            DEFAULT_PEER_MAX_PER_BIN
         } else {
-            Some(self.store_limit)
+            self.max_per_bin
         }
     }
 

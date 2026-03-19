@@ -111,22 +111,6 @@ Response format:
 - `resident / allocated` > 2.0 suggests memory pressure
 - `retained` growing over time suggests memory not being returned to OS
 
-### Memory Estimation Metrics
-
-The following gauges provide estimated memory usage for major data structures:
-
-```
-# Peer manager
-topology_memory_peer_entries_bytes      # PeerEntry storage
-topology_memory_bin_index_bytes         # Proximity bin index
-
-# Connection registry
-topology_memory_connection_registry_bytes  # Active/pending connections
-
-# Gossip verifier
-topology_memory_gossip_verifier_bytes   # Pending verifications
-```
-
 ## Async Runtime Inspection
 
 ### tokio-console Setup
@@ -162,8 +146,7 @@ All metrics are prefixed with `vertex_` when exported (e.g. `topology_depth` bec
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `topology_connected_peers` | Gauge | `node_type` | Connected peers by type (storer/client) |
-| `topology_connected_peers_total` | Gauge | | Total connected peers |
+| `topology_connected_peers` | Gauge | `node_type` | Connected peers by type (storer/client). Use `sum(topology_connected_peers)` for total. |
 | `topology_known_peers_total` | Gauge | | Total known peers in routing table |
 | `topology_depth` | Gauge | | Current Kademlia depth |
 | `topology_connections_total` | Counter | `node_type`, `direction`, `outcome` | Connection attempts |
@@ -198,7 +181,7 @@ All metrics are prefixed with `vertex_` when exported (e.g. `topology_depth` bec
 | `topology_bin_effective` | Gauge | `po` | Effective count (dialing+handshaking+active) |
 | `topology_bin_target_peers` | Gauge | `po` | Target allocation (-1 for neighborhood) |
 | `topology_bin_ceiling_peers` | Gauge | `po` | Max before rejecting inbound (-1 for neighborhood) |
-| `topology_bin_nominal_peers` | Gauge | `po` | Nominal floor |
+| `topology_bin_nominal_peers` | Gauge | | Nominal floor (global, not per-bin) |
 
 ### Lock Contention
 
@@ -219,13 +202,13 @@ All metrics are prefixed with `vertex_` when exported (e.g. `topology_depth` bec
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `handshake_total` | Counter | `direction` | Total handshakes initiated |
-| `handshake_success_total` | Counter | `direction`, `node_type` | Successful handshakes |
-| `handshake_failure_total` | Counter | `direction`, `reason`, `stage` | Failed handshakes |
+| `handshake_total` | Counter | `direction`, `purpose` | Total handshakes initiated |
+| `handshake_success_total` | Counter | `direction`, `purpose`, `node_type` | Successful handshakes |
+| `handshake_failure_total` | Counter | `direction`, `purpose`, `reason`, `stage` | Failed handshakes |
 | `handshake_active` | Gauge | `direction` | Currently active handshakes |
-| `handshake_stage` | Gauge | `direction`, `stage` | Handshakes in each stage |
-| `handshake_duration_seconds` | Histogram | `direction`, `outcome`, `node_type` | Total handshake duration |
-| `handshake_stage_duration_seconds` | Histogram | `direction`, `stage` | Per-stage duration |
+| `handshake_stage` | Gauge | `direction`, `purpose`, `stage` | Handshakes in each stage |
+| `handshake_duration_seconds` | Histogram | `direction`, `purpose`, `outcome`, `node_type` | Total handshake duration |
+| `handshake_stage_duration_seconds` | Histogram | `direction`, `purpose`, `stage` | Per-stage duration |
 
 ### Hive (Peer Discovery)
 
@@ -247,15 +230,11 @@ All metrics are prefixed with `vertex_` when exported (e.g. `topology_depth` bec
 |--------|------|--------|-------------|
 | `peer_manager_total_peers` | Gauge | | Total tracked peers |
 | `peer_manager_banned_peers` | Gauge | | Banned peers |
-| `peer_manager_avg_score` | Gauge | | Average peer score |
-| `peer_manager_score_min` | Gauge | | Minimum peer score |
-| `peer_manager_score_max` | Gauge | | Maximum peer score |
-| `peer_manager_score_median` | Gauge | | Median peer score |
-| `peer_manager_score_p10` | Gauge | | 10th percentile score |
-| `peer_manager_score_p90` | Gauge | | 90th percentile score |
-| `peer_manager_peers_by_score` | Gauge | `range` | Peers by score range (danger/warning/neutral/good/excellent) |
+| `peer_manager_score_distribution` | Gauge | `le` | Current peer count per score range |
 
-Score ranges: danger (< -50), warning ([-50, 0)), neutral ([0, 10)), good ([10, 50)), excellent (>= 50).
+Uses `le` (upper bound) labels for native Grafana heatmap compatibility: `-100`, `-50`, `-10`, `-1`, `0`, `1`, `5`, `10`, `25`, `50`, `75`, `100`, `+Inf` (13 non-cumulative buckets).
+
+Updated event-driven via `ScoreObserver` callbacks — O(1) per score change rather than periodic O(n) iteration.
 
 ### Gossip Verification
 
@@ -296,9 +275,8 @@ All other histograms use the default Prometheus buckets (0.005s to 10s).
 ### Memory Growth
 
 1. Check `allocated` vs `active` ratio for fragmentation
-2. Review `topology_memory_*` gauges for growth patterns
-3. Look for connection/peer count growth
-4. Check gossip verifier queue depth
+2. Look for connection/peer count growth
+3. Check gossip verifier queue depth
 
 ### Lock Contention
 
@@ -328,12 +306,6 @@ histogram_quantile(0.99, rate(vertex_topology_poll_duration_seconds_bucket[5m]))
 histogram_quantile(0.99, rate(vertex_topology_routing_phases_lock_seconds_bucket[5m]))
 ```
 
-### Memory Growth Rate
-
-```promql
-rate(vertex_topology_memory_peer_entries_bytes[1h])
-```
-
 ### Connection Churn
 
 ```promql
@@ -343,13 +315,11 @@ rate(vertex_topology_connections_total[5m])
 ### Peer Score Distribution
 
 ```promql
-# Current score range
-vertex_peer_manager_score_min
-vertex_peer_manager_score_median
-vertex_peer_manager_score_max
+# Peers in each score range (heatmap-ready with numeric upper-bound labels)
+vertex_peer_manager_score_distribution{instance=~"$instance"}
 
-# Peers in danger zone
-vertex_peer_manager_peers_by_score{range="danger"}
+# Peers with very low scores (le < -10)
+vertex_peer_manager_score_distribution{le=~"-100|-50|-10"}
 ```
 
 ### Handshake Latency

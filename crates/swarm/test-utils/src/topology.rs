@@ -2,7 +2,10 @@
 
 use nectar_primitives::{ChunkAddress, SwarmAddress};
 use std::sync::Arc;
-use vertex_swarm_api::{SwarmIdentity, SwarmNodeType, SwarmTopology, TopologyStats};
+use vertex_swarm_api::{
+    SwarmIdentity, SwarmNodeType, SwarmTopologyBins, SwarmTopologyPeers, SwarmTopologyRouting,
+    SwarmTopologyState, SwarmTopologyStats,
+};
 use vertex_swarm_identity::Identity;
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -16,7 +19,8 @@ use crate::test_identity_arc;
 pub struct MockTopology {
     identity: Arc<Identity>,
     connected: usize,
-    known: usize,
+    routing: usize,
+    stored: usize,
     pending: usize,
     depth: u8,
 }
@@ -26,7 +30,8 @@ impl Default for MockTopology {
         Self {
             identity: test_identity_arc(),
             connected: 0,
-            known: 0,
+            routing: 0,
+            stored: 0,
             pending: 0,
             depth: 0,
         }
@@ -38,7 +43,7 @@ impl std::fmt::Debug for MockTopology {
         f.debug_struct("MockTopology")
             .field("overlay", &self.identity.overlay_address())
             .field("connected", &self.connected)
-            .field("known", &self.known)
+            .field("routing", &self.routing)
             .field("depth", &self.depth)
             .finish()
     }
@@ -46,11 +51,12 @@ impl std::fmt::Debug for MockTopology {
 
 impl MockTopology {
     /// Create a new mock topology with the given parameters.
-    pub fn new(connected: usize, known: usize, depth: u8) -> Self {
+    pub fn new(connected: usize, routing: usize, depth: u8) -> Self {
         Self {
             identity: test_identity_arc(),
             connected,
-            known,
+            routing,
+            stored: 0,
             pending: 0,
             depth,
         }
@@ -70,10 +76,17 @@ impl MockTopology {
         self
     }
 
-    /// Set the number of known peers.
+    /// Set the number of routing peers.
     #[must_use]
-    pub fn with_known(mut self, known: usize) -> Self {
-        self.known = known;
+    pub fn with_routing(mut self, routing: usize) -> Self {
+        self.routing = routing;
+        self
+    }
+
+    /// Set the number of stored peers.
+    #[must_use]
+    pub fn with_stored(mut self, stored: usize) -> Self {
+        self.stored = stored;
         self
     }
 
@@ -102,21 +115,13 @@ impl MockTopology {
     }
 }
 
-impl TopologyStats for MockTopology {
-    fn connected_peers_count(&self) -> usize {
-        self.connected
-    }
-
-    fn known_peers_count(&self) -> usize {
-        self.known
-    }
-
-    fn pending_connections_count(&self) -> usize {
-        self.pending
+impl SwarmTopologyBins for MockTopology {
+    fn bin_sizes(&self) -> Vec<(usize, usize)> {
+        vec![(0, 0); 32]
     }
 }
 
-impl SwarmTopology for MockTopology {
+impl SwarmTopologyState for MockTopology {
     type Identity = Identity;
 
     fn identity(&self) -> &Self::Identity {
@@ -126,28 +131,43 @@ impl SwarmTopology for MockTopology {
     fn depth(&self) -> u8 {
         self.depth
     }
+}
+
+impl SwarmTopologyRouting for MockTopology {
+    fn closest_to(&self, _address: &ChunkAddress, _count: usize) -> Vec<OverlayAddress> {
+        Vec::new()
+    }
 
     fn neighbors(&self, _depth: u8) -> Vec<OverlayAddress> {
-        // Mock returns empty - no actual peers
+        Vec::new()
+    }
+}
+
+impl SwarmTopologyPeers for MockTopology {
+    fn connected_peers_in_bin(&self, _po: u8) -> Vec<OverlayAddress> {
         Vec::new()
     }
 
-    fn closest_to(&self, _address: &ChunkAddress, _count: usize) -> Vec<OverlayAddress> {
-        // Mock returns empty - no actual peers
+    fn connected_peer_details_in_bin(&self, _po: u8) -> Vec<(OverlayAddress, Vec<libp2p::Multiaddr>)> {
         Vec::new()
     }
+}
 
-    fn bin_sizes(&self) -> Vec<(usize, usize)> {
-        // Return 32 empty bins (one per proximity order)
-        vec![(0, 0); 32]
+impl SwarmTopologyStats for MockTopology {
+    fn connected_peers_count(&self) -> usize {
+        self.connected
     }
 
-    fn connected_peers_in_bin(&self, _po: u8) -> Vec<String> {
-        Vec::new()
+    fn routing_peers_count(&self) -> usize {
+        self.routing
     }
 
-    fn connected_peer_details_in_bin(&self, _po: u8) -> Vec<(String, Vec<String>)> {
-        Vec::new()
+    fn pending_connections_count(&self) -> usize {
+        self.pending
+    }
+
+    fn stored_peers_count(&self) -> usize {
+        self.stored
     }
 }
 
@@ -160,7 +180,8 @@ mod tests {
         let topo = MockTopology::default();
 
         assert_eq!(topo.connected_peers_count(), 0);
-        assert_eq!(topo.known_peers_count(), 0);
+        assert_eq!(topo.routing_peers_count(), 0);
+        assert_eq!(topo.stored_peers_count(), 0);
         assert_eq!(topo.depth(), 0);
     }
 
@@ -169,7 +190,7 @@ mod tests {
         let topo = MockTopology::new(10, 50, 4);
 
         assert_eq!(topo.connected_peers_count(), 10);
-        assert_eq!(topo.known_peers_count(), 50);
+        assert_eq!(topo.routing_peers_count(), 50);
         assert_eq!(topo.depth(), 4);
     }
 
@@ -177,11 +198,13 @@ mod tests {
     fn test_mock_topology_builder() {
         let topo = MockTopology::default()
             .with_connected(5)
-            .with_known(20)
+            .with_routing(20)
+            .with_stored(100)
             .with_depth(3);
 
         assert_eq!(topo.connected_peers_count(), 5);
-        assert_eq!(topo.known_peers_count(), 20);
+        assert_eq!(topo.routing_peers_count(), 20);
+        assert_eq!(topo.stored_peers_count(), 100);
         assert_eq!(topo.depth(), 3);
     }
 
@@ -199,7 +222,6 @@ mod tests {
     fn test_swarm_topology_trait() {
         let topo = MockTopology::new(5, 10, 2);
 
-        // Verify trait methods work
         assert_eq!(topo.depth(), 2);
         assert!(topo.neighbors(0).is_empty());
         assert_eq!(topo.bin_sizes().len(), 32);

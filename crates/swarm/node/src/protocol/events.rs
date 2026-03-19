@@ -11,7 +11,7 @@
 //!
 //! # Settlement Events
 //!
-//! Settlement-specific events ([`PseudosettleEvent`], [`SwapEvent`]) are defined here
+//! Settlement-specific events ([`PseudosettleEvent`]) are defined here
 //! for routing to the respective settlement services. The behaviour routes these
 //! events based on optional senders configured at construction time.
 
@@ -20,7 +20,6 @@ use bytes::Bytes;
 use libp2p::PeerId;
 use nectar_primitives::ChunkAddress;
 use vertex_swarm_net_pseudosettle::PaymentAck;
-use vertex_swarm_bandwidth_chequebook::SignedCheque;
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
 /// Events emitted by the client behaviour.
@@ -135,28 +134,6 @@ pub enum ClientEvent {
         peer: OverlayAddress,
         /// Current balance (positive = they owe us).
         balance: i64,
-    },
-
-    /// Received a cheque from a peer (SWAP settlement).
-    ChequeReceived {
-        /// The peer that sent the cheque.
-        peer: OverlayAddress,
-        /// The libp2p peer ID.
-        peer_id: PeerId,
-        /// The signed cheque.
-        cheque: SignedCheque,
-        /// The peer's exchange rate.
-        peer_rate: U256,
-    },
-
-    /// Successfully sent a cheque to a peer.
-    ChequeSent {
-        /// The peer we sent to.
-        peer: OverlayAddress,
-        /// The libp2p peer ID.
-        peer_id: PeerId,
-        /// The peer's exchange rate.
-        peer_rate: U256,
     },
 
     /// Received a pseudosettle payment from a peer.
@@ -284,16 +261,6 @@ pub enum ClientCommand {
         storage_radius: u8,
     },
 
-    /// Send a cheque to a peer (SWAP settlement).
-    SendCheque {
-        /// The peer to send the cheque to.
-        peer: OverlayAddress,
-        /// The signed cheque to send.
-        cheque: SignedCheque,
-        /// Our exchange rate.
-        our_rate: U256,
-    },
-
     /// Send a pseudosettle payment to a peer.
     SendPseudosettle {
         /// The peer to send the payment to.
@@ -347,26 +314,3 @@ pub enum PseudosettleEvent {
     },
 }
 
-/// Events routed to the swap service.
-///
-/// These events are extracted from [`ClientEvent`] and sent to the
-/// swap service via a dedicated channel for type-safe handling.
-#[derive(Debug, Clone)]
-pub enum SwapEvent {
-    /// We sent a cheque and received acknowledgment (peer rate).
-    ChequeSent {
-        /// The peer we sent to.
-        peer: OverlayAddress,
-        /// The peer's exchange rate.
-        peer_rate: U256,
-    },
-    /// A peer sent us a cheque.
-    ChequeReceived {
-        /// The peer that sent the cheque.
-        peer: OverlayAddress,
-        /// The signed cheque.
-        cheque: SignedCheque,
-        /// The peer's exchange rate.
-        peer_rate: U256,
-    },
-}

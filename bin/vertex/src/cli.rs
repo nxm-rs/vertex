@@ -11,7 +11,7 @@ use vertex_node_core::dirs::DataDirs;
 use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
 use vertex_swarm_builder::{
     BootnodeConfig, ClientConfig, DefaultClientBuilder, DefaultNodeBuilder, DefaultStorerBuilder,
-    StorerConfig, WithInfrastructure,
+    StorerConfig,
 };
 use vertex_swarm_node::ProtocolConfig;
 use vertex_swarm_node::args::ProtocolArgs;
@@ -100,6 +100,7 @@ pub async fn run() -> Result<()> {
             .register_all(vertex_swarm_net_handshake::metrics::HISTOGRAM_BUCKETS)
             .register_all(vertex_swarm_net_hive::metrics::HISTOGRAM_BUCKETS)
             .register_all(vertex_swarm_net_identify::metrics::HISTOGRAM_BUCKETS)
+            .register_all(vertex_storage_redb::metrics::HISTOGRAM_BUCKETS)
             .build();
 
         // Initialize metrics via launch context
@@ -128,7 +129,6 @@ pub async fn run() -> Result<()> {
                 let node_config = ClientConfig::new(spec, identity, network, bandwidth);
 
                 let (task_fn, rpc_providers) = DefaultClientBuilder::from_config(node_config)
-                    .with_infrastructure(&launch_ctx)
                     .build(&launch_ctx)
                     .await?
                     .into_parts();
@@ -138,7 +138,6 @@ pub async fn run() -> Result<()> {
                 let node_config = BootnodeConfig::new(spec, identity, network);
 
                 let (task_fn, rpc_providers) = DefaultNodeBuilder::from_config(node_config)
-                    .with_infrastructure(&launch_ctx)
                     .build(&launch_ctx)
                     .await?
                     .into_parts();
@@ -156,7 +155,6 @@ pub async fn run() -> Result<()> {
                     StorerConfig::new(spec, identity, network, bandwidth, local_store, storage);
 
                 let (task_fn, rpc_providers) = DefaultStorerBuilder::from_config(node_config)
-                    .with_infrastructure(&launch_ctx)
                     .build(&launch_ctx)
                     .await?
                     .into_parts();
@@ -189,7 +187,7 @@ async fn run_with_grpc<P: RegistersGrpcServices + Send + Sync + 'static>(
 
     // Spawn the node task with graceful shutdown support.
     // This passes a GracefulShutdown signal to the task function.
-    let node_handle = executor.spawn_critical_with_graceful_shutdown_signal("swarm-node", task_fn);
+    let node_handle = executor.spawn_critical_with_graceful_shutdown_signal("swarm.node", task_fn);
 
     // Run until shutdown signal fires or node task completes
     tokio::select! {

@@ -936,6 +936,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "atomic-polyfill"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8cf2bce30dfe09ef0bfaef228b9d414faaf7e563035494d7fe092dba54b300f4"
+dependencies = [
+ "critical-section",
+]
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1246,15 +1255,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
 dependencies = [
  "generic-array",
-]
-
-[[package]]
-name = "block2"
-version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5"
-dependencies = [
- "objc2",
 ]
 
 [[package]]
@@ -1570,6 +1570,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75443c44cd6b379beb8c5b45d85d0773baf31cce901fe7bb252f4eff3008ef7d"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "cobs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fa961b519f0b462e3a3b4a34b64d119eeaca1d59af726fe450bbba07a9fc0a1"
+dependencies = [
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2255,18 +2264,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dispatch2"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89a09f22a6c6069a18470eb92d2298acf25463f14256d24778e1230d789a2aec"
-dependencies = [
- "bitflags 2.10.0",
- "block2",
- "libc",
- "objc2",
-]
-
-[[package]]
 name = "displaydoc"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2275,17 +2272,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.115",
-]
-
-[[package]]
-name = "dlopen2"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09b4f5f101177ff01b8ec4ecc81eead416a8aa42819a2869311b3420fa114ffa"
-dependencies = [
- "libc",
- "once_cell",
- "winapi",
 ]
 
 [[package]]
@@ -2386,6 +2372,18 @@ dependencies = [
  "subtle",
  "zeroize",
 ]
+
+[[package]]
+name = "embedded-io"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef1a6892d9eef45c8fa6b9e0086428a2cca8491aca8f787c534a3d6d0bcb3ced"
+
+[[package]]
+name = "embedded-io"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
 name = "endian-type"
@@ -2924,6 +2922,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash32"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0c35f58762feb77d74ebe43bdbc3210f09be9fe6742234d573bacc26ed92b67"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2977,6 +2984,20 @@ dependencies = [
  "flate2",
  "nom",
  "num-traits",
+]
+
+[[package]]
+name = "heapless"
+version = "0.7.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdc6457c0eb62c71aac4bc17216026d8410337c4126773b9c5daba343f17964f"
+dependencies = [
+ "atomic-polyfill",
+ "hash32",
+ "rustc_version 0.4.1",
+ "serde",
+ "spin 0.9.8",
+ "stable_deref_trait",
 ]
 
 [[package]]
@@ -3386,8 +3407,8 @@ dependencies = [
  "if-addrs",
  "ipnet",
  "log",
- "netlink-packet-core 0.7.0",
- "netlink-packet-route 0.17.1",
+ "netlink-packet-core",
+ "netlink-packet-route",
  "netlink-proto",
  "netlink-sys",
  "rtnetlink",
@@ -3480,7 +3501,7 @@ dependencies = [
  "log",
  "num-format",
  "once_cell",
- "quick-xml 0.26.0",
+ "quick-xml",
  "rgb",
  "str_stack",
 ]
@@ -4137,12 +4158,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
-name = "mac-addr"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3d25b0e0b648a86960ac23b7ad4abb9717601dec6f66c165f5b037f3f03065f"
-
-[[package]]
 name = "mach2"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4418,6 +4433,7 @@ dependencies = [
  "alloy-signer-local",
  "bytes",
  "digest 0.10.7",
+ "futures",
  "generic-array",
  "getrandom 0.2.17",
  "getrandom 0.3.4",
@@ -4444,28 +4460,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "netdev"
-version = "0.40.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc9815643a243856e7bd84524e1ff739e901e846cfb06ad9627cd2b6d59bd737"
-dependencies = [
- "block2",
- "dispatch2",
- "dlopen2",
- "ipnet",
- "libc",
- "mac-addr",
- "netlink-packet-core 0.8.1",
- "netlink-packet-route 0.25.1",
- "netlink-sys",
- "objc2-core-foundation",
- "objc2-system-configuration",
- "once_cell",
- "plist",
- "windows-sys 0.59.0",
-]
-
-[[package]]
 name = "netlink-packet-core"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4474,15 +4468,6 @@ dependencies = [
  "anyhow",
  "byteorder",
  "netlink-packet-utils",
-]
-
-[[package]]
-name = "netlink-packet-core"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3463cbb78394cb0141e2c926b93fc2197e473394b761986eca3b9da2c63ae0f4"
-dependencies = [
- "paste",
 ]
 
 [[package]]
@@ -4495,20 +4480,8 @@ dependencies = [
  "bitflags 1.3.2",
  "byteorder",
  "libc",
- "netlink-packet-core 0.7.0",
+ "netlink-packet-core",
  "netlink-packet-utils",
-]
-
-[[package]]
-name = "netlink-packet-route"
-version = "0.25.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ec2f5b6839be2a19d7fa5aab5bc444380f6311c2b693551cb80f45caaa7b5ef"
-dependencies = [
- "bitflags 2.10.0",
- "libc",
- "log",
- "netlink-packet-core 0.8.1",
 ]
 
 [[package]]
@@ -4532,7 +4505,7 @@ dependencies = [
  "bytes",
  "futures",
  "log",
- "netlink-packet-core 0.7.0",
+ "netlink-packet-core",
  "netlink-sys",
  "thiserror 2.0.18",
 ]
@@ -4692,59 +4665,6 @@ dependencies = [
  "ruint",
  "serde",
  "smallvec",
-]
-
-[[package]]
-name = "objc2"
-version = "0.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7c2599ce0ec54857b29ce62166b0ed9b4f6f1a70ccc9a71165b6154caca8c05"
-dependencies = [
- "objc2-encode",
-]
-
-[[package]]
-name = "objc2-core-foundation"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
-dependencies = [
- "bitflags 2.10.0",
- "block2",
- "dispatch2",
- "libc",
- "objc2",
-]
-
-[[package]]
-name = "objc2-encode"
-version = "4.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef25abbcd74fb2609453eb695bd2f860d389e457f67dc17cafc8b8cbc89d0c33"
-
-[[package]]
-name = "objc2-security"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "709fe137109bd1e8b5a99390f77a7d8b2961dafc1a1c5db8f2e60329ad6d895a"
-dependencies = [
- "bitflags 2.10.0",
- "objc2",
- "objc2-core-foundation",
-]
-
-[[package]]
-name = "objc2-system-configuration"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7216bd11cbda54ccabcab84d523dc93b858ec75ecfb3a7d89513fa22464da396"
-dependencies = [
- "bitflags 2.10.0",
- "dispatch2",
- "libc",
- "objc2",
- "objc2-core-foundation",
- "objc2-security",
 ]
 
 [[package]]
@@ -5126,17 +5046,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "plist"
-version = "1.8.0"
+name = "pkg-config"
+version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "740ebea15c5d1428f910cd1a5f52cebf8d25006245ed8ade92702f4943d91e07"
-dependencies = [
- "base64 0.22.1",
- "indexmap 2.13.0",
- "quick-xml 0.38.4",
- "serde",
- "time",
-]
+checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 
 [[package]]
 name = "plotters"
@@ -5208,6 +5121,22 @@ name = "portable-atomic"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "postcard"
+version = "1.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6764c3b5dd454e283a30e6dfe78e9b31096d9e32036b5d1eaac7a6119ccb9a24"
+dependencies = [
+ "cobs",
+ "embedded-io 0.4.0",
+ "embedded-io 0.6.1",
+ "heapless",
+ "serde",
+]
 
 [[package]]
 name = "potential_utf"
@@ -5244,7 +5173,7 @@ dependencies = [
  "prost-derive 0.12.6",
  "sha2",
  "smallvec",
- "spin",
+ "spin 0.10.0",
  "symbolic-demangle",
  "tempfile",
  "thiserror 2.0.18",
@@ -5611,15 +5540,6 @@ name = "quick-xml"
 version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f50b1c63b38611e7d4d7f68b82d3ad0cc71a2ad2e7f61fc10f1328d917c93cd"
-dependencies = [
- "memchr",
-]
-
-[[package]]
-name = "quick-xml"
-version = "0.38.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b66c2058c55a409d601666cffe35f04333cf1013010882cec174a7467cd4e21c"
 dependencies = [
  "memchr",
 ]
@@ -6060,8 +5980,8 @@ checksum = "7a552eb82d19f38c3beed3f786bd23aa434ceb9ac43ab44419ca6d67a7e186c0"
 dependencies = [
  "futures",
  "log",
- "netlink-packet-core 0.7.0",
- "netlink-packet-route 0.17.1",
+ "netlink-packet-core",
+ "netlink-packet-route",
  "netlink-packet-utils",
  "netlink-proto",
  "netlink-sys",
@@ -6656,6 +6576,15 @@ checksum = "86f4aa3ad99f2088c990dfa82d367e19cb29268ed67c574d10d0a4bfe71f07e0"
 dependencies = [
  "libc",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "spin"
+version = "0.9.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+dependencies = [
+ "lock_api",
 ]
 
 [[package]]
@@ -7383,18 +7312,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tracing-appender"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "786d480bce6247ab75f005b14ae1624ad978d3029d9113f0a22fa1ac773faeaf"
-dependencies = [
- "crossbeam-channel",
- "thiserror 2.0.18",
- "time",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "tracing-attributes"
 version = "0.1.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7702,6 +7619,7 @@ dependencies = [
  "vertex-node-core",
  "vertex-observability",
  "vertex-rpc-server",
+ "vertex-storage-redb",
  "vertex-swarm-api",
  "vertex-swarm-bandwidth",
  "vertex-swarm-builder",
@@ -7709,6 +7627,7 @@ dependencies = [
  "vertex-swarm-net-handshake",
  "vertex-swarm-net-headers",
  "vertex-swarm-net-hive",
+ "vertex-swarm-net-identify",
  "vertex-swarm-node",
  "vertex-swarm-peer-manager",
  "vertex-swarm-primitives",
@@ -7739,6 +7658,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "vertex-net-dialer"
+version = "0.1.0"
+dependencies = [
+ "hashlink",
+ "libp2p",
+ "metrics",
+ "strum",
+ "thiserror 2.0.18",
+ "tokio",
+ "vertex-metrics",
+ "web-time",
+]
+
+[[package]]
 name = "vertex-net-dnsaddr"
 version = "0.1.0"
 dependencies = [
@@ -7753,16 +7686,16 @@ dependencies = [
 name = "vertex-net-local"
 version = "0.1.0"
 dependencies = [
- "hashlink",
  "ipnet",
  "libp2p",
- "netdev",
  "parking_lot",
  "serde",
- "tokio",
  "tracing",
- "web-time",
 ]
+
+[[package]]
+name = "vertex-net-peer-backoff"
+version = "0.1.0"
 
 [[package]]
 name = "vertex-net-peer-registry"
@@ -7779,8 +7712,9 @@ dependencies = [
 name = "vertex-net-peer-score"
 version = "0.1.0"
 dependencies = [
+ "portable-atomic",
+ "postcard",
  "serde",
- "serde_json",
  "tokio",
 ]
 
@@ -7791,14 +7725,19 @@ dependencies = [
  "auto_impl",
  "parking_lot",
  "serde",
- "serde_json",
- "tempfile",
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "vertex-net-ratelimiter"
 version = "0.1.0"
+
+[[package]]
+name = "vertex-net-utils"
+version = "0.1.0"
+dependencies = [
+ "libp2p",
+]
 
 [[package]]
 name = "vertex-node-api"
@@ -7857,13 +7796,11 @@ dependencies = [
  "parking_lot",
  "rand 0.9.2",
  "serde",
- "serde_json",
  "shellexpand",
  "tempfile",
  "tokio",
  "toml 0.7.8",
  "tracing",
- "tracing-appender",
  "tracing-subscriber",
  "vergen-gitcl",
  "vertex-node-api",
@@ -7889,7 +7826,6 @@ dependencies = [
  "parking_lot",
  "pprof",
  "serde",
- "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tikv-jemalloc-ctl",
@@ -7898,7 +7834,6 @@ dependencies = [
  "tower 0.5.3",
  "tower-http",
  "tracing",
- "tracing-appender",
  "tracing-opentelemetry",
  "tracing-subscriber",
  "vertex-metrics",
@@ -7932,6 +7867,32 @@ dependencies = [
  "tracing",
  "vertex-node-api",
  "vertex-rpc-core",
+]
+
+[[package]]
+name = "vertex-storage"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "nectar-primitives",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "vertex-storage-redb"
+version = "0.1.0"
+dependencies = [
+ "metrics",
+ "parking_lot",
+ "postcard",
+ "redb",
+ "serde",
+ "tempfile",
+ "tracing",
+ "vertex-observability",
+ "vertex-storage",
+ "zstd",
 ]
 
 [[package]]
@@ -7980,23 +7941,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vertex-swarm-bandwidth-chequebook"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "alloy-signer",
- "alloy-signer-local",
- "alloy-sol-types",
- "bytes",
- "nectar-contracts",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "vertex-swarm-spec",
-]
-
-[[package]]
 name = "vertex-swarm-bandwidth-pricing"
 version = "0.1.0"
 dependencies = [
@@ -8029,25 +7973,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vertex-swarm-bandwidth-swap"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "async-trait",
- "parking_lot",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "vertex-swarm-api",
- "vertex-swarm-bandwidth",
- "vertex-swarm-bandwidth-chequebook",
- "vertex-swarm-node",
- "vertex-swarm-primitives",
- "vertex-swarm-test-utils",
- "vertex-tasks",
-]
-
-[[package]]
 name = "vertex-swarm-builder"
 version = "0.1.0"
 dependencies = [
@@ -8060,20 +7985,22 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "vertex-net-peer-store",
  "vertex-node-api",
  "vertex-node-builder",
  "vertex-node-commands",
  "vertex-node-core",
  "vertex-rpc-server",
+ "vertex-storage-redb",
  "vertex-swarm-api",
  "vertex-swarm-bandwidth",
  "vertex-swarm-bandwidth-pricing",
  "vertex-swarm-bandwidth-pseudosettle",
- "vertex-swarm-bandwidth-swap",
  "vertex-swarm-identity",
  "vertex-swarm-localstore",
  "vertex-swarm-node",
  "vertex-swarm-peer-manager",
+ "vertex-swarm-peer-score",
  "vertex-swarm-redistribution",
  "vertex-swarm-rpc",
  "vertex-swarm-spec",
@@ -8155,6 +8082,7 @@ dependencies = [
  "tracing-subscriber",
  "vertex-net-codec",
  "vertex-net-peer-registry",
+ "vertex-net-utils",
  "vertex-observability",
  "vertex-swarm-api",
  "vertex-swarm-identity",
@@ -8196,6 +8124,7 @@ dependencies = [
  "hashlink",
  "libp2p",
  "metrics",
+ "parking_lot",
  "quick-protobuf-codec",
  "strum",
  "thiserror 2.0.18",
@@ -8203,6 +8132,7 @@ dependencies = [
  "tracing",
  "vertex-net-codec",
  "vertex-net-ratelimiter",
+ "vertex-net-utils",
  "vertex-observability",
  "vertex-swarm-api",
  "vertex-swarm-net-headers",
@@ -8226,13 +8156,17 @@ dependencies = [
  "libp2p-swarm",
  "libp2p-swarm-test",
  "lru",
+ "metrics",
+ "parking_lot",
  "quick-protobuf",
  "quick-protobuf-codec",
  "smallvec",
+ "strum",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "vertex-metrics",
+ "vertex-observability",
  "void",
 ]
 
@@ -8341,28 +8275,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vertex-swarm-net-swap"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "asynchronous-codec",
- "bytes",
- "futures",
- "libp2p",
- "quick-protobuf",
- "quick-protobuf-codec",
- "serde",
- "serde_json",
- "strum",
- "thiserror 2.0.18",
- "tracing",
- "vertex-net-codec",
- "vertex-swarm-bandwidth-chequebook",
- "vertex-swarm-net-headers",
- "vertex-swarm-net-proto",
-]
-
-[[package]]
 name = "vertex-swarm-node"
 version = "0.1.0"
 dependencies = [
@@ -8382,10 +8294,10 @@ dependencies = [
  "tokio",
  "tracing",
  "vertex-net-local",
+ "vertex-net-peer-store",
  "vertex-node-api",
  "vertex-swarm-api",
  "vertex-swarm-bandwidth",
- "vertex-swarm-bandwidth-chequebook",
  "vertex-swarm-bandwidth-pricing",
  "vertex-swarm-identity",
  "vertex-swarm-localstore",
@@ -8395,9 +8307,9 @@ dependencies = [
  "vertex-swarm-net-pseudosettle",
  "vertex-swarm-net-pushsync",
  "vertex-swarm-net-retrieval",
- "vertex-swarm-net-swap",
  "vertex-swarm-peer",
  "vertex-swarm-peer-manager",
+ "vertex-swarm-peer-score",
  "vertex-swarm-primitives",
  "vertex-swarm-redistribution",
  "vertex-swarm-spec",
@@ -8418,11 +8330,11 @@ dependencies = [
  "libp2p",
  "nectar-primitives",
  "nectar-swarms",
+ "postcard",
  "proptest",
  "proptest-arbitrary-interop",
  "rand 0.9.2",
  "serde",
- "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "vertex-net-local",
@@ -8436,21 +8348,25 @@ dependencies = [
 name = "vertex-swarm-peer-manager"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "dashmap",
  "hashlink",
  "libp2p",
  "metrics",
  "parking_lot",
+ "postcard",
  "scopeguard",
  "serde",
- "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "vertex-net-local",
+ "vertex-net-peer-backoff",
  "vertex-net-peer-store",
  "vertex-observability",
+ "vertex-storage",
+ "vertex-storage-redb",
  "vertex-swarm-api",
  "vertex-swarm-peer",
  "vertex-swarm-peer-score",
@@ -8460,27 +8376,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "vertex-swarm-peer-registry"
-version = "0.1.0"
-dependencies = [
- "libp2p",
- "parking_lot",
- "strum",
- "vertex-net-peer-registry",
- "vertex-swarm-primitives",
- "vertex-swarm-test-utils",
- "web-time",
-]
-
-[[package]]
 name = "vertex-swarm-peer-score"
 version = "0.1.0"
 dependencies = [
- "auto_impl",
- "parking_lot",
+ "paste",
+ "postcard",
  "serde",
- "serde_json",
- "tracing",
  "vertex-net-peer-score",
  "vertex-swarm-api",
  "vertex-swarm-primitives",
@@ -8535,9 +8436,9 @@ dependencies = [
  "nectar-swarms",
  "proptest",
  "serde",
- "serde_json",
  "strum",
  "thiserror 2.0.18",
+ "toml 0.8.23",
  "tracing",
  "vertex-swarm-api",
  "vertex-swarm-forks",
@@ -8583,12 +8484,14 @@ name = "vertex-swarm-topology"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "async-trait",
  "bytes",
  "clap 4.5.58",
  "codspeed-criterion-compat",
  "futures",
  "hashlink",
  "hex",
+ "if-watch",
  "libp2p",
  "metrics",
  "nectar-primitives",
@@ -8600,9 +8503,12 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "vertex-net-dialer",
  "vertex-net-dnsaddr",
  "vertex-net-local",
+ "vertex-net-peer-registry",
  "vertex-net-peer-store",
+ "vertex-net-utils",
  "vertex-observability",
  "vertex-swarm-api",
  "vertex-swarm-identity",
@@ -8613,7 +8519,6 @@ dependencies = [
  "vertex-swarm-net-pingpong",
  "vertex-swarm-peer",
  "vertex-swarm-peer-manager",
- "vertex-swarm-peer-registry",
  "vertex-swarm-peer-score",
  "vertex-swarm-primitives",
  "vertex-swarm-spec",
@@ -8630,6 +8535,7 @@ dependencies = [
  "dyn-clone",
  "futures-util",
  "metrics",
+ "parking_lot",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -9580,3 +9486,31 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
+
+[[package]]
+name = "zstd"
+version = "0.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
+dependencies = [
+ "zstd-safe",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "7.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f49c4d5f0abb602a93fb8736af2a4f4dd9512e36f7f570d66e65ff867ed3b9d"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.0.16+zstd.1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91e19ebc2adc8f83e43039e79776e3fda8ca919132d68a1fed6a5faca2683748"
+dependencies = [
+ "cc",
+ "pkg-config",
+]

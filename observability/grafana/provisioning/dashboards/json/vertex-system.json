@@ -15,11 +15,23 @@
       }
     ]
   },
-  "description": "High-level health and KPIs for the Vertex Swarm node",
+  "description": "Task executor, memory allocator, and process-level metrics",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
   "links": [
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Overview",
+      "tooltip": "",
+      "type": "link",
+      "url": "/d/vertex-overview"
+    },
     {
       "asDropdown": false,
       "icon": "external link",
@@ -67,18 +79,6 @@
       "tooltip": "",
       "type": "link",
       "url": "/d/vertex-database"
-    },
-    {
-      "asDropdown": false,
-      "icon": "external link",
-      "includeVars": true,
-      "keepTime": true,
-      "tags": [],
-      "targetBlank": false,
-      "title": "System",
-      "tooltip": "",
-      "type": "link",
-      "url": "/d/vertex-system"
     }
   ],
   "panels": [
@@ -90,7 +90,7 @@
         "y": 0
       },
       "id": 1,
-      "title": "Key Metrics",
+      "title": "Task Executor",
       "type": "row",
       "collapsed": false
     },
@@ -145,12 +145,12 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(vertex_topology_connected_peers{instance=~\"$instance\"})",
-          "legendFormat": "Connected",
+          "expr": "count(vertex_executor_tasks_running{instance=~\"$instance\"} > 0 and vertex_executor_tasks_running{type=\"critical\", instance=~\"$instance\"}) or vector(0)",
+          "legendFormat": "",
           "refId": "A"
         }
       ],
-      "title": "Connected Peers",
+      "title": "Critical Tasks",
       "type": "stat"
     },
     {
@@ -204,12 +204,12 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "vertex_topology_depth{instance=~\"$instance\"}",
-          "legendFormat": "Depth",
+          "expr": "count(vertex_executor_tasks_running{instance=~\"$instance\"} > 0 and vertex_executor_tasks_running{type=\"regular\", instance=~\"$instance\"}) or vector(0)",
+          "legendFormat": "",
           "refId": "A"
         }
       ],
-      "title": "Kademlia Depth",
+      "title": "Regular Tasks",
       "type": "stat"
     },
     {
@@ -263,12 +263,12 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "vertex_peer_manager_total_peers{instance=~\"$instance\"}",
-          "legendFormat": "Indexed",
+          "expr": "count(vertex_executor_tasks_running{instance=~\"$instance\"} > 0 and vertex_executor_tasks_running{type=\"blocking\", instance=~\"$instance\"}) or vector(0)",
+          "legendFormat": "",
           "refId": "A"
         }
       ],
-      "title": "Indexed Peers",
+      "title": "Blocking Tasks",
       "type": "stat"
     },
     {
@@ -290,12 +290,8 @@
                 "value": null
               },
               {
-                "color": "yellow",
-                "value": 10
-              },
-              {
                 "color": "red",
-                "value": 50
+                "value": 1
               }
             ]
           },
@@ -330,12 +326,12 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "vertex_peer_registry_pending_connections{instance=~\"$instance\"}",
-          "legendFormat": "Pending",
+          "expr": "sum(vertex_executor_tasks_panicked_total{instance=~\"$instance\"}) or vector(0)",
+          "legendFormat": "",
           "refId": "A"
         }
       ],
-      "title": "Pending",
+      "title": "Panicked (Total)",
       "type": "stat"
     },
     {
@@ -355,14 +351,6 @@
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 10
-              },
-              {
-                "color": "red",
-                "value": 50
               }
             ]
           },
@@ -397,12 +385,12 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "vertex_peer_manager_health{state=\"failing\", instance=~\"$instance\"}",
-          "legendFormat": "Failing",
+          "expr": "vertex_executor_tasks_graceful_shutdown_pending{instance=~\"$instance\"}",
+          "legendFormat": "",
           "refId": "A"
         }
       ],
-      "title": "Failing",
+      "title": "Graceful Shutdown Pending",
       "type": "stat"
     },
     {
@@ -422,14 +410,6 @@
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 1
-              },
-              {
-                "color": "red",
-                "value": 5
               }
             ]
           },
@@ -464,25 +444,119 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "vertex_peer_manager_health{state=\"banned\", instance=~\"$instance\"}",
-          "legendFormat": "Banned",
+          "expr": "vertex_executor_tasks_graceful_shutdown_registered{instance=~\"$instance\"}",
+          "legendFormat": "",
           "refId": "A"
         }
       ],
-      "title": "Banned",
+      "title": "Graceful Shutdown Registered",
       "type": "stat"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
       "gridPos": {
-        "h": 1,
-        "w": 24,
+        "h": 8,
+        "w": 12,
         "x": 0,
         "y": 5
       },
       "id": 8,
-      "title": "Network Health",
-      "type": "row",
-      "collapsed": false
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "count(vertex_executor_tasks_running{type=\"critical\", instance=~\"$instance\"} > 0) or vector(0)",
+          "legendFormat": "Critical",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "count(vertex_executor_tasks_running{type=\"regular\", instance=~\"$instance\"} > 0) or vector(0)",
+          "legendFormat": "Regular",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "count(vertex_executor_tasks_running{type=\"blocking\", instance=~\"$instance\"} > 0) or vector(0)",
+          "legendFormat": "Blocking",
+          "refId": "C"
+        }
+      ],
+      "title": "Running Tasks by Type",
+      "type": "timeseries"
     },
     {
       "datasource": {
@@ -536,15 +610,15 @@
               }
             ]
           },
-          "unit": "short"
+          "unit": "ops"
         },
         "overrides": []
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 6
+        "w": 12,
+        "x": 12,
+        "y": 5
       },
       "id": 9,
       "options": {
@@ -564,8 +638,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(vertex_topology_connected_peers{instance=~\"$instance\"})",
-          "legendFormat": "Total",
+          "expr": "sum by (task) (rate(vertex_executor_spawn_critical_tasks_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "Critical: {{task}}",
           "refId": "A"
         },
         {
@@ -573,8 +647,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "vertex_topology_connected_peers{node_type=\"storer\", instance=~\"$instance\"}",
-          "legendFormat": "Storers",
+          "expr": "sum by (task) (rate(vertex_executor_spawn_regular_tasks_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "Regular: {{task}}",
           "refId": "B"
         },
         {
@@ -582,12 +656,12 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "vertex_topology_connected_peers{node_type=\"client\", instance=~\"$instance\"}",
-          "legendFormat": "Clients",
+          "expr": "sum by (task) (rate(vertex_executor_spawn_regular_blocking_tasks_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "Blocking: {{task}}",
           "refId": "C"
         }
       ],
-      "title": "Connected Peers",
+      "title": "Task Spawn Rate /s",
       "type": "timeseries"
     },
     {
@@ -648,9 +722,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 6
+        "w": 12,
+        "x": 0,
+        "y": 13
       },
       "id": 10,
       "options": {
@@ -670,8 +744,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vertex_topology_connections_total{instance=~\"$instance\"}[$rate_window]))",
-          "legendFormat": "Connections",
+          "expr": "sum by (task) (rate(vertex_executor_spawn_finished_critical_tasks_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "Critical: {{task}}",
           "refId": "A"
         },
         {
@@ -679,8 +753,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vertex_topology_disconnections_total{instance=~\"$instance\"}[$rate_window]))",
-          "legendFormat": "Disconnections",
+          "expr": "sum by (task) (rate(vertex_executor_spawn_finished_regular_tasks_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "Regular: {{task}}",
           "refId": "B"
         },
         {
@@ -688,12 +762,12 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vertex_topology_connections_rejected_total{instance=~\"$instance\"}[$rate_window]))",
-          "legendFormat": "Rejected",
+          "expr": "sum by (task) (rate(vertex_executor_spawn_finished_regular_blocking_tasks_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "Blocking: {{task}}",
           "refId": "C"
         }
       ],
-      "title": "Connection Events /s",
+      "title": "Task Completion Rate /s",
       "type": "timeseries"
     },
     {
@@ -714,7 +788,7 @@
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
-            "fillOpacity": 10,
+            "fillOpacity": 0,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -754,9 +828,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 6
+        "w": 12,
+        "x": 12,
+        "y": 13
       },
       "id": 11,
       "options": {
@@ -776,98 +850,56 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "vertex_topology_depth{instance=~\"$instance\"}",
-          "legendFormat": "Depth",
+          "expr": "vertex_executor_tasks_graceful_shutdown_registered{instance=~\"$instance\"}",
+          "legendFormat": "Registered",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "vertex_executor_tasks_graceful_shutdown_pending{instance=~\"$instance\"}",
+          "legendFormat": "Pending",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(vertex_executor_tasks_graceful_shutdown_finished_total{instance=~\"$instance\"}[$rate_window]))",
+          "legendFormat": "Finished /s",
+          "refId": "C"
         }
       ],
-      "title": "Kademlia Depth",
+      "title": "Graceful Shutdown State",
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      },
       "gridPos": {
-        "h": 1,
+        "h": 8,
         "w": 24,
         "x": 0,
-        "y": 14
+        "y": 21
       },
       "id": 12,
-      "title": "Protocol Health",
-      "type": "row",
-      "collapsed": false
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 15
-      },
-      "id": 13,
       "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
+        "showHeader": true,
+        "footer": {
+          "show": false
         }
       },
       "targets": [
@@ -876,199 +908,25 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (protocol, direction) (rate(vertex_protocol_exchanges_total{instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "{{protocol}} {{direction}}",
-          "refId": "A"
+          "expr": "vertex_executor_tasks_running{instance=~\"$instance\"} > 0",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
         }
       ],
-      "title": "Protocol Exchange Rate /s",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 15
-      },
-      "id": 14,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum by (protocol, outcome) (rate(vertex_protocol_exchange_outcomes_total{instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "{{protocol}} {{outcome}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Protocol Exchange Outcomes /s",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 15
-      },
-      "id": 15,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum by (protocol, reason) (rate(vertex_protocol_upgrade_errors_total{instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "{{protocol}} {{reason}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Protocol Upgrade Errors /s",
-      "type": "timeseries"
+      "title": "Running Tasks Detail",
+      "type": "table"
     },
     {
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 23
+        "y": 29
       },
-      "id": 16,
-      "title": "Resources",
+      "id": 13,
+      "title": "Memory",
       "type": "row",
       "collapsed": false
     },
@@ -1130,11 +988,11 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
+        "w": 12,
         "x": 0,
-        "y": 24
+        "y": 30
       },
-      "id": 17,
+      "id": 14,
       "options": {
         "legend": {
           "calcs": [],
@@ -1161,8 +1019,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "vertex_jemalloc_resident_bytes{instance=~\"$instance\"}",
-          "legendFormat": "Resident",
+          "expr": "vertex_jemalloc_active_bytes{instance=~\"$instance\"}",
+          "legendFormat": "Active",
           "refId": "B"
         },
         {
@@ -1170,13 +1028,237 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
+          "expr": "vertex_jemalloc_resident_bytes{instance=~\"$instance\"}",
+          "legendFormat": "Resident",
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "vertex_jemalloc_mapped_bytes{instance=~\"$instance\"}",
+          "legendFormat": "Mapped",
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "vertex_jemalloc_retained_bytes{instance=~\"$instance\"}",
+          "legendFormat": "Retained",
+          "refId": "E"
+        }
+      ],
+      "title": "jemalloc Memory",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 30
+      },
+      "id": 15,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "vertex_process_resident_memory_bytes{instance=~\"$instance\"}",
-          "legendFormat": "Process RSS",
+          "legendFormat": "Resident (RSS)",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "vertex_process_virtual_memory_bytes{instance=~\"$instance\"}",
+          "legendFormat": "Virtual",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "vertex_process_virtual_memory_max_bytes{instance=~\"$instance\"}",
+          "legendFormat": "Virtual Max",
           "refId": "C"
         }
       ],
-      "title": "Memory Usage",
+      "title": "Process Memory",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 38
+      },
+      "id": 16,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "vertex_jemalloc_resident_bytes{instance=~\"$instance\"} - vertex_jemalloc_allocated_bytes{instance=~\"$instance\"}",
+          "legendFormat": "Fragmentation",
+          "refId": "A"
+        }
+      ],
+      "title": "jemalloc Fragmentation (Resident - Allocated)",
+      "type": "timeseries"
+    },
+    {
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 46
+      },
+      "id": 17,
+      "title": "Process",
+      "type": "row",
+      "collapsed": false
     },
     {
       "datasource": {
@@ -1237,8 +1319,8 @@
       "gridPos": {
         "h": 8,
         "w": 8,
-        "x": 8,
-        "y": 24
+        "x": 0,
+        "y": 47
       },
       "id": 18,
       "options": {
@@ -1325,8 +1407,8 @@
       "gridPos": {
         "h": 8,
         "w": 8,
-        "x": 16,
-        "y": 24
+        "x": 8,
+        "y": 47
       },
       "id": 19,
       "options": {
@@ -1364,16 +1446,92 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
       "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 32
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 47
       },
       "id": 20,
-      "title": "Storage",
-      "type": "row",
-      "collapsed": false
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "vertex_process_threads{instance=~\"$instance\"}",
+          "legendFormat": "Threads",
+          "refId": "A"
+        }
+      ],
+      "title": "OS Threads",
+      "type": "timeseries"
     },
     {
       "datasource": {
@@ -1395,15 +1553,15 @@
               }
             ]
           },
-          "unit": "bytes"
+          "unit": "s"
         },
         "overrides": []
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
+        "w": 6,
         "x": 0,
-        "y": 33
+        "y": 55
       },
       "id": 21,
       "options": {
@@ -1426,12 +1584,12 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "vertex_redb_file_size_bytes{instance=~\"$instance\"}",
-          "legendFormat": "",
+          "expr": "time() - vertex_process_start_time_seconds{instance=~\"$instance\"}",
+          "legendFormat": "Uptime",
           "refId": "A"
         }
       ],
-      "title": "DB File Size",
+      "title": "Uptime",
       "type": "stat"
     },
     {
@@ -1460,9 +1618,9 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 4,
-        "y": 33
+        "w": 6,
+        "x": 6,
+        "y": 55
       },
       "id": 22,
       "options": {
@@ -1485,12 +1643,12 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(vertex_db_entries{instance=~\"$instance\"})",
-          "legendFormat": "Entries",
+          "expr": "vertex_process_open_fds{instance=~\"$instance\"}",
+          "legendFormat": "",
           "refId": "A"
         }
       ],
-      "title": "Total Entries",
+      "title": "Open FDs",
       "type": "stat"
     },
     {
@@ -1510,26 +1668,18 @@
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 0.2
-              },
-              {
-                "color": "red",
-                "value": 0.5
               }
             ]
           },
-          "unit": "percentunit"
+          "unit": "short"
         },
         "overrides": []
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 8,
-        "y": 33
+        "w": 6,
+        "x": 12,
+        "y": 55
       },
       "id": 23,
       "options": {
@@ -1552,12 +1702,12 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "vertex_redb_fragmented_bytes_total{instance=~\"$instance\"} / (vertex_redb_stored_bytes_total{instance=~\"$instance\"} + vertex_redb_metadata_bytes_total{instance=~\"$instance\"} + vertex_redb_fragmented_bytes_total{instance=~\"$instance\"})",
-          "legendFormat": "Ratio",
+          "expr": "vertex_process_threads{instance=~\"$instance\"}",
+          "legendFormat": "",
           "refId": "A"
         }
       ],
-      "title": "Fragmentation",
+      "title": "OS Threads",
       "type": "stat"
     },
     {
@@ -1580,15 +1730,15 @@
               }
             ]
           },
-          "unit": "ops"
+          "unit": "bytes"
         },
         "overrides": []
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 12,
-        "y": 33
+        "w": 6,
+        "x": 18,
+        "y": 55
       },
       "id": 24,
       "options": {
@@ -1611,19 +1761,19 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vertex_db_operations_total{instance=~\"$instance\"}[$rate_window]))",
-          "legendFormat": "Ops/s",
+          "expr": "vertex_process_resident_memory_bytes{instance=~\"$instance\"}",
+          "legendFormat": "",
           "refId": "A"
         }
       ],
-      "title": "DB Ops /s",
+      "title": "Resident Memory",
       "type": "stat"
     }
   ],
   "schemaVersion": 39,
   "tags": [
     "vertex",
-    "overview"
+    "system"
   ],
   "templating": {
     "list": [
@@ -1727,8 +1877,8 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "Vertex Overview",
-  "uid": "vertex-overview",
+  "title": "Vertex System",
+  "uid": "vertex-system",
   "version": 1,
   "refresh": "10s"
 }

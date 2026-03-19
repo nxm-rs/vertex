@@ -22,11 +22,14 @@ message GetStatusResponse {
   // Total number of connected peers.
   uint32 connected_peers = 3;
 
-  // Total number of known (discovered but not connected) peers.
+  // Peers in routing table (bounded ProximityIndex).
   uint32 known_peers = 4;
 
   // Number of pending connection attempts.
   uint32 pending_connections = 5;
+
+  // Total peers persisted in the backing store.
+  uint32 stored_peers = 6;
 }
 
 message GetTopologyRequest {}

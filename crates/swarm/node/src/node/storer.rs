@@ -16,7 +16,7 @@ use vertex_swarm_topology::{KademliaConfig, TopologyCommand, TopologyHandle};
 use vertex_tasks::GracefulShutdown;
 
 use super::client::{ClientNode, ClientNodeBuilder};
-use crate::protocol::{PseudosettleEvent, SwapEvent};
+use crate::protocol::PseudosettleEvent;
 use crate::{ClientHandle, ClientService};
 
 /// A full Swarm storer node with storage and chunk sync.
@@ -111,7 +111,6 @@ pub struct StorerNodeBuilder<I: SwarmIdentity + Clone> {
     identity: I,
     kademlia_config: Option<KademliaConfig>,
     pseudosettle_event_tx: Option<mpsc::UnboundedSender<PseudosettleEvent>>,
-    swap_event_tx: Option<mpsc::UnboundedSender<SwapEvent>>,
 }
 
 impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
@@ -121,7 +120,6 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
             identity,
             kademlia_config: None,
             pseudosettle_event_tx: None,
-            swap_event_tx: None,
         }
     }
 
@@ -140,11 +138,6 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
         self
     }
 
-    /// Set the sender for routing swap events.
-    pub fn with_swap_events(mut self, tx: mpsc::UnboundedSender<SwapEvent>) -> Self {
-        self.swap_event_tx = Some(tx);
-        self
-    }
 }
 
 impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
@@ -152,6 +145,8 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
     pub async fn build<C>(
         self,
         network_config: &C,
+        peer_store: Option<std::sync::Arc<dyn vertex_net_peer_store::NetPeerStore<vertex_swarm_peer_manager::StoredPeer>>>,
+        score_store: Option<std::sync::Arc<dyn vertex_swarm_api::SwarmScoreStore<Score = vertex_swarm_peer_score::PeerScore, Error = vertex_net_peer_store::StoreError>>>,
     ) -> Result<(StorerNode<I>, ClientService, ClientHandle)>
     where
         I: vertex_swarm_spec::HasSpec,
@@ -168,11 +163,8 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
         if let Some(tx) = self.pseudosettle_event_tx {
             client_builder = client_builder.with_pseudosettle_events(tx);
         }
-        if let Some(tx) = self.swap_event_tx {
-            client_builder = client_builder.with_swap_events(tx);
-        }
 
-        let (client, service, handle) = client_builder.build(network_config).await?;
+        let (client, service, handle) = client_builder.build(network_config, peer_store, score_store).await?;
 
         // TODO: Initialize storage-specific components:
         // - local_store

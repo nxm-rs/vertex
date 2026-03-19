@@ -1,3 +1,5 @@
+compile_error!("vertex-swarm-net-swap is disabled: depends on serde_json which has been removed from the workspace. Remove serde_json dependency before re-enabling.");
+
 //! SWAP protocol for Swarm cheque-based bandwidth settlement.
 
 mod codec;
