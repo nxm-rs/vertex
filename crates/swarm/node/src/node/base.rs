@@ -3,9 +3,10 @@
 use eyre::Result;
 use libp2p::{Multiaddr, PeerId, Swarm, swarm::NetworkBehaviour, swarm::SwarmEvent};
 use nectar_primitives::SwarmAddress;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 use vertex_swarm_api::SwarmIdentity;
-use vertex_swarm_topology::TopologyHandle;
+use vertex_swarm_net_identify as identify;
+use vertex_swarm_topology::{TopologyBehaviour, TopologyHandle};
 
 /// Base node with shared state for [`BootNode`](super::BootNode),
 /// [`ClientNode`](super::ClientNode), and [`StorerNode`](super::StorerNode).
@@ -118,6 +119,41 @@ impl<I: SwarmIdentity, B: NetworkBehaviour> BaseNode<I, B> {
             }
             SwarmEvent::Behaviour(_) => Some(event),
             _ => None,
+        }
+    }
+}
+
+/// Handle an identify event by recording observed addresses and pushing them back.
+///
+/// Shared between [`BootNode`](super::BootNode) and [`ClientNode`](super::ClientNode).
+pub(crate) fn handle_identify_event<I: SwarmIdentity + Clone>(
+    topology: &TopologyBehaviour<I>,
+    identify: &mut identify::Behaviour,
+    event: identify::Event,
+) {
+    match event {
+        identify::Event::Received { peer_id, info, .. } => {
+            debug!(
+                %peer_id,
+                protocol_version = %info.protocol_version,
+                agent_version = %info.agent_version,
+                observed_addr = %info.observed_addr,
+                "Received identify info"
+            );
+
+            if !info.observed_addr.is_empty() {
+                topology.on_observed_addr(&info.observed_addr);
+                identify.push_with_addresses(peer_id, vec![info.observed_addr]);
+            }
+        }
+        identify::Event::Sent { peer_id, .. } => {
+            trace!(%peer_id, "Sent identify info");
+        }
+        identify::Event::Pushed { peer_id, .. } => {
+            debug!(%peer_id, "Pushed identify info");
+        }
+        identify::Event::Error { peer_id, error, .. } => {
+            warn!(%peer_id, %error, "Identify error");
         }
     }
 }

@@ -10,13 +10,14 @@ use std::sync::Arc;
 use eyre::Result;
 use futures::StreamExt;
 use libp2p::{
-    Multiaddr, PeerId, SwarmBuilder, identity::PublicKey, noise, swarm::NetworkBehaviour,
-    swarm::SwarmEvent, tcp, yamux,
+    Multiaddr, PeerId, identity::PublicKey, swarm::NetworkBehaviour, swarm::SwarmEvent,
 };
 use nectar_primitives::SwarmAddress;
 use tokio::sync::mpsc;
-use tracing::{debug, info, trace, warn};
-use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig};
+use tracing::{debug, info, warn};
+use vertex_swarm_api::{
+    SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig,
+};
 use vertex_swarm_net_identify as identify;
 use vertex_swarm_topology::{
     KademliaConfig, TopologyBehaviour, TopologyCommand, TopologyConfig, TopologyEvent,
@@ -27,10 +28,9 @@ use vertex_tasks::TaskExecutor;
 
 use super::base::BaseNode;
 use super::builder::BuiltInfrastructure;
-use super::error::NodeBuildError;
 use crate::protocol::{
     BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientCommand, ClientEvent,
-    PseudosettleEvent, SwapEvent,
+    PseudosettleEvent,
 };
 use crate::{ClientHandle, ClientService};
 
@@ -45,12 +45,16 @@ pub struct ClientNodeBehaviour<I: SwarmIdentity + Clone> {
 
 impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
     pub fn from_parts(local_public_key: PublicKey, topology: TopologyBehaviour<I>) -> Self {
+        let agent_versions = topology.agent_versions();
         Self {
             // Send listen addresses (even private IPs) so bee's peerstore has entries.
             // waitPeerAddrs() returns immediately if len(addrs) > 0, regardless of
             // whether addresses match or are reachable. The handshake protocol uses
             // RemoteMultiaddr directly. Private IPs in gossip are harmless.
-            identify: identify::Behaviour::new(identify::Config::new(local_public_key)),
+            identify: identify::Behaviour::new(
+                identify::Config::new(local_public_key),
+                agent_versions,
+            ),
             topology,
             client: ClientBehaviour::new(ClientBehaviourConfig::default()),
         }
@@ -88,8 +92,8 @@ impl From<ClientEvent> for ClientNodeEvent {
 /// reading from and writing to the Swarm network.
 pub struct ClientNode<I: SwarmIdentity + Clone> {
     base: BaseNode<I, ClientNodeBehaviour<I>>,
-    client_event_tx: mpsc::UnboundedSender<ClientEvent>,
-    client_command_rx: mpsc::UnboundedReceiver<ClientCommand>,
+    client_event_tx: mpsc::Sender<ClientEvent>,
+    client_command_rx: mpsc::Receiver<ClientCommand>,
 }
 
 impl<I: SwarmIdentity + Clone> ClientNode<I> {
@@ -159,6 +163,7 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
             tokio::select! {
                 guard = &mut shutdown => {
                     info!("Client node shutdown signal received");
+                    self.base.swarm.behaviour_mut().topology.on_command(TopologyCommand::SavePeers);
                     drop(guard);
                     break;
                 }
@@ -203,50 +208,8 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
     }
 
     fn handle_identify_event(&mut self, event: identify::Event) {
-        match event {
-            identify::Event::Received { peer_id, info, .. } => {
-                debug!(
-                    %peer_id,
-                    protocol_version = %info.protocol_version,
-                    agent_version = %info.agent_version,
-                    observed_addr = %info.observed_addr,
-                    "Received identify info"
-                );
-                // Store agent version for diagnostics
-                self.base
-                    .topology_handle
-                    .set_agent_version(&peer_id, info.agent_version.clone());
-
-                // Record observed address for NAT discovery. This enables us to know
-                // we're publicly reachable and connect to other public peers.
-                if !info.observed_addr.is_empty() {
-                    self.base
-                        .swarm
-                        .behaviour()
-                        .topology
-                        .on_observed_addr(&info.observed_addr);
-
-                    // Push back our observed address to the peer. This bypasses go-libp2p's
-                    // address filtering (which drops private IPs when connected from public IP)
-                    // and ensures bee's peerstore has an entry for us, avoiding the 10s delay
-                    // in waitPeerAddrs().
-                    self.base
-                        .swarm
-                        .behaviour_mut()
-                        .identify
-                        .push_with_addresses(peer_id, vec![info.observed_addr]);
-                }
-            }
-            identify::Event::Sent { peer_id, .. } => {
-                trace!(%peer_id, "Sent identify info");
-            }
-            identify::Event::Pushed { peer_id, .. } => {
-                debug!(%peer_id, "Pushed identify info");
-            }
-            identify::Event::Error { peer_id, error, .. } => {
-                warn!(%peer_id, %error, "Identify error");
-            }
-        }
+        let behaviour = self.base.swarm.behaviour_mut();
+        super::base::handle_identify_event(&behaviour.topology, &mut behaviour.identify, event);
     }
 
     fn handle_topology_service_event(&mut self, event: TopologyEvent) {
@@ -276,8 +239,9 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
     }
 
     fn route_client_event(&self, event: ClientEvent) {
-        if let Err(e) = self.client_event_tx.send(event) {
+        if let Err(e) = self.client_event_tx.try_send(event) {
             warn!(%e, "Failed to send client event to service");
+            metrics::counter!("swarm.client.events_dropped").increment(1);
         }
     }
 
@@ -301,7 +265,6 @@ pub struct ClientNodeBuilder<I: SwarmIdentity + Clone> {
     infra: Option<BuiltInfrastructure<I>>,
     kademlia_config: Option<KademliaConfig>,
     pseudosettle_event_tx: Option<mpsc::UnboundedSender<PseudosettleEvent>>,
-    swap_event_tx: Option<mpsc::UnboundedSender<SwapEvent>>,
 }
 
 impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
@@ -311,7 +274,6 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
             infra: None,
             kademlia_config: None,
             pseudosettle_event_tx: None,
-            swap_event_tx: None,
         }
     }
 
@@ -333,16 +295,14 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
         self
     }
 
-    pub fn with_swap_events(mut self, tx: mpsc::UnboundedSender<SwapEvent>) -> Self {
-        self.swap_event_tx = Some(tx);
-        self
-    }
 }
 
 impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
     pub async fn build<C>(
         self,
         network_config: &C,
+        peer_store: Option<std::sync::Arc<dyn vertex_net_peer_store::NetPeerStore<vertex_swarm_peer_manager::StoredPeer>>>,
+        score_store: Option<std::sync::Arc<dyn vertex_swarm_api::SwarmScoreStore<Score = vertex_swarm_peer_score::PeerScore, Error = vertex_net_peer_store::StoreError>>>,
     ) -> Result<(ClientNode<I>, ClientService, ClientHandle)>
     where
         I: vertex_swarm_spec::HasSpec,
@@ -350,79 +310,42 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
     {
         info!("Initializing client P2P network...");
 
-        let mut infra = match self.infra {
+        let infra = match self.infra {
             Some(infra) => infra,
             None => {
                 let topology_config = TopologyConfig::new()
                     .with_kademlia(self.kademlia_config.unwrap_or_default());
-                BuiltInfrastructure::from_config(self.identity, network_config, topology_config)?
+                BuiltInfrastructure::from_config(self.identity, network_config, topology_config, peer_store, score_store)?
             }
         };
 
-        let topology_behaviour = infra
-            .take_behaviour()
-            .ok_or(NodeBuildError::TopologyBehaviourTaken)?;
-        let idle_timeout = network_config.idle_timeout();
-        let listen_addrs = network_config.listen_addrs().to_vec();
-
-        let topology_cell = std::sync::Mutex::new(Some(topology_behaviour));
-
-        let mut swarm = SwarmBuilder::with_new_identity()
-            .with_tokio()
-            .with_tcp(
-                tcp::Config::default(),
-                noise::Config::new,
-                yamux::Config::default,
-            )?
-            .with_dns()?
-            .with_behaviour(|keypair| {
-                let topology = topology_cell
-                    .lock()
-                    .map_err(|_| NodeBuildError::TopologyCellPoisoned)?
-                    .take()
-                    .ok_or(NodeBuildError::TopologyBehaviourTaken)?;
-                Ok(ClientNodeBehaviour::from_parts(keypair.public().clone(), topology))
-            })?
-            .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(idle_timeout))
-            .build();
-
-        if let Some(tx) = self.pseudosettle_event_tx {
-            swarm.behaviour_mut().client.set_pseudosettle_events(tx);
-        }
-        if let Some(tx) = self.swap_event_tx {
-            swarm.behaviour_mut().client.set_swap_events(tx);
-        }
-
-        let local_peer_id = *swarm.local_peer_id();
-        info!(%local_peer_id, "Client node peer ID");
-        info!(overlay = %infra.identity.overlay_address(), "Overlay address");
+        let mut base = super::builder::build_base_node(
+            infra,
+            network_config,
+            "Client node",
+            ClientNodeBehaviour::from_parts,
+        )
+        .await?;
 
         // Set local PeerId for address advertisement in handshakes
-        swarm.behaviour().topology.set_local_peer_id(local_peer_id);
+        base.swarm.behaviour().topology.set_local_peer_id(*base.swarm.local_peer_id());
 
-        if infra.topology_handle.connect_bootnodes().await.is_err() {
-            warn!("Failed to send connect_bootnodes command");
+        if let Some(tx) = self.pseudosettle_event_tx {
+            base.swarm.behaviour_mut().client.set_pseudosettle_events(tx);
         }
 
         let executor = TaskExecutor::current();
-        let _stats_handle = crate::stats::spawn_stats_task(
-            Arc::new(infra.topology_handle.clone()),
-            Arc::clone(infra.topology_handle.peer_manager()),
-            crate::stats::StatsConfig::default(),
+        let _stats_handle = super::stats::spawn_stats_task(
+            Arc::new(base.topology_handle.clone()),
+            Arc::clone(base.topology_handle.peer_manager().score_distribution()),
+            super::stats::StatsConfig::default(),
             &executor,
         );
 
-        let (command_tx, command_rx) = mpsc::unbounded_channel();
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (command_tx, command_rx) = mpsc::channel(crate::client_service::DEFAULT_CHANNEL_CAPACITY);
+        let (event_tx, event_rx) = mpsc::channel(crate::client_service::DEFAULT_CHANNEL_CAPACITY);
 
         let (client_service, client_handle) = ClientService::with_channels(command_tx, event_rx);
-
-        let base = BaseNode {
-            swarm,
-            identity: infra.identity,
-            listen_addrs,
-            topology_handle: infra.topology_handle,
-        };
 
         let node = ClientNode {
             base,

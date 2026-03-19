@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use nectar_primitives::{AnyChunk, ChunkAddress};
 use vertex_swarm_api::{
     BootnodeComponents, ClientComponents, HasAccounting, HasTopology, SwarmClient,
-    SwarmClientAccounting, SwarmError, SwarmResult, SwarmTopology,
+    SwarmClientAccounting, SwarmError, SwarmResult, SwarmTopologyRouting,
 };
 
 use crate::ClientHandle;
@@ -74,7 +74,7 @@ impl<T, A> Client<ClientComponents<T, A>, ()> {
 #[async_trait]
 impl<T, A, S> SwarmClient for Client<ClientComponents<T, A>, S>
 where
-    T: SwarmTopology + Send + Sync + 'static,
+    T: SwarmTopologyRouting + Send + Sync + 'static,
     A: SwarmClientAccounting + Send + Sync + 'static,
     S: Send + Sync + 'static,
 {
@@ -108,15 +108,16 @@ pub type FullClient<T, A, S = ()> = Client<ClientComponents<T, A>, S>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Accounting, ClientCommand, ClientHandle, FixedPricer};
+    use crate::{ClientCommand, ClientHandle};
+    use vertex_swarm_bandwidth::{Accounting, FixedPricer};
     use std::sync::Arc;
     use tokio::sync::mpsc;
-    use vertex_swarm_api::SwarmBandwidthAccounting;
+    use vertex_swarm_api::{SwarmBandwidthAccounting, SwarmTopologyRouting};
     use vertex_swarm_bandwidth::{ClientAccounting, DefaultBandwidthConfig};
     use vertex_swarm_test_utils::{test_identity_arc as test_identity, MockTopology};
 
     fn create_test_handle() -> ClientHandle {
-        let (tx, _rx) = mpsc::unbounded_channel::<ClientCommand>();
+        let (tx, _rx) = mpsc::channel::<ClientCommand>(16);
         ClientHandle::new(tx)
     }
 

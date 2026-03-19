@@ -15,13 +15,14 @@ use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
 
-// Re-export the types from protocol module
-pub use crate::protocol::{ClientCommand, ClientEvent};
+use crate::protocol::{ClientCommand, ClientEvent};
+
+pub(crate) const DEFAULT_CHANNEL_CAPACITY: usize = 256;
 
 /// Handle for sending commands to the network layer.
 #[derive(Clone)]
 pub struct ClientHandle {
-    command_tx: mpsc::UnboundedSender<ClientCommand>,
+    command_tx: mpsc::Sender<ClientCommand>,
     pending_retrievals: Arc<Mutex<HashMap<ChunkAddress, oneshot::Sender<RetrievalResult>>>>,
 }
 
@@ -54,18 +55,27 @@ pub enum RetrievalError {
 
 impl ClientHandle {
     /// Create a new client handle.
-    pub fn new(command_tx: mpsc::UnboundedSender<ClientCommand>) -> Self {
+    pub fn new(command_tx: mpsc::Sender<ClientCommand>) -> Self {
         Self {
             command_tx,
             pending_retrievals: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    /// Send a command to the network layer.
+    /// Send a command to the network layer (non-blocking).
+    ///
+    /// Uses `try_send` because callers (e.g. the libp2p event loop) must not block.
     pub fn send_command(&self, command: ClientCommand) -> Result<(), RetrievalError> {
         self.command_tx
-            .send(command)
-            .map_err(|_| RetrievalError::ChannelClosed)
+            .try_send(command)
+            .map_err(|e| match e {
+                mpsc::error::TrySendError::Full(_) => {
+                    warn!("Client command channel full");
+                    metrics::counter!("swarm.client.commands_dropped").increment(1);
+                    RetrievalError::ChannelClosed
+                }
+                mpsc::error::TrySendError::Closed(_) => RetrievalError::ChannelClosed,
+            })
     }
 
     /// Retrieve a chunk from a specific peer.
@@ -102,7 +112,6 @@ impl ClientHandle {
     }
 
     /// Fail a pending retrieval with an error.
-    #[allow(dead_code)]
     pub(crate) fn fail_retrieval(&self, address: ChunkAddress, _error: String) {
         let mut pending = self.pending_retrievals.lock();
         pending.remove(&address);
@@ -117,16 +126,16 @@ pub struct ClientService {
     /// Handle for sending commands.
     handle: ClientHandle,
     /// Event receiver from the network.
-    event_rx: mpsc::UnboundedReceiver<ClientEvent>,
+    event_rx: mpsc::Receiver<ClientEvent>,
 }
 
 impl ClientService {
-    /// Create a new client service.
+    /// Create a new client service with default channel capacity.
     ///
     /// Returns the service and a sender for events (to be used by the network layer).
-    pub fn new() -> (Self, mpsc::UnboundedSender<ClientEvent>, ClientHandle) {
-        let (command_tx, _command_rx) = mpsc::unbounded_channel();
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
+    pub fn new() -> (Self, mpsc::Sender<ClientEvent>, ClientHandle) {
+        let (command_tx, _command_rx) = mpsc::channel(DEFAULT_CHANNEL_CAPACITY);
+        let (event_tx, event_rx) = mpsc::channel(DEFAULT_CHANNEL_CAPACITY);
 
         let handle = ClientHandle::new(command_tx);
 
@@ -142,8 +151,8 @@ impl ClientService {
     ///
     /// Use this when the network layer creates the command channel.
     pub fn with_channels(
-        command_tx: mpsc::UnboundedSender<ClientCommand>,
-        event_rx: mpsc::UnboundedReceiver<ClientEvent>,
+        command_tx: mpsc::Sender<ClientCommand>,
+        event_rx: mpsc::Receiver<ClientEvent>,
     ) -> (Self, ClientHandle) {
         let handle = ClientHandle::new(command_tx);
 
@@ -302,32 +311,6 @@ impl ClientService {
             ClientEvent::SettlementNeeded { peer, balance } => {
                 debug!(%peer, %balance, "Settlement needed");
                 // TODO: Initiate settlement (swap or pseudosettle)
-            }
-
-            ClientEvent::ChequeReceived {
-                peer,
-                peer_id,
-                cheque,
-                peer_rate,
-            } => {
-                debug!(
-                    %peer,
-                    %peer_id,
-                    beneficiary = %cheque.cheque.beneficiary,
-                    chequebook = %cheque.cheque.chequebook,
-                    cumulative_payout = %cheque.cheque.cumulativePayout,
-                    %peer_rate,
-                    "Cheque received"
-                );
-                // TODO: Validate and cash cheque
-            }
-
-            ClientEvent::ChequeSent {
-                peer,
-                peer_id,
-                peer_rate,
-            } => {
-                debug!(%peer, %peer_id, %peer_rate, "Cheque sent");
             }
 
             ClientEvent::PseudosettleReceived {

@@ -61,5 +61,6 @@ pub type BuiltBootnode = BuiltNode<BootnodeRpcProviders<Arc<Identity>>>;
 pub type BuiltClient =
     BuiltNode<ClientRpcProviders<Arc<Identity>, NetworkChunkProvider<Arc<Identity>>>>;
 
-/// Built storer node (topology + storage).
-pub type BuiltStorer = BuiltNode<StorerRpcProviders<Arc<Identity>>>;
+/// Built storer node (topology + chunks + storage).
+pub type BuiltStorer =
+    BuiltNode<StorerRpcProviders<Arc<Identity>, NetworkChunkProvider<Arc<Identity>>>>;

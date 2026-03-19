@@ -7,13 +7,12 @@
 
 use eyre::Result;
 use futures::StreamExt;
-use libp2p::{
-    PeerId, SwarmBuilder, identity::PublicKey, noise, swarm::NetworkBehaviour,
-    swarm::SwarmEvent, tcp, yamux,
-};
+use libp2p::{PeerId, identity::PublicKey, swarm::NetworkBehaviour, swarm::SwarmEvent};
 use nectar_primitives::SwarmAddress;
-use tracing::{debug, info, trace, warn};
-use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig};
+use tracing::info;
+use vertex_swarm_api::{
+    SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig,
+};
 use vertex_swarm_net_identify as identify;
 use vertex_swarm_topology::{
     KademliaConfig, TopologyBehaviour, TopologyCommand, TopologyConfig, TopologyEvent,
@@ -23,7 +22,6 @@ use vertex_tasks::GracefulShutdown;
 
 use super::base::BaseNode;
 use super::builder::BuiltInfrastructure;
-use super::error::NodeBuildError;
 
 /// Network behaviour for a bootnode (topology only, no client protocols).
 #[derive(NetworkBehaviour)]
@@ -36,12 +34,16 @@ pub struct BootnodeBehaviour<I: SwarmIdentity + Clone> {
 impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
     /// Create behaviour from pre-built topology (used with libp2p SwarmBuilder).
     pub fn from_parts(local_public_key: PublicKey, topology: TopologyBehaviour<I>) -> Self {
+        let agent_versions = topology.agent_versions();
         Self {
             // Send listen addresses (even private IPs) so bee's peerstore has entries.
             // waitPeerAddrs() returns immediately if len(addrs) > 0, regardless of
             // whether addresses match or are reachable. The handshake protocol uses
             // RemoteMultiaddr directly. Private IPs in gossip are harmless.
-            identify: identify::Behaviour::new(identify::Config::new(local_public_key)),
+            identify: identify::Behaviour::new(
+                identify::Config::new(local_public_key),
+                agent_versions,
+            ),
             topology,
         }
     }
@@ -119,6 +121,7 @@ impl<I: SwarmIdentity + Clone> BootNode<I> {
             tokio::select! {
                 guard = &mut shutdown => {
                     info!("Bootnode shutdown signal received");
+                    self.base.swarm.behaviour_mut().topology.on_command(TopologyCommand::SavePeers);
                     drop(guard);
                     break;
                 }
@@ -161,50 +164,8 @@ impl<I: SwarmIdentity + Clone> BootNode<I> {
     }
 
     fn handle_identify_event(&mut self, event: identify::Event) {
-        match event {
-            identify::Event::Received { peer_id, info, .. } => {
-                debug!(
-                    %peer_id,
-                    protocol_version = %info.protocol_version,
-                    agent_version = %info.agent_version,
-                    observed_addr = %info.observed_addr,
-                    "Received identify info"
-                );
-                // Store agent version for diagnostics
-                self.base
-                    .topology_handle
-                    .set_agent_version(&peer_id, info.agent_version.clone());
-
-                // Record observed address for NAT discovery. This enables us to know
-                // we're publicly reachable and connect to other public peers.
-                if !info.observed_addr.is_empty() {
-                    self.base
-                        .swarm
-                        .behaviour()
-                        .topology
-                        .on_observed_addr(&info.observed_addr);
-
-                    // Push back our observed address to the peer. This bypasses go-libp2p's
-                    // address filtering (which drops private IPs when connected from public IP)
-                    // and ensures bee's peerstore has an entry for us, avoiding the 10s delay
-                    // in waitPeerAddrs().
-                    self.base
-                        .swarm
-                        .behaviour_mut()
-                        .identify
-                        .push_with_addresses(peer_id, vec![info.observed_addr]);
-                }
-            }
-            identify::Event::Sent { peer_id, .. } => {
-                trace!(%peer_id, "Sent identify info");
-            }
-            identify::Event::Pushed { peer_id, .. } => {
-                debug!(%peer_id, "Pushed identify info");
-            }
-            identify::Event::Error { peer_id, error, .. } => {
-                warn!(%peer_id, %error, "Identify error");
-            }
-        }
+        let behaviour = self.base.swarm.behaviour_mut();
+        super::base::handle_identify_event(&behaviour.topology, &mut behaviour.identify, event);
     }
 
     pub fn connected_peers(&self) -> usize {
@@ -241,66 +202,37 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
 }
 
 impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
-    pub async fn build<C>(self, network_config: &C) -> Result<BootNode<I>>
+    pub async fn build<C>(
+        self,
+        network_config: &C,
+        peer_store: Option<std::sync::Arc<dyn vertex_net_peer_store::NetPeerStore<vertex_swarm_peer_manager::StoredPeer>>>,
+        score_store: Option<std::sync::Arc<dyn vertex_swarm_api::SwarmScoreStore<Score = vertex_swarm_peer_score::PeerScore, Error = vertex_net_peer_store::StoreError>>>,
+    ) -> Result<BootNode<I>>
     where
         I: vertex_swarm_spec::HasSpec,
         C: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig<Routing = KademliaConfig>,
     {
         info!("Initializing bootnode P2P network...");
 
-        let mut infra = match self.infra {
+        let infra = match self.infra {
             Some(infra) => infra,
             None => {
                 let topology_config = TopologyConfig::new()
                     .with_kademlia(self.kademlia_config.unwrap_or_default());
-                BuiltInfrastructure::from_config(self.identity, network_config, topology_config)?
+                BuiltInfrastructure::from_config(self.identity, network_config, topology_config, peer_store, score_store)?
             }
         };
 
-        let topology_behaviour = infra
-            .take_behaviour()
-            .ok_or(NodeBuildError::TopologyBehaviourTaken)?;
-        let idle_timeout = network_config.idle_timeout();
-        let listen_addrs = network_config.listen_addrs().to_vec();
-
-        let topology_cell = std::sync::Mutex::new(Some(topology_behaviour));
-
-        let swarm = SwarmBuilder::with_new_identity()
-            .with_tokio()
-            .with_tcp(
-                tcp::Config::default(),
-                noise::Config::new,
-                yamux::Config::default,
-            )?
-            .with_dns()?
-            .with_behaviour(|keypair| {
-                let topology = topology_cell
-                    .lock()
-                    .map_err(|_| NodeBuildError::TopologyCellPoisoned)?
-                    .take()
-                    .ok_or(NodeBuildError::TopologyBehaviourTaken)?;
-                Ok(BootnodeBehaviour::from_parts(keypair.public().clone(), topology))
-            })?
-            .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(idle_timeout))
-            .build();
-
-        let local_peer_id = *swarm.local_peer_id();
-        info!(%local_peer_id, "Bootnode peer ID");
-        info!(overlay = %infra.identity.overlay_address(), "Overlay address");
+        let base = super::builder::build_base_node(
+            infra,
+            network_config,
+            "Bootnode",
+            BootnodeBehaviour::from_parts,
+        )
+        .await?;
 
         // Set local PeerId for address advertisement in handshakes
-        swarm.behaviour().topology.set_local_peer_id(local_peer_id);
-
-        if infra.topology_handle.connect_bootnodes().await.is_err() {
-            warn!("Failed to send connect_bootnodes command");
-        }
-
-        let base = BaseNode {
-            swarm,
-            identity: infra.identity,
-            listen_addrs,
-            topology_handle: infra.topology_handle,
-        };
+        base.swarm.behaviour().topology.set_local_peer_id(*base.swarm.local_peer_id());
 
         Ok(BootNode { base })
     }

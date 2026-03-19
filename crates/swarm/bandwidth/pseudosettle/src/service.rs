@@ -9,7 +9,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_api::{Direction, SwarmBandwidthAccounting, SwarmPeerBandwidth};
-use vertex_swarm_node::{PseudosettleEvent, protocol::ClientCommand};
+use vertex_swarm_node::{ClientCommand, PseudosettleEvent};
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
 

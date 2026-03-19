@@ -5,11 +5,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use metrics::{gauge, histogram};
 use tokio::task::JoinHandle;
 use tracing::info;
-use vertex_swarm_api::{SwarmTopology, TopologyStats};
-use vertex_swarm_peer_manager::PeerManager;
+use vertex_swarm_api::{SwarmTopologyState, SwarmTopologyStats};
+use vertex_swarm_peer_manager::ScoreDistribution;
 use vertex_tasks::TaskExecutor;
 
 const DEFAULT_STATS_INTERVAL: Duration = Duration::from_secs(20);
@@ -35,13 +34,13 @@ impl StatsConfig {
 }
 
 /// Spawns a background task that periodically reports node statistics.
-pub fn spawn_stats_task<T: SwarmTopology + TopologyStats + 'static>(
+pub fn spawn_stats_task<T: SwarmTopologyState + SwarmTopologyStats + 'static>(
     topology: Arc<T>,
-    peer_manager: Arc<PeerManager>,
+    score_distribution: Arc<ScoreDistribution>,
     config: StatsConfig,
     executor: &TaskExecutor,
 ) -> JoinHandle<()> {
-    executor.spawn_with_graceful_shutdown_signal("node_stats", |shutdown| async move {
+    executor.spawn_with_graceful_shutdown_signal("node.stats", |shutdown| async move {
         let mut shutdown = std::pin::pin!(shutdown);
 
         loop {
@@ -53,16 +52,17 @@ pub fn spawn_stats_task<T: SwarmTopology + TopologyStats + 'static>(
                 }
                 _ = tokio::time::sleep(config.interval) => {
                     log_stats(&*topology);
-                    report_peer_health(&peer_manager);
+                    score_distribution.push_gauges();
                 }
             }
         }
     })
 }
 
-fn log_stats<T: SwarmTopology + TopologyStats>(topology: &T) {
+fn log_stats<T: SwarmTopologyState + SwarmTopologyStats>(topology: &T) {
     let connected = topology.connected_peers_count();
-    let known = topology.known_peers_count();
+    let routing = topology.routing_peers_count();
+    let stored = topology.stored_peers_count();
     let depth = topology.depth();
     let pending = topology.pending_connections_count();
 
@@ -87,41 +87,13 @@ fn log_stats<T: SwarmTopology + TopologyStats>(topology: &T) {
 
     info!(
         connected,
-        known,
+        routing,
+        stored,
         depth,
         pending,
         bins = %bin_summary,
         "swarm status"
     );
-}
-
-fn report_peer_health(peer_manager: &PeerManager) {
-    let mut healthy: usize = 0;
-    let mut in_backoff: usize = 0;
-    let mut failed: usize = 0;
-    let mut stale: usize = 0;
-    let mut banned: usize = 0;
-
-    peer_manager.for_each_peer(|_, score, failures, is_backoff, is_stale, is_banned| {
-        histogram!("peer_manager_score_distribution").record(score);
-        if is_banned {
-            banned += 1;
-        } else if is_stale {
-            stale += 1;
-        } else if is_backoff {
-            in_backoff += 1;
-        } else if failures > 0 {
-            failed += 1;
-        } else {
-            healthy += 1;
-        }
-    });
-
-    gauge!("peer_manager_health", "state" => "healthy").set(healthy as f64);
-    gauge!("peer_manager_health", "state" => "in_backoff").set(in_backoff as f64);
-    gauge!("peer_manager_health", "state" => "failed").set(failed as f64);
-    gauge!("peer_manager_health", "state" => "stale").set(stale as f64);
-    gauge!("peer_manager_health", "state" => "banned").set(banned as f64);
 }
 
 #[cfg(test)]
@@ -137,7 +109,7 @@ mod tests {
 
     #[test]
     fn test_log_stats_empty() {
-        let topology = MockTopology::new(0, 0, 0);
+        let topology = MockTopology::new(0, 0, 0).with_stored(0);
         log_stats(&topology);
     }
 }

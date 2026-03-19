@@ -1,3 +1,5 @@
+compile_error!("vertex-swarm-bandwidth-swap is disabled: depends on serde_json which has been removed from the workspace. Remove serde_json dependency before re-enabling.");
+
 //! Chequebook-based settlement provider for bandwidth accounting.
 //!
 //! When debt exceeds the payment threshold, the debtor issues a signed cheque.
@@ -28,7 +30,7 @@ use vertex_swarm_api::{
     SwarmPeerState, SwarmResult, SwarmSettlementProvider,
 };
 use vertex_swarm_bandwidth::{Accounting, AccountingPeerHandle};
-use vertex_swarm_node::protocol::ClientCommand;
+use vertex_swarm_node::ClientCommand;
 use vertex_swarm_primitives::OverlayAddress;
 
 pub use error::SwapError;

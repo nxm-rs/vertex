@@ -207,8 +207,7 @@ impl SwarmLaunchConfig for ClientConfig {
         let db = open_shared_database(ctx);
         let (peer_store, score_store) = create_peer_store(&db);
 
-        // TODO: wire accounting into node when supported
-        let _accounting = build_accounting(self.spec().clone(), self.identity(), self.bandwidth().clone());
+        let accounting = build_accounting(self.spec().clone(), self.identity(), self.bandwidth().clone());
 
         let (node, client_service, client_handle) = ClientNode::builder(self.identity().clone())
             .build(self.network(), peer_store, score_store)
@@ -222,8 +221,9 @@ impl SwarmLaunchConfig for ClientConfig {
         // Spawn client service as independent task with graceful shutdown
         ctx.executor().spawn_service("swarm.client_service", client_service);
 
-        // Return node task - it will be spawned by the caller
+        // Return node task - accounting is moved into the closure to keep it alive
         let task = single_task(move |shutdown| async move {
+            let _accounting = accounting;
             if let Err(e) = node.start_and_run(shutdown).await {
                 tracing::error!(error = %e, "ClientNode error");
             }
@@ -237,7 +237,7 @@ impl SwarmLaunchConfig for ClientConfig {
 #[async_trait]
 impl SwarmLaunchConfig for StorerConfig {
     type Types = StorerLaunchTypes;
-    type Providers = StorerRpcProviders<Arc<Identity>>;
+    type Providers = StorerRpcProviders<Arc<Identity>, NetworkChunkProvider<Arc<Identity>>>;
     type Error = SwarmNodeError;
 
     async fn build(self, ctx: &dyn InfrastructureContext) -> Result<(NodeTaskFn, Self::Providers), Self::Error> {
@@ -246,27 +246,28 @@ impl SwarmLaunchConfig for StorerConfig {
         let db = open_shared_database(ctx);
         let (peer_store, score_store) = create_peer_store(&db);
 
-        // TODO: wire accounting into node when supported
-        let _accounting = build_accounting(self.spec().clone(), self.identity(), self.bandwidth().clone());
+        let accounting = build_accounting(self.spec().clone(), self.identity(), self.bandwidth().clone());
 
         // TODO: build storer-specific components
         let _ = self.local_store();
         let _ = self.storage();
 
         // Build as ClientNode for now (storer components not yet implemented)
-        let (node, client_service, _client_handle) = ClientNode::builder(self.identity().clone())
+        let (node, client_service, client_handle) = ClientNode::builder(self.identity().clone())
             .build(self.network(), peer_store, score_store)
             .await
             .map_err(|e| SwarmNodeError::Build(e.to_string()))?;
 
         let topology = node.topology_handle().clone();
-        let providers = StorerRpcProviders::new(topology);
+        let chunk_provider = NetworkChunkProvider::new(client_handle, topology.clone());
+        let providers = StorerRpcProviders::new(topology, chunk_provider);
 
         // Spawn client service as independent task with graceful shutdown
         ctx.executor().spawn_service("swarm.client_service", client_service);
 
-        // Return node task - it will be spawned by the caller
+        // Return node task - accounting is moved into the closure to keep it alive
         let task = single_task(move |shutdown| async move {
+            let _accounting = accounting;
             if let Err(e) = node.start_and_run(shutdown).await {
                 tracing::error!(error = %e, "StorerNode error");
             }

@@ -9,6 +9,7 @@ mod bootnode;
 mod builder;
 mod client;
 mod error;
+pub(crate) mod stats;
 mod storer;
 
 pub use base::BaseNode;

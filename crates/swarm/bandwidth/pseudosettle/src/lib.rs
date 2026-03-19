@@ -28,7 +28,7 @@ use vertex_swarm_api::{
     SwarmPeerState, SwarmResult, SwarmSettlementProvider,
 };
 use vertex_swarm_bandwidth::{Accounting, AccountingPeerHandle};
-use vertex_swarm_node::protocol::ClientCommand;
+use vertex_swarm_node::ClientCommand;
 use vertex_swarm_primitives::OverlayAddress;
 
 pub use error::PseudosettleError;
