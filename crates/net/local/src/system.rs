@@ -133,7 +133,10 @@ pub fn remove_subnet(net: IpNet) {
 
 /// Check if two multiaddrs are on the same directly-connected subnet.
 pub fn same_subnet(addr1: &Multiaddr, addr2: &Multiaddr) -> bool {
-    let (Some(ip1), Some(ip2)) = (crate::scope::extract_ip(addr1), crate::scope::extract_ip(addr2)) else {
+    let (Some(ip1), Some(ip2)) = (
+        crate::scope::extract_ip(addr1),
+        crate::scope::extract_ip(addr2),
+    ) else {
         return false;
     };
     is_on_same_subnet(ip1, ip2)

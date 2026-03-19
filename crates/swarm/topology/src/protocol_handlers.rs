@@ -74,10 +74,13 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         );
 
         // Get dial info from connection registry before transitioning
-        let current_state = self.connection_registry.get(&overlay)
-            .or_else(|| self.connection_registry.resolve_id(&peer_id)
-                .and_then(|o| self.connection_registry.get(&o)));
-        let direction = current_state.as_ref()
+        let current_state = self.connection_registry.get(&overlay).or_else(|| {
+            self.connection_registry
+                .resolve_id(&peer_id)
+                .and_then(|o| self.connection_registry.get(&o))
+        });
+        let direction = current_state
+            .as_ref()
             .and_then(|s| s.direction())
             .unwrap_or(ConnectionDirection::Inbound);
 
@@ -106,7 +109,8 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         // transitioning to active. Outbound connections already reserved capacity
         // at dial time via try_reserve_dial.
         if direction == ConnectionDirection::Inbound {
-            let bin_at_capacity = !RoutingCapacity::should_accept_inbound(&*self.routing, &overlay, node_type);
+            let bin_at_capacity =
+                !RoutingCapacity::should_accept_inbound(&*self.routing, &overlay, node_type);
             if bin_at_capacity {
                 debug!(
                     %peer_id,
@@ -132,11 +136,9 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         }
 
         // Transition to Active state in connection registry
-        let activate_result = self.connection_registry.activate(
-            peer_id,
-            connection_id,
-            overlay,
-        );
+        let activate_result = self
+            .connection_registry
+            .activate(peer_id, connection_id, overlay);
         match &activate_result {
             ActivateResult::Accepted => {
                 gauge!("peer_registry_pending_connections").decrement(1.0);
@@ -145,7 +147,9 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             ActivateResult::Replaced { old_id: None, .. } => {
                 gauge!("peer_registry_pending_connections").decrement(1.0);
             }
-            ActivateResult::Replaced { old_id: Some(_), .. } => {}
+            ActivateResult::Replaced {
+                old_id: Some(_), ..
+            } => {}
         }
 
         // Update routing capacity tracking (transitions Handshaking->Active)
@@ -153,13 +157,19 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
         // Handle the activate result from connection registry
         match activate_result {
-            ActivateResult::Replaced { old_peer_id, old_connection_id, ref old_id } => {
+            ActivateResult::Replaced {
+                old_peer_id,
+                old_connection_id,
+                ref old_id,
+            } => {
                 // The old connection was already counted by a prior PeerReady event.
                 // Its registry entry is now overwritten, so handle_connection_closed
                 // will not emit PeerDisconnected -- we must decrement here.
                 // Use connected_node_types (recorded at PeerReady time) for symmetric decrement.
                 let old_overlay = old_id.as_ref().unwrap_or(&overlay);
-                let old_node_type = self.connected_node_types.remove(old_overlay)
+                let old_node_type = self
+                    .connected_node_types
+                    .remove(old_overlay)
                     .unwrap_or(SwarmNodeType::Client);
                 self.metrics.decrement_connected(old_node_type);
                 gauge!("peer_registry_active_connections").decrement(1.0);
@@ -189,7 +199,8 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         }
 
         // Store peer metadata
-        self.peer_manager.on_peer_ready(info.swarm_peer.clone(), info.node_type);
+        self.peer_manager
+            .on_peer_ready(info.swarm_peer.clone(), info.node_type);
 
         let po = self.proximity(&overlay);
 
@@ -262,12 +273,19 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             overlay,
             addrs: Vec::new(),
             error: crate::error::DialError::HandshakeFailed(error.to_string()),
-            dial_duration: state.as_ref().and_then(|s| s.started_at()).map(|t| t.elapsed()),
+            dial_duration: state
+                .as_ref()
+                .and_then(|s| s.started_at())
+                .map(|t| t.elapsed()),
             reason,
         });
     }
 
-    fn on_hive_peers_received(&mut self, peer_id: PeerId, peers: Vec<vertex_swarm_peer::SwarmPeer>) {
+    fn on_hive_peers_received(
+        &mut self,
+        peer_id: PeerId,
+        peers: Vec<vertex_swarm_peer::SwarmPeer>,
+    ) {
         if peers.is_empty() {
             return;
         }
@@ -309,13 +327,16 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             });
 
         let peer_count = peers.len();
-        self.gossip.send(GossipInput::PeersReceived { gossiper, peers });
+        self.gossip
+            .send(GossipInput::PeersReceived { gossiper, peers });
 
         // Disconnect from bootnodes after receiving the initial peer list.
         // Bootnodes are gossip amplifiers -- every new peer connecting to the bootnode
         // triggers a hive stream to all existing connections. Staying connected produces
         // a flood of 1-peer hive messages (~2/s on mainnet) that overwhelms rate limiters.
-        let reason = self.connection_registry.get(&gossiper)
+        let reason = self
+            .connection_registry
+            .get(&gossiper)
             .and_then(|s| *s.reason());
         if reason == Some(DialReason::Bootnode) {
             info!(

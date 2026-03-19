@@ -26,12 +26,12 @@ pub use self::components::{
     SwarmTopologyStats,
 };
 pub use self::config::{
-    DefaultPeerConfig, DefaultStorageConfig, METADATA_OVERHEAD_FACTOR,
-    NodeTask, NodeTaskFn, PeerConfigValues, SwarmBootnodeConfig, SwarmClientConfig,
-    SwarmClientLaunchConfig, SwarmIdentityConfig, SwarmLaunchConfig, SwarmNetworkConfig,
-    SwarmPeerConfig, SwarmRoutingConfig, SwarmStorageConfig, SwarmStorerConfig,
-    SwarmStorerLaunchConfig, DEFAULT_PEER_BAN_THRESHOLD, DEFAULT_PEER_MAX_PER_BIN,
-    DEFAULT_PEER_WARN_THRESHOLD, estimate_chunks_for_bytes, estimate_storage_bytes,
+    DEFAULT_PEER_BAN_THRESHOLD, DEFAULT_PEER_MAX_PER_BIN, DEFAULT_PEER_WARN_THRESHOLD,
+    DefaultPeerConfig, DefaultStorageConfig, METADATA_OVERHEAD_FACTOR, NodeTask, NodeTaskFn,
+    PeerConfigValues, SwarmBootnodeConfig, SwarmClientConfig, SwarmClientLaunchConfig,
+    SwarmIdentityConfig, SwarmLaunchConfig, SwarmNetworkConfig, SwarmPeerConfig,
+    SwarmRoutingConfig, SwarmStorageConfig, SwarmStorerConfig, SwarmStorerLaunchConfig,
+    estimate_chunks_for_bytes, estimate_storage_bytes,
 };
 pub use self::error::{ConfigAddressKind, ConfigError, ConfigResult, SwarmError, SwarmResult};
 pub use self::identity::SwarmIdentity;

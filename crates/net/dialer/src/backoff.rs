@@ -61,7 +61,10 @@ mod tests {
 
     #[test]
     fn first_failure_uses_base() {
-        let entry = BackoffEntry { last_failure_secs: 100, consecutive_failures: 1 };
+        let entry = BackoffEntry {
+            last_failure_secs: 100,
+            consecutive_failures: 1,
+        };
         // At t=100, backoff ~5s (±jitter). Check still active at t=101.
         assert!(backoff_remaining(&entry, 101, 5, 20, 128).is_some());
         // At t=106, should be expired.
@@ -70,7 +73,10 @@ mod tests {
 
     #[test]
     fn second_failure_doubles() {
-        let entry = BackoffEntry { last_failure_secs: 100, consecutive_failures: 2 };
+        let entry = BackoffEntry {
+            last_failure_secs: 100,
+            consecutive_failures: 2,
+        };
         // base=5, 2^1=2, raw=10. At t=105, should still be active.
         assert!(backoff_remaining(&entry, 105, 5, 20, 128).is_some());
         // At t=112, should be expired.
@@ -79,7 +85,10 @@ mod tests {
 
     #[test]
     fn capped_at_max() {
-        let entry = BackoffEntry { last_failure_secs: 100, consecutive_failures: 10 };
+        let entry = BackoffEntry {
+            last_failure_secs: 100,
+            consecutive_failures: 10,
+        };
         // Without cap this would be huge, but max=20.
         assert!(backoff_remaining(&entry, 122, 5, 20, 128).is_none());
     }

@@ -209,9 +209,11 @@ enum State {
     /// Active and processing protocols.
     Active {
         overlay: OverlayAddress,
+        #[allow(dead_code)]
         node_type: SwarmNodeType,
     },
     /// Handler is closing.
+    #[allow(dead_code)]
     Closing,
 }
 
@@ -277,10 +279,7 @@ impl ClientHandler {
         match &self.state {
             State::Dormant => {
                 debug!(%overlay, ?node_type, "Handler activated");
-                self.state = State::Active {
-                    overlay,
-                    node_type,
-                };
+                self.state = State::Active { overlay, node_type };
                 self.pending_events
                     .push_back(HandlerEvent::Activated { overlay });
             }
@@ -294,7 +293,10 @@ impl ClientHandler {
     }
 
     /// Handle incoming pricing threshold.
-    fn on_pricing_received(&mut self, threshold: vertex_swarm_net_pricing::AnnouncePaymentThreshold) {
+    fn on_pricing_received(
+        &mut self,
+        threshold: vertex_swarm_net_pricing::AnnouncePaymentThreshold,
+    ) {
         if let Some(overlay) = self.overlay() {
             debug!(%overlay, threshold = %threshold.payment_threshold, "Received pricing");
             self.pending_events
@@ -364,6 +366,7 @@ impl ClientHandler {
     }
 
     /// Handle retrieval response.
+    #[allow(dead_code)]
     fn on_retrieval_response(
         &mut self,
         delivery: vertex_swarm_net_retrieval::Delivery,
@@ -454,10 +457,7 @@ impl ConnectionHandler for ClientHandler {
         // Process pending commands
         while let Some(cmd) = self.pending_commands.pop_front() {
             match cmd {
-                HandlerCommand::Activate {
-                    overlay,
-                    node_type,
-                } => {
+                HandlerCommand::Activate { overlay, node_type } => {
                     self.activate(overlay, node_type);
                     if let Some(event) = self.pending_events.pop_front() {
                         return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
@@ -466,7 +466,8 @@ impl ConnectionHandler for ClientHandler {
                 HandlerCommand::AnnouncePricing { threshold } => {
                     if !self.pricing_sent && !self.pricing_outbound_pending {
                         self.pricing_outbound_pending = true;
-                        let announce = vertex_swarm_net_pricing::AnnouncePaymentThreshold::new(threshold);
+                        let announce =
+                            vertex_swarm_net_pricing::AnnouncePaymentThreshold::new(threshold);
                         let upgrade = ClientOutboundUpgrade::pricing(announce);
                         return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
                             protocol: SubstreamProtocol::new(upgrade, ClientOutboundInfo::Pricing)

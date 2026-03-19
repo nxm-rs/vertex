@@ -6,8 +6,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use libp2p::PeerId;
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use metrics::counter;
@@ -24,13 +24,13 @@ use vertex_swarm_peer_manager::PeerManager;
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_spec::Spec;
 
+use super::GossipInput;
 use super::events::{GossipAction, GossipCheckOk, VerificationResult};
 use super::filter::{
-    RecipientProfile, detect_depth_decrease, filter_peers_for_recipient,
-    scoring_event_for, select_peers_for_distant,
+    RecipientProfile, detect_depth_decrease, filter_peers_for_recipient, scoring_event_for,
+    select_peers_for_distant,
 };
 use super::verifier::{GossipVerifier, Verification};
-use super::GossipInput;
 use crate::kademlia::RoutingEvaluatorHandle;
 use crate::kademlia::peer_selection;
 
@@ -60,6 +60,7 @@ struct VerifierBehaviour {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 enum VerifierSwarmEvent {
     Handshake(HandshakeEvent),
     Identify(identify::Event),
@@ -144,7 +145,11 @@ impl<I: SwarmIdentity> GossipTask<I> {
             GossipInput::MarkGossipDial(peer_id) => {
                 self.gossip_dial_peers.insert(peer_id);
             }
-            GossipInput::PeerActivated { peer_id, swarm_peer, node_type } => {
+            GossipInput::PeerActivated {
+                peer_id,
+                swarm_peer,
+                node_type,
+            } => {
                 if self.gossip_dial_peers.remove(&peer_id) {
                     // Gossip dial: delay before exchanging (peer may drop us if bin saturated)
                     self.schedule_exchange(peer_id, swarm_peer, node_type);
@@ -189,7 +194,9 @@ impl<I: SwarmIdentity> GossipTask<I> {
 
         for peer in peers {
             let existing = self.peer_manager.get_swarm_peer(peer.overlay());
-            let result = self.verifier.check_gossip(&peer, &gossiper, existing.as_ref());
+            let result = self
+                .verifier
+                .check_gossip(&peer, &gossiper, existing.as_ref());
             match result {
                 Ok(GossipCheckOk::AlreadyKnown) => {
                     trace!(overlay = %peer.overlay(), %gossiper, "gossip check: already_known");
@@ -201,7 +208,8 @@ impl<I: SwarmIdentity> GossipTask<I> {
                 }
                 Err(ref err) => {
                     trace!(overlay = %peer.overlay(), %gossiper, reason = %err, "gossip check: rejected");
-                    counter!("topology_gossip_rejected_total", "reason" => err.label_value()).increment(1);
+                    counter!("topology_gossip_rejected_total", "reason" => err.label_value())
+                        .increment(1);
                     rejected += 1;
                 }
             }
@@ -219,39 +227,53 @@ impl<I: SwarmIdentity> GossipTask<I> {
     }
 
     fn on_handshake_completed(&mut self, peer_id: PeerId, verified_peer: SwarmPeer) {
-        if let Some(Verification::Resolved { gossiped_peer, gossiper, dial_addr }) = self.verifier.resolve_in_flight(&peer_id) {
-            let (gossiper, result) = GossipVerifier::verify_handshake(gossiped_peer, gossiper, dial_addr, verified_peer);
+        if let Some(Verification::Resolved {
+            gossiped_peer,
+            gossiper,
+            dial_addr,
+        }) = self.verifier.resolve_in_flight(&peer_id)
+        {
+            let (gossiper, result) =
+                GossipVerifier::verify_handshake(gossiped_peer, gossiper, dial_addr, verified_peer);
             self.process_result(gossiper, result);
         }
     }
 
     fn on_dial_failed(&mut self, peer_id: &PeerId) {
-        if let Some(Verification::Resolved { gossiped_peer, gossiper, .. }) = self.verifier.resolve_in_flight(peer_id) {
+        if let Some(Verification::Resolved {
+            gossiped_peer,
+            gossiper,
+            ..
+        }) = self.verifier.resolve_in_flight(peer_id)
+        {
             let gossiped_overlay = *gossiped_peer.overlay();
             debug!(
                 overlay = %gossiped_overlay,
                 %gossiper,
                 "Gossip verification failed: peer unreachable"
             );
-            self.process_result(gossiper, VerificationResult::Unreachable { gossiped_overlay });
+            self.process_result(
+                gossiper,
+                VerificationResult::Unreachable { gossiped_overlay },
+            );
         }
     }
 
     fn drain_pending_dials(&mut self) {
         let capability = self.local_capabilities.capability();
 
-        while let Some(Verification::Pending { peer_id, addrs }) = self.verifier.next_verification_dial() {
+        while let Some(Verification::Pending { peer_id, addrs }) =
+            self.verifier.next_verification_dial()
+        {
             if self.verifier_swarm.is_connected(&peer_id) {
                 // Already connected -- clean up without sending an event
                 self.verifier.resolve_in_flight(&peer_id);
                 continue;
             }
 
-            let Some(opts) = vertex_net_dialer::prepare_dial_opts(
-                peer_id,
-                addrs,
-                |addr| vertex_net_local::is_dialable(addr, capability),
-            ) else {
+            let Some(opts) = vertex_net_dialer::prepare_dial_opts(peer_id, addrs, |addr| {
+                vertex_net_local::is_dialable(addr, capability)
+            }) else {
                 debug!(%peer_id, ?capability, "no reachable addresses for verification");
                 self.on_dial_failed(&peer_id);
                 continue;
@@ -266,9 +288,11 @@ impl<I: SwarmIdentity> GossipTask<I> {
 
     fn handle_swarm_event(&mut self, event: SwarmEvent<VerifierSwarmEvent>) {
         match event {
-            SwarmEvent::Behaviour(VerifierSwarmEvent::Handshake(
-                HandshakeEvent::Completed { peer_id, info, .. },
-            )) => {
+            SwarmEvent::Behaviour(VerifierSwarmEvent::Handshake(HandshakeEvent::Completed {
+                peer_id,
+                info,
+                ..
+            })) => {
                 debug!(
                     %peer_id,
                     overlay = %info.swarm_peer.overlay(),
@@ -282,21 +306,29 @@ impl<I: SwarmIdentity> GossipTask<I> {
                 // Drain more dials since a slot opened up
                 self.drain_pending_dials();
             }
-            SwarmEvent::Behaviour(VerifierSwarmEvent::Handshake(
-                HandshakeEvent::Failed { peer_id, error, .. },
-            )) => {
+            SwarmEvent::Behaviour(VerifierSwarmEvent::Handshake(HandshakeEvent::Failed {
+                peer_id,
+                error,
+                ..
+            })) => {
                 debug!(%peer_id, %error, "Verification handshake failed");
                 self.on_dial_failed(&peer_id);
                 self.drain_pending_dials();
             }
-            SwarmEvent::OutgoingConnectionError { peer_id: Some(peer_id), error, .. } => {
+            SwarmEvent::OutgoingConnectionError {
+                peer_id: Some(peer_id),
+                error,
+                ..
+            } => {
                 debug!(%peer_id, %error, "Verification dial failed");
                 self.on_dial_failed(&peer_id);
                 self.drain_pending_dials();
             }
-            SwarmEvent::Behaviour(VerifierSwarmEvent::Identify(
-                identify::Event::Received { peer_id, info, .. },
-            )) => {
+            SwarmEvent::Behaviour(VerifierSwarmEvent::Identify(identify::Event::Received {
+                peer_id,
+                info,
+                ..
+            })) => {
                 if !info.observed_addr.is_empty() {
                     trace!(%peer_id, observed = %info.observed_addr, "Pushing observed addr via identify");
                     self.verifier_swarm
@@ -330,7 +362,10 @@ impl<I: SwarmIdentity> GossipTask<I> {
                 debug!(%stored, %gossiper, "Peer identity updated via verification");
                 self.verifier.clear_backoff(&OverlayAddress::from(overlay));
             }
-            VerificationResult::DifferentPeerAtAddress { verified_peer, gossiped_overlay } => {
+            VerificationResult::DifferentPeerAtAddress {
+                verified_peer,
+                gossiped_overlay,
+            } => {
                 let verified_overlay = self.peer_manager.store_discovered_peer(verified_peer);
                 warn!(
                     verified = %verified_overlay,
@@ -351,14 +386,24 @@ impl<I: SwarmIdentity> GossipTask<I> {
             }
         }
 
-        self.peer_manager.record_scoring_event(&gossiper, scoring_event);
+        self.peer_manager
+            .record_scoring_event(&gossiper, scoring_event);
     }
 
-    fn schedule_exchange(&mut self, peer_id: PeerId, swarm_peer: SwarmPeer, node_type: SwarmNodeType) {
+    fn schedule_exchange(
+        &mut self,
+        peer_id: PeerId,
+        swarm_peer: SwarmPeer,
+        node_type: SwarmNodeType,
+    ) {
         let delay = self.health_check_delay;
         self.pending_exchanges.push(Box::pin(async move {
             tokio::time::sleep(delay).await;
-            PendingExchange { peer_id, swarm_peer, node_type }
+            PendingExchange {
+                peer_id,
+                swarm_peer,
+                node_type,
+            }
         }));
     }
 
@@ -391,7 +436,10 @@ impl<I: SwarmIdentity> GossipTask<I> {
             return Vec::new();
         };
 
-        debug!(old_depth, new_depth, "Depth decreased - neighborhood expanded");
+        debug!(
+            old_depth,
+            new_depth, "Depth decreased - neighborhood expanded"
+        );
 
         let mut actions = Vec::new();
 
@@ -470,8 +518,7 @@ impl<I: SwarmIdentity> GossipTask<I> {
         }
 
         // Compute the base neighborhood peer set once (without exclude)
-        let all_neighborhood_peers =
-            self.known_neighborhood_peers(self.current_depth, None);
+        let all_neighborhood_peers = self.known_neighborhood_peers(self.current_depth, None);
 
         for neighbor in neighbors {
             let is_stale = self
@@ -482,10 +529,7 @@ impl<I: SwarmIdentity> GossipTask<I> {
 
             if is_stale {
                 let profile = self.recipient_profile(&neighbor);
-                let filtered = self.filter_for_recipient(
-                    &all_neighborhood_peers,
-                    &profile,
-                );
+                let filtered = self.filter_for_recipient(&all_neighborhood_peers, &profile);
 
                 // Exclude the neighbor itself from the result
                 let peers: Vec<SwarmPeer> = filtered
@@ -520,12 +564,8 @@ impl<I: SwarmIdentity> GossipTask<I> {
 
         let new_peer_profile = self.recipient_profile(&new_peer);
 
-        let neighborhood_peers =
-            self.known_neighborhood_peers(depth, Some(&new_peer));
-        let filtered = self.filter_for_recipient(
-            &neighborhood_peers,
-            &new_peer_profile,
-        );
+        let neighborhood_peers = self.known_neighborhood_peers(depth, Some(&new_peer));
+        let filtered = self.filter_for_recipient(&neighborhood_peers, &new_peer_profile);
 
         if !filtered.is_empty() {
             debug!(to = %new_peer, count = filtered.len(), "Sending known neighborhood peers");
@@ -544,10 +584,7 @@ impl<I: SwarmIdentity> GossipTask<I> {
             if neighbor != new_peer {
                 let profile = self.recipient_profile(&neighbor);
 
-                let filtered = self.filter_for_recipient(
-                    &new_peer_slice,
-                    &profile,
-                );
+                let filtered = self.filter_for_recipient(&new_peer_slice, &profile);
 
                 if !filtered.is_empty() {
                     trace!(to = %neighbor, about = %new_peer, "Notifying neighbor about new peer");
@@ -623,11 +660,10 @@ impl<I: SwarmIdentity> GossipTask<I> {
     ) -> Vec<&'a SwarmPeer> {
         filter_peers_for_recipient(peers, profile, &*self.peer_manager)
     }
-
 }
 
 /// Spawn the gossip task. Returns a handle for sending inputs and receiving outputs.
-pub fn spawn_gossip_task<I: SwarmIdentity>(
+pub(crate) fn spawn_gossip_task<I: SwarmIdentity>(
     spec: Arc<Spec>,
     local_overlay: OverlayAddress,
     peer_manager: Arc<PeerManager<I>>,
@@ -640,8 +676,7 @@ pub fn spawn_gossip_task<I: SwarmIdentity>(
 
     // Build ephemeral identity for the verification swarm
     let verifier_identity = Arc::new(
-        Identity::random(spec, SwarmNodeType::Client)
-            .with_welcome_message("gossip-verifier"),
+        Identity::random(spec, SwarmNodeType::Client).with_welcome_message("gossip-verifier"),
     );
 
     info!(
@@ -670,10 +705,7 @@ pub fn spawn_gossip_task<I: SwarmIdentity>(
                     Arc::new(NoAddresses),
                     "verifier",
                 ),
-                identify: identify::Behaviour::new(
-                    identify_config,
-                    identify::new_agent_versions(),
-                ),
+                identify: identify::Behaviour::new(identify_config, identify::new_agent_versions()),
             })
         })
         .map_err(|e| format!("Behaviour: {e}"))?
@@ -887,6 +919,9 @@ mod tests {
         };
 
         let filtered = state.filter_peers_for_recipient(&peers, &profile);
-        assert!(filtered.is_empty(), "Loopback peers should be excluded for public recipients");
+        assert!(
+            filtered.is_empty(),
+            "Loopback peers should be excluded for public recipients"
+        );
     }
 }

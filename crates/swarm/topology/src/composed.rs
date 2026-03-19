@@ -25,13 +25,40 @@ impl ProtocolEvent {
     /// Extract peer_id and connection_id from any protocol event.
     pub(crate) fn peer_connection(&self) -> (libp2p::PeerId, libp2p::swarm::ConnectionId) {
         match self {
-            Self::Handshake(HandshakeEvent::Completed { peer_id, connection_id, .. }) => (*peer_id, *connection_id),
-            Self::Handshake(HandshakeEvent::Failed { peer_id, connection_id, .. }) => (*peer_id, *connection_id),
-            Self::Hive(HiveEvent::PeersReceived { peer_id, connection_id, .. }) => (*peer_id, *connection_id),
-            Self::Hive(HiveEvent::Error { peer_id, connection_id, .. }) => (*peer_id, *connection_id),
-            Self::Pingpong(PingpongEvent::Pong { peer_id, connection_id, .. }) => (*peer_id, *connection_id),
-            Self::Pingpong(PingpongEvent::PingReceived { peer_id, connection_id }) => (*peer_id, *connection_id),
-            Self::Pingpong(PingpongEvent::Error { peer_id, connection_id, .. }) => (*peer_id, *connection_id),
+            Self::Handshake(HandshakeEvent::Completed {
+                peer_id,
+                connection_id,
+                ..
+            }) => (*peer_id, *connection_id),
+            Self::Handshake(HandshakeEvent::Failed {
+                peer_id,
+                connection_id,
+                ..
+            }) => (*peer_id, *connection_id),
+            Self::Hive(HiveEvent::PeersReceived {
+                peer_id,
+                connection_id,
+                ..
+            }) => (*peer_id, *connection_id),
+            Self::Hive(HiveEvent::Error {
+                peer_id,
+                connection_id,
+                ..
+            }) => (*peer_id, *connection_id),
+            Self::Pingpong(PingpongEvent::Pong {
+                peer_id,
+                connection_id,
+                ..
+            }) => (*peer_id, *connection_id),
+            Self::Pingpong(PingpongEvent::PingReceived {
+                peer_id,
+                connection_id,
+            }) => (*peer_id, *connection_id),
+            Self::Pingpong(PingpongEvent::Error {
+                peer_id,
+                connection_id,
+                ..
+            }) => (*peer_id, *connection_id),
         }
     }
 }
@@ -74,10 +101,7 @@ where
     I: SwarmIdentity + Clone + 'static,
 {
     /// Create new composed protocol behaviours.
-    pub(crate) fn new(
-        identity: Arc<I>,
-        address_provider: Arc<LocalAddressManager>,
-    ) -> Self {
+    pub(crate) fn new(identity: Arc<I>, address_provider: Arc<LocalAddressManager>) -> Self {
         Self {
             handshake: HandshakeBehaviour::new(identity.clone(), address_provider, "topology"),
             hive: HiveBehaviour::new(identity),

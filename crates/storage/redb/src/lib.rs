@@ -23,17 +23,21 @@ impl RedbDatabase {
     /// Create or open a database at the given path.
     pub fn create(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
         let p = path.as_ref().to_path_buf();
-        let inner = redb::Database::create(path)
-            .map_err(DatabaseError::open_err)?;
-        Ok(Self { inner, path: Some(p) })
+        let inner = redb::Database::create(path).map_err(DatabaseError::open_err)?;
+        Ok(Self {
+            inner,
+            path: Some(p),
+        })
     }
 
     /// Open an existing database (fails if it doesn't exist).
     pub fn open(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
         let p = path.as_ref().to_path_buf();
-        let inner = redb::Database::open(path)
-            .map_err(DatabaseError::open_err)?;
-        Ok(Self { inner, path: Some(p) })
+        let inner = redb::Database::open(path).map_err(DatabaseError::open_err)?;
+        Ok(Self {
+            inner,
+            path: Some(p),
+        })
     }
 
     /// Create an in-memory database (no persistence).
@@ -75,14 +79,16 @@ impl Database for RedbDatabase {
     type TXMut = RedbWriteTx;
 
     fn tx(&self) -> Result<Self::TX, DatabaseError> {
-        let inner = self.inner.begin_read()
-            .map_err(|e| DatabaseError::InitTx(DatabaseErrorInfo::with_source("begin read tx", e)))?;
+        let inner = self.inner.begin_read().map_err(|e| {
+            DatabaseError::InitTx(DatabaseErrorInfo::with_source("begin read tx", e))
+        })?;
         Ok(RedbReadTx::new(inner))
     }
 
     fn tx_mut(&self) -> Result<Self::TXMut, DatabaseError> {
-        let inner = self.inner.begin_write()
-            .map_err(|e| DatabaseError::InitTx(DatabaseErrorInfo::with_source("begin write tx", e)))?;
+        let inner = self.inner.begin_write().map_err(|e| {
+            DatabaseError::InitTx(DatabaseErrorInfo::with_source("begin write tx", e))
+        })?;
         Ok(RedbWriteTx::new(inner))
     }
 }
@@ -95,9 +101,12 @@ pub fn open_database(
     match path {
         Some(path) if !memory_only => {
             if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| DatabaseError::Open(DatabaseErrorInfo::with_source(
-                        format!("create dir {}", parent.display()), e)))?;
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    DatabaseError::Open(DatabaseErrorInfo::with_source(
+                        format!("create dir {}", parent.display()),
+                        e,
+                    ))
+                })?;
             }
             tracing::info!(path = %path.display(), "Opening database");
             RedbDatabase::create(path).map(RedbDatabase::into_arc)
@@ -115,7 +124,9 @@ mod tests {
     use vertex_storage::*;
 
     // A simple test key/value type.
-    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+    #[derive(
+        Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+    )]
     struct TestKey(u32);
 
     impl Encode for TestKey {
@@ -154,7 +165,8 @@ mod tests {
         db.update(|tx| {
             tx.put::<TestTable>(TestKey(1), TestValue("hello".into()))?;
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 
         let result = db.view(|tx| tx.get::<TestTable>(TestKey(1))).unwrap();
         assert_eq!(result, Some(TestValue("hello".into())));
@@ -173,7 +185,8 @@ mod tests {
         db.update(|tx| {
             tx.put::<TestTable>(TestKey(1), TestValue("hello".into()))?;
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 
         let existed = db.update(|tx| tx.delete::<TestTable>(TestKey(1))).unwrap();
         assert!(existed);
@@ -197,7 +210,8 @@ mod tests {
                 tx.put::<TestTable>(TestKey(i), TestValue(format!("val{i}")))?;
             }
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 
         assert_eq!(db.view(|tx| tx.count::<TestTable>()).unwrap(), 5);
 
@@ -213,7 +227,8 @@ mod tests {
             tx.put::<TestTable>(TestKey(1), TestValue("a".into()))?;
             tx.put::<TestTable>(TestKey(3), TestValue("c".into()))?;
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 
         let entries = db.view(|tx| tx.entries::<TestTable>()).unwrap();
         assert_eq!(entries.len(), 3);
@@ -229,11 +244,13 @@ mod tests {
         db.update(|tx| {
             tx.put::<TestTable>(TestKey(1), TestValue("first".into()))?;
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
         db.update(|tx| {
             tx.put::<TestTable>(TestKey(1), TestValue("second".into()))?;
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 
         let result = db.view(|tx| tx.get::<TestTable>(TestKey(1))).unwrap();
         assert_eq!(result, Some(TestValue("second".into())));
@@ -251,7 +268,8 @@ mod tests {
             db.update(|tx| {
                 tx.put::<TestTable>(TestKey(42), TestValue("persisted".into()))?;
                 Ok(())
-            }).unwrap();
+            })
+            .unwrap();
         }
 
         // Re-open and read
@@ -272,7 +290,8 @@ mod tests {
                 tx.put::<TestTable>(TestKey(i), TestValue(format!("v{i}")))?;
             }
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 
         assert_eq!(db.view(|tx| tx.count::<TestTable>()).unwrap(), 10);
     }
@@ -284,7 +303,8 @@ mod tests {
         db.update(|tx| {
             tx.put::<TestTable>(TestKey(1), TestValue("mem".into()))?;
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
         let val = db.view(|tx| tx.get::<TestTable>(TestKey(1))).unwrap();
         assert_eq!(val, Some(TestValue("mem".into())));
     }
@@ -298,7 +318,8 @@ mod tests {
         db.update(|tx| {
             tx.put::<TestTable>(TestKey(1), TestValue("file".into()))?;
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
         let val = db.view(|tx| tx.get::<TestTable>(TestKey(1))).unwrap();
         assert_eq!(val, Some(TestValue("file".into())));
     }
@@ -311,7 +332,9 @@ mod index_tests {
 
     // -- Synthetic test types --
 
-    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+    #[derive(
+        Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+    )]
     struct UserId(u32);
 
     impl Encode for UserId {
@@ -328,7 +351,9 @@ mod index_tests {
         }
     }
 
-    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+    #[derive(
+        Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+    )]
     struct Email(String);
 
     impl Encode for Email {
@@ -353,58 +378,79 @@ mod index_tests {
     }
 
     table!(UserTable, "users", UserId, UserRecord);
-    index!(EmailIndex, "users_by_email", Email, UserTable, |user| user.email.clone());
+    index!(EmailIndex, "users_by_email", Email, UserTable, |user| user
+        .email
+        .clone());
 
     fn setup() -> Arc<RedbDatabase> {
         let db = RedbDatabase::in_memory().unwrap();
-        db.init_tables(&[UserTable::NAME, EmailIndex::NAME]).unwrap();
+        db.init_tables(&[UserTable::NAME, EmailIndex::NAME])
+            .unwrap();
         db.into_arc()
     }
 
     #[test]
     fn test_put_indexed_and_get_via() {
         let db = setup();
-        let user = UserRecord { name: "Alice".into(), email: Email("alice@test.com".into()) };
+        let user = UserRecord {
+            name: "Alice".into(),
+            email: Email("alice@test.com".into()),
+        };
 
         db.update(|tx| {
             tx.put_indexed::<EmailIndex>(UserId(1), user.clone())?;
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 
         // Look up by primary key
         let by_pk = db.view(|tx| tx.get::<UserTable>(UserId(1))).unwrap();
         assert_eq!(by_pk, Some(user.clone()));
 
         // Look up via secondary index
-        let by_email = db.view(|tx| tx.get_via::<EmailIndex>(Email("alice@test.com".into()))).unwrap();
+        let by_email = db
+            .view(|tx| tx.get_via::<EmailIndex>(Email("alice@test.com".into())))
+            .unwrap();
         assert_eq!(by_email, Some(user));
     }
 
     #[test]
     fn test_get_via_missing() {
         let db = setup();
-        let result = db.view(|tx| tx.get_via::<EmailIndex>(Email("nobody@test.com".into()))).unwrap();
+        let result = db
+            .view(|tx| tx.get_via::<EmailIndex>(Email("nobody@test.com".into())))
+            .unwrap();
         assert_eq!(result, None);
     }
 
     #[test]
     fn test_put_indexed_update_same_index_key() {
         let db = setup();
-        let user = UserRecord { name: "Alice".into(), email: Email("alice@test.com".into()) };
+        let user = UserRecord {
+            name: "Alice".into(),
+            email: Email("alice@test.com".into()),
+        };
 
         db.update(|tx| {
             tx.put_indexed::<EmailIndex>(UserId(1), user)?;
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 
         // Update name but keep same email
-        let updated = UserRecord { name: "Alice B.".into(), email: Email("alice@test.com".into()) };
+        let updated = UserRecord {
+            name: "Alice B.".into(),
+            email: Email("alice@test.com".into()),
+        };
         db.update(|tx| {
             tx.put_indexed::<EmailIndex>(UserId(1), updated.clone())?;
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 
-        let by_email = db.view(|tx| tx.get_via::<EmailIndex>(Email("alice@test.com".into()))).unwrap();
+        let by_email = db
+            .view(|tx| tx.get_via::<EmailIndex>(Email("alice@test.com".into())))
+            .unwrap();
         assert_eq!(by_email.unwrap().name, "Alice B.");
 
         // Only one entry in each table
@@ -415,26 +461,38 @@ mod index_tests {
     #[test]
     fn test_put_indexed_update_changed_index_key() {
         let db = setup();
-        let user = UserRecord { name: "Alice".into(), email: Email("old@test.com".into()) };
+        let user = UserRecord {
+            name: "Alice".into(),
+            email: Email("old@test.com".into()),
+        };
 
         db.update(|tx| {
             tx.put_indexed::<EmailIndex>(UserId(1), user)?;
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 
         // Update with new email
-        let updated = UserRecord { name: "Alice".into(), email: Email("new@test.com".into()) };
+        let updated = UserRecord {
+            name: "Alice".into(),
+            email: Email("new@test.com".into()),
+        };
         db.update(|tx| {
             tx.put_indexed::<EmailIndex>(UserId(1), updated.clone())?;
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 
         // Old email should not resolve
-        let old = db.view(|tx| tx.get_via::<EmailIndex>(Email("old@test.com".into()))).unwrap();
+        let old = db
+            .view(|tx| tx.get_via::<EmailIndex>(Email("old@test.com".into())))
+            .unwrap();
         assert_eq!(old, None);
 
         // New email should resolve
-        let new = db.view(|tx| tx.get_via::<EmailIndex>(Email("new@test.com".into()))).unwrap();
+        let new = db
+            .view(|tx| tx.get_via::<EmailIndex>(Email("new@test.com".into())))
+            .unwrap();
         assert_eq!(new, Some(updated));
 
         // Still one entry in each table
@@ -445,14 +503,20 @@ mod index_tests {
     #[test]
     fn test_delete_indexed() {
         let db = setup();
-        let user = UserRecord { name: "Alice".into(), email: Email("alice@test.com".into()) };
+        let user = UserRecord {
+            name: "Alice".into(),
+            email: Email("alice@test.com".into()),
+        };
 
         db.update(|tx| {
             tx.put_indexed::<EmailIndex>(UserId(1), user)?;
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 
-        let existed = db.update(|tx| tx.delete_indexed::<EmailIndex>(UserId(1))).unwrap();
+        let existed = db
+            .update(|tx| tx.delete_indexed::<EmailIndex>(UserId(1)))
+            .unwrap();
         assert!(existed);
 
         // Both tables empty
@@ -460,14 +524,18 @@ mod index_tests {
         assert_eq!(db.view(|tx| tx.count::<EmailIndex>()).unwrap(), 0);
 
         // Look up returns None
-        let result = db.view(|tx| tx.get_via::<EmailIndex>(Email("alice@test.com".into()))).unwrap();
+        let result = db
+            .view(|tx| tx.get_via::<EmailIndex>(Email("alice@test.com".into())))
+            .unwrap();
         assert_eq!(result, None);
     }
 
     #[test]
     fn test_delete_indexed_nonexistent() {
         let db = setup();
-        let existed = db.update(|tx| tx.delete_indexed::<EmailIndex>(UserId(99))).unwrap();
+        let existed = db
+            .update(|tx| tx.delete_indexed::<EmailIndex>(UserId(99)))
+            .unwrap();
         assert!(!existed);
     }
 
@@ -484,7 +552,8 @@ mod index_tests {
                 tx.put_indexed::<EmailIndex>(UserId(i), user)?;
             }
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 
         assert_eq!(db.view(|tx| tx.count::<UserTable>()).unwrap(), 5);
         assert_eq!(db.view(|tx| tx.count::<EmailIndex>()).unwrap(), 5);
@@ -502,35 +571,60 @@ mod index_tests {
         db.update(|tx| {
             tx.put_indexed::<EmailIndex>(
                 UserId(1),
-                UserRecord { name: "Alice".into(), email: Email("alice@test.com".into()) },
+                UserRecord {
+                    name: "Alice".into(),
+                    email: Email("alice@test.com".into()),
+                },
             )?;
             tx.put_indexed::<EmailIndex>(
                 UserId(2),
-                UserRecord { name: "Bob".into(), email: Email("bob@test.com".into()) },
+                UserRecord {
+                    name: "Bob".into(),
+                    email: Email("bob@test.com".into()),
+                },
             )?;
             tx.put_indexed::<EmailIndex>(
                 UserId(3),
-                UserRecord { name: "Carol".into(), email: Email("carol@test.com".into()) },
+                UserRecord {
+                    name: "Carol".into(),
+                    email: Email("carol@test.com".into()),
+                },
             )?;
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 
         assert_eq!(db.view(|tx| tx.count::<UserTable>()).unwrap(), 3);
         assert_eq!(db.view(|tx| tx.count::<EmailIndex>()).unwrap(), 3);
 
         // Each email resolves to the correct user
-        let alice = db.view(|tx| tx.get_via::<EmailIndex>(Email("alice@test.com".into()))).unwrap().unwrap();
+        let alice = db
+            .view(|tx| tx.get_via::<EmailIndex>(Email("alice@test.com".into())))
+            .unwrap()
+            .unwrap();
         assert_eq!(alice.name, "Alice");
 
-        let bob = db.view(|tx| tx.get_via::<EmailIndex>(Email("bob@test.com".into()))).unwrap().unwrap();
+        let bob = db
+            .view(|tx| tx.get_via::<EmailIndex>(Email("bob@test.com".into())))
+            .unwrap()
+            .unwrap();
         assert_eq!(bob.name, "Bob");
 
         // Delete one, others unaffected
-        db.update(|tx| tx.delete_indexed::<EmailIndex>(UserId(2))).unwrap();
+        db.update(|tx| tx.delete_indexed::<EmailIndex>(UserId(2)))
+            .unwrap();
         assert_eq!(db.view(|tx| tx.count::<UserTable>()).unwrap(), 2);
         assert_eq!(db.view(|tx| tx.count::<EmailIndex>()).unwrap(), 2);
 
-        assert!(db.view(|tx| tx.get_via::<EmailIndex>(Email("bob@test.com".into()))).unwrap().is_none());
-        assert!(db.view(|tx| tx.get_via::<EmailIndex>(Email("alice@test.com".into()))).unwrap().is_some());
+        assert!(
+            db.view(|tx| tx.get_via::<EmailIndex>(Email("bob@test.com".into())))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.view(|tx| tx.get_via::<EmailIndex>(Email("alice@test.com".into())))
+                .unwrap()
+                .is_some()
+        );
     }
 }

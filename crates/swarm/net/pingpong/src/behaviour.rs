@@ -16,8 +16,8 @@ use libp2p::{
 use strum::IntoStaticStr;
 use tracing::{debug, trace};
 
-use vertex_swarm_net_headers::ProtocolStreamError;
 use crate::handler::{PingpongCommand, PingpongConfig, PingpongHandler, PingpongHandlerEvent};
+use vertex_swarm_net_headers::ProtocolStreamError;
 
 /// Events emitted by PingpongBehaviour.
 #[derive(Debug, IntoStaticStr)]

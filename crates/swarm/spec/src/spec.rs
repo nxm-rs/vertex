@@ -14,15 +14,15 @@ use crate::{
     constants::{DEFAULT_RESERVE_CAPACITY, dev, mainnet, testnet},
     generate_dev_network_id,
 };
+#[cfg(feature = "std")]
+use alloc::sync::Arc;
+#[cfg(feature = "std")]
+use alloc::vec;
 use alloc::{
     format,
     string::{String, ToString},
     vec::Vec,
 };
-#[cfg(feature = "std")]
-use alloc::vec;
-#[cfg(feature = "std")]
-use alloc::sync::Arc;
 use alloy_chains::{Chain, NamedChain};
 #[cfg(feature = "std")]
 use std::sync::OnceLock;

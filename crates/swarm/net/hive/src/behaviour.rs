@@ -6,11 +6,13 @@ use std::{
     task::{Context, Poll},
 };
 
+use crate::handler::{HiveCommand, HiveHandler, HiveHandlerEvent};
+use crate::protocol::{PeerCache, new_peer_cache};
 use libp2p::{
     Multiaddr, PeerId,
     swarm::{
-        ConnectionId, FromSwarm, NetworkBehaviour, NotifyHandler, THandler,
-        THandlerInEvent, THandlerOutEvent, ToSwarm,
+        ConnectionId, FromSwarm, NetworkBehaviour, NotifyHandler, THandler, THandlerInEvent,
+        THandlerOutEvent, ToSwarm,
     },
 };
 use strum::IntoStaticStr;
@@ -18,8 +20,6 @@ use tracing::debug;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_net_headers::ProtocolStreamError;
 use vertex_swarm_peer::SwarmPeer;
-use crate::handler::{HiveCommand, HiveHandler, HiveHandlerEvent};
-use crate::protocol::{PeerCache, new_peer_cache};
 
 /// Events emitted by HiveBehaviour.
 #[derive(Debug, IntoStaticStr)]
@@ -60,7 +60,12 @@ where
     }
 
     /// Broadcast peers to a specific connection.
-    pub fn broadcast(&mut self, peer_id: PeerId, connection_id: ConnectionId, peers: Vec<SwarmPeer>) {
+    pub fn broadcast(
+        &mut self,
+        peer_id: PeerId,
+        connection_id: ConnectionId,
+        peers: Vec<SwarmPeer>,
+    ) {
         self.events.push_back(ToSwarm::NotifyHandler {
             peer_id,
             handler: NotifyHandler::One(connection_id),
@@ -116,19 +121,21 @@ where
         match event {
             HiveHandlerEvent::PeersReceived(peers) => {
                 debug!(%peer_id, peer_count = peers.len(), "Hive: received peers");
-                self.events.push_back(ToSwarm::GenerateEvent(HiveEvent::PeersReceived {
-                    peer_id,
-                    connection_id,
-                    peers,
-                }));
+                self.events
+                    .push_back(ToSwarm::GenerateEvent(HiveEvent::PeersReceived {
+                        peer_id,
+                        connection_id,
+                        peers,
+                    }));
             }
             HiveHandlerEvent::Error(error) => {
                 debug!(%peer_id, %error, "Hive: error");
-                self.events.push_back(ToSwarm::GenerateEvent(HiveEvent::Error {
-                    peer_id,
-                    connection_id,
-                    error,
-                }));
+                self.events
+                    .push_back(ToSwarm::GenerateEvent(HiveEvent::Error {
+                        peer_id,
+                        connection_id,
+                        error,
+                    }));
             }
         }
     }

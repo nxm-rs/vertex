@@ -108,10 +108,10 @@ unwrap_used = "warn"
 expect_used = "warn"
 
 [workspace.dependencies]
-## nectar (local submodule)
-nectar-contracts = { path = "../nectar/crates/contracts" }
-nectar-primitives = { path = "../nectar/crates/primitives" }
-nectar-swarms = { path = "../nectar/crates/swarms" }
+## nectar
+nectar-contracts = { git = "https://github.com/nxm-rs/nectar" }
+nectar-primitives = { git = "https://github.com/nxm-rs/nectar" }
+nectar-swarms = { git = "https://github.com/nxm-rs/nectar" }
 
 digest = "0.10"
 

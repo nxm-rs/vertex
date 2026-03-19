@@ -282,7 +282,8 @@ impl OutboundUpgrade<Stream> for ClientOutboundUpgrade {
         Box::pin(async move {
             match self.request {
                 ClientOutboundRequest::Pricing(threshold) => {
-                    let pricing: PricingOutboundProtocol = vertex_swarm_net_pricing::outbound(threshold);
+                    let pricing: PricingOutboundProtocol =
+                        vertex_swarm_net_pricing::outbound(threshold);
                     pricing
                         .upgrade_outbound(socket, info)
                         .await

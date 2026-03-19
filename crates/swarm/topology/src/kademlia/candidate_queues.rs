@@ -64,6 +64,7 @@ impl CandidateQueues {
     }
 
     /// Check if a peer is already queued (without cloning the set).
+    #[allow(dead_code)]
     pub(super) fn contains(&self, peer: &OverlayAddress) -> bool {
         self.pending.lock().contains(peer)
     }

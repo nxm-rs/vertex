@@ -47,6 +47,7 @@ impl<I: SwarmIdentity> Clone for TopologyHandle<I> {
 }
 
 impl<I: SwarmIdentity> TopologyHandle<I> {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         identity: Arc<I>,
         routing: Arc<KademliaRouting<I>>,
@@ -123,7 +124,10 @@ impl<I: SwarmIdentity> SwarmTopologyPeers for TopologyHandle<I> {
         self.routing.connected_overlays_in_bin(po)
     }
 
-    fn connected_peer_details_in_bin(&self, po: u8) -> Vec<(OverlayAddress, Vec<libp2p::Multiaddr>)> {
+    fn connected_peer_details_in_bin(
+        &self,
+        po: u8,
+    ) -> Vec<(OverlayAddress, Vec<libp2p::Multiaddr>)> {
         self.routing
             .connected_overlays_in_bin(po)
             .into_iter()

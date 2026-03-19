@@ -4,11 +4,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use metrics::{counter, gauge, histogram};
+use vertex_observability::labels::outcome;
 use vertex_observability::{
     CONNECTION_LIFETIME, DURATION_NETWORK, HistogramBucketConfig, LOCK_CONTENTION, LabelValue,
     POLL_DURATION,
 };
-use vertex_observability::labels::outcome;
 use vertex_swarm_primitives::SwarmNodeType;
 
 use crate::DialReason;
@@ -18,10 +18,8 @@ use crate::events::{ConnectionDirection, TopologyEvent};
 /// Pre-computed proximity order labels (`&'static str`) to avoid per-call allocation.
 /// Covers bins 0-31 which is the full practical range for Kademlia routing.
 const PO_LABELS: [&str; 32] = [
-    "0", "1", "2", "3", "4", "5", "6", "7",
-    "8", "9", "10", "11", "12", "13", "14", "15",
-    "16", "17", "18", "19", "20", "21", "22", "23",
-    "24", "25", "26", "27", "28", "29", "30", "31",
+    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16",
+    "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31",
 ];
 
 pub(crate) fn po_label(po: u8) -> &'static str {
@@ -46,7 +44,9 @@ pub const HISTOGRAM_BUCKETS: &[HistogramBucketConfig] = &[
     // Ping RTT: 1ms to 5s (no matching preset).
     HistogramBucketConfig {
         suffix: "topology_ping_rtt_seconds",
-        buckets: &[0.001, 0.005, 0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.0, 2.5, 5.0],
+        buckets: &[
+            0.001, 0.005, 0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.0, 2.5, 5.0,
+        ],
     },
     HistogramBucketConfig {
         suffix: "topology_poll_duration_seconds",
@@ -98,7 +98,11 @@ impl TopologyMetrics {
             } => {
                 self.record_peer_ready(*node_type, *dir);
             }
-            TopologyEvent::PeerRejected { reason, direction: dir, .. } => {
+            TopologyEvent::PeerRejected {
+                reason,
+                direction: dir,
+                ..
+            } => {
                 self.record_peer_rejected(*reason, *dir);
             }
             TopologyEvent::PeerDisconnected {
@@ -109,7 +113,10 @@ impl TopologyMetrics {
             } => {
                 self.record_peer_disconnected(*reason, *connection_duration, *node_type);
             }
-            TopologyEvent::DepthChanged { old_depth, new_depth } => {
+            TopologyEvent::DepthChanged {
+                old_depth,
+                new_depth,
+            } => {
                 self.record_depth_changed(*old_depth, *new_depth);
             }
             TopologyEvent::DialFailed {
@@ -189,7 +196,8 @@ impl TopologyMetrics {
 
     /// Record a depth change.
     fn record_depth_changed(&self, old_depth: u8, new_depth: u8) {
-        self.current_depth.store(new_depth as u64, Ordering::Relaxed);
+        self.current_depth
+            .store(new_depth as u64, Ordering::Relaxed);
         gauge!("topology_depth").set(new_depth as f64);
 
         if new_depth > old_depth {
@@ -207,9 +215,7 @@ impl TopologyMetrics {
         reason: Option<DialReason>,
         error: &DialError,
     ) {
-        let reason_label = reason
-            .map(|r| r.label_value())
-            .unwrap_or("unknown");
+        let reason_label = reason.map(|r| r.label_value()).unwrap_or("unknown");
         let error_label = error.label_value();
 
         counter!("topology_dial_failures_total", "reason" => reason_label, "error_type" => error_label).increment(1);
@@ -298,10 +304,10 @@ pub(crate) fn record_phase_transition(from: &'static str, to: &'static str) {
 
 /// Phase transition labels.
 pub(crate) mod phase {
-    pub const NONE: &str = "none";
-    pub const DIALING: &str = "dialing";
-    pub const HANDSHAKING: &str = "handshaking";
-    pub const ACTIVE: &str = "active";
+    pub(crate) const NONE: &str = "none";
+    pub(crate) const DIALING: &str = "dialing";
+    pub(crate) const HANDSHAKING: &str = "handshaking";
+    pub(crate) const ACTIVE: &str = "active";
 }
 
 impl Default for TopologyMetrics {
@@ -309,7 +315,6 @@ impl Default for TopologyMetrics {
         Self::new()
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -534,5 +539,4 @@ mod tests {
         // Should not panic
         metrics.record_event(&event);
     }
-
 }

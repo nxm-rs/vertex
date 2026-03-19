@@ -3,18 +3,20 @@
 use std::time::Duration;
 
 use eyre::{Result, WrapErr};
-use libp2p::{Multiaddr, SwarmBuilder, identity::PublicKey, noise, swarm::NetworkBehaviour, tcp, yamux};
+use libp2p::{
+    Multiaddr, SwarmBuilder, identity::PublicKey, noise, swarm::NetworkBehaviour, tcp, yamux,
+};
 use tracing::{info, warn};
 use vertex_net_peer_store::NetPeerStore;
-use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig, SwarmTopologyCommands};
 use vertex_net_peer_store::StoreError;
 use vertex_swarm_api::SwarmScoreStore;
+use vertex_swarm_api::{
+    SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig, SwarmTopologyCommands,
+};
 use vertex_swarm_peer_manager::StoredPeer;
 use vertex_swarm_peer_score::PeerScore;
 use vertex_swarm_spec::HasSpec;
-use vertex_swarm_topology::{
-    KademliaConfig, TopologyBehaviour, TopologyConfig, TopologyHandle,
-};
+use vertex_swarm_topology::{KademliaConfig, TopologyBehaviour, TopologyConfig, TopologyHandle};
 
 use super::base::BaseNode;
 use super::error::NodeBuildError;

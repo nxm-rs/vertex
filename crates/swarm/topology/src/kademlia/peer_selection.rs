@@ -142,11 +142,7 @@ mod tests {
         let ctx = TopologyTestContext::new().with_peers();
         let recipient = test_overlay(0xFF);
 
-        let selected = select_for_distant(
-            &ctx.local_overlay,
-            &ctx.peer_manager,
-            recipient,
-        );
+        let selected = select_for_distant(&ctx.local_overlay, &ctx.peer_manager, recipient);
 
         let unique: HashSet<_> = selected.iter().map(|(p, _)| *p.overlay()).collect();
         assert_eq!(unique.len(), selected.len());

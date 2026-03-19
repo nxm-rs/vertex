@@ -167,16 +167,16 @@ impl<Id, R> PeerRegistry<Id, R> {
     }
 }
 
-impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> PeerRegistry<Id, R> {
+impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static>
+    PeerRegistry<Id, R>
+{
     pub fn get(&self, id: &Id) -> Option<ConnectionState<Id, R>> {
-        self.maps.read()
-            .by_key
-            .get(&id.clone().into())
-            .cloned()
+        self.maps.read().by_key.get(&id.clone().into()).cloned()
     }
 
     pub fn active_connection_id(&self, id: &Id) -> Option<ConnectionId> {
-        self.maps.read()
+        self.maps
+            .read()
             .by_key
             .get(&id.clone().into())
             .and_then(|s| {
@@ -201,7 +201,8 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
     }
 
     pub fn resolve_peer_id(&self, id: &Id) -> Option<PeerId> {
-        self.maps.read()
+        self.maps
+            .read()
             .by_key
             .get(&id.clone().into())
             .map(|s| s.peer_id())
@@ -395,7 +396,8 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
             self.num_active.fetch_sub(active_removed, Ordering::Relaxed);
         }
         if pending_removed > 0 {
-            self.num_pending.fetch_sub(pending_removed, Ordering::Relaxed);
+            self.num_pending
+                .fetch_sub(pending_removed, Ordering::Relaxed);
         }
 
         result
@@ -459,7 +461,8 @@ impl<Id: Clone + Eq + Hash + Debug, R: Clone + Default + Send + Sync + 'static> 
 
     #[must_use]
     pub fn active_ids(&self) -> Vec<Id> {
-        self.maps.read()
+        self.maps
+            .read()
             .by_key
             .iter()
             .filter_map(|(key, state)| {
@@ -589,12 +592,14 @@ mod tests {
         let r = registry();
         let p = peer(1);
 
-        assert!(r
-            .connected_outbound(p, conn(1), Some(TestId(1)), Instant::now(), ())
-            .is_some());
-        assert!(r
-            .connected_outbound(p, conn(2), Some(TestId(2)), Instant::now(), ())
-            .is_none());
+        assert!(
+            r.connected_outbound(p, conn(1), Some(TestId(1)), Instant::now(), ())
+                .is_some()
+        );
+        assert!(
+            r.connected_outbound(p, conn(2), Some(TestId(2)), Instant::now(), ())
+                .is_none()
+        );
     }
 
     #[test]
@@ -602,9 +607,10 @@ mod tests {
         let r = registry();
         let p = peer(1);
 
-        assert!(r
-            .connected_outbound(p, conn(1), None, Instant::now(), ())
-            .is_some());
+        assert!(
+            r.connected_outbound(p, conn(1), None, Instant::now(), ())
+                .is_some()
+        );
         assert!(r.contains_peer(&p));
         assert!(r.resolve_id(&p).is_none());
     }

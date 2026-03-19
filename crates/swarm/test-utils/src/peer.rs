@@ -52,8 +52,7 @@ pub fn test_peer_id(n: u8) -> PeerId {
     let bytes = [n; 32];
     let key = libp2p::identity::ed25519::SecretKey::try_from_bytes(bytes)
         .expect("32 bytes is valid ed25519 secret key");
-    let keypair =
-        libp2p::identity::Keypair::from(libp2p::identity::ed25519::Keypair::from(key));
+    let keypair = libp2p::identity::Keypair::from(libp2p::identity::ed25519::Keypair::from(key));
     keypair.public().to_peer_id()
 }
 
@@ -78,9 +77,11 @@ pub fn test_peer_id(n: u8) -> PeerId {
 pub fn test_swarm_peer(n: u8) -> SwarmPeer {
     let overlay = B256::repeat_byte(n);
     let peer_id = test_peer_id(n);
-    let multiaddrs = vec![format!("/ip4/127.0.0.{}/tcp/1634/p2p/{}", n, peer_id)
-        .parse()
-        .expect("valid multiaddr")];
+    let multiaddrs = vec![
+        format!("/ip4/127.0.0.{}/tcp/1634/p2p/{}", n, peer_id)
+            .parse()
+            .expect("valid multiaddr"),
+    ];
     SwarmPeer::from_validated(
         multiaddrs,
         Signature::test_signature(),
@@ -154,9 +155,9 @@ mod tests {
 
         // Verify multiaddr contains /p2p/ component
         let addr = peer.multiaddrs().first().unwrap();
-        let has_p2p = addr.iter().any(|p| {
-            matches!(p, libp2p::multiaddr::Protocol::P2p(_))
-        });
+        let has_p2p = addr
+            .iter()
+            .any(|p| matches!(p, libp2p::multiaddr::Protocol::P2p(_)));
         assert!(has_p2p, "multiaddr should contain /p2p/ component");
     }
 

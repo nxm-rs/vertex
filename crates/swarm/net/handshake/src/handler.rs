@@ -8,7 +8,7 @@ use std::{
 
 use futures::future::BoxFuture;
 use libp2p::{
-    Multiaddr, PeerId, Stream,
+    InboundUpgrade, Multiaddr, OutboundUpgrade, PeerId, Stream,
     core::UpgradeInfo,
     swarm::{
         StreamUpgradeError, SubstreamProtocol,
@@ -17,13 +17,12 @@ use libp2p::{
             FullyNegotiatedOutbound,
         },
     },
-    InboundUpgrade, OutboundUpgrade,
 };
 use tracing::{debug, warn};
 use vertex_swarm_api::SwarmIdentity;
 
 use crate::{
-    AddressProvider, HandshakeError, HandshakeInfo, HANDSHAKE_TIMEOUT, PROTOCOL,
+    AddressProvider, HANDSHAKE_TIMEOUT, HandshakeError, HandshakeInfo, PROTOCOL,
     protocol::HandshakeProtocol,
 };
 
@@ -65,10 +64,7 @@ impl std::fmt::Debug for HandshakeHandlerEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Completed { .. } => f.debug_struct("Completed").finish_non_exhaustive(),
-            Self::Failed { error, .. } => f
-                .debug_struct("Failed")
-                .field("error", error)
-                .finish(),
+            Self::Failed { error, .. } => f.debug_struct("Failed").field("error", error).finish(),
         }
     }
 }

@@ -9,9 +9,9 @@ use alloy_primitives::{B256, Signature};
 use futures::future::BoxFuture;
 use hashlink::LruCache;
 use metrics::{counter, histogram};
-use vertex_net_utils::extract_peer_id;
 use tracing::{debug, warn};
 use vertex_net_codec::FramedProto;
+use vertex_net_utils::extract_peer_id;
 use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 use vertex_swarm_net_headers::{
     HeaderedInbound, HeaderedOutbound, HeaderedStream, Outbound, ProtocolStreamError,
@@ -19,9 +19,9 @@ use vertex_swarm_net_headers::{
 use vertex_swarm_peer::{SwarmAddress, SwarmPeer};
 use vertex_tasks::TaskExecutor;
 
+use crate::PROTOCOL_NAME;
 use crate::codec::encode_peers;
 use crate::error::ValidationFailure;
-use crate::PROTOCOL_NAME;
 
 /// 32 KiB frame limit (fits ~100 peers at typical size).
 const MAX_MESSAGE_SIZE: usize = 32 * 1024;
@@ -58,14 +58,8 @@ impl<I: SwarmIdentity> std::fmt::Debug for HiveInner<I> {
 }
 
 impl<I: SwarmIdentity> HiveInner<I> {
-    pub(crate) fn new(
-        identity: Arc<I>,
-        cache: PeerCache,
-    ) -> Self {
-        Self {
-            identity,
-            cache,
-        }
+    pub(crate) fn new(identity: Arc<I>, cache: PeerCache) -> Self {
+        Self { identity, cache }
     }
 }
 
@@ -92,8 +86,7 @@ impl<I: SwarmIdentity> HeaderedInbound for HiveInner<I> {
 
             // Offload CPU-bound ECDSA validation to blocking thread pool.
             let (peers, valid_count, invalid_count) =
-                validate_batch_blocking(raw_peers, network_id, local_overlay, cache)
-                    .await;
+                validate_batch_blocking(raw_peers, network_id, local_overlay, cache).await;
 
             // Hive-specific peer metrics
             counter!("hive_peers_received_total", "outcome" => "valid")
@@ -121,8 +114,7 @@ async fn validate_batch_blocking(
 
     let (tx, rx) = tokio::sync::oneshot::channel();
     executor.spawn_blocking("hive_peer_validation", async move {
-        let result =
-            validate_batch(raw_peers, network_id, &local_overlay, &cache);
+        let result = validate_batch(raw_peers, network_id, &local_overlay, &cache);
         let _ = tx.send(result);
     });
 
@@ -144,8 +136,8 @@ fn validate_batch(
 
     let peers: Vec<SwarmPeer> = raw_peers
         .into_iter()
-        .filter_map(|p| {
-            match validate_proto_peer(p, network_id, local_overlay, cache) {
+        .filter_map(
+            |p| match validate_proto_peer(p, network_id, local_overlay, cache) {
                 Ok(peer) => {
                     valid_count += 1;
                     Some(peer)
@@ -155,8 +147,8 @@ fn validate_batch(
                     invalid_count += 1;
                     None
                 }
-            }
-        })
+            },
+        )
         .collect();
 
     histogram!("hive_validation_duration_seconds", "direction" => "inbound")
@@ -176,8 +168,7 @@ fn validate_proto_peer(
     local_overlay: &SwarmAddress,
     cache: &Mutex<LruCache<SwarmAddress, SwarmPeer>>,
 ) -> Result<SwarmPeer, ValidationFailure> {
-    let overlay =
-        B256::try_from(p.overlay.as_slice()).map_err(ValidationFailure::OverlayLength)?;
+    let overlay = B256::try_from(p.overlay.as_slice()).map_err(ValidationFailure::OverlayLength)?;
 
     // Reject our own overlay address to prevent self-dial
     let peer_overlay = SwarmAddress::from(overlay);
@@ -202,8 +193,7 @@ fn validate_proto_peer(
     counter!("hive_validation_cache_total", "outcome" => "miss").increment(1);
 
     // Tier 2: Full ECDSA signature recovery.
-    let nonce =
-        B256::try_from(p.nonce.as_slice()).map_err(ValidationFailure::NonceLength)?;
+    let nonce = B256::try_from(p.nonce.as_slice()).map_err(ValidationFailure::NonceLength)?;
 
     // NOTE: validate_overlay disabled due to Bee multiaddr re-serialization bug
     let peer = SwarmPeer::from_signed(
@@ -215,7 +205,11 @@ fn validate_proto_peer(
         false,
     )?;
 
-    if !peer.multiaddrs().iter().all(|addr| extract_peer_id(addr).is_some()) {
+    if !peer
+        .multiaddrs()
+        .iter()
+        .all(|addr| extract_peer_id(addr).is_some())
+    {
         warn!(
             overlay = %overlay,
             "rejecting peer: multiaddrs missing /p2p/ component"

@@ -191,7 +191,12 @@ mod tests {
 
         // At max length - should succeed
         let max_message = "x".repeat(MAX_WELCOME_MESSAGE_CHARS);
-        let proto = encode_ack(&peer, SwarmNodeType::Client, &max_message, spec.network_id());
+        let proto = encode_ack(
+            &peer,
+            SwarmNodeType::Client,
+            &max_message,
+            spec.network_id(),
+        );
         assert!(decode_ack(proto, spec.network_id()).is_ok());
 
         // Over max length - should fail

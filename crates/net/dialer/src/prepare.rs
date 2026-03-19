@@ -2,9 +2,9 @@
 
 use std::num::NonZeroU8;
 
+use libp2p::multiaddr::Protocol;
 use libp2p::swarm::dial_opts::DialOpts;
 use libp2p::{Multiaddr, PeerId};
-use libp2p::multiaddr::Protocol;
 
 /// Error returned by [`DialTracker::prepare_and_start`](crate::DialTracker::prepare_and_start).
 #[derive(Debug, thiserror::Error)]

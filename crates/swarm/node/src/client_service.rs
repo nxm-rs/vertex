@@ -66,16 +66,14 @@ impl ClientHandle {
     ///
     /// Uses `try_send` because callers (e.g. the libp2p event loop) must not block.
     pub fn send_command(&self, command: ClientCommand) -> Result<(), RetrievalError> {
-        self.command_tx
-            .try_send(command)
-            .map_err(|e| match e {
-                mpsc::error::TrySendError::Full(_) => {
-                    warn!("Client command channel full");
-                    metrics::counter!("swarm.client.commands_dropped").increment(1);
-                    RetrievalError::ChannelClosed
-                }
-                mpsc::error::TrySendError::Closed(_) => RetrievalError::ChannelClosed,
-            })
+        self.command_tx.try_send(command).map_err(|e| match e {
+            mpsc::error::TrySendError::Full(_) => {
+                warn!("Client command channel full");
+                metrics::counter!("swarm.client.commands_dropped").increment(1);
+                RetrievalError::ChannelClosed
+            }
+            mpsc::error::TrySendError::Closed(_) => RetrievalError::ChannelClosed,
+        })
     }
 
     /// Retrieve a chunk from a specific peer.

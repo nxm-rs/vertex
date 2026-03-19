@@ -23,10 +23,8 @@ pub trait SwarmScoreStore: Send + Sync {
     /// Load a peer's score.
     fn get_score(&self, overlay: &OverlayAddress) -> Result<Option<Self::Score>, Self::Error>;
     /// Persist a batch of scores.
-    fn save_score_batch(
-        &self,
-        scores: &[(OverlayAddress, Self::Score)],
-    ) -> Result<(), Self::Error>;
+    fn save_score_batch(&self, scores: &[(OverlayAddress, Self::Score)])
+    -> Result<(), Self::Error>;
     /// Load banned overlay addresses (startup use).
     fn load_banned_overlays(&self) -> Result<Vec<OverlayAddress>, Self::Error> {
         Ok(Vec::new())

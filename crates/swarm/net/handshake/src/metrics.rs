@@ -59,7 +59,8 @@ impl HandshakeMetrics {
     /// Start tracking a new handshake.
     pub fn new(dir: &'static str, purpose: &'static str) -> Self {
         counter!("handshake_total", "direction" => dir, "purpose" => purpose).increment(1);
-        gauge!("handshake_stage", "direction" => dir, "purpose" => purpose, "stage" => "pending").increment(1.0);
+        gauge!("handshake_stage", "direction" => dir, "purpose" => purpose, "stage" => "pending")
+            .increment(1.0);
 
         Self {
             direction: dir,
@@ -109,7 +110,10 @@ impl HandshakeMetrics {
         .decrement(1.0);
 
         // Increment new stage gauge (except for terminal states which use outcome metrics)
-        if !matches!(new_stage, HandshakeStage::Completed | HandshakeStage::Failed) {
+        if !matches!(
+            new_stage,
+            HandshakeStage::Completed | HandshakeStage::Failed
+        ) {
             gauge!(
                 "handshake_stage",
                 "direction" => self.direction,
@@ -211,7 +215,10 @@ impl HandshakeMetrics {
 impl Drop for HandshakeMetrics {
     fn drop(&mut self) {
         // Clean up stage gauge if not already transitioned to terminal state.
-        if !matches!(self.stage, HandshakeStage::Completed | HandshakeStage::Failed) {
+        if !matches!(
+            self.stage,
+            HandshakeStage::Completed | HandshakeStage::Failed
+        ) {
             gauge!(
                 "handshake_stage",
                 "direction" => self.direction,

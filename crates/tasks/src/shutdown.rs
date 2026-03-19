@@ -267,12 +267,12 @@ mod tests {
     async fn test_graceful_shutdown_is_fused() {
         let (signal, shutdown) = signal();
         let counter = Arc::new(GracefulShutdownCounter::new());
-        let gs = GracefulShutdown::new(
-            shutdown,
-            GracefulShutdownGuard::new(Arc::clone(&counter)),
-        );
+        let gs = GracefulShutdown::new(shutdown, GracefulShutdownGuard::new(Arc::clone(&counter)));
 
-        assert!(!gs.is_terminated(), "should not be terminated before completion");
+        assert!(
+            !gs.is_terminated(),
+            "should not be terminated before completion"
+        );
 
         // Pin and poll to completion
         let mut gs = gs;
@@ -284,7 +284,10 @@ mod tests {
         let waker = futures_util::task::noop_waker();
         let mut cx = Context::from_waker(&waker);
         let poll = Pin::new(&mut gs).poll(&mut cx);
-        assert!(poll.is_pending(), "re-polling a completed GracefulShutdown should return Pending");
+        assert!(
+            poll.is_pending(),
+            "re-polling a completed GracefulShutdown should return Pending"
+        );
 
         drop(guard);
     }

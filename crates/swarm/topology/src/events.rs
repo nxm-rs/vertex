@@ -7,7 +7,7 @@ use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
 pub use vertex_net_peer_registry::ConnectionDirection;
 
-pub use crate::error::{DialError, DisconnectReason, RejectionReason};
+pub(crate) use crate::error::{DialError, DisconnectReason, RejectionReason};
 
 /// Reason for initiating a dial.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, strum::IntoStaticStr)]

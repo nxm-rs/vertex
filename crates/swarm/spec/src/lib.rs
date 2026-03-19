@@ -61,9 +61,6 @@ pub use vertex_swarm_forks::*;
 pub use nectar_contracts;
 
 // Re-export SwarmSpec trait and providers from vertex-swarm-api
-pub use vertex_swarm_api::{
-    StaticSwarmSpecProvider, SwarmSpec, SwarmSpecParser, SwarmSpecProvider, SwarmToken,
-};
 pub use constants::*;
 #[cfg(feature = "std")]
 pub use display::Loggable;
@@ -77,6 +74,9 @@ pub use parser::DefaultSpecParser;
 pub use spec::{DEV, MAINNET, TESTNET};
 pub use spec::{Spec, SpecBuilder};
 pub use token::Token;
+pub use vertex_swarm_api::{
+    StaticSwarmSpecProvider, SwarmSpec, SwarmSpecParser, SwarmSpecProvider, SwarmToken,
+};
 
 // HasSpec trait is defined in this module and exported directly
 

@@ -27,7 +27,11 @@ impl<I: SwarmIdentity> PeerManager<I> {
             self.remove_peer(overlay);
         }
 
-        debug!(removed = stale.len(), remaining = self.index.len(), "purged stale peers");
+        debug!(
+            removed = stale.len(),
+            remaining = self.index.len(),
+            "purged stale peers"
+        );
     }
 
     /// Collect dirty hot peers into the write buffer for batched DB flush.
@@ -51,10 +55,10 @@ impl<I: SwarmIdentity> PeerManager<I> {
         }
         if let Some(ref ss) = self.score_store {
             let scores = self.write_buffer.drain_scores();
-            if !scores.is_empty() {
-                if let Err(e) = ss.save_score_batch(&scores) {
-                    warn!(error = %e, "failed to flush score buffer");
-                }
+            if !scores.is_empty()
+                && let Err(e) = ss.save_score_batch(&scores)
+            {
+                warn!(error = %e, "failed to flush score buffer");
             }
         }
     }
@@ -75,7 +79,8 @@ impl<I: SwarmIdentity> PeerManager<I> {
         let to_evict = current.saturating_sub(self.max_hot_peers);
 
         // Collect eviction candidates: peers with failures (not connected)
-        let mut candidates: Vec<(OverlayAddress, u64)> = self.peers
+        let mut candidates: Vec<(OverlayAddress, u64)> = self
+            .peers
             .iter()
             .filter(|r| r.value().consecutive_failures() > 0)
             .map(|r| (*r.key(), r.value().last_seen()))
@@ -98,7 +103,11 @@ impl<I: SwarmIdentity> PeerManager<I> {
         if evicted > 0 {
             self.flush_write_buffer();
             gauge!("peer_manager_hot_peers").set(self.peers.len() as f64);
-            debug!(evicted, remaining_hot = self.peers.len(), "evicted cold peers from hot cache");
+            debug!(
+                evicted,
+                remaining_hot = self.peers.len(),
+                "evicted cold peers from hot cache"
+            );
         }
     }
 
@@ -218,9 +227,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
         if total_stored > 0 {
             debug!(
                 total_stored,
-                indexed,
-                banned,
-                "loaded peer index from store"
+                indexed, banned, "loaded peer index from store"
             );
         }
     }

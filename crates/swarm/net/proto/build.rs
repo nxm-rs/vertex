@@ -21,7 +21,9 @@ fn main() {
     let mut protos = Vec::new();
     let proto_ext = Some(Path::new("proto").as_os_str());
     for entry in WalkDir::new(&in_dir) {
-        let path = entry.expect("failed to read proto directory entry").into_path();
+        let path = entry
+            .expect("failed to read proto directory entry")
+            .into_path();
         if path.extension() == proto_ext {
             println!(
                 "cargo:rerun-if-changed={}",

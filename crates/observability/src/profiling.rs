@@ -40,7 +40,9 @@ pub fn cpu_profile(duration: Duration) -> eyre::Result<Vec<u8>> {
 /// CPU profiling not available without `profiling` feature.
 #[cfg(not(feature = "profiling"))]
 pub fn cpu_profile(_duration: Duration) -> eyre::Result<Vec<u8>> {
-    Err(eyre::eyre!("CPU profiling requires the 'profiling' feature"))
+    Err(eyre::eyre!(
+        "CPU profiling requires the 'profiling' feature"
+    ))
 }
 
 /// Get current memory statistics from jemalloc.
@@ -51,16 +53,16 @@ pub fn memory_stats() -> eyre::Result<MemoryStats> {
     // Refresh stats epoch (jemalloc error doesn't impl std::error::Error)
     epoch::advance().map_err(|e| eyre::eyre!("jemalloc epoch advance failed: {:?}", e))?;
 
-    let allocated = stats::allocated::read()
-        .map_err(|e| eyre::eyre!("jemalloc stats read failed: {:?}", e))?;
-    let active = stats::active::read()
-        .map_err(|e| eyre::eyre!("jemalloc stats read failed: {:?}", e))?;
-    let resident = stats::resident::read()
-        .map_err(|e| eyre::eyre!("jemalloc stats read failed: {:?}", e))?;
-    let mapped = stats::mapped::read()
-        .map_err(|e| eyre::eyre!("jemalloc stats read failed: {:?}", e))?;
-    let retained = stats::retained::read()
-        .map_err(|e| eyre::eyre!("jemalloc stats read failed: {:?}", e))?;
+    let allocated =
+        stats::allocated::read().map_err(|e| eyre::eyre!("jemalloc stats read failed: {:?}", e))?;
+    let active =
+        stats::active::read().map_err(|e| eyre::eyre!("jemalloc stats read failed: {:?}", e))?;
+    let resident =
+        stats::resident::read().map_err(|e| eyre::eyre!("jemalloc stats read failed: {:?}", e))?;
+    let mapped =
+        stats::mapped::read().map_err(|e| eyre::eyre!("jemalloc stats read failed: {:?}", e))?;
+    let retained =
+        stats::retained::read().map_err(|e| eyre::eyre!("jemalloc stats read failed: {:?}", e))?;
 
     Ok(MemoryStats {
         allocated,
@@ -89,8 +91,7 @@ pub fn heap_dump(path: &std::path::Path) -> eyre::Result<()> {
     let path_str = path
         .to_str()
         .ok_or_else(|| eyre::eyre!("path contains non-UTF8 characters"))?;
-    let c_path =
-        CString::new(path_str).map_err(|e| eyre::eyre!("path contains null byte: {e}"))?;
+    let c_path = CString::new(path_str).map_err(|e| eyre::eyre!("path contains null byte: {e}"))?;
 
     // prof.dump writes a heap profile to the specified path.
     // This will fail if jemalloc was not compiled with profiling support

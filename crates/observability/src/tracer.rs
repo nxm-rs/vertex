@@ -1,6 +1,6 @@
 //! VertexTracer builder for unified observability initialization.
 
-use crate::{OtlpLogsConfig, layers, OtlpConfig, StdoutConfig, TracingGuard};
+use crate::{OtlpConfig, OtlpLogsConfig, StdoutConfig, TracingGuard, layers};
 
 /// Builder for initializing the tracing/logging stack.
 ///

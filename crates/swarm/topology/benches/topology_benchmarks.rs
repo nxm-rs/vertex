@@ -28,35 +28,27 @@ fn bench_deduplication(c: &mut Criterion) {
         let new_candidates: Vec<OverlayAddress> = make_overlays(*size);
 
         // Vec::contains approach (O(n²))
-        group.bench_with_input(
-            BenchmarkId::new("vec_contains", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    let mut result = existing.clone();
-                    for candidate in &new_candidates {
-                        if !result.contains(candidate) {
-                            result.push(*candidate);
-                        }
+        group.bench_with_input(BenchmarkId::new("vec_contains", size), size, |b, _| {
+            b.iter(|| {
+                let mut result = existing.clone();
+                for candidate in &new_candidates {
+                    if !result.contains(candidate) {
+                        result.push(*candidate);
                     }
-                    black_box(result)
-                })
-            },
-        );
+                }
+                black_box(result)
+            })
+        });
 
         // HashSet approach (O(n))
-        group.bench_with_input(
-            BenchmarkId::new("hashset_dedup", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    let existing_set: HashSet<_> = existing.iter().copied().collect();
-                    let mut result = existing.clone();
-                    result.extend(new_candidates.iter().filter(|c| !existing_set.contains(c)));
-                    black_box(result)
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("hashset_dedup", size), size, |b, _| {
+            b.iter(|| {
+                let existing_set: HashSet<_> = existing.iter().copied().collect();
+                let mut result = existing.clone();
+                result.extend(new_candidates.iter().filter(|c| !existing_set.contains(c)));
+                black_box(result)
+            })
+        });
     }
 
     group.finish();
@@ -78,25 +70,17 @@ fn bench_proximity_index(c: &mut Criterion) {
         }
 
         // Benchmark all_peers() - now optimized with pre-allocation
-        group.bench_with_input(
-            BenchmarkId::new("all_peers", size),
-            size,
-            |b, _| {
-                b.iter(|| black_box(index.all_peers()))
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("all_peers", size), size, |b, _| {
+            b.iter(|| black_box(index.all_peers()))
+        });
 
         // Benchmark iter_by_proximity() - uses cached sorted list
-        group.bench_with_input(
-            BenchmarkId::new("iter_by_proximity", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    let items: Vec<_> = index.iter_by_proximity().collect();
-                    black_box(items)
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("iter_by_proximity", size), size, |b, _| {
+            b.iter(|| {
+                let items: Vec<_> = index.iter_by_proximity().collect();
+                black_box(items)
+            })
+        });
 
         // Benchmark iter_by_proximity_desc()
         group.bench_with_input(
@@ -111,13 +95,9 @@ fn bench_proximity_index(c: &mut Criterion) {
         );
 
         // Benchmark bin_sizes()
-        group.bench_with_input(
-            BenchmarkId::new("bin_sizes", size),
-            size,
-            |b, _| {
-                b.iter(|| black_box(index.bin_sizes()))
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("bin_sizes", size), size, |b, _| {
+            b.iter(|| black_box(index.bin_sizes()))
+        });
     }
 
     group.finish();
@@ -132,45 +112,36 @@ fn bench_lock_patterns(c: &mut Criterion) {
 
     for size in [100, 500, 1000].iter() {
         let overlays = make_overlays(*size);
-        let map: Arc<RwLock<HashMap<OverlayAddress, u8>>> = Arc::new(RwLock::new(
-            overlays.iter().map(|o| (*o, 0u8)).collect(),
-        ));
+        let map: Arc<RwLock<HashMap<OverlayAddress, u8>>> =
+            Arc::new(RwLock::new(overlays.iter().map(|o| (*o, 0u8)).collect()));
 
         // Pattern 1: Snapshot keys then iterate (optimized)
-        group.bench_with_input(
-            BenchmarkId::new("snapshot_keys", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    let keys: HashSet<OverlayAddress> = map.read().keys().copied().collect();
-                    let mut count = 0;
-                    for key in keys {
-                        if key.as_slice()[0] > 128 {
-                            count += 1;
-                        }
+        group.bench_with_input(BenchmarkId::new("snapshot_keys", size), size, |b, _| {
+            b.iter(|| {
+                let keys: HashSet<OverlayAddress> = map.read().keys().copied().collect();
+                let mut count = 0;
+                for key in keys {
+                    if key.as_slice()[0] > 128 {
+                        count += 1;
                     }
-                    black_box(count)
-                })
-            },
-        );
+                }
+                black_box(count)
+            })
+        });
 
         // Pattern 2: Hold read lock during iteration (original)
-        group.bench_with_input(
-            BenchmarkId::new("hold_lock", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    let guard = map.read();
-                    let mut count = 0;
-                    for (key, _) in guard.iter() {
-                        if key.as_slice()[0] > 128 {
-                            count += 1;
-                        }
+        group.bench_with_input(BenchmarkId::new("hold_lock", size), size, |b, _| {
+            b.iter(|| {
+                let guard = map.read();
+                let mut count = 0;
+                for (key, _) in guard.iter() {
+                    if key.as_slice()[0] > 128 {
+                        count += 1;
                     }
-                    black_box(count)
-                })
-            },
-        );
+                }
+                black_box(count)
+            })
+        });
     }
 
     group.finish();
@@ -204,23 +175,13 @@ fn bench_in_flight_lookup(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("hashmap_values_any", size),
             size,
-            |b, _| {
-                b.iter(|| {
-                    black_box(map.values().any(|v| v.overlay == target))
-                })
-            },
+            |b, _| b.iter(|| black_box(map.values().any(|v| v.overlay == target))),
         );
 
         // HashSet::contains() - O(1)
-        group.bench_with_input(
-            BenchmarkId::new("hashset_contains", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    black_box(set.contains(&target))
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("hashset_contains", size), size, |b, _| {
+            b.iter(|| black_box(set.contains(&target)))
+        });
     }
 
     group.finish();

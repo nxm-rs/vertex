@@ -1,8 +1,8 @@
 //! Proximity-ordered storage for Kademlia-style routing.
 
 use std::fmt;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use hashlink::LinkedHashSet;
 use metrics::gauge;
@@ -65,7 +65,9 @@ impl ProximityIndex {
             local_overlay,
             max_po,
             max_per_bin,
-            bins: (0..num_bins).map(|_| RwLock::new(LinkedHashSet::new())).collect(),
+            bins: (0..num_bins)
+                .map(|_| RwLock::new(LinkedHashSet::new()))
+                .collect(),
             bin_counts: (0..num_bins).map(|_| AtomicUsize::new(0)).collect(),
             total_count: AtomicUsize::new(0),
             generation: AtomicU64::new(0),
@@ -208,9 +210,9 @@ impl ProximityIndex {
 
     /// Get up to `count` addresses from a bin (LRU first).
     pub fn take_lru_from_bin(&self, po: u8, count: usize) -> Vec<OverlayAddress> {
-        self.bins
-            .get(po as usize)
-            .map_or_else(Vec::new, |bin| bin.read().iter().take(count).copied().collect())
+        self.bins.get(po as usize).map_or_else(Vec::new, |bin| {
+            bin.read().iter().take(count).copied().collect()
+        })
     }
 
     /// Iterate from shallowest to deepest proximity order (ascending PO).

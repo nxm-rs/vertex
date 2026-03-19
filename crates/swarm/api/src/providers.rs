@@ -64,5 +64,5 @@ pub trait SwarmChunkSender: Send + Sync + 'static {
     ///
     /// Returns `SwarmError::InvalidSignature` if the stamp doesn't match the chunk.
     async fn send_chunk(&self, chunk: nectar_primitives::AnyChunk)
-        -> SwarmResult<ChunkSendReceipt>;
+    -> SwarmResult<ChunkSendReceipt>;
 }

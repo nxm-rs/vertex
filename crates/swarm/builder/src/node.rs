@@ -36,11 +36,7 @@ pub trait BuilderExt: Sized {
     where
         F: FnOnce(Self) -> Self,
     {
-        if cond {
-            f(self)
-        } else {
-            self
-        }
+        if cond { f(self) } else { self }
     }
 }
 
@@ -68,7 +64,11 @@ where
     N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
 {
     pub fn new(spec: Arc<Spec>, identity: I, network: N) -> Self {
-        Self { spec, identity, network }
+        Self {
+            spec,
+            identity,
+            network,
+        }
     }
 
     pub fn spec(&self) -> &Arc<Spec> {
@@ -88,7 +88,10 @@ where
     where
         A: SwarmAccountingConfig + SwarmPricingConfig,
     {
-        ClientNodeBuilder { base: self, accounting }
+        ClientNodeBuilder {
+            base: self,
+            accounting,
+        }
     }
 }
 
@@ -122,12 +125,20 @@ where
     }
 
     /// Transition to storer builder by adding storage.
-    pub fn with_storage<S, St>(self, local_store: S, storage: St) -> StorerNodeBuilder<I, N, A, S, St>
+    pub fn with_storage<S, St>(
+        self,
+        local_store: S,
+        storage: St,
+    ) -> StorerNodeBuilder<I, N, A, S, St>
     where
         S: SwarmLocalStoreConfig,
         St: SwarmStorageConfig,
     {
-        StorerNodeBuilder { client: self, local_store, storage }
+        StorerNodeBuilder {
+            client: self,
+            local_store,
+            storage,
+        }
     }
 }
 
@@ -186,7 +197,11 @@ pub type DefaultStorerBuilder = StorerNodeBuilder<
 
 impl DefaultNodeBuilder {
     pub fn from_config(config: BootnodeConfig) -> Self {
-        Self::new(config.spec().clone(), config.identity().clone(), config.network().clone())
+        Self::new(
+            config.spec().clone(),
+            config.identity().clone(),
+            config.network().clone(),
+        )
     }
 
     /// Convert to config for building.
@@ -195,7 +210,10 @@ impl DefaultNodeBuilder {
     }
 
     /// Build the bootnode. Delegates to SwarmLaunchConfig::build().
-    pub async fn build(self, ctx: &dyn InfrastructureContext) -> Result<BuiltBootnode, SwarmNodeError> {
+    pub async fn build(
+        self,
+        ctx: &dyn InfrastructureContext,
+    ) -> Result<BuiltBootnode, SwarmNodeError> {
         let config = self.into_config();
         let (task, providers) = config.build(ctx).await?;
         Ok(BuiltNode::new(task, providers))
@@ -223,11 +241,19 @@ impl DefaultClientBuilder {
 
     /// Convert to config for building.
     pub fn into_config(self) -> ClientConfig {
-        ClientConfig::new(self.base.spec, self.base.identity, self.base.network, self.accounting)
+        ClientConfig::new(
+            self.base.spec,
+            self.base.identity,
+            self.base.network,
+            self.accounting,
+        )
     }
 
     /// Build the client node. Delegates to SwarmLaunchConfig::build().
-    pub async fn build(self, ctx: &dyn InfrastructureContext) -> Result<BuiltClient, SwarmNodeError> {
+    pub async fn build(
+        self,
+        ctx: &dyn InfrastructureContext,
+    ) -> Result<BuiltClient, SwarmNodeError> {
         let config = self.into_config();
         let (task, providers) = config.build(ctx).await?;
         Ok(BuiltNode::new(task, providers))
@@ -272,7 +298,10 @@ impl DefaultStorerBuilder {
     }
 
     /// Build the storer node. Delegates to SwarmLaunchConfig::build().
-    pub async fn build(self, ctx: &dyn InfrastructureContext) -> Result<BuiltStorer, SwarmNodeError> {
+    pub async fn build(
+        self,
+        ctx: &dyn InfrastructureContext,
+    ) -> Result<BuiltStorer, SwarmNodeError> {
         let config = self.into_config();
         let (task, providers) = config.build(ctx).await?;
         Ok(BuiltNode::new(task, providers))

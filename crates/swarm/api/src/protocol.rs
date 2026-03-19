@@ -35,10 +35,8 @@ where
         let (task_fn, providers) = config.build(ctx).await?;
 
         // Spawn the node's main event loop with graceful shutdown support
-        ctx.executor().spawn_critical_with_graceful_shutdown_signal(
-            "swarm.protocol",
-            task_fn,
-        );
+        ctx.executor()
+            .spawn_critical_with_graceful_shutdown_signal("swarm.protocol", task_fn);
 
         Ok(providers)
     }

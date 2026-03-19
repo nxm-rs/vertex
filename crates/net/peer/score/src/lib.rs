@@ -72,7 +72,8 @@ impl PeerScore {
     }
 
     pub fn record_latency(&self, latency_nanos: u64) {
-        self.latency_sum_nanos.fetch_add(latency_nanos, Ordering::Relaxed);
+        self.latency_sum_nanos
+            .fetch_add(latency_nanos, Ordering::Relaxed);
         self.latency_samples.fetch_add(1, Ordering::Release);
     }
 

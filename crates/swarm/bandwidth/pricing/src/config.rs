@@ -5,8 +5,8 @@ use std::sync::Arc;
 use vertex_swarm_api::SwarmPricingBuilder;
 use vertex_swarm_spec::SwarmSpec;
 
-use crate::constants::DEFAULT_BASE_PRICE;
 use crate::FixedPricer;
+use crate::constants::DEFAULT_BASE_PRICE;
 
 /// Validated fixed-rate chunk pricing configuration.
 #[derive(Debug, Clone, Copy)]

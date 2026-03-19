@@ -84,7 +84,14 @@ impl<I: SwarmIdentity> PeerManager<I> {
         scoring_config: SwarmScoringConfig,
         max_per_bin: usize,
     ) -> Arc<Self> {
-        Self::build(identity, scoring_config, max_per_bin, None, None, DEFAULT_MAX_HOT_PEERS)
+        Self::build(
+            identity,
+            scoring_config,
+            max_per_bin,
+            None,
+            None,
+            DEFAULT_MAX_HOT_PEERS,
+        )
     }
 
     /// Create with a database-backed persistent store.
@@ -558,7 +565,8 @@ impl<I: SwarmIdentity> PeerManager<I> {
         let record = StoredPeer::from(entry);
         self.write_buffer.push(record);
         if self.score_store.is_some() {
-            self.write_buffer.push_score(overlay, entry.score_snapshot());
+            self.write_buffer
+                .push_score(overlay, entry.score_snapshot());
         }
     }
 

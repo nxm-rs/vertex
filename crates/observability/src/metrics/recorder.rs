@@ -5,9 +5,8 @@ use std::collections::HashSet;
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
 use metrics_util::layers::{PrefixLayer, Stack};
 use std::sync::{
-    OnceLock,
+    Arc, OnceLock,
     atomic::{AtomicBool, Ordering},
-    Arc,
 };
 use vertex_tasks::TaskExecutor;
 
@@ -62,7 +61,10 @@ pub struct PrometheusRecorder {
 impl std::fmt::Debug for PrometheusRecorder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PrometheusRecorder")
-            .field("upkeep_started", &self.upkeep_started.load(Ordering::Relaxed))
+            .field(
+                "upkeep_started",
+                &self.upkeep_started.load(Ordering::Relaxed),
+            )
             .finish()
     }
 }
@@ -73,11 +75,10 @@ impl PrometheusRecorder {
         // Note: Buckets are set BEFORE the prefix layer, so use unprefixed names.
         let mut builder = PrometheusBuilder::new();
         for config in histogram_buckets {
-            builder = builder
-                .set_buckets_for_metric(
-                    Matcher::Suffix(config.suffix.to_string()),
-                    config.buckets,
-                )?;
+            builder = builder.set_buckets_for_metric(
+                Matcher::Suffix(config.suffix.to_string()),
+                config.buckets,
+            )?;
         }
         let recorder = builder.build_recorder();
 
@@ -113,23 +114,26 @@ impl PrometheusRecorder {
         }
 
         let handle = self.handle.clone();
-        executor.spawn_with_graceful_shutdown_signal("metrics.upkeep", move |shutdown| async move {
-            let mut shutdown = std::pin::pin!(shutdown);
-            let interval = std::time::Duration::from_secs(interval_secs);
+        executor.spawn_with_graceful_shutdown_signal(
+            "metrics.upkeep",
+            move |shutdown| async move {
+                let mut shutdown = std::pin::pin!(shutdown);
+                let interval = std::time::Duration::from_secs(interval_secs);
 
-            loop {
-                tokio::select! {
-                    guard = &mut shutdown => {
-                        tracing::debug!("Metrics upkeep task shutting down");
-                        drop(guard);
-                        break;
-                    }
-                    _ = tokio::time::sleep(interval) => {
-                        handle.run_upkeep();
+                loop {
+                    tokio::select! {
+                        guard = &mut shutdown => {
+                            tracing::debug!("Metrics upkeep task shutting down");
+                            drop(guard);
+                            break;
+                        }
+                        _ = tokio::time::sleep(interval) => {
+                            handle.run_upkeep();
+                        }
                     }
                 }
-            }
-        });
+            },
+        );
     }
 }
 
@@ -210,8 +214,6 @@ mod tests {
             buckets: &[2.0],
         }];
 
-        let _ = HistogramRegistry::new()
-            .register_all(a)
-            .register_all(b);
+        let _ = HistogramRegistry::new().register_all(a).register_all(b);
     }
 }

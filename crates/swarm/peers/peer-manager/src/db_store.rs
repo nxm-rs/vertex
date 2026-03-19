@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use alloy_primitives::Address;
 use vertex_net_peer_store::{NetPeerStore, StoreError};
-use vertex_storage::{Database, DatabaseError, DbTx, DbTxMut, IndexedRead, IndexedWrite, Table, index, table};
+use vertex_storage::{
+    Database, DatabaseError, DbTx, DbTxMut, IndexedRead, IndexedWrite, Table, index, table,
+};
 use vertex_swarm_api::SwarmScoreStore;
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -40,61 +42,75 @@ impl<DB: Database> DbPeerStore<DB> {
 
     /// Initialize the peers table, index, and score table (call once at startup).
     pub fn init(&self) -> Result<(), StoreError> {
-        self.db.update(|tx| {
-            tx.ensure_table(PeerTable::NAME)?;
-            tx.ensure_table(EthAddrPeerIndex::NAME)?;
-            tx.ensure_table(ScoreTable::NAME)?;
-            Ok(())
-        }).map_err(db_err)
+        self.db
+            .update(|tx| {
+                tx.ensure_table(PeerTable::NAME)?;
+                tx.ensure_table(EthAddrPeerIndex::NAME)?;
+                tx.ensure_table(ScoreTable::NAME)?;
+                Ok(())
+            })
+            .map_err(db_err)
     }
 
     /// Look up a peer by Ethereum address via the secondary index.
     pub fn get_by_eth_address(&self, addr: &Address) -> Result<Option<StoredPeer>, StoreError> {
-        self.db.view(|tx| tx.get_via::<EthAddrPeerIndex>(*addr)).map_err(db_err)
+        self.db
+            .view(|tx| tx.get_via::<EthAddrPeerIndex>(*addr))
+            .map_err(db_err)
     }
 
     /// Load all overlay addresses (key-only scan, no value deserialization).
-    pub fn load_overlay_set(&self) -> Result<std::collections::HashSet<OverlayAddress>, StoreError> {
-        self.db.view(|tx| {
-            let keys = tx.keys::<PeerTable>()?;
-            Ok(keys.into_iter().collect())
-        }).map_err(db_err)
+    pub fn load_overlay_set(
+        &self,
+    ) -> Result<std::collections::HashSet<OverlayAddress>, StoreError> {
+        self.db
+            .view(|tx| {
+                let keys = tx.keys::<PeerTable>()?;
+                Ok(keys.into_iter().collect())
+            })
+            .map_err(db_err)
     }
 
     /// Batch-load specific peers by overlay address.
     pub fn load_batch(&self, ids: &[OverlayAddress]) -> Result<Vec<StoredPeer>, StoreError> {
-        self.db.view(|tx| {
-            let mut result = Vec::with_capacity(ids.len());
-            for id in ids {
-                if let Some(record) = tx.get::<PeerTable>(*id)? {
-                    result.push(record);
+        self.db
+            .view(|tx| {
+                let mut result = Vec::with_capacity(ids.len());
+                for id in ids {
+                    if let Some(record) = tx.get::<PeerTable>(*id)? {
+                        result.push(record);
+                    }
                 }
-            }
-            Ok(result)
-        }).map_err(db_err)
+                Ok(result)
+            })
+            .map_err(db_err)
     }
 
     /// Batch-remove peers by overlay address. Returns count of removed entries.
     pub fn remove_batch(&self, ids: &[OverlayAddress]) -> Result<usize, StoreError> {
-        self.db.update(|tx| {
-            let mut removed = 0;
-            for id in ids {
-                let _ = tx.delete::<ScoreTable>(*id);
-                if tx.delete_indexed::<EthAddrPeerIndex>(*id)? {
-                    removed += 1;
+        self.db
+            .update(|tx| {
+                let mut removed = 0;
+                for id in ids {
+                    let _ = tx.delete::<ScoreTable>(*id);
+                    if tx.delete_indexed::<EthAddrPeerIndex>(*id)? {
+                        removed += 1;
+                    }
                 }
-            }
-            Ok(removed)
-        }).map_err(db_err)
+                Ok(removed)
+            })
+            .map_err(db_err)
     }
 }
 
 impl<DB: Database> NetPeerStore<StoredPeer> for DbPeerStore<DB> {
     fn load_all(&self) -> Result<Vec<StoredPeer>, StoreError> {
-        self.db.view(|tx| {
-            let entries = tx.entries::<PeerTable>()?;
-            Ok(entries.into_iter().map(|(_, v)| v).collect())
-        }).map_err(db_err)
+        self.db
+            .view(|tx| {
+                let entries = tx.entries::<PeerTable>()?;
+                Ok(entries.into_iter().map(|(_, v)| v).collect())
+            })
+            .map_err(db_err)
     }
 
     fn load_ids(&self) -> Result<Vec<OverlayAddress>, StoreError> {
@@ -104,35 +120,52 @@ impl<DB: Database> NetPeerStore<StoredPeer> for DbPeerStore<DB> {
     fn save(&self, record: &StoredPeer) -> Result<(), StoreError> {
         let key = *record.peer.overlay();
         let value = record.clone();
-        self.db.update(|tx| {
-            tx.put_indexed::<EthAddrPeerIndex>(key, value)?;
-            Ok(())
-        }).map_err(db_err)
+        self.db
+            .update(|tx| {
+                tx.put_indexed::<EthAddrPeerIndex>(key, value)?;
+                Ok(())
+            })
+            .map_err(db_err)
     }
 
     fn save_batch(&self, records: &[StoredPeer]) -> Result<(), StoreError> {
-        self.db.update(|tx| {
-            for record in records {
-                let key = *record.peer.overlay();
-                tx.put_indexed::<EthAddrPeerIndex>(key, record.clone())?;
-            }
-            Ok(())
-        }).map_err(db_err)
+        self.db
+            .update(|tx| {
+                for record in records {
+                    let key = *record.peer.overlay();
+                    tx.put_indexed::<EthAddrPeerIndex>(key, record.clone())?;
+                }
+                Ok(())
+            })
+            .map_err(db_err)
     }
 
-    fn remove(&self, id: &<StoredPeer as vertex_net_peer_store::NetRecord>::Id) -> Result<bool, StoreError> {
-        self.db.update(|tx| {
-            let _ = tx.delete::<ScoreTable>(*id);
-            tx.delete_indexed::<EthAddrPeerIndex>(*id)
-        }).map_err(db_err)
+    fn remove(
+        &self,
+        id: &<StoredPeer as vertex_net_peer_store::NetRecord>::Id,
+    ) -> Result<bool, StoreError> {
+        self.db
+            .update(|tx| {
+                let _ = tx.delete::<ScoreTable>(*id);
+                tx.delete_indexed::<EthAddrPeerIndex>(*id)
+            })
+            .map_err(db_err)
     }
 
-    fn get(&self, id: &<StoredPeer as vertex_net_peer_store::NetRecord>::Id) -> Result<Option<StoredPeer>, StoreError> {
+    fn get(
+        &self,
+        id: &<StoredPeer as vertex_net_peer_store::NetRecord>::Id,
+    ) -> Result<Option<StoredPeer>, StoreError> {
         self.db.view(|tx| tx.get::<PeerTable>(*id)).map_err(db_err)
     }
 
-    fn contains(&self, id: &<StoredPeer as vertex_net_peer_store::NetRecord>::Id) -> Result<bool, StoreError> {
-        self.db.view(|tx| Ok(tx.get::<PeerTable>(*id)?.is_some())).map_err(db_err)
+    fn contains(
+        &self,
+        id: &<StoredPeer as vertex_net_peer_store::NetRecord>::Id,
+    ) -> Result<bool, StoreError> {
+        self.db
+            .view(|tx| Ok(tx.get::<PeerTable>(*id)?.is_some()))
+            .map_err(db_err)
     }
 
     fn count(&self) -> Result<usize, StoreError> {
@@ -140,10 +173,12 @@ impl<DB: Database> NetPeerStore<StoredPeer> for DbPeerStore<DB> {
     }
 
     fn clear(&self) -> Result<(), StoreError> {
-        self.db.update(|tx| {
-            tx.clear::<ScoreTable>()?;
-            tx.clear_indexed::<EthAddrPeerIndex>()
-        }).map_err(db_err)
+        self.db
+            .update(|tx| {
+                tx.clear::<ScoreTable>()?;
+                tx.clear_indexed::<EthAddrPeerIndex>()
+            })
+            .map_err(db_err)
     }
 
     fn flush(&self) -> Result<(), StoreError> {
@@ -157,29 +192,36 @@ impl<DB: Database> SwarmScoreStore for DbPeerStore<DB> {
     type Error = StoreError;
 
     fn get_score(&self, overlay: &OverlayAddress) -> Result<Option<PeerScore>, StoreError> {
-        self.db.view(|tx| tx.get::<ScoreTable>(*overlay)).map_err(db_err)
+        self.db
+            .view(|tx| tx.get::<ScoreTable>(*overlay))
+            .map_err(db_err)
     }
 
     fn save_score_batch(&self, scores: &[(OverlayAddress, PeerScore)]) -> Result<(), StoreError> {
         if scores.is_empty() {
             return Ok(());
         }
-        self.db.update(|tx| {
-            for (overlay, score) in scores {
-                tx.put::<ScoreTable>(*overlay, score.clone())?;
-            }
-            Ok(())
-        }).map_err(db_err)
+        self.db
+            .update(|tx| {
+                for (overlay, score) in scores {
+                    tx.put::<ScoreTable>(*overlay, score.clone())?;
+                }
+                Ok(())
+            })
+            .map_err(db_err)
     }
 
     fn load_banned_overlays(&self) -> Result<Vec<OverlayAddress>, StoreError> {
-        self.db.view(|tx| {
-            let entries = tx.entries::<PeerTable>()?;
-            Ok(entries.into_iter()
-                .filter(|(_, v)| v.is_banned())
-                .map(|(k, _)| k)
-                .collect())
-        }).map_err(db_err)
+        self.db
+            .view(|tx| {
+                let entries = tx.entries::<PeerTable>()?;
+                Ok(entries
+                    .into_iter()
+                    .filter(|(_, v)| v.is_banned())
+                    .map(|(k, _)| k)
+                    .collect())
+            })
+            .map_err(db_err)
     }
 }
 
@@ -207,9 +249,11 @@ mod tests {
     /// Create a peer with a distinct Ethereum address (test_swarm_peer uses Address::ZERO).
     fn make_peer_with_eth(n: u8) -> StoredPeer {
         let peer_id = vertex_swarm_test_utils::test_peer_id(n);
-        let multiaddrs = vec![format!("/ip4/127.0.0.{n}/tcp/1634/p2p/{peer_id}")
-            .parse()
-            .expect("valid multiaddr")];
+        let multiaddrs = vec![
+            format!("/ip4/127.0.0.{n}/tcp/1634/p2p/{peer_id}")
+                .parse()
+                .expect("valid multiaddr"),
+        ];
         let peer = SwarmPeer::from_validated(
             multiaddrs,
             alloy_primitives::Signature::test_signature(),
@@ -389,7 +433,10 @@ mod tests {
 
         // Each eth address resolves to the correct peer
         for peer in &peers {
-            let found = store.get_by_eth_address(peer.peer.ethereum_address()).unwrap().unwrap();
+            let found = store
+                .get_by_eth_address(peer.peer.ethereum_address())
+                .unwrap()
+                .unwrap();
             assert_eq!(found.peer.overlay(), peer.peer.overlay());
         }
     }
@@ -423,7 +470,9 @@ mod tests {
         store.clear().unwrap();
 
         for peer in &peers {
-            let found = store.get_by_eth_address(peer.peer.ethereum_address()).unwrap();
+            let found = store
+                .get_by_eth_address(peer.peer.ethereum_address())
+                .unwrap();
             assert!(found.is_none());
         }
     }
@@ -457,7 +506,10 @@ mod tests {
         assert_eq!(deserialized.node_type, record.node_type);
         assert_eq!(deserialized.first_seen, record.first_seen);
         assert_eq!(deserialized.last_seen, record.last_seen);
-        assert_eq!(deserialized.consecutive_failures, record.consecutive_failures);
+        assert_eq!(
+            deserialized.consecutive_failures,
+            record.consecutive_failures
+        );
         assert!(deserialized.ban_info.is_some());
     }
 }

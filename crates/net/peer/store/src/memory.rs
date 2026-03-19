@@ -31,7 +31,9 @@ impl<R: NetRecord> NetPeerStore<R> for MemoryPeerStore<R> {
     }
 
     fn save(&self, record: &R) -> Result<(), StoreError> {
-        self.peers.write().insert(record.id().clone(), record.clone());
+        self.peers
+            .write()
+            .insert(record.id().clone(), record.clone());
         Ok(())
     }
 
@@ -77,7 +79,9 @@ mod tests {
 
     impl NetRecord for TestRecord {
         type Id = TestId;
-        fn id(&self) -> &TestId { &self.id }
+        fn id(&self) -> &TestId {
+            &self.id
+        }
     }
 
     fn record(n: u64) -> TestRecord {

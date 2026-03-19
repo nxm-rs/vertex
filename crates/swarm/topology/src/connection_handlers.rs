@@ -37,7 +37,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 let result = self.connection_registry.connected_outbound(
                     established.peer_id,
                     established.connection_id,
-                    overlay.clone(),
+                    overlay,
                     request.queued_at(),
                     Some(reason),
                 );
@@ -51,10 +51,8 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 trace!(peer_id = %established.peer_id, "ConnectionEstablished for untracked outbound peer");
             }
         } else {
-            self.connection_registry.connected_inbound(
-                established.peer_id,
-                established.connection_id,
-            );
+            self.connection_registry
+                .connected_inbound(established.peer_id, established.connection_id);
             gauge!("peer_registry_pending_connections").increment(1.0);
         }
     }
@@ -77,7 +75,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
         self.gossip.send(GossipInput::ConnectionClosed {
             peer_id: closed.peer_id,
-            overlay: overlay.clone(),
+            overlay,
         });
 
         let Some(overlay) = overlay else {
@@ -88,7 +86,9 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         };
 
         // Use the node_type recorded at PeerReady time for symmetric metric decrement.
-        let node_type = self.connected_node_types.remove(&overlay)
+        let node_type = self
+            .connected_node_types
+            .remove(&overlay)
             .unwrap_or(SwarmNodeType::Client);
 
         let connection_duration = connected_at.map(|t| t.elapsed());
@@ -130,19 +130,19 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
         // Penalize early disconnects (post-handshake connections that fail quickly).
         // Skip BinTrimmed since we initiated the eviction.
-        if disconnect_reason != DisconnectReason::BinTrimmed {
-            if let Some(duration) = connection_duration {
-                if duration < self.early_disconnect_threshold {
-                    debug!(
-                        %overlay,
-                        ?duration,
-                        ?disconnect_reason,
-                        "early disconnect detected, applying penalty"
-                    );
-                    self.peer_manager.record_early_disconnect(&overlay, duration);
-                    self.metrics.record_early_disconnect(disconnect_reason);
-                }
-            }
+        if disconnect_reason != DisconnectReason::BinTrimmed
+            && let Some(duration) = connection_duration
+            && duration < self.early_disconnect_threshold
+        {
+            debug!(
+                %overlay,
+                ?duration,
+                ?disconnect_reason,
+                "early disconnect detected, applying penalty"
+            );
+            self.peer_manager
+                .record_early_disconnect(&overlay, duration);
+            self.metrics.record_early_disconnect(disconnect_reason);
         }
 
         self.emit_event(TopologyEvent::PeerDisconnected {
@@ -165,10 +165,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         }
     }
 
-    pub(crate) fn handle_dial_failure(
-        &mut self,
-        failure: libp2p::swarm::behaviour::DialFailure,
-    ) {
+    pub(crate) fn handle_dial_failure(&mut self, failure: libp2p::swarm::behaviour::DialFailure) {
         let Some(peer_id) = failure.peer_id else {
             trace!("DialFailure without peer_id");
             return;
@@ -183,7 +180,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         let overlay = request.id;
         let dial_duration = Some(request.queued_at().elapsed());
 
-        let classified_error = classify_dial_error(&failure.error);
+        let classified_error = classify_dial_error(failure.error);
 
         // Release routing capacity for this failed dial
         if let Some(overlay) = &overlay {
@@ -197,7 +194,8 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 DialError::ConnectionRefused => SwarmScoringEvent::ConnectionRefused,
                 _ => SwarmScoringEvent::ConnectionTimeout,
             };
-            self.peer_manager.record_scoring_event(overlay, scoring_event);
+            self.peer_manager
+                .record_scoring_event(overlay, scoring_event);
         }
 
         warn!(
@@ -279,8 +277,8 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
 /// Classify a libp2p dial error into a structured `DialError` variant.
 pub(crate) fn classify_dial_error(error: &libp2p::swarm::DialError) -> DialError {
-    use std::io::ErrorKind;
     use libp2p::core::transport::TransportError;
+    use std::io::ErrorKind;
 
     match error {
         libp2p::swarm::DialError::Transport(addrs) => {
@@ -291,8 +289,9 @@ pub(crate) fn classify_dial_error(error: &libp2p::swarm::DialError) -> DialError
                     TransportError::Other(io_err) => match io_err.kind() {
                         ErrorKind::TimedOut => return DialError::Timeout,
                         ErrorKind::ConnectionRefused => return DialError::ConnectionRefused,
-                        ErrorKind::AddrNotAvailable | ErrorKind::NetworkUnreachable | ErrorKind::HostUnreachable
-                            => return DialError::Unreachable,
+                        ErrorKind::AddrNotAvailable
+                        | ErrorKind::NetworkUnreachable
+                        | ErrorKind::HostUnreachable => return DialError::Unreachable,
                         _ => {
                             // Check inner error message for nested timeout/refused
                             let msg = io_err.to_string().to_lowercase();
@@ -318,13 +317,12 @@ pub(crate) fn classify_dial_error(error: &libp2p::swarm::DialError) -> DialError
             }
             DialError::Other(format!("{error:?}"))
         }
-        libp2p::swarm::DialError::Aborted
-        | libp2p::swarm::DialError::DialPeerConditionFalse(_) => DialError::Stale,
+        libp2p::swarm::DialError::Aborted | libp2p::swarm::DialError::DialPeerConditionFalse(_) => {
+            DialError::Stale
+        }
         libp2p::swarm::DialError::Denied { .. } => DialError::NegotiationFailed,
         libp2p::swarm::DialError::NoAddresses => DialError::NoRoute,
         libp2p::swarm::DialError::LocalPeerId { .. }
-        | libp2p::swarm::DialError::WrongPeerId { .. } => {
-            DialError::Other(format!("{error:?}"))
-        }
+        | libp2p::swarm::DialError::WrongPeerId { .. } => DialError::Other(format!("{error:?}")),
     }
 }

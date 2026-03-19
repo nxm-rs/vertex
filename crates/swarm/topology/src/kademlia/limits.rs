@@ -29,6 +29,7 @@ impl Default for DepthAwareLimits {
     }
 }
 
+#[allow(dead_code)]
 impl DepthAwareLimits {
     /// Create with total target and nominal minimum per bin.
     pub(crate) fn new(total_target: usize, nominal: usize) -> Self {
@@ -115,7 +116,11 @@ impl DepthAwareLimits {
     /// Target + inbound headroom (max before rejecting inbound). `usize::MAX` for neighborhood.
     pub(crate) fn ceiling(&self, bin: u8, depth: u8) -> usize {
         let target = self.target(bin, depth);
-        if target == usize::MAX { usize::MAX } else { target + self.inbound_headroom }
+        if target == usize::MAX {
+            usize::MAX
+        } else {
+            target + self.inbound_headroom
+        }
     }
 
     /// Check if bin should accept inbound (allows headroom above target).
@@ -149,7 +154,9 @@ impl DepthAwareLimits {
         // Sum of geometric series: nominal × (2 + 4 + 8 + ... + 2^depth)
         // = nominal × 2 × (2^depth - 1)
         let two_to_depth = 1usize << depth.min(20);
-        self.nominal.saturating_mul(2).saturating_mul(two_to_depth.saturating_sub(1))
+        self.nominal
+            .saturating_mul(2)
+            .saturating_mul(two_to_depth.saturating_sub(1))
     }
 
     /// Estimate depth from known peer distribution (highest bin with >= nominal peers).
@@ -205,20 +212,33 @@ impl DepthAwareLimits {
     }
 
     /// Target using effective depth (for allocation with known peer distribution).
-    pub(crate) fn target_effective(&self, bin: u8, connected_depth: u8, known_bin_sizes: &[usize]) -> usize {
+    pub(crate) fn target_effective(
+        &self,
+        bin: u8,
+        connected_depth: u8,
+        known_bin_sizes: &[usize],
+    ) -> usize {
         self.target(bin, self.effective_depth(connected_depth, known_bin_sizes))
     }
 
     /// Check if we need more peers using effective depth.
-    pub(crate) fn needs_more_effective(&self, bin: u8, connected_depth: u8, connected: usize, known_bin_sizes: &[usize]) -> bool {
-        self.needs_more(bin, self.effective_depth(connected_depth, known_bin_sizes), connected)
+    pub(crate) fn needs_more_effective(
+        &self,
+        bin: u8,
+        connected_depth: u8,
+        connected: usize,
+        known_bin_sizes: &[usize],
+    ) -> bool {
+        self.needs_more(
+            bin,
+            self.effective_depth(connected_depth, known_bin_sizes),
+            connected,
+        )
     }
 
     /// Generate allocation table for debugging/metrics.
     pub(crate) fn allocation_table(&self, depth: u8) -> Vec<(u8, usize)> {
-        (0..32)
-            .map(|bin| (bin, self.target(bin, depth)))
-            .collect()
+        (0..32).map(|bin| (bin, self.target(bin, depth))).collect()
     }
 }
 
@@ -228,9 +248,13 @@ pub(crate) struct LimitsSnapshot {
     limits: DepthAwareLimits,
 }
 
+#[allow(dead_code)]
 impl LimitsSnapshot {
     pub(crate) fn capture(limits: &DepthAwareLimits, depth: u8) -> Self {
-        Self { depth, limits: limits.clone() }
+        Self {
+            depth,
+            limits: limits.clone(),
+        }
     }
 
     pub(crate) fn target(&self, bin: u8) -> usize {
@@ -254,7 +278,8 @@ impl LimitsSnapshot {
     }
 
     pub(crate) fn should_accept_inbound(&self, bin: u8, connected: usize) -> bool {
-        self.limits.should_accept_inbound(bin, self.depth, connected)
+        self.limits
+            .should_accept_inbound(bin, self.depth, connected)
     }
 }
 
@@ -272,7 +297,7 @@ mod tests {
 
         assert_eq!(limits.target(7, 8), 35);
         assert_eq!(limits.target(6, 8), 31); // 160 × 7 / 36 = 31.1
-        assert_eq!(limits.target(0, 8), 4);  // 160 × 1 / 36 = 4.4
+        assert_eq!(limits.target(0, 8), 4); // 160 × 1 / 36 = 4.4
 
         // Neighborhood (bin >= depth) returns MAX
         assert_eq!(limits.target(8, 8), usize::MAX);
@@ -394,18 +419,18 @@ mod tests {
         // Known peers in low bins only -> depth based on highest populated
         let mut known = vec![0; 32];
         known[0] = 100; // bin 0: 100 peers
-        known[1] = 50;  // bin 1: 50 peers
-        known[2] = 20;  // bin 2: 20 peers
-        known[3] = 10;  // bin 3: 10 peers
-        known[4] = 5;   // bin 4: 5 >= nominal
-        known[5] = 2;   // bin 5: 2 < nominal
+        known[1] = 50; // bin 1: 50 peers
+        known[2] = 20; // bin 2: 20 peers
+        known[3] = 10; // bin 3: 10 peers
+        known[4] = 5; // bin 4: 5 >= nominal
+        known[5] = 2; // bin 5: 2 < nominal
         assert_eq!(limits.estimate_depth_from_known(&known), 4);
 
         // Known peers in higher bins -> higher estimated depth
-        known[6] = 3;  // bin 6: exactly nominal
+        known[6] = 3; // bin 6: exactly nominal
         assert_eq!(limits.estimate_depth_from_known(&known), 6);
 
-        known[7] = 3;  // bin 7: exactly nominal
+        known[7] = 3; // bin 7: exactly nominal
         assert_eq!(limits.estimate_depth_from_known(&known), 7);
     }
 
@@ -455,12 +480,12 @@ mod tests {
         known[0] = 768;
         // Projects: bin 1 = 384, bin 2 = 192, ..., bin 7 = 6, bin 8 = 3
         let projected = limits.estimate_depth_projected(&known);
-        assert!(projected >= 7 && projected <= 9, "projected = {}", projected);
+        assert!((7..=9).contains(&projected), "projected = {}", projected);
 
         // Fewer peers in bin 0 suggests lower depth
         known[0] = 24; // 24 / 2 = 12, /2 = 6, /2 = 3 -> depth ~3
         let projected = limits.estimate_depth_projected(&known);
-        assert!(projected >= 2 && projected <= 4, "projected = {}", projected);
+        assert!((2..=4).contains(&projected), "projected = {}", projected);
     }
 
     #[test]

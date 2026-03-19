@@ -3,11 +3,11 @@
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
+    Resource,
     logs::SdkLoggerProvider,
     trace::{RandomIdGenerator, Sampler, SdkTracerProvider},
-    Resource,
 };
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{LogFormat, OtlpConfig, OtlpLogsConfig, StdoutConfig, TracingGuard};
 
@@ -59,9 +59,7 @@ pub(crate) fn build_and_init(
     Ok(TracingGuard::new(tracer_provider, logger_provider))
 }
 
-fn build_console_layer<S>(
-    config: Option<&StdoutConfig>,
-) -> (Option<BoxedLayer<S>>, EnvFilter)
+fn build_console_layer<S>(config: Option<&StdoutConfig>) -> (Option<BoxedLayer<S>>, EnvFilter)
 where
     S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
 {

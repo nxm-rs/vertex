@@ -205,13 +205,19 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmBandwidthAccounting for Ac
         price: u64,
         originated: bool,
     ) -> SwarmResult<ReceiveAction> {
-        Accounting::prepare_receive(self, peer, price, originated)
-            .map_err(|e| vertex_swarm_api::SwarmError::Accounting { message: e.to_string() })
+        Accounting::prepare_receive(self, peer, price, originated).map_err(|e| {
+            vertex_swarm_api::SwarmError::Accounting {
+                message: e.to_string(),
+            }
+        })
     }
 
     fn prepare_provide(&self, peer: OverlayAddress, price: u64) -> SwarmResult<ProvideAction> {
-        Accounting::prepare_provide(self, peer, price)
-            .map_err(|e| vertex_swarm_api::SwarmError::Accounting { message: e.to_string() })
+        Accounting::prepare_provide(self, peer, price).map_err(|e| {
+            vertex_swarm_api::SwarmError::Accounting {
+                message: e.to_string(),
+            }
+        })
     }
 }
 
@@ -316,7 +322,7 @@ impl SwarmPeerBandwidth for AccountingPeerHandle {
 mod tests {
     use super::*;
     use crate::{BandwidthConfig, NoSettlement};
-    use vertex_swarm_test_utils::{test_identity, test_peer, Identity};
+    use vertex_swarm_test_utils::{Identity, test_identity, test_peer};
 
     fn test_accounting() -> Accounting<BandwidthConfig, Identity> {
         Accounting::new(BandwidthConfig::default(), test_identity())

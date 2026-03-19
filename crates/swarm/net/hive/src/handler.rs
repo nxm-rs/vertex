@@ -24,13 +24,13 @@ use libp2p::{
 };
 use metrics::counter;
 use tracing::{debug, trace, warn};
+use vertex_net_ratelimiter::RateLimiter;
 use vertex_observability::labels::direction;
 use vertex_swarm_api::SwarmIdentity;
-use vertex_net_ratelimiter::RateLimiter;
 use vertex_swarm_net_headers::{Inbound, Outbound, ProtocolStreamError, UpgradeError};
 use vertex_swarm_peer::SwarmPeer;
 
-use crate::protocol::{HiveInner, HiveOutboundProtocol, HiveOutboundInner, PeerCache};
+use crate::protocol::{HiveInner, HiveOutboundInner, HiveOutboundProtocol, PeerCache};
 
 /// Timeout for stream processing (headers exchange + protobuf + validation).
 const STREAM_TIMEOUT: Duration = Duration::from_secs(10);
@@ -82,11 +82,7 @@ where
     I: SwarmIdentity + 'static,
 {
     /// Create a new hive handler.
-    pub(crate) fn new(
-        identity: Arc<I>,
-        remote_peer_id: PeerId,
-        cache: PeerCache,
-    ) -> Self {
+    pub(crate) fn new(identity: Arc<I>, remote_peer_id: PeerId, cache: PeerCache) -> Self {
         Self {
             rate_limiter: RateLimiter::new(RATE_LIMIT_BURST, RATE_LIMIT_REFILL),
             remote_peer_id,
@@ -111,10 +107,7 @@ where
     type OutboundOpenInfo = ();
 
     fn listen_protocol(&self) -> SubstreamProtocol<Self::InboundProtocol, Self::InboundOpenInfo> {
-        let inner = HiveInner::new(
-            self.identity.clone(),
-            self.cache.clone(),
-        );
+        let inner = HiveInner::new(self.identity.clone(), self.cache.clone());
         let upgrade = Inbound::new(inner);
         SubstreamProtocol::new(upgrade, ()).with_timeout(STREAM_TIMEOUT)
     }
@@ -142,8 +135,7 @@ where
             debug!(peer_count = peers.len(), "Sending hive broadcast");
             let protocol = Outbound::new(HiveOutboundInner::new(&peers));
             return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
-                protocol: SubstreamProtocol::new(protocol, ())
-                    .with_timeout(STREAM_TIMEOUT),
+                protocol: SubstreamProtocol::new(protocol, ()).with_timeout(STREAM_TIMEOUT),
             });
         }
 

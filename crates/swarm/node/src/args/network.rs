@@ -116,20 +116,20 @@ impl NetworkArgs {
         let mut config = NetworkConfig::try_from(self)?;
 
         // If no CLI bootnodes, use spec's default bootnodes
-        if config.bootnodes().is_empty() {
-            if let Some(spec_bootnodes) = spec.bootnodes() {
-                let parsed: Result<Vec<Multiaddr>, _> = spec_bootnodes
-                    .iter()
-                    .map(|s| {
-                        s.parse().map_err(|e| ConfigError::InvalidAddress {
-                            kind: ConfigAddressKind::Bootnode,
-                            addr: s.clone(),
-                            source: e,
-                        })
+        if config.bootnodes().is_empty()
+            && let Some(spec_bootnodes) = spec.bootnodes()
+        {
+            let parsed: Result<Vec<Multiaddr>, _> = spec_bootnodes
+                .iter()
+                .map(|s| {
+                    s.parse().map_err(|e| ConfigError::InvalidAddress {
+                        kind: ConfigAddressKind::Bootnode,
+                        addr: s.clone(),
+                        source: e,
                     })
-                    .collect();
-                config.set_bootnodes(parsed?);
-            }
+                })
+                .collect();
+            config.set_bootnodes(parsed?);
         }
 
         Ok(config)
@@ -193,10 +193,12 @@ impl<R> NetworkConfig<R> {
 }
 
 impl Default for NetworkConfig<KademliaConfig> {
+    #[allow(clippy::expect_used)]
     fn default() -> Self {
-        let listen_addr: Multiaddr = format!("/ip4/{}/tcp/{}", DEFAULT_LISTEN_ADDR, DEFAULT_P2P_PORT)
-            .parse()
-            .expect("default listen address is valid");
+        let listen_addr: Multiaddr =
+            format!("/ip4/{}/tcp/{}", DEFAULT_LISTEN_ADDR, DEFAULT_P2P_PORT)
+                .parse()
+                .expect("default listen address is valid");
         Self {
             listen_addrs: vec![listen_addr],
             bootnodes: Vec::new(),
@@ -217,13 +219,16 @@ impl TryFrom<&NetworkArgs> for NetworkConfig<KademliaConfig> {
 
     fn try_from(args: &NetworkArgs) -> Result<Self, Self::Error> {
         let listen_addr_str = format!("/ip4/{}/tcp/{}", args.addr, args.port);
-        let listen_addrs = vec![listen_addr_str
-            .parse()
-            .map_err(|e| ConfigError::InvalidAddress {
-                kind: ConfigAddressKind::ListenAddr,
-                addr: listen_addr_str,
-                source: e,
-            })?];
+        let listen_addrs =
+            vec![
+                listen_addr_str
+                    .parse()
+                    .map_err(|e| ConfigError::InvalidAddress {
+                        kind: ConfigAddressKind::ListenAddr,
+                        addr: listen_addr_str,
+                        source: e,
+                    })?,
+            ];
 
         let bootnodes = args
             .bootnodes_raw
@@ -339,14 +344,19 @@ mod tests {
         // Default listen address is constructed from addr:port
         assert!(!config.listen_addrs().is_empty());
         assert_eq!(config.max_peers(), DEFAULT_MAX_PEERS);
-        assert_eq!(config.idle_timeout(), Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS));
+        assert_eq!(
+            config.idle_timeout(),
+            Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS)
+        );
         assert!(config.discovery_enabled());
     }
 
     #[test]
     fn network_config_parses_valid_bootnodes() {
-        let mut args = NetworkArgs::default();
-        args.bootnodes_raw = vec!["/ip4/192.168.1.1/tcp/1634".to_string()];
+        let args = NetworkArgs {
+            bootnodes_raw: vec!["/ip4/192.168.1.1/tcp/1634".to_string()],
+            ..Default::default()
+        };
 
         let config = NetworkConfig::try_from(&args).expect("valid multiaddrs should parse");
 
@@ -355,8 +365,10 @@ mod tests {
 
     #[test]
     fn network_config_fails_on_invalid_listen_addr() {
-        let mut args = NetworkArgs::default();
-        args.addr = "not-an-ip".to_string();
+        let args = NetworkArgs {
+            addr: "not-an-ip".to_string(),
+            ..Default::default()
+        };
 
         let result = NetworkConfig::try_from(&args);
         assert!(result.is_err());
@@ -364,8 +376,10 @@ mod tests {
 
     #[test]
     fn network_config_fails_on_invalid_bootnode() {
-        let mut args = NetworkArgs::default();
-        args.bootnodes_raw = vec!["also-invalid".to_string()];
+        let args = NetworkArgs {
+            bootnodes_raw: vec!["also-invalid".to_string()],
+            ..Default::default()
+        };
 
         let result = NetworkConfig::try_from(&args);
         assert!(result.is_err());
@@ -381,8 +395,10 @@ mod tests {
 
     #[test]
     fn peer_config_with_store_path() {
-        let mut args = PeerArgs::default();
-        args.store_path = Some(std::path::PathBuf::from("/tmp/peers.json"));
+        let args = PeerArgs {
+            store_path: Some(std::path::PathBuf::from("/tmp/peers.json")),
+            ..Default::default()
+        };
 
         let config = PeerConfig::from(&args);
 

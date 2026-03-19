@@ -66,6 +66,7 @@ impl<T> Client<BootnodeComponents<T>, ()> {
 // Client constructors
 impl<T, A> Client<ClientComponents<T, A>, ()> {
     /// Create a client node (topology + accounting).
+    #[allow(clippy::self_named_constructors)]
     pub fn client(topology: T, accounting: A, client_handle: ClientHandle) -> Self {
         Self::new(ClientComponents::new(topology, accounting), client_handle)
     }
@@ -109,12 +110,12 @@ pub type FullClient<T, A, S = ()> = Client<ClientComponents<T, A>, S>;
 mod tests {
     use super::*;
     use crate::{ClientCommand, ClientHandle};
-    use vertex_swarm_bandwidth::{Accounting, FixedPricer};
     use std::sync::Arc;
     use tokio::sync::mpsc;
     use vertex_swarm_api::{SwarmBandwidthAccounting, SwarmTopologyRouting};
+    use vertex_swarm_bandwidth::{Accounting, FixedPricer};
     use vertex_swarm_bandwidth::{ClientAccounting, DefaultBandwidthConfig};
-    use vertex_swarm_test_utils::{test_identity_arc as test_identity, MockTopology};
+    use vertex_swarm_test_utils::{MockTopology, test_identity_arc as test_identity};
 
     fn create_test_handle() -> ClientHandle {
         let (tx, _rx) = mpsc::channel::<ClientCommand>(16);
@@ -133,7 +134,10 @@ mod tests {
     #[test]
     fn test_full_client() {
         let topology = MockTopology::default();
-        let bandwidth = Arc::new(Accounting::new(DefaultBandwidthConfig::default(), test_identity()));
+        let bandwidth = Arc::new(Accounting::new(
+            DefaultBandwidthConfig::default(),
+            test_identity(),
+        ));
         let pricer = FixedPricer::new(10_000, vertex_swarm_spec::init_mainnet());
         let accounting = ClientAccounting::new(bandwidth, pricer);
         let handle = create_test_handle();

@@ -4,7 +4,7 @@ use std::io;
 
 use asynchronous_codec::{FramedRead, FramedWrite};
 use futures::prelude::*;
-use libp2p::core::{multiaddr, Multiaddr, PeerRecord, SignedEnvelope};
+use libp2p::core::{Multiaddr, PeerRecord, SignedEnvelope, multiaddr};
 use libp2p::identity::{self as identity, PublicKey};
 use libp2p::swarm::StreamProtocol;
 use thiserror::Error;

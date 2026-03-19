@@ -5,7 +5,9 @@
 use asynchronous_codec::Framed;
 use futures::{SinkExt, TryStreamExt, future::BoxFuture};
 use tracing::debug;
-use vertex_swarm_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound};
+use vertex_swarm_net_headers::{
+    HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound,
+};
 
 use crate::{
     PROTOCOL_NAME,

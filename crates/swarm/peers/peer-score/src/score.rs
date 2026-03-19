@@ -10,8 +10,7 @@ use vertex_swarm_primitives::OverlayAddress;
 use crate::config::{SwarmScoringConfig, SwarmScoringEvent};
 
 /// Called when a peer's score changes: `(overlay, old_score, new_score, event)`.
-pub type ScoreChangedFn =
-    Box<dyn Fn(&OverlayAddress, f64, f64, &SwarmScoringEvent) + Send + Sync>;
+pub type ScoreChangedFn = Box<dyn Fn(&OverlayAddress, f64, f64, &SwarmScoringEvent) + Send + Sync>;
 
 /// Called when a peer's score crosses the warning threshold: `(overlay, score)`.
 pub type ScoreWarningFn = Box<dyn Fn(&OverlayAddress, f64) + Send + Sync>;
@@ -99,7 +98,8 @@ impl SwarmPeerScore {
 
         // Record latency if present
         if let Some(latency) = event.latency() {
-            self.score.record_latency(latency.as_nanos().min(u64::MAX as u128) as u64);
+            self.score
+                .record_latency(latency.as_nanos().min(u64::MAX as u128) as u64);
         }
 
         // Apply weight
@@ -148,7 +148,11 @@ impl SwarmPeerScore {
 
         if self.config.should_warn(score) {
             // Only warn once (CAS: false → true)
-            if self.warned.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+            if self
+                .warned
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
                 (self.callbacks.on_score_warning)(&self.overlay, score);
             }
         } else {
@@ -167,7 +171,14 @@ mod tests {
         OverlayAddress::from([n; 32])
     }
 
-    fn counting_callbacks() -> (Arc<ScoreCallbacks>, Arc<AtomicU32>, Arc<AtomicU32>, Arc<AtomicU32>, Arc<AtomicU32>) {
+    #[allow(clippy::type_complexity)]
+    fn counting_callbacks() -> (
+        Arc<ScoreCallbacks>,
+        Arc<AtomicU32>,
+        Arc<AtomicU32>,
+        Arc<AtomicU32>,
+        Arc<AtomicU32>,
+    ) {
         let changes = Arc::new(AtomicU32::new(0));
         let warnings = Arc::new(AtomicU32::new(0));
         let bans = Arc::new(AtomicU32::new(0));
@@ -176,19 +187,27 @@ mod tests {
         let cb = Arc::new(ScoreCallbacks {
             on_score_changed: {
                 let c = Arc::clone(&changes);
-                Box::new(move |_, _, _, _| { c.fetch_add(1, Ordering::Relaxed); })
+                Box::new(move |_, _, _, _| {
+                    c.fetch_add(1, Ordering::Relaxed);
+                })
             },
             on_score_warning: {
                 let w = Arc::clone(&warnings);
-                Box::new(move |_, _| { w.fetch_add(1, Ordering::Relaxed); })
+                Box::new(move |_, _| {
+                    w.fetch_add(1, Ordering::Relaxed);
+                })
             },
             on_should_ban: {
                 let b = Arc::clone(&bans);
-                Box::new(move |_, _, _| { b.fetch_add(1, Ordering::Relaxed); })
+                Box::new(move |_, _, _| {
+                    b.fetch_add(1, Ordering::Relaxed);
+                })
             },
             on_severe_event: {
                 let s = Arc::clone(&severe);
-                Box::new(move |_, _| { s.fetch_add(1, Ordering::Relaxed); })
+                Box::new(move |_, _| {
+                    s.fetch_add(1, Ordering::Relaxed);
+                })
             },
         });
 
@@ -219,15 +238,21 @@ mod tests {
         let cb = ScoreCallbacks {
             on_score_changed: {
                 let c = Arc::clone(&changes);
-                Box::new(move |_, _, _, _| { c.fetch_add(1, Ordering::Relaxed); })
+                Box::new(move |_, _, _, _| {
+                    c.fetch_add(1, Ordering::Relaxed);
+                })
             },
             on_score_warning: {
                 let w = Arc::clone(&warnings);
-                Box::new(move |_, _| { w.fetch_add(1, Ordering::Relaxed); })
+                Box::new(move |_, _| {
+                    w.fetch_add(1, Ordering::Relaxed);
+                })
             },
             on_should_ban: {
                 let b = Arc::clone(&bans);
-                Box::new(move |_, _, _| { b.fetch_add(1, Ordering::Relaxed); })
+                Box::new(move |_, _, _| {
+                    b.fetch_add(1, Ordering::Relaxed);
+                })
             },
             on_severe_event: Box::new(|_, _| {}),
         };

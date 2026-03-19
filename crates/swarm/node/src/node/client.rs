@@ -9,15 +9,11 @@ use std::sync::Arc;
 
 use eyre::Result;
 use futures::StreamExt;
-use libp2p::{
-    Multiaddr, PeerId, identity::PublicKey, swarm::NetworkBehaviour, swarm::SwarmEvent,
-};
+use libp2p::{Multiaddr, PeerId, identity::PublicKey, swarm::NetworkBehaviour, swarm::SwarmEvent};
 use nectar_primitives::SwarmAddress;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
-use vertex_swarm_api::{
-    SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig,
-};
+use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig};
 use vertex_swarm_net_identify as identify;
 use vertex_swarm_topology::{
     KademliaConfig, TopologyBehaviour, TopologyCommand, TopologyConfig, TopologyEvent,
@@ -62,6 +58,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
 }
 
 /// Events from the client node behaviour.
+#[allow(clippy::large_enum_variant)]
 pub enum ClientNodeEvent {
     Identify(Box<identify::Event>),
     Topology(()),
@@ -258,7 +255,6 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
     }
 }
 
-
 /// Builder for ClientNode.
 pub struct ClientNodeBuilder<I: SwarmIdentity + Clone> {
     identity: I,
@@ -294,15 +290,25 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
         self.pseudosettle_event_tx = Some(tx);
         self
     }
-
 }
 
 impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
     pub async fn build<C>(
         self,
         network_config: &C,
-        peer_store: Option<std::sync::Arc<dyn vertex_net_peer_store::NetPeerStore<vertex_swarm_peer_manager::StoredPeer>>>,
-        score_store: Option<std::sync::Arc<dyn vertex_swarm_api::SwarmScoreStore<Score = vertex_swarm_peer_score::PeerScore, Error = vertex_net_peer_store::StoreError>>>,
+        peer_store: Option<
+            std::sync::Arc<
+                dyn vertex_net_peer_store::NetPeerStore<vertex_swarm_peer_manager::StoredPeer>,
+            >,
+        >,
+        score_store: Option<
+            std::sync::Arc<
+                dyn vertex_swarm_api::SwarmScoreStore<
+                        Score = vertex_swarm_peer_score::PeerScore,
+                        Error = vertex_net_peer_store::StoreError,
+                    >,
+            >,
+        >,
     ) -> Result<(ClientNode<I>, ClientService, ClientHandle)>
     where
         I: vertex_swarm_spec::HasSpec,
@@ -313,9 +319,15 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
         let infra = match self.infra {
             Some(infra) => infra,
             None => {
-                let topology_config = TopologyConfig::new()
-                    .with_kademlia(self.kademlia_config.unwrap_or_default());
-                BuiltInfrastructure::from_config(self.identity, network_config, topology_config, peer_store, score_store)?
+                let topology_config =
+                    TopologyConfig::new().with_kademlia(self.kademlia_config.unwrap_or_default());
+                BuiltInfrastructure::from_config(
+                    self.identity,
+                    network_config,
+                    topology_config,
+                    peer_store,
+                    score_store,
+                )?
             }
         };
 
@@ -328,10 +340,16 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
         .await?;
 
         // Set local PeerId for address advertisement in handshakes
-        base.swarm.behaviour().topology.set_local_peer_id(*base.swarm.local_peer_id());
+        base.swarm
+            .behaviour()
+            .topology
+            .set_local_peer_id(*base.swarm.local_peer_id());
 
         if let Some(tx) = self.pseudosettle_event_tx {
-            base.swarm.behaviour_mut().client.set_pseudosettle_events(tx);
+            base.swarm
+                .behaviour_mut()
+                .client
+                .set_pseudosettle_events(tx);
         }
 
         let executor = TaskExecutor::current();
@@ -342,7 +360,8 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
             &executor,
         );
 
-        let (command_tx, command_rx) = mpsc::channel(crate::client_service::DEFAULT_CHANNEL_CAPACITY);
+        let (command_tx, command_rx) =
+            mpsc::channel(crate::client_service::DEFAULT_CHANNEL_CAPACITY);
         let (event_tx, event_rx) = mpsc::channel(crate::client_service::DEFAULT_CHANNEL_CAPACITY);
 
         let (client_service, client_handle) = ClientService::with_channels(command_tx, event_rx);

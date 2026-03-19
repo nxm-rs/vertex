@@ -247,11 +247,7 @@ fn recover_signer(
 /// Generate the message to sign for handshake verification.
 ///
 /// Format: `"bee-handshake-" || multiaddr_bytes || overlay || network_id(BE)`
-fn generate_sign_message(
-    multiaddr_bytes: &[u8],
-    overlay: &SwarmAddress,
-    network_id: u64,
-) -> Bytes {
+fn generate_sign_message(multiaddr_bytes: &[u8], overlay: &SwarmAddress, network_id: u64) -> Bytes {
     let mut message = BytesMut::new();
     message.extend_from_slice(b"bee-handshake-");
     message.extend_from_slice(multiaddr_bytes);
@@ -287,7 +283,7 @@ mod tests {
     use std::sync::Arc;
     use vertex_swarm_identity::Identity;
     use vertex_swarm_primitives::SwarmNodeType;
-    use vertex_swarm_spec::{init_testnet, SpecBuilder};
+    use vertex_swarm_spec::{SpecBuilder, init_testnet};
 
     #[test]
     fn swarm_peer_roundtrip() {

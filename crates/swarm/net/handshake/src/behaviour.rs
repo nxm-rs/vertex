@@ -20,7 +20,7 @@ use vertex_net_peer_registry::ConnectionDirection;
 
 use crate::{
     AddressProvider, HandshakeError, HandshakeInfo,
-    handler::{HandshakeConfig, HandshakeHandler, HandshakeCommand, HandshakeHandlerEvent},
+    handler::{HandshakeCommand, HandshakeConfig, HandshakeHandler, HandshakeHandlerEvent},
 };
 
 /// Events emitted by HandshakeBehaviour.
@@ -100,7 +100,8 @@ where
         remote_addr: &Multiaddr,
     ) -> Result<THandler<Self>, libp2p::swarm::ConnectionDenied> {
         debug!(%peer, ?connection_id, %remote_addr, "Creating inbound handshake handler");
-        self.connection_directions.insert(connection_id, ConnectionDirection::Inbound);
+        self.connection_directions
+            .insert(connection_id, ConnectionDirection::Inbound);
         Ok(HandshakeHandler::new_inbound(
             self.config.clone(),
             self.identity.clone(),
@@ -119,7 +120,8 @@ where
         _port_use: libp2p::core::transport::PortUse,
     ) -> Result<THandler<Self>, libp2p::swarm::ConnectionDenied> {
         debug!(%peer, ?connection_id, %addr, "Creating outbound handshake handler");
-        self.connection_directions.insert(connection_id, ConnectionDirection::Outbound);
+        self.connection_directions
+            .insert(connection_id, ConnectionDirection::Outbound);
         Ok(HandshakeHandler::new_outbound(
             self.config.clone(),
             self.identity.clone(),
@@ -130,7 +132,12 @@ where
     }
 
     fn on_swarm_event(&mut self, event: FromSwarm) {
-        if let FromSwarm::ConnectionClosed(ConnectionClosed { connection_id, peer_id, .. }) = event {
+        if let FromSwarm::ConnectionClosed(ConnectionClosed {
+            connection_id,
+            peer_id,
+            ..
+        }) = event
+        {
             self.connection_directions.remove(&connection_id);
             debug!(%peer_id, "Connection closed");
         }
@@ -142,7 +149,8 @@ where
         connection_id: ConnectionId,
         event: THandlerOutEvent<Self>,
     ) {
-        let direction = self.connection_directions
+        let direction = self
+            .connection_directions
             .get(&connection_id)
             .copied()
             .unwrap_or(ConnectionDirection::Inbound);
@@ -150,21 +158,23 @@ where
         match event {
             HandshakeHandlerEvent::Completed { info } => {
                 debug!(%peer_id, ?connection_id, ?direction, "Handshake completed");
-                self.events.push_back(ToSwarm::GenerateEvent(HandshakeEvent::Completed {
-                    peer_id,
-                    connection_id,
-                    direction,
-                    info,
-                }));
+                self.events
+                    .push_back(ToSwarm::GenerateEvent(HandshakeEvent::Completed {
+                        peer_id,
+                        connection_id,
+                        direction,
+                        info,
+                    }));
             }
             HandshakeHandlerEvent::Failed { error } => {
                 debug!(%peer_id, ?connection_id, ?direction, ?error, "Handshake failed");
-                self.events.push_back(ToSwarm::GenerateEvent(HandshakeEvent::Failed {
-                    peer_id,
-                    connection_id,
-                    direction,
-                    error,
-                }));
+                self.events
+                    .push_back(ToSwarm::GenerateEvent(HandshakeEvent::Failed {
+                        peer_id,
+                        connection_id,
+                        direction,
+                        error,
+                    }));
             }
         }
     }

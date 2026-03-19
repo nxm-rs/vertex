@@ -26,8 +26,8 @@ use libp2p::{
 };
 use metrics::counter;
 use tracing::{debug, trace, warn};
-use vertex_observability::labels::direction;
 use vertex_net_ratelimiter::RateLimiter;
+use vertex_observability::labels::direction;
 use vertex_swarm_net_headers::{Inbound, ProtocolError, ProtocolStreamError, UpgradeError};
 
 use crate::{PROTOCOL_NAME, PingpongOutboundProtocol, outbound, protocol::PingpongInboundInner};
@@ -180,7 +180,9 @@ impl ConnectionHandler for PingpongHandler {
             }
         }
 
-        if !self.outbound_pending && let Some(greeting) = self.pending_pings.pop_front() {
+        if !self.outbound_pending
+            && let Some(greeting) = self.pending_pings.pop_front()
+        {
             self.outbound_pending = true;
             let sent_at = Instant::now();
             debug!(%greeting, "Sending ping");

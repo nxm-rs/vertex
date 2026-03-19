@@ -25,7 +25,11 @@ impl CandidateSnapshot {
     /// Check if peer is eligible for dialing (not in-progress, queued, banned, or in backoff).
     ///
     /// Ban/backoff status is checked live via `PeerManager`.
-    pub fn is_eligible<I: SwarmIdentity>(&self, peer: &OverlayAddress, peer_manager: &PeerManager<I>) -> bool {
+    pub(crate) fn is_eligible<I: SwarmIdentity>(
+        &self,
+        peer: &OverlayAddress,
+        peer_manager: &PeerManager<I>,
+    ) -> bool {
         !self.in_progress.contains(peer)
             && !self.queued.contains(peer)
             && !peer_manager.is_banned(peer)
@@ -45,7 +49,7 @@ pub(crate) struct CandidateSelector<'a> {
 
 impl<'a> CandidateSelector<'a> {
     /// Create a new selector with borrowed snapshot and connected-peer index.
-    pub fn new(
+    pub(crate) fn new(
         snapshot: &'a CandidateSnapshot,
         connected_peers: &'a ProximityIndex,
         max_candidates: usize,
@@ -60,22 +64,22 @@ impl<'a> CandidateSelector<'a> {
     }
 
     /// Current number of selected candidates.
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.candidates.len()
     }
 
     /// Check if we've reached max candidates.
-    pub fn is_full(&self) -> bool {
+    pub(crate) fn is_full(&self) -> bool {
         self.candidates.len() >= self.max_candidates
     }
 
     /// Remaining capacity.
-    pub fn remaining(&self) -> usize {
+    pub(crate) fn remaining(&self) -> usize {
         self.max_candidates.saturating_sub(self.candidates.len())
     }
 
     /// Get count of candidates already selected for a bin.
-    pub fn bin_selected(&self, bin: u8) -> usize {
+    pub(crate) fn bin_selected(&self, bin: u8) -> usize {
         self.bin_selections.get(&bin).copied().unwrap_or(0)
     }
 
@@ -83,7 +87,7 @@ impl<'a> CandidateSelector<'a> {
     ///
     /// Returns true if added, false if ineligible or at capacity.
     #[cfg(test)]
-    pub fn try_add(&mut self, peer: OverlayAddress) -> bool {
+    pub(crate) fn try_add(&mut self, peer: OverlayAddress) -> bool {
         if self.is_full() {
             return false;
         }
@@ -106,7 +110,7 @@ impl<'a> CandidateSelector<'a> {
     }
 
     /// Try to add with bin capacity enforcement.
-    pub fn try_add_with_bin_capacity<I: SwarmIdentity>(
+    pub(crate) fn try_add_with_bin_capacity<I: SwarmIdentity>(
         &mut self,
         peer: OverlayAddress,
         bin: u8,
@@ -143,12 +147,12 @@ impl<'a> CandidateSelector<'a> {
     }
 
     /// Access the snapshot.
-    pub fn snapshot(&self) -> &CandidateSnapshot {
+    pub(crate) fn snapshot(&self) -> &CandidateSnapshot {
         self.snapshot
     }
 
     /// Consume and return selected candidates.
-    pub fn finish(self) -> Vec<OverlayAddress> {
+    pub(crate) fn finish(self) -> Vec<OverlayAddress> {
         self.candidates
     }
 }
@@ -171,7 +175,11 @@ pub(crate) fn select_neighborhood_candidates<I: SwarmIdentity>(
         let effective = connected_counts(po);
         let already_selected = selector.bin_selected(po);
 
-        if !selector.snapshot().limits.needs_more(po, effective + already_selected) {
+        if !selector
+            .snapshot()
+            .limits
+            .needs_more(po, effective + already_selected)
+        {
             continue;
         }
 
@@ -202,11 +210,18 @@ pub(crate) fn select_balanced_candidates<I: SwarmIdentity>(
         let effective = connected_counts(po);
         let already_selected = selector.bin_selected(po);
 
-        if !selector.snapshot().limits.needs_more(po, effective + already_selected) {
+        if !selector
+            .snapshot()
+            .limits
+            .needs_more(po, effective + already_selected)
+        {
             continue;
         }
 
-        let deficit = selector.snapshot().limits.deficit(po, effective + already_selected);
+        let deficit = selector
+            .snapshot()
+            .limits
+            .deficit(po, effective + already_selected);
         if deficit > 0 {
             bin_stats.push((po, effective, deficit));
         }
@@ -237,8 +252,8 @@ pub(crate) fn select_balanced_candidates<I: SwarmIdentity>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::DepthAwareLimits;
+    use super::*;
     use vertex_swarm_test_utils::make_overlay;
 
     fn test_proximity_index() -> ProximityIndex {

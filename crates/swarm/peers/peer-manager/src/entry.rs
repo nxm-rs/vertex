@@ -14,10 +14,12 @@ const DEFAULT_BASE_BACKOFF_SECS: u64 = 30;
 
 /// Maximum backoff duration (1 hour).
 const DEFAULT_MAX_BACKOFF_SECS: u64 = 3600;
+use metrics::gauge;
 use vertex_net_peer_store::NetRecord;
 use vertex_swarm_peer::SwarmPeer;
-use vertex_swarm_peer_score::{PeerScore, ScoreCallbacks, SwarmPeerScore, SwarmScoringConfig, SwarmScoringEvent};
-use metrics::gauge;
+use vertex_swarm_peer_score::{
+    PeerScore, ScoreCallbacks, SwarmPeerScore, SwarmScoringConfig, SwarmScoringEvent,
+};
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
 /// Exclusive health state for a peer.
@@ -124,7 +126,9 @@ impl StoredPeer {
 
 impl NetRecord for StoredPeer {
     type Id = OverlayAddress;
-    fn id(&self) -> &OverlayAddress { self.peer.overlay() }
+    fn id(&self) -> &OverlayAddress {
+        self.peer.overlay()
+    }
 }
 
 pub(crate) fn unix_timestamp_secs() -> u64 {
@@ -181,12 +185,7 @@ impl PeerEntry {
         let overlay = OverlayAddress::from(*record.peer.overlay());
         Self {
             identity: RwLock::new((record.peer, record.node_type)),
-            scoring: SwarmPeerScore::new(
-                overlay,
-                scoring.unwrap_or_default(),
-                config,
-                callbacks,
-            ),
+            scoring: SwarmPeerScore::new(overlay, scoring.unwrap_or_default(), config, callbacks),
             first_seen: AtomicU64::new(record.first_seen),
             last_seen: AtomicU64::new(record.last_seen),
             backoff: PeerBackoff::from_persisted(
@@ -349,7 +348,8 @@ impl PeerEntry {
     }
 
     fn touch(&self) {
-        self.last_seen.store(unix_timestamp_secs(), Ordering::Relaxed);
+        self.last_seen
+            .store(unix_timestamp_secs(), Ordering::Relaxed);
     }
 
     fn reset_failures(&self) {
@@ -388,7 +388,9 @@ mod tests {
         let peer = test_swarm_peer(n);
         let overlay = OverlayAddress::from(*peer.overlay());
         PeerEntry::with_config(
-            peer, node_type, overlay,
+            peer,
+            node_type,
+            overlay,
             Arc::new(SwarmScoringConfig::default()),
             ScoreCallbacks::noop(),
         )
@@ -429,7 +431,10 @@ mod tests {
         let record = StoredPeer::from(&entry);
         let score = entry.score_snapshot();
         let restored = PeerEntry::from_record(
-            record, Some(score), Arc::new(SwarmScoringConfig::default()), ScoreCallbacks::noop(),
+            record,
+            Some(score),
+            Arc::new(SwarmScoringConfig::default()),
+            ScoreCallbacks::noop(),
         );
 
         assert!((restored.score() - entry.score()).abs() < 0.01);
@@ -445,7 +450,10 @@ mod tests {
         assert!(record.is_banned());
 
         let restored = PeerEntry::from_record(
-            record, None, Arc::new(SwarmScoringConfig::default()), ScoreCallbacks::noop(),
+            record,
+            None,
+            Arc::new(SwarmScoringConfig::default()),
+            ScoreCallbacks::noop(),
         );
         assert!(restored.is_banned());
         assert!(!restored.is_dialable());
@@ -470,7 +478,9 @@ mod tests {
     #[test]
     fn test_success_resets_failures() {
         let entry = test_entry(1, SwarmNodeType::Client);
-        for _ in 0..3 { entry.record_dial_failure(); }
+        for _ in 0..3 {
+            entry.record_dial_failure();
+        }
         assert_eq!(entry.consecutive_failures(), 3);
 
         entry.record_success(Duration::from_millis(50));
@@ -489,14 +499,21 @@ mod tests {
         assert!(record.last_dial_attempt > 0);
 
         let restored = PeerEntry::from_record(
-            record, None, Arc::new(SwarmScoringConfig::default()), ScoreCallbacks::noop(),
+            record,
+            None,
+            Arc::new(SwarmScoringConfig::default()),
+            ScoreCallbacks::noop(),
         );
         assert_eq!(restored.consecutive_failures(), 2);
     }
 
     #[test]
     fn test_node_type_variants() {
-        for (n, nt) in [(1, SwarmNodeType::Bootnode), (2, SwarmNodeType::Client), (3, SwarmNodeType::Storer)] {
+        for (n, nt) in [
+            (1, SwarmNodeType::Bootnode),
+            (2, SwarmNodeType::Client),
+            (3, SwarmNodeType::Storer),
+        ] {
             assert_eq!(test_entry(n, nt).node_type(), nt);
         }
     }

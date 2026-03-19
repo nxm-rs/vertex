@@ -148,7 +148,10 @@ impl SwarmTopologyPeers for MockTopology {
         Vec::new()
     }
 
-    fn connected_peer_details_in_bin(&self, _po: u8) -> Vec<(OverlayAddress, Vec<libp2p::Multiaddr>)> {
+    fn connected_peer_details_in_bin(
+        &self,
+        _po: u8,
+    ) -> Vec<(OverlayAddress, Vec<libp2p::Multiaddr>)> {
         Vec::new()
     }
 }

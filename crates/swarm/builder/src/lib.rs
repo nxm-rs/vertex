@@ -20,8 +20,8 @@ pub use node::BuilderExt;
 
 // Builders
 pub use node::{
-    ClientNodeBuilder, DefaultClientBuilder, DefaultNodeBuilder, DefaultStorerBuilder,
-    NodeBuilder, StorerNodeBuilder,
+    ClientNodeBuilder, DefaultClientBuilder, DefaultNodeBuilder, DefaultStorerBuilder, NodeBuilder,
+    StorerNodeBuilder,
 };
 
 // Build outputs

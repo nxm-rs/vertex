@@ -8,11 +8,11 @@ use vertex_observability::HistogramBucketConfig;
 
 /// Histogram bucket configurations for protocol exchange metrics.
 pub const HISTOGRAM_BUCKETS: &[HistogramBucketConfig] = &[HistogramBucketConfig {
-        suffix: "protocol_exchange_duration_seconds",
-        buckets: &[
-            0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.0, 2.5, 5.0, 10.0, 30.0,
-        ],
-    }];
+    suffix: "protocol_exchange_duration_seconds",
+    buckets: &[
+        0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.0, 2.5, 5.0, 10.0, 30.0,
+    ],
+}];
 
 /// Tracks metrics for a single protocol exchange (inbound or outbound).
 ///

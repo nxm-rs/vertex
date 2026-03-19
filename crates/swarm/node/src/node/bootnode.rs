@@ -10,9 +10,7 @@ use futures::StreamExt;
 use libp2p::{PeerId, identity::PublicKey, swarm::NetworkBehaviour, swarm::SwarmEvent};
 use nectar_primitives::SwarmAddress;
 use tracing::info;
-use vertex_swarm_api::{
-    SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig,
-};
+use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig};
 use vertex_swarm_net_identify as identify;
 use vertex_swarm_topology::{
     KademliaConfig, TopologyBehaviour, TopologyCommand, TopologyConfig, TopologyEvent,
@@ -173,7 +171,6 @@ impl<I: SwarmIdentity + Clone> BootNode<I> {
     }
 }
 
-
 /// Builder for BootNode.
 pub struct BootNodeBuilder<I: SwarmIdentity + Clone> {
     identity: I,
@@ -205,8 +202,19 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
     pub async fn build<C>(
         self,
         network_config: &C,
-        peer_store: Option<std::sync::Arc<dyn vertex_net_peer_store::NetPeerStore<vertex_swarm_peer_manager::StoredPeer>>>,
-        score_store: Option<std::sync::Arc<dyn vertex_swarm_api::SwarmScoreStore<Score = vertex_swarm_peer_score::PeerScore, Error = vertex_net_peer_store::StoreError>>>,
+        peer_store: Option<
+            std::sync::Arc<
+                dyn vertex_net_peer_store::NetPeerStore<vertex_swarm_peer_manager::StoredPeer>,
+            >,
+        >,
+        score_store: Option<
+            std::sync::Arc<
+                dyn vertex_swarm_api::SwarmScoreStore<
+                        Score = vertex_swarm_peer_score::PeerScore,
+                        Error = vertex_net_peer_store::StoreError,
+                    >,
+            >,
+        >,
     ) -> Result<BootNode<I>>
     where
         I: vertex_swarm_spec::HasSpec,
@@ -217,9 +225,15 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
         let infra = match self.infra {
             Some(infra) => infra,
             None => {
-                let topology_config = TopologyConfig::new()
-                    .with_kademlia(self.kademlia_config.unwrap_or_default());
-                BuiltInfrastructure::from_config(self.identity, network_config, topology_config, peer_store, score_store)?
+                let topology_config =
+                    TopologyConfig::new().with_kademlia(self.kademlia_config.unwrap_or_default());
+                BuiltInfrastructure::from_config(
+                    self.identity,
+                    network_config,
+                    topology_config,
+                    peer_store,
+                    score_store,
+                )?
             }
         };
 
@@ -232,7 +246,10 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
         .await?;
 
         // Set local PeerId for address advertisement in handshakes
-        base.swarm.behaviour().topology.set_local_peer_id(*base.swarm.local_peer_id());
+        base.swarm
+            .behaviour()
+            .topology
+            .set_local_peer_id(*base.swarm.local_peer_id());
 
         Ok(BootNode { base })
     }

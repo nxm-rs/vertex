@@ -101,12 +101,18 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
             remote_overlay = tracing::field::Empty,
         )
     )]
-    pub(crate) async fn handle_inbound(self, stream: Stream) -> Result<HandshakeInfo, HandshakeError> {
+    pub(crate) async fn handle_inbound(
+        self,
+        stream: Stream,
+    ) -> Result<HandshakeInfo, HandshakeError> {
         let mut metrics = HandshakeMetrics::inbound(self.purpose);
         metrics.initiated();
         let result = self.do_inbound_exchange(stream, &mut metrics).await;
         if let Ok(ref info) = result {
-            Span::current().record("remote_overlay", tracing::field::display(info.swarm_peer.overlay()));
+            Span::current().record(
+                "remote_overlay",
+                tracing::field::display(info.swarm_peer.overlay()),
+            );
         }
         metrics.record(&result);
         result
@@ -176,12 +182,18 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
             remote_overlay = tracing::field::Empty,
         )
     )]
-    pub(crate) async fn handle_outbound(self, stream: Stream) -> Result<HandshakeInfo, HandshakeError> {
+    pub(crate) async fn handle_outbound(
+        self,
+        stream: Stream,
+    ) -> Result<HandshakeInfo, HandshakeError> {
         let mut metrics = HandshakeMetrics::outbound(self.purpose);
         metrics.initiated();
         let result = self.do_outbound_exchange(stream, &mut metrics).await;
         if let Ok(ref info) = result {
-            Span::current().record("remote_overlay", tracing::field::display(info.swarm_peer.overlay()));
+            Span::current().record(
+                "remote_overlay",
+                tracing::field::display(info.swarm_peer.overlay()),
+            );
         }
         metrics.record(&result);
         result
@@ -202,13 +214,13 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
         if extract_peer_id(&their_observed_multiaddr).is_some() {
             their_observed_multiaddr.pop();
         }
-        let their_observed_multiaddr =
-            their_observed_multiaddr.with(Protocol::P2p(self.peer_id));
+        let their_observed_multiaddr = their_observed_multiaddr.with(Protocol::P2p(self.peer_id));
 
         // Send SYN: tell peer what address we see them at.
-        let stream = Framed::send::<_, HandshakeError, _>(stream, encode_syn(&their_observed_multiaddr))
-            .instrument(debug_span!("send_syn"))
-            .await?;
+        let stream =
+            Framed::send::<_, HandshakeError, _>(stream, encode_syn(&their_observed_multiaddr))
+                .instrument(debug_span!("send_syn"))
+                .await?;
         metrics.syn_exchanged();
 
         // Receive SYNACK: peer echoes our observed addr + their identity.

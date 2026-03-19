@@ -205,8 +205,5 @@ async fn run_with_grpc<P: RegistersGrpcServices + Send + Sync + 'static>(
 }
 
 fn socket_addr(addr: &str, port: u16) -> SocketAddr {
-    SocketAddr::new(
-        addr.parse().unwrap_or(IpAddr::from([127, 0, 0, 1])),
-        port,
-    )
+    SocketAddr::new(addr.parse().unwrap_or(IpAddr::from([127, 0, 0, 1])), port)
 }

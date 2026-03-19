@@ -9,8 +9,8 @@ use vertex_swarm_net_headers::{
 };
 use vertex_swarm_net_proto::pingpong::{Ping, Pong};
 
-use crate::codec::format_pong_response;
 use crate::PROTOCOL_NAME;
+use crate::codec::format_pong_response;
 
 /// Maximum size of a pingpong message.
 const MAX_MESSAGE_SIZE: usize = 4096;
@@ -78,7 +78,9 @@ impl HeaderedOutbound for PingpongOutboundInner {
             debug!(greeting = %self.greeting, "Pingpong: Sending ping");
             let stream = Framed::send::<_, ProtocolStreamError, _>(
                 stream.into_inner(),
-                Ping { greeting: self.greeting },
+                Ping {
+                    greeting: self.greeting,
+                },
             )
             .await?;
 

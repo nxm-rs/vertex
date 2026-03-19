@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use libp2p::{Multiaddr, PeerId};
 use libp2p::multiaddr::Protocol;
+use libp2p::{Multiaddr, PeerId};
 use tracing::{debug, info, warn};
 use vertex_net_local::{AddressScope, IpCapability, LocalCapabilities, classify_multiaddr};
 use vertex_swarm_net_handshake::AddressProvider;
@@ -76,13 +76,21 @@ impl LocalAddressManager {
     /// Check if we have any public addresses to advertise.
     pub fn has_public_addresses(&self) -> bool {
         // Check static NAT addresses
-        if self.nat_addrs.iter().any(|a| classify_multiaddr(a) == Some(AddressScope::Public)) {
+        if self
+            .nat_addrs
+            .iter()
+            .any(|a| classify_multiaddr(a) == Some(AddressScope::Public))
+        {
             return true;
         }
 
         // Check local listen addresses
-        if self.local.listen_addrs().iter()
-            .any(|addr| classify_multiaddr(addr) == Some(AddressScope::Public)) {
+        if self
+            .local
+            .listen_addrs()
+            .iter()
+            .any(|addr| classify_multiaddr(addr) == Some(AddressScope::Public))
+        {
             return true;
         }
 
@@ -95,10 +103,10 @@ impl LocalAddressManager {
         // Strip /p2p/ suffix if present for classification
         let addr_for_classify = strip_peer_id(addr);
 
-        if classify_multiaddr(&addr_for_classify) == Some(AddressScope::Public) {
-            if !self.has_public_connectivity.swap(true, Ordering::Relaxed) {
-                info!("Confirmed public connectivity via peer observation");
-            }
+        if classify_multiaddr(&addr_for_classify) == Some(AddressScope::Public)
+            && !self.has_public_connectivity.swap(true, Ordering::Relaxed)
+        {
+            info!("Confirmed public connectivity via peer observation");
         }
     }
 
@@ -321,7 +329,8 @@ mod tests {
         let peer_id = PeerId::random();
 
         // Observed address often includes /p2p/{peer_id} - should still work
-        let observed_with_peer = parse_addr(&format!("/ip4/91.189.35.149/tcp/1634/p2p/{}", peer_id));
+        let observed_with_peer =
+            parse_addr(&format!("/ip4/91.189.35.149/tcp/1634/p2p/{}", peer_id));
         manager.on_observed_addr(&observed_with_peer);
 
         assert!(manager.has_public_addresses());

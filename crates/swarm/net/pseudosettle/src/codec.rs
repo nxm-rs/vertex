@@ -8,7 +8,9 @@
 //! matching Go's `big.Int.Bytes()` serialization used by Bee.
 
 use alloy_primitives::U256;
-use vertex_net_codec::{Codec, ProtoMessage, current_unix_timestamp_nanos, decode_u256_be, encode_u256_be};
+use vertex_net_codec::{
+    Codec, ProtoMessage, current_unix_timestamp_nanos, decode_u256_be, encode_u256_be,
+};
 
 use crate::error::PseudosettleError;
 

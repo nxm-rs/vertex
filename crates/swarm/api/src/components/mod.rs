@@ -140,9 +140,7 @@ impl<T, A, S> StorerComponents<T, A, S> {
     }
 }
 
-impl<T: Send + Sync, A: Send + Sync, S: Send + Sync> HasTopology
-    for StorerComponents<T, A, S>
-{
+impl<T: Send + Sync, A: Send + Sync, S: Send + Sync> HasTopology for StorerComponents<T, A, S> {
     type Topology = T;
 
     fn topology(&self) -> &T {

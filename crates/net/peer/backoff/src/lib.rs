@@ -173,7 +173,10 @@ mod tests {
     #[test]
     fn no_backoff_zero_failures() {
         let b = PeerBackoff::new();
-        assert!(b.remaining(1000, DEFAULT_BASE_BACKOFF_SECS, DEFAULT_MAX_BACKOFF_SECS).is_none());
+        assert!(
+            b.remaining(1000, DEFAULT_BASE_BACKOFF_SECS, DEFAULT_MAX_BACKOFF_SECS)
+                .is_none()
+        );
     }
 
     #[test]
@@ -216,7 +219,10 @@ mod tests {
     #[test]
     fn expired_backoff() {
         let b = PeerBackoff::from_persisted(1000, 1);
-        assert!(b.remaining(1031, DEFAULT_BASE_BACKOFF_SECS, DEFAULT_MAX_BACKOFF_SECS).is_none());
+        assert!(
+            b.remaining(1031, DEFAULT_BASE_BACKOFF_SECS, DEFAULT_MAX_BACKOFF_SECS)
+                .is_none()
+        );
     }
 
     #[test]
@@ -230,7 +236,7 @@ mod tests {
             let secs = remaining.as_secs();
             // base=30, +/-25% -> [22, 37]
             assert!(
-                secs >= 22 && secs <= 37,
+                (22..=37).contains(&secs),
                 "seed {seed}: backoff {secs}s outside [22, 37]"
             );
         }
@@ -269,7 +275,7 @@ mod tests {
             let secs = remaining.as_secs();
             // max=3600, +/-25% -> [2700, 4500]
             assert!(
-                secs >= 2700 && secs <= 4500,
+                (2700..=4500).contains(&secs),
                 "seed {seed}: capped backoff {secs}s outside [2700, 4500]"
             );
         }

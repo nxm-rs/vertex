@@ -1,7 +1,7 @@
 //! Identity and keystore CLI arguments.
 
-use crate::keystore::{create_and_save_signer, load_signer_from_keystore, resolve_password};
 use crate::Identity;
+use crate::keystore::{create_and_save_signer, load_signer_from_keystore, resolve_password};
 use alloy_primitives::B256;
 use clap::Args;
 use eyre::Result;
@@ -72,7 +72,10 @@ impl IdentityArgs {
 
         let password = resolve_password(
             self.password.as_deref(),
-            self.password_file.as_ref().map(|p| p.to_string_lossy()).as_deref(),
+            self.password_file
+                .as_ref()
+                .map(|p| p.to_string_lossy())
+                .as_deref(),
         )?;
 
         let signer = if keystore_path.exists() {

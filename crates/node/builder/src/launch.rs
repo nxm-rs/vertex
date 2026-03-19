@@ -116,16 +116,20 @@ impl LaunchContextWith<WithMetrics> {
     pub async fn start_metrics_server(self) -> eyre::Result<Self> {
         let has_config = self.attachment.config().is_some();
         let has_recorder = self.attachment.recorder().is_some();
-        tracing::debug!(has_config, has_recorder, "Checking metrics server prerequisites");
+        tracing::debug!(
+            has_config,
+            has_recorder,
+            "Checking metrics server prerequisites"
+        );
 
         if let (Some(config), Some(recorder)) =
             (self.attachment.config(), self.attachment.recorder())
         {
             tracing::debug!(addr = %config.addr(), "Starting metrics server");
-            let hooks_builder = Hooks::builder()
-                .with_hook(process_metrics_hook());
+            let hooks_builder = Hooks::builder().with_hook(process_metrics_hook());
             #[cfg(feature = "jemalloc")]
-            let hooks_builder = hooks_builder.with_hook(vertex_observability::jemalloc_metrics_hook());
+            let hooks_builder =
+                hooks_builder.with_hook(vertex_observability::jemalloc_metrics_hook());
             let hooks = hooks_builder.build();
             let server = MetricsServer::from_config(config, recorder.handle().clone(), hooks);
             server.start(&self.executor).await?;
@@ -170,7 +174,8 @@ impl LaunchContextExt for (TaskExecutor, DataDirs) {
 
         let recorder = if let Some(ref cfg) = config {
             tracing::debug!(addr = %cfg.addr(), prefix = %cfg.prefix(), "Installing prometheus recorder");
-            let recorder = install_prometheus_recorder_with_buckets(cfg.prefix(), histogram_buckets)?;
+            let recorder =
+                install_prometheus_recorder_with_buckets(cfg.prefix(), histogram_buckets)?;
             recorder.spawn_upkeep(&executor, cfg.upkeep_interval_secs());
             tracing::debug!("Prometheus recorder installed successfully");
             Some(Arc::new(recorder))

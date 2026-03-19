@@ -42,14 +42,22 @@ fn intern_table_name(name: &str) -> &'static str {
 /// Deserialize a value from raw bytes, decompressing first if the table uses compression.
 fn decode_value<T: Table>(raw: &[u8]) -> Result<T::Value, DatabaseError> {
     if T::COMPRESS_VALUES {
-        let bytes = zstd::decode_all(raw)
-            .map_err(|e| DatabaseError::Read(DatabaseErrorInfo::with_source(
-                format!("zstd decompress {}", T::NAME), e)))?;
+        let bytes = zstd::decode_all(raw).map_err(|e| {
+            DatabaseError::Read(DatabaseErrorInfo::with_source(
+                format!("zstd decompress {}", T::NAME),
+                e,
+            ))
+        })?;
         postcard::from_bytes(&bytes)
     } else {
         postcard::from_bytes(raw)
-    }.map_err(|e| DatabaseError::Read(DatabaseErrorInfo::with_source(
-        format!("deserialize {}", T::NAME), e)))
+    }
+    .map_err(|e| {
+        DatabaseError::Read(DatabaseErrorInfo::with_source(
+            format!("deserialize {}", T::NAME),
+            e,
+        ))
+    })
 }
 
 /// Record a completed DB operation's metrics.
@@ -71,19 +79,29 @@ macro_rules! impl_db_tx_reads {
             let _span = tracing::trace_span!("db_get", table = T::NAME).entered();
 
             let def = table_def(T::NAME);
-            let table = self.inner.open_table(def)
-                .map_err(|e| DatabaseError::Read(DatabaseErrorInfo::with_source(
-                    format!("open table {}", T::NAME), e)))?;
+            let table = self.inner.open_table(def).map_err(|e| {
+                DatabaseError::Read(DatabaseErrorInfo::with_source(
+                    format!("open table {}", T::NAME),
+                    e,
+                ))
+            })?;
             let encoded = key.encode();
-            let result = match table.get(encoded.as_ref())
-                .map_err(|e| DatabaseError::Read(DatabaseErrorInfo::with_source(
-                    format!("get from {}", T::NAME), e)))?
-            {
+            let result = match table.get(encoded.as_ref()).map_err(|e| {
+                DatabaseError::Read(DatabaseErrorInfo::with_source(
+                    format!("get from {}", T::NAME),
+                    e,
+                ))
+            })? {
                 Some(guard) => Ok(Some(decode_value::<T>(guard.value())?)),
                 None => Ok(None),
             };
 
-            record_op(T::NAME, operation::GET, "success", start.elapsed().as_secs_f64());
+            record_op(
+                T::NAME,
+                operation::GET,
+                "success",
+                start.elapsed().as_secs_f64(),
+            );
             result
         }
 
@@ -92,26 +110,42 @@ macro_rules! impl_db_tx_reads {
             let _span = tracing::trace_span!("db_entries", table = T::NAME).entered();
 
             let def = table_def(T::NAME);
-            let table = self.inner.open_table(def)
-                .map_err(|e| DatabaseError::Read(DatabaseErrorInfo::with_source(
-                    format!("open table {}", T::NAME), e)))?;
-            let len = table.len()
-                .map_err(|e| DatabaseError::Read(DatabaseErrorInfo::with_source(
-                    format!("len {}", T::NAME), e)))?;
+            let table = self.inner.open_table(def).map_err(|e| {
+                DatabaseError::Read(DatabaseErrorInfo::with_source(
+                    format!("open table {}", T::NAME),
+                    e,
+                ))
+            })?;
+            let len = table.len().map_err(|e| {
+                DatabaseError::Read(DatabaseErrorInfo::with_source(
+                    format!("len {}", T::NAME),
+                    e,
+                ))
+            })?;
             let mut result = Vec::with_capacity(len as usize);
-            for entry in table.iter()
-                .map_err(|e| DatabaseError::Read(DatabaseErrorInfo::with_source(
-                    format!("iter {}", T::NAME), e)))?
-            {
-                let (k, v) = entry
-                    .map_err(|e| DatabaseError::Read(DatabaseErrorInfo::with_source(
-                        format!("read entry from {}", T::NAME), e)))?;
+            for entry in table.iter().map_err(|e| {
+                DatabaseError::Read(DatabaseErrorInfo::with_source(
+                    format!("iter {}", T::NAME),
+                    e,
+                ))
+            })? {
+                let (k, v) = entry.map_err(|e| {
+                    DatabaseError::Read(DatabaseErrorInfo::with_source(
+                        format!("read entry from {}", T::NAME),
+                        e,
+                    ))
+                })?;
                 let key = T::Key::decode(k.value())?;
                 let value = decode_value::<T>(v.value())?;
                 result.push((key, value));
             }
 
-            record_op(T::NAME, operation::ENTRIES, "success", start.elapsed().as_secs_f64());
+            record_op(
+                T::NAME,
+                operation::ENTRIES,
+                "success",
+                start.elapsed().as_secs_f64(),
+            );
             Ok(result)
         }
 
@@ -120,24 +154,40 @@ macro_rules! impl_db_tx_reads {
             let _span = tracing::trace_span!("db_keys", table = T::NAME).entered();
 
             let def = table_def(T::NAME);
-            let table = self.inner.open_table(def)
-                .map_err(|e| DatabaseError::Read(DatabaseErrorInfo::with_source(
-                    format!("open table {}", T::NAME), e)))?;
-            let len = table.len()
-                .map_err(|e| DatabaseError::Read(DatabaseErrorInfo::with_source(
-                    format!("len {}", T::NAME), e)))?;
+            let table = self.inner.open_table(def).map_err(|e| {
+                DatabaseError::Read(DatabaseErrorInfo::with_source(
+                    format!("open table {}", T::NAME),
+                    e,
+                ))
+            })?;
+            let len = table.len().map_err(|e| {
+                DatabaseError::Read(DatabaseErrorInfo::with_source(
+                    format!("len {}", T::NAME),
+                    e,
+                ))
+            })?;
             let mut result = Vec::with_capacity(len as usize);
-            for entry in table.iter()
-                .map_err(|e| DatabaseError::Read(DatabaseErrorInfo::with_source(
-                    format!("iter {}", T::NAME), e)))?
-            {
-                let (k, _v) = entry
-                    .map_err(|e| DatabaseError::Read(DatabaseErrorInfo::with_source(
-                        format!("read key from {}", T::NAME), e)))?;
+            for entry in table.iter().map_err(|e| {
+                DatabaseError::Read(DatabaseErrorInfo::with_source(
+                    format!("iter {}", T::NAME),
+                    e,
+                ))
+            })? {
+                let (k, _v) = entry.map_err(|e| {
+                    DatabaseError::Read(DatabaseErrorInfo::with_source(
+                        format!("read key from {}", T::NAME),
+                        e,
+                    ))
+                })?;
                 result.push(T::Key::decode(k.value())?);
             }
 
-            record_op(T::NAME, operation::KEYS, "success", start.elapsed().as_secs_f64());
+            record_op(
+                T::NAME,
+                operation::KEYS,
+                "success",
+                start.elapsed().as_secs_f64(),
+            );
             Ok(result)
         }
 
@@ -146,14 +196,25 @@ macro_rules! impl_db_tx_reads {
             let _span = tracing::trace_span!("db_count", table = T::NAME).entered();
 
             let def = table_def(T::NAME);
-            let table = self.inner.open_table(def)
-                .map_err(|e| DatabaseError::Read(DatabaseErrorInfo::with_source(
-                    format!("open table {}", T::NAME), e)))?;
-            let len = table.len()
-                .map_err(|e| DatabaseError::Read(DatabaseErrorInfo::with_source(
-                    format!("len {}", T::NAME), e)))?;
+            let table = self.inner.open_table(def).map_err(|e| {
+                DatabaseError::Read(DatabaseErrorInfo::with_source(
+                    format!("open table {}", T::NAME),
+                    e,
+                ))
+            })?;
+            let len = table.len().map_err(|e| {
+                DatabaseError::Read(DatabaseErrorInfo::with_source(
+                    format!("len {}", T::NAME),
+                    e,
+                ))
+            })?;
 
-            record_op(T::NAME, operation::COUNT, "success", start.elapsed().as_secs_f64());
+            record_op(
+                T::NAME,
+                operation::COUNT,
+                "success",
+                start.elapsed().as_secs_f64(),
+            );
             Ok(len as usize)
         }
     };
@@ -167,7 +228,10 @@ pub struct RedbReadTx {
 
 impl RedbReadTx {
     pub(crate) fn new(inner: redb::ReadTransaction) -> Self {
-        Self { inner, start: Instant::now() }
+        Self {
+            inner,
+            start: Instant::now(),
+        }
     }
 }
 
@@ -226,8 +290,7 @@ impl DbTxMut for RedbWriteTx {
         // SAFETY: We set committed=true so Drop won't double-drop.
         self.committed = true;
         let inner = unsafe { ManuallyDrop::take(&mut self.inner) };
-        let result = inner.commit()
-            .map_err(DatabaseError::commit_err);
+        let result = inner.commit().map_err(DatabaseError::commit_err);
 
         let outcome = if result.is_ok() { "success" } else { "failure" };
         counter!("db_operations_total", "table" => "", "operation" => operation::COMMIT, "outcome" => outcome)
@@ -242,7 +305,9 @@ impl DbTxMut for RedbWriteTx {
         let _span = tracing::trace_span!("db_put", table = T::NAME).entered();
 
         let def = table_def(T::NAME);
-        let mut table = self.inner.open_table(def)
+        let mut table = self
+            .inner
+            .open_table(def)
             .map_err(|e| DatabaseError::write(T::NAME, 0, 0, format!("open table: {e}")))?;
         let encoded_key = key.encode();
         let serialized = postcard::to_allocvec(&value)
@@ -254,10 +319,16 @@ impl DbTxMut for RedbWriteTx {
             serialized
         };
         let key_bytes = encoded_key.as_ref();
-        table.insert(key_bytes, stored.as_slice())
+        table
+            .insert(key_bytes, stored.as_slice())
             .map_err(|e| DatabaseError::write_err(T::NAME, key_bytes.len(), stored.len(), e))?;
 
-        record_op(T::NAME, operation::PUT, "success", start.elapsed().as_secs_f64());
+        record_op(
+            T::NAME,
+            operation::PUT,
+            "success",
+            start.elapsed().as_secs_f64(),
+        );
         Ok(())
     }
 
@@ -266,14 +337,23 @@ impl DbTxMut for RedbWriteTx {
         let _span = tracing::trace_span!("db_delete", table = T::NAME).entered();
 
         let def = table_def(T::NAME);
-        let mut table = self.inner.open_table(def)
-            .map_err(|e| DatabaseError::Delete(DatabaseErrorInfo::with_source(
-                format!("open table {}", T::NAME), e)))?;
+        let mut table = self.inner.open_table(def).map_err(|e| {
+            DatabaseError::Delete(DatabaseErrorInfo::with_source(
+                format!("open table {}", T::NAME),
+                e,
+            ))
+        })?;
         let encoded = key.encode();
-        let removed = table.remove(encoded.as_ref())
+        let removed = table
+            .remove(encoded.as_ref())
             .map_err(DatabaseError::delete_err)?;
 
-        record_op(T::NAME, operation::DELETE, "success", start.elapsed().as_secs_f64());
+        record_op(
+            T::NAME,
+            operation::DELETE,
+            "success",
+            start.elapsed().as_secs_f64(),
+        );
         Ok(removed.is_some())
     }
 
@@ -282,23 +362,37 @@ impl DbTxMut for RedbWriteTx {
         let _span = tracing::trace_span!("db_clear", table = T::NAME).entered();
 
         let def = table_def(T::NAME);
-        let mut table = self.inner.open_table(def)
-            .map_err(|e| DatabaseError::Delete(DatabaseErrorInfo::with_source(
-                format!("open table {}", T::NAME), e)))?;
-        table.retain(|_, _| false)
-            .map_err(|e| DatabaseError::Delete(DatabaseErrorInfo::with_source(
-                format!("clear {}", T::NAME), e)))?;
+        let mut table = self.inner.open_table(def).map_err(|e| {
+            DatabaseError::Delete(DatabaseErrorInfo::with_source(
+                format!("open table {}", T::NAME),
+                e,
+            ))
+        })?;
+        table.retain(|_, _| false).map_err(|e| {
+            DatabaseError::Delete(DatabaseErrorInfo::with_source(
+                format!("clear {}", T::NAME),
+                e,
+            ))
+        })?;
 
-        record_op(T::NAME, operation::CLEAR, "success", start.elapsed().as_secs_f64());
+        record_op(
+            T::NAME,
+            operation::CLEAR,
+            "success",
+            start.elapsed().as_secs_f64(),
+        );
         Ok(())
     }
 
     fn ensure_table(&self, name: &str) -> Result<(), DatabaseError> {
         let name_static = intern_table_name(name);
         let def: TableDefinition<'static, &[u8], &[u8]> = TableDefinition::new(name_static);
-        let _ = self.inner.open_table(def)
-            .map_err(|e| DatabaseError::CreateTable(DatabaseErrorInfo::with_source(
-                format!("create table {name}"), e)))?;
+        let _ = self.inner.open_table(def).map_err(|e| {
+            DatabaseError::CreateTable(DatabaseErrorInfo::with_source(
+                format!("create table {name}"),
+                e,
+            ))
+        })?;
         Ok(())
     }
 }

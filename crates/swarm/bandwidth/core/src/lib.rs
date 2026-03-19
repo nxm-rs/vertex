@@ -36,4 +36,4 @@ pub use client_accounting::ClientAccounting;
 pub use config::{BandwidthConfig, BandwidthConfigError, DefaultBandwidthConfig};
 pub use noop::{NoAccounting, NoPeerBandwidth, NoProvideAction, NoReceiveAction};
 pub use settlement::NoSettlement;
-pub use vertex_swarm_bandwidth_pricing::{FixedPricingConfig, FixedPricer, NoPricer, Pricer};
+pub use vertex_swarm_bandwidth_pricing::{FixedPricer, FixedPricingConfig, NoPricer, Pricer};

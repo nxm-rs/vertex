@@ -119,8 +119,7 @@ fn resolve_recursive<'a>(
 
                     match value.parse::<Multiaddr>() {
                         Ok(resolved_addr) => {
-                            let nested =
-                                resolve_recursive(&resolved_addr, seen, depth + 1).await?;
+                            let nested = resolve_recursive(&resolved_addr, seen, depth + 1).await?;
                             results.extend(nested);
                         }
                         Err(e) => {
@@ -164,7 +163,10 @@ mod tests {
     #[test]
     fn extract_domain_from_dnsaddr() {
         let addr: Multiaddr = "/dnsaddr/mainnet.ethswarm.org".parse().unwrap();
-        assert_eq!(extract_domain(&addr), Some("mainnet.ethswarm.org".to_string()));
+        assert_eq!(
+            extract_domain(&addr),
+            Some("mainnet.ethswarm.org".to_string())
+        );
     }
 
     #[test]
@@ -176,7 +178,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_all_passes_non_dnsaddr_through() {
         let addr: Multiaddr = "/ip4/127.0.0.1/tcp/1634".parse().unwrap();
-        let resolved = resolve_all(&[addr.clone()]).await;
+        let resolved = resolve_all(std::slice::from_ref(&addr)).await;
         assert_eq!(resolved, vec![addr]);
     }
 

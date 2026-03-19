@@ -590,5 +590,4 @@ mod tests {
         // Dual <-> Dual: true (shared both)
         assert!(IpCapability::Dual.can_reach(&IpCapability::Dual));
     }
-
 }

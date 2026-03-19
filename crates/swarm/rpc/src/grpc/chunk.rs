@@ -24,6 +24,7 @@ impl<P> ChunkService<P> {
 }
 
 /// Parse a hex string into a ChunkAddress.
+#[allow(clippy::result_large_err)]
 fn parse_chunk_address(hex: &str) -> Result<ChunkAddress, Status> {
     let bytes = <[u8; 32]>::from_hex(hex).map_err(|_| {
         Status::invalid_argument(format!(

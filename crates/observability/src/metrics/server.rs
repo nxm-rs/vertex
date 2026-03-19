@@ -3,12 +3,11 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
-    Json,
+    Json, Router,
     extract::{Query, State},
     http::{StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::get,
-    Router,
 };
 use metrics_exporter_prometheus::PrometheusHandle;
 use serde::Deserialize;
@@ -30,11 +29,19 @@ pub struct MetricsServer {
 
 impl MetricsServer {
     pub fn new(addr: SocketAddr, handle: PrometheusHandle, hooks: Hooks) -> Self {
-        Self { addr, handle, hooks }
+        Self {
+            addr,
+            handle,
+            hooks,
+        }
     }
 
     /// Create from configuration.
-    pub fn from_config(config: &MetricsServerConfig, handle: PrometheusHandle, hooks: Hooks) -> Self {
+    pub fn from_config(
+        config: &MetricsServerConfig,
+        handle: PrometheusHandle,
+        hooks: Hooks,
+    ) -> Self {
         Self::new(config.addr(), handle, hooks)
     }
 
@@ -62,16 +69,20 @@ impl MetricsServer {
         tracing::info!("Metrics server listening on {addr}");
 
         // Use the executor's shutdown signal for graceful shutdown
-        executor.spawn_critical_with_graceful_shutdown_signal("metrics.server", move |shutdown| async move {
-            tracing::debug!("Metrics server task started, beginning to serve");
-            let server = axum::serve(listener, app).with_graceful_shutdown(shutdown.ignore_guard());
+        executor.spawn_critical_with_graceful_shutdown_signal(
+            "metrics.server",
+            move |shutdown| async move {
+                tracing::debug!("Metrics server task started, beginning to serve");
+                let server =
+                    axum::serve(listener, app).with_graceful_shutdown(shutdown.ignore_guard());
 
-            match server.await {
-                Ok(()) => tracing::debug!("Metrics server stopped gracefully"),
-                Err(err) => tracing::error!("Metrics server error: {err}"),
-            }
-            tracing::debug!("Metrics server task exiting");
-        });
+                match server.await {
+                    Ok(()) => tracing::debug!("Metrics server stopped gracefully"),
+                    Err(err) => tracing::error!("Metrics server error: {err}"),
+                }
+                tracing::debug!("Metrics server task exiting");
+            },
+        );
 
         Ok(())
     }
@@ -149,12 +160,16 @@ async fn pprof_handler(Query(params): Query<ProfileParams>) -> Response {
 
     match result {
         Ok(Ok(svg)) => ([(header::CONTENT_TYPE, "image/svg+xml")], svg).into_response(),
-        Ok(Err(e)) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Profiling failed: {e}")).into_response()
-        }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Task failed: {e}")).into_response()
-        }
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Profiling failed: {e}"),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Task failed: {e}"),
+        )
+            .into_response(),
     }
 }
 

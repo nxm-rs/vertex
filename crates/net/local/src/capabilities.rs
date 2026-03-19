@@ -201,5 +201,4 @@ mod tests {
         assert!(!addrs.iter().any(|a| a.to_string().contains("192.168")));
         assert!(addrs.iter().any(|a| a.to_string().contains("8.8.4.4")));
     }
-
 }

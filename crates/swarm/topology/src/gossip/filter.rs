@@ -39,8 +39,9 @@ pub(crate) fn scoring_event_for(result: &VerificationResult) -> SwarmScoringEven
         VerificationResult::Verified { .. } | VerificationResult::IdentityUpdated { .. } => {
             SwarmScoringEvent::GossipVerified
         }
-        VerificationResult::DifferentPeerAtAddress { .. }
-        | VerificationResult::Failed { .. } => SwarmScoringEvent::GossipInvalid,
+        VerificationResult::DifferentPeerAtAddress { .. } | VerificationResult::Failed { .. } => {
+            SwarmScoringEvent::GossipInvalid
+        }
         VerificationResult::Unreachable { .. } => SwarmScoringEvent::GossipUnreachable,
     }
 }
@@ -48,7 +49,10 @@ pub(crate) fn scoring_event_for(result: &VerificationResult) -> SwarmScoringEven
 /// Check if a peer's address scopes are compatible with gossiping to a recipient.
 ///
 /// Public recipients only receive peers that have exclusively public addresses.
-pub(crate) fn scope_eligible_for_recipient(peer: &SwarmPeer, recipient_scope: AddressScope) -> bool {
+pub(crate) fn scope_eligible_for_recipient(
+    peer: &SwarmPeer,
+    recipient_scope: AddressScope,
+) -> bool {
     if recipient_scope != AddressScope::Public {
         return true;
     }

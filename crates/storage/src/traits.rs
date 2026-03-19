@@ -42,8 +42,9 @@ macro_rules! impl_fixed_codec {
         }
         impl $crate::Decode for $ty {
             fn decode(value: &[u8]) -> Result<Self, $crate::DatabaseError> {
-                let bytes: [u8; $n] =
-                    value.try_into().map_err(|_| $crate::DatabaseError::Decode)?;
+                let bytes: [u8; $n] = value
+                    .try_into()
+                    .map_err(|_| $crate::DatabaseError::Decode)?;
                 Ok(Self::from(bytes))
             }
         }

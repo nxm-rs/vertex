@@ -113,10 +113,7 @@ impl ClientBehaviour {
                 self.push_event(ToSwarm::NotifyHandler {
                     peer_id,
                     handler: libp2p::swarm::NotifyHandler::Any,
-                    event: HandlerCommand::Activate {
-                        overlay,
-                        node_type,
-                    },
+                    event: HandlerCommand::Activate { overlay, node_type },
                 });
             }
             ClientCommand::AnnouncePricing { peer, threshold } => {
@@ -240,13 +237,11 @@ impl ClientBehaviour {
                     }));
             }
             HandlerEvent::PricingReceived { overlay, threshold } => {
-                self.push_event(ToSwarm::GenerateEvent(
-                    ClientEvent::PricingReceived {
-                        peer: overlay,
-                        peer_id,
-                        threshold,
-                    },
-                ));
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::PricingReceived {
+                    peer: overlay,
+                    peer_id,
+                    threshold,
+                }));
             }
             HandlerEvent::PricingSent { overlay } => {
                 self.pending_events
@@ -259,14 +254,12 @@ impl ClientBehaviour {
                 address,
                 request_id,
             } => {
-                self.push_event(ToSwarm::GenerateEvent(
-                    ClientEvent::ChunkRequested {
-                        peer: overlay,
-                        peer_id,
-                        address,
-                        request_id,
-                    },
-                ));
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::ChunkRequested {
+                    peer: overlay,
+                    peer_id,
+                    address,
+                    request_id,
+                }));
             }
             HandlerEvent::ChunkReceived {
                 overlay,
@@ -289,16 +282,14 @@ impl ClientBehaviour {
                 stamp,
                 request_id,
             } => {
-                self.push_event(ToSwarm::GenerateEvent(
-                    ClientEvent::ChunkPushReceived {
-                        peer: overlay,
-                        peer_id,
-                        address,
-                        data,
-                        stamp,
-                        request_id,
-                    },
-                ));
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::ChunkPushReceived {
+                    peer: overlay,
+                    peer_id,
+                    address,
+                    data,
+                    stamp,
+                    request_id,
+                }));
             }
             HandlerEvent::ReceiptReceived {
                 overlay,
@@ -307,15 +298,13 @@ impl ClientBehaviour {
                 nonce,
                 storage_radius,
             } => {
-                self.push_event(ToSwarm::GenerateEvent(
-                    ClientEvent::ReceiptReceived {
-                        peer: overlay,
-                        address,
-                        signature,
-                        nonce,
-                        storage_radius,
-                    },
-                ));
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::ReceiptReceived {
+                    peer: overlay,
+                    address,
+                    signature,
+                    nonce,
+                    storage_radius,
+                }));
             }
             HandlerEvent::Error {
                 overlay,
@@ -347,14 +336,12 @@ impl ClientBehaviour {
                 {
                     warn!(%overlay, "Pseudosettle event channel closed");
                 }
-                self.push_event(ToSwarm::GenerateEvent(
-                    ClientEvent::PseudosettleReceived {
-                        peer: overlay,
-                        peer_id,
-                        amount,
-                        request_id,
-                    },
-                ));
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::PseudosettleReceived {
+                    peer: overlay,
+                    peer_id,
+                    amount,
+                    request_id,
+                }));
             }
             HandlerEvent::PseudosettleSent { overlay, ack } => {
                 // Route to pseudosettle service if configured
@@ -368,13 +355,11 @@ impl ClientBehaviour {
                 {
                     warn!(%overlay, "Pseudosettle event channel closed");
                 }
-                self.push_event(ToSwarm::GenerateEvent(
-                    ClientEvent::PseudosettleSent {
-                        peer: overlay,
-                        peer_id,
-                        ack,
-                    },
-                ));
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::PseudosettleSent {
+                    peer: overlay,
+                    peer_id,
+                    ack,
+                }));
             }
         }
     }

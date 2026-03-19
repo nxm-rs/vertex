@@ -5,9 +5,9 @@ mod candidate_queues;
 mod candidates;
 mod config;
 mod evaluator_task;
-mod routing;
 mod limits;
 pub(crate) mod peer_selection;
+mod routing;
 
 pub use args::RoutingArgs;
 pub(crate) use candidates::{
@@ -16,9 +16,9 @@ pub(crate) use candidates::{
 };
 pub use config::KademliaConfig;
 pub(crate) use evaluator_task::RoutingEvaluatorHandle;
-pub(crate) use routing::KademliaRouting;
 pub(crate) use limits::DepthAwareLimits;
 pub(crate) use limits::LimitsSnapshot;
+pub(crate) use routing::KademliaRouting;
 
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
@@ -54,6 +54,7 @@ pub(crate) trait RoutingCapacity: Send + Sync {
 /// Routing operations: extends RoutingCapacity with peer connection/disconnection notifications.
 pub(crate) trait SwarmRouting<I: SwarmIdentity>: RoutingCapacity {
     /// Should we accept an inbound connection from this peer?
+    #[allow(dead_code)]
     fn should_accept_peer(&self, peer: &OverlayAddress, node_type: SwarmNodeType) -> bool;
 
     /// Notify that a peer has connected.

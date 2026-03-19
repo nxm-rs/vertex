@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use vertex_observability::{LogFormat, StdoutConfig};
 
 /// Logging configuration.
-#[derive(Debug, Args, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Args, Clone, Serialize, Deserialize)]
 #[command(next_help_heading = "Logging")]
 #[serde(default)]
 pub struct LogArgs {
@@ -23,16 +23,6 @@ pub struct LogArgs {
     /// Use JSON format for log output.
     #[arg(long = "log.json")]
     pub json: bool,
-}
-
-impl Default for LogArgs {
-    fn default() -> Self {
-        Self {
-            quiet: false,
-            verbosity: 0,
-            json: false,
-        }
-    }
 }
 
 impl LogArgs {

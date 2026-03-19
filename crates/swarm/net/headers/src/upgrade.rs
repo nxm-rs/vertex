@@ -12,7 +12,9 @@ use crate::{
     error::{HeadersError, ProtocolError},
     metrics::ProtocolMetrics,
     stream::HeaderedStream,
-    tracing::{PeerContext, inject_trace_context, span_from_headers, span_from_headers_with_context},
+    tracing::{
+        PeerContext, inject_trace_context, span_from_headers, span_from_headers_with_context,
+    },
     traits::{HeaderedInbound, HeaderedOutbound},
 };
 
@@ -42,7 +44,10 @@ pub struct Inbound<P> {
 impl<P> Inbound<P> {
     /// Create a new inbound protocol wrapper.
     pub fn new(inner: P) -> Self {
-        Self { inner, peer_context: None }
+        Self {
+            inner,
+            peer_context: None,
+        }
     }
 
     /// Attach peer identity context so protocol spans include peer_id and overlay.
@@ -70,8 +75,10 @@ impl<P: HeaderedInbound> InboundUpgrade<Stream> for Inbound<P> {
         let protocol_name = self.inner.protocol_name();
 
         Box::pin(async move {
-            let _stream_guard =
-                StreamGuard::new(protocol_short_name(protocol_name), labels::direction::INBOUND);
+            let _stream_guard = StreamGuard::new(
+                protocol_short_name(protocol_name),
+                labels::direction::INBOUND,
+            );
 
             let codec = HeadersCodec::new(MAX_HEADERS_SIZE);
             let mut framed = Framed::new(socket, codec);
@@ -86,7 +93,9 @@ impl<P: HeaderedInbound> InboundUpgrade<Stream> for Inbound<P> {
 
             // Create tracing span from received headers (may contain remote trace context)
             let span = match &self.peer_context {
-                Some(ctx) => span_from_headers_with_context(protocol_name, "inbound", &peer_headers, ctx),
+                Some(ctx) => {
+                    span_from_headers_with_context(protocol_name, "inbound", &peer_headers, ctx)
+                }
                 None => span_from_headers(protocol_name, "inbound", &peer_headers),
             };
 
@@ -99,15 +108,12 @@ impl<P: HeaderedInbound> InboundUpgrade<Stream> for Inbound<P> {
                     response_header_count = response_headers.len(),
                     "Sending response headers"
                 );
-                framed
-                    .send(Headers::new(response_headers))
-                    .await?;
+                framed.send(Headers::new(response_headers)).await?;
 
                 // Phase 3: Create HeaderedStream and call inner protocol
                 let headered = HeaderedStream::new(framed.into_inner(), peer_headers);
 
-                let mut metrics =
-                    ProtocolMetrics::inbound(protocol_short_name(protocol_name));
+                let mut metrics = ProtocolMetrics::inbound(protocol_short_name(protocol_name));
                 match self.inner.read(headered).await {
                     Ok(output) => {
                         metrics.record_success();
@@ -143,7 +149,10 @@ pub struct Outbound<P> {
 impl<P> Outbound<P> {
     /// Create a new outbound protocol wrapper.
     pub fn new(inner: P) -> Self {
-        Self { inner, peer_context: None }
+        Self {
+            inner,
+            peer_context: None,
+        }
     }
 
     /// Attach peer identity context so protocol spans include peer_id and overlay.
@@ -171,8 +180,10 @@ impl<P: HeaderedOutbound> OutboundUpgrade<Stream> for Outbound<P> {
         let protocol_name = self.inner.protocol_name();
 
         Box::pin(async move {
-            let _stream_guard =
-                StreamGuard::new(protocol_short_name(protocol_name), labels::direction::OUTBOUND);
+            let _stream_guard = StreamGuard::new(
+                protocol_short_name(protocol_name),
+                labels::direction::OUTBOUND,
+            );
 
             let codec = HeadersCodec::new(MAX_HEADERS_SIZE);
             let mut framed = Framed::new(socket, codec);
@@ -186,9 +197,7 @@ impl<P: HeaderedOutbound> OutboundUpgrade<Stream> for Outbound<P> {
                 header_count = our_headers.len(),
                 "Sending our headers"
             );
-            framed
-                .send(Headers::new(our_headers))
-                .await?;
+            framed.send(Headers::new(our_headers)).await?;
 
             // Phase 2: Read peer's response headers
             debug!(protocol = protocol_name, "Reading peer response headers");
@@ -200,15 +209,16 @@ impl<P: HeaderedOutbound> OutboundUpgrade<Stream> for Outbound<P> {
 
             // Create tracing span and run inner protocol within it
             let span = match &self.peer_context {
-                Some(ctx) => span_from_headers_with_context(protocol_name, "outbound", &peer_headers, ctx),
+                Some(ctx) => {
+                    span_from_headers_with_context(protocol_name, "outbound", &peer_headers, ctx)
+                }
                 None => span_from_headers(protocol_name, "outbound", &peer_headers),
             };
 
             async {
                 let headered = HeaderedStream::new(framed.into_inner(), peer_headers);
 
-                let mut metrics =
-                    ProtocolMetrics::outbound(protocol_short_name(protocol_name));
+                let mut metrics = ProtocolMetrics::outbound(protocol_short_name(protocol_name));
                 match self.inner.write(headered).await {
                     Ok(output) => {
                         metrics.record_success();

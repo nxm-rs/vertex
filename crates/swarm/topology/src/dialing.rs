@@ -67,11 +67,13 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         }
 
         // For Known peers, check routing capacity before dialing
-        if let Some(overlay) = target.overlay() {
-            if !self.routing.try_reserve_dial(&overlay, SwarmNodeType::Storer) {
-                trace!(%overlay, "Skipping dial - at capacity or already tracking");
-                return;
-            }
+        if let Some(overlay) = target.overlay()
+            && !self
+                .routing
+                .try_reserve_dial(&overlay, SwarmNodeType::Storer)
+        {
+            trace!(%overlay, "Skipping dial - at capacity or already tracking");
+            return;
         }
 
         // One call: filter addresses, build DialOpts, register in-flight
@@ -128,8 +130,8 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         }
 
         // Check if any addresses need dnsaddr resolution
-        let needs_resolution = bootnodes.iter().any(|addr| is_dnsaddr(addr))
-            || trusted_peers.iter().any(|addr| is_dnsaddr(addr));
+        let needs_resolution =
+            bootnodes.iter().any(is_dnsaddr) || trusted_peers.iter().any(is_dnsaddr);
 
         if needs_resolution {
             info!(
@@ -152,7 +154,11 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     }
 
     /// Dial bootnodes and trusted peers (called after dnsaddr resolution if needed).
-    pub(crate) fn dial_bootnodes(&mut self, bootnodes: Vec<Multiaddr>, trusted_peers: Vec<Multiaddr>) {
+    pub(crate) fn dial_bootnodes(
+        &mut self,
+        bootnodes: Vec<Multiaddr>,
+        trusted_peers: Vec<Multiaddr>,
+    ) {
         if !bootnodes.is_empty() {
             info!(count = bootnodes.len(), "Connecting to all bootnodes...");
         }
@@ -168,7 +174,6 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
     /// Check if a PeerId is already being tracked (dialing, connected, or active).
     pub(crate) fn is_peer_tracked(&self, peer_id: &PeerId) -> bool {
-        self.connection_registry.contains_peer(peer_id)
-            || self.dial_tracker.contains_peer(peer_id)
+        self.connection_registry.contains_peer(peer_id) || self.dial_tracker.contains_peer(peer_id)
     }
 }

@@ -11,7 +11,9 @@
 use asynchronous_codec::Framed;
 use futures::{SinkExt, TryStreamExt, future::BoxFuture};
 use tracing::debug;
-use vertex_swarm_net_headers::{HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound};
+use vertex_swarm_net_headers::{
+    HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound,
+};
 
 use crate::{
     PROTOCOL_NAME,
@@ -165,10 +167,7 @@ pub fn outbound(payment: Payment) -> PseudosettleOutboundProtocol {
 }
 
 /// Validate that a timestamp is within acceptable bounds of the current time.
-pub fn validate_timestamp(
-    timestamp: i64,
-    tolerance_secs: u64,
-) -> Result<(), PseudosettleError> {
+pub fn validate_timestamp(timestamp: i64, tolerance_secs: u64) -> Result<(), PseudosettleError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| PseudosettleError::InvalidTimestamp("system time before unix epoch".into()))?

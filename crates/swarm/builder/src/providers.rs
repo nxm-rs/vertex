@@ -67,9 +67,7 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
             Some(e) => Err(SwarmError::Network {
                 message: e.to_string(),
             }),
-            None => Err(SwarmError::ChunkNotFound {
-                address: *address,
-            }),
+            None => Err(SwarmError::ChunkNotFound { address: *address }),
         }
     }
 

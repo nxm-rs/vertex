@@ -137,7 +137,6 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
         self.pseudosettle_event_tx = Some(tx);
         self
     }
-
 }
 
 impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
@@ -145,8 +144,19 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
     pub async fn build<C>(
         self,
         network_config: &C,
-        peer_store: Option<std::sync::Arc<dyn vertex_net_peer_store::NetPeerStore<vertex_swarm_peer_manager::StoredPeer>>>,
-        score_store: Option<std::sync::Arc<dyn vertex_swarm_api::SwarmScoreStore<Score = vertex_swarm_peer_score::PeerScore, Error = vertex_net_peer_store::StoreError>>>,
+        peer_store: Option<
+            std::sync::Arc<
+                dyn vertex_net_peer_store::NetPeerStore<vertex_swarm_peer_manager::StoredPeer>,
+            >,
+        >,
+        score_store: Option<
+            std::sync::Arc<
+                dyn vertex_swarm_api::SwarmScoreStore<
+                        Score = vertex_swarm_peer_score::PeerScore,
+                        Error = vertex_net_peer_store::StoreError,
+                    >,
+            >,
+        >,
     ) -> Result<(StorerNode<I>, ClientService, ClientHandle)>
     where
         I: vertex_swarm_spec::HasSpec,
@@ -164,7 +174,9 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
             client_builder = client_builder.with_pseudosettle_events(tx);
         }
 
-        let (client, service, handle) = client_builder.build(network_config, peer_store, score_store).await?;
+        let (client, service, handle) = client_builder
+            .build(network_config, peer_store, score_store)
+            .await?;
 
         // TODO: Initialize storage-specific components:
         // - local_store

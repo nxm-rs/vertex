@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use vertex_swarm_api::SwarmNodeType;
 use vertex_swarm_peer_manager::PeerManager;
-use vertex_swarm_test_utils::{MockIdentity, test_overlay, test_swarm_peer};
 use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_test_utils::{MockIdentity, test_overlay, test_swarm_peer};
 
 use crate::behaviour::ConnectionRegistry;
 

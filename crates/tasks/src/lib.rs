@@ -417,7 +417,8 @@ impl TaskExecutor {
             TaskKind::Blocking => {
                 self.metrics.inc_regular_blocking_tasks(task_name);
                 (
-                    self.metrics.finished_regular_blocking_tasks_total(task_name),
+                    self.metrics
+                        .finished_regular_blocking_tasks_total(task_name),
                     self.metrics.running_task(task_name, "blocking", graceful),
                 )
             }
@@ -457,8 +458,14 @@ impl TaskExecutor {
                 metrics.record_critical_panic();
                 let task_error = PanickedTaskError::new(name, error);
                 error!("{task_error}");
-                if panicked_tasks_tx.send(TaskEvent::Panic(task_error)).is_err() {
-                    warn!(task = name, "failed to notify TaskManager of panic (already shut down)");
+                if panicked_tasks_tx
+                    .send(TaskEvent::Panic(task_error))
+                    .is_err()
+                {
+                    warn!(
+                        task = name,
+                        "failed to notify TaskManager of panic (already shut down)"
+                    );
                 }
             })
             .map(drop);
@@ -613,7 +620,11 @@ impl TaskExecutor {
     /// This is the preferred way to spawn long-running services that implement
     /// [`SpawnableTask`]. The service receives a [`GracefulShutdown`] signal and
     /// is monitored for panics.
-    pub fn spawn_service<S: SpawnableTask>(&self, name: &'static str, service: S) -> JoinHandle<()> {
+    pub fn spawn_service<S: SpawnableTask>(
+        &self,
+        name: &'static str,
+        service: S,
+    ) -> JoinHandle<()> {
         self.spawn_critical_with_graceful_shutdown_signal(name, |shutdown| {
             service.into_task(shutdown)
         })

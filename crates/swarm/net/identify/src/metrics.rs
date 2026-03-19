@@ -107,10 +107,7 @@ mod tests {
 
     #[test]
     fn normalize_normal_agent_version() {
-        assert_eq!(
-            normalize_agent_version("vertex/0.1.0"),
-            "vertex/0.1.0"
-        );
+        assert_eq!(normalize_agent_version("vertex/0.1.0"), "vertex/0.1.0");
         assert_eq!(
             normalize_agent_version("bee/2.3.0-abc123"),
             "bee/2.3.0-abc123"

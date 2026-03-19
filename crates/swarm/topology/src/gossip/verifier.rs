@@ -4,7 +4,7 @@
 //! being stored in the peer manager. This prevents storage exhaustion attacks
 //! and ensures only cryptographically valid peers enter our peer store.
 
-use std::time::Duration;
+use std::{sync::LazyLock, time::Duration};
 
 use hashlink::LruCache;
 use libp2p::PeerId;
@@ -13,11 +13,17 @@ use tracing::{debug, warn};
 use vertex_net_dialer::{DialRequest, DialTracker, DialTrackerConfig, EnqueueError};
 use vertex_swarm_peer::{SwarmAddress, SwarmPeer};
 
-use super::events::{GossipCheckOk, VerificationResult};
 use super::error::{GossipCheckError, VerificationFailure};
+use super::events::{GossipCheckOk, VerificationResult};
 use crate::extract_peer_id;
 
 type OverlayAddress = SwarmAddress;
+
+/// Fallback dial address used when the gossiped peer has no multiaddrs.
+/// This should never happen — `check_gossip` validates non-empty addrs.
+#[allow(clippy::unwrap_used)]
+static FALLBACK_ADDR: LazyLock<libp2p::Multiaddr> =
+    LazyLock::new(|| "/ip4/0.0.0.0/tcp/0".parse().unwrap());
 
 const MAX_PENDING_PER_GOSSIPER: usize = 64;
 /// ~32 concurrent connections x ~30 gossiped peers each = 960, rounded to 1024.
@@ -117,12 +123,11 @@ impl GossipVerifier {
             return Err(EnqueueError::AlreadyPending.into());
         }
 
-        if let Some(existing) = existing_peer {
-            if Self::signatures_match(existing, gossiped_peer)
-                && Self::has_matching_multiaddr(existing, gossiped_peer)
-            {
-                return Ok(GossipCheckOk::AlreadyKnown);
-            }
+        if let Some(existing) = existing_peer
+            && Self::signatures_match(existing, gossiped_peer)
+            && Self::has_matching_multiaddr(existing, gossiped_peer)
+        {
+            return Ok(GossipCheckOk::AlreadyKnown);
         }
 
         let gossiper_count = self.per_gossiper_count.get(gossiper).copied().unwrap_or(0);
@@ -184,10 +189,12 @@ impl GossipVerifier {
         Some(Verification::Resolved {
             gossiped_peer: request.data.gossiped_peer,
             gossiper: request.data.gossiper,
-            dial_addr: request.addrs.into_iter().next().unwrap_or_else(|| {
-                // Should never happen - check_gossip validates non-empty multiaddrs
-                "/ip4/0.0.0.0/tcp/0".parse().unwrap()
-            }),
+            dial_addr: request
+                .addrs
+                .into_iter()
+                .next()
+                // Should never happen — check_gossip validates non-empty multiaddrs
+                .unwrap_or_else(|| FALLBACK_ADDR.clone()),
         })
     }
 
@@ -229,9 +236,12 @@ impl GossipVerifier {
                     %gossiper,
                     "Gossip verification failed: gossiped multiaddr not in verified peer"
                 );
-                return (gossiper, VerificationResult::Failed {
-                    reason: VerificationFailure::MultiAddrNotInPeer,
-                });
+                return (
+                    gossiper,
+                    VerificationResult::Failed {
+                        reason: VerificationFailure::MultiAddrNotInPeer,
+                    },
+                );
             }
 
             // Compare signatures (byte-level)
@@ -250,7 +260,10 @@ impl GossipVerifier {
                 %gossiper,
                 "Gossip verification: identity updated (same overlay, different signature)"
             );
-            return (gossiper, VerificationResult::IdentityUpdated { verified_peer });
+            return (
+                gossiper,
+                VerificationResult::IdentityUpdated { verified_peer },
+            );
         }
 
         // CASE 2: Different overlay -- completely different peer at this address
@@ -260,12 +273,14 @@ impl GossipVerifier {
             %gossiper,
             "Wrong overlay gossiped - different peer at address"
         );
-        (gossiper, VerificationResult::DifferentPeerAtAddress {
-            verified_peer,
-            gossiped_overlay,
-        })
+        (
+            gossiper,
+            VerificationResult::DifferentPeerAtAddress {
+                verified_peer,
+                gossiped_overlay,
+            },
+        )
     }
-
 
     /// Check if two peers have matching signatures.
     fn signatures_match(a: &SwarmPeer, b: &SwarmPeer) -> bool {
@@ -288,7 +303,11 @@ mod tests {
     use alloy_primitives::{Address, B256, Signature, U256};
     use vertex_swarm_test_utils::test_peer_id;
 
-    fn mock_swarm_peer_with_peer_id(overlay_bytes: [u8; 32], addr: &str, peer_id: PeerId) -> SwarmPeer {
+    fn mock_swarm_peer_with_peer_id(
+        overlay_bytes: [u8; 32],
+        addr: &str,
+        peer_id: PeerId,
+    ) -> SwarmPeer {
         let addr_with_p2p = format!("{}/p2p/{}", addr, peer_id);
         let multiaddr: libp2p::Multiaddr = addr_with_p2p.parse().unwrap();
         SwarmPeer::from_validated(
@@ -377,7 +396,8 @@ mod tests {
             let peer_id = test_peer_id((i + 10) as u8);
             let mut overlay_bytes = [0u8; 32];
             overlay_bytes[0] = (i + 10) as u8;
-            let peer = mock_swarm_peer_with_peer_id(overlay_bytes, "/ip4/1.2.3.4/tcp/1634", peer_id);
+            let peer =
+                mock_swarm_peer_with_peer_id(overlay_bytes, "/ip4/1.2.3.4/tcp/1634", peer_id);
             let result = verifier.check_gossip(&peer, &gossiper, None);
             assert!(matches!(result, Ok(GossipCheckOk::Enqueued)));
         }
@@ -401,8 +421,16 @@ mod tests {
 
         // Simulate dial and handshake
         let _dial = verifier.next_verification_dial().unwrap();
-        let Verification::Resolved { gossiped_peer, gossiper, dial_addr } = verifier.resolve_in_flight(&peer_id).unwrap() else { return };
-        let (_gossiper, result) = GossipVerifier::verify_handshake(gossiped_peer, gossiper, dial_addr, peer);
+        let Verification::Resolved {
+            gossiped_peer,
+            gossiper,
+            dial_addr,
+        } = verifier.resolve_in_flight(&peer_id).unwrap()
+        else {
+            return;
+        };
+        let (_gossiper, result) =
+            GossipVerifier::verify_handshake(gossiped_peer, gossiper, dial_addr, peer);
 
         assert!(matches!(result, VerificationResult::Verified { .. }));
         assert_eq!(verifier.dial_tracker.pending_count(), 0);
@@ -414,16 +442,28 @@ mod tests {
 
         let peer_id = test_peer_id(2);
         // Gossiped peer with signature (1, 2)
-        let gossiped_peer = mock_swarm_peer_with_signature([2u8; 32], "/ip4/1.2.3.4/tcp/1634", peer_id, 1, 2);
+        let gossiped_peer =
+            mock_swarm_peer_with_signature([2u8; 32], "/ip4/1.2.3.4/tcp/1634", peer_id, 1, 2);
         let gossiper = OverlayAddress::from(B256::from([3u8; 32]));
 
-        verifier.check_gossip(&gossiped_peer, &gossiper, None).unwrap();
+        verifier
+            .check_gossip(&gossiped_peer, &gossiper, None)
+            .unwrap();
         let _dial = verifier.next_verification_dial().unwrap();
 
         // Verified peer has same overlay but different signature (3, 4)
-        let verified_peer = mock_swarm_peer_with_signature([2u8; 32], "/ip4/1.2.3.4/tcp/1634", peer_id, 3, 4);
-        let Verification::Resolved { gossiped_peer, gossiper, dial_addr } = verifier.resolve_in_flight(&peer_id).unwrap() else { return };
-        let (_gossiper, result) = GossipVerifier::verify_handshake(gossiped_peer, gossiper, dial_addr, verified_peer);
+        let verified_peer =
+            mock_swarm_peer_with_signature([2u8; 32], "/ip4/1.2.3.4/tcp/1634", peer_id, 3, 4);
+        let Verification::Resolved {
+            gossiped_peer,
+            gossiper,
+            dial_addr,
+        } = verifier.resolve_in_flight(&peer_id).unwrap()
+        else {
+            return;
+        };
+        let (_gossiper, result) =
+            GossipVerifier::verify_handshake(gossiped_peer, gossiper, dial_addr, verified_peer);
 
         assert!(matches!(result, VerificationResult::IdentityUpdated { .. }));
     }
@@ -433,17 +473,29 @@ mod tests {
         let mut verifier = GossipVerifier::new();
 
         let peer_id = test_peer_id(2);
-        let gossiped_peer = mock_swarm_peer_with_peer_id([2u8; 32], "/ip4/1.2.3.4/tcp/1634", peer_id);
+        let gossiped_peer =
+            mock_swarm_peer_with_peer_id([2u8; 32], "/ip4/1.2.3.4/tcp/1634", peer_id);
         let gossiper = OverlayAddress::from(B256::from([3u8; 32]));
         let gossiped_overlay = *gossiped_peer.overlay();
 
-        verifier.check_gossip(&gossiped_peer, &gossiper, None).unwrap();
+        verifier
+            .check_gossip(&gossiped_peer, &gossiper, None)
+            .unwrap();
         let _dial = verifier.next_verification_dial().unwrap();
 
         // Handshake returns completely different overlay
-        let verified_peer = mock_swarm_peer_with_peer_id([99u8; 32], "/ip4/1.2.3.4/tcp/1634", peer_id);
-        let Verification::Resolved { gossiped_peer, gossiper, dial_addr } = verifier.resolve_in_flight(&peer_id).unwrap() else { return };
-        let (_gossiper, result) = GossipVerifier::verify_handshake(gossiped_peer, gossiper, dial_addr, verified_peer);
+        let verified_peer =
+            mock_swarm_peer_with_peer_id([99u8; 32], "/ip4/1.2.3.4/tcp/1634", peer_id);
+        let Verification::Resolved {
+            gossiped_peer,
+            gossiper,
+            dial_addr,
+        } = verifier.resolve_in_flight(&peer_id).unwrap()
+        else {
+            return;
+        };
+        let (_gossiper, result) =
+            GossipVerifier::verify_handshake(gossiped_peer, gossiper, dial_addr, verified_peer);
 
         match result {
             VerificationResult::DifferentPeerAtAddress {
@@ -467,7 +519,13 @@ mod tests {
         verifier.check_gossip(&peer, &gossiper, None).unwrap();
         assert!(!verifier.dial_tracker.is_in_flight(&peer_id));
 
-        let Verification::Pending { peer_id: dial_peer_id, .. } = verifier.next_verification_dial().unwrap() else { return };
+        let Verification::Pending {
+            peer_id: dial_peer_id,
+            ..
+        } = verifier.next_verification_dial().unwrap()
+        else {
+            return;
+        };
         assert!(verifier.dial_tracker.is_in_flight(&dial_peer_id));
     }
 
@@ -483,7 +541,13 @@ mod tests {
         let _dial = verifier.next_verification_dial().unwrap();
 
         // resolve_in_flight cleans up accounting; task decides the result
-        let Verification::Resolved { gossiper: resolved_gossiper, .. } = verifier.resolve_in_flight(&peer_id).unwrap() else { return };
+        let Verification::Resolved {
+            gossiper: resolved_gossiper,
+            ..
+        } = verifier.resolve_in_flight(&peer_id).unwrap()
+        else {
+            return;
+        };
         assert_eq!(resolved_gossiper, gossiper);
         assert_eq!(verifier.dial_tracker.pending_count(), 0);
     }
@@ -500,7 +564,8 @@ mod tests {
             overlay_bytes[0] = (i % 256) as u8;
             overlay_bytes[1] = (i / 256) as u8;
             overlay_bytes[2] = (i / 65536) as u8;
-            let peer = mock_swarm_peer_with_peer_id(overlay_bytes, "/ip4/1.2.3.4/tcp/1634", peer_id);
+            let peer =
+                mock_swarm_peer_with_peer_id(overlay_bytes, "/ip4/1.2.3.4/tcp/1634", peer_id);
 
             // Each peer from a different gossiper
             let mut gossiper_bytes = [0u8; 32];
@@ -512,7 +577,9 @@ mod tests {
             let result = verifier.check_gossip(&peer, &gossiper, None);
             assert!(
                 result.is_ok(),
-                "Expected Ok for peer {}, got {:?}", i, result
+                "Expected Ok for peer {}, got {:?}",
+                i,
+                result
             );
         }
 
@@ -541,7 +608,8 @@ mod tests {
                 let peer_id = test_peer_id((g * 10 + i + 20) as u8);
                 let mut overlay_bytes = [0u8; 32];
                 overlay_bytes[0] = (g * 10 + i + 20) as u8;
-                let peer = mock_swarm_peer_with_peer_id(overlay_bytes, "/ip4/1.2.3.4/tcp/1634", peer_id);
+                let peer =
+                    mock_swarm_peer_with_peer_id(overlay_bytes, "/ip4/1.2.3.4/tcp/1634", peer_id);
 
                 let result = verifier.check_gossip(&peer, &gossiper, None);
                 assert!(matches!(result, Ok(GossipCheckOk::Enqueued)));
@@ -561,7 +629,8 @@ mod tests {
             let peer_id = test_peer_id((i + 10) as u8);
             let mut overlay_bytes = [0u8; 32];
             overlay_bytes[0] = (i + 10) as u8;
-            let peer = mock_swarm_peer_with_peer_id(overlay_bytes, "/ip4/1.2.3.4/tcp/1634", peer_id);
+            let peer =
+                mock_swarm_peer_with_peer_id(overlay_bytes, "/ip4/1.2.3.4/tcp/1634", peer_id);
             let gossiper = OverlayAddress::from(B256::from([3u8; 32]));
             verifier.check_gossip(&peer, &gossiper, None).unwrap();
         }
@@ -584,7 +653,8 @@ mod tests {
             let peer_id = test_peer_id((i + 10) as u8);
             let mut overlay_bytes = [0u8; 32];
             overlay_bytes[0] = (i + 10) as u8;
-            let peer = mock_swarm_peer_with_peer_id(overlay_bytes, "/ip4/1.2.3.4/tcp/1634", peer_id);
+            let peer =
+                mock_swarm_peer_with_peer_id(overlay_bytes, "/ip4/1.2.3.4/tcp/1634", peer_id);
             let gossiper = OverlayAddress::from(B256::from([3u8; 32]));
             verifier.check_gossip(&peer, &gossiper, None).unwrap();
         }
@@ -595,7 +665,9 @@ mod tests {
 
         // All should be in-flight now
         for v in &batch {
-            let Verification::Pending { peer_id, .. } = v else { continue };
+            let Verification::Pending { peer_id, .. } = v else {
+                continue;
+            };
             assert!(verifier.dial_tracker.is_in_flight(peer_id));
         }
 

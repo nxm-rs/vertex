@@ -1,7 +1,7 @@
 //! NetworkBehaviour implementation for identify with targeted push support.
 
 use std::{
-    collections::{hash_map::Entry, HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque, hash_map::Entry},
     num::NonZeroUsize,
     sync::Arc,
     task::{Context, Poll},
@@ -12,23 +12,23 @@ use lru::LruCache;
 use parking_lot::RwLock;
 
 use libp2p::core::{
+    ConnectedPoint, Endpoint, Multiaddr,
     multiaddr::{self, Protocol},
     transport::PortUse,
-    ConnectedPoint, Endpoint, Multiaddr,
 };
 use libp2p::identity::{Keypair, PeerId, PublicKey};
 use libp2p::swarm::{
+    _address_translation, ConnectionDenied, ConnectionId, DialError, ExternalAddresses,
+    ListenAddresses, NetworkBehaviour, NotifyHandler, PeerAddresses, StreamUpgradeError, THandler,
+    THandlerInEvent, THandlerOutEvent, ToSwarm,
     behaviour::{ConnectionClosed, ConnectionEstablished, DialFailure, FromSwarm},
-    ConnectionDenied, ConnectionId, DialError, ExternalAddresses, ListenAddresses,
-    NetworkBehaviour, NotifyHandler, PeerAddresses, StreamUpgradeError, THandler, THandlerInEvent,
-    THandlerOutEvent, ToSwarm, _address_translation,
 };
 
 use crate::{
+    Config,
     handler::{self, Handler, InEvent},
     metrics::{self, IdentifyErrorKind},
     protocol::{Info, UpgradeError},
-    Config,
 };
 
 fn is_quic_addr(addr: &Multiaddr, v1: bool) -> bool {
@@ -170,7 +170,11 @@ impl Behaviour {
     }
 
     /// Create a new identify behaviour with a keypair for signed peer records.
-    pub fn new_with_keypair(config: Config, keypair: &Keypair, agent_versions: AgentVersions) -> Self {
+    pub fn new_with_keypair(
+        config: Config,
+        keypair: &Keypair,
+        agent_versions: AgentVersions,
+    ) -> Self {
         let discovered_peers = match NonZeroUsize::new(config.cache_size) {
             None => PeerCache::disabled(),
             Some(size) => PeerCache::enabled(size),
@@ -259,7 +263,8 @@ impl Behaviour {
             .or_default()
             .insert(conn, addr);
 
-        self.connection_timers.insert(conn, std::time::Instant::now());
+        self.connection_timers
+            .insert(conn, std::time::Instant::now());
 
         if let Some(cache) = self.discovered_peers.0.as_mut() {
             for addr in failed_addresses {
@@ -386,7 +391,9 @@ impl NetworkBehaviour for Behaviour {
                     .retain(|addr| multiaddr_matches_peer_id(addr, &peer_id));
 
                 // Store agent version for shared access by topology.
-                self.agent_versions.write().put(peer_id, info.agent_version.clone());
+                self.agent_versions
+                    .write()
+                    .put(peer_id, info.agent_version.clone());
 
                 // Record metrics with the remote peer's agent version.
                 let duration = self

@@ -107,7 +107,10 @@ impl<Id: Clone + Eq + Hash + Debug, D: Debug> DialTracker<Id, D> {
             self.last_cleanup = Instant::now();
         }
 
-        let available_slots = self.config.max_in_flight.saturating_sub(self.in_flight.len());
+        let available_slots = self
+            .config
+            .max_in_flight
+            .saturating_sub(self.in_flight.len());
         let batch_size = max.min(available_slots);
 
         if batch_size == 0 {
@@ -242,10 +245,7 @@ impl<Id: Clone + Eq + Hash + Debug, D: Debug> DialTracker<Id, D> {
         let timed_out_peer_ids: Vec<PeerId> = self
             .in_flight
             .iter()
-            .filter(|(_, req)| {
-                req.started_at
-                    .is_some_and(|t| t.elapsed() > timeout)
-            })
+            .filter(|(_, req)| req.started_at.is_some_and(|t| t.elapsed() > timeout))
             .map(|(peer_id, _)| *peer_id)
             .collect();
 
@@ -324,16 +324,11 @@ impl<Id: Clone + Eq + Hash + Debug, D: Debug> DialTracker<Id, D> {
             return;
         };
 
-        let entry = backoff_cache
-            .get(id)
-            .copied()
-            .unwrap_or_default();
+        let entry = backoff_cache.get(id).copied().unwrap_or_default();
 
         let new_failures = entry.consecutive_failures + 1;
 
-        if self.config.ban_after_failures > 0
-            && new_failures >= self.config.ban_after_failures
-        {
+        if self.config.ban_after_failures > 0 && new_failures >= self.config.ban_after_failures {
             // Promote to ban
             backoff_cache.remove(id);
             if let Some(ban_cache) = self.banned.as_mut() {
@@ -347,10 +342,13 @@ impl<Id: Clone + Eq + Hash + Debug, D: Debug> DialTracker<Id, D> {
             return;
         }
 
-        backoff_cache.insert(id.clone(), BackoffEntry {
-            last_failure_secs: now_secs,
-            consecutive_failures: new_failures,
-        });
+        backoff_cache.insert(
+            id.clone(),
+            BackoffEntry {
+                last_failure_secs: now_secs,
+                consecutive_failures: new_failures,
+            },
+        );
         self.record_backoff_metrics();
         if let Some(purpose) = self.metrics_label {
             counter!("dial_tracker_backoff_recorded_total", "purpose" => purpose).increment(1);
@@ -432,10 +430,8 @@ impl<Id: Clone + Eq + Hash + Debug, D: Debug> DialTracker<Id, D> {
 
     fn record_gauges(&self) {
         if let Some(purpose) = self.metrics_label {
-            gauge!("dial_tracker_pending", "purpose" => purpose)
-                .set(self.pending.len() as f64);
-            gauge!("dial_tracker_in_flight", "purpose" => purpose)
-                .set(self.in_flight.len() as f64);
+            gauge!("dial_tracker_pending", "purpose" => purpose).set(self.pending.len() as f64);
+            gauge!("dial_tracker_in_flight", "purpose" => purpose).set(self.in_flight.len() as f64);
         }
     }
 
@@ -539,11 +535,20 @@ mod tests {
     }
 
     fn request(id: TestId, peer_idx: u8) -> DialRequest<TestId, &'static str> {
-        DialRequest::new(id, peer(peer_idx), vec![addr(9000 + id as u16)], "test-data")
+        DialRequest::new(
+            id,
+            peer(peer_idx),
+            vec![addr(9000 + id as u16)],
+            "test-data",
+        )
     }
 
     fn request_no_id(peer_idx: u8) -> DialRequest<TestId, &'static str> {
-        DialRequest::without_id(peer(peer_idx), vec![addr(9000 + peer_idx as u16)], "test-data")
+        DialRequest::without_id(
+            peer(peer_idx),
+            vec![addr(9000 + peer_idx as u16)],
+            "test-data",
+        )
     }
 
     fn config() -> DialTrackerConfig {
@@ -606,8 +611,14 @@ mod tests {
     fn test_enqueue_dedup() {
         let mut t = tracker();
         t.enqueue(request(1, 1)).unwrap();
-        assert_eq!(t.enqueue(request(2, 1)).unwrap_err(), EnqueueError::AlreadyPending); // same peer_id
-        assert_eq!(t.enqueue(request(1, 2)).unwrap_err(), EnqueueError::AlreadyPending); // same id
+        assert_eq!(
+            t.enqueue(request(2, 1)).unwrap_err(),
+            EnqueueError::AlreadyPending
+        ); // same peer_id
+        assert_eq!(
+            t.enqueue(request(1, 2)).unwrap_err(),
+            EnqueueError::AlreadyPending
+        ); // same id
         assert_counts(&t, 1, 0);
     }
 
@@ -615,7 +626,10 @@ mod tests {
     fn test_enqueue_dedup_in_flight() {
         let mut t = tracker();
         enqueue_in_flight(&mut t, 1, 1);
-        assert_eq!(t.enqueue(request(2, 1)).unwrap_err(), EnqueueError::AlreadyInFlight);
+        assert_eq!(
+            t.enqueue(request(2, 1)).unwrap_err(),
+            EnqueueError::AlreadyInFlight
+        );
     }
 
     #[test]
@@ -623,7 +637,10 @@ mod tests {
         let mut t = tracker_with(|c| c.max_pending = 2);
         t.enqueue(request(1, 1)).unwrap();
         t.enqueue(request(2, 2)).unwrap();
-        assert_eq!(t.enqueue(request(3, 3)).unwrap_err(), EnqueueError::QueueFull);
+        assert_eq!(
+            t.enqueue(request(3, 3)).unwrap_err(),
+            EnqueueError::QueueFull
+        );
     }
 
     #[test]
@@ -644,7 +661,9 @@ mod tests {
     #[test]
     fn test_next_dial_respects_max_in_flight() {
         let mut t = tracker_with(|c| c.max_in_flight = 2);
-        for i in 0..5u8 { t.enqueue(request(i as u64, i + 10)).unwrap(); }
+        for i in 0..5u8 {
+            t.enqueue(request(i as u64, i + 10)).unwrap();
+        }
 
         assert!(t.next_dial().is_some());
         assert!(t.next_dial().is_some());
@@ -655,7 +674,9 @@ mod tests {
     #[test]
     fn test_next_batch() {
         let mut t = tracker();
-        for i in 0..5u8 { t.enqueue(request(i as u64, i + 10)).unwrap(); }
+        for i in 0..5u8 {
+            t.enqueue(request(i as u64, i + 10)).unwrap();
+        }
 
         let batch = t.next_batch(3);
         assert_eq!(batch.len(), 3);
@@ -679,7 +700,9 @@ mod tests {
     #[test]
     fn test_fifo_ordering() {
         let mut t = tracker_with(|c| c.max_in_flight = 10);
-        for i in 0..5u8 { t.enqueue(request(i as u64, i + 10)).unwrap(); }
+        for i in 0..5u8 {
+            t.enqueue(request(i as u64, i + 10)).unwrap();
+        }
         for i in 0..5u64 {
             assert_eq!(t.next_dial().unwrap().id, Some(i));
         }
@@ -849,8 +872,14 @@ mod tests {
     fn test_prepare_and_start_already_tracked() {
         let mut t = tracker();
         prepare(&mut t, Some(1), 1).unwrap();
-        assert!(matches!(prepare(&mut t, Some(2), 1), Err(PrepareError::AlreadyTracked))); // same peer
-        assert!(matches!(prepare(&mut t, Some(1), 2), Err(PrepareError::AlreadyTracked))); // same id
+        assert!(matches!(
+            prepare(&mut t, Some(2), 1),
+            Err(PrepareError::AlreadyTracked)
+        )); // same peer
+        assert!(matches!(
+            prepare(&mut t, Some(1), 2),
+            Err(PrepareError::AlreadyTracked)
+        )); // same id
     }
 
     #[test]
@@ -915,10 +944,13 @@ mod tests {
 
         // Manually create an expired backoff entry by using a very old timestamp.
         // We simulate this by inserting directly into the backoff cache.
-        t.backoff.as_mut().unwrap().insert(id, BackoffEntry {
-            last_failure_secs: 0, // epoch = 0, which is `t.epoch`
-            consecutive_failures: 1,
-        });
+        t.backoff.as_mut().unwrap().insert(
+            id,
+            BackoffEntry {
+                last_failure_secs: 0, // epoch = 0, which is `t.epoch`
+                consecutive_failures: 1,
+            },
+        );
 
         // With base=5s and 1 failure, backoff ~5s.
         // Epoch elapsed is near-zero so it should be in backoff now.
@@ -947,10 +979,7 @@ mod tests {
         t.record_backoff(&id);
 
         // Should be banned, not just in backoff
-        assert_eq!(
-            t.enqueue(request(id, 1)).unwrap_err(),
-            EnqueueError::Banned
-        );
+        assert_eq!(t.enqueue(request(id, 1)).unwrap_err(), EnqueueError::Banned);
     }
 
     #[test]
@@ -964,10 +993,7 @@ mod tests {
         }
 
         // Immediate rejection
-        assert_eq!(
-            t.enqueue(request(id, 1)).unwrap_err(),
-            EnqueueError::Banned
-        );
+        assert_eq!(t.enqueue(request(id, 1)).unwrap_err(), EnqueueError::Banned);
 
         // Different id should still work
         assert!(t.enqueue(request(2, 2)).is_ok());
@@ -982,10 +1008,7 @@ mod tests {
         for _ in 0..3 {
             t.record_backoff(&id);
         }
-        assert_eq!(
-            t.enqueue(request(id, 1)).unwrap_err(),
-            EnqueueError::Banned
-        );
+        assert_eq!(t.enqueue(request(id, 1)).unwrap_err(), EnqueueError::Banned);
 
         // Clear should remove from ban
         t.clear_backoff(&id);

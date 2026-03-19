@@ -16,40 +16,40 @@ use libp2p::{
     Multiaddr, PeerId,
     core::{Endpoint, transport::PortUse},
     swarm::{
-        ConnectionDenied, ConnectionId, FromSwarm, NetworkBehaviour,
-        THandlerInEvent, THandlerOutEvent, ToSwarm,
+        ConnectionDenied, ConnectionId, FromSwarm, NetworkBehaviour, THandlerInEvent,
+        THandlerOutEvent, ToSwarm,
     },
 };
 use tracing::{debug, info};
+use vertex_net_local::{AddressScope, LocalCapabilities, same_subnet};
+use vertex_net_peer_store::{NetPeerStore, StoreError};
+use vertex_swarm_api::SwarmScoreStore;
+use vertex_swarm_api::{PeerConfigValues, SwarmBootnodeConfig, SwarmIdentity};
 use vertex_swarm_net_handshake::HANDSHAKE_TIMEOUT;
 use vertex_swarm_net_hive::MAX_BATCH_SIZE;
 use vertex_swarm_net_identify as identify;
-use vertex_net_local::{AddressScope, LocalCapabilities, same_subnet};
-use vertex_swarm_api::{PeerConfigValues, SwarmBootnodeConfig, SwarmIdentity};
 use vertex_swarm_peer::SwarmPeer;
-use vertex_swarm_spec::HasSpec;
-use vertex_net_peer_store::{NetPeerStore, StoreError};
-use vertex_swarm_peer_score::PeerScore;
-use vertex_swarm_api::SwarmScoreStore;
 use vertex_swarm_peer_manager::{PeerManager, StoredPeer};
+use vertex_swarm_peer_score::PeerScore;
 use vertex_swarm_peer_score::SwarmScoringConfig;
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
+use vertex_swarm_spec::HasSpec;
 
+use crate::DialReason;
 use vertex_net_dialer::{DialTracker, DialTrackerConfig};
 use vertex_net_peer_registry::PeerRegistry;
-use crate::DialReason;
 
 pub(crate) type ConnectionRegistry = PeerRegistry<OverlayAddress, Option<DialReason>>;
-use crate::extract_peer_id;
+use crate::TopologyCommand;
 use crate::composed::ProtocolBehaviours;
 use crate::error::TopologyError;
 use crate::events::TopologyEvent;
+use crate::extract_peer_id;
 use crate::gossip::{GossipHandle, spawn_gossip_task};
 use crate::handle::TopologyHandle;
+use crate::kademlia::{KademliaConfig, KademliaRouting, RoutingEvaluatorHandle, SwarmRouting};
 use crate::metrics::{TopologyMetrics, po_label};
 use crate::nat_discovery::LocalAddressManager;
-use crate::kademlia::{KademliaConfig, KademliaRouting, RoutingEvaluatorHandle, SwarmRouting};
-use crate::TopologyCommand;
 
 /// Type-erased peer store supporting both file-based and database-backed storage.
 type PeerStore = Arc<dyn NetPeerStore<StoredPeer>>;
@@ -192,7 +192,9 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
     pub(crate) peer_save_interval: Pin<Box<Interval>>,
 
     // Pending dnsaddr resolution for bootnodes (resolved_bootnodes, resolved_trusted)
-    pub(crate) pending_bootnode_resolution: Option<Pin<Box<dyn Future<Output = (Vec<Multiaddr>, Vec<Multiaddr>)> + Send>>>,
+    #[allow(clippy::type_complexity)]
+    pub(crate) pending_bootnode_resolution:
+        Option<Pin<Box<dyn Future<Output = (Vec<Multiaddr>, Vec<Multiaddr>)> + Send>>>,
 
     /// Static NAT addresses to emit as external addresses on first poll.
     /// Cleared after emitting to avoid re-emission.
@@ -265,11 +267,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 peer_config.max_per_bin(),
             )
         } else {
-            PeerManager::with_config(
-                &identity,
-                scoring_config,
-                peer_config.max_per_bin(),
-            )
+            PeerManager::with_config(&identity, scoring_config, peer_config.max_per_bin())
         };
 
         let local_overlay = identity.overlay_address();
@@ -279,7 +277,11 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
         let ban_rx = peer_manager.subscribe_bans();
 
-        let routing = KademliaRouting::new(identity.clone(), config.kademlia.clone(), peer_manager.clone());
+        let routing = KademliaRouting::new(
+            identity.clone(),
+            config.kademlia.clone(),
+            peer_manager.clone(),
+        );
 
         let local_capabilities = Arc::new(LocalCapabilities::new());
 
@@ -296,10 +298,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         let identity = Arc::new(identity);
 
         // Create composed protocol behaviours
-        let protocols = ProtocolBehaviours::new(
-            identity.clone(),
-            nat_discovery.clone(),
-        );
+        let protocols = ProtocolBehaviours::new(identity.clone(), nat_discovery.clone());
 
         let metrics = Arc::new(TopologyMetrics::new());
 
@@ -322,7 +321,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         // Spawn background connection evaluator
         let evaluator_handle = routing
             .spawn_evaluator()
-            .map_err(|e| TopologyError::VerifierSpawn(e))?;
+            .map_err(TopologyError::VerifierSpawn)?;
 
         // Spawn interface watcher for push-based subnet discovery.
         // if-watch subscribes to netlink address events and fires initial Up
@@ -495,7 +494,10 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         if self.peer_store.is_some() {
             self.peer_manager.collect_dirty();
             self.peer_manager.flush_write_buffer();
-            debug!(peers = self.peer_manager.index().len(), "Flushed peers to store");
+            debug!(
+                peers = self.peer_manager.index().len(),
+                "Flushed peers to store"
+            );
         }
     }
 
@@ -507,7 +509,9 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         if let Some(connection_id) = state.connection_id() {
             let peer_id = state.peer_id();
             for chunk in peers.chunks(MAX_BATCH_SIZE) {
-                self.protocols.hive.broadcast(peer_id, connection_id, chunk.to_vec());
+                self.protocols
+                    .hive
+                    .broadcast(peer_id, connection_id, chunk.to_vec());
             }
         }
     }
@@ -541,14 +545,15 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
         let mut trimmed = 0;
         for candidate in &candidates {
-            let reason = self.connection_registry.get(&candidate.overlay)
+            let reason = self
+                .connection_registry
+                .get(&candidate.overlay)
                 .and_then(|s| *s.reason());
             if matches!(reason, Some(DialReason::Trusted)) {
                 continue;
             }
 
-            let Some(peer_id) = self.connection_registry.resolve_peer_id(&candidate.overlay)
-            else {
+            let Some(peer_id) = self.connection_registry.resolve_peer_id(&candidate.overlay) else {
                 continue;
             };
 
@@ -569,7 +574,11 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         }
 
         if trimmed > 0 {
-            info!(trimmed, total_candidates = candidates.len(), "Trimmed overpopulated bins");
+            info!(
+                trimmed,
+                total_candidates = candidates.len(),
+                "Trimmed overpopulated bins"
+            );
         }
     }
 
@@ -586,16 +595,11 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         let (connected, known) = self.routing.bin_peer_counts(po);
         let (dialing, handshaking, active) = self.routing.bin_phase_counts(po);
 
-        metrics::gauge!("topology_bin_connected_peers", "po" => po_str)
-            .set(connected as f64);
-        metrics::gauge!("topology_bin_known_peers", "po" => po_str)
-            .set(known as f64);
-        metrics::gauge!("topology_bin_dialing", "po" => po_str)
-            .set(dialing as f64);
-        metrics::gauge!("topology_bin_handshaking", "po" => po_str)
-            .set(handshaking as f64);
-        metrics::gauge!("topology_bin_active", "po" => po_str)
-            .set(active as f64);
+        metrics::gauge!("topology_bin_connected_peers", "po" => po_str).set(connected as f64);
+        metrics::gauge!("topology_bin_known_peers", "po" => po_str).set(known as f64);
+        metrics::gauge!("topology_bin_dialing", "po" => po_str).set(dialing as f64);
+        metrics::gauge!("topology_bin_handshaking", "po" => po_str).set(handshaking as f64);
+        metrics::gauge!("topology_bin_active", "po" => po_str).set(active as f64);
         metrics::gauge!("topology_bin_effective", "po" => po_str)
             .set((dialing + handshaking + active) as f64);
     }
@@ -609,9 +613,17 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         for po in 0..bin_count {
             let po_str = po_label(po as u8);
             let target = limits.target(po as u8, depth);
-            let target_val = if target == usize::MAX { -1.0 } else { target as f64 };
+            let target_val = if target == usize::MAX {
+                -1.0
+            } else {
+                target as f64
+            };
             let ceiling_val = limits.ceiling(po as u8, depth);
-            let ceiling = if ceiling_val == usize::MAX { -1.0 } else { ceiling_val as f64 };
+            let ceiling = if ceiling_val == usize::MAX {
+                -1.0
+            } else {
+                ceiling_val as f64
+            };
 
             metrics::gauge!("topology_bin_target_peers", "po" => po_str).set(target_val);
             metrics::gauge!("topology_bin_ceiling_peers", "po" => po_str).set(ceiling);
@@ -642,7 +654,9 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 // Private/link-local peer - check if we share a subnet
                 let listen_addrs = self.nat_discovery.listen_addrs();
                 peer.multiaddrs().iter().any(|peer_addr| {
-                    listen_addrs.iter().any(|our_addr| same_subnet(our_addr, peer_addr))
+                    listen_addrs
+                        .iter()
+                        .any(|our_addr| same_subnet(our_addr, peer_addr))
                 })
             }
             Some(AddressScope::Loopback) | None => {
@@ -691,7 +705,7 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
 
     fn on_swarm_event(&mut self, event: FromSwarm) {
         // Forward swarm events to composed protocols
-        self.protocols.on_swarm_event(event.clone());
+        self.protocols.on_swarm_event(event);
 
         match event {
             FromSwarm::ConnectionEstablished(established) => {
@@ -705,7 +719,8 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
             }
             FromSwarm::NewListenAddr(info) => {
                 debug!(address = %info.addr, "New listen address");
-                let capability_became_known = self.nat_discovery.on_new_listen_addr(info.addr.clone());
+                let capability_became_known =
+                    self.nat_discovery.on_new_listen_addr(info.addr.clone());
 
                 if capability_became_known {
                     debug!("Network capability now known, triggering immediate dial");
@@ -714,7 +729,7 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
             }
             FromSwarm::ExpiredListenAddr(info) => {
                 debug!(address = %info.addr, "Expired listen address");
-                self.nat_discovery.on_expired_listen_addr(&info.addr);
+                self.nat_discovery.on_expired_listen_addr(info.addr);
             }
             _ => {}
         }
@@ -727,7 +742,8 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
         event: THandlerOutEvent<Self>,
     ) {
         // Forward to composed protocols
-        self.protocols.on_connection_handler_event(peer_id, connection_id, event);
+        self.protocols
+            .on_connection_handler_event(peer_id, connection_id, event);
     }
 
     fn poll(
@@ -735,15 +751,16 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
         cx: &mut Context<'_>,
     ) -> Poll<ToSwarm<Self::ToSwarm, THandlerInEvent<Self>>> {
         // Use TimingGuard for automatic poll duration recording
-        let _poll_timer = vertex_observability::TimingGuard::new(
-            metrics::histogram!("topology_poll_duration_seconds"),
-        );
+        let _poll_timer = vertex_observability::TimingGuard::new(metrics::histogram!(
+            "topology_poll_duration_seconds"
+        ));
 
         // Emit any pending static NAT addresses as external addresses (one-time on startup)
         if !self.pending_nat_external_addrs.is_empty() {
             for addr in std::mem::take(&mut self.pending_nat_external_addrs) {
                 debug!(addr = %addr, "Emitting static NAT address as external address");
-                self.pending_actions.push_back(ToSwarm::ExternalAddrConfirmed(addr));
+                self.pending_actions
+                    .push_back(ToSwarm::ExternalAddrConfirmed(addr));
             }
         }
 
@@ -753,16 +770,16 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
         }
 
         // Poll pending dnsaddr resolution for bootnodes
-        if let Some(ref mut future) = self.pending_bootnode_resolution {
-            if let Poll::Ready((resolved_bootnodes, resolved_trusted)) = future.as_mut().poll(cx) {
-                info!(
-                    bootnodes = resolved_bootnodes.len(),
-                    trusted = resolved_trusted.len(),
-                    "dnsaddr resolution complete, dialing bootnodes"
-                );
-                self.pending_bootnode_resolution = None;
-                self.dial_bootnodes(resolved_bootnodes, resolved_trusted);
-            }
+        if let Some(ref mut future) = self.pending_bootnode_resolution
+            && let Poll::Ready((resolved_bootnodes, resolved_trusted)) = future.as_mut().poll(cx)
+        {
+            info!(
+                bootnodes = resolved_bootnodes.len(),
+                trusted = resolved_trusted.len(),
+                "dnsaddr resolution complete, dialing bootnodes"
+            );
+            self.pending_bootnode_resolution = None;
+            self.dial_bootnodes(resolved_bootnodes, resolved_trusted);
         }
 
         // Drain gossip broadcast actions from the async gossip task
@@ -792,11 +809,25 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
                 Poll::Ready(ToSwarm::Dial { opts }) => {
                     return Poll::Ready(ToSwarm::Dial { opts });
                 }
-                Poll::Ready(ToSwarm::NotifyHandler { peer_id, handler, event }) => {
-                    return Poll::Ready(ToSwarm::NotifyHandler { peer_id, handler, event });
+                Poll::Ready(ToSwarm::NotifyHandler {
+                    peer_id,
+                    handler,
+                    event,
+                }) => {
+                    return Poll::Ready(ToSwarm::NotifyHandler {
+                        peer_id,
+                        handler,
+                        event,
+                    });
                 }
-                Poll::Ready(ToSwarm::CloseConnection { peer_id, connection }) => {
-                    return Poll::Ready(ToSwarm::CloseConnection { peer_id, connection });
+                Poll::Ready(ToSwarm::CloseConnection {
+                    peer_id,
+                    connection,
+                }) => {
+                    return Poll::Ready(ToSwarm::CloseConnection {
+                        peer_id,
+                        connection,
+                    });
                 }
                 Poll::Ready(ToSwarm::ExternalAddrConfirmed(addr)) => {
                     return Poll::Ready(ToSwarm::ExternalAddrConfirmed(addr));

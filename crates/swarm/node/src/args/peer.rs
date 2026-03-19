@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 use vertex_swarm_api::{
-    PeerConfigValues, DEFAULT_PEER_BAN_THRESHOLD, DEFAULT_PEER_MAX_PER_BIN,
-    DEFAULT_PEER_WARN_THRESHOLD,
+    DEFAULT_PEER_BAN_THRESHOLD, DEFAULT_PEER_MAX_PER_BIN, DEFAULT_PEER_WARN_THRESHOLD,
+    PeerConfigValues,
 };
 
 /// Validated peer management configuration.

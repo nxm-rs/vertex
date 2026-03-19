@@ -52,7 +52,10 @@ pub trait SwarmTopologyPeers: SwarmTopologyBins {
     /// Get connected peer details in a specific bin.
     ///
     /// Returns `(overlay, multiaddrs)` for each connected peer in the bin.
-    fn connected_peer_details_in_bin(&self, po: u8) -> Vec<(OverlayAddress, Vec<libp2p::Multiaddr>)>;
+    fn connected_peer_details_in_bin(
+        &self,
+        po: u8,
+    ) -> Vec<(OverlayAddress, Vec<libp2p::Multiaddr>)>;
 }
 
 /// Connection and storage statistics for topology monitoring.

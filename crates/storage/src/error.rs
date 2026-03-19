@@ -24,19 +24,27 @@ impl fmt::Display for DatabaseErrorInfo {
 
 impl std::error::Error for DatabaseErrorInfo {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source.as_deref().map(|e| e as &(dyn std::error::Error + 'static))
+        self.source
+            .as_deref()
+            .map(|e| e as &(dyn std::error::Error + 'static))
     }
 }
 
 impl DatabaseErrorInfo {
     /// Create from a message string with no source error.
     pub fn msg(message: impl Into<String>) -> Self {
-        Self { message: message.into(), source: None }
+        Self {
+            message: message.into(),
+            source: None,
+        }
     }
 
     /// Create from a source error. Display delegates to the source directly.
     pub fn from_err(err: impl std::error::Error + Send + Sync + 'static) -> Self {
-        Self { message: String::new(), source: Some(Box::new(err)) }
+        Self {
+            message: String::new(),
+            source: Some(Box::new(err)),
+        }
     }
 
     /// Create with a contextual message and a source error.
@@ -44,7 +52,10 @@ impl DatabaseErrorInfo {
         message: impl Into<String>,
         err: impl std::error::Error + Send + Sync + 'static,
     ) -> Self {
-        Self { message: message.into(), source: Some(Box::new(err)) }
+        Self {
+            message: message.into(),
+            source: Some(Box::new(err)),
+        }
     }
 }
 
@@ -132,7 +143,12 @@ impl DatabaseError {
     }
 
     /// Create a Write error from a message.
-    pub fn write(table: &'static str, key_len: usize, value_len: usize, msg: impl Into<String>) -> Self {
+    pub fn write(
+        table: &'static str,
+        key_len: usize,
+        value_len: usize,
+        msg: impl Into<String>,
+    ) -> Self {
         Self::Write(Box::new(DatabaseWriteError {
             table_name: table,
             key_len,

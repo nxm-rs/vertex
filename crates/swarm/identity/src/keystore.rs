@@ -25,10 +25,7 @@ pub fn resolve_password(password: Option<&str>, password_file: Option<&str>) -> 
 }
 
 /// Load a signer from an Ethereum keystore file.
-pub fn load_signer_from_keystore(
-    keystore_path: &Path,
-    password: &str,
-) -> Result<PrivateKeySigner> {
+pub fn load_signer_from_keystore(keystore_path: &Path, password: &str) -> Result<PrivateKeySigner> {
     info!(
         "Loading signing key from keystore: {}",
         keystore_path.display()

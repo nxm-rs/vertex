@@ -15,7 +15,10 @@ impl fmt::Display for NodeBuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TopologyBehaviourTaken => {
-                write!(f, "topology behaviour was already taken from infrastructure")
+                write!(
+                    f,
+                    "topology behaviour was already taken from infrastructure"
+                )
             }
             Self::TopologyCellPoisoned => {
                 write!(f, "failed to acquire topology from cell")

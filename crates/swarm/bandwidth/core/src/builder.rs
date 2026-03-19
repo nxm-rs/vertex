@@ -84,11 +84,7 @@ impl<C, P> AccountingBuilder<C, P> {
     where
         F: FnOnce(Self) -> Self,
     {
-        if cond {
-            f(self)
-        } else {
-            self
-        }
+        if cond { f(self) } else { self }
     }
 
     /// Get a reference to the config.
