@@ -12,6 +12,9 @@ description = "Swarm protocol RPC services for Vertex"
 # Internal dependencies
 vertex-swarm-api = { workspace = true }
 
+# Primitives
+hex = { workspace = true }
+
 # Async
 async-trait.workspace = true
 tokio = { workspace = true, features = ["sync", "rt"] }

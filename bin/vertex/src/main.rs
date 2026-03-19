@@ -2,49 +2,18 @@
 
 mod cli;
 
-use vertex_node_builder::NodeBuilder;
-use vertex_swarm_builder::{SwarmNodeBuilder, node_type};
-use vertex_swarm_primitives::SwarmNodeType;
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-#[tokio::main]
-async fn main() -> eyre::Result<()> {
-    cli::run(|ctx, args| async move {
-        match ctx.config.protocol.node_type {
-            SwarmNodeType::Client => {
-                NodeBuilder::new()
-                    .with_launch_context(
-                        ctx.base.executor.clone(),
-                        ctx.base.dirs.clone(),
-                        ctx.config.infra.api.clone(),
-                    )
-                    .with_protocol(
-                        SwarmNodeBuilder::<node_type::Client>::new(&ctx, &args.swarm).build(),
-                    )
-                    .launch()
-                    .await?
-                    .wait_for_shutdown()
-                    .await;
-            }
-            SwarmNodeType::Storer => {
-                unimplemented!("storer node not yet implemented")
-            }
-            SwarmNodeType::Bootnode => {
-                NodeBuilder::new()
-                    .with_launch_context(
-                        ctx.base.executor.clone(),
-                        ctx.base.dirs.clone(),
-                        ctx.config.infra.api.clone(),
-                    )
-                    .with_protocol(
-                        SwarmNodeBuilder::<node_type::Bootnode>::new(&ctx, &args.swarm).build(),
-                    )
-                    .launch()
-                    .await?
-                    .wait_for_shutdown()
-                    .await;
-            }
-        }
-        Ok(())
-    })
-    .await
+#[cfg(feature = "heap-profiling")]
+#[unsafe(export_name = "_rjem_malloc_conf")]
+static MALLOC_CONF: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
+
+fn main() -> eyre::Result<()> {
+    // Build and run the tokio runtime
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(cli::run())
 }

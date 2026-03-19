@@ -11,7 +11,7 @@
 //!
 //! # Settlement Events
 //!
-//! Settlement-specific events ([`PseudosettleEvent`], [`SwapEvent`]) are defined here
+//! Settlement-specific events ([`PseudosettleEvent`]) are defined here
 //! for routing to the respective settlement services. The behaviour routes these
 //! events based on optional senders configured at construction time.
 
@@ -19,20 +19,12 @@ use alloy_primitives::U256;
 use bytes::Bytes;
 use libp2p::PeerId;
 use nectar_primitives::ChunkAddress;
-use vertex_net_pseudosettle::PaymentAck;
-use vertex_swarm_bandwidth_chequebook::SignedCheque;
-use vertex_swarm_primitives::OverlayAddress;
-
-// ============================================================================
-// Client Events
-// ============================================================================
+use vertex_swarm_net_pseudosettle::PaymentAck;
+use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
 /// Events emitted by the client behaviour.
 #[derive(Debug, Clone)]
 pub enum ClientEvent {
-    // ========================================================================
-    // Pricing Protocol
-    // ========================================================================
     /// Received a payment threshold from a peer.
     ///
     /// Validate this threshold and decide whether to continue or disconnect.
@@ -51,9 +43,6 @@ pub enum ClientEvent {
         peer: OverlayAddress,
     },
 
-    // ========================================================================
-    // Retrieval Protocol
-    // ========================================================================
     /// A peer is requesting a chunk from us.
     ///
     /// Check if we have the chunk, verify accounting, then respond with
@@ -93,9 +82,6 @@ pub enum ClientEvent {
         error: String,
     },
 
-    // ========================================================================
-    // PushSync Protocol
-    // ========================================================================
     /// A peer is pushing a chunk to us.
     ///
     /// Validate the stamp, decide whether to store or forward, then respond
@@ -139,9 +125,6 @@ pub enum ClientEvent {
         error: String,
     },
 
-    // ========================================================================
-    // Settlement
-    // ========================================================================
     /// A settlement is needed with a peer.
     ///
     /// Emitted when the balance crosses the payment threshold. Initiate
@@ -151,28 +134,6 @@ pub enum ClientEvent {
         peer: OverlayAddress,
         /// Current balance (positive = they owe us).
         balance: i64,
-    },
-
-    /// Received a cheque from a peer (SWAP settlement).
-    ChequeReceived {
-        /// The peer that sent the cheque.
-        peer: OverlayAddress,
-        /// The libp2p peer ID.
-        peer_id: PeerId,
-        /// The signed cheque.
-        cheque: SignedCheque,
-        /// The peer's exchange rate.
-        peer_rate: U256,
-    },
-
-    /// Successfully sent a cheque to a peer.
-    ChequeSent {
-        /// The peer we sent to.
-        peer: OverlayAddress,
-        /// The libp2p peer ID.
-        peer_id: PeerId,
-        /// The peer's exchange rate.
-        peer_rate: U256,
     },
 
     /// Received a pseudosettle payment from a peer.
@@ -197,9 +158,6 @@ pub enum ClientEvent {
         ack: PaymentAck,
     },
 
-    // ========================================================================
-    // Connection Lifecycle
-    // ========================================================================
     /// A peer's handler has been activated.
     ///
     /// This is emitted after the ActivatePeer command is processed.
@@ -218,9 +176,6 @@ pub enum ClientEvent {
         overlay: OverlayAddress,
     },
 
-    // ========================================================================
-    // Errors
-    // ========================================================================
     /// A protocol error occurred.
     ProtocolError {
         /// The peer involved (if known).
@@ -234,16 +189,9 @@ pub enum ClientEvent {
     },
 }
 
-// ============================================================================
-// Client Commands
-// ============================================================================
-
 /// Commands accepted by the client behaviour.
 #[derive(Debug, Clone)]
 pub enum ClientCommand {
-    // ========================================================================
-    // Handler Lifecycle
-    // ========================================================================
     /// Activate the handler for a peer after handshake completes.
     ///
     /// This is sent by the node when TopologyEvent::PeerAuthenticated is received.
@@ -253,13 +201,10 @@ pub enum ClientCommand {
         peer_id: PeerId,
         /// The peer's Swarm overlay address.
         overlay: OverlayAddress,
-        /// Whether the peer is a full node.
-        is_full_node: bool,
+        /// The peer's node type.
+        node_type: SwarmNodeType,
     },
 
-    // ========================================================================
-    // Pricing Protocol
-    // ========================================================================
     /// Announce our payment threshold to a peer.
     ///
     /// The threshold value depends on peer type (full vs light) and configuration.
@@ -270,9 +215,6 @@ pub enum ClientCommand {
         threshold: U256,
     },
 
-    // ========================================================================
-    // Retrieval Protocol
-    // ========================================================================
     /// Request a chunk from a peer.
     RetrieveChunk {
         /// The peer to request from.
@@ -293,9 +235,6 @@ pub enum ClientCommand {
         stamp: Bytes,
     },
 
-    // ========================================================================
-    // PushSync Protocol
-    // ========================================================================
     /// Push a chunk to a peer.
     PushChunk {
         /// The peer to push to.
@@ -320,19 +259,6 @@ pub enum ClientCommand {
         nonce: Bytes,
         /// Our storage radius.
         storage_radius: u8,
-    },
-
-    // ========================================================================
-    // Settlement
-    // ========================================================================
-    /// Send a cheque to a peer (SWAP settlement).
-    SendCheque {
-        /// The peer to send the cheque to.
-        peer: OverlayAddress,
-        /// The signed cheque to send.
-        cheque: SignedCheque,
-        /// Our exchange rate.
-        our_rate: U256,
     },
 
     /// Send a pseudosettle payment to a peer.
@@ -385,29 +311,5 @@ pub enum PseudosettleEvent {
         amount: U256,
         /// Request ID for sending ack.
         request_id: u64,
-    },
-}
-
-/// Events routed to the swap service.
-///
-/// These events are extracted from [`ClientEvent`] and sent to the
-/// swap service via a dedicated channel for type-safe handling.
-#[derive(Debug, Clone)]
-pub enum SwapEvent {
-    /// We sent a cheque and received acknowledgment (peer rate).
-    ChequeSent {
-        /// The peer we sent to.
-        peer: OverlayAddress,
-        /// The peer's exchange rate.
-        peer_rate: U256,
-    },
-    /// A peer sent us a cheque.
-    ChequeReceived {
-        /// The peer that sent the cheque.
-        peer: OverlayAddress,
-        /// The signed cheque.
-        cheque: SignedCheque,
-        /// The peer's exchange rate.
-        peer_rate: U256,
     },
 }

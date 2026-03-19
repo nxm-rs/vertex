@@ -1,0 +1,39 @@
+// Copyright 2026 Nexum Contributors
+// SPDX-License-Identifier: AGPL-3.0-only
+
+syntax = "proto3";
+
+package pullsync;
+
+message Syn {}
+
+message Ack {
+  repeated uint64 cursors = 1;
+  uint64 epoch = 2;
+}
+
+message Get {
+  int32 bin = 1;
+  uint64 start = 2;
+}
+
+message Chunk {
+  bytes address = 1;
+  bytes batch_id = 2;
+  bytes stamp_hash = 3;
+}
+
+message Offer {
+  uint64 topmost = 1;
+  repeated Chunk chunks = 2;
+}
+
+message Want {
+  bytes bit_vector = 1;
+}
+
+message Delivery {
+  bytes address = 1;
+  bytes data = 2;
+  bytes stamp = 3;
+}

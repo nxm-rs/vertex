@@ -1,3 +1,5 @@
+compile_error!("vertex-swarm-bandwidth-swap is disabled: depends on serde_json which has been removed from the workspace. Remove serde_json dependency before re-enabling.");
+
 //! Chequebook-based settlement provider for bandwidth accounting.
 //!
 //! When debt exceeds the payment threshold, the debtor issues a signed cheque.
@@ -28,7 +30,7 @@ use vertex_swarm_api::{
     SwarmPeerState, SwarmResult, SwarmSettlementProvider,
 };
 use vertex_swarm_bandwidth::{Accounting, AccountingPeerHandle};
-use vertex_swarm_node::protocol::ClientCommand;
+use vertex_swarm_node::ClientCommand;
 use vertex_swarm_primitives::OverlayAddress;
 
 pub use error::SwapError;
@@ -181,16 +183,12 @@ pub fn new_swap_accounting<C: SwarmAccountingConfig + Clone + 'static, I: SwarmI
 mod tests {
     use super::*;
     use vertex_swarm_api::{
-        BandwidthMode, Direction, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmNodeType,
+        BandwidthMode, Direction, SwarmAccountingConfig, SwarmBandwidthAccounting,
         SwarmPeerBandwidth,
     };
-    use vertex_swarm_bandwidth::DefaultAccountingConfig;
+    use vertex_swarm_bandwidth::BandwidthConfig;
     use vertex_swarm_bandwidth::PeerState;
-    use vertex_swarm_identity::Identity;
-
-    fn test_identity() -> Identity {
-        Identity::random(vertex_swarmspec::init_testnet(), SwarmNodeType::Client)
-    }
+    use vertex_swarm_test_utils::{test_identity, test_peer};
 
     struct SwapTestConfig;
 
@@ -220,10 +218,6 @@ mod tests {
         }
     }
 
-    fn test_peer() -> OverlayAddress {
-        OverlayAddress::from([1u8; 32])
-    }
-
     #[test]
     fn test_swap_provider_name() {
         let provider = SwapProvider::new(SwapTestConfig);
@@ -232,7 +226,7 @@ mod tests {
 
     #[test]
     fn test_swap_accounting_basic() {
-        let accounting = new_swap_accounting(DefaultAccountingConfig, test_identity());
+        let accounting = new_swap_accounting(BandwidthConfig::default(), test_identity());
 
         let handle = accounting.for_peer(test_peer());
         assert_eq!(handle.balance(), 0);

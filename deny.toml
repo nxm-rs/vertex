@@ -19,6 +19,7 @@ allow = [
     "Zlib",
     "MPL-2.0",
     "Unicode-3.0",
+    "CDDL-1.0",    # inferno (pprof flamegraph generation)
 ]
 
 [bans]
@@ -30,3 +31,4 @@ highlight = "all"
 unknown-registry = "deny"
 unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://github.com/nxm-rs/nectar"]

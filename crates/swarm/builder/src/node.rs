@@ -1,381 +1,327 @@
-//! Generic Swarm node builder for protocol configuration.
+//! Layered node builders for Swarm nodes.
 //!
-//! This module provides `SwarmNodeBuilder<N, TB, AB, PB>` - a generic builder
-//! that configures Swarm protocol components based on node type.
-//!
-//! # Usage
-//!
-//! ```ignore
-//! use vertex_swarm_builder::{SwarmNodeBuilder, node_type};
-//!
-//! // Create a light node builder with defaults
-//! let builder = SwarmNodeBuilder::<node_type::Client>::new(&ctx, &args);
-//!
-//! // Or customize components
-//! let builder = SwarmNodeBuilder::<node_type::Client>::new(&ctx, &args)
-//!     .accounting(CustomAccountingBuilder::new());
-//!
-//! // Use with NodeBuilder
-//! NodeBuilder::new()
-//!     .with_context(&ctx, &args.infra)
-//!     .with_protocol(builder)
-//!     .launch()
-//!     .await?;
-//! ```
+//! Provides fluent builder APIs for constructing nodes. The actual build logic
+//! lives in SwarmLaunchConfig implementations in launch.rs.
 
-use std::marker::PhantomData;
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use tokio::sync::mpsc;
-use vertex_node_api::{NodeBuildsProtocol, NodeContext};
+use vertex_node_api::InfrastructureContext;
 use vertex_swarm_api::{
-    NodeTask, SwarmAccountingConfig, SwarmLaunchConfig, SwarmNetworkConfig, SwarmProtocol,
+    SwarmAccountingConfig, SwarmIdentity, SwarmLaunchConfig, SwarmLocalStoreConfig,
+    SwarmNetworkConfig, SwarmPeerConfig, SwarmPricingConfig, SwarmRoutingConfig,
+    SwarmStorageConfig,
 };
-use vertex_swarm_bandwidth::{Accounting, DefaultAccountingConfig};
-use vertex_swarm_bandwidth_pseudosettle::{PseudosettleProvider, create_pseudosettle_actor};
+use vertex_swarm_bandwidth::DefaultBandwidthConfig;
 use vertex_swarm_identity::Identity;
-use vertex_swarm_node::args::ProtocolArgs;
-use vertex_swarm_node::{ClientCommand, ClientNode};
-use vertex_swarm_peermanager::PeerStore;
-use vertex_swarmspec::Hive;
-use vertex_tasks::{SpawnableTask, TaskExecutor};
+use vertex_swarm_localstore::LocalStoreConfig;
+use vertex_swarm_node::args::NetworkConfig;
+use vertex_swarm_redistribution::StorageConfig;
+use vertex_swarm_spec::Spec;
+use vertex_swarm_topology::KademliaConfig;
 
+use crate::config::{BootnodeConfig, ClientConfig, StorerConfig};
 use crate::error::SwarmNodeError;
-use crate::launch::SwarmLaunchContext;
-use crate::node_type::{Bootnode, Client, NodeTypeDefaults, Storer};
-use crate::types::{DefaultClientTypes, DefaultNetworkConfig};
+use crate::handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};
 
-/// Generic Swarm node builder parameterized by node type and component builders.
-///
-/// The node type `N` determines default component builders via [`NodeTypeDefaults`].
-/// Component builders can be overridden using the builder methods.
-///
-/// # Type Parameters
-///
-/// - `N`: Node type marker (e.g., `Client`, `Storer`, `Bootnode`)
-/// - `TB`: Topology builder type
-/// - `AB`: Accounting builder type
-/// - `PB`: Pricer builder type
-pub struct SwarmNodeBuilder<
-    N: NodeTypeDefaults,
-    TB = <N as NodeTypeDefaults>::DefaultTopology,
-    AB = <N as NodeTypeDefaults>::DefaultAccounting,
-    PB = <N as NodeTypeDefaults>::DefaultPricer,
-> {
-    identity: Arc<Identity>,
-    spec: Arc<Hive>,
-    peer_store: Arc<PeerStore>,
-    peers_path: std::path::PathBuf,
-    network_config: DefaultNetworkConfig,
-    topology_builder: TB,
-    accounting_builder: AB,
-    pricer_builder: PB,
-    _node_type: PhantomData<N>,
+/// Fluent transformation API for builders.
+pub trait BuilderExt: Sized {
+    fn apply<F>(self, f: F) -> Self
+    where
+        F: FnOnce(Self) -> Self,
+    {
+        f(self)
+    }
+
+    fn apply_if<F>(self, cond: bool, f: F) -> Self
+    where
+        F: FnOnce(Self) -> Self,
+    {
+        if cond { f(self) } else { self }
+    }
 }
 
-impl<N: NodeTypeDefaults> SwarmNodeBuilder<N> {
-    /// Create a new builder with default components for the node type.
-    ///
-    /// Extracts configuration from the launch context and swarm args.
-    pub fn new(ctx: &SwarmLaunchContext, _args: &ProtocolArgs) -> Self {
-        let network_config = DefaultNetworkConfig {
-            listen_addrs: ctx.config.protocol.network.listen_addrs(),
-            bootnodes: ctx.config.protocol.network.bootnodes(),
-            discovery_enabled: ctx.config.protocol.network.discovery_enabled(),
-            max_peers: ctx.config.protocol.network.max_peers(),
-            idle_timeout_secs: ctx.config.protocol.network.idle_timeout().as_secs(),
-            nat_addrs: ctx.config.protocol.network.nat_addrs(),
-            nat_auto: ctx.config.protocol.network.nat_auto_enabled(),
-        };
+/// Builder for bootnodes.
+pub struct NodeBuilder<I, N>
+where
+    I: SwarmIdentity,
+    N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
+{
+    spec: Arc<Spec>,
+    identity: I,
+    network: N,
+}
 
-        SwarmNodeBuilder {
-            identity: Arc::new(ctx.identity.clone()),
-            spec: ctx.spec.clone(),
-            peer_store: ctx.peer_store.clone(),
-            peers_path: ctx.peers_path.clone(),
-            network_config,
-            topology_builder: N::DefaultTopology::default(),
-            accounting_builder: N::DefaultAccounting::default(),
-            pricer_builder: N::DefaultPricer::default(),
-            _node_type: PhantomData,
+impl<I, N> BuilderExt for NodeBuilder<I, N>
+where
+    I: SwarmIdentity,
+    N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
+{
+}
+
+impl<I, N> NodeBuilder<I, N>
+where
+    I: SwarmIdentity,
+    N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
+{
+    pub fn new(spec: Arc<Spec>, identity: I, network: N) -> Self {
+        Self {
+            spec,
+            identity,
+            network,
+        }
+    }
+
+    pub fn spec(&self) -> &Arc<Spec> {
+        &self.spec
+    }
+
+    pub fn identity(&self) -> &I {
+        &self.identity
+    }
+
+    pub fn network(&self) -> &N {
+        &self.network
+    }
+
+    /// Transition to client builder by adding accounting.
+    pub fn with_accounting<A>(self, accounting: A) -> ClientNodeBuilder<I, N, A>
+    where
+        A: SwarmAccountingConfig + SwarmPricingConfig,
+    {
+        ClientNodeBuilder {
+            base: self,
+            accounting,
         }
     }
 }
 
-impl<N: NodeTypeDefaults, TB, AB, PB> SwarmNodeBuilder<N, TB, AB, PB> {
-    /// Override the topology builder.
-    #[must_use]
-    pub fn topology<NewTB>(self, builder: NewTB) -> SwarmNodeBuilder<N, NewTB, AB, PB> {
-        SwarmNodeBuilder {
-            identity: self.identity,
-            spec: self.spec,
-            peer_store: self.peer_store,
-            peers_path: self.peers_path,
-            network_config: self.network_config,
-            topology_builder: builder,
-            accounting_builder: self.accounting_builder,
-            pricer_builder: self.pricer_builder,
-            _node_type: PhantomData,
-        }
-    }
-
-    /// Override the accounting builder.
-    #[must_use]
-    pub fn accounting<NewAB>(self, builder: NewAB) -> SwarmNodeBuilder<N, TB, NewAB, PB> {
-        SwarmNodeBuilder {
-            identity: self.identity,
-            spec: self.spec,
-            peer_store: self.peer_store,
-            peers_path: self.peers_path,
-            network_config: self.network_config,
-            topology_builder: self.topology_builder,
-            accounting_builder: builder,
-            pricer_builder: self.pricer_builder,
-            _node_type: PhantomData,
-        }
-    }
-
-    /// Override the pricer builder.
-    #[must_use]
-    pub fn pricer<NewPB>(self, builder: NewPB) -> SwarmNodeBuilder<N, TB, AB, NewPB> {
-        SwarmNodeBuilder {
-            identity: self.identity,
-            spec: self.spec,
-            peer_store: self.peer_store,
-            peers_path: self.peers_path,
-            network_config: self.network_config,
-            topology_builder: self.topology_builder,
-            accounting_builder: self.accounting_builder,
-            pricer_builder: builder,
-            _node_type: PhantomData,
-        }
-    }
-
-    /// Override network configuration.
-    #[must_use]
-    pub fn network_config(mut self, config: DefaultNetworkConfig) -> Self {
-        self.network_config = config;
-        self
-    }
+/// Builder for client nodes.
+pub struct ClientNodeBuilder<I, N, A>
+where
+    I: SwarmIdentity,
+    N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
+    A: SwarmAccountingConfig + SwarmPricingConfig,
+{
+    base: NodeBuilder<I, N>,
+    accounting: A,
 }
 
-/// Build config for light nodes produced by SwarmNodeBuilder.
-///
-/// This implements `NodeBuildsProtocol` and can be passed to `NodeBuilder::with_protocol`.
-pub struct ClientNodeBuildConfig {
-    identity: Arc<Identity>,
-    spec: Arc<Hive>,
-    peer_store: Arc<PeerStore>,
-    peers_path: std::path::PathBuf,
-    network_config: DefaultNetworkConfig,
+impl<I, N, A> BuilderExt for ClientNodeBuilder<I, N, A>
+where
+    I: SwarmIdentity,
+    N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
+    A: SwarmAccountingConfig + SwarmPricingConfig,
+{
 }
 
-impl<TB, AB, PB> SwarmNodeBuilder<Client, TB, AB, PB> {
-    /// Build the light node configuration.
-    ///
-    /// Returns a `ClientNodeBuildConfig` that implements `NodeBuildsProtocol`.
-    #[must_use]
-    pub fn build(self) -> ClientNodeBuildConfig {
-        ClientNodeBuildConfig {
-            identity: self.identity,
-            spec: self.spec,
-            peer_store: self.peer_store,
-            peers_path: self.peers_path,
-            network_config: self.network_config,
+impl<I, N, A> ClientNodeBuilder<I, N, A>
+where
+    I: SwarmIdentity,
+    N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
+    A: SwarmAccountingConfig + SwarmPricingConfig,
+{
+    pub fn spec(&self) -> &Arc<Spec> {
+        self.base.spec()
+    }
+
+    /// Transition to storer builder by adding storage.
+    pub fn with_storage<S, St>(
+        self,
+        local_store: S,
+        storage: St,
+    ) -> StorerNodeBuilder<I, N, A, S, St>
+    where
+        S: SwarmLocalStoreConfig,
+        St: SwarmStorageConfig,
+    {
+        StorerNodeBuilder {
+            client: self,
+            local_store,
+            storage,
         }
     }
 }
 
-impl NodeBuildsProtocol for ClientNodeBuildConfig {
-    type Protocol = SwarmProtocol<Self>;
+/// Builder for storer nodes.
+pub struct StorerNodeBuilder<I, N, A, S, St>
+where
+    I: SwarmIdentity,
+    N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
+    A: SwarmAccountingConfig + SwarmPricingConfig,
+    S: SwarmLocalStoreConfig,
+    St: SwarmStorageConfig,
+{
+    client: ClientNodeBuilder<I, N, A>,
+    local_store: S,
+    storage: St,
+}
 
-    fn protocol_name(&self) -> &'static str {
-        "Swarm"
+impl<I, N, A, S, St> BuilderExt for StorerNodeBuilder<I, N, A, S, St>
+where
+    I: SwarmIdentity,
+    N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
+    A: SwarmAccountingConfig + SwarmPricingConfig,
+    S: SwarmLocalStoreConfig,
+    St: SwarmStorageConfig,
+{
+}
+
+impl<I, N, A, S, St> StorerNodeBuilder<I, N, A, S, St>
+where
+    I: SwarmIdentity,
+    N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
+    A: SwarmAccountingConfig + SwarmPricingConfig,
+    S: SwarmLocalStoreConfig,
+    St: SwarmStorageConfig,
+{
+    pub fn spec(&self) -> &Arc<Spec> {
+        self.client.spec()
     }
 }
 
-#[async_trait]
-impl SwarmLaunchConfig for ClientNodeBuildConfig {
-    type Types = DefaultClientTypes;
-    type Providers = crate::rpc::ClientRpcProviders<crate::providers::NetworkChunkProvider>;
-    type Error = SwarmNodeError;
+/// Default bootnode builder.
+pub type DefaultNodeBuilder = NodeBuilder<Arc<Identity>, NetworkConfig<KademliaConfig>>;
 
-    async fn build(self, _ctx: &NodeContext) -> Result<(NodeTask, Self::Providers), Self::Error> {
-        use tracing::info;
-        use vertex_swarmspec::Loggable;
+/// Default client builder.
+pub type DefaultClientBuilder =
+    ClientNodeBuilder<Arc<Identity>, NetworkConfig<KademliaConfig>, DefaultBandwidthConfig>;
 
-        info!("Building {} node...", Client::NAME);
-        self.spec.log();
-        self.identity.log();
-        info!("Peers database: {}", self.peers_path.display());
+/// Default storer builder.
+pub type DefaultStorerBuilder = StorerNodeBuilder<
+    Arc<Identity>,
+    NetworkConfig<KademliaConfig>,
+    DefaultBandwidthConfig,
+    LocalStoreConfig,
+    StorageConfig,
+>;
 
-        // Create event channels for settlement services
-        let (pseudosettle_event_tx, pseudosettle_event_rx) = mpsc::unbounded_channel();
-
-        // Build the ClientNode with event routing configured
-        let (node, client_service, client_handle) =
-            ClientNode::<DefaultClientTypes>::builder(self.identity.clone())
-                .with_network_config(&self.network_config)
-                .with_peer_store(self.peer_store)
-                .with_pseudosettle_events(pseudosettle_event_tx)
-                .build()
-                .await
-                .map_err(|e| SwarmNodeError::Build(e.to_string()))?;
-
-        // Get the topology from the node
-        let topology = node.kademlia_topology().clone();
-
-        // Create accounting configuration
-        let config = DefaultAccountingConfig;
-
-        // Create a command channel sender for settlement services
-        let (settlement_command_tx, mut settlement_command_rx) =
-            mpsc::unbounded_channel::<ClientCommand>();
-
-        // Create accounting for pseudosettle
-        let accounting = Arc::new(Accounting::with_providers(
-            config,
-            self.identity.clone(),
-            vec![],
-        ));
-
-        // Create pseudosettle actor
-        let (pseudosettle_service, pseudosettle_handle) = create_pseudosettle_actor(
-            pseudosettle_event_rx,
-            settlement_command_tx.clone(),
-            accounting.clone(),
-            config.refresh_rate(),
-        );
-
-        // Create bandwidth accounting with pseudosettle provider
-        let bandwidth = Arc::new(Accounting::with_providers(
-            config,
-            self.identity.clone(),
-            vec![Box::new(PseudosettleProvider::with_handle(
-                config,
-                pseudosettle_handle,
-            ))],
-        ));
-
-        let provider_names = bandwidth.provider_names();
-        if provider_names.is_empty() {
-            info!("Bandwidth incentives: disabled");
-        } else {
-            info!("Bandwidth incentives: {}", provider_names.join(", "));
-        }
-
-        // Create chunk provider for RPC
-        let chunk_provider =
-            crate::providers::NetworkChunkProvider::new(client_handle.clone(), topology.clone());
-
-        // Create RPC providers
-        let providers = crate::rpc::ClientRpcProviders::new(topology, chunk_provider);
-
-        // Create the main event loop task
-        let task: NodeTask = Box::pin(async move {
-            let executor = TaskExecutor::current();
-
-            // Spawn settlement services
-            executor.spawn(pseudosettle_service.into_task());
-
-            // Forward settlement commands to client handle
-            let client_handle_for_settlement = client_handle.clone();
-            executor.spawn(async move {
-                while let Some(cmd) = settlement_command_rx.recv().await {
-                    if let Err(e) = client_handle_for_settlement.send_command(cmd) {
-                        tracing::warn!(error = %e, "Failed to forward settlement command");
-                    }
-                }
-            });
-
-            // Run client service and node concurrently
-            tokio::select! {
-                _ = client_service.into_task() => {}
-                _ = node.into_task() => {}
-            }
-        });
-
-        info!("{} node built successfully", Client::NAME);
-        Ok((task, providers))
-    }
-}
-
-impl<TB, AB, PB> SwarmNodeBuilder<Storer, TB, AB, PB> {
-    /// Build the full node configuration.
-    pub fn build(self) -> ! {
-        unimplemented!("Storer node builder not yet implemented")
-    }
-}
-
-impl<TB, AB, PB> SwarmNodeBuilder<Bootnode, TB, AB, PB> {
-    /// Build the bootnode configuration.
-    #[must_use]
-    pub fn build(self) -> BootnodeBuildConfig {
-        BootnodeBuildConfig {
-            identity: self.identity,
-            spec: self.spec,
-            peer_store: self.peer_store,
-            peers_path: self.peers_path,
-            network_config: self.network_config,
-        }
-    }
-}
-
-/// Build config for bootnodes.
-pub struct BootnodeBuildConfig {
-    identity: Arc<Identity>,
-    spec: Arc<Hive>,
-    peer_store: Arc<PeerStore>,
-    peers_path: std::path::PathBuf,
-    network_config: DefaultNetworkConfig,
-}
-
-impl NodeBuildsProtocol for BootnodeBuildConfig {
-    type Protocol = SwarmProtocol<Self>;
-
-    fn protocol_name(&self) -> &'static str {
-        "Swarm (Bootnode)"
-    }
-}
-
-#[async_trait]
-impl SwarmLaunchConfig for BootnodeBuildConfig {
-    type Types = crate::types::DefaultBootnodeTypes;
-    type Providers = crate::rpc::BootnodeRpcProviders;
-    type Error = SwarmNodeError;
-
-    async fn build(self, _ctx: &NodeContext) -> Result<(NodeTask, Self::Providers), Self::Error> {
-        use tracing::info;
-        use vertex_swarmspec::Loggable;
-
-        info!("Building {} node...", Bootnode::NAME);
-        self.spec.log();
-        self.identity.log();
-        info!("Peers database: {}", self.peers_path.display());
-
-        // Build the BootNode (no client protocols)
-        let node = vertex_swarm_node::BootNode::<crate::types::DefaultBootnodeTypes>::builder(
-            self.identity.clone(),
+impl DefaultNodeBuilder {
+    pub fn from_config(config: BootnodeConfig) -> Self {
+        Self::new(
+            config.spec().clone(),
+            config.identity().clone(),
+            config.network().clone(),
         )
-        .with_network_config(&self.network_config)
-        .with_peer_store(self.peer_store)
-        .build()
-        .await
-        .map_err(|e| SwarmNodeError::Build(e.to_string()))?;
+    }
 
-        // Get topology for RPC
-        let topology = node.kademlia_topology().clone();
+    /// Convert to config for building.
+    pub fn into_config(self) -> BootnodeConfig {
+        BootnodeConfig::new(self.spec, self.identity, self.network)
+    }
 
-        // Create RPC providers
-        let providers = crate::rpc::BootnodeRpcProviders::new(topology);
+    /// Build the bootnode. Delegates to SwarmLaunchConfig::build().
+    pub async fn build(
+        self,
+        ctx: &dyn InfrastructureContext,
+    ) -> Result<BuiltBootnode, SwarmNodeError> {
+        let config = self.into_config();
+        let (task, providers) = config.build(ctx).await?;
+        Ok(BuiltNode::new(task, providers))
+    }
+}
 
-        // Create the main event loop task
-        let task: NodeTask = Box::pin(async move {
-            node.into_task().await;
-        });
+impl DefaultClientBuilder {
+    pub fn from_parts(
+        spec: Arc<Spec>,
+        identity: Arc<Identity>,
+        network: NetworkConfig<KademliaConfig>,
+        bandwidth: DefaultBandwidthConfig,
+    ) -> Self {
+        NodeBuilder::new(spec, identity, network).with_accounting(bandwidth)
+    }
 
-        info!("{} node built successfully", Bootnode::NAME);
-        Ok((task, providers))
+    pub fn from_config(config: ClientConfig) -> Self {
+        Self::from_parts(
+            config.spec().clone(),
+            config.identity().clone(),
+            config.network().clone(),
+            config.bandwidth().clone(),
+        )
+    }
+
+    /// Convert to config for building.
+    pub fn into_config(self) -> ClientConfig {
+        ClientConfig::new(
+            self.base.spec,
+            self.base.identity,
+            self.base.network,
+            self.accounting,
+        )
+    }
+
+    /// Build the client node. Delegates to SwarmLaunchConfig::build().
+    pub async fn build(
+        self,
+        ctx: &dyn InfrastructureContext,
+    ) -> Result<BuiltClient, SwarmNodeError> {
+        let config = self.into_config();
+        let (task, providers) = config.build(ctx).await?;
+        Ok(BuiltNode::new(task, providers))
+    }
+}
+
+impl DefaultStorerBuilder {
+    pub fn from_parts(
+        spec: Arc<Spec>,
+        identity: Arc<Identity>,
+        network: NetworkConfig<KademliaConfig>,
+        bandwidth: DefaultBandwidthConfig,
+        local_store: LocalStoreConfig,
+        storage: StorageConfig,
+    ) -> Self {
+        NodeBuilder::new(spec, identity, network)
+            .with_accounting(bandwidth)
+            .with_storage(local_store, storage)
+    }
+
+    pub fn from_config(config: StorerConfig) -> Self {
+        Self::from_parts(
+            config.spec().clone(),
+            config.identity().clone(),
+            config.network().clone(),
+            config.bandwidth().clone(),
+            config.local_store().clone(),
+            config.storage().clone(),
+        )
+    }
+
+    /// Convert to config for building.
+    pub fn into_config(self) -> StorerConfig {
+        StorerConfig::new(
+            self.client.base.spec,
+            self.client.base.identity,
+            self.client.base.network,
+            self.client.accounting,
+            self.local_store,
+            self.storage,
+        )
+    }
+
+    /// Build the storer node. Delegates to SwarmLaunchConfig::build().
+    pub async fn build(
+        self,
+        ctx: &dyn InfrastructureContext,
+    ) -> Result<BuiltStorer, SwarmNodeError> {
+        let config = self.into_config();
+        let (task, providers) = config.build(ctx).await?;
+        Ok(BuiltNode::new(task, providers))
+    }
+}
+
+impl From<BootnodeConfig> for DefaultNodeBuilder {
+    fn from(config: BootnodeConfig) -> Self {
+        Self::from_config(config)
+    }
+}
+
+impl From<ClientConfig> for DefaultClientBuilder {
+    fn from(config: ClientConfig) -> Self {
+        Self::from_config(config)
+    }
+}
+
+impl From<StorerConfig> for DefaultStorerBuilder {
+    fn from(config: StorerConfig) -> Self {
+        Self::from_config(config)
     }
 }

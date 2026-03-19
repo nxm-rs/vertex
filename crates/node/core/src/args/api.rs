@@ -1,9 +1,9 @@
 //! API server CLI arguments.
 
-use crate::constants::{DEFAULT_GRPC_PORT, DEFAULT_LOCALHOST_ADDR, DEFAULT_METRICS_PORT};
+use crate::constants::{DEFAULT_GRPC_PORT, DEFAULT_LOCALHOST_ADDR};
 use clap::Args;
 use serde::{Deserialize, Serialize};
-use vertex_node_api::{NodeMetricsConfig, NodeRpcConfig};
+use vertex_node_api::NodeRpcConfig;
 
 /// API server configuration.
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
@@ -21,18 +21,6 @@ pub struct ApiArgs {
     /// gRPC server listen port.
     #[arg(long = "grpc.port", default_value_t = DEFAULT_GRPC_PORT)]
     pub grpc_port: u16,
-
-    /// Enable metrics HTTP endpoint.
-    #[arg(long = "metrics")]
-    pub metrics: bool,
-
-    /// Metrics listen address.
-    #[arg(long = "metrics.addr", default_value = DEFAULT_LOCALHOST_ADDR)]
-    pub metrics_addr: String,
-
-    /// Metrics listen port.
-    #[arg(long = "metrics.port", default_value_t = DEFAULT_METRICS_PORT)]
-    pub metrics_port: u16,
 }
 
 impl Default for ApiArgs {
@@ -41,9 +29,6 @@ impl Default for ApiArgs {
             grpc: false,
             grpc_addr: DEFAULT_LOCALHOST_ADDR.to_string(),
             grpc_port: DEFAULT_GRPC_PORT,
-            metrics: false,
-            metrics_addr: DEFAULT_LOCALHOST_ADDR.to_string(),
-            metrics_port: DEFAULT_METRICS_PORT,
         }
     }
 }
@@ -59,19 +44,5 @@ impl NodeRpcConfig for ApiArgs {
 
     fn grpc_port(&self) -> u16 {
         self.grpc_port
-    }
-}
-
-impl NodeMetricsConfig for ApiArgs {
-    fn metrics_enabled(&self) -> bool {
-        self.metrics
-    }
-
-    fn metrics_addr(&self) -> &str {
-        &self.metrics_addr
-    }
-
-    fn metrics_port(&self) -> u16 {
-        self.metrics_port
     }
 }

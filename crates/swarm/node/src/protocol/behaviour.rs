@@ -22,15 +22,28 @@ use tracing::{debug, trace, warn};
 use vertex_swarm_primitives::OverlayAddress;
 
 use super::{
-    ClientCommand, ClientEvent, PseudosettleEvent, SwapEvent,
+    ClientCommand, ClientEvent, PseudosettleEvent,
     handler::{ClientHandler, Config as HandlerConfig, HandlerCommand, HandlerEvent},
 };
 
+const DEFAULT_MAX_PENDING_EVENTS: usize = 4096;
+
 /// Configuration for the client behaviour.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Config {
     /// Handler configuration.
     pub handler: HandlerConfig,
+    /// Maximum pending events before dropping new ones.
+    pub max_pending_events: usize,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            handler: HandlerConfig::default(),
+            max_pending_events: DEFAULT_MAX_PENDING_EVENTS,
+        }
+    }
 }
 
 /// The ClientBehaviour manages client-side protocols.
@@ -43,8 +56,7 @@ pub struct Config {
 ///
 /// Settlement events can be routed directly to settlement services via optional
 /// event senders. Use [`set_pseudosettle_events`](Self::set_pseudosettle_events)
-/// and [`set_swap_events`](Self::set_swap_events) to configure routing.
-/// Events are still emitted as [`ClientEvent`] for other consumers.
+/// to configure routing. Events are still emitted as [`ClientEvent`] for other consumers.
 pub struct ClientBehaviour {
     config: Config,
     /// Map of peer_id -> overlay for activated peers.
@@ -55,8 +67,6 @@ pub struct ClientBehaviour {
     pending_events: VecDeque<ToSwarm<ClientEvent, HandlerCommand>>,
     /// Optional sender for pseudosettle events.
     pseudosettle_event_tx: Option<mpsc::UnboundedSender<PseudosettleEvent>>,
-    /// Optional sender for swap events.
-    swap_event_tx: Option<mpsc::UnboundedSender<SwapEvent>>,
 }
 
 impl ClientBehaviour {
@@ -68,7 +78,6 @@ impl ClientBehaviour {
             overlay_peers: HashMap::new(),
             pending_events: VecDeque::new(),
             pseudosettle_event_tx: None,
-            swap_event_tx: None,
         }
     }
 
@@ -80,12 +89,14 @@ impl ClientBehaviour {
         self.pseudosettle_event_tx = Some(tx);
     }
 
-    /// Set the sender for swap events.
-    ///
-    /// When set, swap-related events will be sent to this channel
-    /// in addition to being emitted as [`ClientEvent`].
-    pub fn set_swap_events(&mut self, tx: mpsc::UnboundedSender<SwapEvent>) {
-        self.swap_event_tx = Some(tx);
+    /// Push an event if the queue isn't full, otherwise drop with a metric.
+    fn push_event(&mut self, event: ToSwarm<ClientEvent, HandlerCommand>) {
+        if self.pending_events.len() >= self.config.max_pending_events {
+            warn!("Behaviour event queue full, dropping event");
+            metrics::counter!("swarm.client.behaviour.events_dropped").increment(1);
+            return;
+        }
+        self.pending_events.push_back(event);
     }
 
     /// Handle a command from the application layer.
@@ -94,24 +105,21 @@ impl ClientBehaviour {
             ClientCommand::ActivatePeer {
                 peer_id,
                 overlay,
-                is_full_node,
+                node_type,
             } => {
-                debug!(%peer_id, %overlay, %is_full_node, "Activating peer");
+                debug!(%peer_id, %overlay, ?node_type, "Activating peer");
                 self.peer_overlays.insert(peer_id, overlay);
                 self.overlay_peers.insert(overlay, peer_id);
-                self.pending_events.push_back(ToSwarm::NotifyHandler {
+                self.push_event(ToSwarm::NotifyHandler {
                     peer_id,
                     handler: libp2p::swarm::NotifyHandler::Any,
-                    event: HandlerCommand::Activate {
-                        overlay,
-                        is_full_node,
-                    },
+                    event: HandlerCommand::Activate { overlay, node_type },
                 });
             }
             ClientCommand::AnnouncePricing { peer, threshold } => {
                 if let Some(&peer_id) = self.overlay_peers.get(&peer) {
                     debug!(%peer_id, %peer, %threshold, "Announcing pricing");
-                    self.pending_events.push_back(ToSwarm::NotifyHandler {
+                    self.push_event(ToSwarm::NotifyHandler {
                         peer_id,
                         handler: libp2p::swarm::NotifyHandler::Any,
                         event: HandlerCommand::AnnouncePricing { threshold },
@@ -123,7 +131,7 @@ impl ClientBehaviour {
             ClientCommand::RetrieveChunk { peer, address } => {
                 if let Some(&peer_id) = self.overlay_peers.get(&peer) {
                     debug!(%peer_id, %peer, %address, "Retrieving chunk");
-                    self.pending_events.push_back(ToSwarm::NotifyHandler {
+                    self.push_event(ToSwarm::NotifyHandler {
                         peer_id,
                         handler: libp2p::swarm::NotifyHandler::Any,
                         event: HandlerCommand::RetrieveChunk { address },
@@ -140,7 +148,7 @@ impl ClientBehaviour {
             } => {
                 if let Some(&peer_id) = self.overlay_peers.get(&peer) {
                     debug!(%peer_id, %peer, %address, "Pushing chunk");
-                    self.pending_events.push_back(ToSwarm::NotifyHandler {
+                    self.push_event(ToSwarm::NotifyHandler {
                         peer_id,
                         handler: libp2p::swarm::NotifyHandler::Any,
                         event: HandlerCommand::PushChunk {
@@ -176,26 +184,10 @@ impl ClientBehaviour {
                     trace!("SendReceipt not yet implemented");
                 }
             }
-            ClientCommand::SendCheque {
-                peer,
-                cheque,
-                our_rate,
-            } => {
-                if let Some(&peer_id) = self.overlay_peers.get(&peer) {
-                    debug!(%peer_id, %peer, "Sending swap cheque");
-                    self.pending_events.push_back(ToSwarm::NotifyHandler {
-                        peer_id,
-                        handler: libp2p::swarm::NotifyHandler::Any,
-                        event: HandlerCommand::SendCheque { cheque, our_rate },
-                    });
-                } else {
-                    debug!(%peer, "Unknown peer for cheque");
-                }
-            }
             ClientCommand::SendPseudosettle { peer, amount } => {
                 if let Some(&peer_id) = self.overlay_peers.get(&peer) {
                     debug!(%peer_id, %peer, %amount, "Sending pseudosettle");
-                    self.pending_events.push_back(ToSwarm::NotifyHandler {
+                    self.push_event(ToSwarm::NotifyHandler {
                         peer_id,
                         handler: libp2p::swarm::NotifyHandler::Any,
                         event: HandlerCommand::SendPseudosettle { amount },
@@ -211,7 +203,7 @@ impl ClientBehaviour {
             } => {
                 if let Some(&peer_id) = self.overlay_peers.get(&peer) {
                     debug!(%peer_id, %peer, %request_id, "Acking pseudosettle");
-                    self.pending_events.push_back(ToSwarm::NotifyHandler {
+                    self.push_event(ToSwarm::NotifyHandler {
                         peer_id,
                         handler: libp2p::swarm::NotifyHandler::Any,
                         event: HandlerCommand::AckPseudosettle { request_id, ack },
@@ -223,7 +215,7 @@ impl ClientBehaviour {
             ClientCommand::DisconnectPeer { peer, reason } => {
                 if let Some(&peer_id) = self.overlay_peers.get(&peer) {
                     debug!(%peer_id, %peer, ?reason, "Disconnecting peer");
-                    self.pending_events.push_back(ToSwarm::CloseConnection {
+                    self.push_event(ToSwarm::CloseConnection {
                         peer_id,
                         connection: libp2p::swarm::CloseConnection::All,
                     });
@@ -245,13 +237,11 @@ impl ClientBehaviour {
                     }));
             }
             HandlerEvent::PricingReceived { overlay, threshold } => {
-                self.pending_events.push_back(ToSwarm::GenerateEvent(
-                    ClientEvent::PricingReceived {
-                        peer: overlay,
-                        peer_id,
-                        threshold,
-                    },
-                ));
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::PricingReceived {
+                    peer: overlay,
+                    peer_id,
+                    threshold,
+                }));
             }
             HandlerEvent::PricingSent { overlay } => {
                 self.pending_events
@@ -264,14 +254,12 @@ impl ClientBehaviour {
                 address,
                 request_id,
             } => {
-                self.pending_events.push_back(ToSwarm::GenerateEvent(
-                    ClientEvent::ChunkRequested {
-                        peer: overlay,
-                        peer_id,
-                        address,
-                        request_id,
-                    },
-                ));
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::ChunkRequested {
+                    peer: overlay,
+                    peer_id,
+                    address,
+                    request_id,
+                }));
             }
             HandlerEvent::ChunkReceived {
                 overlay,
@@ -294,16 +282,14 @@ impl ClientBehaviour {
                 stamp,
                 request_id,
             } => {
-                self.pending_events.push_back(ToSwarm::GenerateEvent(
-                    ClientEvent::ChunkPushReceived {
-                        peer: overlay,
-                        peer_id,
-                        address,
-                        data,
-                        stamp,
-                        request_id,
-                    },
-                ));
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::ChunkPushReceived {
+                    peer: overlay,
+                    peer_id,
+                    address,
+                    data,
+                    stamp,
+                    request_id,
+                }));
             }
             HandlerEvent::ReceiptReceived {
                 overlay,
@@ -312,15 +298,13 @@ impl ClientBehaviour {
                 nonce,
                 storage_radius,
             } => {
-                self.pending_events.push_back(ToSwarm::GenerateEvent(
-                    ClientEvent::ReceiptReceived {
-                        peer: overlay,
-                        address,
-                        signature,
-                        nonce,
-                        storage_radius,
-                    },
-                ));
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::ReceiptReceived {
+                    peer: overlay,
+                    address,
+                    signature,
+                    nonce,
+                    storage_radius,
+                }));
             }
             HandlerEvent::Error {
                 overlay,
@@ -352,14 +336,12 @@ impl ClientBehaviour {
                 {
                     warn!(%overlay, "Pseudosettle event channel closed");
                 }
-                self.pending_events.push_back(ToSwarm::GenerateEvent(
-                    ClientEvent::PseudosettleReceived {
-                        peer: overlay,
-                        peer_id,
-                        amount,
-                        request_id,
-                    },
-                ));
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::PseudosettleReceived {
+                    peer: overlay,
+                    peer_id,
+                    amount,
+                    request_id,
+                }));
             }
             HandlerEvent::PseudosettleSent { overlay, ack } => {
                 // Route to pseudosettle service if configured
@@ -373,58 +355,11 @@ impl ClientBehaviour {
                 {
                     warn!(%overlay, "Pseudosettle event channel closed");
                 }
-                self.pending_events.push_back(ToSwarm::GenerateEvent(
-                    ClientEvent::PseudosettleSent {
-                        peer: overlay,
-                        peer_id,
-                        ack,
-                    },
-                ));
-            }
-            HandlerEvent::ChequeReceived {
-                overlay,
-                cheque,
-                peer_rate,
-            } => {
-                // Route to swap service if configured
-                if let Some(tx) = &self.swap_event_tx
-                    && tx
-                        .send(SwapEvent::ChequeReceived {
-                            peer: overlay,
-                            cheque: cheque.clone(),
-                            peer_rate,
-                        })
-                        .is_err()
-                {
-                    warn!(%overlay, "Swap event channel closed");
-                }
-                self.pending_events.push_back(ToSwarm::GenerateEvent(
-                    ClientEvent::ChequeReceived {
-                        peer: overlay,
-                        peer_id,
-                        cheque,
-                        peer_rate,
-                    },
-                ));
-            }
-            HandlerEvent::ChequeSent { overlay, peer_rate } => {
-                // Route to swap service if configured
-                if let Some(tx) = &self.swap_event_tx
-                    && tx
-                        .send(SwapEvent::ChequeSent {
-                            peer: overlay,
-                            peer_rate,
-                        })
-                        .is_err()
-                {
-                    warn!(%overlay, "Swap event channel closed");
-                }
-                self.pending_events
-                    .push_back(ToSwarm::GenerateEvent(ClientEvent::ChequeSent {
-                        peer: overlay,
-                        peer_id,
-                        peer_rate,
-                    }));
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::PseudosettleSent {
+                    peer: overlay,
+                    peer_id,
+                    ack,
+                }));
             }
         }
     }

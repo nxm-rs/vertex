@@ -1,0 +1,35 @@
+[package]
+name = "vertex-swarm-net-pingpong"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+## vertex
+vertex-net-codec.workspace = true
+vertex-net-ratelimiter.workspace = true
+vertex-observability.workspace = true
+vertex-swarm-net-headers.workspace = true
+vertex-swarm-net-proto.workspace = true
+
+## async
+futures.workspace = true
+futures-bounded = "0.2"
+
+## p2p
+libp2p.workspace = true
+
+## misc
+strum.workspace = true
+
+## tracing & metrics
+tracing.workspace = true
+metrics.workspace = true
+
+[dev-dependencies]

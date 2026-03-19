@@ -205,13 +205,19 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmBandwidthAccounting for Ac
         price: u64,
         originated: bool,
     ) -> SwarmResult<ReceiveAction> {
-        Accounting::prepare_receive(self, peer, price, originated)
-            .map_err(|e| vertex_swarm_api::SwarmError::Accounting(e.to_string()))
+        Accounting::prepare_receive(self, peer, price, originated).map_err(|e| {
+            vertex_swarm_api::SwarmError::Accounting {
+                message: e.to_string(),
+            }
+        })
     }
 
     fn prepare_provide(&self, peer: OverlayAddress, price: u64) -> SwarmResult<ProvideAction> {
-        Accounting::prepare_provide(self, peer, price)
-            .map_err(|e| vertex_swarm_api::SwarmError::Accounting(e.to_string()))
+        Accounting::prepare_provide(self, peer, price).map_err(|e| {
+            vertex_swarm_api::SwarmError::Accounting {
+                message: e.to_string(),
+            }
+        })
     }
 }
 
@@ -315,20 +321,11 @@ impl SwarmPeerBandwidth for AccountingPeerHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DefaultAccountingConfig, NoSettlement};
-    use vertex_swarm_api::SwarmNodeType;
-    use vertex_swarm_identity::Identity;
+    use crate::{BandwidthConfig, NoSettlement};
+    use vertex_swarm_test_utils::{Identity, test_identity, test_peer};
 
-    fn test_identity() -> Identity {
-        Identity::random(vertex_swarmspec::init_testnet(), SwarmNodeType::Client)
-    }
-
-    fn test_peer() -> OverlayAddress {
-        OverlayAddress::from([1u8; 32])
-    }
-
-    fn test_accounting() -> Accounting<DefaultAccountingConfig, Identity> {
-        Accounting::new(DefaultAccountingConfig, test_identity())
+    fn test_accounting() -> Accounting<BandwidthConfig, Identity> {
+        Accounting::new(BandwidthConfig::default(), test_identity())
     }
 
     #[test]
@@ -380,7 +377,7 @@ mod tests {
     #[test]
     fn test_with_single_provider() {
         let accounting = Accounting::with_providers(
-            DefaultAccountingConfig,
+            BandwidthConfig::default(),
             test_identity(),
             vec![Box::new(NoSettlement)],
         );
@@ -395,7 +392,7 @@ mod tests {
     #[test]
     fn test_with_two_providers() {
         let accounting = Accounting::with_providers(
-            DefaultAccountingConfig,
+            BandwidthConfig::default(),
             test_identity(),
             vec![Box::new(NoSettlement), Box::new(NoSettlement)],
         );
@@ -501,7 +498,7 @@ mod tests {
     #[test]
     fn test_provider_composition_pre_allow() {
         let accounting = Accounting::with_providers(
-            DefaultAccountingConfig,
+            BandwidthConfig::default(),
             test_identity(),
             vec![
                 Box::new(FixedAdjustProvider(100)),

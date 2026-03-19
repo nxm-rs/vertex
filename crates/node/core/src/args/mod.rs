@@ -45,11 +45,17 @@ mod api;
 mod database;
 mod datadir;
 mod log;
+mod metrics;
+mod observability;
+mod tracing;
 
 pub use api::ApiArgs;
-pub use database::DatabaseArgs;
+pub use database::{DatabaseArgs, DatabaseConfig};
 pub use datadir::DataDirArgs;
 pub use log::LogArgs;
+pub use metrics::MetricsArgs;
+pub use observability::ObservabilityArgs;
+pub use tracing::TracingArgs;
 
 use clap::Args;
 use serde::{Deserialize, Serialize};
@@ -62,24 +68,28 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 #[derive(Default)]
 pub struct InfraArgs {
-    /// API configuration (gRPC, metrics).
+    /// Data directory configuration.
     #[command(flatten)]
-    pub api: ApiArgs,
+    pub datadir: DataDirArgs,
 
     /// Database configuration.
     #[command(flatten)]
     pub database: DatabaseArgs,
 
-    /// Data directory configuration.
+    /// API configuration (gRPC).
     #[command(flatten)]
-    pub datadir: DataDirArgs,
+    pub api: ApiArgs,
+
+    /// Observability configuration (metrics, tracing).
+    #[command(flatten)]
+    pub observability: ObservabilityArgs,
 }
 
-/// Full node infrastructure arguments including logging.
+/// Full node infrastructure arguments including logging and tracing.
 ///
 /// This struct combines all generic infrastructure CLI arguments including
-/// logging. Use [`InfraArgs`] if logging is handled separately at the CLI
-/// top level.
+/// logging and tracing. Use [`InfraArgs`] if logging/tracing are handled
+/// separately at the CLI top level.
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
 #[serde(default)]
 #[derive(Default)]
@@ -87,6 +97,10 @@ pub struct NodeArgs {
     /// Logging configuration.
     #[command(flatten)]
     pub logs: LogArgs,
+
+    /// OpenTelemetry tracing configuration.
+    #[command(flatten)]
+    pub tracing: TracingArgs,
 
     /// Infrastructure configuration (API, database, data directory).
     #[command(flatten)]

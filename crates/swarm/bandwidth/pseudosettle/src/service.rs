@@ -1,15 +1,17 @@
 //! Pseudosettle service actor (runs in its own tokio task).
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 
 use alloy_primitives::U256;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
-use vertex_net_pseudosettle::PaymentAck;
 use vertex_swarm_api::{Direction, SwarmBandwidthAccounting, SwarmPeerBandwidth};
-use vertex_swarm_node::{PseudosettleEvent, protocol::ClientCommand};
+use vertex_swarm_net_pseudosettle::PaymentAck;
+use vertex_swarm_node::{ClientCommand, PseudosettleEvent};
 use vertex_swarm_primitives::OverlayAddress;
+use vertex_tasks::{GracefulShutdown, SpawnableTask};
 
 use crate::error::PseudosettleError;
 
@@ -65,12 +67,17 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
         }
     }
 
-    /// Run the service event loop.
-    ///
-    /// This method runs until all senders are dropped.
-    pub async fn run(mut self) {
+    /// Run the service event loop with graceful shutdown support.
+    async fn run(mut self, shutdown: GracefulShutdown) {
+        let mut shutdown = std::pin::pin!(shutdown);
+
         loop {
             tokio::select! {
+                guard = &mut shutdown => {
+                    debug!("Pseudosettle service received shutdown signal");
+                    drop(guard);
+                    break;
+                }
                 Some(cmd) = self.command_rx.recv() => {
                     self.handle_command(cmd).await;
                 }
@@ -78,16 +85,12 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
                     self.handle_event(event).await;
                 }
                 else => {
-                    debug!("Pseudosettle service shutting down");
+                    debug!("Pseudosettle service channels closed");
                     break;
                 }
             }
         }
-    }
-
-    /// Convert self into a spawnable future.
-    pub async fn into_task(self) {
-        self.run().await;
+        debug!("Pseudosettle service shutdown complete");
     }
 
     async fn handle_command(&mut self, cmd: PseudosettleCommand) {
@@ -214,6 +217,12 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
         // TODO: Implement proper time-based allowance tracking per peer
         // This would involve tracking accumulated allowance since last settlement
         std::cmp::min(requested, owed)
+    }
+}
+
+impl<A: SwarmBandwidthAccounting + 'static> SpawnableTask for PseudosettleService<A> {
+    fn into_task(self, shutdown: GracefulShutdown) -> impl Future<Output = ()> + Send {
+        self.run(shutdown)
     }
 }
 

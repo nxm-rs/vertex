@@ -1,8 +1,13 @@
 # Address Management
 
-Protocol-agnostic network utilities for libp2p-based P2P networks, provided by `vertex-net-peer`.
+## Overview
 
-## Address Classification
+Address management in Vertex spans two crates:
+
+- **`vertex-net-local`** — Protocol-agnostic address classification, capability tracking, and subnet detection
+- **`vertex-swarm-topology` (`LocalAddressManager`)** — Swarm-specific address selection for handshake advertisement
+
+## Address Classification (`vertex-net-local`)
 
 Classifies IP addresses into scopes for smart address selection:
 
@@ -13,15 +18,13 @@ Classifies IP addresses into scopes for smart address selection:
 | Link-local | 169.254.0.0/16 | fe80::/10 |
 | Public | Everything else | Everything else |
 
-The `IpCapability` type tracks dual-stack support (IPv4, IPv6, or both) and is used to filter peer addresses we can actually dial.
+`IpCapability` tracks dual-stack support (IPv4, IPv6, or both) and filters peer addresses we can actually dial.
 
 ## Local Network Detection
 
-Queries system network interfaces to determine subnet membership. This enables accurate "same subnet" checks without hardcoding subnet sizes.
+`LocalCapabilities` queries system network interfaces to determine subnet membership. This enables accurate "same subnet" checks without hardcoding subnet sizes.
 
-Uses the `netdev` crate supporting Linux, macOS, Windows, Android, iOS, and BSDs.
-
-Interface information is cached for 60 seconds to avoid repeated system calls.
+Uses the `netdev` crate supporting Linux, macOS, Windows, Android, iOS, and BSDs. Interface information is cached for 60 seconds.
 
 ### Special Cases
 
@@ -30,40 +33,67 @@ Interface information is cached for 60 seconds to avoid repeated system calls.
 - **Different IP versions**: Never on the same subnet
 - **Unspecified** (0.0.0.0, ::): Never on any network
 
-## AddressManager
+## LocalAddressManager (Topology)
 
-Manages multiaddr selection for handshake and peer advertisement.
+Manages address selection for the Swarm handshake protocol. Located in `vertex-swarm-topology::nat_discovery`.
 
-### Address Types
+### Address Sources
 
-| Type | Description |
-|------|-------------|
-| Listen | Addresses from libp2p we're listening on |
-| NAT | Configured external addresses for NAT traversal |
-| Observed | Addresses peers report seeing us at (auto-NAT) |
+| Source | Priority | Description |
+|--------|----------|-------------|
+| NAT | Highest | Static addresses configured via `--nat-addr` |
+| Listen | Normal | Addresses from libp2p we're listening on |
 
-### Selection Logic
+### Scope-Based Selection
 
-When selecting addresses for a peer based on their connection scope:
+When selecting addresses for a peer during handshake:
 
 | Peer Scope | Addresses Returned |
 |------------|-------------------|
-| Loopback | Loopback + private listen addresses |
+| Loopback | Loopback listen addresses only (no NAT) |
 | Private | Same-subnet private + NAT addresses |
-| Public | Public listen + NAT + confirmed observed |
+| Public | Public listen + NAT addresses |
 
-### Observed Address Confirmation
+All returned addresses include `/p2p/{local_peer_id}`.
 
-To prevent a single malicious peer from claiming false addresses:
+### Public Connectivity Detection
 
-1. Observed addresses require confirmation from 2+ unique IPs (same protocol family)
-2. Only public peers can confirm public observed addresses
-3. Confirmed addresses are cached with 1-hour TTL
-4. Pending observations are capped at 10 entries (LRU eviction)
-5. Confirmed cache is capped at 20 entries (LRU eviction)
+`has_public_addresses()` returns true if any of:
+- NAT addresses are configured (static public addresses)
+- Local listen addresses include public IPs
+- Confirmed public connectivity via peer observation
 
-### Security Considerations
+When a peer reports our address via identify, `on_observed_addr()` sets a boolean public connectivity flag if the observed address is public. This flag enables dialing other public peers. The observed address itself is **not stored or advertised** — only the connectivity fact is recorded.
 
-- Private peers cannot confirm public addresses (prevents address spoofing)
-- Confirmations must come from the same IP family (IPv4 peer confirms IPv4 addresses)
-- Duplicate confirmations from the same IP are ignored
+## Why Observed Addresses Are Not Stored
+
+NAT-mapped addresses contain ephemeral ports that are connection-specific:
+
+```
+Peer A connects to us → NAT assigns port 12345
+Peer A reports: "I see you at /ip4/203.0.113.5/tcp/12345"
+
+Peer B connects to us → NAT assigns port 12346
+Peer B reports: "I see you at /ip4/203.0.113.5/tcp/12346"
+```
+
+Port 12345 only works for the A-to-us connection. If we advertise it to peer C via hive gossip, peer C cannot use it — the NAT mapping doesn't exist for C. Storing and advertising these addresses causes:
+
+1. **Unbounded growth** — each new connection adds another ephemeral port variant
+2. **Handshake encoding overflow** — too many multiaddrs exceed the 2048-byte protobuf buffer
+3. **Network pollution** — hive gossip propagates unreachable addresses to all peers
+
+### What Bee Does
+
+Bee uses **static NAT configuration** (`--nat-addr`) for production deployments, not dynamic discovery. Bee also requires at least one underlay address in the handshake (empty underlays are rejected). The handshake protocol handles this by appending the peer-reported observed address as a last-resort fallback.
+
+### IPv6 vs IPv4
+
+Most IPv6 addresses are globally routable (except loopback, link-local, ULA, and documentation ranges). IPv4 is more complex due to NAT prevalence. For IPv4, only explicitly public listen addresses or configured NAT addresses are trusted.
+
+## Future Work
+
+- **UPnP integration** — libp2p UPnP support for automatic port mapping (dependencies available, not yet wired)
+- **AutoNAT v2** — Dial-back verification to confirm addresses are truly reachable (dependencies available, not yet wired)
+- **Address trust levels** — Formal `Configured > Verified > AssumedPublic` hierarchy for selection priority
+- **Pre-encoding validation** — Hard limit on address count/size before handshake serialization

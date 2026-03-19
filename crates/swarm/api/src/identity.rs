@@ -1,22 +1,23 @@
 //! Identity trait for Swarm network participation.
 
+use crate::SwarmSpec;
 use alloy_primitives::{Address, B256};
 use alloy_signer::{Signer, SignerSync};
 use nectar_primitives::SwarmAddress;
 use std::sync::Arc;
 use vertex_swarm_primitives::{SwarmNodeType, compute_overlay};
-use vertex_swarmspec::SwarmSpec;
 
 /// Identity trait for Swarm network participation.
 ///
 /// Provides cryptographic identity for handshake and overlay address derivation.
+/// Implementations should be wrapped in `Arc` for sharing across components.
 #[auto_impl::auto_impl(&, Arc, Box)]
-pub trait SwarmIdentity: Clone + Send + Sync + 'static {
+pub trait SwarmIdentity: Send + Sync + 'static {
     /// The network specification type.
-    type Spec: SwarmSpec + Clone;
+    type Spec: SwarmSpec;
 
     /// The signer type for signing handshake messages.
-    type Signer: Signer + SignerSync + Clone + Send + Sync + 'static;
+    type Signer: Signer + SignerSync + Send + Sync + 'static;
 
     /// Get the network specification.
     fn spec(&self) -> &Self::Spec;

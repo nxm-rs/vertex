@@ -1,11 +1,11 @@
 //! Node service implementation for Swarm topology and status information.
 
 use tonic::{Request, Response, Status};
-use vertex_swarm_api::SwarmTopologyProvider;
+use vertex_swarm_api::{SwarmTopologyPeers, SwarmTopologyState, SwarmTopologyStats};
 
 use crate::proto::node::{
     BinInfo, GetStatusRequest, GetStatusResponse, GetTopologyRequest, GetTopologyResponse,
-    node_server::Node,
+    PeerInfo, node_server::Node,
 };
 
 /// Node service implementation.
@@ -16,24 +16,26 @@ pub struct NodeService<T> {
 }
 
 impl<T> NodeService<T> {
-    /// Create a new node service with the given topology provider.
     pub fn new(topology: T) -> Self {
         Self { topology }
     }
 }
 
 #[tonic::async_trait]
-impl<T: SwarmTopologyProvider> Node for NodeService<T> {
+impl<T: SwarmTopologyState + SwarmTopologyStats + SwarmTopologyPeers + Send + Sync + 'static> Node
+    for NodeService<T>
+{
     async fn get_status(
         &self,
         _request: Request<GetStatusRequest>,
     ) -> Result<Response<GetStatusResponse>, Status> {
         Ok(Response::new(GetStatusResponse {
-            overlay_address: self.topology.overlay_address(),
+            overlay_address: self.topology.overlay_address().to_string(),
             depth: self.topology.depth() as u32,
             connected_peers: self.topology.connected_peers_count() as u32,
-            known_peers: self.topology.known_peers_count() as u32,
+            known_peers: self.topology.routing_peers_count() as u32,
             pending_connections: self.topology.pending_connections_count() as u32,
+            stored_peers: self.topology.stored_peers_count() as u32,
         }))
     }
 
@@ -46,10 +48,19 @@ impl<T: SwarmTopologyProvider> Node for NodeService<T> {
             .iter()
             .enumerate()
             .map(|(po, (connected, known))| {
-                let connected_addrs = if *connected > 0 {
-                    self.topology.connected_peers_in_bin(po as u8)
+                let (connected_addrs, peer_info) = if *connected > 0 {
+                    let details = self.topology.connected_peer_details_in_bin(po as u8);
+                    let addrs = details.iter().map(|(o, _)| o.to_string()).collect();
+                    let info = details
+                        .into_iter()
+                        .map(|(overlay, multiaddrs)| PeerInfo {
+                            overlay: overlay.to_string(),
+                            multiaddrs: multiaddrs.iter().map(|m| m.to_string()).collect(),
+                        })
+                        .collect();
+                    (addrs, info)
                 } else {
-                    Vec::new()
+                    (Vec::new(), Vec::new())
                 };
 
                 BinInfo {
@@ -57,12 +68,13 @@ impl<T: SwarmTopologyProvider> Node for NodeService<T> {
                     connected_peers: *connected as u32,
                     known_peers: *known as u32,
                     connected_peer_addresses: connected_addrs,
+                    connected_peer_info: peer_info,
                 }
             })
             .collect();
 
         Ok(Response::new(GetTopologyResponse {
-            overlay_address: self.topology.overlay_address(),
+            overlay_address: self.topology.overlay_address().to_string(),
             depth: self.topology.depth() as u32,
             bins,
         }))

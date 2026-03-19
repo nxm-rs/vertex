@@ -11,9 +11,10 @@ description = "Time-based settlement provider for Swarm bandwidth accounting"
 [dependencies]
 vertex-swarm-bandwidth = { workspace = true }
 vertex-swarm-node = { workspace = true }
-vertex-net-pseudosettle = { workspace = true }
+vertex-swarm-net-pseudosettle = { workspace = true }
 vertex-swarm-primitives = { workspace = true }
 vertex-swarm-api = { workspace = true }
+vertex-tasks = { workspace = true }
 alloy-primitives = { workspace = true }
 async-trait = { workspace = true }
 parking_lot = { workspace = true }
@@ -22,11 +23,8 @@ tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-alloy-primitives = { workspace = true }
-alloy-signer-local = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
-vertex-swarm-identity = { workspace = true }
-vertex-swarmspec = { workspace = true }
+vertex-swarm-test-utils = { workspace = true }
 
 [features]
 default = ["std"]

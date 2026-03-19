@@ -8,9 +8,19 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
-bytes.workspace = true
 serde = { workspace = true, default-features = false }
 thiserror.workspace = true
+
+# Optional: codec impls for nectar types
+nectar-primitives = { workspace = true, optional = true }
+
+# Optional: codec impls for alloy types
+alloy-primitives = { workspace = true, optional = true, features = ["serde"] }
+
+[features]
+default = []
+nectar = ["dep:nectar-primitives"]
+alloy = ["dep:alloy-primitives"]
 
 [lints]
 workspace = true

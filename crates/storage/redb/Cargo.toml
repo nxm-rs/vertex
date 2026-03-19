@@ -1,0 +1,26 @@
+[package]
+name = "vertex-storage-redb"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "redb backend for vertex-storage"
+
+[dependencies]
+vertex-storage.workspace = true
+vertex-observability.workspace = true
+metrics.workspace = true
+parking_lot.workspace = true
+redb = "2"
+postcard.workspace = true
+zstd.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+serde = { workspace = true, features = ["derive", "std"] }
+
+[lints]
+workspace = true

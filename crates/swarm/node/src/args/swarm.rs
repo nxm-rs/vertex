@@ -1,18 +1,17 @@
 //! Aggregated Swarm protocol CLI arguments.
-
-use std::path::PathBuf;
+//!
+//! Convert to [`ProtocolConfig`](crate::config::ProtocolConfig) via `TryFrom` for validated configuration.
 
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
 use vertex_swarm_bandwidth::BandwidthArgs;
-use vertex_swarm_bandwidth_pricing::PricingArgs;
 use vertex_swarm_identity::IdentityArgs;
 use vertex_swarm_localstore::LocalStoreArgs;
 use vertex_swarm_primitives::SwarmNodeType;
 use vertex_swarm_redistribution::RedistributionArgs;
 
-use super::NetworkArgs;
+use super::{NetworkArgs, SwarmSpecArgs};
 
 /// CLI argument for node mode selection. Maps to [`SwarmNodeType`].
 #[derive(
@@ -41,80 +40,48 @@ pub enum NodeTypeArg {
 
 impl From<NodeTypeArg> for SwarmNodeType {
     fn from(arg: NodeTypeArg) -> Self {
-        SwarmNodeType::from_repr(arg as u8).expect("matching repr")
+        match arg {
+            NodeTypeArg::Bootnode => SwarmNodeType::Bootnode,
+            NodeTypeArg::Client => SwarmNodeType::Client,
+            NodeTypeArg::Storer => SwarmNodeType::Storer,
+        }
     }
 }
 
 impl From<SwarmNodeType> for NodeTypeArg {
     fn from(node_type: SwarmNodeType) -> Self {
-        NodeTypeArg::from_repr(node_type as u8).expect("matching repr")
+        match node_type {
+            SwarmNodeType::Bootnode => NodeTypeArg::Bootnode,
+            SwarmNodeType::Client => NodeTypeArg::Client,
+            SwarmNodeType::Storer => NodeTypeArg::Storer,
+        }
     }
 }
 
 /// Aggregated Swarm protocol CLI arguments.
 ///
-/// Combines all Swarm-specific configuration into a single flattened group
-/// for use with clap.
-#[derive(Debug, Args, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
+/// This struct is for CLI parsing and serialization only.
+/// Convert to `ProtocolConfig` for runtime use.
+/// Pricing is nested under `bandwidth` (accessible via `--bandwidth.base-price`).
+#[derive(Args, Clone)]
 pub struct ProtocolArgs {
-    /// Node mode: bootnode, client, or storer.
-    #[arg(long = "mode", value_enum, default_value_t = NodeTypeArg::Client)]
-    pub node_type: NodeTypeArg,
+    /// Swarm network specification and node mode.
+    #[command(flatten)]
+    pub spec: SwarmSpecArgs,
+
+    #[command(flatten)]
+    pub identity: IdentityArgs,
 
     #[command(flatten)]
     pub network: NetworkArgs,
 
+    /// Bandwidth accounting (includes pricing via `--bandwidth.base-price`).
     #[command(flatten)]
     pub bandwidth: BandwidthArgs,
-
-    #[command(flatten)]
-    pub pricing: PricingArgs,
 
     #[command(flatten)]
     pub localstore: LocalStoreArgs,
 
     #[command(flatten)]
     pub redistribution: RedistributionArgs,
-
-    #[command(flatten)]
-    pub identity: IdentityArgs,
-
-    /// Run on mainnet.
-    #[arg(long, conflicts_with_all = ["testnet", "swarmspec"])]
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub mainnet: bool,
-
-    /// Run on testnet.
-    #[arg(long, conflicts_with_all = ["mainnet", "swarmspec"])]
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub testnet: bool,
-
-    /// Path to custom SwarmSpec file for local/dev networks.
-    #[arg(long, conflicts_with_all = ["mainnet", "testnet"], value_name = "PATH")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub swarmspec: Option<PathBuf>,
-}
-
-impl ProtocolArgs {
-    /// Validate argument combinations.
-    pub fn validate(&self) -> Result<(), String> {
-        self.bandwidth.validate()?;
-        Ok(())
-    }
-
-    /// Returns true if mainnet is selected (explicitly or by default).
-    pub fn is_mainnet(&self) -> bool {
-        self.mainnet || (!self.testnet && self.swarmspec.is_none())
-    }
-
-    /// Returns true if testnet is explicitly selected.
-    pub fn is_testnet(&self) -> bool {
-        self.testnet
-    }
-
-    /// Returns true if a custom swarmspec is provided.
-    pub fn is_custom_network(&self) -> bool {
-        self.swarmspec.is_some()
-    }
 }

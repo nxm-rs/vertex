@@ -1,0 +1,67 @@
+[package]
+name = "vertex-observability"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Unified observability (logging, tracing, metrics) for Vertex Swarm"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+profiling = ["pprof"]
+jemalloc = ["tikv-jemalloc-ctl"]
+heap-profiling = ["jemalloc"]
+tokio-console = ["console-subscriber"]
+
+[dependencies]
+# Internal crates
+vertex-metrics = { workspace = true }
+vertex-tasks = { workspace = true }
+
+# Metrics
+metrics = { workspace = true }
+metrics-exporter-prometheus = "0.17"
+metrics-process = "2.3"
+metrics-util = "0.19"
+
+# Tracing
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+# OpenTelemetry for distributed tracing
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+opentelemetry-appender-tracing = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread"] }
+
+# HTTP server for metrics
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+
+# Error handling
+thiserror = { workspace = true }
+eyre = { workspace = true }
+
+# Synchronization
+parking_lot = { workspace = true }
+
+# Misc
+serde = { workspace = true, features = ["derive"] }
+
+# Profiling (optional)
+pprof = { workspace = true, optional = true }
+tikv-jemalloc-ctl = { workspace = true, optional = true }
+console-subscriber = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.5"

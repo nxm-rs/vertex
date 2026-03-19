@@ -17,10 +17,12 @@ tokio = { workspace = true, features = ["sync", "rt"] }
 futures-util = { workspace = true, features = ["std"] }
 
 # metrics
+vertex-metrics = { workspace = true }
 metrics.workspace = true
 
 # misc
 auto_impl.workspace = true
+parking_lot.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 dyn-clone.workspace = true

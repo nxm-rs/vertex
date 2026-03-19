@@ -60,37 +60,9 @@ impl InfraConfig {
     }
 }
 
-/// Full node configuration combining infrastructure and protocol settings.
+/// Combined infrastructure and protocol configuration.
 ///
-/// This is the main configuration type used by the node. It is generic over
-/// the protocol config type `P`, allowing different protocols to define their
-/// own configuration structure.
-///
-/// # Type Parameters
-///
-/// - `P`: Protocol configuration type implementing [`NodeProtocolConfig`]
-///
-/// # Serialization
-///
-/// The configuration is serialized as a flat structure where infrastructure
-/// and protocol fields are at the same level:
-///
-/// ```toml
-/// # Infrastructure (from InfraConfig)
-/// [api]
-/// grpc = true
-/// grpc_port = 5555
-///
-/// [database]
-/// memory_only = false
-///
-/// # Protocol-specific (from P, e.g., ProtocolConfig)
-/// node_type = "light"
-///
-/// [network]
-/// port = 1634
-/// max_peers = 50
-/// ```
+/// Serialized as flat TOML with infrastructure and protocol fields at the same level.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FullNodeConfig<P>

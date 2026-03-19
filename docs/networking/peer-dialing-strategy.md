@@ -150,7 +150,7 @@ fn backoff_expired(peer: &PeerState) -> bool {
 1. Kademlia identifies bins below target (e.g., < 4 connected)
 2. For each underfilled bin, select dial candidates (respecting backoff)
 3. Dial candidates, update tracking on success/failure
-4. Signal dial_notify when new candidates are ready
+4. TopologyBehaviour initiates dials after evaluating connection candidates
 
 ### Continuous Maintenance
 

@@ -2,8 +2,9 @@
 
 use clap::Args;
 use serde::{Deserialize, Serialize};
-use vertex_swarm_api::SwarmAccountingConfig;
 use vertex_swarm_primitives::BandwidthMode;
+
+pub use vertex_swarm_bandwidth_pricing::FixedPricingArgs;
 
 use crate::constants::*;
 
@@ -47,33 +48,41 @@ impl From<BandwidthMode> for BandwidthModeArg {
 }
 
 /// Bandwidth accounting CLI arguments.
+///
+/// This struct is for CLI parsing and serialization only.
+/// Convert to `BandwidthConfig` for runtime use.
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
 #[command(next_help_heading = "Bandwidth Accounting")]
 #[serde(default)]
 pub struct BandwidthArgs {
-    /// Bandwidth accounting mode
+    /// Bandwidth accounting mode.
     #[arg(long = "bandwidth.mode", value_enum, default_value_t = BandwidthModeArg::Pseudosettle)]
     pub mode: BandwidthModeArg,
 
-    /// Payment threshold (triggers settlement when exceeded)
+    /// Payment threshold (triggers settlement when exceeded).
     #[arg(long = "bandwidth.threshold", default_value_t = DEFAULT_PAYMENT_THRESHOLD)]
     pub payment_threshold: u64,
 
-    /// Payment tolerance percent for disconnect threshold
+    /// Payment tolerance percent for disconnect threshold.
     #[arg(long = "bandwidth.tolerance-percent", default_value_t = DEFAULT_PAYMENT_TOLERANCE_PERCENT)]
     pub payment_tolerance_percent: u64,
 
-    /// Pseudosettle refresh rate per second
+    /// Pseudosettle refresh rate per second.
     #[arg(long = "bandwidth.refresh-rate", default_value_t = DEFAULT_REFRESH_RATE)]
     pub refresh_rate: u64,
 
-    /// Early payment trigger percent (for SWAP)
+    /// Early payment trigger percent (for SWAP).
     #[arg(long = "bandwidth.early-percent", default_value_t = DEFAULT_EARLY_PAYMENT_PERCENT)]
     pub early_payment_percent: u64,
 
-    /// Scaling factor for client-only nodes (divides thresholds)
+    /// Scaling factor for client-only nodes (divides thresholds).
     #[arg(long = "bandwidth.client-only-factor", default_value_t = DEFAULT_CLIENT_ONLY_FACTOR)]
     pub client_only_factor: u64,
+
+    /// Chunk pricing configuration.
+    #[command(flatten)]
+    #[serde(default)]
+    pub pricing: FixedPricingArgs,
 }
 
 impl Default for BandwidthArgs {
@@ -85,69 +94,16 @@ impl Default for BandwidthArgs {
             refresh_rate: DEFAULT_REFRESH_RATE,
             early_payment_percent: DEFAULT_EARLY_PAYMENT_PERCENT,
             client_only_factor: DEFAULT_CLIENT_ONLY_FACTOR,
+            pricing: FixedPricingArgs::default(),
         }
     }
 }
 
 impl BandwidthArgs {
-    /// Validate argument combinations.
-    pub fn validate(&self) -> Result<(), String> {
-        match self.mode {
-            BandwidthModeArg::None => {
-                let default = Self::default();
-                if self.refresh_rate != default.refresh_rate
-                    || self.payment_threshold != default.payment_threshold
-                    || self.payment_tolerance_percent != default.payment_tolerance_percent
-                    || self.early_payment_percent != default.early_payment_percent
-                    || self.client_only_factor != default.client_only_factor
-                {
-                    return Err("bandwidth options have no effect when mode is 'none'".to_string());
-                }
-            }
-            BandwidthModeArg::Pseudosettle => {
-                let default = Self::default();
-                if self.early_payment_percent != default.early_payment_percent {
-                    return Err("early-percent only applies to 'swap' or 'both' modes".to_string());
-                }
-            }
-            BandwidthModeArg::Swap => {
-                let default = Self::default();
-                if self.refresh_rate != default.refresh_rate {
-                    return Err(
-                        "refresh-rate only applies to 'pseudosettle' or 'both' modes".to_string(),
-                    );
-                }
-            }
-            BandwidthModeArg::Both => {
-                // All args are valid
-            }
-        }
-        Ok(())
-    }
-}
-
-impl SwarmAccountingConfig for BandwidthArgs {
-    fn mode(&self) -> BandwidthMode {
-        self.mode.into()
-    }
-
-    fn payment_threshold(&self) -> u64 {
-        self.payment_threshold
-    }
-
-    fn payment_tolerance_percent(&self) -> u64 {
-        self.payment_tolerance_percent
-    }
-
-    fn refresh_rate(&self) -> u64 {
-        self.refresh_rate
-    }
-
-    fn early_payment_percent(&self) -> u64 {
-        self.early_payment_percent
-    }
-
-    fn client_only_factor(&self) -> u64 {
-        self.client_only_factor
+    /// Create validated BandwidthConfig from these CLI arguments.
+    pub fn accounting_config(
+        &self,
+    ) -> Result<crate::DefaultBandwidthConfig, crate::BandwidthConfigError> {
+        crate::BandwidthConfig::try_from(self)
     }
 }

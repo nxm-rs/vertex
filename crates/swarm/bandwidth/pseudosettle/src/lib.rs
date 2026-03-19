@@ -28,7 +28,7 @@ use vertex_swarm_api::{
     SwarmPeerState, SwarmResult, SwarmSettlementProvider,
 };
 use vertex_swarm_bandwidth::{Accounting, AccountingPeerHandle};
-use vertex_swarm_node::protocol::ClientCommand;
+use vertex_swarm_node::ClientCommand;
 use vertex_swarm_primitives::OverlayAddress;
 
 pub use error::PseudosettleError;
@@ -205,36 +205,26 @@ pub fn new_pseudosettle_accounting<C: SwarmAccountingConfig + Clone + 'static, I
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vertex_swarm_api::{
-        Direction, SwarmBandwidthAccounting, SwarmNodeType, SwarmPeerBandwidth,
-    };
-    use vertex_swarm_bandwidth::DefaultAccountingConfig;
+    use vertex_swarm_api::{Direction, SwarmBandwidthAccounting, SwarmPeerBandwidth};
+    use vertex_swarm_bandwidth::BandwidthConfig;
     use vertex_swarm_bandwidth::PeerState;
-    use vertex_swarm_identity::Identity;
-
-    fn test_identity() -> Identity {
-        Identity::random(vertex_swarmspec::init_testnet(), SwarmNodeType::Client)
-    }
-
-    fn test_peer() -> OverlayAddress {
-        OverlayAddress::from([1u8; 32])
-    }
+    use vertex_swarm_test_utils::{test_identity, test_peer};
 
     #[test]
     fn test_pseudosettle_provider_name() {
-        let provider = PseudosettleProvider::new(DefaultAccountingConfig);
+        let provider = PseudosettleProvider::new(BandwidthConfig::default());
         assert_eq!(provider.name(), "pseudosettle");
     }
 
     #[test]
     fn test_pseudosettle_refresh_rate() {
-        let provider = PseudosettleProvider::new(DefaultAccountingConfig);
+        let provider = PseudosettleProvider::new(BandwidthConfig::default());
         assert_eq!(provider.refresh_rate(), 4_500_000);
     }
 
     #[test]
     fn test_pseudosettle_accounting_basic() {
-        let accounting = new_pseudosettle_accounting(DefaultAccountingConfig, test_identity());
+        let accounting = new_pseudosettle_accounting(BandwidthConfig::default(), test_identity());
 
         let handle = accounting.for_peer(test_peer());
         assert_eq!(handle.balance(), 0);

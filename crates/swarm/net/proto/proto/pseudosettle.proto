@@ -1,0 +1,15 @@
+// Copyright 2026 Nexum Contributors
+// SPDX-License-Identifier: AGPL-3.0-only
+
+syntax = "proto3";
+
+package pseudosettle;
+
+message Payment {
+  bytes amount = 1;
+}
+
+message PaymentAck {
+  bytes amount = 1;
+  int64 timestamp = 2;
+}

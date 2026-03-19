@@ -1,0 +1,6 @@
+# Cargo configuration for vertex workspace
+
+[build]
+# Enable tokio's unstable APIs for tokio-console support.
+# Force frame pointers for CPU profiling with pprof.
+rustflags = ["--cfg", "tokio_unstable", "-C", "force-frame-pointers=yes"]

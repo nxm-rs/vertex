@@ -47,12 +47,8 @@
 mod behaviour;
 mod events;
 mod handler;
-pub mod upgrade;
+pub(crate) mod upgrade;
 
 pub use behaviour::{ClientBehaviour, Config as BehaviourConfig};
-pub use events::{ClientCommand, ClientEvent, PseudosettleEvent, SwapEvent};
-pub use handler::{ClientHandler, Config as HandlerConfig, HandlerCommand, HandlerEvent};
-pub use upgrade::{
-    ClientInboundOutput, ClientInboundUpgrade, ClientOutboundInfo, ClientOutboundOutput,
-    ClientOutboundRequest, ClientOutboundUpgrade, ClientUpgradeError,
-};
+pub use events::{ClientCommand, ClientEvent, PseudosettleEvent};
+pub use handler::{ClientHandler, Config as HandlerConfig};

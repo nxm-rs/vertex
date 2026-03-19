@@ -1,0 +1,47 @@
+[package]
+name = "vertex-swarm-net-identify"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+## async
+futures.workspace = true
+futures-bounded = "0.2"
+futures-timer = "3.0"
+
+## p2p
+libp2p.workspace = true
+libp2p-swarm.workspace = true
+
+## codec
+asynchronous-codec.workspace = true
+quick-protobuf.workspace = true
+quick-protobuf-codec = "0.3"
+
+## metrics
+vertex-metrics.workspace = true
+vertex-observability.workspace = true
+metrics.workspace = true
+strum.workspace = true
+
+## misc
+parking_lot.workspace = true
+either = "1.13"
+lru = "0.12"
+smallvec = "1.13"
+thiserror.workspace = true
+void = "1.0"
+
+## tracing
+tracing.workspace = true
+
+[dev-dependencies]
+libp2p-swarm-test.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }

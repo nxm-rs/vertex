@@ -1,0 +1,24 @@
+[package]
+name = "vertex-net-dialer"
+description = "Generic dial request tracking with bounded queue and in-flight management"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+libp2p = { workspace = true }
+hashlink = { workspace = true }
+metrics = { workspace = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
+vertex-metrics = { workspace = true }
+web-time = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time"] }

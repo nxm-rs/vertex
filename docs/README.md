@@ -40,6 +40,14 @@ Command-line interface and configuration.
 
 - [**Configuration**](cli/configuration.md) - CLI arguments, node configuration, examples
 
+### Observability
+
+Production monitoring: metrics, tracing, and logging.
+
+- [**Design**](observability/design.md) - Span boundaries, metrics patterns, naming conventions
+- [**Helpers**](observability/helpers.md) - LabelValue trait, guards, macros, common labels
+- [**Local Stack**](../observability/README.md) - Docker Compose setup for Prometheus, Tempo, Loki, Grafana
+
 ### Development
 
 Internal documentation for contributors.
@@ -58,6 +66,7 @@ Internal documentation for contributors.
 | What's different from Bee? | [Differences from Bee](swarm/differences-from-bee.md) |
 | How does bandwidth accounting work? | [Swarm API](swarm/api.md) |
 | Where is libp2p used? | [Client Architecture](client/architecture.md) |
+| How do I monitor my node? | [Observability Design](observability/design.md) |
 
 ## Node Types
 

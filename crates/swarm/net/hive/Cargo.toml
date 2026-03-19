@@ -1,0 +1,50 @@
+[package]
+name = "vertex-swarm-net-hive"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+## vertex
+vertex-net-codec.workspace = true
+vertex-net-ratelimiter.workspace = true
+vertex-swarm-net-headers.workspace = true
+vertex-swarm-net-proto.workspace = true
+vertex-swarm-peer.workspace = true
+vertex-swarm-primitives.workspace = true
+vertex-swarm-api.workspace = true
+vertex-net-utils.workspace = true
+vertex-swarm-spec.workspace = true
+vertex-tasks.workspace = true
+
+## async
+futures.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+## p2p
+quick-protobuf-codec.workspace = true
+libp2p.workspace = true
+
+## crypto
+alloy-primitives.workspace = true
+
+## cache
+hashlink.workspace = true
+parking_lot.workspace = true
+
+## tracing & metrics
+tracing.workspace = true
+metrics.workspace = true
+vertex-observability.workspace = true
+strum.workspace = true
+
+## error handling
+thiserror.workspace = true
+
+[dev-dependencies]

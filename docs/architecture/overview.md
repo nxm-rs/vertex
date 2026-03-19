@@ -98,10 +98,9 @@ Following the reth pattern, we define stateless traits that carry associated typ
 
 ```rust
 // Generic node infrastructure (node/types)
-pub trait NodeTypes: Clone + Debug + Send + Sync + 'static {
-    type Database: DatabaseProvider;
-    type Rpc: RpcServer;
-    type Executor: TaskExecutor;
+pub trait NodeTypes: Send + Sync + 'static {
+    type Database: NodeDatabaseProvider;
+    type Rpc: NodeRpcServer;
 }
 
 // Swarm capability traits (swarm/api)

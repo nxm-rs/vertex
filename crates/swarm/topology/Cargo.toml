@@ -1,6 +1,6 @@
 [package]
 name = "vertex-swarm-topology"
-description = "Topology behaviour for libp2p handshake, hive, and pingpong protocols"
+description = "Topology behaviour and Kademlia routing for Swarm peer management"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,36 +12,67 @@ repository.workspace = true
 ## vertex
 vertex-swarm-primitives.workspace = true
 vertex-swarm-api.workspace = true
+vertex-observability.workspace = true
 vertex-swarm-identity.workspace = true
-vertex-net-handshake.workspace = true
-vertex-net-headers.workspace = true
-vertex-net-hive.workspace = true
-vertex-net-pingpong.workspace = true
+vertex-swarm-spec.workspace = true
+vertex-net-dialer.workspace = true
+vertex-net-local.workspace = true
+vertex-net-utils.workspace = true
+vertex-net-peer-store.workspace = true
+vertex-tasks.workspace = true
+vertex-swarm-net-handshake.workspace = true
+vertex-swarm-net-identify.workspace = true
+vertex-swarm-net-headers.workspace = true
+vertex-swarm-net-hive.workspace = true
+vertex-swarm-net-pingpong.workspace = true
 vertex-swarm-peer.workspace = true
-vertex-swarm-peermanager.workspace = true
+vertex-swarm-peer-manager.workspace = true
+vertex-net-peer-registry.workspace = true
+vertex-swarm-peer-score.workspace = true
+nectar-primitives.workspace = true
 
 ## p2p
 libp2p.workspace = true
 
 ## async
 futures.workspace = true
+tokio.workspace = true
+if-watch.workspace = true
 
 ## crypto/primitives
 alloy-primitives.workspace = true
 bytes.workspace = true
 
 ## misc
+async-trait = "0.1"
 thiserror.workspace = true
 rand.workspace = true
+parking_lot.workspace = true
+hashlink.workspace = true
+strum.workspace = true
+web-time.workspace = true
+hex = "0.4"
+
+## CLI args (optional, for RoutingArgs)
+clap.workspace = true
+serde.workspace = true
+
+## tracing & metrics
 tracing.workspace = true
+metrics.workspace = true
 
 # DNS resolution (for bootnode dnsaddr resolution)
-hickory-resolver = { version = "0.25", features = ["tokio", "system-config"] }
-tokio = { workspace = true }
+vertex-net-dnsaddr.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
 tracing-subscriber.workspace = true
+vertex-swarm-test-utils = { workspace = true }
+criterion.workspace = true
+
+[[bench]]
+name = "topology_benchmarks"
+harness = false
 
 [lints]
 workspace = true

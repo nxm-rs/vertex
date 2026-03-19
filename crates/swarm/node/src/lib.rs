@@ -14,37 +14,30 @@ mod config;
 pub use config::ProtocolConfig;
 
 mod bootnodes;
-mod client;
+mod client_service;
 mod node;
-pub mod protocol;
-mod service;
-mod stats;
+mod protocol;
+mod swarm_client;
 
 pub use node::{
-    BaseNode, BootNode, BootNodeBuilder, BootnodeBehaviour, BootnodeEvent, BuilderConfig,
-    BuiltInfrastructure, ClientNode, ClientNodeBehaviour, ClientNodeBuilder, ClientNodeEvent,
+    BaseNode, BootNode, BootNodeBuilder, BootnodeBehaviour, BootnodeEvent, BuiltInfrastructure,
+    ClientNode, ClientNodeBehaviour, ClientNodeBuilder, ClientNodeEvent, NodeBuildError,
     StorerNode, StorerNodeBuilder,
 };
 
 pub use vertex_swarm_api::SwarmNodeType;
 
-pub use service::{
-    ClientCommand, ClientEvent, ClientHandle, ClientService, RetrievalError, RetrievalResult,
-};
+pub use client_service::{ClientHandle, ClientService, RetrievalError, RetrievalResult};
+pub use protocol::{ClientCommand, ClientEvent};
 
-pub use protocol::{PseudosettleEvent, SwapEvent};
+pub use protocol::PseudosettleEvent;
 
 pub use protocol::{
     BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientHandler,
     HandlerConfig as ClientHandlerConfig,
 };
 
-pub use client::{BootnodeClient, BuiltSwarmComponents, Client, FullClient};
+pub use swarm_client::{BootnodeClient, Client, FullClient};
 
 pub use bootnodes::BootnodeProvider;
-pub use stats::{StatsConfig, spawn_stats_task};
-
-pub use vertex_swarm_bandwidth::{
-    Accounting, AccountingError, AccountingPeerHandle, ClientAccounting, FixedPricer, PeerState,
-    Pricer, ProvideAction, ReceiveAction,
-};
+pub use node::stats::{StatsConfig, spawn_stats_task};

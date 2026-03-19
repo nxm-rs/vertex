@@ -1,0 +1,52 @@
+[package]
+name = "vertex-swarm-peer-manager"
+description = "Peer lifecycle management with PeerId/OverlayAddress abstraction boundary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Network primitives
+vertex-net-local = { workspace = true }
+vertex-net-peer-backoff = { workspace = true }
+vertex-net-peer-store = { workspace = true, features = ["test-utils"] }
+
+# Swarm-specific
+vertex-swarm-api = { workspace = true }
+vertex-swarm-primitives = { workspace = true }
+vertex-swarm-peer = { workspace = true, features = ["serde"] }
+vertex-swarm-peer-score = { workspace = true }
+
+# Tasks
+vertex-tasks = { workspace = true }
+
+# Observability
+vertex-observability = { workspace = true }
+metrics = { workspace = true }
+
+# Storage
+vertex-storage = { workspace = true, features = ["nectar", "alloy"] }
+alloy-primitives = { workspace = true }
+
+# Core
+libp2p = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+
+# Concurrency
+dashmap = { workspace = true }
+hashlink = { workspace = true }
+scopeguard = { workspace = true }
+tokio = { workspace = true, features = ["time", "sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+tempfile = "3"
+postcard = { workspace = true }
+vertex-swarm-test-utils = { workspace = true }
+vertex-storage-redb = { workspace = true }

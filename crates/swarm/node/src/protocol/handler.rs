@@ -33,26 +33,34 @@ use libp2p::swarm::{
 };
 use nectar_primitives::ChunkAddress;
 use tracing::{debug, warn};
-use vertex_net_pseudosettle::PaymentAck;
-use vertex_swarm_bandwidth_chequebook::SignedCheque;
-use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_net_pseudosettle::PaymentAck;
+use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
 use super::upgrade::{
     ClientInboundOutput, ClientInboundUpgrade, ClientOutboundInfo, ClientOutboundOutput,
     ClientOutboundUpgrade,
 };
 
+const DEFAULT_MAX_PENDING_COMMANDS: usize = 256;
+const DEFAULT_MAX_PENDING_EVENTS: usize = 256;
+
 /// Configuration for the client handler.
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Timeout for protocol operations.
     pub timeout: Duration,
+    /// Maximum pending commands before dropping new ones.
+    pub max_pending_commands: usize,
+    /// Maximum pending events before dropping new ones.
+    pub max_pending_events: usize,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             timeout: Duration::from_secs(30),
+            max_pending_commands: DEFAULT_MAX_PENDING_COMMANDS,
+            max_pending_events: DEFAULT_MAX_PENDING_EVENTS,
         }
     }
 }
@@ -64,8 +72,8 @@ pub enum HandlerCommand {
     Activate {
         /// The peer's overlay address.
         overlay: OverlayAddress,
-        /// Whether the peer is a full node.
-        is_full_node: bool,
+        /// The peer's node type.
+        node_type: SwarmNodeType,
     },
     /// Announce our payment threshold to the peer.
     AnnouncePricing {
@@ -90,13 +98,6 @@ pub enum HandlerCommand {
     SendPseudosettle {
         /// The amount to send.
         amount: U256,
-    },
-    /// Send a swap cheque to the peer.
-    SendCheque {
-        /// The signed cheque.
-        cheque: SignedCheque,
-        /// Our exchange rate.
-        our_rate: U256,
     },
     /// Acknowledge a pseudosettle payment.
     AckPseudosettle {
@@ -198,81 +199,22 @@ pub enum HandlerEvent {
         /// The ack received.
         ack: PaymentAck,
     },
-    /// Received swap cheque from peer.
-    ChequeReceived {
-        /// The peer's overlay address.
-        overlay: OverlayAddress,
-        /// The signed cheque.
-        cheque: SignedCheque,
-        /// The peer's exchange rate.
-        peer_rate: U256,
-    },
-    /// Successfully sent swap cheque.
-    ChequeSent {
-        /// The peer's overlay address.
-        overlay: OverlayAddress,
-        /// The peer's exchange rate.
-        peer_rate: U256,
-    },
 }
 
 /// Handler state machine.
 #[derive(Debug)]
-#[allow(dead_code)]
 enum State {
     /// Waiting for activation command.
     Dormant,
     /// Active and processing protocols.
     Active {
         overlay: OverlayAddress,
-        is_full_node: bool,
+        #[allow(dead_code)]
+        node_type: SwarmNodeType,
     },
     /// Handler is closing.
+    #[allow(dead_code)]
     Closing,
-}
-
-/// Outbound protocol selection.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub(super) enum OutboundProtocol {
-    Pricing(vertex_net_pricing::PricingOutboundProtocol),
-    Retrieval(vertex_net_retrieval::RetrievalOutboundProtocol),
-    PushSync(vertex_net_pushsync::PushsyncOutboundProtocol),
-}
-
-/// Inbound protocol selection.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub(super) enum InboundProtocol {
-    Pricing(vertex_net_pricing::PricingInboundProtocol),
-    Retrieval(vertex_net_retrieval::RetrievalInboundProtocol),
-    PushSync(vertex_net_pushsync::PushsyncInboundProtocol),
-}
-
-/// Inbound protocol output after negotiation.
-#[allow(dead_code)]
-pub(super) enum InboundOutput {
-    Pricing(vertex_net_pricing::AnnouncePaymentThreshold),
-    Retrieval(
-        (
-            vertex_net_retrieval::Request,
-            vertex_net_retrieval::RetrievalResponder,
-        ),
-    ),
-    PushSync(
-        (
-            vertex_net_pushsync::Delivery,
-            vertex_net_pushsync::PushsyncResponder,
-        ),
-    ),
-}
-
-/// Outbound protocol output after negotiation.
-#[allow(dead_code)]
-pub(super) enum OutboundOutput {
-    Pricing,
-    Retrieval(vertex_net_retrieval::Delivery),
-    PushSync(vertex_net_pushsync::Receipt),
 }
 
 /// Swarm client connection handler.
@@ -293,8 +235,17 @@ pub struct ClientHandler {
     pricing_outbound_pending: bool,
 }
 
-#[allow(dead_code)]
 impl ClientHandler {
+    /// Push an event if the queue isn't full, otherwise drop with a metric.
+    fn push_event(&mut self, event: HandlerEvent) {
+        if self.pending_events.len() >= self.config.max_pending_events {
+            warn!("Handler event queue full, dropping event");
+            metrics::counter!("swarm.client.handler.events_dropped").increment(1);
+            return;
+        }
+        self.pending_events.push_back(event);
+    }
+
     /// Create a new handler in dormant state.
     pub fn new(config: Config) -> Self {
         Self {
@@ -324,14 +275,11 @@ impl ClientHandler {
     }
 
     /// Process activation command.
-    fn activate(&mut self, overlay: OverlayAddress, is_full_node: bool) {
+    fn activate(&mut self, overlay: OverlayAddress, node_type: SwarmNodeType) {
         match &self.state {
             State::Dormant => {
-                debug!(%overlay, %is_full_node, "Handler activated");
-                self.state = State::Active {
-                    overlay,
-                    is_full_node,
-                };
+                debug!(%overlay, ?node_type, "Handler activated");
+                self.state = State::Active { overlay, node_type };
                 self.pending_events
                     .push_back(HandlerEvent::Activated { overlay });
             }
@@ -345,7 +293,10 @@ impl ClientHandler {
     }
 
     /// Handle incoming pricing threshold.
-    fn on_pricing_received(&mut self, threshold: vertex_net_pricing::AnnouncePaymentThreshold) {
+    fn on_pricing_received(
+        &mut self,
+        threshold: vertex_swarm_net_pricing::AnnouncePaymentThreshold,
+    ) {
         if let Some(overlay) = self.overlay() {
             debug!(%overlay, threshold = %threshold.payment_threshold, "Received pricing");
             self.pending_events
@@ -354,35 +305,44 @@ impl ClientHandler {
                     threshold: threshold.payment_threshold,
                 });
         } else {
-            warn!("Received pricing in dormant state");
+            // This should not happen since we don't advertise pricing in dormant state.
+            // If it does, the peer may be using an outdated protocol cache or race condition.
+            warn!(
+                threshold = %threshold.payment_threshold,
+                "Received pricing in dormant state (peer may have cached old protocol list)"
+            );
         }
     }
 
     /// Handle incoming retrieval request.
     fn on_retrieval_request(
         &mut self,
-        request: vertex_net_retrieval::Request,
-        _responder: vertex_net_retrieval::RetrievalResponder,
+        request: vertex_swarm_net_retrieval::Request,
+        _responder: vertex_swarm_net_retrieval::RetrievalResponder,
     ) {
         if let Some(overlay) = self.overlay() {
             let request_id = self.next_request_id();
             debug!(%overlay, address = %request.address, %request_id, "Received retrieval request");
-            self.pending_events.push_back(HandlerEvent::ChunkRequested {
+            self.push_event(HandlerEvent::ChunkRequested {
                 overlay,
                 address: request.address,
                 request_id,
             });
             // TODO: Store responder for later use
         } else {
-            warn!("Received retrieval request in dormant state");
+            // This should not happen since we don't advertise retrieval in dormant state.
+            warn!(
+                address = %request.address,
+                "Received retrieval request in dormant state (peer may have cached old protocol list)"
+            );
         }
     }
 
     /// Handle incoming pushsync delivery.
     fn on_pushsync_delivery(
         &mut self,
-        delivery: vertex_net_pushsync::Delivery,
-        _responder: vertex_net_pushsync::PushsyncResponder,
+        delivery: vertex_swarm_net_pushsync::Delivery,
+        _responder: vertex_swarm_net_pushsync::PushsyncResponder,
     ) {
         if let Some(overlay) = self.overlay() {
             let request_id = self.next_request_id();
@@ -397,27 +357,32 @@ impl ClientHandler {
                 });
             // TODO: Store responder for later use
         } else {
-            warn!("Received pushsync delivery in dormant state");
+            // This should not happen since we don't advertise pushsync in dormant state.
+            warn!(
+                address = %delivery.address,
+                "Received pushsync delivery in dormant state (peer may have cached old protocol list)"
+            );
         }
     }
 
     /// Handle retrieval response.
+    #[allow(dead_code)]
     fn on_retrieval_response(
         &mut self,
-        delivery: vertex_net_retrieval::Delivery,
+        delivery: vertex_swarm_net_retrieval::Delivery,
         address: ChunkAddress,
     ) {
         if let Some(overlay) = self.overlay() {
             if let Some(ref err) = delivery.error {
                 debug!(%overlay, error = %err, "Retrieval failed");
-                self.pending_events.push_back(HandlerEvent::Error {
+                self.push_event(HandlerEvent::Error {
                     overlay: Some(overlay),
                     protocol: "retrieval",
                     error: err.clone(),
                 });
             } else {
                 debug!(%overlay, data_len = delivery.data.len(), "Received chunk");
-                self.pending_events.push_back(HandlerEvent::ChunkReceived {
+                self.push_event(HandlerEvent::ChunkReceived {
                     overlay,
                     address,
                     data: delivery.data,
@@ -428,11 +393,11 @@ impl ClientHandler {
     }
 
     /// Handle pushsync receipt.
-    fn on_pushsync_receipt(&mut self, receipt: vertex_net_pushsync::Receipt) {
+    fn on_pushsync_receipt(&mut self, receipt: vertex_swarm_net_pushsync::Receipt) {
         if let Some(overlay) = self.overlay() {
             if let Some(ref err) = receipt.error {
                 debug!(%overlay, error = %err, "Pushsync failed");
-                self.pending_events.push_back(HandlerEvent::Error {
+                self.push_event(HandlerEvent::Error {
                     overlay: Some(overlay),
                     protocol: "pushsync",
                     error: err.clone(),
@@ -467,7 +432,15 @@ impl ConnectionHandler for ClientHandler {
     type OutboundOpenInfo = ClientOutboundInfo;
 
     fn listen_protocol(&self) -> SubstreamProtocol<Self::InboundProtocol, Self::InboundOpenInfo> {
-        SubstreamProtocol::new(ClientInboundUpgrade::new(), ()).with_timeout(self.config.timeout)
+        // Only advertise client protocols when active (post-handshake).
+        // In dormant state, we don't advertise any protocols to prevent
+        // remote peers from initiating pricing/retrieval/pushsync before
+        // we're ready.
+        let upgrade = match &self.state {
+            State::Active { .. } => ClientInboundUpgrade::active(),
+            State::Dormant | State::Closing => ClientInboundUpgrade::new(),
+        };
+        SubstreamProtocol::new(upgrade, ()).with_timeout(self.config.timeout)
     }
 
     fn poll(
@@ -484,11 +457,8 @@ impl ConnectionHandler for ClientHandler {
         // Process pending commands
         while let Some(cmd) = self.pending_commands.pop_front() {
             match cmd {
-                HandlerCommand::Activate {
-                    overlay,
-                    is_full_node,
-                } => {
-                    self.activate(overlay, is_full_node);
+                HandlerCommand::Activate { overlay, node_type } => {
+                    self.activate(overlay, node_type);
                     if let Some(event) = self.pending_events.pop_front() {
                         return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
                     }
@@ -496,7 +466,8 @@ impl ConnectionHandler for ClientHandler {
                 HandlerCommand::AnnouncePricing { threshold } => {
                     if !self.pricing_sent && !self.pricing_outbound_pending {
                         self.pricing_outbound_pending = true;
-                        let announce = vertex_net_pricing::AnnouncePaymentThreshold::new(threshold);
+                        let announce =
+                            vertex_swarm_net_pricing::AnnouncePaymentThreshold::new(threshold);
                         let upgrade = ClientOutboundUpgrade::pricing(announce);
                         return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
                             protocol: SubstreamProtocol::new(upgrade, ClientOutboundInfo::Pricing)
@@ -521,7 +492,7 @@ impl ConnectionHandler for ClientHandler {
                     stamp,
                 } => {
                     // Create pushsync outbound request
-                    let delivery = vertex_net_pushsync::Delivery::new(address, data, stamp);
+                    let delivery = vertex_swarm_net_pushsync::Delivery::new(address, data, stamp);
                     let upgrade = ClientOutboundUpgrade::pushsync(delivery);
                     return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
                         protocol: SubstreamProtocol::new(
@@ -532,7 +503,7 @@ impl ConnectionHandler for ClientHandler {
                     });
                 }
                 HandlerCommand::SendPseudosettle { amount } => {
-                    let payment = vertex_net_pseudosettle::Payment::new(amount);
+                    let payment = vertex_swarm_net_pseudosettle::Payment::new(amount);
                     let upgrade = ClientOutboundUpgrade::pseudosettle(payment);
                     return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
                         protocol: SubstreamProtocol::new(
@@ -540,13 +511,6 @@ impl ConnectionHandler for ClientHandler {
                             ClientOutboundInfo::Pseudosettle { amount },
                         )
                         .with_timeout(self.config.timeout),
-                    });
-                }
-                HandlerCommand::SendCheque { cheque, our_rate } => {
-                    let upgrade = ClientOutboundUpgrade::swap(cheque, our_rate);
-                    return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
-                        protocol: SubstreamProtocol::new(upgrade, ClientOutboundInfo::Swap)
-                            .with_timeout(self.config.timeout),
                     });
                 }
                 HandlerCommand::AckPseudosettle { request_id, ack } => {
@@ -560,6 +524,11 @@ impl ConnectionHandler for ClientHandler {
     }
 
     fn on_behaviour_event(&mut self, event: Self::FromBehaviour) {
+        if self.pending_commands.len() >= self.config.max_pending_commands {
+            warn!("Handler command queue full, dropping command");
+            metrics::counter!("swarm.client.handler.commands_dropped").increment(1);
+            return;
+        }
         self.pending_commands.push_back(event);
     }
 
@@ -600,10 +569,9 @@ impl ConnectionHandler for ClientHandler {
                     ClientOutboundInfo::Retrieval { .. } => "retrieval",
                     ClientOutboundInfo::Pushsync { .. } => "pushsync",
                     ClientOutboundInfo::Pseudosettle { .. } => "pseudosettle",
-                    ClientOutboundInfo::Swap => "swap",
                 };
                 warn!(protocol, error = %e.error, "Client dial upgrade error");
-                self.pending_events.push_back(HandlerEvent::Error {
+                self.push_event(HandlerEvent::Error {
                     overlay: self.overlay(),
                     protocol,
                     error: e.error.to_string(),
@@ -613,7 +581,7 @@ impl ConnectionHandler for ClientHandler {
             // Handle listen (inbound) errors
             ConnectionEvent::ListenUpgradeError(e) => {
                 warn!(error = %e.error, "Client listen upgrade error");
-                self.pending_events.push_back(HandlerEvent::Error {
+                self.push_event(HandlerEvent::Error {
                     overlay: self.overlay(),
                     protocol: "unknown",
                     error: e.error.to_string(),
@@ -651,16 +619,6 @@ impl ClientHandler {
                     // TODO: Store responder for later ack
                 }
             }
-            ClientInboundOutput::Swap(cheque, headers) => {
-                if let Some(overlay) = self.overlay() {
-                    debug!(%overlay, peer_rate = %headers.exchange_rate, "Received swap cheque");
-                    self.pending_events.push_back(HandlerEvent::ChequeReceived {
-                        overlay,
-                        cheque,
-                        peer_rate: headers.exchange_rate,
-                    });
-                }
-            }
         }
     }
 
@@ -681,7 +639,7 @@ impl ClientHandler {
             ) => {
                 if let Some(overlay) = self.overlay() {
                     debug!(%overlay, %address, "Received chunk delivery");
-                    self.pending_events.push_back(HandlerEvent::ChunkReceived {
+                    self.push_event(HandlerEvent::ChunkReceived {
                         overlay,
                         address,
                         data: delivery.data.clone(),
@@ -703,15 +661,6 @@ impl ClientHandler {
                     debug!(%overlay, ack_amount = %ack.amount, "Pseudosettle sent");
                     self.pending_events
                         .push_back(HandlerEvent::PseudosettleSent { overlay, ack });
-                }
-            }
-            (ClientOutboundOutput::Swap(headers), ClientOutboundInfo::Swap) => {
-                if let Some(overlay) = self.overlay() {
-                    debug!(%overlay, peer_rate = %headers.exchange_rate, "Swap cheque sent");
-                    self.pending_events.push_back(HandlerEvent::ChequeSent {
-                        overlay,
-                        peer_rate: headers.exchange_rate,
-                    });
                 }
             }
             // Mismatched output/info - should not happen

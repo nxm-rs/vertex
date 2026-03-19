@@ -1,57 +1,45 @@
 //! Swarm node builder infrastructure.
 //!
-//! This crate provides the builder pattern for launching Swarm nodes and
-//! constructing Swarm components.
+//! Provides layered builders for constructing Swarm nodes:
+//! - [`NodeBuilder`] / [`DefaultNodeBuilder`] - Bootnode builder
+//! - [`ClientNodeBuilder`] / [`DefaultClientBuilder`] - Client node builder
+//! - [`StorerNodeBuilder`] / [`DefaultStorerBuilder`] - Storer node builder
 //!
-//! # Node Building
-//!
-//! The primary entry point is `NodeBuilder` from `vertex-node-builder`, combined
-//! with `SwarmNodeBuilder<N>` for protocol configuration:
-//!
-//! ```ignore
-//! use vertex_node_builder::NodeBuilder;
-//! use vertex_swarm_builder::{SwarmNodeBuilder, node_type};
-//!
-//! let handle = NodeBuilder::new()
-//!     .with_context(&ctx, &args.infra)
-//!     .with_protocol(SwarmNodeBuilder::<node_type::Client>::new(&ctx, &args.swarm))
-//!     .launch()
-//!     .await?;
-//!
-//! handle.wait_for_exit().await?;
-//! ```
-//!
-//! # Component Building
-//!
-//! Lower-level component building is also available via:
-//! - [`SwarmBuilderContext`] - Runtime context passed to all builders
-//! - [`SwarmComponentsBuilder`] - Combines individual builders
-//! - [`TopologyBuilder`], [`AccountingBuilder`], [`PricerBuilder`] - Individual component builders
+//! Build returns [`BuiltNode`] which contains the task and RPC providers.
 
-mod components;
-mod context;
+pub mod config;
 mod error;
+mod handle;
 mod launch;
 mod node;
-pub mod node_type;
 mod providers;
 mod rpc;
-mod types;
 
-// Node building
-pub use error::SwarmNodeError;
-pub use launch::{
-    SwarmLaunchContext, create_and_save_signer, load_signer_from_keystore, resolve_password,
+// Traits
+pub use node::BuilderExt;
+
+// Builders
+pub use node::{
+    ClientNodeBuilder, DefaultClientBuilder, DefaultNodeBuilder, DefaultStorerBuilder, NodeBuilder,
+    StorerNodeBuilder,
 };
-pub use node::{ClientNodeBuildConfig, SwarmNodeBuilder};
+
+// Build outputs
+pub use handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};
+
+// Providers
 pub use providers::NetworkChunkProvider;
-pub use rpc::{BootnodeRpcProviders, ClientRpcProviders};
-pub use types::{DefaultBootnodeTypes, DefaultClientTypes, DefaultNetworkConfig};
+pub use rpc::{BootnodeRpcProviders, ClientRpcProviders, StorerRpcProviders};
 
-// Component building
-pub use components::{
-    AccountingBuilder, BuiltSwarmComponents, DefaultAccountingBuilder, DefaultComponentsBuilder,
-    FixedPricerBuilder, KademliaTopologyBuilder, NoAccountingBuilder, NoPricerBuilder,
-    PricerBuilder, SwarmComponentsBuilder, TopologyBuilder,
-};
-pub use context::SwarmBuilderContext;
+// Configs
+pub use config::{BootnodeConfig, ClientConfig, StorerConfig};
+
+// Launch types (for SwarmLaunchConfig associated types)
+pub use launch::{BootnodeLaunchTypes, ClientLaunchTypes, StorerLaunchTypes};
+
+// Errors
+pub use error::SwarmNodeError;
+
+// Re-exports
+pub use vertex_swarm_api::{BootnodeComponents, ClientComponents, StorerComponents};
+pub use vertex_swarm_bandwidth::{AccountingBuilder, NoAccountingBuilder};

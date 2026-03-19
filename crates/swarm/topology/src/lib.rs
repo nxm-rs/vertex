@@ -1,45 +1,34 @@
 //! Swarm network topology management.
 //!
-//! Provides libp2p behaviour and handlers for Swarm peer discovery and connection
-//! management. Operates at the libp2p layer using `PeerId` and `Multiaddr`.
-//!
-//! # Public API vs Internal Types
-//!
-//! This crate exposes two levels of command/event types:
-//!
-//! - **Public API** ([`TopologyCommand`], [`TopologyEvent`]): High-level commands and
-//!   events for the node layer. Use these to interact with the topology behaviour.
-//!
-//! - **Internal** (`handler::Command`, `handler::Event`): Low-level per-connection
-//!   messages between the behaviour and connection handlers. These are not exported.
-//!
-//! # Components
-//!
-//! - [`TopologyBehaviour`]: libp2p `NetworkBehaviour` managing handshake, hive, pingpong
-//! - [`BootnodeConnector`]: Bootstrap node connection strategy
-//! - [`dns`]: Resolution of `/dnsaddr/` multiaddrs
+//! Provides libp2p behaviour, handlers, and Kademlia routing for Swarm peer
+//! discovery and connection management.
 
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-pub mod behaviour;
-pub mod bootnode;
-pub mod dns;
-pub mod events;
-pub mod handler;
-pub mod protocol;
+pub(crate) use vertex_net_utils::extract_peer_id;
 
+mod behaviour;
+mod connection_handlers;
+mod dialing;
+mod events;
+mod handle;
+mod kademlia;
+pub mod metrics;
+mod nat_discovery;
+mod protocol_handlers;
+
+mod composed;
 mod error;
 mod gossip;
 
-pub use gossip::HiveGossipConfig;
+#[cfg(test)]
+pub(crate) mod test_support;
 
-pub use behaviour::{DepthProvider, TopologyBehaviour};
-pub use bootnode::BootnodeConnector;
-pub use dns::{DnsaddrResolveError, is_dnsaddr, resolve_all_dnsaddrs, resolve_dnsaddr};
-pub use error::{TopologyError, TopologyResult};
-pub use events::{TopologyCommand, TopologyEvent};
-pub use handler::TopologyConfig;
-pub use protocol::{
-    TopologyInboundOutput, TopologyInboundUpgrade, TopologyOutboundInfo, TopologyOutboundOutput,
-    TopologyOutboundRequest, TopologyOutboundUpgrade, TopologyUpgradeError,
-};
+pub use behaviour::{DEFAULT_DIAL_INTERVAL, TopologyBehaviour, TopologyConfig};
+pub use error::{DialError, DisconnectReason, RejectionReason, TopologyError, TopologyResult};
+pub use events::{ConnectionDirection, DialReason, TopologyCommand, TopologyEvent};
+pub use handle::{BinStats, RoutingStats, TopologyHandle};
+
+pub use kademlia::{KademliaConfig, RoutingArgs};
+
+pub use libp2p::Multiaddr;

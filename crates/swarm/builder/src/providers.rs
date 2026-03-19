@@ -1,45 +1,23 @@
 //! RPC provider implementations for Swarm nodes.
-//!
-//! This module provides concrete implementations of the provider traits
-//! defined in `vertex-swarm-api`.
 
-use std::sync::Arc;
-
-use alloy_primitives::hex::FromHex;
 use async_trait::async_trait;
 use nectar_primitives::SwarmAddress;
 use vertex_swarm_api::{
-    ChunkRetrievalError, ChunkRetrievalResult, SwarmChunkProvider, SwarmTopology,
+    ChunkAddress, ChunkRetrievalResult, SwarmChunkProvider, SwarmError, SwarmIdentity, SwarmResult,
+    SwarmTopologyRouting,
 };
-use vertex_swarm_identity::Identity;
-use vertex_swarm_kademlia::KademliaTopology;
 use vertex_swarm_node::ClientHandle;
+use vertex_swarm_topology::TopologyHandle;
 
-/// Chunk provider implementation that uses a ClientHandle for network retrieval.
-///
-/// This wraps the network layer's ClientHandle to provide chunk retrieval
-/// via the gRPC API.
+/// Chunk provider using ClientHandle for network retrieval.
 #[derive(Clone)]
-pub struct NetworkChunkProvider {
+pub struct NetworkChunkProvider<I: SwarmIdentity> {
     client_handle: ClientHandle,
-    topology: Arc<KademliaTopology<Arc<Identity>>>,
+    topology: TopologyHandle<I>,
 }
 
-impl std::fmt::Debug for NetworkChunkProvider {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NetworkChunkProvider")
-            .field("client_handle", &"ClientHandle")
-            .field("topology", &"KademliaTopology")
-            .finish()
-    }
-}
-
-impl NetworkChunkProvider {
-    /// Create a new network chunk provider.
-    pub fn new(
-        client_handle: ClientHandle,
-        topology: Arc<KademliaTopology<Arc<Identity>>>,
-    ) -> Self {
+impl<I: SwarmIdentity> NetworkChunkProvider<I> {
+    pub fn new(client_handle: ClientHandle, topology: TopologyHandle<I>) -> Self {
         Self {
             client_handle,
             topology,
@@ -48,23 +26,17 @@ impl NetworkChunkProvider {
 }
 
 #[async_trait]
-impl SwarmChunkProvider for NetworkChunkProvider {
-    async fn retrieve_chunk(
-        &self,
-        address: &str,
-    ) -> Result<ChunkRetrievalResult, ChunkRetrievalError> {
-        // Parse the hex address into a SwarmAddress
-        let addr_bytes = <[u8; 32]>::from_hex(address)
-            .map_err(|_| ChunkRetrievalError::InvalidAddress(address.to_string()))?;
-        let chunk_address = SwarmAddress::new(addr_bytes);
+impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
+    async fn retrieve_chunk(&self, address: &ChunkAddress) -> SwarmResult<ChunkRetrievalResult> {
+        let chunk_address = SwarmAddress::new(address.0.into());
 
         // Get the closest peers to the chunk address (up to 5 candidates)
         let closest_peers = self.topology.closest_to(&chunk_address, 5);
 
         if closest_peers.is_empty() {
-            return Err(ChunkRetrievalError::Network(
-                "No connected peers available for retrieval".to_string(),
-            ));
+            return Err(SwarmError::Network {
+                message: "No connected peers available for retrieval".to_string(),
+            });
         }
 
         // Try each peer in order until one succeeds
@@ -80,7 +52,7 @@ impl SwarmChunkProvider for NetworkChunkProvider {
                     return Ok(ChunkRetrievalResult {
                         data: result.data,
                         stamp: result.stamp,
-                        served_by: result.peer.to_string(),
+                        served_by: result.peer,
                     });
                 }
                 Err(e) => {
@@ -92,12 +64,14 @@ impl SwarmChunkProvider for NetworkChunkProvider {
 
         // All peers failed
         match last_error {
-            Some(e) => Err(ChunkRetrievalError::Network(e.to_string())),
-            None => Err(ChunkRetrievalError::NotFound(address.to_string())),
+            Some(e) => Err(SwarmError::Network {
+                message: e.to_string(),
+            }),
+            None => Err(SwarmError::ChunkNotFound { address: *address }),
         }
     }
 
-    fn has_chunk(&self, _address: &str) -> bool {
+    fn has_chunk(&self, _address: &ChunkAddress) -> bool {
         // Client nodes don't have local storage
         false
     }

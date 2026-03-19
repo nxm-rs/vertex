@@ -119,9 +119,9 @@ pub trait SwarmAccountingConfig: Send + Sync {
     }
 }
 
-/// Per-peer bandwidth accounting handle. Clone-safe and lock-free.
+/// Per-peer bandwidth accounting handle.
 #[async_trait::async_trait]
-pub trait SwarmPeerBandwidth: Clone + Send + Sync {
+pub trait SwarmPeerBandwidth: Send + Sync {
     /// Record bandwidth usage (lock-free, must not block).
     fn record(&self, bytes: u64, direction: Direction);
 
@@ -186,7 +186,7 @@ pub trait SwarmBandwidthAccounting: Send + Sync {
 /// Unifies chunk pricing and bandwidth accounting so callers don't need
 /// to coordinate between separate pricer and accounting instances.
 #[auto_impl::auto_impl(&, Arc)]
-pub trait SwarmClientAccounting: Clone + Send + Sync {
+pub trait SwarmClientAccounting: Send + Sync {
     /// The underlying bandwidth accounting type.
     type Bandwidth: SwarmBandwidthAccounting;
 

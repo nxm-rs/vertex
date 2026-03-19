@@ -28,6 +28,10 @@
         devShells.default = pkgs.mkShell {
           name = "vertex-dev";
 
+          # Disable fortify hardening — jemalloc's configure runs test
+          # compiles with -O0 which conflicts with _FORTIFY_SOURCE.
+          hardeningDisable = [ "fortify" ];
+
           buildInputs = with pkgs; [
             # Rust toolchain
             rustToolchain
@@ -45,8 +49,10 @@
             # Development tools
             just               # Task runner
             cargo-audit        # Security audit
+            cargo-deny         # Dependency check
             cargo-watch        # File watcher
             cargo-expand       # Macro expansion
+            cargo-nextest      # Test runner
 
             # Git
             git

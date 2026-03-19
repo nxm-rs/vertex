@@ -6,6 +6,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 pub mod args;
+pub mod keystore;
 
 use alloy_primitives::B256;
 use alloy_signer::k256::ecdsa::SigningKey;
@@ -14,27 +15,23 @@ use nectar_primitives::SwarmAddress;
 use std::sync::Arc;
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeType};
 use vertex_swarm_primitives::compute_overlay;
-use vertex_swarmspec::{Hive, Loggable, SwarmSpec};
+use vertex_swarm_spec::{HasSpec, Loggable, Spec, SwarmSpec};
 
 pub use args::IdentityArgs;
+pub use keystore::{create_and_save_signer, load_signer_from_keystore, resolve_password};
 pub use vertex_swarm_api::SwarmIdentity as IdentityTrait;
 
 /// Local node identity containing signing key, nonce, and network spec.
 ///
-/// Caches the overlay address at construction time.
-#[derive(Clone)]
+/// Holds an `Arc<Spec>` for shared access to the network specification.
+/// Wrap in `Arc<Identity>` for sharing across components.
 pub struct Identity {
-    /// Network specification (network_id, bootnodes, etc.)
-    spec: Arc<Hive>,
-    /// Signing key for this node.
+    spec: Arc<Spec>,
     signer: Arc<LocalSigner<SigningKey>>,
-    /// Nonce for overlay address derivation.
     nonce: B256,
-    /// Cached overlay address.
+    /// Cached at construction time.
     overlay: SwarmAddress,
-    /// Node capability level.
     node_type: SwarmNodeType,
-    /// Custom welcome message for peers.
     welcome_message: Option<String>,
 }
 
@@ -43,7 +40,7 @@ impl Identity {
     pub fn new(
         signer: LocalSigner<SigningKey>,
         nonce: B256,
-        spec: Arc<Hive>,
+        spec: Arc<Spec>,
         node_type: SwarmNodeType,
     ) -> Self {
         let overlay = compute_overlay(&signer.address(), spec.network_id(), &nonce);
@@ -58,21 +55,9 @@ impl Identity {
     }
 
     /// Creates a random ephemeral identity for testing.
-    pub fn random(spec: Arc<Hive>, node_type: SwarmNodeType) -> Self {
-        use rand::Rng;
-        let mut rng = rand::rng();
-
-        let mut key_bytes = [0u8; 32];
-        rng.fill(&mut key_bytes);
-        let signing_key =
-            SigningKey::from_slice(&key_bytes).expect("32 bytes is valid for secp256k1");
-        let signer = LocalSigner::from_signing_key(signing_key);
-
-        let mut nonce_bytes = [0u8; 32];
-        rng.fill(&mut nonce_bytes);
-        let nonce = B256::from(nonce_bytes);
-
-        Self::new(signer, nonce, spec, node_type)
+    pub fn random(spec: Arc<Spec>, node_type: SwarmNodeType) -> Self {
+        let nonce = B256::from(rand::random::<[u8; 32]>());
+        Self::new(LocalSigner::random(), nonce, spec, node_type)
     }
 
     /// Sets a custom welcome message.
@@ -82,8 +67,14 @@ impl Identity {
     }
 }
 
+impl HasSpec for Identity {
+    fn spec(&self) -> &Arc<Spec> {
+        &self.spec
+    }
+}
+
 impl SwarmIdentity for Identity {
-    type Spec = Hive;
+    type Spec = Arc<Spec>;
     type Signer = LocalSigner<SigningKey>;
 
     fn spec(&self) -> &Self::Spec {
@@ -126,7 +117,7 @@ impl Loggable for Identity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vertex_swarmspec::init_testnet;
+    use vertex_swarm_spec::init_testnet;
 
     #[test]
     fn random_identity() {
@@ -141,12 +132,7 @@ mod tests {
     #[test]
     fn same_signer_and_nonce_same_overlay() {
         let spec = init_testnet();
-
-        let mut rng = rand::rng();
-        let mut key_bytes = [0u8; 32];
-        rand::Rng::fill(&mut rng, &mut key_bytes);
-        let signing_key = SigningKey::from_slice(&key_bytes).unwrap();
-        let signer = LocalSigner::from_signing_key(signing_key);
+        let signer = LocalSigner::random();
         let nonce = B256::from([0x42u8; 32]);
 
         let id1 = Identity::new(signer.clone(), nonce, spec.clone(), SwarmNodeType::Storer);
@@ -159,12 +145,7 @@ mod tests {
     #[test]
     fn different_nonce_different_overlay() {
         let spec = init_testnet();
-
-        let mut rng = rand::rng();
-        let mut key_bytes = [0u8; 32];
-        rand::Rng::fill(&mut rng, &mut key_bytes);
-        let signing_key = SigningKey::from_slice(&key_bytes).unwrap();
-        let signer = LocalSigner::from_signing_key(signing_key);
+        let signer = LocalSigner::random();
 
         let id1 = Identity::new(
             signer.clone(),
@@ -190,5 +171,19 @@ mod tests {
 
         let identity = identity.with_welcome_message("Hello!");
         assert_eq!(identity.welcome_message(), Some("Hello!"));
+    }
+
+    #[test]
+    fn has_spec_trait() {
+        let spec = init_testnet();
+        let identity = Identity::random(spec.clone(), SwarmNodeType::Client);
+
+        // HasSpec returns &Arc<Spec>
+        let spec_ref: &Arc<Spec> = HasSpec::spec(&identity);
+        assert_eq!(spec_ref.network_id(), spec.network_id());
+
+        // Can clone the Arc without taking ownership
+        let cloned: Arc<Spec> = spec_ref.clone();
+        assert_eq!(cloned.network_id(), spec.network_id());
     }
 }

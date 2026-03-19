@@ -41,7 +41,10 @@ jobs:
       - uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Clippy (production)
+        run: cargo clippy --lib --all-features -- -D warnings
+      - name: Clippy (tests)
+        run: cargo clippy --tests --benches --all-features -- -D warnings -A clippy::unwrap_used -A clippy::expect_used
 
   test:
     name: test
@@ -59,7 +62,7 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Run tests
-        run: cargo nextest run --workspace --no-tests=warn
+        run: cargo nextest run --workspace --all-features --no-tests=warn
 
   doc:
     name: doc
@@ -76,7 +79,7 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Run doctests
-        run: cargo test --doc --workspace
+        run: cargo test --doc --workspace --all-features
 
   ci-success:
     name: ci success

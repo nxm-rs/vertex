@@ -23,24 +23,25 @@ vertex-tasks.workspace = true
 vertex-swarm-bandwidth.workspace = true
 vertex-swarm-bandwidth-pricing.workspace = true
 vertex-swarm-bandwidth-pseudosettle.workspace = true
-vertex-swarm-bandwidth-swap.workspace = true
-vertex-swarm-kademlia.workspace = true
-vertex-swarm-peermanager.workspace = true
-vertex-node-types.workspace = true
+vertex-swarm-localstore.workspace = true
+vertex-swarm-peer-manager.workspace = true
+vertex-swarm-peer-score.workspace = true
+vertex-net-peer-store.workspace = true
+vertex-storage-redb.workspace = true
+vertex-swarm-redistribution.workspace = true
+vertex-swarm-topology.workspace = true
 vertex-rpc-server.workspace = true
 vertex-swarm-api.workspace = true
 vertex-swarm-node = { workspace = true, features = ["cli"] }
 vertex-swarm-identity.workspace = true
 vertex-swarm-rpc.workspace = true
-vertex-swarmspec.workspace = true
+vertex-swarm-spec.workspace = true
 
 # nectar
 nectar-primitives.workspace = true
 
 # alloy
 alloy-primitives.workspace = true
-alloy-signer.workspace = true
-alloy-signer-local.workspace = true
 
 # async
 tokio = { workspace = true, features = ["sync"] }
@@ -50,7 +51,5 @@ async-trait.workspace = true
 bytes.workspace = true
 eyre.workspace = true
 hex.workspace = true
-rand.workspace = true
-rand_08.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

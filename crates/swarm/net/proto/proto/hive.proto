@@ -1,0 +1,19 @@
+// Copyright 2026 Nexum Contributors
+// SPDX-License-Identifier: AGPL-3.0-only
+
+syntax = "proto3";
+
+package hive;
+
+message Peers {
+  repeated Peer peers = 1;
+}
+
+// Peer represents a gossiped peer address in the Hive protocol.
+// Note: Field numbers match BzzAddress for wire compatibility with Bee.
+message Peer {
+  bytes multiaddrs = 1;
+  bytes signature = 2;
+  bytes overlay = 3;
+  bytes nonce = 4;
+}

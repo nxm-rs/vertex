@@ -16,7 +16,7 @@ workspace = true
 nectar-contracts = { workspace = true, features = ["serde"] }
 
 # vertex
-vertex-swarmspec = { workspace = true }
+vertex-swarm-spec = { workspace = true }
 
 # alloy
 alloy-primitives = { workspace = true, features = ["serde"] }

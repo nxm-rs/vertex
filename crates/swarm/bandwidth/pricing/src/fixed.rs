@@ -1,39 +1,37 @@
 //! Fixed-rate pricing using `(max_po - proximity + 1) * base_price`.
 
+use std::sync::Arc;
+
 use nectar_primitives::{ChunkAddress, SwarmAddress};
 use vertex_swarm_primitives::OverlayAddress;
-use vertex_swarmspec::SwarmSpec;
+use vertex_swarm_spec::SwarmSpec;
 
 use crate::Pricer;
 
 /// Prices chunks based on Kademlia proximity to peer.
-#[derive(Debug, Clone)]
-pub struct FixedPricer {
+#[derive(Debug)]
+pub struct FixedPricer<S> {
     base_price: u64,
-    max_po: u8,
+    spec: Arc<S>,
 }
 
-impl FixedPricer {
-    /// Create a new fixed pricer with the given base price, deriving `max_po` from the spec.
-    pub fn new(base_price: u64, spec: &impl SwarmSpec) -> Self {
+impl<S> Clone for FixedPricer<S> {
+    fn clone(&self) -> Self {
         Self {
-            base_price,
-            max_po: spec.max_po(),
+            base_price: self.base_price,
+            spec: Arc::clone(&self.spec),
         }
     }
+}
 
-    /// Get the base price.
-    pub fn base_price(&self) -> u64 {
-        self.base_price
-    }
-
-    /// Get the max proximity order.
-    pub fn max_po(&self) -> u8 {
-        self.max_po
+impl<S: SwarmSpec> FixedPricer<S> {
+    /// Create a new fixed pricer.
+    pub fn new(base_price: u64, spec: Arc<S>) -> Self {
+        Self { base_price, spec }
     }
 }
 
-impl Pricer for FixedPricer {
+impl<S: SwarmSpec> Pricer for FixedPricer<S> {
     fn price(&self, _chunk: &ChunkAddress) -> u64 {
         self.base_price
     }
@@ -42,12 +40,12 @@ impl Pricer for FixedPricer {
         let peer_addr: &SwarmAddress = peer;
         let chunk_addr: &SwarmAddress = chunk;
         let proximity = peer_addr.proximity(chunk_addr);
-        let factor = (self.max_po as u64) - (proximity as u64) + 1;
+        let factor = (self.spec.max_po() as u64) - (proximity as u64) + 1;
         factor * self.base_price
     }
 }
 
-impl vertex_swarm_api::SwarmPricing for FixedPricer {
+impl<S: SwarmSpec + Send + Sync + 'static> vertex_swarm_api::SwarmPricing for FixedPricer<S> {
     fn price(&self, chunk: &ChunkAddress) -> u64 {
         Pricer::price(self, chunk)
     }
@@ -60,41 +58,34 @@ impl vertex_swarm_api::SwarmPricing for FixedPricer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vertex_swarmspec::init_mainnet;
+    use vertex_swarm_spec::init_mainnet;
 
-    fn test_pricer(base_price: u64) -> FixedPricer {
-        let spec = init_mainnet();
-        FixedPricer::new(base_price, &*spec)
+    fn test_pricer(base_price: u64) -> FixedPricer<vertex_swarm_spec::Spec> {
+        FixedPricer::new(base_price, init_mainnet())
     }
 
     #[test]
-    fn test_fixed_pricer_base() {
+    fn test_base_price() {
         let pricer = test_pricer(10);
         let chunk = ChunkAddress::from([0u8; 32]);
         assert_eq!(pricer.price(&chunk), 10);
     }
 
     #[test]
-    fn test_fixed_pricer_peer_price() {
+    fn test_peer_price_same_address() {
         let pricer = test_pricer(10);
         let peer = OverlayAddress::from([0u8; 32]);
         let chunk = ChunkAddress::from([0u8; 32]);
+        // Same address = max proximity = factor of 1
         assert_eq!(pricer.peer_price(&peer, &chunk), 10);
     }
 
     #[test]
-    fn test_fixed_pricer_far_peer() {
+    fn test_peer_price_distant() {
         let pricer = test_pricer(10);
         let peer = OverlayAddress::from([0x00; 32]);
-        let chunk_bytes = [0x80; 32];
-        let chunk = ChunkAddress::from(chunk_bytes);
+        let chunk = ChunkAddress::from([0x80; 32]);
+        // First bit differs = proximity 0 = factor of (31 - 0 + 1) = 32
         assert_eq!(pricer.peer_price(&peer, &chunk), 320);
-    }
-
-    #[test]
-    fn test_max_po_from_spec() {
-        let spec = init_mainnet();
-        let pricer = FixedPricer::new(10, &*spec);
-        assert_eq!(pricer.max_po(), 31);
     }
 }

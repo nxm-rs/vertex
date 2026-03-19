@@ -1,14 +1,16 @@
 //! Swap service actor (runs in its own tokio task).
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 
 use alloy_primitives::U256;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_api::{Direction, SwarmBandwidthAccounting, SwarmPeerBandwidth};
-use vertex_swarm_node::{SwapEvent, protocol::ClientCommand};
+use vertex_swarm_node::{ClientCommand, SwapEvent};
 use vertex_swarm_primitives::OverlayAddress;
+use vertex_tasks::{GracefulShutdown, SpawnableTask};
 
 use crate::error::SwapError;
 
@@ -66,10 +68,17 @@ impl<A: SwarmBandwidthAccounting + 'static> SwapService<A> {
         }
     }
 
-    /// Run the service event loop.
-    pub async fn run(mut self) {
+    /// Run the service event loop with graceful shutdown support.
+    async fn run(mut self, shutdown: GracefulShutdown) {
+        let mut shutdown = std::pin::pin!(shutdown);
+
         loop {
             tokio::select! {
+                guard = &mut shutdown => {
+                    debug!("Swap service received shutdown signal");
+                    drop(guard);
+                    break;
+                }
                 Some(cmd) = self.command_rx.recv() => {
                     self.handle_command(cmd).await;
                 }
@@ -77,16 +86,12 @@ impl<A: SwarmBandwidthAccounting + 'static> SwapService<A> {
                     self.handle_event(event).await;
                 }
                 else => {
-                    debug!("Swap service shutting down");
+                    debug!("Swap service channels closed");
                     break;
                 }
             }
         }
-    }
-
-    /// Convert self into a spawnable future.
-    pub async fn into_task(self) {
-        self.run().await;
+        debug!("Swap service shutdown complete");
     }
 
     async fn handle_command(&mut self, cmd: SwapCommand) {
@@ -183,5 +188,11 @@ impl<A: SwarmBandwidthAccounting + 'static> SwapService<A> {
                 // TODO: Store cheque for later cashing
             }
         }
+    }
+}
+
+impl<A: SwarmBandwidthAccounting + 'static> SpawnableTask for SwapService<A> {
+    fn into_task(self, shutdown: GracefulShutdown) -> impl Future<Output = ()> + Send {
+        self.run(shutdown)
     }
 }
