@@ -130,12 +130,9 @@ where
     }
 
     fn on_swarm_event(&mut self, event: FromSwarm) {
-        match event {
-            FromSwarm::ConnectionClosed(ConnectionClosed { connection_id, peer_id, .. }) => {
-                self.connection_directions.remove(&connection_id);
-                debug!(%peer_id, "Connection closed");
-            }
-            _ => {}
+        if let FromSwarm::ConnectionClosed(ConnectionClosed { connection_id, peer_id, .. }) = event {
+            self.connection_directions.remove(&connection_id);
+            debug!(%peer_id, "Connection closed");
         }
     }
 

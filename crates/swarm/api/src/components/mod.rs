@@ -6,11 +6,17 @@ mod peers;
 mod pricing;
 mod topology;
 
-pub use bandwidth::*;
-pub use localstore::*;
-pub use peers::*;
-pub use pricing::*;
-pub use topology::*;
+pub use self::bandwidth::{
+    BandwidthMode, Direction, SwarmAccountingConfig, SwarmBandwidthAccounting,
+    SwarmClientAccounting, SwarmPeerBandwidth, SwarmPeerState, SwarmSettlementProvider,
+};
+pub use self::localstore::{SwarmLocalStore, SwarmLocalStoreConfig};
+pub use self::peers::{SwarmPeerResolver, SwarmScoreStore};
+pub use self::pricing::{SwarmPricing, SwarmPricingBuilder, SwarmPricingConfig};
+pub use self::topology::{
+    SwarmTopology, SwarmTopologyBins, SwarmTopologyCommands, SwarmTopologyPeers,
+    SwarmTopologyRouting, SwarmTopologyState, SwarmTopologyStats,
+};
 
 use crate::SwarmIdentity;
 

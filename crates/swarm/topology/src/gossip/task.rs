@@ -102,6 +102,9 @@ struct GossipTask<I: SwarmIdentity> {
     current_depth: u8,
     last_depth: u8,
     last_broadcast: HashMap<OverlayAddress, Instant>,
+    /// Peers we initiated a gossip-dial to. Bounded by active outbound connections:
+    /// entries are added on `MarkGossipDial` (one per outbound dial) and removed on
+    /// `PeerActivated` (connection succeeded) or `ConnectionClosed` (connection dropped).
     gossip_dial_peers: HashSet<PeerId>,
     health_check_delay: Duration,
     gossip_interval: Interval,
@@ -436,6 +439,21 @@ impl<I: SwarmIdentity> GossipTask<I> {
     fn on_tick(&mut self) {
         let now = Instant::now();
         let mut actions = Vec::new();
+
+        // Periodic cleanup: remove cancelled_exchanges entries with no pending future.
+        // When pending_exchanges is empty, all futures have resolved so no cancellation
+        // tokens are needed. Otherwise, retain only entries that could still match a
+        // pending future (conservatively keep all — they are removed on resolution).
+        if self.pending_exchanges.is_empty() {
+            self.cancelled_exchanges.clear();
+        }
+
+        // Periodic cleanup: evict stale last_broadcast entries.
+        // Entries older than 2x the refresh interval are unlikely to be useful —
+        // the peer has either disconnected or will be refreshed on the next tick.
+        let broadcast_expiry = GOSSIP_REFRESH_INTERVAL * 2;
+        self.last_broadcast
+            .retain(|_, ts| now.duration_since(*ts) <= broadcast_expiry);
 
         let neighbors = self.connected_neighbors();
 

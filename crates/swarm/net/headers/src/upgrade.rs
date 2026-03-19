@@ -80,8 +80,7 @@ impl<P: HeaderedInbound> InboundUpgrade<Stream> for Inbound<P> {
             debug!(protocol = protocol_name, "Reading peer headers");
             let peer_headers = framed
                 .try_next()
-                .await
-                .map_err(HeadersError::from)?
+                .await?
                 .ok_or(HeadersError::ConnectionClosed)?
                 .into_inner();
 
@@ -102,8 +101,7 @@ impl<P: HeaderedInbound> InboundUpgrade<Stream> for Inbound<P> {
                 );
                 framed
                     .send(Headers::new(response_headers))
-                    .await
-                    .map_err(HeadersError::from)?;
+                    .await?;
 
                 // Phase 3: Create HeaderedStream and call inner protocol
                 let headered = HeaderedStream::new(framed.into_inner(), peer_headers);
@@ -190,15 +188,13 @@ impl<P: HeaderedOutbound> OutboundUpgrade<Stream> for Outbound<P> {
             );
             framed
                 .send(Headers::new(our_headers))
-                .await
-                .map_err(HeadersError::from)?;
+                .await?;
 
             // Phase 2: Read peer's response headers
             debug!(protocol = protocol_name, "Reading peer response headers");
             let peer_headers = framed
                 .try_next()
-                .await
-                .map_err(HeadersError::from)?
+                .await?
                 .ok_or(HeadersError::ConnectionClosed)?
                 .into_inner();
 

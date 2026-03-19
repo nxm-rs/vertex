@@ -11,12 +11,12 @@ use std::time::Duration;
 use dashmap::{DashMap, DashSet};
 use metrics::gauge;
 use tokio::sync::broadcast;
-use tracing::{debug, trace, warn};
+use tracing::{debug, warn};
 use vertex_net_local::IpCapability;
-use vertex_net_peer_store::{NetPeerStore, NetRecord, StoreError};
+use vertex_net_peer_store::{NetPeerStore, StoreError};
 use vertex_swarm_api::{SwarmIdentity, SwarmPeerResolver, SwarmScoreStore, SwarmSpec};
 use vertex_swarm_peer::SwarmPeer;
-use vertex_swarm_peer_score::{PeerScore, ScoreCallbacks, SwarmScoringConfig, SwarmScoringEvent};
+use vertex_swarm_peer_score::{PeerScore, ScoreCallbacks, SwarmScoringConfig};
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
 use crate::entry::{
@@ -47,29 +47,29 @@ const DEFAULT_WRITE_BUFFER_CAPACITY: usize = 64;
 ///
 /// When no store is configured (tests/ephemeral), all peers live in DashMap.
 pub struct PeerManager<I: SwarmIdentity> {
-    _identity: PhantomData<I>,
+    pub(crate) _identity: PhantomData<I>,
     /// In-memory peer index with LRU ordering (ALL known overlays).
-    index: ProximityIndex,
+    pub(crate) index: ProximityIndex,
     /// Hot cache: connected + recently-accessed peers.
-    peers: DashMap<OverlayAddress, Arc<PeerEntry>>,
+    pub(crate) peers: DashMap<OverlayAddress, Arc<PeerEntry>>,
     /// Database backend for cold storage (None for ephemeral/test mode).
-    store: Option<Arc<dyn NetPeerStore<StoredPeer>>>,
+    pub(crate) store: Option<Arc<dyn NetPeerStore<StoredPeer>>>,
     /// Score persistence (None for ephemeral/test mode).
-    score_store: Option<Arc<dyn SwarmScoreStore<Score = PeerScore, Error = StoreError>>>,
+    pub(crate) score_store: Option<Arc<dyn SwarmScoreStore<Score = PeerScore, Error = StoreError>>>,
     /// O(1) ban checks without DB or DashMap lookup.
-    banned_set: DashSet<OverlayAddress>,
+    pub(crate) banned_set: DashSet<OverlayAddress>,
     /// Batches DB writes for amortized flush.
-    write_buffer: WriteBuffer,
+    pub(crate) write_buffer: WriteBuffer,
     /// Scoring configuration.
-    scoring_config: Arc<SwarmScoringConfig>,
+    pub(crate) scoring_config: Arc<SwarmScoringConfig>,
     /// Maximum peers in hot DashMap cache before eviction.
-    max_hot_peers: usize,
+    pub(crate) max_hot_peers: usize,
     /// Callbacks shared with all PeerEntries.
-    callbacks: Arc<ScoreCallbacks>,
+    pub(crate) callbacks: Arc<ScoreCallbacks>,
     /// Per-bucket gauge tracking of score distribution.
-    score_distribution: Arc<ScoreDistribution>,
+    pub(crate) score_distribution: Arc<ScoreDistribution>,
     /// Channel for notifying topology of banned peers.
-    ban_tx: broadcast::Sender<OverlayAddress>,
+    pub(crate) ban_tx: broadcast::Sender<OverlayAddress>,
 }
 
 impl<I: SwarmIdentity> PeerManager<I> {
@@ -99,12 +99,19 @@ impl<I: SwarmIdentity> PeerManager<I> {
         scoring_config: SwarmScoringConfig,
         max_per_bin: usize,
     ) -> Arc<Self> {
-        let pm = Self::build(identity, scoring_config, max_per_bin, Some(store), score_store, DEFAULT_MAX_HOT_PEERS);
+        let pm = Self::build(
+            identity,
+            scoring_config,
+            max_per_bin,
+            Some(store),
+            score_store,
+            DEFAULT_MAX_HOT_PEERS,
+        );
         pm.load_index_from_store();
         pm
     }
 
-    fn build(
+    pub(crate) fn build(
         identity: &I,
         scoring_config: SwarmScoringConfig,
         max_per_bin: usize,
@@ -187,13 +194,15 @@ impl<I: SwarmIdentity> PeerManager<I> {
     #[must_use]
     pub fn eligible_peers(&self) -> Vec<OverlayAddress> {
         if self.store.is_none() {
-            return self.peers
+            return self
+                .peers
                 .iter()
                 .filter(|r| r.value().is_dialable())
                 .map(|r| *r.key())
                 .collect();
         }
-        self.index.all_peers()
+        self.index
+            .all_peers()
             .into_iter()
             .filter(|overlay| !self.banned_set.contains(overlay))
             .collect()
@@ -239,8 +248,6 @@ impl<I: SwarmIdentity> PeerManager<I> {
     /// Get known storer overlays in a specific proximity bin (not banned).
     #[must_use]
     pub fn storer_overlays_in_bin(&self, po: u8, count: usize) -> Vec<OverlayAddress> {
-        // Two-phase filter: fast checks under the bin read lock, DB reads outside.
-        // This avoids holding the ProximityIndex bin lock during blocking I/O.
         let mut result = Vec::new();
         let mut cold_candidates = Vec::new();
 
@@ -252,25 +259,24 @@ impl<I: SwarmIdentity> PeerManager<I> {
                 if e.node_type() == SwarmNodeType::Storer {
                     result.push(*overlay);
                 }
-                return false; // Don't add to filter_bin result
+                return false;
             }
-            // Cold peer — defer DB check
             cold_candidates.push(*overlay);
             false
         });
 
-        // Phase 2: check cold peers outside any lock.
-        if result.len() < count {
-            if let Some(ref store) = self.store {
-                for overlay in &cold_candidates {
-                    if result.len() >= count {
-                        break;
-                    }
-                    if let Ok(Some(record)) = store.get(overlay) {
-                        if record.node_type == SwarmNodeType::Storer && !record.is_banned() {
-                            result.push(*overlay);
-                        }
-                    }
+        if result.len() < count
+            && let Some(ref store) = self.store
+        {
+            for overlay in &cold_candidates {
+                if result.len() >= count {
+                    break;
+                }
+                if let Ok(Some(record)) = store.get(overlay)
+                    && record.node_type == SwarmNodeType::Storer
+                    && !record.is_banned()
+                {
+                    result.push(*overlay);
                 }
             }
         }
@@ -304,9 +310,6 @@ impl<I: SwarmIdentity> PeerManager<I> {
     }
 
     /// Get dialable overlay addresses from a specific bin (not banned, not in backoff).
-    ///
-    /// Hot peers are checked via DashMap under the bin lock. Cold peers are
-    /// checked via DB outside the lock to avoid blocking bin writes during I/O.
     pub fn dialable_overlays_in_bin(&self, po: u8, count: usize) -> Vec<OverlayAddress> {
         let mut result = Vec::new();
         let mut cold_candidates = Vec::new();
@@ -508,278 +511,6 @@ impl<I: SwarmIdentity> PeerManager<I> {
         }
     }
 
-    pub fn record_latency(&self, overlay: &OverlayAddress, rtt: Duration) {
-        if let Some(entry) = self.peers.get(overlay) {
-            entry.set_latency(rtt);
-            trace!(?overlay, ?rtt, "recorded latency");
-        }
-    }
-
-    pub fn record_dial_failure(&self, overlay: &OverlayAddress) {
-        if let Some(entry) = self.peers.get(overlay) {
-            let old_state = entry.health_state();
-            entry.record_dial_failure();
-            on_health_changed(old_state, entry.health_state());
-            let failures = entry.consecutive_failures();
-            let backoff = entry.backoff_remaining();
-            debug!(
-                ?overlay,
-                failures,
-                backoff_secs = backoff.map(|d| d.as_secs()),
-                "recorded dial failure with backoff"
-            );
-        } else if let Some(ref store) = self.store {
-            // Cold peer - load, modify, route through write buffer
-            if let Ok(Some(mut record)) = store.get(overlay) {
-                record.consecutive_failures += 1;
-                record.last_dial_attempt = unix_timestamp_secs();
-                if self.write_buffer.push(record) {
-                    self.flush_write_buffer();
-                }
-            }
-        }
-    }
-
-    /// Record an early disconnect for a peer (post-handshake connection that failed quickly).
-    pub fn record_early_disconnect(&self, overlay: &OverlayAddress, duration: Duration) {
-        if let Some(entry) = self.peers.get(overlay) {
-            let old_state = entry.health_state();
-            entry.record_early_disconnect(duration);
-            on_health_changed(old_state, entry.health_state());
-            let failures = entry.consecutive_failures();
-            let backoff = entry.backoff_remaining();
-            debug!(
-                ?overlay,
-                ?duration,
-                failures,
-                backoff_secs = backoff.map(|d| d.as_secs()),
-                "recorded early disconnect with backoff"
-            );
-        }
-    }
-
-    /// Record a scoring event for a peer.
-    pub fn record_scoring_event(&self, overlay: &OverlayAddress, event: SwarmScoringEvent) {
-        if let Some(entry) = self.peers.get(overlay) {
-            entry.record_event(event);
-        }
-    }
-
-    /// Remove stale peers unconditionally.
-    pub fn purge_stale(&self) {
-        let stale: Vec<OverlayAddress> = self
-            .peers
-            .iter()
-            .filter(|r| r.value().is_stale())
-            .map(|r| *r.key())
-            .collect();
-
-        if stale.is_empty() {
-            return;
-        }
-
-        for overlay in &stale {
-            self.remove_peer(overlay);
-        }
-
-        debug!(removed = stale.len(), remaining = self.index.len(), "purged stale peers");
-    }
-
-    /// Collect dirty hot peers into the write buffer for batched DB flush.
-    pub fn collect_dirty(&self) {
-        if self.store.is_none() {
-            return;
-        }
-        for entry in self.peers.iter() {
-            if entry.value().take_dirty() {
-                self.buffer_entry(*entry.key(), entry.value());
-            }
-        }
-    }
-
-    /// Flush the write buffer to the DB (peer records and scores).
-    pub fn flush_write_buffer(&self) {
-        if let Some(ref store) = self.store
-            && let Err(e) = self.write_buffer.flush(store.as_ref())
-        {
-            warn!(error = %e, "failed to flush write buffer");
-        }
-        if let Some(ref ss) = self.score_store {
-            let scores = self.write_buffer.drain_scores();
-            if !scores.is_empty() {
-                if let Err(e) = ss.save_score_batch(&scores) {
-                    warn!(error = %e, "failed to flush score buffer");
-                }
-            }
-        }
-    }
-
-    /// Evict non-connected peers from the hot cache to keep it bounded.
-    ///
-    /// Peers with consecutive failures > 0 are considered disconnected and
-    /// eligible for eviction. Their state is saved to DB before removal.
-    pub fn evict_cold(&self) {
-        if self.store.is_none() {
-            return;
-        }
-        let current = self.peers.len();
-        if current <= self.max_hot_peers {
-            return;
-        }
-
-        let to_evict = current.saturating_sub(self.max_hot_peers);
-
-        // Collect eviction candidates: peers with failures (not connected)
-        let mut candidates: Vec<(OverlayAddress, u64)> = self.peers
-            .iter()
-            .filter(|r| r.value().consecutive_failures() > 0)
-            .map(|r| (*r.key(), r.value().last_seen()))
-            .collect();
-
-        // Sort by last_seen ascending (oldest first)
-        candidates.sort_unstable_by_key(|&(_, last_seen)| last_seen);
-
-        let mut evicted = 0;
-        for (overlay, _) in candidates.into_iter().take(to_evict) {
-            // Remove from hot cache and snapshot to DB in one lookup
-            if let Some((_, entry)) = self.peers.remove(&overlay) {
-                self.buffer_entry(overlay, &entry);
-                self.score_distribution.on_peer_removed(entry.score());
-                on_health_removed(entry.health_state());
-            }
-            evicted += 1;
-        }
-
-        if evicted > 0 {
-            self.flush_write_buffer();
-            gauge!("peer_manager_hot_peers").set(self.peers.len() as f64);
-            debug!(evicted, remaining_hot = self.peers.len(), "evicted cold peers from hot cache");
-        }
-    }
-
-    /// Replenish depleted proximity bins from the database.
-    ///
-    /// Scans bins below half capacity (low-water mark), then streams DB keys
-    /// to fill them. Runs periodically from the persistence task.
-    pub fn replenish_bins(&self) {
-        let Some(ref store) = self.store else { return };
-
-        let max_per_bin = self.index.max_per_bin();
-        if max_per_bin == 0 {
-            return; // Unbounded index, nothing to replenish
-        }
-
-        // Build per-bin remaining capacity array for O(1) lookup.
-        let low_water = max_per_bin / 2;
-        let bin_sizes = self.index.bin_sizes();
-        let max_po = self.index.max_po() as usize;
-        let mut remaining = vec![0usize; max_po + 1];
-        let mut any_depleted = false;
-        for (po, &size) in bin_sizes.iter().enumerate() {
-            if size < low_water {
-                remaining[po] = max_per_bin.saturating_sub(size);
-                any_depleted = true;
-            }
-        }
-        if !any_depleted {
-            return;
-        }
-
-        // Key-only scan: loads overlay addresses without deserializing values.
-        let overlays = match store.load_ids() {
-            Ok(ids) => ids,
-            Err(e) => {
-                warn!(error = %e, "failed to load peer IDs for bin replenishment");
-                return;
-            }
-        };
-
-        let mut added = 0usize;
-        for overlay in &overlays {
-            if self.index.exists(overlay) {
-                continue;
-            }
-            let po = self.index.bin_for(overlay) as usize;
-            if remaining[po] > 0 && self.index.add(*overlay).is_ok() {
-                added += 1;
-                remaining[po] -= 1;
-            }
-        }
-
-        if added > 0 {
-            gauge!("peer_manager_total_peers").set(self.index.len() as f64);
-            debug!(added, "replenished depleted proximity bins from store");
-        }
-    }
-
-    /// Load the overlay index and banned set from the store.
-    ///
-    /// Uses key-only scan for the overlay index (no value deserialization),
-    /// then loads banned overlays separately.
-    /// Called once during construction. Does NOT populate the DashMap;
-    /// peers are loaded on demand via `get_or_load`.
-    fn load_index_from_store(&self) {
-        let Some(ref store) = self.store else { return };
-
-        // Phase 1: Key-only scan for overlay index (no value deserialization).
-        let overlays = match store.load_ids() {
-            Ok(ids) => ids,
-            Err(e) => {
-                warn!(error = %e, "failed to load peer IDs from store");
-                return;
-            }
-        };
-
-        let total_stored = overlays.len();
-        let mut indexed = 0;
-        for overlay in &overlays {
-            if self.index.add(*overlay).is_ok() {
-                indexed += 1;
-            }
-        }
-
-        // Phase 2: Load banned overlays (needs value deserialization for ban_info).
-        let mut banned = 0;
-        if let Some(ref ss) = self.score_store {
-            match ss.load_banned_overlays() {
-                Ok(banned_overlays) => {
-                    for overlay in &banned_overlays {
-                        self.banned_set.insert(*overlay);
-                    }
-                    banned = banned_overlays.len();
-                }
-                Err(e) => warn!(error = %e, "failed to load banned peers"),
-            }
-        } else {
-            // No score store — fall back to full record scan for ban info.
-            match store.load_all() {
-                Ok(records) => {
-                    for record in &records {
-                        if record.is_banned() {
-                            self.banned_set.insert(*record.id());
-                            banned += 1;
-                        }
-                    }
-                }
-                Err(e) => warn!(error = %e, "failed to load ban info from store"),
-            }
-        }
-
-        gauge!("peer_manager_total_peers").set(indexed as f64);
-        gauge!("peer_manager_banned_peers").set(banned as f64);
-        gauge!("peer_manager_hot_peers").set(0.0f64);
-        gauge!("peer_manager_stored_peers").set(total_stored as f64);
-
-        if total_stored > 0 {
-            debug!(
-                total_stored,
-                indexed,
-                banned,
-                "loaded peer index from store"
-            );
-        }
-    }
-
     /// Total peers persisted in the backing store (or hot cache size if no store).
     #[must_use]
     pub fn stored_count(&self) -> usize {
@@ -790,30 +521,21 @@ impl<I: SwarmIdentity> PeerManager<I> {
     }
 
     /// Check DashMap first, then load from DB and promote to hot cache.
-    ///
-    /// Uses the DashMap entry API to prevent a TOCTOU race where two concurrent
-    /// callers both miss the initial check, both load from DB, and the second
-    /// insert silently overwrites the first (losing any mutations made to it).
     fn get_or_load(&self, overlay: &OverlayAddress) -> Option<Arc<PeerEntry>> {
-        // Fast path: already in hot cache.
         if let Some(entry) = self.peers.get(overlay) {
             return Some(Arc::clone(entry.value()));
         }
 
-        // Slow path: load from DB. This happens outside any lock, so two threads
-        // can race here — the entry API below resolves the race.
         let store = self.store.as_ref()?;
         let record = store.get(overlay).ok()??;
-        let score = self.score_store.as_ref()
+        let score = self
+            .score_store
+            .as_ref()
             .and_then(|ss| ss.get_score(overlay).ok().flatten());
 
         use dashmap::mapref::entry::Entry;
         match self.peers.entry(*overlay) {
-            Entry::Occupied(e) => {
-                // Another thread promoted this peer while we were loading from DB.
-                // Use their entry (which may already have mutations applied).
-                Some(Arc::clone(e.get()))
-            }
+            Entry::Occupied(e) => Some(Arc::clone(e.get())),
             Entry::Vacant(e) => {
                 let entry = Arc::new(PeerEntry::from_record(
                     record,
@@ -832,7 +554,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
     }
 
     /// Snapshot a peer entry into the write buffer (record + score).
-    fn buffer_entry(&self, overlay: OverlayAddress, entry: &PeerEntry) {
+    pub(crate) fn buffer_entry(&self, overlay: OverlayAddress, entry: &PeerEntry) {
         let record = StoredPeer::from(entry);
         self.write_buffer.push(record);
         if self.score_store.is_some() {
@@ -842,8 +564,12 @@ impl<I: SwarmIdentity> PeerManager<I> {
 
     /// Check if a cold peer is dialable from its stored record.
     fn is_cold_peer_dialable(&self, overlay: &OverlayAddress) -> bool {
-        let Some(ref store) = self.store else { return false };
-        let Ok(Some(record)) = store.get(overlay) else { return false };
+        let Some(ref store) = self.store else {
+            return false;
+        };
+        let Ok(Some(record)) = store.get(overlay) else {
+            return false;
+        };
         record.is_dialable()
     }
 
@@ -866,7 +592,6 @@ impl<I: SwarmIdentity> PeerManager<I> {
                 ));
                 let initial_score = entry.score();
                 e.insert(entry);
-                // Only increment total gauge if truly new (not cold→hot promotion)
                 if self.index.add(overlay).is_ok() {
                     gauge!("peer_manager_total_peers").increment(1.0);
                 }
@@ -878,7 +603,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
     }
 
     /// Fully remove a peer from all data structures (index, hot cache, DB, banned set).
-    fn remove_peer(&self, overlay: &OverlayAddress) {
+    pub(crate) fn remove_peer(&self, overlay: &OverlayAddress) {
         let was_hot = if let Some((_, entry)) = self.peers.remove(overlay) {
             self.score_distribution.on_peer_removed(entry.score());
             on_health_removed(entry.health_state());
@@ -899,7 +624,6 @@ impl<I: SwarmIdentity> PeerManager<I> {
             let _ = store.remove(overlay);
         }
     }
-
 }
 
 impl<I: SwarmIdentity> SwarmPeerResolver for PeerManager<I> {
@@ -913,8 +637,8 @@ impl<I: SwarmIdentity> SwarmPeerResolver for PeerManager<I> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vertex_swarm_api::SwarmScoreStore;
     use vertex_net_peer_store::MemoryPeerStore;
+    use vertex_swarm_api::SwarmScoreStore;
     use vertex_swarm_test_utils::{MockIdentity, test_overlay, test_swarm_peer};
 
     fn mock_identity() -> MockIdentity {
@@ -950,11 +674,9 @@ mod tests {
         let swarm_peer = test_swarm_peer(1);
         let overlay = test_overlay(1);
 
-        // Discover peer via Hive
         pm.store_discovered_peer(swarm_peer.clone());
         assert!(pm.eligible_peers().contains(&overlay));
 
-        // Store as connected peer
         pm.on_peer_ready(swarm_peer, SwarmNodeType::Client);
         assert!(pm.eligible_peers().contains(&overlay));
     }
@@ -993,7 +715,6 @@ mod tests {
         let config = SwarmScoringConfig::lenient();
         let pm = PeerManager::with_config(&mock_identity(), config, DEFAULT_MAX_PER_BIN);
 
-        // Verify custom config is accepted (ban threshold propagates)
         assert!(pm.scoring_config.ban_threshold() < 0.0);
     }
 
@@ -1047,7 +768,10 @@ mod tests {
         pm.on_peer_ready(test_swarm_peer(2), SwarmNodeType::Client);
         pm.on_peer_ready(test_swarm_peer(3), SwarmNodeType::Storer);
 
-        assert_eq!(pm.node_type(&test_overlay(1)), Some(SwarmNodeType::Bootnode));
+        assert_eq!(
+            pm.node_type(&test_overlay(1)),
+            Some(SwarmNodeType::Bootnode)
+        );
         assert_eq!(pm.node_type(&test_overlay(2)), Some(SwarmNodeType::Client));
         assert_eq!(pm.node_type(&test_overlay(3)), Some(SwarmNodeType::Storer));
     }
@@ -1077,18 +801,13 @@ mod tests {
         pm.store_discovered_peer(test_swarm_peer(2));
         pm.store_discovered_peer(test_swarm_peer(3));
 
-        // Update peer 1 (should move to MRU)
         pm.store_discovered_peer(test_swarm_peer(1));
-
-        // Peer 2 should now be LRU
-        // (exact order depends on which bin they're in)
     }
 
     #[test]
     fn test_dialable_in_bin() {
         let pm = PeerManager::new(&mock_identity());
 
-        // Add peers to same bin
         let p1 = OverlayAddress::from([0x80; 32]);
         let p2 = OverlayAddress::from([0xc0; 32]);
         let p3 = OverlayAddress::from([0xa0; 32]);
@@ -1097,22 +816,39 @@ mod tests {
         let peer2 = test_swarm_peer(2);
         let peer3 = test_swarm_peer(3);
 
-        // Manually insert with specific overlays (direct field access for mutation)
         let _ = pm.index.add(p1);
         let _ = pm.index.add(p2);
         let _ = pm.index.add(p3);
-        pm.peers.insert(p1, Arc::new(PeerEntry::with_config(
-            peer1, SwarmNodeType::Client, p1,
-            Arc::clone(&pm.scoring_config), Arc::clone(&pm.callbacks),
-        )));
-        pm.peers.insert(p2, Arc::new(PeerEntry::with_config(
-            peer2, SwarmNodeType::Client, p2,
-            Arc::clone(&pm.scoring_config), Arc::clone(&pm.callbacks),
-        )));
-        pm.peers.insert(p3, Arc::new(PeerEntry::with_config(
-            peer3, SwarmNodeType::Client, p3,
-            Arc::clone(&pm.scoring_config), Arc::clone(&pm.callbacks),
-        )));
+        pm.peers.insert(
+            p1,
+            Arc::new(PeerEntry::with_config(
+                peer1,
+                SwarmNodeType::Client,
+                p1,
+                Arc::clone(&pm.scoring_config),
+                Arc::clone(&pm.callbacks),
+            )),
+        );
+        pm.peers.insert(
+            p2,
+            Arc::new(PeerEntry::with_config(
+                peer2,
+                SwarmNodeType::Client,
+                p2,
+                Arc::clone(&pm.scoring_config),
+                Arc::clone(&pm.callbacks),
+            )),
+        );
+        pm.peers.insert(
+            p3,
+            Arc::new(PeerEntry::with_config(
+                peer3,
+                SwarmNodeType::Client,
+                p3,
+                Arc::clone(&pm.scoring_config),
+                Arc::clone(&pm.callbacks),
+            )),
+        );
 
         pm.ban(&p1, None);
 
@@ -1133,11 +869,15 @@ mod tests {
 
     #[test]
     fn test_persistence_roundtrip() {
-        let store: Arc<dyn NetPeerStore<StoredPeer>> = Arc::new(MemoryPeerStore::<StoredPeer>::new());
+        let store: Arc<dyn NetPeerStore<StoredPeer>> =
+            Arc::new(MemoryPeerStore::<StoredPeer>::new());
 
         let pm1 = PeerManager::with_store(
-            &mock_identity(), store.clone(), None,
-            SwarmScoringConfig::default(), DEFAULT_MAX_PER_BIN,
+            &mock_identity(),
+            store.clone(),
+            None,
+            SwarmScoringConfig::default(),
+            DEFAULT_MAX_PER_BIN,
         );
 
         for n in 1..=5 {
@@ -1148,31 +888,30 @@ mod tests {
         pm1.flush_write_buffer();
 
         let pm2 = PeerManager::with_store(
-            &mock_identity(), store, None,
-            SwarmScoringConfig::default(), DEFAULT_MAX_PER_BIN,
+            &mock_identity(),
+            store,
+            None,
+            SwarmScoringConfig::default(),
+            DEFAULT_MAX_PER_BIN,
         );
         assert_eq!(pm2.index().len(), 5);
         assert!(pm2.is_banned(&test_overlay(1)));
         assert!(!pm2.is_banned(&test_overlay(2)));
     }
 
-    /// store_discovered_peer preserves handshake-confirmed Storer type.
     #[test]
     fn test_store_discovered_peer_preserves_node_type() {
         let pm = PeerManager::new(&mock_identity());
         let swarm_peer = test_swarm_peer(1);
         let overlay = test_overlay(1);
 
-        // Peer connected via handshake as Storer
         pm.on_peer_ready(swarm_peer.clone(), SwarmNodeType::Storer);
         assert_eq!(pm.node_type(&overlay), Some(SwarmNodeType::Storer));
 
-        // Gossip re-discovery should NOT overwrite to Client
         pm.store_discovered_peer(swarm_peer);
         assert_eq!(pm.node_type(&overlay), Some(SwarmNodeType::Storer));
     }
 
-    /// store_discovered_peer defaults new peers to Client.
     #[test]
     fn test_store_discovered_peer_defaults_to_client() {
         let pm = PeerManager::new(&mock_identity());
@@ -1183,23 +922,18 @@ mod tests {
         assert_eq!(pm.node_type(&overlay), Some(SwarmNodeType::Client));
     }
 
-    /// store_discovered_peers preserves node_type for existing peers.
     #[test]
     fn test_store_discovered_peers_preserves_node_type() {
         let pm = PeerManager::new(&mock_identity());
 
-        // Peers 1 and 2 connected as Storers
         pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Storer);
         pm.on_peer_ready(test_swarm_peer(2), SwarmNodeType::Storer);
 
-        // Gossip re-discovers peers 1, 2 (existing) and 3 (new)
         let peers = vec![test_swarm_peer(1), test_swarm_peer(2), test_swarm_peer(3)];
         pm.store_discovered_peers(peers);
 
-        // Existing peers keep Storer type
         assert_eq!(pm.node_type(&test_overlay(1)), Some(SwarmNodeType::Storer));
         assert_eq!(pm.node_type(&test_overlay(2)), Some(SwarmNodeType::Storer));
-        // New peer defaults to Client
         assert_eq!(pm.node_type(&test_overlay(3)), Some(SwarmNodeType::Client));
     }
 
@@ -1217,67 +951,75 @@ mod tests {
         pm.ban(&test_overlay(2), None);
         assert_eq!(pm.eligible_count(), 3);
 
-        // Double-ban should not double-count
         pm.ban(&test_overlay(1), None);
         assert_eq!(pm.eligible_count(), 3);
     }
 
-    // --- Hot/cold architecture tests ---
-
     #[test]
     fn test_gossip_peers_cold() {
-        let store: Arc<dyn NetPeerStore<StoredPeer>> = Arc::new(MemoryPeerStore::<StoredPeer>::new());
+        let store: Arc<dyn NetPeerStore<StoredPeer>> =
+            Arc::new(MemoryPeerStore::<StoredPeer>::new());
         let pm = PeerManager::with_store(
-            &mock_identity(), store.clone(), None,
-            SwarmScoringConfig::default(), DEFAULT_MAX_PER_BIN,
+            &mock_identity(),
+            store.clone(),
+            None,
+            SwarmScoringConfig::default(),
+            DEFAULT_MAX_PER_BIN,
         );
 
-        // Discovered peers should NOT be in DashMap when store is present
         pm.store_discovered_peer(test_swarm_peer(1));
         pm.store_discovered_peer(test_swarm_peer(2));
 
         assert_eq!(pm.index().len(), 2);
-        assert_eq!(pm.peers.len(), 0); // Not in hot cache
+        assert_eq!(pm.peers.len(), 0);
     }
 
     #[test]
     fn test_connected_peers_always_hot() {
-        let store: Arc<dyn NetPeerStore<StoredPeer>> = Arc::new(MemoryPeerStore::<StoredPeer>::new());
+        let store: Arc<dyn NetPeerStore<StoredPeer>> =
+            Arc::new(MemoryPeerStore::<StoredPeer>::new());
         let pm = PeerManager::with_store(
-            &mock_identity(), store, None,
-            SwarmScoringConfig::default(), DEFAULT_MAX_PER_BIN,
+            &mock_identity(),
+            store,
+            None,
+            SwarmScoringConfig::default(),
+            DEFAULT_MAX_PER_BIN,
         );
 
         pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Client);
 
         assert_eq!(pm.index().len(), 1);
-        assert_eq!(pm.peers.len(), 1); // Connected = always hot
+        assert_eq!(pm.peers.len(), 1);
     }
 
     #[test]
     fn test_get_or_load_promotes() {
-        let store: Arc<dyn NetPeerStore<StoredPeer>> = Arc::new(MemoryPeerStore::<StoredPeer>::new());
+        let store: Arc<dyn NetPeerStore<StoredPeer>> =
+            Arc::new(MemoryPeerStore::<StoredPeer>::new());
         let pm = PeerManager::with_store(
-            &mock_identity(), store.clone(), None,
-            SwarmScoringConfig::default(), DEFAULT_MAX_PER_BIN,
+            &mock_identity(),
+            store.clone(),
+            None,
+            SwarmScoringConfig::default(),
+            DEFAULT_MAX_PER_BIN,
         );
 
-        // Add peer via handshake (hot), then save to store
         pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Storer);
         pm.collect_dirty();
         pm.flush_write_buffer();
 
-        // Create fresh PM with same store
         let pm2 = PeerManager::with_store(
-            &mock_identity(), store, None,
-            SwarmScoringConfig::default(), DEFAULT_MAX_PER_BIN,
+            &mock_identity(),
+            store,
+            None,
+            SwarmScoringConfig::default(),
+            DEFAULT_MAX_PER_BIN,
         );
-        assert_eq!(pm2.peers.len(), 0); // Hot cache empty
+        assert_eq!(pm2.peers.len(), 0);
 
-        // get_swarm_peer should promote cold→hot
         let peer = pm2.get_swarm_peer(&test_overlay(1));
         assert!(peer.is_some());
-        assert_eq!(pm2.peers.len(), 1); // Now in hot cache
+        assert_eq!(pm2.peers.len(), 1);
     }
 
     #[test]
@@ -1287,7 +1029,6 @@ mod tests {
         pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Client);
         pm.ban(&test_overlay(1), None);
 
-        // Ban check via DashSet (O(1))
         assert!(pm.is_banned(&test_overlay(1)));
         assert!(!pm.is_banned(&test_overlay(2)));
         assert_eq!(pm.banned_count(), 1);
@@ -1295,35 +1036,41 @@ mod tests {
 
     #[test]
     fn test_write_buffer_flush() {
-        let store: Arc<dyn NetPeerStore<StoredPeer>> = Arc::new(MemoryPeerStore::<StoredPeer>::new());
+        let store: Arc<dyn NetPeerStore<StoredPeer>> =
+            Arc::new(MemoryPeerStore::<StoredPeer>::new());
         let pm = PeerManager::with_store(
-            &mock_identity(), store.clone(), None,
-            SwarmScoringConfig::default(), DEFAULT_MAX_PER_BIN,
+            &mock_identity(),
+            store.clone(),
+            None,
+            SwarmScoringConfig::default(),
+            DEFAULT_MAX_PER_BIN,
         );
 
         pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Client);
         pm.collect_dirty();
         pm.flush_write_buffer();
 
-        // Peer should now be in DB
         assert_eq!(store.count().unwrap(), 1);
     }
 
     #[test]
     fn test_ban_bypasses_buffer() {
-        let store: Arc<dyn NetPeerStore<StoredPeer>> = Arc::new(MemoryPeerStore::<StoredPeer>::new());
+        let store: Arc<dyn NetPeerStore<StoredPeer>> =
+            Arc::new(MemoryPeerStore::<StoredPeer>::new());
         let pm = PeerManager::with_store(
-            &mock_identity(), store.clone(), None,
-            SwarmScoringConfig::default(), DEFAULT_MAX_PER_BIN,
+            &mock_identity(),
+            store.clone(),
+            None,
+            SwarmScoringConfig::default(),
+            DEFAULT_MAX_PER_BIN,
         );
 
         pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Client);
         pm.collect_dirty();
-        pm.flush_write_buffer(); // Ensure peer is in DB
+        pm.flush_write_buffer();
 
         pm.ban(&test_overlay(1), Some("test".into()));
 
-        // Ban should be in DB immediately (no flush needed)
         let record = store.get(&test_overlay(1)).unwrap().unwrap();
         assert!(record.ban_info.is_some());
     }
@@ -1344,61 +1091,65 @@ mod tests {
 
     #[test]
     fn test_db_roundtrip_hot_cold() {
-        let store: Arc<dyn NetPeerStore<StoredPeer>> = Arc::new(MemoryPeerStore::<StoredPeer>::new());
+        let store: Arc<dyn NetPeerStore<StoredPeer>> =
+            Arc::new(MemoryPeerStore::<StoredPeer>::new());
         let pm = PeerManager::with_store(
-            &mock_identity(), store.clone(), None,
-            SwarmScoringConfig::default(), DEFAULT_MAX_PER_BIN,
+            &mock_identity(),
+            store.clone(),
+            None,
+            SwarmScoringConfig::default(),
+            DEFAULT_MAX_PER_BIN,
         );
 
-        // Discover (cold) → connect (hot) → save → reload
         pm.store_discovered_peer(test_swarm_peer(1));
-        assert_eq!(pm.peers.len(), 0); // Cold
+        assert_eq!(pm.peers.len(), 0);
 
         pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Storer);
-        assert_eq!(pm.peers.len(), 1); // Hot
+        assert_eq!(pm.peers.len(), 1);
 
         pm.collect_dirty();
         pm.flush_write_buffer();
 
-        // Reload
         let pm2 = PeerManager::with_store(
-            &mock_identity(), store, None,
-            SwarmScoringConfig::default(), DEFAULT_MAX_PER_BIN,
+            &mock_identity(),
+            store,
+            None,
+            SwarmScoringConfig::default(),
+            DEFAULT_MAX_PER_BIN,
         );
         assert_eq!(pm2.index().len(), 1);
-        assert_eq!(pm2.peers.len(), 0); // Cold after reload
+        assert_eq!(pm2.peers.len(), 0);
 
-        // Rediscover
         pm2.store_discovered_peer(test_swarm_peer(1));
-        assert_eq!(pm2.peers.len(), 0); // Still cold (already known)
+        assert_eq!(pm2.peers.len(), 0);
     }
 
     #[test]
     fn test_evict_cold() {
-        let store: Arc<dyn NetPeerStore<StoredPeer>> = Arc::new(MemoryPeerStore::<StoredPeer>::new());
+        let store: Arc<dyn NetPeerStore<StoredPeer>> =
+            Arc::new(MemoryPeerStore::<StoredPeer>::new());
         let pm = PeerManager::build(
-            &mock_identity(), SwarmScoringConfig::default(), DEFAULT_MAX_PER_BIN,
-            Some(store), None, 10, // max_hot_peers = 10
+            &mock_identity(),
+            SwarmScoringConfig::default(),
+            DEFAULT_MAX_PER_BIN,
+            Some(store),
+            None,
+            10,
         );
 
-        // Insert 20 peers as "connected" (hot), exceeding max_hot_peers=10
         for n in 1..=20 {
             pm.on_peer_ready(test_swarm_peer(n), SwarmNodeType::Client);
         }
         assert_eq!(pm.peers.len(), 20);
 
-        // Simulate failures on 15 peers (makes them eviction candidates)
         for n in 1..=15 {
             pm.record_dial_failure(&test_overlay(n));
         }
 
         pm.evict_cold();
 
-        // Should evict down to max_hot_peers (10).
-        // 15 candidates with failures, need to evict 10 (20 - 10).
         assert_eq!(pm.peers.len(), 10);
 
-        // The 5 peers without failures (16-20) should still be in hot cache
         for n in 16..=20 {
             assert!(pm.peers.contains_key(&test_overlay(n)));
         }
@@ -1408,21 +1159,19 @@ mod tests {
     fn test_concurrent_hot_cold_access() {
         use std::thread;
 
-        let store: Arc<dyn NetPeerStore<StoredPeer>> = Arc::new(MemoryPeerStore::<StoredPeer>::new());
+        let store: Arc<dyn NetPeerStore<StoredPeer>> =
+            Arc::new(MemoryPeerStore::<StoredPeer>::new());
         let pm = PeerManager::with_store(
-            &mock_identity(), store, None,
-            SwarmScoringConfig::default(), DEFAULT_MAX_PER_BIN,
+            &mock_identity(),
+            store,
+            None,
+            SwarmScoringConfig::default(),
+            DEFAULT_MAX_PER_BIN,
         );
         let pm = Arc::new(pm);
 
-        // The PeerManager is already wrapped in Arc from with_store, but our
-        // variable shadows it. We need to use the inner Arc.
-        // Actually, with_store returns Arc<Self>, so pm is Arc<PeerManager>.
-        // We can clone Arc.
-
         let mut handles = vec![];
 
-        // Writer threads: discover peers
         for batch in 0..4 {
             let pm = Arc::clone(&pm);
             handles.push(thread::spawn(move || {
@@ -1432,7 +1181,6 @@ mod tests {
             }));
         }
 
-        // Reader thread: query peers
         {
             let pm = Arc::clone(&pm);
             handles.push(thread::spawn(move || {
@@ -1450,82 +1198,87 @@ mod tests {
         assert_eq!(pm.index().len(), 100);
     }
 
-    // --- Integration tests (Unit 5) ---
-
     #[test]
     fn test_discover_flush_reload() {
-        let store: Arc<dyn NetPeerStore<StoredPeer>> = Arc::new(MemoryPeerStore::<StoredPeer>::new());
+        let store: Arc<dyn NetPeerStore<StoredPeer>> =
+            Arc::new(MemoryPeerStore::<StoredPeer>::new());
         let pm = PeerManager::with_store(
-            &mock_identity(), store.clone(), None,
-            SwarmScoringConfig::default(), DEFAULT_MAX_PER_BIN,
+            &mock_identity(),
+            store.clone(),
+            None,
+            SwarmScoringConfig::default(),
+            DEFAULT_MAX_PER_BIN,
         );
 
-        // Discover peers via gossip (cold)
         for n in 1..=10 {
             pm.store_discovered_peer(test_swarm_peer(n));
         }
         assert_eq!(pm.index().len(), 10);
-        assert_eq!(pm.peers.len(), 0); // All cold
+        assert_eq!(pm.peers.len(), 0);
 
-        // Flush write buffer to DB
         pm.flush_write_buffer();
         assert_eq!(store.count().unwrap(), 10);
 
-        // Create new PM with same DB
         let pm2 = PeerManager::with_store(
-            &mock_identity(), store, None,
-            SwarmScoringConfig::default(), DEFAULT_MAX_PER_BIN,
+            &mock_identity(),
+            store,
+            None,
+            SwarmScoringConfig::default(),
+            DEFAULT_MAX_PER_BIN,
         );
         assert_eq!(pm2.index().len(), 10);
-        assert_eq!(pm2.peers.len(), 0); // All cold
+        assert_eq!(pm2.peers.len(), 0);
 
-        // All peers should be accessible via get_swarm_peer (cold→hot promotion)
         for n in 1..=10 {
             assert!(pm2.get_swarm_peer(&test_overlay(n)).is_some());
         }
-        assert_eq!(pm2.peers.len(), 10); // All promoted to hot
+        assert_eq!(pm2.peers.len(), 10);
     }
 
     #[test]
     fn test_full_lifecycle() {
-        let db = vertex_storage_redb::RedbDatabase::in_memory().unwrap().into_arc();
+        let db = vertex_storage_redb::RedbDatabase::in_memory()
+            .unwrap()
+            .into_arc();
         let db_store = Arc::new(crate::db_store::DbPeerStore::new(Arc::clone(&db)));
         db_store.init().unwrap();
         let store: Arc<dyn NetPeerStore<StoredPeer>> = Arc::clone(&db_store) as _;
-        let score_store: Option<Arc<dyn SwarmScoreStore<Score = PeerScore, Error = vertex_net_peer_store::StoreError>>> = Some(Arc::clone(&db_store) as _);
+        let score_store: Option<
+            Arc<dyn SwarmScoreStore<Score = PeerScore, Error = vertex_net_peer_store::StoreError>>,
+        > = Some(Arc::clone(&db_store) as _);
         let pm = PeerManager::with_store(
-            &mock_identity(), store.clone(), score_store.clone(),
-            SwarmScoringConfig::default(), DEFAULT_MAX_PER_BIN,
+            &mock_identity(),
+            store.clone(),
+            score_store.clone(),
+            SwarmScoringConfig::default(),
+            DEFAULT_MAX_PER_BIN,
         );
 
-        // 1. Discover via gossip (cold)
         pm.store_discovered_peer(test_swarm_peer(1));
         assert_eq!(pm.peers.len(), 0);
 
-        // 2. Connect (hot)
         pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Storer);
         assert_eq!(pm.peers.len(), 1);
 
-        // 3. Score via success
         {
             let entry = pm.peers.get(&test_overlay(1)).unwrap();
             entry.record_success(Duration::from_millis(50));
             assert!(entry.score() > 0.0);
         }
 
-        // 4. Save to store
         pm.collect_dirty();
         pm.flush_write_buffer();
 
-        // 5. Reload into fresh PM
         let pm2 = PeerManager::with_store(
-            &mock_identity(), store, score_store,
-            SwarmScoringConfig::default(), DEFAULT_MAX_PER_BIN,
+            &mock_identity(),
+            store,
+            score_store,
+            SwarmScoringConfig::default(),
+            DEFAULT_MAX_PER_BIN,
         );
         assert_eq!(pm2.index().len(), 1);
-        assert_eq!(pm2.peers.len(), 0); // Cold
+        assert_eq!(pm2.peers.len(), 0);
 
-        // 6. Verify score survives roundtrip
         let peer = pm2.get_swarm_peer(&test_overlay(1));
         assert!(peer.is_some());
         let entry = pm2.peers.get(&test_overlay(1)).unwrap();
@@ -1535,26 +1288,30 @@ mod tests {
 
     #[test]
     fn test_ban_persistence() {
-        let store: Arc<dyn NetPeerStore<StoredPeer>> = Arc::new(MemoryPeerStore::<StoredPeer>::new());
+        let store: Arc<dyn NetPeerStore<StoredPeer>> =
+            Arc::new(MemoryPeerStore::<StoredPeer>::new());
         let pm = PeerManager::with_store(
-            &mock_identity(), store.clone(), None,
-            SwarmScoringConfig::default(), DEFAULT_MAX_PER_BIN,
+            &mock_identity(),
+            store.clone(),
+            None,
+            SwarmScoringConfig::default(),
+            DEFAULT_MAX_PER_BIN,
         );
 
-        // Connect and ban
         pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Client);
         pm.collect_dirty();
         pm.flush_write_buffer();
         pm.ban(&test_overlay(1), Some("test ban".into()));
 
-        // Ban is written directly to DB (bypass buffer)
         let record = store.get(&test_overlay(1)).unwrap().unwrap();
         assert!(record.ban_info.is_some());
 
-        // Reload: ban should persist
         let pm2 = PeerManager::with_store(
-            &mock_identity(), store, None,
-            SwarmScoringConfig::default(), DEFAULT_MAX_PER_BIN,
+            &mock_identity(),
+            store,
+            None,
+            SwarmScoringConfig::default(),
+            DEFAULT_MAX_PER_BIN,
         );
         assert!(pm2.is_banned(&test_overlay(1)));
         assert!(!pm2.eligible_peers().contains(&test_overlay(1)));
@@ -1564,16 +1321,19 @@ mod tests {
     fn test_concurrent_gossip_and_queries() {
         use std::thread;
 
-        let store: Arc<dyn NetPeerStore<StoredPeer>> = Arc::new(MemoryPeerStore::<StoredPeer>::new());
+        let store: Arc<dyn NetPeerStore<StoredPeer>> =
+            Arc::new(MemoryPeerStore::<StoredPeer>::new());
         let pm = PeerManager::with_store(
-            &mock_identity(), store, None,
-            SwarmScoringConfig::default(), DEFAULT_MAX_PER_BIN,
+            &mock_identity(),
+            store,
+            None,
+            SwarmScoringConfig::default(),
+            DEFAULT_MAX_PER_BIN,
         );
         let pm = Arc::new(pm);
 
         let mut handles = vec![];
 
-        // Gossip writers
         for batch in 0..4 {
             let pm = Arc::clone(&pm);
             handles.push(thread::spawn(move || {
@@ -1584,7 +1344,6 @@ mod tests {
             }));
         }
 
-        // Query readers: eligible_peers, eligible_count, is_banned
         for _ in 0..2 {
             let pm = Arc::clone(&pm);
             handles.push(thread::spawn(move || {
@@ -1596,7 +1355,6 @@ mod tests {
             }));
         }
 
-        // Flush writer
         {
             let pm = Arc::clone(&pm);
             handles.push(thread::spawn(move || {
@@ -1615,22 +1373,22 @@ mod tests {
 
     #[test]
     fn test_memory_bounded() {
-        let store: Arc<dyn NetPeerStore<StoredPeer>> = Arc::new(MemoryPeerStore::<StoredPeer>::new());
+        let store: Arc<dyn NetPeerStore<StoredPeer>> =
+            Arc::new(MemoryPeerStore::<StoredPeer>::new());
         let pm = PeerManager::with_store(
-            &mock_identity(), store, None,
-            SwarmScoringConfig::default(), DEFAULT_MAX_PER_BIN,
+            &mock_identity(),
+            store,
+            None,
+            SwarmScoringConfig::default(),
+            DEFAULT_MAX_PER_BIN,
         );
 
-        // Discover many peers via gossip — none should go into DashMap
         for n in 1..=200 {
             pm.store_discovered_peer(test_swarm_peer(n));
         }
 
-        // Index should track all peers
         assert_eq!(pm.index().len(), 200);
-        // Hot cache should be empty (all cold when store present)
         assert_eq!(pm.peers.len(), 0);
-        // All should be eligible
         assert_eq!(pm.eligible_count(), 200);
     }
 }

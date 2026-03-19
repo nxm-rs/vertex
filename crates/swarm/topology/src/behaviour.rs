@@ -9,7 +9,6 @@ use std::{
     time::Duration,
 };
 
-use rand::seq::SliceRandom;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::Interval;
 
@@ -17,16 +16,14 @@ use libp2p::{
     Multiaddr, PeerId,
     core::{Endpoint, transport::PortUse},
     swarm::{
-        ConnectionDenied, ConnectionError, ConnectionId, FromSwarm, NetworkBehaviour,
+        ConnectionDenied, ConnectionId, FromSwarm, NetworkBehaviour,
         THandlerInEvent, THandlerOutEvent, ToSwarm,
     },
 };
-use metrics::gauge;
-use tracing::{debug, info, trace, warn};
-use vertex_swarm_net_handshake::{HandshakeEvent, HANDSHAKE_TIMEOUT};
-use vertex_swarm_net_hive::{HiveEvent, MAX_BATCH_SIZE};
+use tracing::{debug, info};
+use vertex_swarm_net_handshake::HANDSHAKE_TIMEOUT;
+use vertex_swarm_net_hive::MAX_BATCH_SIZE;
 use vertex_swarm_net_identify as identify;
-use vertex_swarm_net_pingpong::PingpongEvent;
 use vertex_net_local::{AddressScope, LocalCapabilities, same_subnet};
 use vertex_swarm_api::{PeerConfigValues, SwarmBootnodeConfig, SwarmIdentity};
 use vertex_swarm_peer::SwarmPeer;
@@ -38,21 +35,20 @@ use vertex_swarm_peer_manager::{PeerManager, StoredPeer};
 use vertex_swarm_peer_score::SwarmScoringConfig;
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
-use vertex_net_dialer::{DialTracker, DialTrackerConfig, PrepareError};
-use vertex_net_peer_registry::{ActivateResult, ConnectionState, PeerRegistry};
+use vertex_net_dialer::{DialTracker, DialTrackerConfig};
+use vertex_net_peer_registry::PeerRegistry;
 use crate::DialReason;
 
 pub(crate) type ConnectionRegistry = PeerRegistry<OverlayAddress, Option<DialReason>>;
 use crate::extract_peer_id;
-use crate::composed::{ProtocolBehaviours, ProtocolEvent};
-use vertex_net_dnsaddr::{is_dnsaddr, resolve_all};
-use crate::error::{DialError, DisconnectReason, RejectionReason, TopologyError};
-use crate::events::{ConnectionDirection, TopologyEvent};
-use crate::gossip::{GossipHandle, GossipInput, spawn_gossip_task};
+use crate::composed::ProtocolBehaviours;
+use crate::error::TopologyError;
+use crate::events::TopologyEvent;
+use crate::gossip::{GossipHandle, spawn_gossip_task};
 use crate::handle::TopologyHandle;
 use crate::metrics::{TopologyMetrics, po_label};
 use crate::nat_discovery::LocalAddressManager;
-use crate::kademlia::{KademliaConfig, KademliaRouting, RoutingCapacity, RoutingEvaluatorHandle, SwarmRouting};
+use crate::kademlia::{KademliaConfig, KademliaRouting, RoutingEvaluatorHandle, SwarmRouting};
 use crate::TopologyCommand;
 
 /// Type-erased peer store supporting both file-based and database-backed storage.
@@ -164,74 +160,74 @@ impl TopologyConfig {
 /// Composes `HandshakeBehaviour`, `HiveBehaviour`, and `PingpongBehaviour` for
 /// protocol handling, delegating to each while coordinating connection state.
 pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
-    identity: Arc<I>,
+    pub(crate) identity: Arc<I>,
 
     /// Composed protocol behaviours (handshake, hive, pingpong).
-    protocols: ProtocolBehaviours<I>,
+    pub(crate) protocols: ProtocolBehaviours<I>,
 
     // Shared with TopologyHandle (Arc for external access)
-    routing: Arc<KademliaRouting<I>>,
-    peer_manager: Arc<PeerManager<I>>,
+    pub(crate) routing: Arc<KademliaRouting<I>>,
+    pub(crate) peer_manager: Arc<PeerManager<I>>,
 
     // Owned (internal only, Arc for handler sharing and routing integration)
-    connection_registry: Arc<ConnectionRegistry>,
-    nat_discovery: Arc<LocalAddressManager>,
-    bootnodes: Vec<Multiaddr>,
-    trusted_peers: Vec<Multiaddr>,
+    pub(crate) connection_registry: Arc<ConnectionRegistry>,
+    pub(crate) nat_discovery: Arc<LocalAddressManager>,
+    pub(crate) bootnodes: Vec<Multiaddr>,
+    pub(crate) trusted_peers: Vec<Multiaddr>,
 
     // Channels
-    command_rx: mpsc::Receiver<TopologyCommand>,
-    event_tx: broadcast::Sender<TopologyEvent>,
+    pub(crate) command_rx: mpsc::Receiver<TopologyCommand>,
+    pub(crate) event_tx: broadcast::Sender<TopologyEvent>,
 
     // Pending swarm actions (dials, close connections, external addrs)
-    pending_actions: VecDeque<ToSwarm<(), THandlerInEvent<ProtocolBehaviours<I>>>>,
+    pub(crate) pending_actions: VecDeque<ToSwarm<(), THandlerInEvent<ProtocolBehaviours<I>>>>,
 
     // Gossip coordination (async task with channel-based API)
-    gossip: GossipHandle,
+    pub(crate) gossip: GossipHandle,
 
     // Periodic dial interval
-    dial_interval: Pin<Box<Interval>>,
+    pub(crate) dial_interval: Pin<Box<Interval>>,
 
     // Periodic peer save interval (only ticks when peer_store is Some)
-    peer_save_interval: Pin<Box<Interval>>,
+    pub(crate) peer_save_interval: Pin<Box<Interval>>,
 
     // Pending dnsaddr resolution for bootnodes (resolved_bootnodes, resolved_trusted)
-    pending_bootnode_resolution: Option<Pin<Box<dyn Future<Output = (Vec<Multiaddr>, Vec<Multiaddr>)> + Send>>>,
+    pub(crate) pending_bootnode_resolution: Option<Pin<Box<dyn Future<Output = (Vec<Multiaddr>, Vec<Multiaddr>)> + Send>>>,
 
     /// Static NAT addresses to emit as external addresses on first poll.
     /// Cleared after emitting to avoid re-emission.
-    pending_nat_external_addrs: Vec<Multiaddr>,
+    pub(crate) pending_nat_external_addrs: Vec<Multiaddr>,
 
     /// Handle for triggering background connection evaluation.
-    evaluator_handle: RoutingEvaluatorHandle,
+    pub(crate) evaluator_handle: RoutingEvaluatorHandle,
 
     /// Dial tracker for all outbound dials.
     /// Overlay may be unknown at dial time (bootnodes, commands).
-    dial_tracker: DialTracker<OverlayAddress, DialReason>,
+    pub(crate) dial_tracker: DialTracker<OverlayAddress, DialReason>,
 
     /// Threshold for detecting post-handshake early disconnects.
-    early_disconnect_threshold: Duration,
+    pub(crate) early_disconnect_threshold: Duration,
 
     /// Overlays pending eviction from bin trimming (consumed by handle_connection_closed).
-    pending_evictions: HashSet<OverlayAddress>,
+    pub(crate) pending_evictions: HashSet<OverlayAddress>,
 
     /// Node type recorded at PeerReady time for symmetric metric decrement on disconnect.
     ///
     /// Without this, gossip re-verification can overwrite the handshake-confirmed
     /// node_type in PeerManager, causing the disconnect to decrement the wrong counter.
-    connected_node_types: HashMap<OverlayAddress, SwarmNodeType>,
+    pub(crate) connected_node_types: HashMap<OverlayAddress, SwarmNodeType>,
 
     /// Receiver for peer ban notifications from PeerManager.
-    ban_rx: broadcast::Receiver<OverlayAddress>,
+    pub(crate) ban_rx: broadcast::Receiver<OverlayAddress>,
 
     /// Persistent peer store (None for ephemeral mode).
-    peer_store: Option<PeerStore>,
+    pub(crate) peer_store: Option<PeerStore>,
 
     /// Agent versions received via identify, shared with identify behaviour.
-    agent_versions: identify::AgentVersions,
+    pub(crate) agent_versions: identify::AgentVersions,
 
     // Metrics
-    metrics: Arc<TopologyMetrics>,
+    pub(crate) metrics: Arc<TopologyMetrics>,
 }
 
 impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
@@ -454,39 +450,6 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         Arc::clone(&self.metrics)
     }
 
-    /// Dial a known SwarmPeer for discovery.
-    ///
-    /// Checks routing capacity and filters before dialing.
-    pub fn dial_swarm_peer(&mut self, swarm_peer: SwarmPeer) -> bool {
-        let overlay = OverlayAddress::from(*swarm_peer.overlay());
-
-        // Check if banned or in backoff
-        if self.peer_manager.is_banned(&overlay) || self.peer_manager.peer_is_in_backoff(&overlay) {
-            return false;
-        }
-
-        // Check scope compatibility
-        if !self.can_advertise_to(&swarm_peer) {
-            return false;
-        }
-
-        self.dial(DialTarget::Known(swarm_peer), DialReason::Discovery);
-        true
-    }
-
-    /// Process a batch of dial requests.
-    ///
-    /// Returns the number of dials that were successfully initiated.
-    pub fn dial_batch(&mut self, peers: impl IntoIterator<Item = SwarmPeer>) -> usize {
-        let mut dialed = 0;
-        for peer in peers {
-            if self.dial_swarm_peer(peer) {
-                dialed += 1;
-            }
-        }
-        dialed
-    }
-
     /// Handle a topology command (dial, close connection, etc.).
     pub fn on_command(&mut self, command: TopologyCommand) {
         match command {
@@ -498,7 +461,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             }
             TopologyCommand::CloseConnection(overlay) => {
                 let Some(peer_id) = self.connection_registry.resolve_peer_id(&overlay) else {
-                    warn!(%overlay, "Cannot close connection: peer not found");
+                    tracing::warn!(%overlay, "Cannot close connection: peer not found");
                     return;
                 };
                 debug!(%overlay, %peer_id, "Close connection command");
@@ -525,700 +488,10 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         }
     }
 
-    // Connection management
-
-    /// Dial a peer target.
-    ///
-    /// For Known peers: checks routing capacity, registers in DialTracker, verifies during handshake.
-    /// For Unknown peers: no capacity check, tracked in pending_unknown_dials, learns overlay at handshake.
-    fn dial(&mut self, target: DialTarget, reason: DialReason) {
-        let Some(peer_id) = target.peer_id() else {
-            warn!(?target, "Cannot dial: no /p2p/ component in address");
-            return;
-        };
-
-        if self.is_peer_tracked(&peer_id) {
-            trace!(%peer_id, "Skipping dial - already tracked");
-            return;
-        }
-
-        // For Known peers, check routing capacity before dialing
-        if let Some(overlay) = target.overlay() {
-            if !self.routing.try_reserve_dial(&overlay, SwarmNodeType::Storer) {
-                trace!(%overlay, "Skipping dial - at capacity or already tracking");
-                return;
-            }
-        }
-
-        // One call: filter addresses, build DialOpts, register in-flight
-        let capability = self.nat_discovery.capability();
-        let opts = match self.dial_tracker.prepare_and_start(
-            target.overlay(),
-            peer_id,
-            target.addrs(),
-            reason,
-            |addr| vertex_net_local::is_dialable(addr, capability),
-        ) {
-            Ok(opts) => opts,
-            Err(PrepareError::NoReachableAddresses) => {
-                if let Some(overlay) = target.overlay() {
-                    self.routing.release_dial(&overlay);
-                    self.peer_manager.record_dial_failure(&overlay);
-                }
-                debug!(%peer_id, ?capability, "No reachable addresses");
-                return;
-            }
-            Err(PrepareError::AlreadyTracked) => {
-                if let Some(overlay) = target.overlay() {
-                    self.routing.release_dial(&overlay);
-                }
-                trace!(%peer_id, "Skipping dial - already in dial tracker");
-                return;
-            }
-            Err(PrepareError::InBackoff | PrepareError::Banned) => {
-                if let Some(overlay) = target.overlay() {
-                    self.routing.release_dial(&overlay);
-                }
-                trace!(%peer_id, "Skipping dial - peer in backoff or banned");
-                return;
-            }
-        };
-
-        debug!(%peer_id, ?reason, "Dialing peer");
-
-        // Track discovery dials for delayed gossip exchange
-        if reason == DialReason::Discovery {
-            self.gossip.send(GossipInput::MarkGossipDial(peer_id));
-        }
-
-        self.pending_actions.push_back(ToSwarm::Dial { opts });
-    }
-
-    fn connect_bootnodes(&mut self) {
-        let mut bootnodes = self.bootnodes.clone();
-        bootnodes.shuffle(&mut rand::rng());
-        let trusted_peers = self.trusted_peers.clone();
-
-        if bootnodes.is_empty() && trusted_peers.is_empty() {
-            return;
-        }
-
-        // Check if any addresses need dnsaddr resolution
-        let needs_resolution = bootnodes.iter().any(|addr| is_dnsaddr(addr))
-            || trusted_peers.iter().any(|addr| is_dnsaddr(addr));
-
-        if needs_resolution {
-            info!(
-                bootnodes = bootnodes.len(),
-                trusted = trusted_peers.len(),
-                "Resolving dnsaddr entries for bootnodes..."
-            );
-
-            // Resolve bootnodes and trusted peers separately to preserve DialReason
-            let future = Box::pin(async move {
-                let resolved_bootnodes = resolve_all(bootnodes.iter()).await;
-                let resolved_trusted = resolve_all(trusted_peers.iter()).await;
-                (resolved_bootnodes, resolved_trusted)
-            });
-            self.pending_bootnode_resolution = Some(future);
-        } else {
-            // No resolution needed, dial immediately
-            self.dial_bootnodes(bootnodes, trusted_peers);
-        }
-    }
-
-    /// Dial bootnodes and trusted peers (called after dnsaddr resolution if needed).
-    fn dial_bootnodes(&mut self, bootnodes: Vec<Multiaddr>, trusted_peers: Vec<Multiaddr>) {
-        if !bootnodes.is_empty() {
-            info!(count = bootnodes.len(), "Connecting to all bootnodes...");
-        }
-
-        for addr in bootnodes {
-            self.dial(DialTarget::Unknown(addr), DialReason::Bootnode);
-        }
-
-        for addr in trusted_peers {
-            self.dial(DialTarget::Unknown(addr), DialReason::Trusted);
-        }
-    }
-
-    /// Check if a PeerId is already being tracked (dialing, connected, or active).
-    fn is_peer_tracked(&self, peer_id: &PeerId) -> bool {
-        self.connection_registry.contains_peer(peer_id)
-            || self.dial_tracker.contains_peer(peer_id)
-    }
-
-    // Event handlers
-
-    #[tracing::instrument(skip_all, level = "trace", fields(%peer_id))]
-    fn process_protocol_event(
-        &mut self,
-        peer_id: PeerId,
-        connection_id: ConnectionId,
-        event: ProtocolEvent,
-    ) {
-        match event {
-            ProtocolEvent::Handshake(HandshakeEvent::Completed { info, .. }) => {
-                self.on_handshake_completed(peer_id, connection_id, *info);
-            }
-            ProtocolEvent::Handshake(HandshakeEvent::Failed { error, .. }) => {
-                self.on_handshake_failed(peer_id, error);
-            }
-            ProtocolEvent::Hive(HiveEvent::PeersReceived { peers, .. }) => {
-                self.on_hive_peers_received(peer_id, peers);
-            }
-            ProtocolEvent::Hive(HiveEvent::Error { error, .. }) => {
-                warn!(%peer_id, %error, "Hive error");
-            }
-            ProtocolEvent::Pingpong(PingpongEvent::Pong { rtt, .. }) => {
-                self.on_pingpong_pong(peer_id, rtt);
-            }
-            ProtocolEvent::Pingpong(PingpongEvent::PingReceived { .. }) => {
-                debug!(%peer_id, "Received ping from peer");
-            }
-            ProtocolEvent::Pingpong(PingpongEvent::Error { error, .. }) => {
-                warn!(%peer_id, %error, "Pingpong failed");
-            }
-        }
-    }
-
-    #[tracing::instrument(skip(self, info), level = "debug", fields(%peer_id))]
-    fn on_handshake_completed(
-        &mut self,
-        peer_id: PeerId,
-        connection_id: ConnectionId,
-        info: vertex_swarm_net_handshake::HandshakeInfo,
-    ) {
-        let overlay = OverlayAddress::from(*info.swarm_peer.overlay());
-        let node_type = info.node_type;
-
-        debug!(
-            %peer_id,
-            %overlay,
-            ?node_type,
-            po = self.proximity(&overlay),
-            "Handshake completed"
-        );
-
-        // Get dial info from connection registry before transitioning
-        let current_state = self.connection_registry.get(&overlay)
-            .or_else(|| self.connection_registry.resolve_id(&peer_id)
-                .and_then(|o| self.connection_registry.get(&o)));
-        let direction = current_state.as_ref()
-            .and_then(|s| s.direction())
-            .unwrap_or(ConnectionDirection::Inbound);
-
-        // Reject banned peers immediately (inbound peers bypass dial-time ban check).
-        if self.peer_manager.is_banned(&overlay) {
-            debug!(
-                %peer_id,
-                %overlay,
-                ?direction,
-                "Rejecting connection: peer is banned"
-            );
-            self.emit_event(TopologyEvent::PeerRejected {
-                overlay,
-                peer_id,
-                reason: RejectionReason::Banned,
-                direction,
-            });
-            self.pending_actions.push_back(ToSwarm::CloseConnection {
-                peer_id,
-                connection: libp2p::swarm::CloseConnection::All,
-            });
-            return;
-        }
-
-        // For inbound connections, check bin capacity and reserve a slot before
-        // transitioning to active. Outbound connections already reserved capacity
-        // at dial time via try_reserve_dial.
-        if direction == ConnectionDirection::Inbound {
-            let bin_at_capacity = !RoutingCapacity::should_accept_inbound(&*self.routing, &overlay, node_type);
-            if bin_at_capacity {
-                debug!(
-                    %peer_id,
-                    %overlay,
-                    ?node_type,
-                    ?direction,
-                    "Rejecting inbound connection: bin saturated"
-                );
-                self.emit_event(TopologyEvent::PeerRejected {
-                    overlay,
-                    peer_id,
-                    reason: RejectionReason::BinSaturated,
-                    direction,
-                });
-                self.pending_actions.push_back(ToSwarm::CloseConnection {
-                    peer_id,
-                    connection: libp2p::swarm::CloseConnection::All,
-                });
-                return;
-            }
-            // Reserve inbound slot so handshake_completed can transition Handshaking→Active
-            RoutingCapacity::reserve_inbound(&*self.routing, &overlay);
-        }
-
-        // Transition to Active state in connection registry
-        let activate_result = self.connection_registry.activate(
-            peer_id,
-            connection_id,
-            overlay,
-        );
-        match &activate_result {
-            ActivateResult::Accepted => {
-                gauge!("peer_registry_pending_connections").decrement(1.0);
-                gauge!("peer_registry_active_connections").increment(1.0);
-            }
-            ActivateResult::Replaced { old_id: None, .. } => {
-                gauge!("peer_registry_pending_connections").decrement(1.0);
-            }
-            ActivateResult::Replaced { old_id: Some(_), .. } => {}
-        }
-
-        // Update routing capacity tracking (transitions Handshaking→Active)
-        RoutingCapacity::handshake_completed(&*self.routing, &overlay);
-
-        // Handle the activate result from connection registry
-        match activate_result {
-            ActivateResult::Replaced { old_peer_id, old_connection_id, ref old_id } => {
-                // The old connection was already counted by a prior PeerReady event.
-                // Its registry entry is now overwritten, so handle_connection_closed
-                // will not emit PeerDisconnected — we must decrement here.
-                // Use connected_node_types (recorded at PeerReady time) for symmetric decrement.
-                let old_overlay = old_id.as_ref().unwrap_or(&overlay);
-                let old_node_type = self.connected_node_types.remove(old_overlay)
-                    .unwrap_or(SwarmNodeType::Client);
-                self.metrics.decrement_connected(old_node_type);
-                gauge!("peer_registry_active_connections").decrement(1.0);
-
-                debug!(
-                    %peer_id,
-                    %old_peer_id,
-                    ?old_connection_id,
-                    %overlay,
-                    "Closing old connection, new connection takes over"
-                );
-                self.emit_event(TopologyEvent::PeerRejected {
-                    overlay,
-                    peer_id: old_peer_id,
-                    reason: RejectionReason::DuplicateConnection,
-                    direction,
-                });
-                // Close only the specific old connection, not all connections.
-                // This handles racing dialers (same PeerId claiming same overlay)
-                // correctly by keeping the new connection active.
-                self.pending_actions.push_back(ToSwarm::CloseConnection {
-                    peer_id: old_peer_id,
-                    connection: libp2p::swarm::CloseConnection::One(old_connection_id),
-                });
-            }
-            ActivateResult::Accepted => {}
-        }
-
-        // Store peer metadata
-        self.peer_manager.on_peer_ready(info.swarm_peer.clone(), info.node_type);
-
-        let po = self.proximity(&overlay);
-
-        let old_depth = self.routing.depth();
-        self.routing.connected(overlay);
-        let new_depth = self.routing.depth();
-
-        // Push event-driven routing gauges for the affected bin
-        self.push_routing_gauges(po);
-
-        if new_depth != old_depth {
-            self.push_bin_targets();
-            self.gossip.send(GossipInput::DepthChanged(new_depth));
-            self.emit_event(TopologyEvent::DepthChanged {
-                old_depth,
-                new_depth,
-            });
-            if new_depth > old_depth {
-                self.trim_overpopulated_bins();
-            }
-        }
-
-        // Record node_type for symmetric decrement on disconnect.
-        self.connected_node_types.insert(overlay, node_type);
-
-        self.emit_event(TopologyEvent::PeerReady {
-            overlay,
-            peer_id,
-            node_type,
-            direction,
-        });
-
-        // Notify gossip task — exchange happens immediately or after delay (for gossip dials)
-        self.gossip.send(GossipInput::PeerActivated {
-            peer_id,
-            swarm_peer: info.swarm_peer,
-            node_type,
-        });
-
-        // Dial completed successfully - coalesced evaluation in poll()
-        self.evaluator_handle.trigger_evaluation();
-    }
-
-    fn on_handshake_failed(
-        &mut self,
-        peer_id: PeerId,
-        error: vertex_swarm_net_handshake::HandshakeError,
-    ) {
-        warn!(%peer_id, %error, "Handshake failed");
-
-        // Handshake failed means the peer was already registered in connection_registry.
-        // Remove it and release routing capacity.
-        let state = self.connection_registry.disconnected(&peer_id);
-        if let Some(ref s) = state {
-            decrement_connection_phase_gauge(s);
-        }
-        let reason = state.as_ref().and_then(|s| *s.reason());
-        let overlay = state.as_ref().and_then(|s| s.id());
-
-        if let Some(ref overlay) = overlay {
-            self.routing.release_handshake(overlay);
-            self.peer_manager.record_dial_failure(overlay);
-        }
-
-        self.emit_event(TopologyEvent::DialFailed {
-            overlay,
-            addrs: Vec::new(),
-            error: DialError::HandshakeFailed(error.to_string()),
-            dial_duration: state.as_ref().and_then(|s| s.started_at()).map(|t| t.elapsed()),
-            reason,
-        });
-    }
-
-    fn on_hive_peers_received(&mut self, peer_id: PeerId, peers: Vec<vertex_swarm_peer::SwarmPeer>) {
-        if peers.is_empty() {
-            return;
-        }
-
-        // Filter peers we can't reach based on our IP capability.
-        let local_capability = self.nat_discovery.capability();
-        let peers: Vec<vertex_swarm_peer::SwarmPeer> = if local_capability.is_known() {
-            peers
-                .into_iter()
-                .filter(|peer| {
-                    let peer_cap = peer.ip_capability();
-                    let reachable = local_capability.can_reach(&peer_cap);
-                    if !reachable {
-                        trace!(
-                            overlay = %peer.overlay(),
-                            ?local_capability,
-                            ?peer_cap,
-                            "filtering unreachable gossiped peer"
-                        );
-                    }
-                    reachable
-                })
-                .collect()
-        } else {
-            // Capability unknown (no listen addrs yet) — let all through
-            peers
-        };
-
-        if peers.is_empty() {
-            return;
-        }
-
-        let gossiper = self
-            .connection_registry
-            .resolve_id(&peer_id)
-            .unwrap_or_else(|| {
-                warn!(%peer_id, "Hive peers from unknown peer");
-                OverlayAddress::default()
-            });
-
-        let peer_count = peers.len();
-        self.gossip.send(GossipInput::PeersReceived { gossiper, peers });
-
-        // Disconnect from bootnodes after receiving the initial peer list.
-        // Bootnodes are gossip amplifiers — every new peer connecting to the bootnode
-        // triggers a hive stream to all existing connections. Staying connected produces
-        // a flood of 1-peer hive messages (~2/s on mainnet) that overwhelms rate limiters.
-        let reason = self.connection_registry.get(&gossiper)
-            .and_then(|s| *s.reason());
-        if reason == Some(DialReason::Bootnode) {
-            info!(
-                %peer_id,
-                %gossiper,
-                peer_count,
-                "Disconnecting from bootnode after initial hive gossip"
-            );
-            self.pending_actions.push_back(ToSwarm::CloseConnection {
-                peer_id,
-                connection: libp2p::swarm::CloseConnection::All,
-            });
-        }
-    }
-
-    fn on_pingpong_pong(&mut self, peer_id: PeerId, rtt: Duration) {
-        debug!(%peer_id, ?rtt, "Pingpong success");
-
-        if let Some(overlay) = self.connection_registry.resolve_id(&peer_id) {
-            self.peer_manager.record_latency(&overlay, rtt);
-            debug!(%peer_id, %overlay, ?rtt, "Connection health verified");
-
-            self.emit_event(TopologyEvent::PingCompleted { overlay, rtt });
-        }
-    }
-
-    // Lifecycle
-
-    fn handle_connection_established(&mut self, established: libp2p::swarm::behaviour::ConnectionEstablished) {
-        if established.endpoint.is_dialer() {
-            // Resolve from DialTracker (sole source of outbound dial tracking)
-            if let Some(request) = self.dial_tracker.resolve(&established.peer_id) {
-                let overlay = request.id;
-                let reason = request.data;
-                let result = self.connection_registry.connected_outbound(
-                    established.peer_id,
-                    established.connection_id,
-                    overlay.clone(),
-                    request.queued_at(),
-                    Some(reason),
-                );
-                if result.is_some() {
-                    gauge!("peer_registry_pending_connections").increment(1.0);
-                }
-                if let Some(overlay) = &overlay {
-                    self.routing.dial_connected(overlay);
-                }
-            } else {
-                trace!(peer_id = %established.peer_id, "ConnectionEstablished for untracked outbound peer");
-            }
-        } else {
-            self.connection_registry.connected_inbound(
-                established.peer_id,
-                established.connection_id,
-            );
-            gauge!("peer_registry_pending_connections").increment(1.0);
-        }
-    }
-
-    fn handle_connection_closed(&mut self, closed: libp2p::swarm::behaviour::ConnectionClosed) {
-        if closed.remaining_established > 0 {
-            return;
-        }
-
-        // Remove from connection registry (sole source of truth for connections)
-        let removed_state = self.connection_registry.disconnected(&closed.peer_id);
-        if let Some(ref s) = removed_state {
-            decrement_connection_phase_gauge(s);
-        }
-        let connected_at = removed_state.as_ref().and_then(|s| s.connected_at());
-        let overlay = removed_state.as_ref().and_then(|s| s.id());
-
-        self.gossip.send(GossipInput::ConnectionClosed {
-            peer_id: closed.peer_id,
-            overlay: overlay.clone(),
-        });
-
-        let Some(overlay) = overlay else {
-            // Unknown overlay connection closed — no routing capacity to release and
-            // no routing table entry to update, so skip evaluation.
-            self.metrics.record_unknown_overlay_disconnect();
-            return;
-        };
-
-        // Use the node_type recorded at PeerReady time for symmetric metric decrement.
-        let node_type = self.connected_node_types.remove(&overlay)
-            .unwrap_or(SwarmNodeType::Client);
-
-        let connection_duration = connected_at.map(|t| t.elapsed());
-        debug!(
-            peer_id = %closed.peer_id,
-            %overlay,
-            ?node_type,
-            ?connection_duration,
-            cause = ?closed.cause,
-            "Peer disconnected"
-        );
-
-        // Release capacity slot
-        RoutingCapacity::disconnected(&*self.routing, &overlay);
-
-        // Push event-driven routing gauges for the affected bin
-        let po = self.proximity(&overlay);
-        self.push_routing_gauges(po);
-
-        // Capacity freed - coalesced evaluation in poll()
-        self.evaluator_handle.trigger_evaluation();
-
-        // Update routing tables
-        let old_depth = self.routing.depth();
-        SwarmRouting::on_peer_disconnected(&*self.routing, &overlay);
-        let new_depth = self.routing.depth();
-
-        // Determine disconnect reason from pending evictions and libp2p cause.
-        let disconnect_reason = if self.pending_evictions.remove(&overlay) {
-            DisconnectReason::BinTrimmed
-        } else {
-            match closed.cause {
-                Some(ConnectionError::IO(_)) => DisconnectReason::ConnectionError,
-                Some(ConnectionError::KeepAliveTimeout) => DisconnectReason::ConnectionError,
-                // No error: orderly close initiated by local or remote side.
-                None => DisconnectReason::LocalClose,
-            }
-        };
-
-        // Penalize early disconnects (post-handshake connections that fail quickly).
-        // Skip BinTrimmed since we initiated the eviction.
-        if disconnect_reason != DisconnectReason::BinTrimmed {
-            if let Some(duration) = connection_duration {
-                if duration < self.early_disconnect_threshold {
-                    debug!(
-                        %overlay,
-                        ?duration,
-                        ?disconnect_reason,
-                        "early disconnect detected, applying penalty"
-                    );
-                    self.peer_manager.record_early_disconnect(&overlay, duration);
-                    self.metrics.record_early_disconnect(disconnect_reason);
-                }
-            }
-        }
-
-        self.emit_event(TopologyEvent::PeerDisconnected {
-            overlay,
-            reason: disconnect_reason,
-            connection_duration,
-            node_type,
-        });
-
-        if new_depth != old_depth {
-            self.push_bin_targets();
-            self.gossip.send(GossipInput::DepthChanged(new_depth));
-            self.emit_event(TopologyEvent::DepthChanged {
-                old_depth,
-                new_depth,
-            });
-            if new_depth > old_depth {
-                self.trim_overpopulated_bins();
-            }
-        }
-    }
-
-    fn handle_dial_failure(&mut self, failure: libp2p::swarm::behaviour::DialFailure) {
-        let Some(peer_id) = failure.peer_id else {
-            trace!("DialFailure without peer_id");
-            return;
-        };
-
-        // Resolve from DialTracker (sole source of outbound dial tracking)
-        let Some(request) = self.dial_tracker.resolve(&peer_id) else {
-            trace!(%peer_id, "DialFailure for unknown/untracked peer_id");
-            return;
-        };
-
-        let overlay = request.id;
-        let dial_duration = Some(request.queued_at().elapsed());
-
-        let classified_error = classify_dial_error(&failure.error);
-
-        // Release routing capacity for this failed dial
-        if let Some(overlay) = &overlay {
-            self.routing.release_dial(overlay);
-            self.peer_manager.record_dial_failure(overlay);
-
-            // Score penalty based on error type
-            use vertex_swarm_peer_score::SwarmScoringEvent;
-            let scoring_event = match &classified_error {
-                DialError::Timeout | DialError::Stale => SwarmScoringEvent::ConnectionTimeout,
-                DialError::ConnectionRefused => SwarmScoringEvent::ConnectionRefused,
-                _ => SwarmScoringEvent::ConnectionTimeout,
-            };
-            self.peer_manager.record_scoring_event(overlay, scoring_event);
-        }
-
-        warn!(
-            %peer_id,
-            ?overlay,
-            ?classified_error,
-            addr_count = request.addrs.len(),
-            "Dial failed (all addresses exhausted)"
-        );
-
-        self.emit_event(TopologyEvent::DialFailed {
-            overlay,
-            addrs: request.addrs,
-            error: classified_error,
-            dial_duration,
-            reason: Some(request.data),
-        });
-    }
-
-    /// Clean up pending connections that have been waiting longer than HANDSHAKE_TIMEOUT.
-    ///
-    /// This includes both:
-    /// - Dials stuck waiting for TCP/QUIC connection (can take 2+ minutes due to OS retries)
-    /// - Handshakes stuck waiting for peer to complete the handshake protocol
-    ///
-    /// This cleanup ensures stuck connections don't block new connection attempts.
-    fn cleanup_stale_pending(&mut self) {
-        // Clean up stale dials from the DialTracker (covers all outbound dials)
-        let cleanup = self.dial_tracker.cleanup_expired();
-        for request in cleanup.timed_out_in_flight {
-            if let Some(overlay) = &request.id {
-                self.routing.release_dial(overlay);
-                self.peer_manager.record_dial_failure(overlay);
-            }
-            warn!(
-                peer_id = %request.peer_id,
-                overlay = ?request.id,
-                timeout = ?HANDSHAKE_TIMEOUT,
-                "Cleaning up stale dial from tracker"
-            );
-            let dial_duration = request.queued_at().elapsed();
-            self.emit_event(TopologyEvent::DialFailed {
-                overlay: request.id,
-                addrs: request.addrs,
-                error: DialError::Stale,
-                dial_duration: Some(dial_duration),
-                reason: Some(request.data),
-            });
-        }
-
-        // Clean up stale handshakes from the connection registry
-        // (connections that established TCP but handshake hasn't completed)
-        let stale_peers = self.connection_registry.stale_pending(HANDSHAKE_TIMEOUT);
-
-        for peer_id in stale_peers {
-            if let Some(state) = self.connection_registry.disconnected(&peer_id) {
-                decrement_connection_phase_gauge(&state);
-
-                let reason = *state.reason();
-                let overlay = state.id();
-
-                if let Some(overlay) = &overlay {
-                    self.routing.release_handshake(overlay);
-                    self.peer_manager.record_dial_failure(overlay);
-                }
-
-                warn!(
-                    %peer_id,
-                    ?overlay,
-                    timeout = ?HANDSHAKE_TIMEOUT,
-                    "Cleaning up stale handshake"
-                );
-
-                self.emit_event(TopologyEvent::DialFailed {
-                    overlay,
-                    addrs: Vec::new(),
-                    error: DialError::Stale,
-                    dial_duration: state.started_at().map(|t| t.elapsed()),
-                    reason,
-                });
-            }
-        }
-    }
-
     // Peer store
 
     /// Collect dirty hot peers and flush all pending writes to persistent storage.
-    fn save_peers(&self) {
+    pub(crate) fn save_peers(&self) {
         if self.peer_store.is_some() {
             self.peer_manager.collect_dirty();
             self.peer_manager.flush_write_buffer();
@@ -1226,9 +499,9 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         }
     }
 
-    fn broadcast_peers(&mut self, to: OverlayAddress, peers: Vec<SwarmPeer>) {
+    pub(crate) fn broadcast_peers(&mut self, to: OverlayAddress, peers: Vec<SwarmPeer>) {
         let Some(state) = self.connection_registry.get(&to) else {
-            warn!(%to, "Cannot broadcast: peer not found");
+            tracing::warn!(%to, "Cannot broadcast: peer not found");
             return;
         };
         if let Some(connection_id) = state.connection_id() {
@@ -1242,7 +515,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     // Routing
 
     /// Drain candidates from the background evaluator's per-bin queues and dial them.
-    fn drain_candidate_queues(&mut self) {
+    pub(crate) fn drain_candidate_queues(&mut self) {
         let candidates = self.routing.drain_candidates();
         if candidates.is_empty() {
             return;
@@ -1260,7 +533,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     ///
     /// Emits `CloseConnection` for each evicted peer. Existing event handlers
     /// (`handle_connection_closed`) handle cleanup of routing capacity and state.
-    fn trim_overpopulated_bins(&mut self) {
+    pub(crate) fn trim_overpopulated_bins(&mut self) {
         let candidates = self.routing.eviction_candidates();
         if candidates.is_empty() {
             return;
@@ -1302,13 +575,13 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
     // Metrics and helpers
 
-    fn emit_event(&self, event: TopologyEvent) {
+    pub(crate) fn emit_event(&self, event: TopologyEvent) {
         self.metrics.record_event(&event);
         let _ = self.event_tx.send(event);
     }
 
     /// Push routing gauges for a single bin and global totals.
-    fn push_routing_gauges(&self, po: u8) {
+    pub(crate) fn push_routing_gauges(&self, po: u8) {
         let po_str = po_label(po);
         let (connected, known) = self.routing.bin_peer_counts(po);
         let (dialing, handshaking, active) = self.routing.bin_phase_counts(po);
@@ -1328,7 +601,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     }
 
     /// Push per-bin target/ceiling gauges and the global nominal gauge (called on depth change).
-    fn push_bin_targets(&self) {
+    pub(crate) fn push_bin_targets(&self) {
         let depth = self.routing.depth();
         let limits = self.routing.limits();
         let bin_count = self.routing.bin_sizes().len();
@@ -1348,7 +621,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     }
 
     /// Get the proximity order for a peer relative to our overlay address.
-    fn proximity(&self, peer: &OverlayAddress) -> u8 {
+    pub(crate) fn proximity(&self, peer: &OverlayAddress) -> u8 {
         self.identity.overlay_address().proximity(peer)
     }
 
@@ -1357,7 +630,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     /// - Public peers: require public addresses (NAT or discovered)
     /// - Private peers on LAN: can use private addresses if on same subnet
     /// - Loopback peers: always dialable
-    fn can_advertise_to(&self, peer: &SwarmPeer) -> bool {
+    pub(crate) fn can_advertise_to(&self, peer: &SwarmPeer) -> bool {
         let peer_max_scope = peer.max_scope();
 
         match peer_max_scope {
@@ -1376,67 +649,6 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 // Loopback or unknown - allow
                 true
             }
-        }
-    }
-}
-
-/// Decrement the appropriate connection phase gauge based on the removed state.
-fn decrement_connection_phase_gauge<Id: Clone, R>(state: &ConnectionState<Id, R>) {
-    if state.is_active() {
-        gauge!("peer_registry_active_connections").decrement(1.0);
-    } else if state.is_pending() {
-        gauge!("peer_registry_pending_connections").decrement(1.0);
-    }
-}
-
-/// Classify a libp2p dial error into a structured `DialError` variant.
-fn classify_dial_error(error: &libp2p::swarm::DialError) -> DialError {
-    use std::io::ErrorKind;
-    use libp2p::core::transport::TransportError;
-
-    match error {
-        libp2p::swarm::DialError::Transport(addrs) => {
-            // Classify based on the most informative transport error.
-            // If all addresses failed with the same kind, use that; otherwise fall back.
-            for (_, err) in addrs {
-                match err {
-                    TransportError::Other(io_err) => match io_err.kind() {
-                        ErrorKind::TimedOut => return DialError::Timeout,
-                        ErrorKind::ConnectionRefused => return DialError::ConnectionRefused,
-                        ErrorKind::AddrNotAvailable | ErrorKind::NetworkUnreachable | ErrorKind::HostUnreachable
-                            => return DialError::Unreachable,
-                        _ => {
-                            // Check inner error message for nested timeout/refused
-                            let msg = io_err.to_string().to_lowercase();
-                            if msg.contains("timed out") || msg.contains("timeout") {
-                                return DialError::Timeout;
-                            }
-                            if msg.contains("connection refused") {
-                                return DialError::ConnectionRefused;
-                            }
-                            if msg.contains("no route") {
-                                return DialError::NoRoute;
-                            }
-                            if msg.contains("unreachable") {
-                                return DialError::Unreachable;
-                            }
-                            if msg.contains("negotiation") || msg.contains("multistream") {
-                                return DialError::NegotiationFailed;
-                            }
-                        }
-                    },
-                    TransportError::MultiaddrNotSupported(_) => {}
-                }
-            }
-            DialError::Other(format!("{error:?}"))
-        }
-        libp2p::swarm::DialError::Aborted
-        | libp2p::swarm::DialError::DialPeerConditionFalse(_) => DialError::Stale,
-        libp2p::swarm::DialError::Denied { .. } => DialError::NegotiationFailed,
-        libp2p::swarm::DialError::NoAddresses => DialError::NoRoute,
-        libp2p::swarm::DialError::LocalPeerId { .. }
-        | libp2p::swarm::DialError::WrongPeerId { .. } => {
-            DialError::Other(format!("{error:?}"))
         }
     }
 }

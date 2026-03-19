@@ -9,13 +9,25 @@ use vertex_swarm_primitives::OverlayAddress;
 
 use crate::config::{SwarmScoringConfig, SwarmScoringEvent};
 
+/// Called when a peer's score changes: `(overlay, old_score, new_score, event)`.
+pub type ScoreChangedFn =
+    Box<dyn Fn(&OverlayAddress, f64, f64, &SwarmScoringEvent) + Send + Sync>;
+
+/// Called when a peer's score crosses the warning threshold: `(overlay, score)`.
+pub type ScoreWarningFn = Box<dyn Fn(&OverlayAddress, f64) + Send + Sync>;
+
+/// Called when a peer should be banned: `(overlay, score, reason)`.
+pub type ShouldBanFn = Box<dyn Fn(&OverlayAddress, f64, &str) + Send + Sync>;
+
+/// Called on severe scoring events: `(overlay, event)`.
+pub type SevereEventFn = Box<dyn Fn(&OverlayAddress, &SwarmScoringEvent) + Send + Sync>;
+
 /// Closure-based callbacks invoked on peer score changes.
 pub struct ScoreCallbacks {
-    pub on_score_changed:
-        Box<dyn Fn(&OverlayAddress, f64, f64, &SwarmScoringEvent) + Send + Sync>,
-    pub on_score_warning: Box<dyn Fn(&OverlayAddress, f64) + Send + Sync>,
-    pub on_should_ban: Box<dyn Fn(&OverlayAddress, f64, &str) + Send + Sync>,
-    pub on_severe_event: Box<dyn Fn(&OverlayAddress, &SwarmScoringEvent) + Send + Sync>,
+    pub on_score_changed: ScoreChangedFn,
+    pub on_score_warning: ScoreWarningFn,
+    pub on_should_ban: ShouldBanFn,
+    pub on_severe_event: SevereEventFn,
 }
 
 impl ScoreCallbacks {

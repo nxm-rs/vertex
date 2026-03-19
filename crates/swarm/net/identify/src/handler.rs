@@ -39,6 +39,7 @@ const MAX_CONCURRENT_STREAMS_PER_CONNECTION: usize = 10;
 /// Protocol handler for sending and receiving identification requests.
 pub struct Handler {
     remote_peer_id: PeerId,
+    #[allow(clippy::type_complexity)]
     events: SmallVec<
         [ConnectionHandlerEvent<
             Either<ReadyUpgrade<StreamProtocol>, ReadyUpgrade<StreamProtocol>>,
@@ -349,21 +350,21 @@ impl ConnectionHandler for Handler {
             return Poll::Ready(event);
         }
 
-        if let Some(delay) = self.trigger_next_identify.as_mut() {
-            if let Poll::Ready(()) = delay.poll_unpin(cx) {
-                // After the initial identify, only schedule another if periodic is enabled.
-                match self.interval {
-                    Some(interval) => delay.reset(interval),
-                    None => self.trigger_next_identify = None,
-                }
-                let event = ConnectionHandlerEvent::OutboundSubstreamRequest {
-                    protocol: SubstreamProtocol::new(
-                        Either::Left(ReadyUpgrade::new(PROTOCOL_NAME)),
-                        (),
-                    ),
-                };
-                return Poll::Ready(event);
+        if let Some(delay) = self.trigger_next_identify.as_mut()
+            && let Poll::Ready(()) = delay.poll_unpin(cx)
+        {
+            // After the initial identify, only schedule another if periodic is enabled.
+            match self.interval {
+                Some(interval) => delay.reset(interval),
+                None => self.trigger_next_identify = None,
             }
+            let event = ConnectionHandlerEvent::OutboundSubstreamRequest {
+                protocol: SubstreamProtocol::new(
+                    Either::Left(ReadyUpgrade::new(PROTOCOL_NAME)),
+                    (),
+                ),
+            };
+            return Poll::Ready(event);
         }
 
         while let Poll::Ready(ready) = self.active_streams.poll_unpin(cx) {
@@ -437,6 +438,10 @@ impl ConnectionHandler for Handler {
             ConnectionEvent::FullyNegotiatedOutbound(fully_negotiated_outbound) => {
                 self.on_fully_negotiated_outbound(fully_negotiated_outbound)
             }
+            // ReadyUpgrade never fails, so the upgrade error is Infallible (void).
+            // The unreachable() call consumes a void value, which triggers unreachable_code.
+            // This follows the upstream libp2p pattern for ReadyUpgrade error handling.
+            #[allow(unreachable_code)]
             ConnectionEvent::DialUpgradeError(DialUpgradeError { error, .. }) => {
                 self.events.push(ConnectionHandlerEvent::NotifyBehaviour(
                     Event::IdentificationError(

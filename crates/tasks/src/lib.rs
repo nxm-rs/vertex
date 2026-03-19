@@ -356,6 +356,7 @@ impl TaskExecutor {
     ///
     /// Panics if no global executor has been initialized. Use [`try_current`](Self::try_current)
     /// for a non-panicking version.
+    #[allow(clippy::expect_used)]
     pub fn current() -> Self {
         Self::try_current().expect("TaskExecutor::current() called before TaskManager was created")
     }

@@ -40,6 +40,9 @@ const STREAM_TIMEOUT: Duration = Duration::from_secs(10);
 const RATE_LIMIT_BURST: u32 = 4;
 const RATE_LIMIT_REFILL: Duration = Duration::from_secs(5);
 
+/// Maximum queued broadcasts before dropping (prevents unbounded growth if outbound is slow).
+const MAX_PENDING_BROADCASTS: usize = 16;
+
 /// Commands from behaviour to handler.
 #[derive(Debug)]
 pub enum HiveCommand {
@@ -66,7 +69,10 @@ pub struct HiveHandler<I: SwarmIdentity> {
     cache: PeerCache,
     /// Token bucket to prevent rapid stream cycling.
     rate_limiter: RateLimiter,
+    /// Implicitly bounded by the number of connection events per poll cycle
+    /// (at most one inbound + one error per `on_connection_event` call).
     pending_events: VecDeque<HiveHandlerEvent>,
+    /// Bounded by [`MAX_PENDING_BROADCASTS`]; excess broadcasts are dropped with a warning.
     pending_broadcasts: VecDeque<Vec<SwarmPeer>>,
     outbound_pending: bool,
 }
@@ -129,16 +135,16 @@ where
         }
 
         // Process pending broadcasts
-        if !self.outbound_pending {
-            if let Some(peers) = self.pending_broadcasts.pop_front() {
-                self.outbound_pending = true;
-                debug!(peer_count = peers.len(), "Sending hive broadcast");
-                let protocol = Outbound::new(HiveOutboundInner::new(&peers));
-                return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
-                    protocol: SubstreamProtocol::new(protocol, ())
-                        .with_timeout(STREAM_TIMEOUT),
-                });
-            }
+        if !self.outbound_pending
+            && let Some(peers) = self.pending_broadcasts.pop_front()
+        {
+            self.outbound_pending = true;
+            debug!(peer_count = peers.len(), "Sending hive broadcast");
+            let protocol = Outbound::new(HiveOutboundInner::new(&peers));
+            return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
+                protocol: SubstreamProtocol::new(protocol, ())
+                    .with_timeout(STREAM_TIMEOUT),
+            });
         }
 
         Poll::Pending
@@ -147,6 +153,14 @@ where
     fn on_behaviour_event(&mut self, event: Self::FromBehaviour) {
         match event {
             HiveCommand::BroadcastPeers(peers) => {
+                if self.pending_broadcasts.len() >= MAX_PENDING_BROADCASTS {
+                    warn!(
+                        peer_id = %self.remote_peer_id,
+                        queue_len = self.pending_broadcasts.len(),
+                        "Dropping hive broadcast: pending queue full"
+                    );
+                    return;
+                }
                 self.pending_broadcasts.push_back(peers);
             }
         }

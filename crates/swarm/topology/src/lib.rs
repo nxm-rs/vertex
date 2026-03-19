@@ -8,6 +8,9 @@
 pub(crate) use vertex_net_utils::extract_peer_id;
 
 mod behaviour;
+mod connection_handlers;
+mod dialing;
+mod protocol_handlers;
 mod events;
 mod handle;
 pub mod metrics;

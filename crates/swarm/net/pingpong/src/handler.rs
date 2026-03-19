@@ -43,6 +43,9 @@ const MAX_CONCURRENT_STREAMS_PER_CONNECTION: usize = 2;
 const RATE_LIMIT_BURST: u32 = 2;
 const RATE_LIMIT_REFILL: Duration = Duration::from_secs(2);
 
+/// Maximum queued outbound ping commands per connection.
+const MAX_PENDING_PINGS: usize = 8;
+
 /// StreamProtocol for multistream-select negotiation.
 const PINGPONG_STREAM_PROTOCOL: StreamProtocol = StreamProtocol::new(PROTOCOL_NAME);
 
@@ -101,7 +104,9 @@ pub struct PingpongHandler {
     active_streams: futures_bounded::FuturesSet<Result<(), ProtocolError>>,
     /// Token bucket to prevent rapid stream cycling.
     rate_limiter: RateLimiter,
+    /// Implicitly bounded by `FuturesSet` max capacity + one event per outbound completion/error.
     pending_events: VecDeque<PingpongHandlerEvent>,
+    /// Bounded by `MAX_PENDING_PINGS`; excess commands are dropped with a warning.
     pending_pings: VecDeque<String>,
     outbound_pending: bool,
 }
@@ -149,8 +154,8 @@ impl ConnectionHandler for PingpongHandler {
             return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
         }
 
-        // Drain completed inbound streams
-        while let Poll::Ready(result) = self.active_streams.poll_unpin(cx) {
+        // Drain completed inbound streams (one per poll to yield between events).
+        if let Poll::Ready(result) = self.active_streams.poll_unpin(cx) {
             match result {
                 Ok(Ok(())) => {
                     trace!("Responded to ping");
@@ -175,19 +180,17 @@ impl ConnectionHandler for PingpongHandler {
             }
         }
 
-        if !self.outbound_pending {
-            if let Some(greeting) = self.pending_pings.pop_front() {
-                self.outbound_pending = true;
-                let sent_at = Instant::now();
-                debug!(%greeting, "Sending ping");
-                return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
-                    protocol: SubstreamProtocol::new(
-                        outbound(greeting),
-                        PingpongOutboundInfo { sent_at },
-                    )
-                    .with_timeout(self.config.timeout),
-                });
-            }
+        if !self.outbound_pending && let Some(greeting) = self.pending_pings.pop_front() {
+            self.outbound_pending = true;
+            let sent_at = Instant::now();
+            debug!(%greeting, "Sending ping");
+            return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
+                protocol: SubstreamProtocol::new(
+                    outbound(greeting),
+                    PingpongOutboundInfo { sent_at },
+                )
+                .with_timeout(self.config.timeout),
+            });
         }
 
         Poll::Pending
@@ -196,6 +199,14 @@ impl ConnectionHandler for PingpongHandler {
     fn on_behaviour_event(&mut self, event: Self::FromBehaviour) {
         match event {
             PingpongCommand::Ping { greeting } => {
+                if self.pending_pings.len() >= MAX_PENDING_PINGS {
+                    warn!(
+                        peer_id = %self.remote_peer_id,
+                        max = MAX_PENDING_PINGS,
+                        "Dropping ping command: pending queue full"
+                    );
+                    return;
+                }
                 let greeting = greeting.unwrap_or_else(|| self.config.greeting.clone());
                 self.pending_pings.push_back(greeting);
             }

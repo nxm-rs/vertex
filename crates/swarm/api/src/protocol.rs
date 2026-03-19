@@ -37,7 +37,7 @@ where
         // Spawn the node's main event loop with graceful shutdown support
         ctx.executor().spawn_critical_with_graceful_shutdown_signal(
             "swarm.protocol",
-            move |shutdown| task_fn(shutdown),
+            task_fn,
         );
 
         Ok(providers)

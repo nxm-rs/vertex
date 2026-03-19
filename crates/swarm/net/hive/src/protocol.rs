@@ -189,14 +189,14 @@ fn validate_proto_peer(
     let signature = Signature::try_from(p.signature.as_slice())?;
 
     // Tier 1: Check LRU cache — validated earlier in this session.
+    // On signature mismatch, falls through to tier 2 which re-validates and overwrites.
     {
         let mut guard = cache.lock();
-        if let Some(cached) = guard.get(&peer_overlay) {
-            if *cached.signature() == signature {
-                counter!("hive_validation_cache_total", "outcome" => "cache_hit").increment(1);
-                return Ok(cached.clone());
-            }
-            // Signature changed — peer updated multiaddrs, evict stale entry.
+        if let Some(cached) = guard.get(&peer_overlay)
+            && *cached.signature() == signature
+        {
+            counter!("hive_validation_cache_total", "outcome" => "cache_hit").increment(1);
+            return Ok(cached.clone());
         }
     }
     counter!("hive_validation_cache_total", "outcome" => "miss").increment(1);
