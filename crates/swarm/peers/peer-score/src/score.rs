@@ -1,85 +1,93 @@
-//! Swarm peer score wrapper with policy and observer support.
+//! Swarm peer score wrapper with policy, callbacks, and observer support.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use parking_lot::RwLock;
-use vertex_net_peer_score::{PeerScore, PeerScoreSnapshot};
+use vertex_net_peer_score::PeerScore;
 use vertex_swarm_primitives::OverlayAddress;
 
-use crate::callbacks::ScoreObserver;
 use crate::config::{SwarmScoringConfig, SwarmScoringEvent};
 
+/// Closure-based callbacks invoked on peer score changes.
+pub struct ScoreCallbacks {
+    pub on_score_changed:
+        Box<dyn Fn(&OverlayAddress, f64, f64, &SwarmScoringEvent) + Send + Sync>,
+    pub on_score_warning: Box<dyn Fn(&OverlayAddress, f64) + Send + Sync>,
+    pub on_should_ban: Box<dyn Fn(&OverlayAddress, f64, &str) + Send + Sync>,
+    pub on_severe_event: Box<dyn Fn(&OverlayAddress, &SwarmScoringEvent) + Send + Sync>,
+}
+
+impl ScoreCallbacks {
+    /// Create no-op callbacks (all closures do nothing).
+    pub fn noop() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+}
+
+impl Default for ScoreCallbacks {
+    fn default() -> Self {
+        Self {
+            on_score_changed: Box::new(|_, _, _, _| {}),
+            on_score_warning: Box::new(|_, _| {}),
+            on_should_ban: Box::new(|_, _, _| {}),
+            on_severe_event: Box::new(|_, _| {}),
+        }
+    }
+}
+
 /// Swarm-specific peer score with configurable policy and observer support.
-///
-/// Wraps `PeerScore` and adds:
-/// - Configurable scoring weights via `SwarmScoringConfig`
-/// - Observer callbacks for score changes
-/// - Swarm-specific event handling
 pub struct SwarmPeerScore {
-    /// Stored here so observer callbacks can identify which peer triggered the event,
-    /// without threading overlay through every scoring method call.
+    /// Identifies which peer triggered callbacks without threading overlay through every call.
     overlay: OverlayAddress,
     score: Arc<PeerScore>,
     config: Arc<SwarmScoringConfig>,
-    observer: Arc<dyn ScoreObserver>,
-    warned: RwLock<bool>,
+    callbacks: Arc<ScoreCallbacks>,
+    warned: AtomicBool,
 }
 
 impl SwarmPeerScore {
-    /// Create a new score tracker for a peer.
     pub fn new(
         overlay: OverlayAddress,
         score: PeerScore,
         config: Arc<SwarmScoringConfig>,
-        observer: Arc<dyn ScoreObserver>,
+        callbacks: Arc<ScoreCallbacks>,
     ) -> Self {
         Self {
             overlay,
             score: Arc::new(score),
             config,
-            observer,
-            warned: RwLock::new(false),
+            callbacks,
+            warned: AtomicBool::new(false),
         }
     }
 
-    /// Create with default config and no-op observer.
     pub fn with_defaults(overlay: OverlayAddress) -> Self {
         Self::new(
             overlay,
             PeerScore::new(),
             Arc::new(SwarmScoringConfig::default()),
-            Arc::new(crate::callbacks::NoOpScoreObserver),
+            ScoreCallbacks::noop(),
         )
     }
 
-    /// Get the current score.
     #[must_use]
     pub fn score(&self) -> f64 {
         self.score.score()
     }
 
-    /// Get a clone of the underlying PeerScore Arc.
-    pub fn inner(&self) -> Arc<PeerScore> {
-        Arc::clone(&self.score)
-    }
-
-    /// Access the scoring config.
     pub fn config(&self) -> &SwarmScoringConfig {
         &self.config
     }
 
-    /// Record a scoring event.
-    ///
-    /// Applies the configured weight for the event type, updates latency
-    /// tracking if applicable, and notifies the observer.
+    /// Apply configured weight, update latency tracking, and notify observer.
     pub fn record_event(&self, event: SwarmScoringEvent) {
         let old_score = self.score.score();
         let weight = self.config.weight_for(&event);
 
         // Record latency if present
         if let Some(latency) = event.latency() {
-            self.score.record_latency(latency.as_nanos() as u64);
+            self.score.record_latency(latency.as_nanos().min(u64::MAX as u128) as u64);
         }
 
         // Apply weight
@@ -88,67 +96,52 @@ impl SwarmPeerScore {
         let new_score = self.score.score();
 
         // Notify observer
-        self.observer
-            .on_score_changed(&self.overlay, old_score, new_score, &event);
+        (self.callbacks.on_score_changed)(&self.overlay, old_score, new_score, &event);
 
         // Check for severe events
         if event.is_severe() {
-            self.observer.on_severe_event(&self.overlay, &event);
+            (self.callbacks.on_severe_event)(&self.overlay, &event);
         }
 
         // Check thresholds
         self.check_thresholds(new_score, &event);
     }
 
-    /// Set latency without affecting score (for latency-only measurements).
+    /// Record latency without affecting score.
     pub fn set_latency(&self, rtt: Duration) {
         self.score.record_latency(rtt.as_nanos() as u64);
     }
 
-    /// Get average latency if samples exist.
     #[must_use]
     pub fn avg_latency(&self) -> Option<Duration> {
         self.score.avg_latency()
     }
 
-    /// Check if peer should be banned based on current score.
     #[must_use]
     pub fn should_ban(&self) -> bool {
         self.config.should_ban(self.score.score())
     }
 
-    /// Create a snapshot for persistence.
     #[must_use]
-    pub fn snapshot(&self) -> PeerScoreSnapshot {
-        PeerScoreSnapshot::from(&self.score)
+    pub fn snapshot(&self) -> PeerScore {
+        (*self.score).clone()
     }
 
     fn check_thresholds(&self, score: f64, event: &SwarmScoringEvent) {
-        // Check ban threshold
         if self.config.should_ban(score) {
             let reason = format!("score {:+.1} below threshold after {:?}", score, event);
-            self.observer.on_should_ban(&self.overlay, score, &reason);
+            (self.callbacks.on_should_ban)(&self.overlay, score, &reason);
             return;
         }
 
-        // Check warning threshold (only warn once)
-        // Release lock before calling observer to prevent deadlocks
-        let should_warn = if self.config.should_warn(score) {
-            let mut warned = self.warned.write();
-            if *warned {
-                false
-            } else {
-                *warned = true;
-                true
+        if self.config.should_warn(score) {
+            // Only warn once (CAS: false → true)
+            if self.warned.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+                (self.callbacks.on_score_warning)(&self.overlay, score);
             }
         } else {
             // Reset warning flag if score recovered
-            *self.warned.write() = false;
-            false
-        };
-
-        if should_warn {
-            self.observer.on_score_warning(&self.overlay, score);
+            self.warned.store(false, Ordering::Release);
         }
     }
 }
@@ -162,46 +155,82 @@ mod tests {
         OverlayAddress::from([n; 32])
     }
 
-    struct TestObserver {
-        changes: AtomicU32,
-        warnings: AtomicU32,
-        bans: AtomicU32,
-        severe: AtomicU32,
+    fn counting_callbacks() -> (Arc<ScoreCallbacks>, Arc<AtomicU32>, Arc<AtomicU32>, Arc<AtomicU32>, Arc<AtomicU32>) {
+        let changes = Arc::new(AtomicU32::new(0));
+        let warnings = Arc::new(AtomicU32::new(0));
+        let bans = Arc::new(AtomicU32::new(0));
+        let severe = Arc::new(AtomicU32::new(0));
+
+        let cb = Arc::new(ScoreCallbacks {
+            on_score_changed: {
+                let c = Arc::clone(&changes);
+                Box::new(move |_, _, _, _| { c.fetch_add(1, Ordering::Relaxed); })
+            },
+            on_score_warning: {
+                let w = Arc::clone(&warnings);
+                Box::new(move |_, _| { w.fetch_add(1, Ordering::Relaxed); })
+            },
+            on_should_ban: {
+                let b = Arc::clone(&bans);
+                Box::new(move |_, _, _| { b.fetch_add(1, Ordering::Relaxed); })
+            },
+            on_severe_event: {
+                let s = Arc::clone(&severe);
+                Box::new(move |_, _| { s.fetch_add(1, Ordering::Relaxed); })
+            },
+        });
+
+        (cb, changes, warnings, bans, severe)
     }
 
-    impl TestObserver {
-        fn new() -> Arc<Self> {
-            Arc::new(Self {
-                changes: AtomicU32::new(0),
-                warnings: AtomicU32::new(0),
-                bans: AtomicU32::new(0),
-                severe: AtomicU32::new(0),
-            })
-        }
+    #[test]
+    fn test_noop_callbacks() {
+        let cb = ScoreCallbacks::noop();
+        let overlay = test_overlay(1);
+        let event = SwarmScoringEvent::ConnectionSuccess {
+            latency: Some(Duration::from_millis(50)),
+        };
+
+        // Should not panic
+        (cb.on_score_changed)(&overlay, 0.0, 1.0, &event);
+        (cb.on_score_warning)(&overlay, -60.0);
+        (cb.on_should_ban)(&overlay, -101.0, "test");
+        (cb.on_severe_event)(&overlay, &event);
     }
 
-    impl ScoreObserver for TestObserver {
-        fn on_score_changed(
-            &self,
-            _overlay: &OverlayAddress,
-            _old: f64,
-            _new: f64,
-            _event: &SwarmScoringEvent,
-        ) {
-            self.changes.fetch_add(1, Ordering::Relaxed);
-        }
+    #[test]
+    fn test_counting_callbacks() {
+        let changes = Arc::new(AtomicU32::new(0));
+        let warnings = Arc::new(AtomicU32::new(0));
+        let bans = Arc::new(AtomicU32::new(0));
 
-        fn on_score_warning(&self, _overlay: &OverlayAddress, _score: f64) {
-            self.warnings.fetch_add(1, Ordering::Relaxed);
-        }
+        let cb = ScoreCallbacks {
+            on_score_changed: {
+                let c = Arc::clone(&changes);
+                Box::new(move |_, _, _, _| { c.fetch_add(1, Ordering::Relaxed); })
+            },
+            on_score_warning: {
+                let w = Arc::clone(&warnings);
+                Box::new(move |_, _| { w.fetch_add(1, Ordering::Relaxed); })
+            },
+            on_should_ban: {
+                let b = Arc::clone(&bans);
+                Box::new(move |_, _, _| { b.fetch_add(1, Ordering::Relaxed); })
+            },
+            on_severe_event: Box::new(|_, _| {}),
+        };
 
-        fn on_should_ban(&self, _overlay: &OverlayAddress, _score: f64, _reason: &str) {
-            self.bans.fetch_add(1, Ordering::Relaxed);
-        }
+        let overlay = test_overlay(1);
+        let event = SwarmScoringEvent::ConnectionSuccess { latency: None };
 
-        fn on_severe_event(&self, _overlay: &OverlayAddress, _event: &SwarmScoringEvent) {
-            self.severe.fetch_add(1, Ordering::Relaxed);
-        }
+        (cb.on_score_changed)(&overlay, 0.0, 1.0, &event);
+        (cb.on_score_changed)(&overlay, 1.0, 2.0, &event);
+        (cb.on_score_warning)(&overlay, -60.0);
+        (cb.on_should_ban)(&overlay, -101.0, "misbehaving");
+
+        assert_eq!(changes.load(Ordering::Relaxed), 2);
+        assert_eq!(warnings.load(Ordering::Relaxed), 1);
+        assert_eq!(bans.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -229,33 +258,33 @@ mod tests {
     }
 
     #[test]
-    fn test_observer_notifications() {
-        let observer = TestObserver::new();
+    fn test_callback_notifications() {
+        let (cb, changes, _, _, _) = counting_callbacks();
         let config = Arc::new(SwarmScoringConfig::default());
-        let score = SwarmPeerScore::new(test_overlay(1), PeerScore::new(), config, Arc::clone(&observer) as _);
+        let score = SwarmPeerScore::new(test_overlay(1), PeerScore::new(), config, cb);
 
         score.record_connection_success(None);
         score.record_connection_timeout();
 
-        assert_eq!(observer.changes.load(Ordering::Relaxed), 2);
+        assert_eq!(changes.load(Ordering::Relaxed), 2);
     }
 
     #[test]
     fn test_severe_event_notification() {
-        let observer = TestObserver::new();
+        let (cb, _, _, _, severe) = counting_callbacks();
         let config = Arc::new(SwarmScoringConfig::default());
-        let score = SwarmPeerScore::new(test_overlay(1), PeerScore::new(), config, Arc::clone(&observer) as _);
+        let score = SwarmPeerScore::new(test_overlay(1), PeerScore::new(), config, cb);
 
         score.record_malicious_behavior();
 
-        assert_eq!(observer.severe.load(Ordering::Relaxed), 1);
+        assert_eq!(severe.load(Ordering::Relaxed), 1);
     }
 
     #[test]
     fn test_warning_notification() {
-        let observer = TestObserver::new();
+        let (cb, _, warnings, _, _) = counting_callbacks();
         let config = SwarmScoringConfig::builder().warn_threshold(-10.0).build();
-        let score = SwarmPeerScore::new(test_overlay(1), PeerScore::new(), Arc::new(config), Arc::clone(&observer) as _);
+        let score = SwarmPeerScore::new(test_overlay(1), PeerScore::new(), Arc::new(config), cb);
 
         // Drop below warning threshold
         for _ in 0..10 {
@@ -263,21 +292,21 @@ mod tests {
         }
 
         // Should only warn once
-        assert_eq!(observer.warnings.load(Ordering::Relaxed), 1);
+        assert_eq!(warnings.load(Ordering::Relaxed), 1);
     }
 
     #[test]
     fn test_ban_notification() {
-        let observer = TestObserver::new();
+        let (cb, _, _, bans, _) = counting_callbacks();
         let config = SwarmScoringConfig::builder().ban_threshold(-20.0).build();
-        let score = SwarmPeerScore::new(test_overlay(1), PeerScore::new(), Arc::new(config), Arc::clone(&observer) as _);
+        let score = SwarmPeerScore::new(test_overlay(1), PeerScore::new(), Arc::new(config), cb);
 
         // Drop below ban threshold
         for _ in 0..15 {
             score.record_connection_timeout();
         }
 
-        assert!(observer.bans.load(Ordering::Relaxed) >= 1);
+        assert!(bans.load(Ordering::Relaxed) >= 1);
         assert!(score.should_ban());
     }
 
@@ -291,9 +320,9 @@ mod tests {
 
         let score2 = SwarmPeerScore::new(
             test_overlay(2),
-            PeerScore::from(&snapshot),
+            snapshot,
             Arc::new(SwarmScoringConfig::default()),
-            Arc::new(crate::callbacks::NoOpScoreObserver),
+            ScoreCallbacks::noop(),
         );
 
         assert!((score.score() - score2.score()).abs() < 0.01);

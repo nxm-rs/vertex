@@ -11,7 +11,8 @@ repository.workspace = true
 [dependencies]
 # Network primitives
 vertex-net-local = { workspace = true }
-vertex-net-peer-store = { workspace = true }
+vertex-net-peer-backoff = { workspace = true }
+vertex-net-peer-store = { workspace = true, features = ["test-utils"] }
 
 # Swarm-specific
 vertex-swarm-api = { workspace = true }
@@ -26,12 +27,15 @@ vertex-tasks = { workspace = true }
 vertex-observability = { workspace = true }
 metrics = { workspace = true }
 
+# Storage
+vertex-storage = { workspace = true, features = ["nectar", "alloy"] }
+alloy-primitives = { workspace = true }
+
 # Core
 libp2p = { workspace = true }
 parking_lot = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_json = { version = "1.0", features = ["std"] }
 thiserror = { workspace = true }
 
 # Concurrency
@@ -43,4 +47,6 @@ tokio = { workspace = true, features = ["time", "sync"] }
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
 tempfile = "3"
+postcard = { workspace = true }
 vertex-swarm-test-utils = { workspace = true }
+vertex-storage-redb = { workspace = true }

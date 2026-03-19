@@ -5,15 +5,11 @@
 //! - Multiaddr serialization (Bee-compatible)
 //! - Signature verification and overlay validation
 
-mod error;
 mod serde_multiaddr;
-mod util;
 
-pub use error::{MultiAddrError, SwarmPeerError};
 pub use serde_multiaddr::{deserialize_multiaddrs, serialize_multiaddrs};
-pub use util::arbitrary_multiaddr;
 
-use util::generate_sign_message;
+use bytes::{Bytes, BytesMut};
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_primitives::compute_overlay;
 use vertex_swarm_spec::SwarmSpec;
@@ -27,13 +23,34 @@ use alloy_signer::{Signer, SignerSync};
 use libp2p::Multiaddr;
 use vertex_net_local::{IpCapability, classify_multiaddr};
 
-// Re-export for consumers
-pub use vertex_net_local::IpCapability as SwarmPeerIpCapability;
 pub use vertex_net_local::AddressScope;
 
-/// Resolve an overlay address to a previously verified SwarmPeer.
-pub trait SwarmPeerResolver: Send + Sync + 'static {
-    fn get_swarm_peer(&self, overlay: &SwarmAddress) -> Option<SwarmPeer>;
+/// Errors from multiaddr serialization/deserialization.
+#[derive(Debug, thiserror::Error)]
+pub enum MultiAddrError {
+    #[error("empty byte slice")]
+    EmptyData,
+    #[error("failed to read varint: {0}")]
+    VarintError(#[from] std::io::Error),
+    #[error("inconsistent data: expected {expected} bytes, got {actual}")]
+    InconsistentLength { expected: u64, actual: usize },
+    #[error("failed to parse multiaddr: {0}")]
+    InvalidMultiaddr(#[from] libp2p::multiaddr::Error),
+}
+
+/// Errors from [`SwarmPeer`] construction.
+#[derive(Debug, thiserror::Error)]
+pub enum SwarmPeerError {
+    #[error("invalid signature: {0}")]
+    InvalidSignature(#[from] alloy_primitives::SignatureError),
+    #[error("signer error: {0}")]
+    SignerError(#[from] alloy_signer::Error),
+    #[error("computed overlay does not match claimed overlay")]
+    InvalidOverlay,
+    #[error("at least one multiaddr is required")]
+    NoMultiaddrs,
+    #[error("invalid multiaddr encoding: {0}")]
+    InvalidMultiaddrEncoding(#[from] MultiAddrError),
 }
 
 /// Verifiable peer identity with multiaddrs, signature, and overlay address.
@@ -227,6 +244,43 @@ fn recover_signer(
     Ok(signature.recover_address_from_msg(prehash)?)
 }
 
+/// Generate the message to sign for handshake verification.
+///
+/// Format: `"bee-handshake-" || multiaddr_bytes || overlay || network_id(BE)`
+fn generate_sign_message(
+    multiaddr_bytes: &[u8],
+    overlay: &SwarmAddress,
+    network_id: u64,
+) -> Bytes {
+    let mut message = BytesMut::new();
+    message.extend_from_slice(b"bee-handshake-");
+    message.extend_from_slice(multiaddr_bytes);
+    message.extend_from_slice(overlay.as_ref());
+    message.extend_from_slice(network_id.to_be_bytes().as_slice());
+    message.freeze()
+}
+
+/// Generate a random valid multiaddr for property testing.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn arbitrary_multiaddr(u: &mut arbitrary::Unstructured) -> arbitrary::Result<Multiaddr> {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    let use_ipv6: bool = u.arbitrary()?;
+    let port: u16 = u.int_in_range(1025..=65535)?;
+
+    let addr = if use_ipv6 {
+        let bytes: [u8; 16] = u.arbitrary()?;
+        let ipv6 = Ipv6Addr::from(bytes);
+        format!("/ip6/{}/tcp/{}", ipv6, port)
+    } else {
+        let bytes: [u8; 4] = u.arbitrary()?;
+        let ipv4 = Ipv4Addr::from(bytes);
+        format!("/ip4/{}/tcp/{}", ipv4, port)
+    };
+
+    addr.parse().map_err(|_| arbitrary::Error::IncorrectFormat)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,8 +444,8 @@ mod tests {
 
         let peer1 = SwarmPeer::from_identity(&identity, vec![v4_addr]).unwrap();
 
-        let json = serde_json::to_string(&peer1).unwrap();
-        let peer2: SwarmPeer = serde_json::from_str(&json).unwrap();
+        let bytes = postcard::to_allocvec(&peer1).unwrap();
+        let peer2: SwarmPeer = postcard::from_bytes(&bytes).unwrap();
 
         assert_eq!(peer1.ip_capability(), peer2.ip_capability());
         assert!(peer2.ip_capability().supports_ipv4());

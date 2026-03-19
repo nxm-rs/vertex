@@ -75,6 +75,7 @@ scoring_events! {
 
 impl SwarmScoringEvent {
     /// Extract latency if this event includes timing information.
+    #[must_use]
     pub fn latency(&self) -> Option<Duration> {
         match self {
             Self::ConnectionSuccess { latency } => *latency,
@@ -85,22 +86,19 @@ impl SwarmScoringEvent {
         }
     }
 
-    /// Check if this is a connection success event.
     pub fn is_connection_success(&self) -> bool {
         matches!(self, Self::ConnectionSuccess { .. })
     }
 
-    /// Check if this is a connection timeout event.
     pub fn is_connection_timeout(&self) -> bool {
         matches!(self, Self::ConnectionTimeout)
     }
 
-    /// Check if this is a protocol error.
     pub fn is_protocol_error(&self) -> bool {
         matches!(self, Self::ProtocolError)
     }
 
-    /// Check if this event should trigger a ban check.
+    /// True for events that should trigger an immediate ban check.
     pub fn is_severe(&self) -> bool {
         matches!(
             self,
@@ -113,13 +111,11 @@ impl SwarmScoringEvent {
 }
 
 impl SwarmScoringConfig {
-    /// Create a new config with default values.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Create a builder for custom configuration.
     #[must_use]
     pub fn builder() -> SwarmScoringConfigBuilder {
         SwarmScoringConfigBuilder::new()
@@ -155,13 +151,12 @@ impl SwarmScoringConfig {
             .build()
     }
 
-    /// Check if a score should trigger a ban.
     #[must_use]
     pub fn should_ban(&self, score: f64) -> bool {
         score < self.ban_threshold
     }
 
-    /// Check if a score is in warning territory.
+    /// True if score is below warning threshold but above ban threshold.
     #[must_use]
     pub fn should_warn(&self, score: f64) -> bool {
         score < self.warn_threshold && score >= self.ban_threshold
@@ -221,8 +216,8 @@ mod tests {
     #[test]
     fn test_serialization() {
         let config = SwarmScoringConfig::default();
-        let json = serde_json::to_string(&config).unwrap();
-        let restored: SwarmScoringConfig = serde_json::from_str(&json).unwrap();
+        let bytes = postcard::to_allocvec(&config).unwrap();
+        let restored: SwarmScoringConfig = postcard::from_bytes(&bytes).unwrap();
         assert!((config.connection_success() - restored.connection_success()).abs() < 0.001);
     }
 

@@ -19,14 +19,11 @@ vertex-swarm-api = { workspace = true }
 vertex-swarm-primitives = { workspace = true }
 
 # Core
-auto_impl = { workspace = true }
 paste = { workspace = true }
-parking_lot = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-tracing = { workspace = true }
 
 [dev-dependencies]
-serde_json = "1.0"
+postcard = { workspace = true }
 
 [lints]
 workspace = true

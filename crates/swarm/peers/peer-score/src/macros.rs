@@ -1,20 +1,7 @@
 //! Internal macro for generating scoring events and config.
 
-/// Generates [`SwarmScoringEvent`], [`SwarmScoringConfig`], and
-/// [`SwarmScoringConfigBuilder`] from a single declaration table.
-///
-/// Each entry maps an event variant (with optional fields) to a config
-/// field name and its default weight. Extra config fields (e.g. thresholds)
-/// are declared after a `;` separator.
-///
-/// The macro produces:
-/// - The event enum with doc comments and variant fields
-/// - `default_weight()` on the event
-/// - The config struct with one `f64` field per event, plus extra fields
-/// - `Default` impl using the declared defaults
-/// - A getter for every field
-/// - `weight_for()` dispatching events to their config field
-/// - A builder struct with a fluent setter per field
+/// Generates `SwarmScoringEvent`, `SwarmScoringConfig`, and `SwarmScoringConfigBuilder`
+/// from a single declaration table mapping event variants to config fields and defaults.
 macro_rules! scoring_events {
     (
         $(

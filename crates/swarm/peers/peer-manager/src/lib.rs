@@ -2,24 +2,18 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-mod ban;
-mod data;
+mod db_store;
 mod entry;
 mod manager;
 mod proximity_index;
-mod pruner;
+mod score_distribution;
+mod tasks;
+mod write_buffer;
 
-pub use data::SwarmPeerData;
-pub use manager::{PeerManager, PeerManagerStats};
-pub use proximity_index::{ProximityIndex, ProximityIndexCacheStats};
-pub use pruner::{PruneConfig, spawn_prune_task};
+pub use db_store::DbPeerStore;
+pub use entry::StoredPeer;
+pub use manager::PeerManager;
+pub use proximity_index::{AddError, ProximityIndex};
+pub use score_distribution::ScoreDistribution;
+pub use tasks::{PersistenceConfig, PurgeConfig, spawn_persistence_task, spawn_purge_task};
 
-pub use vertex_swarm_peer_score::SwarmScoringConfig;
-
-/// Histogram bucket configurations for peer manager metrics.
-pub const HISTOGRAM_BUCKETS: &[vertex_observability::HistogramBucketConfig] = &[
-    vertex_observability::HistogramBucketConfig {
-        suffix: "peer_manager_score_distribution",
-        buckets: vertex_observability::PEER_SCORE,
-    },
-];
