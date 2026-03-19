@@ -8,7 +8,8 @@ fmt-check:
     cargo fmt --check
 
 clippy:
-    cargo clippy --all-targets --all-features -- -D warnings
+    cargo clippy --lib --all-features -- -D warnings
+    cargo clippy --tests --benches --all-features -- -D warnings -A clippy::unwrap_used -A clippy::expect_used
 
 test:
     cargo test --all-features

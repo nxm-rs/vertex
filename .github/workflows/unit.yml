@@ -62,7 +62,7 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Run tests
-        run: cargo nextest run --workspace --no-tests=warn
+        run: cargo nextest run --workspace --all-features --no-tests=warn
 
   doc:
     name: doc
@@ -79,7 +79,7 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Run doctests
-        run: cargo test --doc --workspace
+        run: cargo test --doc --workspace --all-features
 
   ci-success:
     name: ci success
