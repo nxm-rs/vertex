@@ -56,13 +56,13 @@ const RESPONDER_STALE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Configuration for the client handler.
 #[derive(Debug, Clone)]
-pub struct Config {
+pub(crate) struct Config {
     /// Timeout for protocol operations.
-    pub timeout: Duration,
+    pub(crate) timeout: Duration,
     /// Maximum pending commands before dropping new ones.
-    pub max_pending_commands: usize,
+    pub(crate) max_pending_commands: usize,
     /// Maximum pending events before dropping new ones.
-    pub max_pending_events: usize,
+    pub(crate) max_pending_events: usize,
 }
 
 impl Default for Config {
@@ -77,7 +77,7 @@ impl Default for Config {
 
 /// Commands sent from the behaviour to the handler.
 #[derive(Debug)]
-pub enum HandlerCommand {
+pub(crate) enum HandlerCommand {
     /// Activate the handler after handshake completion.
     Activate {
         /// The peer's overlay address.
@@ -142,7 +142,7 @@ pub enum HandlerCommand {
 
 /// Events emitted by the handler to the behaviour.
 #[derive(Debug)]
-pub enum HandlerEvent {
+pub(crate) enum HandlerEvent {
     /// Handler has been activated.
     Activated {
         /// The peer's overlay address.
@@ -261,7 +261,7 @@ struct StoredResponse {
 /// Swarm client connection handler.
 ///
 /// Manages multiple client protocols on a single peer connection.
-pub struct ClientHandler {
+pub(crate) struct ClientHandler {
     config: Config,
     state: State,
     /// Counter for request IDs.
@@ -292,7 +292,7 @@ impl ClientHandler {
     }
 
     /// Create a new handler in dormant state.
-    pub fn new(config: Config) -> Self {
+    pub(crate) fn new(config: Config) -> Self {
         Self {
             config,
             state: State::Dormant,

@@ -44,12 +44,9 @@
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
 
-#[allow(unreachable_pub)]
 mod behaviour;
 mod events;
-#[allow(unreachable_pub)]
 mod handler;
-#[allow(unreachable_pub)]
 pub(crate) mod upgrade;
 
 pub(crate) use behaviour::{ClientBehaviour, Config as BehaviourConfig};
