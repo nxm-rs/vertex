@@ -817,10 +817,18 @@ impl ClientHandler {
             }
             (
                 ClientOutboundOutput::Pseudosettle(ack),
-                ClientOutboundInfo::Pseudosettle { amount: _ },
+                ClientOutboundInfo::Pseudosettle { amount },
             ) => {
                 if let Some(overlay) = self.overlay() {
-                    debug!(%overlay, ack_amount = %ack.amount, "Pseudosettle sent");
+                    if ack.amount != amount {
+                        warn!(
+                            %overlay,
+                            sent = %amount,
+                            acked = %ack.amount,
+                            "Pseudosettle ack amount mismatch"
+                        );
+                    }
+                    debug!(%overlay, %amount, ack_amount = %ack.amount, "Pseudosettle sent");
                     self.pending_events
                         .push_back(HandlerEvent::PseudosettleSent { overlay, ack });
                 }
