@@ -1,13 +1,15 @@
 //! Storer error types.
 
 use nectar_primitives::ChunkAddress;
+use vertex_storage::DatabaseError;
 
 /// Errors from storer operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum StorerError {
     /// Database error.
     #[error("database error: {0}")]
-    Database(String),
+    Database(#[from] DatabaseError),
 
     /// Chunk not found.
     #[error("chunk not found: {0}")]
@@ -23,39 +25,47 @@ pub enum StorerError {
 
     /// Serialization error.
     #[error("serialization error: {0}")]
-    Serialization(String),
+    Serialization(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     /// IO error.
     #[error("io error: {0}")]
-    Io(String),
+    Io(#[from] std::io::Error),
+}
+
+impl StorerError {
+    /// Record this error in metrics.
+    pub fn record(&self) {
+        let reason: &'static str = self.into();
+        metrics::counter!("storer_errors_total", "reason" => reason).increment(1);
+    }
 }
 
 impl From<redb::DatabaseError> for StorerError {
     fn from(err: redb::DatabaseError) -> Self {
-        StorerError::Database(err.to_string())
+        StorerError::Database(DatabaseError::open_err(err))
     }
 }
 
 impl From<redb::TransactionError> for StorerError {
     fn from(err: redb::TransactionError) -> Self {
-        StorerError::Database(err.to_string())
+        StorerError::Database(DatabaseError::Other(err.to_string()))
     }
 }
 
 impl From<redb::TableError> for StorerError {
     fn from(err: redb::TableError) -> Self {
-        StorerError::Database(err.to_string())
+        StorerError::Database(DatabaseError::Other(err.to_string()))
     }
 }
 
 impl From<redb::StorageError> for StorerError {
     fn from(err: redb::StorageError) -> Self {
-        StorerError::Database(err.to_string())
+        StorerError::Database(DatabaseError::Other(err.to_string()))
     }
 }
 
 impl From<redb::CommitError> for StorerError {
     fn from(err: redb::CommitError) -> Self {
-        StorerError::Database(err.to_string())
+        StorerError::Database(DatabaseError::commit_err(err))
     }
 }

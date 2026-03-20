@@ -6,7 +6,8 @@ use std::string::String;
 use vertex_swarm_primitives::OverlayAddress;
 
 /// Error type for Swarm API operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum SwarmError {
     /// Chunk not found in the network.
     #[error("chunk not found: {address}")]
@@ -36,6 +37,9 @@ pub enum SwarmError {
     Storage {
         /// Description of the storage failure.
         message: String,
+        /// Original error, if available.
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
     /// Network operation failed.
@@ -43,6 +47,9 @@ pub enum SwarmError {
     Network {
         /// Description of the network failure.
         message: String,
+        /// Original error, if available.
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
     /// Peer disconnected or unavailable.
@@ -70,6 +77,9 @@ pub enum SwarmError {
     PaymentRequired {
         /// Description of the payment requirement.
         reason: String,
+        /// Original error, if available.
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
     /// Invalid chunk data.
@@ -86,6 +96,9 @@ pub enum SwarmError {
     Accounting {
         /// Description of the accounting failure.
         message: String,
+        /// Original error, if available.
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
     /// Internal error.
@@ -93,10 +106,99 @@ pub enum SwarmError {
     Internal {
         /// Description of the internal failure.
         message: String,
+        /// Original error, if available.
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 }
 
 impl SwarmError {
+    /// Create a storage error from a source error.
+    pub fn storage(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::Storage {
+            message: source.to_string(),
+            source: Some(Box::new(source)),
+        }
+    }
+
+    /// Create a storage error from a message string.
+    pub fn storage_msg(message: impl Into<String>) -> Self {
+        Self::Storage {
+            message: message.into(),
+            source: None,
+        }
+    }
+
+    /// Create a network error from a source error.
+    pub fn network(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::Network {
+            message: source.to_string(),
+            source: Some(Box::new(source)),
+        }
+    }
+
+    /// Create a network error from a message string.
+    pub fn network_msg(message: impl Into<String>) -> Self {
+        Self::Network {
+            message: message.into(),
+            source: None,
+        }
+    }
+
+    /// Create an accounting error from a source error.
+    pub fn accounting(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::Accounting {
+            message: source.to_string(),
+            source: Some(Box::new(source)),
+        }
+    }
+
+    /// Create an accounting error from a message string.
+    pub fn accounting_msg(message: impl Into<String>) -> Self {
+        Self::Accounting {
+            message: message.into(),
+            source: None,
+        }
+    }
+
+    /// Create an internal error from a source error.
+    pub fn internal(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::Internal {
+            message: source.to_string(),
+            source: Some(Box::new(source)),
+        }
+    }
+
+    /// Create an internal error from a message string.
+    pub fn internal_msg(message: impl Into<String>) -> Self {
+        Self::Internal {
+            message: message.into(),
+            source: None,
+        }
+    }
+
+    /// Create a payment required error from a source error.
+    pub fn payment_required(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::PaymentRequired {
+            reason: source.to_string(),
+            source: Some(Box::new(source)),
+        }
+    }
+
+    /// Create a payment required error from a message string.
+    pub fn payment_required_msg(reason: impl Into<String>) -> Self {
+        Self::PaymentRequired {
+            reason: reason.into(),
+            source: None,
+        }
+    }
+
+    /// Record this error in metrics.
+    pub fn record(&self) {
+        let reason: &'static str = self.into();
+        metrics::counter!("swarm_errors_total", "reason" => reason).increment(1);
+    }
+
     /// Whether this error represents a transient failure that may succeed on retry.
     ///
     /// Retryable errors include network issues, peer unavailability, and accounting
@@ -154,7 +256,8 @@ impl core::fmt::Display for ConfigAddressKind {
 }
 
 /// Error type for configuration validation.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum ConfigError {
     /// Invalid multiaddress.
     #[error("invalid {kind} '{addr}': {source}")]

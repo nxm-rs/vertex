@@ -1,8 +1,9 @@
 //! Pseudosettle settlement errors.
 
 /// Errors that can occur during pseudosettle operations.
-#[derive(Debug, Clone, thiserror::Error)]
-pub enum PseudosettleError {
+#[derive(Debug, Clone, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum PseudosettleSettlementError {
     /// Service has stopped.
     #[error("pseudosettle service stopped")]
     ServiceStopped,

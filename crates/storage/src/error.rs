@@ -74,7 +74,8 @@ pub struct DatabaseWriteError {
 }
 
 /// Database error type.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum DatabaseError {
     /// Failed to open the database.
     #[error("failed to open the database: {_0}")]

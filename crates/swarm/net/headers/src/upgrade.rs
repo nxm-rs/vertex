@@ -120,7 +120,7 @@ impl<P: HeaderedInbound> InboundUpgrade<Stream> for Inbound<P> {
                         Ok(output)
                     }
                     Err(e) => {
-                        metrics.record_error();
+                        metrics.record_error("protocol_error");
                         Err(ProtocolError::Protocol(e.into()))
                     }
                 }
@@ -225,7 +225,7 @@ impl<P: HeaderedOutbound> OutboundUpgrade<Stream> for Outbound<P> {
                         Ok(output)
                     }
                     Err(e) => {
-                        metrics.record_error();
+                        metrics.record_error("protocol_error");
                         Err(ProtocolError::Protocol(e.into()))
                     }
                 }

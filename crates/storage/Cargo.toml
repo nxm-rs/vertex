@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 serde = { workspace = true, default-features = false }
+strum.workspace = true
 thiserror.workspace = true
 
 # Optional: codec impls for nectar types

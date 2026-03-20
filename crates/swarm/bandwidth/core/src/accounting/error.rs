@@ -3,7 +3,8 @@
 use vertex_swarm_primitives::OverlayAddress;
 
 /// Errors that can occur during accounting operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum AccountingError {
     /// Peer has exceeded disconnect threshold.
     #[error("peer {peer} balance {balance} exceeds disconnect threshold {threshold}")]
@@ -32,4 +33,12 @@ pub enum AccountingError {
     /// Channel closed (service stopped).
     #[error("channel closed")]
     ChannelClosed,
+}
+
+impl AccountingError {
+    /// Record this error in metrics.
+    pub fn record(&self) {
+        let reason: &'static str = self.into();
+        metrics::counter!("accounting_errors_total", "reason" => reason).increment(1);
+    }
 }

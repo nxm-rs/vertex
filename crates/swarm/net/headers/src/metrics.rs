@@ -55,6 +55,7 @@ impl ProtocolMetrics {
             "protocol" => self.protocol,
             "direction" => self.direction,
             "outcome" => outcome::SUCCESS,
+            "reason" => "none",
         )
         .increment(1);
 
@@ -68,12 +69,13 @@ impl ProtocolMetrics {
         self.outcome_recorded = true;
     }
 
-    pub(crate) fn record_error(&mut self) {
+    pub(crate) fn record_error(&mut self, reason: &'static str) {
         counter!(
             "protocol_exchange_outcomes_total",
             "protocol" => self.protocol,
             "direction" => self.direction,
             "outcome" => outcome::FAILURE,
+            "reason" => reason,
         )
         .increment(1);
 
@@ -86,6 +88,7 @@ impl ProtocolMetrics {
 
         self.outcome_recorded = true;
     }
+
 }
 
 impl Drop for ProtocolMetrics {
@@ -96,6 +99,7 @@ impl Drop for ProtocolMetrics {
                 "protocol" => self.protocol,
                 "direction" => self.direction,
                 "outcome" => "unknown",
+                "reason" => "unknown",
             )
             .increment(1);
         }

@@ -18,6 +18,7 @@ vertex-tasks = { workspace = true }
 alloy-primitives = { workspace = true }
 async-trait = { workspace = true }
 parking_lot = { workspace = true }
+strum = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }

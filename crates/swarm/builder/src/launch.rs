@@ -181,7 +181,7 @@ impl SwarmLaunchConfig for BootnodeConfig {
         let node = BootNode::builder(self.identity().clone())
             .build(self.network(), peer_store, score_store)
             .await
-            .map_err(|e| SwarmNodeError::Build(e.to_string()))?;
+            .map_err(|e| SwarmNodeError::Build(e.into()))?;
 
         let topology = node.topology_handle().clone();
         let providers = BootnodeRpcProviders::new(topology);
@@ -221,7 +221,7 @@ impl SwarmLaunchConfig for ClientConfig {
         let (node, client_service, client_handle) = ClientNode::builder(self.identity().clone())
             .build(self.network(), peer_store, score_store)
             .await
-            .map_err(|e| SwarmNodeError::Build(e.to_string()))?;
+            .map_err(|e| SwarmNodeError::Build(e.into()))?;
 
         let topology = node.topology_handle().clone();
         let chunk_provider = NetworkChunkProvider::new(client_handle, topology.clone());
@@ -273,7 +273,7 @@ impl SwarmLaunchConfig for StorerConfig {
         let (node, client_service, client_handle) = ClientNode::builder(self.identity().clone())
             .build(self.network(), peer_store, score_store)
             .await
-            .map_err(|e| SwarmNodeError::Build(e.to_string()))?;
+            .map_err(|e| SwarmNodeError::Build(e.into()))?;
 
         let topology = node.topology_handle().clone();
         let chunk_provider = NetworkChunkProvider::new(client_handle, topology.clone());

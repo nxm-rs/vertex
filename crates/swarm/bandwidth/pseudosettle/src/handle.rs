@@ -3,7 +3,7 @@
 use tokio::sync::{mpsc, oneshot};
 use vertex_swarm_primitives::OverlayAddress;
 
-use crate::error::PseudosettleError;
+use crate::error::PseudosettleSettlementError;
 use crate::service::PseudosettleCommand;
 
 /// Cloneable handle for requesting settlements from the service.
@@ -23,7 +23,7 @@ impl PseudosettleHandle {
         &self,
         peer: OverlayAddress,
         amount: u64,
-    ) -> Result<u64, PseudosettleError> {
+    ) -> Result<u64, PseudosettleSettlementError> {
         let (tx, rx) = oneshot::channel();
 
         self.command_tx
@@ -32,8 +32,8 @@ impl PseudosettleHandle {
                 amount,
                 response_tx: tx,
             })
-            .map_err(|_| PseudosettleError::ServiceStopped)?;
+            .map_err(|_| PseudosettleSettlementError::ServiceStopped)?;
 
-        rx.await.map_err(|_| PseudosettleError::ServiceStopped)?
+        rx.await.map_err(|_| PseudosettleSettlementError::ServiceStopped)?
     }
 }
