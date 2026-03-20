@@ -15,13 +15,14 @@ use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 use vertex_swarm_peer_manager::PeerManager;
 use vertex_swarm_peer_manager::ProximityIndex;
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
+use vertex_tasks::TaskExecutor;
 
 use super::{
     CandidateSelector, CandidateSnapshot, DepthAwareLimits, KademliaConfig, LimitsSnapshot,
     RoutingCapacity, SwarmRouting,
     candidate_queues::CandidateQueues,
-    evaluator_task::{RoutingEvaluatorHandle, spawn_evaluator},
     select_balanced_candidates, select_neighborhood_candidates,
+    task::{RoutingEvaluatorHandle, spawn_evaluator},
 };
 use crate::metrics::{phase, record_phase_transition};
 
@@ -535,8 +536,11 @@ impl<I: SwarmIdentity> SwarmRouting<I> for KademliaRouting<I> {
 // and topology behaviour within the routing module.
 impl<I: SwarmIdentity + 'static> KademliaRouting<I> {
     /// Spawn background evaluator. Returns handle for triggering evaluation.
-    pub(crate) fn spawn_evaluator(self: &Arc<Self>) -> Result<RoutingEvaluatorHandle, String> {
-        spawn_evaluator(self.clone())
+    pub(crate) fn spawn_evaluator(
+        self: &Arc<Self>,
+        executor: &TaskExecutor,
+    ) -> RoutingEvaluatorHandle {
+        spawn_evaluator(self.clone(), executor)
     }
 
     /// Drain all pending candidates (called from poll loop). O(bins).

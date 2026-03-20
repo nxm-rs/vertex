@@ -4,10 +4,10 @@ mod args;
 mod candidate_queues;
 mod candidates;
 mod config;
-mod evaluator_task;
 mod limits;
 pub(crate) mod peer_selection;
 mod routing;
+mod task;
 
 pub use args::RoutingArgs;
 pub(crate) use candidates::{
@@ -15,10 +15,10 @@ pub(crate) use candidates::{
     select_neighborhood_candidates,
 };
 pub use config::KademliaConfig;
-pub(crate) use evaluator_task::RoutingEvaluatorHandle;
 pub(crate) use limits::DepthAwareLimits;
 pub(crate) use limits::LimitsSnapshot;
 pub(crate) use routing::KademliaRouting;
+pub(crate) use task::RoutingEvaluatorHandle;
 
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};

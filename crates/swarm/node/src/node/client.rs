@@ -353,7 +353,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
         }
 
         let executor = TaskExecutor::current();
-        let _stats_handle = super::stats::spawn_stats_task(
+        super::task::spawn_stats_task(
             Arc::new(base.topology_handle.clone()),
             Arc::clone(base.topology_handle.peer_manager().score_distribution()),
             super::stats::StatsConfig::default(),

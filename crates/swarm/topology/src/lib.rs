@@ -20,6 +20,7 @@ mod protocol_handlers;
 mod composed;
 mod error;
 mod gossip;
+mod tasks;
 
 #[cfg(test)]
 pub(crate) mod test_support;

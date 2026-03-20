@@ -6,6 +6,7 @@ use std::time::Duration;
 use tokio::sync::Notify;
 use tracing::debug;
 use vertex_swarm_api::SwarmIdentity;
+use vertex_tasks::{GracefulShutdown, TaskExecutor};
 
 use super::routing::KademliaRouting;
 
@@ -29,12 +30,18 @@ struct RoutingEvaluatorTask<I: SwarmIdentity> {
 }
 
 impl<I: SwarmIdentity + 'static> RoutingEvaluatorTask<I> {
-    async fn run(self) {
+    async fn run(self, shutdown: GracefulShutdown) {
         let debounce = Duration::from_millis(100);
         let periodic = Duration::from_secs(5);
+        let mut shutdown = std::pin::pin!(shutdown);
 
         loop {
             tokio::select! {
+                guard = &mut shutdown => {
+                    debug!("routing evaluator shutting down");
+                    drop(guard);
+                    return;
+                }
                 _ = self.notify.notified() => {
                     tokio::time::sleep(debounce).await;
                 }
@@ -48,7 +55,8 @@ impl<I: SwarmIdentity + 'static> RoutingEvaluatorTask<I> {
 /// Spawn the routing evaluator task. Returns a handle for triggering evaluation.
 pub(crate) fn spawn_evaluator<I: SwarmIdentity + 'static>(
     routing: Arc<KademliaRouting<I>>,
-) -> Result<RoutingEvaluatorHandle, String> {
+    executor: &TaskExecutor,
+) -> RoutingEvaluatorHandle {
     let notify = Arc::new(Notify::new());
     let handle = RoutingEvaluatorHandle {
         notify: notify.clone(),
@@ -56,21 +64,9 @@ pub(crate) fn spawn_evaluator<I: SwarmIdentity + 'static>(
 
     let task = RoutingEvaluatorTask { routing, notify };
 
-    let executor = vertex_tasks::TaskExecutor::try_current()
-        .map_err(|e| format!("No task executor available: {e}"))?;
+    executor.spawn_critical_with_graceful_shutdown_signal("topology.evaluator", move |shutdown| {
+        task.run(shutdown)
+    });
 
-    executor.spawn_critical_with_graceful_shutdown_signal(
-        "topology.evaluator",
-        |shutdown| async move {
-            tokio::select! {
-                _ = task.run() => {}
-                guard = shutdown => {
-                    debug!("routing evaluator shutting down");
-                    drop(guard);
-                }
-            }
-        },
-    );
-
-    Ok(handle)
+    handle
 }

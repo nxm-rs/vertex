@@ -1,15 +1,12 @@
-//! Node statistics reporting task.
+//! Node statistics configuration and reporting.
 //!
-//! Provides periodic logging of node health and topology statistics.
+//! Provides configuration and logging for node health and topology statistics.
+//! The background task that drives periodic reporting lives in [`super::task`].
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::task::JoinHandle;
 use tracing::info;
 use vertex_swarm_api::{SwarmTopologyState, SwarmTopologyStats};
-use vertex_swarm_peer_manager::ScoreDistribution;
-use vertex_tasks::TaskExecutor;
 
 const DEFAULT_STATS_INTERVAL: Duration = Duration::from_secs(20);
 
@@ -33,33 +30,7 @@ impl StatsConfig {
     }
 }
 
-/// Spawns a background task that periodically reports node statistics.
-pub fn spawn_stats_task<T: SwarmTopologyState + SwarmTopologyStats + 'static>(
-    topology: Arc<T>,
-    score_distribution: Arc<ScoreDistribution>,
-    config: StatsConfig,
-    executor: &TaskExecutor,
-) -> JoinHandle<()> {
-    executor.spawn_with_graceful_shutdown_signal("node.stats", |shutdown| async move {
-        let mut shutdown = std::pin::pin!(shutdown);
-
-        loop {
-            tokio::select! {
-                guard = &mut shutdown => {
-                    tracing::debug!("stats task shutting down");
-                    drop(guard);
-                    break;
-                }
-                _ = tokio::time::sleep(config.interval) => {
-                    log_stats(&*topology);
-                    score_distribution.push_gauges();
-                }
-            }
-        }
-    })
-}
-
-fn log_stats<T: SwarmTopologyState + SwarmTopologyStats>(topology: &T) {
+pub(crate) fn log_stats<T: SwarmTopologyState + SwarmTopologyStats>(topology: &T) {
     let connected = topology.connected_peers_count();
     let routing = topology.routing_peers_count();
     let stored = topology.stored_peers_count();

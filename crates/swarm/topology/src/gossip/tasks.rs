@@ -667,6 +667,7 @@ pub(crate) fn spawn_gossip_task<I: SwarmIdentity>(
     connection_registry: Arc<ConnectionRegistry>,
     evaluator_handle: RoutingEvaluatorHandle,
     local_capabilities: Arc<vertex_net_local::LocalCapabilities>,
+    executor: &vertex_tasks::TaskExecutor,
 ) -> Result<super::GossipHandle, Box<dyn std::error::Error + Send + Sync>> {
     let (input_tx, input_rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
     let (output_tx, output_rx) = mpsc::channel(OUTPUT_CHANNEL_CAPACITY);
@@ -730,9 +731,6 @@ pub(crate) fn spawn_gossip_task<I: SwarmIdentity>(
         cancelled_exchanges: HashSet::new(),
         evaluator_handle,
     };
-
-    let executor = vertex_tasks::TaskExecutor::try_current()
-        .map_err(|e| format!("No task executor available: {e}"))?;
 
     executor.spawn_critical_with_graceful_shutdown_signal(
         "topology.gossip",

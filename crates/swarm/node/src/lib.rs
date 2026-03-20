@@ -32,4 +32,5 @@ pub use protocol::{ClientCommand, ClientEvent, PseudosettleEvent};
 pub use swarm_client::{BootnodeClient, Client, FullClient};
 
 pub use bootnodes::BootnodeProvider;
-pub use node::stats::{StatsConfig, spawn_stats_task};
+pub use node::stats::StatsConfig;
+pub use node::task::spawn_stats_task;

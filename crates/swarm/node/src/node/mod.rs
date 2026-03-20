@@ -13,6 +13,7 @@ mod client;
 mod error;
 pub(crate) mod stats;
 mod storer;
+pub(crate) mod task;
 
 pub use base::BaseNode;
 pub use bootnode::{BootNode, BootNodeBuilder};

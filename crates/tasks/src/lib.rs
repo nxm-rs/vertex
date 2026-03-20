@@ -8,9 +8,10 @@
 use std::{
     any::Any,
     fmt::{Display, Formatter},
-    pin::{Pin, pin},
+    pin::Pin,
     sync::{Arc, OnceLock},
     task::{Context, Poll, ready},
+    time::Duration,
 };
 
 use dyn_clone::DynClone;
@@ -488,7 +489,7 @@ impl TaskExecutor {
     {
         let on_shutdown = self.on_shutdown.clone();
         let fut = async move {
-            let fut = pin!(fut);
+            let fut = std::pin::pin!(fut);
             let _ = select(on_shutdown, fut).await;
         };
         self.spawn_task_as(fut, TaskKind::Default, "<unnamed>", false)
@@ -504,7 +505,7 @@ impl TaskExecutor {
     {
         let on_shutdown = self.on_shutdown.clone();
         let fut = async move {
-            let fut = pin!(fut);
+            let fut = std::pin::pin!(fut);
             let _ = select(on_shutdown, fut).await;
         };
         self.spawn_task_as(fut, TaskKind::Blocking, name, false)
@@ -521,7 +522,7 @@ impl TaskExecutor {
         debug!(task = name, "spawning critical task");
         let on_shutdown = self.on_shutdown.clone();
         let fut = async move {
-            let fut = pin!(fut);
+            let fut = std::pin::pin!(fut);
             match select(on_shutdown, fut).await {
                 Either::Left(_) => {
                     debug!(task = name, "critical task cancelled by shutdown signal");
@@ -544,7 +545,7 @@ impl TaskExecutor {
     {
         let on_shutdown = self.on_shutdown.clone();
         let fut = async move {
-            let fut = pin!(fut);
+            let fut = std::pin::pin!(fut);
             let _ = select(on_shutdown, fut).await;
         };
         self.spawn_critical_as(name, fut, TaskKind::Blocking, false)
@@ -628,6 +629,44 @@ impl TaskExecutor {
         self.spawn_critical_with_graceful_shutdown_signal(name, |shutdown| {
             service.into_task(shutdown)
         })
+    }
+
+    /// Spawns a periodic background task with graceful shutdown support.
+    ///
+    /// The callback `f` runs every `interval`. On shutdown the current iteration
+    /// completes before the task exits.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn t(executor: vertex_tasks::TaskExecutor) {
+    /// use std::time::Duration;
+    ///
+    /// executor.spawn_periodic("my_task", Duration::from_secs(10), || {
+    ///     // periodic work
+    /// });
+    /// # }
+    /// ```
+    pub fn spawn_periodic(
+        &self,
+        name: &'static str,
+        interval: Duration,
+        mut f: impl FnMut() + Send + 'static,
+    ) {
+        self.spawn_with_graceful_shutdown_signal(name, move |shutdown| async move {
+            let mut shutdown = std::pin::pin!(shutdown);
+            loop {
+                tokio::select! {
+                    guard = &mut shutdown => {
+                        drop(guard);
+                        break;
+                    }
+                    _ = tokio::time::sleep(interval) => {
+                        f();
+                    }
+                }
+            }
+        });
     }
 
     /// Sends a request to the `TaskManager` to initiate a graceful shutdown.
