@@ -133,17 +133,13 @@ impl<S: ChunkStore> SwarmLocalStore for LocalStoreImpl<S> {
         // Try to reserve space
         self.reserve
             .try_reserve(&self.store)
-            .map_err(|e| SwarmError::Storage {
-                message: e.to_string(),
-            })?;
+            .map_err(SwarmError::storage)?;
 
         // Serialize and store
         let bytes = Self::serialize_chunk(chunk);
         self.store
             .put(address, &bytes)
-            .map_err(|e| SwarmError::Storage {
-                message: e.to_string(),
-            })?;
+            .map_err(SwarmError::storage)?;
 
         // Update reserve and cache
         self.reserve.on_added();
@@ -161,9 +157,7 @@ impl<S: ChunkStore> SwarmLocalStore for LocalStoreImpl<S> {
         }
 
         // Check store
-        let bytes = self.store.get(address).map_err(|e| SwarmError::Storage {
-            message: e.to_string(),
-        })?;
+        let bytes = self.store.get(address).map_err(SwarmError::storage)?;
 
         match bytes {
             Some(data) => {
@@ -191,11 +185,7 @@ impl<S: ChunkStore> SwarmLocalStore for LocalStoreImpl<S> {
         self.cache.remove(address);
 
         // Remove from store
-        self.store
-            .delete(address)
-            .map_err(|e| SwarmError::Storage {
-                message: e.to_string(),
-            })?;
+        self.store.delete(address).map_err(SwarmError::storage)?;
 
         // Update reserve
         self.reserve.on_removed();

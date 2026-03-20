@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use alloy_primitives::Address;
-use vertex_net_peer_store::{NetPeerStore, StoreError};
+use vertex_net_peer_store::NetPeerStore;
+use vertex_net_peer_store::error::StoreError;
 use vertex_storage::{
     Database, DatabaseError, DbTx, DbTxMut, IndexedRead, IndexedWrite, Table, index, table,
 };

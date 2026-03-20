@@ -3,21 +3,18 @@
 use thiserror::Error;
 
 /// Error type for Swarm node building and launching.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum SwarmNodeError {
     /// Build error from protocol.
     #[error("build error: {0}")]
-    Build(String),
+    Build(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     /// Launch error.
     #[error("launch error: {0}")]
-    Launch(String),
+    Launch(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     /// Node type not implemented.
     #[error("node type not implemented: {0}")]
     NotImplemented(String),
-
-    /// Runtime error.
-    #[error("runtime error: {0}")]
-    Runtime(#[from] eyre::Report),
 }

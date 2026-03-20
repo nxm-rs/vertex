@@ -1,8 +1,9 @@
 //! SWAP settlement errors.
 
 /// Errors that can occur during swap operations.
-#[derive(Debug, Clone, thiserror::Error)]
-pub enum SwapError {
+#[derive(Debug, Clone, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum SwapSettlementError {
     /// Service has stopped.
     #[error("swap service stopped")]
     ServiceStopped,

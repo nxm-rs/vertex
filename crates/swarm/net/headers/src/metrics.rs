@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use metrics::{counter, histogram};
-use vertex_metrics::labels::{direction, outcome};
+use vertex_metrics::labels::{direction, outcome, reason};
 use vertex_observability::HistogramBucketConfig;
 
 /// Histogram bucket configurations for protocol exchange metrics.
@@ -49,12 +49,13 @@ impl ProtocolMetrics {
         Self::new(protocol, direction::OUTBOUND)
     }
 
-    pub(crate) fn record_success(&mut self) {
+    fn record_outcome(&mut self, outcome_label: &'static str, reason_label: &'static str) {
         counter!(
             "protocol_exchange_outcomes_total",
             "protocol" => self.protocol,
             "direction" => self.direction,
-            "outcome" => outcome::SUCCESS,
+            "outcome" => outcome_label,
+            "reason" => reason_label,
         )
         .increment(1);
 
@@ -68,23 +69,12 @@ impl ProtocolMetrics {
         self.outcome_recorded = true;
     }
 
-    pub(crate) fn record_error(&mut self) {
-        counter!(
-            "protocol_exchange_outcomes_total",
-            "protocol" => self.protocol,
-            "direction" => self.direction,
-            "outcome" => outcome::FAILURE,
-        )
-        .increment(1);
+    pub(crate) fn record_success(&mut self) {
+        self.record_outcome(outcome::SUCCESS, reason::NONE);
+    }
 
-        histogram!(
-            "protocol_exchange_duration_seconds",
-            "protocol" => self.protocol,
-            "direction" => self.direction,
-        )
-        .record(self.start.elapsed().as_secs_f64());
-
-        self.outcome_recorded = true;
+    pub(crate) fn record_error(&mut self, error_reason: &'static str) {
+        self.record_outcome(outcome::FAILURE, error_reason);
     }
 }
 
@@ -95,7 +85,8 @@ impl Drop for ProtocolMetrics {
                 "protocol_exchange_outcomes_total",
                 "protocol" => self.protocol,
                 "direction" => self.direction,
-                "outcome" => "unknown",
+                "outcome" => reason::UNKNOWN,
+                "reason" => reason::UNKNOWN,
             )
             .increment(1);
         }

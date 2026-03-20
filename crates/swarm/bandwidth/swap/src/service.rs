@@ -12,7 +12,7 @@ use vertex_swarm_node::{ClientCommand, SwapEvent};
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
 
-use crate::error::SwapError;
+use crate::error::SwapSettlementError;
 
 /// Commands from the handle to the service.
 pub enum SwapCommand {
@@ -23,7 +23,7 @@ pub enum SwapCommand {
         /// The amount to settle.
         amount: u64,
         /// Channel to send the result.
-        response_tx: oneshot::Sender<Result<u64, SwapError>>,
+        response_tx: oneshot::Sender<Result<u64, SwapSettlementError>>,
     },
 }
 
@@ -45,7 +45,7 @@ pub struct SwapService<A: SwarmBandwidthAccounting> {
 
 struct PendingSettlement {
     amount: u64,
-    response_tx: oneshot::Sender<Result<u64, SwapError>>,
+    response_tx: oneshot::Sender<Result<u64, SwapSettlementError>>,
 }
 
 impl<A: SwarmBandwidthAccounting + 'static> SwapService<A> {
@@ -102,7 +102,7 @@ impl<A: SwarmBandwidthAccounting + 'static> SwapService<A> {
             } => {
                 // Check if we already have a pending settlement with this peer
                 if self.pending.contains_key(&peer) {
-                    let _ = response_tx.send(Err(SwapError::SettlementInProgress));
+                    let _ = response_tx.send(Err(SwapSettlementError::SettlementInProgress));
                     return;
                 }
 

@@ -6,7 +6,8 @@ use std::string::String;
 use vertex_swarm_primitives::OverlayAddress;
 
 /// Error type for Swarm API operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum SwarmError {
     /// Chunk not found in the network.
     #[error("chunk not found: {address}")]
@@ -36,6 +37,9 @@ pub enum SwarmError {
     Storage {
         /// Description of the storage failure.
         message: String,
+        /// Original error, if available.
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
     /// Network operation failed.
@@ -43,6 +47,9 @@ pub enum SwarmError {
     Network {
         /// Description of the network failure.
         message: String,
+        /// Original error, if available.
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
     /// Peer disconnected or unavailable.
@@ -70,6 +77,9 @@ pub enum SwarmError {
     PaymentRequired {
         /// Description of the payment requirement.
         reason: String,
+        /// Original error, if available.
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
     /// Invalid chunk data.
@@ -86,6 +96,9 @@ pub enum SwarmError {
     Accounting {
         /// Description of the accounting failure.
         message: String,
+        /// Original error, if available.
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
     /// Internal error.
@@ -93,10 +106,48 @@ pub enum SwarmError {
     Internal {
         /// Description of the internal failure.
         message: String,
+        /// Original error, if available.
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 }
 
+/// Generate constructor pairs for SwarmError variants with `message + source` fields.
+macro_rules! sourced_error_constructors {
+    ($($fn_name:ident => $Variant:ident { $field:ident }),+ $(,)?) => {
+        $(
+            /// Create from a source error, preserving the error chain.
+            pub fn $fn_name(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+                Self::$Variant {
+                    $field: source.to_string(),
+                    source: Some(Box::new(source)),
+                }
+            }
+
+            paste::paste! {
+                /// Create from a message string with no source error.
+                pub fn [<$fn_name _msg>]($field: impl Into<String>) -> Self {
+                    Self::$Variant {
+                        $field: $field.into(),
+                        source: None,
+                    }
+                }
+            }
+        )+
+    };
+}
+
 impl SwarmError {
+    sourced_error_constructors! {
+        storage => Storage { message },
+        network => Network { message },
+        accounting => Accounting { message },
+        internal => Internal { message },
+        payment_required => PaymentRequired { reason },
+    }
+
+    vertex_metrics::impl_record_error!("swarm_errors_total");
+
     /// Whether this error represents a transient failure that may succeed on retry.
     ///
     /// Retryable errors include network issues, peer unavailability, and accounting
@@ -154,7 +205,8 @@ impl core::fmt::Display for ConfigAddressKind {
 }
 
 /// Error type for configuration validation.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum ConfigError {
     /// Invalid multiaddress.
     #[error("invalid {kind} '{addr}': {source}")]

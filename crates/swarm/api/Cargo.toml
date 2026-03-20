@@ -28,6 +28,9 @@ eyre = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
 libp2p = { workspace = true }
+paste = { workspace = true }
+metrics = { workspace = true }
+vertex-metrics = { workspace = true }
 thiserror = { workspace = true }
 async-trait = "0.1"
 tracing = { workspace = true }

@@ -1,6 +1,5 @@
 //! Proximity-ordered storage for Kademlia-style routing.
 
-use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -10,21 +9,15 @@ use parking_lot::RwLock;
 use vertex_swarm_primitives::OverlayAddress;
 
 /// Error returned when adding a peer to the index fails.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum AddError {
     /// Peer already exists in the index (LRU position was touched).
+    #[error("peer already present in index")]
     AlreadyPresent,
     /// Bin is at capacity; peer should be saved to DB only.
+    #[error("bin at capacity")]
     BinFull,
-}
-
-impl fmt::Display for AddError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::AlreadyPresent => write!(f, "peer already present in index"),
-            Self::BinFull => write!(f, "bin at capacity"),
-        }
-    }
 }
 
 /// Proximity-ordered storage with per-bin locking and LRU ordering.

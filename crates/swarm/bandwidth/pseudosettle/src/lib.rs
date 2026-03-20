@@ -31,7 +31,7 @@ use vertex_swarm_bandwidth::Accounting;
 use vertex_swarm_node::ClientCommand;
 use vertex_swarm_primitives::OverlayAddress;
 
-pub use error::PseudosettleError;
+pub use error::PseudosettleSettlementError;
 pub use handle::PseudosettleHandle;
 pub use service::{PseudosettleCommand, PseudosettleService};
 pub use vertex_swarm_node::PseudosettleEvent;
@@ -99,13 +99,10 @@ impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for Pseudosettl
             }
 
             let amount = (-balance) as u64;
-            let accepted =
-                handle
-                    .settle(peer, amount)
-                    .await
-                    .map_err(|e| SwarmError::PaymentRequired {
-                        reason: e.to_string(),
-                    })?;
+            let accepted = handle
+                .settle(peer, amount)
+                .await
+                .map_err(SwarmError::payment_required)?;
 
             Ok(accepted as i64)
         } else {

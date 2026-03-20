@@ -10,11 +10,9 @@ use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use libp2p::PeerId;
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
-use metrics::counter;
 use tokio::sync::mpsc;
 use tokio::time::Interval;
 use tracing::{debug, info, trace, warn};
-use vertex_observability::LabelValue;
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeType};
 use vertex_swarm_identity::Identity;
 use vertex_swarm_net_handshake::{HandshakeBehaviour, HandshakeEvent, NoAddresses};
@@ -208,8 +206,7 @@ impl<I: SwarmIdentity> GossipTask<I> {
                 }
                 Err(ref err) => {
                     trace!(overlay = %peer.overlay(), %gossiper, reason = %err, "gossip check: rejected");
-                    counter!("topology_gossip_rejected_total", "reason" => err.label_value())
-                        .increment(1);
+                    err.record();
                     rejected += 1;
                 }
             }
@@ -377,7 +374,7 @@ impl<I: SwarmIdentity> GossipTask<I> {
             }
             VerificationResult::Failed { reason } => {
                 warn!(%gossiper, %reason, "Gossip verification failed");
-                counter!("topology_gossip_verification_failed_total", "reason" => reason.label_value()).increment(1);
+                reason.record();
                 // No backoff: the address was reachable, the gossip data was bad
             }
             VerificationResult::Unreachable { gossiped_overlay } => {

@@ -60,7 +60,8 @@ pub enum RejectionReason {
 }
 
 /// Errors that can occur in topology operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum TopologyError {
     /// Failed to parse a multiaddr string.
     #[error("invalid multiaddr '{addr}': {reason}")]
@@ -97,6 +98,10 @@ pub enum TopologyError {
     /// Failed to spawn the gossip verifier task.
     #[error("failed to spawn gossip verifier: {0}")]
     VerifierSpawn(String),
+}
+
+impl TopologyError {
+    vertex_metrics::impl_record_error!("topology_errors_total");
 }
 
 /// Result type for topology operations.

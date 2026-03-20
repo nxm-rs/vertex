@@ -22,7 +22,8 @@ use libp2p::{
 };
 use tracing::{debug, info};
 use vertex_net_local::{AddressScope, LocalCapabilities, same_subnet};
-use vertex_net_peer_store::{NetPeerStore, StoreError};
+use vertex_net_peer_store::NetPeerStore;
+use vertex_net_peer_store::error::StoreError;
 use vertex_swarm_api::SwarmScoreStore;
 use vertex_swarm_api::{PeerConfigValues, SwarmBootnodeConfig, SwarmIdentity};
 use vertex_swarm_net_handshake::HANDSHAKE_TIMEOUT;

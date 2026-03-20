@@ -26,9 +26,10 @@ use libp2p::swarm::{
 
 use crate::{
     Config,
+    error::UpgradeError,
     handler::{self, Handler, InEvent},
     metrics::{self, IdentifyErrorKind},
-    protocol::{Info, UpgradeError},
+    protocol::Info,
 };
 
 fn is_quic_addr(addr: &Multiaddr, v1: bool) -> bool {

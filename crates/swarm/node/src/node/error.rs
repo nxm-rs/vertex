@@ -1,30 +1,13 @@
 //! Node construction errors.
 
-use std::fmt;
-
 /// Error during node construction.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum NodeBuildError {
     /// Topology behaviour was already taken from infrastructure.
+    #[error("topology behaviour was already taken from infrastructure")]
     TopologyBehaviourTaken,
     /// Failed to acquire topology from cell (should never happen in single-threaded context).
+    #[error("failed to acquire topology from cell")]
     TopologyCellPoisoned,
 }
-
-impl fmt::Display for NodeBuildError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TopologyBehaviourTaken => {
-                write!(
-                    f,
-                    "topology behaviour was already taken from infrastructure"
-                )
-            }
-            Self::TopologyCellPoisoned => {
-                write!(f, "failed to acquire topology from cell")
-            }
-        }
-    }
-}
-
-impl std::error::Error for NodeBuildError {}

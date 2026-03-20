@@ -13,7 +13,7 @@ use vertex_swarm_node::{ClientCommand, PseudosettleEvent};
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
 
-use crate::error::PseudosettleError;
+use crate::error::PseudosettleSettlementError;
 
 /// Commands from the handle to the service.
 pub enum PseudosettleCommand {
@@ -24,7 +24,7 @@ pub enum PseudosettleCommand {
         /// The amount to settle.
         amount: u64,
         /// Channel to send the result.
-        response_tx: oneshot::Sender<Result<u64, PseudosettleError>>,
+        response_tx: oneshot::Sender<Result<u64, PseudosettleSettlementError>>,
     },
 }
 
@@ -41,7 +41,7 @@ pub struct PseudosettleService<A: SwarmBandwidthAccounting> {
     /// Tokens per second for rate limiting settlements.
     refresh_rate: u64,
     /// Track pending outbound settlements (waiting for ack).
-    pending: HashMap<OverlayAddress, oneshot::Sender<Result<u64, PseudosettleError>>>,
+    pending: HashMap<OverlayAddress, oneshot::Sender<Result<u64, PseudosettleSettlementError>>>,
     /// Track last settlement time per peer (for rate limiting).
     last_settlement: HashMap<OverlayAddress, u64>,
 }
@@ -101,7 +101,8 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
             } => {
                 // Check if we already have a pending settlement with this peer
                 if self.pending.contains_key(&peer) {
-                    let _ = response_tx.send(Err(PseudosettleError::SettlementInProgress));
+                    let _ =
+                        response_tx.send(Err(PseudosettleSettlementError::SettlementInProgress));
                     return;
                 }
 
@@ -110,7 +111,7 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
                 if let Some(&last) = self.last_settlement.get(&peer)
                     && now <= last
                 {
-                    let _ = response_tx.send(Err(PseudosettleError::TooSoon));
+                    let _ = response_tx.send(Err(PseudosettleSettlementError::TooSoon));
                     return;
                 }
 
@@ -128,7 +129,9 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
                     warn!(%peer, error = ?e, "Failed to send pseudosettle command");
                     // Remove the pending entry and notify failure
                     if let Some(tx) = self.pending.remove(&peer) {
-                        let _ = tx.send(Err(PseudosettleError::NetworkError(e.to_string())));
+                        let _ = tx.send(Err(PseudosettleSettlementError::NetworkError(
+                            e.to_string(),
+                        )));
                     }
                 }
             }

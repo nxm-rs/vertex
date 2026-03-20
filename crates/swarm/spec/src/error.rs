@@ -2,7 +2,8 @@
 
 /// Error type for SwarmSpec file operations.
 #[cfg(feature = "std")]
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum SwarmSpecFileError {
     /// IO error reading/writing file.
     #[error("IO error: {0}")]

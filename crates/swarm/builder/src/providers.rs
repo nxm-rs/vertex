@@ -34,9 +34,9 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
         let closest_peers = self.topology.closest_to(&chunk_address, 5);
 
         if closest_peers.is_empty() {
-            return Err(SwarmError::Network {
-                message: "No connected peers available for retrieval".to_string(),
-            });
+            return Err(SwarmError::network_msg(
+                "No connected peers available for retrieval",
+            ));
         }
 
         // Try each peer in order until one succeeds
@@ -64,9 +64,7 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
 
         // All peers failed
         match last_error {
-            Some(e) => Err(SwarmError::Network {
-                message: e.to_string(),
-            }),
+            Some(e) => Err(SwarmError::network_msg(e.to_string())),
             None => Err(SwarmError::ChunkNotFound { address: *address }),
         }
     }

@@ -16,7 +16,7 @@ pub enum ValidationFailure {
     #[error("invalid nonce length: {0}")]
     NonceLength(TryFromSliceError),
     #[error("peer validation failed: {0}")]
-    PeerValidation(#[from] vertex_swarm_peer::SwarmPeerError),
+    PeerValidation(#[from] vertex_swarm_peer::error::SwarmPeerError),
     #[error("peer is own overlay")]
     SelfOverlay,
     #[error("multiaddrs missing /p2p/ component")]

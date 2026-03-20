@@ -5,7 +5,7 @@ use libp2p::PeerId;
 use libp2p::swarm::ToSwarm;
 use rand::seq::SliceRandom;
 use tracing::{debug, info, trace, warn};
-use vertex_net_dialer::PrepareError;
+use vertex_net_dialer::error::PrepareError;
 use vertex_net_dnsaddr::{is_dnsaddr, resolve_all};
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_peer::SwarmPeer;

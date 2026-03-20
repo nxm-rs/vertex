@@ -4,7 +4,8 @@ use std::collections::HashMap;
 
 use parking_lot::RwLock;
 
-use crate::{NetPeerStore, NetRecord, StoreError};
+use crate::error::StoreError;
+use crate::{NetPeerStore, NetRecord};
 
 /// In-memory peer store for testing or ephemeral storage.
 pub struct MemoryPeerStore<R: NetRecord> {

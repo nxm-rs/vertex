@@ -7,29 +7,9 @@ use metrics::counter;
 use strum::IntoStaticStr;
 use vertex_metrics::LabelValue;
 
-/// Error during headers exchange.
-#[derive(Debug, thiserror::Error, IntoStaticStr)]
-#[strum(serialize_all = "snake_case")]
-pub enum HeadersError {
-    /// Connection closed before headers exchange completed.
-    #[error("connection closed")]
-    ConnectionClosed,
-
-    /// Protobuf encoding/decoding error.
-    #[error("protobuf error: {0}")]
-    #[strum(serialize = "protobuf_error")]
-    Protobuf(#[from] quick_protobuf_codec::Error),
-
-    /// I/O error during stream operations.
-    #[error("io error: {0}")]
-    #[strum(serialize = "io_error")]
-    Io(#[from] std::io::Error),
-}
-
-impl From<Infallible> for HeadersError {
-    fn from(never: Infallible) -> Self {
-        match never {}
-    }
+vertex_net_codec::protocol_error! {
+    /// Error during headers exchange.
+    pub enum HeadersError {}
 }
 
 /// Error from a headered protocol upgrade.

@@ -33,7 +33,7 @@ use vertex_swarm_bandwidth::{Accounting, AccountingPeerHandle};
 use vertex_swarm_node::ClientCommand;
 use vertex_swarm_primitives::OverlayAddress;
 
-pub use error::SwapError;
+pub use error::SwapSettlementError;
 pub use handle::SwapHandle;
 pub use service::{SwapCommand, SwapService};
 pub use vertex_swarm_node::SwapEvent;
@@ -98,9 +98,7 @@ impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for SwapProvide
                 handle
                     .settle(peer, amount)
                     .await
-                    .map_err(|e| SwarmError::PaymentRequired {
-                        reason: e.to_string(),
-                    })?;
+                    .map_err(SwarmError::payment_required)?;
 
             Ok(accepted as i64)
         } else {

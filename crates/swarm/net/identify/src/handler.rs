@@ -30,7 +30,8 @@ use vertex_metrics::StreamGuard;
 use crate::{
     PROTOCOL_NAME, PUSH_PROTOCOL_NAME,
     behaviour::KeyType,
-    protocol::{self, Info, PushInfo, UpgradeError},
+    error::UpgradeError,
+    protocol::{self, Info, PushInfo},
 };
 
 const STREAM_TIMEOUT: Duration = Duration::from_secs(60);
