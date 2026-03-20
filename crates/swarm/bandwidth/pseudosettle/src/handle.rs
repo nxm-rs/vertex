@@ -34,6 +34,7 @@ impl PseudosettleHandle {
             })
             .map_err(|_| PseudosettleSettlementError::ServiceStopped)?;
 
-        rx.await.map_err(|_| PseudosettleSettlementError::ServiceStopped)?
+        rx.await
+            .map_err(|_| PseudosettleSettlementError::ServiceStopped)?
     }
 }

@@ -88,7 +88,6 @@ impl ProtocolMetrics {
 
         self.outcome_recorded = true;
     }
-
 }
 
 impl Drop for ProtocolMetrics {

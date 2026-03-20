@@ -185,9 +185,7 @@ impl<S: ChunkStore> SwarmLocalStore for LocalStoreImpl<S> {
         self.cache.remove(address);
 
         // Remove from store
-        self.store
-            .delete(address)
-            .map_err(SwarmError::storage)?;
+        self.store.delete(address).map_err(SwarmError::storage)?;
 
         // Update reserve
         self.reserve.on_removed();

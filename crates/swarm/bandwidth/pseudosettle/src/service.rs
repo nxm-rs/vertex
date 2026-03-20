@@ -101,7 +101,8 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
             } => {
                 // Check if we already have a pending settlement with this peer
                 if self.pending.contains_key(&peer) {
-                    let _ = response_tx.send(Err(PseudosettleSettlementError::SettlementInProgress));
+                    let _ =
+                        response_tx.send(Err(PseudosettleSettlementError::SettlementInProgress));
                     return;
                 }
 
@@ -128,7 +129,9 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
                     warn!(%peer, error = ?e, "Failed to send pseudosettle command");
                     // Remove the pending entry and notify failure
                     if let Some(tx) = self.pending.remove(&peer) {
-                        let _ = tx.send(Err(PseudosettleSettlementError::NetworkError(e.to_string())));
+                        let _ = tx.send(Err(PseudosettleSettlementError::NetworkError(
+                            e.to_string(),
+                        )));
                     }
                 }
             }

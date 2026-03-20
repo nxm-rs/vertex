@@ -99,11 +99,10 @@ impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for Pseudosettl
             }
 
             let amount = (-balance) as u64;
-            let accepted =
-                handle
-                    .settle(peer, amount)
-                    .await
-                    .map_err(SwarmError::payment_required)?;
+            let accepted = handle
+                .settle(peer, amount)
+                .await
+                .map_err(SwarmError::payment_required)?;
 
             Ok(accepted as i64)
         } else {
