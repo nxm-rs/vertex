@@ -323,7 +323,6 @@ impl OutboundUpgrade<Stream> for ClientOutboundUpgrade {
 
 /// Information about an outbound request, used for correlating responses.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum ClientOutboundInfo {
     /// Pricing announcement.
     Pricing,

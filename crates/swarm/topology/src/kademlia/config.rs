@@ -28,7 +28,6 @@ impl Default for KademliaConfig {
 
 impl KademliaConfig {
     /// Create with custom depth-aware limits.
-    #[allow(dead_code)]
     pub(crate) fn with_limits(limits: DepthAwareLimits) -> Self {
         Self {
             limits,

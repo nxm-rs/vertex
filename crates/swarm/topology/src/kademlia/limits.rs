@@ -29,7 +29,6 @@ impl Default for DepthAwareLimits {
     }
 }
 
-#[allow(dead_code)]
 impl DepthAwareLimits {
     /// Create with total target and nominal minimum per bin.
     pub(crate) fn new(total_target: usize, nominal: usize) -> Self {
@@ -248,7 +247,6 @@ pub(crate) struct LimitsSnapshot {
     limits: DepthAwareLimits,
 }
 
-#[allow(dead_code)]
 impl LimitsSnapshot {
     pub(crate) fn capture(limits: &DepthAwareLimits, depth: u8) -> Self {
         Self {

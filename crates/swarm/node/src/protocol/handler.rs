@@ -239,14 +239,7 @@ enum State {
     /// Waiting for activation command.
     Dormant,
     /// Active and processing protocols.
-    Active {
-        overlay: OverlayAddress,
-        #[allow(dead_code)]
-        node_type: SwarmNodeType,
-    },
-    /// Handler is closing.
-    #[allow(dead_code)]
-    Closing,
+    Active { overlay: OverlayAddress },
 }
 
 /// A pending inbound response waiting for the application layer to provide data.
@@ -360,8 +353,7 @@ impl ClientHandler {
     /// Remove responders older than the stale timeout.
     fn evict_stale_responses(&mut self) {
         let cutoff = Instant::now() - RESPONDER_STALE_TIMEOUT;
-        self.pending_responses
-            .retain(|_, v| v.stored_at > cutoff);
+        self.pending_responses.retain(|_, v| v.stored_at > cutoff);
     }
 
     /// Take a pending response by request ID.
@@ -376,15 +368,12 @@ impl ClientHandler {
         match &self.state {
             State::Dormant => {
                 debug!(%overlay, ?node_type, "Handler activated");
-                self.state = State::Active { overlay, node_type };
+                self.state = State::Active { overlay };
                 self.pending_events
                     .push_back(HandlerEvent::Activated { overlay });
             }
             State::Active { .. } => {
                 warn!("Handler already active, ignoring duplicate activation");
-            }
-            State::Closing => {
-                warn!("Handler closing, ignoring activation");
             }
         }
     }
@@ -522,7 +511,7 @@ impl ConnectionHandler for ClientHandler {
     fn listen_protocol(&self) -> SubstreamProtocol<Self::InboundProtocol, Self::InboundOpenInfo> {
         let upgrade = match &self.state {
             State::Active { .. } => ClientInboundUpgrade::active(),
-            State::Dormant | State::Closing => ClientInboundUpgrade::new(),
+            State::Dormant => ClientInboundUpgrade::new(),
         };
         SubstreamProtocol::new(upgrade, ()).with_timeout(self.config.timeout)
     }

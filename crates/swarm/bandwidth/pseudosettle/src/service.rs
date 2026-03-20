@@ -29,7 +29,6 @@ pub enum PseudosettleCommand {
 }
 
 /// Processes settlement commands from handles and network events.
-#[allow(dead_code)]
 pub struct PseudosettleService<A: SwarmBandwidthAccounting> {
     /// Receive commands from handles.
     command_rx: mpsc::UnboundedReceiver<PseudosettleCommand>,

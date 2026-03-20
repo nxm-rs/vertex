@@ -110,7 +110,6 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
     }
 
     /// Returns the maximum proximity order for this routing table.
-    #[allow(dead_code)]
     pub(crate) fn max_po(&self) -> u8 {
         self.max_po
     }
