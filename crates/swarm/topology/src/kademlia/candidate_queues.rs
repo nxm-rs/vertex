@@ -63,11 +63,6 @@ impl CandidateQueues {
         result
     }
 
-    /// Check if a peer is already queued (without cloning the set).
-    pub(super) fn contains(&self, peer: &OverlayAddress) -> bool {
-        self.pending.lock().contains(peer)
-    }
-
     /// Clone the dedup set for snapshot purposes.
     pub(super) fn snapshot_queued(&self) -> HashSet<OverlayAddress> {
         self.pending.lock().clone()

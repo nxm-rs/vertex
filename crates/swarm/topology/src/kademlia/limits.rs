@@ -50,11 +50,6 @@ impl DepthAwareLimits {
         self.nominal
     }
 
-    /// Extra headroom for accepting inbound connections above target.
-    pub(crate) fn inbound_headroom(&self) -> usize {
-        self.inbound_headroom
-    }
-
     /// Total target peers across all bins.
     pub(crate) fn total_target(&self) -> usize {
         self.total_target
@@ -133,6 +128,26 @@ impl DepthAwareLimits {
         }
     }
 
+    /// Estimate depth from known peer distribution (highest bin with >= nominal peers).
+    pub(crate) fn estimate_depth_from_known(&self, known_bin_sizes: &[usize]) -> u8 {
+        // Find highest bin with >= nominal known peers
+        for (po, &count) in known_bin_sizes.iter().enumerate().rev() {
+            if count >= self.nominal {
+                return po as u8;
+            }
+        }
+        0
+    }
+
+    /// Effective depth: max(connected_depth, estimated_depth) for bootstrap.
+    pub(crate) fn effective_depth(&self, connected_depth: u8, known_bin_sizes: &[usize]) -> u8 {
+        let estimated = self.estimate_depth_from_known(known_bin_sizes);
+        connected_depth.max(estimated)
+    }
+}
+
+#[cfg(test)]
+impl DepthAwareLimits {
     /// Expected available peers in bin (exponential estimate from uniform distribution).
     pub(crate) fn expected_available(&self, bin: u8, depth: u8) -> usize {
         if depth == 0 || bin >= depth {
@@ -156,17 +171,6 @@ impl DepthAwareLimits {
         self.nominal
             .saturating_mul(2)
             .saturating_mul(two_to_depth.saturating_sub(1))
-    }
-
-    /// Estimate depth from known peer distribution (highest bin with >= nominal peers).
-    pub(crate) fn estimate_depth_from_known(&self, known_bin_sizes: &[usize]) -> u8 {
-        // Find highest bin with >= nominal known peers
-        for (po, &count) in known_bin_sizes.iter().enumerate().rev() {
-            if count >= self.nominal {
-                return po as u8;
-            }
-        }
-        0
     }
 
     /// Estimate depth by projecting known peer distribution to higher bins.
@@ -204,12 +208,6 @@ impl DepthAwareLimits {
         estimated_depth
     }
 
-    /// Effective depth: max(connected_depth, estimated_depth) for bootstrap.
-    pub(crate) fn effective_depth(&self, connected_depth: u8, known_bin_sizes: &[usize]) -> u8 {
-        let estimated = self.estimate_depth_from_known(known_bin_sizes);
-        connected_depth.max(estimated)
-    }
-
     /// Target using effective depth (for allocation with known peer distribution).
     pub(crate) fn target_effective(
         &self,
@@ -218,26 +216,6 @@ impl DepthAwareLimits {
         known_bin_sizes: &[usize],
     ) -> usize {
         self.target(bin, self.effective_depth(connected_depth, known_bin_sizes))
-    }
-
-    /// Check if we need more peers using effective depth.
-    pub(crate) fn needs_more_effective(
-        &self,
-        bin: u8,
-        connected_depth: u8,
-        connected: usize,
-        known_bin_sizes: &[usize],
-    ) -> bool {
-        self.needs_more(
-            bin,
-            self.effective_depth(connected_depth, known_bin_sizes),
-            connected,
-        )
-    }
-
-    /// Generate allocation table for debugging/metrics.
-    pub(crate) fn allocation_table(&self, depth: u8) -> Vec<(u8, usize)> {
-        (0..32).map(|bin| (bin, self.target(bin, depth))).collect()
     }
 }
 
@@ -255,14 +233,6 @@ impl LimitsSnapshot {
         }
     }
 
-    pub(crate) fn target(&self, bin: u8) -> usize {
-        self.limits.target(bin, self.depth)
-    }
-
-    pub(crate) fn is_neighborhood(&self, bin: u8) -> bool {
-        bin >= self.depth
-    }
-
     pub(crate) fn needs_more(&self, bin: u8, connected: usize) -> bool {
         self.limits.needs_more(bin, self.depth, connected)
     }
@@ -270,14 +240,16 @@ impl LimitsSnapshot {
     pub(crate) fn deficit(&self, bin: u8, connected: usize) -> usize {
         self.limits.deficit(bin, self.depth, connected)
     }
+}
+
+#[cfg(test)]
+impl LimitsSnapshot {
+    pub(crate) fn target(&self, bin: u8) -> usize {
+        self.limits.target(bin, self.depth)
+    }
 
     pub(crate) fn surplus(&self, bin: u8, connected: usize) -> usize {
         self.limits.surplus(bin, self.depth, connected)
-    }
-
-    pub(crate) fn should_accept_inbound(&self, bin: u8, connected: usize) -> bool {
-        self.limits
-            .should_accept_inbound(bin, self.depth, connected)
     }
 }
 

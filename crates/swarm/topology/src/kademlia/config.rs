@@ -27,14 +27,6 @@ impl Default for KademliaConfig {
 }
 
 impl KademliaConfig {
-    /// Create with custom depth-aware limits.
-    pub(crate) fn with_limits(limits: DepthAwareLimits) -> Self {
-        Self {
-            limits,
-            ..Default::default()
-        }
-    }
-
     /// Create with custom total target peers.
     pub fn with_total_target(mut self, total: usize) -> Self {
         self.limits = DepthAwareLimits::new(total, self.limits.nominal());
@@ -51,6 +43,17 @@ impl KademliaConfig {
     pub fn with_inbound_headroom(mut self, headroom: usize) -> Self {
         self.limits = self.limits.with_inbound_headroom(headroom);
         self
+    }
+}
+
+#[cfg(test)]
+impl KademliaConfig {
+    /// Create with custom depth-aware limits.
+    pub(crate) fn with_limits(limits: DepthAwareLimits) -> Self {
+        Self {
+            limits,
+            ..Default::default()
+        }
     }
 }
 

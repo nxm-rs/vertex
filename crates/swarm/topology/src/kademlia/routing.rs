@@ -109,11 +109,6 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         })
     }
 
-    /// Returns the maximum proximity order for this routing table.
-    pub(crate) fn max_po(&self) -> u8 {
-        self.max_po
-    }
-
     /// Depth-aware per-bin capacity limits.
     pub(crate) fn limits(&self) -> &DepthAwareLimits {
         &self.config.limits
@@ -522,15 +517,6 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
 }
 
 impl<I: SwarmIdentity> SwarmRouting<I> for KademliaRouting<I> {
-    fn should_accept_peer(&self, peer: &OverlayAddress, _node_type: SwarmNodeType) -> bool {
-        let po = self.proximity(peer);
-        let effective_count = self.effective_count(po);
-        // Use depth-aware limits for peer acceptance
-        self.config
-            .limits
-            .needs_more(po, self.depth(), effective_count)
-    }
-
     fn connected(&self, peer: OverlayAddress) {
         self.peer_connected(peer);
     }
@@ -722,46 +708,6 @@ mod tests {
         // Disconnect
         RoutingCapacity::disconnected(&*routing, &peer);
         assert_eq!(routing.effective_count(0), 0);
-    }
-
-    #[test]
-    fn test_should_accept_peer() {
-        let base = SwarmAddress::with_first_byte(0x00);
-        let config = KademliaConfig::default().with_nominal(2);
-        let (routing, _pm) = make_routing(base, config);
-
-        let peer1 = SwarmAddress::with_first_byte(0x80);
-        let peer2 = SwarmAddress::with_first_byte(0xc0);
-        let peer3 = SwarmAddress::with_first_byte(0xa0);
-
-        assert!(SwarmRouting::should_accept_peer(
-            &*routing,
-            &peer1,
-            SwarmNodeType::Storer
-        ));
-
-        // Reserve and activate peer1
-        routing.try_reserve_dial(&peer1, SwarmNodeType::Storer);
-        routing.dial_connected(&peer1);
-        routing.handshake_completed(&peer1);
-
-        assert!(SwarmRouting::should_accept_peer(
-            &*routing,
-            &peer2,
-            SwarmNodeType::Storer
-        ));
-
-        // Reserve and activate peer2
-        routing.try_reserve_dial(&peer2, SwarmNodeType::Storer);
-        routing.dial_connected(&peer2);
-        routing.handshake_completed(&peer2);
-
-        // At capacity (effective=2 >= nominal=2)
-        assert!(!SwarmRouting::should_accept_peer(
-            &*routing,
-            &peer3,
-            SwarmNodeType::Storer
-        ));
     }
 
     #[test]
