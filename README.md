@@ -1,9 +1,31 @@
 # Vertex
 
-[![CI Status](https://github.com/nxm-rs/vertex/actions/workflows/unit.yml/badge.svg)](https://github.com/nxm-rs/vertex/actions/workflows/unit.yml)
+[![CI](https://github.com/nxm-rs/vertex/actions/workflows/unit.yml/badge.svg)](https://github.com/nxm-rs/vertex/actions/workflows/unit.yml)
+[![Audit](https://github.com/nxm-rs/vertex/actions/workflows/audit.yml/badge.svg)](https://github.com/nxm-rs/vertex/actions/workflows/audit.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![Rust](https://img.shields.io/badge/rust-1.91%2B-orange.svg)](https://www.rust-lang.org)
+[![Matrix](https://img.shields.io/badge/chat-Matrix-green.svg)](https://matrix.to/#/#nexum:nxm.rs)
 
 **Swarm node that actually works. Built in Rust because Go was not cutting it for real decentralisation.**
+
+> [!WARNING]
+> This is development software. It compiles, it runs tests, but it is not ready for your production workloads. Yet.
+
+## Quick Start
+
+```bash
+# Build
+cargo build --release
+
+# Run a client node on mainnet
+vertex node --mainnet
+
+# Run a bootnode
+vertex node --mainnet --mode=bootnode
+
+# See all options
+vertex node --help
+```
 
 ## What is Vertex?
 
@@ -11,11 +33,38 @@ Vertex is a ground-up rewrite of the Ethereum Swarm node. Same protocol, differe
 
 Compatible with all Swarm protocols: postage stamps, push/pull sync, storage incentives, the works. If Bee does it, Vertex will do it faster.
 
-## Architecture
+### Goals
 
-Vertex is split into layered crates that can be used independently:
+1. **Modularity**: every component is a library. Import what you need, build what you want.
+2. **Performance**: concurrent processing, zero-copy where possible, no GC pauses.
+3. **Client Diversity**: more implementations means a more resilient network.
+4. **Developer Experience**: ergonomic APIs and actual documentation.
 
-### Swarm Protocol
+### Node Modes
+
+| Mode | Description |
+|------|-------------|
+| **Bootnode** | Topology only (peer discovery). Lightweight network infrastructure. |
+| **Client** | Retrieval + upload. Consumes the network without storing chunks locally. Default mode. |
+| **Storer** | Full storage node with redistribution. Stores chunks and earns rewards. |
+
+## Documentation
+
+Full documentation is in the [`docs/`](docs/README.md) directory:
+
+- [Architecture Overview](docs/architecture/overview.md) - crate structure, design principles, dependency flow
+- [Node Types](docs/architecture/node-types.md) - bootnode, client, storer capabilities
+- [Swarm API](docs/swarm/api.md) - core protocol traits
+- [Client Architecture](docs/client/architecture.md) - libp2p boundary
+- [CLI Configuration](docs/cli/configuration.md) - configuration architecture
+- [Observability](docs/observability/README.md) - metrics, tracing, profiling
+
+## Crate Overview
+
+Vertex is split into 54 layered crates. Each can be used independently as a library.
+
+<details>
+<summary><strong>Swarm Protocol</strong> - core protocol traits and types</summary>
 
 | Crate | Description |
 |-------|-------------|
@@ -29,7 +78,10 @@ Vertex is split into layered crates that can be used independently:
 | `vertex-swarm-rpc` | gRPC service implementations |
 | `vertex-swarm-test-utils` | Test fixtures and helpers |
 
-### Swarm Peers
+</details>
+
+<details>
+<summary><strong>Swarm Peers</strong> - peer management and topology</summary>
 
 | Crate | Description |
 |-------|-------------|
@@ -38,7 +90,10 @@ Vertex is split into layered crates that can be used independently:
 | `vertex-swarm-peer-score` | Peer scoring |
 | `vertex-swarm-topology` | Kademlia DHT, peer discovery, neighbourhood management |
 
-### Swarm Bandwidth
+</details>
+
+<details>
+<summary><strong>Swarm Bandwidth</strong> - accounting and settlement</summary>
 
 | Crate | Description |
 |-------|-------------|
@@ -48,7 +103,10 @@ Vertex is split into layered crates that can be used independently:
 | `vertex-swarm-bandwidth-chequebook` | Chequebook types |
 | `vertex-swarm-bandwidth-swap` | SWAP settlement provider |
 
-### Swarm Network Protocols
+</details>
+
+<details>
+<summary><strong>Swarm Network Protocols</strong> - libp2p protocol implementations</summary>
 
 | Crate | Description |
 |-------|-------------|
@@ -65,7 +123,10 @@ Vertex is split into layered crates that can be used independently:
 | `vertex-swarm-net-retrieval` | Chunk request/response |
 | `vertex-swarm-net-swap` | SWAP settlement protocol |
 
-### Swarm Storage
+</details>
+
+<details>
+<summary><strong>Swarm Storage</strong> - local storage and incentives</summary>
 
 | Crate | Description |
 |-------|-------------|
@@ -73,7 +134,10 @@ Vertex is split into layered crates that can be used independently:
 | `vertex-swarm-storer` | Storer node storage |
 | `vertex-swarm-redistribution` | Storage incentives |
 
-### Node Infrastructure
+</details>
+
+<details>
+<summary><strong>Node Infrastructure</strong> - generic node framework</summary>
 
 | Crate | Description |
 |-------|-------------|
@@ -82,7 +146,10 @@ Vertex is split into layered crates that can be used independently:
 | `vertex-node-commands` | CLI commands |
 | `vertex-node-core` | CLI configuration and logging |
 
-### Networking
+</details>
+
+<details>
+<summary><strong>Networking</strong> - protocol-agnostic utilities</summary>
 
 | Crate | Description |
 |-------|-------------|
@@ -97,7 +164,10 @@ Vertex is split into layered crates that can be used independently:
 | `vertex-net-peer-score` | Generic peer scoring |
 | `vertex-net-peer-backoff` | Exponential backoff |
 
-### Supporting Crates
+</details>
+
+<details>
+<summary><strong>Supporting Crates</strong> - shared infrastructure</summary>
 
 | Crate | Description |
 |-------|-------------|
@@ -109,28 +179,15 @@ Vertex is split into layered crates that can be used independently:
 | `vertex-observability` | Tracing, Prometheus, profiling |
 | `vertex-tasks` | Task lifecycle management |
 
-## Goals
-
-1. **Modularity**: Every component is a library. Import what you need, build what you want.
-2. **Performance**: Concurrent processing, zero-copy where possible, no GC pauses.
-3. **Client Diversity**: More implementations means a more resilient network.
-4. **Developer Experience**: Ergonomic APIs and actual documentation.
+</details>
 
 ## Related Projects
 
-- [`nectar`](https://github.com/nxm-rs/nectar): Low-level Swarm primitives (BMT, chunks, postage)
-- [`apiary`](https://github.com/nxm-rs/apiary): Kurtosis package for spinning up test networks
-- [`apiarist`](https://github.com/nxm-rs/apiarist): Stress testing and integration checks
-
-## Status
-
-Under active development. Not production ready yet, but getting there.
-
-## Building
-
-```bash
-cargo build --release
-```
+| Project | Description |
+|---------|-------------|
+| [`nectar`](https://github.com/nxm-rs/nectar) | Low-level Swarm primitives (BMT, chunks, postage) |
+| [`apiary`](https://github.com/nxm-rs/apiary) | Kurtosis package for spinning up test networks |
+| [`apiarist`](https://github.com/nxm-rs/apiarist) | Stress testing and integration checks |
 
 ## Contributing
 
@@ -142,7 +199,3 @@ We welcome contributions. Please read the [CLA](./CLA.md) before submitting PRs.
 ## Licence
 
 [AGPL-3.0-or-later](./LICENSE): because decentralised storage should stay decentralised.
-
-## Warning
-
-This is development software. It compiles, it runs tests, but it is not ready for your production workloads. Yet.
