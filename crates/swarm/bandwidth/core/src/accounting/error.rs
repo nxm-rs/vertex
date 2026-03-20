@@ -36,9 +36,5 @@ pub enum AccountingError {
 }
 
 impl AccountingError {
-    /// Record this error in metrics.
-    pub fn record(&self) {
-        let reason: &'static str = self.into();
-        metrics::counter!("accounting_errors_total", "reason" => reason).increment(1);
-    }
+    vertex_metrics::impl_record_error!("accounting_errors_total");
 }

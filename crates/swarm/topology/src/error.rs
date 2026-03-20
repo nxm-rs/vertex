@@ -101,11 +101,7 @@ pub enum TopologyError {
 }
 
 impl TopologyError {
-    /// Record this error in metrics.
-    pub fn record(&self) {
-        let reason: &'static str = self.into();
-        metrics::counter!("topology_errors_total", "reason" => reason).increment(1);
-    }
+    vertex_metrics::impl_record_error!("topology_errors_total");
 }
 
 /// Result type for topology operations.

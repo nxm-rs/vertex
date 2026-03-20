@@ -112,92 +112,41 @@ pub enum SwarmError {
     },
 }
 
+/// Generate constructor pairs for SwarmError variants with `message + source` fields.
+macro_rules! sourced_error_constructors {
+    ($($fn_name:ident => $Variant:ident { $field:ident }),+ $(,)?) => {
+        $(
+            /// Create from a source error, preserving the error chain.
+            pub fn $fn_name(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+                Self::$Variant {
+                    $field: source.to_string(),
+                    source: Some(Box::new(source)),
+                }
+            }
+
+            paste::paste! {
+                /// Create from a message string with no source error.
+                pub fn [<$fn_name _msg>]($field: impl Into<String>) -> Self {
+                    Self::$Variant {
+                        $field: $field.into(),
+                        source: None,
+                    }
+                }
+            }
+        )+
+    };
+}
+
 impl SwarmError {
-    /// Create a storage error from a source error.
-    pub fn storage(source: impl std::error::Error + Send + Sync + 'static) -> Self {
-        Self::Storage {
-            message: source.to_string(),
-            source: Some(Box::new(source)),
-        }
+    sourced_error_constructors! {
+        storage => Storage { message },
+        network => Network { message },
+        accounting => Accounting { message },
+        internal => Internal { message },
+        payment_required => PaymentRequired { reason },
     }
 
-    /// Create a storage error from a message string.
-    pub fn storage_msg(message: impl Into<String>) -> Self {
-        Self::Storage {
-            message: message.into(),
-            source: None,
-        }
-    }
-
-    /// Create a network error from a source error.
-    pub fn network(source: impl std::error::Error + Send + Sync + 'static) -> Self {
-        Self::Network {
-            message: source.to_string(),
-            source: Some(Box::new(source)),
-        }
-    }
-
-    /// Create a network error from a message string.
-    pub fn network_msg(message: impl Into<String>) -> Self {
-        Self::Network {
-            message: message.into(),
-            source: None,
-        }
-    }
-
-    /// Create an accounting error from a source error.
-    pub fn accounting(source: impl std::error::Error + Send + Sync + 'static) -> Self {
-        Self::Accounting {
-            message: source.to_string(),
-            source: Some(Box::new(source)),
-        }
-    }
-
-    /// Create an accounting error from a message string.
-    pub fn accounting_msg(message: impl Into<String>) -> Self {
-        Self::Accounting {
-            message: message.into(),
-            source: None,
-        }
-    }
-
-    /// Create an internal error from a source error.
-    pub fn internal(source: impl std::error::Error + Send + Sync + 'static) -> Self {
-        Self::Internal {
-            message: source.to_string(),
-            source: Some(Box::new(source)),
-        }
-    }
-
-    /// Create an internal error from a message string.
-    pub fn internal_msg(message: impl Into<String>) -> Self {
-        Self::Internal {
-            message: message.into(),
-            source: None,
-        }
-    }
-
-    /// Create a payment required error from a source error.
-    pub fn payment_required(source: impl std::error::Error + Send + Sync + 'static) -> Self {
-        Self::PaymentRequired {
-            reason: source.to_string(),
-            source: Some(Box::new(source)),
-        }
-    }
-
-    /// Create a payment required error from a message string.
-    pub fn payment_required_msg(reason: impl Into<String>) -> Self {
-        Self::PaymentRequired {
-            reason: reason.into(),
-            source: None,
-        }
-    }
-
-    /// Record this error in metrics.
-    pub fn record(&self) {
-        let reason: &'static str = self.into();
-        metrics::counter!("swarm_errors_total", "reason" => reason).increment(1);
-    }
+    vertex_metrics::impl_record_error!("swarm_errors_total");
 
     /// Whether this error represents a transient failure that may succeed on retry.
     ///

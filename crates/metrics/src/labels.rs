@@ -28,3 +28,9 @@ pub mod cache {
     pub const HIT: &str = "hit";
     pub const MISS: &str = "miss";
 }
+
+/// Error reason labels.
+pub mod reason {
+    pub const NONE: &str = "none";
+    pub const UNKNOWN: &str = "unknown";
+}

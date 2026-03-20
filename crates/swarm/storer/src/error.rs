@@ -33,11 +33,7 @@ pub enum StorerError {
 }
 
 impl StorerError {
-    /// Record this error in metrics.
-    pub fn record(&self) {
-        let reason: &'static str = self.into();
-        metrics::counter!("storer_errors_total", "reason" => reason).increment(1);
-    }
+    vertex_metrics::impl_record_error!("storer_errors_total");
 }
 
 impl From<redb::DatabaseError> for StorerError {
@@ -48,19 +44,25 @@ impl From<redb::DatabaseError> for StorerError {
 
 impl From<redb::TransactionError> for StorerError {
     fn from(err: redb::TransactionError) -> Self {
-        StorerError::Database(DatabaseError::Other(err.to_string()))
+        StorerError::Database(DatabaseError::InitTx(
+            vertex_storage::DatabaseErrorInfo::from_err(err),
+        ))
     }
 }
 
 impl From<redb::TableError> for StorerError {
     fn from(err: redb::TableError) -> Self {
-        StorerError::Database(DatabaseError::Other(err.to_string()))
+        StorerError::Database(DatabaseError::Read(
+            vertex_storage::DatabaseErrorInfo::from_err(err),
+        ))
     }
 }
 
 impl From<redb::StorageError> for StorerError {
     fn from(err: redb::StorageError) -> Self {
-        StorerError::Database(DatabaseError::Other(err.to_string()))
+        StorerError::Database(DatabaseError::Read(
+            vertex_storage::DatabaseErrorInfo::from_err(err),
+        ))
     }
 }
 

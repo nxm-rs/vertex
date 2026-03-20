@@ -11,6 +11,7 @@ description = "Core bandwidth accounting for Swarm data availability"
 [dependencies]
 nectar-primitives = { workspace = true }
 vertex-swarm-primitives = { workspace = true }
+vertex-metrics = { workspace = true }
 vertex-swarm-api = { workspace = true }
 vertex-swarm-bandwidth-pricing = { workspace = true, features = ["cli"] }
 vertex-swarm-spec = { workspace = true }
