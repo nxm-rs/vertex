@@ -1,6 +1,6 @@
 # Bee Protocol Patterns
 
-This document describes the network protocol patterns used in Vertex (compatible with Bee).
+This document describes the network protocol patterns used in Vertex (compatible with [Bee](https://github.com/ethersphere/bee)).
 
 ## Headered Streams
 

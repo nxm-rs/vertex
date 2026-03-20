@@ -1,6 +1,6 @@
 # Recommended Bee Protocol Improvements
 
-This document tracks protocol-level changes that would improve interoperability and type safety in the Swarm network. These are suggestions for upstream Bee changes.
+This document tracks protocol-level changes that would improve interoperability and type safety in the [Swarm](https://ethswarm.org) network. These are suggestions for upstream [Bee](https://github.com/ethersphere/bee) changes.
 
 ## Pricing Protocol
 

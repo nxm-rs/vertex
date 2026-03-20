@@ -6,7 +6,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.91%2B-orange.svg)](https://www.rust-lang.org)
 [![Matrix](https://img.shields.io/badge/chat-Matrix-green.svg)](https://matrix.to/#/#nexum:nxm.rs)
 
-**Swarm node that actually works. Built in Rust because Go was not cutting it for real decentralisation.**
+**[Ethereum Swarm](https://ethswarm.org) node that actually works. Built in Rust because Go was not cutting it for real decentralisation.**
 
 > [!WARNING]
 > This is development software. It compiles, it runs tests, but it is not ready for your production workloads. Yet.
@@ -29,9 +29,9 @@ vertex node --help
 
 ## What is Vertex?
 
-Vertex is a ground-up rewrite of the Ethereum Swarm node. Same protocol, different philosophy. We are building for modularity, performance, and the kind of reliability you would expect from infrastructure software.
+Vertex is a ground-up rewrite of the [Ethereum Swarm](https://ethswarm.org) node. Same protocol, different philosophy. We are building for modularity, performance, and the kind of reliability you would expect from infrastructure software.
 
-Compatible with all Swarm protocols: postage stamps, push/pull sync, storage incentives, the works. If Bee does it, Vertex will do it faster.
+Compatible with all [Swarm](https://ethswarm.org) protocols: postage stamps, push/pull sync, storage incentives, the works. If [Bee](https://github.com/ethersphere/bee) does it, Vertex will do it faster.
 
 ### Goals
 
@@ -185,7 +185,7 @@ Vertex is split into 54 layered crates. Each can be used independently as a libr
 
 | Project | Description |
 |---------|-------------|
-| [`nectar`](https://github.com/nxm-rs/nectar) | Low-level Swarm primitives (BMT, chunks, postage) |
+| [`nectar`](https://github.com/nxm-rs/nectar) | Low-level [Swarm](https://ethswarm.org) primitives (BMT, chunks, postage) |
 | [`apiary`](https://github.com/nxm-rs/apiary) | Kurtosis package for spinning up test networks |
 | [`apiarist`](https://github.com/nxm-rs/apiarist) | Stress testing and integration checks |
 

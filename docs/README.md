@@ -1,6 +1,6 @@
 # Vertex Documentation
 
-Vertex is a modular, high-performance implementation of the Ethereum Swarm protocol written in Rust.
+Vertex is a modular, high-performance implementation of the [Ethereum Swarm](https://ethswarm.org) protocol written in Rust.
 
 ## Documentation Structure
 
@@ -15,7 +15,7 @@ High-level design and crate organisation.
 
 ### Swarm Protocol
 
-Swarm-specific protocol details and differences from Bee.
+[Swarm](https://ethswarm.org)-specific protocol details and differences from [Bee](https://github.com/ethersphere/bee).
 
 - [**API**](swarm/api.md) - Core traits (SwarmPrimitives, SwarmClientTypes, SwarmStorerTypes)
 - [**Protocols**](swarm/protocols.md) - Network protocol patterns (headered streams, etc.)
@@ -81,4 +81,4 @@ For node types, crate dependencies, and architecture diagrams, see the [Architec
 ## See Also
 
 - [Main README](../README.md) - Project overview, goals, and status
-- [Bee Documentation](https://docs.ethswarm.org) - Official Swarm documentation
+- [Bee Documentation](https://docs.ethswarm.org) - Official [Swarm](https://ethswarm.org) documentation

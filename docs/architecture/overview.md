@@ -1,6 +1,6 @@
 # Architecture Overview
 
-This document describes the high-level architecture of Vertex and how its crates are organised.
+This document describes the high-level architecture of Vertex, an [Ethereum Swarm](https://ethswarm.org) node implementation, and how its crates are organised.
 
 ## Design Principles
 

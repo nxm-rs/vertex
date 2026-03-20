@@ -1,6 +1,6 @@
 # Differences from Bee
 
-This document tracks architectural and design differences between Vertex and the reference [Bee](https://github.com/ethersphere/bee) implementation.
+This document tracks architectural and design differences between Vertex and the reference [Bee](https://github.com/ethersphere/bee) implementation of [Ethereum Swarm](https://ethswarm.org).
 
 ## Network Specification
 
