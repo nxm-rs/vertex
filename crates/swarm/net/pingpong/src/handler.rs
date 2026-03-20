@@ -26,8 +26,8 @@ use libp2p::{
 };
 use metrics::counter;
 use tracing::{debug, trace, warn};
-use vertex_net_ratelimiter::RateLimiter;
 use vertex_observability::labels::direction;
+use vertex_swarm_net_handler_core::HandlerCore;
 use vertex_swarm_net_headers::{Inbound, ProtocolError, ProtocolStreamError, UpgradeError};
 
 use crate::{PROTOCOL_NAME, PingpongOutboundProtocol, outbound, protocol::PingpongInboundInner};
@@ -102,13 +102,10 @@ pub struct PingpongHandler {
     remote_peer_id: PeerId,
     /// Bounded set of active inbound streams for backpressure.
     active_streams: futures_bounded::FuturesSet<Result<(), ProtocolError>>,
-    /// Token bucket to prevent rapid stream cycling.
-    rate_limiter: RateLimiter,
-    /// Implicitly bounded by `FuturesSet` max capacity + one event per outbound completion/error.
-    pending_events: VecDeque<PingpongHandlerEvent>,
+    /// Shared handler core: events, rate limiter, outbound flag.
+    core: HandlerCore<PingpongHandlerEvent>,
     /// Bounded by `MAX_PENDING_PINGS`; excess commands are dropped with a warning.
     pending_pings: VecDeque<String>,
-    outbound_pending: bool,
 }
 
 impl PingpongHandler {
@@ -118,12 +115,10 @@ impl PingpongHandler {
                 STREAM_TIMEOUT,
                 MAX_CONCURRENT_STREAMS_PER_CONNECTION,
             ),
-            rate_limiter: RateLimiter::new(RATE_LIMIT_BURST, RATE_LIMIT_REFILL),
+            core: HandlerCore::new(RATE_LIMIT_BURST, RATE_LIMIT_REFILL),
             config,
             remote_peer_id,
-            pending_events: VecDeque::new(),
             pending_pings: VecDeque::new(),
-            outbound_pending: false,
         }
     }
 }
@@ -150,7 +145,7 @@ impl ConnectionHandler for PingpongHandler {
     ) -> Poll<
         ConnectionHandlerEvent<Self::OutboundProtocol, Self::OutboundOpenInfo, Self::ToBehaviour>,
     > {
-        if let Some(event) = self.pending_events.pop_front() {
+        if let Some(event) = self.core.poll_pending() {
             return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
         }
 
@@ -180,10 +175,10 @@ impl ConnectionHandler for PingpongHandler {
             }
         }
 
-        if !self.outbound_pending
+        if !self.core.outbound_pending()
             && let Some(greeting) = self.pending_pings.pop_front()
         {
-            self.outbound_pending = true;
+            self.core.set_outbound_pending(true);
             let sent_at = Instant::now();
             debug!(%greeting, "Sending ping");
             return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
@@ -229,7 +224,7 @@ impl ConnectionHandler for PingpongHandler {
                 protocol: stream,
                 ..
             }) => {
-                if !self.rate_limiter.try_acquire() {
+                if !self.core.try_accept_inbound() {
                     warn!(peer_id = %self.remote_peer_id, "Rate limiting inbound pingpong stream");
                     counter!("pingpong_rate_limited_total").increment(1);
                     return;
@@ -251,23 +246,23 @@ impl ConnectionHandler for PingpongHandler {
                 info,
                 ..
             }) => {
-                self.outbound_pending = false;
+                self.core.set_outbound_pending(false);
                 // Handler-level RTT: substream request → upgrade completion (includes
                 // protocol negotiation + headers exchange). The protocol-level RTT in
                 // protocol.rs measures only ping-send → pong-receive within the stream.
                 let rtt = info.sent_at.elapsed();
                 trace!(?rtt, "Pong received");
-                self.pending_events
-                    .push_back(PingpongHandlerEvent::Pong { response, rtt });
+                self.core
+                    .push_event(PingpongHandlerEvent::Pong { response, rtt });
             }
 
             ConnectionEvent::DialUpgradeError(error) => {
-                self.outbound_pending = false;
+                self.core.set_outbound_pending(false);
                 let pingpong_error =
                     UpgradeError::record_and_convert(error.error, "pingpong", direction::OUTBOUND);
                 warn!(error = %pingpong_error, "Pingpong outbound error");
-                self.pending_events
-                    .push_back(PingpongHandlerEvent::Error(pingpong_error));
+                self.core
+                    .push_event(PingpongHandlerEvent::Error(pingpong_error));
             }
 
             _ => {}

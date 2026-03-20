@@ -7697,6 +7697,8 @@ dependencies = [
  "futures",
  "quick-protobuf",
  "quick-protobuf-codec",
+ "strum",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -8096,6 +8098,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vertex-swarm-net-handler-core"
+version = "0.1.0"
+dependencies = [
+ "futures-bounded",
+ "vertex-net-ratelimiter",
+]
+
+[[package]]
 name = "vertex-swarm-net-handshake"
 version = "0.1.0"
 dependencies = [
@@ -8177,6 +8187,7 @@ dependencies = [
  "vertex-net-utils",
  "vertex-observability",
  "vertex-swarm-api",
+ "vertex-swarm-net-handler-core",
  "vertex-swarm-net-headers",
  "vertex-swarm-net-proto",
  "vertex-swarm-peer",
@@ -8225,6 +8236,7 @@ dependencies = [
  "vertex-net-codec",
  "vertex-net-ratelimiter",
  "vertex-observability",
+ "vertex-swarm-net-handler-core",
  "vertex-swarm-net-headers",
  "vertex-swarm-net-proto",
 ]
@@ -8326,6 +8338,7 @@ dependencies = [
  "clap 4.6.0",
  "eyre",
  "futures",
+ "futures-bounded",
  "libp2p",
  "metrics",
  "nectar-primitives",

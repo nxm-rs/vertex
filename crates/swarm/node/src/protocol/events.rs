@@ -227,6 +227,8 @@ pub enum ClientCommand {
     ServeChunk {
         /// The peer to serve.
         peer: OverlayAddress,
+        /// Request ID from ChunkRequested event.
+        request_id: u64,
         /// The chunk address.
         address: ChunkAddress,
         /// The chunk data.
@@ -251,6 +253,8 @@ pub enum ClientCommand {
     SendReceipt {
         /// The peer to send the receipt to.
         peer: OverlayAddress,
+        /// Request ID from ChunkPushReceived event.
+        request_id: u64,
         /// The chunk address.
         address: ChunkAddress,
         /// The receipt signature.

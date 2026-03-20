@@ -54,14 +54,21 @@ mod token;
 // Re-export chain types
 pub use alloy_chains::{Chain, NamedChain};
 
-// Re-export hardfork types
-pub use vertex_swarm_forks::*;
+// Re-export hardfork types used in the public API
+pub use vertex_swarm_forks::{
+    DEV_HARDFORKS, DisplayHardforks, ForkCondition, ForkDigest, ForkFilter, ForkHash, ForkId,
+    Hardfork, Hardforks, Head, SwarmHardfork, SwarmHardforks, SwarmHardforksTrait,
+};
 
 // Re-export contract bindings and addresses from nectar
 pub use nectar_contracts;
 
 // Re-export SwarmSpec trait and providers from vertex-swarm-api
-pub use constants::*;
+pub use constants::{
+    DEFAULT_BRANCHES, DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_CAPACITY_LOG2, DEFAULT_CHUNK_SIZE,
+    DEFAULT_CHUNK_SIZE_LOG2, DEFAULT_RESERVE_CAPACITY, DEFAULT_RESERVE_CAPACITY_LOG2,
+    DEFAULT_SECTION_SIZE, dev, mainnet, mainnet_contracts, testnet, testnet_contracts,
+};
 #[cfg(feature = "std")]
 pub use display::Loggable;
 pub use display::{DisplaySwarmSpec, SwarmSpecExt};

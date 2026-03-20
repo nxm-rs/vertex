@@ -15,9 +15,9 @@
 
 extern crate alloc;
 
-pub mod error;
-pub mod handle;
-pub mod service;
+mod error;
+mod handle;
+mod service;
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -27,7 +27,7 @@ use vertex_swarm_api::{
     BandwidthMode, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmError, SwarmIdentity,
     SwarmPeerState, SwarmResult, SwarmSettlementProvider,
 };
-use vertex_swarm_bandwidth::{Accounting, AccountingPeerHandle};
+use vertex_swarm_bandwidth::Accounting;
 use vertex_swarm_node::ClientCommand;
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -183,9 +183,6 @@ fn current_timestamp() -> u64 {
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
-
-/// Type alias for the pseudosettle peer handle.
-pub type PseudosettlePeerHandle = AccountingPeerHandle;
 
 /// Create a new pseudosettle-only accounting instance.
 ///

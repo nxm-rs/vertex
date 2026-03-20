@@ -11,7 +11,7 @@ use vertex_net_codec::{Codec, ProtoMessage, decode_u256_be, encode_u256_be};
 use crate::error::PricingError;
 
 /// Codec for pricing protocol messages.
-pub type PricingCodec = Codec<AnnouncePaymentThreshold, PricingError>;
+pub(crate) type PricingCodec = Codec<AnnouncePaymentThreshold, PricingError>;
 
 /// Payment threshold announcement message.
 #[derive(Debug, Clone, PartialEq, Eq)]

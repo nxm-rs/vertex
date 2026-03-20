@@ -44,11 +44,13 @@
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
 
+#[allow(unreachable_pub)]
 mod behaviour;
 mod events;
+#[allow(unreachable_pub)]
 mod handler;
+#[allow(unreachable_pub)]
 pub(crate) mod upgrade;
 
-pub use behaviour::{ClientBehaviour, Config as BehaviourConfig};
+pub(crate) use behaviour::{ClientBehaviour, Config as BehaviourConfig};
 pub use events::{ClientCommand, ClientEvent, PseudosettleEvent};
-pub use handler::{ClientHandler, Config as HandlerConfig};

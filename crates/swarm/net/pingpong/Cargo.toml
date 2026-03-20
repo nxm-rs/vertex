@@ -14,6 +14,7 @@ workspace = true
 ## vertex
 vertex-net-codec.workspace = true
 vertex-net-ratelimiter.workspace = true
+vertex-swarm-net-handler-core.workspace = true
 vertex-observability.workspace = true
 vertex-swarm-net-headers.workspace = true
 vertex-swarm-net-proto.workspace = true

@@ -1,11 +1,12 @@
 //! Pushsync protocol for Swarm chunk push and storage receipt.
 
 mod codec;
-mod error;
-mod protocol;
+pub use codec::{Delivery, Receipt};
 
-pub use codec::{Delivery, DeliveryCodec, Receipt, ReceiptCodec};
+mod error;
 pub use error::PushsyncError;
+
+mod protocol;
 pub use protocol::{
     PushsyncInboundProtocol, PushsyncOutboundProtocol, PushsyncResponder, inbound, outbound,
 };

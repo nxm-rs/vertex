@@ -7,10 +7,10 @@ use vertex_net_codec::{Codec, ProtoMessage};
 use crate::error::RetrievalError;
 
 /// Codec for retrieval request messages.
-pub type RequestCodec = Codec<Request, RetrievalError>;
+pub(crate) type RequestCodec = Codec<Request, RetrievalError>;
 
 /// Codec for retrieval delivery messages.
-pub type DeliveryCodec = Codec<Delivery, RetrievalError>;
+pub(crate) type DeliveryCodec = Codec<Delivery, RetrievalError>;
 
 /// A request for a chunk by its address.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -30,6 +30,68 @@ macro_rules! assert_proto_roundtrip {
     }};
 }
 
+/// Generates a protocol error enum with common variants for protobuf-based protocols.
+///
+/// All protocol error types share `ConnectionClosed`, `Protobuf`, and `Io` variants
+/// plus a `From<Infallible>` impl. This macro generates those, and you can add
+/// protocol-specific variants after the macro invocation.
+///
+/// # Example
+///
+/// ```ignore
+/// vertex_net_codec::protocol_error! {
+///     /// Pushsync protocol errors.
+///     pub enum PushsyncError {
+///         /// Invalid chunk address length.
+///         #[error("invalid chunk address length: expected 32, got {0}")]
+///         #[strum(serialize = "invalid_address_length")]
+///         InvalidAddressLength(usize),
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! protocol_error {
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $(
+                $(#[$variant_meta:meta])*
+                $variant:ident $( ( $($field:ty),* $(,)? ) )? $( { $($struct_field:ident : $struct_ty:ty),* $(,)? } )?,
+            )*
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, ::thiserror::Error, ::strum::IntoStaticStr)]
+        #[strum(serialize_all = "snake_case")]
+        $vis enum $name {
+            /// Connection closed before operation completed.
+            #[error("connection closed")]
+            ConnectionClosed,
+
+            $(
+                $(#[$variant_meta])*
+                $variant $( ( $($field),* ) )? $( { $($struct_field : $struct_ty),* } )?,
+            )*
+
+            /// Protobuf encoding/decoding error.
+            #[error("protobuf error: {0}")]
+            #[strum(serialize = "protobuf_error")]
+            Protobuf(#[from] ::quick_protobuf_codec::Error),
+
+            /// I/O error during stream operations.
+            #[error("io error: {0}")]
+            #[strum(serialize = "io_error")]
+            Io(#[from] ::std::io::Error),
+        }
+
+        impl From<::std::convert::Infallible> for $name {
+            fn from(never: ::std::convert::Infallible) -> Self {
+                match never {}
+            }
+        }
+    };
+}
+
 use std::marker::PhantomData;
 
 use bytes::BytesMut;

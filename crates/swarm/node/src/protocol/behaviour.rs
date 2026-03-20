@@ -18,7 +18,7 @@ use libp2p::{
     },
 };
 use tokio::sync::mpsc;
-use tracing::{debug, trace, warn};
+use tracing::{debug, warn};
 use vertex_swarm_primitives::OverlayAddress;
 
 use super::{
@@ -163,25 +163,49 @@ impl ClientBehaviour {
             }
             ClientCommand::ServeChunk {
                 peer,
+                request_id,
                 address: _,
-                data: _,
-                stamp: _,
+                data,
+                stamp,
             } => {
-                // TODO: Implement serving chunks (responding to retrieval requests)
-                if self.overlay_peers.contains_key(&peer) {
-                    trace!("ServeChunk not yet implemented");
+                if let Some(&peer_id) = self.overlay_peers.get(&peer) {
+                    debug!(%peer_id, %peer, %request_id, "Serving chunk");
+                    self.push_event(ToSwarm::NotifyHandler {
+                        peer_id,
+                        handler: libp2p::swarm::NotifyHandler::Any,
+                        event: HandlerCommand::ServeChunk {
+                            request_id,
+                            data,
+                            stamp,
+                        },
+                    });
+                } else {
+                    debug!(%peer, "Unknown peer for serve chunk");
                 }
             }
             ClientCommand::SendReceipt {
                 peer,
-                address: _,
-                signature: _,
-                nonce: _,
-                storage_radius: _,
+                request_id,
+                address,
+                signature,
+                nonce,
+                storage_radius,
             } => {
-                // TODO: Implement sending receipts
-                if self.overlay_peers.contains_key(&peer) {
-                    trace!("SendReceipt not yet implemented");
+                if let Some(&peer_id) = self.overlay_peers.get(&peer) {
+                    debug!(%peer_id, %peer, %request_id, "Sending receipt");
+                    self.push_event(ToSwarm::NotifyHandler {
+                        peer_id,
+                        handler: libp2p::swarm::NotifyHandler::Any,
+                        event: HandlerCommand::SendReceipt {
+                            request_id,
+                            address,
+                            signature,
+                            nonce,
+                            storage_radius,
+                        },
+                    });
+                } else {
+                    debug!(%peer, "Unknown peer for send receipt");
                 }
             }
             ClientCommand::SendPseudosettle { peer, amount } => {

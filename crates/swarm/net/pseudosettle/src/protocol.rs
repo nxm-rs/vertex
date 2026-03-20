@@ -155,8 +155,8 @@ impl HeaderedOutbound for PseudosettleOutboundInner {
     }
 }
 
-pub type PseudosettleInboundProtocol = Inbound<PseudosettleInboundInner>;
-pub type PseudosettleOutboundProtocol = Outbound<PseudosettleOutboundInner>;
+pub(crate) type PseudosettleInboundProtocol = Inbound<PseudosettleInboundInner>;
+pub(crate) type PseudosettleOutboundProtocol = Outbound<PseudosettleOutboundInner>;
 
 pub fn inbound() -> PseudosettleInboundProtocol {
     Inbound::new(PseudosettleInboundInner::new())
@@ -166,32 +166,32 @@ pub fn outbound(payment: Payment) -> PseudosettleOutboundProtocol {
     Outbound::new(PseudosettleOutboundInner::new(payment))
 }
 
-/// Validate that a timestamp is within acceptable bounds of the current time.
-pub fn validate_timestamp(timestamp: i64, tolerance_secs: u64) -> Result<(), PseudosettleError> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| PseudosettleError::InvalidTimestamp("system time before unix epoch".into()))?
-        .as_nanos() as i64;
-
-    let tolerance_nanos = (tolerance_secs as i64) * 1_000_000_000;
-    let diff = (now - timestamp).abs();
-
-    if diff > tolerance_nanos {
-        return Err(PseudosettleError::InvalidTimestamp(format!(
-            "timestamp {} is {}s away from current time (tolerance: {}s)",
-            timestamp,
-            diff / 1_000_000_000,
-            tolerance_secs
-        )));
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloy_primitives::U256;
+
+    /// Validate that a timestamp is within acceptable bounds of the current time.
+    fn validate_timestamp(timestamp: i64, tolerance_secs: u64) -> Result<(), PseudosettleError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| PseudosettleError::InvalidTimestamp("system time before unix epoch".into()))?
+            .as_nanos() as i64;
+
+        let tolerance_nanos = (tolerance_secs as i64) * 1_000_000_000;
+        let diff = (now - timestamp).abs();
+
+        if diff > tolerance_nanos {
+            return Err(PseudosettleError::InvalidTimestamp(format!(
+                "timestamp {} is {}s away from current time (tolerance: {}s)",
+                timestamp,
+                diff / 1_000_000_000,
+                tolerance_secs
+            )));
+        }
+
+        Ok(())
+    }
 
     #[test]
     fn test_validate_timestamp_valid() {
