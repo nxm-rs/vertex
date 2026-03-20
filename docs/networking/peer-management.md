@@ -1,42 +1,41 @@
 # Peer Management
 
-Protocol-agnostic peer state management with Arc-per-peer pattern, provided by `vertex-net-peers`.
+Protocol-agnostic peer state management with Arc-per-peer pattern.
+
+## Crate Structure
+
+Peer management is split across four crates:
+
+| Crate | Responsibility |
+|-------|---------------|
+| `vertex-net-peer-registry` | Bidirectional Id ↔ PeerId mapping, peer registration lifecycle |
+| `vertex-net-peer-store` | Peer persistence (snapshot save/load, memory and file backends) |
+| `vertex-net-peer-score` | Atomic peer scoring with fixed-point arithmetic |
+| `vertex-net-peer-backoff` | Exponential backoff for failed connections |
+
+All crates are protocol-agnostic and operate below the Swarm layer.
 
 ## Architecture
 
-```
-┌───────────────────────────────────────────────────────┐
-│                  NetPeerManager<Id>                   │
-│  ┌────────────────┐  ┌────────────────┐              │
-│  │ peers: RwLock  │  │ PeerRegistry   │              │
-│  │ <HashMap<Id,   │  │ Id ↔ PeerId    │              │
-│  │  Arc<State>>>  │  │ bidirectional  │              │
-│  └────────────────┘  └────────────────┘              │
-└───────────────────────────────────────────────────────┘
-                              │
-                    Arc::clone() (cheap)
-                              │
-           ┌──────────────────┼──────────────────┐
-           ▼                  ▼                  ▼
-   RetrievalHandler    PushSyncHandler    PricingHandler
-   (holds Arc clone)   (holds Arc clone)  (holds Arc clone)
-                              │
-                              ▼
-              ┌───────────────────────────────┐
-              │       PeerState<Id>           │
-              │  ┌─────────────────────────┐  │
-              │  │ Atomics (lock-free)     │  │
-              │  │ - score                 │  │
-              │  │ - state                 │  │
-              │  │ - latency               │  │
-              │  │ - counters              │  │
-              │  └─────────────────────────┘  │
-              │  ┌─────────────────────────┐  │
-              │  │ Per-peer RwLock (cold)  │  │
-              │  │ - multiaddrs            │  │
-              │  │ - ban_info              │  │
-              │  └─────────────────────────┘  │
-              └───────────────────────────────┘
+```mermaid
+graph TD
+    subgraph "NetPeerManager&lt;Id&gt;"
+        peers["peers: RwLock&lt;HashMap&lt;Id, Arc&lt;State&gt;&gt;&gt;"]
+        registry["PeerRegistry<br/>Id ↔ PeerId bidirectional"]
+    end
+
+    peers -->|"Arc::clone() (cheap)"| handler1["RetrievalHandler<br/>(holds Arc clone)"]
+    peers -->|"Arc::clone() (cheap)"| handler2["PushSyncHandler<br/>(holds Arc clone)"]
+    peers -->|"Arc::clone() (cheap)"| handler3["PricingHandler<br/>(holds Arc clone)"]
+
+    handler1 --> state
+    handler2 --> state
+    handler3 --> state
+
+    subgraph state["PeerState&lt;Id&gt;"]
+        atomics["Atomics (lock-free)<br/>score, state, latency, counters"]
+        locked["Per-peer RwLock (cold)<br/>multiaddrs, ban_info"]
+    end
 ```
 
 ## Arc-per-Peer Pattern
@@ -47,7 +46,7 @@ The core design principle: protocol handlers get `Arc<PeerState>` once, then all
 
 | Operation | Lock | Contention |
 |-----------|------|------------|
-| Get peer Arc | Global map read | Brief, amortized by caching Arc |
+| Get peer Arc | Global map read | Brief, amortised by caching Arc |
 | Create new peer | Global map write | Rare (once per peer lifetime) |
 | Score update | None (atomic) | Zero |
 | State check | None (atomic) | Zero |
@@ -61,43 +60,25 @@ The core design principle: protocol handlers get `Arc<PeerState>` once, then all
 
 Any type implementing `Clone + Eq + Hash + Send + Sync + Debug + Serialize + Deserialize` automatically implements `NetPeerId`. No explicit implementation needed.
 
-```rust
-#[derive(Clone, Hash, Eq, PartialEq, Debug, Serialize, Deserialize)]
-struct OverlayAddress([u8; 32]);
-
-// Works automatically!
-let manager = NetPeerManager::<OverlayAddress>::with_defaults();
-```
-
-### PeerState<Id>
+### PeerState
 
 Per-peer state with atomic hot paths and per-peer locked cold paths.
 
-**Atomic fields (hot path):**
-- `score` - Fixed-point reputation score
-- `state` - ConnectionState as u8
-- `latency_nanos` - Last measured RTT
-- `connection_successes`, `connection_timeouts`, `protocol_errors` - Counters
-- `last_seen` - Unix timestamp
-- `is_full_node` - Node capability flag
+**Atomic fields (hot path):** score, connection state, latency, connection counters, last-seen timestamp, full-node flag.
 
-**Locked fields (cold path):**
-- `multiaddrs` - Known addresses for this peer
-- `ban_info` - Ban metadata if banned
+**Locked fields (cold path):** multiaddrs, ban metadata.
 
 ### ConnectionState
 
-```rust
-enum ConnectionState {
-    Known,       // Discovered but not connected
-    Connecting,  // Dial in progress
-    Connected,   // Handshake complete
-    Disconnected,// Was connected, may reconnect
-    Banned,      // Will not reconnect
-}
-```
+| State | Meaning |
+|-------|---------|
+| `Known` | Discovered but not connected |
+| `Connecting` | Dial in progress |
+| `Connected` | Handshake complete |
+| `Disconnected` | Was connected, may reconnect |
+| `Banned` | Will not reconnect |
 
-### PeerRegistry<Id>
+### PeerRegistry
 
 Bidirectional mapping between protocol IDs (e.g., `OverlayAddress`) and libp2p `PeerId`.
 
@@ -106,84 +87,20 @@ Handles:
 - Same peer, same PeerId reconnection (returns `RegisterResult::SamePeer`)
 - Peer changing overlay address (old mapping removed)
 
-### EventEmitter<Id>
+### EventEmitter
 
-Non-blocking broadcast channel for peer events.
-
-Events:
-- `Discovered` - New peer added to manager
-- `Connecting` - Dial started
-- `Connected` - Handshake complete
-- `Disconnected` - Connection closed
-- `Banned` / `Unbanned` - Ban status changed
-- `StateChanged` - Any state transition
-- `ScoreBelowThreshold` - Score dropped below ban threshold
+Non-blocking broadcast channel for peer events: `Discovered`, `Connecting`, `Connected`, `Disconnected`, `Banned`, `Unbanned`, `StateChanged`, `ScoreBelowThreshold`.
 
 Slow subscribers drop events independently (no backpressure on other subscribers).
 
 ## Persistence
 
-### NetPeerStore Trait
-
-```rust
-trait NetPeerStore<Id>: Send + Sync {
-    fn load_all(&self) -> Result<Vec<NetPeerSnapshot<Id>>, PeerStoreError>;
-    fn save(&self, snapshot: &NetPeerSnapshot<Id>) -> Result<(), PeerStoreError>;
-    fn save_batch(&self, snapshots: &[NetPeerSnapshot<Id>]) -> Result<(), PeerStoreError>;
-    fn remove(&self, id: &Id) -> Result<(), PeerStoreError>;
-    fn get(&self, id: &Id) -> Result<Option<NetPeerSnapshot<Id>>, PeerStoreError>;
-    fn count(&self) -> Result<usize, PeerStoreError>;
-    fn clear(&self) -> Result<(), PeerStoreError>;
-    fn flush(&self) -> Result<(), PeerStoreError>;
-}
-```
-
-Auto-impl provided for `&T`, `Box<T>`, `Arc<T>`.
-
-### Implementations
+The `NetPeerStore` trait provides snapshot-based persistence with `load_all`, `save`, `save_batch`, `remove`, `get`, `count`, `clear`, and `flush` operations. Auto-impl provided for `&T`, `Box<T>`, `Arc<T>`.
 
 | Store | Use Case |
 |-------|----------|
 | `MemoryPeerStore` | Testing, no persistence |
 | `FilePeerStore` | JSON file, atomic writes via temp file + rename |
-
-## Usage
-
-```rust
-use vertex_net_peers::{NetPeerManager, PeerEvent};
-
-let manager = NetPeerManager::<OverlayAddress>::with_defaults();
-
-// Get peer state (cached by protocol handlers)
-let peer = manager.peer(overlay);
-
-// Atomic operations (hot path)
-peer.record_success(latency);
-peer.add_score(1.0);
-let score = peer.score();
-
-// Per-peer locked operations (cold path)
-peer.update_multiaddrs(addrs);
-
-// Connection lifecycle
-manager.start_connecting(id);
-manager.on_connected(id, peer_id, is_full_node);
-manager.on_disconnected_by_peer_id(&peer_id);
-
-// Event subscription
-let mut rx = manager.subscribe();
-while let Ok(event) = rx.recv().await {
-    match event {
-        PeerEvent::Connected { id, .. } => { /* ... */ }
-        PeerEvent::Banned { id, reason } => { /* ... */ }
-        _ => {}
-    }
-}
-
-// Persistence
-manager.load_from_store(&store)?;
-manager.save_to_store(&store)?;
-```
 
 ## Scoring
 
@@ -207,11 +124,6 @@ All types are `Send + Sync`. The design ensures:
 
 Protocol handlers should cache the `Arc<PeerState>` to avoid repeated map lookups.
 
-## Relationship to vertex-net-peer
+## See Also
 
-| Crate | Scope |
-|-------|-------|
-| `vertex-net-peer` | Single-peer utilities: address classification, NAT, local network detection |
-| `vertex-net-peers` | Multi-peer management: registry, state, events, persistence |
-
-Both are protocol-agnostic and operate below the Swarm layer.
+- [Address Management](address-management.md) - Address classification and NAT

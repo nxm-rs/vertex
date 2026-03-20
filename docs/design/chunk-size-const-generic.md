@@ -8,217 +8,59 @@ Make chunk body size a compile-time const generic that flows through the type sy
 
 ### Constants (nectar-primitives)
 
-```rust
-// bmt/constants.rs
-pub(crate) const HASH_SIZE: usize = 32;
-pub(crate) const BRANCHES: usize = 128;
-pub const MAX_DATA_LENGTH: usize = BRANCHES * SEGMENT_SIZE; // 4096
-```
+The BMT constants module defines `HASH_SIZE` (32), `BRANCHES` (128), and the derived `MAX_DATA_LENGTH` (4096, computed as `BRANCHES * SEGMENT_SIZE`). `HASH_SIZE` and `BRANCHES` have crate-level visibility, while `MAX_DATA_LENGTH` is public.
 
 ### ChunkTypeSet (nectar-primitives)
 
-```rust
-pub trait ChunkTypeSet: Send + Sync + 'static {
-    fn supports(type_id: ChunkTypeId) -> bool;
-    fn deserialize(bytes: &[u8]) -> Result<AnyChunk>;
-    fn supported_types() -> &'static [ChunkTypeId];
-}
+`ChunkTypeSet` is currently a trait with static methods `supports(ChunkTypeId) -> bool`, `deserialize(&[u8]) -> Result<AnyChunk>`, and `supported_types() -> &'static [ChunkTypeId]`. `StandardChunkSet` is the concrete implementation. Neither the trait nor the struct is parameterized by body size.
 
-pub struct StandardChunkSet;
-impl ChunkTypeSet for StandardChunkSet { ... }
-```
+### SwarmSpec (vertex-swarm-spec)
 
-### SwarmSpec (vertex-swarmspec)
-
-```rust
-pub trait SwarmSpec: Send + Sync + Unpin + Debug + 'static {
-    type ChunkSet: ChunkTypeSet;
-
-    fn chunk_size(&self) -> usize;  // Runtime method
-    // ...
-}
-
-impl SwarmSpec for Hive {
-    type ChunkSet = StandardChunkSet;
-
-    fn chunk_size(&self) -> usize {
-        self.chunk_size  // Stored as field
-    }
-}
-```
+`SwarmSpec` is a trait with an associated type `ChunkSet: ChunkTypeSet` and a runtime method `chunk_size(&self) -> usize`. The `Hive` implementation stores chunk size as a field and returns it from `chunk_size()`.
 
 ## Proposed Design
 
 ### Core Idea
 
-Single const generic `BODY_SIZE` on `ChunkTypeSet`, defaulting to 4096:
-
-```rust
-pub trait ChunkTypeSet<const BODY_SIZE: usize = 4096>: Send + Sync + 'static {
-    fn supports(type_id: ChunkTypeId) -> bool;
-    fn deserialize(bytes: &[u8]) -> Result<AnyChunk<BODY_SIZE>>;
-    fn supported_types() -> &'static [ChunkTypeId];
-
-    /// Body size in bytes (derived from const generic)
-    const BODY_SIZE: usize = BODY_SIZE;
-}
-```
+Introduce a single const generic `BODY_SIZE` on `ChunkTypeSet`, defaulting to 4096. This const generic then propagates through all chunk types and up to `SwarmSpec`.
 
 ### Layer 1: nectar-primitives
 
-**bmt/constants.rs** - Add default constant:
+The following table summarises the changes in nectar-primitives:
 
-```rust
-pub const DEFAULT_BODY_SIZE: usize = 4096;  // 128 * 32
-```
+| File | Change |
+|------|--------|
+| `bmt/constants.rs` | Add `DEFAULT_BODY_SIZE: usize = 4096` |
+| `chunk/traits.rs` | Add `const BODY_SIZE: usize = 4096` to `Chunk` and `BmtChunk` traits; add associated const `MAX_DATA_SIZE` defaulting to `BODY_SIZE` |
+| `chunk/content.rs` | Parameterize `ContentChunk` with `const BODY_SIZE: usize = 4096`; validate data length against `BODY_SIZE` in the constructor |
+| `chunk/any_chunk.rs` | Parameterize `AnyChunk` with `const BODY_SIZE: usize = 4096`; variants wrap `ContentChunk<BODY_SIZE>` and `SingleOwnerChunk<BODY_SIZE>` |
+| `chunk/chunk_type_set.rs` | Add `const BODY_SIZE: usize = 4096` to `ChunkTypeSet` trait and `StandardChunkSet` struct; `deserialize` returns `AnyChunk<BODY_SIZE>` |
 
-**chunk/traits.rs** - Parameterize core traits:
+All existing code continues to compile using the default value.
 
-```rust
-pub trait Chunk<const BODY_SIZE: usize = 4096>: Send + Sync + 'static {
-    type Header: ChunkHeader;
+### Layer 2: vertex-swarm-spec
 
-    fn address(&self) -> &ChunkAddress;
-    fn header(&self) -> &Self::Header;
-    fn data(&self) -> &Bytes;
+The `SwarmSpec` trait gains an associated const `BODY_SIZE: usize = 4096`. Its associated type bound becomes `ChunkSet: ChunkTypeSet<{ Self::BODY_SIZE }>`. The `chunk_size()` method gets a default implementation returning `Self::BODY_SIZE`.
 
-    fn size(&self) -> usize {
-        self.header().bytes().len() + self.data().len()
-    }
-
-    /// Maximum data size for this chunk type
-    const MAX_DATA_SIZE: usize = BODY_SIZE;
-}
-
-pub trait BmtChunk<const BODY_SIZE: usize = 4096>: Chunk<BODY_SIZE> {
-    fn span(&self) -> u64;
-}
-```
-
-**chunk/content.rs** - Parameterize ContentChunk:
-
-```rust
-pub struct ContentChunk<const BODY_SIZE: usize = 4096> {
-    address: ChunkAddress,
-    header: ContentHeader,
-    data: Bytes,
-}
-
-impl<const BODY_SIZE: usize> ContentChunk<BODY_SIZE> {
-    pub fn new(data: &[u8]) -> Result<Self> {
-        if data.len() > BODY_SIZE {
-            return Err(ChunkError::data_too_large(data.len(), BODY_SIZE));
-        }
-        // ...
-    }
-}
-
-impl<const BODY_SIZE: usize> Chunk<BODY_SIZE> for ContentChunk<BODY_SIZE> { ... }
-```
-
-**chunk/any_chunk.rs** - Parameterize AnyChunk:
-
-```rust
-pub enum AnyChunk<const BODY_SIZE: usize = 4096> {
-    Content(ContentChunk<BODY_SIZE>),
-    SingleOwner(SingleOwnerChunk<BODY_SIZE>),
-}
-```
-
-**chunk/chunk_type_set.rs** - Parameterize ChunkTypeSet:
-
-```rust
-pub trait ChunkTypeSet<const BODY_SIZE: usize = 4096>: Send + Sync + 'static {
-    const BODY_SIZE: usize = BODY_SIZE;
-
-    fn supports(type_id: ChunkTypeId) -> bool;
-    fn deserialize(bytes: &[u8]) -> Result<AnyChunk<BODY_SIZE>>;
-    fn supported_types() -> &'static [ChunkTypeId];
-}
-
-pub struct StandardChunkSet<const BODY_SIZE: usize = 4096>;
-
-impl<const BODY_SIZE: usize> ChunkTypeSet<BODY_SIZE> for StandardChunkSet<BODY_SIZE> {
-    fn deserialize(bytes: &[u8]) -> Result<AnyChunk<BODY_SIZE>> {
-        // ...
-    }
-    // ...
-}
-```
-
-### Layer 2: vertex-swarmspec
-
-**api.rs** - SwarmSpec uses ChunkSet's const:
-
-```rust
-pub trait SwarmSpec: Send + Sync + Unpin + Debug + 'static {
-    /// Body size for chunks on this network
-    const BODY_SIZE: usize = 4096;
-
-    /// The set of chunk types supported by this network
-    type ChunkSet: ChunkTypeSet<{ Self::BODY_SIZE }>;
-
-    // Other methods...
-
-    /// Returns the chunk body size (derived from const)
-    fn chunk_size(&self) -> usize {
-        Self::BODY_SIZE
-    }
-}
-```
-
-**spec.rs** - Hive implementation:
-
-```rust
-// For standard networks (mainnet, testnet)
-impl SwarmSpec for Hive {
-    const BODY_SIZE: usize = 4096;
-    type ChunkSet = StandardChunkSet<4096>;
-
-    // chunk_size() uses default impl
-}
-
-// For custom networks with different sizes, use a generic Hive
-pub struct Hive<const BODY_SIZE: usize = 4096> {
-    // fields...
-}
-
-impl<const BODY_SIZE: usize> SwarmSpec for Hive<BODY_SIZE> {
-    const BODY_SIZE: usize = BODY_SIZE;
-    type ChunkSet = StandardChunkSet<BODY_SIZE>;
-}
-```
+The `Hive` struct becomes parameterized as `Hive<const BODY_SIZE: usize = 4096>`, implementing `SwarmSpec` with `BODY_SIZE` and `ChunkSet = StandardChunkSet<BODY_SIZE>`.
 
 ### Type Aliases for Convenience
 
-```rust
-// nectar-primitives
-pub type DefaultChunk = ContentChunk<4096>;
-pub type DefaultChunkSet = StandardChunkSet<4096>;
-
-// vertex-swarmspec
-pub type MainnetHive = Hive<4096>;
-```
+For ergonomics, type aliases are provided: `DefaultChunk` for `ContentChunk<4096>`, `DefaultChunkSet` for `StandardChunkSet<4096>`, and `MainnetHive` for `Hive<4096>`.
 
 ## Migration Path
 
 ### Phase 1: Add const generic with default (non-breaking)
 
-1. Add `const BODY_SIZE: usize = 4096` to traits
-2. Existing code continues to work (uses default)
-3. All type aliases point to `<4096>` variants
+Add `const BODY_SIZE: usize = 4096` to all relevant traits and structs. Because the default matches the current hard-coded value, all existing code continues to compile without changes. Introduce type aliases pointing to the `<4096>` variants.
 
 ### Phase 2: Update downstream consumers
 
-1. Update `SwarmSpec` to use const from `ChunkSet`
-2. Update storage layers to be generic over body size
-3. Update networking to validate chunk sizes at compile time
+Update `SwarmSpec` to derive its body size from the `ChunkSet` const. Update storage layers to be generic over body size. Update networking to validate chunk sizes at compile time.
 
 ### Phase 3: Remove runtime chunk_size field
 
-1. Remove `chunk_size` field from `Hive`
-2. Remove `chunk_size()` method or make it return `Self::BODY_SIZE`
-3. `HiveBuilder::chunk_size()` becomes a type-level choice
+Remove the `chunk_size` field from `Hive`. Either remove the `chunk_size()` method or have it return `Self::BODY_SIZE`. The builder's `chunk_size()` setting becomes a type-level choice rather than a runtime value.
 
 ## Trade-offs
 
@@ -233,23 +75,11 @@ pub type MainnetHive = Hive<4096>;
 
 - **Type complexity**: More generic parameters in signatures
 - **Monomorphization**: Separate code generated per size (minimal impact)
-- **Less runtime flexibility**: Can't change chunk size without recompilation
+- **Less runtime flexibility**: Cannot change chunk size without recompilation
 
 ### Why single const generic?
 
-Starting with just `BODY_SIZE` keeps the design simple. If needed later, we could decompose into `BRANCHES` and `HASH_SIZE`:
-
-```rust
-// Future refinement (not proposed now)
-pub trait ChunkTypeSet<
-    const BRANCHES: usize = 128,
-    const HASH_SIZE: usize = 32,
->: Send + Sync + 'static {
-    const BODY_SIZE: usize = BRANCHES * HASH_SIZE;
-}
-```
-
-This can be done as a follow-up refactor without breaking the API.
+Starting with just `BODY_SIZE` keeps the design simple. If needed later, decomposing into separate `BRANCHES` and `HASH_SIZE` const generics (with `BODY_SIZE` derived as their product) can be done as a follow-up refactor without breaking the API.
 
 ## Design Decisions
 
@@ -261,14 +91,4 @@ This can be done as a follow-up refactor without breaking the API.
 
 ## Implementation Order
 
-1. `nectar-primitives/bmt/constants.rs` - Add `DEFAULT_BODY_SIZE`
-2. `nectar-primitives/bmt/hasher.rs` - Parameterize `Hasher<const BODY_SIZE: usize>`
-3. `nectar-primitives/chunk/traits.rs` - Add const generic to `Chunk`, `BmtChunk`
-4. `nectar-primitives/chunk/content.rs` - Parameterize `ContentChunk`
-5. `nectar-primitives/chunk/single_owner.rs` - Parameterize `SingleOwnerChunk`
-6. `nectar-primitives/chunk/any_chunk.rs` - Parameterize `AnyChunk`
-7. `nectar-primitives/chunk/chunk_type_set.rs` - Parameterize `ChunkTypeSet`
-8. `nectar-primitives/lib.rs` - Add type aliases, update exports
-9. `vertex-swarmspec/api.rs` - Update `SwarmSpec` trait
-10. `vertex-swarmspec/spec.rs` - Update `Hive` implementation
-11. Downstream crates - Update as needed
+The implementation proceeds bottom-up through the dependency graph. First, add `DEFAULT_BODY_SIZE` to `nectar-primitives/bmt/constants.rs`. Then parameterize the BMT `Hasher` in `nectar-primitives/bmt/hasher.rs`. Next, add the const generic to the `Chunk` and `BmtChunk` traits in `nectar-primitives/chunk/traits.rs`, followed by the concrete types: `ContentChunk`, `SingleOwnerChunk`, `AnyChunk`, and `ChunkTypeSet` (along with `StandardChunkSet`). Update `nectar-primitives/lib.rs` with type aliases and updated exports. Then update `vertex-swarm-spec/api.rs` (`SwarmSpec` trait) and `vertex-swarm-spec/spec.rs` (`Hive` implementation). Finally, update downstream crates as needed.

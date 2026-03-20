@@ -15,39 +15,99 @@ Compatible with all Swarm protocols: postage stamps, push/pull sync, storage inc
 
 Vertex is split into layered crates that can be used independently:
 
-### Node Layer
-| Crate | Description |
-|-------|-------------|
-| `vertex-node-api` | Protocol lifecycle traits and node configuration |
-| `vertex-node-types` | Infrastructure types (database, RPC, executor) |
-| `vertex-node-core` | Node implementation with CLI and configuration |
-| `vertex-node-builder` | Type-state builder for node construction |
+### Swarm Protocol
 
-### Swarm Layer
 | Crate | Description |
 |-------|-------------|
-| `vertex-swarm-api` | Swarm protocol traits (topology, storage, sync) |
-| `vertex-swarm-primitives` | Core types, addresses, chunk handling |
-| `vertex-swarm-identity` | Cryptographic identity and handshake |
-| `vertex-swarm-kademlia` | Kademlia DHT implementation |
-| `vertex-swarm-bandwidth` | SWAP-compatible bandwidth accounting |
-| `vertex-swarm-topology` | Peer discovery and neighbourhood management |
-| `vertex-swarm-localstore` | Local chunk storage |
-| `vertex-swarm-storer` | Full storer node implementation |
-| `vertex-swarm-node` | Client node for upload/download |
+| `vertex-swarm-api` | Core protocol traits (topology, storage, bandwidth accounting) |
+| `vertex-swarm-spec` | Network specification (`SwarmSpec` trait) |
+| `vertex-swarm-forks` | Hardfork definitions (timestamp-based activation) |
+| `vertex-swarm-primitives` | Core types (`OverlayAddress`, `SwarmNodeType`) |
+| `vertex-swarm-identity` | Node identity and signing |
+| `vertex-swarm-node` | `SwarmNode` behaviour and client handler |
+| `vertex-swarm-builder` | Node construction and launch |
+| `vertex-swarm-rpc` | gRPC service implementations |
+| `vertex-swarm-test-utils` | Test fixtures and helpers |
 
-### Network Layer
+### Swarm Peers
+
 | Crate | Description |
 |-------|-------------|
-| `vertex-net-p2p` | libp2p networking stack |
-| `vertex-net-primitives` | Network addressing and peer types |
+| `vertex-swarm-peer` | `SwarmPeer` type (libp2p boundary for `Multiaddr`) |
+| `vertex-swarm-peer-manager` | Peer lifecycle management |
+| `vertex-swarm-peer-score` | Peer scoring |
+| `vertex-swarm-topology` | Kademlia DHT, peer discovery, neighbourhood management |
+
+### Swarm Bandwidth
+
+| Crate | Description |
+|-------|-------------|
+| `vertex-swarm-bandwidth` | Per-peer bandwidth handles, lock-free recording |
+| `vertex-swarm-bandwidth-pricing` | Pricing strategy |
+| `vertex-swarm-bandwidth-pseudosettle` | Pseudosettle provider |
+| `vertex-swarm-bandwidth-chequebook` | Chequebook types |
+| `vertex-swarm-bandwidth-swap` | SWAP settlement provider |
+
+### Swarm Network Protocols
+
+| Crate | Description |
+|-------|-------------|
+| `vertex-swarm-net-proto` | Protobuf message definitions |
+| `vertex-swarm-net-handler-core` | Base handler types |
+| `vertex-swarm-net-headers` | Headered protocol abstraction |
+| `vertex-swarm-net-handshake` | Peer authentication (SYN/SYNACK/ACK) |
+| `vertex-swarm-net-hive` | Peer discovery gossip |
+| `vertex-swarm-net-identify` | libp2p identify integration |
+| `vertex-swarm-net-pingpong` | Connection liveness |
+| `vertex-swarm-net-pricing` | Price announcements |
+| `vertex-swarm-net-pseudosettle` | Bandwidth settlement |
+| `vertex-swarm-net-pushsync` | Chunk push/receipt |
+| `vertex-swarm-net-retrieval` | Chunk request/response |
+| `vertex-swarm-net-swap` | SWAP settlement protocol |
+
+### Swarm Storage
+
+| Crate | Description |
+|-------|-------------|
+| `vertex-swarm-localstore` | Storage configuration |
+| `vertex-swarm-storer` | Storer node storage |
+| `vertex-swarm-redistribution` | Storage incentives |
+
+### Node Infrastructure
+
+| Crate | Description |
+|-------|-------------|
+| `vertex-node-api` | `NodeProtocol`, `InfrastructureContext` traits |
+| `vertex-node-builder` | Type-state builder framework |
+| `vertex-node-commands` | CLI commands |
+| `vertex-node-core` | CLI configuration and logging |
+
+### Networking
+
+| Crate | Description |
+|-------|-------------|
+| `vertex-net-codec` | Protobuf codec utilities |
+| `vertex-net-dialer` | Dial request tracking |
+| `vertex-net-dnsaddr` | DNS address resolution |
+| `vertex-net-local` | Local network detection |
+| `vertex-net-ratelimiter` | Rate limiting |
+| `vertex-net-utils` | Network utilities |
+| `vertex-net-peer-registry` | Peer registry |
+| `vertex-net-peer-store` | Peer persistence |
+| `vertex-net-peer-score` | Generic peer scoring |
+| `vertex-net-peer-backoff` | Exponential backoff |
 
 ### Supporting Crates
+
 | Crate | Description |
 |-------|-------------|
-| `vertex-rpc` | JSON-RPC server implementation |
-| `vertex-metrics` | Prometheus metrics |
-| `vertex-tasks` | Async task management |
+| `vertex-rpc-core` | gRPC service traits |
+| `vertex-rpc-server` | gRPC server implementation |
+| `vertex-storage` | Storage abstraction |
+| `vertex-storage-redb` | redb storage backend |
+| `vertex-metrics` | Lightweight metric primitives |
+| `vertex-observability` | Tracing, Prometheus, profiling |
+| `vertex-tasks` | Task lifecycle management |
 
 ## Goals
 

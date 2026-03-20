@@ -6,7 +6,7 @@
 //! - **Pricing**: Payment threshold exchange
 //! - **Retrieval**: Chunk request/response
 //! - **PushSync**: Chunk push with receipt
-//! - **Settlement**: SWAP cheques and pseudosettle
+//! - **Pseudosettle**: Bandwidth accounting settlement
 //!
 //! # Architecture
 //!
@@ -25,8 +25,7 @@
 //! the node sends an `ActivatePeer` command which transitions the handler to
 //! active state with:
 //! - Peer's overlay address
-//! - Storer node status (is_full_node flag)
-//! - PeerBandwidth handle for bandwidth accounting
+//! - Node type (full or light)
 //!
 //! # Event/Command Interface
 //!

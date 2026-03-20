@@ -26,20 +26,17 @@ All three share the same `tracing` subscriber infrastructure, enabling trace-to-
 
 Instrumentation is placed at **layer transitions** and **external boundaries**:
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                           Node Layer                                │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │                        Swarm Layer                           │   │
-│  │  ┌─────────────────────────────────────────────────────┐    │   │
-│  │  │                   Protocol Layer                     │    │   │
-│  │  │  ┌─────────────────────────────────────────────┐    │    │   │
-│  │  │  │                Network Layer                 │    │    │   │
-│  │  │  │           (libp2p, I/O, timers)             │    │    │   │
-│  │  │  └─────────────────────────────────────────────┘    │    │   │
-│  │  └─────────────────────────────────────────────────────┘    │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph Node["Node Layer"]
+        subgraph Swarm["Swarm Layer"]
+            subgraph Protocol["Protocol Layer"]
+                subgraph Network["Network Layer"]
+                    NetworkDesc["libp2p, I/O, timers"]
+                end
+            end
+        end
+    end
 ```
 
 | Boundary | Span | Metrics | Rationale |
@@ -82,9 +79,7 @@ Metrics capture **aggregated state** and **rates**:
 
 ### Format
 
-```
-<component>_<what>_<unit>
-```
+Metrics follow the pattern `<component>_<what>_<unit>`.
 
 Examples:
 - `topology_connected_peers` (gauge, unitless count)
@@ -111,28 +106,13 @@ Labels add dimensions but must have **bounded cardinality**:
 
 ### Label Modules
 
-Each metrics module defines labels in a `label` submodule:
-
-```rust
-pub mod label {
-    pub mod direction {
-        pub const INBOUND: &str = "inbound";
-        pub const OUTBOUND: &str = "outbound";
-    }
-    pub mod outcome {
-        pub const SUCCESS: &str = "success";
-        pub const FAILURE: &str = "failure";
-    }
-}
-```
+Each metrics module defines labels in a `label` submodule. Label constants are organized by category (e.g., `direction::INBOUND`, `direction::OUTBOUND`, `outcome::SUCCESS`, `outcome::FAILURE`) and exposed as `&str` constants.
 
 ## Span Naming Conventions
 
 ### Format
 
-```
-<component>.<operation>
-```
+Spans follow the pattern `<component>.<operation>`.
 
 Examples:
 - `handshake.inbound`
@@ -143,16 +123,7 @@ Examples:
 
 ### Span Fields
 
-Use structured fields for context:
-
-```rust
-info_span!(
-    "retrieval.fetch",
-    chunk_addr = %addr,  // Display format
-    peer_id = ?peer,     // Debug format
-    attempt = attempt,   // Numeric
-)
-```
+Use structured fields for context. Fields use Display format (prefixed with `%`) for human-readable values, Debug format (prefixed with `?`) for complex types, and bare names for numeric values. For example, a retrieval span would carry `chunk_addr` in Display format, `peer_id` in Debug format, and `attempt` as a plain numeric field.
 
 **High-cardinality fields** (peer_id, chunk_addr) are acceptable in span fields because they're stored in trace storage, not metric labels.
 
@@ -160,107 +131,23 @@ info_span!(
 
 ### Pattern 1: Stateful Metrics (Gauges)
 
-For gauges that track current state, use a stateful struct:
-
-```rust
-pub struct TopologyMetrics {
-    connected_peers: AtomicU64,
-}
-
-impl TopologyMetrics {
-    pub fn record_peer_connected(&self) {
-        let count = self.connected_peers.fetch_add(1, Ordering::Relaxed);
-        gauge!("topology_connected_peers").set((count + 1) as f64);
-    }
-
-    pub fn record_peer_disconnected(&self) {
-        let count = self.connected_peers.fetch_sub(1, Ordering::Relaxed);
-        gauge!("topology_connected_peers").set((count - 1) as f64);
-    }
-}
-```
+For gauges that track current state, use a stateful struct that holds an atomic counter alongside the gauge. Methods such as `record_peer_connected` and `record_peer_disconnected` atomically increment or decrement the counter and then set the gauge to the new value. This ensures the gauge always reflects the true count, even under concurrent updates.
 
 ### Pattern 2: Drop-Based Lifecycle Tracking
 
-For operations with clear start/end, use Drop to ensure metrics are recorded:
-
-```rust
-pub struct HandshakeMetrics {
-    direction: &'static str,
-    start: Instant,
-    outcome_recorded: bool,
-}
-
-impl HandshakeMetrics {
-    pub fn new(direction: &'static str) -> Self {
-        counter!("handshake_attempts_total", "direction" => direction).increment(1);
-        gauge!("handshake_active", "direction" => direction).increment(1.0);
-        Self { direction, start: Instant::now(), outcome_recorded: false }
-    }
-
-    pub fn record_success(mut self) {
-        counter!("handshake_success_total", "direction" => self.direction).increment(1);
-        histogram!("handshake_duration_seconds", "direction" => self.direction)
-            .record(self.start.elapsed().as_secs_f64());
-        self.outcome_recorded = true;
-    }
-}
-
-impl Drop for HandshakeMetrics {
-    fn drop(&mut self) {
-        gauge!("handshake_active", "direction" => self.direction).decrement(1.0);
-        if !self.outcome_recorded {
-            counter!("handshake_failure_total", "direction" => self.direction, "reason" => "unknown")
-                .increment(1);
-        }
-    }
-}
-```
+For operations with a clear start and end, use a struct that records the start time and an "outcome recorded" flag. On construction, increment the attempt counter and active gauge. When the caller explicitly records success, emit the success counter and duration histogram. On drop, decrement the active gauge; if no outcome was recorded, emit a failure counter with reason "unknown". This guarantees cleanup even on early returns or panics.
 
 ### Pattern 3: LazyLock for Global Metrics
 
-For cross-cutting concerns (executor, node-level), use lazy initialization:
-
-```rust
-static RUNNING_TASKS: LazyLock<Gauge> =
-    LazyLock::new(|| metrics::gauge!("executor.tasks.running", "type" => "critical"));
-```
+For cross-cutting concerns (executor, node-level), use `LazyLock<Gauge>` (or `LazyLock<Counter>`, etc.) to lazily initialize global metric handles. The metric is registered with the recorder on first access, avoiding ordering issues with recorder installation.
 
 ### Pattern 4: Stateless Event Recording
 
-For fire-and-forget metrics without gauge tracking:
-
-```rust
-pub fn record_event(event: &TopologyEvent) {
-    match event {
-        TopologyEvent::PeerReady { handshake_duration, direction, .. } => {
-            counter!("topology_connections_total", "direction" => direction.as_str())
-                .increment(1);
-            histogram!("topology_handshake_duration_seconds")
-                .record(handshake_duration.as_secs_f64());
-        }
-        // ...
-    }
-}
-```
+For fire-and-forget metrics without gauge tracking, use a plain function that matches on an event enum and increments the appropriate counters or records histogram values. No struct or state is needed.
 
 ### Pattern 5: Span Instrumentation
 
-For async operations, wrap with `.instrument()`:
-
-```rust
-async fn handle_exchange(&mut self, peer: PeerId) -> Result<()> {
-    let span = info_span!("hive.exchange", %peer);
-
-    async move {
-        // Exchange logic...
-        debug!("received peers");
-        // ...
-    }
-    .instrument(span)
-    .await
-}
-```
+For async operations, create an `info_span!` with the appropriate name and fields, then wrap the async block with `.instrument(span)` before awaiting. This propagates the span context through the entire async operation, including across yield points.
 
 ## Component Coverage
 
@@ -324,22 +211,14 @@ async fn handle_exchange(&mut self, peer: PeerId) -> Result<()> {
 | Level | Audience | Use Case | Examples |
 |-------|----------|----------|----------|
 | `error!` | Operators | Requires attention | Connection failures, storage errors |
-| `warn!` | Operators | Degraded but functional | Peer misbehavior, retries exhausted |
+| `warn!` | Operators | Degraded but functional | Peer misbehaviour, retries exhausted |
 | `info!` | Operators | State changes | Node started, depth changed, peer connected |
 | `debug!` | Developers | Technical details | Message contents, state transitions |
 | `trace!` | Developers | Verbose debugging | Every packet, every decision |
 
 ### Structured Logging
 
-Always use structured fields:
-
-```rust
-// Good
-info!(peer = %peer_id, depth = depth, "depth changed");
-
-// Bad
-info!("depth changed for peer {} to {}", peer_id, depth);
-```
+Always use structured fields rather than interpolated format strings. Pass values as named fields (e.g., `peer = %peer_id, depth = depth`) so they can be indexed and filtered by log aggregation tools.
 
 ## Sampling Strategy
 
@@ -383,10 +262,3 @@ vertex node --tracing.sampling-ratio 1.0
 ## Local Development Stack
 
 See [Observability Stack](../../observability/README.md) for the Docker Compose setup with Prometheus, Tempo, Loki, and Grafana.
-
-## Future Enhancements
-
-1. **Exemplars**: Link histogram buckets to trace IDs
-2. **Service mesh**: Automatic span propagation between services
-3. **Continuous profiling**: pprof integration for CPU/memory hotspots
-4. **Custom exporters**: Direct push to managed observability platforms

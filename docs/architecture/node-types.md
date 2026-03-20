@@ -39,7 +39,7 @@ Fetching chunks from peers using the retrieval protocol. Requires bandwidth acco
 Writing chunks to the network. Requires valid postage stamps.
 
 ### Pullsync
-Synchronizing chunks with neighborhood peers. Storage nodes pull chunks they're responsible for based on overlay address proximity.
+Synchronising chunks with neighbourhood peers. Storage nodes pull chunks they are responsible for based on overlay address proximity.
 
 ### Redistribution
 Participating in the storage incentive game. Requires staking BZZ tokens. Nodes prove they store chunks and earn rewards.
@@ -65,30 +65,13 @@ Bandwidth accounting can be configured independently of node type (except Bootno
 
 ## Protocol Dependency Diagram
 
-```
-                    ┌─────────────┐
-                    │   Storer    │
-                    │             │
-                    │ pullsync    │
-                    │ localstore  │
-                    │ redistrib.  │
-                    └──────┬──────┘
-                           │
-                    ┌──────▼──────┐
-                    │   Client    │
-                    │             │
-                    │ retrieval   │
-                    │ pushsync    │
-                    │ bandwidth   │
-                    └──────┬──────┘
-                           │
-                    ┌──────▼──────┐
-                    │  Bootnode   │
-                    │             │
-                    │ hive        │
-                    │ kademlia    │
-                    │ pingpong    │
-                    └─────────────┘
+```mermaid
+graph TD
+    Storer["Storer<br/>pullsync, localstore, redistribution"]
+    Client["Client<br/>retrieval, pushsync, bandwidth"]
+    Bootnode["Bootnode<br/>hive, kademlia, pingpong"]
+
+    Storer --> Client --> Bootnode
 ```
 
 Each layer builds on the one below. A Storer node runs all protocols from Bootnode through Pullsync/Redistribution.
@@ -103,19 +86,9 @@ Each layer builds on the one below. A Storer node runs all protocols from Bootno
 
 ## Type System Representation
 
-The node types are represented internally as capability traits:
+The node types are represented internally as a capability trait hierarchy: `SwarmPrimitives` → `SwarmNetworkTypes` → `SwarmClientTypes` → `SwarmStorerTypes`. Each level adds associated types for additional services. Bootnode needs `SwarmNetworkTypes`, Client needs `SwarmClientTypes`, and Storer needs `SwarmStorerTypes`.
 
-```
-BootnodeTypes (base - topology only)
-       │
-       ▼
-ClientTypes (adds BandwidthAccounting)
-       │
-       ▼
-StorerTypes (adds LocalStore + ChunkSync)
-```
-
-Each node type implements the corresponding trait hierarchy.
+For the full trait hierarchy diagram and details, see [Swarm API](../swarm/api.md#trait-hierarchy).
 
 ## See Also
 

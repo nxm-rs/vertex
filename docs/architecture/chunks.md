@@ -29,12 +29,12 @@ SOC addresses are derived from both the owner's public key and an identifier, en
 
 ## Data Hierarchy
 
-```
-Chunks
-├── Content Chunks (CAC)
-│   └── Binary Merkle Tree (BMT) Body
-└── Single Owner Chunks (SOC)
-    └── Binary Merkle Tree (BMT) Body
+```mermaid
+graph TD
+    A[Chunks] --> B[Content Chunks - CAC]
+    A --> C[Single Owner Chunks - SOC]
+    B --> D[Binary Merkle Tree Body]
+    C --> E[Binary Merkle Tree Body]
 ```
 
 ## Design Benefits
@@ -49,22 +49,24 @@ By focusing on core functionalities within the body and allowing specific chunk 
 
 ### BMT Body Storage
 
-The BMT body is stored in the database as a tuple: `(data, counter)`.
+The BMT body is stored in the database with the following fields:
 
-The counter tracks how many times the chunk body has been referenced by content chunks or single owner chunks. This is used to determine when the chunk body can be garbage collected.
+| Field | Purpose |
+|-------|---------|
+| data | The chunk body content |
+| counter | Reference count from content chunks and single owner chunks |
+
+The counter tracks how many times the chunk body has been referenced. This is used to determine when the chunk body can be garbage collected.
 
 ### Chunk Header Storage
 
-Chunks (CAC and SOC) are stored with their headers in the database. The tuple stored is:
+Chunks (CAC and SOC) are stored with their headers in the database. The stored record contains the following fields:
 
-```
-(...headers, body_hash, counter)
-```
-
-Where:
-- `headers` - Chunk-specific header data
-- `body_hash` - Hash of the BMT body this chunk links to
-- `counter` - Number of authorizers for the chunk
+| Field | Purpose |
+|-------|---------|
+| headers | Chunk-specific header data |
+| body_hash | Hash of the BMT body this chunk links to |
+| counter | Number of authorizers for the chunk |
 
 Alternatively, instead of a counter, a bitfield may be used with bit positions representing the authorizers of the chunk.
 
@@ -74,24 +76,27 @@ An authorizer may optionally support authorizing a chunk multiple times, in whic
 
 ### PostageAuthorizer Example
 
-Users purchase batches of postage stamps to authorize chunks. A postage stamp is a signature on:
+Users purchase batches of postage stamps to authorize chunks. A postage stamp is a signature over the following fields:
 
-```
-(chunk_address, batch_id, index, timestamp)
-```
-
-Where:
-- `index` - Unique identifier for the stamp within the batch
-- `timestamp` - Used to determine if a stamp overwrites a previous stamp
+| Field | Purpose |
+|-------|---------|
+| chunk_address | The address of the chunk being authorized |
+| batch_id | Identifier for the postage batch |
+| index | Unique identifier for the stamp within the batch |
+| timestamp | Used to determine if a stamp overwrites a previous stamp |
 
 A batch may be **mutable**, in which case its depth may be increased and the number of indices correspondingly increase.
 
 The `PostageAuthorizer` maintains a table showing the number of stamps allocated to each chunk it has authorized. Batches are evicted from the database at specific times, at which point stamps from the batch are no longer valid. If the number of stamps allocated to a chunk reduces to zero, the chunk is no longer authorized.
 
-Stamps are stored as:
-```
-(batch_id, index, timestamp, signature)
-```
+Stamps are stored with the following fields:
+
+| Field | Purpose |
+|-------|---------|
+| batch_id | Identifier for the postage batch |
+| index | Stamp index within the batch |
+| timestamp | Stamp issuance timestamp |
+| signature | Cryptographic signature over the stamp fields |
 
 The storage supports pagination to query all batches that authorize a specific chunk.
 

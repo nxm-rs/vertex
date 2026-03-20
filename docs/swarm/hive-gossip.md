@@ -4,46 +4,40 @@ This document describes the intelligent peer discovery gossip strategy used by t
 
 ## Overview
 
-Hive gossip distributes peer information based on network topology. The strategy optimizes for:
+Hive gossip distributes peer information based on network topology. The strategy optimises for:
 
-1. **Neighborhood replication** - Neighbors need to know each other for chunk replication
-2. **Bootstrap efficiency** - New peers need help finding their neighborhood
-3. **IPv4/IPv6 compatibility** - Only gossip peers the recipient can actually reach
+1. **Neighbourhood replication**: neighbours need to know each other for chunk replication
+2. **Bootstrap efficiency**: new peers need help finding their neighbourhood
+3. **IPv4/IPv6 compatibility**: only gossip peers the recipient can actually reach
 
 ## Gossip Rules
 
-### Neighbors (proximity >= depth)
+### Neighbours (proximity >= depth)
 
-Neighbors are critical for chunk replication. They receive **all other neighborhood peers**:
-
-```
-New neighbor joins
-       │
-       ├──> Send: all current neighbors (filtered by IP capability)
-       │
-       └──> Notify: all existing neighbors about new peer
-```
+Neighbours are critical for chunk replication. When a new neighbour joins:
+- It receives all current neighbours (filtered by IP capability)
+- All existing neighbours are notified about the new peer
 
 ### Distant Peers (proximity < depth)
 
 Distant peers receive a targeted bootstrap set:
 
-1. **Close peers** - Peers near the recipient's overlay address (help find their neighborhood)
-2. **Diverse sample** - One peer from each bin for routing diversity
+1. **Close peers**: peers near the recipient's overlay address (help find their neighbourhood)
+2. **Diverse sample**: one peer from each bin for routing diversity
 
 ### Light Nodes
 
 Light nodes are invisible to gossip:
-- Never gossiped about (they don't store chunks)
+- Never gossiped about (they do not store chunks)
 - Receive no peer lists (they connect to storers directly)
 
 ## Triggers
 
 | Event | Action |
 |-------|--------|
-| Full node connects | Gossip based on neighbor/distant rules |
-| Depth decreases | Notify newly-promoted neighbors |
-| Periodic tick | Refresh stale neighborhood peers |
+| Full node connects | Gossip based on neighbour/distant rules |
+| Depth decreases | Notify newly-promoted neighbours |
+| Periodic tick | Refresh stale neighbourhood peers |
 
 ## IP Capability Filtering
 
@@ -59,20 +53,18 @@ This prevents gossiping unreachable addresses.
 
 ## Configuration
 
-```rust
-HiveGossipConfig {
-    refresh_interval: Duration,    // How often to refresh neighbors (default: 10min)
-    max_peers_for_distant: usize,  // Max peers for non-neighbors (default: 16)
-    close_peers_count: usize,      // Close-to-recipient peers (default: 4)
-}
-```
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `refresh_interval` | 10 minutes | How often to refresh neighbours |
+| `max_peers_for_distant` | 16 | Maximum peers sent to non-neighbours |
+| `close_peers_count` | 4 | Close-to-recipient peers in bootstrap set |
 
 ## Implementation
 
 The gossip manager is in `vertex-swarm-topology`:
 
-- `HiveGossipManager` - Tracks broadcast times and depth changes
-- `TopologyBehaviour::enable_gossip()` - Enables gossip with a depth provider
+- `HiveGossipManager` tracks broadcast times and depth changes
+- `TopologyBehaviour::enable_gossip()` enables gossip with a depth provider
 - Gossip triggers after successful ping/pong (proves bidirectional connectivity)
 
 ## See Also

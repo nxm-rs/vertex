@@ -4,14 +4,14 @@ Design notes for peer discovery, bootstrapping, and connection retry logic.
 
 ## Goals
 
-1. **Fast bootstrapping** - Connect to the network quickly on startup
-2. **Resilient retry** - Don't give up on peers that temporarily reject us
-3. **Efficient resource use** - Don't waste bandwidth on peers unlikely to accept
-4. **Bin coverage** - Maintain Kademlia bin targets for proper routing
+1. **Fast bootstrapping**: Connect to the network quickly on startup
+2. **Resilient retry**: Do not give up on peers that temporarily reject us
+3. **Efficient resource use**: Do not waste bandwidth on peers unlikely to accept
+4. **Bin coverage**: Maintain Kademlia bin targets for proper routing
 
 ## Why Peers Reject Connections
 
-A peer disconnecting or refusing a connection doesn't mean they're bad:
+A peer disconnecting or refusing a connection does not mean they are bad:
 
 | Reason | Action |
 |--------|--------|
@@ -26,57 +26,32 @@ A peer disconnecting or refusing a connection doesn't mean they're bad:
 
 ## Connection States
 
-```
-                    ┌─────────────────────────────────────┐
-                    │                                     │
-                    ▼                                     │
-┌─────────┐    ┌───────────┐    ┌───────────┐    ┌──────────────┐
-│  Known  │───▶│Connecting │───▶│ Connected │───▶│ Disconnected │
-└─────────┘    └───────────┘    └───────────┘    └──────────────┘
-     ▲              │                                     │
-     │              │ (dial failed)                       │
-     │              ▼                                     │
-     │         ┌─────────┐                                │
-     └─────────│ Failed  │◀───────────────────────────────┘
-               └─────────┘          (connection lost)
-                    │
-                    │ (after backoff expires)
-                    ▼
-               Retry as Known
+```mermaid
+stateDiagram-v2
+    [*] --> Known
+    Known --> Connecting
+    Connecting --> Connected
+    Connecting --> Failed : dial failed
+    Connected --> Disconnected
+    Disconnected --> Failed : connection lost
+    Failed --> Known : after backoff expires
 ```
 
 ## Dial Tracking Fields
 
-Add to `PeerState`:
+The `PeerState` struct should include the following dial tracking fields:
 
-```rust
-struct DialTracking {
-    /// When we last attempted to dial this peer
-    last_dial_attempt: Option<Instant>,
-
-    /// Consecutive dial failures (reset on success)
-    consecutive_failures: u32,
-
-    /// Total lifetime dial attempts
-    total_dial_attempts: u64,
-
-    /// Total lifetime successful connections
-    total_connections: u64,
-
-    /// Last successful connection time
-    last_connected: Option<Instant>,
-}
-```
+| Field | Type | Description |
+|-------|------|-------------|
+| `last_dial_attempt` | `Option<Instant>` | When we last attempted to dial this peer |
+| `consecutive_failures` | `u32` | Consecutive dial failures; reset on success |
+| `total_dial_attempts` | `u64` | Total lifetime dial attempts |
+| `total_connections` | `u64` | Total lifetime successful connections |
+| `last_connected` | `Option<Instant>` | Last successful connection time |
 
 ## Exponential Backoff
 
-After a failed dial, wait before retrying:
-
-```
-base_delay = 30 seconds
-max_delay = 1 hour
-delay = min(base_delay * 2^consecutive_failures, max_delay)
-```
+After a failed dial, wait before retrying. The delay is calculated as the minimum of `base_delay * 2^consecutive_failures` and `max_delay`, where `base_delay` is 30 seconds and `max_delay` is 1 hour.
 
 | Failures | Delay |
 |----------|-------|
@@ -93,42 +68,18 @@ delay = min(base_delay * 2^consecutive_failures, max_delay)
 
 ## Dial Candidate Selection
 
-When Kademlia needs connections for a bin, select candidates using:
+When Kademlia needs connections for a bin, candidates are selected by filtering known peers for dialability and backoff expiry, then sorting by priority, and taking up to a maximum number of candidates.
 
-```rust
-fn select_dial_candidates(bin: &Bin, max_candidates: usize) -> Vec<OverlayAddress> {
-    bin.known_peers()
-        .filter(|p| is_dialable(p))
-        .filter(|p| backoff_expired(p))
-        .sorted_by(dial_priority)
-        .take(max_candidates)
-        .collect()
-}
+The backoff check is straightforward: if a peer has never been dialled, it is immediately eligible. Otherwise, the elapsed time since the last attempt must exceed the calculated backoff delay.
 
-fn dial_priority(peer: &PeerState) -> impl Ord {
-    // Priority order (higher = dial sooner):
-    // 1. Never attempted (newest discoveries first for freshness)
-    // 2. Previously connected (proven to work)
-    // 3. Fewer consecutive failures
-    // 4. Longer since last attempt (LRU)
+The priority ordering (highest priority first) is:
 
-    (
-        peer.total_connections > 0,           // Previously connected
-        -(peer.consecutive_failures as i32),  // Fewer failures
-        peer.last_dial_attempt,               // LRU (None = highest priority)
-    )
-}
-
-fn backoff_expired(peer: &PeerState) -> bool {
-    match peer.last_dial_attempt {
-        None => true,  // Never attempted
-        Some(last) => {
-            let delay = backoff_delay(peer.consecutive_failures);
-            last.elapsed() >= delay
-        }
-    }
-}
-```
+| Priority | Criterion |
+|----------|-----------|
+| 1 | Never attempted (newest discoveries first for freshness) |
+| 2 | Previously connected (proven to work) |
+| 3 | Fewer consecutive failures |
+| 4 | Longer since last attempt (LRU) |
 
 ## Bootstrapping Strategy
 
@@ -136,7 +87,7 @@ fn backoff_expired(peer: &PeerState) -> bool {
 
 1. Dial bootnodes in parallel (configured list)
 2. Stop after reaching `min_bootnode_connections` (default: 3)
-3. Don't wait for slow bootnodes - move on after first success
+3. Do not wait for slow bootnodes; move on after first success
 
 ### Phase 2: Hive Discovery
 
@@ -156,41 +107,16 @@ fn backoff_expired(peer: &PeerState) -> bool {
 
 After initial bootstrap:
 
-1. **Periodic evaluation** - Kademlia's manage loop checks bin health
-2. **Event-driven dialing** - New hive peers trigger immediate evaluation
-3. **Backoff expiry** - Peers become dialable again after backoff
-4. **Connection churn** - Disconnections trigger replacement searches
+1. **Periodic evaluation**: Kademlia's manage loop checks bin health
+2. **Event-driven dialing**: New hive peers trigger immediate evaluation
+3. **Backoff expiry**: Peers become dialable again after backoff
+4. **Connection churn**: Disconnections trigger replacement searches
 
 ## Pruning Strategy
 
-Don't delete peers aggressively. Prune only when:
-
-```rust
-fn should_prune(peer: &PeerState) -> bool {
-    // Never prune recently active peers
-    if peer.last_connected.map(|t| t.elapsed() < Duration::hours(24)).unwrap_or(false) {
-        return false;
-    }
-
-    // Prune if: many failures AND never connected AND old
-    peer.consecutive_failures >= 10
-        && peer.total_connections == 0
-        && peer.created_at.elapsed() > Duration::days(7)
-}
-```
+Peers should not be deleted aggressively. A peer is a candidate for pruning only when all of the following conditions are met: it has not been connected in the last 24 hours, it has at least 10 consecutive failures, it has never had a successful connection, and it was discovered more than 7 days ago.
 
 **Rationale**: A peer we connected to yesterday might be temporarily offline. A peer we discovered a week ago and never successfully connected to is likely invalid.
-
-## Implementation Checklist
-
-- [ ] Add `DialTracking` fields to `PeerState`
-- [ ] Implement `backoff_expired()` check in `filter_dialable_candidates()`
-- [ ] Update `start_connecting()` to set `last_dial_attempt`
-- [ ] Update `on_connected()` to reset `consecutive_failures`, set `last_connected`
-- [ ] Update `connection_failed()` to increment `consecutive_failures`
-- [ ] Add jitter to backoff calculation
-- [ ] Implement pruning in periodic maintenance task
-- [ ] Add metrics for dial success rate, backoff distribution
 
 ## Metrics to Track
 
@@ -202,10 +128,3 @@ fn should_prune(peer: &PeerState) -> bool {
 | `kademlia_bin_fill_ratio` | Connected/target per bin |
 | `peer_store_size` | Total known peers |
 | `peer_dialable_count` | Peers eligible for dialing now |
-
-## Open Questions
-
-1. **Bin prioritization**: Should we prioritize filling closer bins (higher PO) over distant ones?
-2. **Parallel dial limit**: How many concurrent dials per bin? Global limit?
-3. **Success ratio threshold**: Should peers with <10% success rate be deprioritized further?
-4. **Network partition detection**: How do we detect we're isolated vs peers are unavailable?
