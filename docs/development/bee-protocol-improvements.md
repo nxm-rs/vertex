@@ -1,28 +1,20 @@
 # Recommended Bee Protocol Improvements
 
-This document tracks protocol-level changes that would improve interoperability and type safety in the Swarm network. These are suggestions for upstream Bee changes.
+This document tracks protocol-level changes that would improve interoperability and type safety in the [Swarm](https://ethswarm.org) network. These are suggestions for upstream [Bee](https://github.com/ethersphere/bee) changes.
 
 ## Pricing Protocol
 
 **File**: `bee/pkg/pricing/pb/pricing.proto`
 
-**Current**:
-```protobuf
-message AnnouncePaymentThreshold {
-  bytes PaymentThreshold = 1;
-}
-```
+The following table compares the current and recommended protobuf message formats for `AnnouncePaymentThreshold`:
 
-**Issue**: Using `bytes` with Go's `*big.Int` serialization is ambiguous. The wire format depends on Go's `big.Int.Bytes()` behavior (big-endian, no leading zeros), which is implementation-specific.
+| Aspect | Current | Recommended |
+|--------|---------|-------------|
+| Field type | `bytes` | `bytes` (fixed 32 bytes, big-endian uint256) |
+| Encoding | Go's `big.Int.Bytes()` (big-endian, no leading zeros) | Fixed-width 32-byte big-endian encoding |
+| Determinism | Implementation-specific; depends on Go's `big.Int` serialization behaviour | Unambiguous across implementations |
 
-**Recommendation**: Use a fixed-width type for deterministic encoding:
-```protobuf
-message AnnouncePaymentThreshold {
-  bytes PaymentThreshold = 1;  // Fixed 32 bytes, big-endian uint256
-}
-```
-
-Or define explicit encoding rules in the protocol specification.
+**Issue**: Using `bytes` with Go's `big.Int` serialization is ambiguous. The wire format depends on Go's `big.Int.Bytes()` behaviour (big-endian, no leading zeros), which is implementation-specific. Alternatively, explicit encoding rules should be defined in the protocol specification.
 
 **Rationale**:
 - Current practical values fit in `u64` (max ~108,000,000)

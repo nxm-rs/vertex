@@ -39,13 +39,6 @@ impl RedbChunkStore {
         debug!("Opened redb chunk store");
         Ok(Self { db })
     }
-
-    /// Open an existing store (fails if it doesn't exist).
-    #[allow(dead_code)]
-    pub fn open_existing<P: AsRef<Path>>(path: P) -> StorerResult<Self> {
-        let db = Database::open(path)?;
-        Ok(Self { db })
-    }
 }
 
 /// Convert ChunkAddress to a fixed-size byte array for redb key.

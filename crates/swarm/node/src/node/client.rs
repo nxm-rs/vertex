@@ -33,14 +33,14 @@ use crate::{ClientHandle, ClientService};
 /// Network behaviour for a client node (topology + client protocols).
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "ClientNodeEvent")]
-pub struct ClientNodeBehaviour<I: SwarmIdentity + Clone> {
-    pub identify: identify::Behaviour,
-    pub topology: TopologyBehaviour<I>,
-    pub client: ClientBehaviour,
+pub(crate) struct ClientNodeBehaviour<I: SwarmIdentity + Clone> {
+    pub(crate) identify: identify::Behaviour,
+    pub(crate) topology: TopologyBehaviour<I>,
+    pub(crate) client: ClientBehaviour,
 }
 
 impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
-    pub fn from_parts(local_public_key: PublicKey, topology: TopologyBehaviour<I>) -> Self {
+    pub(crate) fn from_parts(local_public_key: PublicKey, topology: TopologyBehaviour<I>) -> Self {
         let agent_versions = topology.agent_versions();
         Self {
             // Send listen addresses (even private IPs) so bee's peerstore has entries.

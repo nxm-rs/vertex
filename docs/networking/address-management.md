@@ -4,8 +4,8 @@
 
 Address management in Vertex spans two crates:
 
-- **`vertex-net-local`** — Protocol-agnostic address classification, capability tracking, and subnet detection
-- **`vertex-swarm-topology` (`LocalAddressManager`)** — Swarm-specific address selection for handshake advertisement
+- **`vertex-net-local`** - Protocol-agnostic address classification, capability tracking, and subnet detection
+- **`vertex-swarm-topology` (`LocalAddressManager`)** - Swarm-specific address selection for handshake advertisement
 
 ## Address Classification (`vertex-net-local`)
 
@@ -63,25 +63,15 @@ All returned addresses include `/p2p/{local_peer_id}`.
 - Local listen addresses include public IPs
 - Confirmed public connectivity via peer observation
 
-When a peer reports our address via identify, `on_observed_addr()` sets a boolean public connectivity flag if the observed address is public. This flag enables dialing other public peers. The observed address itself is **not stored or advertised** — only the connectivity fact is recorded.
+When a peer reports our address via identify, `on_observed_addr()` sets a boolean public connectivity flag if the observed address is public. This flag enables dialing other public peers. The observed address itself is **not stored or advertised** - only the connectivity fact is recorded.
 
 ## Why Observed Addresses Are Not Stored
 
-NAT-mapped addresses contain ephemeral ports that are connection-specific:
+NAT-mapped addresses contain ephemeral ports that are connection-specific. Each inbound connection gets a different port assignment from the NAT, so the port reported by peer A only works for the A-to-us connection. If we advertise it to peer C via hive gossip, peer C cannot use it because the NAT mapping does not exist for C. Storing and advertising these addresses causes:
 
-```
-Peer A connects to us → NAT assigns port 12345
-Peer A reports: "I see you at /ip4/203.0.113.5/tcp/12345"
-
-Peer B connects to us → NAT assigns port 12346
-Peer B reports: "I see you at /ip4/203.0.113.5/tcp/12346"
-```
-
-Port 12345 only works for the A-to-us connection. If we advertise it to peer C via hive gossip, peer C cannot use it — the NAT mapping doesn't exist for C. Storing and advertising these addresses causes:
-
-1. **Unbounded growth** — each new connection adds another ephemeral port variant
-2. **Handshake encoding overflow** — too many multiaddrs exceed the 2048-byte protobuf buffer
-3. **Network pollution** — hive gossip propagates unreachable addresses to all peers
+1. **Unbounded growth** - each new connection adds another ephemeral port variant
+2. **Handshake encoding overflow** - too many multiaddrs exceed the 2048-byte protobuf buffer
+3. **Network pollution** - hive gossip propagates unreachable addresses to all peers
 
 ### What Bee Does
 
@@ -91,9 +81,3 @@ Bee uses **static NAT configuration** (`--nat-addr`) for production deployments,
 
 Most IPv6 addresses are globally routable (except loopback, link-local, ULA, and documentation ranges). IPv4 is more complex due to NAT prevalence. For IPv4, only explicitly public listen addresses or configured NAT addresses are trusted.
 
-## Future Work
-
-- **UPnP integration** — libp2p UPnP support for automatic port mapping (dependencies available, not yet wired)
-- **AutoNAT v2** — Dial-back verification to confirm addresses are truly reachable (dependencies available, not yet wired)
-- **Address trust levels** — Formal `Configured > Verified > AssumedPublic` hierarchy for selection priority
-- **Pre-encoding validation** — Hard limit on address count/size before handshake serialization

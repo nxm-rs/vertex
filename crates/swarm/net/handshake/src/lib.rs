@@ -3,29 +3,25 @@
 use std::time::Duration;
 
 use libp2p::{Multiaddr, PeerId};
-
-pub use vertex_swarm_identity::Identity;
-pub use vertex_swarm_peer::{SwarmNodeType, SwarmPeer};
-
-mod address;
-pub use address::{AddressProvider, NoAddresses};
+use vertex_swarm_peer::{SwarmNodeType, SwarmPeer};
 
 mod behaviour;
 pub use behaviour::{HandshakeBehaviour, HandshakeEvent};
-pub use vertex_net_peer_registry::ConnectionDirection;
+
+mod handler;
+
+mod codec;
+
+mod protocol;
 
 mod error;
 pub use error::HandshakeError;
 
-mod handler;
-pub use handler::{HandshakeCommand, HandshakeConfig, HandshakeHandler, HandshakeHandlerEvent};
-
 pub mod metrics;
 pub use metrics::HandshakeStage;
 
-mod protocol;
-
-mod codec;
+mod address;
+pub use address::{AddressProvider, NoAddresses};
 
 /// Protocol name for handshake.
 pub const PROTOCOL: &str = "/swarm/handshake/14.0.0/handshake";

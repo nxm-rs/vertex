@@ -150,27 +150,6 @@ impl Reserve {
             })
         }
     }
-
-    /// Batch eviction to free up space for multiple chunks.
-    #[allow(dead_code)]
-    pub fn evict_batch<S: ChunkStore>(&self, store: &S, count: u64) -> StorerResult<u64> {
-        let mut evicted = 0;
-        let mut to_evict = Vec::new();
-
-        store.for_each(|addr| {
-            to_evict.push(*addr);
-            to_evict.len() < count as usize
-        })?;
-
-        for addr in to_evict {
-            store.delete(&addr)?;
-            self.on_removed();
-            evicted += 1;
-        }
-
-        debug!(evicted, "Batch eviction complete");
-        Ok(evicted)
-    }
 }
 
 /// Statistics about the reserve.

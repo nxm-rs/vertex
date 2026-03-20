@@ -4,6 +4,7 @@
 //! - Pricing: Payment threshold exchange
 //! - Retrieval: Chunk request/response
 //! - PushSync: Chunk push with receipt
+//! - Pseudosettle: Bandwidth accounting payments
 //!
 //! # Lifecycle
 //!
@@ -11,19 +12,20 @@
 //! 2. After handshake, `Activate` command transitions to `Active` state
 //! 3. In `Active` state, handler processes protocol messages
 //!
-//! # Multi-Protocol Support
+//! # Responder Storage
 //!
-//! The handler uses `ClientInboundUpgrade` which advertises all three
-//! protocols (pricing, retrieval, pushsync) and dispatches based on the
-//! negotiated protocol.
+//! Inbound requests (retrieval, pushsync, pseudosettle) arrive with responders
+//! that must be stored until the application layer provides a response. The handler
+//! maps request IDs to [`PendingResponse`] entries, bounded per connection.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     task::{Context, Poll},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use alloy_primitives::U256;
+use futures_bounded::Timeout;
 use libp2p::swarm::{
     SubstreamProtocol,
     handler::{
@@ -43,16 +45,24 @@ use super::upgrade::{
 
 const DEFAULT_MAX_PENDING_COMMANDS: usize = 256;
 const DEFAULT_MAX_PENDING_EVENTS: usize = 256;
+/// Maximum number of stored responders per connection.
+const MAX_PENDING_RESPONSES: usize = 64;
+/// Timeout for async response sending (prevent stuck streams).
+const RESPONSE_SEND_TIMEOUT: Duration = Duration::from_secs(15);
+/// Maximum concurrent response sends per connection.
+const MAX_CONCURRENT_RESPONSE_SENDS: usize = 8;
+/// Responders older than this are dropped as stale.
+const RESPONDER_STALE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Configuration for the client handler.
 #[derive(Debug, Clone)]
-pub struct Config {
+pub(crate) struct Config {
     /// Timeout for protocol operations.
-    pub timeout: Duration,
+    pub(crate) timeout: Duration,
     /// Maximum pending commands before dropping new ones.
-    pub max_pending_commands: usize,
+    pub(crate) max_pending_commands: usize,
     /// Maximum pending events before dropping new ones.
-    pub max_pending_events: usize,
+    pub(crate) max_pending_events: usize,
 }
 
 impl Default for Config {
@@ -67,7 +77,7 @@ impl Default for Config {
 
 /// Commands sent from the behaviour to the handler.
 #[derive(Debug)]
-pub enum HandlerCommand {
+pub(crate) enum HandlerCommand {
     /// Activate the handler after handshake completion.
     Activate {
         /// The peer's overlay address.
@@ -106,11 +116,33 @@ pub enum HandlerCommand {
         /// The ack to send.
         ack: PaymentAck,
     },
+    /// Serve a chunk to a peer (respond to retrieval request).
+    ServeChunk {
+        /// Request ID from the ChunkRequested event.
+        request_id: u64,
+        /// The chunk data.
+        data: bytes::Bytes,
+        /// The postage stamp.
+        stamp: bytes::Bytes,
+    },
+    /// Send a receipt to a peer (respond to pushsync delivery).
+    SendReceipt {
+        /// Request ID from the ChunkPushReceived event.
+        request_id: u64,
+        /// The chunk address.
+        address: ChunkAddress,
+        /// The receipt signature.
+        signature: bytes::Bytes,
+        /// The receipt nonce.
+        nonce: bytes::Bytes,
+        /// Our storage radius.
+        storage_radius: u8,
+    },
 }
 
 /// Events emitted by the handler to the behaviour.
 #[derive(Debug)]
-pub enum HandlerEvent {
+pub(crate) enum HandlerEvent {
     /// Handler has been activated.
     Activated {
         /// The peer's overlay address.
@@ -207,20 +239,29 @@ enum State {
     /// Waiting for activation command.
     Dormant,
     /// Active and processing protocols.
-    Active {
-        overlay: OverlayAddress,
-        #[allow(dead_code)]
-        node_type: SwarmNodeType,
-    },
-    /// Handler is closing.
-    #[allow(dead_code)]
-    Closing,
+    Active { overlay: OverlayAddress },
+}
+
+/// A pending inbound response waiting for the application layer to provide data.
+enum PendingResponse {
+    /// Awaiting chunk data to serve (retrieval response).
+    Retrieval(vertex_swarm_net_retrieval::RetrievalResponder),
+    /// Awaiting receipt to send (pushsync response).
+    Pushsync(vertex_swarm_net_pushsync::PushsyncResponder),
+    /// Awaiting ack to send (pseudosettle response).
+    Pseudosettle(vertex_swarm_net_pseudosettle::PseudosettleInboundResult),
+}
+
+/// Metadata for tracking when a responder was stored.
+struct StoredResponse {
+    response: PendingResponse,
+    stored_at: Instant,
 }
 
 /// Swarm client connection handler.
 ///
 /// Manages multiple client protocols on a single peer connection.
-pub struct ClientHandler {
+pub(crate) struct ClientHandler {
     config: Config,
     state: State,
     /// Counter for request IDs.
@@ -233,6 +274,10 @@ pub struct ClientHandler {
     pricing_sent: bool,
     /// Whether pricing outbound is pending.
     pricing_outbound_pending: bool,
+    /// Stored responders waiting for application-layer responses, keyed by request_id.
+    pending_responses: HashMap<u64, StoredResponse>,
+    /// Bounded set for async response sends (prevents blocking poll).
+    response_sends: futures_bounded::FuturesSet<Result<(), String>>,
 }
 
 impl ClientHandler {
@@ -247,7 +292,7 @@ impl ClientHandler {
     }
 
     /// Create a new handler in dormant state.
-    pub fn new(config: Config) -> Self {
+    pub(crate) fn new(config: Config) -> Self {
         Self {
             config,
             state: State::Dormant,
@@ -256,6 +301,11 @@ impl ClientHandler {
             pending_events: VecDeque::new(),
             pricing_sent: false,
             pricing_outbound_pending: false,
+            pending_responses: HashMap::new(),
+            response_sends: futures_bounded::FuturesSet::new(
+                RESPONSE_SEND_TIMEOUT,
+                MAX_CONCURRENT_RESPONSE_SENDS,
+            ),
         }
     }
 
@@ -274,20 +324,56 @@ impl ClientHandler {
         id
     }
 
+    /// Store a pending response, evicting stale entries if at capacity.
+    fn store_response(&mut self, request_id: u64, response: PendingResponse) {
+        if self.pending_responses.len() >= MAX_PENDING_RESPONSES {
+            self.evict_stale_responses();
+        }
+        if self.pending_responses.len() >= MAX_PENDING_RESPONSES {
+            warn!(%request_id, "Pending response map full, dropping oldest");
+            metrics::counter!("swarm.client.handler.responses_dropped").increment(1);
+            if let Some(&oldest_id) = self
+                .pending_responses
+                .iter()
+                .min_by_key(|(_, v)| v.stored_at)
+                .map(|(k, _)| k)
+            {
+                self.pending_responses.remove(&oldest_id);
+            }
+        }
+        self.pending_responses.insert(
+            request_id,
+            StoredResponse {
+                response,
+                stored_at: Instant::now(),
+            },
+        );
+    }
+
+    /// Remove responders older than the stale timeout.
+    fn evict_stale_responses(&mut self) {
+        let cutoff = Instant::now() - RESPONDER_STALE_TIMEOUT;
+        self.pending_responses.retain(|_, v| v.stored_at > cutoff);
+    }
+
+    /// Take a pending response by request ID.
+    fn take_response(&mut self, request_id: u64) -> Option<PendingResponse> {
+        self.pending_responses
+            .remove(&request_id)
+            .map(|s| s.response)
+    }
+
     /// Process activation command.
     fn activate(&mut self, overlay: OverlayAddress, node_type: SwarmNodeType) {
         match &self.state {
             State::Dormant => {
                 debug!(%overlay, ?node_type, "Handler activated");
-                self.state = State::Active { overlay, node_type };
+                self.state = State::Active { overlay };
                 self.pending_events
                     .push_back(HandlerEvent::Activated { overlay });
             }
             State::Active { .. } => {
                 warn!("Handler already active, ignoring duplicate activation");
-            }
-            State::Closing => {
-                warn!("Handler closing, ignoring activation");
             }
         }
     }
@@ -305,8 +391,6 @@ impl ClientHandler {
                     threshold: threshold.payment_threshold,
                 });
         } else {
-            // This should not happen since we don't advertise pricing in dormant state.
-            // If it does, the peer may be using an outdated protocol cache or race condition.
             warn!(
                 threshold = %threshold.payment_threshold,
                 "Received pricing in dormant state (peer may have cached old protocol list)"
@@ -318,7 +402,7 @@ impl ClientHandler {
     fn on_retrieval_request(
         &mut self,
         request: vertex_swarm_net_retrieval::Request,
-        _responder: vertex_swarm_net_retrieval::RetrievalResponder,
+        responder: vertex_swarm_net_retrieval::RetrievalResponder,
     ) {
         if let Some(overlay) = self.overlay() {
             let request_id = self.next_request_id();
@@ -328,9 +412,8 @@ impl ClientHandler {
                 address: request.address,
                 request_id,
             });
-            // TODO: Store responder for later use
+            self.store_response(request_id, PendingResponse::Retrieval(responder));
         } else {
-            // This should not happen since we don't advertise retrieval in dormant state.
             warn!(
                 address = %request.address,
                 "Received retrieval request in dormant state (peer may have cached old protocol list)"
@@ -342,7 +425,7 @@ impl ClientHandler {
     fn on_pushsync_delivery(
         &mut self,
         delivery: vertex_swarm_net_pushsync::Delivery,
-        _responder: vertex_swarm_net_pushsync::PushsyncResponder,
+        responder: vertex_swarm_net_pushsync::PushsyncResponder,
     ) {
         if let Some(overlay) = self.overlay() {
             let request_id = self.next_request_id();
@@ -355,9 +438,8 @@ impl ClientHandler {
                     stamp: delivery.stamp,
                     request_id,
                 });
-            // TODO: Store responder for later use
+            self.store_response(request_id, PendingResponse::Pushsync(responder));
         } else {
-            // This should not happen since we don't advertise pushsync in dormant state.
             warn!(
                 address = %delivery.address,
                 "Received pushsync delivery in dormant state (peer may have cached old protocol list)"
@@ -366,7 +448,6 @@ impl ClientHandler {
     }
 
     /// Handle retrieval response.
-    #[allow(dead_code)]
     fn on_retrieval_response(
         &mut self,
         delivery: vertex_swarm_net_retrieval::Delivery,
@@ -418,10 +499,6 @@ impl ClientHandler {
 }
 
 /// Multi-protocol ConnectionHandler implementation.
-///
-/// Uses `ClientInboundUpgrade` to advertise pricing, retrieval, and pushsync protocols.
-/// Uses `ClientOutboundUpgrade` for outbound requests with `ClientOutboundInfo`
-/// to track which request type is in flight.
 #[allow(deprecated)]
 impl ConnectionHandler for ClientHandler {
     type FromBehaviour = HandlerCommand;
@@ -432,26 +509,50 @@ impl ConnectionHandler for ClientHandler {
     type OutboundOpenInfo = ClientOutboundInfo;
 
     fn listen_protocol(&self) -> SubstreamProtocol<Self::InboundProtocol, Self::InboundOpenInfo> {
-        // Only advertise client protocols when active (post-handshake).
-        // In dormant state, we don't advertise any protocols to prevent
-        // remote peers from initiating pricing/retrieval/pushsync before
-        // we're ready.
         let upgrade = match &self.state {
             State::Active { .. } => ClientInboundUpgrade::active(),
-            State::Dormant | State::Closing => ClientInboundUpgrade::new(),
+            State::Dormant => ClientInboundUpgrade::new(),
         };
         SubstreamProtocol::new(upgrade, ()).with_timeout(self.config.timeout)
     }
 
     fn poll(
         &mut self,
-        _cx: &mut Context<'_>,
+        cx: &mut Context<'_>,
     ) -> Poll<
         ConnectionHandlerEvent<Self::OutboundProtocol, Self::OutboundOpenInfo, Self::ToBehaviour>,
     > {
         // Emit pending events first
         if let Some(event) = self.pending_events.pop_front() {
             return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
+        }
+
+        // Drain completed response sends
+        while let Poll::Ready(result) = self.response_sends.poll_unpin(cx) {
+            match result {
+                Ok(Ok(())) => {
+                    debug!("Response send completed");
+                }
+                Ok(Err(err)) => {
+                    warn!(error = %err, "Response send failed");
+                    self.push_event(HandlerEvent::Error {
+                        overlay: self.overlay(),
+                        protocol: "response",
+                        error: err,
+                    });
+                }
+                Err(Timeout { .. }) => {
+                    warn!("Response send timed out");
+                    self.push_event(HandlerEvent::Error {
+                        overlay: self.overlay(),
+                        protocol: "response",
+                        error: "response send timed out".into(),
+                    });
+                }
+            }
+            if let Some(event) = self.pending_events.pop_front() {
+                return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
+            }
         }
 
         // Process pending commands
@@ -476,7 +577,6 @@ impl ConnectionHandler for ClientHandler {
                     }
                 }
                 HandlerCommand::RetrieveChunk { address } => {
-                    // Create retrieval outbound request
                     let upgrade = ClientOutboundUpgrade::retrieval(address);
                     return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
                         protocol: SubstreamProtocol::new(
@@ -491,7 +591,6 @@ impl ConnectionHandler for ClientHandler {
                     data,
                     stamp,
                 } => {
-                    // Create pushsync outbound request
                     let delivery = vertex_swarm_net_pushsync::Delivery::new(address, data, stamp);
                     let upgrade = ClientOutboundUpgrade::pushsync(delivery);
                     return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
@@ -514,8 +613,83 @@ impl ConnectionHandler for ClientHandler {
                     });
                 }
                 HandlerCommand::AckPseudosettle { request_id, ack } => {
-                    // TODO: Store responders and look up by request_id
-                    debug!(%request_id, amount = %ack.amount, "Ack pseudosettle (responder not yet implemented)");
+                    if let Some(PendingResponse::Pseudosettle(result)) =
+                        self.take_response(request_id)
+                    {
+                        debug!(%request_id, amount = %ack.amount, "Sending pseudosettle ack");
+                        if self
+                            .response_sends
+                            .try_push(async move {
+                                result
+                                    .respond(ack)
+                                    .await
+                                    .map_err(|e| format!("pseudosettle ack: {e}"))
+                            })
+                            .is_err()
+                        {
+                            warn!("Response send queue full, dropping pseudosettle ack");
+                        }
+                    } else {
+                        warn!(%request_id, "No pseudosettle responder found for request_id");
+                    }
+                }
+                HandlerCommand::ServeChunk {
+                    request_id,
+                    data,
+                    stamp,
+                } => {
+                    if let Some(PendingResponse::Retrieval(responder)) =
+                        self.take_response(request_id)
+                    {
+                        debug!(%request_id, "Serving chunk");
+                        if self
+                            .response_sends
+                            .try_push(async move {
+                                responder
+                                    .send_chunk(data, stamp)
+                                    .await
+                                    .map_err(|e| format!("serve chunk: {e}"))
+                            })
+                            .is_err()
+                        {
+                            warn!("Response send queue full, dropping chunk serve");
+                        }
+                    } else {
+                        warn!(%request_id, "No retrieval responder found for request_id");
+                    }
+                }
+                HandlerCommand::SendReceipt {
+                    request_id,
+                    address,
+                    signature,
+                    nonce,
+                    storage_radius,
+                } => {
+                    if let Some(PendingResponse::Pushsync(responder)) =
+                        self.take_response(request_id)
+                    {
+                        debug!(%request_id, %address, "Sending receipt");
+                        let receipt = vertex_swarm_net_pushsync::Receipt::success(
+                            address,
+                            signature,
+                            nonce,
+                            storage_radius,
+                        );
+                        if self
+                            .response_sends
+                            .try_push(async move {
+                                responder
+                                    .send_receipt(receipt)
+                                    .await
+                                    .map_err(|e| format!("send receipt: {e}"))
+                            })
+                            .is_err()
+                        {
+                            warn!("Response send queue full, dropping receipt send");
+                        }
+                    } else {
+                        warn!(%request_id, "No pushsync responder found for request_id");
+                    }
                 }
             }
         }
@@ -542,7 +716,6 @@ impl ConnectionHandler for ClientHandler {
         >,
     ) {
         match event {
-            // Handle inbound protocol completions
             ConnectionEvent::FullyNegotiatedInbound(FullyNegotiatedInbound {
                 protocol: output,
                 ..
@@ -550,7 +723,6 @@ impl ConnectionHandler for ClientHandler {
                 self.handle_inbound_output(output);
             }
 
-            // Handle outbound protocol completions
             ConnectionEvent::FullyNegotiatedOutbound(FullyNegotiatedOutbound {
                 protocol: output,
                 info,
@@ -559,7 +731,6 @@ impl ConnectionHandler for ClientHandler {
                 self.handle_outbound_output(output, info);
             }
 
-            // Handle dial (outbound) errors
             ConnectionEvent::DialUpgradeError(e) => {
                 let protocol = match &e.info {
                     ClientOutboundInfo::Pricing => {
@@ -578,7 +749,6 @@ impl ConnectionHandler for ClientHandler {
                 });
             }
 
-            // Handle listen (inbound) errors
             ConnectionEvent::ListenUpgradeError(e) => {
                 warn!(error = %e.error, "Client listen upgrade error");
                 self.push_event(HandlerEvent::Error {
@@ -616,7 +786,7 @@ impl ClientHandler {
                             amount: result.payment.amount,
                             request_id,
                         });
-                    // TODO: Store responder for later ack
+                    self.store_response(request_id, PendingResponse::Pseudosettle(result));
                 }
             }
         }
@@ -637,15 +807,7 @@ impl ClientHandler {
                 ClientOutboundOutput::Retrieval(delivery),
                 ClientOutboundInfo::Retrieval { address },
             ) => {
-                if let Some(overlay) = self.overlay() {
-                    debug!(%overlay, %address, "Received chunk delivery");
-                    self.push_event(HandlerEvent::ChunkReceived {
-                        overlay,
-                        address,
-                        data: delivery.data.clone(),
-                        stamp: delivery.stamp.clone(),
-                    });
-                }
+                self.on_retrieval_response(delivery, address);
             }
             (ClientOutboundOutput::Pushsync(receipt), ClientOutboundInfo::Pushsync { address }) => {
                 if let Some(overlay) = self.overlay() {
@@ -655,15 +817,22 @@ impl ClientHandler {
             }
             (
                 ClientOutboundOutput::Pseudosettle(ack),
-                ClientOutboundInfo::Pseudosettle { amount: _ },
+                ClientOutboundInfo::Pseudosettle { amount },
             ) => {
                 if let Some(overlay) = self.overlay() {
-                    debug!(%overlay, ack_amount = %ack.amount, "Pseudosettle sent");
+                    if ack.amount != amount {
+                        warn!(
+                            %overlay,
+                            sent = %amount,
+                            acked = %ack.amount,
+                            "Pseudosettle ack amount mismatch"
+                        );
+                    }
+                    debug!(%overlay, %amount, ack_amount = %ack.amount, "Pseudosettle sent");
                     self.pending_events
                         .push_back(HandlerEvent::PseudosettleSent { overlay, ack });
                 }
             }
-            // Mismatched output/info - should not happen
             (output, info) => {
                 warn!(?output, ?info, "Mismatched outbound output and info");
             }

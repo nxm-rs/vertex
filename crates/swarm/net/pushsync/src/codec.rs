@@ -7,10 +7,10 @@ use vertex_net_codec::{Codec, ProtoMessage};
 use crate::error::PushsyncError;
 
 /// Codec for pushsync delivery messages.
-pub type DeliveryCodec = Codec<Delivery, PushsyncError>;
+pub(crate) type DeliveryCodec = Codec<Delivery, PushsyncError>;
 
 /// Codec for pushsync receipt messages.
-pub type ReceiptCodec = Codec<Receipt, PushsyncError>;
+pub(crate) type ReceiptCodec = Codec<Receipt, PushsyncError>;
 
 /// Delivery of a chunk to be stored.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,0 +1,17 @@
+[package]
+name = "vertex-swarm-net-handler-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+futures-bounded = "0.2"
+vertex-net-ratelimiter.workspace = true
+
+[dev-dependencies]

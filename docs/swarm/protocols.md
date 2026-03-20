@@ -1,73 +1,56 @@
 # Bee Protocol Patterns
 
-This document describes the network protocol patterns used in Vertex (compatible with Bee).
+This document describes the network protocol patterns used in Vertex (compatible with [Bee](https://github.com/ethersphere/bee)).
 
 ## Headered Streams
 
 All Bee protocol streams use a headers exchange **except handshake**.
 
-```
-┌─────────────┐                    ┌─────────────┐
-│   Dialer    │                    │  Listener   │
-└──────┬──────┘                    └──────┬──────┘
-       │                                  │
-       │──── Send Headers ───────────────>│
-       │<─── Receive Headers ─────────────│
-       │                                  │
-       │──── Protocol Data ──────────────>│  (or receive, depends on protocol)
-       │                                  │
+```mermaid
+sequenceDiagram
+    participant D as Dialer
+    participant L as Listener
+
+    D->>L: Send Headers
+    L->>D: Receive Headers
+    D->>L: Protocol Data (or receive, depends on protocol)
 ```
 
-**Headered protocols:** hive, pricing, pushsync, retrieval, pingpong, pullsync
+**Headered protocols:** hive, pricing, pushsync, retrieval, pingpong, pullsync, pseudosettle
 
 **Non-headered:** handshake (uses SYN/ACK directly)
 
 ## Headered Protocol Abstraction
 
-Use `vertex-net-headers` traits to compose headered protocols:
+The `vertex-swarm-net-headers` crate provides composable traits for building headered protocols:
 
-```rust
-// Implement InnerInbound to read data after headers
-impl InnerInbound for MyProtocolInner {
-    type Output = MyData;
-    type Error = MyCodecError;
+| Trait | Purpose |
+|-------|---------|
+| `InnerInbound` | Read protocol data after headers have been exchanged |
+| `InnerOutbound` | Write protocol data after headers have been exchanged |
+| `HeaderedInbound<T>` | Wraps an `InnerInbound` with automatic header exchange |
+| `HeaderedOutbound<T>` | Wraps an `InnerOutbound` with automatic header exchange |
 
-    fn protocol_name(&self) -> &'static str { PROTOCOL_NAME }
-    fn read(self, stream: Stream) -> BoxFuture<Result<(MyData, Stream), MyCodecError>> { ... }
-}
-
-// Implement InnerOutbound to write data after headers
-impl InnerOutbound for MyProtocolOutbound {
-    type Error = MyCodecError;
-
-    fn protocol_name(&self) -> &'static str { PROTOCOL_NAME }
-    fn write(self, stream: Stream) -> BoxFuture<Result<Stream, MyCodecError>> { ... }
-}
-
-// Compose with headers wrapper
-pub type MyInboundProtocol = HeaderedInbound<MyProtocolInner>;
-pub type MyOutboundProtocol = HeaderedOutbound<MyProtocolOutbound>;
-```
-
-Handler receives `HeaderedInboundOutput<T>` with `.data` field containing protocol output.
+The handler receives `HeaderedInboundOutput<T>` with a `.data` field containing the protocol output.
 
 ## MultiAddr Encoding
 
-Bee uses a custom `0x99` prefix for encoding multiple multiaddrs in a single bytes field. This is **not standard libp2p** - the standard approach uses `repeated bytes` in protobuf.
+Bee uses a custom `0x99` prefix for encoding multiple multiaddrs in a single bytes field. This is **not standard libp2p**: the standard approach uses `repeated bytes` in protobuf.
 
-Located in `vertex-net-primitives`: `serialize_multiaddrs()` / `deserialize_multiaddrs()`
+Located in `vertex-swarm-peer`: `serialize_multiaddrs()` / `deserialize_multiaddrs()`.
 
 ## Protocol Summary
 
-| Protocol | Headered | Direction | Purpose |
-|----------|:--------:|-----------|---------|
-| handshake | No | Bidirectional | Peer identity exchange, overlay address verification |
-| hive | Yes | Request/Response | Peer discovery, neighbor lists |
-| pricing | Yes | Bidirectional | Bandwidth price negotiation |
-| pingpong | Yes | Request/Response | Liveness checks |
-| retrieval | Yes | Request/Response | Fetch chunks by address |
-| pushsync | Yes | Request/Response | Push chunks to responsible peers |
-| pullsync | Yes | Request/Response | Sync chunks in neighborhood |
+| Protocol | Headered | Direction | Purpose | Crate |
+|----------|:--------:|-----------|---------|-------|
+| handshake | No | Bidirectional | Peer identity exchange, overlay address verification | `vertex-swarm-net-handshake` |
+| hive | Yes | Request/Response | Peer discovery, neighbour lists | `vertex-swarm-net-hive` |
+| pricing | Yes | Bidirectional | Bandwidth price negotiation | `vertex-swarm-net-pricing` |
+| pseudosettle | Yes | Bidirectional | Bandwidth settlement (soft accounting) | `vertex-swarm-net-pseudosettle` |
+| pingpong | Yes | Request/Response | Liveness checks | `vertex-swarm-net-pingpong` |
+| retrieval | Yes | Request/Response | Fetch chunks by address | `vertex-swarm-net-retrieval` |
+| pushsync | Yes | Request/Response | Push chunks to responsible peers | `vertex-swarm-net-pushsync` |
+| pullsync | Yes | Request/Response | Sync chunks in neighbourhood | (not yet implemented) |
 
 ## See Also
 

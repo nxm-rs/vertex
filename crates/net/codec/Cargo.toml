@@ -17,3 +17,5 @@ bytes.workspace = true
 futures.workspace = true
 quick-protobuf-codec.workspace = true
 quick-protobuf.workspace = true
+strum.workspace = true
+thiserror.workspace = true

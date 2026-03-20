@@ -7,6 +7,7 @@
 //!
 //! The client handler needs to accept multiple inbound protocols:
 //! - Pricing: Payment threshold exchange (symmetric - both peers announce)
+//! - Pseudosettle: Bandwidth settlement (symmetric)
 //! - Retrieval: Chunk request/response (full nodes only)
 //! - Pushsync: Chunk push with receipt (full nodes only)
 //!
@@ -37,7 +38,7 @@ use vertex_swarm_net_retrieval::{
 };
 /// Errors from client protocol upgrades.
 #[derive(Debug, Error)]
-pub enum ClientUpgradeError {
+pub(crate) enum ClientUpgradeError {
     /// Pricing protocol error.
     #[error("pricing error: {0}")]
     Pricing(#[source] ProtocolError),
@@ -60,7 +61,7 @@ pub enum ClientUpgradeError {
 }
 
 /// Output from a client inbound upgrade.
-pub enum ClientInboundOutput {
+pub(crate) enum ClientInboundOutput {
     /// Received pricing threshold.
     Pricing(AnnouncePaymentThreshold),
     /// Received retrieval request (with responder to send delivery).
@@ -106,19 +107,19 @@ impl std::fmt::Debug for ClientInboundOutput {
 /// complete. Once the handler is activated (after handshake), protocols
 /// are advertised on subsequent inbound substream requests.
 #[derive(Clone, Debug, Default)]
-pub struct ClientInboundUpgrade {
+pub(crate) struct ClientInboundUpgrade {
     /// Whether the handler is active (post-handshake).
     is_active: bool,
 }
 
 impl ClientInboundUpgrade {
     /// Create a new client inbound upgrade in dormant state (no protocols advertised).
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self { is_active: false }
     }
 
     /// Create a new client inbound upgrade in active state (all protocols advertised).
-    pub fn active() -> Self {
+    pub(crate) fn active() -> Self {
         Self { is_active: true }
     }
 }
@@ -205,7 +206,7 @@ pub(crate) enum ClientOutboundRequest {
 
 /// Output from a client outbound upgrade.
 #[derive(Debug)]
-pub enum ClientOutboundOutput {
+pub(crate) enum ClientOutboundOutput {
     /// Pricing announcement sent successfully.
     Pricing,
     /// Received chunk delivery.
@@ -220,34 +221,34 @@ pub enum ClientOutboundOutput {
 ///
 /// Unlike inbound, outbound requests know which protocol to use.
 #[derive(Clone, Debug)]
-pub struct ClientOutboundUpgrade {
+pub(crate) struct ClientOutboundUpgrade {
     request: ClientOutboundRequest,
 }
 
 impl ClientOutboundUpgrade {
     /// Create a new pricing outbound upgrade.
-    pub fn pricing(threshold: AnnouncePaymentThreshold) -> Self {
+    pub(crate) fn pricing(threshold: AnnouncePaymentThreshold) -> Self {
         Self {
             request: ClientOutboundRequest::Pricing(threshold),
         }
     }
 
     /// Create a new retrieval outbound upgrade.
-    pub fn retrieval(address: ChunkAddress) -> Self {
+    pub(crate) fn retrieval(address: ChunkAddress) -> Self {
         Self {
             request: ClientOutboundRequest::Retrieval(address),
         }
     }
 
     /// Create a new pushsync outbound upgrade.
-    pub fn pushsync(delivery: PushsyncDelivery) -> Self {
+    pub(crate) fn pushsync(delivery: PushsyncDelivery) -> Self {
         Self {
             request: ClientOutboundRequest::Pushsync(delivery),
         }
     }
 
     /// Create a new pseudosettle outbound upgrade.
-    pub fn pseudosettle(payment: Payment) -> Self {
+    pub(crate) fn pseudosettle(payment: Payment) -> Self {
         Self {
             request: ClientOutboundRequest::Pseudosettle(payment),
         }
@@ -323,7 +324,7 @@ impl OutboundUpgrade<Stream> for ClientOutboundUpgrade {
 
 /// Information about an outbound request, used for correlating responses.
 #[derive(Debug, Clone)]
-pub enum ClientOutboundInfo {
+pub(crate) enum ClientOutboundInfo {
     /// Pricing announcement.
     Pricing,
     /// Retrieval request with chunk address.

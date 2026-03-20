@@ -47,7 +47,7 @@ impl ProtoMessage for Payment {
     }
 }
 
-pub type PaymentCodec = Codec<Payment, PseudosettleError>;
+pub(crate) type PaymentCodec = Codec<Payment, PseudosettleError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaymentAck {
@@ -88,7 +88,7 @@ impl ProtoMessage for PaymentAck {
     }
 }
 
-pub type PaymentAckCodec = Codec<PaymentAck, PseudosettleError>;
+pub(crate) type PaymentAckCodec = Codec<PaymentAck, PseudosettleError>;
 
 #[cfg(test)]
 mod tests {

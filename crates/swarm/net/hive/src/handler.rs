@@ -24,9 +24,9 @@ use libp2p::{
 };
 use metrics::counter;
 use tracing::{debug, trace, warn};
-use vertex_net_ratelimiter::RateLimiter;
 use vertex_observability::labels::direction;
 use vertex_swarm_api::SwarmIdentity;
+use vertex_swarm_net_handler_core::HandlerCore;
 use vertex_swarm_net_headers::{Inbound, Outbound, ProtocolStreamError, UpgradeError};
 use vertex_swarm_peer::SwarmPeer;
 
@@ -67,14 +67,10 @@ pub struct HiveHandler<I: SwarmIdentity> {
     remote_peer_id: PeerId,
     identity: Arc<I>,
     cache: PeerCache,
-    /// Token bucket to prevent rapid stream cycling.
-    rate_limiter: RateLimiter,
-    /// Implicitly bounded by the number of connection events per poll cycle
-    /// (at most one inbound + one error per `on_connection_event` call).
-    pending_events: VecDeque<HiveHandlerEvent>,
+    /// Shared handler core: events, rate limiter, outbound flag.
+    core: HandlerCore<HiveHandlerEvent>,
     /// Bounded by [`MAX_PENDING_BROADCASTS`]; excess broadcasts are dropped with a warning.
     pending_broadcasts: VecDeque<Vec<SwarmPeer>>,
-    outbound_pending: bool,
 }
 
 impl<I> HiveHandler<I>
@@ -84,13 +80,11 @@ where
     /// Create a new hive handler.
     pub(crate) fn new(identity: Arc<I>, remote_peer_id: PeerId, cache: PeerCache) -> Self {
         Self {
-            rate_limiter: RateLimiter::new(RATE_LIMIT_BURST, RATE_LIMIT_REFILL),
+            core: HandlerCore::new(RATE_LIMIT_BURST, RATE_LIMIT_REFILL),
             remote_peer_id,
             identity,
             cache,
-            pending_events: VecDeque::new(),
             pending_broadcasts: VecDeque::new(),
-            outbound_pending: false,
         }
     }
 }
@@ -123,15 +117,15 @@ where
         ConnectionHandlerEvent<Self::OutboundProtocol, Self::OutboundOpenInfo, Self::ToBehaviour>,
     > {
         // Emit pending events
-        if let Some(event) = self.pending_events.pop_front() {
+        if let Some(event) = self.core.poll_pending() {
             return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
         }
 
         // Process pending broadcasts
-        if !self.outbound_pending
+        if !self.core.outbound_pending()
             && let Some(peers) = self.pending_broadcasts.pop_front()
         {
-            self.outbound_pending = true;
+            self.core.set_outbound_pending(true);
             debug!(peer_count = peers.len(), "Sending hive broadcast");
             let protocol = Outbound::new(HiveOutboundInner::new(&peers));
             return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
@@ -172,7 +166,7 @@ where
                 protocol: validated,
                 ..
             }) => {
-                if !self.rate_limiter.try_acquire() {
+                if !self.core.try_accept_inbound() {
                     warn!(
                         peer_id = %self.remote_peer_id,
                         "Rate limiting inbound hive stream - dropping result"
@@ -180,12 +174,12 @@ where
                     counter!("hive_rate_limited_total").increment(1);
                     return;
                 }
-                self.pending_events
-                    .push_back(HiveHandlerEvent::PeersReceived(validated.peers));
+                self.core
+                    .push_event(HiveHandlerEvent::PeersReceived(validated.peers));
             }
 
             ConnectionEvent::FullyNegotiatedOutbound(FullyNegotiatedOutbound { .. }) => {
-                self.outbound_pending = false;
+                self.core.set_outbound_pending(false);
                 trace!("Hive broadcast completed");
             }
 
@@ -193,17 +187,15 @@ where
                 let hive_error =
                     UpgradeError::record_and_convert(error, "hive", direction::INBOUND);
                 warn!(error = %hive_error, "Hive inbound stream error");
-                self.pending_events
-                    .push_back(HiveHandlerEvent::Error(hive_error));
+                self.core.push_event(HiveHandlerEvent::Error(hive_error));
             }
 
             ConnectionEvent::DialUpgradeError(error) => {
-                self.outbound_pending = false;
+                self.core.set_outbound_pending(false);
                 let hive_error =
                     UpgradeError::record_and_convert(error.error, "hive", direction::OUTBOUND);
                 warn!(error = %hive_error, "Hive outbound error");
-                self.pending_events
-                    .push_back(HiveHandlerEvent::Error(hive_error));
+                self.core.push_event(HiveHandlerEvent::Error(hive_error));
             }
 
             _ => {}

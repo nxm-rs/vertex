@@ -1,11 +1,12 @@
 //! Retrieval protocol for Swarm chunk request and delivery.
 
 mod codec;
-mod error;
-mod protocol;
+pub use codec::{Delivery, Request};
 
-pub use codec::{Delivery, DeliveryCodec, Request, RequestCodec};
+mod error;
 pub use error::RetrievalError;
+
+mod protocol;
 pub use protocol::{
     RetrievalInboundProtocol, RetrievalOutboundProtocol, RetrievalResponder, inbound, outbound,
 };

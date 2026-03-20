@@ -1,4 +1,33 @@
-//! Swarm API - Core abstractions for Ethereum Swarm.
+//! Swarm API - core abstractions for Ethereum Swarm.
+//!
+//! This crate defines *what* the Swarm protocol does without prescribing *how*.
+//! All traits are libp2p-agnostic; the libp2p boundary lives in `vertex-swarm-node`.
+//!
+//! # Type Hierarchy
+//!
+//! Node capabilities are modelled as a trait chain where each level adds
+//! associated types for additional services:
+//!
+//! - [`SwarmPrimitives`] - `Spec` + `Identity` (pure data, no services)
+//! - [`SwarmNetworkTypes`] - adds `Topology` (peer discovery)
+//! - [`SwarmClientTypes`] - adds `Accounting` (bandwidth + pricing)
+//! - [`SwarmStorerTypes`] - adds `Store` (local chunk persistence)
+//!
+//! # Component Containers
+//!
+//! Each capability level has a runtime container:
+//!
+//! - [`BootnodeComponents`] - topology only
+//! - [`ClientComponents`] - topology + accounting
+//! - [`StorerComponents`] - topology + accounting + store
+//!
+//! Access is abstracted via [`HasTopology`], [`HasAccounting`], [`HasStore`],
+//! and [`HasIdentity`] traits.
+//!
+//! # Protocol Integration
+//!
+//! [`SwarmProtocol`] implements [`vertex_node_api::NodeProtocol`], bridging the
+//! Swarm domain with the generic node infrastructure.
 
 #![warn(missing_docs)]
 #![cfg_attr(not(feature = "std"), no_std)]

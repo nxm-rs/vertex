@@ -1,11 +1,12 @@
 //! Pricing protocol for Swarm payment threshold announcement.
 
 mod codec;
-mod error;
-mod protocol;
+pub use codec::AnnouncePaymentThreshold;
 
-pub use codec::{AnnouncePaymentThreshold, PricingCodec};
+mod error;
 pub use error::PricingError;
+
+mod protocol;
 pub use protocol::{PricingInboundProtocol, PricingOutboundProtocol, inbound, outbound};
 
 /// Protocol name for pricing.

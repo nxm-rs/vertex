@@ -234,7 +234,7 @@ All metrics are prefixed with `vertex_` when exported (e.g. `topology_depth` bec
 
 Uses `le` (upper bound) labels for native Grafana heatmap compatibility: `-100`, `-50`, `-10`, `-1`, `0`, `1`, `5`, `10`, `25`, `50`, `75`, `100`, `+Inf` (13 non-cumulative buckets).
 
-Updated event-driven via `ScoreObserver` callbacks — O(1) per score change rather than periodic O(n) iteration.
+Updated event-driven via `ScoreObserver` callbacks; O(1) per score change rather than periodic O(n) iteration.
 
 ### Gossip Verification
 

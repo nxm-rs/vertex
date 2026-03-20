@@ -29,7 +29,6 @@ pub enum PseudosettleCommand {
 }
 
 /// Processes settlement commands from handles and network events.
-#[allow(dead_code)]
 pub struct PseudosettleService<A: SwarmBandwidthAccounting> {
     /// Receive commands from handles.
     command_rx: mpsc::UnboundedReceiver<PseudosettleCommand>,
@@ -39,7 +38,7 @@ pub struct PseudosettleService<A: SwarmBandwidthAccounting> {
     command_tx: mpsc::UnboundedSender<ClientCommand>,
     /// Reference to accounting for balance updates.
     accounting: Arc<A>,
-    /// Config for refresh rate (tokens per second).
+    /// Tokens per second for rate limiting settlements.
     refresh_rate: u64,
     /// Track pending outbound settlements (waiting for ack).
     pending: HashMap<OverlayAddress, oneshot::Sender<Result<u64, PseudosettleError>>>,
@@ -106,7 +105,7 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
                     return;
                 }
 
-                // Check rate limiting (1 second minimum between settlements)
+                // Check rate limiting
                 let now = current_timestamp();
                 if let Some(&last) = self.last_settlement.get(&peer)
                     && now <= last
@@ -176,7 +175,7 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
 
                 // Calculate acceptable amount based on time-based refresh
                 let handle = self.accounting.for_peer(peer);
-                let acceptable = self.calculate_acceptable(&handle, amount.as_limbs()[0]);
+                let acceptable = self.calculate_acceptable(&peer, &handle, amount.as_limbs()[0]);
 
                 if acceptable > 0 {
                     // Credit peer's balance (they paid us)
@@ -200,8 +199,9 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
         }
     }
 
-    /// Calculate acceptable amount, capped at what the peer owes us.
-    fn calculate_acceptable(&self, handle: &A::Peer, requested: u64) -> u64 {
+    /// Calculate acceptable amount, capped at what the peer owes us and the
+    /// time-based allowance since the last settlement.
+    fn calculate_acceptable(&self, peer: &OverlayAddress, handle: &A::Peer, requested: u64) -> u64 {
         let balance = handle.balance();
 
         // They can only pay us if they owe us (positive balance means they owe us)
@@ -212,11 +212,15 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
         // Cap at what they actually owe us
         let owed = balance as u64;
 
-        // Also cap at time-based allowance
-        // For now, we accept up to the capped amount
-        // TODO: Implement proper time-based allowance tracking per peer
-        // This would involve tracking accumulated allowance since last settlement
-        std::cmp::min(requested, owed)
+        // Cap at time-based allowance: refresh_rate tokens accumulate per second
+        let now = current_timestamp();
+        let elapsed = self
+            .last_settlement
+            .get(peer)
+            .map_or(now, |&last| now.saturating_sub(last));
+        let allowance = self.refresh_rate.saturating_mul(elapsed);
+
+        requested.min(owed).min(allowance)
     }
 }
 

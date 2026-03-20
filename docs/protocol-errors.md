@@ -11,78 +11,25 @@ This document defines the error handling architecture for Vertex network protoco
 
 ## Error Pattern
 
-All protocols follow this pattern:
+All protocol error enums follow the same structure. Each error type is defined as a flat enum deriving `Debug`, `thiserror::Error`, and `strum::IntoStaticStr`, with a `#[strum(serialize_all = "snake_case")]` attribute applied at the enum level.
 
-```rust
-// error.rs
-use strum::IntoStaticStr;
+Error variants fall into three categories:
 
-#[derive(Debug, thiserror::Error, IntoStaticStr)]
-#[strum(serialize_all = "snake_case")]
-pub enum ProtocolError {
-    // === Lifecycle errors ===
+| Category | Examples | Notes |
+|----------|----------|-------|
+| Lifecycle errors | `ConnectionClosed`, `Timeout` | Protocol state machine failures |
+| Validation errors | `InvalidLength { expected, actual }` | Protocol-specific semantic checks |
+| Infrastructure errors | `Protobuf(quick_protobuf_codec::Error)`, `Io(std::io::Error)` | Low-level library failures, using `#[from]` for automatic conversion |
 
-    /// Connection closed before message received.
-    #[error("connection closed")]
-    ConnectionClosed,
-
-    /// Operation timeout.
-    #[error("timeout")]
-    Timeout,
-
-    // === Validation errors (protocol-specific) ===
-
-    /// Invalid field length.
-    #[error("invalid length: expected {expected}, got {actual}")]
-    #[strum(serialize = "invalid_length")]
-    InvalidLength { expected: usize, actual: usize },
-
-    // === Infrastructure errors ===
-
-    /// Protobuf encoding/decoding error.
-    #[error("protobuf error: {0}")]
-    #[strum(serialize = "protobuf_error")]
-    Protobuf(#[from] quick_protobuf_codec::Error),
-
-    /// I/O error during stream operations.
-    #[error("io error: {0}")]
-    #[strum(serialize = "io_error")]
-    Io(#[from] std::io::Error),
-}
-```
+Each variant has an `#[error("...")]` attribute for display formatting and, where needed, a `#[strum(serialize = "...")]` override for the metrics label (see below).
 
 ## LabelValue Trait (Automatic)
 
-The `LabelValue` trait in `vertex-swarm-observability` has a blanket implementation:
+The `LabelValue` trait in `vertex-observability` provides a `label_value()` method returning a `&'static str`. It has a blanket implementation for any type where a shared reference can be converted `Into<&'static str>`. Since `IntoStaticStr` from strum provides exactly this conversion, any error enum deriving `IntoStaticStr` automatically satisfies `LabelValue`.
 
-```rust
-pub trait LabelValue {
-    fn label_value(&self) -> &'static str;
-}
+No manual `label()` methods are needed. Just derive `IntoStaticStr`.
 
-// Automatic for any type deriving IntoStaticStr
-impl<T> LabelValue for T
-where
-    for<'a> &'a T: Into<&'static str>,
-{
-    fn label_value(&self) -> &'static str {
-        self.into()
-    }
-}
-```
-
-**No manual `label()` methods needed.** Just derive `IntoStaticStr`.
-
-Usage in metrics:
-
-```rust
-use vertex_swarm_observability::LabelValue;
-
-counter!(
-    "protocol_errors_total",
-    "reason" => error.label_value()
-).increment(1);
-```
+To use this in metrics, call `error.label_value()` to obtain the static string for the error variant and pass it as a label value when incrementing counters.
 
 ## Error Categories
 
@@ -118,116 +65,35 @@ Low-level failures from underlying libraries:
 | `Protobuf` | Wire format parsing failed |
 | `Io` | Stream read/write failed |
 
-## File Organization
+## File Organisation
 
-```
-protocol/src/
-├── lib.rs           # Public exports
-├── error.rs         # Protocol error enum
-├── codec.rs         # Codec implementation
-├── protocol.rs      # Protocol handlers
-└── metrics.rs       # Metrics tracking (optional)
+```mermaid
+graph TD
+    A["protocol/src/"] --> B["lib.rs: Public exports"]
+    A --> C["error.rs: Protocol error enum"]
+    A --> D["codec.rs: Codec implementation"]
+    A --> E["protocol.rs: Protocol handlers"]
+    A --> F["metrics.rs: Metrics tracking (optional)"]
 ```
 
 ## Codec Trait Requirements
 
-The `Codec<M, E>` from `vertex-net-codec` requires:
-
-```rust
-impl Decoder for Codec<M, E>
-where
-    M::DecodeError: Into<E>,
-    quick_protobuf_codec::Error: Into<E>,
-    E: From<std::io::Error>,
-```
-
-A flat error enum satisfies these via `#[from]` attributes:
-
-```rust
-#[derive(Debug, thiserror::Error)]
-pub enum MyError {
-    #[error("protobuf: {0}")]
-    Protobuf(#[from] quick_protobuf_codec::Error),
-
-    #[error("io: {0}")]
-    Io(#[from] std::io::Error),
-
-    // Validation errors...
-}
-```
+The `Codec<M, E>` from `vertex-net-codec` requires that the message's `DecodeError` type converts into `E`, that `quick_protobuf_codec::Error` converts into `E`, and that `E` implements `From<std::io::Error>`. A flat error enum satisfies all three bounds via `#[from]` attributes on its `Protobuf` and `Io` variants.
 
 ## Strum Serialization
 
-Use `#[strum(serialize = "...")]` to override generated names when needed:
-
-```rust
-#[derive(IntoStaticStr)]
-#[strum(serialize_all = "snake_case")]
-pub enum Error {
-    // Generates "connection_closed"
-    ConnectionClosed,
-
-    // Override to "missing_field" (not "missing_field_0")
-    #[strum(serialize = "missing_field")]
-    MissingField(&'static str),
-
-    // Override for clarity
-    #[strum(serialize = "protobuf_error")]
-    Protobuf(quick_protobuf_codec::Error),
-}
-```
+The `#[strum(serialize_all = "snake_case")]` attribute at the enum level converts variant names to snake_case automatically (e.g., `ConnectionClosed` becomes `"connection_closed"`). For variants with fields, the auto-generated name may include a suffix; use `#[strum(serialize = "...")]` on individual variants to override. For example, a `MissingField(&'static str)` variant should have `#[strum(serialize = "missing_field")]` to avoid the generated name `"missing_field_0"`. Similarly, wrapper variants like `Protobuf(...)` benefit from an explicit serialize attribute for clarity.
 
 ## Anti-Patterns
 
-### Manufacturing Io Errors
+The following table describes common mistakes and their corrections:
 
-```rust
-// BAD
-.ok_or_else(|| {
-    Error::Io(std::io::Error::new(
-        std::io::ErrorKind::UnexpectedEof,
-        "connection closed",
-    ))
-})
+| Anti-pattern | Problem | Correct approach |
+|-------------|---------|-----------------|
+| Manufacturing Io errors | Creating a `std::io::Error` to wrap a logical condition (e.g., wrapping "connection closed" in `Error::Io`) | Use a dedicated variant such as `Error::ConnectionClosed` |
+| String escape hatch | Calling `.map_err(|e| Error::protocol(e.to_string()))` to convert errors through a catch-all string variant | Use a specific variant such as `Error::InvalidAddress` |
+| Nested error hierarchies | Wrapping an inner error enum inside an outer enum (e.g., `OuterError::Codec(InnerCodecError)`) | Use a flat enum with all variants at the same level; this enables automatic `LabelValue` without a custom implementation |
 
-// GOOD
-.ok_or(Error::ConnectionClosed)
-```
+## Requirements for New Protocols
 
-### String Escape Hatch
-
-```rust
-// BAD
-.map_err(|e| Error::protocol(e.to_string()))?;
-
-// GOOD
-.map_err(Error::InvalidAddress)?;
-```
-
-### Nested Error Hierarchies
-
-```rust
-// BAD - requires custom LabelValue impl
-pub enum OuterError {
-    Codec(InnerCodecError),
-}
-
-// GOOD - flat enum, automatic LabelValue
-pub enum Error {
-    NetworkIdMismatch,
-    InvalidSignature(SignatureError),
-    // ... all variants at same level
-}
-```
-
-## Checklist for New Protocols
-
-- [ ] Create `error.rs` with flat error enum
-- [ ] Derive `thiserror::Error` and `strum::IntoStaticStr`
-- [ ] Add `#[strum(serialize_all = "snake_case")]`
-- [ ] Include `ConnectionClosed` variant
-- [ ] Include `Protobuf(#[from] quick_protobuf_codec::Error)` variant
-- [ ] Include `Io(#[from] std::io::Error)` variant
-- [ ] Add protocol-specific validation errors as needed
-- [ ] Use `#[strum(serialize = "...")]` for variants with parameters
-- [ ] Export error type from `lib.rs`
+When adding a new protocol, define a flat error enum in `error.rs` deriving `thiserror::Error` and `strum::IntoStaticStr`, with `#[strum(serialize_all = "snake_case")]` at the enum level. The enum must include a `ConnectionClosed` variant, a `Protobuf` variant with `#[from] quick_protobuf_codec::Error`, and an `Io` variant with `#[from] std::io::Error`. Add protocol-specific validation error variants as needed, using `#[strum(serialize = "...")]` on any variant that has parameters. Export the error type from `lib.rs`.

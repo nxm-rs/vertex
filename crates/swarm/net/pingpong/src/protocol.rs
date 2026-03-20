@@ -96,9 +96,9 @@ impl HeaderedOutbound for PingpongOutboundInner {
 }
 
 /// Outbound protocol type for handler.
-pub type PingpongOutboundProtocol = Outbound<PingpongOutboundInner>;
+pub(crate) type PingpongOutboundProtocol = Outbound<PingpongOutboundInner>;
 
 /// Create an outbound protocol handler with the given greeting.
-pub fn outbound(greeting: impl Into<String>) -> PingpongOutboundProtocol {
+pub(crate) fn outbound(greeting: impl Into<String>) -> PingpongOutboundProtocol {
     Outbound::new(PingpongOutboundInner::new(greeting))
 }

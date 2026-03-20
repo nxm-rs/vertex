@@ -30,5 +30,3 @@ pub use events::{ConnectionDirection, DialReason, TopologyCommand, TopologyEvent
 pub use handle::{BinStats, RoutingStats, TopologyHandle};
 
 pub use kademlia::{KademliaConfig, RoutingArgs};
-
-pub use libp2p::Multiaddr;

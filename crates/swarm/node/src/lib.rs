@@ -20,22 +20,14 @@ mod protocol;
 mod swarm_client;
 
 pub use node::{
-    BaseNode, BootNode, BootNodeBuilder, BootnodeBehaviour, BootnodeEvent, BuiltInfrastructure,
-    ClientNode, ClientNodeBehaviour, ClientNodeBuilder, ClientNodeEvent, NodeBuildError,
-    StorerNode, StorerNodeBuilder,
+    BaseNode, BootNode, BootNodeBuilder, BuiltInfrastructure, ClientNode, ClientNodeBuilder,
+    NodeBuildError, StorerNode, StorerNodeBuilder,
 };
 
 pub use vertex_swarm_api::SwarmNodeType;
 
 pub use client_service::{ClientHandle, ClientService, RetrievalError, RetrievalResult};
-pub use protocol::{ClientCommand, ClientEvent};
-
-pub use protocol::PseudosettleEvent;
-
-pub use protocol::{
-    BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientHandler,
-    HandlerConfig as ClientHandlerConfig,
-};
+pub use protocol::{ClientCommand, ClientEvent, PseudosettleEvent};
 
 pub use swarm_client::{BootnodeClient, Client, FullClient};
 

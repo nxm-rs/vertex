@@ -18,7 +18,7 @@ use libp2p::{
     },
 };
 use tokio::sync::mpsc;
-use tracing::{debug, trace, warn};
+use tracing::{debug, warn};
 use vertex_swarm_primitives::OverlayAddress;
 
 use super::{
@@ -30,11 +30,11 @@ const DEFAULT_MAX_PENDING_EVENTS: usize = 4096;
 
 /// Configuration for the client behaviour.
 #[derive(Debug, Clone)]
-pub struct Config {
+pub(crate) struct Config {
     /// Handler configuration.
-    pub handler: HandlerConfig,
+    pub(crate) handler: HandlerConfig,
     /// Maximum pending events before dropping new ones.
-    pub max_pending_events: usize,
+    pub(crate) max_pending_events: usize,
 }
 
 impl Default for Config {
@@ -57,7 +57,7 @@ impl Default for Config {
 /// Settlement events can be routed directly to settlement services via optional
 /// event senders. Use [`set_pseudosettle_events`](Self::set_pseudosettle_events)
 /// to configure routing. Events are still emitted as [`ClientEvent`] for other consumers.
-pub struct ClientBehaviour {
+pub(crate) struct ClientBehaviour {
     config: Config,
     /// Map of peer_id -> overlay for activated peers.
     peer_overlays: HashMap<PeerId, OverlayAddress>,
@@ -71,7 +71,7 @@ pub struct ClientBehaviour {
 
 impl ClientBehaviour {
     /// Create a new client behaviour with the given configuration.
-    pub fn new(config: Config) -> Self {
+    pub(crate) fn new(config: Config) -> Self {
         Self {
             config,
             peer_overlays: HashMap::new(),
@@ -85,7 +85,7 @@ impl ClientBehaviour {
     ///
     /// When set, pseudosettle-related events will be sent to this channel
     /// in addition to being emitted as [`ClientEvent`].
-    pub fn set_pseudosettle_events(&mut self, tx: mpsc::UnboundedSender<PseudosettleEvent>) {
+    pub(crate) fn set_pseudosettle_events(&mut self, tx: mpsc::UnboundedSender<PseudosettleEvent>) {
         self.pseudosettle_event_tx = Some(tx);
     }
 
@@ -100,7 +100,7 @@ impl ClientBehaviour {
     }
 
     /// Handle a command from the application layer.
-    pub fn on_command(&mut self, command: ClientCommand) {
+    pub(crate) fn on_command(&mut self, command: ClientCommand) {
         match command {
             ClientCommand::ActivatePeer {
                 peer_id,
@@ -163,25 +163,49 @@ impl ClientBehaviour {
             }
             ClientCommand::ServeChunk {
                 peer,
+                request_id,
                 address: _,
-                data: _,
-                stamp: _,
+                data,
+                stamp,
             } => {
-                // TODO: Implement serving chunks (responding to retrieval requests)
-                if self.overlay_peers.contains_key(&peer) {
-                    trace!("ServeChunk not yet implemented");
+                if let Some(&peer_id) = self.overlay_peers.get(&peer) {
+                    debug!(%peer_id, %peer, %request_id, "Serving chunk");
+                    self.push_event(ToSwarm::NotifyHandler {
+                        peer_id,
+                        handler: libp2p::swarm::NotifyHandler::Any,
+                        event: HandlerCommand::ServeChunk {
+                            request_id,
+                            data,
+                            stamp,
+                        },
+                    });
+                } else {
+                    debug!(%peer, "Unknown peer for serve chunk");
                 }
             }
             ClientCommand::SendReceipt {
                 peer,
-                address: _,
-                signature: _,
-                nonce: _,
-                storage_radius: _,
+                request_id,
+                address,
+                signature,
+                nonce,
+                storage_radius,
             } => {
-                // TODO: Implement sending receipts
-                if self.overlay_peers.contains_key(&peer) {
-                    trace!("SendReceipt not yet implemented");
+                if let Some(&peer_id) = self.overlay_peers.get(&peer) {
+                    debug!(%peer_id, %peer, %request_id, "Sending receipt");
+                    self.push_event(ToSwarm::NotifyHandler {
+                        peer_id,
+                        handler: libp2p::swarm::NotifyHandler::Any,
+                        event: HandlerCommand::SendReceipt {
+                            request_id,
+                            address,
+                            signature,
+                            nonce,
+                            storage_radius,
+                        },
+                    });
+                } else {
+                    debug!(%peer, "Unknown peer for send receipt");
                 }
             }
             ClientCommand::SendPseudosettle { peer, amount } => {

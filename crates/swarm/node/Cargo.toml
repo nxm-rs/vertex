@@ -55,6 +55,7 @@ alloy-primitives.workspace = true
 ## async
 async-trait.workspace = true
 futures.workspace = true
+futures-bounded = "0.2"
 tokio = { workspace = true, features = ["sync"] }
 
 ## observability

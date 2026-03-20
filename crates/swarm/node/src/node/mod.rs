@@ -5,16 +5,18 @@
 //! - [`StorerNode`] - Client + storage protocols (full node)
 
 mod base;
+#[allow(unreachable_pub)]
 mod bootnode;
 mod builder;
+#[allow(unreachable_pub)]
 mod client;
 mod error;
 pub(crate) mod stats;
 mod storer;
 
 pub use base::BaseNode;
-pub use bootnode::{BootNode, BootNodeBuilder, BootnodeBehaviour, BootnodeEvent};
+pub use bootnode::{BootNode, BootNodeBuilder};
 pub use builder::BuiltInfrastructure;
-pub use client::{ClientNode, ClientNodeBehaviour, ClientNodeBuilder, ClientNodeEvent};
+pub use client::{ClientNode, ClientNodeBuilder};
 pub use error::NodeBuildError;
 pub use storer::{StorerNode, StorerNodeBuilder};

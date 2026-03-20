@@ -53,10 +53,6 @@ pub(crate) trait RoutingCapacity: Send + Sync {
 
 /// Routing operations: extends RoutingCapacity with peer connection/disconnection notifications.
 pub(crate) trait SwarmRouting<I: SwarmIdentity>: RoutingCapacity {
-    /// Should we accept an inbound connection from this peer?
-    #[allow(dead_code)]
-    fn should_accept_peer(&self, peer: &OverlayAddress, node_type: SwarmNodeType) -> bool;
-
     /// Notify that a peer has connected.
     fn connected(&self, peer: OverlayAddress);
 

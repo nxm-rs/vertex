@@ -1,105 +1,98 @@
 # Swarm API Architecture
 
-The `swarm-api` crate defines the core protocol traits for Swarm operations. These traits define *what* Swarm does, not *how* it's implemented.
+The `vertex-swarm-api` crate defines the core protocol traits for Swarm operations. These traits define *what* Swarm does, not *how* it is implemented.
 
 ## Node Types
 
-Vertex has three node types:
+Vertex has three node types, each implementing a different level of the trait hierarchy:
 
-| Node Type | Capabilities | Traits Implemented |
-|-----------|--------------|-------------------|
-| **Bootnode** | Topology only (peer discovery) | `BootnodeTypes` |
-| **Client** | Topology + retrieval + upload | `BootnodeTypes`, `ClientTypes` |
-| **Storer** | Full capabilities including local storage | Full trait hierarchy |
+| Node Type | Capabilities | Trait Level |
+|-----------|--------------|-------------|
+| **Bootnode** | Topology only (peer discovery) | `SwarmNetworkTypes` |
+| **Client** | Topology + retrieval + upload | `SwarmClientTypes` |
+| **Storer** | Full capabilities including local storage | `SwarmStorerTypes` |
 
-## Core Traits
+## Trait Hierarchy
 
-### BootnodeTypes
+The type system models node capabilities as a chain of supertraits, where each level adds new associated types:
 
-Base trait for all nodes. Provides network participation.
+```mermaid
+graph TD
+    SP["SwarmPrimitives<br/><i>Spec + Identity</i>"]
+    SNT["SwarmNetworkTypes<br/><i>+ Topology</i>"]
+    SCT["SwarmClientTypes<br/><i>+ Accounting</i>"]
+    SST["SwarmStorerTypes<br/><i>+ Store</i>"]
 
-```rust
-pub trait BootnodeTypes: Clone + Send + Sync {
-    type Spec: SwarmSpec + Clone;
-    type Identity: Identity<Spec = Self::Spec>;
-    type Topology: Topology + Clone;
-    type Node: SpawnableTask;
-    type ClientService: SpawnableTask;
-    type ClientHandle: Clone + Send + Sync + 'static;
-}
+    SP --> SNT --> SCT --> SST
 ```
 
-### ClientTypes
+### SwarmPrimitives
 
-Extends BootnodeTypes with bandwidth accounting for data transfer.
+Pure data types for Swarm network participation. Contains only configuration and identity data (no services). Use this when you need spec/identity without a running topology.
 
-```rust
-pub trait ClientTypes: BootnodeTypes {
-    type Accounting: BandwidthAccounting;
-}
-```
+| Associated Type | Bound | Purpose |
+|----------------|-------|---------|
+| `Spec` | `SwarmSpec` | Network ID, hardforks, chunk types |
+| `Identity` | `SwarmIdentity` | Cryptographic identity for handshake and routing |
 
-### StorerTypes
+### SwarmNetworkTypes
 
-Full storage node capabilities with local storage and synchronization.
+Extends `SwarmPrimitives` with topology (peer discovery service). This is the minimum for participating in the overlay network.
 
-```rust
-pub trait StorerTypes: ClientTypes {
-    type Store: LocalStore + Clone;
-    type Sync: ChunkSync + Clone;
-}
-```
+| Associated Type | Bound | Purpose |
+|----------------|-------|---------|
+| `Topology` | `SwarmTopologyState + SwarmTopologyRouting + SwarmTopologyPeers + SwarmTopologyStats` | Peer discovery and routing |
 
-## Identity Trait
+### SwarmClientTypes
 
-The core `Identity` trait defines node identity:
+Extends `SwarmNetworkTypes` with bandwidth accounting for data transfer operations.
 
-```rust
-pub trait Identity: Clone + Send + Sync + 'static {
-    type Spec: SwarmSpec + Clone;
-    type Signer: Signer + SignerSync + Clone;
+| Associated Type | Bound | Purpose |
+|----------------|-------|---------|
+| `Accounting` | `SwarmClientAccounting` | Combined pricing and bandwidth accounting |
 
-    fn spec(&self) -> &Self::Spec;
-    fn nonce(&self) -> B256;
-    fn signer(&self) -> Arc<Self::Signer>;
-    fn node_type(&self) -> SwarmNodeType;
-    fn overlay_address(&self) -> SwarmAddress;
-    fn ethereum_address(&self) -> Address;
-    fn is_full_node(&self) -> bool;
-    fn welcome_message(&self) -> Option<&str>;
-}
-```
+### SwarmStorerTypes
+
+Full storage node capabilities with local chunk persistence.
+
+| Associated Type | Bound | Purpose |
+|----------------|-------|---------|
+| `Store` | `SwarmLocalStore` | Local chunk storage |
 
 ## Component Containers
 
-Each node type has a corresponding component container:
+Each node type has a corresponding component container that holds concrete instances at runtime:
 
-- `SwarmBaseComponents` - Base components (identity + topology)
-- `SwarmClientComponents` - Client nodes (base + accounting)
-- `SwarmStorerComponents` - Storer nodes (client + store + sync)
+| Container | Contents | Access Traits |
+|-----------|----------|---------------|
+| `BootnodeComponents<T>` | Topology | `HasTopology` |
+| `ClientComponents<T, A>` | Topology + Accounting | `HasTopology`, `HasAccounting` |
+| `StorerComponents<T, A, S>` | Topology + Accounting + Store | `HasTopology`, `HasAccounting`, `HasStore` |
+
+Identity is accessed via `topology().identity()` rather than a separate component.
 
 ## Key Traits
 
 | Trait | Purpose | Node Types |
 |-------|---------|------------|
-| `Identity` | Node identity and signing | All |
-| `Topology` | Peer discovery and routing | All |
-| `BandwidthAccounting` | Per-peer bandwidth tracking | Client, Storer |
-| `LocalStore` | Local chunk persistence | Storer only |
-| `ChunkSync` | Chunk synchronization | Storer only |
+| `SwarmIdentity` | Node identity, signing, overlay address | All |
+| `SwarmTopologyState` | Peer discovery and routing state | All |
+| `SwarmTopologyRouting` | Overlay routing decisions | All |
+| `SwarmBandwidthAccounting` | Per-peer bandwidth tracking | Client, Storer |
+| `SwarmLocalStore` | Local chunk persistence | Storer only |
 
 ## Protocol Integration
 
-- `SwarmProtocol` - Implements `vertex_node_api::Protocol`
-- `SwarmServices` - Unified services for all node types
+- `SwarmProtocol` implements `vertex_node_api::NodeProtocol`, bridging the Swarm domain with the generic node infrastructure
+- `SwarmClient` and `SwarmStorer` provide high-level operations (get/put chunks, storage responsibility)
 
 ## Design Principles
 
 ### 1. Traits Define What, Implementations Define How
-The API defines behavior contracts without specifying implementation details.
+The API defines behaviour contracts without specifying implementation details.
 
 ### 2. No libp2p Leakage
-All operations use `OverlayAddress` (32-byte Swarm address), not libp2p `PeerId`. The mapping happens in the client layer.
+All operations use `OverlayAddress` (32-byte Swarm address), not libp2p `PeerId`. The mapping happens in `vertex-swarm-node`.
 
 ### 3. Lock-Free Bandwidth Accounting
 Per-peer handles use atomics for `record()` operations. Multiple protocols can record concurrently without contention.
@@ -108,12 +101,12 @@ Per-peer handles use atomics for `record()` operations. Multiple protocols can r
 
 Two-level design to avoid lock contention:
 
-1. `BandwidthAccounting` - Factory that creates per-peer handles
-2. `PeerBandwidth` - Per-peer handle with lock-free operations
+1. `SwarmBandwidthAccounting`: factory that creates per-peer handles
+2. `SwarmPeerBandwidth`: per-peer handle with lock-free operations
 
 Accounting uses overlay addresses (not `PeerId`) because:
 - Accounting is tied to Swarm identity, not connection
-- A peer may reconnect with different multiaddr but same overlay
+- A peer may reconnect with a different multiaddr but the same overlay
 - Settlement (SWAP cheques) is based on overlay identity
 
 ## Default Accounting Values
