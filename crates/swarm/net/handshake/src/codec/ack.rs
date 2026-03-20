@@ -176,7 +176,7 @@ mod tests {
             matches!(
                 result,
                 Err(HandshakeError::InvalidPeer(
-                    vertex_swarm_peer::SwarmPeerError::NoMultiaddrs
+                    vertex_swarm_peer::error::SwarmPeerError::NoMultiaddrs
                 ))
             ),
             "expected NoMultiaddrs error, got: {:?}",
@@ -222,7 +222,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(HandshakeError::InvalidPeer(
-                vertex_swarm_peer::SwarmPeerError::InvalidSignature(_)
+                vertex_swarm_peer::error::SwarmPeerError::InvalidSignature(_)
             ))
         ));
     }

@@ -50,5 +50,6 @@ tokio = { workspace = true, features = ["sync"] }
 async-trait.workspace = true
 bytes.workspace = true
 hex.workspace = true
+strum.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

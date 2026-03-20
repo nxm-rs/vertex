@@ -3,7 +3,7 @@
 use std::convert::Infallible;
 
 use strum::IntoStaticStr;
-use vertex_swarm_peer::{MultiAddrError, SwarmPeerError};
+use vertex_swarm_peer::error::{MultiAddrError, SwarmPeerError};
 
 /// Handshake protocol errors.
 #[derive(Debug, thiserror::Error, IntoStaticStr)]
@@ -23,12 +23,10 @@ pub enum HandshakeError {
 
     /// Required field missing from message.
     #[error("missing field: {0}")]
-    #[strum(serialize = "missing_field")]
     MissingField(&'static str),
 
     /// Field exceeds maximum allowed length.
     #[error("{field} exceeds max length {max}, got {actual}")]
-    #[strum(serialize = "field_too_long")]
     FieldTooLong {
         field: &'static str,
         max: usize,
@@ -37,22 +35,18 @@ pub enum HandshakeError {
 
     /// Invalid data conversion (e.g., slice to fixed-size array).
     #[error("invalid data: {0}")]
-    #[strum(serialize = "invalid_data")]
     InvalidData(#[from] std::array::TryFromSliceError),
 
     /// Invalid multiaddr encoding.
     #[error("invalid multiaddr: {0}")]
-    #[strum(serialize = "invalid_multiaddr")]
     InvalidMultiaddr(#[from] MultiAddrError),
 
     /// Invalid signature bytes (wrong length or format).
     #[error("invalid signature: {0}")]
-    #[strum(serialize = "invalid_signature")]
     InvalidSignature(#[from] alloy_primitives::SignatureError),
 
     /// Invalid peer identity (signature verification or overlay mismatch).
     #[error("invalid peer: {0}")]
-    #[strum(serialize = "invalid_peer")]
     InvalidPeer(#[from] SwarmPeerError),
 
     /// Invalid overlay address.
@@ -75,7 +69,6 @@ pub enum HandshakeError {
 
     /// Stream upgrade failed at libp2p layer.
     #[error("upgrade error: {0}")]
-    #[strum(serialize = "upgrade_error")]
     UpgradeError(String),
 }
 

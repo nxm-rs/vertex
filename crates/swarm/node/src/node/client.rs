@@ -305,7 +305,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
             std::sync::Arc<
                 dyn vertex_swarm_api::SwarmScoreStore<
                         Score = vertex_swarm_peer_score::PeerScore,
-                        Error = vertex_net_peer_store::StoreError,
+                        Error = vertex_net_peer_store::error::StoreError,
                     >,
             >,
         >,

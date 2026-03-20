@@ -2,11 +2,12 @@
 
 mod backoff;
 mod config;
+pub mod error;
 mod prepare;
 mod tracker;
 mod types;
 
 pub use config::DialTrackerConfig;
-pub use prepare::{PrepareError, prepare_dial_opts};
+pub use prepare::prepare_dial_opts;
 pub use tracker::DialTracker;
 pub use types::{CleanupResult, DialDispatch, DialRequest, EnqueueError};

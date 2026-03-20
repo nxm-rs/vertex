@@ -56,7 +56,7 @@ impl WriteBuffer {
     pub(crate) fn flush(
         &self,
         store: &dyn NetPeerStore<StoredPeer>,
-    ) -> Result<(), vertex_net_peer_store::StoreError> {
+    ) -> Result<(), vertex_net_peer_store::error::StoreError> {
         let records = self.drain();
         if records.is_empty() {
             return Ok(());

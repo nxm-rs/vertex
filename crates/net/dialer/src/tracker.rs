@@ -12,7 +12,8 @@ use metrics::{counter, gauge};
 
 use crate::backoff::{BackoffEntry, backoff_remaining, jitter_seed_for};
 use crate::config::DialTrackerConfig;
-use crate::prepare::{self, PrepareError};
+use crate::error::PrepareError;
+use crate::prepare;
 use crate::types::{CleanupResult, DialDispatch, DialRequest, EnqueueError};
 
 /// Generic dial request tracker.

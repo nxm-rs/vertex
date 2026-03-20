@@ -7,7 +7,8 @@ use crate::args::{BandwidthArgs, BandwidthModeArg};
 use crate::constants::*;
 
 /// Error during bandwidth configuration validation.
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum BandwidthConfigError {
     #[error("bandwidth options have no effect when mode is 'none'")]
     OptionsWithDisabledMode,

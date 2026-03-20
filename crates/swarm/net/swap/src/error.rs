@@ -5,7 +5,6 @@ vertex_net_codec::protocol_error! {
     pub enum SwapError {
         /// Missing required header.
         #[error("missing header: {0}")]
-        #[strum(serialize = "missing_header")]
         MissingHeader(&'static str),
 
         /// Invalid beneficiary address length.

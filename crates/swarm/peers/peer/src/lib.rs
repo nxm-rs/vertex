@@ -5,11 +5,13 @@
 //! - Multiaddr serialization (Bee-compatible)
 //! - Signature verification and overlay validation
 
+pub mod error;
 mod serde_multiaddr;
 
 pub use serde_multiaddr::{deserialize_multiaddrs, serialize_multiaddrs};
 
 use bytes::{Bytes, BytesMut};
+use error::SwarmPeerError;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_primitives::compute_overlay;
 use vertex_swarm_spec::SwarmSpec;
@@ -24,34 +26,6 @@ use libp2p::Multiaddr;
 use vertex_net_local::{IpCapability, classify_multiaddr};
 
 pub use vertex_net_local::AddressScope;
-
-/// Errors from multiaddr serialization/deserialization.
-#[derive(Debug, thiserror::Error)]
-pub enum MultiAddrError {
-    #[error("empty byte slice")]
-    EmptyData,
-    #[error("failed to read varint: {0}")]
-    VarintError(#[from] std::io::Error),
-    #[error("inconsistent data: expected {expected} bytes, got {actual}")]
-    InconsistentLength { expected: u64, actual: usize },
-    #[error("failed to parse multiaddr: {0}")]
-    InvalidMultiaddr(#[from] libp2p::multiaddr::Error),
-}
-
-/// Errors from [`SwarmPeer`] construction.
-#[derive(Debug, thiserror::Error)]
-pub enum SwarmPeerError {
-    #[error("invalid signature: {0}")]
-    InvalidSignature(#[from] alloy_primitives::SignatureError),
-    #[error("signer error: {0}")]
-    SignerError(#[from] alloy_signer::Error),
-    #[error("computed overlay does not match claimed overlay")]
-    InvalidOverlay,
-    #[error("at least one multiaddr is required")]
-    NoMultiaddrs,
-    #[error("invalid multiaddr encoding: {0}")]
-    InvalidMultiaddrEncoding(#[from] MultiAddrError),
-}
 
 /// Verifiable peer identity with multiaddrs, signature, and overlay address.
 #[derive(Clone, Debug, PartialEq, Eq)]

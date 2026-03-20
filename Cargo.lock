@@ -7770,6 +7770,7 @@ dependencies = [
  "auto_impl",
  "parking_lot",
  "serde",
+ "strum",
  "thiserror 2.0.18",
 ]
 
@@ -7799,6 +7800,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "eyre",
+ "strum",
  "thiserror 2.0.18",
  "tokio",
  "tonic-reflection",
@@ -8034,6 +8036,7 @@ dependencies = [
  "bytes",
  "hex",
  "nectar-primitives",
+ "strum",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -8398,6 +8401,7 @@ dependencies = [
  "proptest-arbitrary-interop",
  "rand 0.9.2",
  "serde",
+ "strum",
  "thiserror 2.0.18",
  "tokio",
  "vertex-net-local",
@@ -8420,6 +8424,7 @@ dependencies = [
  "postcard",
  "scopeguard",
  "serde",
+ "strum",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

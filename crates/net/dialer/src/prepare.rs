@@ -6,19 +6,6 @@ use libp2p::multiaddr::Protocol;
 use libp2p::swarm::dial_opts::DialOpts;
 use libp2p::{Multiaddr, PeerId};
 
-/// Error returned by [`DialTracker::prepare_and_start`](crate::DialTracker::prepare_and_start).
-#[derive(Debug, thiserror::Error)]
-pub enum PrepareError {
-    #[error("no reachable addresses after filtering")]
-    NoReachableAddresses,
-    #[error("peer already pending or in-flight")]
-    AlreadyTracked,
-    #[error("peer in backoff")]
-    InBackoff,
-    #[error("peer is banned")]
-    Banned,
-}
-
 /// IP version extracted from a multiaddr protocol component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IpVersion {

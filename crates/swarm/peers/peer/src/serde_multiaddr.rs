@@ -2,7 +2,7 @@
 //!
 //! Handles single addresses (raw bytes) and multiple addresses (0x99 prefix + varint lengths).
 
-use crate::MultiAddrError;
+use crate::error::MultiAddrError;
 use libp2p::Multiaddr;
 use std::io::{Cursor, Read};
 

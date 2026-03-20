@@ -1,14 +1,12 @@
 //! Wire protocol for identify messages.
 
-use std::io;
-
 use asynchronous_codec::{FramedRead, FramedWrite};
 use futures::prelude::*;
-use libp2p::core::{Multiaddr, PeerRecord, SignedEnvelope, multiaddr};
-use libp2p::identity::{self as identity, PublicKey};
+use libp2p::core::{Multiaddr, PeerRecord, SignedEnvelope};
+use libp2p::identity::PublicKey;
 use libp2p::swarm::StreamProtocol;
-use thiserror::Error;
 
+use crate::error::UpgradeError;
 use crate::generated as proto;
 
 const MAX_MESSAGE_SIZE_BYTES: usize = 4096;
@@ -224,18 +222,4 @@ impl TryFrom<proto::Identify> for PushInfo {
 
         Ok(info)
     }
-}
-
-#[derive(Debug, Error)]
-pub enum UpgradeError {
-    #[error(transparent)]
-    Codec(#[from] quick_protobuf_codec::Error),
-    #[error("I/O interaction failed")]
-    Io(#[from] io::Error),
-    #[error("Stream closed")]
-    StreamClosed,
-    #[error("Failed decoding multiaddr")]
-    Multiaddr(#[from] multiaddr::Error),
-    #[error("Failed decoding public key")]
-    PublicKey(#[from] identity::DecodingError),
 }

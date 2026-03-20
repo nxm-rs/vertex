@@ -20,6 +20,7 @@ vertex-tasks.workspace = true
 
 async-trait.workspace = true
 eyre.workspace = true
+strum.workspace = true
 thiserror.workspace = true
 tonic-reflection.workspace = true
 tracing.workspace = true

@@ -8,7 +8,7 @@ use libp2p::{
 };
 use tracing::{info, warn};
 use vertex_net_peer_store::NetPeerStore;
-use vertex_net_peer_store::StoreError;
+use vertex_net_peer_store::error::StoreError;
 use vertex_swarm_api::SwarmScoreStore;
 use vertex_swarm_api::{
     SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig, SwarmTopologyCommands,

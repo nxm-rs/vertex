@@ -37,7 +37,8 @@ pub struct RetrievalResult {
 }
 
 /// Error from retrieval operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum RetrievalError {
     /// Channel closed.
     #[error("Network channel closed")]

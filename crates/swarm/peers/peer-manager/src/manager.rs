@@ -13,7 +13,8 @@ use metrics::gauge;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 use vertex_net_local::IpCapability;
-use vertex_net_peer_store::{NetPeerStore, StoreError};
+use vertex_net_peer_store::NetPeerStore;
+use vertex_net_peer_store::error::StoreError;
 use vertex_swarm_api::{SwarmIdentity, SwarmPeerResolver, SwarmScoreStore, SwarmSpec};
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_score::{PeerScore, ScoreCallbacks, SwarmScoringConfig};
@@ -1252,7 +1253,12 @@ mod tests {
         db_store.init().unwrap();
         let store: Arc<dyn NetPeerStore<StoredPeer>> = Arc::clone(&db_store) as _;
         let score_store: Option<
-            Arc<dyn SwarmScoreStore<Score = PeerScore, Error = vertex_net_peer_store::StoreError>>,
+            Arc<
+                dyn SwarmScoreStore<
+                        Score = PeerScore,
+                        Error = vertex_net_peer_store::error::StoreError,
+                    >,
+            >,
         > = Some(Arc::clone(&db_store) as _);
         let pm = PeerManager::with_store(
             &mock_identity(),

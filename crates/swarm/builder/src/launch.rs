@@ -7,7 +7,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tracing::{info, warn};
 
-use vertex_net_peer_store::{NetPeerStore, StoreError};
+use vertex_net_peer_store::NetPeerStore;
+use vertex_net_peer_store::error::StoreError;
 use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
 use vertex_swarm_api::{PeerConfigValues, SwarmLaunchConfig, SwarmPeerConfig, SwarmScoreStore};
