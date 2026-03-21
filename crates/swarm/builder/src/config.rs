@@ -1,4 +1,15 @@
 //! Node-type-specific validated configurations holding runtime objects.
+//!
+//! These structs are the final tier of the configuration architecture: fully
+//! assembled configs that hold runtime objects such as `Arc<Identity>` and
+//! `Arc<Spec>`. They live in `vertex-swarm-builder` (not `vertex-node-core`)
+//! because they depend on swarm-specific types like `Identity`,
+//! `KademliaConfig`, and `Spec`.
+//!
+//! Each struct implements `NodeBuildsProtocol` so the builder can select the
+//! correct protocol stack at construction time.
+//!
+//! See `docs/architecture/config.md` for the full three-tier pattern.
 
 use std::sync::Arc;
 

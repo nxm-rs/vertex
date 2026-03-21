@@ -2,10 +2,22 @@
 //!
 //! These args serve dual purposes:
 //! - CLI parsing via clap (`#[derive(Args)]`)
-//! - Configuration serialization via serde (`#[derive(Serialize, Deserialize)]`)
+//! - Configuration serialisation via serde (`#[derive(Serialize, Deserialize)]`)
 //!
 //! The structs implement config traits from `vertex_node_api`, allowing them
 //! to be passed directly to infrastructure components.
+//!
+//! ## Naming Convention
+//!
+//! Each `Args` struct exposes `*_config()` builder methods named after the
+//! **output domain**, not the struct. For example, `TracingArgs::tracing_config()`
+//! produces an `OtlpConfig`. When a struct yields multiple configs (e.g.
+//! `LogArgs` producing stdout and file configs), each method uses a more
+//! specific name such as `stdout_config()`.
+//!
+//! See `docs/architecture/config.md` for full details on the three-tier pattern.
+//!
+//! ## Aggregated Structs
 //!
 //! This module provides two aggregated structs for different use cases:
 //!
