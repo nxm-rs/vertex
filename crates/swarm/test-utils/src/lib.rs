@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 //! Test utilities and mocks for vertex-swarm crates.
 //!
 //! This crate provides shared test infrastructure to reduce duplication

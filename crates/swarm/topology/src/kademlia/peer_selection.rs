@@ -82,16 +82,23 @@ pub(crate) fn select_for_distant<I: SwarmIdentity>(
 
     // Phase 1: Top CLOSE_PEERS_COUNT by proximity to recipient (O(p) partition)
     let mut indices: Vec<usize> = (0..storers.len()).collect();
+    let cmp_proximity = |a: &usize, b: &usize| {
+        let pa = storers.get(*a).map(|s| s.1);
+        let pb = storers.get(*b).map(|s| s.1);
+        pb.cmp(&pa)
+    };
     if indices.len() > CLOSE_PEERS_COUNT {
-        indices.select_nth_unstable_by(CLOSE_PEERS_COUNT, |&a, &b| storers[b].1.cmp(&storers[a].1));
-        indices[..CLOSE_PEERS_COUNT].sort_by(|&a, &b| storers[b].1.cmp(&storers[a].1));
+        indices.select_nth_unstable_by(CLOSE_PEERS_COUNT, |a, b| cmp_proximity(a, b));
+        if let Some(top) = indices.get_mut(..CLOSE_PEERS_COUNT) {
+            top.sort_by(|a, b| cmp_proximity(a, b));
+        }
     } else {
-        indices.sort_by(|&a, &b| storers[b].1.cmp(&storers[a].1));
+        indices.sort_by(|a, b| cmp_proximity(a, b));
     }
 
     for &idx in indices.iter().take(CLOSE_PEERS_COUNT) {
-        if selected_indices.insert(idx) {
-            selected.push((storers[idx].0.clone(), storers[idx].2));
+        if selected_indices.insert(idx) && let Some(entry) = storers.get(idx) {
+            selected.push((entry.0.clone(), entry.2));
         }
     }
 

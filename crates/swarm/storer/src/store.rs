@@ -90,15 +90,10 @@ impl<S: ChunkStore> LocalStoreImpl<S> {
     fn deserialize_chunk(address: ChunkAddress, bytes: &[u8]) -> SwarmResult<AnyChunk> {
         use nectar_primitives::ContentChunk;
 
-        if bytes.is_empty() {
-            return Err(SwarmError::InvalidChunk {
-                address: Some(address),
-                reason: "empty data".to_string(),
-            });
-        }
-
-        let type_byte = bytes[0];
-        let data = &bytes[1..];
+        let (&type_byte, data) = bytes.split_first().ok_or(SwarmError::InvalidChunk {
+            address: Some(address),
+            reason: "empty data".to_string(),
+        })?;
 
         match type_byte {
             0..=2 => {

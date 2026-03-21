@@ -38,9 +38,9 @@ pub fn serialize_multiaddrs(addrs: &[Multiaddr]) -> Vec<u8> {
 /// - 0x99 prefix: list format
 /// - Otherwise: single legacy multiaddr
 pub fn deserialize_multiaddrs(data: &[u8]) -> Result<Vec<Multiaddr>, MultiAddrError> {
-    match data.first() {
+    match data.split_first() {
         None => Ok(Vec::new()),
-        Some(&MULTIADDR_LIST_PREFIX) => deserialize_list(&data[1..]),
+        Some((&MULTIADDR_LIST_PREFIX, rest)) => deserialize_list(rest),
         Some(_) => {
             let addr = Multiaddr::try_from(data.to_vec())?;
             Ok(vec![addr])

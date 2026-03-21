@@ -10,8 +10,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[inline]
 pub fn encode_u256_be(value: U256) -> Vec<u8> {
     let bytes = value.to_be_bytes::<32>();
-    match bytes.iter().position(|&b| b != 0) {
-        Some(pos) => bytes[pos..].to_vec(),
+    let start = bytes.iter().position(|&b| b != 0);
+    match start.and_then(|pos| bytes.get(pos..)) {
+        Some(trimmed) => trimmed.to_vec(),
         None => vec![],
     }
 }
