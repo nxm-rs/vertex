@@ -109,11 +109,12 @@ impl GossipVerifier {
         gossiper: &OverlayAddress,
         existing_peer: Option<&SwarmPeer>,
     ) -> Result<GossipCheckOk, GossipCheckError> {
-        if gossiped_peer.multiaddrs().is_empty() {
-            return Err(GossipCheckError::NoMultiaddrs);
-        }
+        let first_addr = gossiped_peer
+            .multiaddrs()
+            .first()
+            .ok_or(GossipCheckError::NoMultiaddrs)?;
 
-        let Some(peer_id) = extract_peer_id(&gossiped_peer.multiaddrs()[0]) else {
+        let Some(peer_id) = extract_peer_id(first_addr) else {
             return Err(GossipCheckError::NoPeerId);
         };
 

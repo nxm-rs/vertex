@@ -107,6 +107,7 @@ rust.unused_must_use = "deny"
 [workspace.lints.clippy]
 unwrap_used = "warn"
 expect_used = "warn"
+indexing_slicing = "warn"
 
 [workspace.dependencies]
 ## nectar

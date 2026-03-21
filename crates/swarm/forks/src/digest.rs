@@ -45,8 +45,8 @@ impl ForkDigest {
             data.extend_from_slice(&timestamp.to_le_bytes());
         }
 
-        let hash = keccak256(&data);
-        Self(FixedBytes::from_slice(&hash[..4]))
+        let hash: [u8; 32] = keccak256(&data).into();
+        Self(FixedBytes::new([hash[0], hash[1], hash[2], hash[3]]))
     }
 }
 
