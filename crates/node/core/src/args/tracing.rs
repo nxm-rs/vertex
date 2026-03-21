@@ -60,10 +60,10 @@ impl Default for TracingArgs {
 }
 
 impl TracingArgs {
-    /// Build OTLP tracing config.
+    /// Build tracing config from CLI arguments.
     ///
-    /// Returns None if tracing is disabled.
-    pub fn otlp_config(&self) -> Option<OtlpConfig> {
+    /// Returns `None` if tracing is disabled.
+    pub fn tracing_config(&self) -> Option<OtlpConfig> {
         if !self.enabled {
             return None;
         }
@@ -75,10 +75,10 @@ impl TracingArgs {
         ))
     }
 
-    /// Build OTLP logs config.
+    /// Build tracing logs config from CLI arguments.
     ///
-    /// Returns None if OTLP log export is disabled.
-    pub fn otlp_logs_config(&self) -> Option<OtlpLogsConfig> {
+    /// Returns `None` if OTLP log export is disabled.
+    pub fn tracing_logs_config(&self) -> Option<OtlpLogsConfig> {
         if !self.logs_enabled {
             return None;
         }

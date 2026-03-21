@@ -64,6 +64,7 @@ This ensures operators can set base configuration in a file and selectively over
 
 ## See Also
 
+- [Configuration Architecture](../architecture/config.md) - Internal three-tier config pattern (Args, Config, ValidatedConfig)
 - [Node Types](../architecture/node-types.md) - Detailed node type descriptions
 - [Node Builder](../architecture/node-builder.md) - How configuration flows into the builder
 - [Swarm API](../swarm/api.md) - Protocol traits and accounting

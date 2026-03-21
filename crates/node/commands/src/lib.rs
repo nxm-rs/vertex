@@ -42,10 +42,10 @@ where
     if let Some(stdout) = cli.logs().stdout_config() {
         tracer = tracer.with_stdout(stdout);
     }
-    if let Some(otlp) = cli.tracing().otlp_config() {
+    if let Some(otlp) = cli.tracing().tracing_config() {
         tracer = tracer.with_otlp(otlp);
     }
-    if let Some(otlp_logs) = cli.tracing().otlp_logs_config() {
+    if let Some(otlp_logs) = cli.tracing().tracing_logs_config() {
         tracer = tracer.with_otlp_logs(otlp_logs);
     }
 
