@@ -32,6 +32,12 @@ impl Default for PeerBackoff {
 }
 
 impl PeerBackoff {
+    /// Base backoff duration (30 seconds).
+    pub const DEFAULT_BASE_SECS: u64 = 30;
+
+    /// Maximum backoff duration (1 hour).
+    pub const DEFAULT_MAX_SECS: u64 = 3600;
+
     pub fn new() -> Self {
         Self {
             last_attempt: AtomicU64::new(0),
@@ -66,12 +72,12 @@ impl PeerBackoff {
         self.last_attempt.load(Ordering::Relaxed)
     }
 
-    /// Calculate remaining backoff with per-peer jitter (+/-25%).
+    /// Calculate remaining backoff with per-peer jitter (+/-25%) and custom parameters.
     ///
     /// The `jitter_seed` should be stable per-peer (e.g. derived from overlay address)
     /// so the same peer always gets the same jitter factor, but different peers spread
     /// their retry times apart.
-    pub fn remaining_jittered(
+    pub fn remaining_jittered_with(
         &self,
         now: u64,
         base_secs: u64,
@@ -88,8 +94,8 @@ impl PeerBackoff {
         )
     }
 
-    /// Calculate remaining backoff without jitter.
-    pub fn remaining(&self, now: u64, base_secs: u64, max_secs: u64) -> Option<Duration> {
+    /// Calculate remaining backoff without jitter, with custom parameters.
+    pub fn remaining_with(&self, now: u64, base_secs: u64, max_secs: u64) -> Option<Duration> {
         remaining_inner(
             self.consecutive_failures(),
             self.last_attempt(),
@@ -99,27 +105,21 @@ impl PeerBackoff {
             None,
         )
     }
-}
 
-/// Standalone backoff calculation from plain persisted fields.
-///
-/// Used by `StoredPeer::is_dialable()` to check backoff without constructing a `PeerBackoff`.
-pub fn backoff_remaining(
-    consecutive_failures: u32,
-    last_attempt: u64,
-    now: u64,
-    base_secs: u64,
-    max_secs: u64,
-    jitter_seed: u64,
-) -> Option<Duration> {
-    remaining_inner(
-        consecutive_failures,
-        last_attempt,
-        now,
-        base_secs,
-        max_secs,
-        Some(jitter_seed),
-    )
+    /// Calculate remaining backoff with per-peer jitter (+/-25%).
+    pub fn remaining_jittered(&self, now: u64, jitter_seed: u64) -> Option<Duration> {
+        self.remaining_jittered_with(
+            now,
+            Self::DEFAULT_BASE_SECS,
+            Self::DEFAULT_MAX_SECS,
+            jitter_seed,
+        )
+    }
+
+    /// Calculate remaining backoff without jitter.
+    pub fn remaining(&self, now: u64) -> Option<Duration> {
+        self.remaining_with(now, Self::DEFAULT_BASE_SECS, Self::DEFAULT_MAX_SECS)
+    }
 }
 
 fn remaining_inner(
@@ -167,72 +167,57 @@ fn remaining_inner(
 mod tests {
     use super::*;
 
-    const DEFAULT_BASE_BACKOFF_SECS: u64 = 30;
-    const DEFAULT_MAX_BACKOFF_SECS: u64 = 3600;
+    const BASE: u64 = PeerBackoff::DEFAULT_BASE_SECS;
+    const MAX: u64 = PeerBackoff::DEFAULT_MAX_SECS;
 
     #[test]
     fn no_backoff_zero_failures() {
         let b = PeerBackoff::new();
-        assert!(
-            b.remaining(1000, DEFAULT_BASE_BACKOFF_SECS, DEFAULT_MAX_BACKOFF_SECS)
-                .is_none()
-        );
+        assert!(b.remaining(1000).is_none());
     }
 
     #[test]
     fn exponential_growth() {
-        let base = DEFAULT_BASE_BACKOFF_SECS;
-        let max = DEFAULT_MAX_BACKOFF_SECS;
-
         // 1 failure: 30s
         let b1 = PeerBackoff::from_persisted(1000, 1);
-        assert_eq!(b1.remaining(1000, base, max).unwrap().as_secs(), 30);
+        assert_eq!(b1.remaining_with(1000, BASE, MAX).unwrap().as_secs(), 30);
 
         // 2 failures: 60s
         let b2 = PeerBackoff::from_persisted(1000, 2);
-        assert_eq!(b2.remaining(1000, base, max).unwrap().as_secs(), 60);
+        assert_eq!(b2.remaining_with(1000, BASE, MAX).unwrap().as_secs(), 60);
 
         // 3 failures: 120s
         let b3 = PeerBackoff::from_persisted(1000, 3);
-        assert_eq!(b3.remaining(1000, base, max).unwrap().as_secs(), 120);
+        assert_eq!(b3.remaining_with(1000, BASE, MAX).unwrap().as_secs(), 120);
     }
 
     #[test]
     fn max_cap() {
-        let base = DEFAULT_BASE_BACKOFF_SECS;
-        let max = DEFAULT_MAX_BACKOFF_SECS;
-
         let b = PeerBackoff::from_persisted(1000, 20);
-        assert_eq!(b.remaining(1000, base, max).unwrap().as_secs(), max);
+        assert_eq!(b.remaining_with(1000, BASE, MAX).unwrap().as_secs(), MAX);
     }
 
     #[test]
     fn custom_base_and_max() {
         let b1 = PeerBackoff::from_persisted(1000, 1);
-        assert_eq!(b1.remaining(1000, 10, 500).unwrap().as_secs(), 10);
+        assert_eq!(b1.remaining_with(1000, 10, 500).unwrap().as_secs(), 10);
 
         let b2 = PeerBackoff::from_persisted(1000, 5);
         // 10 * 2^4 = 160
-        assert_eq!(b2.remaining(1000, 10, 500).unwrap().as_secs(), 160);
+        assert_eq!(b2.remaining_with(1000, 10, 500).unwrap().as_secs(), 160);
     }
 
     #[test]
     fn expired_backoff() {
         let b = PeerBackoff::from_persisted(1000, 1);
-        assert!(
-            b.remaining(1031, DEFAULT_BASE_BACKOFF_SECS, DEFAULT_MAX_BACKOFF_SECS)
-                .is_none()
-        );
+        assert!(b.remaining_with(1031, BASE, MAX).is_none());
     }
 
     #[test]
     fn jitter_within_bounds() {
-        let base = DEFAULT_BASE_BACKOFF_SECS;
-        let max = DEFAULT_MAX_BACKOFF_SECS;
-
         for seed in 0u64..1000 {
             let b = PeerBackoff::from_persisted(1000, 1);
-            let remaining = b.remaining_jittered(1000, base, max, seed).unwrap();
+            let remaining = b.remaining_jittered(1000, seed).unwrap();
             let secs = remaining.as_secs();
             // base=30, +/-25% -> [22, 37]
             assert!(
@@ -245,33 +230,24 @@ mod tests {
     #[test]
     fn jitter_deterministic_per_seed() {
         let b = PeerBackoff::from_persisted(1000, 2);
-        let base = DEFAULT_BASE_BACKOFF_SECS;
-        let max = DEFAULT_MAX_BACKOFF_SECS;
-
-        let r1 = b.remaining_jittered(1000, base, max, 42).unwrap();
-        let r2 = b.remaining_jittered(1000, base, max, 42).unwrap();
+        let r1 = b.remaining_jittered(1000, 42).unwrap();
+        let r2 = b.remaining_jittered(1000, 42).unwrap();
         assert_eq!(r1, r2, "same seed should produce same jitter");
     }
 
     #[test]
     fn jitter_varies_across_seeds() {
         let b = PeerBackoff::from_persisted(1000, 3);
-        let base = DEFAULT_BASE_BACKOFF_SECS;
-        let max = DEFAULT_MAX_BACKOFF_SECS;
-
-        let r1 = b.remaining_jittered(1000, base, max, 1).unwrap();
-        let r2 = b.remaining_jittered(1000, base, max, 999).unwrap();
+        let r1 = b.remaining_jittered(1000, 1).unwrap();
+        let r2 = b.remaining_jittered(1000, 999).unwrap();
         assert_ne!(r1, r2, "different seeds should produce different jitter");
     }
 
     #[test]
     fn jitter_capped_at_max() {
-        let base = DEFAULT_BASE_BACKOFF_SECS;
-        let max = DEFAULT_MAX_BACKOFF_SECS;
-
         for seed in 0u64..100 {
             let b = PeerBackoff::from_persisted(1000, 20);
-            let remaining = b.remaining_jittered(1000, base, max, seed).unwrap();
+            let remaining = b.remaining_jittered(1000, seed).unwrap();
             let secs = remaining.as_secs();
             // max=3600, +/-25% -> [2700, 4500]
             assert!(
@@ -302,15 +278,6 @@ mod tests {
 
         b.reset();
         assert_eq!(b.consecutive_failures(), 0);
-    }
-
-    #[test]
-    fn standalone_backoff_remaining() {
-        // Matches PeerBackoff::remaining_jittered
-        let b = PeerBackoff::from_persisted(1000, 2);
-        let from_struct = b.remaining_jittered(1000, 30, 3600, 42);
-        let from_fn = backoff_remaining(2, 1000, 1000, 30, 3600, 42);
-        assert_eq!(from_struct, from_fn);
     }
 
     #[test]

@@ -4,17 +4,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use metrics::gauge;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use vertex_net_local::IpCapability;
-use vertex_net_peer_backoff::{PeerBackoff, backoff_remaining};
-
-/// Base backoff duration (30 seconds).
-const DEFAULT_BASE_BACKOFF_SECS: u64 = 30;
-
-/// Maximum backoff duration (1 hour).
-const DEFAULT_MAX_BACKOFF_SECS: u64 = 3600;
-use metrics::gauge;
+use vertex_net_peer_backoff::PeerBackoff;
 use vertex_net_peer_store::NetRecord;
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_score::{
@@ -110,17 +104,13 @@ impl StoredPeer {
         if self.last_dial_attempt == 0 {
             return true;
         }
+        let backoff =
+            PeerBackoff::from_persisted(self.last_dial_attempt, self.consecutive_failures);
         let overlay = OverlayAddress::from(*self.peer.overlay());
         let jitter_seed = jitter_seed_from_overlay(&overlay);
-        backoff_remaining(
-            self.consecutive_failures,
-            self.last_dial_attempt,
-            unix_timestamp_secs(),
-            DEFAULT_BASE_BACKOFF_SECS,
-            DEFAULT_MAX_BACKOFF_SECS,
-            jitter_seed,
-        )
-        .is_none()
+        backoff
+            .remaining_jittered(unix_timestamp_secs(), jitter_seed)
+            .is_none()
     }
 }
 
@@ -311,12 +301,8 @@ impl PeerEntry {
 
     /// Backoff with per-peer jitter (+/-25%) to prevent synchronized retry storms.
     pub(crate) fn backoff_remaining(&self) -> Option<Duration> {
-        self.backoff.remaining_jittered(
-            unix_timestamp_secs(),
-            DEFAULT_BASE_BACKOFF_SECS,
-            DEFAULT_MAX_BACKOFF_SECS,
-            self.jitter_seed,
-        )
+        self.backoff
+            .remaining_jittered(unix_timestamp_secs(), self.jitter_seed)
     }
 
     pub(crate) fn is_in_backoff(&self) -> bool {
