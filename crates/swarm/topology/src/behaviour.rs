@@ -25,7 +25,7 @@ use vertex_net_local::{AddressScope, LocalCapabilities, same_subnet};
 use vertex_net_peer_store::NetPeerStore;
 use vertex_net_peer_store::error::StoreError;
 use vertex_swarm_api::SwarmScoreStore;
-use vertex_swarm_api::{PeerConfigValues, SwarmBootnodeConfig, SwarmIdentity};
+use vertex_swarm_api::{SwarmBootnodeConfig, SwarmIdentity};
 use vertex_swarm_net_handshake::HANDSHAKE_TIMEOUT;
 use vertex_swarm_net_hive::MAX_BATCH_SIZE;
 use vertex_swarm_net_identify as identify;
@@ -242,7 +242,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         config: TopologyConfig,
         network_config: &impl SwarmBootnodeConfig,
         peer_store: Option<Arc<dyn NetPeerStore<StoredPeer>>>,
-        score_store: Option<Arc<dyn SwarmScoreStore<Score = PeerScore, Error = StoreError>>>,
+        score_store: Option<Arc<dyn SwarmScoreStore<Value = PeerScore, Error = StoreError>>>,
     ) -> Result<(Self, TopologyHandle<I>), TopologyError>
     where
         I: HasSpec,
@@ -254,10 +254,9 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         let (event_tx, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let (command_tx, command_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
 
-        let peer_config = network_config.peers();
         let scoring_config = SwarmScoringConfig::builder()
-            .ban_threshold(peer_config.ban_threshold())
-            .warn_threshold(peer_config.warn_threshold())
+            .ban_threshold(network_config.ban_threshold())
+            .warn_threshold(network_config.warn_threshold())
             .build();
         let peer_manager = if let Some(ref store) = peer_store {
             PeerManager::with_store(
@@ -265,10 +264,10 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 store.clone(),
                 score_store,
                 scoring_config,
-                peer_config.max_per_bin(),
+                network_config.max_per_bin(),
             )
         } else {
-            PeerManager::with_config(&identity, scoring_config, peer_config.max_per_bin())
+            PeerManager::with_config(&identity, scoring_config, network_config.max_per_bin())
         };
 
         let local_overlay = identity.overlay_address();

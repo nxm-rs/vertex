@@ -70,7 +70,6 @@ members = [
     "crates/swarm/peers/peer-score",
     "crates/swarm/bandwidth/core",
     # "crates/swarm/bandwidth/chequebook",  # disabled: depends on serde_json
-    "crates/swarm/bandwidth/pricing",
     "crates/swarm/bandwidth/pseudosettle",
     # "crates/swarm/bandwidth/swap",  # disabled: depends on serde_json
 
@@ -187,7 +186,6 @@ vertex-swarm-peer-score = { path = "crates/swarm/peers/peer-score" }
 # bandwidth (in swarm/)
 vertex-swarm-bandwidth = { path = "crates/swarm/bandwidth/core" }
 # vertex-swarm-bandwidth-chequebook = { path = "crates/swarm/bandwidth/chequebook" }  # disabled
-vertex-swarm-bandwidth-pricing = { path = "crates/swarm/bandwidth/pricing" }
 vertex-swarm-bandwidth-pseudosettle = { path = "crates/swarm/bandwidth/pseudosettle" }
 # vertex-swarm-bandwidth-swap = { path = "crates/swarm/bandwidth/swap" }  # disabled
 

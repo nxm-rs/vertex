@@ -26,8 +26,8 @@ use std::sync::Arc;
 use alloy_primitives::U256;
 use tokio::sync::mpsc;
 use vertex_swarm_api::{
-    BandwidthMode, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmError, SwarmIdentity,
-    SwarmPeerAccounting, SwarmResult, SwarmSettlementProvider,
+    BandwidthMode, SwarmAccountingConfig, SwarmError, SwarmIdentity, SwarmPeerAccounting,
+    SwarmPeerBandwidth, SwarmPeerRegistry, SwarmResult, SwarmSettlementProvider,
 };
 use vertex_swarm_bandwidth::{Accounting, AccountingPeerHandle};
 use vertex_swarm_node::ClientCommand;
@@ -138,7 +138,7 @@ impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for SwapProvide
 ///
 /// Spawn the service as a background task. Use the handle to create
 /// a [`SwapProvider`].
-pub fn create_swap_actor<A: SwarmBandwidthAccounting + 'static>(
+pub fn create_swap_actor<A: SwarmPeerRegistry<Peer: SwarmPeerBandwidth> + 'static>(
     event_rx: mpsc::UnboundedReceiver<SwapEvent>,
     client_command_tx: mpsc::UnboundedSender<ClientCommand>,
     accounting: Arc<A>,
@@ -181,8 +181,7 @@ pub fn new_swap_accounting<C: SwarmAccountingConfig + Clone + 'static, I: SwarmI
 mod tests {
     use super::*;
     use vertex_swarm_api::{
-        BandwidthMode, Direction, SwarmAccountingConfig, SwarmBandwidthAccounting,
-        SwarmPeerBandwidth,
+        BandwidthMode, Direction, SwarmAccountingConfig, SwarmPeerBandwidth, SwarmPeerRegistry,
     };
     use vertex_swarm_bandwidth::BandwidthConfig;
     use vertex_swarm_bandwidth::PeerAccounting;

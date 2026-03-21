@@ -8,7 +8,7 @@
 //! - [`Accounting`] - Per-peer balance factory with settlement delegation
 //! - [`AccountingBuilder`] - Builder for constructing accounting with pricing
 //! - [`AccountingPeerHandle`] - Handle for recording bandwidth per peer
-//! - [`ReceiveAction`] / [`ProvideAction`] - Prepare/apply pattern for balance changes
+//! - [`BalanceAction`] - Prepare/apply pattern for balance changes
 //! - [`NoSettlement`] - No-op settlement provider
 //!
 //! Settlement providers (`PseudosettleProvider`, `SwapProvider`) are in sibling crates.
@@ -25,21 +25,21 @@ mod config;
 mod constants;
 pub(crate) mod metrics;
 mod noop;
+mod pricing;
 mod settlement;
 #[cfg(feature = "std")]
 mod store;
 
 pub use accounting::{
-    Accounting, AccountingAction, AccountingError, AccountingPeerHandle, PeerAccounting,
-    ProvideAction,
-    ReceiveAction,
+    Accounting, AccountingError, AccountingPeerHandle, ActionDirection, BalanceAction,
+    PeerAccounting,
 };
 pub use args::{BandwidthArgs, BandwidthModeArg};
 pub use builder::{AccountingBuilder, NoAccountingBuilder};
 pub use client_accounting::ClientAccounting;
-pub use config::{BandwidthConfig, BandwidthConfigError, DefaultBandwidthConfig};
-pub use noop::{NoAccounting, NoPeerBandwidth, NoProvideAction, NoReceiveAction};
+pub use config::{BandwidthConfig, BandwidthConfigError};
+pub use noop::{NoAccounting, NoAction, NoPeerBandwidth};
+pub use pricing::chunk_price;
 pub use settlement::NoSettlement;
 #[cfg(feature = "std")]
 pub use store::{AccountingStore, AccountingStoreError, DbAccountingStore};
-pub use vertex_swarm_bandwidth_pricing::{FixedPricer, FixedPricingConfig, NoPricer, Pricer};

@@ -7,16 +7,13 @@
 //!
 //! Settlement is handled by pluggable [`SwarmSettlementProvider`] implementations:
 //! - **Pseudosettle**: Time-based debt forgiveness (soft accounting)
-//! - **Swap**: Chequebook-based real payments
 //!
 //! Providers are configured via [`SwarmAccountingConfig`] which specifies the [`BandwidthMode`].
 
-use std::vec::Vec;
-
-use nectar_primitives::ChunkAddress;
 use vertex_swarm_primitives::OverlayAddress;
 
-use crate::{SwarmIdentity, SwarmPricing, SwarmResult};
+use super::peers::SwarmPeerRegistry;
+use crate::SwarmResult;
 
 pub use vertex_swarm_primitives::BandwidthMode;
 
@@ -33,6 +30,10 @@ pub enum Direction {
 ///
 /// Positive balance = peer owes us, negative = we owe peer.
 /// The peer address is passed separately to settlement methods.
+///
+/// Trait methods express domain operations, not raw state mutations.
+/// Override [`record_refresh`](SwarmPeerAccounting::record_refresh) to
+/// customise how refresh timestamps are stored.
 #[auto_impl::auto_impl(&, Arc)]
 pub trait SwarmPeerAccounting: Send + Sync {
     /// Get the current balance (positive = peer owes us).
@@ -41,17 +42,62 @@ pub trait SwarmPeerAccounting: Send + Sync {
     /// Add to the balance.
     fn add_balance(&self, amount: i64);
 
-    /// Get the last refresh timestamp (for pseudosettle).
+    /// Get the last refresh timestamp (epoch seconds).
     fn last_refresh(&self) -> u64;
 
-    /// Set the last refresh timestamp.
-    fn set_last_refresh(&self, timestamp: u64);
+    /// Record that a refresh occurred at the given timestamp.
+    ///
+    /// Called by the default [`apply_refresh`](SwarmPeerAccounting::apply_refresh)
+    /// implementation. Override to add bookkeeping (metrics, persistence) when
+    /// a refresh is committed.
+    fn record_refresh(&self, timestamp: u64);
 
     /// Get the credit limit for this peer.
     fn credit_limit(&self) -> u64;
 
     /// Get the disconnect limit for this peer.
     fn disconnect_limit(&self) -> u64;
+
+    /// Apply time-based refresh and return the credit applied.
+    ///
+    /// If the peer has negative balance (we owe them), credits up to
+    /// `elapsed_seconds * refresh_rate`, capped at the absolute debt.
+    /// Returns the credit applied (zero if balance is non-negative or
+    /// no time has elapsed).
+    ///
+    /// `now` is the current timestamp in epoch seconds. Passing it
+    /// explicitly keeps the trait pure and simplifies testing.
+    ///
+    /// The default implementation calls [`record_refresh`](SwarmPeerAccounting::record_refresh)
+    /// to commit the new timestamp. Override `apply_refresh` itself to change
+    /// the credit algorithm entirely.
+    fn apply_refresh(&self, now: u64, refresh_rate: u64) -> i64 {
+        let last = self.last_refresh();
+
+        if last == 0 {
+            self.record_refresh(now);
+            return 0;
+        }
+
+        let elapsed = now.saturating_sub(last);
+        if elapsed == 0 {
+            return 0;
+        }
+
+        let allowance = elapsed * refresh_rate;
+
+        let balance = self.balance();
+        let credit = if balance < 0 {
+            let credit = (allowance as i64).min(-balance);
+            self.add_balance(credit);
+            credit
+        } else {
+            0
+        };
+
+        self.record_refresh(now);
+        credit
+    }
 }
 
 /// Settlement provider for bandwidth accounting.
@@ -69,7 +115,11 @@ pub trait SwarmSettlementProvider: Send + Sync + 'static {
 
     /// Called when explicit settlement is requested.
     /// Returns the amount settled, or an error if settlement failed.
-    async fn settle(&self, peer: OverlayAddress, state: &dyn SwarmPeerAccounting) -> SwarmResult<i64>;
+    async fn settle(
+        &self,
+        peer: OverlayAddress,
+        state: &dyn SwarmPeerAccounting,
+    ) -> SwarmResult<i64>;
 
     /// Human-readable name for logging.
     fn name(&self) -> &'static str;
@@ -80,18 +130,6 @@ pub trait SwarmSettlementProvider: Send + Sync + 'static {
 pub trait SwarmAccountingConfig: Send + Sync {
     /// The bandwidth accounting mode.
     fn mode(&self) -> BandwidthMode;
-
-    /// Check if a settlement provider is enabled for this configuration.
-    fn provider_enabled(&self, provider: &dyn SwarmSettlementProvider) -> bool {
-        let mode = self.mode();
-        let supported = provider.supported_mode();
-        match supported {
-            BandwidthMode::Pseudosettle => mode.pseudosettle_enabled(),
-            BandwidthMode::Swap => mode.swap_enabled(),
-            BandwidthMode::Both => mode.pseudosettle_enabled() || mode.swap_enabled(),
-            BandwidthMode::None => true, // No-op provider always works
-        }
-    }
 
     /// Credit limit (triggers settlement when peer debt exceeds this).
     fn credit_limit(&self) -> u64;
@@ -138,32 +176,14 @@ pub trait SwarmPeerBandwidth: Send + Sync {
     fn peer(&self) -> OverlayAddress;
 }
 
-/// Factory for creating per-peer bandwidth accounting handles.
+/// Balance reservation for bandwidth accounting.
+///
+/// Extends [`SwarmPeerRegistry`](crate::SwarmPeerRegistry) with prepare/apply
+/// balance operations. The `Peer` handle must implement [`SwarmPeerBandwidth`].
 #[auto_impl::auto_impl(&, Arc)]
-pub trait SwarmBandwidthAccounting: Send + Sync {
-    /// The node identity type.
-    type Identity: SwarmIdentity;
-
-    /// The per-peer accounting handle type.
-    type Peer: SwarmPeerBandwidth;
-
-    /// Action for receiving service (balance decreases).
-    type ReceiveAction: Send;
-
-    /// Action for providing service (balance increases).
-    type ProvideAction: Send;
-
-    /// Get the node's identity.
-    fn identity(&self) -> &Self::Identity;
-
-    /// Get or create an accounting handle for a peer.
-    fn for_peer(&self, peer: OverlayAddress) -> Self::Peer;
-
-    /// List all peers with active accounting.
-    fn peers(&self) -> Vec<OverlayAddress>;
-
-    /// Remove accounting for a peer.
-    fn remove_peer(&self, peer: &OverlayAddress);
+pub trait SwarmBandwidthAccounting: SwarmPeerRegistry<Peer: SwarmPeerBandwidth> {
+    /// Action for balance changes (receive or provide).
+    type Action: Send;
 
     /// Prepare to receive service from a peer (balance decreases).
     ///
@@ -174,72 +194,8 @@ pub trait SwarmBandwidthAccounting: Send + Sync {
         peer: OverlayAddress,
         price: u64,
         originated: bool,
-    ) -> SwarmResult<Self::ReceiveAction>;
+    ) -> SwarmResult<Self::Action>;
 
     /// Prepare to provide service to a peer (balance increases).
-    fn prepare_provide(&self, peer: OverlayAddress, price: u64)
-    -> SwarmResult<Self::ProvideAction>;
-}
-
-/// Combined pricing and bandwidth accounting for client operations.
-///
-/// Unifies chunk pricing and bandwidth accounting so callers don't need
-/// to coordinate between separate pricer and accounting instances.
-#[auto_impl::auto_impl(&, Arc)]
-pub trait SwarmClientAccounting: Send + Sync {
-    /// The underlying bandwidth accounting type.
-    type Bandwidth: SwarmBandwidthAccounting;
-
-    /// The pricing strategy type.
-    type Pricing: SwarmPricing;
-
-    /// Get the bandwidth accounting.
-    fn bandwidth(&self) -> &Self::Bandwidth;
-
-    /// Get the pricer.
-    fn pricing(&self) -> &Self::Pricing;
-
-    /// Get the node's identity.
-    fn identity(&self) -> &<Self::Bandwidth as SwarmBandwidthAccounting>::Identity {
-        self.bandwidth().identity()
-    }
-
-    /// Get or create accounting for a peer.
-    fn for_peer(
-        &self,
-        peer: OverlayAddress,
-    ) -> <Self::Bandwidth as SwarmBandwidthAccounting>::Peer {
-        self.bandwidth().for_peer(peer)
-    }
-
-    /// Prepare to receive a chunk (we pay, balance decreases).
-    fn prepare_receive_chunk(
-        &self,
-        peer: OverlayAddress,
-        chunk: &ChunkAddress,
-        originated: bool,
-    ) -> SwarmResult<<Self::Bandwidth as SwarmBandwidthAccounting>::ReceiveAction> {
-        let price = self.pricing().peer_price(&peer, chunk);
-        self.bandwidth().prepare_receive(peer, price, originated)
-    }
-
-    /// Prepare to provide a chunk (peer pays, balance increases).
-    fn prepare_provide_chunk(
-        &self,
-        peer: OverlayAddress,
-        chunk: &ChunkAddress,
-    ) -> SwarmResult<<Self::Bandwidth as SwarmBandwidthAccounting>::ProvideAction> {
-        let price = self.pricing().peer_price(&peer, chunk);
-        self.bandwidth().prepare_provide(peer, price)
-    }
-
-    /// Calculate price for receiving a chunk from a peer.
-    fn receive_price(&self, peer: &OverlayAddress, chunk: &ChunkAddress) -> u64 {
-        self.pricing().peer_price(peer, chunk)
-    }
-
-    /// Calculate price for providing a chunk to a peer.
-    fn provide_price(&self, peer: &OverlayAddress, chunk: &ChunkAddress) -> u64 {
-        self.pricing().peer_price(peer, chunk)
-    }
+    fn prepare_provide(&self, peer: OverlayAddress, price: u64) -> SwarmResult<Self::Action>;
 }

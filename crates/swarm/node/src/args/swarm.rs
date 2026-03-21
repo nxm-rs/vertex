@@ -62,7 +62,7 @@ impl From<SwarmNodeType> for NodeTypeArg {
 ///
 /// This struct is for CLI parsing and serialization only.
 /// Convert to `ProtocolConfig` for runtime use.
-/// Pricing is nested under `bandwidth` (accessible via `--bandwidth.base-price`).
+/// Base price is a network-wide constant defined in the SwarmSpec.
 #[derive(Args, Clone)]
 pub struct ProtocolArgs {
     /// Swarm network specification and node mode.
@@ -75,7 +75,7 @@ pub struct ProtocolArgs {
     #[command(flatten)]
     pub network: NetworkArgs,
 
-    /// Bandwidth accounting (includes pricing via `--bandwidth.base-price`).
+    /// Bandwidth accounting configuration.
     #[command(flatten)]
     pub bandwidth: BandwidthArgs,
 

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use eyre::Result;
 use serde::{Deserialize, Serialize};
 use vertex_node_api::NodeProtocolConfig;
-use vertex_swarm_bandwidth::{BandwidthArgs, BandwidthConfigError, DefaultBandwidthConfig};
+use vertex_swarm_bandwidth::{BandwidthArgs, BandwidthConfig, BandwidthConfigError};
 use vertex_swarm_identity::{Identity, IdentityArgs};
 use vertex_swarm_localstore::{LocalStoreArgs, LocalStoreConfig};
 use vertex_swarm_primitives::SwarmNodeType;
@@ -21,7 +21,7 @@ use crate::args::{NetworkArgs, NetworkConfig, ProtocolArgs};
 ///
 /// Contains all Swarm-specific settings for config file serialization.
 /// Used as the type parameter for `vertex_node_core::config::FullNodeConfig`.
-/// Pricing is nested under `bandwidth`.
+/// Base price is a network-wide constant defined in the SwarmSpec.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProtocolConfig {
@@ -45,8 +45,8 @@ impl ProtocolConfig {
     }
 
     /// Create validated bandwidth accounting configuration.
-    pub fn bandwidth_config(&self) -> Result<DefaultBandwidthConfig, BandwidthConfigError> {
-        DefaultBandwidthConfig::try_from(&self.bandwidth)
+    pub fn bandwidth_config(&self) -> Result<BandwidthConfig, BandwidthConfigError> {
+        BandwidthConfig::try_from(&self.bandwidth)
     }
 
     /// Create local store configuration.

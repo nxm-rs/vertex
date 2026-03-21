@@ -379,10 +379,7 @@ impl ClientHandler {
     }
 
     /// Handle incoming credit limit.
-    fn on_credit_limit_received(
-        &mut self,
-        announce: vertex_swarm_net_credit::AnnounceCreditLimit,
-    ) {
+    fn on_credit_limit_received(&mut self, announce: vertex_swarm_net_credit::AnnounceCreditLimit) {
         if let Some(overlay) = self.overlay() {
             debug!(%overlay, credit_limit = %announce.credit_limit, "Received credit limit");
             self.pending_events

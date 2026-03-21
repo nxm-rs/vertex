@@ -24,10 +24,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::mpsc;
 use vertex_swarm_api::{
-    BandwidthMode, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmError, SwarmIdentity,
-    SwarmPeerAccounting, SwarmResult, SwarmSettlementProvider,
+    BandwidthMode, SwarmAccountingConfig, SwarmError, SwarmPeerAccounting, SwarmPeerBandwidth,
+    SwarmPeerRegistry, SwarmResult, SwarmSettlementProvider,
 };
-use vertex_swarm_bandwidth::Accounting;
 use vertex_swarm_node::ClientCommand;
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -50,22 +49,28 @@ pub struct PseudosettleProvider<C> {
 }
 
 impl<C: SwarmAccountingConfig> PseudosettleProvider<C> {
-    /// Create a new pseudosettle provider with the given configuration.
+    /// Create a pseudosettle provider with a handle for network settlement.
     ///
-    /// This creates a provider without network settlement capability.
-    /// Use [`create_pseudosettle_actor`] for full functionality.
-    pub fn new(config: C) -> Self {
-        Self {
-            config,
-            handle: None,
-        }
-    }
-
-    /// Create a new pseudosettle provider with a handle for network settlement.
-    pub fn with_handle(config: C, handle: PseudosettleHandle) -> Self {
+    /// Settlement requires a network round-trip: the debtor sends a
+    /// `Payment` message and the creditor replies with a `PaymentAck`
+    /// containing the accepted amount. Use [`create_pseudosettle_actor`]
+    /// to obtain the handle.
+    pub fn new(config: C, handle: PseudosettleHandle) -> Self {
         Self {
             config,
             handle: Some(handle),
+        }
+    }
+
+    /// Create a provider for testing without a network service.
+    ///
+    /// `settle()` will return an error; only `pre_allow()` (time-based
+    /// refresh) is functional.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn new_without_handle(config: C) -> Self {
+        Self {
+            config,
+            handle: None,
         }
     }
 
@@ -87,10 +92,14 @@ impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for Pseudosettl
     }
 
     fn pre_allow(&self, _peer: OverlayAddress, state: &dyn SwarmPeerAccounting) -> i64 {
-        refresh_allowance(state, self.config.refresh_rate())
+        state.apply_refresh(current_timestamp(), self.config.refresh_rate())
     }
 
-    async fn settle(&self, peer: OverlayAddress, state: &dyn SwarmPeerAccounting) -> SwarmResult<i64> {
+    async fn settle(
+        &self,
+        peer: OverlayAddress,
+        state: &dyn SwarmPeerAccounting,
+    ) -> SwarmResult<i64> {
         // If we have a handle, delegate to the service
         if let Some(handle) = &self.handle {
             let balance = state.balance();
@@ -106,8 +115,10 @@ impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for Pseudosettl
 
             Ok(accepted as i64)
         } else {
-            // No handle - refresh happens automatically in pre_allow()
-            Ok(0i64)
+            // No network service -- cannot settle without a handle.
+            Err(SwarmError::payment_required(
+                PseudosettleSettlementError::ServiceStopped,
+            ))
         }
     }
 
@@ -120,7 +131,7 @@ impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for Pseudosettl
 ///
 /// Spawn the service as a background task. Use the handle to create
 /// a [`PseudosettleProvider`].
-pub fn create_pseudosettle_actor<A: SwarmBandwidthAccounting + 'static>(
+pub fn create_pseudosettle_actor<A: SwarmPeerRegistry<Peer: SwarmPeerBandwidth> + 'static>(
     event_rx: mpsc::UnboundedReceiver<PseudosettleEvent>,
     client_command_tx: mpsc::UnboundedSender<ClientCommand>,
     accounting: Arc<A>,
@@ -141,39 +152,6 @@ pub fn create_pseudosettle_actor<A: SwarmBandwidthAccounting + 'static>(
     (service, handle)
 }
 
-/// Apply time-based credit to peer's negative balance. Returns credit applied.
-fn refresh_allowance(state: &dyn SwarmPeerAccounting, refresh_rate: u64) -> i64 {
-    let now = current_timestamp();
-    let last = state.last_refresh();
-
-    if last == 0 {
-        state.set_last_refresh(now);
-        return 0i64;
-    }
-
-    let elapsed = now.saturating_sub(last);
-    if elapsed == 0 {
-        return 0i64;
-    }
-
-    // Calculate allowance: elapsed_seconds * refresh_rate
-    let allowance = elapsed * refresh_rate;
-
-    // Only add credit if balance is negative (we owe them)
-    let balance = state.balance();
-    let credit = if balance < 0 {
-        let allowance_i64 = allowance as i64;
-        let credit = allowance_i64.min(-balance);
-        state.add_balance(credit);
-        credit
-    } else {
-        0i64
-    };
-
-    state.set_last_refresh(now);
-    credit
-}
-
 /// Get current timestamp in seconds.
 fn current_timestamp() -> u64 {
     SystemTime::now()
@@ -182,38 +160,45 @@ fn current_timestamp() -> u64 {
         .unwrap_or(0)
 }
 
-/// Create a new pseudosettle-only accounting instance.
+/// Create a pseudosettle-only accounting instance for testing.
 ///
-/// This is a convenience function that creates a `Accounting` with
-/// a `PseudosettleProvider`.
-pub fn new_pseudosettle_accounting<C: SwarmAccountingConfig + Clone + 'static, I: SwarmIdentity>(
+/// The provider has no network handle, so `settle()` will error.
+/// Only `pre_allow()` (time-based refresh) is functional.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn new_pseudosettle_accounting<
+    C: SwarmAccountingConfig + Clone + 'static,
+    I: vertex_swarm_api::SwarmIdentity,
+>(
     config: C,
     identity: I,
-) -> Accounting<C, I> {
-    Accounting::with_providers(
+) -> vertex_swarm_bandwidth::Accounting<C, I> {
+    vertex_swarm_bandwidth::Accounting::with_providers(
         config.clone(),
         identity,
-        vec![Box::new(PseudosettleProvider::new(config))],
+        vec![Box::new(PseudosettleProvider::new_without_handle(config))],
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vertex_swarm_api::{Direction, SwarmBandwidthAccounting, SwarmPeerBandwidth};
+    use vertex_swarm_api::{Direction, SwarmPeerBandwidth, SwarmPeerRegistry};
     use vertex_swarm_bandwidth::BandwidthConfig;
     use vertex_swarm_bandwidth::PeerAccounting;
     use vertex_swarm_test_utils::{test_identity, test_peer};
 
+    // Fixed base time for deterministic tests.
+    const T0: u64 = 1_000_000;
+
     #[test]
     fn test_pseudosettle_provider_name() {
-        let provider = PseudosettleProvider::new(BandwidthConfig::default());
+        let provider = PseudosettleProvider::new_without_handle(BandwidthConfig::default());
         assert_eq!(provider.name(), "pseudosettle");
     }
 
     #[test]
     fn test_pseudosettle_refresh_rate() {
-        let provider = PseudosettleProvider::new(BandwidthConfig::default());
+        let provider = PseudosettleProvider::new_without_handle(BandwidthConfig::default());
         assert_eq!(provider.refresh_rate(), 4_500_000);
     }
 
@@ -232,130 +217,126 @@ mod tests {
     }
 
     #[test]
-    fn test_refresh_allowance_positive_balance() {
+    fn test_refresh_positive_balance_no_credit() {
         let state = PeerAccounting::new(13_500_000, 16_875_000);
         state.add_balance(1000);
 
-        let credit = refresh_allowance(&state, 4_500_000);
+        let credit = state.apply_refresh(T0, 4_500_000);
 
         assert_eq!(credit, 0);
         assert_eq!(state.balance(), 1000);
     }
 
     #[test]
-    fn test_refresh_allowance_negative_balance() {
+    fn test_refresh_negative_balance() {
         let state = PeerAccounting::new(13_500_000, 16_875_000);
         state.add_balance(-1000);
-        state.set_last_refresh(current_timestamp() - 1);
+        state.set_last_refresh(T0);
 
-        let credit = refresh_allowance(&state, 100);
+        let credit = state.apply_refresh(T0 + 1, 100);
 
         assert_eq!(credit, 100);
         assert_eq!(state.balance(), -900);
     }
 
     #[test]
-    fn test_refresh_allowance_caps_at_zero() {
+    fn test_refresh_caps_at_zero() {
         let state = PeerAccounting::new(13_500_000, 16_875_000);
         state.add_balance(-100);
-        state.set_last_refresh(current_timestamp() - 10);
+        state.set_last_refresh(T0);
 
-        let credit = refresh_allowance(&state, 1000);
+        let credit = state.apply_refresh(T0 + 10, 1000);
 
         assert_eq!(credit, 100);
         assert_eq!(state.balance(), 0);
     }
 
     #[test]
-    fn test_settlement_too_soon_same_second() {
+    fn test_refresh_same_second_no_credit() {
         let state = PeerAccounting::new(13_500_000, 16_875_000);
-        let now = current_timestamp();
-
-        state.set_last_refresh(now);
+        state.set_last_refresh(T0);
         state.add_balance(-10_000);
 
-        let credit = refresh_allowance(&state, 4_500_000);
+        let credit = state.apply_refresh(T0, 4_500_000);
 
         assert_eq!(credit, 0);
         assert_eq!(state.balance(), -10_000);
     }
 
     #[test]
-    fn test_time_limited_partial_acceptance() {
+    fn test_refresh_time_limited_partial() {
         let state = PeerAccounting::new(13_500_000, 16_875_000);
         state.add_balance(-50_000);
-        state.set_last_refresh(current_timestamp() - 3);
+        state.set_last_refresh(T0);
 
-        let credit = refresh_allowance(&state, 10_000);
+        let credit = state.apply_refresh(T0 + 3, 10_000);
 
         assert_eq!(credit, 30_000);
         assert_eq!(state.balance(), -20_000);
     }
 
     #[test]
-    fn test_full_debt_acceptance() {
+    fn test_refresh_full_debt_acceptance() {
         let state = PeerAccounting::new(13_500_000, 16_875_000);
         state.add_balance(-10_000);
-        state.set_last_refresh(current_timestamp() - 10);
+        state.set_last_refresh(T0);
 
-        let credit = refresh_allowance(&state, 10_000);
+        let credit = state.apply_refresh(T0 + 10, 10_000);
 
         assert_eq!(credit, 10_000);
         assert_eq!(state.balance(), 0);
     }
 
     #[test]
-    fn test_sequential_refreshes() {
+    fn test_refresh_sequential() {
         let state = PeerAccounting::new(13_500_000, 16_875_000);
-        let base_time = current_timestamp();
-
         state.add_balance(-100_000);
-        state.set_last_refresh(base_time - 5);
+        state.set_last_refresh(T0);
 
-        let credit1 = refresh_allowance(&state, 10_000);
+        let credit1 = state.apply_refresh(T0 + 5, 10_000);
         assert_eq!(credit1, 50_000);
         assert_eq!(state.balance(), -50_000);
 
-        let credit2 = refresh_allowance(&state, 10_000);
+        // Same second -- no credit
+        let credit2 = state.apply_refresh(T0 + 5, 10_000);
         assert_eq!(credit2, 0);
         assert_eq!(state.balance(), -50_000);
 
-        state.set_last_refresh(current_timestamp() - 3);
-
-        let credit3 = refresh_allowance(&state, 10_000);
+        // 3 more seconds
+        let credit3 = state.apply_refresh(T0 + 8, 10_000);
         assert_eq!(credit3, 30_000);
         assert_eq!(state.balance(), -20_000);
     }
 
     #[test]
-    fn test_first_refresh_initialization() {
+    fn test_refresh_first_call_initialises() {
         let state = PeerAccounting::new(13_500_000, 16_875_000);
 
         assert_eq!(state.last_refresh(), 0);
         state.add_balance(-10_000);
 
-        let credit = refresh_allowance(&state, 10_000);
+        let credit = state.apply_refresh(T0, 10_000);
 
         assert_eq!(credit, 0);
         assert_eq!(state.balance(), -10_000);
-        assert!(state.last_refresh() > 0);
+        assert_eq!(state.last_refresh(), T0);
     }
 
     #[test]
-    fn test_client_vs_storer_refresh_rate() {
+    fn test_refresh_client_vs_storer_rate() {
         let storer_state = PeerAccounting::new(13_500_000, 16_875_000);
         let client_state = PeerAccounting::new_client_only(13_500_000, 16_875_000, 10);
 
         storer_state.add_balance(-50_000);
         client_state.add_balance(-50_000);
-        storer_state.set_last_refresh(current_timestamp() - 10);
-        client_state.set_last_refresh(current_timestamp() - 10);
+        storer_state.set_last_refresh(T0);
+        client_state.set_last_refresh(T0);
 
-        let storer_credit = refresh_allowance(&storer_state, 10_000);
+        let storer_credit = storer_state.apply_refresh(T0 + 10, 10_000);
         assert_eq!(storer_credit, 50_000);
         assert_eq!(storer_state.balance(), 0);
 
-        let client_credit = refresh_allowance(&client_state, 1_000);
+        let client_credit = client_state.apply_refresh(T0 + 10, 1_000);
         assert_eq!(client_credit, 10_000);
         assert_eq!(client_state.balance(), -40_000);
     }

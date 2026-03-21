@@ -56,7 +56,7 @@ pub struct PeerManager<I: SwarmIdentity> {
     /// Database backend for cold storage (None for ephemeral/test mode).
     pub(crate) store: Option<Arc<dyn NetPeerStore<StoredPeer>>>,
     /// Score persistence (None for ephemeral/test mode).
-    pub(crate) score_store: Option<Arc<dyn SwarmScoreStore<Score = PeerScore, Error = StoreError>>>,
+    pub(crate) score_store: Option<Arc<dyn SwarmScoreStore<Value = PeerScore, Error = StoreError>>>,
     /// O(1) ban checks without DB or DashMap lookup.
     pub(crate) banned_set: DashSet<OverlayAddress>,
     /// Batches DB writes for amortized flush.
@@ -103,7 +103,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
     pub fn with_store(
         identity: &I,
         store: Arc<dyn NetPeerStore<StoredPeer>>,
-        score_store: Option<Arc<dyn SwarmScoreStore<Score = PeerScore, Error = StoreError>>>,
+        score_store: Option<Arc<dyn SwarmScoreStore<Value = PeerScore, Error = StoreError>>>,
         scoring_config: SwarmScoringConfig,
         max_per_bin: usize,
     ) -> Arc<Self> {
@@ -124,7 +124,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
         scoring_config: SwarmScoringConfig,
         max_per_bin: usize,
         store: Option<Arc<dyn NetPeerStore<StoredPeer>>>,
-        score_store: Option<Arc<dyn SwarmScoreStore<Score = PeerScore, Error = StoreError>>>,
+        score_store: Option<Arc<dyn SwarmScoreStore<Value = PeerScore, Error = StoreError>>>,
         max_hot_peers: usize,
     ) -> Arc<Self> {
         let local_overlay = identity.overlay_address();
@@ -539,7 +539,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
         let score = self
             .score_store
             .as_ref()
-            .and_then(|ss| ss.get_score(overlay).ok().flatten());
+            .and_then(|ss| ss.load(overlay).ok().flatten());
 
         use dashmap::mapref::entry::Entry;
         match self.peers.entry(*overlay) {
@@ -1255,7 +1255,7 @@ mod tests {
         let score_store: Option<
             Arc<
                 dyn SwarmScoreStore<
-                        Score = PeerScore,
+                        Value = PeerScore,
                         Error = vertex_net_peer_store::error::StoreError,
                     >,
             >,

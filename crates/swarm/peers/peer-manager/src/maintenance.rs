@@ -3,7 +3,7 @@
 use metrics::gauge;
 use tracing::{debug, warn};
 use vertex_net_peer_store::NetRecord;
-use vertex_swarm_api::{SwarmIdentity, SwarmScoreStore};
+use vertex_swarm_api::{SwarmIdentity, SwarmPeerStore};
 use vertex_swarm_primitives::OverlayAddress;
 
 use crate::entry::on_health_removed;
@@ -56,7 +56,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
         if let Some(ref ss) = self.score_store {
             let scores = self.write_buffer.drain_scores();
             if !scores.is_empty()
-                && let Err(e) = ss.save_score_batch(&scores)
+                && let Err(e) = ss.store_batch(&scores)
             {
                 warn!(error = %e, "failed to flush score buffer");
             }

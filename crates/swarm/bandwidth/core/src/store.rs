@@ -28,11 +28,8 @@ impl From<DatabaseError> for AccountingStoreError {
 /// Type-erased accounting store trait for use in `Accounting` without a DB generic.
 pub trait AccountingStore: Send + Sync + fmt::Debug {
     /// Save a single peer's state.
-    fn save(
-        &self,
-        peer: OverlayAddress,
-        state: PeerAccounting,
-    ) -> Result<(), AccountingStoreError>;
+    fn save(&self, peer: OverlayAddress, state: PeerAccounting)
+    -> Result<(), AccountingStoreError>;
 
     /// Save a batch of peer states in a single transaction.
     fn save_batch(
@@ -44,9 +41,7 @@ pub trait AccountingStore: Send + Sync + fmt::Debug {
     fn load(&self, peer: OverlayAddress) -> Result<Option<PeerAccounting>, AccountingStoreError>;
 
     /// Load all peer states.
-    fn load_all(
-        &self,
-    ) -> Result<Vec<(OverlayAddress, PeerAccounting)>, AccountingStoreError>;
+    fn load_all(&self) -> Result<Vec<(OverlayAddress, PeerAccounting)>, AccountingStoreError>;
 
     /// Remove a peer's state.
     fn remove(&self, peer: OverlayAddress) -> Result<bool, AccountingStoreError>;
@@ -113,18 +108,13 @@ impl<DB: Database> AccountingStore for DbAccountingStore<DB> {
             .map_err(AccountingStoreError::from)
     }
 
-    fn load(
-        &self,
-        peer: OverlayAddress,
-    ) -> Result<Option<PeerAccounting>, AccountingStoreError> {
+    fn load(&self, peer: OverlayAddress) -> Result<Option<PeerAccounting>, AccountingStoreError> {
         self.db
             .view(|tx| tx.get::<AccountingTable>(peer))
             .map_err(AccountingStoreError::from)
     }
 
-    fn load_all(
-        &self,
-    ) -> Result<Vec<(OverlayAddress, PeerAccounting)>, AccountingStoreError> {
+    fn load_all(&self) -> Result<Vec<(OverlayAddress, PeerAccounting)>, AccountingStoreError> {
         self.db
             .view(|tx| tx.entries::<AccountingTable>())
             .map_err(AccountingStoreError::from)

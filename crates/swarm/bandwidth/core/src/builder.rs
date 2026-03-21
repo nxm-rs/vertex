@@ -1,17 +1,13 @@
-//! Bandwidth accounting builder with integrated pricing.
+//! Bandwidth accounting builder.
 
 use std::sync::Arc;
 
-use vertex_swarm_api::{
-    SwarmAccountingConfig, SwarmIdentity, SwarmPricing, SwarmPricingBuilder, SwarmPricingConfig,
-    SwarmSettlementProvider, SwarmSpec,
-};
-use vertex_swarm_bandwidth_pricing::NoPricer;
+use vertex_swarm_api::{SwarmAccountingConfig, SwarmIdentity, SwarmSettlementProvider, SwarmSpec};
 
 use crate::store::AccountingStore;
 use crate::{Accounting, ClientAccounting};
 
-/// Builder for bandwidth accounting with integrated pricing.
+/// Builder for bandwidth accounting.
 ///
 /// Constructs [`ClientAccounting`] which combines per-peer balance tracking
 /// with chunk pricing. Settlement providers are added via [`with_settlement`].
@@ -20,40 +16,22 @@ use crate::{Accounting, ClientAccounting};
 ///
 /// ```ignore
 /// let accounting = AccountingBuilder::new(bandwidth_config)
-///     .with_pricer_from_config(spec.clone())
 ///     .with_settlement(PseudosettleProvider::new(&config))
-///     .build(&identity);
+///     .build(spec, &identity);
 /// ```
-pub struct AccountingBuilder<C, P = NoPricer> {
+pub struct AccountingBuilder<C> {
     config: C,
-    pricing: P,
     providers: Vec<Box<dyn SwarmSettlementProvider>>,
     store: Option<Arc<dyn AccountingStore>>,
 }
 
-impl<C: SwarmAccountingConfig> AccountingBuilder<C, NoPricer> {
-    /// Create a new accounting builder with no pricer.
+impl<C: SwarmAccountingConfig> AccountingBuilder<C> {
+    /// Create a new accounting builder.
     pub fn new(config: C) -> Self {
         Self {
             config,
-            pricing: NoPricer,
             providers: Vec::new(),
             store: None,
-        }
-    }
-}
-
-impl<C, P> AccountingBuilder<C, P> {
-    /// Set the pricing strategy.
-    pub fn with_pricing<NewP: SwarmPricing + Clone + Send + Sync + 'static>(
-        self,
-        pricing: NewP,
-    ) -> AccountingBuilder<C, NewP> {
-        AccountingBuilder {
-            config: self.config,
-            pricing,
-            providers: self.providers,
-            store: self.store,
         }
     }
 
@@ -66,7 +44,6 @@ impl<C, P> AccountingBuilder<C, P> {
     /// Add a settlement provider.
     ///
     /// Multiple providers can be added. They are called in order during settlement.
-    /// For `BandwidthMode::Both`, add pseudosettle before swap.
     pub fn with_settlement(mut self, provider: impl SwarmSettlementProvider + 'static) -> Self {
         self.providers.push(Box::new(provider));
         self
@@ -103,40 +80,22 @@ impl<C, P> AccountingBuilder<C, P> {
     }
 }
 
-impl<C> AccountingBuilder<C, NoPricer>
-where
-    C: SwarmPricingConfig,
-{
-    /// Build pricer from config's embedded pricing configuration.
-    pub fn with_pricer_from_config<S>(
-        self,
-        spec: Arc<S>,
-    ) -> AccountingBuilder<C, <C::Pricing as SwarmPricingBuilder<S>>::Pricer>
-    where
-        C::Pricing: SwarmPricingBuilder<S>,
-        S: SwarmSpec + Send + Sync + 'static,
-    {
-        let pricer = self.config.pricing().build_pricer(spec);
-        self.with_pricing(pricer)
-    }
-}
-
-impl<C: SwarmAccountingConfig + Clone + 'static, P: SwarmPricing + Clone + Send + Sync + 'static>
-    AccountingBuilder<C, P>
-{
+impl<C: SwarmAccountingConfig + Clone + 'static> AccountingBuilder<C> {
     /// Build the accounting system.
     ///
     /// If a store was configured via [`with_store`](AccountingBuilder::with_store),
     /// persisted peer state is loaded into the in-memory cache before returning.
-    pub fn build<I: SwarmIdentity + Clone>(
+    pub fn build<I, S>(
         self,
+        spec: Arc<S>,
         identity: &I,
-    ) -> ClientAccounting<Arc<Accounting<C, I>>, P> {
-        let mut accounting = Accounting::with_providers(
-            self.config,
-            identity.clone(),
-            self.providers,
-        );
+    ) -> ClientAccounting<Arc<Accounting<C, I>>, S>
+    where
+        I: SwarmIdentity + Clone,
+        S: SwarmSpec,
+    {
+        let mut accounting =
+            Accounting::with_providers(self.config, identity.clone(), self.providers);
 
         if let Some(store) = self.store {
             accounting.set_store(store);
@@ -145,7 +104,7 @@ impl<C: SwarmAccountingConfig + Clone + 'static, P: SwarmPricing + Clone + Send 
             }
         }
 
-        ClientAccounting::new(Arc::new(accounting), self.pricing)
+        ClientAccounting::new(Arc::new(accounting), spec)
     }
 }
 
@@ -165,40 +124,24 @@ impl NoAccountingBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DefaultBandwidthConfig;
+    use crate::BandwidthConfig;
     use vertex_swarm_test_utils::test_identity_arc as test_identity;
 
     #[test]
-    fn test_builder_with_pricer_from_config() {
+    fn test_builder_basic() {
         let identity = test_identity();
-        let config = DefaultBandwidthConfig::default();
+        let config = BandwidthConfig::default();
 
-        let _accounting = AccountingBuilder::new(config)
-            .with_pricer_from_config(identity.spec().clone())
-            .build(&identity);
-    }
-
-    #[test]
-    fn test_builder_with_custom_pricing() {
-        use vertex_swarm_bandwidth_pricing::FixedPricer;
-
-        let identity = test_identity();
-        let config = DefaultBandwidthConfig::default();
-        let pricer = FixedPricer::new(5000, identity.spec().clone());
-
-        let _accounting = AccountingBuilder::new(config)
-            .with_pricing(pricer)
-            .build(&identity);
+        let _accounting = AccountingBuilder::new(config).build(identity.spec().clone(), &identity);
     }
 
     #[test]
     fn test_builder_apply() {
         let identity = test_identity();
-        let config = DefaultBandwidthConfig::default();
+        let config = BandwidthConfig::default();
 
         let _accounting = AccountingBuilder::new(config)
-            .with_pricer_from_config(identity.spec().clone())
             .apply_if(true, |b| b)
-            .build(&identity);
+            .build(identity.spec().clone(), &identity);
     }
 }

@@ -13,7 +13,6 @@ nectar-primitives = { workspace = true, features = ["serde"] }
 vertex-swarm-primitives = { workspace = true }
 vertex-metrics = { workspace = true }
 vertex-swarm-api = { workspace = true }
-vertex-swarm-bandwidth-pricing = { workspace = true, features = ["cli"] }
 vertex-swarm-spec = { workspace = true }
 vertex-storage = { workspace = true, optional = true, features = ["nectar"] }
 async-trait = { workspace = true }

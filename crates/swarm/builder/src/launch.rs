@@ -11,12 +11,9 @@ use vertex_net_peer_store::NetPeerStore;
 use vertex_net_peer_store::error::StoreError;
 use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
-use vertex_swarm_api::{
-    PeerConfigValues, SwarmClientAccounting, SwarmLaunchConfig, SwarmPeerConfig, SwarmScoreStore,
-};
+use vertex_swarm_api::{SwarmLaunchConfig, SwarmPeerConfig, SwarmScoreStore};
 use vertex_swarm_bandwidth::{
-    Accounting, AccountingBuilder, ClientAccounting, DbAccountingStore, DefaultBandwidthConfig,
-    FixedPricer,
+    Accounting, AccountingBuilder, BandwidthConfig, ClientAccounting, DbAccountingStore,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::{BootNode, ClientNode};
@@ -32,50 +29,34 @@ use crate::providers::NetworkChunkProvider;
 use crate::rpc::{BootnodeRpcProviders, ClientRpcProviders, StorerRpcProviders};
 
 type PeerStore = Arc<dyn NetPeerStore<StoredPeer>>;
-type PeerScoreStore = Arc<dyn SwarmScoreStore<Score = PeerScore, Error = StoreError>>;
+type PeerScoreStore = Arc<dyn SwarmScoreStore<Value = PeerScore, Error = StoreError>>;
 
 /// Stats collection interval for database metrics.
 const DB_METRICS_INTERVAL: Duration = Duration::from_secs(30);
 
-fn log_build_start<N>(node_type: &str, spec: &Spec, network: &N)
-where
-    N: SwarmPeerConfig,
-    N::Peers: PeerConfigValues,
-{
+fn log_build_start<N: SwarmPeerConfig>(node_type: &str, spec: &Spec, network: &N) {
     info!("Building {} node...", node_type);
     spec.log();
 
-    match network.peers().store_path() {
+    match network.store_path() {
         Some(path) => info!(path = %path.display(), "Peers database"),
         None => info!("Peers database: ephemeral"),
     }
 }
 
-#[allow(clippy::type_complexity)]
-fn build_accounting<A>(
+fn build_accounting(
     spec: Arc<Spec>,
     identity: &Arc<Identity>,
-    config: A,
+    config: BandwidthConfig,
     store: Option<Arc<DbAccountingStore<RedbDatabase>>>,
-) -> ClientAccounting<
-    Arc<vertex_swarm_bandwidth::Accounting<A, Arc<Identity>>>,
-    <A::Pricing as vertex_swarm_api::SwarmPricingBuilder<Spec>>::Pricer,
->
-where
-    A: vertex_swarm_api::SwarmAccountingConfig
-        + vertex_swarm_api::SwarmPricingConfig
-        + Clone
-        + 'static,
-    A::Pricing: vertex_swarm_api::SwarmPricingBuilder<Spec>,
-{
-    let mut builder = AccountingBuilder::new(config)
-        .with_pricer_from_config(spec);
+) -> ClientAccounting<Arc<Accounting<BandwidthConfig, Arc<Identity>>>, Spec> {
+    let mut builder = AccountingBuilder::new(config);
 
     if let Some(store) = store {
         builder = builder.with_store(store);
     }
 
-    builder.build(identity)
+    builder.build(spec, identity)
 }
 
 /// Wrap a future factory as a NodeTaskFn with graceful shutdown support.
@@ -178,10 +159,8 @@ macro_rules! define_launch_types {
         define_launch_types!($name);
 
         impl vertex_swarm_api::SwarmClientTypes for $name {
-            type Accounting = ClientAccounting<
-                Arc<Accounting<DefaultBandwidthConfig, Arc<Identity>>>,
-                FixedPricer<Arc<Spec>>,
-            >;
+            type Accounting =
+                ClientAccounting<Arc<Accounting<BandwidthConfig, Arc<Identity>>>, Spec>;
         }
     };
 }

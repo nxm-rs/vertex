@@ -7,7 +7,7 @@ use std::sync::Arc;
 use alloy_primitives::U256;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
-use vertex_swarm_api::{Direction, SwarmBandwidthAccounting, SwarmPeerBandwidth};
+use vertex_swarm_api::{Direction, SwarmPeerBandwidth, SwarmPeerRegistry};
 use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_node::ClientCommand;
 use vertex_swarm_primitives::OverlayAddress;
@@ -31,7 +31,7 @@ pub enum PseudosettleCommand {
 }
 
 /// Processes settlement commands from handles and network events.
-pub struct PseudosettleService<A: SwarmBandwidthAccounting> {
+pub struct PseudosettleService<A: SwarmPeerRegistry<Peer: SwarmPeerBandwidth>> {
     /// Receive commands from handles.
     command_rx: mpsc::UnboundedReceiver<PseudosettleCommand>,
     /// Receive events routed from the network layer.
@@ -48,7 +48,7 @@ pub struct PseudosettleService<A: SwarmBandwidthAccounting> {
     last_settlement: HashMap<OverlayAddress, u64>,
 }
 
-impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
+impl<A: SwarmPeerRegistry<Peer: SwarmPeerBandwidth> + 'static> PseudosettleService<A> {
     /// Create a new pseudosettle service.
     pub fn new(
         command_rx: mpsc::UnboundedReceiver<PseudosettleCommand>,
@@ -229,7 +229,9 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
     }
 }
 
-impl<A: SwarmBandwidthAccounting + 'static> SpawnableTask for PseudosettleService<A> {
+impl<A: SwarmPeerRegistry<Peer: SwarmPeerBandwidth> + 'static> SpawnableTask
+    for PseudosettleService<A>
+{
     fn into_task(self, shutdown: GracefulShutdown) -> impl Future<Output = ()> + Send {
         self.run(shutdown)
     }

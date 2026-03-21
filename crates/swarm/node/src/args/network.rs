@@ -316,10 +316,20 @@ impl<R> SwarmNetworkConfig for NetworkConfig<R> {
 }
 
 impl<R> SwarmPeerConfig for NetworkConfig<R> {
-    type Peers = PeerConfig;
+    fn ban_threshold(&self) -> f64 {
+        self.peer.ban_threshold()
+    }
 
-    fn peers(&self) -> &Self::Peers {
-        &self.peer
+    fn warn_threshold(&self) -> f64 {
+        self.peer.warn_threshold()
+    }
+
+    fn max_per_bin(&self) -> usize {
+        self.peer.max_per_bin()
+    }
+
+    fn store_path(&self) -> Option<std::path::PathBuf> {
+        self.peer.store_path()
     }
 }
 
@@ -334,7 +344,7 @@ impl<R: Default> SwarmRoutingConfig for NetworkConfig<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vertex_swarm_api::PeerConfigValues;
+    use vertex_swarm_api::SwarmPeerConfig;
 
     #[test]
     fn network_config_from_default_args() {

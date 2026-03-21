@@ -7993,23 +7993,9 @@ dependencies = [
  "vertex-storage",
  "vertex-storage-redb",
  "vertex-swarm-api",
- "vertex-swarm-bandwidth-pricing",
  "vertex-swarm-primitives",
  "vertex-swarm-spec",
  "vertex-swarm-test-utils",
-]
-
-[[package]]
-name = "vertex-swarm-bandwidth-pricing"
-version = "0.1.0"
-dependencies = [
- "auto_impl",
- "clap 4.6.0",
- "nectar-primitives",
- "serde",
- "vertex-swarm-api",
- "vertex-swarm-primitives",
- "vertex-swarm-spec",
 ]
 
 [[package]]
@@ -8054,7 +8040,6 @@ dependencies = [
  "vertex-storage-redb",
  "vertex-swarm-api",
  "vertex-swarm-bandwidth",
- "vertex-swarm-bandwidth-pricing",
  "vertex-swarm-bandwidth-pseudosettle",
  "vertex-swarm-identity",
  "vertex-swarm-localstore",
@@ -8369,7 +8354,6 @@ dependencies = [
  "vertex-node-api",
  "vertex-swarm-api",
  "vertex-swarm-bandwidth",
- "vertex-swarm-bandwidth-pricing",
  "vertex-swarm-identity",
  "vertex-swarm-localstore",
  "vertex-swarm-net-credit",

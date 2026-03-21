@@ -3,7 +3,8 @@
 use std::vec::Vec;
 
 use vertex_swarm_api::{
-    Direction, SwarmBandwidthAccounting, SwarmIdentity, SwarmPeerBandwidth, SwarmResult,
+    Direction, SwarmBandwidthAccounting, SwarmIdentity, SwarmPeerBandwidth, SwarmPeerRegistry,
+    SwarmResult,
 };
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -17,6 +18,11 @@ impl<I: SwarmIdentity> NoAccounting<I> {
     /// Create a new no-op accounting with the given identity.
     pub fn new(identity: I) -> Self {
         Self { identity }
+    }
+
+    /// Get the node's identity.
+    pub fn identity(&self) -> &I {
+        &self.identity
     }
 }
 
@@ -47,21 +53,11 @@ impl SwarmPeerBandwidth for NoPeerBandwidth {
     }
 }
 
-/// No-op receive action (does nothing on apply).
-pub struct NoReceiveAction;
+/// No-op action (does nothing on apply).
+pub struct NoAction;
 
-/// No-op provide action (does nothing on apply).
-pub struct NoProvideAction;
-
-impl<I: SwarmIdentity> SwarmBandwidthAccounting for NoAccounting<I> {
-    type Identity = I;
+impl<I: SwarmIdentity> SwarmPeerRegistry for NoAccounting<I> {
     type Peer = NoPeerBandwidth;
-    type ReceiveAction = NoReceiveAction;
-    type ProvideAction = NoProvideAction;
-
-    fn identity(&self) -> &I {
-        &self.identity
-    }
 
     fn for_peer(&self, peer: OverlayAddress) -> Self::Peer {
         NoPeerBandwidth { peer }
@@ -72,17 +68,21 @@ impl<I: SwarmIdentity> SwarmBandwidthAccounting for NoAccounting<I> {
     }
 
     fn remove_peer(&self, _peer: &OverlayAddress) {}
+}
+
+impl<I: SwarmIdentity> SwarmBandwidthAccounting for NoAccounting<I> {
+    type Action = NoAction;
 
     fn prepare_receive(
         &self,
         _peer: OverlayAddress,
         _price: u64,
         _originated: bool,
-    ) -> SwarmResult<NoReceiveAction> {
-        Ok(NoReceiveAction)
+    ) -> SwarmResult<NoAction> {
+        Ok(NoAction)
     }
 
-    fn prepare_provide(&self, _peer: OverlayAddress, _price: u64) -> SwarmResult<NoProvideAction> {
-        Ok(NoProvideAction)
+    fn prepare_provide(&self, _peer: OverlayAddress, _price: u64) -> SwarmResult<NoAction> {
+        Ok(NoAction)
     }
 }

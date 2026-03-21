@@ -4,8 +4,6 @@ use clap::Args;
 use serde::{Deserialize, Serialize};
 use vertex_swarm_primitives::BandwidthMode;
 
-pub use vertex_swarm_bandwidth_pricing::FixedPricingArgs;
-
 use crate::constants::*;
 
 /// CLI wrapper for [`BandwidthMode`] with clap integration.
@@ -29,10 +27,10 @@ pub enum BandwidthModeArg {
     /// Soft accounting without real payments (default).
     #[default]
     Pseudosettle = 1,
-    /// Real payment channels with chequebook.
-    Swap = 2,
-    /// Both pseudosettle and SWAP.
-    Both = 3,
+    // /// Real payment channels with chequebook (not yet implemented).
+    // Swap = 2,
+    // /// Both pseudosettle and SWAP (not yet implemented).
+    // Both = 3,
 }
 
 impl From<BandwidthModeArg> for BandwidthMode {
@@ -51,6 +49,9 @@ impl From<BandwidthMode> for BandwidthModeArg {
 ///
 /// This struct is for CLI parsing and serialization only.
 /// Convert to `BandwidthConfig` for runtime use.
+///
+/// Base price per chunk is a network-wide constant defined in the
+/// [`SwarmSpec`](vertex_swarm_spec::SwarmSpec) and is not user-configurable.
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
 #[command(next_help_heading = "Bandwidth Accounting")]
 #[serde(default)]
@@ -78,11 +79,6 @@ pub struct BandwidthArgs {
     /// Scaling factor for client-only nodes (divides thresholds).
     #[arg(long = "bandwidth.client-only-factor", default_value_t = DEFAULT_CLIENT_ONLY_FACTOR)]
     pub client_only_factor: u64,
-
-    /// Chunk pricing configuration.
-    #[command(flatten)]
-    #[serde(default)]
-    pub pricing: FixedPricingArgs,
 }
 
 impl Default for BandwidthArgs {
@@ -94,16 +90,13 @@ impl Default for BandwidthArgs {
             refresh_rate: DEFAULT_REFRESH_RATE,
             early_payment_percent: DEFAULT_EARLY_PAYMENT_PERCENT,
             client_only_factor: DEFAULT_CLIENT_ONLY_FACTOR,
-            pricing: FixedPricingArgs::default(),
         }
     }
 }
 
 impl BandwidthArgs {
     /// Create validated BandwidthConfig from these CLI arguments.
-    pub fn accounting_config(
-        &self,
-    ) -> Result<crate::DefaultBandwidthConfig, crate::BandwidthConfigError> {
+    pub fn accounting_config(&self) -> Result<crate::BandwidthConfig, crate::BandwidthConfigError> {
         crate::BandwidthConfig::try_from(self)
     }
 }

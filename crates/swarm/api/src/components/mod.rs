@@ -3,16 +3,14 @@
 mod bandwidth;
 mod localstore;
 mod peers;
-mod pricing;
 mod topology;
 
 pub use self::bandwidth::{
-    BandwidthMode, Direction, SwarmAccountingConfig, SwarmBandwidthAccounting,
-    SwarmClientAccounting, SwarmPeerBandwidth, SwarmPeerAccounting, SwarmSettlementProvider,
+    BandwidthMode, Direction, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmPeerAccounting,
+    SwarmPeerBandwidth, SwarmSettlementProvider,
 };
 pub use self::localstore::{SwarmLocalStore, SwarmLocalStoreConfig};
-pub use self::peers::{SwarmPeerResolver, SwarmScoreStore};
-pub use self::pricing::{SwarmPricing, SwarmPricingBuilder, SwarmPricingConfig};
+pub use self::peers::{SwarmPeerRegistry, SwarmPeerResolver, SwarmPeerStore, SwarmScoreStore};
 pub use self::topology::{
     SwarmTopology, SwarmTopologyBins, SwarmTopologyCommands, SwarmTopologyPeers,
     SwarmTopologyRouting, SwarmTopologyState, SwarmTopologyStats,

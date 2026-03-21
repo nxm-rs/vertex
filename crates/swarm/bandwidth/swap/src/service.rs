@@ -7,7 +7,7 @@ use std::sync::Arc;
 use alloy_primitives::U256;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
-use vertex_swarm_api::{Direction, SwarmBandwidthAccounting, SwarmPeerBandwidth};
+use vertex_swarm_api::{Direction, SwarmPeerBandwidth, SwarmPeerRegistry};
 use vertex_swarm_node::{ClientCommand, SwapEvent};
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
@@ -28,7 +28,7 @@ pub enum SwapCommand {
 }
 
 /// Processes settlement commands from handles and network events.
-pub struct SwapService<A: SwarmBandwidthAccounting> {
+pub struct SwapService<A: SwarmPeerRegistry<Peer: SwarmPeerBandwidth>> {
     /// Receive commands from handles.
     command_rx: mpsc::UnboundedReceiver<SwapCommand>,
     /// Receive events routed from the network layer.
@@ -48,7 +48,7 @@ struct PendingSettlement {
     response_tx: oneshot::Sender<Result<u64, SwapSettlementError>>,
 }
 
-impl<A: SwarmBandwidthAccounting + 'static> SwapService<A> {
+impl<A: SwarmPeerRegistry<Peer: SwarmPeerBandwidth> + 'static> SwapService<A> {
     /// Create a new swap service.
     pub fn new(
         command_rx: mpsc::UnboundedReceiver<SwapCommand>,
@@ -190,7 +190,7 @@ impl<A: SwarmBandwidthAccounting + 'static> SwapService<A> {
     }
 }
 
-impl<A: SwarmBandwidthAccounting + 'static> SpawnableTask for SwapService<A> {
+impl<A: SwarmPeerRegistry<Peer: SwarmPeerBandwidth> + 'static> SpawnableTask for SwapService<A> {
     fn into_task(self, shutdown: GracefulShutdown) -> impl Future<Output = ()> + Send {
         self.run(shutdown)
     }

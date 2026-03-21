@@ -38,79 +38,52 @@ pub trait SwarmToken: Send + Sync {
     fn decimals(&self) -> u8;
 }
 
-/// A Swarm network specification.
+/// Consensus-critical parameters that identify a Swarm network.
 ///
-/// Defines the consensus-critical parameters that identify a network and
-/// govern protocol behavior. All nodes on the same network must use an
-/// equivalent spec to interoperate.
-///
-/// Covers network-level concerns fixed for all participants:
-/// - Network identity (ID, name, underlying L1 chain)
-/// - Bootstrap nodes for initial peer discovery
-/// - Hardfork activation schedule
-/// - Token contract address
-/// - Supported chunk types
-///
-/// Excludes node-level config (storage capacity, pricing, cache policies).
+/// All nodes on the same network must use an equivalent spec.
 #[auto_impl::auto_impl(&, Arc)]
 pub trait SwarmSpec: Send + Sync + 'static {
-    /// The set of chunk types supported by this network.
+    /// Supported chunk types.
     type ChunkSet: ChunkTypeSet;
 
-    /// The token type for this network specification.
+    /// Token type for this network.
     type Token: SwarmToken;
 
-    /// Returns the corresponding Swarm network identifier.
+    /// Swarm network identifier.
     fn swarm(&self) -> Swarm;
 
-    /// Returns the underlying blockchain this network uses.
+    /// Underlying L1 chain.
     fn chain(&self) -> Chain;
 
-    /// Returns the network ID for the Swarm network.
+    /// Numeric network ID.
     fn network_id(&self) -> u64 {
         self.swarm().id()
     }
 
-    /// Returns the Swarm network name (like "mainnet", "testnet", etc.).
+    /// Network name (e.g. "mainnet", "testnet").
     fn network_name(&self) -> &str;
 
-    /// Returns the bootnodes for the network (as multiaddr strings).
-    ///
-    /// Consumers should parse these as `Multiaddr` in the networking layer.
+    /// Bootstrap node multiaddrs (as strings).
     fn bootnodes(&self) -> Option<Vec<String>>;
 
-    /// Returns the Swarm token details.
-    ///
-    /// This defines which BZZ token this network uses and where it's deployed.
+    /// Token details (contract address, symbol, decimals).
     fn token(&self) -> &Self::Token;
 
-    /// Returns the hardforks configuration.
+    /// Hardfork activation schedule.
     fn hardforks(&self) -> &SwarmHardforks;
 
-    /// Returns the chunk size in bytes for this network.
-    ///
-    /// This is the fundamental unit of storage in Swarm. Standard Swarm
-    /// networks use 4096 bytes (2^12), but custom networks may differ.
-    ///
-    /// The default implementation returns the chunk size from the associated
-    /// `ChunkSet` type, providing compile-time access to this value.
+    /// Chunk body size in bytes. Defaults to the `ChunkSet` constant.
     fn chunk_size(&self) -> usize {
         Self::ChunkSet::BODY_SIZE
     }
 
-    /// Returns the reserve capacity in number of chunks for full nodes.
-    ///
-    /// This is the target number of chunks a full storage node should hold.
-    /// Standard networks use 2^22 = 4,194,304 chunks.
+    /// Target reserve capacity in chunks for full nodes.
     fn reserve_capacity(&self) -> u64;
 
-    /// Returns the fork activation status for a given Swarm hardfork at a timestamp.
+    /// Whether `fork` is active at `timestamp`.
     fn is_fork_active_at_timestamp(&self, fork: SwarmHardfork, timestamp: u64) -> bool;
 
-    /// Returns the activation timestamp of the next fork after the given timestamp.
-    ///
-    /// Used during handshake to communicate upcoming protocol changes.
-    /// Returns `None` if all known forks are already active.
+    /// Activation timestamp of the next fork after `after`, if any.
     fn next_fork_timestamp(&self, after: u64) -> Option<u64> {
         for (_, condition) in self.hardforks().forks_iter() {
             if let ForkCondition::Timestamp(activation) = condition
@@ -122,30 +95,30 @@ pub trait SwarmSpec: Send + Sync + 'static {
         None
     }
 
-    /// Computes a digest representing the current fork state at a given timestamp.
-    ///
-    /// Two nodes with the same digest are fork-compatible and can interoperate.
-    /// The digest incorporates network ID, genesis timestamp, and active forks.
-    ///
-    /// During handshake, peers exchange digests to verify compatibility.
+    /// Fork-compatibility digest at a given timestamp.
     fn fork_digest(&self, at_timestamp: u64) -> ForkDigest;
 
-    /// Returns whether this is the mainnet Swarm.
+    /// Whether this is the mainnet Swarm.
     fn is_mainnet(&self) -> bool {
         self.network_id() == NamedSwarm::Mainnet as u64
     }
 
-    /// Returns whether this is a testnet Swarm.
+    /// Whether this is a testnet Swarm.
     fn is_testnet(&self) -> bool {
         self.network_id() == NamedSwarm::Testnet as u64
     }
 
-    /// Returns the maximum proximity order for addresses in this network.
+    /// Base price per chunk in Accounting Units (AU).
+    fn base_price(&self) -> u64 {
+        10_000
+    }
+
+    /// Maximum proximity order for addresses in this network.
     fn max_po(&self) -> u8 {
         nectar_primitives::MAX_PO
     }
 
-    /// Returns whether this is a development network.
+    /// Whether this is a development network.
     fn is_dev(&self) -> bool {
         !self.is_mainnet() && !self.is_testnet()
     }

@@ -30,3 +30,4 @@ vertex-swarm-test-utils = { workspace = true }
 [features]
 default = ["std"]
 std = []
+test-utils = []

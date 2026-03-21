@@ -17,7 +17,11 @@ impl SwarmSettlementProvider for NoSettlement {
         0i64
     }
 
-    async fn settle(&self, _peer: OverlayAddress, _state: &dyn SwarmPeerAccounting) -> SwarmResult<i64> {
+    async fn settle(
+        &self,
+        _peer: OverlayAddress,
+        _state: &dyn SwarmPeerAccounting,
+    ) -> SwarmResult<i64> {
         Ok(0i64)
     }
 

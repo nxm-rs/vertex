@@ -152,7 +152,7 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
         score_store: Option<
             std::sync::Arc<
                 dyn vertex_swarm_api::SwarmScoreStore<
-                        Score = vertex_swarm_peer_score::PeerScore,
+                        Value = vertex_swarm_peer_score::PeerScore,
                         Error = vertex_net_peer_store::error::StoreError,
                     >,
             >,

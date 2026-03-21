@@ -6,7 +6,7 @@ use clap::Args;
 use serde::{Deserialize, Serialize};
 use vertex_swarm_api::{
     DEFAULT_PEER_BAN_THRESHOLD, DEFAULT_PEER_MAX_PER_BIN, DEFAULT_PEER_WARN_THRESHOLD,
-    PeerConfigValues,
+    SwarmPeerConfig,
 };
 
 /// Validated peer management configuration.
@@ -53,7 +53,7 @@ impl PeerConfig {
     }
 }
 
-impl PeerConfigValues for PeerConfig {
+impl SwarmPeerConfig for PeerConfig {
     fn ban_threshold(&self) -> f64 {
         self.ban_threshold
     }
@@ -104,7 +104,7 @@ impl Default for PeerArgs {
     }
 }
 
-impl PeerConfigValues for PeerArgs {
+impl SwarmPeerConfig for PeerArgs {
     fn ban_threshold(&self) -> f64 {
         self.ban_threshold
     }

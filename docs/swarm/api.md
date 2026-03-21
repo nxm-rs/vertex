@@ -49,7 +49,7 @@ Extends `SwarmNetworkTypes` with bandwidth accounting for data transfer operatio
 
 | Associated Type | Bound | Purpose |
 |----------------|-------|---------|
-| `Accounting` | `SwarmClientAccounting` | Combined pricing and bandwidth accounting |
+| `Accounting` | `Send + Sync` | Combined pricing and bandwidth accounting |
 
 ### SwarmStorerTypes
 

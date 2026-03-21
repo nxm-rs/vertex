@@ -209,7 +209,7 @@ impl ClientService {
                 debug!(%peer_id, %peer, %credit_limit, "Received credit limit");
                 // TODO: Validate credit limit against configured minimum
                 // TODO: Wire ClientService to hold Arc<Accounting<C, I>> so we can call:
-                //   accounting.set_remote_credit_limit(peer, credit_limit.to::<u64>());
+                //   accounting.announce_credit_limit(peer, credit_limit.to::<u64>());
             }
 
             ClientEvent::CreditLimitSent { peer } => {

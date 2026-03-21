@@ -24,7 +24,7 @@ use super::error::NodeBuildError;
 use crate::BootnodeProvider;
 
 type PeerStore = std::sync::Arc<dyn NetPeerStore<StoredPeer>>;
-type PeerScoreStore = std::sync::Arc<dyn SwarmScoreStore<Score = PeerScore, Error = StoreError>>;
+type PeerScoreStore = std::sync::Arc<dyn SwarmScoreStore<Value = PeerScore, Error = StoreError>>;
 
 /// Pre-built infrastructure components ready for swarm assembly.
 pub struct BuiltInfrastructure<I: SwarmIdentity + Clone> {
@@ -126,10 +126,20 @@ impl<C: SwarmNetworkConfig> SwarmNetworkConfig for ConfigWithBootnodes<'_, C> {
 }
 
 impl<C: SwarmPeerConfig> SwarmPeerConfig for ConfigWithBootnodes<'_, C> {
-    type Peers = C::Peers;
+    fn ban_threshold(&self) -> f64 {
+        self.inner.ban_threshold()
+    }
 
-    fn peers(&self) -> &Self::Peers {
-        self.inner.peers()
+    fn warn_threshold(&self) -> f64 {
+        self.inner.warn_threshold()
+    }
+
+    fn max_per_bin(&self) -> usize {
+        self.inner.max_per_bin()
+    }
+
+    fn store_path(&self) -> Option<std::path::PathBuf> {
+        self.inner.store_path()
     }
 }
 

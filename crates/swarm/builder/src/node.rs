@@ -8,10 +8,9 @@ use std::sync::Arc;
 use vertex_node_api::InfrastructureContext;
 use vertex_swarm_api::{
     SwarmAccountingConfig, SwarmIdentity, SwarmLaunchConfig, SwarmLocalStoreConfig,
-    SwarmNetworkConfig, SwarmPeerConfig, SwarmPricingConfig, SwarmRoutingConfig,
-    SwarmStorageConfig,
+    SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig, SwarmStorageConfig,
 };
-use vertex_swarm_bandwidth::DefaultBandwidthConfig;
+use vertex_swarm_bandwidth::BandwidthConfig;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
 use vertex_swarm_node::args::NetworkConfig;
@@ -86,7 +85,7 @@ where
     /// Transition to client builder by adding accounting.
     pub fn with_accounting<A>(self, accounting: A) -> ClientNodeBuilder<I, N, A>
     where
-        A: SwarmAccountingConfig + SwarmPricingConfig,
+        A: SwarmAccountingConfig,
     {
         ClientNodeBuilder {
             base: self,
@@ -100,7 +99,7 @@ pub struct ClientNodeBuilder<I, N, A>
 where
     I: SwarmIdentity,
     N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
-    A: SwarmAccountingConfig + SwarmPricingConfig,
+    A: SwarmAccountingConfig,
 {
     base: NodeBuilder<I, N>,
     accounting: A,
@@ -110,7 +109,7 @@ impl<I, N, A> BuilderExt for ClientNodeBuilder<I, N, A>
 where
     I: SwarmIdentity,
     N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
-    A: SwarmAccountingConfig + SwarmPricingConfig,
+    A: SwarmAccountingConfig,
 {
 }
 
@@ -118,7 +117,7 @@ impl<I, N, A> ClientNodeBuilder<I, N, A>
 where
     I: SwarmIdentity,
     N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
-    A: SwarmAccountingConfig + SwarmPricingConfig,
+    A: SwarmAccountingConfig,
 {
     pub fn spec(&self) -> &Arc<Spec> {
         self.base.spec()
@@ -147,7 +146,7 @@ pub struct StorerNodeBuilder<I, N, A, S, St>
 where
     I: SwarmIdentity,
     N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
-    A: SwarmAccountingConfig + SwarmPricingConfig,
+    A: SwarmAccountingConfig,
     S: SwarmLocalStoreConfig,
     St: SwarmStorageConfig,
 {
@@ -160,7 +159,7 @@ impl<I, N, A, S, St> BuilderExt for StorerNodeBuilder<I, N, A, S, St>
 where
     I: SwarmIdentity,
     N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
-    A: SwarmAccountingConfig + SwarmPricingConfig,
+    A: SwarmAccountingConfig,
     S: SwarmLocalStoreConfig,
     St: SwarmStorageConfig,
 {
@@ -170,7 +169,7 @@ impl<I, N, A, S, St> StorerNodeBuilder<I, N, A, S, St>
 where
     I: SwarmIdentity,
     N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
-    A: SwarmAccountingConfig + SwarmPricingConfig,
+    A: SwarmAccountingConfig,
     S: SwarmLocalStoreConfig,
     St: SwarmStorageConfig,
 {
@@ -184,13 +183,13 @@ pub type DefaultNodeBuilder = NodeBuilder<Arc<Identity>, NetworkConfig<KademliaC
 
 /// Default client builder.
 pub type DefaultClientBuilder =
-    ClientNodeBuilder<Arc<Identity>, NetworkConfig<KademliaConfig>, DefaultBandwidthConfig>;
+    ClientNodeBuilder<Arc<Identity>, NetworkConfig<KademliaConfig>, BandwidthConfig>;
 
 /// Default storer builder.
 pub type DefaultStorerBuilder = StorerNodeBuilder<
     Arc<Identity>,
     NetworkConfig<KademliaConfig>,
-    DefaultBandwidthConfig,
+    BandwidthConfig,
     LocalStoreConfig,
     StorageConfig,
 >;
@@ -225,7 +224,7 @@ impl DefaultClientBuilder {
         spec: Arc<Spec>,
         identity: Arc<Identity>,
         network: NetworkConfig<KademliaConfig>,
-        bandwidth: DefaultBandwidthConfig,
+        bandwidth: BandwidthConfig,
     ) -> Self {
         NodeBuilder::new(spec, identity, network).with_accounting(bandwidth)
     }
@@ -265,7 +264,7 @@ impl DefaultStorerBuilder {
         spec: Arc<Spec>,
         identity: Arc<Identity>,
         network: NetworkConfig<KademliaConfig>,
-        bandwidth: DefaultBandwidthConfig,
+        bandwidth: BandwidthConfig,
         local_store: LocalStoreConfig,
         storage: StorageConfig,
     ) -> Self {

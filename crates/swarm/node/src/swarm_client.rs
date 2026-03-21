@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use nectar_primitives::{AnyChunk, ChunkAddress};
 use vertex_swarm_api::{
-    BootnodeComponents, ClientComponents, HasAccounting, HasTopology, SwarmClient,
-    SwarmClientAccounting, SwarmError, SwarmResult, SwarmTopologyRouting,
+    BootnodeComponents, ClientComponents, HasAccounting, HasTopology, SwarmClient, SwarmError,
+    SwarmResult, SwarmTopologyRouting,
 };
 
 use crate::ClientHandle;
@@ -76,7 +76,7 @@ impl<T, A> Client<ClientComponents<T, A>, ()> {
 impl<T, A, S> SwarmClient for Client<ClientComponents<T, A>, S>
 where
     T: SwarmTopologyRouting + Send + Sync + 'static,
-    A: SwarmClientAccounting + Send + Sync + 'static,
+    A: Send + Sync + 'static,
     S: Send + Sync + 'static,
 {
     type Storage = S;
@@ -112,9 +112,8 @@ mod tests {
     use crate::{ClientCommand, ClientHandle};
     use std::sync::Arc;
     use tokio::sync::mpsc;
-    use vertex_swarm_api::{SwarmBandwidthAccounting, SwarmTopologyRouting};
-    use vertex_swarm_bandwidth::{Accounting, FixedPricer};
-    use vertex_swarm_bandwidth::{ClientAccounting, DefaultBandwidthConfig};
+    use vertex_swarm_api::{SwarmPeerRegistry, SwarmTopologyRouting};
+    use vertex_swarm_bandwidth::{Accounting, BandwidthConfig, ClientAccounting};
     use vertex_swarm_test_utils::{MockTopology, test_identity_arc as test_identity};
 
     fn create_test_handle() -> ClientHandle {
@@ -134,18 +133,15 @@ mod tests {
     #[test]
     fn test_full_client() {
         let topology = MockTopology::default();
-        let bandwidth = Arc::new(Accounting::new(
-            DefaultBandwidthConfig::default(),
-            test_identity(),
-        ));
-        let pricer = FixedPricer::new(10_000, vertex_swarm_spec::init_mainnet());
-        let accounting = ClientAccounting::new(bandwidth, pricer);
+        let bandwidth = Arc::new(Accounting::new(BandwidthConfig::default(), test_identity()));
+        let spec = vertex_swarm_spec::init_mainnet();
+        let accounting = ClientAccounting::new(bandwidth, spec);
         let handle = create_test_handle();
 
         let client: FullClient<MockTopology, ClientAccounting<_, _>> =
             Client::client(topology, accounting, handle);
 
-        let peers = SwarmBandwidthAccounting::peers(client.accounting().bandwidth());
+        let peers = SwarmPeerRegistry::peers(client.accounting().bandwidth());
         assert!(peers.is_empty());
     }
 }

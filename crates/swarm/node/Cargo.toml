@@ -74,7 +74,6 @@ tracing.workspace = true
 clap = { workspace = true, features = ["derive", "env"], optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 vertex-node-api = { workspace = true, optional = true }
-vertex-swarm-bandwidth-pricing = { workspace = true, optional = true, features = ["cli"] }
 vertex-swarm-localstore = { workspace = true, optional = true }
 vertex-swarm-redistribution = { workspace = true, optional = true }
 
@@ -89,7 +88,6 @@ cli = [
     "dep:clap",
     "dep:serde",
     "dep:vertex-node-api",
-    "dep:vertex-swarm-bandwidth-pricing",
     "dep:vertex-swarm-localstore",
     "dep:vertex-swarm-redistribution",
     "vertex-swarm-primitives/serde",

@@ -19,11 +19,11 @@ use futures::future::BoxFuture;
 use libp2p::{InboundUpgrade, OutboundUpgrade, Stream, core::UpgradeInfo};
 use nectar_primitives::ChunkAddress;
 use thiserror::Error;
-use vertex_swarm_net_headers::ProtocolError;
 use vertex_swarm_net_credit::{
-    AnnounceCreditLimit, PROTOCOL_NAME as CREDIT_PROTOCOL, CreditInboundProtocol,
-    CreditOutboundProtocol,
+    AnnounceCreditLimit, CreditInboundProtocol, CreditOutboundProtocol,
+    PROTOCOL_NAME as CREDIT_PROTOCOL,
 };
+use vertex_swarm_net_headers::ProtocolError;
 use vertex_swarm_net_pseudosettle::{
     PROTOCOL_NAME as PSEUDOSETTLE_PROTOCOL, Payment, PaymentAck, PseudosettleInboundResult,
 };
@@ -283,8 +283,7 @@ impl OutboundUpgrade<Stream> for ClientOutboundUpgrade {
         Box::pin(async move {
             match self.request {
                 ClientOutboundRequest::Credit(limit) => {
-                    let credit: CreditOutboundProtocol =
-                        vertex_swarm_net_credit::outbound(limit);
+                    let credit: CreditOutboundProtocol = vertex_swarm_net_credit::outbound(limit);
                     credit
                         .upgrade_outbound(socket, info)
                         .await

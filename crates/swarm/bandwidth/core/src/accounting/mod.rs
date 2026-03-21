@@ -15,13 +15,13 @@
 //!
 //! - [`PeerAccounting`] - Per-peer balance counters
 //! - [`Accounting`] - Factory with pluggable settlement providers
-//! - [`ReceiveAction`] / [`ProvideAction`] - Prepare/apply pattern for balance changes
+//! - [`BalanceAction`] - Prepare/apply pattern for balance changes
 
 mod action;
 mod error;
 mod peer;
 
-pub use action::{AccountingAction, ProvideAction, ReceiveAction};
+pub use action::{ActionDirection, BalanceAction};
 pub use error::AccountingError;
 pub use peer::PeerAccounting;
 
@@ -32,7 +32,7 @@ use dashmap::DashMap;
 
 use vertex_swarm_api::{
     Direction, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmIdentity, SwarmPeerBandwidth,
-    SwarmResult,
+    SwarmPeerRegistry, SwarmResult,
 };
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -71,7 +71,6 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
     /// Create a new accounting instance with the given settlement providers.
     ///
     /// Providers are called in order during settlement operations.
-    /// For `BandwidthMode::Both`, pseudosettle should come before swap.
     pub fn with_providers(
         config: C,
         identity: I,
@@ -91,6 +90,11 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
         &self.config
     }
 
+    /// Get the node's identity.
+    pub fn identity(&self) -> &I {
+        &self.identity
+    }
+
     /// Get a reference to the settlement providers.
     pub fn providers(&self) -> &[Box<dyn SwarmSettlementProvider>] {
         &self.providers
@@ -107,7 +111,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
         peer: OverlayAddress,
         price: u64,
         _originated: bool,
-    ) -> Result<ReceiveAction, AccountingError> {
+    ) -> Result<BalanceAction, AccountingError> {
         let state = self.get_or_create_peer(peer);
 
         let current_balance = state.balance();
@@ -126,7 +130,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
         }
 
         state.add_reserved(price);
-        Ok(ReceiveAction::new(state, price))
+        Ok(BalanceAction::new(state, price, ActionDirection::Receive))
     }
 
     /// Prepare a provide action (we are providing service, balance increases).
@@ -134,10 +138,10 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
         &self,
         peer: OverlayAddress,
         price: u64,
-    ) -> Result<ProvideAction, AccountingError> {
+    ) -> Result<BalanceAction, AccountingError> {
         let state = self.get_or_create_peer(peer);
         state.add_shadow_reserved(price);
-        Ok(ProvideAction::new(state, price))
+        Ok(BalanceAction::new(state, price, ActionDirection::Provide))
     }
 
     /// Get or create peer state with cache-aside database loading.
@@ -146,18 +150,16 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             .entry(peer)
             .or_insert_with(|| {
                 // Cache-aside: check the store for a persisted entry
-                let from_store = self.store.as_ref().and_then(|s| {
-                    match s.load(peer) {
-                        Ok(Some(state)) => Some(Arc::new(state)),
-                        Ok(None) => None,
-                        Err(e) => {
-                            tracing::warn!(
-                                %peer,
-                                error = %e,
-                                "Failed to load peer state from store, creating fresh",
-                            );
-                            None
-                        }
+                let from_store = self.store.as_ref().and_then(|s| match s.load(peer) {
+                    Ok(Some(state)) => Some(Arc::new(state)),
+                    Ok(None) => None,
+                    Err(e) => {
+                        tracing::warn!(
+                            %peer,
+                            error = %e,
+                            "Failed to load peer state from store, creating fresh",
+                        );
+                        None
                     }
                 });
 
@@ -190,10 +192,10 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
     /// Record the credit limit announced by a remote peer.
     ///
     /// Creates the peer entry if it does not already exist.
-    pub fn set_remote_credit_limit(&self, peer: OverlayAddress, limit: u64) {
+    pub fn announce_credit_limit(&self, peer: OverlayAddress, limit: u64) {
         crate::metrics::record_remote_credit_limit(limit);
         let state = self.get_or_create_peer(peer);
-        state.set_remote_credit_limit(limit);
+        state.announce_credit_limit(limit);
     }
 
     /// Notify that a settlement was received from a peer.
@@ -201,15 +203,11 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
     /// This drives the trust ramp algorithm: as a peer settles more debt,
     /// we increase the credit limit we extend to them and return `true` if
     /// the caller should re-announce the new limit.
-    pub fn notify_settlement_received(
-        &self,
-        peer: OverlayAddress,
-        amount: u64,
-    ) -> bool {
+    pub fn notify_settlement_received(&self, peer: OverlayAddress, amount: u64) -> bool {
         let state = self.get_or_create_peer(peer);
         let grew = state.notify_settlement_received(amount);
         if grew {
-            crate::metrics::record_trust_ramp_growth(state.credit_limit_for_peer());
+            crate::metrics::record_trust_ramp_growth(state.local_credit_limit());
         }
         grew
     }
@@ -252,24 +250,15 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
         let count = entries.len();
 
         for (peer, state) in entries {
-            self.peers
-                .entry(peer)
-                .or_insert_with(|| Arc::new(state));
+            self.peers.entry(peer).or_insert_with(|| Arc::new(state));
         }
 
         Ok(count)
     }
 }
 
-impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmBandwidthAccounting for Accounting<C, I> {
-    type Identity = I;
+impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmPeerRegistry for Accounting<C, I> {
     type Peer = AccountingPeerHandle;
-    type ReceiveAction = ReceiveAction;
-    type ProvideAction = ProvideAction;
-
-    fn identity(&self) -> &I {
-        &self.identity
-    }
 
     fn for_peer(&self, peer: OverlayAddress) -> Self::Peer {
         let state = self.get_or_create_peer(peer);
@@ -301,18 +290,22 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmBandwidthAccounting for Ac
             }
         }
     }
+}
+
+impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmBandwidthAccounting for Accounting<C, I> {
+    type Action = BalanceAction;
 
     fn prepare_receive(
         &self,
         peer: OverlayAddress,
         price: u64,
         originated: bool,
-    ) -> SwarmResult<ReceiveAction> {
+    ) -> SwarmResult<BalanceAction> {
         Accounting::prepare_receive(self, peer, price, originated)
             .map_err(vertex_swarm_api::SwarmError::accounting)
     }
 
-    fn prepare_provide(&self, peer: OverlayAddress, price: u64) -> SwarmResult<ProvideAction> {
+    fn prepare_provide(&self, peer: OverlayAddress, price: u64) -> SwarmResult<BalanceAction> {
         Accounting::prepare_provide(self, peer, price)
             .map_err(vertex_swarm_api::SwarmError::accounting)
     }

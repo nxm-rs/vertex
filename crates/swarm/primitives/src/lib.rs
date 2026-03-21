@@ -98,19 +98,15 @@ pub enum BandwidthMode {
     /// Soft accounting without real payments (default).
     #[default]
     Pseudosettle = 1,
-    /// Real payment channels with chequebook.
-    Swap = 2,
-    /// Both pseudosettle and SWAP.
-    Both = 3,
+    // /// Real payment channels with chequebook (not yet implemented).
+    // Swap = 2,
+    // /// Both pseudosettle and SWAP (not yet implemented).
+    // Both = 3,
 }
 
 impl BandwidthMode {
     pub fn pseudosettle_enabled(self) -> bool {
-        matches!(self, BandwidthMode::Pseudosettle | BandwidthMode::Both)
-    }
-
-    pub fn swap_enabled(self) -> bool {
-        matches!(self, BandwidthMode::Swap | BandwidthMode::Both)
+        matches!(self, BandwidthMode::Pseudosettle)
     }
 
     pub fn is_enabled(self) -> bool {

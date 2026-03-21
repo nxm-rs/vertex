@@ -48,19 +48,17 @@ mod types;
 pub use self::components::{
     BandwidthMode, BootnodeComponents, ClientComponents, Direction, HasAccounting, HasIdentity,
     HasStore, HasTopology, StorerComponents, SwarmAccountingConfig, SwarmBandwidthAccounting,
-    SwarmClientAccounting, SwarmLocalStore, SwarmLocalStoreConfig, SwarmPeerBandwidth,
-    SwarmPeerResolver, SwarmPeerAccounting, SwarmPricing, SwarmPricingBuilder, SwarmPricingConfig,
-    SwarmScoreStore, SwarmSettlementProvider, SwarmTopology, SwarmTopologyBins,
-    SwarmTopologyCommands, SwarmTopologyPeers, SwarmTopologyRouting, SwarmTopologyState,
-    SwarmTopologyStats,
+    SwarmLocalStore, SwarmLocalStoreConfig, SwarmPeerAccounting, SwarmPeerBandwidth,
+    SwarmPeerRegistry, SwarmPeerResolver, SwarmPeerStore, SwarmScoreStore, SwarmSettlementProvider,
+    SwarmTopology, SwarmTopologyBins, SwarmTopologyCommands, SwarmTopologyPeers,
+    SwarmTopologyRouting, SwarmTopologyState, SwarmTopologyStats,
 };
 pub use self::config::{
     DEFAULT_PEER_BAN_THRESHOLD, DEFAULT_PEER_MAX_PER_BIN, DEFAULT_PEER_WARN_THRESHOLD,
     DefaultPeerConfig, DefaultStorageConfig, METADATA_OVERHEAD_FACTOR, NodeTask, NodeTaskFn,
-    PeerConfigValues, SwarmBootnodeConfig, SwarmClientConfig, SwarmClientLaunchConfig,
-    SwarmIdentityConfig, SwarmLaunchConfig, SwarmNetworkConfig, SwarmPeerConfig,
-    SwarmRoutingConfig, SwarmStorageConfig, SwarmStorerConfig, SwarmStorerLaunchConfig,
-    estimate_chunks_for_bytes, estimate_storage_bytes,
+    SwarmBootnodeConfig, SwarmClientConfig, SwarmClientLaunchConfig, SwarmIdentityConfig,
+    SwarmLaunchConfig, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig, SwarmStorageConfig,
+    SwarmStorerConfig, SwarmStorerLaunchConfig, estimate_chunks_for_bytes, estimate_storage_bytes,
 };
 pub use self::error::{ConfigAddressKind, ConfigError, ConfigResult, SwarmError, SwarmResult};
 pub use self::identity::SwarmIdentity;
@@ -74,8 +72,8 @@ pub use self::spec::{
 };
 pub use self::swarm::{SwarmClient, SwarmStorer};
 pub use self::types::{
-    AccountingOf, BandwidthOf, IdentityOf, PricingOf, SpecOf, StoreOf, SwarmClientTypes,
-    SwarmNetworkTypes, SwarmNodeType, SwarmPrimitives, SwarmStorerTypes, TopologyOf,
+    AccountingOf, IdentityOf, SpecOf, StoreOf, SwarmClientTypes, SwarmNetworkTypes, SwarmNodeType,
+    SwarmPrimitives, SwarmStorerTypes, TopologyOf,
 };
 
 // Re-export primitives for convenience

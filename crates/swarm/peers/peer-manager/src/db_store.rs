@@ -8,7 +8,7 @@ use vertex_net_peer_store::error::StoreError;
 use vertex_storage::{
     Database, DatabaseError, DbTx, DbTxMut, IndexedRead, IndexedWrite, Table, index, table,
 };
-use vertex_swarm_api::SwarmScoreStore;
+use vertex_swarm_api::{SwarmPeerStore, SwarmScoreStore};
 use vertex_swarm_primitives::OverlayAddress;
 
 use vertex_swarm_peer_score::PeerScore;
@@ -188,17 +188,17 @@ impl<DB: Database> NetPeerStore<StoredPeer> for DbPeerStore<DB> {
     }
 }
 
-impl<DB: Database> SwarmScoreStore for DbPeerStore<DB> {
-    type Score = PeerScore;
+impl<DB: Database> SwarmPeerStore for DbPeerStore<DB> {
+    type Value = PeerScore;
     type Error = StoreError;
 
-    fn get_score(&self, overlay: &OverlayAddress) -> Result<Option<PeerScore>, StoreError> {
+    fn load(&self, overlay: &OverlayAddress) -> Result<Option<PeerScore>, StoreError> {
         self.db
             .view(|tx| tx.get::<ScoreTable>(*overlay))
             .map_err(db_err)
     }
 
-    fn save_score_batch(&self, scores: &[(OverlayAddress, PeerScore)]) -> Result<(), StoreError> {
+    fn store_batch(&self, scores: &[(OverlayAddress, PeerScore)]) -> Result<(), StoreError> {
         if scores.is_empty() {
             return Ok(());
         }
@@ -211,7 +211,9 @@ impl<DB: Database> SwarmScoreStore for DbPeerStore<DB> {
             })
             .map_err(db_err)
     }
+}
 
+impl<DB: Database> SwarmScoreStore for DbPeerStore<DB> {
     fn load_banned_overlays(&self) -> Result<Vec<OverlayAddress>, StoreError> {
         self.db
             .view(|tx| {

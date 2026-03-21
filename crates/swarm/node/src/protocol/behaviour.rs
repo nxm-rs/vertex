@@ -260,7 +260,10 @@ impl ClientBehaviour {
                         overlay,
                     }));
             }
-            HandlerEvent::CreditLimitReceived { overlay, credit_limit } => {
+            HandlerEvent::CreditLimitReceived {
+                overlay,
+                credit_limit,
+            } => {
                 self.push_event(ToSwarm::GenerateEvent(ClientEvent::CreditLimitReceived {
                     peer: overlay,
                     peer_id,
@@ -268,10 +271,9 @@ impl ClientBehaviour {
                 }));
             }
             HandlerEvent::CreditLimitSent { overlay } => {
-                self.pending_events
-                    .push_back(ToSwarm::GenerateEvent(ClientEvent::CreditLimitSent {
-                        peer: overlay,
-                    }));
+                self.pending_events.push_back(ToSwarm::GenerateEvent(
+                    ClientEvent::CreditLimitSent { peer: overlay },
+                ));
             }
             HandlerEvent::ChunkRequested {
                 overlay,

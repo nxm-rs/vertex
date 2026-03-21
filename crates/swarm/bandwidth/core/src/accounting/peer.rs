@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 use vertex_swarm_api::SwarmPeerAccounting;
 
-/// Multiplier for the linear step size in the trust ramp algorithm.
+/// Multiplier for the linear step size in credit limit growth.
 /// `credit_limit_grow_at` starts at `refresh_rate * LINEAR_STEP_FACTOR`.
 const LINEAR_STEP_FACTOR: u64 = 100;
 
@@ -40,12 +40,11 @@ pub struct PeerAccounting {
     /// Persisted so that trust state survives restarts.
     remote_credit_limit: AtomicU64,
 
-    // -- Trust ramp state (Bee algorithm) --
-
-    /// Our dynamic outbound credit limit for this peer. Starts at the
+    // -- Trust ramp state --
+    /// Our locally determined credit limit for this peer. Starts at the
     /// configured default and grows as the peer proves creditworthy
     /// through successful settlements.
-    credit_limit_for_peer: AtomicU64,
+    local_credit_limit: AtomicU64,
     /// Cumulative amount of debt repaid by this peer (via pseudosettle
     /// or swap). Used to decide when to grow the outbound credit limit.
     total_debt_repaid: AtomicU64,
@@ -70,7 +69,9 @@ impl Clone for PeerAccounting {
             disconnect_limit: self.disconnect_limit,
             last_refresh: AtomicU64::new(self.last_refresh.load(Ordering::Relaxed)),
             remote_credit_limit: AtomicU64::new(self.remote_credit_limit.load(Ordering::Relaxed)),
-            credit_limit_for_peer: AtomicU64::new(self.credit_limit_for_peer.load(Ordering::Relaxed)),
+            local_credit_limit: AtomicU64::new(
+                self.local_credit_limit.load(Ordering::Relaxed),
+            ),
             total_debt_repaid: AtomicU64::new(self.total_debt_repaid.load(Ordering::Relaxed)),
             credit_limit_grow_at: AtomicU64::new(self.credit_limit_grow_at.load(Ordering::Relaxed)),
             refresh_rate: self.refresh_rate,
@@ -87,11 +88,7 @@ impl PeerAccounting {
     }
 
     /// Create peer state with the given limits and refresh rate for trust ramp.
-    pub fn with_refresh_rate(
-        credit_limit: u64,
-        disconnect_limit: u64,
-        refresh_rate: u64,
-    ) -> Self {
+    pub fn with_refresh_rate(credit_limit: u64, disconnect_limit: u64, refresh_rate: u64) -> Self {
         Self {
             balance: AtomicI64::new(0),
             reserved_balance: AtomicU64::new(0),
@@ -101,11 +98,9 @@ impl PeerAccounting {
             disconnect_limit,
             last_refresh: AtomicU64::new(0),
             remote_credit_limit: AtomicU64::new(0),
-            credit_limit_for_peer: AtomicU64::new(credit_limit),
+            local_credit_limit: AtomicU64::new(credit_limit),
             total_debt_repaid: AtomicU64::new(0),
-            credit_limit_grow_at: AtomicU64::new(
-                refresh_rate.saturating_mul(LINEAR_STEP_FACTOR),
-            ),
+            credit_limit_grow_at: AtomicU64::new(refresh_rate.saturating_mul(LINEAR_STEP_FACTOR)),
             refresh_rate,
         }
     }
@@ -168,12 +163,14 @@ impl PeerAccounting {
 
     /// Add to shadow reserved balance.
     pub fn add_shadow_reserved(&self, amount: u64) {
-        self.shadow_reserved_balance.fetch_add(amount, Ordering::Relaxed);
+        self.shadow_reserved_balance
+            .fetch_add(amount, Ordering::Relaxed);
     }
 
     /// Subtract from shadow reserved balance.
     pub fn sub_shadow_reserved(&self, amount: u64) {
-        self.shadow_reserved_balance.fetch_sub(amount, Ordering::Relaxed);
+        self.shadow_reserved_balance
+            .fetch_sub(amount, Ordering::Relaxed);
     }
 
     /// Get the surplus balance.
@@ -213,16 +210,16 @@ impl PeerAccounting {
         self.remote_credit_limit.load(Ordering::Relaxed)
     }
 
-    /// Set the credit limit announced by the remote peer.
-    pub fn set_remote_credit_limit(&self, limit: u64) {
+    /// Record the credit limit announced by the remote peer.
+    pub fn announce_credit_limit(&self, limit: u64) {
         self.remote_credit_limit.store(limit, Ordering::Relaxed);
     }
 
     // -- Trust ramp accessors --
 
-    /// Get our dynamic outbound credit limit for this peer.
-    pub fn credit_limit_for_peer(&self) -> u64 {
-        self.credit_limit_for_peer.load(Ordering::Relaxed)
+    /// Get our locally determined credit limit for this peer.
+    pub fn local_credit_limit(&self) -> u64 {
+        self.local_credit_limit.load(Ordering::Relaxed)
     }
 
     /// Get the total debt repaid by this peer.
@@ -242,10 +239,10 @@ impl PeerAccounting {
 
     /// Notify that a settlement was received from this peer.
     ///
-    /// Implements the trust ramp algorithm from the golang reference:
-    /// linear growth up to `LINEAR_CHECKPOINT_COUNT` steps, then
-    /// exponential doubling. Returns `true` if the outbound credit
-    /// limit was increased (caller should re-announce).
+    /// Implements the trust ramp algorithm: linear growth up to
+    /// `LINEAR_CHECKPOINT_COUNT` steps, then exponential doubling.
+    /// Returns `true` if the local credit limit was increased
+    /// (caller should re-announce).
     pub fn notify_settlement_received(&self, amount: u64) -> bool {
         if self.refresh_rate == 0 {
             return false;
@@ -268,9 +265,7 @@ impl PeerAccounting {
             let new_grow_at = if grow_at >= linear_threshold {
                 grow_at.saturating_mul(2) // exponential
             } else {
-                grow_at.saturating_add(
-                    self.refresh_rate.saturating_mul(LINEAR_STEP_FACTOR),
-                ) // linear
+                grow_at.saturating_add(self.refresh_rate.saturating_mul(LINEAR_STEP_FACTOR)) // linear
             };
 
             // Attempt to claim this growth step
@@ -280,7 +275,7 @@ impl PeerAccounting {
                 .is_ok()
             {
                 // Won the race -- bump the outbound credit limit
-                self.credit_limit_for_peer
+                self.local_credit_limit
                     .fetch_add(self.refresh_rate, Ordering::Relaxed);
                 return true;
             }
@@ -302,7 +297,7 @@ impl SwarmPeerAccounting for PeerAccounting {
         PeerAccounting::last_refresh(self)
     }
 
-    fn set_last_refresh(&self, timestamp: u64) {
+    fn record_refresh(&self, timestamp: u64) {
         PeerAccounting::set_last_refresh(self, timestamp);
     }
 
@@ -363,7 +358,7 @@ mod tests {
         state.add_balance(500);
         state.add_surplus(100);
         state.set_last_refresh(12345);
-        state.set_remote_credit_limit(9999);
+        state.announce_credit_limit(9999);
 
         let serialised = postcard::to_allocvec(&state).expect("serialise");
         let restored: PeerAccounting = postcard::from_bytes(&serialised).expect("deserialise");
@@ -376,7 +371,7 @@ mod tests {
         // remote_credit_limit is now persisted
         assert_eq!(restored.remote_credit_limit(), 9999);
         // Trust ramp state is persisted
-        assert_eq!(restored.credit_limit_for_peer(), 1000);
+        assert_eq!(restored.local_credit_limit(), 1000);
         assert_eq!(restored.total_debt_repaid(), 0);
         assert_eq!(restored.credit_limit_grow_at(), 100 * 100); // refresh_rate * LINEAR_STEP_FACTOR
         // Transient fields reset to zero
@@ -390,17 +385,17 @@ mod tests {
         let state = PeerAccounting::with_refresh_rate(1000, 10000, refresh_rate);
 
         // Initial state
-        assert_eq!(state.credit_limit_for_peer(), 1000);
+        assert_eq!(state.local_credit_limit(), 1000);
         assert_eq!(state.credit_limit_grow_at(), 10_000); // 100 * 100
 
         // Settlement below checkpoint: no growth
         assert!(!state.notify_settlement_received(5_000));
-        assert_eq!(state.credit_limit_for_peer(), 1000);
+        assert_eq!(state.local_credit_limit(), 1000);
         assert_eq!(state.total_debt_repaid(), 5_000);
 
         // Settlement crossing checkpoint: growth
         assert!(state.notify_settlement_received(6_000));
-        assert_eq!(state.credit_limit_for_peer(), 1100); // 1000 + 100
+        assert_eq!(state.local_credit_limit(), 1100); // 1000 + 100
         assert_eq!(state.total_debt_repaid(), 11_000);
         // Next checkpoint: linear step
         assert_eq!(state.credit_limit_grow_at(), 20_000); // 10_000 + 100*100
@@ -432,6 +427,6 @@ mod tests {
         assert_eq!(state.credit_limit_grow_at(), 0);
         // Settlement should not trigger growth
         assert!(!state.notify_settlement_received(1000));
-        assert_eq!(state.credit_limit_for_peer(), 1000);
+        assert_eq!(state.local_credit_limit(), 1000);
     }
 }

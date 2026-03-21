@@ -5,7 +5,7 @@ use core::time::Duration;
 use libp2p::Multiaddr;
 use vertex_node_api::InfrastructureContext;
 
-use crate::components::{SwarmAccountingConfig, SwarmLocalStoreConfig, SwarmPricingConfig};
+use crate::components::{SwarmAccountingConfig, SwarmLocalStoreConfig};
 use crate::{SwarmClientTypes, SwarmNetworkTypes, SwarmStorerTypes};
 
 // Re-export from vertex-tasks (canonical location)
@@ -38,19 +38,12 @@ pub const DEFAULT_PEER_WARN_THRESHOLD: f64 = -50.0;
 /// Default maximum peers per proximity bin in the index.
 pub const DEFAULT_PEER_MAX_PER_BIN: usize = 128;
 
-/// Configuration for peer management (scoring, limits).
+/// Configuration for peer management (scoring, limits, persistence).
 pub trait SwarmPeerConfig {
-    /// The peer management configuration type.
-    type Peers: Default + PeerConfigValues;
-
-    /// Get the peer configuration.
-    fn peers(&self) -> &Self::Peers;
-}
-
-/// Values required from a peer configuration.
-pub trait PeerConfigValues {
     /// Score threshold below which peers are banned.
-    fn ban_threshold(&self) -> f64;
+    fn ban_threshold(&self) -> f64 {
+        DEFAULT_PEER_BAN_THRESHOLD
+    }
 
     /// Score threshold below which a warning is emitted.
     fn warn_threshold(&self) -> f64 {
@@ -69,46 +62,13 @@ pub trait PeerConfigValues {
 }
 
 /// Default peer management configuration.
-#[derive(Debug, Clone)]
-pub struct DefaultPeerConfig {
-    /// Score threshold for banning peers.
-    pub ban_threshold: f64,
-    /// Score threshold for warning about peers.
-    pub warn_threshold: f64,
-    /// Maximum peers per proximity bin.
-    pub max_per_bin: usize,
-    /// Path for peer store persistence.
-    pub store_path: Option<std::path::PathBuf>,
-}
+///
+/// Provides all defaults from [`SwarmPeerConfig`]. Used when no CLI
+/// arguments or custom configuration is needed.
+#[derive(Debug, Clone, Default)]
+pub struct DefaultPeerConfig;
 
-impl Default for DefaultPeerConfig {
-    fn default() -> Self {
-        Self {
-            ban_threshold: DEFAULT_PEER_BAN_THRESHOLD,
-            warn_threshold: DEFAULT_PEER_WARN_THRESHOLD,
-            max_per_bin: DEFAULT_PEER_MAX_PER_BIN,
-            store_path: None,
-        }
-    }
-}
-
-impl PeerConfigValues for DefaultPeerConfig {
-    fn ban_threshold(&self) -> f64 {
-        self.ban_threshold
-    }
-
-    fn warn_threshold(&self) -> f64 {
-        self.warn_threshold
-    }
-
-    fn max_per_bin(&self) -> usize {
-        self.max_per_bin
-    }
-
-    fn store_path(&self) -> Option<std::path::PathBuf> {
-        self.store_path.clone()
-    }
-}
+impl SwarmPeerConfig for DefaultPeerConfig {}
 
 /// Configuration for P2P networking.
 ///
@@ -170,17 +130,11 @@ impl<T> SwarmBootnodeConfig for T where T: SwarmNetworkConfig + SwarmPeerConfig 
 
 /// Configuration for client nodes.
 ///
-/// Extends bootnode config with bandwidth accounting and chunk pricing,
-/// enabling the node to retrieve and upload chunks with proper payment.
-pub trait SwarmClientConfig:
-    SwarmBootnodeConfig + SwarmAccountingConfig + SwarmPricingConfig
-{
-}
+/// Extends bootnode config with bandwidth accounting. Chunk pricing (base price)
+/// is a network-wide constant defined in the [`SwarmSpec`](crate::SwarmSpec).
+pub trait SwarmClientConfig: SwarmBootnodeConfig + SwarmAccountingConfig {}
 
-impl<T> SwarmClientConfig for T where
-    T: SwarmBootnodeConfig + SwarmAccountingConfig + SwarmPricingConfig
-{
-}
+impl<T> SwarmClientConfig for T where T: SwarmBootnodeConfig + SwarmAccountingConfig {}
 
 /// Configuration for storer (full) nodes.
 ///

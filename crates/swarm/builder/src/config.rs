@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use vertex_node_api::NodeBuildsProtocol;
 use vertex_swarm_api::SwarmProtocol;
-use vertex_swarm_bandwidth::DefaultBandwidthConfig;
+use vertex_swarm_bandwidth::BandwidthConfig;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
 use vertex_swarm_node::args::NetworkConfig;
@@ -86,7 +86,7 @@ pub struct ClientConfig {
     spec: Arc<Spec>,
     identity: Arc<Identity>,
     network: NetworkConfig<KademliaConfig>,
-    bandwidth: DefaultBandwidthConfig,
+    bandwidth: BandwidthConfig,
 }
 
 impl ClientConfig {
@@ -94,7 +94,7 @@ impl ClientConfig {
         spec: Arc<Spec>,
         identity: Arc<Identity>,
         network: NetworkConfig<KademliaConfig>,
-        bandwidth: DefaultBandwidthConfig,
+        bandwidth: BandwidthConfig,
     ) -> Self {
         Self {
             spec,
@@ -104,7 +104,7 @@ impl ClientConfig {
         }
     }
 
-    pub fn bandwidth(&self) -> &DefaultBandwidthConfig {
+    pub fn bandwidth(&self) -> &BandwidthConfig {
         &self.bandwidth
     }
 }
@@ -118,7 +118,7 @@ pub struct StorerConfig {
     spec: Arc<Spec>,
     identity: Arc<Identity>,
     network: NetworkConfig<KademliaConfig>,
-    bandwidth: DefaultBandwidthConfig,
+    bandwidth: BandwidthConfig,
     local_store: LocalStoreConfig,
     storage: StorageConfig,
 }
@@ -128,7 +128,7 @@ impl StorerConfig {
         spec: Arc<Spec>,
         identity: Arc<Identity>,
         network: NetworkConfig<KademliaConfig>,
-        bandwidth: DefaultBandwidthConfig,
+        bandwidth: BandwidthConfig,
         local_store: LocalStoreConfig,
         storage: StorageConfig,
     ) -> Self {
@@ -142,7 +142,7 @@ impl StorerConfig {
         }
     }
 
-    pub fn bandwidth(&self) -> &DefaultBandwidthConfig {
+    pub fn bandwidth(&self) -> &BandwidthConfig {
         &self.bandwidth
     }
 
