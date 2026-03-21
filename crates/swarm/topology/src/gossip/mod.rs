@@ -3,13 +3,13 @@
 mod error;
 mod events;
 mod filter;
-mod task;
+mod tasks;
 mod verifier;
 
 use tokio::sync::mpsc;
 
 pub(crate) use events::{GossipAction, GossipInput};
-pub(crate) use task::spawn_gossip_task;
+pub(crate) use tasks::spawn_gossip_task;
 
 /// Handle for communicating with the gossip task.
 pub(crate) struct GossipHandle {

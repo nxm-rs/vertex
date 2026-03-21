@@ -5,6 +5,7 @@ mod hooks;
 mod process;
 mod recorder;
 mod server;
+mod task;
 
 pub use buckets::{
     CONNECTION_LIFETIME, DURATION_FINE, DURATION_NETWORK, DURATION_SECONDS, LOCK_CONTENTION,

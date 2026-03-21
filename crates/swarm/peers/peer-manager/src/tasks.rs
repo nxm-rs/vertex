@@ -94,20 +94,7 @@ pub fn spawn_purge_task<I: SwarmIdentity>(
     config: PurgeConfig,
     executor: &TaskExecutor,
 ) {
-    executor.spawn_with_graceful_shutdown_signal("peers.purge", move |shutdown| async move {
-        let mut shutdown = std::pin::pin!(shutdown);
-
-        loop {
-            tokio::select! {
-                guard = &mut shutdown => {
-                    debug!("peer purger shutting down");
-                    drop(guard);
-                    break;
-                }
-                () = tokio::time::sleep(config.check_interval) => {
-                    manager.purge_stale();
-                }
-            }
-        }
+    executor.spawn_periodic("peers.purge", config.check_interval, move || {
+        manager.purge_stale();
     });
 }

@@ -319,56 +319,14 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         // Queue static NAT addresses to emit as external addresses on first poll
         let pending_nat_external_addrs = nat_discovery.nat_addrs().to_vec();
 
+        let executor = vertex_tasks::TaskExecutor::try_current()
+            .map_err(|e| TopologyError::TaskSpawn(e.to_string()))?;
+
         // Spawn background connection evaluator
-        let evaluator_handle = routing
-            .spawn_evaluator()
-            .map_err(TopologyError::VerifierSpawn)?;
+        let evaluator_handle = crate::kademlia::spawn_evaluator(routing.clone(), &executor);
 
         // Spawn interface watcher for push-based subnet discovery.
-        // if-watch subscribes to netlink address events and fires initial Up
-        // events for all existing addresses, then ongoing Up/Down as interfaces change.
-        {
-            let executor = vertex_tasks::TaskExecutor::try_current()
-                .map_err(|e| TopologyError::VerifierSpawn(e.to_string()))?;
-            executor.spawn_with_graceful_shutdown_signal(
-                "net.interface_watcher",
-                move |shutdown| async move {
-                    use futures::StreamExt;
-
-                    let mut watcher = match if_watch::tokio::IfWatcher::new() {
-                        Ok(w) => w,
-                        Err(e) => {
-                            tracing::error!(error = %e, "failed to create interface watcher");
-                            return;
-                        }
-                    };
-
-                    let mut shutdown = std::pin::pin!(shutdown);
-                    loop {
-                        tokio::select! {
-                            guard = &mut shutdown => {
-                                drop(guard);
-                                break;
-                            }
-                            event = watcher.next() => {
-                                match event {
-                                    Some(Ok(if_watch::IfEvent::Up(net))) => {
-                                        vertex_net_local::add_subnet(net);
-                                    }
-                                    Some(Ok(if_watch::IfEvent::Down(net))) => {
-                                        vertex_net_local::remove_subnet(net);
-                                    }
-                                    Some(Err(e)) => {
-                                        tracing::warn!(error = %e, "interface watcher error");
-                                    }
-                                    None => break,
-                                }
-                            }
-                        }
-                    }
-                },
-            );
-        }
+        crate::tasks::spawn_interface_watcher(&executor);
 
         // Spawn the gossip task (merged peer exchange + verification).
         let spec = <I as HasSpec>::spec(&*identity).clone();
@@ -379,8 +337,9 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             connection_registry.clone(),
             evaluator_handle.clone(),
             local_capabilities.clone(),
+            &executor,
         )
-        .map_err(|e| TopologyError::VerifierSpawn(e.to_string()))?;
+        .map_err(|e| TopologyError::TaskSpawn(e.to_string()))?;
 
         let behaviour = Self {
             identity,

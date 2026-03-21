@@ -95,9 +95,9 @@ pub enum TopologyError {
     #[error("topology service has shut down")]
     ServiceShutdown,
 
-    /// Failed to spawn the gossip verifier task.
-    #[error("failed to spawn gossip verifier: {0}")]
-    VerifierSpawn(String),
+    /// Failed to spawn a background task.
+    #[error("failed to spawn task: {0}")]
+    TaskSpawn(String),
 }
 
 impl TopologyError {

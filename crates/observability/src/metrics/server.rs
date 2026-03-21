@@ -16,6 +16,7 @@ use tower_http::trace::TraceLayer;
 use vertex_tasks::TaskExecutor;
 
 use super::Hooks;
+use super::task::spawn_server_task;
 use crate::MetricsServerConfig;
 use crate::profiling;
 
@@ -68,21 +69,7 @@ impl MetricsServer {
         let addr = listener.local_addr()?;
         tracing::info!("Metrics server listening on {addr}");
 
-        // Use the executor's shutdown signal for graceful shutdown
-        executor.spawn_critical_with_graceful_shutdown_signal(
-            "metrics.server",
-            move |shutdown| async move {
-                tracing::debug!("Metrics server task started, beginning to serve");
-                let server =
-                    axum::serve(listener, app).with_graceful_shutdown(shutdown.ignore_guard());
-
-                match server.await {
-                    Ok(()) => tracing::debug!("Metrics server stopped gracefully"),
-                    Err(err) => tracing::error!("Metrics server error: {err}"),
-                }
-                tracing::debug!("Metrics server task exiting");
-            },
-        );
+        spawn_server_task(executor, listener, app);
 
         Ok(())
     }
