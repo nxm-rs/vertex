@@ -109,7 +109,7 @@ impl StoredPeer {
         let overlay = OverlayAddress::from(*self.peer.overlay());
         let jitter_seed = jitter_seed_from_overlay(&overlay);
         backoff
-            .remaining_jittered_default(unix_timestamp_secs(), jitter_seed)
+            .remaining_jittered(unix_timestamp_secs(), jitter_seed)
             .is_none()
     }
 }
@@ -302,7 +302,7 @@ impl PeerEntry {
     /// Backoff with per-peer jitter (+/-25%) to prevent synchronized retry storms.
     pub(crate) fn backoff_remaining(&self) -> Option<Duration> {
         self.backoff
-            .remaining_jittered_default(unix_timestamp_secs(), self.jitter_seed)
+            .remaining_jittered(unix_timestamp_secs(), self.jitter_seed)
     }
 
     pub(crate) fn is_in_backoff(&self) -> bool {

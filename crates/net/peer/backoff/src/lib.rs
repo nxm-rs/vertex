@@ -72,12 +72,12 @@ impl PeerBackoff {
         self.last_attempt.load(Ordering::Relaxed)
     }
 
-    /// Calculate remaining backoff with per-peer jitter (+/-25%).
+    /// Calculate remaining backoff with per-peer jitter (+/-25%) and custom parameters.
     ///
     /// The `jitter_seed` should be stable per-peer (e.g. derived from overlay address)
     /// so the same peer always gets the same jitter factor, but different peers spread
     /// their retry times apart.
-    pub fn remaining_jittered(
+    pub fn remaining_jittered_with(
         &self,
         now: u64,
         base_secs: u64,
@@ -94,8 +94,8 @@ impl PeerBackoff {
         )
     }
 
-    /// Calculate remaining backoff without jitter.
-    pub fn remaining(&self, now: u64, base_secs: u64, max_secs: u64) -> Option<Duration> {
+    /// Calculate remaining backoff without jitter, with custom parameters.
+    pub fn remaining_with(&self, now: u64, base_secs: u64, max_secs: u64) -> Option<Duration> {
         remaining_inner(
             self.consecutive_failures(),
             self.last_attempt(),
@@ -106,9 +106,9 @@ impl PeerBackoff {
         )
     }
 
-    /// Calculate remaining backoff with default parameters and per-peer jitter.
-    pub fn remaining_jittered_default(&self, now: u64, jitter_seed: u64) -> Option<Duration> {
-        self.remaining_jittered(
+    /// Calculate remaining backoff with per-peer jitter (+/-25%).
+    pub fn remaining_jittered(&self, now: u64, jitter_seed: u64) -> Option<Duration> {
+        self.remaining_jittered_with(
             now,
             Self::DEFAULT_BASE_SECS,
             Self::DEFAULT_MAX_SECS,
@@ -116,9 +116,9 @@ impl PeerBackoff {
         )
     }
 
-    /// Calculate remaining backoff with default parameters, without jitter.
-    pub fn remaining_default(&self, now: u64) -> Option<Duration> {
-        self.remaining(now, Self::DEFAULT_BASE_SECS, Self::DEFAULT_MAX_SECS)
+    /// Calculate remaining backoff without jitter.
+    pub fn remaining(&self, now: u64) -> Option<Duration> {
+        self.remaining_with(now, Self::DEFAULT_BASE_SECS, Self::DEFAULT_MAX_SECS)
     }
 }
 
@@ -173,60 +173,51 @@ mod tests {
     #[test]
     fn no_backoff_zero_failures() {
         let b = PeerBackoff::new();
-        assert!(b.remaining_default(1000).is_none());
+        assert!(b.remaining(1000).is_none());
     }
 
     #[test]
     fn exponential_growth() {
-        let base = BASE;
-        let max = MAX;
-
         // 1 failure: 30s
         let b1 = PeerBackoff::from_persisted(1000, 1);
-        assert_eq!(b1.remaining(1000, base, max).unwrap().as_secs(), 30);
+        assert_eq!(b1.remaining_with(1000, BASE, MAX).unwrap().as_secs(), 30);
 
         // 2 failures: 60s
         let b2 = PeerBackoff::from_persisted(1000, 2);
-        assert_eq!(b2.remaining(1000, base, max).unwrap().as_secs(), 60);
+        assert_eq!(b2.remaining_with(1000, BASE, MAX).unwrap().as_secs(), 60);
 
         // 3 failures: 120s
         let b3 = PeerBackoff::from_persisted(1000, 3);
-        assert_eq!(b3.remaining(1000, base, max).unwrap().as_secs(), 120);
+        assert_eq!(b3.remaining_with(1000, BASE, MAX).unwrap().as_secs(), 120);
     }
 
     #[test]
     fn max_cap() {
-        let base = BASE;
-        let max = MAX;
-
         let b = PeerBackoff::from_persisted(1000, 20);
-        assert_eq!(b.remaining(1000, base, max).unwrap().as_secs(), max);
+        assert_eq!(b.remaining_with(1000, BASE, MAX).unwrap().as_secs(), MAX);
     }
 
     #[test]
     fn custom_base_and_max() {
         let b1 = PeerBackoff::from_persisted(1000, 1);
-        assert_eq!(b1.remaining(1000, 10, 500).unwrap().as_secs(), 10);
+        assert_eq!(b1.remaining_with(1000, 10, 500).unwrap().as_secs(), 10);
 
         let b2 = PeerBackoff::from_persisted(1000, 5);
         // 10 * 2^4 = 160
-        assert_eq!(b2.remaining(1000, 10, 500).unwrap().as_secs(), 160);
+        assert_eq!(b2.remaining_with(1000, 10, 500).unwrap().as_secs(), 160);
     }
 
     #[test]
     fn expired_backoff() {
         let b = PeerBackoff::from_persisted(1000, 1);
-        assert!(b.remaining(1031, BASE, MAX).is_none());
+        assert!(b.remaining_with(1031, BASE, MAX).is_none());
     }
 
     #[test]
     fn jitter_within_bounds() {
-        let base = BASE;
-        let max = MAX;
-
         for seed in 0u64..1000 {
             let b = PeerBackoff::from_persisted(1000, 1);
-            let remaining = b.remaining_jittered(1000, base, max, seed).unwrap();
+            let remaining = b.remaining_jittered(1000, seed).unwrap();
             let secs = remaining.as_secs();
             // base=30, +/-25% -> [22, 37]
             assert!(
@@ -239,33 +230,24 @@ mod tests {
     #[test]
     fn jitter_deterministic_per_seed() {
         let b = PeerBackoff::from_persisted(1000, 2);
-        let base = BASE;
-        let max = MAX;
-
-        let r1 = b.remaining_jittered(1000, base, max, 42).unwrap();
-        let r2 = b.remaining_jittered(1000, base, max, 42).unwrap();
+        let r1 = b.remaining_jittered(1000, 42).unwrap();
+        let r2 = b.remaining_jittered(1000, 42).unwrap();
         assert_eq!(r1, r2, "same seed should produce same jitter");
     }
 
     #[test]
     fn jitter_varies_across_seeds() {
         let b = PeerBackoff::from_persisted(1000, 3);
-        let base = BASE;
-        let max = MAX;
-
-        let r1 = b.remaining_jittered(1000, base, max, 1).unwrap();
-        let r2 = b.remaining_jittered(1000, base, max, 999).unwrap();
+        let r1 = b.remaining_jittered(1000, 1).unwrap();
+        let r2 = b.remaining_jittered(1000, 999).unwrap();
         assert_ne!(r1, r2, "different seeds should produce different jitter");
     }
 
     #[test]
     fn jitter_capped_at_max() {
-        let base = BASE;
-        let max = MAX;
-
         for seed in 0u64..100 {
             let b = PeerBackoff::from_persisted(1000, 20);
-            let remaining = b.remaining_jittered(1000, base, max, seed).unwrap();
+            let remaining = b.remaining_jittered(1000, seed).unwrap();
             let secs = remaining.as_secs();
             // max=3600, +/-25% -> [2700, 4500]
             assert!(
