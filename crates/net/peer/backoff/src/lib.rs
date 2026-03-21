@@ -122,44 +122,6 @@ impl PeerBackoff {
     }
 }
 
-/// Standalone backoff calculation from plain persisted fields.
-///
-/// Used by `StoredPeer::is_dialable()` to check backoff without constructing a `PeerBackoff`.
-pub fn backoff_remaining(
-    consecutive_failures: u32,
-    last_attempt: u64,
-    now: u64,
-    base_secs: u64,
-    max_secs: u64,
-    jitter_seed: u64,
-) -> Option<Duration> {
-    remaining_inner(
-        consecutive_failures,
-        last_attempt,
-        now,
-        base_secs,
-        max_secs,
-        Some(jitter_seed),
-    )
-}
-
-/// Standalone backoff calculation using default parameters.
-pub fn backoff_remaining_default(
-    consecutive_failures: u32,
-    last_attempt: u64,
-    now: u64,
-    jitter_seed: u64,
-) -> Option<Duration> {
-    backoff_remaining(
-        consecutive_failures,
-        last_attempt,
-        now,
-        PeerBackoff::DEFAULT_BASE_SECS,
-        PeerBackoff::DEFAULT_MAX_SECS,
-        jitter_seed,
-    )
-}
-
 fn remaining_inner(
     consecutive_failures: u32,
     last_attempt: u64,
@@ -334,15 +296,6 @@ mod tests {
 
         b.reset();
         assert_eq!(b.consecutive_failures(), 0);
-    }
-
-    #[test]
-    fn standalone_backoff_remaining() {
-        // Matches PeerBackoff::remaining_jittered
-        let b = PeerBackoff::from_persisted(1000, 2);
-        let from_struct = b.remaining_jittered(1000, 30, 3600, 42);
-        let from_fn = backoff_remaining(2, 1000, 1000, 30, 3600, 42);
-        assert_eq!(from_struct, from_fn);
     }
 
     #[test]

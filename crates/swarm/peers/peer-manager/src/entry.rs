@@ -8,7 +8,7 @@ use metrics::gauge;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use vertex_net_local::IpCapability;
-use vertex_net_peer_backoff::{PeerBackoff, backoff_remaining_default};
+use vertex_net_peer_backoff::PeerBackoff;
 use vertex_net_peer_store::NetRecord;
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_score::{
@@ -104,15 +104,13 @@ impl StoredPeer {
         if self.last_dial_attempt == 0 {
             return true;
         }
+        let backoff =
+            PeerBackoff::from_persisted(self.last_dial_attempt, self.consecutive_failures);
         let overlay = OverlayAddress::from(*self.peer.overlay());
         let jitter_seed = jitter_seed_from_overlay(&overlay);
-        backoff_remaining_default(
-            self.consecutive_failures,
-            self.last_dial_attempt,
-            unix_timestamp_secs(),
-            jitter_seed,
-        )
-        .is_none()
+        backoff
+            .remaining_jittered_default(unix_timestamp_secs(), jitter_seed)
+            .is_none()
     }
 }
 
