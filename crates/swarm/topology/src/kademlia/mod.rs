@@ -18,7 +18,7 @@ pub use config::KademliaConfig;
 pub(crate) use limits::DepthAwareLimits;
 pub(crate) use limits::LimitsSnapshot;
 pub(crate) use routing::KademliaRouting;
-pub(crate) use task::RoutingEvaluatorHandle;
+pub(crate) use task::{RoutingEvaluatorHandle, spawn_evaluator};
 
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};

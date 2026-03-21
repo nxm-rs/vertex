@@ -323,7 +323,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             .map_err(|e| TopologyError::TaskSpawn(e.to_string()))?;
 
         // Spawn background connection evaluator
-        let evaluator_handle = routing.spawn_evaluator(&executor);
+        let evaluator_handle = crate::kademlia::spawn_evaluator(routing.clone(), &executor);
 
         // Spawn interface watcher for push-based subnet discovery.
         crate::tasks::spawn_interface_watcher(&executor);

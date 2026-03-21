@@ -8,6 +8,12 @@ use std::{
     },
 };
 
+use super::{
+    CandidateSelector, CandidateSnapshot, DepthAwareLimits, KademliaConfig, LimitsSnapshot,
+    RoutingCapacity, SwarmRouting, candidate_queues::CandidateQueues, select_balanced_candidates,
+    select_neighborhood_candidates,
+};
+use crate::metrics::{phase, record_phase_transition};
 use nectar_primitives::ChunkAddress;
 use parking_lot::RwLock;
 use tracing::{debug, info, trace};
@@ -15,16 +21,6 @@ use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 use vertex_swarm_peer_manager::PeerManager;
 use vertex_swarm_peer_manager::ProximityIndex;
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
-use vertex_tasks::TaskExecutor;
-
-use super::{
-    CandidateSelector, CandidateSnapshot, DepthAwareLimits, KademliaConfig, LimitsSnapshot,
-    RoutingCapacity, SwarmRouting,
-    candidate_queues::CandidateQueues,
-    select_balanced_candidates, select_neighborhood_candidates,
-    task::{RoutingEvaluatorHandle, spawn_evaluator},
-};
-use crate::metrics::{phase, record_phase_transition};
 
 /// Connection phase for capacity tracking.
 #[derive(PartialEq, Eq)]
@@ -535,14 +531,6 @@ impl<I: SwarmIdentity> SwarmRouting<I> for KademliaRouting<I> {
 // Methods internalized from the poll loop — called only by the background evaluator task
 // and topology behaviour within the routing module.
 impl<I: SwarmIdentity + 'static> KademliaRouting<I> {
-    /// Spawn background evaluator. Returns handle for triggering evaluation.
-    pub(crate) fn spawn_evaluator(
-        self: &Arc<Self>,
-        executor: &TaskExecutor,
-    ) -> RoutingEvaluatorHandle {
-        spawn_evaluator(self.clone(), executor)
-    }
-
     /// Drain all pending candidates (called from poll loop). O(bins).
     pub(crate) fn drain_candidates(&self) -> Vec<OverlayAddress> {
         self.candidate_queues.drain_all()
