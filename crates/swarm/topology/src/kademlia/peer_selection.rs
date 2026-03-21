@@ -97,7 +97,9 @@ pub(crate) fn select_for_distant<I: SwarmIdentity>(
     }
 
     for &idx in indices.iter().take(CLOSE_PEERS_COUNT) {
-        if selected_indices.insert(idx) && let Some(entry) = storers.get(idx) {
+        if selected_indices.insert(idx)
+            && let Some(entry) = storers.get(idx)
+        {
             selected.push((entry.0.clone(), entry.2));
         }
     }
