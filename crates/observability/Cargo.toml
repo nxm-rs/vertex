@@ -25,7 +25,11 @@ vertex-tasks = { workspace = true }
 
 # Metrics
 metrics = { workspace = true }
-metrics-exporter-prometheus = "0.17"
+# We only serve metrics over the HTTP listener; Prometheus scrapes us and never
+# pushes. Dropping the default push-gateway feature avoids hyper-rustls and its
+# aws-lc-rs backend, which is C/assembly that breaks the wasm32 target and old
+# ARM cross-toolchains. Push-based export, if ever needed, belongs on OTLP.
+metrics-exporter-prometheus = { version = "0.17", default-features = false, features = ["http-listener"] }
 metrics-process = "2.3"
 metrics-util = "0.19"
 
