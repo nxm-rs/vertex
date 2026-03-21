@@ -25,8 +25,8 @@ pub enum BandwidthConfigError {
 #[derive(Debug, Clone)]
 pub struct BandwidthConfig<P = FixedPricingConfig> {
     mode: BandwidthMode,
-    payment_threshold: u64,
-    payment_tolerance_percent: u64,
+    credit_limit: u64,
+    credit_tolerance_percent: u64,
     refresh_rate: u64,
     early_payment_percent: u64,
     client_only_factor: u64,
@@ -40,8 +40,8 @@ impl<P> BandwidthConfig<P> {
     /// Create with explicit values.
     pub fn new(
         mode: BandwidthMode,
-        payment_threshold: u64,
-        payment_tolerance_percent: u64,
+        credit_limit: u64,
+        credit_tolerance_percent: u64,
         refresh_rate: u64,
         early_payment_percent: u64,
         client_only_factor: u64,
@@ -49,8 +49,8 @@ impl<P> BandwidthConfig<P> {
     ) -> Self {
         Self {
             mode,
-            payment_threshold,
-            payment_tolerance_percent,
+            credit_limit,
+            credit_tolerance_percent,
             refresh_rate,
             early_payment_percent,
             client_only_factor,
@@ -73,8 +73,8 @@ impl TryFrom<&BandwidthArgs> for BandwidthConfig<FixedPricingConfig> {
         match args.mode {
             BandwidthModeArg::None => {
                 let has_non_default = args.refresh_rate != default.refresh_rate
-                    || args.payment_threshold != default.payment_threshold
-                    || args.payment_tolerance_percent != default.payment_tolerance_percent
+                    || args.credit_limit != default.credit_limit
+                    || args.credit_tolerance_percent != default.credit_tolerance_percent
                     || args.early_payment_percent != default.early_payment_percent
                     || args.client_only_factor != default.client_only_factor;
                 if has_non_default {
@@ -96,8 +96,8 @@ impl TryFrom<&BandwidthArgs> for BandwidthConfig<FixedPricingConfig> {
 
         Ok(Self {
             mode: args.mode.into(),
-            payment_threshold: args.payment_threshold,
-            payment_tolerance_percent: args.payment_tolerance_percent,
+            credit_limit: args.credit_limit,
+            credit_tolerance_percent: args.credit_tolerance_percent,
             refresh_rate: args.refresh_rate,
             early_payment_percent: args.early_payment_percent,
             client_only_factor: args.client_only_factor,
@@ -110,8 +110,8 @@ impl Default for BandwidthConfig<FixedPricingConfig> {
     fn default() -> Self {
         Self {
             mode: BandwidthMode::Pseudosettle,
-            payment_threshold: DEFAULT_PAYMENT_THRESHOLD,
-            payment_tolerance_percent: DEFAULT_PAYMENT_TOLERANCE_PERCENT,
+            credit_limit: DEFAULT_CREDIT_LIMIT,
+            credit_tolerance_percent: DEFAULT_CREDIT_TOLERANCE_PERCENT,
             refresh_rate: DEFAULT_REFRESH_RATE,
             early_payment_percent: DEFAULT_EARLY_PAYMENT_PERCENT,
             client_only_factor: DEFAULT_CLIENT_ONLY_FACTOR,
@@ -128,12 +128,12 @@ where
         self.mode
     }
 
-    fn payment_threshold(&self) -> u64 {
-        self.payment_threshold
+    fn credit_limit(&self) -> u64 {
+        self.credit_limit
     }
 
-    fn payment_tolerance_percent(&self) -> u64 {
-        self.payment_tolerance_percent
+    fn credit_tolerance_percent(&self) -> u64 {
+        self.credit_tolerance_percent
     }
 
     fn refresh_rate(&self) -> u64 {

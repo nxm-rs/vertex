@@ -23,12 +23,16 @@ mod builder;
 mod client_accounting;
 mod config;
 mod constants;
+pub(crate) mod metrics;
 mod noop;
 mod settlement;
+#[cfg(feature = "std")]
+mod store;
 
 pub use accounting::{
-    Accounting, AccountingAction, AccountingError, AccountingPeerHandle, PeerState,
-    PeerStateSnapshot, ProvideAction, ReceiveAction,
+    Accounting, AccountingAction, AccountingError, AccountingPeerHandle, PeerAccounting,
+    ProvideAction,
+    ReceiveAction,
 };
 pub use args::{BandwidthArgs, BandwidthModeArg};
 pub use builder::{AccountingBuilder, NoAccountingBuilder};
@@ -36,4 +40,6 @@ pub use client_accounting::ClientAccounting;
 pub use config::{BandwidthConfig, BandwidthConfigError, DefaultBandwidthConfig};
 pub use noop::{NoAccounting, NoPeerBandwidth, NoProvideAction, NoReceiveAction};
 pub use settlement::NoSettlement;
+#[cfg(feature = "std")]
+pub use store::{AccountingStore, AccountingStoreError, DbAccountingStore};
 pub use vertex_swarm_bandwidth_pricing::{FixedPricer, FixedPricingConfig, NoPricer, Pricer};

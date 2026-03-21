@@ -27,7 +27,7 @@ use alloy_primitives::U256;
 use tokio::sync::mpsc;
 use vertex_swarm_api::{
     BandwidthMode, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmError, SwarmIdentity,
-    SwarmPeerState, SwarmResult, SwarmSettlementProvider,
+    SwarmPeerAccounting, SwarmResult, SwarmSettlementProvider,
 };
 use vertex_swarm_bandwidth::{Accounting, AccountingPeerHandle};
 use vertex_swarm_node::ClientCommand;
@@ -80,17 +80,17 @@ impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for SwapProvide
         BandwidthMode::Swap
     }
 
-    fn pre_allow(&self, _peer: OverlayAddress, _state: &dyn SwarmPeerState) -> i64 {
+    fn pre_allow(&self, _peer: OverlayAddress, _state: &dyn SwarmPeerAccounting) -> i64 {
         // SWAP doesn't modify balance during allow check
-        0
+        0i64
     }
 
-    async fn settle(&self, peer: OverlayAddress, state: &dyn SwarmPeerState) -> SwarmResult<i64> {
+    async fn settle(&self, peer: OverlayAddress, state: &dyn SwarmPeerAccounting) -> SwarmResult<i64> {
         // If we have a handle, delegate to the service
         if let Some(handle) = &self.handle {
             let balance = state.balance();
             if balance >= 0 {
-                return Ok(0); // Nothing to settle
+                return Ok(0i64); // Nothing to settle
             }
 
             let amount = (-balance) as u64;
@@ -107,25 +107,25 @@ impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for SwapProvide
 
             // Only settle if balance exceeds payment threshold (we owe them)
             if balance >= 0 {
-                return Ok(0);
+                return Ok(0i64);
             }
 
             let debt = (-balance) as u64;
-            let threshold = self.config.payment_threshold();
+            let threshold = self.config.credit_limit();
 
             if debt < threshold {
-                return Ok(0);
+                return Ok(0i64);
             }
 
             tracing::debug!(
                 %peer,
-                balance = balance,
+                balance = %balance,
                 debt = debt,
                 "SWAP settlement stub - no-op (cheque would be issued here)"
             );
 
             // For now, just log and return 0 (no settlement occurred)
-            Ok(0)
+            Ok(0i64)
         }
     }
 
@@ -185,7 +185,7 @@ mod tests {
         SwarmPeerBandwidth,
     };
     use vertex_swarm_bandwidth::BandwidthConfig;
-    use vertex_swarm_bandwidth::PeerState;
+    use vertex_swarm_bandwidth::PeerAccounting;
     use vertex_swarm_test_utils::{test_identity, test_peer};
 
     struct SwapTestConfig;
@@ -195,11 +195,11 @@ mod tests {
             BandwidthMode::Swap
         }
 
-        fn payment_threshold(&self) -> u64 {
-            13_500_000
+        fn credit_limit(&self) -> u64 {
+            13_500_000u64
         }
 
-        fn payment_tolerance_percent(&self) -> u64 {
+        fn credit_tolerance_percent(&self) -> u64 {
             25
         }
 
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn test_swap_pre_allow_no_change() {
         let provider = SwapProvider::new(SwapTestConfig);
-        let state = PeerState::new(13_500_000, 16_875_000);
+        let state = PeerAccounting::new(13_500_000, 16_875_000);
         state.add_balance(-1000);
 
         let adjustment = provider.pre_allow(test_peer(), &state);

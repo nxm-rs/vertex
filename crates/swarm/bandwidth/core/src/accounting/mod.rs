@@ -6,14 +6,14 @@
 //! network cost based on Kademlia proximity:
 //!
 //! ```text
-//! price = (max_po - proximity + 1) × base_price
+//! price = (max_po - proximity + 1) * base_price
 //! ```
 //!
 //! Closer chunks (higher proximity) cost less; distant chunks cost more.
 //!
 //! # Components
 //!
-//! - [`PeerState`] - Atomic per-peer balance counters
+//! - [`PeerAccounting`] - Per-peer balance counters
 //! - [`Accounting`] - Factory with pluggable settlement providers
 //! - [`ReceiveAction`] / [`ProvideAction`] - Prepare/apply pattern for balance changes
 
@@ -23,12 +23,12 @@ mod peer;
 
 pub use action::{AccountingAction, ProvideAction, ReceiveAction};
 pub use error::AccountingError;
-pub use peer::{PeerState, PeerStateSnapshot};
+pub use peer::PeerAccounting;
 
 use alloc::vec::Vec;
-use parking_lot::RwLock;
-use std::collections::HashMap;
 use std::sync::Arc;
+
+use dashmap::DashMap;
 
 use vertex_swarm_api::{
     Direction, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmIdentity, SwarmPeerBandwidth,
@@ -38,15 +38,22 @@ use vertex_swarm_primitives::OverlayAddress;
 
 use vertex_swarm_api::SwarmSettlementProvider;
 
+use crate::store::AccountingStore;
+
 /// Per-peer accounting with pluggable settlement providers.
 ///
 /// Manages balances and delegates settlement to configured providers.
 /// Without providers, behaves as a simple balance tracker.
+///
+/// When constructed with an [`AccountingStore`], peer state is persisted to
+/// the database on removal and can be restored on startup via
+/// [`load_all_from_store`](Self::load_all_from_store).
 pub struct Accounting<C, I: SwarmIdentity> {
     config: C,
     identity: I,
     providers: Arc<[Box<dyn SwarmSettlementProvider>]>,
-    peers: RwLock<HashMap<OverlayAddress, Arc<PeerState>>>,
+    peers: DashMap<OverlayAddress, Arc<PeerAccounting>>,
+    store: Option<Arc<dyn AccountingStore>>,
 }
 
 impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
@@ -56,7 +63,8 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             config,
             identity,
             providers: Arc::from(Vec::new()),
-            peers: RwLock::new(HashMap::new()),
+            peers: DashMap::new(),
+            store: None,
         }
     }
 
@@ -73,7 +81,8 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             config,
             identity,
             providers: Arc::from(providers),
-            peers: RwLock::new(HashMap::new()),
+            peers: DashMap::new(),
+            store: None,
         }
     }
 
@@ -105,9 +114,10 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
         let reserved = state.reserved_balance();
         let projected = current_balance - (price as i64) - (reserved as i64);
 
-        let disconnect_threshold = self.config.disconnect_threshold();
+        let disconnect_threshold = self.config.disconnect_limit();
         let threshold = -(disconnect_threshold as i64);
         if projected < threshold {
+            crate::metrics::record_disconnect_violation();
             return Err(AccountingError::DisconnectThreshold {
                 peer,
                 balance: current_balance,
@@ -130,43 +140,124 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
         Ok(ProvideAction::new(state, price))
     }
 
-    /// Get or create peer state (double-checked locking).
-    pub fn get_or_create_peer(&self, peer: OverlayAddress) -> Arc<PeerState> {
-        // Fast path: read lock
-        if let Some(state) = self.peers.read().get(&peer) {
-            return Arc::clone(state);
-        }
-
-        // Slow path: write lock
+    /// Get or create peer state with cache-aside database loading.
+    pub fn get_or_create_peer(&self, peer: OverlayAddress) -> Arc<PeerAccounting> {
         self.peers
-            .write()
             .entry(peer)
             .or_insert_with(|| {
-                Arc::new(PeerState::new(
-                    self.config.payment_threshold(),
-                    self.config.disconnect_threshold(),
-                ))
+                // Cache-aside: check the store for a persisted entry
+                let from_store = self.store.as_ref().and_then(|s| {
+                    match s.load(peer) {
+                        Ok(Some(state)) => Some(Arc::new(state)),
+                        Ok(None) => None,
+                        Err(e) => {
+                            tracing::warn!(
+                                %peer,
+                                error = %e,
+                                "Failed to load peer state from store, creating fresh",
+                            );
+                            None
+                        }
+                    }
+                });
+
+                from_store.unwrap_or_else(|| {
+                    Arc::new(PeerAccounting::with_refresh_rate(
+                        self.config.credit_limit(),
+                        self.config.disconnect_limit(),
+                        self.config.refresh_rate(),
+                    ))
+                })
             })
             .clone()
     }
 
     /// Get or create peer state for a light node.
-    pub fn get_or_create_light_peer(&self, peer: OverlayAddress) -> Arc<PeerState> {
-        if let Some(state) = self.peers.read().get(&peer) {
-            return Arc::clone(state);
-        }
-
+    pub fn get_or_create_light_peer(&self, peer: OverlayAddress) -> Arc<PeerAccounting> {
         self.peers
-            .write()
             .entry(peer)
             .or_insert_with(|| {
-                Arc::new(PeerState::new_client_only(
-                    self.config.payment_threshold(),
-                    self.config.disconnect_threshold(),
+                Arc::new(PeerAccounting::new_client_only_with_refresh(
+                    self.config.credit_limit(),
+                    self.config.disconnect_limit(),
                     self.config.client_only_factor(),
+                    self.config.refresh_rate(),
                 ))
             })
             .clone()
+    }
+
+    /// Record the credit limit announced by a remote peer.
+    ///
+    /// Creates the peer entry if it does not already exist.
+    pub fn set_remote_credit_limit(&self, peer: OverlayAddress, limit: u64) {
+        crate::metrics::record_remote_credit_limit(limit);
+        let state = self.get_or_create_peer(peer);
+        state.set_remote_credit_limit(limit);
+    }
+
+    /// Notify that a settlement was received from a peer.
+    ///
+    /// This drives the trust ramp algorithm: as a peer settles more debt,
+    /// we increase the credit limit we extend to them and return `true` if
+    /// the caller should re-announce the new limit.
+    pub fn notify_settlement_received(
+        &self,
+        peer: OverlayAddress,
+        amount: u64,
+    ) -> bool {
+        let state = self.get_or_create_peer(peer);
+        let grew = state.notify_settlement_received(amount);
+        if grew {
+            crate::metrics::record_trust_ramp_growth(state.credit_limit_for_peer());
+        }
+        grew
+    }
+
+    /// Set the persistence store.
+    pub fn set_store(&mut self, store: Arc<dyn AccountingStore>) {
+        self.store = Some(store);
+    }
+
+    /// Batch-persist all current peer state to the store.
+    ///
+    /// Call this during graceful shutdown to avoid losing in-memory state.
+    pub fn flush_to_store(&self) -> Result<(), crate::store::AccountingStoreError> {
+        let Some(store) = self.store.as_ref() else {
+            return Ok(());
+        };
+
+        let entries: Vec<_> = self
+            .peers
+            .iter()
+            .map(|entry| (*entry.key(), PeerAccounting::clone(entry.value())))
+            .collect();
+
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        store.save_batch(&entries)
+    }
+
+    /// Warm the in-memory cache from the store.
+    ///
+    /// Call after construction (and before traffic) to restore persisted state.
+    pub fn load_all_from_store(&self) -> Result<usize, crate::store::AccountingStoreError> {
+        let Some(store) = self.store.as_ref() else {
+            return Ok(0);
+        };
+
+        let entries = store.load_all()?;
+        let count = entries.len();
+
+        for (peer, state) in entries {
+            self.peers
+                .entry(peer)
+                .or_insert_with(|| Arc::new(state));
+        }
+
+        Ok(count)
     }
 }
 
@@ -186,17 +277,29 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmBandwidthAccounting for Ac
             peer,
             state,
             providers: Arc::clone(&self.providers),
-            disconnect_threshold: self.config.disconnect_threshold(),
-            payment_threshold: self.config.payment_threshold(),
+            disconnect_limit: self.config.disconnect_limit(),
+            credit_limit: self.config.credit_limit(),
         }
     }
 
     fn peers(&self) -> Vec<OverlayAddress> {
-        self.peers.read().keys().copied().collect()
+        self.peers.iter().map(|entry| *entry.key()).collect()
     }
 
     fn remove_peer(&self, peer: &OverlayAddress) {
-        self.peers.write().remove(peer);
+        if let Some((_, state)) = self.peers.remove(peer) {
+            crate::metrics::set_peer_count(self.peers.len());
+            // Persist state before eviction
+            if let Some(store) = &self.store
+                && let Err(e) = store.save(*peer, PeerAccounting::clone(&state))
+            {
+                tracing::warn!(
+                    %peer,
+                    error = %e,
+                    "Failed to persist peer state on removal",
+                );
+            }
+        }
     }
 
     fn prepare_receive(
@@ -218,10 +321,10 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmBandwidthAccounting for Ac
 /// Handle to a peer's accounting state. Cheap to clone.
 pub struct AccountingPeerHandle {
     peer: OverlayAddress,
-    state: Arc<PeerState>,
+    state: Arc<PeerAccounting>,
     providers: Arc<[Box<dyn SwarmSettlementProvider>]>,
-    disconnect_threshold: u64,
-    payment_threshold: u64,
+    disconnect_limit: u64,
+    credit_limit: u64,
 }
 
 impl Clone for AccountingPeerHandle {
@@ -230,26 +333,26 @@ impl Clone for AccountingPeerHandle {
             peer: self.peer,
             state: Arc::clone(&self.state),
             providers: Arc::clone(&self.providers),
-            disconnect_threshold: self.disconnect_threshold,
-            payment_threshold: self.payment_threshold,
+            disconnect_limit: self.disconnect_limit,
+            credit_limit: self.credit_limit,
         }
     }
 }
 
 impl AccountingPeerHandle {
     /// Get access to the underlying peer state.
-    pub fn state(&self) -> &Arc<PeerState> {
+    pub fn state(&self) -> &Arc<PeerAccounting> {
         &self.state
     }
 
-    /// Get the payment threshold.
-    pub fn payment_threshold(&self) -> u64 {
-        self.payment_threshold
+    /// Get the credit limit.
+    pub fn credit_limit(&self) -> u64 {
+        self.credit_limit
     }
 
-    /// Get the disconnect threshold.
-    pub fn disconnect_threshold(&self) -> u64 {
-        self.disconnect_threshold
+    /// Get the disconnect limit.
+    pub fn disconnect_limit(&self) -> u64 {
+        self.disconnect_limit
     }
 
     /// Call `pre_allow()` on all providers, returning total adjustment.
@@ -265,11 +368,14 @@ impl AccountingPeerHandle {
         let mut total = 0i64;
 
         for provider in self.providers.iter() {
-            total = total.saturating_add(provider.settle(self.peer, self.state.as_ref()).await?);
+            crate::metrics::record_settlement_attempt(provider.name());
+            let settled = provider.settle(self.peer, self.state.as_ref()).await?;
+            crate::metrics::record_settlement_success(provider.name(), settled);
+            total = total.saturating_add(settled);
 
             // Check if still over threshold
             let balance = self.state.balance();
-            if balance <= self.payment_threshold as i64 {
+            if balance <= self.credit_limit as i64 {
                 break;
             }
         }
@@ -280,23 +386,29 @@ impl AccountingPeerHandle {
 
 #[async_trait::async_trait]
 impl SwarmPeerBandwidth for AccountingPeerHandle {
-    fn record(&self, bytes: u64, direction: Direction) {
+    fn record(&self, price: u64, direction: Direction) {
         match direction {
-            Direction::Upload => self.state.add_balance(bytes as i64),
-            Direction::Download => self.state.add_balance(-(bytes as i64)),
+            Direction::Upload => {
+                crate::metrics::record_chunk_transfer(price, true);
+                self.state.add_balance(price as i64);
+            }
+            Direction::Download => {
+                crate::metrics::record_chunk_transfer(price, false);
+                self.state.add_balance(-(price as i64));
+            }
         }
     }
 
-    fn allow(&self, bytes: u64) -> bool {
+    fn allow(&self, price: u64) -> bool {
         // Let providers adjust balance first (e.g., pseudosettle refresh)
         self.pre_allow_all();
 
-        // Check threshold
+        // Check limit
         let balance = self.state.balance();
         let reserved = self.state.reserved_balance();
-        let projected = balance - (bytes as i64) - (reserved as i64);
+        let projected = balance - (price as i64) - (reserved as i64);
 
-        projected >= -(self.disconnect_threshold as i64)
+        projected >= -(self.disconnect_limit as i64)
     }
 
     fn balance(&self) -> i64 {
@@ -470,7 +582,7 @@ mod tests {
         fn pre_allow(
             &self,
             _peer: OverlayAddress,
-            state: &dyn vertex_swarm_api::SwarmPeerState,
+            state: &dyn vertex_swarm_api::SwarmPeerAccounting,
         ) -> i64 {
             state.add_balance(self.0);
             self.0
@@ -479,7 +591,7 @@ mod tests {
         async fn settle(
             &self,
             _peer: OverlayAddress,
-            _state: &dyn vertex_swarm_api::SwarmPeerState,
+            _state: &dyn vertex_swarm_api::SwarmPeerAccounting,
         ) -> SwarmResult<i64> {
             Ok(0)
         }

@@ -198,21 +198,22 @@ impl ClientService {
         match event {
             ClientEvent::PeerActivated { peer_id, overlay } => {
                 debug!(%peer_id, %overlay, "Peer activated for client protocols");
-                // TODO: Trigger pricing announcement based on peer type
+                // TODO: Trigger credit limit announcement based on peer type
             }
 
-            ClientEvent::PricingReceived {
+            ClientEvent::CreditLimitReceived {
                 peer,
                 peer_id,
-                threshold,
+                credit_limit,
             } => {
-                debug!(%peer_id, %peer, %threshold, "Received pricing threshold");
-                // TODO: Validate threshold against minimum
-                // TODO: Store peer's threshold for bandwidth accounting
+                debug!(%peer_id, %peer, %credit_limit, "Received credit limit");
+                // TODO: Validate credit limit against configured minimum
+                // TODO: Wire ClientService to hold Arc<Accounting<C, I>> so we can call:
+                //   accounting.set_remote_credit_limit(peer, credit_limit.to::<u64>());
             }
 
-            ClientEvent::PricingSent { peer } => {
-                debug!(%peer, "Pricing threshold sent");
+            ClientEvent::CreditLimitSent { peer } => {
+                debug!(%peer, "Credit limit sent");
             }
 
             ClientEvent::ChunkReceived {

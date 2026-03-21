@@ -14,9 +14,9 @@ pub enum AccountingError {
         threshold: u64,
     },
 
-    /// Operation would exceed payment threshold.
-    #[error("peer {peer} balance {balance} exceeds payment threshold {threshold}")]
-    PaymentThreshold {
+    /// Operation would exceed credit limit.
+    #[error("peer {peer} balance {balance} exceeds credit limit {threshold}")]
+    CreditLimit {
         peer: OverlayAddress,
         balance: i64,
         threshold: u64,

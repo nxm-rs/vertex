@@ -49,7 +49,7 @@ pub use self::components::{
     BandwidthMode, BootnodeComponents, ClientComponents, Direction, HasAccounting, HasIdentity,
     HasStore, HasTopology, StorerComponents, SwarmAccountingConfig, SwarmBandwidthAccounting,
     SwarmClientAccounting, SwarmLocalStore, SwarmLocalStoreConfig, SwarmPeerBandwidth,
-    SwarmPeerResolver, SwarmPeerState, SwarmPricing, SwarmPricingBuilder, SwarmPricingConfig,
+    SwarmPeerResolver, SwarmPeerAccounting, SwarmPricing, SwarmPricingBuilder, SwarmPricingConfig,
     SwarmScoreStore, SwarmSettlementProvider, SwarmTopology, SwarmTopologyBins,
     SwarmTopologyCommands, SwarmTopologyPeers, SwarmTopologyRouting, SwarmTopologyState,
     SwarmTopologyStats,

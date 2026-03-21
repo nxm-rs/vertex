@@ -1,6 +1,6 @@
 //! ClientBehaviour for managing client-side protocols.
 //!
-//! This behaviour manages multiple client protocols (pricing, retrieval, pushsync)
+//! This behaviour manages multiple client protocols (credit, retrieval, pushsync)
 //! using a per-connection handler pattern. Handlers start in dormant state and are
 //! activated after handshake completion.
 
@@ -116,16 +116,16 @@ impl ClientBehaviour {
                     event: HandlerCommand::Activate { overlay, node_type },
                 });
             }
-            ClientCommand::AnnouncePricing { peer, threshold } => {
+            ClientCommand::AnnounceCreditLimit { peer, credit_limit } => {
                 if let Some(&peer_id) = self.overlay_peers.get(&peer) {
-                    debug!(%peer_id, %peer, %threshold, "Announcing pricing");
+                    debug!(%peer_id, %peer, %credit_limit, "Announcing credit limit");
                     self.push_event(ToSwarm::NotifyHandler {
                         peer_id,
                         handler: libp2p::swarm::NotifyHandler::Any,
-                        event: HandlerCommand::AnnouncePricing { threshold },
+                        event: HandlerCommand::AnnounceCreditLimit { credit_limit },
                     });
                 } else {
-                    debug!(%peer, "Unknown peer for pricing announcement");
+                    debug!(%peer, "Unknown peer for credit limit announcement");
                 }
             }
             ClientCommand::RetrieveChunk { peer, address } => {
@@ -260,16 +260,16 @@ impl ClientBehaviour {
                         overlay,
                     }));
             }
-            HandlerEvent::PricingReceived { overlay, threshold } => {
-                self.push_event(ToSwarm::GenerateEvent(ClientEvent::PricingReceived {
+            HandlerEvent::CreditLimitReceived { overlay, credit_limit } => {
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::CreditLimitReceived {
                     peer: overlay,
                     peer_id,
-                    threshold,
+                    credit_limit,
                 }));
             }
-            HandlerEvent::PricingSent { overlay } => {
+            HandlerEvent::CreditLimitSent { overlay } => {
                 self.pending_events
-                    .push_back(ToSwarm::GenerateEvent(ClientEvent::PricingSent {
+                    .push_back(ToSwarm::GenerateEvent(ClientEvent::CreditLimitSent {
                         peer: overlay,
                     }));
             }

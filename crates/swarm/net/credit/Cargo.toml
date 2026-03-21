@@ -1,5 +1,5 @@
 [package]
-name = "vertex-swarm-net-pricing"
+name = "vertex-swarm-net-credit"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

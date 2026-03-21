@@ -59,13 +59,13 @@ pub struct BandwidthArgs {
     #[arg(long = "bandwidth.mode", value_enum, default_value_t = BandwidthModeArg::Pseudosettle)]
     pub mode: BandwidthModeArg,
 
-    /// Payment threshold (triggers settlement when exceeded).
-    #[arg(long = "bandwidth.threshold", default_value_t = DEFAULT_PAYMENT_THRESHOLD)]
-    pub payment_threshold: u64,
+    /// Credit limit (triggers settlement when exceeded).
+    #[arg(long = "bandwidth.threshold", default_value_t = DEFAULT_CREDIT_LIMIT)]
+    pub credit_limit: u64,
 
-    /// Payment tolerance percent for disconnect threshold.
-    #[arg(long = "bandwidth.tolerance-percent", default_value_t = DEFAULT_PAYMENT_TOLERANCE_PERCENT)]
-    pub payment_tolerance_percent: u64,
+    /// Credit tolerance percent for disconnect limit.
+    #[arg(long = "bandwidth.tolerance-percent", default_value_t = DEFAULT_CREDIT_TOLERANCE_PERCENT)]
+    pub credit_tolerance_percent: u64,
 
     /// Pseudosettle refresh rate per second.
     #[arg(long = "bandwidth.refresh-rate", default_value_t = DEFAULT_REFRESH_RATE)]
@@ -89,8 +89,8 @@ impl Default for BandwidthArgs {
     fn default() -> Self {
         Self {
             mode: BandwidthModeArg::default(),
-            payment_threshold: DEFAULT_PAYMENT_THRESHOLD,
-            payment_tolerance_percent: DEFAULT_PAYMENT_TOLERANCE_PERCENT,
+            credit_limit: DEFAULT_CREDIT_LIMIT,
+            credit_tolerance_percent: DEFAULT_CREDIT_TOLERANCE_PERCENT,
             refresh_rate: DEFAULT_REFRESH_RATE,
             early_payment_percent: DEFAULT_EARLY_PAYMENT_PERCENT,
             client_only_factor: DEFAULT_CLIENT_ONLY_FACTOR,

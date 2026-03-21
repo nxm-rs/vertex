@@ -8,6 +8,7 @@ use vertex_swarm_api::{
 };
 use vertex_swarm_bandwidth_pricing::NoPricer;
 
+use crate::store::AccountingStore;
 use crate::{Accounting, ClientAccounting};
 
 /// Builder for bandwidth accounting with integrated pricing.
@@ -27,6 +28,7 @@ pub struct AccountingBuilder<C, P = NoPricer> {
     config: C,
     pricing: P,
     providers: Vec<Box<dyn SwarmSettlementProvider>>,
+    store: Option<Arc<dyn AccountingStore>>,
 }
 
 impl<C: SwarmAccountingConfig> AccountingBuilder<C, NoPricer> {
@@ -36,6 +38,7 @@ impl<C: SwarmAccountingConfig> AccountingBuilder<C, NoPricer> {
             config,
             pricing: NoPricer,
             providers: Vec::new(),
+            store: None,
         }
     }
 }
@@ -50,7 +53,14 @@ impl<C, P> AccountingBuilder<C, P> {
             config: self.config,
             pricing,
             providers: self.providers,
+            store: self.store,
         }
+    }
+
+    /// Set the persistence store for accounting state.
+    pub fn with_store(mut self, store: Arc<dyn AccountingStore>) -> Self {
+        self.store = Some(store);
+        self
     }
 
     /// Add a settlement provider.
@@ -115,17 +125,27 @@ impl<C: SwarmAccountingConfig + Clone + 'static, P: SwarmPricing + Clone + Send 
     AccountingBuilder<C, P>
 {
     /// Build the accounting system.
+    ///
+    /// If a store was configured via [`with_store`](AccountingBuilder::with_store),
+    /// persisted peer state is loaded into the in-memory cache before returning.
     pub fn build<I: SwarmIdentity + Clone>(
         self,
         identity: &I,
     ) -> ClientAccounting<Arc<Accounting<C, I>>, P> {
-        let accounting = Arc::new(Accounting::with_providers(
+        let mut accounting = Accounting::with_providers(
             self.config,
             identity.clone(),
             self.providers,
-        ));
+        );
 
-        ClientAccounting::new(accounting, self.pricing)
+        if let Some(store) = self.store {
+            accounting.set_store(store);
+            if let Err(e) = accounting.load_all_from_store() {
+                tracing::warn!(error = %e, "Failed to load accounting state from store");
+            }
+        }
+
+        ClientAccounting::new(Arc::new(accounting), self.pricing)
     }
 }
 

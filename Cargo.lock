@@ -7980,13 +7980,18 @@ dependencies = [
  "async-trait",
  "auto_impl",
  "clap 4.6.0",
+ "dashmap",
  "metrics",
  "nectar-primitives",
- "parking_lot",
+ "portable-atomic",
+ "postcard",
  "serde",
  "strum",
  "thiserror 2.0.18",
+ "tracing",
  "vertex-metrics",
+ "vertex-storage",
+ "vertex-storage-redb",
  "vertex-swarm-api",
  "vertex-swarm-bandwidth-pricing",
  "vertex-swarm-primitives",
@@ -8106,6 +8111,25 @@ dependencies = [
  "serde",
  "vertex-swarm-api",
  "vertex-swarm-spec",
+]
+
+[[package]]
+name = "vertex-swarm-net-credit"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "asynchronous-codec",
+ "bytes",
+ "futures",
+ "libp2p",
+ "quick-protobuf",
+ "quick-protobuf-codec",
+ "strum",
+ "thiserror 2.0.18",
+ "tracing",
+ "vertex-net-codec",
+ "vertex-swarm-net-headers",
+ "vertex-swarm-net-proto",
 ]
 
 [[package]]
@@ -8253,25 +8277,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vertex-swarm-net-pricing"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "asynchronous-codec",
- "bytes",
- "futures",
- "libp2p",
- "quick-protobuf",
- "quick-protobuf-codec",
- "strum",
- "thiserror 2.0.18",
- "tracing",
- "vertex-net-codec",
- "vertex-swarm-net-headers",
- "vertex-swarm-net-proto",
-]
-
-[[package]]
 name = "vertex-swarm-net-proto"
 version = "0.1.0"
 dependencies = [
@@ -8367,9 +8372,9 @@ dependencies = [
  "vertex-swarm-bandwidth-pricing",
  "vertex-swarm-identity",
  "vertex-swarm-localstore",
+ "vertex-swarm-net-credit",
  "vertex-swarm-net-headers",
  "vertex-swarm-net-identify",
- "vertex-swarm-net-pricing",
  "vertex-swarm-net-pseudosettle",
  "vertex-swarm-net-pushsync",
  "vertex-swarm-net-retrieval",

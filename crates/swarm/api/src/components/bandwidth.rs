@@ -34,11 +34,11 @@ pub enum Direction {
 /// Positive balance = peer owes us, negative = we owe peer.
 /// The peer address is passed separately to settlement methods.
 #[auto_impl::auto_impl(&, Arc)]
-pub trait SwarmPeerState: Send + Sync {
+pub trait SwarmPeerAccounting: Send + Sync {
     /// Get the current balance (positive = peer owes us).
     fn balance(&self) -> i64;
 
-    /// Add to the balance atomically.
+    /// Add to the balance.
     fn add_balance(&self, amount: i64);
 
     /// Get the last refresh timestamp (for pseudosettle).
@@ -47,11 +47,11 @@ pub trait SwarmPeerState: Send + Sync {
     /// Set the last refresh timestamp.
     fn set_last_refresh(&self, timestamp: u64);
 
-    /// Get the payment threshold for this peer.
-    fn payment_threshold(&self) -> u64;
+    /// Get the credit limit for this peer.
+    fn credit_limit(&self) -> u64;
 
-    /// Get the disconnect threshold for this peer.
-    fn disconnect_threshold(&self) -> u64;
+    /// Get the disconnect limit for this peer.
+    fn disconnect_limit(&self) -> u64;
 }
 
 /// Settlement provider for bandwidth accounting.
@@ -65,11 +65,11 @@ pub trait SwarmSettlementProvider: Send + Sync + 'static {
 
     /// Called before checking if a transfer is allowed.
     /// Returns the amount of balance adjustment (positive = credit added).
-    fn pre_allow(&self, peer: OverlayAddress, state: &dyn SwarmPeerState) -> i64;
+    fn pre_allow(&self, peer: OverlayAddress, state: &dyn SwarmPeerAccounting) -> i64;
 
     /// Called when explicit settlement is requested.
     /// Returns the amount settled, or an error if settlement failed.
-    async fn settle(&self, peer: OverlayAddress, state: &dyn SwarmPeerState) -> SwarmResult<i64>;
+    async fn settle(&self, peer: OverlayAddress, state: &dyn SwarmPeerAccounting) -> SwarmResult<i64>;
 
     /// Human-readable name for logging.
     fn name(&self) -> &'static str;
@@ -93,11 +93,11 @@ pub trait SwarmAccountingConfig: Send + Sync {
         }
     }
 
-    /// Payment threshold (triggers settlement when peer debt exceeds this).
-    fn payment_threshold(&self) -> u64;
+    /// Credit limit (triggers settlement when peer debt exceeds this).
+    fn credit_limit(&self) -> u64;
 
-    /// Payment tolerance percent (disconnect threshold = payment_threshold * (100 + tolerance) / 100).
-    fn payment_tolerance_percent(&self) -> u64;
+    /// Credit tolerance percent (disconnect limit = credit_limit * (100 + tolerance) / 100).
+    fn credit_tolerance_percent(&self) -> u64;
 
     /// Refresh rate per second (for pseudosettle).
     fn refresh_rate(&self) -> u64;
@@ -108,9 +108,9 @@ pub trait SwarmAccountingConfig: Send + Sync {
     /// Scaling factor for client-only nodes (divides thresholds).
     fn client_only_factor(&self) -> u64;
 
-    /// Calculate the disconnect threshold.
-    fn disconnect_threshold(&self) -> u64 {
-        self.payment_threshold() * (100 + self.payment_tolerance_percent()) / 100
+    /// Calculate the disconnect limit.
+    fn disconnect_limit(&self) -> u64 {
+        self.credit_limit() * (100 + self.credit_tolerance_percent()) / 100
     }
 
     /// Check if bandwidth accounting is enabled.
@@ -122,11 +122,11 @@ pub trait SwarmAccountingConfig: Send + Sync {
 /// Per-peer bandwidth accounting handle.
 #[async_trait::async_trait]
 pub trait SwarmPeerBandwidth: Send + Sync {
-    /// Record bandwidth usage (lock-free, must not block).
-    fn record(&self, bytes: u64, direction: Direction);
+    /// Record a chunk transfer in accounting units (must not block).
+    fn record(&self, price: u64, direction: Direction);
 
-    /// Check if a transfer is allowed (false if over disconnect threshold).
-    fn allow(&self, bytes: u64) -> bool;
+    /// Check if a transfer of the given price is allowed (false if over disconnect limit).
+    fn allow(&self, price: u64) -> bool;
 
     /// Get current balance (positive = peer owes us).
     fn balance(&self) -> i64;

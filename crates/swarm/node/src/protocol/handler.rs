@@ -1,7 +1,7 @@
 //! Connection handler for client protocols.
 //!
 //! The `ClientHandler` manages multiple protocols on a single connection:
-//! - Pricing: Payment threshold exchange
+//! - Credit: Credit limit exchange
 //! - Retrieval: Chunk request/response
 //! - PushSync: Chunk push with receipt
 //! - Pseudosettle: Bandwidth accounting payments
@@ -85,10 +85,10 @@ pub(crate) enum HandlerCommand {
         /// The peer's node type.
         node_type: SwarmNodeType,
     },
-    /// Announce our payment threshold to the peer.
-    AnnouncePricing {
-        /// The threshold to announce.
-        threshold: U256,
+    /// Announce our credit limit to the peer.
+    AnnounceCreditLimit {
+        /// The credit limit to announce.
+        credit_limit: U256,
     },
     /// Request a chunk from the peer.
     RetrieveChunk {
@@ -148,15 +148,15 @@ pub(crate) enum HandlerEvent {
         /// The peer's overlay address.
         overlay: OverlayAddress,
     },
-    /// Received pricing threshold from peer.
-    PricingReceived {
+    /// Received credit limit from peer.
+    CreditLimitReceived {
         /// The peer's overlay address.
         overlay: OverlayAddress,
-        /// The payment threshold.
-        threshold: U256,
+        /// The credit limit.
+        credit_limit: U256,
     },
-    /// Successfully sent our pricing threshold.
-    PricingSent {
+    /// Successfully sent our credit limit.
+    CreditLimitSent {
         /// The peer's overlay address.
         overlay: OverlayAddress,
     },
@@ -270,10 +270,10 @@ pub(crate) struct ClientHandler {
     pending_commands: VecDeque<HandlerCommand>,
     /// Pending events to emit.
     pending_events: VecDeque<HandlerEvent>,
-    /// Whether pricing has been sent.
-    pricing_sent: bool,
-    /// Whether pricing outbound is pending.
-    pricing_outbound_pending: bool,
+    /// Whether credit limit has been sent.
+    credit_limit_sent: bool,
+    /// Whether credit limit outbound is pending.
+    credit_limit_outbound_pending: bool,
     /// Stored responders waiting for application-layer responses, keyed by request_id.
     pending_responses: HashMap<u64, StoredResponse>,
     /// Bounded set for async response sends (prevents blocking poll).
@@ -299,8 +299,8 @@ impl ClientHandler {
             next_request_id: 0,
             pending_commands: VecDeque::new(),
             pending_events: VecDeque::new(),
-            pricing_sent: false,
-            pricing_outbound_pending: false,
+            credit_limit_sent: false,
+            credit_limit_outbound_pending: false,
             pending_responses: HashMap::new(),
             response_sends: futures_bounded::FuturesSet::new(
                 RESPONSE_SEND_TIMEOUT,
@@ -378,22 +378,22 @@ impl ClientHandler {
         }
     }
 
-    /// Handle incoming pricing threshold.
-    fn on_pricing_received(
+    /// Handle incoming credit limit.
+    fn on_credit_limit_received(
         &mut self,
-        threshold: vertex_swarm_net_pricing::AnnouncePaymentThreshold,
+        announce: vertex_swarm_net_credit::AnnounceCreditLimit,
     ) {
         if let Some(overlay) = self.overlay() {
-            debug!(%overlay, threshold = %threshold.payment_threshold, "Received pricing");
+            debug!(%overlay, credit_limit = %announce.credit_limit, "Received credit limit");
             self.pending_events
-                .push_back(HandlerEvent::PricingReceived {
+                .push_back(HandlerEvent::CreditLimitReceived {
                     overlay,
-                    threshold: threshold.payment_threshold,
+                    credit_limit: announce.credit_limit,
                 });
         } else {
             warn!(
-                threshold = %threshold.payment_threshold,
-                "Received pricing in dormant state (peer may have cached old protocol list)"
+                credit_limit = %announce.credit_limit,
+                "Received credit limit in dormant state (peer may have cached old protocol list)"
             );
         }
     }
@@ -564,14 +564,14 @@ impl ConnectionHandler for ClientHandler {
                         return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
                     }
                 }
-                HandlerCommand::AnnouncePricing { threshold } => {
-                    if !self.pricing_sent && !self.pricing_outbound_pending {
-                        self.pricing_outbound_pending = true;
+                HandlerCommand::AnnounceCreditLimit { credit_limit } => {
+                    if !self.credit_limit_sent && !self.credit_limit_outbound_pending {
+                        self.credit_limit_outbound_pending = true;
                         let announce =
-                            vertex_swarm_net_pricing::AnnouncePaymentThreshold::new(threshold);
-                        let upgrade = ClientOutboundUpgrade::pricing(announce);
+                            vertex_swarm_net_credit::AnnounceCreditLimit::new(credit_limit);
+                        let upgrade = ClientOutboundUpgrade::credit(announce);
                         return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
-                            protocol: SubstreamProtocol::new(upgrade, ClientOutboundInfo::Pricing)
+                            protocol: SubstreamProtocol::new(upgrade, ClientOutboundInfo::Credit)
                                 .with_timeout(self.config.timeout),
                         });
                     }
@@ -733,9 +733,9 @@ impl ConnectionHandler for ClientHandler {
 
             ConnectionEvent::DialUpgradeError(e) => {
                 let protocol = match &e.info {
-                    ClientOutboundInfo::Pricing => {
-                        self.pricing_outbound_pending = false;
-                        "pricing"
+                    ClientOutboundInfo::Credit => {
+                        self.credit_limit_outbound_pending = false;
+                        "credit"
                     }
                     ClientOutboundInfo::Retrieval { .. } => "retrieval",
                     ClientOutboundInfo::Pushsync { .. } => "pushsync",
@@ -767,8 +767,8 @@ impl ClientHandler {
     /// Handle an inbound protocol completion.
     fn handle_inbound_output(&mut self, output: ClientInboundOutput) {
         match output {
-            ClientInboundOutput::Pricing(threshold) => {
-                self.on_pricing_received(threshold);
+            ClientInboundOutput::Credit(announce) => {
+                self.on_credit_limit_received(announce);
             }
             ClientInboundOutput::Retrieval(request, responder) => {
                 self.on_retrieval_request(request, responder);
@@ -795,12 +795,12 @@ impl ClientHandler {
     /// Handle an outbound protocol completion.
     fn handle_outbound_output(&mut self, output: ClientOutboundOutput, info: ClientOutboundInfo) {
         match (output, info) {
-            (ClientOutboundOutput::Pricing, ClientOutboundInfo::Pricing) => {
-                self.pricing_sent = true;
-                self.pricing_outbound_pending = false;
+            (ClientOutboundOutput::Credit, ClientOutboundInfo::Credit) => {
+                self.credit_limit_sent = true;
+                self.credit_limit_outbound_pending = false;
                 if let Some(overlay) = self.overlay() {
                     self.pending_events
-                        .push_back(HandlerEvent::PricingSent { overlay });
+                        .push_back(HandlerEvent::CreditLimitSent { overlay });
                 }
             }
             (

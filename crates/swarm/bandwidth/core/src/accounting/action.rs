@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use super::PeerState;
+use super::PeerAccounting;
 
 /// Trait for accounting actions.
 pub trait AccountingAction: Send {
@@ -19,14 +19,14 @@ pub trait AccountingAction: Send {
 ///
 /// Reserves balance on creation; commits on apply(), releases on drop.
 pub struct ReceiveAction {
-    state: Arc<PeerState>,
+    state: Arc<PeerAccounting>,
     price: u64,
     applied: bool,
 }
 
 impl ReceiveAction {
     /// Create a new receive action.
-    pub fn new(state: Arc<PeerState>, price: u64) -> Self {
+    pub fn new(state: Arc<PeerAccounting>, price: u64) -> Self {
         Self {
             state,
             price,
@@ -62,14 +62,14 @@ impl AccountingAction for ReceiveAction {
 ///
 /// Reserves shadow balance on creation; commits on apply(), releases on drop.
 pub struct ProvideAction {
-    state: Arc<PeerState>,
+    state: Arc<PeerAccounting>,
     price: u64,
     applied: bool,
 }
 
 impl ProvideAction {
     /// Create a new provide action.
-    pub fn new(state: Arc<PeerState>, price: u64) -> Self {
+    pub fn new(state: Arc<PeerAccounting>, price: u64) -> Self {
         Self {
             state,
             price,
@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn test_receive_action_apply() {
-        let state = Arc::new(PeerState::new(1000, 10000));
+        let state = Arc::new(PeerAccounting::new(1000, 10000));
         state.add_reserved(100);
 
         let action = ReceiveAction::new(Arc::clone(&state), 100);
@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn test_receive_action_drop() {
-        let state = Arc::new(PeerState::new(1000, 10000));
+        let state = Arc::new(PeerAccounting::new(1000, 10000));
         state.add_reserved(100);
 
         {
@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn test_provide_action_apply() {
-        let state = Arc::new(PeerState::new(1000, 10000));
+        let state = Arc::new(PeerAccounting::new(1000, 10000));
         state.add_shadow_reserved(100);
 
         let action = ProvideAction::new(Arc::clone(&state), 100);
@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn test_provide_action_drop() {
-        let state = Arc::new(PeerState::new(1000, 10000));
+        let state = Arc::new(PeerAccounting::new(1000, 10000));
         state.add_shadow_reserved(100);
 
         {

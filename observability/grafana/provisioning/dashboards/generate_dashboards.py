@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Generate Grafana dashboards for Vertex observability stack.
 
-Produces 5 dashboard JSON files:
+Produces 7 dashboard JSON files:
   - vertex-overview.json   : High-level KPIs and health summary
   - vertex-topology.json   : Kademlia routing, connections, dialing, gossip
   - vertex-protocols.json  : Protocol streams, handshake, hive, pingpong
   - vertex-peers.json      : Peer management, scoring, health, registry
+  - vertex-bandwidth.json  : Bandwidth accounting, settlement, trust ramp
+  - vertex-database.json   : Database performance and storage stats
   - vertex-system.json     : Task executor, memory, process metrics
 
 Usage:
@@ -464,6 +466,7 @@ def build_overview():
         dash_link("Topology", "vertex-topology"),
         dash_link("Protocols", "vertex-protocols"),
         dash_link("Peers", "vertex-peers"),
+        dash_link("Bandwidth", "vertex-bandwidth"),
         dash_link("Database", "vertex-database"),
         dash_link("System", "vertex-system"),
     ]
@@ -2112,6 +2115,198 @@ def build_database():
 
 
 # ---------------------------------------------------------------------------
+# 7. BANDWIDTH ACCOUNTING DASHBOARD
+# ---------------------------------------------------------------------------
+def build_bandwidth():
+    _reset_ids()
+    y = 0
+    panels = []
+
+    links = [
+        dash_link("Overview", "vertex-overview"),
+        dash_link("Protocols", "vertex-protocols"),
+        dash_link("Peers", "vertex-peers"),
+    ]
+
+    # -- KPI row
+    panels.append(row_panel("Accounting Overview", y))
+    y += 1
+    panels.append(
+        stat(
+            "Tracked Peers",
+            [_tgt(g("vertex_accounting_peers"), "Peers")],
+            0, y,
+        )
+    )
+    panels.append(
+        stat(
+            "Disconnect Violations (1h)",
+            [_tgt(sinc("vertex_accounting_disconnect_violations_total"), "Violations")],
+            4, y,
+            thresholds={
+                "mode": "absolute",
+                "steps": [
+                    {"color": "green", "value": None},
+                    {"color": "yellow", "value": 1},
+                    {"color": "red", "value": 10},
+                ],
+            },
+        )
+    )
+    panels.append(
+        stat(
+            "Trust Ramp Growth (1h)",
+            [_tgt(sinc("vertex_accounting_trust_ramp_growth_total"), "Upgrades")],
+            8, y,
+        )
+    )
+    panels.append(
+        stat(
+            "Errors (1h)",
+            [_tgt(sinc("vertex_accounting_errors_total"), "Errors")],
+            12, y,
+            thresholds={
+                "mode": "absolute",
+                "steps": [
+                    {"color": "green", "value": None},
+                    {"color": "yellow", "value": 1},
+                    {"color": "red", "value": 10},
+                ],
+            },
+        )
+    )
+    panels.append(
+        stat(
+            "Credit Limits Received (1h)",
+            [_tgt(sinc("vertex_accounting_credit_limit_received_total"), "Received")],
+            16, y,
+        )
+    )
+    panels.append(
+        stat(
+            "Latest Peer Credit Limit",
+            [_tgt(g("vertex_accounting_credit_limit_received_latest_au"), "Limit")],
+            20, y,
+        )
+    )
+    y += 4
+
+    # -- Balance flow row
+    panels.append(row_panel("Balance Flow", y))
+    y += 1
+    panels.append(
+        ts(
+            "Chunk Throughput (chunks/s)",
+            [
+                _tgt(
+                    sr("vertex_accounting_chunks_total",
+                       by="direction", labels='direction="inbound"'),
+                    "Upload (inbound)",
+                ),
+                _tgt(
+                    sr("vertex_accounting_chunks_total",
+                       by="direction", labels='direction="outbound"'),
+                    "Download (outbound)",
+                ),
+            ],
+            0, y, w=8, unit="cps",
+        )
+    )
+    panels.append(
+        ts(
+            "Economic Flow (AU/s)",
+            [
+                _tgt(
+                    sr("vertex_accounting_au_total",
+                       by="direction", labels='direction="inbound"'),
+                    "Upload (inbound)",
+                ),
+                _tgt(
+                    sr("vertex_accounting_au_total",
+                       by="direction", labels='direction="outbound"'),
+                    "Download (outbound)",
+                ),
+            ],
+            8, y, w=8, unit="short",
+        )
+    )
+    panels.append(
+        ts(
+            "Disconnect Violations Rate",
+            [_tgt(r("vertex_accounting_disconnect_violations_total"), "Violations/s")],
+            16, y, w=8,
+        )
+    )
+    y += 8
+
+    # -- Settlement row
+    panels.append(row_panel("Settlement", y))
+    y += 1
+    panels.append(
+        ts(
+            "Settlement Attempts Rate",
+            [_tgt(
+                sr("vertex_accounting_settlement_attempts_total", by="provider"),
+                "{{provider}}",
+            )],
+            0, y, w=8,
+        )
+    )
+    panels.append(
+        ts(
+            "Settlement Success Rate",
+            [_tgt(
+                sr("vertex_accounting_settlement_success_total", by="provider"),
+                "{{provider}}",
+            )],
+            8, y, w=8,
+        )
+    )
+    panels.append(
+        ts(
+            "Settlement AU Rate",
+            [_tgt(
+                sr("vertex_accounting_settlement_au_total", by="provider"),
+                "{{provider}}",
+            )],
+            16, y, w=8,
+        )
+    )
+    y += 8
+
+    # -- Errors row
+    panels.append(row_panel("Errors", y))
+    y += 1
+    panels.append(
+        ts(
+            "Accounting Errors by Reason",
+            [_tgt(
+                sr("vertex_accounting_errors_total", by="reason"),
+                "{{reason}}",
+            )],
+            0, y, w=12,
+        )
+    )
+    panels.append(
+        ts(
+            "Trust Ramp: Latest Outbound Limit",
+            [_tgt(g("vertex_accounting_trust_ramp_latest_limit_au"), "Limit")],
+            12, y, w=12,
+        )
+    )
+    y += 8
+
+    return dashboard(
+        "vertex-bandwidth",
+        "Vertex Bandwidth Accounting",
+        "Bandwidth accounting, settlement, trust ramp, and credit limits",
+        ["vertex", "bandwidth", "accounting"],
+        panels,
+        links,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
@@ -2124,6 +2319,7 @@ def main():
         "vertex-peers.json": build_peers(),
         "vertex-database.json": build_database(),
         "vertex-system.json": build_system(),
+        "vertex-bandwidth.json": build_bandwidth(),
     }
 
     for filename, db in dashboards.items():

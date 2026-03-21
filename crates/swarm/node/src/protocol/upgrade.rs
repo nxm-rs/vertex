@@ -1,12 +1,12 @@
 //! Combined protocol upgrades for client handler.
 //!
 //! This module provides multi-protocol support for the client handler,
-//! combining pricing, retrieval, and pushsync into a single `InboundUpgrade`.
+//! combining credit, retrieval, and pushsync into a single `InboundUpgrade`.
 //!
 //! # Architecture
 //!
 //! The client handler needs to accept multiple inbound protocols:
-//! - Pricing: Payment threshold exchange (symmetric - both peers announce)
+//! - Credit: Credit limit exchange (symmetric -- both peers announce)
 //! - Pseudosettle: Bandwidth settlement (symmetric)
 //! - Retrieval: Chunk request/response (full nodes only)
 //! - Pushsync: Chunk push with receipt (full nodes only)
@@ -20,9 +20,9 @@ use libp2p::{InboundUpgrade, OutboundUpgrade, Stream, core::UpgradeInfo};
 use nectar_primitives::ChunkAddress;
 use thiserror::Error;
 use vertex_swarm_net_headers::ProtocolError;
-use vertex_swarm_net_pricing::{
-    AnnouncePaymentThreshold, PROTOCOL_NAME as PRICING_PROTOCOL, PricingInboundProtocol,
-    PricingOutboundProtocol,
+use vertex_swarm_net_credit::{
+    AnnounceCreditLimit, PROTOCOL_NAME as CREDIT_PROTOCOL, CreditInboundProtocol,
+    CreditOutboundProtocol,
 };
 use vertex_swarm_net_pseudosettle::{
     PROTOCOL_NAME as PSEUDOSETTLE_PROTOCOL, Payment, PaymentAck, PseudosettleInboundResult,
@@ -39,9 +39,9 @@ use vertex_swarm_net_retrieval::{
 /// Errors from client protocol upgrades.
 #[derive(Debug, Error)]
 pub(crate) enum ClientUpgradeError {
-    /// Pricing protocol error.
-    #[error("pricing error: {0}")]
-    Pricing(#[source] ProtocolError),
+    /// Credit protocol error.
+    #[error("credit error: {0}")]
+    Credit(#[source] ProtocolError),
 
     /// Retrieval protocol error.
     #[error("retrieval error: {0}")]
@@ -62,8 +62,8 @@ pub(crate) enum ClientUpgradeError {
 
 /// Output from a client inbound upgrade.
 pub(crate) enum ClientInboundOutput {
-    /// Received pricing threshold.
-    Pricing(AnnouncePaymentThreshold),
+    /// Received credit limit.
+    Credit(AnnounceCreditLimit),
     /// Received retrieval request (with responder to send delivery).
     Retrieval(RetrievalRequest, RetrievalResponder),
     /// Received pushsync delivery (with responder to send receipt).
@@ -75,7 +75,7 @@ pub(crate) enum ClientInboundOutput {
 impl std::fmt::Debug for ClientInboundOutput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Pricing(threshold) => f.debug_tuple("Pricing").field(threshold).finish(),
+            Self::Credit(limit) => f.debug_tuple("Credit").field(limit).finish(),
             Self::Retrieval(request, _) => f
                 .debug_tuple("Retrieval")
                 .field(request)
@@ -97,7 +97,7 @@ impl std::fmt::Debug for ClientInboundOutput {
 
 /// Combined inbound upgrade for client protocols.
 ///
-/// Advertises pricing, retrieval, and pushsync protocols and dispatches
+/// Advertises credit, retrieval, and pushsync protocols and dispatches
 /// to the appropriate handler based on the negotiated protocol.
 ///
 /// # Dormant State
@@ -131,7 +131,7 @@ impl UpgradeInfo for ClientInboundUpgrade {
     fn protocol_info(&self) -> Self::InfoIter {
         if self.is_active {
             vec![
-                PRICING_PROTOCOL,
+                CREDIT_PROTOCOL,
                 RETRIEVAL_PROTOCOL,
                 PUSHSYNC_PROTOCOL,
                 PSEUDOSETTLE_PROTOCOL,
@@ -153,13 +153,13 @@ impl InboundUpgrade<Stream> for ClientInboundUpgrade {
     fn upgrade_inbound(self, socket: Stream, info: Self::Info) -> Self::Future {
         Box::pin(async move {
             match info {
-                PRICING_PROTOCOL => {
-                    let pricing: PricingInboundProtocol = vertex_swarm_net_pricing::inbound();
-                    let threshold = pricing
+                CREDIT_PROTOCOL => {
+                    let credit: CreditInboundProtocol = vertex_swarm_net_credit::inbound();
+                    let limit = credit
                         .upgrade_inbound(socket, info)
                         .await
-                        .map_err(ClientUpgradeError::Pricing)?;
-                    Ok(ClientInboundOutput::Pricing(threshold))
+                        .map_err(ClientUpgradeError::Credit)?;
+                    Ok(ClientInboundOutput::Credit(limit))
                 }
                 RETRIEVAL_PROTOCOL => {
                     let retrieval: RetrievalInboundProtocol = vertex_swarm_net_retrieval::inbound();
@@ -194,8 +194,8 @@ impl InboundUpgrade<Stream> for ClientInboundUpgrade {
 /// Type of outbound request for client protocols.
 #[derive(Debug, Clone)]
 pub(crate) enum ClientOutboundRequest {
-    /// Announce payment threshold.
-    Pricing(AnnouncePaymentThreshold),
+    /// Announce credit limit.
+    Credit(AnnounceCreditLimit),
     /// Request a chunk.
     Retrieval(ChunkAddress),
     /// Push a chunk for storage.
@@ -207,8 +207,8 @@ pub(crate) enum ClientOutboundRequest {
 /// Output from a client outbound upgrade.
 #[derive(Debug)]
 pub(crate) enum ClientOutboundOutput {
-    /// Pricing announcement sent successfully.
-    Pricing,
+    /// Credit limit announcement sent successfully.
+    Credit,
     /// Received chunk delivery.
     Retrieval(RetrievalDelivery),
     /// Received receipt.
@@ -226,10 +226,10 @@ pub(crate) struct ClientOutboundUpgrade {
 }
 
 impl ClientOutboundUpgrade {
-    /// Create a new pricing outbound upgrade.
-    pub(crate) fn pricing(threshold: AnnouncePaymentThreshold) -> Self {
+    /// Create a new credit outbound upgrade.
+    pub(crate) fn credit(limit: AnnounceCreditLimit) -> Self {
         Self {
-            request: ClientOutboundRequest::Pricing(threshold),
+            request: ClientOutboundRequest::Credit(limit),
         }
     }
 
@@ -257,7 +257,7 @@ impl ClientOutboundUpgrade {
     /// Get the protocol name for this request.
     fn protocol_name(&self) -> &'static str {
         match &self.request {
-            ClientOutboundRequest::Pricing(_) => PRICING_PROTOCOL,
+            ClientOutboundRequest::Credit(_) => CREDIT_PROTOCOL,
             ClientOutboundRequest::Retrieval(_) => RETRIEVAL_PROTOCOL,
             ClientOutboundRequest::Pushsync(_) => PUSHSYNC_PROTOCOL,
             ClientOutboundRequest::Pseudosettle(_) => PSEUDOSETTLE_PROTOCOL,
@@ -282,14 +282,14 @@ impl OutboundUpgrade<Stream> for ClientOutboundUpgrade {
     fn upgrade_outbound(self, socket: Stream, info: Self::Info) -> Self::Future {
         Box::pin(async move {
             match self.request {
-                ClientOutboundRequest::Pricing(threshold) => {
-                    let pricing: PricingOutboundProtocol =
-                        vertex_swarm_net_pricing::outbound(threshold);
-                    pricing
+                ClientOutboundRequest::Credit(limit) => {
+                    let credit: CreditOutboundProtocol =
+                        vertex_swarm_net_credit::outbound(limit);
+                    credit
                         .upgrade_outbound(socket, info)
                         .await
-                        .map_err(ClientUpgradeError::Pricing)?;
-                    Ok(ClientOutboundOutput::Pricing)
+                        .map_err(ClientUpgradeError::Credit)?;
+                    Ok(ClientOutboundOutput::Credit)
                 }
                 ClientOutboundRequest::Retrieval(address) => {
                     let retrieval: RetrievalOutboundProtocol =
@@ -325,8 +325,8 @@ impl OutboundUpgrade<Stream> for ClientOutboundUpgrade {
 /// Information about an outbound request, used for correlating responses.
 #[derive(Debug, Clone)]
 pub(crate) enum ClientOutboundInfo {
-    /// Pricing announcement.
-    Pricing,
+    /// Credit limit announcement.
+    Credit,
     /// Retrieval request with chunk address.
     Retrieval { address: ChunkAddress },
     /// Pushsync request with chunk address.

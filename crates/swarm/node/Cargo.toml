@@ -21,7 +21,7 @@ vertex-swarm-primitives.workspace = true
 ## vertex - network (libp2p layer)
 vertex-swarm-net-headers.workspace = true
 vertex-swarm-net-identify.workspace = true
-vertex-swarm-net-pricing.workspace = true
+vertex-swarm-net-credit.workspace = true
 vertex-swarm-net-pseudosettle.workspace = true
 
 ## vertex - identity

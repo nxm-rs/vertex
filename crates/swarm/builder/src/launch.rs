@@ -11,9 +11,12 @@ use vertex_net_peer_store::NetPeerStore;
 use vertex_net_peer_store::error::StoreError;
 use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
-use vertex_swarm_api::{PeerConfigValues, SwarmLaunchConfig, SwarmPeerConfig, SwarmScoreStore};
+use vertex_swarm_api::{
+    PeerConfigValues, SwarmClientAccounting, SwarmLaunchConfig, SwarmPeerConfig, SwarmScoreStore,
+};
 use vertex_swarm_bandwidth::{
-    Accounting, AccountingBuilder, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
+    Accounting, AccountingBuilder, ClientAccounting, DbAccountingStore, DefaultBandwidthConfig,
+    FixedPricer,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::{BootNode, ClientNode};
@@ -53,6 +56,7 @@ fn build_accounting<A>(
     spec: Arc<Spec>,
     identity: &Arc<Identity>,
     config: A,
+    store: Option<Arc<DbAccountingStore<RedbDatabase>>>,
 ) -> ClientAccounting<
     Arc<vertex_swarm_bandwidth::Accounting<A, Arc<Identity>>>,
     <A::Pricing as vertex_swarm_api::SwarmPricingBuilder<Spec>>::Pricer,
@@ -64,9 +68,14 @@ where
         + 'static,
     A::Pricing: vertex_swarm_api::SwarmPricingBuilder<Spec>,
 {
-    AccountingBuilder::new(config)
-        .with_pricer_from_config(spec)
-        .build(identity)
+    let mut builder = AccountingBuilder::new(config)
+        .with_pricer_from_config(spec);
+
+    if let Some(store) = store {
+        builder = builder.with_store(store);
+    }
+
+    builder.build(identity)
 }
 
 /// Wrap a future factory as a NodeTaskFn with graceful shutdown support.
@@ -112,6 +121,23 @@ fn spawn_db_metrics_task(ctx: &dyn InfrastructureContext, db: Arc<RedbDatabase>)
                 }
             }
         });
+}
+
+fn create_accounting_store(
+    db: &Option<Arc<RedbDatabase>>,
+) -> Option<Arc<DbAccountingStore<RedbDatabase>>> {
+    let db = db.as_ref()?;
+    let store = Arc::new(DbAccountingStore::new(Arc::clone(db)));
+    match store.init() {
+        Ok(()) => {
+            info!("Accounting store: shared database");
+            Some(store)
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to init accounting table");
+            None
+        }
+    }
 }
 
 fn create_peer_store(
@@ -212,11 +238,13 @@ impl SwarmLaunchConfig for ClientConfig {
 
         let db = open_shared_database(ctx);
         let (peer_store, score_store) = create_peer_store(&db);
+        let accounting_store = create_accounting_store(&db);
 
         let accounting = build_accounting(
             self.spec().clone(),
             self.identity(),
             self.bandwidth().clone(),
+            accounting_store,
         );
 
         let (node, client_service, client_handle) = ClientNode::builder(self.identity().clone())
@@ -232,11 +260,17 @@ impl SwarmLaunchConfig for ClientConfig {
         ctx.executor()
             .spawn_service("swarm.client_service", client_service);
 
-        // Return node task - accounting is moved into the closure to keep it alive
+        // Return node task - accounting is moved into the closure to keep it alive.
+        // On shutdown: flush peer state to the store.
+        // TODO: Settle all outstanding balances before flushing. This requires
+        // researching how Bee handles graceful settlement on shutdown (iterate
+        // connected peers, call settle() for each with outstanding debt).
         let task = single_task(move |shutdown| async move {
-            let _accounting = accounting;
             if let Err(e) = node.start_and_run(shutdown).await {
                 tracing::error!(error = %e, "ClientNode error");
+            }
+            if let Err(e) = accounting.bandwidth().flush_to_store() {
+                tracing::warn!(error = %e, "Failed to flush accounting state on shutdown");
             }
         });
 
@@ -259,11 +293,13 @@ impl SwarmLaunchConfig for StorerConfig {
 
         let db = open_shared_database(ctx);
         let (peer_store, score_store) = create_peer_store(&db);
+        let accounting_store = create_accounting_store(&db);
 
         let accounting = build_accounting(
             self.spec().clone(),
             self.identity(),
             self.bandwidth().clone(),
+            accounting_store,
         );
 
         // TODO: build storer-specific components
@@ -284,11 +320,15 @@ impl SwarmLaunchConfig for StorerConfig {
         ctx.executor()
             .spawn_service("swarm.client_service", client_service);
 
-        // Return node task - accounting is moved into the closure to keep it alive
+        // Return node task - accounting is moved into the closure to keep it alive.
+        // On shutdown: flush peer state to the store.
+        // TODO: Settle all outstanding balances before flushing (see ClientConfig).
         let task = single_task(move |shutdown| async move {
-            let _accounting = accounting;
             if let Err(e) = node.start_and_run(shutdown).await {
                 tracing::error!(error = %e, "StorerNode error");
+            }
+            if let Err(e) = accounting.bandwidth().flush_to_store() {
+                tracing::warn!(error = %e, "Failed to flush accounting state on shutdown");
             }
         });
 

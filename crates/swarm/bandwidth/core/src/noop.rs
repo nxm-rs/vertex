@@ -28,14 +28,14 @@ pub struct NoPeerBandwidth {
 
 #[async_trait::async_trait]
 impl SwarmPeerBandwidth for NoPeerBandwidth {
-    fn record(&self, _bytes: u64, _direction: Direction) {}
+    fn record(&self, _price: u64, _direction: Direction) {}
 
-    fn allow(&self, _bytes: u64) -> bool {
+    fn allow(&self, _price: u64) -> bool {
         true
     }
 
     fn balance(&self) -> i64 {
-        0
+        0i64
     }
 
     async fn settle(&self) -> SwarmResult<()> {

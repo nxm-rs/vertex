@@ -25,21 +25,21 @@ use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 /// Events emitted by the client behaviour.
 #[derive(Debug, Clone)]
 pub enum ClientEvent {
-    /// Received a payment threshold from a peer.
+    /// Received a credit limit from a peer.
     ///
-    /// Validate this threshold and decide whether to continue or disconnect.
-    PricingReceived {
+    /// Validate this limit and decide whether to continue or disconnect.
+    CreditLimitReceived {
         /// The peer's overlay address.
         peer: OverlayAddress,
         /// The libp2p peer ID.
         peer_id: PeerId,
-        /// The payment threshold announced by the peer.
-        threshold: U256,
+        /// The credit limit announced by the peer.
+        credit_limit: U256,
     },
 
-    /// Successfully sent our payment threshold to a peer.
-    PricingSent {
-        /// The peer we sent the threshold to.
+    /// Successfully sent our credit limit to a peer.
+    CreditLimitSent {
+        /// The peer we sent the limit to.
         peer: OverlayAddress,
     },
 
@@ -127,7 +127,7 @@ pub enum ClientEvent {
 
     /// A settlement is needed with a peer.
     ///
-    /// Emitted when the balance crosses the payment threshold. Initiate
+    /// Emitted when the balance crosses the credit limit. Initiate
     /// swap or pseudosettle accordingly.
     SettlementNeeded {
         /// The peer to settle with.
@@ -205,14 +205,14 @@ pub enum ClientCommand {
         node_type: SwarmNodeType,
     },
 
-    /// Announce our payment threshold to a peer.
+    /// Announce our credit limit to a peer.
     ///
-    /// The threshold value depends on peer type (full vs light) and configuration.
-    AnnouncePricing {
+    /// The limit value depends on peer type (full vs light) and configuration.
+    AnnounceCreditLimit {
         /// The peer to announce to.
         peer: OverlayAddress,
-        /// The payment threshold to announce.
-        threshold: U256,
+        /// The credit limit to announce.
+        credit_limit: U256,
     },
 
     /// Request a chunk from a peer.

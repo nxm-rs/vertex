@@ -3,8 +3,11 @@
 
 syntax = "proto3";
 
+// NOTE: wire-compat — package name is irrelevant on the wire.
 package pricing;
 
-message AnnouncePaymentThreshold {
-  bytes payment_threshold = 1;
+// Wire-compatible with Bee's AnnouncePaymentThreshold.
+// Field number 1 and type bytes are what matter; names are cosmetic.
+message AnnounceCreditLimit {
+  bytes credit_limit = 1;
 }

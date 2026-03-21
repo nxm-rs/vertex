@@ -40,7 +40,7 @@ members = [
     "crates/swarm/net/hive",
     "crates/swarm/net/pingpong",
     "crates/swarm/net/identify",
-    "crates/swarm/net/pricing",
+    "crates/swarm/net/credit",
     "crates/swarm/net/pseudosettle",
     "crates/swarm/net/pushsync",
     "crates/swarm/net/retrieval",
@@ -144,7 +144,7 @@ vertex-swarm-net-handshake = { path = "crates/swarm/net/handshake" }
 vertex-swarm-net-headers = { path = "crates/swarm/net/headers" }
 vertex-swarm-net-hive = { path = "crates/swarm/net/hive" }
 vertex-swarm-net-identify = { path = "crates/swarm/net/identify" }
-vertex-swarm-net-pricing = { path = "crates/swarm/net/pricing" }
+vertex-swarm-net-credit = { path = "crates/swarm/net/credit" }
 vertex-swarm-net-pseudosettle = { path = "crates/swarm/net/pseudosettle" }
 vertex-swarm-net-pingpong = { path = "crates/swarm/net/pingpong" }
 vertex-swarm-net-pushsync = { path = "crates/swarm/net/pushsync" }
