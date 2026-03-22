@@ -1,9 +1,10 @@
 //! API server CLI arguments.
 
+use std::net::{IpAddr, SocketAddr};
+
 use crate::constants::{DEFAULT_GRPC_PORT, DEFAULT_LOCALHOST_ADDR};
 use clap::Args;
 use serde::{Deserialize, Serialize};
-use vertex_node_api::NodeRpcConfig;
 
 /// API server configuration.
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
@@ -23,6 +24,14 @@ pub struct ApiArgs {
     pub grpc_port: u16,
 }
 
+impl ApiArgs {
+    /// Compute the gRPC socket address from configured host and port.
+    pub fn grpc_socket_addr(&self) -> SocketAddr {
+        let ip: IpAddr = self.grpc_addr.parse().unwrap_or(IpAddr::from([127, 0, 0, 1]));
+        SocketAddr::new(ip, self.grpc_port)
+    }
+}
+
 impl Default for ApiArgs {
     fn default() -> Self {
         Self {
@@ -30,19 +39,5 @@ impl Default for ApiArgs {
             grpc_addr: DEFAULT_LOCALHOST_ADDR.to_string(),
             grpc_port: DEFAULT_GRPC_PORT,
         }
-    }
-}
-
-impl NodeRpcConfig for ApiArgs {
-    fn grpc_enabled(&self) -> bool {
-        self.grpc
-    }
-
-    fn grpc_addr(&self) -> &str {
-        &self.grpc_addr
-    }
-
-    fn grpc_port(&self) -> u16 {
-        self.grpc_port
     }
 }

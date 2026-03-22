@@ -6,7 +6,7 @@ use vertex_swarm_api::{
     ChunkAddress, ChunkRetrievalResult, SwarmChunkProvider, SwarmError, SwarmIdentity, SwarmResult,
     SwarmTopologyRouting,
 };
-use vertex_swarm_node::ClientHandle;
+use vertex_swarm_client::ClientHandle;
 use vertex_swarm_topology::TopologyHandle;
 
 /// Chunk provider using ClientHandle for network retrieval.

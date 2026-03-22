@@ -15,7 +15,6 @@
 //!   and data directory to protocols during launch.
 //! - [`NodeProtocolConfig`] - protocol-specific configuration with CLI argument
 //!   support.
-//! - [`NodeRpcConfig`] - gRPC server configuration.
 
 #![warn(missing_docs)]
 

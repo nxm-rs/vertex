@@ -46,6 +46,7 @@ pub enum TopologyEvent {
     /// All connections to peer closed.
     PeerDisconnected {
         overlay: OverlayAddress,
+        peer_id: PeerId,
         reason: DisconnectReason,
         /// How long the peer was connected before disconnecting.
         connection_duration: Option<Duration>,

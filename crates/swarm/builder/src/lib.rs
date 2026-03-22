@@ -1,9 +1,9 @@
 //! Swarm node builder infrastructure.
 //!
-//! Provides layered builders for constructing Swarm nodes:
-//! - [`NodeBuilder`] / [`DefaultNodeBuilder`] - Bootnode builder
-//! - [`ClientNodeBuilder`] / [`DefaultClientBuilder`] - Client node builder
-//! - [`StorerNodeBuilder`] / [`DefaultStorerBuilder`] - Storer node builder
+//! Provides a progressive type-state builder chain for constructing Swarm nodes:
+//! - [`SwarmBaseBuilder`] / [`DefaultBaseBuilder`] - Bootnode builder
+//! - [`SwarmClientBuilder`] / [`DefaultClientBuilder`] - Client node builder
+//! - [`SwarmStorerBuilder`] / [`DefaultStorerBuilder`] - Storer node builder
 //!
 //! Build returns [`BuiltNode`] which contains the task and RPC providers.
 
@@ -20,8 +20,8 @@ pub use node::BuilderExt;
 
 // Builders
 pub use node::{
-    ClientNodeBuilder, DefaultClientBuilder, DefaultNodeBuilder, DefaultStorerBuilder, NodeBuilder,
-    StorerNodeBuilder,
+    DefaultBaseBuilder, DefaultClientBuilder, DefaultStorerBuilder, SwarmBaseBuilder,
+    SwarmClientBuilder, SwarmProtocolBuilder, SwarmStorerBuilder, SwarmWithIdentity, SwarmWithSpec,
 };
 
 // Build outputs
@@ -29,13 +29,13 @@ pub use handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};
 
 // Providers
 pub use providers::NetworkChunkProvider;
-pub use rpc::{BootnodeRpcProviders, ClientRpcProviders, StorerRpcProviders};
+pub use rpc::{BootnodeRpcProviders, FullRpcProviders, SwarmNodeProviders};
 
 // Configs
-pub use config::{BootnodeConfig, ClientConfig, StorerConfig};
+pub use config::{SwarmBuildConfig, SwarmConfigError};
 
 // Launch types (for SwarmLaunchConfig associated types)
-pub use launch::{BootnodeLaunchTypes, ClientLaunchTypes, StorerLaunchTypes};
+pub use launch::{BootnodeLaunchTypes, ClientLaunchTypes};
 
 // Errors
 pub use error::SwarmNodeError;

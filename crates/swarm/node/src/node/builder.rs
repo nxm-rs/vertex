@@ -156,15 +156,14 @@ impl<C: SwarmRoutingConfig> SwarmRoutingConfig for ConfigWithBootnodes<'_, C> {
 /// Handles the common SwarmBuilder pipeline, peer ID logging, and bootnode
 /// connection that all node types share.
 ///
-/// The `behaviour_fn` receives the libp2p public key and the topology behaviour,
-/// and must return both the composed NetworkBehaviour and a reference to its
-/// topology so we can call `set_local_peer_id`.
+/// Returns the `BaseNode` and the listen addresses from the network config.
+/// The caller is responsible for passing the addresses to `start_listening`.
 pub(crate) async fn build_base_node<I, B, C, F>(
     mut infra: BuiltInfrastructure<I>,
     network_config: &C,
     node_type_name: &str,
     behaviour_fn: F,
-) -> Result<BaseNode<I, B>>
+) -> Result<(BaseNode<I, B>, Vec<Multiaddr>)>
 where
     I: SwarmIdentity + Clone,
     B: NetworkBehaviour,
@@ -206,10 +205,11 @@ where
         warn!("Failed to send connect_bootnodes command");
     }
 
-    Ok(BaseNode {
+    let base = BaseNode {
         swarm,
         identity: infra.identity,
-        listen_addrs,
         topology_handle: infra.topology_handle,
-    })
+    };
+
+    Ok((base, listen_addrs))
 }

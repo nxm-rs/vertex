@@ -1,12 +1,8 @@
-//! Swarm client behaviour for the Vertex node.
+//! Swarm client protocol behaviour and service.
 //!
-//! This module provides the `ClientBehaviour` which handles all client-side
-//! protocols on the Swarm network:
-//!
-//! - **Pricing**: Payment threshold exchange
-//! - **Retrieval**: Chunk request/response
-//! - **PushSync**: Chunk push with receipt
-//! - **Pseudosettle**: Bandwidth accounting settlement
+//! Provides the [`ClientBehaviour`] (composed libp2p `NetworkBehaviour` multiplexing
+//! credit, retrieval, pushsync, pseudosettle) and the [`ClientService`]/[`ClientHandle`]
+//! business-logic bridge.
 //!
 //! # Architecture
 //!
@@ -43,10 +39,19 @@
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
 
+#![cfg_attr(not(feature = "std"), no_std)]
+
 mod behaviour;
 mod events;
 mod handler;
+mod queue;
+mod resolver;
+mod service;
 pub(crate) mod upgrade;
 
-pub(crate) use behaviour::{ClientBehaviour, Config as BehaviourConfig};
-pub use events::{ClientCommand, ClientEvent, PseudosettleEvent};
+pub use behaviour::{ClientBehaviour, Config as BehaviourConfig};
+pub use events::{ClientCommand, ClientEvent, ClientProtocol, PseudosettleEvent};
+pub use resolver::PeerAddressResolver;
+pub use service::{ClientHandle, ClientService, RetrievalError, RetrievalResult};
+
+pub const DEFAULT_CHANNEL_CAPACITY: usize = 256;

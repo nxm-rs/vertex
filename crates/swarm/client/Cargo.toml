@@ -1,0 +1,54 @@
+[package]
+name = "vertex-swarm-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Swarm client protocol behaviour and service"
+
+[lints]
+workspace = true
+
+[dependencies]
+## nectar
+nectar-primitives.workspace = true
+
+## vertex - primitives
+vertex-swarm-primitives.workspace = true
+
+## vertex - network protocols
+vertex-swarm-net-headers.workspace = true
+vertex-swarm-net-credit.workspace = true
+vertex-swarm-net-pseudosettle.workspace = true
+vertex-swarm-net-pushsync.workspace = true
+vertex-swarm-net-retrieval.workspace = true
+
+## vertex - infrastructure
+vertex-tasks.workspace = true
+
+## p2p
+libp2p.workspace = true
+
+## crypto
+alloy-primitives.workspace = true
+
+## async
+futures.workspace = true
+futures-bounded = "0.2"
+tokio = { workspace = true, features = ["sync"] }
+
+## observability
+metrics.workspace = true
+
+## misc
+bytes.workspace = true
+parking_lot.workspace = true
+strum.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[features]
+default = ["std"]
+std = []

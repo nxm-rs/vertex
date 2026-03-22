@@ -6,18 +6,17 @@
 //!
 //! Use this for nodes that store and serve chunks in the Swarm network.
 
+use std::ops::{Deref, DerefMut};
+
 use eyre::Result;
-use libp2p::PeerId;
-use nectar_primitives::SwarmAddress;
 use tokio::sync::mpsc;
 use tracing::info;
 use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig};
-use vertex_swarm_topology::{KademliaConfig, TopologyCommand, TopologyHandle};
+use vertex_swarm_topology::KademliaConfig;
 use vertex_tasks::GracefulShutdown;
 
 use super::client::{ClientNode, ClientNodeBuilder};
-use crate::protocol::PseudosettleEvent;
-use crate::{ClientHandle, ClientService};
+use vertex_swarm_client::{ClientHandle, ClientService, PseudosettleEvent};
 
 /// A full Swarm storer node with storage and chunk sync.
 ///
@@ -48,40 +47,24 @@ pub struct StorerNode<I: SwarmIdentity + Clone> {
     // - redistribution: RedistributionService
 }
 
+impl<I: SwarmIdentity + Clone> Deref for StorerNode<I> {
+    type Target = ClientNode<I>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.client
+    }
+}
+
+impl<I: SwarmIdentity + Clone> DerefMut for StorerNode<I> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.client
+    }
+}
+
 impl<I: SwarmIdentity + Clone> StorerNode<I> {
     /// Create a builder for constructing a StorerNode.
     pub fn builder(identity: I) -> StorerNodeBuilder<I> {
         StorerNodeBuilder::new(identity)
-    }
-
-    /// Get the local peer ID.
-    pub fn local_peer_id(&self) -> &PeerId {
-        self.client.local_peer_id()
-    }
-
-    /// Get the overlay address.
-    pub fn overlay_address(&self) -> SwarmAddress {
-        self.client.overlay_address()
-    }
-
-    /// Get the topology handle for peer and routing queries.
-    pub fn topology_handle(&self) -> &TopologyHandle<I> {
-        self.client.topology_handle()
-    }
-
-    /// Send a topology command.
-    pub fn topology_command(&mut self, command: TopologyCommand) {
-        self.client.topology_command(command);
-    }
-
-    /// Dial peers from multiaddr strings.
-    pub fn dial_addresses(&mut self, addrs: &[String]) -> usize {
-        self.client.dial_addresses(addrs)
-    }
-
-    /// Start listening on configured addresses.
-    pub fn start_listening(&mut self) -> Result<()> {
-        self.client.start_listening()
     }
 
     /// Run the network event loop with graceful shutdown support.
@@ -93,16 +76,6 @@ impl<I: SwarmIdentity + Clone> StorerNode<I> {
         info!("Starting storer node event loop");
         // TODO: spawn chunk sync and redistribution tasks
         self.client.run(shutdown).await
-    }
-
-    /// Get the number of connected peers.
-    pub fn connected_peers(&self) -> usize {
-        self.client.connected_peers()
-    }
-
-    /// Check if we're connected to any peers.
-    pub fn is_connected(&self) -> bool {
-        self.client.is_connected()
     }
 }
 

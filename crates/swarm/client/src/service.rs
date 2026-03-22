@@ -15,9 +15,10 @@ use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
 
-use crate::protocol::{ClientCommand, ClientEvent};
+use crate::{ClientCommand, ClientEvent, DEFAULT_CHANNEL_CAPACITY};
 
-pub(crate) const DEFAULT_CHANNEL_CAPACITY: usize = 256;
+/// Maximum number of concurrent pending retrievals.
+const MAX_PENDING_RETRIEVALS: usize = 1024;
 
 /// Handle for sending commands to the network layer.
 #[derive(Clone)]
@@ -87,9 +88,14 @@ impl ClientHandle {
     ) -> Result<RetrievalResult, RetrievalError> {
         let (tx, rx) = oneshot::channel();
 
-        // Register the pending retrieval
+        // Register the pending retrieval (bounded)
         {
             let mut pending = self.pending_retrievals.lock();
+            if pending.len() >= MAX_PENDING_RETRIEVALS {
+                warn!("Pending retrievals map full, rejecting request");
+                metrics::counter!("swarm.client.retrievals_rejected").increment(1);
+                return Err(RetrievalError::ChannelClosed);
+            }
             pending.insert(address, tx);
         }
 

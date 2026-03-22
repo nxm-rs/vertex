@@ -79,6 +79,11 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
         &self.peer_manager
     }
 
+    /// Get the connection registry for peer address resolution.
+    pub fn connection_registry(&self) -> &Arc<ConnectionRegistry> {
+        &self.connection_registry
+    }
+
     /// Get agent version for a peer by PeerId.
     pub fn agent_version(&self, peer_id: &PeerId) -> Option<String> {
         self.agent_versions.read().peek(peer_id).cloned()

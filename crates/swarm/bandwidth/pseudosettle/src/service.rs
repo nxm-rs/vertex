@@ -9,11 +9,11 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_api::{Direction, SwarmPeerBandwidth, SwarmPeerRegistry};
 use vertex_swarm_net_pseudosettle::PaymentAck;
-use vertex_swarm_node::ClientCommand;
+use vertex_swarm_client::ClientCommand;
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
 
-pub use vertex_swarm_node::PseudosettleEvent;
+pub use vertex_swarm_client::PseudosettleEvent;
 
 use crate::error::PseudosettleSettlementError;
 

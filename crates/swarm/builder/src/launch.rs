@@ -1,4 +1,4 @@
-//! SwarmLaunchConfig implementations for config types.
+//! SwarmLaunchConfig implementation for progressive building.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -11,22 +11,24 @@ use vertex_net_peer_store::NetPeerStore;
 use vertex_net_peer_store::error::StoreError;
 use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
-use vertex_swarm_api::{SwarmLaunchConfig, SwarmPeerConfig, SwarmScoreStore};
+use vertex_swarm_api::{SwarmLaunchConfig, SwarmNodeType, SwarmPeerConfig, SwarmScoreStore};
 use vertex_swarm_bandwidth::{
     Accounting, AccountingBuilder, BandwidthConfig, ClientAccounting, DbAccountingStore,
 };
 use vertex_swarm_identity::Identity;
-use vertex_swarm_node::{BootNode, ClientNode};
+use vertex_swarm_node::ClientNode;
+use vertex_swarm_node::args::NetworkConfig;
 use vertex_swarm_peer_manager::{DbPeerStore, StoredPeer};
 use vertex_swarm_peer_score::PeerScore;
 use vertex_swarm_spec::{Loggable, Spec};
-use vertex_swarm_topology::TopologyHandle;
+use vertex_swarm_topology::{KademliaConfig, TopologyHandle};
 use vertex_tasks::{GracefulShutdown, NodeTaskFn};
 
-use crate::config::{BootnodeConfig, ClientConfig, StorerConfig};
+use crate::config::{SwarmBuildConfig, SwarmConfigError};
 use crate::error::SwarmNodeError;
+use crate::node::SwarmProtocolBuilder;
 use crate::providers::NetworkChunkProvider;
-use crate::rpc::{BootnodeRpcProviders, ClientRpcProviders, StorerRpcProviders};
+use crate::rpc::{FullRpcProviders, SwarmNodeProviders};
 
 type PeerStore = Arc<dyn NetPeerStore<StoredPeer>>;
 type PeerScoreStore = Arc<dyn SwarmScoreStore<Value = PeerScore, Error = StoreError>>;
@@ -34,7 +36,7 @@ type PeerScoreStore = Arc<dyn SwarmScoreStore<Value = PeerScore, Error = StoreEr
 /// Stats collection interval for database metrics.
 const DB_METRICS_INTERVAL: Duration = Duration::from_secs(30);
 
-fn log_build_start<N: SwarmPeerConfig>(node_type: &str, spec: &Spec, network: &N) {
+pub(crate) fn log_build_start<N: SwarmPeerConfig>(node_type: &str, spec: &Spec, network: &N) {
     info!("Building {} node...", node_type);
     spec.log();
 
@@ -44,7 +46,7 @@ fn log_build_start<N: SwarmPeerConfig>(node_type: &str, spec: &Spec, network: &N
     }
 }
 
-fn build_accounting(
+pub(crate) fn build_accounting(
     spec: Arc<Spec>,
     identity: &Arc<Identity>,
     config: BandwidthConfig,
@@ -60,7 +62,7 @@ fn build_accounting(
 }
 
 /// Wrap a future factory as a NodeTaskFn with graceful shutdown support.
-fn single_task<F, Fut>(f: F) -> NodeTaskFn
+pub(crate) fn single_task<F, Fut>(f: F) -> NodeTaskFn
 where
     F: FnOnce(GracefulShutdown) -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
@@ -68,7 +70,7 @@ where
     Box::new(move |shutdown| Box::pin(f(shutdown)))
 }
 
-fn open_shared_database(ctx: &dyn InfrastructureContext) -> Option<Arc<RedbDatabase>> {
+pub(crate) fn open_shared_database(ctx: &dyn InfrastructureContext) -> Option<Arc<RedbDatabase>> {
     let path = ctx.data_dir().join("db").join("vertex.redb");
     match vertex_storage_redb::open_database(Some(&path), false) {
         Ok(db) => {
@@ -104,7 +106,7 @@ fn spawn_db_metrics_task(ctx: &dyn InfrastructureContext, db: Arc<RedbDatabase>)
         });
 }
 
-fn create_accounting_store(
+pub(crate) fn create_accounting_store(
     db: &Option<Arc<RedbDatabase>>,
 ) -> Option<Arc<DbAccountingStore<RedbDatabase>>> {
     let db = db.as_ref()?;
@@ -121,7 +123,7 @@ fn create_accounting_store(
     }
 }
 
-fn create_peer_store(
+pub(crate) fn create_peer_store(
     db: &Option<Arc<RedbDatabase>>,
 ) -> (Option<PeerStore>, Option<PeerScoreStore>) {
     let Some(db) = db.as_ref() else {
@@ -140,6 +142,63 @@ fn create_peer_store(
             (None, None)
         }
     }
+}
+
+/// Build a client-like node (client or storer) with shared infrastructure.
+///
+/// Both client and storer nodes share identical build logic: open DB, create
+/// stores, build accounting, construct a `ClientNode`, extract topology,
+/// create chunk provider, spawn client service, and set up shutdown with
+/// accounting flush.
+pub(crate) async fn build_client_like_node(
+    node_type: &'static str,
+    spec: &Arc<Spec>,
+    identity: &Arc<Identity>,
+    network: &NetworkConfig<KademliaConfig>,
+    bandwidth: BandwidthConfig,
+    ctx: &dyn InfrastructureContext,
+) -> Result<(NodeTaskFn, FullRpcProviders<Arc<Identity>, NetworkChunkProvider<Arc<Identity>>>), SwarmNodeError>
+{
+    let db = open_shared_database(ctx);
+    let (peer_store, score_store) = create_peer_store(&db);
+    let accounting_store = create_accounting_store(&db);
+
+    let accounting = build_accounting(
+        spec.clone(),
+        identity,
+        bandwidth,
+        accounting_store,
+    );
+
+    let (node, client_service, client_handle) = ClientNode::builder(identity.clone())
+        .build(network, peer_store, score_store)
+        .await
+        .map_err(|e| SwarmNodeError::Build(e.into()))?;
+
+    let topology = node.topology_handle().clone();
+    let chunk_provider = NetworkChunkProvider::new(client_handle, topology.clone());
+    let providers = FullRpcProviders::new(topology, chunk_provider);
+
+    // Spawn client service as independent task with graceful shutdown
+    ctx.executor()
+        .spawn_service("swarm.client_service", client_service);
+
+    // Return node task - accounting is moved into the closure to keep it alive.
+    // On shutdown: flush peer state to the store.
+    // TODO: Settle all outstanding balances before flushing. This requires
+    // researching how Bee handles graceful settlement on shutdown (iterate
+    // connected peers, call settle() for each with outstanding debt).
+    let task = single_task(move |shutdown| async move {
+        if let Err(e) = node.start_and_run(shutdown).await {
+            tracing::error!(error = %e, "{} error", node_type);
+        }
+        if let Err(e) = accounting.bandwidth().flush_to_store() {
+            tracing::warn!(error = %e, "Failed to flush accounting state on shutdown");
+        }
+    });
+
+    info!("{} node built successfully", node_type);
+    Ok((task, providers))
 }
 
 macro_rules! define_launch_types {
@@ -167,151 +226,61 @@ macro_rules! define_launch_types {
 
 define_launch_types!(BootnodeLaunchTypes);
 define_launch_types!(ClientLaunchTypes, with_client);
-define_launch_types!(StorerLaunchTypes, with_client);
 
 #[async_trait]
-impl SwarmLaunchConfig for BootnodeConfig {
-    type Types = BootnodeLaunchTypes;
-    type Providers = BootnodeRpcProviders<Arc<Identity>>;
-    type Error = SwarmNodeError;
-
-    async fn build(
-        self,
-        ctx: &dyn InfrastructureContext,
-    ) -> Result<(NodeTaskFn, Self::Providers), Self::Error> {
-        log_build_start("Bootnode", self.spec(), self.network());
-
-        let db = open_shared_database(ctx);
-        let (peer_store, score_store) = create_peer_store(&db);
-
-        let node = BootNode::builder(self.identity().clone())
-            .build(self.network(), peer_store, score_store)
-            .await
-            .map_err(|e| SwarmNodeError::Build(e.into()))?;
-
-        let topology = node.topology_handle().clone();
-        let providers = BootnodeRpcProviders::new(topology);
-
-        let task = single_task(move |shutdown| async move {
-            if let Err(e) = node.start_and_run(shutdown).await {
-                tracing::error!(error = %e, "BootNode error");
-            }
-        });
-
-        info!("Bootnode built successfully");
-        Ok((task, providers))
-    }
-}
-
-#[async_trait]
-impl SwarmLaunchConfig for ClientConfig {
+impl SwarmLaunchConfig for SwarmBuildConfig {
     type Types = ClientLaunchTypes;
-    type Providers = ClientRpcProviders<Arc<Identity>, NetworkChunkProvider<Arc<Identity>>>;
+    type Providers = SwarmNodeProviders;
     type Error = SwarmNodeError;
 
     async fn build(
         self,
         ctx: &dyn InfrastructureContext,
     ) -> Result<(NodeTaskFn, Self::Providers), Self::Error> {
-        log_build_start("Client", self.spec(), self.network());
+        // Progressive validation: each step validates its input before
+        // feeding it to the next builder stage.
+        let network = self
+            .protocol
+            .network_config()
+            .map_err(SwarmConfigError::from)?;
 
-        let db = open_shared_database(ctx);
-        let (peer_store, score_store) = create_peer_store(&db);
-        let accounting_store = create_accounting_store(&db);
+        let identity = self
+            .protocol
+            .identity(self.spec.clone(), &self.network_dir)
+            .map_err(SwarmConfigError::Identity)?;
 
-        let accounting = build_accounting(
-            self.spec().clone(),
-            self.identity(),
-            self.bandwidth().clone(),
-            accounting_store,
-        );
+        let base = SwarmProtocolBuilder::with_context(ctx)
+            .with_spec(self.spec)
+            .with_identity(identity)
+            .with_network(network);
 
-        let (node, client_service, client_handle) = ClientNode::builder(self.identity().clone())
-            .build(self.network(), peer_store, score_store)
-            .await
-            .map_err(|e| SwarmNodeError::Build(e.into()))?;
-
-        let topology = node.topology_handle().clone();
-        let chunk_provider = NetworkChunkProvider::new(client_handle, topology.clone());
-        let providers = ClientRpcProviders::new(topology, chunk_provider);
-
-        // Spawn client service as independent task with graceful shutdown
-        ctx.executor()
-            .spawn_service("swarm.client_service", client_service);
-
-        // Return node task - accounting is moved into the closure to keep it alive.
-        // On shutdown: flush peer state to the store.
-        // TODO: Settle all outstanding balances before flushing. This requires
-        // researching how Bee handles graceful settlement on shutdown (iterate
-        // connected peers, call settle() for each with outstanding debt).
-        let task = single_task(move |shutdown| async move {
-            if let Err(e) = node.start_and_run(shutdown).await {
-                tracing::error!(error = %e, "ClientNode error");
+        match self.protocol.node_type {
+            SwarmNodeType::Bootnode => {
+                let (task, providers) = base.build().await?.into_parts();
+                Ok((task, SwarmNodeProviders::Bootnode(providers)))
             }
-            if let Err(e) = accounting.bandwidth().flush_to_store() {
-                tracing::warn!(error = %e, "Failed to flush accounting state on shutdown");
+            SwarmNodeType::Client | SwarmNodeType::Storer => {
+                let bandwidth = self
+                    .protocol
+                    .bandwidth_config()
+                    .map_err(SwarmConfigError::from)?;
+
+                let client = base.with_accounting(bandwidth);
+
+                let (task, providers) = if self.protocol.node_type == SwarmNodeType::Storer {
+                    let local_store = self.protocol.local_store_config();
+                    let storage = self.protocol.storage_config();
+                    client
+                        .with_storage(local_store, storage)
+                        .build()
+                        .await?
+                        .into_parts()
+                } else {
+                    client.build().await?.into_parts()
+                };
+
+                Ok((task, SwarmNodeProviders::Full(providers)))
             }
-        });
-
-        info!("Client node built successfully");
-        Ok((task, providers))
-    }
-}
-
-#[async_trait]
-impl SwarmLaunchConfig for StorerConfig {
-    type Types = StorerLaunchTypes;
-    type Providers = StorerRpcProviders<Arc<Identity>, NetworkChunkProvider<Arc<Identity>>>;
-    type Error = SwarmNodeError;
-
-    async fn build(
-        self,
-        ctx: &dyn InfrastructureContext,
-    ) -> Result<(NodeTaskFn, Self::Providers), Self::Error> {
-        log_build_start("Storer", self.spec(), self.network());
-
-        let db = open_shared_database(ctx);
-        let (peer_store, score_store) = create_peer_store(&db);
-        let accounting_store = create_accounting_store(&db);
-
-        let accounting = build_accounting(
-            self.spec().clone(),
-            self.identity(),
-            self.bandwidth().clone(),
-            accounting_store,
-        );
-
-        // TODO: build storer-specific components
-        let _ = self.local_store();
-        let _ = self.storage();
-
-        // Build as ClientNode for now (storer components not yet implemented)
-        let (node, client_service, client_handle) = ClientNode::builder(self.identity().clone())
-            .build(self.network(), peer_store, score_store)
-            .await
-            .map_err(|e| SwarmNodeError::Build(e.into()))?;
-
-        let topology = node.topology_handle().clone();
-        let chunk_provider = NetworkChunkProvider::new(client_handle, topology.clone());
-        let providers = StorerRpcProviders::new(topology, chunk_provider);
-
-        // Spawn client service as independent task with graceful shutdown
-        ctx.executor()
-            .spawn_service("swarm.client_service", client_service);
-
-        // Return node task - accounting is moved into the closure to keep it alive.
-        // On shutdown: flush peer state to the store.
-        // TODO: Settle all outstanding balances before flushing (see ClientConfig).
-        let task = single_task(move |shutdown| async move {
-            if let Err(e) = node.start_and_run(shutdown).await {
-                tracing::error!(error = %e, "StorerNode error");
-            }
-            if let Err(e) = accounting.bandwidth().flush_to_store() {
-                tracing::warn!(error = %e, "Failed to flush accounting state on shutdown");
-            }
-        });
-
-        info!("Storer node built successfully");
-        Ok((task, providers))
+        }
     }
 }

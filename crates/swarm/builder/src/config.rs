@@ -1,159 +1,63 @@
-//! Node-type-specific validated configurations holding runtime objects.
+//! Swarm build configuration.
 //!
-//! These structs are the final tier of the configuration architecture: fully
-//! assembled configs that hold runtime objects such as `Arc<Identity>` and
-//! `Arc<Spec>`. They live in `vertex-swarm-builder` (not `vertex-node-core`)
-//! because they depend on swarm-specific types like `Identity`,
-//! `KademliaConfig`, and `Spec`.
-//!
-//! Each struct implements `NodeBuildsProtocol` so the builder can select the
-//! correct protocol stack at construction time.
-//!
-//! See `docs/architecture/config.md` for the full three-tier pattern.
+//! [`SwarmBuildConfig`] holds the raw protocol inputs needed to progressively
+//! build a swarm node. Validation happens inside the builder chain (in the
+//! [`SwarmLaunchConfig`] implementation), not up front.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use vertex_node_api::NodeBuildsProtocol;
-use vertex_swarm_api::SwarmProtocol;
-use vertex_swarm_bandwidth::BandwidthConfig;
-use vertex_swarm_identity::Identity;
-use vertex_swarm_localstore::LocalStoreConfig;
-use vertex_swarm_node::args::NetworkConfig;
-use vertex_swarm_redistribution::StorageConfig;
+use vertex_swarm_api::{SwarmNodeType, SwarmProtocol};
+use vertex_swarm_bandwidth::BandwidthConfigError;
+use vertex_swarm_node::ProtocolConfig;
 use vertex_swarm_spec::Spec;
-use vertex_swarm_topology::KademliaConfig;
 
-/// Implement shared config getters: `spec()`, `identity()`, `network()`.
-macro_rules! impl_common_config_getters {
-    ($ty:ident) => {
-        impl $ty {
-            pub fn spec(&self) -> &Arc<Spec> {
-                &self.spec
-            }
+use vertex_swarm_api::ConfigError;
 
-            pub fn identity(&self) -> &Arc<Identity> {
-                &self.identity
-            }
-
-            pub fn network(&self) -> &NetworkConfig<KademliaConfig> {
-                &self.network
-            }
-        }
-    };
+/// Swarm build configuration: raw protocol inputs for progressive building.
+///
+/// Pass this to `with_protocol()` in the node builder pipeline. Validation
+/// and assembly happen progressively inside the builder chain when
+/// `SwarmLaunchConfig::build()` is called.
+pub struct SwarmBuildConfig {
+    pub(crate) protocol: ProtocolConfig,
+    pub(crate) spec: Arc<Spec>,
+    pub(crate) network_dir: PathBuf,
 }
 
-/// Implement `NodeBuildsProtocol` with a given protocol name.
-macro_rules! impl_builds_protocol {
-    ($ty:ident, $name:expr) => {
-        impl NodeBuildsProtocol for $ty {
-            type Protocol = SwarmProtocol<Self>;
-
-            fn protocol_name(&self) -> &'static str {
-                $name
-            }
-        }
-    };
-}
-
-/// Validated configuration for bootnode (network identity and topology only).
-#[derive(Clone)]
-pub struct BootnodeConfig {
-    spec: Arc<Spec>,
-    identity: Arc<Identity>,
-    network: NetworkConfig<KademliaConfig>,
-}
-
-impl BootnodeConfig {
-    pub fn new(
-        spec: Arc<Spec>,
-        identity: Arc<Identity>,
-        network: NetworkConfig<KademliaConfig>,
-    ) -> Self {
+impl SwarmBuildConfig {
+    pub fn new(protocol: ProtocolConfig, spec: Arc<Spec>, network_dir: PathBuf) -> Self {
         Self {
+            protocol,
             spec,
-            identity,
-            network,
+            network_dir,
         }
     }
 }
 
-impl_common_config_getters!(BootnodeConfig);
-impl_builds_protocol!(BootnodeConfig, "Swarm Bootnode");
+impl NodeBuildsProtocol for SwarmBuildConfig {
+    type Protocol = SwarmProtocol<Self>;
 
-/// Validated configuration for client (light) node with bandwidth accounting.
-#[derive(Clone)]
-pub struct ClientConfig {
-    spec: Arc<Spec>,
-    identity: Arc<Identity>,
-    network: NetworkConfig<KademliaConfig>,
-    bandwidth: BandwidthConfig,
-}
-
-impl ClientConfig {
-    pub fn new(
-        spec: Arc<Spec>,
-        identity: Arc<Identity>,
-        network: NetworkConfig<KademliaConfig>,
-        bandwidth: BandwidthConfig,
-    ) -> Self {
-        Self {
-            spec,
-            identity,
-            network,
-            bandwidth,
+    fn protocol_name(&self) -> &'static str {
+        match self.protocol.node_type {
+            SwarmNodeType::Bootnode => "Swarm Bootnode",
+            SwarmNodeType::Client => "Swarm Client",
+            SwarmNodeType::Storer => "Swarm Storer",
         }
     }
-
-    pub fn bandwidth(&self) -> &BandwidthConfig {
-        &self.bandwidth
-    }
 }
 
-impl_common_config_getters!(ClientConfig);
-impl_builds_protocol!(ClientConfig, "Swarm Client");
-
-/// Validated configuration for storer (full) node with storage and redistribution.
-#[derive(Clone)]
-pub struct StorerConfig {
-    spec: Arc<Spec>,
-    identity: Arc<Identity>,
-    network: NetworkConfig<KademliaConfig>,
-    bandwidth: BandwidthConfig,
-    local_store: LocalStoreConfig,
-    storage: StorageConfig,
+/// Error during swarm node build.
+#[derive(Debug, thiserror::Error)]
+pub enum SwarmConfigError {
+    /// Network configuration is invalid.
+    #[error("network config: {0}")]
+    Network(#[from] ConfigError),
+    /// Identity loading failed.
+    #[error("identity: {0}")]
+    Identity(#[source] eyre::Error),
+    /// Bandwidth configuration is invalid.
+    #[error("bandwidth config: {0}")]
+    Bandwidth(#[from] BandwidthConfigError),
 }
-
-impl StorerConfig {
-    pub fn new(
-        spec: Arc<Spec>,
-        identity: Arc<Identity>,
-        network: NetworkConfig<KademliaConfig>,
-        bandwidth: BandwidthConfig,
-        local_store: LocalStoreConfig,
-        storage: StorageConfig,
-    ) -> Self {
-        Self {
-            spec,
-            identity,
-            network,
-            bandwidth,
-            local_store,
-            storage,
-        }
-    }
-
-    pub fn bandwidth(&self) -> &BandwidthConfig {
-        &self.bandwidth
-    }
-
-    pub fn local_store(&self) -> &LocalStoreConfig {
-        &self.local_store
-    }
-
-    pub fn storage(&self) -> &StorageConfig {
-        &self.storage
-    }
-}
-
-impl_common_config_getters!(StorerConfig);
-impl_builds_protocol!(StorerConfig, "Swarm Storer");

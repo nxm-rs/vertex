@@ -1,31 +1,26 @@
 //! Type-state node builder for Vertex.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::Path;
 
-use vertex_node_api::{InfrastructureContext, NodeBuildsProtocol, NodeProtocol, NodeRpcConfig};
+use vertex_node_api::{InfrastructureContext, NodeBuildsProtocol, NodeProtocol};
 use vertex_node_core::dirs::DataDirs;
 use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
 use vertex_tasks::TaskExecutor;
 
 use crate::{InfrastructureError, LaunchError, NodeHandle};
 
-/// Context for launching a node with executor, directories, and API config.
+/// Context for launching a node with executor and directories.
 #[derive(Clone)]
-pub struct LaunchContext<A = ()> {
+pub struct LaunchContext {
     pub executor: TaskExecutor,
     pub dirs: DataDirs,
-    pub api: A,
 }
 
-impl<A> LaunchContext<A> {
+impl LaunchContext {
     /// Create a new launch context.
-    pub fn new(executor: TaskExecutor, dirs: DataDirs, api: A) -> Self {
-        Self {
-            executor,
-            dirs,
-            api,
-        }
+    pub fn new(executor: TaskExecutor, dirs: DataDirs) -> Self {
+        Self { executor, dirs }
     }
 
     /// Get the data directory root.
@@ -34,27 +29,13 @@ impl<A> LaunchContext<A> {
     }
 }
 
-impl<A: Send + Sync> InfrastructureContext for LaunchContext<A> {
+impl InfrastructureContext for LaunchContext {
     fn executor(&self) -> &TaskExecutor {
         &self.executor
     }
 
     fn data_dir(&self) -> &Path {
         &self.dirs.network
-    }
-}
-
-impl<A: NodeRpcConfig> LaunchContext<A> {
-    /// Get the gRPC socket address from configuration.
-    pub fn grpc_addr(&self) -> SocketAddr {
-        let ip: IpAddr = self.api.grpc_addr().parse().unwrap_or_else(|_| {
-            tracing::warn!(
-                addr = %self.api.grpc_addr(),
-                "Invalid gRPC address, falling back to localhost"
-            );
-            [127, 0, 0, 1].into()
-        });
-        SocketAddr::new(ip, self.api.grpc_port())
     }
 }
 
@@ -68,16 +49,11 @@ impl NodeBuilder {
         Self
     }
 
-    /// Add launch context (executor, data directories, and API config).
+    /// Add launch context (executor and data directories).
     #[must_use]
-    pub fn with_launch_context<A>(
-        self,
-        executor: TaskExecutor,
-        dirs: DataDirs,
-        api: A,
-    ) -> WithLaunchContext<A> {
+    pub fn with_launch_context(self, executor: TaskExecutor, dirs: DataDirs) -> WithLaunchContext {
         WithLaunchContext {
-            ctx: LaunchContext::new(executor, dirs, api),
+            ctx: LaunchContext::new(executor, dirs),
         }
     }
 }
@@ -89,13 +65,18 @@ impl Default for NodeBuilder {
 }
 
 /// Builder with launch context attached.
-pub struct WithLaunchContext<A> {
-    ctx: LaunchContext<A>,
+pub struct WithLaunchContext {
+    ctx: LaunchContext,
 }
 
-impl<A> WithLaunchContext<A> {
+impl WithLaunchContext {
+    /// Create from an existing launch context.
+    pub fn new(ctx: LaunchContext) -> Self {
+        Self { ctx }
+    }
+
     /// Get a reference to the launch context.
-    pub fn context(&self) -> &LaunchContext<A> {
+    pub fn context(&self) -> &LaunchContext {
         &self.ctx
     }
 
@@ -111,7 +92,7 @@ impl<A> WithLaunchContext<A> {
 
     /// Provide the protocol configuration (protocol type inferred from config).
     #[must_use]
-    pub fn with_protocol<C: NodeBuildsProtocol>(self, config: C) -> WithProtocol<C::Protocol, A> {
+    pub fn with_protocol<C: NodeBuildsProtocol>(self, config: C) -> WithProtocol<C::Protocol> {
         tracing::info!("Protocol: {}", config.protocol_name());
         WithProtocol {
             ctx: self.ctx,
@@ -121,22 +102,25 @@ impl<A> WithLaunchContext<A> {
 }
 
 /// Builder with protocol configuration, ready to launch.
-pub struct WithProtocol<P: NodeProtocol, A> {
-    ctx: LaunchContext<A>,
+pub struct WithProtocol<P: NodeProtocol> {
+    ctx: LaunchContext,
     config: P::Config,
 }
 
-impl<P: NodeProtocol, A: NodeRpcConfig + Send + Sync> WithProtocol<P, A>
+impl<P: NodeProtocol> WithProtocol<P>
 where
     P::Config: NodeBuildsProtocol,
 {
     /// Get a reference to the launch context.
-    pub fn context(&self) -> &LaunchContext<A> {
+    pub fn context(&self) -> &LaunchContext {
         &self.ctx
     }
 
     /// Launch the node with gRPC server for protocol services.
-    pub async fn launch(self) -> Result<NodeHandle<P::Components>, LaunchError<P::BuildError>>
+    pub async fn launch(
+        self,
+        grpc_addr: SocketAddr,
+    ) -> Result<NodeHandle<P::Components>, LaunchError<P::BuildError>>
     where
         P::Components: RegistersGrpcServices,
     {
@@ -144,9 +128,7 @@ where
 
         // Infrastructure configuration
         info!("Data directory: {}", self.ctx.dirs.root.display());
-        info!("gRPC address: {}", self.ctx.grpc_addr());
-
-        let grpc_addr = self.ctx.grpc_addr();
+        info!("gRPC address: {}", grpc_addr);
 
         // Launch the protocol (builds components and spawns services)
         let components = P::launch(self.config, &self.ctx)
@@ -181,15 +163,10 @@ where
             self.ctx.executor.on_shutdown_signal().clone(),
         ))
     }
-}
 
-impl<P: NodeProtocol> WithProtocol<P, ()>
-where
-    P::Config: NodeBuildsProtocol,
-{
     /// Launch the node without gRPC server.
     ///
-    /// Use this when you don't need the gRPC API.
+    /// Use this when you don't need the gRPC API (e.g. embedded use).
     pub async fn launch_without_grpc(
         self,
     ) -> Result<NodeHandle<P::Components>, LaunchError<P::BuildError>> {

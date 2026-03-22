@@ -7,7 +7,7 @@ use vertex_swarm_api::{
     SwarmResult, SwarmTopologyRouting,
 };
 
-use crate::ClientHandle;
+use vertex_swarm_client::ClientHandle;
 
 /// Unified client for all Swarm node types.
 ///
@@ -109,7 +109,7 @@ pub type FullClient<T, A, S = ()> = Client<ClientComponents<T, A>, S>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ClientCommand, ClientHandle};
+    use vertex_swarm_client::{ClientCommand, ClientHandle};
     use std::sync::Arc;
     use tokio::sync::mpsc;
     use vertex_swarm_api::{SwarmPeerRegistry, SwarmTopologyRouting};

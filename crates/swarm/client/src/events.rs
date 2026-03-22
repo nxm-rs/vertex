@@ -22,6 +22,36 @@ use nectar_primitives::ChunkAddress;
 use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
+/// Identifies which client sub-protocol an error originated from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientProtocol {
+    /// Credit limit exchange.
+    Credit,
+    /// Chunk retrieval.
+    Retrieval,
+    /// Chunk push with receipt.
+    Pushsync,
+    /// Bandwidth accounting settlement.
+    Pseudosettle,
+    /// Async response sending (not a wire protocol).
+    Response,
+    /// Protocol could not be identified.
+    Unknown,
+}
+
+impl std::fmt::Display for ClientProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Credit => write!(f, "credit"),
+            Self::Retrieval => write!(f, "retrieval"),
+            Self::Pushsync => write!(f, "pushsync"),
+            Self::Pseudosettle => write!(f, "pseudosettle"),
+            Self::Response => write!(f, "response"),
+            Self::Unknown => write!(f, "unknown"),
+        }
+    }
+}
+
 /// Events emitted by the client behaviour.
 #[derive(Debug, Clone)]
 pub enum ClientEvent {
@@ -183,7 +213,7 @@ pub enum ClientEvent {
         /// The libp2p peer ID (if known).
         peer_id: Option<PeerId>,
         /// The protocol that failed.
-        protocol: &'static str,
+        protocol: ClientProtocol,
         /// Error description.
         error: String,
     },
@@ -229,8 +259,6 @@ pub enum ClientCommand {
         peer: OverlayAddress,
         /// Request ID from ChunkRequested event.
         request_id: u64,
-        /// The chunk address.
-        address: ChunkAddress,
         /// The chunk data.
         data: Bytes,
         /// The postage stamp.

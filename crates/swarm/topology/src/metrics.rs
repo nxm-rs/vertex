@@ -406,6 +406,7 @@ mod tests {
         // Disconnect a client that was never connected — must not wrap to u64::MAX.
         let event = TopologyEvent::PeerDisconnected {
             overlay: test_overlay(0),
+            peer_id: test_peer_id(0),
             reason: DisconnectReason::ConnectionError,
             connection_duration: None,
             node_type: SwarmNodeType::Client,
@@ -479,6 +480,7 @@ mod tests {
         for i in 0..3 {
             metrics.record_event(&TopologyEvent::PeerDisconnected {
                 overlay: test_overlay(i),
+                peer_id: test_peer_id(i),
                 reason: DisconnectReason::LocalClose,
                 connection_duration: Some(Duration::from_secs(60)),
                 node_type: SwarmNodeType::Storer,
@@ -487,6 +489,7 @@ mod tests {
         for i in 10..12 {
             metrics.record_event(&TopologyEvent::PeerDisconnected {
                 overlay: test_overlay(i),
+                peer_id: test_peer_id(i),
                 reason: DisconnectReason::ConnectionError,
                 connection_duration: None,
                 node_type: SwarmNodeType::Client,
@@ -518,6 +521,7 @@ mod tests {
         // HashMap prevents this by recording the type at connect time.
         metrics.record_event(&TopologyEvent::PeerDisconnected {
             overlay: test_overlay(1),
+            peer_id: test_peer_id(1),
             reason: DisconnectReason::ConnectionError,
             connection_duration: Some(Duration::from_secs(120)),
             node_type: SwarmNodeType::Client, // Wrong type!

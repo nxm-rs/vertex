@@ -5,20 +5,20 @@
 //!
 //! Use this for dedicated bootnode servers that help new nodes join the network.
 
+use std::ops::{Deref, DerefMut};
+
 use eyre::Result;
 use futures::StreamExt;
-use libp2p::{PeerId, identity::PublicKey, swarm::NetworkBehaviour, swarm::SwarmEvent};
-use nectar_primitives::SwarmAddress;
+use libp2p::{identity::PublicKey, swarm::NetworkBehaviour, swarm::SwarmEvent};
 use tracing::info;
 use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig};
 use vertex_swarm_net_identify as identify;
 use vertex_swarm_topology::{
-    KademliaConfig, TopologyBehaviour, TopologyCommand, TopologyConfig, TopologyEvent,
-    TopologyHandle,
+    KademliaConfig, TopologyBehaviour, TopologyConfig, TopologyEvent,
 };
 use vertex_tasks::GracefulShutdown;
 
-use super::base::BaseNode;
+use super::base::{BaseNode, BaseBehaviour};
 use super::builder::BuiltInfrastructure;
 
 /// Network behaviour for a bootnode (topology only, no client protocols).
@@ -27,6 +27,20 @@ use super::builder::BuiltInfrastructure;
 pub struct BootnodeBehaviour<I: SwarmIdentity + Clone> {
     pub identify: identify::Behaviour,
     pub topology: TopologyBehaviour<I>,
+}
+
+impl<I: SwarmIdentity + Clone> BaseBehaviour<I> for BootnodeBehaviour<I> {
+    fn topology(&self) -> &TopologyBehaviour<I> {
+        &self.topology
+    }
+
+    fn topology_mut(&mut self) -> &mut TopologyBehaviour<I> {
+        &mut self.topology
+    }
+
+    fn identify_mut(&mut self) -> &mut identify::Behaviour {
+        &mut self.identify
+    }
 }
 
 impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
@@ -72,6 +86,21 @@ impl From<()> for BootnodeEvent {
 /// peer discovery via handshake, hive, and pingpong.
 pub struct BootNode<I: SwarmIdentity + Clone> {
     base: BaseNode<I, BootnodeBehaviour<I>>,
+    listen_addrs: Vec<libp2p::Multiaddr>,
+}
+
+impl<I: SwarmIdentity + Clone> Deref for BootNode<I> {
+    type Target = BaseNode<I, BootnodeBehaviour<I>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl<I: SwarmIdentity + Clone> DerefMut for BootNode<I> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.base
+    }
 }
 
 impl<I: SwarmIdentity + Clone> BootNode<I> {
@@ -79,29 +108,10 @@ impl<I: SwarmIdentity + Clone> BootNode<I> {
         BootNodeBuilder::new(identity)
     }
 
-    pub fn local_peer_id(&self) -> &PeerId {
-        self.base.local_peer_id()
-    }
-
-    pub fn overlay_address(&self) -> SwarmAddress {
-        self.base.overlay_address()
-    }
-
-    pub fn topology_handle(&self) -> &TopologyHandle<I> {
-        self.base.topology_handle()
-    }
-
-    pub fn topology_command(&mut self, command: TopologyCommand) {
-        self.base.swarm.behaviour_mut().topology.on_command(command);
-    }
-
-    pub fn start_listening(&mut self) -> Result<()> {
-        self.base.start_listening()
-    }
-
     /// Start listening and run the event loop with graceful shutdown support.
     pub async fn start_and_run(mut self, shutdown: GracefulShutdown) -> Result<()> {
-        self.start_listening()?;
+        let addrs = std::mem::take(&mut self.listen_addrs);
+        self.base.start_listening(&addrs)?;
         self.run(shutdown).await
     }
 
@@ -112,14 +122,14 @@ impl<I: SwarmIdentity + Clone> BootNode<I> {
     pub async fn run(mut self, shutdown: GracefulShutdown) -> Result<()> {
         info!("Starting bootnode event loop");
 
-        let mut topo_events = self.base.topology_handle.subscribe();
+        let mut topo_events = self.base.swarm.behaviour().topology.subscribe();
         let mut shutdown = std::pin::pin!(shutdown);
 
         loop {
             tokio::select! {
                 guard = &mut shutdown => {
                     info!("Bootnode shutdown signal received");
-                    self.base.swarm.behaviour_mut().topology.on_command(TopologyCommand::SavePeers);
+                    self.base.save_peers();
                     drop(guard);
                     break;
                 }
@@ -155,19 +165,10 @@ impl<I: SwarmIdentity + Clone> BootNode<I> {
     fn handle_behaviour_event(&mut self, event: BootnodeEvent) {
         match event {
             BootnodeEvent::Identify(boxed_event) => {
-                self.handle_identify_event(*boxed_event);
+                self.base.handle_identify_event(*boxed_event);
             }
             BootnodeEvent::Topology(_) => {}
         }
-    }
-
-    fn handle_identify_event(&mut self, event: identify::Event) {
-        let behaviour = self.base.swarm.behaviour_mut();
-        super::base::handle_identify_event(&behaviour.topology, &mut behaviour.identify, event);
-    }
-
-    pub fn connected_peers(&self) -> usize {
-        self.base.connected_peers()
     }
 }
 
@@ -237,7 +238,7 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
             }
         };
 
-        let base = super::builder::build_base_node(
+        let (base, listen_addrs) = super::builder::build_base_node(
             infra,
             network_config,
             "Bootnode",
@@ -251,6 +252,6 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
             .topology
             .set_local_peer_id(*base.swarm.local_peer_id());
 
-        Ok(BootNode { base })
+        Ok(BootNode { base, listen_addrs })
     }
 }

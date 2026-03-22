@@ -63,6 +63,9 @@ members = [
     "crates/swarm/rpc",
     "crates/swarm/test-utils",
 
+    # Client protocol (behaviour + service)
+    "crates/swarm/client",
+
     # Node (libp2p boundary)
     "crates/swarm/node",
     "crates/swarm/topology",
@@ -174,6 +177,9 @@ vertex-swarm-spec = { path = "crates/swarm/spec" }
 vertex-swarm-builder = { path = "crates/swarm/builder" }
 vertex-swarm-rpc = { path = "crates/swarm/rpc" }
 vertex-swarm-test-utils = { path = "crates/swarm/test-utils" }
+
+# client protocol (behaviour + service)
+vertex-swarm-client = { path = "crates/swarm/client" }
 
 # node (libp2p boundary)
 vertex-swarm-node = { path = "crates/swarm/node" }

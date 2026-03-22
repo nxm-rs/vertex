@@ -15,20 +15,29 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig};
 use vertex_swarm_net_identify as identify;
+use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_topology::{
-    KademliaConfig, TopologyBehaviour, TopologyCommand, TopologyConfig, TopologyEvent,
-    TopologyHandle,
+    ConnectionRegistry, KademliaConfig, TopologyBehaviour, TopologyCommand, TopologyConfig,
+    TopologyEvent, TopologyHandle,
 };
 use vertex_tasks::GracefulShutdown;
 use vertex_tasks::TaskExecutor;
 
-use super::base::BaseNode;
+use super::base::{BaseNode, BaseBehaviour};
 use super::builder::BuiltInfrastructure;
-use crate::protocol::{
+use vertex_swarm_client::{
     BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientCommand, ClientEvent,
-    PseudosettleEvent,
+    ClientHandle, ClientService, PeerAddressResolver, PseudosettleEvent, DEFAULT_CHANNEL_CAPACITY,
 };
-use crate::{ClientHandle, ClientService};
+
+/// Adapts the topology's [`ConnectionRegistry`] to the client's [`PeerAddressResolver`] trait.
+struct TopologyPeerResolver(Arc<ConnectionRegistry>);
+
+impl PeerAddressResolver for TopologyPeerResolver {
+    fn peer_id_for_overlay(&self, overlay: &OverlayAddress) -> Option<PeerId> {
+        self.0.resolve_peer_id(overlay)
+    }
+}
 
 /// Network behaviour for a client node (topology + client protocols).
 #[derive(NetworkBehaviour)]
@@ -39,9 +48,25 @@ pub(crate) struct ClientNodeBehaviour<I: SwarmIdentity + Clone> {
     pub(crate) client: ClientBehaviour,
 }
 
+impl<I: SwarmIdentity + Clone> BaseBehaviour<I> for ClientNodeBehaviour<I> {
+    fn topology(&self) -> &TopologyBehaviour<I> {
+        &self.topology
+    }
+
+    fn topology_mut(&mut self) -> &mut TopologyBehaviour<I> {
+        &mut self.topology
+    }
+
+    fn identify_mut(&mut self) -> &mut identify::Behaviour {
+        &mut self.identify
+    }
+}
+
 impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
     pub(crate) fn from_parts(local_public_key: PublicKey, topology: TopologyBehaviour<I>) -> Self {
         let agent_versions = topology.agent_versions();
+        let resolver: Arc<dyn PeerAddressResolver> =
+            Arc::new(TopologyPeerResolver(Arc::clone(topology.connection_registry())));
         Self {
             // Send listen addresses (even private IPs) so bee's peerstore has entries.
             // waitPeerAddrs() returns immediately if len(addrs) > 0, regardless of
@@ -52,7 +77,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
                 agent_versions,
             ),
             topology,
-            client: ClientBehaviour::new(ClientBehaviourConfig::default()),
+            client: ClientBehaviour::new(ClientBehaviourConfig::default(), resolver),
         }
     }
 }
@@ -89,6 +114,7 @@ impl From<ClientEvent> for ClientNodeEvent {
 /// reading from and writing to the Swarm network.
 pub struct ClientNode<I: SwarmIdentity + Clone> {
     base: BaseNode<I, ClientNodeBehaviour<I>>,
+    listen_addrs: Vec<Multiaddr>,
     client_event_tx: mpsc::Sender<ClientEvent>,
     client_command_rx: mpsc::Receiver<ClientCommand>,
 }
@@ -111,7 +137,19 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
     }
 
     pub fn topology_command(&mut self, command: TopologyCommand) {
-        self.base.swarm.behaviour_mut().topology.on_command(command);
+        self.base.topology_command(command);
+    }
+
+    pub fn start_listening(&mut self, addrs: &[Multiaddr]) -> Result<()> {
+        self.base.start_listening(addrs)
+    }
+
+    pub fn connected_peers(&self) -> usize {
+        self.base.connected_peers()
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.base.is_connected()
     }
 
     /// Dial peers from multiaddr strings. Returns the number of successfully initiated dials.
@@ -121,11 +159,7 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
             match addr_str.parse::<Multiaddr>() {
                 Ok(addr) => {
                     debug!(%addr, "Dialing peer");
-                    self.base
-                        .swarm
-                        .behaviour_mut()
-                        .topology
-                        .on_command(TopologyCommand::Dial(addr));
+                    self.base.topology_command(TopologyCommand::Dial(addr));
                     dialed += 1;
                 }
                 Err(e) => {
@@ -136,13 +170,10 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
         dialed
     }
 
-    pub fn start_listening(&mut self) -> Result<()> {
-        self.base.start_listening()
-    }
-
     /// Start listening and run the event loop with graceful shutdown support.
     pub async fn start_and_run(mut self, shutdown: GracefulShutdown) -> Result<()> {
-        self.start_listening()?;
+        let addrs = std::mem::take(&mut self.listen_addrs);
+        self.base.start_listening(&addrs)?;
         self.run(shutdown).await
     }
 
@@ -153,14 +184,14 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
     pub async fn run(mut self, shutdown: GracefulShutdown) -> Result<()> {
         info!("Starting client node event loop");
 
-        let mut topo_events = self.base.topology_handle.subscribe();
+        let mut topo_events = self.base.swarm.behaviour().topology.subscribe();
         let mut shutdown = std::pin::pin!(shutdown);
 
         loop {
             tokio::select! {
                 guard = &mut shutdown => {
                     info!("Client node shutdown signal received");
-                    self.base.swarm.behaviour_mut().topology.on_command(TopologyCommand::SavePeers);
+                    self.base.save_peers();
                     drop(guard);
                     break;
                 }
@@ -195,18 +226,13 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
     fn handle_behaviour_event(&mut self, event: ClientNodeEvent) {
         match event {
             ClientNodeEvent::Identify(event) => {
-                self.handle_identify_event(*event);
+                self.base.handle_identify_event(*event);
             }
             ClientNodeEvent::Topology(_) => {}
             ClientNodeEvent::Client(event) => {
                 self.route_client_event(event);
             }
         }
-    }
-
-    fn handle_identify_event(&mut self, event: identify::Event) {
-        let behaviour = self.base.swarm.behaviour_mut();
-        super::base::handle_identify_event(&behaviour.topology, &mut behaviour.identify, event);
     }
 
     fn handle_topology_service_event(&mut self, event: TopologyEvent) {
@@ -227,7 +253,11 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
                         node_type,
                     });
             }
-            TopologyEvent::PeerDisconnected { .. } => {}
+            TopologyEvent::PeerDisconnected {
+                overlay, peer_id, ..
+            } => {
+                self.route_client_event(ClientEvent::PeerDisconnected { peer_id, overlay });
+            }
             TopologyEvent::PeerRejected { .. } => {}
             TopologyEvent::DepthChanged { .. } => {}
             TopologyEvent::DialFailed { .. } => {}
@@ -244,14 +274,6 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
 
     fn handle_client_command(&mut self, command: ClientCommand) {
         self.base.swarm.behaviour_mut().client.on_command(command);
-    }
-
-    pub fn connected_peers(&self) -> usize {
-        self.base.connected_peers()
-    }
-
-    pub fn is_connected(&self) -> bool {
-        self.base.is_connected()
     }
 }
 
@@ -331,7 +353,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
             }
         };
 
-        let mut base = super::builder::build_base_node(
+        let (mut base, listen_addrs) = super::builder::build_base_node(
             infra,
             network_config,
             "Client node",
@@ -360,14 +382,14 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
             &executor,
         );
 
-        let (command_tx, command_rx) =
-            mpsc::channel(crate::client_service::DEFAULT_CHANNEL_CAPACITY);
-        let (event_tx, event_rx) = mpsc::channel(crate::client_service::DEFAULT_CHANNEL_CAPACITY);
+        let (command_tx, command_rx) = mpsc::channel(DEFAULT_CHANNEL_CAPACITY);
+        let (event_tx, event_rx) = mpsc::channel(DEFAULT_CHANNEL_CAPACITY);
 
         let (client_service, client_handle) = ClientService::with_channels(command_tx, event_rx);
 
         let node = ClientNode {
             base,
+            listen_addrs,
             client_event_tx: event_tx,
             client_command_rx: command_rx,
         };

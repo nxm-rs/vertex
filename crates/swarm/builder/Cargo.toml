@@ -31,6 +31,7 @@ vertex-swarm-redistribution.workspace = true
 vertex-swarm-topology.workspace = true
 vertex-rpc-server.workspace = true
 vertex-swarm-api.workspace = true
+vertex-swarm-client.workspace = true
 vertex-swarm-node = { workspace = true, features = ["cli"] }
 vertex-swarm-identity.workspace = true
 vertex-swarm-rpc.workspace = true
@@ -47,6 +48,7 @@ tokio = { workspace = true, features = ["sync"] }
 
 # misc
 async-trait.workspace = true
+eyre.workspace = true
 bytes.workspace = true
 hex.workspace = true
 strum.workspace = true

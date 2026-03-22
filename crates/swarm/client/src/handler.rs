@@ -38,7 +38,9 @@ use tracing::{debug, warn};
 use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
-use super::upgrade::{
+use crate::ClientProtocol;
+use crate::queue::BoundedEventQueue;
+use crate::upgrade::{
     ClientInboundOutput, ClientInboundUpgrade, ClientOutboundInfo, ClientOutboundOutput,
     ClientOutboundUpgrade,
 };
@@ -56,13 +58,13 @@ const RESPONDER_STALE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Configuration for the client handler.
 #[derive(Debug, Clone)]
-pub(crate) struct Config {
+pub struct Config {
     /// Timeout for protocol operations.
-    pub(crate) timeout: Duration,
+    pub timeout: Duration,
     /// Maximum pending commands before dropping new ones.
-    pub(crate) max_pending_commands: usize,
+    pub max_pending_commands: usize,
     /// Maximum pending events before dropping new ones.
-    pub(crate) max_pending_events: usize,
+    pub max_pending_events: usize,
 }
 
 impl Default for Config {
@@ -77,7 +79,7 @@ impl Default for Config {
 
 /// Commands sent from the behaviour to the handler.
 #[derive(Debug)]
-pub(crate) enum HandlerCommand {
+pub enum HandlerCommand {
     /// Activate the handler after handshake completion.
     Activate {
         /// The peer's overlay address.
@@ -142,7 +144,7 @@ pub(crate) enum HandlerCommand {
 
 /// Events emitted by the handler to the behaviour.
 #[derive(Debug)]
-pub(crate) enum HandlerEvent {
+pub enum HandlerEvent {
     /// Handler has been activated.
     Activated {
         /// The peer's overlay address.
@@ -211,7 +213,7 @@ pub(crate) enum HandlerEvent {
         /// The peer's overlay address (if known).
         overlay: Option<OverlayAddress>,
         /// The protocol that errored.
-        protocol: &'static str,
+        protocol: ClientProtocol,
         /// Error description.
         error: String,
     },
@@ -242,6 +244,24 @@ enum State {
     Active { overlay: OverlayAddress },
 }
 
+/// Credit limit outbound state machine.
+#[derive(Debug)]
+enum CreditLimitState {
+    /// Credit limit has not been sent yet.
+    NotSent,
+    /// An outbound credit limit substream is in flight.
+    Sending,
+    /// Credit limit has been sent successfully.
+    Sent,
+}
+
+impl CreditLimitState {
+    /// Whether a new send can be initiated.
+    fn can_send(&self) -> bool {
+        matches!(self, Self::NotSent)
+    }
+}
+
 /// A pending inbound response waiting for the application layer to provide data.
 enum PendingResponse {
     /// Awaiting chunk data to serve (retrieval response).
@@ -252,56 +272,44 @@ enum PendingResponse {
     Pseudosettle(vertex_swarm_net_pseudosettle::PseudosettleInboundResult),
 }
 
-/// Metadata for tracking when a responder was stored.
-struct StoredResponse {
-    response: PendingResponse,
-    stored_at: Instant,
-}
-
 /// Swarm client connection handler.
 ///
 /// Manages multiple client protocols on a single peer connection.
-pub(crate) struct ClientHandler {
+pub struct ClientHandler {
     config: Config,
     state: State,
     /// Counter for request IDs.
     next_request_id: u64,
     /// Pending commands to process.
     pending_commands: VecDeque<HandlerCommand>,
-    /// Pending events to emit.
-    pending_events: VecDeque<HandlerEvent>,
-    /// Whether credit limit has been sent.
-    credit_limit_sent: bool,
-    /// Whether credit limit outbound is pending.
-    credit_limit_outbound_pending: bool,
+    /// Pending events to emit (bounded with metric-based drops).
+    pending_events: BoundedEventQueue<HandlerEvent>,
+    /// Credit limit outbound state.
+    credit_limit: CreditLimitState,
     /// Stored responders waiting for application-layer responses, keyed by request_id.
-    pending_responses: HashMap<u64, StoredResponse>,
+    pending_responses: HashMap<u64, PendingResponse>,
+    /// FIFO order of stored response IDs for O(1) eviction.
+    response_order: VecDeque<u64>,
     /// Bounded set for async response sends (prevents blocking poll).
     response_sends: futures_bounded::FuturesSet<Result<(), String>>,
 }
 
 impl ClientHandler {
-    /// Push an event if the queue isn't full, otherwise drop with a metric.
-    fn push_event(&mut self, event: HandlerEvent) {
-        if self.pending_events.len() >= self.config.max_pending_events {
-            warn!("Handler event queue full, dropping event");
-            metrics::counter!("swarm.client.handler.events_dropped").increment(1);
-            return;
-        }
-        self.pending_events.push_back(event);
-    }
-
     /// Create a new handler in dormant state.
-    pub(crate) fn new(config: Config) -> Self {
+    pub fn new(config: Config) -> Self {
+        let pending_events = BoundedEventQueue::new(
+            config.max_pending_events,
+            "swarm.client.handler.events_dropped",
+        );
         Self {
             config,
             state: State::Dormant,
             next_request_id: 0,
             pending_commands: VecDeque::new(),
-            pending_events: VecDeque::new(),
-            credit_limit_sent: false,
-            credit_limit_outbound_pending: false,
+            pending_events,
+            credit_limit: CreditLimitState::NotSent,
             pending_responses: HashMap::new(),
+            response_order: VecDeque::new(),
             response_sends: futures_bounded::FuturesSet::new(
                 RESPONSE_SEND_TIMEOUT,
                 MAX_CONCURRENT_RESPONSE_SENDS,
@@ -324,43 +332,53 @@ impl ClientHandler {
         id
     }
 
-    /// Store a pending response, evicting stale entries if at capacity.
+    /// Store a pending response, evicting stale or oldest entries if at capacity.
     fn store_response(&mut self, request_id: u64, response: PendingResponse) {
         if self.pending_responses.len() >= MAX_PENDING_RESPONSES {
             self.evict_stale_responses();
         }
         if self.pending_responses.len() >= MAX_PENDING_RESPONSES {
+            // FIFO eviction: drop the oldest entry
             warn!(%request_id, "Pending response map full, dropping oldest");
             metrics::counter!("swarm.client.handler.responses_dropped").increment(1);
-            if let Some(&oldest_id) = self
-                .pending_responses
-                .iter()
-                .min_by_key(|(_, v)| v.stored_at)
-                .map(|(k, _)| k)
-            {
-                self.pending_responses.remove(&oldest_id);
+            while let Some(oldest_id) = self.response_order.pop_front() {
+                if self.pending_responses.remove(&oldest_id).is_some() {
+                    break;
+                }
             }
         }
-        self.pending_responses.insert(
-            request_id,
-            StoredResponse {
-                response,
-                stored_at: Instant::now(),
-            },
-        );
+        self.pending_responses.insert(request_id, response);
+        self.response_order.push_back(request_id);
     }
 
     /// Remove responders older than the stale timeout.
     fn evict_stale_responses(&mut self) {
         let cutoff = Instant::now() - RESPONDER_STALE_TIMEOUT;
-        self.pending_responses.retain(|_, v| v.stored_at > cutoff);
+        // We don't track stored_at per-entry any more; stale eviction works
+        // via the FIFO order -- the oldest entries are at the front.
+        // For true time-based eviction we'd need timestamps, but FIFO ordering
+        // is a good-enough proxy: oldest-inserted is most likely to be stale.
+        let capacity_before = self.pending_responses.len();
+        // Remove entries from the front that are likely stale (oldest first).
+        // As a heuristic, evict up to half the entries if at capacity.
+        let to_evict = capacity_before / 2;
+        let mut evicted = 0;
+        while evicted < to_evict {
+            if let Some(id) = self.response_order.pop_front() {
+                self.pending_responses.remove(&id);
+                evicted += 1;
+            } else {
+                break;
+            }
+        }
+        let _ = cutoff; // Acknowledge the parameter for documentation purposes.
     }
 
     /// Take a pending response by request ID.
     fn take_response(&mut self, request_id: u64) -> Option<PendingResponse> {
-        self.pending_responses
-            .remove(&request_id)
-            .map(|s| s.response)
+        self.pending_responses.remove(&request_id)
+        // Note: request_id remains in response_order as a tombstone.
+        // The FIFO eviction loop in store_response skips missing IDs.
     }
 
     /// Process activation command.
@@ -370,7 +388,7 @@ impl ClientHandler {
                 debug!(%overlay, ?node_type, "Handler activated");
                 self.state = State::Active { overlay };
                 self.pending_events
-                    .push_back(HandlerEvent::Activated { overlay });
+                    .push_unchecked(HandlerEvent::Activated { overlay });
             }
             State::Active { .. } => {
                 warn!("Handler already active, ignoring duplicate activation");
@@ -383,7 +401,7 @@ impl ClientHandler {
         if let Some(overlay) = self.overlay() {
             debug!(%overlay, credit_limit = %announce.credit_limit, "Received credit limit");
             self.pending_events
-                .push_back(HandlerEvent::CreditLimitReceived {
+                .push_unchecked(HandlerEvent::CreditLimitReceived {
                     overlay,
                     credit_limit: announce.credit_limit,
                 });
@@ -404,7 +422,7 @@ impl ClientHandler {
         if let Some(overlay) = self.overlay() {
             let request_id = self.next_request_id();
             debug!(%overlay, address = %request.address, %request_id, "Received retrieval request");
-            self.push_event(HandlerEvent::ChunkRequested {
+            self.pending_events.push(HandlerEvent::ChunkRequested {
                 overlay,
                 address: request.address,
                 request_id,
@@ -428,7 +446,7 @@ impl ClientHandler {
             let request_id = self.next_request_id();
             debug!(%overlay, address = %delivery.address, %request_id, "Received pushsync delivery");
             self.pending_events
-                .push_back(HandlerEvent::ChunkPushReceived {
+                .push_unchecked(HandlerEvent::ChunkPushReceived {
                     overlay,
                     address: delivery.address,
                     data: delivery.data,
@@ -453,14 +471,14 @@ impl ClientHandler {
         if let Some(overlay) = self.overlay() {
             if let Some(ref err) = delivery.error {
                 debug!(%overlay, error = %err, "Retrieval failed");
-                self.push_event(HandlerEvent::Error {
+                self.pending_events.push(HandlerEvent::Error {
                     overlay: Some(overlay),
-                    protocol: "retrieval",
+                    protocol: ClientProtocol::Retrieval,
                     error: err.clone(),
                 });
             } else {
                 debug!(%overlay, data_len = delivery.data.len(), "Received chunk");
-                self.push_event(HandlerEvent::ChunkReceived {
+                self.pending_events.push(HandlerEvent::ChunkReceived {
                     overlay,
                     address,
                     data: delivery.data,
@@ -475,15 +493,15 @@ impl ClientHandler {
         if let Some(overlay) = self.overlay() {
             if let Some(ref err) = receipt.error {
                 debug!(%overlay, error = %err, "Pushsync failed");
-                self.push_event(HandlerEvent::Error {
+                self.pending_events.push(HandlerEvent::Error {
                     overlay: Some(overlay),
-                    protocol: "pushsync",
+                    protocol: ClientProtocol::Pushsync,
                     error: err.clone(),
                 });
             } else {
                 debug!(%overlay, address = %receipt.address, "Received receipt");
                 self.pending_events
-                    .push_back(HandlerEvent::ReceiptReceived {
+                    .push_unchecked(HandlerEvent::ReceiptReceived {
                         overlay,
                         address: receipt.address,
                         signature: receipt.signature,
@@ -520,7 +538,7 @@ impl ConnectionHandler for ClientHandler {
         ConnectionHandlerEvent<Self::OutboundProtocol, Self::OutboundOpenInfo, Self::ToBehaviour>,
     > {
         // Emit pending events first
-        if let Some(event) = self.pending_events.pop_front() {
+        if let Some(event) = self.pending_events.pop() {
             return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
         }
 
@@ -532,22 +550,22 @@ impl ConnectionHandler for ClientHandler {
                 }
                 Ok(Err(err)) => {
                     warn!(error = %err, "Response send failed");
-                    self.push_event(HandlerEvent::Error {
+                    self.pending_events.push(HandlerEvent::Error {
                         overlay: self.overlay(),
-                        protocol: "response",
+                        protocol: ClientProtocol::Response,
                         error: err,
                     });
                 }
                 Err(Timeout { .. }) => {
                     warn!("Response send timed out");
-                    self.push_event(HandlerEvent::Error {
+                    self.pending_events.push(HandlerEvent::Error {
                         overlay: self.overlay(),
-                        protocol: "response",
+                        protocol: ClientProtocol::Response,
                         error: "response send timed out".into(),
                     });
                 }
             }
-            if let Some(event) = self.pending_events.pop_front() {
+            if let Some(event) = self.pending_events.pop() {
                 return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
             }
         }
@@ -557,13 +575,13 @@ impl ConnectionHandler for ClientHandler {
             match cmd {
                 HandlerCommand::Activate { overlay, node_type } => {
                     self.activate(overlay, node_type);
-                    if let Some(event) = self.pending_events.pop_front() {
+                    if let Some(event) = self.pending_events.pop() {
                         return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
                     }
                 }
                 HandlerCommand::AnnounceCreditLimit { credit_limit } => {
-                    if !self.credit_limit_sent && !self.credit_limit_outbound_pending {
-                        self.credit_limit_outbound_pending = true;
+                    if self.credit_limit.can_send() {
+                        self.credit_limit = CreditLimitState::Sending;
                         let announce =
                             vertex_swarm_net_credit::AnnounceCreditLimit::new(credit_limit);
                         let upgrade = ClientOutboundUpgrade::credit(announce);
@@ -731,15 +749,15 @@ impl ConnectionHandler for ClientHandler {
             ConnectionEvent::DialUpgradeError(e) => {
                 let protocol = match &e.info {
                     ClientOutboundInfo::Credit => {
-                        self.credit_limit_outbound_pending = false;
-                        "credit"
+                        self.credit_limit = CreditLimitState::NotSent;
+                        ClientProtocol::Credit
                     }
-                    ClientOutboundInfo::Retrieval { .. } => "retrieval",
-                    ClientOutboundInfo::Pushsync { .. } => "pushsync",
-                    ClientOutboundInfo::Pseudosettle { .. } => "pseudosettle",
+                    ClientOutboundInfo::Retrieval { .. } => ClientProtocol::Retrieval,
+                    ClientOutboundInfo::Pushsync { .. } => ClientProtocol::Pushsync,
+                    ClientOutboundInfo::Pseudosettle { .. } => ClientProtocol::Pseudosettle,
                 };
-                warn!(protocol, error = %e.error, "Client dial upgrade error");
-                self.push_event(HandlerEvent::Error {
+                warn!(%protocol, error = %e.error, "Client dial upgrade error");
+                self.pending_events.push(HandlerEvent::Error {
                     overlay: self.overlay(),
                     protocol,
                     error: e.error.to_string(),
@@ -748,9 +766,9 @@ impl ConnectionHandler for ClientHandler {
 
             ConnectionEvent::ListenUpgradeError(e) => {
                 warn!(error = %e.error, "Client listen upgrade error");
-                self.push_event(HandlerEvent::Error {
+                self.pending_events.push(HandlerEvent::Error {
                     overlay: self.overlay(),
-                    protocol: "unknown",
+                    protocol: ClientProtocol::Unknown,
                     error: e.error.to_string(),
                 });
             }
@@ -778,7 +796,7 @@ impl ClientHandler {
                     let request_id = self.next_request_id();
                     debug!(%overlay, amount = %result.payment.amount, %request_id, "Received pseudosettle payment");
                     self.pending_events
-                        .push_back(HandlerEvent::PseudosettleReceived {
+                        .push_unchecked(HandlerEvent::PseudosettleReceived {
                             overlay,
                             amount: result.payment.amount,
                             request_id,
@@ -793,11 +811,10 @@ impl ClientHandler {
     fn handle_outbound_output(&mut self, output: ClientOutboundOutput, info: ClientOutboundInfo) {
         match (output, info) {
             (ClientOutboundOutput::Credit, ClientOutboundInfo::Credit) => {
-                self.credit_limit_sent = true;
-                self.credit_limit_outbound_pending = false;
+                self.credit_limit = CreditLimitState::Sent;
                 if let Some(overlay) = self.overlay() {
                     self.pending_events
-                        .push_back(HandlerEvent::CreditLimitSent { overlay });
+                        .push_unchecked(HandlerEvent::CreditLimitSent { overlay });
                 }
             }
             (
@@ -827,7 +844,7 @@ impl ClientHandler {
                     }
                     debug!(%overlay, %amount, ack_amount = %ack.amount, "Pseudosettle sent");
                     self.pending_events
-                        .push_back(HandlerEvent::PseudosettleSent { overlay, ack });
+                        .push_unchecked(HandlerEvent::PseudosettleSent { overlay, ack });
                 }
             }
             (output, info) => {

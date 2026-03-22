@@ -7,7 +7,7 @@ use vertex_swarm_identity::Identity;
 use vertex_tasks::{GracefulShutdown, NodeTask, NodeTaskFn};
 
 use crate::providers::NetworkChunkProvider;
-use crate::rpc::{BootnodeRpcProviders, ClientRpcProviders, StorerRpcProviders};
+use crate::rpc::{BootnodeRpcProviders, FullRpcProviders};
 
 /// Build output from launching a Swarm node.
 ///
@@ -59,8 +59,7 @@ pub type BuiltBootnode = BuiltNode<BootnodeRpcProviders<Arc<Identity>>>;
 
 /// Built client node (topology + chunk retrieval).
 pub type BuiltClient =
-    BuiltNode<ClientRpcProviders<Arc<Identity>, NetworkChunkProvider<Arc<Identity>>>>;
+    BuiltNode<FullRpcProviders<Arc<Identity>, NetworkChunkProvider<Arc<Identity>>>>;
 
-/// Built storer node (topology + chunks + storage).
-pub type BuiltStorer =
-    BuiltNode<StorerRpcProviders<Arc<Identity>, NetworkChunkProvider<Arc<Identity>>>>;
+/// Built storer node (identical to client until storer-specific RPC services exist).
+pub type BuiltStorer = BuiltClient;

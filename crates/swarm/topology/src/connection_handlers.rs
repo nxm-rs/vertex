@@ -147,6 +147,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
         self.emit_event(TopologyEvent::PeerDisconnected {
             overlay,
+            peer_id: closed.peer_id,
             reason: disconnect_reason,
             connection_duration,
             node_type,

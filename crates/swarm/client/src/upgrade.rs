@@ -38,7 +38,7 @@ use vertex_swarm_net_retrieval::{
 };
 /// Errors from client protocol upgrades.
 #[derive(Debug, Error)]
-pub(crate) enum ClientUpgradeError {
+pub enum ClientUpgradeError {
     /// Credit protocol error.
     #[error("credit error: {0}")]
     Credit(#[source] ProtocolError),
@@ -61,7 +61,7 @@ pub(crate) enum ClientUpgradeError {
 }
 
 /// Output from a client inbound upgrade.
-pub(crate) enum ClientInboundOutput {
+pub enum ClientInboundOutput {
     /// Received credit limit.
     Credit(AnnounceCreditLimit),
     /// Received retrieval request (with responder to send delivery).
@@ -107,7 +107,7 @@ impl std::fmt::Debug for ClientInboundOutput {
 /// complete. Once the handler is activated (after handshake), protocols
 /// are advertised on subsequent inbound substream requests.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ClientInboundUpgrade {
+pub struct ClientInboundUpgrade {
     /// Whether the handler is active (post-handshake).
     is_active: bool,
 }
@@ -206,7 +206,7 @@ pub(crate) enum ClientOutboundRequest {
 
 /// Output from a client outbound upgrade.
 #[derive(Debug)]
-pub(crate) enum ClientOutboundOutput {
+pub enum ClientOutboundOutput {
     /// Credit limit announcement sent successfully.
     Credit,
     /// Received chunk delivery.
@@ -221,7 +221,7 @@ pub(crate) enum ClientOutboundOutput {
 ///
 /// Unlike inbound, outbound requests know which protocol to use.
 #[derive(Clone, Debug)]
-pub(crate) struct ClientOutboundUpgrade {
+pub struct ClientOutboundUpgrade {
     request: ClientOutboundRequest,
 }
 
@@ -323,7 +323,7 @@ impl OutboundUpgrade<Stream> for ClientOutboundUpgrade {
 
 /// Information about an outbound request, used for correlating responses.
 #[derive(Debug, Clone)]
-pub(crate) enum ClientOutboundInfo {
+pub enum ClientOutboundInfo {
     /// Credit limit announcement.
     Credit,
     /// Retrieval request with chunk address.

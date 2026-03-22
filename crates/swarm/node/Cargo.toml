@@ -19,15 +19,13 @@ nectar-primitives.workspace = true
 vertex-swarm-primitives.workspace = true
 
 ## vertex - network (libp2p layer)
-vertex-swarm-net-headers.workspace = true
 vertex-swarm-net-identify.workspace = true
-vertex-swarm-net-credit.workspace = true
-vertex-swarm-net-pseudosettle.workspace = true
+
+## vertex - client protocol
+vertex-swarm-client.workspace = true
 
 ## vertex - identity
 vertex-swarm-peer.workspace = true
-vertex-swarm-net-pushsync.workspace = true
-vertex-swarm-net-retrieval.workspace = true
 
 ## vertex - topology
 vertex-swarm-topology.workspace = true
@@ -55,7 +53,6 @@ alloy-primitives.workspace = true
 ## async
 async-trait.workspace = true
 futures.workspace = true
-futures-bounded = "0.2"
 tokio = { workspace = true, features = ["sync"] }
 
 ## observability
@@ -63,7 +60,6 @@ metrics.workspace = true
 vertex-net-peer-store.workspace = true
 
 ## misc
-bytes.workspace = true
 eyre.workspace = true
 parking_lot.workspace = true
 strum.workspace = true

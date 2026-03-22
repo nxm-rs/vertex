@@ -40,7 +40,7 @@ mod grpc_protocol;
 mod health;
 mod registry;
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -49,9 +49,6 @@ use tokio::sync::watch;
 use tonic::transport::Server;
 use tracing::{info, warn};
 pub use vertex_rpc_core::RpcServer;
-
-// Re-export the config trait for users
-pub use vertex_node_api::NodeRpcConfig;
 
 pub use grpc_protocol::GrpcProtocol;
 pub use health::HealthService;
@@ -108,15 +105,8 @@ impl Default for GrpcServerConfig {
 }
 
 impl GrpcServerConfig {
-    /// Create configuration from an NodeRpcConfig trait implementation.
-    pub fn from_config(config: &impl NodeRpcConfig) -> Self {
-        let addr = SocketAddr::new(
-            config
-                .grpc_addr()
-                .parse()
-                .unwrap_or(IpAddr::from([127, 0, 0, 1])),
-            config.grpc_port(),
-        );
+    /// Create configuration from an address.
+    pub fn from_addr(addr: SocketAddr) -> Self {
         Self { addr }
     }
 }

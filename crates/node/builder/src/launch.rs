@@ -141,6 +141,16 @@ impl LaunchContextWith<WithMetrics> {
     }
 }
 
+impl<T> LaunchContextWith<T> {
+    /// Transition to the NodeBuilder pipeline for protocol launch.
+    ///
+    /// The attachment (e.g. metrics state) is dropped since its setup
+    /// effects (e.g. installed prometheus recorder) persist independently.
+    pub fn into_node_builder(self) -> crate::WithLaunchContext {
+        crate::WithLaunchContext::new(crate::LaunchContext::new(self.executor, self.dirs))
+    }
+}
+
 impl<T: Send + Sync> InfrastructureContext for LaunchContextWith<T> {
     fn executor(&self) -> &TaskExecutor {
         &self.executor

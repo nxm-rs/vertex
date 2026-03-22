@@ -40,7 +40,7 @@ use crate::DialReason;
 use vertex_net_dialer::{DialTracker, DialTrackerConfig};
 use vertex_net_peer_registry::PeerRegistry;
 
-pub(crate) type ConnectionRegistry = PeerRegistry<OverlayAddress, Option<DialReason>>;
+pub type ConnectionRegistry = PeerRegistry<OverlayAddress, Option<DialReason>>;
 use crate::TopologyCommand;
 use crate::composed::ProtocolBehaviours;
 use crate::error::TopologyError;
@@ -381,6 +381,11 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
     // Public methods
 
+    /// Get the connection registry for peer address resolution.
+    pub fn connection_registry(&self) -> &Arc<ConnectionRegistry> {
+        &self.connection_registry
+    }
+
     /// Set the local PeerId for address advertisement in handshakes.
     ///
     /// Must be called after the libp2p Swarm is built. All multiaddrs
@@ -406,6 +411,11 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     /// Shared topology metrics (atomic counters for connected peers).
     pub fn metrics(&self) -> Arc<TopologyMetrics> {
         Arc::clone(&self.metrics)
+    }
+
+    /// Subscribe to topology events (peer ready, disconnected, depth changed, etc.).
+    pub fn subscribe(&self) -> broadcast::Receiver<TopologyEvent> {
+        self.event_tx.subscribe()
     }
 
     /// Handle a topology command (dial, close connection, etc.).
