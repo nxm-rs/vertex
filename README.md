@@ -1,201 +1,119 @@
-# Vertex
+<p align="center">
+  <img src=".github/banner.svg" alt="Nexum · vertex — Ethereum Swarm node in Rust" width="100%" />
+</p>
 
-[![CI](https://github.com/nxm-rs/vertex/actions/workflows/unit.yml/badge.svg)](https://github.com/nxm-rs/vertex/actions/workflows/unit.yml)
-[![Audit](https://github.com/nxm-rs/vertex/actions/workflows/audit.yml/badge.svg)](https://github.com/nxm-rs/vertex/actions/workflows/audit.yml)
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Rust](https://img.shields.io/badge/rust-1.91%2B-orange.svg)](https://www.rust-lang.org)
-[![Matrix](https://img.shields.io/badge/chat-Matrix-green.svg)](https://matrix.to/#/#nexum:nxm.rs)
+# Nexum · vertex
 
-**[Ethereum Swarm](https://ethswarm.org) node that actually works. Built in Rust because Go was not cutting it for real decentralisation.**
+A new **Ethereum Swarm** node implementation in Rust — modular, high-performance, Bee-compatible. Vertex aims to be the fastest Swarm client while being easy to run on consumer hardware, and to contribute meaningful client diversity to the network.
 
-> [!WARNING]
-> This is development software. It compiles, it runs tests, but it is not ready for your production workloads. Yet.
+Nexum builds on Swarm for content-addressed storage of firewall rulesets, snapshots, and shared state. Vertex is how we run our own node infrastructure for that.
 
-## Quick Start
+> Looking for the org overview? See **[github.com/nxm-rs](https://github.com/nxm-rs)**.
+
+---
+
+## Status
+
+| | |
+|---|---|
+| Version | **0.1.0-dev** · pre-release |
+| Compat | Bee protocols: postage stamps, push/pull syncing, storage incentives |
+| MSRV | Rust 1.87 · edition 2024 |
+| License | [AGPL-3.0-or-later](./LICENSE) |
+
+> Vertex is under active development and **not yet ready for production use**. Run on testnets or in lab environments only.
+
+---
+
+## Goals
+
+1. **Modularity.** Every component is a library: well-tested, documented, benchmarked. Developers should be able to import the chunk store, a network protocol, or the storage-incentives module and build on top.
+2. **Performance.** Concurrent processing, careful resource usage, no accidental synchronisation. We measure where it matters.
+3. **Client diversity.** The Swarm network becomes more resilient when no single implementation dominates. A second production-grade client is good for everyone.
+4. **Developer experience.** Ergonomic APIs, useful errors, real docs. A CLI (`dipper`, modelled on `cast`) for hands-on Swarm work — coming as a sibling repo.
+
+---
+
+## Sibling repos
+
+Vertex isn't shipped in isolation. The Swarm work under [nxm-rs](https://github.com/nxm-rs) is split across:
+
+| Repo | Role |
+|---|---|
+| **[vertex](https://github.com/nxm-rs/vertex)** | Full node implementation (this repo) |
+| **[nectar](https://github.com/nxm-rs/nectar)** | Low-level Swarm primitives — chunks, addressing, postage |
+| **[bee](https://github.com/nxm-rs/bee)** | Reference Go client (fork; we contribute upstream) |
+| **[swarm-contracts](https://github.com/nxm-rs/swarm-contracts)** | Economic-layer contracts · Solady + Foundry |
+| **[apiarist](https://github.com/nxm-rs/apiarist)** | In-network stress tester |
+| **[apiary](https://github.com/nxm-rs/apiary)** | One-command stack: Reth + Bee + supporting services |
+| **[SWIPs](https://github.com/nxm-rs/SWIPs)** | Swarm Improvement Proposals |
+
+---
+
+## Build from source
 
 ```bash
-# Build
+git clone https://github.com/nxm-rs/vertex
+cd vertex
 cargo build --release
-
-# Run a client node on mainnet
-vertex node --mainnet
-
-# Run a bootnode
-vertex node --mainnet --mode=bootnode
-
-# See all options
-vertex node --help
 ```
 
-## What is Vertex?
+Binary lands at `target/release/vertex`. CLI documentation lives under [`docs/`](./docs); operational guides are still in progress.
 
-Vertex is a ground-up rewrite of the [Ethereum Swarm](https://ethswarm.org) node. Same protocol, different philosophy. We are building for modularity, performance, and the kind of reliability you would expect from infrastructure software.
+---
 
-Compatible with all [Swarm](https://ethswarm.org) protocols: postage stamps, push/pull sync, storage incentives, the works. If [Bee](https://github.com/ethersphere/bee) does it, Vertex will do it faster.
+## Workspace layout
 
-### Goals
+```
+vertex/
+├── bin/
+│   └── vertex/             ← node binary
+└── crates/
+    ├── primitives/         ← shared chunk + addressing types
+    ├── tasks/              ← async task plumbing
+    ├── net/
+    │   ├── primitives/     ← network types
+    │   ├── codec/          ← wire-format codec
+    │   ├── protocols/      ← handshake, headers, hive, pricing,
+    │   │                     pingpong, pushsync, retrieval
+    │   ├── topology/       ← peer-set management
+    │   └── client/         ← outbound protocol clients
+    ├── node/
+    │   ├── types/          ← node-level types
+    │   ├── api/            ← internal APIs
+    │   └── core/           ← orchestration
+    └── …                   ← see Cargo.toml for the full set
+```
 
-1. **Modularity**: every component is a library. Import what you need, build what you want.
-2. **Performance**: concurrent processing, zero-copy where possible, no GC pauses.
-3. **Client Diversity**: more implementations means a more resilient network.
-4. **Developer Experience**: ergonomic APIs and actual documentation.
+Internals are intentionally split into many small crates so external consumers can take just the pieces they need.
 
-### Node Modes
-
-| Mode | Description |
-|------|-------------|
-| **Bootnode** | Topology only (peer discovery). Lightweight network infrastructure. |
-| **Client** | Retrieval + upload. Consumes the network without storing chunks locally. Default mode. |
-| **Storer** | Full storage node with redistribution. Stores chunks and earns rewards. |
-
-## Documentation
-
-Full documentation is in the [`docs/`](docs/README.md) directory:
-
-- [Architecture Overview](docs/architecture/overview.md) - crate structure, design principles, dependency flow
-- [Node Types](docs/architecture/node-types.md) - bootnode, client, storer capabilities
-- [Swarm API](docs/swarm/api.md) - core protocol traits
-- [Client Architecture](docs/client/architecture.md) - libp2p boundary
-- [CLI Configuration](docs/cli/configuration.md) - configuration architecture
-- [Observability](docs/observability/README.md) - metrics, tracing, profiling
-
-## Crate Overview
-
-Vertex is split into 54 layered crates. Each can be used independently as a library.
-
-<details>
-<summary><strong>Swarm Protocol</strong> - core protocol traits and types</summary>
-
-| Crate | Description |
-|-------|-------------|
-| `vertex-swarm-api` | Core protocol traits (topology, storage, bandwidth accounting) |
-| `vertex-swarm-spec` | Network specification (`SwarmSpec` trait) |
-| `vertex-swarm-forks` | Hardfork definitions (timestamp-based activation) |
-| `vertex-swarm-primitives` | Core types (`OverlayAddress`, `SwarmNodeType`) |
-| `vertex-swarm-identity` | Node identity and signing |
-| `vertex-swarm-node` | `SwarmNode` behaviour and client handler |
-| `vertex-swarm-builder` | Node construction and launch |
-| `vertex-swarm-rpc` | gRPC service implementations |
-| `vertex-swarm-test-utils` | Test fixtures and helpers |
-
-</details>
-
-<details>
-<summary><strong>Swarm Peers</strong> - peer management and topology</summary>
-
-| Crate | Description |
-|-------|-------------|
-| `vertex-swarm-peer` | `SwarmPeer` type (libp2p boundary for `Multiaddr`) |
-| `vertex-swarm-peer-manager` | Peer lifecycle management |
-| `vertex-swarm-peer-score` | Peer scoring |
-| `vertex-swarm-topology` | Kademlia DHT, peer discovery, neighbourhood management |
-
-</details>
-
-<details>
-<summary><strong>Swarm Bandwidth</strong> - accounting and settlement</summary>
-
-| Crate | Description |
-|-------|-------------|
-| `vertex-swarm-bandwidth` | Per-peer bandwidth handles, lock-free recording |
-| `vertex-swarm-bandwidth-pricing` | Pricing strategy |
-| `vertex-swarm-bandwidth-pseudosettle` | Pseudosettle provider |
-| `vertex-swarm-bandwidth-chequebook` | Chequebook types |
-| `vertex-swarm-bandwidth-swap` | SWAP settlement provider |
-
-</details>
-
-<details>
-<summary><strong>Swarm Network Protocols</strong> - libp2p protocol implementations</summary>
-
-| Crate | Description |
-|-------|-------------|
-| `vertex-swarm-net-proto` | Protobuf message definitions |
-| `vertex-swarm-net-handler-core` | Base handler types |
-| `vertex-swarm-net-headers` | Headered protocol abstraction |
-| `vertex-swarm-net-handshake` | Peer authentication (SYN/SYNACK/ACK) |
-| `vertex-swarm-net-hive` | Peer discovery gossip |
-| `vertex-swarm-net-identify` | libp2p identify integration |
-| `vertex-swarm-net-pingpong` | Connection liveness |
-| `vertex-swarm-net-pricing` | Price announcements |
-| `vertex-swarm-net-pseudosettle` | Bandwidth settlement |
-| `vertex-swarm-net-pushsync` | Chunk push/receipt |
-| `vertex-swarm-net-retrieval` | Chunk request/response |
-| `vertex-swarm-net-swap` | SWAP settlement protocol |
-
-</details>
-
-<details>
-<summary><strong>Swarm Storage</strong> - local storage and incentives</summary>
-
-| Crate | Description |
-|-------|-------------|
-| `vertex-swarm-localstore` | Storage configuration |
-| `vertex-swarm-storer` | Storer node storage |
-| `vertex-swarm-redistribution` | Storage incentives |
-
-</details>
-
-<details>
-<summary><strong>Node Infrastructure</strong> - generic node framework</summary>
-
-| Crate | Description |
-|-------|-------------|
-| `vertex-node-api` | `NodeProtocol`, `InfrastructureContext` traits |
-| `vertex-node-builder` | Type-state builder framework |
-| `vertex-node-commands` | CLI commands |
-| `vertex-node-core` | CLI configuration and logging |
-
-</details>
-
-<details>
-<summary><strong>Networking</strong> - protocol-agnostic utilities</summary>
-
-| Crate | Description |
-|-------|-------------|
-| `vertex-net-codec` | Protobuf codec utilities |
-| `vertex-net-dialer` | Dial request tracking |
-| `vertex-net-dnsaddr` | DNS address resolution |
-| `vertex-net-local` | Local network detection |
-| `vertex-net-ratelimiter` | Rate limiting |
-| `vertex-net-utils` | Network utilities |
-| `vertex-net-peer-registry` | Peer registry |
-| `vertex-net-peer-store` | Peer persistence |
-| `vertex-net-peer-score` | Generic peer scoring |
-| `vertex-net-peer-backoff` | Exponential backoff |
-
-</details>
-
-<details>
-<summary><strong>Supporting Crates</strong> - shared infrastructure</summary>
-
-| Crate | Description |
-|-------|-------------|
-| `vertex-rpc-core` | gRPC service traits |
-| `vertex-rpc-server` | gRPC server implementation |
-| `vertex-storage` | Storage abstraction |
-| `vertex-storage-redb` | redb storage backend |
-| `vertex-metrics` | Lightweight metric primitives |
-| `vertex-observability` | Tracing, Prometheus, profiling |
-| `vertex-tasks` | Task lifecycle management |
-
-</details>
-
-## Related Projects
-
-| Project | Description |
-|---------|-------------|
-| [`nectar`](https://github.com/nxm-rs/nectar) | Low-level [Swarm](https://ethswarm.org) primitives (BMT, chunks, postage) |
-| [`apiary`](https://github.com/nxm-rs/apiary) | Kurtosis package for spinning up test networks |
-| [`apiarist`](https://github.com/nxm-rs/apiarist) | Stress testing and integration checks |
+---
 
 ## Contributing
 
-We welcome contributions. Please read the [CLA](./CLA.md) before submitting PRs.
+Pre-release codebase under heavy churn — open an issue before opening a PR for non-trivial work so we don't collide.
 
-- Open an [issue](https://github.com/nxm-rs/vertex/issues) if something is broken
-- Join the [Matrix space](https://matrix.to/#/#nexum:nxm.rs) to discuss development
+Highlights:
 
-## Licence
+- **Rust** — `cargo fmt`, `cargo clippy -- -D warnings`. Edition 2024, MSRV 1.87.
+- **Commits** — Conventional Commits. `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `chore`.
+- **No new dependencies** without a justification in the PR description.
+- **Tests for protocol changes are non-optional.** Net-code regressions are expensive to debug after the fact.
 
-[AGPL-3.0-or-later](./LICENSE): because decentralised storage should stay decentralised.
+## Getting help
+
+- File an issue (or open a [discussion](https://github.com/nxm-rs/vertex/discussions/new)) for questions about the codebase
+- Bug reports go on this repo with a reproducer
+- Security findings → see [SECURITY.md](https://github.com/nxm-rs/.github/blob/main/SECURITY.md) or email `security@nxm.rs`
+
+## License
+
+AGPL-3.0-or-later. See [LICENSE](./LICENSE).
+
+## Warning
+
+This software is under active development. Bugs exist. Do not run on mainnet with funds at risk.
+
+```
+●  AGPL-3.0  ·  pre-release  ·  bee-compatible
+```
