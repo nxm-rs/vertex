@@ -2,8 +2,6 @@
   <img src=".github/banner.svg" alt="Nexum · vertex — Ethereum Swarm node in Rust" width="100%" />
 </p>
 
-# Nexum · vertex
-
 A new **Ethereum Swarm** node implementation in Rust — modular, high-performance, Bee-compatible. Vertex aims to be the fastest Swarm client while being easy to run on consumer hardware, and to contribute meaningful client diversity to the network.
 
 Nexum builds on Swarm for content-addressed storage of firewall rulesets, snapshots, and shared state. Vertex is how we run our own node infrastructure for that.
