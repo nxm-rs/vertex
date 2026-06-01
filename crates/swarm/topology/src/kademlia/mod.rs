@@ -1,5 +1,6 @@
 //! Kademlia-based peer routing for Swarm overlay network.
 
+mod admission;
 mod args;
 mod candidate_queues;
 mod candidates;
@@ -9,6 +10,7 @@ pub(crate) mod peer_selection;
 mod routing;
 mod task;
 
+pub(crate) use admission::kademlia_admission_control;
 pub use args::RoutingArgs;
 pub(crate) use candidates::{
     CandidateSelector, CandidateSnapshot, select_balanced_candidates,

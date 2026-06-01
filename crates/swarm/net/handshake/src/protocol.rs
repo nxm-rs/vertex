@@ -7,9 +7,10 @@ use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_spec::SwarmSpec;
 
+use crate::admission::{AdmissionDecision, ConnectionDirection};
 use crate::codec::{decode_ack, decode_syn, decode_synack, encode_ack, encode_syn, encode_synack};
 use crate::metrics::HandshakeMetrics;
-use crate::{HandshakeError, HandshakeInfo};
+use crate::{HandshakeError, HandshakeInfo, SharedAdmissionControl};
 
 /// Maximum size for handshake message buffers.
 const MAX_HANDSHAKE_BUFFER_SIZE: usize = 1024;
@@ -64,6 +65,9 @@ pub(crate) struct HandshakeProtocol<I: SwarmIdentity> {
     local_peer_id: Option<PeerId>,
     remote_addr: Multiaddr,
     additional_addrs: Vec<Multiaddr>,
+    /// Optional admission gate. When set, the protocol consults it after the
+    /// remote's identity is verified but before the final Ack is sent.
+    admission_control: Option<(SharedAdmissionControl, ConnectionDirection)>,
     purpose: &'static str,
 }
 
@@ -81,6 +85,7 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
             local_peer_id: None,
             remote_addr,
             additional_addrs,
+            admission_control: None,
             purpose,
         }
     }
@@ -89,6 +94,31 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
     pub(crate) fn with_local_peer_id(mut self, local_peer_id: PeerId) -> Self {
         self.local_peer_id = Some(local_peer_id);
         self
+    }
+
+    /// Install the admission gate for this exchange.
+    ///
+    /// `direction` is the side this end of the connection plays (inbound =
+    /// received SYN, outbound = sent SYN).
+    pub(crate) fn with_admission_control(
+        mut self,
+        admission_control: SharedAdmissionControl,
+        direction: ConnectionDirection,
+    ) -> Self {
+        self.admission_control = Some((admission_control, direction));
+        self
+    }
+
+    /// Evaluate admission control if installed. Returns
+    /// [`HandshakeError::AdmissionRejected`] if the peer is denied.
+    fn evaluate_admission(&self, info: &HandshakeInfo) -> Result<(), HandshakeError> {
+        let Some((ref ac, direction)) = self.admission_control else {
+            return Ok(());
+        };
+        match ac.evaluate(info.swarm_peer.overlay(), info.node_type, direction) {
+            AdmissionDecision::Accept | AdmissionDecision::AcceptEvict { .. } => Ok(()),
+            AdmissionDecision::Reject(reason) => Err(HandshakeError::AdmissionRejected(reason)),
+        }
     }
 
     #[instrument(
@@ -161,15 +191,23 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
             .await?;
         let (swarm_peer, node_type, welcome_message) = decode_ack(ack, network_id)?;
 
-        futures::AsyncWriteExt::close(&mut stream).await?;
-
-        Ok(HandshakeInfo {
+        let info = HandshakeInfo {
             peer_id: self.peer_id,
             swarm_peer,
             node_type,
             welcome_message,
             observed_multiaddr,
-        })
+        };
+
+        // Consult admission control now that the peer's identity is verified.
+        // On reject, abort before closing successfully so the handler reports
+        // `HandshakeError::AdmissionRejected` and routing never sees the peer
+        // as completed.
+        self.evaluate_admission(&info)?;
+
+        futures::AsyncWriteExt::close(&mut stream).await?;
+
+        Ok(info)
     }
 
     #[instrument(
@@ -238,6 +276,18 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
         let local_peer =
             prepare_local_peer(&self.identity, &self.additional_addrs, &observed_multiaddr)?;
 
+        // Consult admission control BEFORE sending the final Ack so a Reject
+        // aborts the handshake without ever committing to the peer (matches
+        // bee's Picker semantics in handshake.go:457).
+        let info = HandshakeInfo {
+            peer_id: self.peer_id,
+            swarm_peer,
+            node_type,
+            welcome_message,
+            observed_multiaddr,
+        };
+        self.evaluate_admission(&info)?;
+
         // Send ACK: our identity.
         let ack = encode_ack(
             &local_peer,
@@ -251,12 +301,6 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
 
         futures::AsyncWriteExt::close(&mut stream).await?;
 
-        Ok(HandshakeInfo {
-            peer_id: self.peer_id,
-            swarm_peer,
-            node_type,
-            welcome_message,
-            observed_multiaddr,
-        })
+        Ok(info)
     }
 }

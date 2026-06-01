@@ -111,6 +111,27 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         &self.config.limits
     }
 
+    /// Admission decision for a peer whose handshake is currently in
+    /// progress — i.e. the peer is already counted in [`Self::effective_count`]
+    /// via a prior `try_reserve_dial` (outbound) or `reserve_inbound`
+    /// (inbound, post-handshake). Returns `true` if the bin is still within
+    /// `ceiling` (target + headroom); `false` if oversaturated.
+    ///
+    /// Distinct from [`Self::should_accept_inbound`], which gates *new* peers
+    /// not yet present in the phases map. This method assumes the peer's slot
+    /// is already reserved.
+    pub(crate) fn admission_within_capacity(&self, overlay: &OverlayAddress) -> bool {
+        let po = self.proximity(overlay);
+        let depth = self.depth();
+        let ceiling = self.config.limits.ceiling(po, depth);
+        if ceiling == usize::MAX {
+            // Neighborhood bin: always within capacity (eviction handled in
+            // Unit 8 via `AcceptEvict`, not Reject).
+            return true;
+        }
+        self.effective_count(po) <= ceiling
+    }
+
     fn effective_count(&self, po: u8) -> usize {
         atomic_load(&self.dialing_counts, po)
             + atomic_load(&self.handshaking_counts, po)

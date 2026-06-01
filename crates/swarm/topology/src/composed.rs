@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use libp2p::swarm::NetworkBehaviour;
 use vertex_swarm_api::SwarmIdentity;
-use vertex_swarm_net_handshake::{HandshakeBehaviour, HandshakeEvent};
+use vertex_swarm_net_handshake::{HandshakeBehaviour, HandshakeEvent, SharedAdmissionControl};
 use vertex_swarm_net_hive::{HiveBehaviour, HiveEvent};
 use vertex_swarm_net_pingpong::{PingpongBehaviour, PingpongEvent};
 
@@ -101,9 +101,18 @@ where
     I: SwarmIdentity + Clone + 'static,
 {
     /// Create new composed protocol behaviours.
-    pub(crate) fn new(identity: Arc<I>, address_provider: Arc<LocalAddressManager>) -> Self {
+    ///
+    /// `admission_control` is installed on the handshake behaviour so routing
+    /// can veto a handshake before the final Ack (see
+    /// [`HandshakeBehaviour::with_admission_control`]).
+    pub(crate) fn new(
+        identity: Arc<I>,
+        address_provider: Arc<LocalAddressManager>,
+        admission_control: SharedAdmissionControl,
+    ) -> Self {
         Self {
-            handshake: HandshakeBehaviour::new(identity.clone(), address_provider, "topology"),
+            handshake: HandshakeBehaviour::new(identity.clone(), address_provider, "topology")
+                .with_admission_control(admission_control),
             hive: HiveBehaviour::new(identity),
             pingpong: PingpongBehaviour::new(),
         }

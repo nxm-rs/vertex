@@ -48,7 +48,10 @@ use crate::events::TopologyEvent;
 use crate::extract_peer_id;
 use crate::gossip::{GossipHandle, spawn_gossip_task};
 use crate::handle::TopologyHandle;
-use crate::kademlia::{KademliaConfig, KademliaRouting, RoutingEvaluatorHandle, SwarmRouting};
+use crate::kademlia::{
+    KademliaConfig, KademliaRouting, RoutingEvaluatorHandle, SwarmRouting,
+    kademlia_admission_control,
+};
 use crate::metrics::{TopologyMetrics, po_label};
 use crate::nat_discovery::LocalAddressManager;
 
@@ -298,8 +301,13 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
         let identity = Arc::new(identity);
 
+        // Wire kademlia routing as the handshake admission gate so routing
+        // can veto a peer before the final Ack (mirrors bee's Picker).
+        let admission_control = kademlia_admission_control(routing.clone());
+
         // Create composed protocol behaviours
-        let protocols = ProtocolBehaviours::new(identity.clone(), nat_discovery.clone());
+        let protocols =
+            ProtocolBehaviours::new(identity.clone(), nat_discovery.clone(), admission_control);
 
         let metrics = Arc::new(TopologyMetrics::new());
 
