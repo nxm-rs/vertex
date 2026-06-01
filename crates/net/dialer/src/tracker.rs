@@ -182,7 +182,7 @@ impl<Id: Clone + Eq + Hash + Debug, D: Debug> DialTracker<Id, D> {
             }
         }
         self.try_start(peer_id, id, PrepareError::AlreadyTracked, |id| {
-            let opts = prepare::prepare_dial_opts(peer_id, addrs.into_iter(), &mut filter)
+            let opts = prepare::prepare_dial_opts(peer_id, addrs, &mut filter)
                 .ok_or(PrepareError::NoReachableAddresses)?;
             let request = match id {
                 Some(id) => DialRequest::new(id, peer_id, Vec::new(), data),
