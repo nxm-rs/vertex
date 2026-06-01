@@ -8183,6 +8183,8 @@ name = "vertex-swarm-net-hive"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-signer",
+ "bytes",
  "futures",
  "hashlink",
  "libp2p",
@@ -8198,6 +8200,7 @@ dependencies = [
  "vertex-net-utils",
  "vertex-observability",
  "vertex-swarm-api",
+ "vertex-swarm-identity",
  "vertex-swarm-net-handler-core",
  "vertex-swarm-net-headers",
  "vertex-swarm-net-proto",

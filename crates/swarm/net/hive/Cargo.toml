@@ -35,6 +35,9 @@ libp2p.workspace = true
 ## crypto
 alloy-primitives.workspace = true
 
+## bytes
+bytes.workspace = true
+
 ## cache
 hashlink.workspace = true
 parking_lot.workspace = true
@@ -49,3 +52,5 @@ strum.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+vertex-swarm-identity.workspace = true
+alloy-signer.workspace = true

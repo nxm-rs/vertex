@@ -10,10 +10,13 @@ message Peers {
 }
 
 // Peer represents a gossiped peer address in the Hive protocol.
-// Note: Field numbers match BzzAddress for wire compatibility with Bee.
+// Mirrors bee's BzzAddress wire format (pkg/hive/pb/hive.proto) for hive 2.0.0.
+// Field numbers MUST match bee's BzzAddress.
 message Peer {
   bytes multiaddrs = 1;
   bytes signature = 2;
   bytes overlay = 3;
   bytes nonce = 4;
+  int64 timestamp = 5;
+  bytes chequebook_address = 6;
 }

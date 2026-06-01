@@ -5,7 +5,6 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use std::time::Instant;
 
-use alloy_primitives::{B256, Signature};
 use futures::future::BoxFuture;
 use hashlink::LruCache;
 use metrics::{counter, histogram};
@@ -20,8 +19,9 @@ use vertex_swarm_peer::{SwarmAddress, SwarmPeer};
 use vertex_tasks::TaskExecutor;
 
 use crate::PROTOCOL_NAME;
+use crate::bzz::BzzAddress;
 use crate::codec::encode_peers;
-use crate::error::ValidationFailure;
+use crate::verifier::{DefaultHiveVerifier, GossipSource, HiveRejection, HiveVerifier};
 
 /// 32 KiB frame limit (fits ~100 peers at typical size).
 const MAX_MESSAGE_SIZE: usize = 32 * 1024;
@@ -84,9 +84,13 @@ impl<I: SwarmIdentity> HeaderedInbound for HiveInner<I> {
 
             let raw_peers = proto.peers;
 
-            // Offload CPU-bound ECDSA validation to blocking thread pool.
+            // Offload CPU-bound ECDSA validation to blocking thread pool. The
+            // verifier owns both signature recovery and timestamp-skew
+            // validation; rejections are mapped to stable metric labels.
+            let verifier: Arc<dyn HiveVerifier> =
+                Arc::new(DefaultHiveVerifier::new(network_id, local_overlay));
             let (peers, valid_count, invalid_count) =
-                validate_batch_blocking(raw_peers, network_id, local_overlay, cache).await;
+                validate_batch_blocking(raw_peers, verifier, cache).await;
 
             // Hive-specific peer metrics
             counter!("hive_peers_received_total", "outcome" => "valid")
@@ -104,17 +108,16 @@ impl<I: SwarmIdentity> HeaderedInbound for HiveInner<I> {
 /// Validate a batch of proto peers, offloading to a blocking thread if the executor is available.
 async fn validate_batch_blocking(
     raw_peers: Vec<vertex_swarm_net_proto::hive::Peer>,
-    network_id: u64,
-    local_overlay: SwarmAddress,
+    verifier: Arc<dyn HiveVerifier>,
     cache: PeerCache,
 ) -> (Vec<SwarmPeer>, usize, usize) {
     let Ok(executor) = TaskExecutor::try_current() else {
-        return validate_batch(raw_peers, network_id, &local_overlay, &cache);
+        return validate_batch(raw_peers, verifier.as_ref(), &cache);
     };
 
     let (tx, rx) = tokio::sync::oneshot::channel();
     executor.spawn_blocking("hive_peer_validation", async move {
-        let result = validate_batch(raw_peers, network_id, &local_overlay, &cache);
+        let result = validate_batch(raw_peers, verifier.as_ref(), &cache);
         let _ = tx.send(result);
     });
 
@@ -124,10 +127,9 @@ async fn validate_batch_blocking(
 /// Validate a batch of proto peers (CPU-bound).
 ///
 /// Returns (valid_peers, valid_count, invalid_count).
-fn validate_batch(
+pub(crate) fn validate_batch(
     raw_peers: Vec<vertex_swarm_net_proto::hive::Peer>,
-    network_id: u64,
-    local_overlay: &SwarmAddress,
+    verifier: &dyn HiveVerifier,
     cache: &Mutex<LruCache<SwarmAddress, SwarmPeer>>,
 ) -> (Vec<SwarmPeer>, usize, usize) {
     let validation_start = Instant::now();
@@ -136,19 +138,17 @@ fn validate_batch(
 
     let peers: Vec<SwarmPeer> = raw_peers
         .into_iter()
-        .filter_map(
-            |p| match validate_proto_peer(p, network_id, local_overlay, cache) {
-                Ok(peer) => {
-                    valid_count += 1;
-                    Some(peer)
-                }
-                Err(reason) => {
-                    reason.record();
-                    invalid_count += 1;
-                    None
-                }
-            },
-        )
+        .filter_map(|p| match validate_proto_peer(p, verifier, cache) {
+            Ok(peer) => {
+                valid_count += 1;
+                Some(peer)
+            }
+            Err(reason) => {
+                record_rejection(reason);
+                invalid_count += 1;
+                None
+            }
+        })
         .collect();
 
     histogram!("hive_validation_duration_seconds", "direction" => "inbound")
@@ -157,34 +157,39 @@ fn validate_batch(
     (peers, valid_count, invalid_count)
 }
 
-/// Validate and convert a single proto peer.
+fn record_rejection(reason: HiveRejection) {
+    let label: &'static str = reason.into();
+    counter!("hive_peer_validation_failures_total", "reason" => label).increment(1);
+}
+
+/// Validate and convert a single proto peer using the supplied [`HiveVerifier`].
 ///
 /// Two-tier lookup to avoid redundant ECDSA signature recovery:
-/// 1. LRU cache — validated earlier in this session
-/// 2. Full ECDSA recovery — cold path
-fn validate_proto_peer(
+/// 1. LRU cache — validated earlier in this session (matching signature bytes)
+/// 2. Full `BzzAddress` parse + verifier dispatch — cold path
+pub(crate) fn validate_proto_peer(
     p: vertex_swarm_net_proto::hive::Peer,
-    network_id: u64,
-    local_overlay: &SwarmAddress,
+    verifier: &dyn HiveVerifier,
     cache: &Mutex<LruCache<SwarmAddress, SwarmPeer>>,
-) -> Result<SwarmPeer, ValidationFailure> {
-    let overlay = B256::try_from(p.overlay.as_slice()).map_err(ValidationFailure::OverlayLength)?;
+) -> Result<SwarmPeer, HiveRejection> {
+    let addr = BzzAddress::from_wire(
+        p.multiaddrs,
+        &p.signature,
+        &p.overlay,
+        &p.nonce,
+        p.timestamp,
+        &p.chequebook_address,
+    )
+    .map_err(HiveRejection::from)?;
 
-    // Reject our own overlay address to prevent self-dial
-    let peer_overlay = SwarmAddress::from(overlay);
-    if peer_overlay == *local_overlay {
-        debug!("Hive: rejected self-overlay from peer exchange");
-        return Err(ValidationFailure::SelfOverlay);
-    }
+    let overlay_for_cache = addr.overlay;
 
-    let signature = Signature::try_from(p.signature.as_slice())?;
-
-    // Tier 1: Check LRU cache — validated earlier in this session.
-    // On signature mismatch, falls through to tier 2 which re-validates and overwrites.
+    // Tier 1: Check LRU cache by overlay+signature — verified earlier in this session.
+    // On signature mismatch the cold path overwrites the entry.
     {
         let mut guard = cache.lock();
-        if let Some(cached) = guard.get(&peer_overlay)
-            && *cached.signature() == signature
+        if let Some(cached) = guard.get(&overlay_for_cache)
+            && cached.signature() == &addr.signature
         {
             counter!("hive_validation_cache_total", "outcome" => "cache_hit").increment(1);
             return Ok(cached.clone());
@@ -192,33 +197,28 @@ fn validate_proto_peer(
     }
     counter!("hive_validation_cache_total", "outcome" => "miss").increment(1);
 
-    // Tier 2: Full ECDSA signature recovery.
-    let nonce = B256::try_from(p.nonce.as_slice()).map_err(ValidationFailure::NonceLength)?;
+    // Tier 2: Full verification via the trait. Every received peer record
+    // must pass signature + timestamp-skew validation before reaching the
+    // routing table (kademlia AddPeer).
+    let verified = verifier.verify(&addr, GossipSource::Gossip)?;
+    let peer = verified.peer;
 
-    // NOTE: validate_overlay disabled due to Bee multiaddr re-serialization bug
-    let peer = SwarmPeer::from_signed(
-        &p.multiaddrs,
-        signature,
-        peer_overlay,
-        nonce,
-        network_id,
-        false,
-    )?;
-
+    // Reject if any multiaddr lacks a `/p2p/` component — without one we
+    // cannot dial the peer back. Bee strips/normalises these upstream.
     if !peer
         .multiaddrs()
         .iter()
         .all(|addr| extract_peer_id(addr).is_some())
     {
         warn!(
-            overlay = %overlay,
+            overlay = %peer.overlay(),
             "rejecting peer: multiaddrs missing /p2p/ component"
         );
-        return Err(ValidationFailure::MissingPeerId);
+        return Err(HiveRejection::Malformed);
     }
 
-    // Store validated peer in LRU cache.
-    cache.lock().insert(peer_overlay, peer.clone());
+    // Store verified peer in LRU cache.
+    cache.lock().insert(overlay_for_cache, peer.clone());
 
     Ok(peer)
 }

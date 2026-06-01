@@ -1,13 +1,21 @@
 //! Hive protocol validation errors.
+//!
+//! Retained as a public type so downstream callers compiled against earlier
+//! versions of the crate continue to build. The active validation path now
+//! lives in [`crate::verifier`] and reports failures as [`crate::HiveRejection`]
+//! instead.
 
-use metrics::counter;
 use strum::IntoStaticStr;
 
 use core::array::TryFromSliceError;
 
-/// Per-peer validation failure reasons.
+/// Per-peer validation failure reasons (legacy surface).
+///
+/// New code should consume [`crate::HiveRejection`] from the
+/// [`crate::HiveVerifier`] trait.
 #[derive(Debug, thiserror::Error, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
+#[non_exhaustive]
 pub enum ValidationFailure {
     #[error("invalid overlay length: {0}")]
     OverlayLength(TryFromSliceError),
@@ -21,11 +29,4 @@ pub enum ValidationFailure {
     SelfOverlay,
     #[error("multiaddrs missing /p2p/ component")]
     MissingPeerId,
-}
-
-impl ValidationFailure {
-    pub(crate) fn record(&self) {
-        let reason: &'static str = self.into();
-        counter!("hive_peer_validation_failures_total", "reason" => reason).increment(1);
-    }
 }
