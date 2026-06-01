@@ -46,11 +46,20 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             ProtocolEvent::Pingpong(PingpongEvent::Pong { rtt, .. }) => {
                 self.on_pingpong_pong(peer_id, rtt);
             }
+            ProtocolEvent::Pingpong(PingpongEvent::RttObserved { rtt, .. }) => {
+                self.on_pingpong_rtt(peer_id, rtt);
+            }
             ProtocolEvent::Pingpong(PingpongEvent::PingReceived { .. }) => {
                 debug!(%peer_id, "Received ping from peer");
             }
             ProtocolEvent::Pingpong(PingpongEvent::Error { error, .. }) => {
                 warn!(%peer_id, %error, "Pingpong failed");
+                self.on_pingpong_error(peer_id);
+            }
+            // `PingpongEvent` is `#[non_exhaustive]`; future variants are
+            // logged and otherwise ignored until topology learns about them.
+            ProtocolEvent::Pingpong(other) => {
+                trace!(%peer_id, event = ?other, "Unhandled pingpong event");
             }
         }
     }
@@ -360,6 +369,31 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             debug!(%peer_id, %overlay, ?rtt, "Connection health verified");
 
             self.emit_event(TopologyEvent::PingCompleted { overlay, rtt });
+        }
+    }
+
+    /// Forward an RTT observation into the EMA on `PeerScore` and into the
+    /// per-peer stabilization detector.
+    fn on_pingpong_rtt(&mut self, peer_id: PeerId, rtt: Duration) {
+        if let Some(overlay) = self.connection_registry.resolve_id(&peer_id) {
+            self.peer_manager.update_rtt(&overlay, rtt);
+        }
+        // Mutex poisoning here is non-fatal: missing an observation cannot
+        // corrupt persistent state, so we recover and continue.
+        match self.stabilization.lock() {
+            Ok(mut guard) => guard.observe(peer_id, true, rtt),
+            Err(poisoned) => poisoned.into_inner().observe(peer_id, true, rtt),
+        }
+    }
+
+    /// Feed a failed exchange into the stabilization detector so the streak
+    /// resets immediately.
+    fn on_pingpong_error(&mut self, peer_id: PeerId) {
+        match self.stabilization.lock() {
+            Ok(mut guard) => guard.observe(peer_id, false, Duration::ZERO),
+            Err(poisoned) => poisoned
+                .into_inner()
+                .observe(peer_id, false, Duration::ZERO),
         }
     }
 }

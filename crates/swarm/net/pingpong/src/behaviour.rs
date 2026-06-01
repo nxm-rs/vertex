@@ -16,28 +16,41 @@ use libp2p::{
 use strum::IntoStaticStr;
 use tracing::{debug, trace};
 
+use crate::codec::{Greeting, GreetingEcho};
 use crate::handler::{PingpongCommand, PingpongConfig, PingpongHandler, PingpongHandlerEvent};
 use vertex_swarm_net_headers::ProtocolStreamError;
 
-/// Events emitted by PingpongBehaviour.
+/// Events emitted by [`PingpongBehaviour`].
+///
+/// `Pong` carries the typed echo payload from the remote, while `RttObserved`
+/// is the dedicated signal consumed by topology / peer-score wiring to update
+/// EMA RTT and feed the per-peer stabilization detector. Splitting the two
+/// keeps payload-curious consumers separate from liveness consumers.
 #[derive(Debug, IntoStaticStr)]
+#[non_exhaustive]
 #[strum(serialize_all = "snake_case")]
 pub enum PingpongEvent {
-    /// Pong received with RTT measurement.
+    /// Pong received with a typed echo payload and the measured RTT.
     Pong {
         peer_id: PeerId,
         connection_id: ConnectionId,
-        /// The pong response string.
-        response: String,
+        /// The pong response payload.
+        response: GreetingEcho,
         /// Round-trip time.
         rtt: Duration,
     },
+    /// RTT observation from a successful ping/pong exchange.
+    ///
+    /// Emitted alongside `Pong` for every successful exchange. Consumers that
+    /// only care about RTT (peer score, stabilization detector) should
+    /// subscribe to this event to avoid coupling to the payload type.
+    RttObserved { peer_id: PeerId, rtt: Duration },
     /// Responded to incoming ping.
     PingReceived {
         peer_id: PeerId,
         connection_id: ConnectionId,
     },
-    /// Error occurred.
+    /// Error occurred during a ping/pong exchange.
     Error {
         peer_id: PeerId,
         connection_id: ConnectionId,
@@ -67,7 +80,12 @@ impl PingpongBehaviour {
     }
 
     /// Send a ping to a specific connection.
-    pub fn ping(&mut self, peer_id: PeerId, connection_id: ConnectionId, greeting: Option<String>) {
+    pub fn ping(
+        &mut self,
+        peer_id: PeerId,
+        connection_id: ConnectionId,
+        greeting: Option<Greeting>,
+    ) {
         self.events.push_back(ToSwarm::NotifyHandler {
             peer_id,
             handler: NotifyHandler::One(connection_id),
@@ -76,7 +94,7 @@ impl PingpongBehaviour {
     }
 
     /// Send a ping to any connection with a peer.
-    pub fn ping_peer(&mut self, peer_id: PeerId, greeting: Option<String>) {
+    pub fn ping_peer(&mut self, peer_id: PeerId, greeting: Option<Greeting>) {
         self.events.push_back(ToSwarm::NotifyHandler {
             peer_id,
             handler: NotifyHandler::Any,
@@ -131,6 +149,14 @@ impl NetworkBehaviour for PingpongBehaviour {
         match event {
             PingpongHandlerEvent::Pong { response, rtt } => {
                 debug!(%peer_id, ?rtt, "Pingpong: pong received");
+                // Emit the dedicated RTT signal first so RTT-only consumers
+                // (peer score, stabilization detector) see it even if a
+                // downstream Pong handler short-circuits.
+                self.events
+                    .push_back(ToSwarm::GenerateEvent(PingpongEvent::RttObserved {
+                        peer_id,
+                        rtt,
+                    }));
                 self.events
                     .push_back(ToSwarm::GenerateEvent(PingpongEvent::Pong {
                         peer_id,

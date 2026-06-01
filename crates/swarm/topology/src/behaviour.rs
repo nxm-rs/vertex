@@ -9,6 +9,8 @@ use std::{
     time::Duration,
 };
 
+use std::sync::Mutex as StdMutex;
+
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::Interval;
 
@@ -33,6 +35,9 @@ use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_manager::{PeerManager, StoredPeer};
 use vertex_swarm_peer_score::PeerScore;
 use vertex_swarm_peer_score::SwarmScoringConfig;
+use vertex_swarm_peer_score::{
+    ConsecutiveOkDetector, StabilizationConfig, StabilizationDetector,
+};
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 use vertex_swarm_spec::HasSpec;
 
@@ -114,6 +119,8 @@ pub struct TopologyConfig {
     pub dial_interval: Duration,
     pub early_disconnect_threshold: Duration,
     pub peer_save_interval: Duration,
+    /// Stabilization detector configuration (per-peer pingpong stability).
+    pub stabilization: StabilizationConfig,
 }
 
 impl Default for TopologyConfig {
@@ -123,6 +130,7 @@ impl Default for TopologyConfig {
             dial_interval: DEFAULT_DIAL_INTERVAL,
             early_disconnect_threshold: DEFAULT_EARLY_DISCONNECT_THRESHOLD,
             peer_save_interval: DEFAULT_PEER_SAVE_INTERVAL,
+            stabilization: StabilizationConfig::default(),
         }
     }
 }
@@ -151,7 +159,21 @@ impl TopologyConfig {
         self.peer_save_interval = interval;
         self
     }
+
+    /// Override the per-peer stabilization detector configuration.
+    pub fn with_stabilization(mut self, config: StabilizationConfig) -> Self {
+        self.stabilization = config;
+        self
+    }
 }
+
+/// Shared, mutable handle to a [`StabilizationDetector`] implementation.
+///
+/// The trait's `observe(&mut self, ...)` signature forces interior-mutability
+/// when the detector is shared with the topology handle. Boxing behind a
+/// `StdMutex` keeps the API simple at the cost of one lock per observation.
+pub(crate) type SharedStabilizationDetector =
+    Arc<StdMutex<Box<dyn StabilizationDetector>>>;
 
 /// Network topology behaviour managing peer connections.
 ///
@@ -229,6 +251,9 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
     /// Agent versions received via identify, shared with identify behaviour.
     pub(crate) agent_versions: identify::AgentVersions,
 
+    /// Per-peer pingpong stabilization detector, shared with `TopologyHandle`.
+    pub(crate) stabilization: SharedStabilizationDetector,
+
     // Metrics
     pub(crate) metrics: Arc<TopologyMetrics>,
 }
@@ -303,6 +328,11 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
         let metrics = Arc::new(TopologyMetrics::new());
 
+        let stabilization: SharedStabilizationDetector = Arc::new(StdMutex::new(Box::new(
+            ConsecutiveOkDetector::with_config(config.stabilization.clone()),
+        )
+            as Box<dyn StabilizationDetector>));
+
         let handle = TopologyHandle::new(
             identity.clone(),
             routing.clone(),
@@ -312,6 +342,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             event_tx.clone(),
             agent_versions.clone(),
             metrics.clone(),
+            stabilization.clone(),
         );
 
         let dial_interval = config.dial_interval;
@@ -374,6 +405,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             peer_store,
             agent_versions,
             pending_nat_external_addrs,
+            stabilization,
             metrics,
         };
 

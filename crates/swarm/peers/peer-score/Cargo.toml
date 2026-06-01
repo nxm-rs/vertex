@@ -22,6 +22,9 @@ vertex-swarm-primitives = { workspace = true }
 paste = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
+# Stabilization detector uses libp2p PeerId
+libp2p = { workspace = true }
+
 [dev-dependencies]
 postcard = { workspace = true }
 

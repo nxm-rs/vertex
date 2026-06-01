@@ -273,6 +273,12 @@ impl PeerEntry {
         self.mark_dirty();
     }
 
+    /// Update the exponentially weighted RTT estimate for this peer.
+    pub(crate) fn update_rtt(&self, rtt: Duration) {
+        self.scoring.update_rtt(rtt);
+        self.mark_dirty();
+    }
+
     pub(crate) fn ban(&self, reason: Option<String>) {
         *self.ban_info.write() = Some((unix_timestamp_secs(), reason.unwrap_or_default()));
         self.mark_dirty();

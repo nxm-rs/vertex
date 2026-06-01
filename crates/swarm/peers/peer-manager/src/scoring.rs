@@ -18,6 +18,17 @@ impl<I: SwarmIdentity> PeerManager<I> {
         }
     }
 
+    /// Update the exponentially weighted RTT estimate for a peer.
+    ///
+    /// Used by topology to forward `PingpongEvent::RttObserved` into the peer
+    /// score store. No-op for unknown peers.
+    pub fn update_rtt(&self, overlay: &OverlayAddress, rtt: Duration) {
+        if let Some(entry) = self.peers.get(overlay) {
+            entry.update_rtt(rtt);
+            trace!(?overlay, ?rtt, "updated EMA RTT");
+        }
+    }
+
     pub fn record_dial_failure(&self, overlay: &OverlayAddress) {
         if let Some(entry) = self.peers.get(overlay) {
             let old_state = entry.health_state();

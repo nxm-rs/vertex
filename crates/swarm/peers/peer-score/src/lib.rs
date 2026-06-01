@@ -4,10 +4,15 @@
 mod macros;
 mod config;
 mod score;
+mod stabilization;
 
 pub use config::{SwarmScoringConfig, SwarmScoringConfigBuilder, SwarmScoringEvent};
 pub use score::{
     ScoreCallbacks, ScoreChangedFn, ScoreWarningFn, SevereEventFn, ShouldBanFn, SwarmPeerScore,
+};
+pub use stabilization::{
+    ConsecutiveOkDetector, DEFAULT_REQUIRED_OK, DEFAULT_WINDOW, StabilizationConfig,
+    StabilizationDetector,
 };
 
 // Re-export base scoring types

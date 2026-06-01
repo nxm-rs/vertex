@@ -13,7 +13,7 @@ use vertex_swarm_net_identify as identify;
 use vertex_swarm_peer_manager::PeerManager;
 use vertex_swarm_primitives::OverlayAddress;
 
-use crate::behaviour::ConnectionRegistry;
+use crate::behaviour::{ConnectionRegistry, SharedStabilizationDetector};
 use crate::events::TopologyEvent;
 use crate::kademlia::KademliaRouting;
 use crate::metrics::TopologyMetrics;
@@ -29,6 +29,7 @@ pub struct TopologyHandle<I: SwarmIdentity> {
     event_tx: broadcast::Sender<TopologyEvent>,
     agent_versions: identify::AgentVersions,
     metrics: Arc<TopologyMetrics>,
+    stabilization: SharedStabilizationDetector,
 }
 
 impl<I: SwarmIdentity> Clone for TopologyHandle<I> {
@@ -42,6 +43,7 @@ impl<I: SwarmIdentity> Clone for TopologyHandle<I> {
             event_tx: self.event_tx.clone(),
             agent_versions: Arc::clone(&self.agent_versions),
             metrics: Arc::clone(&self.metrics),
+            stabilization: Arc::clone(&self.stabilization),
         }
     }
 }
@@ -57,6 +59,7 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
         event_tx: broadcast::Sender<TopologyEvent>,
         agent_versions: identify::AgentVersions,
         metrics: Arc<TopologyMetrics>,
+        stabilization: SharedStabilizationDetector,
     ) -> Self {
         Self {
             identity,
@@ -67,6 +70,21 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
             event_tx,
             agent_versions,
             metrics,
+            stabilization,
+        }
+    }
+
+    /// Returns `true` if the per-peer pingpong stabilization detector
+    /// currently considers `peer` stable.
+    ///
+    /// Consumed by Unit 10's reachability bridge to gate liveness decisions.
+    pub fn is_peer_stable(&self, peer: &PeerId) -> bool {
+        // Mutex poisoning here is non-fatal: the detector's recorded streak
+        // state is best-effort and we'd rather report "not stable" than
+        // propagate a poisoned-lock panic to the call site.
+        match self.stabilization.lock() {
+            Ok(guard) => guard.is_stable(peer),
+            Err(poisoned) => poisoned.into_inner().is_stable(peer),
         }
     }
 

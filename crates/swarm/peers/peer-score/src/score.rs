@@ -124,6 +124,20 @@ impl SwarmPeerScore {
         self.score.record_latency(rtt.as_nanos() as u64);
     }
 
+    /// Update the exponentially weighted RTT estimate from a pingpong sample.
+    ///
+    /// Does not change the cumulative score; the smoothed estimate is consumed
+    /// by stabilization detection and quality-of-service decisions.
+    pub fn update_rtt(&self, rtt: Duration) {
+        self.score.update_rtt(rtt);
+    }
+
+    /// Current EMA RTT, if at least one [`Self::update_rtt`] sample has landed.
+    #[must_use]
+    pub fn ema_rtt(&self) -> Option<Duration> {
+        self.score.ema_rtt()
+    }
+
     #[must_use]
     pub fn avg_latency(&self) -> Option<Duration> {
         self.score.avg_latency()
@@ -163,6 +177,7 @@ impl SwarmPeerScore {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};

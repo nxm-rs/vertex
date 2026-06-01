@@ -6,6 +6,7 @@ pub use behaviour::{PingpongBehaviour, PingpongEvent};
 mod handler;
 
 mod codec;
+pub use codec::{Greeting, GreetingEcho, GreetingError, MAX_GREETING_CHARS, PingpongMessage};
 
 mod protocol;
 pub(crate) use protocol::{PingpongOutboundProtocol, outbound};

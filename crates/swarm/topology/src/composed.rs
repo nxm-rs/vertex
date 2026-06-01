@@ -50,6 +50,13 @@ impl ProtocolEvent {
                 connection_id,
                 ..
             }) => (*peer_id, *connection_id),
+            Self::Pingpong(PingpongEvent::RttObserved { peer_id, .. }) => {
+                // RttObserved carries no connection id. The downstream
+                // `on_pingpong_rtt` handler routes purely off the peer id;
+                // the connection id is a placeholder that never reaches a
+                // per-connection sink.
+                (*peer_id, libp2p::swarm::ConnectionId::new_unchecked(0))
+            }
             Self::Pingpong(PingpongEvent::PingReceived {
                 peer_id,
                 connection_id,
@@ -59,8 +66,23 @@ impl ProtocolEvent {
                 connection_id,
                 ..
             }) => (*peer_id, *connection_id),
+            // `PingpongEvent` is `#[non_exhaustive]`. Future variants we do
+            // not yet recognise are routed with sentinel ids; the dispatcher
+            // logs and discards them via the wildcard arm in
+            // `protocol_handlers::process_protocol_event`.
+            Self::Pingpong(_) => unreachable_pingpong_event(),
         }
     }
+}
+
+/// Sentinel fallback for forward-compatibility with new `PingpongEvent`
+/// variants. Never produces a useful routing target — the dispatcher's
+/// wildcard arm discards events that hit this path.
+fn unreachable_pingpong_event() -> (libp2p::PeerId, libp2p::swarm::ConnectionId) {
+    (
+        libp2p::PeerId::random(),
+        libp2p::swarm::ConnectionId::new_unchecked(0),
+    )
 }
 
 impl From<HandshakeEvent> for ProtocolEvent {

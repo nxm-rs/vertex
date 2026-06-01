@@ -30,6 +30,7 @@ use vertex_observability::labels::direction;
 use vertex_swarm_net_handler_core::HandlerCore;
 use vertex_swarm_net_headers::{Inbound, ProtocolError, ProtocolStreamError, UpgradeError};
 
+use crate::codec::{Greeting, GreetingEcho};
 use crate::{PROTOCOL_NAME, PingpongOutboundProtocol, outbound, protocol::PingpongInboundInner};
 
 /// Timeout for inbound stream processing (headers exchange + ping/pong).
@@ -46,6 +47,12 @@ const RATE_LIMIT_REFILL: Duration = Duration::from_secs(2);
 /// Maximum queued outbound ping commands per connection.
 const MAX_PENDING_PINGS: usize = 8;
 
+/// Default greeting payload used when none is supplied by the caller.
+///
+/// `"ping"` is well within [`crate::MAX_GREETING_CHARS`]; the construction in
+/// [`PingpongConfig::default`] cannot fail.
+const DEFAULT_GREETING_LITERAL: &str = "ping";
+
 /// StreamProtocol for multistream-select negotiation.
 const PINGPONG_STREAM_PROTOCOL: StreamProtocol = StreamProtocol::new(PROTOCOL_NAME);
 
@@ -55,23 +62,40 @@ pub struct PingpongConfig {
     /// Timeout for pingpong outbound protocol.
     pub timeout: Duration,
     /// Default greeting for pings.
-    pub greeting: String,
+    pub greeting: Greeting,
 }
 
 impl Default for PingpongConfig {
     fn default() -> Self {
         Self {
             timeout: Duration::from_secs(30),
-            greeting: "ping".to_string(),
+            greeting: default_greeting(),
         }
     }
+}
+
+/// Construct the default greeting payload.
+///
+/// `"ping"` is a 4-char ASCII literal that fits comfortably under
+/// [`crate::MAX_GREETING_CHARS`]; if [`Greeting::try_from`] ever rejects it the
+/// type's invariants are broken at compile time. We fall back to an empty
+/// greeting (always valid) so callers never observe a panic at runtime.
+fn default_greeting() -> Greeting {
+    Greeting::try_from(DEFAULT_GREETING_LITERAL).unwrap_or_else(|_| {
+        debug_assert!(
+            false,
+            "DEFAULT_GREETING_LITERAL must satisfy the greeting cap"
+        );
+        // Empty string is always within the cap by construction.
+        Greeting::try_from(String::new()).unwrap_or(Greeting::EMPTY)
+    })
 }
 
 /// Commands from behaviour to handler.
 #[derive(Debug)]
 pub enum PingpongCommand {
     /// Send a ping with optional custom greeting.
-    Ping { greeting: Option<String> },
+    Ping { greeting: Option<Greeting> },
 }
 
 /// Events from handler to behaviour.
@@ -79,8 +103,8 @@ pub enum PingpongCommand {
 pub enum PingpongHandlerEvent {
     /// Pong received with RTT.
     Pong {
-        /// The pong response string.
-        response: String,
+        /// The typed pong echo payload.
+        response: GreetingEcho,
         /// Round-trip time.
         rtt: Duration,
     },
@@ -105,7 +129,7 @@ pub struct PingpongHandler {
     /// Shared handler core: events, rate limiter, outbound flag.
     core: HandlerCore<PingpongHandlerEvent>,
     /// Bounded by `MAX_PENDING_PINGS`; excess commands are dropped with a warning.
-    pending_pings: VecDeque<String>,
+    pending_pings: VecDeque<Greeting>,
 }
 
 impl PingpongHandler {

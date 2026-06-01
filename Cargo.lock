@@ -8447,6 +8447,7 @@ dependencies = [
 name = "vertex-swarm-peer-score"
 version = "0.1.0"
 dependencies = [
+ "libp2p",
  "paste",
  "postcard",
  "serde",
