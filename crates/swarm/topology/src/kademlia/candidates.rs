@@ -228,7 +228,7 @@ pub(crate) fn select_balanced_candidates<I: SwarmIdentity>(
     }
 
     // Sort by PO descending (prioritize higher bins)
-    bin_stats.sort_by(|a, b| b.0.cmp(&a.0));
+    bin_stats.sort_by_key(|b| std::cmp::Reverse(b.0));
 
     for (po, effective, deficit) in bin_stats {
         if selector.is_full() {

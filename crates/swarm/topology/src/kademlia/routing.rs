@@ -295,7 +295,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
             peers_with_distance.truncate(count);
         }
         // Sort just the top-k: O(k log k)
-        peers_with_distance.sort_by(|a, b| b.1.cmp(&a.1));
+        peers_with_distance.sort_by_key(|b| std::cmp::Reverse(b.1));
 
         peers_with_distance
             .into_iter()
