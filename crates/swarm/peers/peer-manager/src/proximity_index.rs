@@ -1,12 +1,13 @@
 //! Proximity-ordered storage for Kademlia-style routing.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use hashlink::LinkedHashSet;
 use metrics::gauge;
 use parking_lot::RwLock;
-use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_primitives::{Bin, MAX_BIN, OverlayAddress};
 
 /// Error returned when adding a peer to the index fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error, strum::IntoStaticStr)]
@@ -230,7 +231,62 @@ impl ProximityIndex {
     /// Compute bin (proximity order) for an address, capped at max_po.
     #[must_use]
     pub fn bin_for(&self, addr: &OverlayAddress) -> u8 {
-        self.local_overlay.proximity(addr).min(self.max_po)
+        u8::from(self.local_overlay.proximity(addr)).min(self.max_po)
+    }
+
+    // ----- Typed surface (Bin) --------------------------------------------
+
+    /// Number of addresses in the bin identified by `bin` (typed).
+    ///
+    /// Returns `0` if `bin` is greater than this index's `max_po`.
+    #[must_use]
+    pub fn bin_size_typed(&self, bin: Bin) -> usize {
+        self.bin_size(bin.get())
+    }
+
+    /// Snapshot of populated bin sizes, keyed by typed [`Bin`].
+    ///
+    /// Empty bins are omitted. The map is ordered by bin index (ascending PO).
+    #[must_use]
+    pub fn bin_sizes_typed(&self) -> BTreeMap<Bin, usize> {
+        let mut out = BTreeMap::new();
+        for (idx, counter) in self.bin_counts.iter().enumerate() {
+            let size = counter.load(Ordering::Relaxed);
+            if size == 0 {
+                continue;
+            }
+            // `idx <= max_po <= MAX_BIN`; clamp defensively at MAX_BIN.
+            // Cast is bounded by the `min` above.
+            let raw = idx.min(MAX_BIN as usize) as u8;
+            // `raw <= MAX_BIN == MAX_PO`, so `Bin::new` cannot fail.
+            let bin = Bin::new(raw).unwrap_or(Bin::MAX);
+            out.insert(bin, size);
+        }
+        out
+    }
+
+    /// Typed `Bin` that `addr` falls into for this index, capped at `max_po`.
+    #[must_use]
+    pub fn bin_for_typed(&self, addr: &OverlayAddress) -> Bin {
+        // `SwarmAddress::bin` already caps at MAX_PO (= MAX_BIN). Clamp
+        // again to this index's configured `max_po`.
+        let raw = self.local_overlay.bin(addr).get().min(self.max_po);
+        // `raw <= max_po <= MAX_PO`, so `Bin::new` cannot fail.
+        Bin::new(raw).unwrap_or(Bin::MAX)
+    }
+
+    /// Iterate `(Bin, address)` from shallowest to deepest bin.
+    pub fn iter_by_bin(&self) -> impl ExactSizeIterator<Item = (Bin, OverlayAddress)> {
+        // Inner PO values come from `bin_for`, which already clamps to
+        // `max_po <= MAX_PO`, so `Bin::new` cannot fail.
+        self.iter_by_proximity()
+            .map(|(po, addr)| (Bin::new(po).unwrap_or(Bin::MAX), addr))
+    }
+
+    /// Iterate `(Bin, address)` from deepest to shallowest bin.
+    pub fn iter_by_bin_desc(&self) -> impl ExactSizeIterator<Item = (Bin, OverlayAddress)> {
+        self.iter_by_proximity_desc()
+            .map(|(po, addr)| (Bin::new(po).unwrap_or(Bin::MAX), addr))
     }
 
     /// Build sorted list, using a generation-stamped cache to avoid rebuilds.
@@ -639,6 +695,68 @@ mod tests {
         assert_eq!(rev_iter.len(), 3);
         rev_iter.next();
         assert_eq!(rev_iter.len(), 2);
+    }
+
+    #[test]
+    fn test_bin_size_typed_and_sizes_typed() {
+        let index = ProximityIndex::new(local_overlay(), 31, 0);
+
+        let addr0 = OverlayAddress::from([0x80; 32]); // bin 0
+        let addr2a = OverlayAddress::from([0x20; 32]); // bin 2
+        let addr2b = {
+            let mut bytes = [0x00u8; 32];
+            bytes[0] = 0x30; // bin 2 (top two bits zero, then 1)
+            OverlayAddress::from(bytes)
+        };
+
+        index.add(addr0).unwrap();
+        index.add(addr2a).unwrap();
+        index.add(addr2b).unwrap();
+
+        let b0 = Bin::new(0).unwrap();
+        let b1 = Bin::new(1).unwrap();
+        let b2 = Bin::new(2).unwrap();
+
+        assert_eq!(index.bin_size_typed(b0), 1);
+        assert_eq!(index.bin_size_typed(b1), 0);
+        assert_eq!(index.bin_size_typed(b2), 2);
+
+        let sizes = index.bin_sizes_typed();
+        assert_eq!(sizes.len(), 2); // only populated bins
+        assert_eq!(sizes.get(&b0).copied(), Some(1));
+        assert_eq!(sizes.get(&b2).copied(), Some(2));
+        assert!(!sizes.contains_key(&b1));
+    }
+
+    #[test]
+    fn test_bin_for_typed_matches_bin_for() {
+        let index = ProximityIndex::new(local_overlay(), 31, 0);
+
+        let addr = OverlayAddress::from([0x20; 32]); // bin 2
+        assert_eq!(u8::from(index.bin_for_typed(&addr)), index.bin_for(&addr));
+    }
+
+    #[test]
+    fn test_iter_by_bin_orders_ascending() {
+        let index = ProximityIndex::new(local_overlay(), 31, 0);
+
+        let addr0 = OverlayAddress::from([0x80; 32]);
+        let addr1 = OverlayAddress::from([0x40; 32]);
+        let addr2 = OverlayAddress::from([0x20; 32]);
+        index.add(addr2).unwrap();
+        index.add(addr0).unwrap();
+        index.add(addr1).unwrap();
+
+        let collected: Vec<_> = index.iter_by_bin().collect();
+        assert_eq!(collected.len(), 3);
+        assert_eq!(u8::from(collected[0].0), 0);
+        assert_eq!(u8::from(collected[1].0), 1);
+        assert_eq!(u8::from(collected[2].0), 2);
+
+        let rev: Vec<_> = index.iter_by_bin_desc().collect();
+        assert_eq!(u8::from(rev[0].0), 2);
+        assert_eq!(u8::from(rev[1].0), 1);
+        assert_eq!(u8::from(rev[2].0), 0);
     }
 
     #[test]

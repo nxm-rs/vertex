@@ -441,7 +441,7 @@ impl<I: SwarmIdentity> GossipTask<I> {
         let mut actions = Vec::new();
 
         for overlay in self.connection_registry.active_ids() {
-            let proximity = self.local_overlay.proximity(&overlay);
+            let proximity = u8::from(self.local_overlay.proximity(&overlay));
 
             if proximity >= new_depth
                 && proximity < old_depth
@@ -472,7 +472,7 @@ impl<I: SwarmIdentity> GossipTask<I> {
         }
 
         let new_peer_overlay = OverlayAddress::from(*peer.overlay());
-        let proximity = self.local_overlay.proximity(&new_peer_overlay);
+        let proximity = u8::from(self.local_overlay.proximity(&new_peer_overlay));
 
         if proximity >= depth {
             self.handle_new_neighbor(new_peer_overlay, peer.clone(), depth)

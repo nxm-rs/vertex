@@ -4,6 +4,26 @@
 
 mod validated;
 
+// Re-export nectar's canonical typed proximity/bin newtypes and supporting
+// constants so downstream vertex crates can pull them from a single
+// `vertex_swarm_primitives` path without depending on `nectar_primitives`
+// directly. PR #40 in nectar (merge `3c99edc4`) made these the authoritative
+// definitions.
+pub use nectar_primitives::{
+    Bin, BinError, MAX_PO, ProximityOrder, ProximityOrderError, recompute_neighborhood_depth,
+};
+
+/// Number of bins in a Swarm Kademlia routing table.
+///
+/// Convenience alias for [`Bin::COUNT`] so existing array-sizing call sites
+/// (`[_; NUM_BINS]`) continue to compile without churn.
+pub const NUM_BINS: usize = Bin::COUNT;
+
+/// Maximum allowable bin index (inclusive).
+///
+/// Convenience alias for [`MAX_PO`]: both share the `0..=31` range.
+pub const MAX_BIN: u8 = MAX_PO;
+
 pub use validated::{ValidatedChunk, ValidationError};
 
 use alloy_primitives::{Address, B256, Keccak256};

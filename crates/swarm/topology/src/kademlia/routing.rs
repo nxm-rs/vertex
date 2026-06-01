@@ -19,8 +19,8 @@ use parking_lot::RwLock;
 use tracing::{debug, info, trace};
 use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 use vertex_swarm_peer_manager::PeerManager;
-use vertex_swarm_peer_manager::ProximityIndex;
-use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
+use vertex_swarm_peer_manager::{NeighborhoodDepth, ProximityIndex};
+use vertex_swarm_primitives::{Bin, NUM_BINS, OverlayAddress, SwarmNodeType};
 
 /// Connection phase for capacity tracking.
 #[derive(PartialEq, Eq)]
@@ -122,7 +122,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
     }
 
     fn proximity(&self, peer: &OverlayAddress) -> u8 {
-        self.base().proximity(peer).min(self.max_po)
+        u8::from(self.base().proximity(peer)).min(self.max_po)
     }
 
     /// Capture state for candidate selection (lightweight: banned/backoff checked live).
@@ -151,6 +151,39 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
             }
         }
         0
+    }
+
+    /// Recompute neighborhood depth using the typed bee-equivalent algorithm.
+    ///
+    /// Computes the depth via [`NeighborhoodDepth::recompute`], which mirrors
+    /// bee's `recalcDepth` (`pkg/topology/kademlia/kademlia.go:896-963`). The
+    /// configured `nominal()` value is used as both the saturation threshold
+    /// and the `low_watermark`, consistent with the existing per-bin
+    /// saturation check.
+    ///
+    /// Currently used only by tests and as the typed counterpart of the
+    /// existing `recalc_depth` raw-u8 helper. Once downstream call sites
+    /// migrate, the raw helper can be removed.
+    #[allow(dead_code)]
+    pub(crate) fn recalc_neighborhood_depth(&self) -> NeighborhoodDepth {
+        let mut counts = [0usize; NUM_BINS];
+        for (slot, size) in counts
+            .iter_mut()
+            .zip(self.connected_peers.bin_sizes().into_iter())
+        {
+            *slot = size;
+        }
+        let nominal = self.config.limits.nominal();
+        NeighborhoodDepth::recompute(&counts, nominal, nominal)
+    }
+
+    /// Typed neighborhood depth: wraps the atomic `depth` as a [`Bin`].
+    #[allow(dead_code)]
+    pub(crate) fn depth_typed(&self) -> NeighborhoodDepth {
+        // `self.depth` is always written from values in `0..=max_po <= MAX_PO`,
+        // so `Bin::new` cannot fail; fall back to `Bin::MAX` defensively.
+        let raw = self.depth.load(Ordering::Relaxed);
+        NeighborhoodDepth::new(Bin::new(raw).unwrap_or(Bin::MAX))
     }
 
     /// Log the current routing status showing bin populations.
@@ -958,6 +991,31 @@ mod tests {
             assert_eq!(c.phase, EvictionPhase::Active);
             assert_eq!(c.bin, 0);
         }
+    }
+
+    #[test]
+    fn test_recalc_neighborhood_depth_zero_when_below_watermark() {
+        let base = SwarmAddress::with_first_byte(0x00);
+        let config = KademliaConfig::default().with_nominal(4);
+        let (routing, _pm) = make_routing(base, config);
+
+        // With nominal=4 and total connected=2, depth should be 0.
+        SwarmRouting::connected(&*routing, SwarmAddress::with_first_byte(0x80));
+        SwarmRouting::connected(&*routing, SwarmAddress::with_first_byte(0xc0));
+
+        let depth = routing.recalc_neighborhood_depth();
+        assert_eq!(depth.get(), 0);
+    }
+
+    #[test]
+    fn test_depth_typed_matches_raw() {
+        let base = SwarmAddress::with_first_byte(0x00);
+        let config = KademliaConfig::default().with_nominal(1);
+        let (routing, _pm) = make_routing(base, config);
+
+        SwarmRouting::connected(&*routing, SwarmAddress::with_first_byte(0x80));
+        let typed = routing.depth_typed();
+        assert_eq!(u8::from(typed), routing.depth());
     }
 
     #[test]

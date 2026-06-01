@@ -26,7 +26,7 @@ pub(crate) fn connected_neighbors<I: SwarmIdentity>(
         .active_ids()
         .into_iter()
         .filter(|overlay| {
-            local_overlay.proximity(overlay) >= depth
+            u8::from(local_overlay.proximity(overlay)) >= depth
                 && peer_manager.node_type(overlay) == Some(SwarmNodeType::Storer)
         })
         .collect()
@@ -70,8 +70,8 @@ pub(crate) fn select_for_distant<I: SwarmIdentity>(
         .iter()
         .filter_map(|overlay| {
             let peer = peer_manager.get_swarm_peer(overlay)?;
-            let proximity_to_recipient = recipient.proximity(overlay);
-            let bin = local_overlay.proximity(overlay);
+            let proximity_to_recipient = u8::from(recipient.proximity(overlay));
+            let bin = u8::from(local_overlay.proximity(overlay));
             Some((peer, proximity_to_recipient, bin))
         })
         .collect();
