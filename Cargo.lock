@@ -8390,6 +8390,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
+ "alloy-signer-local",
  "arbitrary",
  "auto_impl",
  "bytes",
