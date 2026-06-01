@@ -3,11 +3,15 @@
 use std::convert::Infallible;
 
 use strum::IntoStaticStr;
+use vertex_swarm_peer::SwarmAddress;
 use vertex_swarm_peer::error::{MultiAddrError, SwarmPeerError};
+
+use crate::welcome::WelcomeMessageError;
 
 /// Handshake protocol errors.
 #[derive(Debug, thiserror::Error, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
+#[non_exhaustive]
 pub enum HandshakeError {
     /// Handshake timeout.
     #[error("timeout")]
@@ -33,6 +37,10 @@ pub enum HandshakeError {
         actual: usize,
     },
 
+    /// Welcome message failed length validation.
+    #[error("welcome message: {0}")]
+    InvalidWelcomeMessage(#[from] WelcomeMessageError),
+
     /// Invalid data conversion (e.g., slice to fixed-size array).
     #[error("invalid data: {0}")]
     InvalidData(#[from] std::array::TryFromSliceError),
@@ -56,6 +64,18 @@ pub enum HandshakeError {
     /// Observed address has wrong or missing peer ID.
     #[error("invalid observed address")]
     InvalidObservedAddress,
+
+    /// Peer's signed timestamp falls outside the permitted clock-skew window.
+    ///
+    /// `peer_overlay` is the overlay the peer advertised; `drift_seconds`
+    /// is the signed delta `peer_timestamp - local_now` in seconds — positive
+    /// means the peer's clock is ahead of ours.
+    #[error("timestamp outside clock-skew window: peer={peer_overlay} drift={drift_seconds}s")]
+    #[strum(serialize = "timestamp_outside_skew_window")]
+    TimestampOutsideSkewWindow {
+        peer_overlay: SwarmAddress,
+        drift_seconds: i64,
+    },
 
     /// Protobuf encoding/decoding error.
     #[error("protobuf error: {0}")]

@@ -8151,6 +8151,7 @@ dependencies = [
  "vertex-swarm-identity",
  "vertex-swarm-net-proto",
  "vertex-swarm-peer",
+ "vertex-swarm-primitives",
  "vertex-swarm-spec",
  "vertex-swarm-test-utils",
 ]
@@ -8390,6 +8391,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
+ "alloy-signer-local",
  "arbitrary",
  "auto_impl",
  "bytes",

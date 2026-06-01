@@ -1,104 +1,122 @@
-//! SynAck message encoding/decoding for handshake protocol.
+//! SynAck message encoding/decoding for handshake 15.0.0.
 
 use libp2p::Multiaddr;
-use vertex_swarm_peer::{SwarmNodeType, SwarmPeer};
+use vertex_swarm_peer::{BzzAddress, SwarmNodeType, Timestamp};
 
-use super::ack::{
-    encode_ack, node_type_from_wire, swarm_peer_from_proto, welcome_message_from_proto,
-};
+use super::ack::{DecodedAck, decode_ack, encode_ack};
 use super::syn_msg::{decode_syn, encode_syn};
 use crate::HandshakeError;
+use crate::welcome::WelcomeMessage;
+
+/// Validated contents of a decoded
+/// [`SynAck`](vertex_swarm_net_proto::handshake::SynAck).
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub struct DecodedSynAck {
+    /// Address the peer observed us at, echoed back.
+    pub observed_multiaddr: Multiaddr,
+    /// Inner Ack with verified peer identity.
+    pub ack: DecodedAck,
+}
 
 /// Decode a SynAck proto message, returning validated components.
 pub(crate) fn decode_synack(
     proto: vertex_swarm_net_proto::handshake::SynAck,
     expected_network_id: u64,
-) -> Result<(Multiaddr, SwarmPeer, SwarmNodeType, String), HandshakeError> {
-    let observed = decode_syn(proto.syn.ok_or(HandshakeError::MissingField("syn"))?)?;
-
+    now: Option<Timestamp>,
+) -> Result<DecodedSynAck, HandshakeError> {
+    let observed_multiaddr = decode_syn(proto.syn.ok_or(HandshakeError::MissingField("syn"))?)?;
     let proto_ack = proto.ack.ok_or(HandshakeError::MissingField("ack"))?;
-    let swarm_peer = swarm_peer_from_proto(&proto_ack, expected_network_id)?;
-    let welcome_message = welcome_message_from_proto(&proto_ack)?;
-    let node_type = node_type_from_wire(proto_ack.storer);
-
-    Ok((observed, swarm_peer, node_type, welcome_message))
+    let ack = decode_ack(proto_ack, expected_network_id, now)?;
+    Ok(DecodedSynAck {
+        observed_multiaddr,
+        ack,
+    })
 }
 
 /// Encode components into a SynAck proto message.
 pub(crate) fn encode_synack(
     observed: &Multiaddr,
-    peer: &SwarmPeer,
+    bzz: &BzzAddress,
     node_type: SwarmNodeType,
-    welcome_message: &str,
+    welcome_message: &WelcomeMessage,
     network_id: u64,
 ) -> vertex_swarm_net_proto::handshake::SynAck {
     vertex_swarm_net_proto::handshake::SynAck {
         syn: Some(encode_syn(observed)),
-        ack: Some(encode_ack(peer, node_type, welcome_message, network_id)),
+        ack: Some(encode_ack(bzz, node_type, welcome_message, network_id)),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vertex_swarm_api::SwarmSpec;
-    use vertex_swarm_identity::Identity;
-    use vertex_swarm_test_utils::test_spec_isolated as test_spec;
+    use alloy_signer_local::PrivateKeySigner;
+    use vertex_swarm_peer::Nonce;
+    use vertex_swarm_primitives::compute_overlay;
 
-    fn create_test_data() -> (Multiaddr, SwarmPeer, u64) {
-        let spec = test_spec();
-        let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
+    fn fixed_now() -> Timestamp {
+        Timestamp::from_secs(1_700_000_000)
+    }
+
+    fn signed_bzz(network_id: u64) -> BzzAddress {
+        let signer = PrivateKeySigner::random();
+        let nonce = Nonce::from([0u8; 32]);
+        let overlay = compute_overlay(&signer.address(), network_id, nonce.as_b256());
+        let underlay: Vec<Multiaddr> = vec!["/ip4/192.168.1.1/tcp/5678".parse().unwrap()];
+        BzzAddress::sign(
+            &signer,
+            underlay,
+            overlay,
+            network_id,
+            nonce,
+            fixed_now(),
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn synack_roundtrip() {
         let observed: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
-        let peer_addr: Multiaddr = "/ip4/192.168.1.1/tcp/5678".parse().unwrap();
-        let peer = SwarmPeer::from_identity(&identity, vec![peer_addr]).unwrap();
-        (observed, peer, spec.network_id())
+        let bzz = signed_bzz(1);
+        let welcome = WelcomeMessage::new("hi").unwrap();
+        let proto = encode_synack(&observed, &bzz, SwarmNodeType::Storer, &welcome, 1);
+        let decoded = decode_synack(proto, 1, Some(fixed_now())).unwrap();
+
+        assert_eq!(decoded.observed_multiaddr, observed);
+        assert_eq!(decoded.ack.bzz_address, bzz);
+        assert_eq!(decoded.ack.node_type, SwarmNodeType::Storer);
+        assert_eq!(decoded.ack.welcome_message, welcome);
     }
 
     #[test]
-    fn test_synack_roundtrip() {
-        let (observed, peer, network_id) = create_test_data();
-        let node_type = SwarmNodeType::Storer;
-        let welcome = "test";
-
-        let proto = encode_synack(&observed, &peer, node_type, welcome, network_id);
-        let (dec_observed, dec_peer, dec_type, dec_welcome) =
-            decode_synack(proto, network_id).unwrap();
-
-        assert_eq!(observed, dec_observed);
-        assert_eq!(peer, dec_peer);
-        assert_eq!(node_type, dec_type);
-        assert_eq!(welcome, dec_welcome);
-    }
-
-    #[test]
-    fn test_synack_missing_syn() {
-        let (_, peer, network_id) = create_test_data();
+    fn synack_missing_syn() {
+        let bzz = signed_bzz(1);
         let mut proto = encode_synack(
             &"/ip4/127.0.0.1/tcp/1234".parse().unwrap(),
-            &peer,
+            &bzz,
             SwarmNodeType::Client,
-            "test",
-            network_id,
+            &WelcomeMessage::empty(),
+            1,
         );
         proto.syn = None;
-
-        let result = decode_synack(proto, network_id);
-        assert!(matches!(result, Err(HandshakeError::MissingField("syn"))));
+        let err = decode_synack(proto, 1, Some(fixed_now())).unwrap_err();
+        assert!(matches!(err, HandshakeError::MissingField("syn")));
     }
 
     #[test]
-    fn test_synack_missing_ack() {
-        let (_, peer, network_id) = create_test_data();
+    fn synack_missing_ack() {
+        let bzz = signed_bzz(1);
         let mut proto = encode_synack(
             &"/ip4/127.0.0.1/tcp/1234".parse().unwrap(),
-            &peer,
+            &bzz,
             SwarmNodeType::Client,
-            "test",
-            network_id,
+            &WelcomeMessage::empty(),
+            1,
         );
         proto.ack = None;
-
-        let result = decode_synack(proto, network_id);
-        assert!(matches!(result, Err(HandshakeError::MissingField("ack"))));
+        let err = decode_synack(proto, 1, Some(fixed_now())).unwrap_err();
+        assert!(matches!(err, HandshakeError::MissingField("ack")));
     }
 }

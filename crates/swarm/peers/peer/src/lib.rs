@@ -5,9 +5,11 @@
 //! - Multiaddr serialization (Bee-compatible)
 //! - Signature verification and overlay validation
 
+pub mod bzz;
 pub mod error;
 mod serde_multiaddr;
 
+pub use bzz::{BzzAddress, MAX_CLOCK_SKEW_SECS, Nonce, Timestamp};
 pub use serde_multiaddr::{deserialize_multiaddrs, serialize_multiaddrs};
 
 use bytes::{Bytes, BytesMut};

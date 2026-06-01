@@ -14,9 +14,11 @@ pub enum MultiAddrError {
     InvalidMultiaddr(#[from] libp2p::multiaddr::Error),
 }
 
-/// Errors from [`SwarmPeer`](crate::SwarmPeer) construction.
+/// Errors from [`SwarmPeer`](crate::SwarmPeer) and
+/// [`BzzAddress`](crate::BzzAddress) construction.
 #[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
+#[non_exhaustive]
 pub enum SwarmPeerError {
     #[error("invalid signature: {0}")]
     InvalidSignature(#[from] alloy_primitives::SignatureError),
@@ -28,4 +30,8 @@ pub enum SwarmPeerError {
     NoMultiaddrs,
     #[error("invalid multiaddr encoding: {0}")]
     InvalidMultiaddrEncoding(#[from] MultiAddrError),
+    #[error("timestamp outside permitted clock-skew window")]
+    TimestampOutsideSkewWindow,
+    #[error("invalid chequebook address encoding")]
+    InvalidChequebook,
 }

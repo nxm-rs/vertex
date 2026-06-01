@@ -64,4 +64,5 @@ arbitrary.workspace = true
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
 rand.workspace = true
+vertex-swarm-primitives.workspace = true
 vertex-swarm-test-utils = { workspace = true }

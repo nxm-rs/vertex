@@ -9,18 +9,18 @@ use crate::HandshakeError;
 pub(crate) fn decode_syn(
     proto: vertex_swarm_net_proto::handshake::Syn,
 ) -> Result<Multiaddr, HandshakeError> {
-    let multiaddrs = deserialize_multiaddrs(&proto.observed_multiaddr)?;
+    let multiaddrs = deserialize_multiaddrs(&proto.observed_underlay)?;
 
     multiaddrs
         .into_iter()
         .next()
-        .ok_or(HandshakeError::MissingField("observed_multiaddr"))
+        .ok_or(HandshakeError::MissingField("observed_underlay"))
 }
 
 /// Encode an observed multiaddr into a Syn proto message.
 pub(crate) fn encode_syn(observed: &Multiaddr) -> vertex_swarm_net_proto::handshake::Syn {
     vertex_swarm_net_proto::handshake::Syn {
-        observed_multiaddr: observed.to_vec(),
+        observed_underlay: observed.to_vec(),
     }
 }
 
@@ -43,7 +43,7 @@ mod tests {
     #[test]
     fn test_syn_rejects_malformed_multiaddr() {
         let proto = vertex_swarm_net_proto::handshake::Syn {
-            observed_multiaddr: vec![0x01, 0x02, 0x03],
+            observed_underlay: vec![0x01, 0x02, 0x03],
         };
         let result = decode_syn(proto);
         assert!(matches!(result, Err(HandshakeError::InvalidMultiaddr(_))));
@@ -52,12 +52,12 @@ mod tests {
     #[test]
     fn test_syn_rejects_empty_multiaddr() {
         let proto = vertex_swarm_net_proto::handshake::Syn {
-            observed_multiaddr: vec![],
+            observed_underlay: vec![],
         };
         let result = decode_syn(proto);
         assert!(matches!(
             result,
-            Err(HandshakeError::MissingField("observed_multiaddr"))
+            Err(HandshakeError::MissingField("observed_underlay"))
         ));
     }
 }

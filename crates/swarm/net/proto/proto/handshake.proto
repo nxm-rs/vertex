@@ -1,19 +1,25 @@
 // Copyright 2026 Nexum Contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
+// Wire format for the Swarm handshake (`/swarm/handshake/15.0.0/handshake`).
+//
+// Matches bee `pkg/p2p/libp2p/internal/handshake/pb/handshake.proto`
+// byte-for-byte. Field numbers (the only thing on the wire) are pinned to
+// bee's layout; field names use snake_case so `pb-rs` generates idiomatic
+// Rust identifiers.
+
 syntax = "proto3";
 
 package handshake;
 
 message Syn {
-  bytes observed_multiaddr = 1;
+  bytes observed_underlay = 1;
 }
 
 message Ack {
-  PeerAddress peer = 1;
+  BzzAddress address = 1;
   uint64 network_id = 2;
-  bool storer = 3;
-  bytes nonce = 4;
+  bool full_node = 3;
   string welcome_message = 99;
 }
 
@@ -22,10 +28,11 @@ message SynAck {
   Ack ack = 2;
 }
 
-// Partial peer address - missing nonce (which is at Ack level).
-// Used for wire format only; convert to SwarmPeer for full representation.
-message PeerAddress {
-  bytes multiaddrs = 1;
+message BzzAddress {
+  bytes underlay = 1;
   bytes signature = 2;
   bytes overlay = 3;
+  bytes nonce = 4;
+  int64 timestamp = 5;
+  bytes chequebook_address = 6;
 }

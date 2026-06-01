@@ -5,6 +5,8 @@ mod ack;
 mod syn_msg;
 mod synack;
 
+pub use ack::DecodedAck;
 pub(crate) use ack::{decode_ack, encode_ack};
 pub(crate) use syn_msg::{decode_syn, encode_syn};
+pub use synack::DecodedSynAck;
 pub(crate) use synack::{decode_synack, encode_synack};
