@@ -1,11 +1,11 @@
 //! Identity trait for Swarm network participation.
 
 use crate::SwarmSpec;
-use alloy_primitives::{Address, B256};
+use alloy_primitives::Address;
 use alloy_signer::{Signer, SignerSync};
 use nectar_primitives::SwarmAddress;
 use std::sync::Arc;
-use vertex_swarm_primitives::{SwarmNodeType, compute_overlay};
+use vertex_swarm_primitives::{Nonce, SwarmNodeType, compute_overlay};
 
 /// Identity trait for Swarm network participation.
 ///
@@ -23,7 +23,7 @@ pub trait SwarmIdentity: Send + Sync + 'static {
     fn spec(&self) -> &Self::Spec;
 
     /// Get the nonce for overlay address derivation.
-    fn nonce(&self) -> B256;
+    fn nonce(&self) -> Nonce;
 
     /// Get the signer for handshake authentication.
     fn signer(&self) -> Arc<Self::Signer>;

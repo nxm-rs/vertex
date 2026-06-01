@@ -1,11 +1,11 @@
 //! Mock identity implementations and test helpers.
 
-use alloy_primitives::B256;
 use alloy_signer_local::LocalSigner;
 use nectar_primitives::SwarmAddress;
 use std::sync::Arc;
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeType};
 use vertex_swarm_identity::Identity;
+use vertex_swarm_primitives::Nonce;
 use vertex_swarm_spec::Spec;
 
 /// A mock identity for testing Swarm components.
@@ -24,7 +24,7 @@ use vertex_swarm_spec::Spec;
 /// // Or with builder pattern
 /// let mock = MockIdentity::with_first_byte(0x00)
 ///     .with_node_type(SwarmNodeType::Client)
-///     .with_nonce(B256::repeat_byte(0xff));
+///     .with_nonce(Nonce::new([0xff; 32]));
 /// ```
 #[derive(Clone)]
 pub struct MockIdentity {
@@ -32,7 +32,7 @@ pub struct MockIdentity {
     signer: Arc<LocalSigner<alloy_signer::k256::ecdsa::SigningKey>>,
     spec: Arc<Spec>,
     node_type: SwarmNodeType,
-    nonce: B256,
+    nonce: Nonce,
 }
 
 impl std::fmt::Debug for MockIdentity {
@@ -53,7 +53,7 @@ impl MockIdentity {
             signer: Arc::new(signer),
             spec: vertex_swarm_spec::init_testnet(),
             node_type: SwarmNodeType::Storer,
-            nonce: B256::ZERO,
+            nonce: Nonce::ZERO,
         }
     }
 
@@ -74,7 +74,7 @@ impl MockIdentity {
 
     /// Set the nonce for this mock identity.
     #[must_use]
-    pub fn with_nonce(mut self, nonce: B256) -> Self {
+    pub fn with_nonce(mut self, nonce: Nonce) -> Self {
         self.nonce = nonce;
         self
     }
@@ -95,7 +95,7 @@ impl SwarmIdentity for MockIdentity {
         &self.spec
     }
 
-    fn nonce(&self) -> B256 {
+    fn nonce(&self) -> Nonce {
         self.nonce
     }
 
@@ -152,17 +152,17 @@ mod tests {
 
         assert_eq!(mock.overlay_address(), overlay);
         assert_eq!(mock.node_type(), SwarmNodeType::Storer);
-        assert_eq!(mock.nonce(), B256::ZERO);
+        assert_eq!(mock.nonce(), Nonce::ZERO);
     }
 
     #[test]
     fn test_mock_identity_builder() {
         let mock = MockIdentity::with_first_byte(0x00)
             .with_node_type(SwarmNodeType::Client)
-            .with_nonce(B256::repeat_byte(0xff));
+            .with_nonce(Nonce::new([0xff; 32]));
 
         assert_eq!(mock.node_type(), SwarmNodeType::Client);
-        assert_eq!(mock.nonce(), B256::repeat_byte(0xff));
+        assert_eq!(mock.nonce(), Nonce::new([0xff; 32]));
     }
 
     #[test]

@@ -8,13 +8,12 @@
 pub mod args;
 pub mod keystore;
 
-use alloy_primitives::B256;
 use alloy_signer::k256::ecdsa::SigningKey;
 use alloy_signer_local::LocalSigner;
 use nectar_primitives::SwarmAddress;
 use std::sync::Arc;
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeType};
-use vertex_swarm_primitives::compute_overlay;
+use vertex_swarm_primitives::{Nonce, compute_overlay};
 use vertex_swarm_spec::{HasSpec, Loggable, Spec, SwarmSpec};
 
 pub use args::IdentityArgs;
@@ -28,7 +27,7 @@ pub use vertex_swarm_api::SwarmIdentity as IdentityTrait;
 pub struct Identity {
     spec: Arc<Spec>,
     signer: Arc<LocalSigner<SigningKey>>,
-    nonce: B256,
+    nonce: Nonce,
     /// Cached at construction time.
     overlay: SwarmAddress,
     node_type: SwarmNodeType,
@@ -39,7 +38,7 @@ impl Identity {
     /// Creates a new identity from a signer, nonce, spec, and node type.
     pub fn new(
         signer: LocalSigner<SigningKey>,
-        nonce: B256,
+        nonce: Nonce,
         spec: Arc<Spec>,
         node_type: SwarmNodeType,
     ) -> Self {
@@ -56,8 +55,7 @@ impl Identity {
 
     /// Creates a random ephemeral identity for testing.
     pub fn random(spec: Arc<Spec>, node_type: SwarmNodeType) -> Self {
-        let nonce = B256::from(rand::random::<[u8; 32]>());
-        Self::new(LocalSigner::random(), nonce, spec, node_type)
+        Self::new(LocalSigner::random(), Nonce::random(), spec, node_type)
     }
 
     /// Sets a custom welcome message.
@@ -81,7 +79,7 @@ impl SwarmIdentity for Identity {
         &self.spec
     }
 
-    fn nonce(&self) -> B256 {
+    fn nonce(&self) -> Nonce {
         self.nonce
     }
 
@@ -133,7 +131,7 @@ mod tests {
     fn same_signer_and_nonce_same_overlay() {
         let spec = init_testnet();
         let signer = LocalSigner::random();
-        let nonce = B256::from([0x42u8; 32]);
+        let nonce = Nonce::new([0x42u8; 32]);
 
         let id1 = Identity::new(signer.clone(), nonce, spec.clone(), SwarmNodeType::Storer);
         let id2 = Identity::new(signer, nonce, spec, SwarmNodeType::Storer);
@@ -149,11 +147,11 @@ mod tests {
 
         let id1 = Identity::new(
             signer.clone(),
-            B256::from([1u8; 32]),
+            Nonce::new([1u8; 32]),
             spec.clone(),
             SwarmNodeType::Storer,
         );
-        let id2 = Identity::new(signer, B256::from([2u8; 32]), spec, SwarmNodeType::Storer);
+        let id2 = Identity::new(signer, Nonce::new([2u8; 32]), spec, SwarmNodeType::Storer);
 
         assert_eq!(id1.ethereum_address(), id2.ethereum_address());
         assert_ne!(id1.overlay_address(), id2.overlay_address());

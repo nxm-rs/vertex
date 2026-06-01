@@ -315,7 +315,7 @@ mod tests {
             vec![multiaddr],
             Signature::new(U256::from(1u64), U256::from(2u64), false),
             B256::from(overlay_bytes),
-            B256::ZERO,
+            vertex_swarm_primitives::Nonce::ZERO,
             Address::ZERO,
         )
     }
@@ -333,7 +333,7 @@ mod tests {
             vec![multiaddr],
             Signature::new(U256::from(sig_r), U256::from(sig_s), false),
             B256::from(overlay_bytes),
-            B256::ZERO,
+            vertex_swarm_primitives::Nonce::ZERO,
             Address::ZERO,
         )
     }
@@ -344,7 +344,7 @@ mod tests {
             vec![multiaddr],
             Signature::new(U256::from(1u64), U256::from(2u64), false),
             B256::from(overlay_bytes),
-            B256::ZERO,
+            vertex_swarm_primitives::Nonce::ZERO,
             Address::ZERO,
         )
     }

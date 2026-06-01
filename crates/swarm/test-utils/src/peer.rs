@@ -4,7 +4,7 @@ use alloy_primitives::{Address, B256, Signature, U256};
 use libp2p::PeerId;
 use nectar_primitives::SwarmAddress;
 use vertex_swarm_peer::SwarmPeer;
-use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_primitives::{Nonce, OverlayAddress};
 
 /// Create a test overlay address from a single byte.
 ///
@@ -86,7 +86,7 @@ pub fn test_swarm_peer(n: u8) -> SwarmPeer {
         multiaddrs,
         Signature::test_signature(),
         overlay,
-        B256::ZERO,
+        Nonce::ZERO,
         Address::ZERO,
     )
 }
@@ -119,7 +119,7 @@ pub fn make_swarm_peer_minimal(overlay_byte: u8) -> SwarmPeer {
         vec![],
         Signature::new(U256::ZERO, U256::ZERO, false),
         B256::from_slice(overlay.as_slice()),
-        B256::ZERO,
+        Nonce::ZERO,
         Address::ZERO,
     )
 }

@@ -5,13 +5,12 @@ use crate::keystore::{create_and_save_signer, load_signer_from_keystore, resolve
 use alloy_primitives::B256;
 use clap::Args;
 use eyre::Result;
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::debug;
 use vertex_swarm_api::SwarmIdentityConfig;
-use vertex_swarm_primitives::SwarmNodeType;
+use vertex_swarm_primitives::{Nonce, SwarmNodeType};
 use vertex_swarm_spec::Spec;
 
 /// Identity and keystore configuration.
@@ -84,11 +83,9 @@ impl IdentityArgs {
             create_and_save_signer(&keystore_path, &password)?
         };
 
-        let nonce = self.nonce.unwrap_or_else(|| {
-            let mut bytes = [0u8; 32];
-            rand::rng().fill(&mut bytes);
+        let nonce = self.nonce.map(Nonce::from).unwrap_or_else(|| {
             debug!("Generated new nonce");
-            B256::from(bytes)
+            Nonce::random()
         });
 
         Ok(Arc::new(Identity::new(signer, nonce, spec, node_type)))

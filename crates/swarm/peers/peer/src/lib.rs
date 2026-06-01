@@ -13,7 +13,7 @@ pub use serde_multiaddr::{deserialize_multiaddrs, serialize_multiaddrs};
 use bytes::{Bytes, BytesMut};
 use error::SwarmPeerError;
 use vertex_swarm_api::SwarmIdentity;
-use vertex_swarm_primitives::compute_overlay;
+use vertex_swarm_primitives::{NetworkId, Nonce, compute_overlay};
 use vertex_swarm_spec::SwarmSpec;
 
 pub use nectar_primitives::SwarmAddress;
@@ -34,7 +34,7 @@ pub struct SwarmPeer {
     multiaddrs: Vec<Multiaddr>,
     signature: Signature,
     overlay: SwarmAddress,
-    nonce: B256,
+    nonce: Nonce,
     ethereum_address: Address,
 }
 
@@ -49,7 +49,7 @@ impl Default for SwarmPeer {
             multiaddrs: Vec::new(),
             signature: Signature::new(U256::ZERO, U256::ZERO, false),
             overlay: SwarmAddress::default(),
-            nonce: B256::ZERO,
+            nonce: Nonce::ZERO,
             ethereum_address: Address::ZERO,
         }
     }
@@ -96,8 +96,8 @@ impl SwarmPeer {
         multiaddrs_bytes: &[u8],
         signature: Signature,
         overlay: SwarmAddress,
-        nonce: B256,
-        network_id: u64,
+        nonce: Nonce,
+        network_id: NetworkId,
         validate_overlay: bool,
     ) -> Result<Self, SwarmPeerError> {
         let multiaddrs = deserialize_multiaddrs(multiaddrs_bytes)?;
@@ -128,7 +128,7 @@ impl SwarmPeer {
         multiaddrs: Vec<Multiaddr>,
         signature: Signature,
         overlay: B256,
-        nonce: B256,
+        nonce: Nonce,
         ethereum_address: Address,
     ) -> Self {
         Self {
@@ -156,7 +156,7 @@ impl SwarmPeer {
         &self.overlay
     }
 
-    pub fn nonce(&self) -> &B256 {
+    pub fn nonce(&self) -> &Nonce {
         &self.nonce
     }
 
@@ -212,7 +212,7 @@ fn recover_signer(
     multiaddr_bytes: &[u8],
     overlay: &SwarmAddress,
     signature: &Signature,
-    network_id: u64,
+    network_id: NetworkId,
 ) -> Result<Address, SwarmPeerError> {
     let prehash = generate_sign_message(multiaddr_bytes, overlay, network_id);
     Ok(signature.recover_address_from_msg(prehash)?)
@@ -221,7 +221,11 @@ fn recover_signer(
 /// Generate the message to sign for handshake verification.
 ///
 /// Format: `"bee-handshake-" || multiaddr_bytes || overlay || network_id(BE)`
-fn generate_sign_message(multiaddr_bytes: &[u8], overlay: &SwarmAddress, network_id: u64) -> Bytes {
+fn generate_sign_message(
+    multiaddr_bytes: &[u8],
+    overlay: &SwarmAddress,
+    network_id: NetworkId,
+) -> Bytes {
     let mut message = BytesMut::new();
     message.extend_from_slice(b"bee-handshake-");
     message.extend_from_slice(multiaddr_bytes);

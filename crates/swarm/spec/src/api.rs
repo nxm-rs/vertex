@@ -6,7 +6,7 @@ use crate::{
 };
 use alloc::{string::String, vec::Vec};
 use alloy_chains::Chain;
-use nectar_primitives::StandardChunkSet;
+use nectar_primitives::{NetworkId, StandardChunkSet};
 use nectar_swarms::Swarm;
 use vertex_swarm_api::{SwarmSpec, SwarmSpecProvider};
 use vertex_swarm_forks::{ForkCondition, ForkDigest, SwarmHardfork, SwarmHardforks};
@@ -27,8 +27,8 @@ impl SwarmSpec for Spec {
         self.chain
     }
 
-    fn network_id(&self) -> u64 {
-        self.network_id
+    fn network_id(&self) -> NetworkId {
+        NetworkId::from(self.network_id)
     }
 
     fn network_name(&self) -> &str {

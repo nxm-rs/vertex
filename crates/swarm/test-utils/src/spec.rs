@@ -51,18 +51,18 @@ mod tests {
     fn test_spec_is_testnet() {
         let spec = test_spec();
         // The spec should be a testnet configuration
-        assert!(spec.network_id() > 0);
+        assert!(spec.network_id().get() > 0);
     }
 
     #[test]
     fn test_spec_isolated_uses_constant() {
         let spec = test_spec_isolated();
-        assert_eq!(spec.network_id(), TEST_NETWORK_ID);
+        assert_eq!(spec.network_id().get(), TEST_NETWORK_ID);
     }
 
     #[test]
     fn test_custom_network_id() {
         let spec = test_spec_with_network_id(42);
-        assert_eq!(spec.network_id(), 42);
+        assert_eq!(spec.network_id().get(), 42);
     }
 }
