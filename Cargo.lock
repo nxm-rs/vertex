@@ -7866,6 +7866,10 @@ dependencies = [
 [[package]]
 name = "vertex-net-ratelimiter"
 version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "vertex-net-utils"

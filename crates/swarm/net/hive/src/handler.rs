@@ -7,6 +7,7 @@
 
 use std::{
     collections::VecDeque,
+    num::NonZeroU32,
     sync::Arc,
     task::{Context, Poll},
     time::Duration,
@@ -24,23 +25,28 @@ use libp2p::{
 };
 use metrics::counter;
 use tracing::{debug, trace, warn};
+use vertex_net_ratelimiter::{KeyedRateLimiter, Quota};
 use vertex_observability::labels::direction;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_net_handler_core::HandlerCore;
 use vertex_swarm_net_headers::{Inbound, Outbound, ProtocolStreamError, UpgradeError};
 use vertex_swarm_peer::SwarmPeer;
 
+use crate::peer_handler::HivePeerHandler;
 use crate::protocol::{HiveInner, HiveOutboundInner, HiveOutboundProtocol, PeerCache};
 
 /// Timeout for stream processing (headers exchange + protobuf + validation).
 const STREAM_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Rate limiter: burst of 4 streams, refill 1 token every 5 seconds.
-/// Sustains ~12 inbound streams per minute, which is generous for topology updates.
-const RATE_LIMIT_BURST: u32 = 4;
-const RATE_LIMIT_REFILL: Duration = Duration::from_secs(5);
+/// Per-connection inbound substream quota: 4 stream-opens per 20-second
+/// window. Enough headroom for the bursts that happen at connection
+/// establishment and on neighborhood-refresh ticks, while throttling a peer
+/// that opens new streams in a tight loop.
+const INBOUND_SUBSTREAM_QUOTA: Quota =
+    Quota::n_every(NonZeroU32::new(4).unwrap(), Duration::from_secs(20));
 
-/// Maximum queued broadcasts before dropping (prevents unbounded growth if outbound is slow).
+/// Outbound broadcast queue depth; excess broadcasts are dropped so a slow
+/// remote cannot grow our memory unboundedly.
 const MAX_PENDING_BROADCASTS: usize = 16;
 
 /// Commands from behaviour to handler.
@@ -67,24 +73,35 @@ pub struct HiveHandler<I: SwarmIdentity> {
     remote_peer_id: PeerId,
     identity: Arc<I>,
     cache: PeerCache,
-    /// Shared handler core: events, rate limiter, outbound flag.
+    /// Shared handler core: events, substream rate limiter, outbound flag.
     core: HandlerCore<HiveHandlerEvent>,
-    /// Bounded by [`MAX_PENDING_BROADCASTS`]; excess broadcasts are dropped with a warning.
+    /// Bounded by [`MAX_PENDING_BROADCASTS`].
     pending_broadcasts: VecDeque<Vec<SwarmPeer>>,
+    /// Shared with the behaviour so per-peer state survives reconnects.
+    inbound_limit: Arc<KeyedRateLimiter<PeerId>>,
+    /// Consulted by the protocol reader to pick the inbound dispatch policy.
+    peer_handler: Arc<dyn HivePeerHandler>,
 }
 
 impl<I> HiveHandler<I>
 where
     I: SwarmIdentity + 'static,
 {
-    /// Create a new hive handler.
-    pub(crate) fn new(identity: Arc<I>, remote_peer_id: PeerId, cache: PeerCache) -> Self {
+    pub(crate) fn new(
+        identity: Arc<I>,
+        remote_peer_id: PeerId,
+        cache: PeerCache,
+        inbound_limit: Arc<KeyedRateLimiter<PeerId>>,
+        peer_handler: Arc<dyn HivePeerHandler>,
+    ) -> Self {
         Self {
-            core: HandlerCore::new(RATE_LIMIT_BURST, RATE_LIMIT_REFILL),
+            core: HandlerCore::new(INBOUND_SUBSTREAM_QUOTA),
             remote_peer_id,
             identity,
             cache,
             pending_broadcasts: VecDeque::new(),
+            inbound_limit,
+            peer_handler,
         }
     }
 }
@@ -101,7 +118,13 @@ where
     type OutboundOpenInfo = ();
 
     fn listen_protocol(&self) -> SubstreamProtocol<Self::InboundProtocol, Self::InboundOpenInfo> {
-        let inner = HiveInner::new(self.identity.clone(), self.cache.clone());
+        let inner = HiveInner::new(
+            self.identity.clone(),
+            self.cache.clone(),
+            self.remote_peer_id,
+            self.inbound_limit.clone(),
+            self.peer_handler.clone(),
+        );
         let upgrade = Inbound::new(inner);
         SubstreamProtocol::new(upgrade, ()).with_timeout(STREAM_TIMEOUT)
     }

@@ -1,9 +1,29 @@
 //! Hive-specific metrics (peer counts, validation).
 //!
-//! Exchange-level metrics (exchanges_total, outcomes, duration) are handled
-//! automatically by the headers crate's `ProtocolMetrics`.
+//! Exchange-level metrics (exchanges_total, outcomes, duration) are emitted
+//! by the headers crate's `ProtocolMetrics`.
 
 use vertex_observability::{DURATION_FINE, HistogramBucketConfig};
+
+/// Counter of peer batches discarded by the hive layer.
+///
+/// Labels:
+/// - `reason="bootnode_mode"` - bootnode role discards inbound gossip
+///   without validation; counted on the raw wire peer count.
+/// - `reason="rate_limited"` - per-peer inbound bucket exhausted; counted
+///   on the raw wire peer count.
+/// - `reason="verifier_rejected"` - a peer record failed signature or
+///   overlay validation.
+pub const HIVE_PEERS_DISCARDED_TOTAL: &str = "hive_peers_discarded_total";
+
+/// Label value for [`HIVE_PEERS_DISCARDED_TOTAL`]: bootnode-mode discard.
+pub const DISCARD_REASON_BOOTNODE_MODE: &str = "bootnode_mode";
+
+/// Label value for [`HIVE_PEERS_DISCARDED_TOTAL`]: rate-limit discard.
+pub const DISCARD_REASON_RATE_LIMITED: &str = "rate_limited";
+
+/// Label value for [`HIVE_PEERS_DISCARDED_TOTAL`]: verifier-rejected discard.
+pub const DISCARD_REASON_VERIFIER_REJECTED: &str = "verifier_rejected";
 
 /// Histogram bucket configurations for hive-specific metrics.
 pub const HISTOGRAM_BUCKETS: &[HistogramBucketConfig] = &[

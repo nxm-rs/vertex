@@ -8,8 +8,11 @@ use std::sync::Arc;
 use libp2p::swarm::NetworkBehaviour;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_net_handshake::{HandshakeBehaviour, HandshakeEvent};
-use vertex_swarm_net_hive::{HiveBehaviour, HiveEvent};
+use vertex_swarm_net_hive::{
+    DiscardSilently, HiveBehaviour, HiveEvent, HivePeerHandler, LearnAndDial,
+};
 use vertex_swarm_net_pingpong::{PingpongBehaviour, PingpongEvent};
+use vertex_swarm_primitives::SwarmNodeType;
 
 use crate::nat_discovery::LocalAddressManager;
 
@@ -101,10 +104,19 @@ where
     I: SwarmIdentity + Clone + 'static,
 {
     /// Create new composed protocol behaviours.
+    ///
+    /// The hive [`HivePeerHandler`] is picked from the local node type:
+    /// bootnodes drop inbound peer gossip without ingesting it, every other
+    /// role learns and may dial. Outbound broadcasting runs in either case.
     pub(crate) fn new(identity: Arc<I>, address_provider: Arc<LocalAddressManager>) -> Self {
+        let peer_handler: Arc<dyn HivePeerHandler> = match identity.node_type() {
+            SwarmNodeType::Bootnode => Arc::new(DiscardSilently),
+            SwarmNodeType::Client | SwarmNodeType::Storer => Arc::new(LearnAndDial),
+        };
+
         Self {
             handshake: HandshakeBehaviour::new(identity.clone(), address_provider, "topology"),
-            hive: HiveBehaviour::new(identity),
+            hive: HiveBehaviour::with_peer_handler(identity, peer_handler),
             pingpong: PingpongBehaviour::new(),
         }
     }

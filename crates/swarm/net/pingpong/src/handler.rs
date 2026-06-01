@@ -25,7 +25,9 @@ use libp2p::{
     },
 };
 use metrics::counter;
+use std::num::NonZeroU32;
 use tracing::{debug, trace, warn};
+use vertex_net_ratelimiter::Quota;
 use vertex_observability::labels::direction;
 use vertex_swarm_net_handler_core::HandlerCore;
 use vertex_swarm_net_headers::{Inbound, ProtocolError, ProtocolStreamError, UpgradeError};
@@ -38,10 +40,10 @@ const STREAM_TIMEOUT: Duration = Duration::from_secs(15);
 /// Maximum concurrent inbound pingpong streams per connection.
 const MAX_CONCURRENT_STREAMS_PER_CONNECTION: usize = 2;
 
-/// Rate limiter: burst of 2 streams, refill 1 token every 2 seconds.
-/// Sustains ~30 inbound pings per minute, generous for liveness checks.
-const RATE_LIMIT_BURST: u32 = 2;
-const RATE_LIMIT_REFILL: Duration = Duration::from_secs(2);
+/// Per-connection substream-open quota: 2 in any 4-second window. Liveness
+/// checks happen on the order of seconds; rapid stream churn from a single
+/// connection is suspicious.
+const INBOUND_QUOTA: Quota = Quota::n_every(NonZeroU32::new(2).unwrap(), Duration::from_secs(4));
 
 /// Maximum queued outbound ping commands per connection.
 const MAX_PENDING_PINGS: usize = 8;
@@ -115,7 +117,7 @@ impl PingpongHandler {
                 STREAM_TIMEOUT,
                 MAX_CONCURRENT_STREAMS_PER_CONNECTION,
             ),
-            core: HandlerCore::new(RATE_LIMIT_BURST, RATE_LIMIT_REFILL),
+            core: HandlerCore::new(INBOUND_QUOTA),
             config,
             remote_peer_id,
             pending_pings: VecDeque::new(),
