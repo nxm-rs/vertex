@@ -16,7 +16,7 @@ pub(crate) const DEFAULT_INBOUND_HEADROOM: usize = 4;
 ///
 /// Stateless: callers provide depth explicitly to avoid dual-source-of-truth bugs.
 #[derive(Debug, Clone)]
-pub(crate) struct DepthAwareLimits {
+pub struct DepthAwareLimits {
     total_target: usize,
     /// Minimum peers per bin.
     nominal: usize,
@@ -31,7 +31,7 @@ impl Default for DepthAwareLimits {
 
 impl DepthAwareLimits {
     /// Create with total target and nominal minimum per bin.
-    pub(crate) fn new(total_target: usize, nominal: usize) -> Self {
+    pub fn new(total_target: usize, nominal: usize) -> Self {
         Self {
             total_target,
             nominal,

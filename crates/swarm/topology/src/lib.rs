@@ -30,4 +30,5 @@ pub use error::{DialError, DisconnectReason, RejectionReason, TopologyError, Top
 pub use events::{ConnectionDirection, DialReason, TopologyCommand, TopologyEvent};
 pub use handle::{BinStats, RoutingStats, TopologyHandle};
 
+pub use kademlia::saturation;
 pub use kademlia::{KademliaConfig, RoutingArgs};

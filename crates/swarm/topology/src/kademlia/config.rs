@@ -44,6 +44,14 @@ impl KademliaConfig {
         self.limits = self.limits.with_inbound_headroom(headroom);
         self
     }
+
+    /// Borrow the depth-aware bin limits. Used by callers (e.g. the
+    /// saturation policy bridge and integration tests) that need to
+    /// build a [`crate::saturation::SaturationContext`] without
+    /// constructing limits separately.
+    pub fn depth_aware_limits(&self) -> &DepthAwareLimits {
+        &self.limits
+    }
 }
 
 #[cfg(test)]
