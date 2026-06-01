@@ -148,9 +148,32 @@ pub trait SwarmNetworkConfig {
 }
 
 /// Configuration for Swarm node identity.
+#[auto_impl::auto_impl(&, Arc, Box)]
 pub trait SwarmIdentityConfig {
     /// Whether to use ephemeral identity (random key, not persisted).
     fn ephemeral(&self) -> bool;
+
+    /// Assert that this configuration satisfies the persistence requirement
+    /// of `node_type`.
+    ///
+    /// Called by node builders (e.g. `BootNodeBuilder`) that require a
+    /// stable overlay address across restarts. Returns
+    /// [`crate::error::IdentityError::EphemeralWhenPersistent`] if `node_type`
+    /// requires persistence (see
+    /// [`crate::SwarmNodeType::requires_persistent_identity`]) but this
+    /// configuration would produce an ephemeral identity.
+    ///
+    /// The default implementation derives the answer from [`Self::ephemeral`].
+    /// Implementations whose persistence semantics differ may override.
+    fn assert_persistent_identity(
+        &self,
+        node_type: crate::SwarmNodeType,
+    ) -> Result<(), crate::error::IdentityError> {
+        if self.ephemeral() && node_type.requires_persistent_identity() {
+            return Err(crate::error::IdentityError::EphemeralWhenPersistent { node_type });
+        }
+        Ok(())
+    }
 }
 
 /// Base configuration for all Swarm nodes (bootnode level).

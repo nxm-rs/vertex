@@ -223,3 +223,25 @@ pub enum ConfigError {
 
 /// Result type for configuration operations.
 pub type ConfigResult<T> = core::result::Result<T, ConfigError>;
+
+/// Error type for identity configuration validation.
+///
+/// Marked `#[non_exhaustive]` so new variants can be added without breaking
+/// downstream matches.
+#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
+#[non_exhaustive]
+#[strum(serialize_all = "snake_case")]
+pub enum IdentityError {
+    /// An ephemeral identity was configured for a node type that requires a
+    /// persistent (keystore-backed) signing key. Bootnodes and storers have
+    /// overlay addresses that are part of the network contract; restarting
+    /// with a fresh random key changes the overlay and orphans the network
+    /// (bootnode case) or the staked reservation (storer case).
+    #[error(
+        "{node_type} requires a persistent identity but was launched ephemeral; configure a keystore"
+    )]
+    EphemeralWhenPersistent {
+        /// The node type whose persistence requirement was violated.
+        node_type: crate::SwarmNodeType,
+    },
+}

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::debug;
-use vertex_swarm_api::SwarmIdentityConfig;
+use vertex_swarm_api::{IdentityError, SwarmIdentityConfig};
 use vertex_swarm_primitives::{Nonce, SwarmNodeType};
 use vertex_swarm_spec::Spec;
 
@@ -57,6 +57,12 @@ impl IdentityArgs {
         network_dir: &Path,
         node_type: SwarmNodeType,
     ) -> Result<Arc<Identity>> {
+        // Bootnodes and storers must run with a persistent (keystore-backed)
+        // identity - their overlay address is part of the network contract.
+        if self.ephemeral && node_type.requires_persistent_identity() {
+            return Err(IdentityError::EphemeralWhenPersistent { node_type }.into());
+        }
+
         let use_ephemeral = self.ephemeral || !node_type.requires_persistent_identity();
 
         if use_ephemeral {
