@@ -153,9 +153,20 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
         let local_peer =
             prepare_local_peer(&self.identity, &self.additional_addrs, &observed_multiaddr)?;
 
-        // Send SYNACK: echo their observed addr back + our identity.
+        // Echo what we observed about the dialer (their `remote_addr` as
+        // libp2p reported it) back in the SYNACK; the dialer validates the
+        // peer id of this address against its own. An earlier version sent
+        // the responder's own observed address instead, which the dialer
+        // always rejected because the peer ids could never match.
+        let mut dialer_observed = self.remote_addr.clone();
+        if extract_peer_id(&dialer_observed).is_some() {
+            dialer_observed.pop();
+        }
+        let dialer_observed = dialer_observed.with(Protocol::P2p(self.peer_id));
+
+        // Send SYNACK: our identity + the dialer's address as we observe it.
         let synack = encode_synack(
-            &observed_multiaddr,
+            &dialer_observed,
             &local_peer,
             self.identity.node_type(),
             self.identity.welcome_message().unwrap_or_default(),

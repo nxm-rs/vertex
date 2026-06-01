@@ -79,8 +79,10 @@ vertex-swarm-localstore = { workspace = true, optional = true }
 vertex-swarm-redistribution = { workspace = true, optional = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros"] }
-vertex-swarm-test-utils = { workspace = true }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
+vertex-swarm-test-utils = { workspace = true, features = ["cluster"] }
+eyre.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
 default = ["std"]

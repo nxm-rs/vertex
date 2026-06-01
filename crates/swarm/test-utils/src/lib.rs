@@ -23,6 +23,8 @@
 //! use vertex_swarm_test_utils::{test_identity, test_peer_id, MockIdentity};
 //! ```
 
+#[cfg(feature = "cluster")]
+pub mod cluster;
 pub mod identity;
 pub mod peer;
 pub mod spec;

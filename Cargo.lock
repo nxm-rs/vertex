@@ -8452,6 +8452,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "vertex-net-local",
  "vertex-net-peer-store",
  "vertex-node-api",
@@ -8633,15 +8634,20 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
+ "eyre",
  "libp2p",
  "nectar-primitives",
  "parking_lot",
  "rand 0.9.4",
+ "tokio",
  "vertex-swarm-api",
  "vertex-swarm-identity",
+ "vertex-swarm-node",
  "vertex-swarm-peer",
  "vertex-swarm-primitives",
  "vertex-swarm-spec",
+ "vertex-swarm-topology",
+ "vertex-tasks",
 ]
 
 [[package]]
