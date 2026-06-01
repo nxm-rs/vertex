@@ -202,6 +202,14 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         self.peer_manager
             .on_peer_ready(info.swarm_peer.clone(), info.node_type);
 
+        // Promote reachability BEFORE notifying routing: the eviction /
+        // saturation logic consults the tracker to score peers, so the new
+        // peer must be `Public` before `routing.connected` and any resulting
+        // `trim_overpopulated_bins()` reads it.
+        self.nat_discovery
+            .reachability()
+            .update_from_handshake(peer_id, true);
+
         let po = self.proximity(&overlay);
 
         let old_depth = self.routing.depth();
@@ -250,6 +258,17 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         error: vertex_swarm_net_handshake::HandshakeError,
     ) {
         warn!(%peer_id, %error, "Handshake failed");
+
+        // Only feed the reachability tracker on errors that are unambiguously
+        // the peer's fault. Timeouts, connection-closed-by-either-side, IO,
+        // and bare upgrade errors can be triggered by our own actions
+        // (duplicate-connection eviction, ban-by-remote, shutdown) and would
+        // unfairly demote innocent peers.
+        if is_peer_fault(&error) {
+            self.nat_discovery
+                .reachability()
+                .update_from_handshake(peer_id, false);
+        }
 
         // Handshake failed means the peer was already registered in connection_registry.
         // Remove it and release routing capacity.
@@ -362,4 +381,26 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             self.emit_event(TopologyEvent::PingCompleted { overlay, rtt });
         }
     }
+}
+
+/// Classify a handshake error: only protocol violations the peer is solely
+/// responsible for should feed the reachability tracker. Timeouts, IO
+/// errors, and bare connection-close events can be caused by our own side
+/// (duplicate-connection eviction, shutdown, ban-by-remote) and would
+/// otherwise demote innocent peers.
+fn is_peer_fault(error: &vertex_swarm_net_handshake::HandshakeError) -> bool {
+    use vertex_swarm_net_handshake::HandshakeError as E;
+    matches!(
+        error,
+        E::NetworkIdMismatch
+            | E::MissingField(_)
+            | E::FieldTooLong { .. }
+            | E::InvalidData(_)
+            | E::InvalidMultiaddr(_)
+            | E::InvalidSignature(_)
+            | E::InvalidPeer(_)
+            | E::InvalidOverlay
+            | E::InvalidObservedAddress
+            | E::Protobuf(_)
+    )
 }

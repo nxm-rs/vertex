@@ -65,6 +65,12 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             return;
         }
 
+        // Drop the reachability record so memory does not accumulate for
+        // transient or scanner peers. A subsequent reconnect rebuilds the
+        // record from a clean slate, which is the correct behaviour for
+        // peers we have no recent evidence about.
+        self.nat_discovery.reachability().forget(&closed.peer_id);
+
         // Remove from connection registry (sole source of truth for connections)
         let removed_state = self.connection_registry.disconnected(&closed.peer_id);
         if let Some(ref s) = removed_state {
