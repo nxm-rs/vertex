@@ -16,6 +16,7 @@ vertex-net-codec.workspace = true
 vertex-net-peer-registry.workspace = true
 vertex-swarm-api.workspace = true
 vertex-swarm-identity.workspace = true
+vertex-swarm-net-core.workspace = true
 vertex-swarm-net-proto.workspace = true
 vertex-swarm-peer.workspace = true
 vertex-net-utils.workspace = true

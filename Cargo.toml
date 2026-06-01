@@ -33,6 +33,7 @@ members = [
     "crates/net/utils",
 
     # Swarm Network Protocols (crates/swarm/net/)
+    "crates/swarm/net/core",
     "crates/swarm/net/proto",
     "crates/swarm/net/handler-core",
     "crates/swarm/net/handshake",
@@ -138,6 +139,7 @@ vertex-net-ratelimiter = { path = "crates/net/ratelimiter" }
 vertex-net-utils = { path = "crates/net/utils" }
 
 # Swarm network protocols (crates/swarm/net/)
+vertex-swarm-net-core = { path = "crates/swarm/net/core" }
 vertex-swarm-net-proto = { path = "crates/swarm/net/proto" }
 vertex-swarm-net-handler-core = { path = "crates/swarm/net/handler-core" }
 vertex-swarm-net-handshake = { path = "crates/swarm/net/handshake" }

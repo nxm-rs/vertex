@@ -8109,6 +8109,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vertex-swarm-net-core"
+version = "0.1.0"
+dependencies = [
+ "libp2p",
+]
+
+[[package]]
 name = "vertex-swarm-net-handler-core"
 version = "0.1.0"
 dependencies = [
@@ -8149,6 +8156,7 @@ dependencies = [
  "vertex-observability",
  "vertex-swarm-api",
  "vertex-swarm-identity",
+ "vertex-swarm-net-core",
  "vertex-swarm-net-proto",
  "vertex-swarm-peer",
  "vertex-swarm-spec",
@@ -8198,6 +8206,7 @@ dependencies = [
  "vertex-net-utils",
  "vertex-observability",
  "vertex-swarm-api",
+ "vertex-swarm-net-core",
  "vertex-swarm-net-handler-core",
  "vertex-swarm-net-headers",
  "vertex-swarm-net-proto",
@@ -8247,6 +8256,7 @@ dependencies = [
  "vertex-net-codec",
  "vertex-net-ratelimiter",
  "vertex-observability",
+ "vertex-swarm-net-core",
  "vertex-swarm-net-handler-core",
  "vertex-swarm-net-headers",
  "vertex-swarm-net-proto",
