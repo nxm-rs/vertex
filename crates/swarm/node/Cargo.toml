@@ -80,6 +80,7 @@ vertex-swarm-redistribution = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
+vertex-swarm-net-hive = { workspace = true }
 vertex-swarm-test-utils = { workspace = true }
 
 [features]

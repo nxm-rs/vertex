@@ -302,6 +302,25 @@ pub(crate) fn record_phase_transition(from: &'static str, to: &'static str) {
     counter!("topology_phase_transitions_total", "from" => from, "to" => to).increment(1);
 }
 
+/// Eviction policy that drove a kademlia bin trim.
+///
+/// Used as the `policy` label on `kademlia_evictions_total`.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum EvictionPolicy {
+    /// Standard depth-driven trimming (saturation policy).
+    Standard,
+    /// Bootnode-specific eviction: short-lived churn after gossip handoff.
+    Bootnode,
+}
+
+/// Record that a kademlia eviction occurred under the given policy.
+pub fn record_kademlia_eviction(policy: EvictionPolicy) {
+    let policy_label: &'static str = policy.into();
+    counter!("kademlia_evictions_total", "policy" => policy_label).increment(1);
+}
+
 /// Phase transition labels.
 pub(crate) mod phase {
     pub(crate) const NONE: &str = "none";
@@ -525,6 +544,20 @@ mod tests {
         // Storer counter is now stuck at 1 (drift), client saturated at 0
         assert_eq!(metrics.connected_storers(), 1);
         assert_eq!(metrics.connected_clients(), 0);
+    }
+
+    #[test]
+    fn test_record_kademlia_eviction_does_not_panic() {
+        record_kademlia_eviction(EvictionPolicy::Standard);
+        record_kademlia_eviction(EvictionPolicy::Bootnode);
+    }
+
+    #[test]
+    fn test_eviction_policy_labels_are_snake_case() {
+        let label: &'static str = EvictionPolicy::Standard.into();
+        assert_eq!(label, "standard");
+        let label: &'static str = EvictionPolicy::Bootnode.into();
+        assert_eq!(label, "bootnode");
     }
 
     #[test]

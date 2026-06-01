@@ -8368,6 +8368,7 @@ dependencies = [
  "vertex-swarm-identity",
  "vertex-swarm-localstore",
  "vertex-swarm-net-headers",
+ "vertex-swarm-net-hive",
  "vertex-swarm-net-identify",
  "vertex-swarm-net-pricing",
  "vertex-swarm-net-pseudosettle",
