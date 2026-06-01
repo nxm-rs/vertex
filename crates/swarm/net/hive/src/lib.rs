@@ -11,7 +11,7 @@ pub use behaviour::{HiveBehaviour, HiveEvent};
 pub use error::ValidationFailure;
 
 /// Protocol name for hive.
-pub const PROTOCOL_NAME: &str = "/swarm/hive/1.1.0/peers";
+pub const PROTOCOL_NAME: &str = "/swarm/hive/2.0.0/peers";
 
 /// Maximum number of peers per broadcast message.
 pub const MAX_BATCH_SIZE: usize = 30;

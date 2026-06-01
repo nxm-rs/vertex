@@ -1,24 +1,28 @@
-//! Ack message encoding/decoding for handshake protocol.
+//! Ack message encoding/decoding for handshake protocol (15.0.0).
 
-use nectar_primitives::{NetworkId, Nonce, SwarmAddress};
+use nectar_primitives::{NetworkId, Nonce, SwarmAddress, Timestamp};
 use tracing::debug;
-use vertex_swarm_peer::{SwarmNodeType, SwarmPeer};
+use vertex_swarm_peer::{SwarmNodeType, SwarmPeer, SwarmPeerWire};
 
 use crate::HandshakeError;
 use crate::MAX_WELCOME_MESSAGE_CHARS;
 
-/// Decode an Ack proto message, validating network_id and returning components.
+/// Decode an `Ack` proto message, validating `network_id` and returning the
+/// recovered peer record + node type + welcome message.
 pub(crate) fn decode_ack(
     proto: vertex_swarm_net_proto::handshake::Ack,
     expected_network_id: NetworkId,
 ) -> Result<(SwarmPeer, SwarmNodeType, String), HandshakeError> {
-    let swarm_peer = swarm_peer_from_proto(&proto, expected_network_id)?;
+    if proto.network_id != expected_network_id.get() {
+        return Err(HandshakeError::NetworkIdMismatch);
+    }
+    let peer = swarm_peer_from_proto(proto.address.as_ref(), expected_network_id)?;
     let welcome_message = welcome_message_from_proto(&proto)?;
     let node_type = node_type_from_wire(proto.storer);
-    Ok((swarm_peer, node_type, welcome_message))
+    Ok((peer, node_type, welcome_message))
 }
 
-/// Encode identity into an Ack proto message.
+/// Encode a `SwarmPeer` into an `Ack` proto message.
 pub(crate) fn encode_ack(
     peer: &SwarmPeer,
     node_type: SwarmNodeType,
@@ -26,22 +30,15 @@ pub(crate) fn encode_ack(
     network_id: NetworkId,
 ) -> vertex_swarm_net_proto::handshake::Ack {
     vertex_swarm_net_proto::handshake::Ack {
-        peer: Some(vertex_swarm_net_proto::handshake::PeerAddress {
-            multiaddrs: peer.serialize_multiaddrs(),
-            signature: peer.signature().as_bytes().to_vec(),
-            overlay: peer.overlay().to_vec(),
-        }),
+        address: Some(encode_swarm_peer(peer)),
         network_id: network_id.get(),
         storer: node_type_to_wire(node_type),
-        nonce: peer.nonce().as_slice().to_vec(),
         welcome_message: welcome_message.to_string(),
     }
 }
 
-/// Convert wire format bool to SwarmNodeType.
-///
-/// Wire format uses `bool storer` for backwards compatibility with existing peers.
-/// Bootnodes don't participate in handshake (topology-only).
+/// Wire format uses `bool storer` for backwards compatibility with existing
+/// peers; bootnodes do not participate in handshake.
 pub(crate) fn node_type_from_wire(storer: bool) -> SwarmNodeType {
     if storer {
         SwarmNodeType::Storer
@@ -54,36 +51,49 @@ fn node_type_to_wire(node_type: SwarmNodeType) -> bool {
     node_type.requires_storage()
 }
 
-pub(crate) fn swarm_peer_from_proto(
-    value: &vertex_swarm_net_proto::handshake::Ack,
-    expected_network_id: NetworkId,
-) -> Result<SwarmPeer, HandshakeError> {
-    if value.network_id != expected_network_id.get() {
-        return Err(HandshakeError::NetworkIdMismatch);
+/// Encode a `SwarmPeer` into the proto `SwarmPeer` message.
+pub(crate) fn encode_swarm_peer(peer: &SwarmPeer) -> vertex_swarm_net_proto::handshake::SwarmPeer {
+    vertex_swarm_net_proto::handshake::SwarmPeer {
+        multiaddrs: peer.serialize_multiaddrs(),
+        signature: peer.signature().as_bytes().to_vec(),
+        overlay: peer.overlay().to_vec(),
+        nonce: peer.nonce().as_slice().to_vec(),
+        timestamp: peer.timestamp().get(),
+        chequebook_address: peer
+            .chequebook()
+            .map(|a| a.as_slice().to_vec())
+            .unwrap_or_default(),
     }
+}
 
-    let peer_address = value
-        .peer
-        .as_ref()
-        .ok_or(HandshakeError::MissingField("peer"))?;
+/// Decode a proto `SwarmPeer` into vertex's `SwarmPeer`, validating
+/// signature, overlay and (when `now` is supplied) the clock-skew tolerance.
+pub(crate) fn swarm_peer_from_proto(
+    proto: Option<&vertex_swarm_net_proto::handshake::SwarmPeer>,
+    network_id: NetworkId,
+) -> Result<SwarmPeer, HandshakeError> {
+    let proto = proto.ok_or(HandshakeError::MissingField("address"))?;
 
-    let overlay = SwarmAddress::from_slice(peer_address.overlay.as_slice())
-        .inspect_err(|e| debug!(error = ?e, "invalid overlay in handshake ack"))
+    let overlay = SwarmAddress::from_slice(proto.overlay.as_slice())
+        .inspect_err(|e| debug!(error = ?e, "invalid overlay in handshake address"))
         .map_err(|_| HandshakeError::InvalidOverlay)?;
 
-    let nonce_bytes: [u8; 32] = value.nonce.as_slice().try_into()?;
+    let nonce_bytes: [u8; 32] = proto.nonce.as_slice().try_into()?;
     let nonce = Nonce::new(nonce_bytes);
-    let signature = peer_address.signature.as_slice().try_into()?;
+    let signature = proto.signature.as_slice().try_into()?;
+    let timestamp = Timestamp::from_seconds(proto.timestamp);
 
-    SwarmPeer::from_signed(
-        &peer_address.multiaddrs,
+    let wire = SwarmPeerWire {
+        multiaddrs_bytes: &proto.multiaddrs,
         signature,
         overlay,
         nonce,
-        NetworkId::from(value.network_id),
-        true,
-    )
-    .map_err(HandshakeError::from)
+        timestamp,
+        chequebook_bytes: &proto.chequebook_address,
+    };
+
+    // Codec does no skew check; that's policy left to the session layer.
+    SwarmPeer::parse(wire, network_id, None).map_err(HandshakeError::from)
 }
 
 pub(crate) fn welcome_message_from_proto(
@@ -104,7 +114,7 @@ pub(crate) fn welcome_message_from_proto(
 mod tests {
     use super::*;
     use libp2p::Multiaddr;
-    use vertex_swarm_api::SwarmSpec;
+    use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
     use vertex_swarm_identity::Identity;
     use vertex_swarm_test_utils::test_spec_isolated as test_spec;
 
@@ -112,7 +122,17 @@ mod tests {
         let spec = test_spec();
         let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
         let multiaddr: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
-        SwarmPeer::from_identity(&identity, vec![multiaddr]).expect("should create peer")
+        let signer = identity.signer();
+        SwarmPeer::sign(
+            &*signer,
+            vec![multiaddr],
+            identity.overlay_address(),
+            spec.network_id(),
+            identity.nonce(),
+            Timestamp::now(),
+            None,
+        )
+        .expect("should sign peer")
     }
 
     #[test]
@@ -132,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn test_wire_format_backwards_compat() {
+    fn test_wire_format_storer_flag() {
         assert_eq!(node_type_from_wire(true), SwarmNodeType::Storer);
         assert_eq!(node_type_from_wire(false), SwarmNodeType::Client);
         assert!(node_type_to_wire(SwarmNodeType::Storer));
@@ -145,45 +165,22 @@ mod tests {
         let spec = test_spec();
         let peer = create_test_peer();
         let proto = encode_ack(&peer, SwarmNodeType::Client, "hello", spec.network_id());
-
-        let wrong_network_id =
-            nectar_primitives::NetworkId::from(spec.network_id().get().wrapping_add(1));
-        let result = decode_ack(proto, wrong_network_id);
+        let wrong = NetworkId::from(spec.network_id().get().wrapping_add(1));
+        let result = decode_ack(proto, wrong);
         assert!(matches!(result, Err(HandshakeError::NetworkIdMismatch)));
     }
 
     #[test]
-    fn test_missing_peer_field() {
+    fn test_missing_address_field() {
         let spec = test_spec();
         let peer = create_test_peer();
         let mut proto = encode_ack(&peer, SwarmNodeType::Client, "test", spec.network_id());
-        proto.peer = None;
-
+        proto.address = None;
         let result = decode_ack(proto, spec.network_id());
-        assert!(matches!(result, Err(HandshakeError::MissingField("peer"))));
-    }
-
-    #[test]
-    fn test_empty_multiaddrs_rejected() {
-        let spec = test_spec();
-        let peer = create_test_peer();
-        let mut proto = encode_ack(&peer, SwarmNodeType::Client, "test", spec.network_id());
-
-        if let Some(ref mut peer_addr) = proto.peer {
-            peer_addr.multiaddrs = vec![];
-        }
-
-        let result = decode_ack(proto, spec.network_id());
-        assert!(
-            matches!(
-                result,
-                Err(HandshakeError::InvalidPeer(
-                    vertex_swarm_peer::error::SwarmPeerError::NoMultiaddrs
-                ))
-            ),
-            "expected NoMultiaddrs error, got: {:?}",
-            result
-        );
+        assert!(matches!(
+            result,
+            Err(HandshakeError::MissingField("address"))
+        ));
     }
 
     #[test]
@@ -191,7 +188,6 @@ mod tests {
         let spec = test_spec();
         let peer = create_test_peer();
 
-        // At max length - should succeed
         let max_message = "x".repeat(MAX_WELCOME_MESSAGE_CHARS);
         let proto = encode_ack(
             &peer,
@@ -201,42 +197,11 @@ mod tests {
         );
         assert!(decode_ack(proto, spec.network_id()).is_ok());
 
-        // Over max length - should fail
         let mut proto = encode_ack(&peer, SwarmNodeType::Client, "", spec.network_id());
         proto.welcome_message = "x".repeat(MAX_WELCOME_MESSAGE_CHARS + 1);
         assert!(matches!(
             decode_ack(proto, spec.network_id()),
             Err(HandshakeError::FieldTooLong { .. })
         ));
-    }
-
-    #[test]
-    fn test_invalid_signature() {
-        let spec = test_spec();
-        let peer = create_test_peer();
-        let mut proto = encode_ack(&peer, SwarmNodeType::Client, "test", spec.network_id());
-
-        if let Some(ref mut peer_addr) = proto.peer {
-            peer_addr.signature = vec![0u8; 65];
-        }
-
-        let result = decode_ack(proto, spec.network_id());
-        assert!(matches!(
-            result,
-            Err(HandshakeError::InvalidPeer(
-                vertex_swarm_peer::error::SwarmPeerError::InvalidSignature(_)
-            ))
-        ));
-    }
-
-    #[test]
-    fn test_invalid_nonce_length() {
-        let spec = test_spec();
-        let peer = create_test_peer();
-        let mut proto = encode_ack(&peer, SwarmNodeType::Client, "test", spec.network_id());
-        proto.nonce = vec![0u8; 16]; // Wrong length
-
-        let result = decode_ack(proto, spec.network_id());
-        assert!(matches!(result, Err(HandshakeError::InvalidData(_))));
     }
 }

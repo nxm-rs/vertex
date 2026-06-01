@@ -16,7 +16,7 @@ use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 use vertex_swarm_net_headers::{
     HeaderedInbound, HeaderedOutbound, HeaderedStream, Outbound, ProtocolStreamError,
 };
-use vertex_swarm_peer::{SwarmAddress, SwarmPeer};
+use vertex_swarm_peer::{SwarmAddress, SwarmPeer, Timestamp};
 use vertex_swarm_primitives::{NetworkId, Nonce};
 use vertex_tasks::TaskExecutor;
 
@@ -104,7 +104,7 @@ impl<I: SwarmIdentity> HeaderedInbound for HiveInner<I> {
 
 /// Validate a batch of proto peers, offloading to a blocking thread if the executor is available.
 async fn validate_batch_blocking(
-    raw_peers: Vec<vertex_swarm_net_proto::hive::Peer>,
+    raw_peers: Vec<vertex_swarm_net_proto::hive::SwarmPeer>,
     network_id: NetworkId,
     local_overlay: SwarmAddress,
     cache: PeerCache,
@@ -126,7 +126,7 @@ async fn validate_batch_blocking(
 ///
 /// Returns (valid_peers, valid_count, invalid_count).
 fn validate_batch(
-    raw_peers: Vec<vertex_swarm_net_proto::hive::Peer>,
+    raw_peers: Vec<vertex_swarm_net_proto::hive::SwarmPeer>,
     network_id: NetworkId,
     local_overlay: &SwarmAddress,
     cache: &Mutex<LruCache<SwarmAddress, SwarmPeer>>,
@@ -164,7 +164,7 @@ fn validate_batch(
 /// 1. LRU cache — validated earlier in this session
 /// 2. Full ECDSA recovery — cold path
 fn validate_proto_peer(
-    p: vertex_swarm_net_proto::hive::Peer,
+    p: vertex_swarm_net_proto::hive::SwarmPeer,
     network_id: NetworkId,
     local_overlay: &SwarmAddress,
     cache: &Mutex<LruCache<SwarmAddress, SwarmPeer>>,
@@ -180,7 +180,7 @@ fn validate_proto_peer(
 
     let signature = Signature::try_from(p.signature.as_slice())?;
 
-    // Tier 1: Check LRU cache — validated earlier in this session.
+    // Tier 1: Check LRU cache - validated earlier in this session.
     // On signature mismatch, falls through to tier 2 which re-validates and overwrites.
     {
         let mut guard = cache.lock();
@@ -193,23 +193,25 @@ fn validate_proto_peer(
     }
     counter!("hive_validation_cache_total", "outcome" => "miss").increment(1);
 
-    // Tier 2: Full ECDSA signature recovery.
+    // Tier 2: Full ECDSA signature recovery via SwarmPeer::parse.
     let nonce_bytes: [u8; 32] = p
         .nonce
         .as_slice()
         .try_into()
         .map_err(ValidationFailure::NonceLength)?;
     let nonce = Nonce::new(nonce_bytes);
+    let timestamp = Timestamp::from_seconds(p.timestamp);
 
-    // NOTE: validate_overlay disabled due to Bee multiaddr re-serialization bug
-    let peer = SwarmPeer::from_signed(
-        &p.multiaddrs,
+    let wire = vertex_swarm_peer::SwarmPeerWire {
+        multiaddrs_bytes: &p.multiaddrs,
         signature,
-        peer_overlay,
+        overlay: peer_overlay,
         nonce,
-        network_id,
-        false,
-    )?;
+        timestamp,
+        chequebook_bytes: &p.chequebook_address,
+    };
+    // No skew check at the validation layer; that's a session policy.
+    let peer = SwarmPeer::parse(wire, network_id, None)?;
 
     if !peer
         .multiaddrs()

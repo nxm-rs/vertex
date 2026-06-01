@@ -5,15 +5,17 @@ syntax = "proto3";
 
 package handshake;
 
+// Bee handshake 15.0.0 wire format (matches bee
+// `pkg/p2p/libp2p/internal/handshake/pb/handshake.proto`).
+
 message Syn {
   bytes observed_multiaddr = 1;
 }
 
 message Ack {
-  PeerAddress peer = 1;
+  SwarmPeer address = 1;
   uint64 network_id = 2;
   bool storer = 3;
-  bytes nonce = 4;
   string welcome_message = 99;
 }
 
@@ -22,10 +24,15 @@ message SynAck {
   Ack ack = 2;
 }
 
-// Partial peer address - missing nonce (which is at Ack level).
-// Used for wire format only; convert to SwarmPeer for full representation.
-message PeerAddress {
+// SwarmPeer is the bee 15.0.0 signed peer record. Field numbers match
+// bee's BzzAddress proto so that vertex bootnodes interoperate with bee
+// mainnet on the wire (proto3 wire format keys on field numbers, not
+// names).
+message SwarmPeer {
   bytes multiaddrs = 1;
   bytes signature = 2;
   bytes overlay = 3;
+  bytes nonce = 4;
+  int64 timestamp = 5;
+  bytes chequebook_address = 6;
 }

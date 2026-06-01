@@ -40,6 +40,7 @@ serde = ["dep:serde", "alloy-primitives/serde", "nectar-primitives/serde"]
 test-utils = []
 
 [dev-dependencies]
+alloy-signer-local.workspace = true
 arbitrary.workspace = true
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true

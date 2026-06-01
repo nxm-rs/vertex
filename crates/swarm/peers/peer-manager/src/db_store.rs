@@ -255,11 +255,13 @@ mod tests {
                 .parse()
                 .expect("valid multiaddr"),
         ];
-        let peer = SwarmPeer::from_validated(
+        let peer = SwarmPeer::from_parts(
             multiaddrs,
             alloy_primitives::Signature::test_signature(),
-            B256::repeat_byte(n),
+            B256::repeat_byte(n).into(),
             vertex_swarm_primitives::Nonce::ZERO,
+            vertex_swarm_peer::Timestamp::from_seconds(1),
+            None,
             Address::repeat_byte(n),
         );
         StoredPeer {

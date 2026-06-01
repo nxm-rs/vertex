@@ -311,11 +311,13 @@ mod tests {
     ) -> SwarmPeer {
         let addr_with_p2p = format!("{}/p2p/{}", addr, peer_id);
         let multiaddr: libp2p::Multiaddr = addr_with_p2p.parse().unwrap();
-        SwarmPeer::from_validated(
+        SwarmPeer::from_parts(
             vec![multiaddr],
             Signature::new(U256::from(1u64), U256::from(2u64), false),
-            B256::from(overlay_bytes),
+            B256::from(overlay_bytes).into(),
             vertex_swarm_primitives::Nonce::ZERO,
+            vertex_swarm_peer::Timestamp::from_seconds(1),
+            None,
             Address::ZERO,
         )
     }
@@ -329,22 +331,26 @@ mod tests {
     ) -> SwarmPeer {
         let addr_with_p2p = format!("{}/p2p/{}", addr, peer_id);
         let multiaddr: libp2p::Multiaddr = addr_with_p2p.parse().unwrap();
-        SwarmPeer::from_validated(
+        SwarmPeer::from_parts(
             vec![multiaddr],
             Signature::new(U256::from(sig_r), U256::from(sig_s), false),
-            B256::from(overlay_bytes),
+            B256::from(overlay_bytes).into(),
             vertex_swarm_primitives::Nonce::ZERO,
+            vertex_swarm_peer::Timestamp::from_seconds(1),
+            None,
             Address::ZERO,
         )
     }
 
     fn mock_swarm_peer_no_p2p(overlay_bytes: [u8; 32], addr: &str) -> SwarmPeer {
         let multiaddr: libp2p::Multiaddr = addr.parse().unwrap();
-        SwarmPeer::from_validated(
+        SwarmPeer::from_parts(
             vec![multiaddr],
             Signature::new(U256::from(1u64), U256::from(2u64), false),
-            B256::from(overlay_bytes),
+            B256::from(overlay_bytes).into(),
             vertex_swarm_primitives::Nonce::ZERO,
+            vertex_swarm_peer::Timestamp::from_seconds(1),
+            None,
             Address::ZERO,
         )
     }

@@ -14,9 +14,11 @@ pub enum MultiAddrError {
     InvalidMultiaddr(#[from] libp2p::multiaddr::Error),
 }
 
-/// Errors from [`SwarmPeer`](crate::SwarmPeer) construction.
+/// Errors from [`SwarmPeer`](crate::SwarmPeer) and
+/// [`SwarmPeer`](crate::SwarmPeer) construction.
 #[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
+#[non_exhaustive]
 pub enum SwarmPeerError {
     #[error("invalid signature: {0}")]
     InvalidSignature(#[from] alloy_primitives::SignatureError),
@@ -28,4 +30,19 @@ pub enum SwarmPeerError {
     NoMultiaddrs,
     #[error("invalid multiaddr encoding: {0}")]
     InvalidMultiaddrEncoding(#[from] MultiAddrError),
+    /// Timestamp is non-positive (bee `ErrTimestampInvalid` equivalent).
+    ///
+    /// This is a structural protocol violation, distinct from a peer whose
+    /// clock has drifted: triage the two separately. Bee uses
+    /// `ErrTimestampInvalid` for `<= 0`.
+    #[error("timestamp must be strictly positive")]
+    InvalidTimestamp,
+    /// Timestamp lies outside the caller's clock-skew tolerance.
+    ///
+    /// Distinct from [`InvalidTimestamp`](Self::InvalidTimestamp); this only
+    /// fires when the caller passed `Some(skew)` and the drift exceeds it.
+    #[error("timestamp outside permitted clock-skew window")]
+    TimestampOutsideSkewWindow,
+    #[error("invalid chequebook address encoding")]
+    InvalidChequebook,
 }

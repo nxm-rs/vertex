@@ -4,7 +4,7 @@ use tracing::{Instrument, Span, debug_span, instrument, warn};
 use vertex_net_codec::FramedProto;
 use vertex_net_utils::extract_peer_id;
 use vertex_swarm_api::SwarmIdentity;
-use vertex_swarm_peer::SwarmPeer;
+use vertex_swarm_peer::{SwarmPeer, Timestamp};
 use vertex_swarm_spec::SwarmSpec;
 
 use crate::codec::{decode_ack, decode_syn, decode_synack, encode_ack, encode_syn, encode_synack};
@@ -51,7 +51,18 @@ fn prepare_local_peer<I: SwarmIdentity>(
         .cloned()
         .collect();
     addrs.push(observed_addr.clone());
-    SwarmPeer::from_identity(identity, addrs).map_err(HandshakeError::from)
+
+    let signer = identity.signer();
+    SwarmPeer::sign(
+        &*signer,
+        addrs,
+        identity.overlay_address(),
+        identity.spec().network_id(),
+        identity.nonce(),
+        Timestamp::now(),
+        None,
+    )
+    .map_err(HandshakeError::from)
 }
 
 /// Handshake protocol for Swarm peer authentication.
