@@ -1,7 +1,9 @@
-//! Bootnode - minimal Swarm node with topology protocols only.
+//! Bootnode - minimal Swarm node with topology protocols and pricing stub.
 //!
-//! A [`BootNode`] participates in peer discovery via handshake, hive, and pingpong
-//! but does not run client protocols (pricing, retrieval, pushsync, settlement).
+//! A [`BootNode`] participates in peer discovery via handshake, hive, and
+//! pingpong and advertises the pricing protocol in listen-only mode so peers
+//! that disconnect on a failed pricing handshake stay connected. It does not
+//! run the other client protocols (retrieval, pushsync, settlement).
 //!
 //! Use this for dedicated bootnode servers that help new nodes join the network.
 
@@ -9,11 +11,12 @@ use eyre::Result;
 use futures::StreamExt;
 use libp2p::{PeerId, identity::PublicKey, swarm::NetworkBehaviour, swarm::SwarmEvent};
 use nectar_primitives::SwarmAddress;
-use tracing::info;
+use tracing::{debug, info};
 use vertex_swarm_api::{
     SwarmIdentity, SwarmIdentityConfig, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig,
 };
 use vertex_swarm_net_identify as identify;
+use vertex_swarm_net_pricing::{PricingBehaviour, PricingEvent};
 use vertex_swarm_topology::{
     KademliaConfig, TopologyBehaviour, TopologyCommand, TopologyConfig, TopologyEvent,
     TopologyHandle,
@@ -23,12 +26,18 @@ use vertex_tasks::GracefulShutdown;
 use super::base::BaseNode;
 use super::builder::BuiltInfrastructure;
 
-/// Network behaviour for a bootnode (topology only, no client protocols).
+/// Network behaviour for a bootnode (topology + pricing stub).
+///
+/// The pricing stub is mandatory for interop with peers that close the
+/// connection when their pricing handshake fails; advertising the protocol
+/// is enough. Bootnodes never dial an outbound pricing stream of their own
+/// because they have no payment state to announce.
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "BootnodeEvent")]
 pub struct BootnodeBehaviour<I: SwarmIdentity + Clone> {
     pub identify: identify::Behaviour,
     pub topology: TopologyBehaviour<I>,
+    pub pricing: PricingBehaviour,
 }
 
 impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
@@ -36,23 +45,40 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
     pub fn from_parts(local_public_key: PublicKey, topology: TopologyBehaviour<I>) -> Self {
         let agent_versions = topology.agent_versions();
         Self {
-            // Send listen addresses (even private IPs) so bee's peerstore has entries.
-            // waitPeerAddrs() returns immediately if len(addrs) > 0, regardless of
-            // whether addresses match or are reachable. The handshake protocol uses
-            // RemoteMultiaddr directly. Private IPs in gossip are harmless.
+            // Advertise listen addresses (even private IPs). Peers gate on
+            // "we have at least one addr" rather than reachability, and the
+            // handshake itself uses the libp2p-observed remote multiaddr, so
+            // private IPs in the identify payload are harmless.
             identify: identify::Behaviour::new(
                 identify::Config::new(local_public_key),
                 agent_versions,
             ),
             topology,
+            // Bootnodes advertise pricing for interop but never dial an
+            // outbound stream of their own and discard inbound thresholds.
+            pricing: PricingBehaviour::new_bootnode(),
         }
+    }
+
+    /// Protocols advertised by this behaviour above the topology layer.
+    ///
+    /// Used in tests and diagnostics to verify mainnet interop coverage.
+    /// Topology protocols (handshake, hive, pingpong) are owned by
+    /// [`TopologyBehaviour`] and tested there; this list covers only the
+    /// extra protocols that the bootnode itself mounts (currently the
+    /// pricing stub required for bee mainnet interop).
+    #[allow(dead_code)] // Reserved for integration tests and operator diagnostics.
+    pub fn supported_protocols() -> &'static [&'static str] {
+        &[vertex_swarm_net_pricing::PROTOCOL_NAME]
     }
 }
 
 /// Events from the bootnode behaviour.
+#[allow(clippy::large_enum_variant)]
 pub enum BootnodeEvent {
     Identify(Box<identify::Event>),
     Topology(()),
+    Pricing(PricingEvent),
 }
 
 impl From<identify::Event> for BootnodeEvent {
@@ -64,6 +90,12 @@ impl From<identify::Event> for BootnodeEvent {
 impl From<()> for BootnodeEvent {
     fn from(_: ()) -> Self {
         BootnodeEvent::Topology(())
+    }
+}
+
+impl From<PricingEvent> for BootnodeEvent {
+    fn from(event: PricingEvent) -> Self {
+        BootnodeEvent::Pricing(event)
     }
 }
 
@@ -160,6 +192,27 @@ impl<I: SwarmIdentity + Clone> BootNode<I> {
                 self.handle_identify_event(*boxed_event);
             }
             BootnodeEvent::Topology(_) => {}
+            BootnodeEvent::Pricing(event) => {
+                // Bootnodes do not perform accounting; observability only.
+                match event {
+                    PricingEvent::ThresholdReceived { peer, threshold } => {
+                        debug!(
+                            %peer,
+                            threshold = %threshold.payment_threshold,
+                            "Bootnode: received pricing threshold (discarded)"
+                        );
+                    }
+                    PricingEvent::InboundError { peer, error } => {
+                        debug!(%peer, %error, "Bootnode: pricing inbound error");
+                    }
+                    // Variants associated with announcing our own threshold
+                    // cannot fire in listen-only mode.
+                    PricingEvent::AnnouncementSent { .. }
+                    | PricingEvent::OutboundError { .. }
+                    | PricingEvent::AnnouncementDropped { .. } => {}
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -357,6 +410,17 @@ mod tests {
                 }
             ),
             "expected EphemeralWhenPersistent {{ Bootnode }}, got: {identity_err:?}"
+        );
+    }
+
+    /// The bootnode must advertise the pricing protocol so peers that
+    /// disconnect on a failed pricing handshake stay connected.
+    #[test]
+    fn supported_protocols_includes_pricing() {
+        let protocols = BootnodeBehaviour::<Arc<Identity>>::supported_protocols();
+        assert!(
+            protocols.contains(&vertex_swarm_net_pricing::PROTOCOL_NAME),
+            "bootnode must advertise pricing protocol; got {protocols:?}"
         );
     }
 }

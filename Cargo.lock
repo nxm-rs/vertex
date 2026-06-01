@@ -8351,8 +8351,10 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "asynchronous-codec",
+ "auto_impl",
  "bytes",
  "futures",
+ "futures-bounded",
  "libp2p",
  "quick-protobuf",
  "quick-protobuf-codec",

@@ -18,6 +18,7 @@ vertex-swarm-net-proto.workspace = true
 
 ## async
 futures.workspace = true
+futures-bounded = "0.2"
 
 ## p2p
 asynchronous-codec.workspace = true
@@ -29,6 +30,7 @@ libp2p.workspace = true
 alloy-primitives.workspace = true
 
 ## misc
+auto_impl.workspace = true
 bytes.workspace = true
 strum.workspace = true
 thiserror.workspace = true
