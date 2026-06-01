@@ -165,9 +165,11 @@ impl<I: SwarmIdentity + Clone> BootNode<I> {
 
     pub fn start_listening(&mut self) -> Result<()> {
         self.base.start_listening()?;
-        // Reflect the number of configured listen addresses; the swarm will
-        // update individual address state via NewListenAddr / ExpiredListenAddr.
-        gauge!("bootnode_listen_addrs").set(self.base.listen_addrs.len() as f64);
+        // Initialise the gauge to 0; libp2p emits NewListenAddr asynchronously
+        // once each listener actually binds. The run loop reconciles the gauge
+        // with `swarm.listeners()` on every NewListenAddr / ExpiredListenAddr /
+        // ListenerClosed event.
+        gauge!("bootnode_listen_addrs").set(0.0);
         Ok(())
     }
 
