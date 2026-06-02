@@ -40,7 +40,7 @@ impl<S: SwarmSpec> Pricer for FixedPricer<S> {
         let peer_addr: &SwarmAddress = peer;
         let chunk_addr: &SwarmAddress = chunk;
         let proximity = peer_addr.proximity(chunk_addr);
-        let factor = (self.spec.max_po() as u64) - (proximity as u64) + 1;
+        let factor = u64::from(self.spec.max_po()) - u64::from(proximity.get()) + 1;
         factor * self.base_price
     }
 }

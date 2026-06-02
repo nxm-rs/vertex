@@ -594,7 +594,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
     /// Get the proximity order for a peer relative to our overlay address.
     pub(crate) fn proximity(&self, peer: &OverlayAddress) -> u8 {
-        self.identity.overlay_address().proximity(peer)
+        self.identity.overlay_address().proximity(peer).get()
     }
 
     /// Check if we can advertise to a peer based on address scope.

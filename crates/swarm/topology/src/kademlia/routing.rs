@@ -122,7 +122,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
     }
 
     fn proximity(&self, peer: &OverlayAddress) -> u8 {
-        self.base().proximity(peer).min(self.max_po)
+        self.base().proximity(peer).get().min(self.max_po)
     }
 
     /// Capture state for candidate selection (lightweight: banned/backoff checked live).
