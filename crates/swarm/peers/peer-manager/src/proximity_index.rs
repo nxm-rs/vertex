@@ -230,7 +230,7 @@ impl ProximityIndex {
     /// Compute bin (proximity order) for an address, capped at max_po.
     #[must_use]
     pub fn bin_for(&self, addr: &OverlayAddress) -> u8 {
-        self.local_overlay.proximity(addr).min(self.max_po)
+        self.local_overlay.proximity(addr).get().min(self.max_po)
     }
 
     /// Build sorted list, using a generation-stamped cache to avoid rebuilds.

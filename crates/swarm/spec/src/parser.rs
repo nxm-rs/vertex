@@ -17,7 +17,7 @@ pub struct DefaultSpecParser;
 impl SwarmSpecParser for DefaultSpecParser {
     type Spec = Spec;
 
-    const SUPPORTED_NETWORKS: &'static [&'static str] = NamedSwarm::VARIANTS;
+    const SUPPORTED_NETWORKS: &'static [&'static str] = <NamedSwarm as VariantNames>::VARIANTS;
 
     fn parse(s: &str) -> eyre::Result<Arc<Self::Spec>> {
         // Try parsing as a named network first

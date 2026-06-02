@@ -16,4 +16,17 @@ ignore = [
     # This is compile-time only (proc-macro) with no runtime security impact.
     # Ref: https://github.com/alloy-rs/core/issues/897
     "RUSTSEC-2024-0436", # paste unmaintained - via alloy-primitives, netlink-packet-*
+
+    # hickory-proto 0.25.x advisories, pinned via libp2p-dns 0.44 -> hickory-resolver 0.25.
+    # Bumping requires upstream libp2p-dns to adopt hickory 0.26 (not yet released).
+    #
+    # RUSTSEC-2026-0118 (NSEC3 closest-encloser proof unbounded loop): only reachable
+    # if `dnssec-ring` or `dnssec-aws-lc-rs` features are enabled. Vertex does not
+    # enable any DNSSEC features (verified via `cargo tree -e features -p hickory-proto`).
+    "RUSTSEC-2026-0118",
+    # RUSTSEC-2026-0119 (O(n^2) name compression DoS in BinEncoder): triggered by
+    # encoding messages with many records. Vertex only uses libp2p-dns for /dnsaddr
+    # resolution (single-name A/AAAA queries). An attacker would need to control the
+    # query content to force the O(n^2) path, which is not exposed to peers.
+    "RUSTSEC-2026-0119",
 ]
