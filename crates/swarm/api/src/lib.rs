@@ -62,7 +62,9 @@ pub use self::config::{
     SwarmRoutingConfig, SwarmStorageConfig, SwarmStorerConfig, SwarmStorerLaunchConfig,
     estimate_chunks_for_bytes, estimate_storage_bytes,
 };
-pub use self::error::{ConfigAddressKind, ConfigError, ConfigResult, SwarmError, SwarmResult};
+pub use self::error::{
+    ConfigAddressKind, ConfigError, ConfigResult, IdentityError, SwarmError, SwarmResult,
+};
 pub use self::identity::SwarmIdentity;
 pub use self::protocol::SwarmProtocol;
 pub use self::providers::{

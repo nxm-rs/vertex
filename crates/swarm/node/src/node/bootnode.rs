@@ -10,7 +10,9 @@ use futures::StreamExt;
 use libp2p::{PeerId, identity::PublicKey, swarm::NetworkBehaviour, swarm::SwarmEvent};
 use nectar_primitives::SwarmAddress;
 use tracing::info;
-use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig};
+use vertex_swarm_api::{
+    SwarmIdentity, SwarmIdentityConfig, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig,
+};
 use vertex_swarm_net_identify as identify;
 use vertex_swarm_topology::{
     KademliaConfig, TopologyBehaviour, TopologyCommand, TopologyConfig, TopologyEvent,
@@ -217,9 +219,15 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
         >,
     ) -> Result<BootNode<I>>
     where
-        I: vertex_swarm_spec::HasSpec,
+        I: vertex_swarm_spec::HasSpec + SwarmIdentityConfig,
         C: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig<Routing = KademliaConfig>,
     {
+        // Bootnodes have a well-known overlay address that peers rely on
+        // across restarts. Reject ephemeral identities before doing any
+        // network setup so misconfiguration fails fast.
+        self.identity
+            .assert_persistent_identity(vertex_swarm_primitives::SwarmNodeType::Bootnode)?;
+
         info!("Initializing bootnode P2P network...");
 
         let infra = match self.infra {
@@ -252,5 +260,103 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
             .set_local_peer_id(*base.swarm.local_peer_id());
 
         Ok(BootNode { base })
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use libp2p::Multiaddr;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use vertex_swarm_api::{DefaultPeerConfig, IdentityError, SwarmIdentityConfig};
+    use vertex_swarm_identity::Identity;
+    use vertex_swarm_primitives::SwarmNodeType;
+
+    /// Minimal config used purely to exercise the bootnode build trait bounds.
+    /// We never reach the network-init code path: `assert_persistent_identity`
+    /// must fail before any peer/routing config is touched.
+    struct TestConfig {
+        peers: DefaultPeerConfig,
+        routing: KademliaConfig,
+        empty_addrs: Vec<Multiaddr>,
+    }
+
+    impl TestConfig {
+        fn new() -> Self {
+            Self {
+                peers: DefaultPeerConfig::default(),
+                routing: KademliaConfig::default(),
+                empty_addrs: Vec::new(),
+            }
+        }
+    }
+
+    impl SwarmNetworkConfig for TestConfig {
+        fn listen_addrs(&self) -> &[Multiaddr] {
+            &self.empty_addrs
+        }
+        fn bootnodes(&self) -> &[Multiaddr] {
+            &self.empty_addrs
+        }
+        fn trusted_peers(&self) -> &[Multiaddr] {
+            &self.empty_addrs
+        }
+        fn discovery_enabled(&self) -> bool {
+            true
+        }
+        fn max_peers(&self) -> usize {
+            32
+        }
+        fn idle_timeout(&self) -> Duration {
+            Duration::from_secs(60)
+        }
+    }
+
+    impl SwarmPeerConfig for TestConfig {
+        type Peers = DefaultPeerConfig;
+        fn peers(&self) -> &Self::Peers {
+            &self.peers
+        }
+    }
+
+    impl SwarmRoutingConfig for TestConfig {
+        type Routing = KademliaConfig;
+        fn routing(&self) -> &Self::Routing {
+            &self.routing
+        }
+    }
+
+    /// An ephemeral bootnode must be rejected at build time. The well-known
+    /// overlay address contract requires a keystore-backed signing key.
+    #[tokio::test]
+    async fn ephemeral_bootnode_is_rejected_at_build() {
+        let spec = vertex_swarm_spec::init_testnet();
+        let identity = Arc::new(Identity::random(spec, SwarmNodeType::Bootnode));
+        assert!(identity.ephemeral(), "test precondition");
+
+        let network = TestConfig::new();
+
+        let result = BootNode::builder(identity)
+            .build(&network, None, None)
+            .await;
+
+        let err = match result {
+            Ok(_) => panic!("ephemeral bootnode must fail to build"),
+            Err(e) => e,
+        };
+        let identity_err = err
+            .downcast_ref::<IdentityError>()
+            .expect("error chain should carry an IdentityError");
+        assert!(
+            matches!(
+                identity_err,
+                IdentityError::EphemeralWhenPersistent {
+                    node_type: SwarmNodeType::Bootnode
+                }
+            ),
+            "expected EphemeralWhenPersistent {{ Bootnode }}, got: {identity_err:?}"
+        );
     }
 }

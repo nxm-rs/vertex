@@ -73,12 +73,56 @@ impl SwarmNodeType {
         matches!(self, SwarmNodeType::Storer)
     }
 
+    /// Whether this node type requires a persistent (keystore-backed) signing
+    /// key. Bootnodes need a stable overlay address across restarts so peers
+    /// can reach them via their well-known overlay. Storers need a stable key
+    /// for staking and chunk reservation.
     pub fn requires_persistent_identity(&self) -> bool {
-        matches!(self, SwarmNodeType::Storer)
+        matches!(self, SwarmNodeType::Bootnode | SwarmNodeType::Storer)
     }
 
+    /// Whether this node type requires a persistent nonce. Combined with a
+    /// persistent signing key, this fixes the overlay address across restarts.
     pub fn requires_persistent_nonce(&self) -> bool {
-        matches!(self, SwarmNodeType::Storer)
+        matches!(self, SwarmNodeType::Bootnode | SwarmNodeType::Storer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bootnode_requires_persistent_identity_and_nonce() {
+        // Bootnode overlay is a contract: peers reach it via a well-known
+        // overlay address derived from the keystore key and nonce. Both must
+        // survive restart.
+        assert!(SwarmNodeType::Bootnode.requires_persistent_identity());
+        assert!(SwarmNodeType::Bootnode.requires_persistent_nonce());
+    }
+
+    #[test]
+    fn storer_requires_persistent_identity_and_nonce() {
+        assert!(SwarmNodeType::Storer.requires_persistent_identity());
+        assert!(SwarmNodeType::Storer.requires_persistent_nonce());
+    }
+
+    #[test]
+    fn client_does_not_require_persistence() {
+        assert!(!SwarmNodeType::Client.requires_persistent_identity());
+        assert!(!SwarmNodeType::Client.requires_persistent_nonce());
+    }
+
+    #[test]
+    fn bootnode_excludes_client_protocols() {
+        let t = SwarmNodeType::Bootnode;
+        assert!(!t.requires_pricing());
+        assert!(!t.requires_accounting());
+        assert!(!t.requires_retrieval());
+        assert!(!t.requires_pushsync());
+        assert!(!t.requires_pullsync());
+        assert!(!t.requires_storage());
+        assert!(!t.supports_staking());
     }
 }
 

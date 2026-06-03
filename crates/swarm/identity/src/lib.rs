@@ -12,12 +12,13 @@ use alloy_signer::k256::ecdsa::SigningKey;
 use alloy_signer_local::LocalSigner;
 use nectar_primitives::SwarmAddress;
 use std::sync::Arc;
-use vertex_swarm_api::{SwarmIdentity, SwarmNodeType};
+use vertex_swarm_api::{SwarmIdentity, SwarmIdentityConfig, SwarmNodeType};
 use vertex_swarm_primitives::{Nonce, compute_overlay};
 use vertex_swarm_spec::{HasSpec, Loggable, Spec, SwarmSpec};
 
 pub use args::IdentityArgs;
 pub use keystore::{create_and_save_signer, load_signer_from_keystore, resolve_password};
+pub use vertex_swarm_api::IdentityError;
 pub use vertex_swarm_api::SwarmIdentity as IdentityTrait;
 
 /// Local node identity containing signing key, nonce, and network spec.
@@ -32,10 +33,18 @@ pub struct Identity {
     overlay: SwarmAddress,
     node_type: SwarmNodeType,
     welcome_message: Option<String>,
+    /// True if this identity was created from a random ephemeral signer rather
+    /// than loaded/saved through a keystore. Bootnodes must never run with
+    /// `ephemeral == true` because their overlay address is a network
+    /// contract.
+    ephemeral: bool,
 }
 
 impl Identity {
     /// Creates a new identity from a signer, nonce, spec, and node type.
+    ///
+    /// Identities created via `new` are considered persistent — callers are
+    /// expected to have sourced the signer from a keystore.
     pub fn new(
         signer: LocalSigner<SigningKey>,
         nonce: Nonce,
@@ -50,18 +59,36 @@ impl Identity {
             overlay,
             node_type,
             welcome_message: None,
+            ephemeral: false,
         }
     }
 
     /// Creates a random ephemeral identity for testing.
     pub fn random(spec: Arc<Spec>, node_type: SwarmNodeType) -> Self {
-        Self::new(LocalSigner::random(), Nonce::random(), spec, node_type)
+        let nonce = Nonce::random();
+        let signer = LocalSigner::random();
+        let overlay = compute_overlay(&signer.address(), spec.network_id(), &nonce);
+        Self {
+            spec,
+            signer: Arc::new(signer),
+            nonce,
+            overlay,
+            node_type,
+            welcome_message: None,
+            ephemeral: true,
+        }
     }
 
     /// Sets a custom welcome message.
     pub fn with_welcome_message(mut self, message: impl Into<String>) -> Self {
         self.welcome_message = Some(message.into());
         self
+    }
+}
+
+impl SwarmIdentityConfig for Identity {
+    fn ephemeral(&self) -> bool {
+        self.ephemeral
     }
 }
 
