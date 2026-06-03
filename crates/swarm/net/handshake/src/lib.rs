@@ -24,7 +24,7 @@ mod address;
 pub use address::{AddressProvider, NoAddresses};
 
 /// Protocol name for handshake.
-pub const PROTOCOL: &str = "/swarm/handshake/14.0.0/handshake";
+pub const PROTOCOL: &str = "/swarm/handshake/15.0.0/handshake";
 
 /// Timeout for handshake operations.
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);

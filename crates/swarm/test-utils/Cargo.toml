@@ -18,7 +18,7 @@ vertex-swarm-api.workspace = true
 vertex-swarm-primitives.workspace = true
 vertex-swarm-spec.workspace = true
 vertex-swarm-identity.workspace = true
-vertex-swarm-peer.workspace = true
+vertex-swarm-peer = { workspace = true, features = ["test-utils"] }
 nectar-primitives.workspace = true
 
 # Crypto/signing

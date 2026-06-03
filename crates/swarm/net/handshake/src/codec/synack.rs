@@ -18,11 +18,14 @@ pub(crate) fn decode_synack(
     let observed = decode_syn(proto.syn.ok_or(HandshakeError::MissingField("syn"))?)?;
 
     let proto_ack = proto.ack.ok_or(HandshakeError::MissingField("ack"))?;
-    let swarm_peer = swarm_peer_from_proto(&proto_ack, expected_network_id)?;
+    if proto_ack.network_id != expected_network_id.get() {
+        return Err(HandshakeError::NetworkIdMismatch);
+    }
+    let peer = swarm_peer_from_proto(proto_ack.address.as_ref(), expected_network_id)?;
     let welcome_message = welcome_message_from_proto(&proto_ack)?;
     let node_type = node_type_from_wire(proto_ack.storer);
 
-    Ok((observed, swarm_peer, node_type, welcome_message))
+    Ok((observed, peer, node_type, welcome_message))
 }
 
 /// Encode components into a SynAck proto message.
@@ -42,8 +45,9 @@ pub(crate) fn encode_synack(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vertex_swarm_api::SwarmSpec;
+    use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
     use vertex_swarm_identity::Identity;
+    use vertex_swarm_peer::Timestamp;
     use vertex_swarm_test_utils::test_spec_isolated as test_spec;
 
     fn create_test_data() -> (Multiaddr, SwarmPeer, NetworkId) {
@@ -51,7 +55,17 @@ mod tests {
         let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
         let observed: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
         let peer_addr: Multiaddr = "/ip4/192.168.1.1/tcp/5678".parse().unwrap();
-        let peer = SwarmPeer::from_identity(&identity, vec![peer_addr]).unwrap();
+        let signer = identity.signer();
+        let peer = SwarmPeer::sign(
+            &*signer,
+            vec![peer_addr],
+            identity.overlay_address(),
+            spec.network_id(),
+            identity.nonce(),
+            Timestamp::now(),
+            None,
+        )
+        .expect("should sign peer");
         (observed, peer, spec.network_id())
     }
 

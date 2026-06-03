@@ -71,7 +71,14 @@ const EVENT_CHANNEL_CAPACITY: usize = 256;
 const COMMAND_CHANNEL_CAPACITY: usize = 64;
 
 /// Target for dialing a peer (internal).
+///
+/// `DialTarget` is only ever passed by value to `Self::dial(...)` and dropped
+/// at the end of that call; it never lives in a collection. The size
+/// asymmetry between `Known` and `Unknown` is a one-shot stack cost per
+/// dial, so boxing the `SwarmPeer` would just add a heap allocation for no
+/// real benefit.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum DialTarget {
     /// Known peer from gossip/store - has overlay for verification during handshake.
     Known(SwarmPeer),

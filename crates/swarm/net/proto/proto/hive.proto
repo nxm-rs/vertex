@@ -5,15 +5,22 @@ syntax = "proto3";
 
 package hive;
 
+// Hive 2.0.0 wire format (matches bee `pkg/hive/pb/hive.proto`).
+// Bumped from 1.1.0 to carry timestamp + chequebook so per-record
+// signatures are verifiable independently of the handshake.
+
 message Peers {
-  repeated Peer peers = 1;
+  repeated SwarmPeer peers = 1;
 }
 
-// Peer represents a gossiped peer address in the Hive protocol.
-// Note: Field numbers match BzzAddress for wire compatibility with Bee.
-message Peer {
+// SwarmPeer is the bee signed peer record. Field numbers and field
+// types match bee's BzzAddress proto for wire compatibility (proto3
+// wire format keys on field numbers, not names).
+message SwarmPeer {
   bytes multiaddrs = 1;
   bytes signature = 2;
   bytes overlay = 3;
   bytes nonce = 4;
+  int64 timestamp = 5;
+  bytes chequebook_address = 6;
 }

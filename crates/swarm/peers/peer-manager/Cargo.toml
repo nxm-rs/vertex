@@ -49,5 +49,6 @@ tokio = { workspace = true, features = ["time", "sync"] }
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
 tempfile = "3"
 postcard = { workspace = true }
+vertex-swarm-peer = { workspace = true, features = ["serde", "test-utils"] }
 vertex-swarm-test-utils = { workspace = true }
 vertex-storage-redb = { workspace = true }

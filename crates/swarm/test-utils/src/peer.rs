@@ -3,7 +3,7 @@
 use alloy_primitives::{Address, B256, Signature, U256};
 use libp2p::PeerId;
 use nectar_primitives::SwarmAddress;
-use vertex_swarm_peer::SwarmPeer;
+use vertex_swarm_peer::{SwarmPeer, Timestamp};
 use vertex_swarm_primitives::{Nonce, OverlayAddress};
 
 /// Create a test overlay address from a single byte.
@@ -75,18 +75,20 @@ pub fn test_peer_id(n: u8) -> PeerId {
 /// // peer has multiaddr /ip4/127.0.0.5/tcp/1634/p2p/{peer_id}
 /// ```
 pub fn test_swarm_peer(n: u8) -> SwarmPeer {
-    let overlay = B256::repeat_byte(n);
+    let overlay = SwarmAddress::from(B256::repeat_byte(n));
     let peer_id = test_peer_id(n);
     let multiaddrs = vec![
         format!("/ip4/127.0.0.{}/tcp/1634/p2p/{}", n, peer_id)
             .parse()
             .expect("valid multiaddr"),
     ];
-    SwarmPeer::from_validated(
+    SwarmPeer::from_parts(
         multiaddrs,
         Signature::test_signature(),
         overlay,
         Nonce::ZERO,
+        Timestamp::from_seconds(1),
+        None,
         Address::ZERO,
     )
 }
@@ -115,11 +117,13 @@ pub fn make_overlay(byte: u8) -> SwarmAddress {
 /// network connectivity.
 pub fn make_swarm_peer_minimal(overlay_byte: u8) -> SwarmPeer {
     let overlay = make_overlay(overlay_byte);
-    SwarmPeer::from_validated(
+    SwarmPeer::from_parts(
         vec![],
         Signature::new(U256::ZERO, U256::ZERO, false),
-        B256::from_slice(overlay.as_slice()),
+        overlay,
         Nonce::ZERO,
+        Timestamp::from_seconds(1),
+        None,
         Address::ZERO,
     )
 }
