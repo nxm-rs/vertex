@@ -111,8 +111,8 @@ indexing_slicing = "warn"
 
 [workspace.dependencies]
 ## nectar
-# All three nectar deps pinned to the same rev so the workspace cannot
-# resolve two distinct copies of shared nectar types via independent updates.
+# Pin all three nectar deps to the same rev so the workspace cannot resolve two
+# distinct copies of shared nectar types via independent updates.
 nectar-contracts = { git = "https://github.com/nxm-rs/nectar", rev = "3c99edc4331781dc4f595485f4eea2e36bac38db" }
 nectar-primitives = { git = "https://github.com/nxm-rs/nectar", rev = "3c99edc4331781dc4f595485f4eea2e36bac38db" }
 nectar-swarms = { git = "https://github.com/nxm-rs/nectar", rev = "3c99edc4331781dc4f595485f4eea2e36bac38db" }
@@ -208,10 +208,10 @@ vertex-rpc-server = { path = "crates/rpc/server" }
 
 ## alloy
 alloy-eip2124 = { version = "0.2", default-features = false }
-alloy-primitives = { version = "1.1", default-features = false }
-alloy-signer = { version = "1.0" }
-alloy-signer-local = { version = "1.0", features = ["eip712", "keystore"] }
-alloy-sol-types = { version = "1.5" }
+alloy-primitives = { version = "1.6", default-features = false }
+alloy-signer = { version = "2.0" }
+alloy-signer-local = { version = "2.0", features = ["eip712", "keystore"] }
+alloy-sol-types = { version = "1.6" }
 alloy-chains = { version = "0.2", default-features = false }
 
 ## tracing & telemetry

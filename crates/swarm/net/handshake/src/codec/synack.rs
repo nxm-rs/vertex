@@ -1,6 +1,7 @@
 //! SynAck message encoding/decoding for handshake protocol.
 
 use libp2p::Multiaddr;
+use nectar_primitives::NetworkId;
 use vertex_swarm_peer::{SwarmNodeType, SwarmPeer};
 
 use super::ack::{
@@ -12,7 +13,7 @@ use crate::HandshakeError;
 /// Decode a SynAck proto message, returning validated components.
 pub(crate) fn decode_synack(
     proto: vertex_swarm_net_proto::handshake::SynAck,
-    expected_network_id: u64,
+    expected_network_id: NetworkId,
 ) -> Result<(Multiaddr, SwarmPeer, SwarmNodeType, String), HandshakeError> {
     let observed = decode_syn(proto.syn.ok_or(HandshakeError::MissingField("syn"))?)?;
 
@@ -30,7 +31,7 @@ pub(crate) fn encode_synack(
     peer: &SwarmPeer,
     node_type: SwarmNodeType,
     welcome_message: &str,
-    network_id: u64,
+    network_id: NetworkId,
 ) -> vertex_swarm_net_proto::handshake::SynAck {
     vertex_swarm_net_proto::handshake::SynAck {
         syn: Some(encode_syn(observed)),
@@ -45,7 +46,7 @@ mod tests {
     use vertex_swarm_identity::Identity;
     use vertex_swarm_test_utils::test_spec_isolated as test_spec;
 
-    fn create_test_data() -> (Multiaddr, SwarmPeer, u64) {
+    fn create_test_data() -> (Multiaddr, SwarmPeer, NetworkId) {
         let spec = test_spec();
         let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
         let observed: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();

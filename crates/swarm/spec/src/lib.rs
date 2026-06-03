@@ -156,19 +156,20 @@ pub mod prelude {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nectar_primitives::NetworkId;
 
     #[test]
     fn test_mainnet_spec() {
         let spec = init_mainnet();
         assert!(spec.is_mainnet());
-        assert_eq!(spec.network_id(), mainnet::NETWORK_ID);
+        assert_eq!(spec.network_id(), NetworkId::from(mainnet::NETWORK_ID));
     }
 
     #[test]
     fn test_testnet_spec() {
         let spec = init_testnet();
         assert!(spec.is_testnet());
-        assert_eq!(spec.network_id(), testnet::NETWORK_ID);
+        assert_eq!(spec.network_id(), NetworkId::from(testnet::NETWORK_ID));
     }
 
     #[test]
@@ -182,11 +183,17 @@ mod tests {
         let spec = init_mainnet();
 
         // Arc<Spec> implements SwarmSpecProvider
-        assert_eq!(spec.spec().network_id(), mainnet::NETWORK_ID);
+        assert_eq!(
+            spec.spec().network_id(),
+            NetworkId::from(mainnet::NETWORK_ID)
+        );
 
         // StaticSwarmSpecProvider also works
         let provider = StaticSwarmSpecProvider::from_arc(spec);
-        assert_eq!(provider.spec().network_id(), mainnet::NETWORK_ID);
+        assert_eq!(
+            provider.spec().network_id(),
+            NetworkId::from(mainnet::NETWORK_ID)
+        );
     }
 
     #[test]

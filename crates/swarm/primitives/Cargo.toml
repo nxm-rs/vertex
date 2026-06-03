@@ -12,7 +12,6 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-alloy-primitives = { workspace = true }
 nectar-primitives = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
@@ -20,5 +19,5 @@ serde = { workspace = true, features = ["derive"], optional = true }
 
 [features]
 default = ["std"]
-std = ["alloy-primitives/std", "nectar-primitives/std"]
+std = ["nectar-primitives/std"]
 serde = ["dep:serde"]

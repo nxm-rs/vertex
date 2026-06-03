@@ -3,7 +3,7 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 use alloy_chains::Chain;
 use alloy_primitives::Address;
-use nectar_primitives::ChunkTypeSet;
+use nectar_primitives::{ChunkTypeSet, NetworkId};
 use nectar_swarms::{NamedSwarm, Swarm};
 use vertex_swarm_forks::{ForkCondition, ForkDigest, SwarmHardfork, SwarmHardforks};
 
@@ -67,8 +67,8 @@ pub trait SwarmSpec: Send + Sync + 'static {
     fn chain(&self) -> Chain;
 
     /// Returns the network ID for the Swarm network.
-    fn network_id(&self) -> u64 {
-        self.swarm().id()
+    fn network_id(&self) -> NetworkId {
+        NetworkId::from(self.swarm().id())
     }
 
     /// Returns the Swarm network name (like "mainnet", "testnet", etc.).
@@ -132,12 +132,12 @@ pub trait SwarmSpec: Send + Sync + 'static {
 
     /// Returns whether this is the mainnet Swarm.
     fn is_mainnet(&self) -> bool {
-        self.network_id() == NamedSwarm::Mainnet as u64
+        self.network_id().get() == NamedSwarm::Mainnet as u64
     }
 
     /// Returns whether this is a testnet Swarm.
     fn is_testnet(&self) -> bool {
-        self.network_id() == NamedSwarm::Testnet as u64
+        self.network_id().get() == NamedSwarm::Testnet as u64
     }
 
     /// Returns the maximum proximity order for addresses in this network.

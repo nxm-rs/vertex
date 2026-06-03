@@ -17,6 +17,7 @@ use vertex_swarm_net_headers::{
     HeaderedInbound, HeaderedOutbound, HeaderedStream, Outbound, ProtocolStreamError,
 };
 use vertex_swarm_peer::{SwarmAddress, SwarmPeer};
+use vertex_swarm_primitives::{NetworkId, Nonce};
 use vertex_tasks::TaskExecutor;
 
 use crate::PROTOCOL_NAME;
@@ -78,7 +79,7 @@ impl<I: SwarmIdentity> HeaderedInbound for HiveInner<I> {
         Box::pin(async move {
             use vertex_swarm_net_proto::hive::Peers;
 
-            debug!(network_id, "Hive: reading peers");
+            debug!(%network_id, "Hive: reading peers");
             let (proto, _) =
                 Framed::recv::<Peers, ProtocolStreamError, _>(stream.into_inner()).await?;
 
@@ -104,7 +105,7 @@ impl<I: SwarmIdentity> HeaderedInbound for HiveInner<I> {
 /// Validate a batch of proto peers, offloading to a blocking thread if the executor is available.
 async fn validate_batch_blocking(
     raw_peers: Vec<vertex_swarm_net_proto::hive::Peer>,
-    network_id: u64,
+    network_id: NetworkId,
     local_overlay: SwarmAddress,
     cache: PeerCache,
 ) -> (Vec<SwarmPeer>, usize, usize) {
@@ -126,7 +127,7 @@ async fn validate_batch_blocking(
 /// Returns (valid_peers, valid_count, invalid_count).
 fn validate_batch(
     raw_peers: Vec<vertex_swarm_net_proto::hive::Peer>,
-    network_id: u64,
+    network_id: NetworkId,
     local_overlay: &SwarmAddress,
     cache: &Mutex<LruCache<SwarmAddress, SwarmPeer>>,
 ) -> (Vec<SwarmPeer>, usize, usize) {
@@ -164,7 +165,7 @@ fn validate_batch(
 /// 2. Full ECDSA recovery — cold path
 fn validate_proto_peer(
     p: vertex_swarm_net_proto::hive::Peer,
-    network_id: u64,
+    network_id: NetworkId,
     local_overlay: &SwarmAddress,
     cache: &Mutex<LruCache<SwarmAddress, SwarmPeer>>,
 ) -> Result<SwarmPeer, ValidationFailure> {
@@ -193,7 +194,12 @@ fn validate_proto_peer(
     counter!("hive_validation_cache_total", "outcome" => "miss").increment(1);
 
     // Tier 2: Full ECDSA signature recovery.
-    let nonce = B256::try_from(p.nonce.as_slice()).map_err(ValidationFailure::NonceLength)?;
+    let nonce_bytes: [u8; 32] = p
+        .nonce
+        .as_slice()
+        .try_into()
+        .map_err(ValidationFailure::NonceLength)?;
+    let nonce = Nonce::new(nonce_bytes);
 
     // NOTE: validate_overlay disabled due to Bee multiaddr re-serialization bug
     let peer = SwarmPeer::from_signed(

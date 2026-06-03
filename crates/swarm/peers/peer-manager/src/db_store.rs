@@ -259,7 +259,7 @@ mod tests {
             multiaddrs,
             alloy_primitives::Signature::test_signature(),
             B256::repeat_byte(n),
-            B256::ZERO,
+            vertex_swarm_primitives::Nonce::ZERO,
             Address::repeat_byte(n),
         );
         StoredPeer {

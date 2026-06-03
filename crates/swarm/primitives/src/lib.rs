@@ -1,4 +1,7 @@
 //! Core primitive types for Ethereum Swarm nodes.
+//!
+//! This crate re-exports canonical Swarm primitives from `nectar-primitives`
+//! and adds vertex-specific node configuration types.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -6,20 +9,13 @@ mod validated;
 
 pub use validated::{ValidatedChunk, ValidationError};
 
-use alloy_primitives::{Address, B256, Keccak256};
+// Re-export canonical Swarm primitives from nectar.
+pub use nectar_primitives::{Bin, NetworkId, Nonce, ProximityOrder, Timestamp, compute_overlay};
+
 use nectar_primitives::SwarmAddress;
 
 /// Overlay address for Swarm routing and peer identification.
 pub type OverlayAddress = SwarmAddress;
-
-/// Computes overlay address: `keccak256(ethereum_address || network_id || nonce)`.
-pub fn compute_overlay(ethereum_address: &Address, network_id: u64, nonce: &B256) -> SwarmAddress {
-    let mut hasher = Keccak256::new();
-    hasher.update(ethereum_address);
-    hasher.update(network_id.to_le_bytes());
-    hasher.update(nonce);
-    hasher.finalize().into()
-}
 
 /// Swarm node type determining capabilities and protocols.
 #[derive(
