@@ -406,6 +406,35 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         self.nat_discovery.on_observed_addr(addr);
     }
 
+    /// Forward an AutoNAT event into the per-peer reachability tracker.
+    ///
+    /// Wire this from whichever layer owns the `libp2p::autonat::Behaviour`
+    /// (the swarm-builder, typically). `OutboundProbe::Response` and
+    /// `InboundProbe::Response` promote the involved peer to
+    /// [`crate::PeerReachability::Public`]; other variants are ignored
+    /// (see [`crate::ReachabilityTracker::update_from_autonat`]).
+    pub fn on_autonat_event(&self, event: &libp2p::autonat::Event) {
+        self.nat_discovery.on_autonat_event(event);
+    }
+
+    /// Notify the reachability tracker that the stabilization detector
+    /// (Unit 9) has classified `peer` with `stable`. See
+    /// [`crate::ReachabilityTracker::update_from_stabilization`].
+    pub fn on_stabilization(&self, peer: PeerId, stable: bool) {
+        self.nat_discovery
+            .reachability()
+            .update_from_stabilization(peer, stable);
+    }
+
+    /// Shared per-peer reachability tracker.
+    ///
+    /// Cheap to clone (Arc inside). Exposed so the routing layer (Unit 8) can
+    /// consult per-peer reachability without taking a hard dependency on the
+    /// topology behaviour internals.
+    pub fn reachability(&self) -> crate::ReachabilityTracker {
+        self.nat_discovery.reachability()
+    }
+
     /// Shared agent version map, populated by identify and read by topology handle.
     pub fn agent_versions(&self) -> identify::AgentVersions {
         Arc::clone(&self.agent_versions)

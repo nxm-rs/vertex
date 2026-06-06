@@ -11,6 +11,8 @@ use tracing::{debug, info, warn};
 use vertex_net_local::{AddressScope, IpCapability, LocalCapabilities, classify_multiaddr};
 use vertex_swarm_net_handshake::AddressProvider;
 
+use crate::reachability::ReachabilityTracker;
+
 fn strip_peer_id(addr: &Multiaddr) -> Multiaddr {
     addr.iter()
         .filter(|p| !matches!(p, Protocol::P2p(_)))
@@ -28,21 +30,61 @@ pub struct LocalAddressManager {
     local_peer_id: OnceLock<PeerId>,
     /// Whether we've confirmed public connectivity (peer observed us from public IP).
     has_public_connectivity: AtomicBool,
+    /// Per-peer reachability bridge. AutoNAT events forwarded via
+    /// [`LocalAddressManager::on_autonat_event`] flow into this tracker so
+    /// the kademlia routing layer can score peers by reachability.
+    reachability: ReachabilityTracker,
 }
 
 impl LocalAddressManager {
     pub fn new(local: Arc<LocalCapabilities>, nat_addrs: Vec<Multiaddr>) -> Self {
+        Self::with_reachability(local, nat_addrs, ReachabilityTracker::new())
+    }
+
+    /// Construct a manager sharing an existing [`ReachabilityTracker`]. Useful
+    /// when the tracker must also be referenced by routing or external
+    /// integrators (e.g. a swarm-builder that wires AutoNAT into the same
+    /// tracker without going through the topology behaviour).
+    pub fn with_reachability(
+        local: Arc<LocalCapabilities>,
+        nat_addrs: Vec<Multiaddr>,
+        reachability: ReachabilityTracker,
+    ) -> Self {
         Self {
             local,
             nat_addrs,
             local_peer_id: OnceLock::new(),
             has_public_connectivity: AtomicBool::new(false),
+            reachability,
         }
     }
 
     /// Create a disabled manager (no NAT addresses).
     pub fn disabled(local: Arc<LocalCapabilities>) -> Self {
         Self::new(local, vec![])
+    }
+
+    /// Shared per-peer reachability tracker. Cheap to clone (Arc inside).
+    pub fn reachability(&self) -> ReachabilityTracker {
+        self.reachability.clone()
+    }
+
+    /// Forward an `libp2p::autonat::Event` to the reachability tracker.
+    ///
+    /// This is the single AutoNAT entry point on the NAT-discovery side: the
+    /// swarm wiring that owns an `autonat::Behaviour` should call this for
+    /// each emitted event. Equivalent to `self.reachability().update_from_autonat(event)`.
+    pub fn on_autonat_event(&self, event: &libp2p::autonat::Event) {
+        self.reachability.update_from_autonat(event);
+    }
+
+    /// Record that a peer has been confirmed reachable via an AutoNAT probe.
+    ///
+    /// Convenience for wiring code that cannot synthesise a full
+    /// `libp2p::autonat::Event` (its internal `ProbeId` constructor is
+    /// crate-private).
+    pub fn on_autonat_peer_confirmed(&self, peer: PeerId) {
+        self.reachability.on_autonat_peer_confirmed(peer);
     }
 
     /// Set the local PeerId for appending /p2p/ to advertised addresses.

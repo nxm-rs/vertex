@@ -20,6 +20,7 @@ mod protocol_handlers;
 mod composed;
 mod error;
 mod gossip;
+mod reachability;
 mod tasks;
 
 #[cfg(test)]
@@ -31,3 +32,6 @@ pub use events::{ConnectionDirection, DialReason, TopologyCommand, TopologyEvent
 pub use handle::{BinStats, RoutingStats, TopologyHandle};
 
 pub use kademlia::{KademliaConfig, RoutingArgs};
+pub use reachability::{
+    HANDSHAKE_FAILURE_DECAY, HANDSHAKE_FAILURE_THRESHOLD, PeerReachability, ReachabilityTracker,
+};
