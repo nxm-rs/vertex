@@ -417,20 +417,14 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         self.nat_discovery.on_autonat_event(event);
     }
 
-    /// Notify the reachability tracker that the stabilization detector
-    /// (Unit 9) has classified `peer` with `stable`. See
-    /// [`crate::ReachabilityTracker::update_from_stabilization`].
+    /// Forward a stabilization-detector verdict to the reachability tracker.
     pub fn on_stabilization(&self, peer: PeerId, stable: bool) {
         self.nat_discovery
             .reachability()
             .update_from_stabilization(peer, stable);
     }
 
-    /// Shared per-peer reachability tracker.
-    ///
-    /// Cheap to clone (Arc inside). Exposed so the routing layer (Unit 8) can
-    /// consult per-peer reachability without taking a hard dependency on the
-    /// topology behaviour internals.
+    /// Shared per-peer reachability tracker; cheap to clone.
     pub fn reachability(&self) -> crate::ReachabilityTracker {
         self.nat_discovery.reachability()
     }
