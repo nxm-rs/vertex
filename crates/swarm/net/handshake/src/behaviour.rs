@@ -19,7 +19,8 @@ use vertex_swarm_api::SwarmIdentity;
 use vertex_net_peer_registry::ConnectionDirection;
 
 use crate::{
-    AddressProvider, HandshakeError, HandshakeInfo,
+    AddressProvider, HandshakeError, HandshakeInfo, SharedAdmissionControl,
+    admission::default_admission_control,
     handler::{HandshakeCommand, HandshakeConfig, HandshakeHandler, HandshakeHandlerEvent},
 };
 
@@ -47,6 +48,9 @@ pub struct HandshakeBehaviour<I, A> {
     config: Arc<HandshakeConfig>,
     identity: Arc<I>,
     address_provider: Arc<A>,
+    /// Admission gate consulted before each side commits to its final
+    /// message; defaults to [`AlwaysAccept`](crate::AlwaysAccept).
+    admission_control: SharedAdmissionControl,
     events: VecDeque<ToSwarm<HandshakeEvent, HandshakeCommand>>,
     /// Track direction per connection for event attribution.
     connection_directions: std::collections::HashMap<ConnectionId, ConnectionDirection>,
@@ -63,6 +67,7 @@ where
             config: Arc::new(HandshakeConfig::new(purpose)),
             identity,
             address_provider,
+            admission_control: default_admission_control(),
             events: VecDeque::new(),
             connection_directions: std::collections::HashMap::new(),
         }
@@ -71,6 +76,19 @@ where
     /// Create with custom config.
     pub fn with_config(mut self, config: HandshakeConfig) -> Self {
         self.config = Arc::new(config);
+        self
+    }
+
+    /// Install an admission control gate, replacing any previously
+    /// installed gate (the default is [`AlwaysAccept`](crate::AlwaysAccept)).
+    ///
+    /// Consulted once per handshake just before the local side commits
+    /// to its final message. On
+    /// [`AdmissionDecision::Reject`](crate::AdmissionDecision::Reject)
+    /// the handshake terminates with
+    /// [`HandshakeError::AdmissionRejected`](crate::HandshakeError::AdmissionRejected).
+    pub fn with_admission_control(mut self, admission_control: SharedAdmissionControl) -> Self {
+        self.admission_control = admission_control;
         self
     }
 
@@ -108,6 +126,7 @@ where
             peer,
             remote_addr.clone(),
             self.address_provider.clone(),
+            self.admission_control.clone(),
         ))
     }
 
@@ -128,6 +147,7 @@ where
             peer,
             addr.clone(),
             self.address_provider.clone(),
+            self.admission_control.clone(),
         ))
     }
 

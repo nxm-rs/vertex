@@ -111,6 +111,38 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         &self.config.limits
     }
 
+    /// Admission decision for a peer whose handshake is currently in
+    /// progress.
+    ///
+    /// `extra` is the number of slots the in-flight peer occupies in the
+    /// caller's accounting but is *not* yet counted in
+    /// [`Self::effective_count`]:
+    ///
+    /// * outbound: `0`. The dial planner reserved a `Dialing` slot via
+    ///   [`RoutingCapacity::try_reserve_dial`] (transitioned to
+    ///   `Handshaking` by [`RoutingCapacity::dial_connected`]) before
+    ///   the handshake started, so `effective_count` already includes
+    ///   the in-flight peer.
+    /// * inbound: `1`. No slot is reserved until topology processes the
+    ///   `HandshakeEvent::Completed`, which happens *after* the
+    ///   admission gate runs. The check must add one to model the slot
+    ///   that will be reserved on success.
+    ///
+    /// Returns `true` when the bin would still be within `ceiling`
+    /// (target plus headroom) after counting the in-flight peer. Bins
+    /// inside the neighborhood (where `ceiling == usize::MAX`) always
+    /// return `true`; eviction in oversaturated neighborhoods is a
+    /// separate concern handled by a future `AcceptEvict` decision.
+    pub(crate) fn admission_within_capacity(&self, overlay: &OverlayAddress, extra: usize) -> bool {
+        let po = self.proximity(overlay);
+        let depth = self.depth();
+        let ceiling = self.config.limits.ceiling(po, depth);
+        if ceiling == usize::MAX {
+            return true;
+        }
+        self.effective_count(po).saturating_add(extra) <= ceiling
+    }
+
     fn effective_count(&self, po: u8) -> usize {
         atomic_load(&self.dialing_counts, po)
             + atomic_load(&self.handshaking_counts, po)
