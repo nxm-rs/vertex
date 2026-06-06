@@ -97,30 +97,52 @@ impl std::fmt::Debug for ClientInboundOutput {
 
 /// Combined inbound upgrade for client protocols.
 ///
-/// Advertises pricing, retrieval, and pushsync protocols and dispatches
-/// to the appropriate handler based on the negotiated protocol.
+/// Advertises pricing, retrieval, pushsync, and pseudosettle based on the
+/// handler's state and the local node's role; dispatches to the appropriate
+/// per-protocol upgrade after libp2p negotiates a protocol id.
 ///
-/// # Dormant State
+/// # State
 ///
-/// When `is_active` is false, no protocols are advertised. This prevents
-/// remote peers from initiating client protocols before the handshake is
-/// complete. Once the handler is activated (after handshake), protocols
-/// are advertised on subsequent inbound substream requests.
+/// - [`Self::new`] (dormant): no protocols advertised. Used before the
+///   topology handshake completes; prevents a remote peer from initiating
+///   any client protocol before we have verified them.
+/// - [`Self::active_for`] (active): advertises a protocol set picked by the
+///   local node's [`SwarmNodeType`]. Bootnodes advertise pricing only
+///   (listen-only); clients and storers advertise the full set.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ClientInboundUpgrade {
-    /// Whether the handler is active (post-handshake).
-    is_active: bool,
+    advertised: ProtocolSet,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ProtocolSet {
+    /// Dormant: no protocols advertised.
+    #[default]
+    None,
+    /// Bootnode-active: pricing only.
+    PricingOnly,
+    /// Client/storer-active: pricing + retrieval + pushsync + pseudosettle.
+    Full,
 }
 
 impl ClientInboundUpgrade {
-    /// Create a new client inbound upgrade in dormant state (no protocols advertised).
+    /// Create a new client inbound upgrade in dormant state.
     pub(crate) fn new() -> Self {
-        Self { is_active: false }
+        Self {
+            advertised: ProtocolSet::None,
+        }
     }
 
-    /// Create a new client inbound upgrade in active state (all protocols advertised).
-    pub(crate) fn active() -> Self {
-        Self { is_active: true }
+    /// Create a new client inbound upgrade in active state for `local_role`.
+    /// Bootnodes only advertise pricing; clients and storers advertise the
+    /// full client protocol set.
+    pub(crate) fn active_for(local_role: vertex_swarm_primitives::SwarmNodeType) -> Self {
+        let advertised = match local_role {
+            vertex_swarm_primitives::SwarmNodeType::Bootnode => ProtocolSet::PricingOnly,
+            vertex_swarm_primitives::SwarmNodeType::Client
+            | vertex_swarm_primitives::SwarmNodeType::Storer => ProtocolSet::Full,
+        };
+        Self { advertised }
     }
 }
 
@@ -129,18 +151,16 @@ impl UpgradeInfo for ClientInboundUpgrade {
     type InfoIter = std::vec::IntoIter<Self::Info>;
 
     fn protocol_info(&self) -> Self::InfoIter {
-        if self.is_active {
-            vec![
+        match self.advertised {
+            ProtocolSet::None => Vec::new().into_iter(),
+            ProtocolSet::PricingOnly => vec![PRICING_PROTOCOL].into_iter(),
+            ProtocolSet::Full => vec![
                 PRICING_PROTOCOL,
                 RETRIEVAL_PROTOCOL,
                 PUSHSYNC_PROTOCOL,
                 PSEUDOSETTLE_PROTOCOL,
             ]
-            .into_iter()
-        } else {
-            // In dormant state, don't advertise any client protocols.
-            // This prevents remote peers from initiating protocols before handshake.
-            vec![].into_iter()
+            .into_iter(),
         }
     }
 }
@@ -333,4 +353,54 @@ pub(crate) enum ClientOutboundInfo {
     Pushsync { address: ChunkAddress },
     /// Pseudosettle payment with amount.
     Pseudosettle { amount: U256 },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vertex_swarm_primitives::SwarmNodeType;
+
+    #[test]
+    fn dormant_advertises_nothing() {
+        let upgrade = ClientInboundUpgrade::new();
+        let protocols: Vec<_> = upgrade.protocol_info().collect();
+        assert!(protocols.is_empty(), "dormant must advertise no protocols");
+    }
+
+    #[test]
+    fn bootnode_role_advertises_pricing_only() {
+        let upgrade = ClientInboundUpgrade::active_for(SwarmNodeType::Bootnode);
+        let protocols: Vec<_> = upgrade.protocol_info().collect();
+        assert_eq!(protocols, vec![PRICING_PROTOCOL]);
+    }
+
+    #[test]
+    fn client_role_advertises_full_set() {
+        let upgrade = ClientInboundUpgrade::active_for(SwarmNodeType::Client);
+        let protocols: Vec<_> = upgrade.protocol_info().collect();
+        assert_eq!(
+            protocols,
+            vec![
+                PRICING_PROTOCOL,
+                RETRIEVAL_PROTOCOL,
+                PUSHSYNC_PROTOCOL,
+                PSEUDOSETTLE_PROTOCOL,
+            ]
+        );
+    }
+
+    #[test]
+    fn storer_role_advertises_full_set() {
+        let upgrade = ClientInboundUpgrade::active_for(SwarmNodeType::Storer);
+        let protocols: Vec<_> = upgrade.protocol_info().collect();
+        assert_eq!(
+            protocols,
+            vec![
+                PRICING_PROTOCOL,
+                RETRIEVAL_PROTOCOL,
+                PUSHSYNC_PROTOCOL,
+                PSEUDOSETTLE_PROTOCOL,
+            ]
+        );
+    }
 }

@@ -46,6 +46,17 @@ impl Default for Config {
     }
 }
 
+impl Config {
+    /// Build a config for the given local node role. The handler's inbound
+    /// protocol set is narrowed by role: bootnodes advertise pricing only,
+    /// clients and storers advertise the full client protocol set.
+    pub(crate) fn for_role(local_role: vertex_swarm_primitives::SwarmNodeType) -> Self {
+        let mut cfg = Self::default();
+        cfg.handler.local_role = local_role;
+        cfg
+    }
+}
+
 /// The ClientBehaviour manages client-side protocols.
 ///
 /// It creates handlers in dormant state for each connection, and activates
