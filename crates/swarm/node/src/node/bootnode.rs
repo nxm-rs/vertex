@@ -1,9 +1,11 @@
-//! Bootnode - minimal Swarm node with topology protocols only.
+//! Bootnode - minimal Swarm node with topology protocols and a listen-only
+//! pricing handler.
 //!
-//! A [`BootNode`] participates in peer discovery via handshake, hive, and pingpong
-//! but does not run client protocols (pricing, retrieval, pushsync, settlement).
-//!
-//! Use this for dedicated bootnode servers that help new nodes join the network.
+//! A [`BootNode`] participates in peer discovery via handshake, hive, and
+//! pingpong and advertises the pricing protocol in listen-only mode so peers
+//! that disconnect on a failed pricing handshake stay connected. It does not
+//! initiate any pricing announcement of its own and does not run the other
+//! client protocols (retrieval, pushsync, pseudosettle).
 
 use eyre::Result;
 use futures::StreamExt;
@@ -14,6 +16,7 @@ use vertex_swarm_api::{
     SwarmIdentity, SwarmIdentityConfig, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig,
 };
 use vertex_swarm_net_identify as identify;
+use vertex_swarm_primitives::SwarmNodeType;
 use vertex_swarm_topology::{
     KademliaConfig, TopologyBehaviour, TopologyCommand, TopologyConfig, TopologyEvent,
     TopologyHandle,
@@ -22,13 +25,21 @@ use vertex_tasks::GracefulShutdown;
 
 use super::base::BaseNode;
 use super::builder::BuiltInfrastructure;
+use crate::protocol::{BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientEvent};
 
-/// Network behaviour for a bootnode (topology only, no client protocols).
+/// Network behaviour for a bootnode (topology + listen-only client behaviour).
+///
+/// The same client behaviour composed into [`ClientNode`](super::ClientNode) is
+/// used here with [`SwarmNodeType::Bootnode`], which narrows the advertised
+/// client protocol set to pricing only. The bootnode never issues client
+/// commands (`AnnouncePricing`, `RetrieveChunk`, ...), so only the inbound
+/// pricing path is ever exercised.
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "BootnodeEvent")]
-pub struct BootnodeBehaviour<I: SwarmIdentity + Clone> {
-    pub identify: identify::Behaviour,
-    pub topology: TopologyBehaviour<I>,
+pub(crate) struct BootnodeBehaviour<I: SwarmIdentity + Clone> {
+    pub(crate) identify: identify::Behaviour,
+    pub(crate) topology: TopologyBehaviour<I>,
+    pub(crate) client: ClientBehaviour,
 }
 
 impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
@@ -36,23 +47,36 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
     pub fn from_parts(local_public_key: PublicKey, topology: TopologyBehaviour<I>) -> Self {
         let agent_versions = topology.agent_versions();
         Self {
-            // Send listen addresses (even private IPs) so bee's peerstore has entries.
-            // waitPeerAddrs() returns immediately if len(addrs) > 0, regardless of
-            // whether addresses match or are reachable. The handshake protocol uses
-            // RemoteMultiaddr directly. Private IPs in gossip are harmless.
+            // Advertise listen addresses (even private IPs). Peers gate on
+            // "we have at least one addr" rather than reachability, and the
+            // handshake itself uses the libp2p-observed remote multiaddr, so
+            // private IPs in the identify payload are harmless.
             identify: identify::Behaviour::new(
                 identify::Config::new(local_public_key),
                 agent_versions,
             ),
             topology,
+            client: ClientBehaviour::new(ClientBehaviourConfig::for_role(SwarmNodeType::Bootnode)),
         }
+    }
+
+    /// Wire-protocol identifiers advertised by this behaviour above the
+    /// topology layer. Topology's protocols (handshake, hive, pingpong) are
+    /// owned by `topology` itself and are not enumerated here. Currently
+    /// only the test below consumes this; the `dead_code` allow keeps the
+    /// helper available for future diagnostics and operator-facing readouts.
+    #[allow(dead_code)]
+    pub fn supported_protocols() -> &'static [&'static str] {
+        &[vertex_swarm_net_pricing::PROTOCOL_NAME]
     }
 }
 
 /// Events from the bootnode behaviour.
+#[allow(clippy::large_enum_variant)]
 pub enum BootnodeEvent {
     Identify(Box<identify::Event>),
     Topology(()),
+    Client(ClientEvent),
 }
 
 impl From<identify::Event> for BootnodeEvent {
@@ -64,6 +88,12 @@ impl From<identify::Event> for BootnodeEvent {
 impl From<()> for BootnodeEvent {
     fn from(_: ()) -> Self {
         BootnodeEvent::Topology(())
+    }
+}
+
+impl From<ClientEvent> for BootnodeEvent {
+    fn from(event: ClientEvent) -> Self {
+        BootnodeEvent::Client(event)
     }
 }
 
@@ -160,6 +190,10 @@ impl<I: SwarmIdentity + Clone> BootNode<I> {
                 self.handle_identify_event(*boxed_event);
             }
             BootnodeEvent::Topology(_) => {}
+            BootnodeEvent::Client(event) => {
+                // Bootnodes only accept pricing-receive; observability only.
+                tracing::debug!(?event, "bootnode client event");
+            }
         }
     }
 
@@ -326,6 +360,17 @@ mod tests {
         fn routing(&self) -> &Self::Routing {
             &self.routing
         }
+    }
+
+    /// The bootnode advertises the pricing protocol so peers that disconnect
+    /// on a failed pricing handshake stay connected.
+    #[test]
+    fn bootnode_advertises_pricing_in_supported_protocols() {
+        let protocols = BootnodeBehaviour::<Arc<Identity>>::supported_protocols();
+        assert!(
+            protocols.contains(&vertex_swarm_net_pricing::PROTOCOL_NAME),
+            "bootnode must advertise pricing protocol; got {protocols:?}"
+        );
     }
 
     /// An ephemeral bootnode must be rejected at build time. The well-known

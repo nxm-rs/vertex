@@ -63,6 +63,11 @@ pub(crate) struct Config {
     pub(crate) max_pending_commands: usize,
     /// Maximum pending events before dropping new ones.
     pub(crate) max_pending_events: usize,
+    /// Local node's role. Controls which protocols are advertised on
+    /// inbound substream upgrades and which outbound commands are honoured.
+    /// Bootnodes only speak pricing (listen-only) so the rest of the
+    /// client surface is inert.
+    pub(crate) local_role: SwarmNodeType,
 }
 
 impl Default for Config {
@@ -71,6 +76,7 @@ impl Default for Config {
             timeout: Duration::from_secs(30),
             max_pending_commands: DEFAULT_MAX_PENDING_COMMANDS,
             max_pending_events: DEFAULT_MAX_PENDING_EVENTS,
+            local_role: SwarmNodeType::Client,
         }
     }
 }
@@ -510,7 +516,7 @@ impl ConnectionHandler for ClientHandler {
 
     fn listen_protocol(&self) -> SubstreamProtocol<Self::InboundProtocol, Self::InboundOpenInfo> {
         let upgrade = match &self.state {
-            State::Active { .. } => ClientInboundUpgrade::active(),
+            State::Active { .. } => ClientInboundUpgrade::active_for(self.config.local_role),
             State::Dormant => ClientInboundUpgrade::new(),
         };
         SubstreamProtocol::new(upgrade, ()).with_timeout(self.config.timeout)
