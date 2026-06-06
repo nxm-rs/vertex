@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use libp2p::PeerId;
 use parking_lot::Mutex;
 use std::time::Instant;
 
@@ -23,6 +24,12 @@ use vertex_tasks::TaskExecutor;
 use crate::PROTOCOL_NAME;
 use crate::codec::encode_peers;
 use crate::error::ValidationFailure;
+use crate::metrics::{
+    DISCARD_REASON_BOOTNODE_MODE, DISCARD_REASON_RATE_LIMITED, DISCARD_REASON_VERIFIER_REJECTED,
+    HIVE_PEERS_DISCARDED_TOTAL,
+};
+use crate::peer_handler::{HivePeerHandler, InboundPolicy};
+use vertex_net_ratelimiter::KeyedRateLimiter;
 
 /// 32 KiB frame limit (fits ~100 peers at typical size).
 const MAX_MESSAGE_SIZE: usize = 32 * 1024;
@@ -50,6 +57,9 @@ pub struct ValidatedPeers {
 pub struct HiveInner<I: SwarmIdentity> {
     identity: Arc<I>,
     cache: PeerCache,
+    remote_peer_id: PeerId,
+    inbound_limit: Arc<KeyedRateLimiter<PeerId>>,
+    peer_handler: Arc<dyn HivePeerHandler>,
 }
 
 impl<I: SwarmIdentity> std::fmt::Debug for HiveInner<I> {
@@ -59,8 +69,20 @@ impl<I: SwarmIdentity> std::fmt::Debug for HiveInner<I> {
 }
 
 impl<I: SwarmIdentity> HiveInner<I> {
-    pub(crate) fn new(identity: Arc<I>, cache: PeerCache) -> Self {
-        Self { identity, cache }
+    pub(crate) fn new(
+        identity: Arc<I>,
+        cache: PeerCache,
+        remote_peer_id: PeerId,
+        inbound_limit: Arc<KeyedRateLimiter<PeerId>>,
+        peer_handler: Arc<dyn HivePeerHandler>,
+    ) -> Self {
+        Self {
+            identity,
+            cache,
+            remote_peer_id,
+            inbound_limit,
+            peer_handler,
+        }
     }
 }
 
@@ -76,6 +98,9 @@ impl<I: SwarmIdentity> HeaderedInbound for HiveInner<I> {
         let network_id = self.identity.spec().network_id();
         let local_overlay = self.identity.overlay_address();
         let cache = self.cache;
+        let remote_peer_id = self.remote_peer_id;
+        let inbound_limit = self.inbound_limit;
+        let peer_handler = self.peer_handler;
         Box::pin(async move {
             use vertex_swarm_net_proto::hive::Peers;
 
@@ -84,16 +109,43 @@ impl<I: SwarmIdentity> HeaderedInbound for HiveInner<I> {
                 Framed::recv::<Peers, ProtocolStreamError, _>(stream.into_inner()).await?;
 
             let raw_peers = proto.peers;
+            let raw_count = raw_peers.len();
 
-            // Offload CPU-bound ECDSA validation to blocking thread pool.
+            // Charge the rate-limit on the raw wire count before any ECDSA
+            // work, so a flood of invalid signatures cannot bypass throttling
+            // by being filtered out.
+            if raw_count > 0 {
+                let cost = u32::try_from(raw_count).unwrap_or(u32::MAX);
+                if inbound_limit.try_consume_n(remote_peer_id, cost).is_err() {
+                    counter!(HIVE_PEERS_DISCARDED_TOTAL, "reason" => DISCARD_REASON_RATE_LIMITED)
+                        .increment(raw_count as u64);
+                    warn!(%remote_peer_id, raw_count, "hive: inbound rate limit exceeded");
+                    return Ok(ValidatedPeers { peers: Vec::new() });
+                }
+            }
+
+            // Bootnodes drop inbound gossip without validating it: the records
+            // would never be ingested anyway, so spending the per-batch ECDSA
+            // cost is pointless. The metric counts the raw wire peers, not the
+            // post-validation count.
+            if matches!(peer_handler.policy(), InboundPolicy::Discard) {
+                counter!(HIVE_PEERS_DISCARDED_TOTAL, "reason" => DISCARD_REASON_BOOTNODE_MODE)
+                    .increment(raw_count as u64);
+                debug!(%remote_peer_id, raw_count, "hive: bootnode discard");
+                return Ok(ValidatedPeers { peers: Vec::new() });
+            }
+
             let (peers, valid_count, invalid_count) =
                 validate_batch_blocking(raw_peers, network_id, local_overlay, cache).await;
 
-            // Hive-specific peer metrics
             counter!("hive_peers_received_total", "outcome" => "valid")
                 .increment(valid_count as u64);
             counter!("hive_peers_received_total", "outcome" => "invalid")
                 .increment(invalid_count as u64);
+            if invalid_count > 0 {
+                counter!(HIVE_PEERS_DISCARDED_TOTAL, "reason" => DISCARD_REASON_VERIFIER_REJECTED)
+                    .increment(invalid_count as u64);
+            }
             histogram!("hive_peers_per_exchange", "direction" => "inbound")
                 .record(valid_count as f64);
 

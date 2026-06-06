@@ -6,7 +6,9 @@ use std::{
     task::{Context, Poll},
 };
 
+use crate::HIVE_INBOUND_QUOTA;
 use crate::handler::{HiveCommand, HiveHandler, HiveHandlerEvent};
+use crate::peer_handler::{HivePeerHandler, LearnAndDial};
 use crate::protocol::{PeerCache, new_peer_cache};
 use libp2p::{
     Multiaddr, PeerId,
@@ -17,6 +19,7 @@ use libp2p::{
 };
 use strum::IntoStaticStr;
 use tracing::debug;
+use vertex_net_ratelimiter::KeyedRateLimiter;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_net_headers::ProtocolStreamError;
 use vertex_swarm_peer::SwarmPeer;
@@ -44,28 +47,49 @@ pub struct HiveBehaviour<I> {
     identity: Arc<I>,
     cache: PeerCache,
     events: VecDeque<ToSwarm<HiveEvent, HiveCommand>>,
+    /// Cloned into each per-connection handler so the protocol reader can
+    /// consult the inbound policy.
+    peer_handler: Arc<dyn HivePeerHandler>,
+    /// Shared with each handler so per-peer buckets survive reconnects but
+    /// are freed by [`Self::on_swarm_event`] on the final `ConnectionClosed`.
+    inbound_limit: Arc<KeyedRateLimiter<PeerId>>,
 }
 
 impl<I> HiveBehaviour<I>
 where
     I: SwarmIdentity + 'static,
 {
-    /// Create a new hive behaviour.
+    /// Construct with the default [`LearnAndDial`] inbound policy.
     pub fn new(identity: Arc<I>) -> Self {
+        Self::with_peer_handler(identity, Arc::new(LearnAndDial))
+    }
+
+    /// Construct with a custom inbound policy; use [`DiscardSilently`] for
+    /// bootnodes.
+    ///
+    /// [`DiscardSilently`]: crate::DiscardSilently
+    pub fn with_peer_handler(identity: Arc<I>, peer_handler: Arc<dyn HivePeerHandler>) -> Self {
         Self {
             identity,
             cache: new_peer_cache(),
             events: VecDeque::new(),
+            peer_handler,
+            inbound_limit: Arc::new(KeyedRateLimiter::new(HIVE_INBOUND_QUOTA)),
         }
     }
 
-    /// Broadcast peers to a specific connection.
+    /// Broadcast a batch of peers on an existing connection. The topology
+    /// already throttles broadcast cadence, so no outbound rate-limit is
+    /// applied here.
     pub fn broadcast(
         &mut self,
         peer_id: PeerId,
         connection_id: ConnectionId,
         peers: Vec<SwarmPeer>,
     ) {
+        if peers.is_empty() {
+            return;
+        }
         self.events.push_back(ToSwarm::NotifyHandler {
             peer_id,
             handler: NotifyHandler::One(connection_id),
@@ -92,6 +116,8 @@ where
             self.identity.clone(),
             peer,
             self.cache.clone(),
+            self.inbound_limit.clone(),
+            self.peer_handler.clone(),
         ))
     }
 
@@ -107,10 +133,21 @@ where
             self.identity.clone(),
             peer,
             self.cache.clone(),
+            self.inbound_limit.clone(),
+            self.peer_handler.clone(),
         ))
     }
 
-    fn on_swarm_event(&mut self, _event: FromSwarm) {}
+    fn on_swarm_event(&mut self, event: FromSwarm) {
+        if let FromSwarm::ConnectionClosed(closed) = event {
+            // Free the per-peer rate-limit bucket only when the last
+            // connection closes; an earlier clear would let a peer reset its
+            // bucket by churning a single connection.
+            if closed.remaining_established == 0 {
+                self.inbound_limit.clear(&closed.peer_id);
+            }
+        }
+    }
 
     fn on_connection_handler_event(
         &mut self,
@@ -120,7 +157,13 @@ where
     ) {
         match event {
             HiveHandlerEvent::PeersReceived(peers) => {
-                debug!(%peer_id, peer_count = peers.len(), "Hive: received peers");
+                // Rate-limit accounting and bootnode-mode discard already
+                // happened in the protocol reader. Empty batches reach us
+                // when those gates fired or all records failed validation;
+                // we have nothing to surface.
+                if peers.is_empty() {
+                    return;
+                }
                 self.events
                     .push_back(ToSwarm::GenerateEvent(HiveEvent::PeersReceived {
                         peer_id,
@@ -129,7 +172,7 @@ where
                     }));
             }
             HiveHandlerEvent::Error(error) => {
-                debug!(%peer_id, %error, "Hive: error");
+                debug!(%peer_id, %error, "hive error");
                 self.events
                     .push_back(ToSwarm::GenerateEvent(HiveEvent::Error {
                         peer_id,
@@ -148,5 +191,20 @@ where
             return Poll::Ready(event);
         }
         Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::peer_handler::{DiscardSilently, HivePeerHandler, InboundPolicy, LearnAndDial};
+
+    #[test]
+    fn discard_silently_returns_discard_policy() {
+        assert_eq!(DiscardSilently.policy(), InboundPolicy::Discard);
+    }
+
+    #[test]
+    fn learn_and_dial_returns_forward_policy() {
+        assert_eq!(LearnAndDial.policy(), InboundPolicy::Forward);
     }
 }

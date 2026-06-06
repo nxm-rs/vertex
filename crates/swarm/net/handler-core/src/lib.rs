@@ -9,9 +9,8 @@
 //! duplicating the same fields and logic.
 
 use std::collections::VecDeque;
-use std::time::Duration;
 
-use vertex_net_ratelimiter::RateLimiter;
+use vertex_net_ratelimiter::{Quota, RateLimiter};
 
 /// Shared core for protocol connection handlers.
 ///
@@ -27,11 +26,11 @@ pub struct HandlerCore<E> {
 }
 
 impl<E> HandlerCore<E> {
-    /// Create a new handler core with the given rate limiter configuration.
-    pub fn new(rate_limit_burst: u32, rate_limit_refill: Duration) -> Self {
+    /// Create a new handler core with the given rate-limit quota.
+    pub fn new(quota: Quota) -> Self {
         Self {
             pending_events: VecDeque::new(),
-            rate_limiter: RateLimiter::new(rate_limit_burst, rate_limit_refill),
+            rate_limiter: RateLimiter::new(quota),
             outbound_pending: false,
         }
     }
@@ -50,7 +49,7 @@ impl<E> HandlerCore<E> {
     ///
     /// Returns `true` if the stream should be accepted, `false` if rate-limited.
     pub fn try_accept_inbound(&mut self) -> bool {
-        self.rate_limiter.try_acquire()
+        self.rate_limiter.try_consume().is_ok()
     }
 
     /// Check whether an outbound request is currently in flight.
