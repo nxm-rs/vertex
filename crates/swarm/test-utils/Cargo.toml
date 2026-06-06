@@ -33,5 +33,22 @@ libp2p.workspace = true
 rand.workspace = true
 parking_lot.workspace = true
 
+# Cluster harness (gated by the `cluster` feature)
+vertex-swarm-node = { workspace = true, optional = true }
+vertex-swarm-topology = { workspace = true, optional = true }
+vertex-tasks = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["sync", "rt", "macros"] }
+eyre = { workspace = true, optional = true }
+
 [features]
 default = []
+# In-process multi-node cluster harness. Pulls in `vertex-swarm-node` and a
+# tokio runtime, so it's gated to keep crate-local tests of leaf primitives
+# fast and dependency-light.
+cluster = [
+    "dep:vertex-swarm-node",
+    "dep:vertex-swarm-topology",
+    "dep:vertex-tasks",
+    "dep:tokio",
+    "dep:eyre",
+]

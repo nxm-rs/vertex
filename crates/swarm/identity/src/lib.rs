@@ -25,6 +25,13 @@ pub use vertex_swarm_api::SwarmIdentity as IdentityTrait;
 ///
 /// Holds an `Arc<Spec>` for shared access to the network specification.
 /// Wrap in `Arc<Identity>` for sharing across components.
+///
+/// `Clone` is cheap: all heap state lives behind `Arc`, so cloning bumps
+/// reference counts only. This enables the integration harness (see
+/// `vertex-swarm-test-utils::cluster`) to construct a single persistent
+/// `Identity` and hand owned copies to each node builder, mirroring how a
+/// real bootnode reuses a stable keystore across restarts.
+#[derive(Clone)]
 pub struct Identity {
     spec: Arc<Spec>,
     signer: Arc<LocalSigner<SigningKey>>,
