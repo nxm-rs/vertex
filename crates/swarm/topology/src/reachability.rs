@@ -69,8 +69,8 @@ impl PeerReachability {
         matches!(self, Self::Private)
     }
 
-    /// Total order used by Unit 8's eviction policy: `Public` survives,
-    /// `Unknown` is neutral, `Private` is evicted first. Higher value = better.
+    /// Eviction ordering: higher rank survives. `Public` > `Unknown` >
+    /// `Private`.
     pub fn rank(&self) -> u8 {
         match self {
             Self::Public => 2,
@@ -316,21 +316,16 @@ impl ReachabilityTracker {
         }
     }
 
-    // ---------------------------------------------------------------------
-    // Consumer surface for Unit 8 (Kademlia eviction / saturation accounting)
-    // ---------------------------------------------------------------------
+    // Routing-layer consumer surface (eviction / saturation accounting).
 
-    /// Predicate used by the kademlia routing layer to exclude private peers
-    /// from saturation counts in non-neighborhood bins. Returns `true` if
-    /// `peer` should count toward bin capacity.
+    /// `true` if `peer` should count toward bin capacity; private peers are
+    /// excluded from saturation counts in non-neighborhood bins.
     pub fn counts_toward_saturation(&self, peer: &PeerId) -> bool {
         !self.status(peer).is_private()
     }
 
-    /// Comparator used by Unit 8's eviction policy: returns the **survivor**
-    /// of two peers, preferring [`PeerReachability::Public`]. Ties fall back
-    /// to the first argument; the caller can break further ties on score or
-    /// `last_seen`.
+    /// Pick the survivor of `a` and `b` by reachability rank. Ties prefer
+    /// `a`; the caller breaks further ties on score or `last_seen`.
     pub fn prefer_survivor<'a>(&self, a: &'a PeerId, b: &'a PeerId) -> &'a PeerId {
         let rank_a = self.status(a).rank();
         let rank_b = self.status(b).rank();
