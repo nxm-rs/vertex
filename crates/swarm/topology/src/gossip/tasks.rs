@@ -19,7 +19,7 @@ use vertex_swarm_net_handshake::{HandshakeBehaviour, HandshakeEvent, NoAddresses
 use vertex_swarm_net_identify as identify;
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_manager::PeerManager;
-use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress};
 use vertex_swarm_spec::Spec;
 
 use super::GossipInput;
@@ -620,7 +620,7 @@ impl<I: SwarmIdentity> GossipTask<I> {
             &self.local_overlay,
             &self.peer_manager,
             &self.connection_registry,
-            self.current_depth,
+            NeighborhoodDepth::new(Bin::new(self.current_depth).unwrap_or(Bin::MAX)),
         )
     }
 
@@ -632,7 +632,7 @@ impl<I: SwarmIdentity> GossipTask<I> {
         peer_selection::known_neighborhood_peers(
             &self.local_overlay,
             &self.peer_manager,
-            depth,
+            NeighborhoodDepth::new(Bin::new(depth).unwrap_or(Bin::MAX)),
             exclude,
         )
     }
@@ -861,7 +861,7 @@ mod tests {
             &state.ctx.local_overlay,
             &state.ctx.peer_manager,
             &state.ctx.connection_registry,
-            0,
+            NeighborhoodDepth::ZERO,
         );
         assert!(neighbors.is_empty());
     }

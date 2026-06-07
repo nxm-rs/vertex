@@ -44,6 +44,7 @@ Primitives and layer-2 constructs (chunks, addresses, BMT, manifests, feeds, pos
 
 - Treat `vertex-swarm-api` as the trait surface. New domain capabilities go in an api trait first, then in a concrete implementation crate.
 - Use `nectar-primitives` re-exports (`OverlayAddress`, `Bin`, `ProximityOrder`, `Nonce`, `Timestamp`) so the canonical types stay consistent across the workspace.
+- Keep the three proximity types distinct; do not collapse them to `u8` (the bee `po: u8` habit). `ProximityOrder` is the metric between two addresses (rank by closeness to a target); `Bin` is a peer's slot index in the local table (keys per-bin storage/iteration); `NeighborhoodDepth` is the boundary bin. Bridges: `Bin::from(po)` is the only `ProximityOrder -> Bin` conversion; `NeighborhoodDepth::{new, bin, contains}` are the only ways in/out of a depth. `NeighborhoodDepth` is intentionally NOT comparable with `Bin` - write `depth.contains(bin)`, never `bin >= depth`. Enumerate bins only via `all_bins`/`balanced_bins(depth)`/`neighborhood_bins(depth, max)`; extract `.get()` only at edges (logs, metrics, wire). Full rationale: `vertex-swarm-primitives` crate docs.
 - When `vertex-swarm-primitives` would host a new type that has no node dependency, push it upstream to `nectar` instead and re-export it here.
 - Error types are `thiserror` enums with `strum::IntoStaticStr` so they emit a `reason` label cleanly.
 - Use accounting units (AU) in bandwidth code. Never mix bytes, BZZ, and AU in the same struct field.

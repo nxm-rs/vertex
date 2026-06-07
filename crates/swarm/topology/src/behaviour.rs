@@ -33,7 +33,7 @@ use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_manager::{PeerManager, StoredPeer};
 use vertex_swarm_peer_score::PeerScore;
 use vertex_swarm_peer_score::SwarmScoringConfig;
-use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
+use vertex_swarm_primitives::{Bin, OverlayAddress, SwarmNodeType, all_bins};
 use vertex_swarm_spec::HasSpec;
 
 use crate::DialReason;
@@ -559,7 +559,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             debug!(
                 %peer_id,
                 overlay = %candidate.overlay,
-                bin = candidate.bin,
+                bin = candidate.bin.get(),
                 phase = ?candidate.phase,
                 "Evicting peer: bin overpopulated after depth change"
             );
@@ -589,17 +589,18 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     }
 
     /// Push routing gauges for a single bin and global totals.
-    pub(crate) fn push_routing_gauges(&self, po: u8) {
-        let po_str = po_label(po);
-        let (connected, known) = self.routing.bin_peer_counts(po);
-        let (dialing, handshaking, active) = self.routing.bin_phase_counts(po);
+    pub(crate) fn push_routing_gauges(&self, bin: Bin) {
+        // The metric label key stays "po" (the established observability name).
+        let label = po_label(bin.get());
+        let (connected, known) = self.routing.bin_peer_counts(bin);
+        let (dialing, handshaking, active) = self.routing.bin_phase_counts(bin);
 
-        metrics::gauge!("topology_bin_connected_peers", "po" => po_str).set(connected as f64);
-        metrics::gauge!("topology_bin_known_peers", "po" => po_str).set(known as f64);
-        metrics::gauge!("topology_bin_dialing", "po" => po_str).set(dialing as f64);
-        metrics::gauge!("topology_bin_handshaking", "po" => po_str).set(handshaking as f64);
-        metrics::gauge!("topology_bin_active", "po" => po_str).set(active as f64);
-        metrics::gauge!("topology_bin_effective", "po" => po_str)
+        metrics::gauge!("topology_bin_connected_peers", "po" => label).set(connected as f64);
+        metrics::gauge!("topology_bin_known_peers", "po" => label).set(known as f64);
+        metrics::gauge!("topology_bin_dialing", "po" => label).set(dialing as f64);
+        metrics::gauge!("topology_bin_handshaking", "po" => label).set(handshaking as f64);
+        metrics::gauge!("topology_bin_active", "po" => label).set(active as f64);
+        metrics::gauge!("topology_bin_effective", "po" => label)
             .set((dialing + handshaking + active) as f64);
     }
 
@@ -607,33 +608,33 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     pub(crate) fn push_bin_targets(&self) {
         let depth = self.routing.depth();
         let limits = self.routing.limits();
-        let bin_count = self.routing.bin_sizes().len();
 
-        for po in 0..bin_count {
-            let po_str = po_label(po as u8);
-            let target = limits.target(po as u8, depth);
+        for bin in all_bins(self.routing.max_bin()) {
+            let label = po_label(bin.get());
+            let target = limits.target(bin, depth);
             let target_val = if target == usize::MAX {
                 -1.0
             } else {
                 target as f64
             };
-            let ceiling_val = limits.ceiling(po as u8, depth);
+            let ceiling_val = limits.ceiling(bin, depth);
             let ceiling = if ceiling_val == usize::MAX {
                 -1.0
             } else {
                 ceiling_val as f64
             };
 
-            metrics::gauge!("topology_bin_target_peers", "po" => po_str).set(target_val);
-            metrics::gauge!("topology_bin_ceiling_peers", "po" => po_str).set(ceiling);
+            metrics::gauge!("topology_bin_target_peers", "po" => label).set(target_val);
+            metrics::gauge!("topology_bin_ceiling_peers", "po" => label).set(ceiling);
         }
 
         metrics::gauge!("topology_bin_nominal_peers").set(limits.nominal() as f64);
     }
 
-    /// Get the proximity order for a peer relative to our overlay address.
-    pub(crate) fn proximity(&self, peer: &OverlayAddress) -> u8 {
-        self.identity.overlay_address().proximity(peer).get()
+    /// The [`Bin`] a peer occupies in this node's table (its proximity order to
+    /// the local overlay).
+    pub(crate) fn bin_for(&self, peer: &OverlayAddress) -> Bin {
+        Bin::from(self.identity.overlay_address().proximity(peer))
     }
 
     /// Check if we can advertise to a peer based on address scope.
@@ -890,7 +891,7 @@ impl<I: SwarmIdentity + Clone> Drop for TopologyBehaviour<I> {
         info!(
             active_peers = active,
             pending_connections = pending,
-            depth,
+            depth = depth.get(),
             "Topology behaviour shutting down"
         );
     }

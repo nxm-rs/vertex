@@ -18,7 +18,7 @@ use vertex_net_peer_store::error::StoreError;
 use vertex_swarm_api::{SwarmIdentity, SwarmPeerResolver, SwarmScoreStore, SwarmSpec};
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_score::{PeerScore, ScoreCallbacks, SwarmScoringConfig};
-use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
+use vertex_swarm_primitives::{Bin, OverlayAddress, SwarmNodeType};
 
 use crate::entry::{
     HealthState, PeerEntry, StoredPeer, on_health_added, on_health_changed, on_health_removed,
@@ -255,11 +255,11 @@ impl<I: SwarmIdentity> PeerManager<I> {
 
     /// Get known storer overlays in a specific proximity bin (not banned).
     #[must_use]
-    pub fn storer_overlays_in_bin(&self, po: u8, count: usize) -> Vec<OverlayAddress> {
+    pub fn storer_overlays_in_bin(&self, bin: Bin, count: usize) -> Vec<OverlayAddress> {
         let mut result = Vec::new();
         let mut cold_candidates = Vec::new();
 
-        self.index.filter_bin(po, count + count, |overlay| {
+        self.index.filter_bin(bin, count + count, |overlay| {
             if self.banned_set.contains(overlay) {
                 return false;
             }
@@ -318,11 +318,11 @@ impl<I: SwarmIdentity> PeerManager<I> {
     }
 
     /// Get dialable overlay addresses from a specific bin (not banned, not in backoff).
-    pub fn dialable_overlays_in_bin(&self, po: u8, count: usize) -> Vec<OverlayAddress> {
+    pub fn dialable_overlays_in_bin(&self, bin: Bin, count: usize) -> Vec<OverlayAddress> {
         let mut result = Vec::new();
         let mut cold_candidates = Vec::new();
 
-        self.index.filter_bin(po, count + count, |overlay| {
+        self.index.filter_bin(bin, count + count, |overlay| {
             if self.banned_set.contains(overlay) {
                 return false;
             }
@@ -352,8 +352,8 @@ impl<I: SwarmIdentity> PeerManager<I> {
     }
 
     /// Get dialable peers from a specific bin (not banned, not in backoff).
-    pub fn dialable_in_bin(&self, po: u8, count: usize) -> Vec<SwarmPeer> {
-        let overlays = self.dialable_overlays_in_bin(po, count);
+    pub fn dialable_in_bin(&self, bin: Bin, count: usize) -> Vec<SwarmPeer> {
+        let overlays = self.dialable_overlays_in_bin(bin, count);
         self.get_swarm_peers(&overlays)
     }
 
@@ -861,7 +861,7 @@ mod tests {
 
         pm.ban(&p1, None);
 
-        let dialable = pm.dialable_in_bin(0, 2);
+        let dialable = pm.dialable_in_bin(Bin::new(0).unwrap(), 2);
         assert_eq!(dialable.len(), 2);
     }
 

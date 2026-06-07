@@ -11,7 +11,7 @@ use vertex_swarm_api::{
 };
 use vertex_swarm_net_identify as identify;
 use vertex_swarm_peer_manager::PeerManager;
-use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress};
 
 use crate::behaviour::ConnectionRegistry;
 use crate::events::TopologyEvent;
@@ -104,7 +104,7 @@ impl<I: SwarmIdentity> SwarmTopologyState for TopologyHandle<I> {
         &self.identity
     }
 
-    fn depth(&self) -> u8 {
+    fn depth(&self) -> NeighborhoodDepth {
         self.routing.depth()
     }
 }
@@ -114,22 +114,22 @@ impl<I: SwarmIdentity> SwarmTopologyRouting for TopologyHandle<I> {
         self.routing.closest_to(address, count)
     }
 
-    fn neighbors(&self, depth: u8) -> Vec<OverlayAddress> {
+    fn neighbors(&self, depth: NeighborhoodDepth) -> Vec<OverlayAddress> {
         self.routing.neighbors(depth)
     }
 }
 
 impl<I: SwarmIdentity> SwarmTopologyPeers for TopologyHandle<I> {
-    fn connected_peers_in_bin(&self, po: u8) -> Vec<OverlayAddress> {
-        self.routing.connected_overlays_in_bin(po)
+    fn connected_peers_in_bin(&self, bin: Bin) -> Vec<OverlayAddress> {
+        self.routing.connected_overlays_in_bin(bin)
     }
 
     fn connected_peer_details_in_bin(
         &self,
-        po: u8,
+        bin: Bin,
     ) -> Vec<(OverlayAddress, Vec<libp2p::Multiaddr>)> {
         self.routing
-            .connected_overlays_in_bin(po)
+            .connected_overlays_in_bin(bin)
             .into_iter()
             .map(|overlay| {
                 let multiaddrs = self
@@ -219,7 +219,7 @@ pub struct RoutingStats {
 
 #[derive(Debug, Clone)]
 pub struct BinStats {
-    pub po: u8,
+    pub bin: u8,
     pub connected: usize,
     pub known: usize,
     pub dialing: usize,
@@ -243,15 +243,16 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
         let bins: Vec<BinStats> = bin_sizes
             .iter()
             .enumerate()
-            .map(|(po, (connected, known))| {
+            .map(|(idx, (connected, known))| {
+                let bin = Bin::new(idx as u8).unwrap_or(Bin::MAX);
                 let (dialing, handshaking, active) = bin_phases
-                    .get(po)
+                    .get(idx)
                     .map(|(_, d, h, a)| (*d, *h, *a))
                     .unwrap_or((0, 0, 0));
-                let target = limits.target(po as u8, depth);
-                let ceiling = limits.ceiling(po as u8, depth);
+                let target = limits.target(bin, depth);
+                let ceiling = limits.ceiling(bin, depth);
                 BinStats {
-                    po: po as u8,
+                    bin: idx as u8,
                     connected: *connected,
                     known: *known,
                     dialing,
@@ -266,7 +267,7 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
 
         RoutingStats {
             bins,
-            depth,
+            depth: depth.get(),
             known_peers_total: self.routing.known_peers_total(),
             connected_peers_total: self.routing.connected_peers_total(),
         }

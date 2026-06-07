@@ -66,6 +66,15 @@ impl KademliaConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vertex_swarm_primitives::{Bin, NeighborhoodDepth};
+
+    fn b(n: u8) -> Bin {
+        Bin::new(n).expect("valid bin")
+    }
+
+    fn d(n: u8) -> NeighborhoodDepth {
+        NeighborhoodDepth::new(b(n))
+    }
 
     #[test]
     fn test_config_default() {
@@ -94,9 +103,9 @@ mod tests {
         // Headroom is internal; verify depth-aware behavior works
         // At depth 8, bin 7 target = 35. With headroom 8, ceiling = 43.
         // At target + 7 = 42, should still accept inbound
-        assert!(config.limits.should_accept_inbound(7, 8, 35 + 7));
+        assert!(config.limits.should_accept_inbound(b(7), d(8), 35 + 7));
         // At target + 8 = 43, should not accept
-        assert!(!config.limits.should_accept_inbound(7, 8, 35 + 8));
+        assert!(!config.limits.should_accept_inbound(b(7), d(8), 35 + 8));
     }
 
     #[test]

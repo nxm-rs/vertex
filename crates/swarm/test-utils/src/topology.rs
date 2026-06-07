@@ -7,7 +7,7 @@ use vertex_swarm_api::{
     SwarmTopologyState, SwarmTopologyStats,
 };
 use vertex_swarm_identity::Identity;
-use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress};
 
 use crate::test_identity_arc;
 
@@ -128,8 +128,8 @@ impl SwarmTopologyState for MockTopology {
         self.identity.as_ref()
     }
 
-    fn depth(&self) -> u8 {
-        self.depth
+    fn depth(&self) -> NeighborhoodDepth {
+        NeighborhoodDepth::new(Bin::new(self.depth).unwrap_or(Bin::MAX))
     }
 }
 
@@ -138,19 +138,19 @@ impl SwarmTopologyRouting for MockTopology {
         Vec::new()
     }
 
-    fn neighbors(&self, _depth: u8) -> Vec<OverlayAddress> {
+    fn neighbors(&self, _depth: NeighborhoodDepth) -> Vec<OverlayAddress> {
         Vec::new()
     }
 }
 
 impl SwarmTopologyPeers for MockTopology {
-    fn connected_peers_in_bin(&self, _po: u8) -> Vec<OverlayAddress> {
+    fn connected_peers_in_bin(&self, _po: Bin) -> Vec<OverlayAddress> {
         Vec::new()
     }
 
     fn connected_peer_details_in_bin(
         &self,
-        _po: u8,
+        _po: Bin,
     ) -> Vec<(OverlayAddress, Vec<libp2p::Multiaddr>)> {
         Vec::new()
     }
@@ -185,7 +185,7 @@ mod tests {
         assert_eq!(topo.connected_peers_count(), 0);
         assert_eq!(topo.routing_peers_count(), 0);
         assert_eq!(topo.stored_peers_count(), 0);
-        assert_eq!(topo.depth(), 0);
+        assert_eq!(topo.depth().get(), 0);
     }
 
     #[test]
@@ -194,7 +194,7 @@ mod tests {
 
         assert_eq!(topo.connected_peers_count(), 10);
         assert_eq!(topo.routing_peers_count(), 50);
-        assert_eq!(topo.depth(), 4);
+        assert_eq!(topo.depth().get(), 4);
     }
 
     #[test]
@@ -208,7 +208,7 @@ mod tests {
         assert_eq!(topo.connected_peers_count(), 5);
         assert_eq!(topo.routing_peers_count(), 20);
         assert_eq!(topo.stored_peers_count(), 100);
-        assert_eq!(topo.depth(), 3);
+        assert_eq!(topo.depth().get(), 3);
     }
 
     #[test]
@@ -225,8 +225,8 @@ mod tests {
     fn test_swarm_topology_trait() {
         let topo = MockTopology::new(5, 10, 2);
 
-        assert_eq!(topo.depth(), 2);
-        assert!(topo.neighbors(0).is_empty());
+        assert_eq!(topo.depth().get(), 2);
+        assert!(topo.neighbors(NeighborhoodDepth::ZERO).is_empty());
         assert_eq!(topo.bin_sizes().len(), 32);
     }
 }

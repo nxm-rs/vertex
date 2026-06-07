@@ -21,6 +21,7 @@ use eyre::Result;
 use libp2p::PeerId;
 use tokio::time::timeout;
 use vertex_swarm_api::{SwarmTopologyPeers as _, SwarmTopologyState as _, SwarmTopologyStats as _};
+use vertex_swarm_primitives::{Bin, NeighborhoodDepth, all_bins};
 use vertex_swarm_test_utils::cluster::{ClusterBuilder, NodeRole};
 use vertex_swarm_topology::TopologyEvent;
 
@@ -130,7 +131,7 @@ async fn three_node_convergence() -> Result<()> {
     // progress.
     // ──────────────────────────────────────────────────────────────────
     for (idx, client) in clients.iter().enumerate() {
-        let knows_bootnode = (0u8..=31)
+        let knows_bootnode = all_bins(Bin::MAX)
             .flat_map(|po| client.topology.connected_peers_in_bin(po))
             .any(|peer| peer == bootnode_overlay);
         assert!(
@@ -151,20 +152,18 @@ async fn three_node_convergence() -> Result<()> {
     // With N=2 random overlays plus the bootnode's, all three nodes sit in
     // small proximity orders (random bits = bin 0/1 with overwhelming
     // probability). The recompute formula treats every connected peer at
-    // small PO as outside the neighborhood, so depth pins at 0.
-    //
-    // Once a typed `NeighborhoodDepth` newtype lands in vertex's routing
-    // layer (see issue #134), this should become
-    // `assert_eq!(depth, NeighborhoodDepth::from_raw(0))`.
+    // small PO as outside the neighborhood, so depth pins at the zero bin.
     let bootnode_depth = bootnode_topo.depth();
     assert_eq!(
-        bootnode_depth, 0,
+        bootnode_depth,
+        NeighborhoodDepth::ZERO,
         "bootnode kademlia depth should be 0 with two small-PO peers, got {bootnode_depth}"
     );
     for (idx, client) in clients.iter().enumerate() {
         let depth = client.topology.depth();
         assert_eq!(
-            depth, 0,
+            depth,
+            NeighborhoodDepth::ZERO,
             "client {idx} kademlia depth should be 0 (small-PO peers only), got {depth}"
         );
     }

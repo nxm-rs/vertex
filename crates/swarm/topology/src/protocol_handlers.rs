@@ -69,7 +69,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             %peer_id,
             %overlay,
             ?node_type,
-            po = self.proximity(&overlay),
+            bin = self.bin_for(&overlay).get(),
             "Handshake completed"
         );
 
@@ -210,21 +210,21 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             .reachability()
             .update_from_handshake(peer_id, true);
 
-        let po = self.proximity(&overlay);
+        let bin = self.bin_for(&overlay);
 
         let old_depth = self.routing.depth();
         self.routing.connected(overlay);
         let new_depth = self.routing.depth();
 
         // Push event-driven routing gauges for the affected bin
-        self.push_routing_gauges(po);
+        self.push_routing_gauges(bin);
 
         if new_depth != old_depth {
             self.push_bin_targets();
-            self.gossip.send(GossipInput::DepthChanged(new_depth));
+            self.gossip.send(GossipInput::DepthChanged(new_depth.get()));
             self.emit_event(TopologyEvent::DepthChanged {
-                old_depth,
-                new_depth,
+                old_depth: old_depth.get(),
+                new_depth: new_depth.get(),
             });
             if new_depth > old_depth {
                 self.trim_overpopulated_bins();
