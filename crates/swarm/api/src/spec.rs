@@ -7,6 +7,21 @@ use nectar_primitives::{ChunkTypeSet, NetworkId};
 use nectar_swarms::{NamedSwarm, Swarm};
 use vertex_swarm_forks::{ForkCondition, ForkDigest, SwarmHardfork, SwarmHardforks};
 
+/// Default per-bin saturation target driving the neighborhood-depth frontier.
+///
+/// A bin with fewer than this many connected peers marks the shallowest
+/// unsaturated frontier in [`recompute_neighborhood_depth`]. Matches the live
+/// reference network so depth tracks node-for-node.
+///
+/// [`recompute_neighborhood_depth`]: nectar_primitives::recompute_neighborhood_depth
+pub const DEFAULT_SATURATION_PEERS: u8 = 8;
+
+/// Default cumulative count of peers in the deepest bins anchoring the
+/// neighborhood in [`recompute_neighborhood_depth`].
+///
+/// [`recompute_neighborhood_depth`]: nectar_primitives::recompute_neighborhood_depth
+pub const DEFAULT_NEIGHBORHOOD_LOW_WATERMARK: u8 = 3;
+
 /// Parser for Swarm network specifications.
 ///
 /// Handles both preset names ("mainnet", "testnet") and file paths via a single
@@ -143,6 +158,24 @@ pub trait SwarmSpec: Send + Sync + 'static {
     /// Returns the maximum proximity order for addresses in this network.
     fn max_po(&self) -> u8 {
         nectar_primitives::MAX_PO
+    }
+
+    /// Per-bin saturation target driving the neighborhood-depth frontier.
+    ///
+    /// Passed as the `saturation` argument to
+    /// [`nectar_primitives::recompute_neighborhood_depth`]: the shallowest bin
+    /// holding fewer than this many connected peers caps the depth.
+    fn saturation_peers(&self) -> u8 {
+        DEFAULT_SATURATION_PEERS
+    }
+
+    /// Minimum cumulative count of peers in the deepest bins that anchors the
+    /// neighborhood.
+    ///
+    /// Passed as the `low_watermark` argument to
+    /// [`nectar_primitives::recompute_neighborhood_depth`].
+    fn neighborhood_low_watermark(&self) -> u8 {
+        DEFAULT_NEIGHBORHOOD_LOW_WATERMARK
     }
 
     /// Returns whether this is a development network.
