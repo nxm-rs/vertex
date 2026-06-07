@@ -12,6 +12,16 @@ const DEFAULT_TOTAL_TARGET: usize = 160;
 /// Default ceiling for inbound connections above target.
 pub(crate) const DEFAULT_INBOUND_HEADROOM: usize = 4;
 
+/// Default per-bin fill target during bootstrap (`depth == 0`).
+///
+/// Before a neighborhood is established every bin is filled aggressively toward
+/// this bound so bins reach the saturation frontier quickly and depth can climb.
+/// Must be `>= SwarmSpec::saturation_peers()` or depth can never advance past 0.
+/// Bounded (not `usize::MAX`) so a node that has not yet established a
+/// neighborhood cannot be flooded by inbound connections. Matches the reference
+/// network's oversaturation level.
+pub(crate) const DEFAULT_BOOTSTRAP_TARGET: usize = 18;
+
 /// Depth-aware peer allocation with linear tapering across Kademlia bins.
 ///
 /// Stateless: callers provide depth explicitly to avoid dual-source-of-truth bugs.
@@ -21,6 +31,8 @@ pub(crate) struct DepthAwareLimits {
     /// Minimum peers per bin.
     nominal: usize,
     inbound_headroom: usize,
+    /// Per-bin fill target during bootstrap (`depth == 0`).
+    bootstrap_target: usize,
 }
 
 impl Default for DepthAwareLimits {
@@ -36,6 +48,7 @@ impl DepthAwareLimits {
             total_target,
             nominal,
             inbound_headroom: DEFAULT_INBOUND_HEADROOM,
+            bootstrap_target: DEFAULT_BOOTSTRAP_TARGET,
         }
     }
 
@@ -58,8 +71,11 @@ impl DepthAwareLimits {
     /// Target for bin at depth. Returns `usize::MAX` for neighborhood bins (>= depth).
     pub(crate) fn target(&self, bin: u8, depth: u8) -> usize {
         if depth == 0 {
-            // No depth yet - use nominal for all bins
-            return self.nominal;
+            // Bootstrap: no neighborhood established yet. Fill every bin
+            // aggressively toward `bootstrap_target` so bins reach the
+            // saturation frontier quickly and depth can climb. Bounded so a
+            // not-yet-established node cannot be flooded by inbound.
+            return self.bootstrap_target;
         }
 
         if bin >= depth {
@@ -148,6 +164,12 @@ impl DepthAwareLimits {
 
 #[cfg(test)]
 impl DepthAwareLimits {
+    /// Set the per-bin bootstrap fill target used while `depth == 0`.
+    pub(crate) fn with_bootstrap_target(mut self, target: usize) -> Self {
+        self.bootstrap_target = target;
+        self
+    }
+
     /// Expected available peers in bin (exponential estimate from uniform distribution).
     pub(crate) fn expected_available(&self, bin: u8, depth: u8) -> usize {
         if depth == 0 || bin >= depth {
@@ -361,10 +383,11 @@ mod tests {
     fn test_zero_depth() {
         let limits = DepthAwareLimits::new(160, 3);
 
-        // All bins return nominal when depth is 0
-        assert_eq!(limits.target(0, 0), 3);
-        assert_eq!(limits.target(7, 0), 3);
-        assert_eq!(limits.target(31, 0), 3);
+        // All bins fill toward bootstrap_target when depth is 0 (aggressive
+        // bootstrap so bins reach the saturation frontier and depth can climb).
+        assert_eq!(limits.target(0, 0), DEFAULT_BOOTSTRAP_TARGET);
+        assert_eq!(limits.target(7, 0), DEFAULT_BOOTSTRAP_TARGET);
+        assert_eq!(limits.target(31, 0), DEFAULT_BOOTSTRAP_TARGET);
     }
 
     #[test]
@@ -428,9 +451,13 @@ mod tests {
     fn test_target_effective() {
         let limits = DepthAwareLimits::new(160, 3);
 
-        // With no known peers and connected depth 0, target_effective returns nominal
+        // With no known peers and connected depth 0, target_effective falls
+        // back to the depth-0 bootstrap target.
         let empty: Vec<usize> = vec![0; 32];
-        assert_eq!(limits.target_effective(5, 0, &empty), 3);
+        assert_eq!(
+            limits.target_effective(5, 0, &empty),
+            DEFAULT_BOOTSTRAP_TARGET
+        );
 
         // With known peers estimating depth 5, get proper allocation
         let mut known = vec![0; 32];
@@ -497,12 +524,13 @@ mod tests {
     #[test]
     fn test_surplus_at_depth_zero() {
         let limits = DepthAwareLimits::new(160, 3);
-        // depth = 0: all bins use nominal (3) as target
+        // depth = 0: all bins fill toward bootstrap_target (18); no surplus
+        // below it. (Eviction never runs at depth 0 anyway - it scans 0..depth.)
 
         assert_eq!(limits.surplus(0, 0, 2), 0);
-        assert_eq!(limits.surplus(0, 0, 3), 0);
-        assert_eq!(limits.surplus(0, 0, 5), 2);
-        assert_eq!(limits.surplus(7, 0, 10), 7);
+        assert_eq!(limits.surplus(0, 0, 18), 0);
+        assert_eq!(limits.surplus(0, 0, 20), 2);
+        assert_eq!(limits.surplus(7, 0, 25), 7);
     }
 
     #[test]

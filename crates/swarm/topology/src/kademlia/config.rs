@@ -55,6 +55,12 @@ impl KademliaConfig {
             ..Default::default()
         }
     }
+
+    /// Set the per-bin bootstrap fill target used while `depth == 0`.
+    pub(crate) fn with_bootstrap_target(mut self, target: usize) -> Self {
+        self.limits = self.limits.with_bootstrap_target(target);
+        self
+    }
 }
 
 #[cfg(test)]

@@ -14,7 +14,7 @@ use super::{
     select_neighborhood_candidates,
 };
 use crate::metrics::{phase, record_phase_transition};
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{ChunkAddress, recompute_neighborhood_depth};
 use parking_lot::RwLock;
 use tracing::{debug, info, trace};
 use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
@@ -176,13 +176,28 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         }
     }
 
+    /// Recompute neighborhood depth from the connected-peer bin distribution.
+    ///
+    /// Delegates to [`recompute_neighborhood_depth`], the canonical port that
+    /// walks shallow to deep to find the unsaturated frontier and then anchors
+    /// the neighborhood by the low watermark. Crucially this caps depth at the
+    /// shallowest empty or unsaturated bin, so a gap below the deepest populated
+    /// bin pulls depth shallower rather than reporting a too-deep neighborhood.
     fn recalc_depth(&self) -> u8 {
-        for po in (0..=self.max_po).rev() {
-            if self.connected_peers.bin_size(po) >= self.config.limits.nominal() {
-                return po;
-            }
+        let spec = self.identity.spec();
+        let sizes = self.connected_peers.bin_sizes();
+        let mut counts = [0u8; 32];
+        for (slot, size) in counts.iter_mut().zip(sizes) {
+            *slot = u8::try_from(size).unwrap_or(u8::MAX);
         }
-        0
+
+        recompute_neighborhood_depth(
+            &counts,
+            spec.saturation_peers(),
+            spec.neighborhood_low_watermark(),
+        )
+        .get()
+        .min(self.max_po)
     }
 
     /// Log the current routing status showing bin populations.
@@ -684,15 +699,18 @@ mod tests {
     #[test]
     fn test_capacity_reserve_and_release() {
         let base = SwarmAddress::with_first_byte(0x00);
-        // With depth 0, all bins use nominal (3) as target
-        let config = KademliaConfig::default().with_nominal(2);
+        // Pin the depth-0 bootstrap target to 2 so the capacity mechanism is
+        // exercised with small numbers (default bootstrap fill is generous).
+        let config = KademliaConfig::default()
+            .with_nominal(2)
+            .with_bootstrap_target(2);
         let (routing, _pm) = make_routing(base, config);
 
         let peer1 = SwarmAddress::with_first_byte(0x80); // po=0
         let peer2 = SwarmAddress::with_first_byte(0xc0); // po=0
         let peer3 = SwarmAddress::with_first_byte(0xa0); // po=0
 
-        // First reserve succeeds (effective=0 < nominal=2)
+        // First reserve succeeds (effective=0 < target=2)
         assert!(routing.try_reserve_dial(&peer1, SwarmNodeType::Storer));
 
         // Second reserve succeeds (effective=1 < nominal=2)
@@ -756,26 +774,67 @@ mod tests {
         assert!(pm.index().exists(&peer));
     }
 
+    /// Build an overlay at exactly proximity order `bin` to base `0x00`,
+    /// disambiguated by `idx` in a deep byte (does not affect proximity order).
+    fn addr_in_bin(bin: u8, idx: u8) -> OverlayAddress {
+        let mut b = [0u8; 32];
+        b[(bin / 8) as usize] = 0x80 >> (bin % 8);
+        b[31] = idx;
+        OverlayAddress::from(b)
+    }
+
     #[test]
-    fn test_depth_calculation() {
+    fn test_depth_stays_zero_below_saturation() {
+        // A handful of peers in one mid bin, everything shallower empty. The
+        // depth frontier is the shallowest unsaturated bin (0), so depth stays
+        // 0 - the corrected algorithm does not jump to the deepest populated
+        // bin the way the old deepest-bin scan did.
         let base = SwarmAddress::with_first_byte(0x00);
-        let config = KademliaConfig::default().with_nominal(2);
-        let (routing, _pm) = make_routing(base, config);
+        let (routing, _pm) = make_routing(base, KademliaConfig::default());
 
         assert_eq!(routing.depth(), 0);
+        for idx in 0..2 {
+            SwarmRouting::connected(&*routing, addr_in_bin(5, idx));
+        }
+        assert_eq!(routing.depth(), 0);
+    }
 
-        let mut peer_bytes1 = [0x00u8; 32];
-        peer_bytes1[0] = 0x04;
-        let peer1 = OverlayAddress::from(peer_bytes1);
+    #[test]
+    fn test_depth_caps_at_gap() {
+        // Regression for the deepest-bin bug: bin 0 is saturated, bins 1..8 are
+        // empty, and bin 8 holds several peers. The old scan reported depth 8;
+        // the corrected algorithm caps depth at the shallowest unsaturated bin
+        // (bin 1, just past the saturated frontier at bin 0).
+        let base = SwarmAddress::with_first_byte(0x00);
+        let (routing, _pm) = make_routing(base, KademliaConfig::default());
 
-        let mut peer_bytes2 = [0x00u8; 32];
-        peer_bytes2[0] = 0x05;
-        let peer2 = OverlayAddress::from(peer_bytes2);
+        for idx in 0..8 {
+            SwarmRouting::connected(&*routing, addr_in_bin(0, idx));
+        }
+        for idx in 0..5 {
+            SwarmRouting::connected(&*routing, addr_in_bin(8, idx));
+        }
 
-        SwarmRouting::connected(&*routing, peer1);
-        SwarmRouting::connected(&*routing, peer2);
+        assert_eq!(routing.depth(), 1, "gap below the deep bin must cap depth");
+    }
 
-        assert_eq!(routing.depth(), 5);
+    #[test]
+    fn test_depth_climbs_with_saturated_bins() {
+        // Bins 0,1,2 saturated (>= 8) with bin 3 holding the low-watermark (3)
+        // anchors the neighborhood at bin 3.
+        let base = SwarmAddress::with_first_byte(0x00);
+        let (routing, _pm) = make_routing(base, KademliaConfig::default());
+
+        for bin in 0..3 {
+            for idx in 0..8 {
+                SwarmRouting::connected(&*routing, addr_in_bin(bin, idx));
+            }
+        }
+        for idx in 0..3 {
+            SwarmRouting::connected(&*routing, addr_in_bin(3, idx));
+        }
+
+        assert_eq!(routing.depth(), 3);
     }
 
     #[test]
@@ -830,10 +889,11 @@ mod tests {
     #[test]
     fn test_inbound_capacity() {
         let base = SwarmAddress::with_first_byte(0x00);
-        // With nominal=2 and headroom=0, inbound ceiling = 2
+        // With bootstrap target 2 and headroom 0, depth-0 inbound ceiling = 2
         let config = KademliaConfig::default()
             .with_nominal(2)
-            .with_inbound_headroom(0);
+            .with_inbound_headroom(0)
+            .with_bootstrap_target(2);
         let (routing, _pm) = make_routing(base, config);
 
         let peer1 = SwarmAddress::with_first_byte(0x80);
@@ -870,9 +930,9 @@ mod tests {
         let config = KademliaConfig::default();
         let (routing, _pm) = make_routing(base, config);
 
-        // Initially depth=0, all bins should use nominal
-        assert_eq!(routing.config.limits.target(0, 0), 3);
-        assert_eq!(routing.config.limits.target(7, 0), 3);
+        // Initially depth=0, all bins fill toward the bootstrap target
+        assert_eq!(routing.config.limits.target(0, 0), 18);
+        assert_eq!(routing.config.limits.target(7, 0), 18);
 
         // At depth 8, targets should vary by bin
         // Bin 7: 160 × 8 / 36 = 35
@@ -995,38 +1055,35 @@ mod tests {
     #[test]
     fn test_eviction_candidates_neighborhood_never_evicted() {
         let base = SwarmAddress::with_first_byte(0x00);
-        let config = KademliaConfig::default().with_nominal(1);
+        // Small total target so below-depth bins overflow their tapered target
+        // and actually yield eviction candidates.
+        let config = KademliaConfig::default().with_total_target(8);
         let (routing, _pm) = make_routing(base, config);
 
-        // Create peers in bin 5 (which will become neighborhood bin)
-        let peer1 = {
-            let mut bytes = [0x00u8; 32];
-            bytes[0] = 0x04;
-            OverlayAddress::from(bytes)
-        };
-        let peer2 = {
-            let mut bytes = [0x00u8; 32];
-            bytes[0] = 0x05;
-            OverlayAddress::from(bytes)
-        };
-        let peer3 = {
-            let mut bytes = [0x00u8; 32];
-            bytes[0] = 0x06;
-            OverlayAddress::from(bytes)
-        };
-
-        for peer in [peer1, peer2, peer3] {
+        let connect = |peer: OverlayAddress| {
             routing.try_reserve_dial(&peer, SwarmNodeType::Storer);
             routing.dial_connected(&peer);
             routing.handshake_completed(&peer);
             SwarmRouting::connected(&*routing, peer);
+        };
+
+        // Saturate bins 0 and 1 (>= saturation) and anchor bin 2 with the low
+        // watermark so depth climbs to 2; bin 2 is then a neighborhood bin.
+        for bin in 0..2 {
+            for idx in 0..8 {
+                connect(addr_in_bin(bin, idx));
+            }
+        }
+        for idx in 0..6 {
+            connect(addr_in_bin(2, idx));
         }
 
-        // With nominal=1 and 3 peers in bin 5, depth should be 5
-        // Bin 5 is neighborhood (>= depth), so no eviction
-        assert!(routing.depth() >= 5);
+        assert_eq!(routing.depth(), 2);
+
         let candidates = routing.eviction_candidates();
-        // Only bins < depth produce candidates; bins >= depth are neighborhood
+        // Below-depth bins (0, 1) overflow their small target; the neighborhood
+        // bin (2) never produces candidates regardless of its population.
+        assert!(!candidates.is_empty());
         for c in &candidates {
             assert!(
                 c.bin < routing.depth(),
