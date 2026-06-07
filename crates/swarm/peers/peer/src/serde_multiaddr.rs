@@ -2,7 +2,7 @@
 //!
 //! Handles single addresses (raw bytes) and multiple addresses (0x99 prefix + varint lengths).
 //!
-//! BEE-COMPAT(TBD): the `0x99`-prefixed multi-multiaddr block is a custom byte
+//! BEE-COMPAT(SWIP-148): the `0x99`-prefixed multi-multiaddr block is a custom byte
 //! layout jammed into a protobuf `bytes` field. Required for v1 wire
 //! conformance; a SWIP candidate should replace it with `repeated bytes`. See
 //! `docs/agents/swarm-protocol.md` ("Wire-compat shims and SWIPs").
@@ -14,7 +14,7 @@ use std::io::{Cursor, Read};
 /// Magic byte prefix for lists of multiple multiaddrs.
 /// Chosen because 0x99 is not a valid multiaddr protocol code.
 ///
-/// BEE-COMPAT(TBD): see module docs.
+/// BEE-COMPAT(SWIP-148): see module docs.
 const MULTIADDR_LIST_PREFIX: u8 = 0x99;
 
 /// Serialize multiaddrs to bytes.
