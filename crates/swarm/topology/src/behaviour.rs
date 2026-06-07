@@ -58,13 +58,21 @@ use crate::nat_discovery::LocalAddressManager;
 /// Type-erased peer store supporting both file-based and database-backed storage.
 type PeerStore = Arc<dyn NetPeerStore<StoredPeer>>;
 
-/// Default interval between connection evaluation rounds.
+/// Default interval between connection-evaluation rounds.
+///
+/// Each round reconsiders which bins are under target and issues new dials.
+/// Shorter wastes work on a stable table; longer slows convergence after churn.
 pub const DEFAULT_DIAL_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Post-handshake connections shorter than this are penalized as early disconnects.
+/// Post-handshake connections shorter than this are penalized as early
+/// disconnects, so a peer that repeatedly connects and immediately leaves is
+/// scored down.
 const DEFAULT_EARLY_DISCONNECT_THRESHOLD: Duration = Duration::from_secs(30);
 
 /// Default interval between periodic peer saves to persistent storage.
+///
+/// Trades store-write frequency against how many freshly learned peers a crash
+/// can lose.
 const DEFAULT_PEER_SAVE_INTERVAL: Duration = Duration::from_secs(300);
 
 /// Event broadcast buffer (256 allows burst without blocking poll loop).

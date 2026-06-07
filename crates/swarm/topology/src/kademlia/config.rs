@@ -1,8 +1,19 @@
 //! Kademlia routing configuration.
+//!
+//! [`KademliaConfig`] bundles the depth-aware per-bin targets (see the `limits`
+//! module) with the per-round candidate budget. Each connection-evaluation round
+//! selects at most `max_neighbor_candidates + max_balanced_candidates` new peers
+//! to dial, split between the neighborhood (depth) bins and the balanced
+//! (non-depth) bins below them. The 16 / 16 default gives a 32-candidate budget
+//! per round, roughly one slot per Kademlia bin, so a single round can make
+//! progress on every bin without flooding the dialer. The depth-aware targets,
+//! not this budget, decide how many candidates actually become connections.
 
 use super::limits::DepthAwareLimits;
 
+/// Max new neighborhood (depth-bin) candidates enqueued per evaluation round.
 const DEFAULT_MAX_NEIGHBOR_CANDIDATES: usize = 16;
+/// Max new balanced (non-depth-bin) candidates enqueued per evaluation round.
 const DEFAULT_MAX_BALANCED_CANDIDATES: usize = 16;
 
 /// Configuration for Kademlia routing.

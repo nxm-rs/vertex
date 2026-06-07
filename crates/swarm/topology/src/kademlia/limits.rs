@@ -5,13 +5,18 @@
 
 use vertex_swarm_primitives::{Bin, NeighborhoodDepth};
 
-/// Default minimum peers per bin (floor for depth calculation).
+/// Default minimum peers per bin (floor for the linear taper and for depth
+/// estimation). A bin is considered populated once it holds this many peers.
 const DEFAULT_NOMINAL: usize = 3;
 
-/// Default total connected peer target.
+/// Default total connected-peer target across all bins. The linear taper
+/// distributes this budget, weighting bins closer to the neighborhood more
+/// heavily where peers are scarcer and more valuable for retrieval.
 const DEFAULT_TOTAL_TARGET: usize = 160;
 
-/// Default ceiling for inbound connections above target.
+/// Default headroom for inbound connections above a bin's target. Accepting a
+/// few extra inbound per bin keeps reachable peers connected without letting any
+/// single bin grow unbounded.
 pub(crate) const DEFAULT_INBOUND_HEADROOM: usize = 4;
 
 /// Default per-bin fill target during bootstrap (`depth == 0`).
