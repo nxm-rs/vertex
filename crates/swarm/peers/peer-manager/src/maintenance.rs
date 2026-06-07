@@ -129,9 +129,9 @@ impl<I: SwarmIdentity> PeerManager<I> {
         let max_po = self.index.max_po() as usize;
         let mut remaining = vec![0usize; max_po + 1];
         let mut any_depleted = false;
-        for (po, &size) in bin_sizes.iter().enumerate() {
+        for (bin, &size) in bin_sizes.iter().enumerate() {
             if size < low_water {
-                remaining[po] = max_per_bin.saturating_sub(size);
+                remaining[bin] = max_per_bin.saturating_sub(size);
                 any_depleted = true;
             }
         }
@@ -153,10 +153,10 @@ impl<I: SwarmIdentity> PeerManager<I> {
             if self.index.exists(overlay) {
                 continue;
             }
-            let po = self.index.bin_for(overlay) as usize;
-            if remaining[po] > 0 && self.index.add(*overlay).is_ok() {
+            let bin = self.index.bin_for(overlay).as_index();
+            if remaining[bin] > 0 && self.index.add(*overlay).is_ok() {
                 added += 1;
-                remaining[po] -= 1;
+                remaining[bin] -= 1;
             }
         }
 

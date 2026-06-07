@@ -8718,6 +8718,7 @@ dependencies = [
  "tonic 0.12.3",
  "tonic-build",
  "vertex-swarm-api",
+ "vertex-swarm-primitives",
 ]
 
 [[package]]

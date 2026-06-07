@@ -39,15 +39,15 @@ pub(crate) fn log_stats<T: SwarmTopologyState + SwarmTopologyStats>(topology: &T
 
     let bin_sizes = topology.bin_sizes();
     let mut bin_summary = String::new();
-    for (po, (conn, known_in_bin)) in bin_sizes.iter().enumerate() {
+    for (bin, (conn, known_in_bin)) in bin_sizes.iter().enumerate() {
         if *conn > 0 || *known_in_bin > 0 {
             if !bin_summary.is_empty() {
                 bin_summary.push(' ');
             }
-            if po as u8 == depth {
-                bin_summary.push_str(&format!("[{po}:{conn}/{known_in_bin}]"));
+            if bin as u8 == depth.get() {
+                bin_summary.push_str(&format!("[{bin}:{conn}/{known_in_bin}]"));
             } else {
-                bin_summary.push_str(&format!("{po}:{conn}/{known_in_bin}"));
+                bin_summary.push_str(&format!("{bin}:{conn}/{known_in_bin}"));
             }
         }
     }
@@ -60,7 +60,7 @@ pub(crate) fn log_stats<T: SwarmTopologyState + SwarmTopologyStats>(topology: &T
         connected,
         routing,
         stored,
-        depth,
+        depth = depth.get(),
         pending,
         bins = %bin_summary,
         "swarm status"

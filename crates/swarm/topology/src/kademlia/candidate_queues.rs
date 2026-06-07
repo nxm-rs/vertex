@@ -3,7 +3,7 @@
 use std::collections::{HashSet, VecDeque};
 
 use parking_lot::Mutex;
-use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_primitives::{Bin, OverlayAddress};
 
 /// Per-bin FIFO queues for connection candidates with global dedup.
 pub(crate) struct CandidateQueues {
@@ -24,13 +24,13 @@ impl CandidateQueues {
     }
 
     /// Enqueue a candidate in the given bin. Returns true if newly inserted.
-    pub(super) fn push(&self, bin: u8, peer: OverlayAddress) -> bool {
+    pub(super) fn push(&self, bin: Bin, peer: OverlayAddress) -> bool {
         let mut pending = self.pending.lock();
         if !pending.insert(peer) {
             return false;
         }
 
-        if let Some(queue) = self.bins.get(bin as usize) {
+        if let Some(queue) = self.bins.get(bin.as_index()) {
             let mut q = queue.lock();
             q.push_back(peer);
             // Cap per-bin: drop oldest if over limit
@@ -72,6 +72,10 @@ impl CandidateQueues {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn b(n: u8) -> Bin {
+        Bin::new(n).expect("valid bin")
+    }
     use nectar_primitives::SwarmAddress;
 
     #[test]
@@ -79,16 +83,16 @@ mod tests {
         let queues = CandidateQueues::new(32, 16);
         let peer = SwarmAddress::with_first_byte(0x80);
 
-        assert!(queues.push(0, peer));
+        assert!(queues.push(b(0), peer));
         // Dedup: second push returns false
-        assert!(!queues.push(0, peer));
+        assert!(!queues.push(b(0), peer));
 
         let drained = queues.drain_all();
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0], peer);
 
         // After drain, can push again
-        assert!(queues.push(0, peer));
+        assert!(queues.push(b(0), peer));
     }
 
     #[test]
@@ -97,8 +101,8 @@ mod tests {
         let lo = SwarmAddress::with_first_byte(0x80);
         let hi = SwarmAddress::with_first_byte(0x40);
 
-        queues.push(0, lo);
-        queues.push(1, hi);
+        queues.push(b(0), lo);
+        queues.push(b(1), hi);
 
         let drained = queues.drain_all();
         assert_eq!(drained.len(), 2);
@@ -115,9 +119,9 @@ mod tests {
         let p2 = SwarmAddress::with_first_byte(0x81);
         let p3 = SwarmAddress::with_first_byte(0x82);
 
-        assert!(queues.push(0, p1));
-        assert!(queues.push(0, p2));
-        assert!(queues.push(0, p3));
+        assert!(queues.push(b(0), p1));
+        assert!(queues.push(b(0), p2));
+        assert!(queues.push(b(0), p3));
 
         // p1 should have been evicted (cap=2)
         let queued = queues.snapshot_queued();
@@ -133,7 +137,7 @@ mod tests {
         let peer = SwarmAddress::with_first_byte(0x80);
 
         // Bin 5 doesn't exist (only 0-3)
-        assert!(!queues.push(5, peer));
+        assert!(!queues.push(b(5), peer));
         assert!(queues.snapshot_queued().is_empty());
     }
 }

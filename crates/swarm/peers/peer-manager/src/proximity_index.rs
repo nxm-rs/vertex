@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use hashlink::LinkedHashSet;
 use metrics::gauge;
 use parking_lot::RwLock;
-use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_primitives::{Bin, OverlayAddress};
 
 /// Error returned when adding a peer to the index fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error, strum::IntoStaticStr)]
@@ -38,7 +38,7 @@ pub struct ProximityIndex {
 /// Cached sorted list with generation stamp.
 struct CachedList {
     generation: Option<u64>,
-    items: Arc<Vec<(u8, OverlayAddress)>>,
+    items: Arc<Vec<(Bin, OverlayAddress)>>,
 }
 
 impl Default for CachedList {
@@ -84,9 +84,9 @@ impl ProximityIndex {
     }
 
     #[must_use]
-    pub fn bin_size(&self, po: u8) -> usize {
+    pub fn bin_size(&self, bin: Bin) -> usize {
         self.bin_counts
-            .get(po as usize)
+            .get(bin.as_index())
             .map_or(0, |c| c.load(Ordering::Relaxed))
     }
 
@@ -114,22 +114,22 @@ impl ProximityIndex {
     /// address is already in the index. Returns `Err(BinFull)` if the bin is
     /// at capacity (peer should be saved to DB only).
     pub fn add(&self, addr: OverlayAddress) -> Result<(), AddError> {
-        let po = self.bin_for(&addr);
-        let mut bin = self.bins[po as usize].write();
+        let bin = self.bin_for(&addr);
+        let mut bucket = self.bins[bin.as_index()].write();
 
         // Check duplicate first (before capacity check)
-        if bin.contains(&addr) {
+        if bucket.contains(&addr) {
             return Err(AddError::AlreadyPresent);
         }
 
         // Enforce capacity limit
-        if self.max_per_bin > 0 && bin.len() >= self.max_per_bin {
+        if self.max_per_bin > 0 && bucket.len() >= self.max_per_bin {
             return Err(AddError::BinFull);
         }
 
-        bin.insert(addr);
+        bucket.insert(addr);
 
-        self.bin_counts[po as usize].fetch_add(1, Ordering::Relaxed);
+        self.bin_counts[bin.as_index()].fetch_add(1, Ordering::Relaxed);
         self.total_count.fetch_add(1, Ordering::Relaxed);
         let generation = self.generation.fetch_add(1, Ordering::Release) + 1;
         gauge!("topology_proximity_generation").set(generation as f64);
@@ -138,14 +138,14 @@ impl ProximityIndex {
 
     /// Remove an address. Returns true if it existed.
     pub fn remove(&self, addr: &OverlayAddress) -> bool {
-        let po = self.bin_for(addr);
-        let mut bin = self.bins[po as usize].write();
+        let bin = self.bin_for(addr);
+        let mut bucket = self.bins[bin.as_index()].write();
 
-        if !bin.remove(addr) {
+        if !bucket.remove(addr) {
             return false;
         }
 
-        self.bin_counts[po as usize].fetch_sub(1, Ordering::Relaxed);
+        self.bin_counts[bin.as_index()].fetch_sub(1, Ordering::Relaxed);
         self.total_count.fetch_sub(1, Ordering::Relaxed);
         let generation = self.generation.fetch_add(1, Ordering::Release) + 1;
         gauge!("topology_proximity_generation").set(generation as f64);
@@ -156,23 +156,23 @@ impl ProximityIndex {
     ///
     /// Returns true if the address existed and was moved.
     pub fn touch(&self, addr: &OverlayAddress) -> bool {
-        let po = self.bin_for(addr);
-        let mut bin = self.bins[po as usize].write();
-        bin.to_back(addr)
+        let bin = self.bin_for(addr);
+        let mut bucket = self.bins[bin.as_index()].write();
+        bucket.to_back(addr)
     }
 
     /// Check if an address exists.
     #[must_use]
     pub fn exists(&self, addr: &OverlayAddress) -> bool {
-        let po = self.bin_for(addr);
-        self.bins[po as usize].read().contains(addr)
+        let bin = self.bin_for(addr);
+        self.bins[bin.as_index()].read().contains(addr)
     }
 
     /// Get all addresses in a specific bin (LRU to MRU order).
-    pub fn peers_in_bin(&self, po: u8) -> Vec<OverlayAddress> {
+    pub fn peers_in_bin(&self, bin: Bin) -> Vec<OverlayAddress> {
         self.bins
-            .get(po as usize)
-            .map_or_else(Vec::new, |bin| bin.read().iter().copied().collect())
+            .get(bin.as_index())
+            .map_or_else(Vec::new, |bucket| bucket.read().iter().copied().collect())
     }
 
     /// Get up to `count` addresses from a bin that match `predicate` (LRU first).
@@ -181,16 +181,16 @@ impl ProximityIndex {
     /// avoiding materializing the entire bin into a Vec.
     pub fn filter_bin(
         &self,
-        po: u8,
+        bin: Bin,
         count: usize,
         mut predicate: impl FnMut(&OverlayAddress) -> bool,
     ) -> Vec<OverlayAddress> {
-        let Some(bin) = self.bins.get(po as usize) else {
+        let Some(bucket) = self.bins.get(bin.as_index()) else {
             return Vec::new();
         };
-        let bin = bin.read();
-        let mut result = Vec::with_capacity(count.min(bin.len()));
-        for addr in bin.iter() {
+        let bucket = bucket.read();
+        let mut result = Vec::with_capacity(count.min(bucket.len()));
+        for addr in bucket.iter() {
             if result.len() >= count {
                 break;
             }
@@ -202,19 +202,21 @@ impl ProximityIndex {
     }
 
     /// Get up to `count` addresses from a bin (LRU first).
-    pub fn take_lru_from_bin(&self, po: u8, count: usize) -> Vec<OverlayAddress> {
-        self.bins.get(po as usize).map_or_else(Vec::new, |bin| {
-            bin.read().iter().take(count).copied().collect()
-        })
+    pub fn take_lru_from_bin(&self, bin: Bin, count: usize) -> Vec<OverlayAddress> {
+        self.bins
+            .get(bin.as_index())
+            .map_or_else(Vec::new, |bucket| {
+                bucket.read().iter().take(count).copied().collect()
+            })
     }
 
     /// Iterate from shallowest to deepest proximity order (ascending PO).
-    pub fn iter_by_proximity(&self) -> impl ExactSizeIterator<Item = (u8, OverlayAddress)> {
+    pub fn iter_by_proximity(&self) -> impl ExactSizeIterator<Item = (Bin, OverlayAddress)> {
         ArcIter::new(self.get_sorted())
     }
 
     /// Iterate from deepest to shallowest proximity order (descending PO).
-    pub fn iter_by_proximity_desc(&self) -> impl ExactSizeIterator<Item = (u8, OverlayAddress)> {
+    pub fn iter_by_proximity_desc(&self) -> impl ExactSizeIterator<Item = (Bin, OverlayAddress)> {
         ArcIterRev::new(self.get_sorted())
     }
 
@@ -227,10 +229,13 @@ impl ProximityIndex {
         result
     }
 
-    /// Compute bin (proximity order) for an address, capped at max_po.
+    /// Compute the [`Bin`] for an address, capped at `max_po`.
     #[must_use]
-    pub fn bin_for(&self, addr: &OverlayAddress) -> u8 {
-        self.local_overlay.proximity(addr).get().min(self.max_po)
+    pub fn bin_for(&self, addr: &OverlayAddress) -> Bin {
+        // proximity is range-validated (<= MAX_PO) and we cap at max_po, so the
+        // value is always a valid Bin.
+        let po = self.local_overlay.proximity(addr).get().min(self.max_po);
+        Bin::new(po).unwrap_or(Bin::MAX)
     }
 
     /// Build sorted list, using a generation-stamped cache to avoid rebuilds.
@@ -238,7 +243,7 @@ impl ProximityIndex {
     /// Items are collected from bins *before* acquiring the cache write lock
     /// to avoid holding the cache lock while reading bins (which would block
     /// concurrent add/remove/touch operations).
-    fn get_sorted(&self) -> Arc<Vec<(u8, OverlayAddress)>> {
+    fn get_sorted(&self) -> Arc<Vec<(Bin, OverlayAddress)>> {
         let current_gen = self.generation.load(Ordering::Acquire);
 
         // Fast path: cache is valid
@@ -252,9 +257,10 @@ impl ProximityIndex {
         // Collect items WITHOUT holding the cache lock, so concurrent
         // add/remove/touch can proceed on bins without blocking.
         let mut items = Vec::with_capacity(self.len());
-        for (po, bin) in self.bins.iter().enumerate() {
-            for &addr in bin.read().iter() {
-                items.push((po as u8, addr));
+        for (idx, bucket) in self.bins.iter().enumerate() {
+            let bin = Bin::new(idx as u8).unwrap_or(Bin::MAX);
+            for &addr in bucket.read().iter() {
+                items.push((bin, addr));
             }
         }
 
@@ -353,6 +359,10 @@ impl<T: Copy> ExactSizeIterator for ArcIterRev<T> {
 mod tests {
     use super::*;
 
+    fn b(n: u8) -> Bin {
+        Bin::new(n).expect("valid bin")
+    }
+
     fn local_overlay() -> OverlayAddress {
         OverlayAddress::from([0x00; 32])
     }
@@ -399,9 +409,9 @@ mod tests {
         index.add(addr1).unwrap();
         index.add(addr2).unwrap();
 
-        assert_eq!(index.bin_size(0), 1);
-        assert_eq!(index.bin_size(1), 1);
-        assert_eq!(index.bin_size(2), 1);
+        assert_eq!(index.bin_size(b(0)), 1);
+        assert_eq!(index.bin_size(b(1)), 1);
+        assert_eq!(index.bin_size(b(2)), 1);
         assert_eq!(index.len(), 3);
     }
 
@@ -416,11 +426,11 @@ mod tests {
 
         assert!(index.add(addr1).is_ok());
         assert!(index.add(addr2).is_ok());
-        assert_eq!(index.bin_size(0), 2);
+        assert_eq!(index.bin_size(b(0)), 2);
 
         // Third should fail (at capacity)
         assert_eq!(index.add(addr3), Err(AddError::BinFull));
-        assert_eq!(index.bin_size(0), 2);
+        assert_eq!(index.bin_size(b(0)), 2);
         assert!(!index.exists(&addr3));
     }
 
@@ -438,9 +448,9 @@ mod tests {
 
         let collected: Vec<_> = index.iter_by_proximity().collect();
         assert_eq!(collected.len(), 3);
-        assert_eq!(collected[0].0, 0);
-        assert_eq!(collected[1].0, 1);
-        assert_eq!(collected[2].0, 2);
+        assert_eq!(collected[0].0.get(), 0);
+        assert_eq!(collected[1].0.get(), 1);
+        assert_eq!(collected[2].0.get(), 2);
     }
 
     #[test]
@@ -457,9 +467,9 @@ mod tests {
 
         let collected: Vec<_> = index.iter_by_proximity_desc().collect();
         assert_eq!(collected.len(), 3);
-        assert_eq!(collected[0].0, 2);
-        assert_eq!(collected[1].0, 1);
-        assert_eq!(collected[2].0, 0);
+        assert_eq!(collected[0].0.get(), 2);
+        assert_eq!(collected[1].0.get(), 1);
+        assert_eq!(collected[2].0.get(), 0);
     }
 
     #[test]
@@ -503,12 +513,12 @@ mod tests {
         index.add(addr2).unwrap();
         index.add(addr3).unwrap();
 
-        let bin0 = index.peers_in_bin(0);
+        let bin0 = index.peers_in_bin(b(0));
         assert_eq!(bin0.len(), 2);
         assert!(bin0.contains(&addr1));
         assert!(bin0.contains(&addr2));
 
-        let bin1 = index.peers_in_bin(1);
+        let bin1 = index.peers_in_bin(b(1));
         assert_eq!(bin1.len(), 1);
         assert!(bin1.contains(&addr3));
     }
@@ -525,7 +535,7 @@ mod tests {
             assert!(index.add(addr).is_ok());
         }
 
-        assert_eq!(index.bin_size(0), 100);
+        assert_eq!(index.bin_size(b(0)), 100);
     }
 
     #[test]
@@ -541,7 +551,7 @@ mod tests {
         index.add(addr2).unwrap();
         index.add(addr3).unwrap();
 
-        let peers = index.peers_in_bin(0);
+        let peers = index.peers_in_bin(b(0));
         assert_eq!(peers.len(), 3);
         assert_eq!(peers[0], addr1); // First added = LRU
         assert_eq!(peers[1], addr2);
@@ -563,7 +573,7 @@ mod tests {
         // Touch addr1 (move from front to back)
         assert!(index.touch(&addr1));
 
-        let peers = index.peers_in_bin(0);
+        let peers = index.peers_in_bin(b(0));
         assert_eq!(peers[0], addr2); // Now LRU
         assert_eq!(peers[1], addr3);
         assert_eq!(peers[2], addr1); // Now MRU
@@ -590,17 +600,17 @@ mod tests {
         index.add(addr3).unwrap();
 
         // Take 2 LRU peers
-        let taken = index.take_lru_from_bin(0, 2);
+        let taken = index.take_lru_from_bin(b(0), 2);
         assert_eq!(taken.len(), 2);
         assert_eq!(taken[0], addr1);
         assert_eq!(taken[1], addr2);
 
         // Take more than available
-        let taken_all = index.take_lru_from_bin(0, 10);
+        let taken_all = index.take_lru_from_bin(b(0), 10);
         assert_eq!(taken_all.len(), 3);
 
         // Take 0
-        let taken_none = index.take_lru_from_bin(0, 0);
+        let taken_none = index.take_lru_from_bin(b(0), 0);
         assert!(taken_none.is_empty());
     }
 
@@ -657,24 +667,20 @@ mod tests {
         index.add(addr4).unwrap();
 
         // Filter with predicate that rejects addr2
-        let result = index.filter_bin(0, 3, |a| *a != addr2);
+        let result = index.filter_bin(b(0), 3, |a| *a != addr2);
         assert_eq!(result.len(), 3);
         assert!(!result.contains(&addr2));
 
         // Filter with count limit (early exit)
-        let result = index.filter_bin(0, 1, |_| true);
+        let result = index.filter_bin(b(0), 1, |_| true);
         assert_eq!(result.len(), 1);
 
         // Filter with no matches
-        let result = index.filter_bin(0, 10, |_| false);
+        let result = index.filter_bin(b(0), 10, |_| false);
         assert!(result.is_empty());
 
         // Filter on empty bin
-        let result = index.filter_bin(5, 10, |_| true);
-        assert!(result.is_empty());
-
-        // Filter on out-of-range bin
-        let result = index.filter_bin(255, 10, |_| true);
+        let result = index.filter_bin(b(5), 10, |_| true);
         assert!(result.is_empty());
     }
 }

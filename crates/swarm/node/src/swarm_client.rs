@@ -128,7 +128,9 @@ mod tests {
         let handle = create_test_handle();
 
         let client = Client::bootnode(topology, handle);
-        let _ = client.topology().neighbors(0);
+        let _ = client
+            .topology()
+            .neighbors(vertex_swarm_primitives::NeighborhoodDepth::ZERO);
     }
 
     #[test]

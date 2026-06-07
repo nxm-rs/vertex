@@ -111,8 +111,8 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         RoutingCapacity::disconnected(&*self.routing, &overlay);
 
         // Push event-driven routing gauges for the affected bin
-        let po = self.proximity(&overlay);
-        self.push_routing_gauges(po);
+        let bin = self.bin_for(&overlay);
+        self.push_routing_gauges(bin);
 
         // Capacity freed - coalesced evaluation in poll()
         self.evaluator_handle.trigger_evaluation();
@@ -160,10 +160,10 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
         if new_depth != old_depth {
             self.push_bin_targets();
-            self.gossip.send(GossipInput::DepthChanged(new_depth));
+            self.gossip.send(GossipInput::DepthChanged(new_depth.get()));
             self.emit_event(TopologyEvent::DepthChanged {
-                old_depth,
-                new_depth,
+                old_depth: old_depth.get(),
+                new_depth: new_depth.get(),
             });
             if new_depth > old_depth {
                 self.trim_overpopulated_bins();

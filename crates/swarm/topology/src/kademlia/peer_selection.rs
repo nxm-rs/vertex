@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeType};
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_manager::PeerManager;
-use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress, neighborhood_bins};
 
 use crate::behaviour::ConnectionRegistry;
 
@@ -20,13 +20,13 @@ pub(crate) fn connected_neighbors<I: SwarmIdentity>(
     local_overlay: &OverlayAddress,
     peer_manager: &PeerManager<I>,
     connection_registry: &ConnectionRegistry,
-    depth: u8,
+    depth: NeighborhoodDepth,
 ) -> Vec<OverlayAddress> {
     connection_registry
         .active_ids()
         .into_iter()
         .filter(|overlay| {
-            local_overlay.proximity(overlay).get() >= depth
+            depth.contains(Bin::from(local_overlay.proximity(overlay)))
                 && peer_manager.node_type(overlay) == Some(SwarmNodeType::Storer)
         })
         .collect()
@@ -36,13 +36,13 @@ pub(crate) fn connected_neighbors<I: SwarmIdentity>(
 pub(crate) fn known_neighborhood_peers<I: SwarmIdentity>(
     _local_overlay: &OverlayAddress,
     peer_manager: &PeerManager<I>,
-    depth: u8,
+    depth: NeighborhoodDepth,
     exclude: Option<&OverlayAddress>,
 ) -> Vec<SwarmPeer> {
-    let max_po = peer_manager.index().max_po();
+    let max_bin = Bin::new(peer_manager.index().max_po()).unwrap_or(Bin::MAX);
     let mut overlays = Vec::new();
-    for po in depth..=max_po {
-        for overlay in peer_manager.storer_overlays_in_bin(po, usize::MAX) {
+    for bin in neighborhood_bins(depth, max_bin) {
+        for overlay in peer_manager.storer_overlays_in_bin(bin, usize::MAX) {
             if exclude.is_some_and(|e| &overlay == e) {
                 continue;
             }
@@ -141,7 +141,7 @@ mod tests {
             &ctx.local_overlay,
             &ctx.peer_manager,
             &ctx.connection_registry,
-            0,
+            NeighborhoodDepth::ZERO,
         );
         assert!(neighbors.is_empty());
     }

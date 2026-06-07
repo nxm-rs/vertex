@@ -4,7 +4,7 @@ use nectar_primitives::ChunkAddress;
 use std::vec::Vec;
 
 use crate::SwarmIdentity;
-use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress};
 
 /// Bin sizes for topology routing (one per proximity order).
 #[auto_impl::auto_impl(&, Arc)]
@@ -25,7 +25,7 @@ pub trait SwarmTopologyState: Send + Sync {
     fn identity(&self) -> &Self::Identity;
 
     /// Get the current neighborhood depth.
-    fn depth(&self) -> u8;
+    fn depth(&self) -> NeighborhoodDepth;
 
     /// Get the node's overlay address.
     fn overlay_address(&self) -> OverlayAddress {
@@ -40,21 +40,21 @@ pub trait SwarmTopologyRouting: Send + Sync {
     fn closest_to(&self, address: &ChunkAddress, count: usize) -> Vec<OverlayAddress>;
 
     /// Get peers within our neighborhood at the given depth.
-    fn neighbors(&self, depth: u8) -> Vec<OverlayAddress>;
+    fn neighbors(&self, depth: NeighborhoodDepth) -> Vec<OverlayAddress>;
 }
 
 /// Connected peer inspection per bin.
 #[auto_impl::auto_impl(&, Arc)]
 pub trait SwarmTopologyPeers: SwarmTopologyBins {
     /// Get connected peer overlay addresses in a specific bin.
-    fn connected_peers_in_bin(&self, po: u8) -> Vec<OverlayAddress>;
+    fn connected_peers_in_bin(&self, bin: Bin) -> Vec<OverlayAddress>;
 
     /// Get connected peer details in a specific bin.
     ///
     /// Returns `(overlay, multiaddrs)` for each connected peer in the bin.
     fn connected_peer_details_in_bin(
         &self,
-        po: u8,
+        bin: Bin,
     ) -> Vec<(OverlayAddress, Vec<libp2p::Multiaddr>)>;
 }
 

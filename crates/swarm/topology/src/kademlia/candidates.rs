@@ -4,7 +4,9 @@ use std::collections::{HashMap, HashSet};
 
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_peer_manager::{PeerManager, ProximityIndex};
-use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_primitives::{
+    Bin, NeighborhoodDepth, OverlayAddress, balanced_bins, neighborhood_bins,
+};
 
 use super::limits::LimitsSnapshot;
 
@@ -44,7 +46,7 @@ pub(crate) struct CandidateSelector<'a> {
     candidates: Vec<OverlayAddress>,
     max_candidates: usize,
     /// Per-bin selection counts to enforce capacity limits.
-    bin_selections: HashMap<u8, usize>,
+    bin_selections: HashMap<Bin, usize>,
 }
 
 impl<'a> CandidateSelector<'a> {
@@ -79,7 +81,7 @@ impl<'a> CandidateSelector<'a> {
     }
 
     /// Get count of candidates already selected for a bin.
-    pub(crate) fn bin_selected(&self, bin: u8) -> usize {
+    pub(crate) fn bin_selected(&self, bin: Bin) -> usize {
         self.bin_selections.get(&bin).copied().unwrap_or(0)
     }
 
@@ -113,7 +115,7 @@ impl<'a> CandidateSelector<'a> {
     pub(crate) fn try_add_with_bin_capacity<I: SwarmIdentity>(
         &mut self,
         peer: OverlayAddress,
-        bin: u8,
+        bin: Bin,
         effective_count: usize,
         peer_manager: &PeerManager<I>,
     ) -> bool {
@@ -161,31 +163,31 @@ impl<'a> CandidateSelector<'a> {
 pub(crate) fn select_neighborhood_candidates<I: SwarmIdentity>(
     selector: &mut CandidateSelector<'_>,
     peer_manager: &PeerManager<I>,
-    connected_counts: impl Fn(u8) -> usize,
-    max_po: u8,
+    connected_counts: impl Fn(Bin) -> usize,
+    max_bin: Bin,
 ) {
     let depth = selector.snapshot().limits.depth;
 
     // Iterate from highest PO down to depth
-    for po in (depth..=max_po).rev() {
+    for bin in neighborhood_bins(depth, max_bin).rev() {
         if selector.is_full() {
             break;
         }
 
-        let effective = connected_counts(po);
-        let already_selected = selector.bin_selected(po);
+        let effective = connected_counts(bin);
+        let already_selected = selector.bin_selected(bin);
 
         if !selector
             .snapshot()
             .limits
-            .needs_more(po, effective + already_selected)
+            .needs_more(bin, effective + already_selected)
         {
             continue;
         }
 
         // Get peers from this bin (LRU order via KnownPeers)
-        for peer in peer_manager.dialable_overlays_in_bin(po, selector.remaining()) {
-            if !selector.try_add_with_bin_capacity(peer, po, effective, peer_manager) {
+        for peer in peer_manager.dialable_overlays_in_bin(bin, selector.remaining()) {
+            if !selector.try_add_with_bin_capacity(peer, bin, effective, peer_manager) {
                 continue;
             }
         }
@@ -196,24 +198,24 @@ pub(crate) fn select_neighborhood_candidates<I: SwarmIdentity>(
 pub(crate) fn select_balanced_candidates<I: SwarmIdentity>(
     selector: &mut CandidateSelector<'_>,
     peer_manager: &PeerManager<I>,
-    connected_counts: impl Fn(u8) -> usize,
+    connected_counts: impl Fn(Bin) -> usize,
 ) {
     let depth = selector.snapshot().limits.depth;
-    if depth == 0 {
+    if depth == NeighborhoodDepth::ZERO {
         return;
     }
 
-    // Collect bin stats: (po, effective, deficit)
-    let mut bin_stats: Vec<(u8, usize, usize)> = Vec::new();
+    // Collect bin stats: (bin, effective, deficit)
+    let mut bin_stats: Vec<(Bin, usize, usize)> = Vec::new();
 
-    for po in 0..depth {
-        let effective = connected_counts(po);
-        let already_selected = selector.bin_selected(po);
+    for bin in balanced_bins(depth) {
+        let effective = connected_counts(bin);
+        let already_selected = selector.bin_selected(bin);
 
         if !selector
             .snapshot()
             .limits
-            .needs_more(po, effective + already_selected)
+            .needs_more(bin, effective + already_selected)
         {
             continue;
         }
@@ -221,16 +223,16 @@ pub(crate) fn select_balanced_candidates<I: SwarmIdentity>(
         let deficit = selector
             .snapshot()
             .limits
-            .deficit(po, effective + already_selected);
+            .deficit(bin, effective + already_selected);
         if deficit > 0 {
-            bin_stats.push((po, effective, deficit));
+            bin_stats.push((bin, effective, deficit));
         }
     }
 
     // Sort by PO descending (prioritize higher bins)
     bin_stats.sort_by_key(|b| std::cmp::Reverse(b.0));
 
-    for (po, effective, deficit) in bin_stats {
+    for (bin, effective, deficit) in bin_stats {
         if selector.is_full() {
             break;
         }
@@ -239,11 +241,11 @@ pub(crate) fn select_balanced_candidates<I: SwarmIdentity>(
         let to_add = deficit.min(selector.remaining());
         let mut added = 0;
 
-        for peer in peer_manager.dialable_overlays_in_bin(po, to_add) {
+        for peer in peer_manager.dialable_overlays_in_bin(bin, to_add) {
             if added >= to_add || selector.is_full() {
                 break;
             }
-            if selector.try_add_with_bin_capacity(peer, po, effective, peer_manager) {
+            if selector.try_add_with_bin_capacity(peer, bin, effective, peer_manager) {
                 added += 1;
             }
         }
@@ -255,6 +257,14 @@ mod tests {
     use super::super::DepthAwareLimits;
     use super::*;
     use vertex_swarm_test_utils::make_overlay;
+
+    fn b(n: u8) -> Bin {
+        Bin::new(n).expect("valid bin")
+    }
+
+    fn d(n: u8) -> NeighborhoodDepth {
+        NeighborhoodDepth::new(b(n))
+    }
 
     fn test_proximity_index() -> ProximityIndex {
         ProximityIndex::new(OverlayAddress::from([0u8; 32]), 31, 0)
@@ -276,7 +286,7 @@ mod tests {
         let limits = DepthAwareLimits::new(160, 3);
 
         let snapshot = CandidateSnapshot {
-            limits: LimitsSnapshot::capture(&limits, 8),
+            limits: LimitsSnapshot::capture(&limits, d(8)),
             in_progress,
             queued,
         };
@@ -300,7 +310,7 @@ mod tests {
     fn test_connected_peer_rejected_by_selector() {
         let limits = DepthAwareLimits::new(160, 3);
         let snapshot = CandidateSnapshot {
-            limits: LimitsSnapshot::capture(&limits, 0),
+            limits: LimitsSnapshot::capture(&limits, d(0)),
             in_progress: HashSet::new(),
             queued: HashSet::new(),
         };
@@ -324,7 +334,7 @@ mod tests {
     fn test_selector_prevents_duplicates() {
         let limits = DepthAwareLimits::new(160, 3);
         let snapshot = CandidateSnapshot {
-            limits: LimitsSnapshot::capture(&limits, 0),
+            limits: LimitsSnapshot::capture(&limits, d(0)),
             in_progress: HashSet::new(),
             queued: HashSet::new(),
         };
@@ -343,7 +353,7 @@ mod tests {
     fn test_selector_respects_max() {
         let limits = DepthAwareLimits::new(160, 3);
         let snapshot = CandidateSnapshot {
-            limits: LimitsSnapshot::capture(&limits, 0),
+            limits: LimitsSnapshot::capture(&limits, d(0)),
             in_progress: HashSet::new(),
             queued: HashSet::new(),
         };
@@ -363,7 +373,7 @@ mod tests {
     fn test_bin_selection_tracking() {
         let limits = DepthAwareLimits::new(160, 3);
         let snapshot = CandidateSnapshot {
-            limits: LimitsSnapshot::capture(&limits, 0),
+            limits: LimitsSnapshot::capture(&limits, d(0)),
             in_progress: HashSet::new(),
             queued: HashSet::new(),
         };
@@ -371,13 +381,13 @@ mod tests {
         let connected = test_proximity_index();
         let mut selector = CandidateSelector::new(&snapshot, &connected, 10);
 
-        assert_eq!(selector.bin_selected(0), 0);
-        assert_eq!(selector.bin_selected(5), 0);
+        assert_eq!(selector.bin_selected(b(0)), 0);
+        assert_eq!(selector.bin_selected(b(5)), 0);
 
         // After adding peers, bin counts should update
         // Note: try_add doesn't track bin (use try_add_with_bin_capacity for that)
         selector.try_add(make_overlay(1));
-        assert_eq!(selector.bin_selected(0), 0); // try_add doesn't track bins
+        assert_eq!(selector.bin_selected(b(0)), 0); // try_add doesn't track bins
 
         // We'd need a PeerManager to test try_add_with_bin_capacity
     }

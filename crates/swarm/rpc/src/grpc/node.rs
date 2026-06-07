@@ -2,6 +2,7 @@
 
 use tonic::{Request, Response, Status};
 use vertex_swarm_api::{SwarmTopologyPeers, SwarmTopologyState, SwarmTopologyStats};
+use vertex_swarm_primitives::Bin;
 
 use crate::proto::node::{
     BinInfo, GetStatusRequest, GetStatusResponse, GetTopologyRequest, GetTopologyResponse,
@@ -31,7 +32,7 @@ impl<T: SwarmTopologyState + SwarmTopologyStats + SwarmTopologyPeers + Send + Sy
     ) -> Result<Response<GetStatusResponse>, Status> {
         Ok(Response::new(GetStatusResponse {
             overlay_address: self.topology.overlay_address().to_string(),
-            depth: self.topology.depth() as u32,
+            depth: u32::from(self.topology.depth().get()),
             connected_peers: self.topology.connected_peers_count() as u32,
             known_peers: self.topology.routing_peers_count() as u32,
             pending_connections: self.topology.pending_connections_count() as u32,
@@ -47,9 +48,11 @@ impl<T: SwarmTopologyState + SwarmTopologyStats + SwarmTopologyPeers + Send + Sy
         let bins: Vec<BinInfo> = bin_sizes
             .iter()
             .enumerate()
-            .map(|(po, (connected, known))| {
+            .map(|(idx, (connected, known))| {
                 let (connected_addrs, peer_info) = if *connected > 0 {
-                    let details = self.topology.connected_peer_details_in_bin(po as u8);
+                    let details = self
+                        .topology
+                        .connected_peer_details_in_bin(Bin::new(idx as u8).unwrap_or(Bin::MAX));
                     let addrs = details.iter().map(|(o, _)| o.to_string()).collect();
                     let info = details
                         .into_iter()
@@ -64,7 +67,7 @@ impl<T: SwarmTopologyState + SwarmTopologyStats + SwarmTopologyPeers + Send + Sy
                 };
 
                 BinInfo {
-                    proximity_order: po as u32,
+                    proximity_order: idx as u32,
                     connected_peers: *connected as u32,
                     known_peers: *known as u32,
                     connected_peer_addresses: connected_addrs,
@@ -75,7 +78,7 @@ impl<T: SwarmTopologyState + SwarmTopologyStats + SwarmTopologyPeers + Send + Sy
 
         Ok(Response::new(GetTopologyResponse {
             overlay_address: self.topology.overlay_address().to_string(),
-            depth: self.topology.depth() as u32,
+            depth: u32::from(self.topology.depth().get()),
             bins,
         }))
     }

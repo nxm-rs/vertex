@@ -11,6 +11,7 @@ description = "Swarm protocol RPC services for Vertex"
 [dependencies]
 # Internal dependencies
 vertex-swarm-api = { workspace = true }
+vertex-swarm-primitives = { workspace = true }
 
 # Primitives
 hex = { workspace = true }
