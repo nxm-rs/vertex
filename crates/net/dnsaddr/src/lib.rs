@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 
 use hickory_resolver::Resolver;
+use hickory_resolver::proto::rr::RData;
 use libp2p::Multiaddr;
 use libp2p::multiaddr::Protocol;
 use tracing::{debug, warn};
@@ -98,7 +99,8 @@ fn resolve_recursive<'a>(
 
         let resolver = Resolver::builder_tokio()
             .map_err(|e| ResolveError::DnsLookup(format!("failed to create resolver: {e}")))?
-            .build();
+            .build()
+            .map_err(|e| ResolveError::DnsLookup(format!("failed to build resolver: {e}")))?;
 
         let txt_name = format!("_dnsaddr.{}", domain);
         debug!(name = %txt_name, "Querying DNS TXT records");
@@ -110,9 +112,12 @@ fn resolve_recursive<'a>(
 
         let mut results = Vec::new();
 
-        for record in txt_records.iter() {
-            for txt in record.txt_data() {
-                let txt_str = String::from_utf8_lossy(txt);
+        for record in txt_records.answers() {
+            let RData::TXT(txt) = &record.data else {
+                continue;
+            };
+            for bytes in txt.txt_data.iter() {
+                let txt_str = String::from_utf8_lossy(bytes);
 
                 if let Some(value) = txt_str.strip_prefix("dnsaddr=") {
                     debug!(record = %value, "Found dnsaddr TXT record");

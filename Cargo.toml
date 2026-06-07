@@ -231,7 +231,9 @@ opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "http-proto",
 opentelemetry-appender-tracing = { version = "0.31", features = ["experimental_use_tracing_span_context"] }
 
 ## p2p
-libp2p = { version = "0.56.0", features = [
+# Pinned to rust-libp2p master to pick up libp2p-dns 0.45.0 against hickory 0.26.1
+# (RUSTSEC-2026-0119 / RUSTSEC-2026-0118). Revisit when libp2p 0.57 is released.
+libp2p = { git = "https://github.com/libp2p/rust-libp2p", rev = "3e72d4c071d5ec8815d2f6f7ee3602600ff51798", features = [
     "tokio",
     "noise",
     "tcp",
@@ -247,8 +249,8 @@ libp2p = { version = "0.56.0", features = [
 quick-protobuf = "0.8"
 quick-protobuf-codec = "0.3.1"
 asynchronous-codec = "0.7.0"
-libp2p-swarm = "0.47.1"
-libp2p-swarm-test = "0.6.0"
+libp2p-swarm = { git = "https://github.com/libp2p/rust-libp2p", rev = "3e72d4c071d5ec8815d2f6f7ee3602600ff51798" }
+libp2p-swarm-test = { git = "https://github.com/libp2p/rust-libp2p", rev = "3e72d4c071d5ec8815d2f6f7ee3602600ff51798" }
 quickcheck = "1.0.3"
 pb-rs = "0.10"
 walkdir = "2.5.0"
@@ -299,7 +301,7 @@ web-time = "1.1"
 # networking
 if-watch = { version = "3.2", features = ["tokio"] }
 ipnet = "2.11"
-hickory-resolver = { version = "0.25", features = ["tokio", "system-config"] }
+hickory-resolver = { version = "0.26", features = ["tokio", "system-config"] }
 
 # misc
 anyhow = "1.0"
