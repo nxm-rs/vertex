@@ -123,6 +123,14 @@ impl<C: SwarmNetworkConfig> SwarmNetworkConfig for ConfigWithBootnodes<'_, C> {
     fn nat_auto_enabled(&self) -> bool {
         self.inner.nat_auto_enabled()
     }
+
+    fn autonat_enabled(&self) -> bool {
+        self.inner.autonat_enabled()
+    }
+
+    fn upnp_enabled(&self) -> bool {
+        self.inner.upnp_enabled()
+    }
 }
 
 impl<C: SwarmPeerConfig> SwarmPeerConfig for ConfigWithBootnodes<'_, C> {

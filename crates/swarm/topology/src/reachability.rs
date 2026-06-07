@@ -15,9 +15,10 @@
 //!   connection-closed-by-either-side, IO) are filtered upstream and never
 //!   reach the tracker. A single negative signal never blacklists a peer.
 //!
-//! [`Self::update_from_autonat`] is a dormant hook reserved for self/peer NAT
-//! reachability once `libp2p::autonat` is wired (tracked separately); it is not
-//! fed today.
+//! * **AutoNAT v2 dial-back** is the third positive signal. When our node acts
+//!   as an AutoNAT v2 server and successfully dials a peer back, that peer is
+//!   proven publicly reachable; the node wiring forwards the confirmed peer via
+//!   [`Self::on_autonat_peer_confirmed`], which promotes it to `Public`.
 //!
 //! Records are dropped on `ConnectionClosed` so memory does not accumulate
 //! for transient or scanner peers; the [`Self::forget`] entry point is
@@ -179,37 +180,14 @@ impl ReachabilityTracker {
         self.inner.read().get(peer).map(|r| r.last_updated)
     }
 
-    /// Update from an AutoNAT outbound or inbound probe outcome.
+    /// Record that a peer has been confirmed publicly reachable via an
+    /// AutoNAT v2 dial-back.
     ///
-    /// `OutboundProbe::Response` (a remote server successfully dialed us back)
-    /// and `InboundProbe::Response` (we successfully dialed a peer that asked
-    /// for a dial-back) both prove the remote peer is publicly reachable —
-    /// otherwise the probe round-trip could not have completed. We promote in
-    /// both cases.
-    ///
-    /// `StatusChanged` is about *our* reachability and is consumed by
-    /// `LocalAddressManager::on_observed_addr`; this method ignores it.
-    pub fn update_from_autonat(&self, event: &libp2p::autonat::Event) {
-        match event {
-            libp2p::autonat::Event::OutboundProbe(
-                libp2p::autonat::OutboundProbeEvent::Response { peer, .. },
-            ) => {
-                self.on_autonat_peer_confirmed(*peer);
-            }
-            libp2p::autonat::Event::InboundProbe(
-                libp2p::autonat::InboundProbeEvent::Response { peer, .. },
-            ) => {
-                self.on_autonat_peer_confirmed(*peer);
-            }
-            _ => {}
-        }
-    }
-
-    /// Record that a peer has been confirmed reachable via an AutoNAT probe.
-    ///
-    /// Direct entry point used by AutoNAT wiring and by tests that cannot
-    /// easily construct a full `libp2p::autonat::Event` (its `ProbeId`
-    /// constructor is crate-private).
+    /// Called by the node wiring for each successful
+    /// `autonat::v2::server::Event` (a dial-back our server completed against
+    /// the peer's advertised address). A completed dial-back proves the peer
+    /// accepts inbound connections on that address, so we promote it to
+    /// [`PeerReachability::Public`].
     pub fn on_autonat_peer_confirmed(&self, peer: PeerId) {
         self.set_public(peer, "autonat");
     }
@@ -440,10 +418,8 @@ mod tests {
 
     #[test]
     fn autonat_peer_confirmed_promotes_to_public() {
-        // `update_from_autonat` delegates to `on_autonat_peer_confirmed`; we
-        // exercise the public-facing direct entry point that doesn't require
-        // building an internal AutoNAT `Event` (whose `ProbeId` constructor
-        // is crate-private).
+        // A successful AutoNAT v2 dial-back promotes the verified peer; the
+        // node wiring forwards each such event through this entry point.
         let tracker = ReachabilityTracker::new();
         let peer = random_peer();
         tracker.on_autonat_peer_confirmed(peer);

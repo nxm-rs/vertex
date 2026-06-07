@@ -29,6 +29,11 @@ fn default_nat_auto() -> bool {
     true
 }
 
+/// Default for autonat (AutoNAT v2 enabled by default for all node types).
+fn default_autonat() -> bool {
+    true
+}
+
 /// P2P network CLI arguments.
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
 #[command(next_help_heading = "Networking")]
@@ -67,6 +72,16 @@ pub struct NetworkArgs {
     #[serde(default = "default_nat_auto")]
     pub nat_auto: bool,
 
+    /// Enable AutoNAT v2 dial-back reachability verification (enabled by default).
+    #[arg(long = "network.autonat", default_value_t = true)]
+    #[serde(default = "default_autonat")]
+    pub autonat: bool,
+
+    /// Enable UPnP automatic port mapping on the LAN gateway (disabled by default).
+    #[arg(long = "network.upnp", default_value_t = false)]
+    #[serde(default)]
+    pub upnp: bool,
+
     /// Maximum number of peers.
     #[arg(long = "network.max-peers", default_value_t = DEFAULT_MAX_PEERS)]
     pub max_peers: usize,
@@ -96,6 +111,8 @@ impl Default for NetworkArgs {
             addr: DEFAULT_LISTEN_ADDR.to_string(),
             nat_addrs_raw: Vec::new(),
             nat_auto: true,
+            autonat: true,
+            upnp: false,
             max_peers: DEFAULT_MAX_PEERS,
             idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
             peer: PeerArgs::default(),
@@ -147,6 +164,8 @@ pub struct NetworkConfig<R = KademliaConfig> {
     trusted_peers: Vec<Multiaddr>,
     nat_addrs: Vec<Multiaddr>,
     nat_auto: bool,
+    autonat: bool,
+    upnp: bool,
     discovery_enabled: bool,
     max_peers: usize,
     idle_timeout: Duration,
@@ -173,6 +192,8 @@ impl<R> NetworkConfig<R> {
             trusted_peers: self.trusted_peers,
             nat_addrs: self.nat_addrs,
             nat_auto: self.nat_auto,
+            autonat: self.autonat,
+            upnp: self.upnp,
             discovery_enabled: self.discovery_enabled,
             max_peers: self.max_peers,
             idle_timeout: self.idle_timeout,
@@ -205,6 +226,8 @@ impl Default for NetworkConfig<KademliaConfig> {
             trusted_peers: Vec::new(),
             nat_addrs: Vec::new(),
             nat_auto: true,
+            autonat: true,
+            upnp: false,
             discovery_enabled: true,
             max_peers: DEFAULT_MAX_PEERS,
             idle_timeout: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS),
@@ -272,6 +295,8 @@ impl TryFrom<&NetworkArgs> for NetworkConfig<KademliaConfig> {
             trusted_peers,
             nat_addrs,
             nat_auto: args.nat_auto,
+            autonat: args.autonat,
+            upnp: args.upnp,
             discovery_enabled: !args.disable_discovery,
             max_peers: args.max_peers,
             idle_timeout: Duration::from_secs(args.idle_timeout_secs),
@@ -313,6 +338,14 @@ impl<R> SwarmNetworkConfig for NetworkConfig<R> {
     fn nat_auto_enabled(&self) -> bool {
         self.nat_auto
     }
+
+    fn autonat_enabled(&self) -> bool {
+        self.autonat
+    }
+
+    fn upnp_enabled(&self) -> bool {
+        self.upnp
+    }
 }
 
 impl<R> SwarmPeerConfig for NetworkConfig<R> {
@@ -349,6 +382,27 @@ mod tests {
             Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS)
         );
         assert!(config.discovery_enabled());
+    }
+
+    #[test]
+    fn nat_traversal_defaults() {
+        // AutoNAT v2 is on by default for every node type; UPnP is opt-in.
+        let config =
+            NetworkConfig::try_from(&NetworkArgs::default()).expect("default args should be valid");
+        assert!(config.autonat_enabled());
+        assert!(!config.upnp_enabled());
+    }
+
+    #[test]
+    fn nat_traversal_flags_propagate() {
+        let args = NetworkArgs {
+            autonat: false,
+            upnp: true,
+            ..Default::default()
+        };
+        let config = NetworkConfig::try_from(&args).expect("valid args");
+        assert!(!config.autonat_enabled());
+        assert!(config.upnp_enabled());
     }
 
     #[test]

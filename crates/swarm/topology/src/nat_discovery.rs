@@ -30,9 +30,10 @@ pub struct LocalAddressManager {
     local_peer_id: OnceLock<PeerId>,
     /// Whether we've confirmed public connectivity (peer observed us from public IP).
     has_public_connectivity: AtomicBool,
-    /// Per-peer reachability bridge. AutoNAT events forwarded via
-    /// [`LocalAddressManager::on_autonat_event`] flow into this tracker so
-    /// the kademlia routing layer can score peers by reachability.
+    /// Per-peer reachability bridge. AutoNAT v2 dial-back confirmations
+    /// forwarded via [`LocalAddressManager::on_autonat_peer_confirmed`] flow
+    /// into this tracker so the kademlia routing layer can score peers by
+    /// reachability.
     reachability: ReachabilityTracker,
 }
 
@@ -69,20 +70,12 @@ impl LocalAddressManager {
         self.reachability.clone()
     }
 
-    /// Forward an `libp2p::autonat::Event` to the reachability tracker.
+    /// Record that a peer has been confirmed publicly reachable via an
+    /// AutoNAT v2 dial-back.
     ///
-    /// This is the single AutoNAT entry point on the NAT-discovery side: the
-    /// swarm wiring that owns an `autonat::Behaviour` should call this for
-    /// each emitted event. Equivalent to `self.reachability().update_from_autonat(event)`.
-    pub fn on_autonat_event(&self, event: &libp2p::autonat::Event) {
-        self.reachability.update_from_autonat(event);
-    }
-
-    /// Record that a peer has been confirmed reachable via an AutoNAT probe.
-    ///
-    /// Convenience for wiring code that cannot synthesise a full
-    /// `libp2p::autonat::Event` (its internal `ProbeId` constructor is
-    /// crate-private).
+    /// The node wiring that owns the `autonat::v2::server::Behaviour` calls
+    /// this for each successful dial-back. Promotes the peer to
+    /// [`crate::PeerReachability::Public`] in the shared tracker.
     pub fn on_autonat_peer_confirmed(&self, peer: PeerId) {
         self.reachability.on_autonat_peer_confirmed(peer);
     }
@@ -149,6 +142,23 @@ impl LocalAddressManager {
             && !self.has_public_connectivity.swap(true, Ordering::Relaxed)
         {
             info!("Confirmed public connectivity via peer observation");
+        }
+    }
+
+    /// Record a verified external address.
+    ///
+    /// Stronger than [`Self::on_observed_addr`]: this is driven by
+    /// `FromSwarm::ExternalAddrConfirmed`, which fires only after AutoNAT v2
+    /// dial-back or UPnP port mapping proves the address reachable. A confirmed
+    /// public address flips public connectivity on, enabling dials to other
+    /// public peers.
+    pub fn on_external_addr_confirmed(&self, addr: &Multiaddr) {
+        let addr_for_classify = strip_peer_id(addr);
+
+        if classify_multiaddr(&addr_for_classify) == Some(AddressScope::Public)
+            && !self.has_public_connectivity.swap(true, Ordering::Relaxed)
+        {
+            info!(%addr, "Confirmed public connectivity via verified external address");
         }
     }
 
@@ -351,6 +361,29 @@ mod tests {
         // Now we have confirmed public connectivity
         assert!(manager.has_public_addresses());
         assert!(manager.has_confirmed_public_connectivity());
+    }
+
+    #[test]
+    fn test_external_addr_confirmed_enables_public() {
+        let local = Arc::new(LocalCapabilities::new());
+        local.on_new_listen_addr(parse_addr("/ip4/192.168.1.1/tcp/1634"));
+        let manager = LocalAddressManager::new(local, vec![]);
+
+        assert!(!manager.has_public_addresses());
+
+        // A verified external address (AutoNAT v2 dial-back or UPnP) flips
+        // public connectivity on.
+        manager.on_external_addr_confirmed(&parse_addr("/ip4/203.0.113.7/tcp/1634"));
+
+        assert!(manager.has_confirmed_public_connectivity());
+        assert!(manager.has_public_addresses());
+    }
+
+    #[test]
+    fn test_external_addr_confirmed_private_ignored() {
+        let manager = create_manager(vec![]);
+        manager.on_external_addr_confirmed(&parse_addr("/ip4/10.0.0.5/tcp/1634"));
+        assert!(!manager.has_confirmed_public_connectivity());
     }
 
     #[test]

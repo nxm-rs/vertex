@@ -145,6 +145,20 @@ pub trait SwarmNetworkConfig {
     fn nat_auto_enabled(&self) -> bool {
         true
     }
+
+    /// Whether AutoNAT v2 (dial-back reachability verification) is enabled
+    /// (default: true). Runs both the client (verify our own addresses) and
+    /// the server (verify peers') roles for every node type.
+    fn autonat_enabled(&self) -> bool {
+        true
+    }
+
+    /// Whether UPnP automatic port mapping is enabled (default: false). Opt-in
+    /// because it actively probes the LAN IGD gateway, which only helps
+    /// home/NAT'd nodes and is noise on directly-routable hosts.
+    fn upnp_enabled(&self) -> bool {
+        false
+    }
 }
 
 /// Configuration for Swarm node identity.

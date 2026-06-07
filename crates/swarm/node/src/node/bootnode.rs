@@ -9,6 +9,9 @@
 
 use eyre::Result;
 use futures::StreamExt;
+use libp2p::autonat::v2 as autonat;
+use libp2p::swarm::behaviour::toggle::Toggle;
+use libp2p::upnp;
 use libp2p::{PeerId, identity::PublicKey, swarm::NetworkBehaviour, swarm::SwarmEvent};
 use nectar_primitives::SwarmAddress;
 use tracing::info;
@@ -23,7 +26,7 @@ use vertex_swarm_topology::{
 };
 use vertex_tasks::GracefulShutdown;
 
-use super::base::BaseNode;
+use super::base::{BaseNode, NatBehaviours};
 use super::builder::BuiltInfrastructure;
 use crate::protocol::{BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientEvent};
 
@@ -38,13 +41,20 @@ use crate::protocol::{BehaviourConfig as ClientBehaviourConfig, ClientBehaviour,
 #[behaviour(to_swarm = "BootnodeEvent")]
 pub(crate) struct BootnodeBehaviour<I: SwarmIdentity + Clone> {
     pub(crate) identify: identify::Behaviour,
+    pub(crate) autonat_client: Toggle<autonat::client::Behaviour>,
+    pub(crate) autonat_server: Toggle<autonat::server::Behaviour>,
+    pub(crate) upnp: Toggle<upnp::tokio::Behaviour>,
     pub(crate) topology: TopologyBehaviour<I>,
     pub(crate) client: ClientBehaviour,
 }
 
 impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
     /// Create behaviour from pre-built topology (used with libp2p SwarmBuilder).
-    pub fn from_parts(local_public_key: PublicKey, topology: TopologyBehaviour<I>) -> Self {
+    pub fn from_parts(
+        local_public_key: PublicKey,
+        topology: TopologyBehaviour<I>,
+        nat: NatBehaviours,
+    ) -> Self {
         let agent_versions = topology.agent_versions();
         Self {
             // Advertise listen addresses (even private IPs). Peers gate on
@@ -55,6 +65,9 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
                 identify::Config::new(local_public_key),
                 agent_versions,
             ),
+            autonat_client: nat.autonat_client,
+            autonat_server: nat.autonat_server,
+            upnp: nat.upnp,
             topology,
             client: ClientBehaviour::new(ClientBehaviourConfig::for_role(SwarmNodeType::Bootnode)),
         }
@@ -75,6 +88,9 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
 #[allow(clippy::large_enum_variant)]
 pub enum BootnodeEvent {
     Identify(Box<identify::Event>),
+    AutonatClient(autonat::client::Event),
+    AutonatServer(autonat::server::Event),
+    Upnp(upnp::Event),
     Topology(()),
     Client(ClientEvent),
 }
@@ -82,6 +98,24 @@ pub enum BootnodeEvent {
 impl From<identify::Event> for BootnodeEvent {
     fn from(event: identify::Event) -> Self {
         BootnodeEvent::Identify(Box::new(event))
+    }
+}
+
+impl From<autonat::client::Event> for BootnodeEvent {
+    fn from(event: autonat::client::Event) -> Self {
+        BootnodeEvent::AutonatClient(event)
+    }
+}
+
+impl From<autonat::server::Event> for BootnodeEvent {
+    fn from(event: autonat::server::Event) -> Self {
+        BootnodeEvent::AutonatServer(event)
+    }
+}
+
+impl From<upnp::Event> for BootnodeEvent {
+    fn from(event: upnp::Event) -> Self {
+        BootnodeEvent::Upnp(event)
     }
 }
 
@@ -189,6 +223,18 @@ impl<I: SwarmIdentity + Clone> BootNode<I> {
             BootnodeEvent::Identify(boxed_event) => {
                 self.handle_identify_event(*boxed_event);
             }
+            BootnodeEvent::AutonatServer(event) => {
+                super::base::handle_autonat_server_event(
+                    &self.base.swarm.behaviour().topology,
+                    event,
+                );
+            }
+            BootnodeEvent::AutonatClient(event) => {
+                super::base::handle_autonat_client_event(event);
+            }
+            BootnodeEvent::Upnp(event) => {
+                super::base::handle_upnp_event(event);
+            }
             BootnodeEvent::Topology(_) => {}
             BootnodeEvent::Client(event) => {
                 // Bootnodes only accept pricing-receive; observability only.
@@ -279,11 +325,12 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
             }
         };
 
+        let nat = NatBehaviours::from_config(network_config);
         let base = super::builder::build_base_node(
             infra,
             network_config,
             "Bootnode",
-            BootnodeBehaviour::from_parts,
+            move |pk, topology| BootnodeBehaviour::from_parts(pk, topology, nat),
         )
         .await?;
 
