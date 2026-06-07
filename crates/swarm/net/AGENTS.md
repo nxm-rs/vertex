@@ -8,7 +8,6 @@ Root-level rules in `/AGENTS.md` apply here too. The notes below are the area-sp
 
 - `handshake`: `/swarm/handshake/15.0.0/handshake`. Identity exchange and admission control. Non-headered.
 - `hive`: signed peer-record gossip for topology bootstrap.
-- `pingpong`: `/swarm/pingpong/1.0.0/pingpong`. Liveness and RTT.
 - `pricing`: `/swarm/pricing/1.0.0/pricing`. Payment threshold announcement.
 - `pseudosettle`: `/swarm/pseudosettle/1.0.0/pseudosettle`. Bandwidth micro-payments.
 - `pushsync`: `/swarm/pushsync/1.3.1/pushsync`. Chunk push with receipts.
@@ -16,7 +15,7 @@ Root-level rules in `/AGENTS.md` apply here too. The notes below are the area-sp
 - `headers`: shared header frame used by request-response protocols, with trace-context propagation.
 - `handler-core`: shared `HandlerCore<E>` for handlers (pending events, GCRA, outbound-pending flag).
 - `identify`: vendored libp2p-identify with targeted-push extension.
-- `proto`: consolidated protobuf modules. Re-exports `handshake`, `hive`, `pingpong`, `pricing`, `pseudosettle`, `pushsync`, `retrieval`, `headers`, `pullsync`, `swap`.
+- `proto`: consolidated protobuf modules. Re-exports `handshake`, `hive`, `pricing`, `pseudosettle`, `pushsync`, `retrieval`, `headers`, `pullsync`, `swap`.
 
 ## Dos
 

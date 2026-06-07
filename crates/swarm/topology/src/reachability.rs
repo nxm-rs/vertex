@@ -1,23 +1,23 @@
 //! Per-peer reachability tracker.
 //!
-//! Three independent signals feed a single per-peer verdict that the kademlia
-//! routing layer consumes when picking eviction candidates and counting bin
-//! saturation:
+//! Two upstream-canonical liveness signals feed a single per-peer verdict that
+//! the kademlia routing layer consumes when picking eviction candidates and
+//! counting bin saturation:
 //!
-//! * **AutoNAT probe responses** promote a peer: a successful outbound or
-//!   inbound probe proves the remote is reachable end-to-end. Probe failures
-//!   do not demote, because the failure may be on our side.
-//! * **Handshake outcomes** promote on success and accumulate consecutive
-//!   protocol-fault failures; once the count crosses
-//!   [`HANDSHAKE_FAILURE_THRESHOLD`] within
-//!   [`HANDSHAKE_FAILURE_DECAY`], the peer flips to `Private`. The decay
-//!   window prevents historical failures from outweighing recent evidence.
-//!   Ambiguous errors (timeouts, connection-closed-by-either-side, IO) are
-//!   ignored upstream and never reach the tracker.
-//! * **Stabilization** locks a peer to `Public` while pingpong RTT is steady.
-//!   Loss of stability demotes only peers that were promoted via
-//!   stabilization in the first place, so a spurious negative cannot
-//!   blacklist a peer reached via handshake or AutoNAT.
+//! * **`libp2p::ping`** is the primary signal: a successful ping promotes a
+//!   peer to `Public`; failed pings accumulate and, once the count crosses
+//!   [`FAILURE_THRESHOLD`] within [`FAILURE_DECAY`], flip it to `Private`. This
+//!   mirrors the reference implementation's reacher, which judges per-peer
+//!   reachability by pinging over `/ipfs/ping`.
+//! * **Handshake faults** share the same streak counter (a protocol-fault is a
+//!   negative signal). The decay window keeps historical failures from
+//!   outweighing recent evidence; ambiguous errors (timeouts,
+//!   connection-closed-by-either-side, IO) are filtered upstream and never
+//!   reach the tracker. A single negative signal never blacklists a peer.
+//!
+//! [`Self::update_from_autonat`] is a dormant hook reserved for self/peer NAT
+//! reachability once `libp2p::autonat` is wired (tracked separately); it is not
+//! fed today.
 //!
 //! Records are dropped on `ConnectionClosed` so memory does not accumulate
 //! for transient or scanner peers; the [`Self::forget`] entry point is
@@ -34,16 +34,16 @@ use libp2p::PeerId;
 use parking_lot::RwLock;
 use tracing::{debug, trace};
 
-/// Number of consecutive handshake protocol-fault failures within
-/// [`HANDSHAKE_FAILURE_DECAY`] that flip a peer to
+/// Number of consecutive negative liveness signals (failed ping or handshake
+/// fault) within [`FAILURE_DECAY`] that flip a peer to
 /// [`PeerReachability::Private`]. Picked on the lenient side so that
 /// transient network blips do not blacklist peers.
-pub const HANDSHAKE_FAILURE_THRESHOLD: u32 = 3;
+pub const FAILURE_THRESHOLD: u32 = 3;
 
 /// How long after the first counted failure the running count is allowed to
 /// grow before it resets. Three failures spread over weeks no longer
 /// constitute evidence; the decay window forces them to be recent.
-pub const HANDSHAKE_FAILURE_DECAY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+pub const FAILURE_DECAY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 /// Reachability status of an individual peer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -88,17 +88,13 @@ struct PeerReachabilityRecord {
     /// the current status (e.g. repeated handshake successes for a Public
     /// peer) does **not** bump this timestamp.
     last_updated: Instant,
-    /// Consecutive handshake failures since the last success or decay window
-    /// reset.
-    handshake_failures: u32,
+    /// Consecutive negative liveness signals (failed ping or handshake fault)
+    /// since the last success or decay-window reset.
+    failures: u32,
     /// Time of the first failure in the current run. Used to decay the
-    /// counter once [`HANDSHAKE_FAILURE_DECAY`] has elapsed without crossing
+    /// counter once [`FAILURE_DECAY`] has elapsed without crossing
     /// the threshold.
     first_failure_at: Option<Instant>,
-    /// `true` if stabilization has promoted this peer to `Public`. Sticky:
-    /// handshake signals will not demote a stable peer until
-    /// `update_from_stabilization(peer, false)` flips it back to `Private`.
-    stable: bool,
 }
 
 impl PeerReachabilityRecord {
@@ -106,9 +102,8 @@ impl PeerReachabilityRecord {
         Self {
             status,
             last_updated: Instant::now(),
-            handshake_failures: 0,
+            failures: 0,
             first_failure_at: None,
-            stable: false,
         }
     }
 
@@ -125,7 +120,7 @@ impl PeerReachabilityRecord {
 
     /// Reset the failure run.
     fn clear_failures(&mut self) {
-        self.handshake_failures = 0;
+        self.failures = 0;
         self.first_failure_at = None;
     }
 }
@@ -219,101 +214,25 @@ impl ReachabilityTracker {
         self.set_public(peer, "autonat");
     }
 
-    /// Update from a handshake completion.
+    /// Update from a `libp2p::ping` round-trip outcome.
     ///
-    /// Successful handshakes promote the peer to [`PeerReachability::Public`]
-    /// (unless stabilization-locked, in which case the signal is ignored as a
-    /// no-op confirmation). Failures accumulate; once
-    /// [`HANDSHAKE_FAILURE_THRESHOLD`] consecutive failures have been observed
-    /// the peer flips to [`PeerReachability::Private`].
-    pub fn update_from_handshake(&self, peer: PeerId, success: bool) {
-        let mut guard = self.inner.write();
-        let entry = guard
-            .entry(peer)
-            .or_insert_with(|| PeerReachabilityRecord::new(PeerReachability::Unknown));
-
-        if entry.stable {
-            // Stabilization-locked peers ignore handshake signals; only an
-            // explicit `update_from_stabilization(peer, false)` can demote them.
-            return;
-        }
-
-        if success {
-            entry.clear_failures();
-            if entry.set_status(PeerReachability::Public) {
-                debug!(%peer, "peer reachability set to Public via handshake");
-            } else {
-                trace!(%peer, "handshake success reaffirms Public");
-            }
-        } else {
-            let now = Instant::now();
-            // Decay the run if the first failure is too far in the past; we
-            // do not want stale historical failures crossing the threshold.
-            if let Some(start) = entry.first_failure_at
-                && now.duration_since(start) > HANDSHAKE_FAILURE_DECAY
-            {
-                entry.clear_failures();
-            }
-            if entry.first_failure_at.is_none() {
-                entry.first_failure_at = Some(now);
-            }
-            entry.handshake_failures = entry.handshake_failures.saturating_add(1);
-            if entry.handshake_failures >= HANDSHAKE_FAILURE_THRESHOLD
-                && entry.set_status(PeerReachability::Private)
-            {
-                debug!(
-                    %peer,
-                    failures = entry.handshake_failures,
-                    "peer reachability set to Private after repeated handshake failures"
-                );
-            } else {
-                trace!(
-                    %peer,
-                    failures = entry.handshake_failures,
-                    "handshake failure noted"
-                );
-            }
-        }
+    /// This is the primary liveness signal, mirroring the reference
+    /// implementation's reacher (which pings over `/ipfs/ping`): a successful
+    /// ping promotes the peer to [`PeerReachability::Public`]; failed pings
+    /// accumulate and, once [`FAILURE_THRESHOLD`] consecutive failures land
+    /// within [`FAILURE_DECAY`], flip it to [`PeerReachability::Private`].
+    pub fn update_from_ping(&self, peer: PeerId, success: bool) {
+        self.record_liveness(peer, success, "ping");
     }
 
-    /// Update from the stabilization detector.
+    /// Update from a handshake outcome.
     ///
-    /// * `stable = true` locks the peer to [`PeerReachability::Public`];
-    ///   handshake failures will not demote it. Creates a record if the peer
-    ///   was previously untracked.
-    /// * `stable = false` releases the lock and demotes the peer to
-    ///   [`PeerReachability::Private`] **only if it was actually
-    ///   stabilization-promoted in the first place**. Peers promoted by
-    ///   handshake or AutoNAT are left alone, and untracked peers are
-    ///   ignored. This preserves the invariant that a spurious negative
-    ///   signal cannot blacklist a peer.
-    pub fn update_from_stabilization(&self, peer: PeerId, stable: bool) {
-        let mut guard = self.inner.write();
-
-        if stable {
-            let entry = guard
-                .entry(peer)
-                .or_insert_with(|| PeerReachabilityRecord::new(PeerReachability::Unknown));
-            entry.stable = true;
-            entry.clear_failures();
-            if entry.set_status(PeerReachability::Public) {
-                debug!(%peer, "peer reachability locked to Public via stabilization");
-            }
-        } else if let Some(entry) = guard.get_mut(&peer) {
-            if !entry.stable {
-                trace!(
-                    %peer,
-                    "stabilization loss for non-stabilized peer ignored"
-                );
-                return;
-            }
-            entry.stable = false;
-            if entry.set_status(PeerReachability::Private) {
-                debug!(%peer, "peer reachability set to Private via stabilization loss");
-            }
-        } else {
-            trace!(%peer, "stabilization loss for untracked peer ignored");
-        }
+    /// A connection-time signal sharing the same streak mechanism as
+    /// [`update_from_ping`](Self::update_from_ping): success promotes, repeated
+    /// faults demote. In practice topology feeds only handshake *faults* here
+    /// (ongoing promotion is owned by ping).
+    pub fn update_from_handshake(&self, peer: PeerId, success: bool) {
+        self.record_liveness(peer, success, "handshake");
     }
 
     // Routing-layer consumer surface (eviction / saturation accounting).
@@ -341,9 +260,56 @@ impl ReachabilityTracker {
         let entry = guard
             .entry(peer)
             .or_insert_with(|| PeerReachabilityRecord::new(PeerReachability::Unknown));
-        entry.handshake_failures = 0;
+        entry.failures = 0;
         if entry.set_status(PeerReachability::Public) {
             debug!(%peer, source, "peer reachability set to Public");
+        }
+    }
+
+    /// Shared streak logic for the two liveness signals (ping, handshake).
+    ///
+    /// Success promotes to `Public` and clears the failure run. A failure
+    /// accumulates; the run decays if its first failure predates
+    /// [`FAILURE_DECAY`], and the peer flips to `Private` once
+    /// [`FAILURE_THRESHOLD`] consecutive failures land inside the window. A
+    /// single negative signal never blacklists a peer.
+    fn record_liveness(&self, peer: PeerId, success: bool, source: &'static str) {
+        let mut guard = self.inner.write();
+        let entry = guard
+            .entry(peer)
+            .or_insert_with(|| PeerReachabilityRecord::new(PeerReachability::Unknown));
+
+        if success {
+            entry.clear_failures();
+            if entry.set_status(PeerReachability::Public) {
+                debug!(%peer, source, "peer reachability set to Public");
+            } else {
+                trace!(%peer, source, "liveness success reaffirms Public");
+            }
+            return;
+        }
+
+        let now = Instant::now();
+        // Decay the run if the first failure is too far in the past; stale
+        // historical failures must not cumulatively cross the threshold.
+        if let Some(start) = entry.first_failure_at
+            && now.duration_since(start) > FAILURE_DECAY
+        {
+            entry.clear_failures();
+        }
+        if entry.first_failure_at.is_none() {
+            entry.first_failure_at = Some(now);
+        }
+        entry.failures = entry.failures.saturating_add(1);
+        if entry.failures >= FAILURE_THRESHOLD && entry.set_status(PeerReachability::Private) {
+            debug!(
+                %peer,
+                source,
+                failures = entry.failures,
+                "peer reachability set to Private after repeated failures"
+            );
+        } else {
+            trace!(%peer, source, failures = entry.failures, "liveness failure noted");
         }
     }
 }
@@ -387,7 +353,7 @@ mod tests {
     fn repeated_handshake_failures_flip_to_private() {
         let tracker = ReachabilityTracker::new();
         let peer = random_peer();
-        for _ in 0..HANDSHAKE_FAILURE_THRESHOLD {
+        for _ in 0..FAILURE_THRESHOLD {
             tracker.update_from_handshake(peer, false);
         }
         assert_eq!(tracker.status(&peer), PeerReachability::Private);
@@ -397,7 +363,7 @@ mod tests {
     fn handshake_success_resets_failure_counter() {
         let tracker = ReachabilityTracker::new();
         let peer = random_peer();
-        for _ in 0..(HANDSHAKE_FAILURE_THRESHOLD - 1) {
+        for _ in 0..(FAILURE_THRESHOLD - 1) {
             tracker.update_from_handshake(peer, false);
         }
         tracker.update_from_handshake(peer, true);
@@ -408,43 +374,48 @@ mod tests {
     }
 
     #[test]
-    fn stabilization_locks_to_public() {
+    fn ping_success_promotes_to_public() {
         let tracker = ReachabilityTracker::new();
         let peer = random_peer();
-        tracker.update_from_stabilization(peer, true);
+        tracker.update_from_ping(peer, true);
         assert_eq!(tracker.status(&peer), PeerReachability::Public);
+    }
 
-        // Stable peers ignore handshake failures regardless of count.
-        for _ in 0..HANDSHAKE_FAILURE_THRESHOLD * 2 {
-            tracker.update_from_handshake(peer, false);
+    #[test]
+    fn repeated_ping_failures_flip_to_private() {
+        let tracker = ReachabilityTracker::new();
+        let peer = random_peer();
+        for _ in 0..FAILURE_THRESHOLD {
+            tracker.update_from_ping(peer, false);
         }
-        assert_eq!(tracker.status(&peer), PeerReachability::Public);
-    }
-
-    #[test]
-    fn stabilization_loss_flips_to_private_and_releases_lock() {
-        let tracker = ReachabilityTracker::new();
-        let peer = random_peer();
-        tracker.update_from_stabilization(peer, true);
-        assert_eq!(tracker.status(&peer), PeerReachability::Public);
-
-        tracker.update_from_stabilization(peer, false);
         assert_eq!(tracker.status(&peer), PeerReachability::Private);
+    }
 
-        // After demotion, a handshake success can promote again (lock released).
-        tracker.update_from_handshake(peer, true);
+    #[test]
+    fn ping_success_resets_failure_streak() {
+        let tracker = ReachabilityTracker::new();
+        let peer = random_peer();
+        for _ in 0..(FAILURE_THRESHOLD - 1) {
+            tracker.update_from_ping(peer, false);
+        }
+        tracker.update_from_ping(peer, true);
+        assert_eq!(tracker.status(&peer), PeerReachability::Public);
+        // One further failure must not flip back.
+        tracker.update_from_ping(peer, false);
         assert_eq!(tracker.status(&peer), PeerReachability::Public);
     }
 
     #[test]
-    fn stabilization_loss_on_untracked_peer_is_noop() {
-        // A spurious `stable = false` for a peer we've never seen must not
-        // synthesise a `Private` record from nothing.
+    fn ping_and_handshake_share_one_failure_streak() {
+        // Both signals feed the same counter; mixed failures cross the
+        // threshold together.
         let tracker = ReachabilityTracker::new();
         let peer = random_peer();
-        tracker.update_from_stabilization(peer, false);
-        assert!(!tracker.contains(&peer));
-        assert_eq!(tracker.status(&peer), PeerReachability::Unknown);
+        tracker.update_from_handshake(peer, false);
+        for _ in 0..(FAILURE_THRESHOLD - 1) {
+            tracker.update_from_ping(peer, false);
+        }
+        assert_eq!(tracker.status(&peer), PeerReachability::Private);
     }
 
     #[test]
@@ -473,7 +444,7 @@ mod tests {
         let unknown_peer = random_peer();
 
         tracker.update_from_handshake(public_peer, true);
-        for _ in 0..HANDSHAKE_FAILURE_THRESHOLD {
+        for _ in 0..FAILURE_THRESHOLD {
             tracker.update_from_handshake(private_peer, false);
         }
 
@@ -490,7 +461,7 @@ mod tests {
         let unknown_peer = random_peer();
 
         tracker.update_from_handshake(public_peer, true);
-        for _ in 0..HANDSHAKE_FAILURE_THRESHOLD {
+        for _ in 0..FAILURE_THRESHOLD {
             tracker.update_from_handshake(private_peer, false);
         }
 
@@ -535,7 +506,7 @@ mod tests {
     fn autonat_peer_confirmed_clears_handshake_failures() {
         let tracker = ReachabilityTracker::new();
         let peer = random_peer();
-        for _ in 0..(HANDSHAKE_FAILURE_THRESHOLD - 1) {
+        for _ in 0..(FAILURE_THRESHOLD - 1) {
             tracker.update_from_handshake(peer, false);
         }
         tracker.on_autonat_peer_confirmed(peer);
@@ -546,22 +517,9 @@ mod tests {
     }
 
     #[test]
-    fn handshake_promoted_peer_immune_to_stability_loss() {
-        // A peer made Public via handshake but never via stabilization must
-        // not be demoted by a spurious `stable = false`. Otherwise the
-        // invariant "a single negative signal cannot blacklist a peer" is
-        // broken.
-        let tracker = ReachabilityTracker::new();
-        let peer = random_peer();
-        tracker.update_from_handshake(peer, true);
-        tracker.update_from_stabilization(peer, false);
-        assert_eq!(tracker.status(&peer), PeerReachability::Public);
-    }
-
-    #[test]
     fn failure_counter_decays_after_window() {
         // Three failures spaced over a long window must not cumulatively
-        // cross the threshold; only failures within HANDSHAKE_FAILURE_DECAY
+        // cross the threshold; only failures within FAILURE_DECAY
         // of each other count.
         let tracker = ReachabilityTracker::new();
         let peer = random_peer();
@@ -572,13 +530,13 @@ mod tests {
         {
             let mut guard = tracker.inner.write();
             let entry = guard.get_mut(&peer).expect("entry exists after failure");
-            entry.first_failure_at = Some(Instant::now() - HANDSHAKE_FAILURE_DECAY * 2);
+            entry.first_failure_at = Some(Instant::now() - FAILURE_DECAY * 2);
         }
 
-        for _ in 0..(HANDSHAKE_FAILURE_THRESHOLD - 1) {
+        for _ in 0..(FAILURE_THRESHOLD - 1) {
             tracker.update_from_handshake(peer, false);
         }
-        // The first failure decayed; only HANDSHAKE_FAILURE_THRESHOLD - 1
+        // The first failure decayed; only FAILURE_THRESHOLD - 1
         // recent failures remain, so the peer stays Unknown.
         assert_eq!(tracker.status(&peer), PeerReachability::Unknown);
     }

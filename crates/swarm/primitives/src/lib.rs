@@ -143,7 +143,7 @@ pub type OverlayAddress = SwarmAddress;
 #[strum(serialize_all = "lowercase")]
 #[repr(u8)]
 pub enum SwarmNodeType {
-    /// Topology only: handshake, hive, pingpong.
+    /// Topology only: handshake, hive, ping.
     Bootnode = 0,
     /// Read + write: retrieval, pushsync, pricing.
     #[default]

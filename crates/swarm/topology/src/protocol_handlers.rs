@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use libp2p::PeerId;
+use libp2p::ping;
 use libp2p::swarm::{ConnectionId, ToSwarm};
 use metrics::gauge;
 use tracing::{debug, info, trace, warn};
@@ -10,7 +11,6 @@ use vertex_net_peer_registry::ActivateResult;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_net_handshake::HandshakeEvent;
 use vertex_swarm_net_hive::HiveEvent;
-use vertex_swarm_net_pingpong::PingpongEvent;
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
 use crate::DialReason;
@@ -43,14 +43,8 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             ProtocolEvent::Hive(HiveEvent::Error { error, .. }) => {
                 warn!(%peer_id, %error, "Hive error");
             }
-            ProtocolEvent::Pingpong(PingpongEvent::Pong { rtt, .. }) => {
-                self.on_pingpong_pong(peer_id, rtt);
-            }
-            ProtocolEvent::Pingpong(PingpongEvent::PingReceived { .. }) => {
-                debug!(%peer_id, "Received ping from peer");
-            }
-            ProtocolEvent::Pingpong(PingpongEvent::Error { error, .. }) => {
-                warn!(%peer_id, %error, "Pingpong failed");
+            ProtocolEvent::Ping(ping::Event { result, .. }) => {
+                self.on_ping_result(peer_id, result);
             }
         }
     }
@@ -371,14 +365,27 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         }
     }
 
-    fn on_pingpong_pong(&mut self, peer_id: PeerId, rtt: Duration) {
-        debug!(%peer_id, ?rtt, "Pingpong success");
-
-        if let Some(overlay) = self.connection_registry.resolve_id(&peer_id) {
-            self.peer_manager.record_latency(&overlay, rtt);
-            debug!(%peer_id, %overlay, ?rtt, "Connection health verified");
-
-            self.emit_event(TopologyEvent::PingCompleted { overlay, rtt });
+    /// Handle a `libp2p::ping` round-trip result.
+    ///
+    /// Success records RTT (latency + score) and is a positive liveness signal
+    /// for the reachability tracker; a failed/timed-out ping is a negative one
+    /// (the tracker demotes after a streak). This is the same mechanism the
+    /// reference implementation's reacher uses to judge peer reachability.
+    fn on_ping_result(&mut self, peer_id: PeerId, result: Result<Duration, ping::Failure>) {
+        let tracker = self.nat_discovery.reachability();
+        match result {
+            Ok(rtt) => {
+                tracker.update_from_ping(peer_id, true);
+                if let Some(overlay) = self.connection_registry.resolve_id(&peer_id) {
+                    self.peer_manager.record_latency(&overlay, rtt);
+                    debug!(%peer_id, %overlay, ?rtt, "ping ok: liveness + rtt");
+                    self.emit_event(TopologyEvent::PingCompleted { overlay, rtt });
+                }
+            }
+            Err(failure) => {
+                tracker.update_from_ping(peer_id, false);
+                debug!(%peer_id, %failure, "ping failed");
+            }
         }
     }
 }

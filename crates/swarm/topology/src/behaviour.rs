@@ -1,4 +1,4 @@
-//! Network topology behaviour managing peer connections via handshake, hive, and pingpong.
+//! Network topology behaviour managing peer connections via handshake, hive, and ping.
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -168,12 +168,12 @@ impl TopologyConfig {
 /// Creates and owns all internal state (routing, peer_manager, dial_tracker, etc.)
 /// and provides a [`TopologyHandle`] for external queries and commands.
 ///
-/// Composes `HandshakeBehaviour`, `HiveBehaviour`, and `PingpongBehaviour` for
+/// Composes `HandshakeBehaviour`, `HiveBehaviour`, and `libp2p::ping::Behaviour` for
 /// protocol handling, delegating to each while coordinating connection state.
 pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
     pub(crate) identity: Arc<I>,
 
-    /// Composed protocol behaviours (handshake, hive, pingpong).
+    /// Composed protocol behaviours (handshake, hive, ping).
     pub(crate) protocols: ProtocolBehaviours<I>,
 
     // Shared with TopologyHandle (Arc for external access)
@@ -424,13 +424,6 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     /// (see [`crate::ReachabilityTracker::update_from_autonat`]).
     pub fn on_autonat_event(&self, event: &libp2p::autonat::Event) {
         self.nat_discovery.on_autonat_event(event);
-    }
-
-    /// Forward a stabilization-detector verdict to the reachability tracker.
-    pub fn on_stabilization(&self, peer: PeerId, stable: bool) {
-        self.nat_discovery
-            .reachability()
-            .update_from_stabilization(peer, stable);
     }
 
     /// Shared per-peer reachability tracker; cheap to clone.
