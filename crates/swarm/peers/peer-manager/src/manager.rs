@@ -3,6 +3,23 @@
 //! Connected and recently-accessed peers live in a hot DashMap cache.
 //! All known overlays are tracked in the ProximityIndex. Peer data for
 //! cold peers lives in the database and is loaded on demand.
+//!
+//! # Capacity defaults
+//!
+//! These bounds size the in-memory structures; they are not specified by the
+//! Book of Swarm and can be overridden at construction.
+//!
+//! - `DEFAULT_MAX_PER_BIN` (128) bounds how many overlays the proximity index
+//!   keeps per bin. Topology targets 3-35 connected peers per bin, so 128 leaves
+//!   3.7-42x headroom for the known-but-unconnected candidates a bin draws from.
+//! - `DEFAULT_MAX_HOT_PEERS` (500) bounds the hot DashMap cache of full peer
+//!   records. It comfortably covers the connected set (total target ~160 plus
+//!   inbound headroom) and the recently-touched cold peers a dial round visits,
+//!   so a steady-state node serves from memory while colder peers spill to the
+//!   database.
+//! - `DEFAULT_WRITE_BUFFER_CAPACITY` (64) is the number of dirty records buffered
+//!   before an automatic flush, amortizing store writes without holding enough in
+//!   memory to lose much on a crash.
 
 use std::marker::PhantomData;
 use std::sync::{Arc, Weak};
@@ -33,10 +50,15 @@ use crate::write_buffer::WriteBuffer;
 /// With topology targets of 3-35 peers per bin, 128 gives 3.7-42x headroom.
 pub(crate) const DEFAULT_MAX_PER_BIN: usize = 128;
 
-/// Default maximum hot peers in DashMap cache.
+/// Default maximum hot peers in the DashMap cache.
+///
+/// Covers the connected set plus recently-touched cold peers; see the
+/// module-level capacity notes.
 const DEFAULT_MAX_HOT_PEERS: usize = 500;
 
-/// Default write buffer capacity before auto-flush.
+/// Default number of dirty records buffered before an automatic flush.
+///
+/// Amortizes store writes; see the module-level capacity notes.
 const DEFAULT_WRITE_BUFFER_CAPACITY: usize = 64;
 
 /// Peer lifecycle manager with hot/cold storage architecture.
