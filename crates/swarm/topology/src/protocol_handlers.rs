@@ -196,10 +196,10 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         self.peer_manager
             .on_peer_ready(info.swarm_peer.clone(), info.node_type);
 
-        // Promote reachability BEFORE notifying routing: the eviction /
-        // saturation logic consults the tracker to score peers, so the new
-        // peer must be `Public` before `routing.connected` and any resulting
-        // `trim_overpopulated_bins()` reads it.
+        // Promote reachability BEFORE notifying routing: `trim_overpopulated_bins`
+        // ranks eviction victims by reachability (least-reachable first), so the
+        // freshly-connected peer must be promoted before `routing.connected` and
+        // any resulting trim reads its rank.
         self.nat_discovery
             .reachability()
             .update_from_handshake(peer_id, true);

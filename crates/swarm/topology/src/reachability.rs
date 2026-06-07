@@ -235,22 +235,6 @@ impl ReachabilityTracker {
         self.record_liveness(peer, success, "handshake");
     }
 
-    // Routing-layer consumer surface (eviction / saturation accounting).
-
-    /// `true` if `peer` should count toward bin capacity; private peers are
-    /// excluded from saturation counts in non-neighborhood bins.
-    pub fn counts_toward_saturation(&self, peer: &PeerId) -> bool {
-        !self.status(peer).is_private()
-    }
-
-    /// Pick the survivor of `a` and `b` by reachability rank. Ties prefer
-    /// `a`; the caller breaks further ties on score or `last_seen`.
-    pub fn prefer_survivor<'a>(&self, a: &'a PeerId, b: &'a PeerId) -> &'a PeerId {
-        let rank_a = self.status(a).rank();
-        let rank_b = self.status(b).rank();
-        if rank_b > rank_a { b } else { a }
-    }
-
     // ---------------------------------------------------------------------
     // Internal helpers
     // ---------------------------------------------------------------------
@@ -437,7 +421,9 @@ mod tests {
     }
 
     #[test]
-    fn counts_toward_saturation_excludes_private() {
+    fn rank_orders_public_above_unknown_above_private() {
+        // The eviction tiebreak relies on this ordering: least-reachable
+        // (lowest rank) is evicted first.
         let tracker = ReachabilityTracker::new();
         let public_peer = random_peer();
         let private_peer = random_peer();
@@ -448,46 +434,8 @@ mod tests {
             tracker.update_from_handshake(private_peer, false);
         }
 
-        assert!(tracker.counts_toward_saturation(&public_peer));
-        assert!(tracker.counts_toward_saturation(&unknown_peer));
-        assert!(!tracker.counts_toward_saturation(&private_peer));
-    }
-
-    #[test]
-    fn prefer_survivor_picks_public() {
-        let tracker = ReachabilityTracker::new();
-        let public_peer = random_peer();
-        let private_peer = random_peer();
-        let unknown_peer = random_peer();
-
-        tracker.update_from_handshake(public_peer, true);
-        for _ in 0..FAILURE_THRESHOLD {
-            tracker.update_from_handshake(private_peer, false);
-        }
-
-        // Public beats Private regardless of argument order.
-        assert_eq!(
-            tracker.prefer_survivor(&public_peer, &private_peer),
-            &public_peer
-        );
-        assert_eq!(
-            tracker.prefer_survivor(&private_peer, &public_peer),
-            &public_peer
-        );
-
-        // Unknown beats Private.
-        assert_eq!(
-            tracker.prefer_survivor(&unknown_peer, &private_peer),
-            &unknown_peer
-        );
-
-        // Equal status: first argument wins (caller breaks the tie elsewhere).
-        let other_public = random_peer();
-        tracker.update_from_handshake(other_public, true);
-        assert_eq!(
-            tracker.prefer_survivor(&public_peer, &other_public),
-            &public_peer
-        );
+        assert!(tracker.status(&public_peer).rank() > tracker.status(&unknown_peer).rank());
+        assert!(tracker.status(&unknown_peer).rank() > tracker.status(&private_peer).rank());
     }
 
     #[test]
