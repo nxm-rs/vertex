@@ -8,6 +8,7 @@ mod config;
 mod limits;
 pub(crate) mod peer_selection;
 mod routing;
+pub mod saturation;
 mod task;
 
 pub(crate) use admission::kademlia_admission_control;
