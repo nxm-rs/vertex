@@ -5,6 +5,8 @@ use std::convert::Infallible;
 use strum::IntoStaticStr;
 use vertex_swarm_peer::error::{MultiAddrError, SwarmPeerError};
 
+use crate::admission::AdmissionRejection;
+
 /// Handshake protocol errors.
 #[derive(Debug, thiserror::Error, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
@@ -70,6 +72,14 @@ pub enum HandshakeError {
     /// Stream upgrade failed at libp2p layer.
     #[error("upgrade error: {0}")]
     UpgradeError(String),
+
+    /// Admission control rejected the peer.
+    ///
+    /// Surfaces the structured reason from
+    /// [`HandshakeAdmissionControl`](crate::HandshakeAdmissionControl) so
+    /// the handler can report it without string-matching.
+    #[error("admission rejected: {0}")]
+    AdmissionRejected(AdmissionRejection),
 }
 
 impl From<Infallible> for HandshakeError {

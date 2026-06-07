@@ -23,6 +23,12 @@ pub use metrics::HandshakeStage;
 mod address;
 pub use address::{AddressProvider, NoAddresses};
 
+mod admission;
+pub use admission::{
+    AdmissionDecision, AdmissionRejection, AlwaysAccept, ConnectionDirection,
+    HandshakeAdmissionControl, SharedAdmissionControl, default_admission_control,
+};
+
 /// Protocol name for handshake.
 pub const PROTOCOL: &str = "/swarm/handshake/15.0.0/handshake";
 

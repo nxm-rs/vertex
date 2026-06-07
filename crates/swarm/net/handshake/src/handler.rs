@@ -22,8 +22,8 @@ use tracing::{debug, warn};
 use vertex_swarm_api::SwarmIdentity;
 
 use crate::{
-    AddressProvider, HANDSHAKE_TIMEOUT, HandshakeError, HandshakeInfo, PROTOCOL,
-    protocol::HandshakeProtocol,
+    AddressProvider, ConnectionDirection, HANDSHAKE_TIMEOUT, HandshakeError, HandshakeInfo,
+    PROTOCOL, SharedAdmissionControl, protocol::HandshakeProtocol,
 };
 
 /// Configuration for handshake handler.
@@ -89,6 +89,8 @@ pub struct HandshakeHandler<I, A> {
     peer_id: PeerId,
     remote_addr: Multiaddr,
     address_provider: Arc<A>,
+    /// Admission gate forwarded into [`HandshakeProtocol`].
+    admission_control: SharedAdmissionControl,
     state: State,
     pending_event: Option<HandshakeHandlerEvent>,
     should_initiate: bool,
@@ -107,6 +109,7 @@ where
         peer_id: PeerId,
         remote_addr: Multiaddr,
         address_provider: Arc<A>,
+        admission_control: SharedAdmissionControl,
     ) -> Self {
         Self {
             config,
@@ -114,6 +117,7 @@ where
             peer_id,
             remote_addr,
             address_provider,
+            admission_control,
             state: State::Pending,
             pending_event: None,
             should_initiate: false,
@@ -128,6 +132,7 @@ where
         peer_id: PeerId,
         remote_addr: Multiaddr,
         address_provider: Arc<A>,
+        admission_control: SharedAdmissionControl,
     ) -> Self {
         Self {
             config,
@@ -135,6 +140,7 @@ where
             peer_id,
             remote_addr,
             address_provider,
+            admission_control,
             state: State::Pending,
             pending_event: None,
             should_initiate: true,
@@ -142,12 +148,14 @@ where
         }
     }
 
-    fn make_upgrade(&self) -> HandshakeUpgrade<I, A> {
+    fn make_upgrade(&self, direction: ConnectionDirection) -> HandshakeUpgrade<I, A> {
         HandshakeUpgrade {
             identity: self.identity.clone(),
             peer_id: self.peer_id,
             remote_addr: self.remote_addr.clone(),
             address_provider: self.address_provider.clone(),
+            admission_control: self.admission_control.clone(),
+            direction,
             purpose: self.config.purpose,
         }
     }
@@ -166,7 +174,8 @@ where
     type OutboundOpenInfo = ();
 
     fn listen_protocol(&self) -> SubstreamProtocol<Self::InboundProtocol, Self::InboundOpenInfo> {
-        SubstreamProtocol::new(self.make_upgrade(), ()).with_timeout(self.config.timeout)
+        SubstreamProtocol::new(self.make_upgrade(ConnectionDirection::Inbound), ())
+            .with_timeout(self.config.timeout)
     }
 
     fn connection_keep_alive(&self) -> bool {
@@ -189,8 +198,11 @@ where
             self.state = State::InProgress;
             debug!(peer_id = %self.peer_id, "Initiating outbound handshake");
             return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
-                protocol: SubstreamProtocol::new(self.make_upgrade(), ())
-                    .with_timeout(self.config.timeout),
+                protocol: SubstreamProtocol::new(
+                    self.make_upgrade(ConnectionDirection::Outbound),
+                    (),
+                )
+                .with_timeout(self.config.timeout),
             });
         }
 
@@ -280,6 +292,12 @@ pub struct HandshakeUpgrade<I, A> {
     peer_id: PeerId,
     remote_addr: Multiaddr,
     address_provider: Arc<A>,
+    /// Forwarded into [`HandshakeProtocol`] so admission control can run
+    /// before the local side commits to the final exchange message.
+    admission_control: SharedAdmissionControl,
+    /// Direction this upgrade was created for; drives which arm of the
+    /// protocol runs and which side the admission gate sees.
+    direction: ConnectionDirection,
     purpose: &'static str,
 }
 
@@ -290,6 +308,8 @@ impl<I, A> Clone for HandshakeUpgrade<I, A> {
             peer_id: self.peer_id,
             remote_addr: self.remote_addr.clone(),
             address_provider: self.address_provider.clone(),
+            admission_control: self.admission_control.clone(),
+            direction: self.direction,
             purpose: self.purpose,
         }
     }
@@ -323,7 +343,8 @@ where
             self.remote_addr,
             additional_addrs,
             self.purpose,
-        );
+        )
+        .with_admission_control(self.admission_control, self.direction);
         if let Some(local_peer_id) = local_peer_id {
             protocol = protocol.with_local_peer_id(local_peer_id);
         }
