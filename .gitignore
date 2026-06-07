@@ -11,3 +11,6 @@ reth
 # direnv
 .direnv/
 .envrc
+
+# Reference PDFs (text extracts are checked in)
+docs/swarm/reference/*.pdf

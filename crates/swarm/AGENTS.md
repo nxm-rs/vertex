@@ -1,0 +1,53 @@
+# AGENTS: crates/swarm/
+
+Swarm domain layer. Defines what a Swarm node is, the network spec, identity, peer records, bandwidth accounting, peer manager, topology, localstore and storer config, redistribution config, and the RPC service surface. The libp2p-aware composition lives in `swarm/node` and `swarm/topology`; the rest is protocol-agnostic.
+
+Root-level rules in `/AGENTS.md` apply here too. The notes below are the area-specific overlay. The wire-protocol crates under `crates/swarm/net/` have their own `AGENTS.md`.
+
+## Sub-area map
+
+- `primitives`, `forks`, `spec`, `identity`: pure data and configuration. `nectar-primitives` is the canonical source for chunk and address types.
+- `peers/peer`: the `SwarmPeer` record with EIP-191 handshake signature.
+- `peers/peer-manager`, `peers/peer-score`: lifecycle, persistence, scoring.
+- `bandwidth/{core,pricing,pseudosettle}`: per-peer balances in Accounting Units (AU). `swap` and `chequebook` are workspace-disabled.
+- `api`: the trait chain `SwarmPrimitives` to `SwarmNetworkTypes` to `SwarmClientTypes` to `SwarmStorerTypes`. Strictly libp2p-free with the documented `Multiaddr` exception.
+- `builder`: layered builders that produce `BuiltBootnode`, `BuiltClient`, `BuiltStorer`.
+- `node`: composes the libp2p `NetworkBehaviour` and exposes `BootNode`, `ClientNode`, `StorerNode`. This is where libp2p shows up.
+- `topology`: libp2p behaviour for peer discovery, kademlia routing, reachability tracking.
+- `localstore`, `storer`, `redistribution`: storer-side configuration and the chunk-store/reserve implementation.
+- `rpc`: tonic-generated gRPC services and a `GrpcServiceProvider` trait.
+- `test-utils`: `MockIdentity`, `MockTopology`, and fixtures.
+
+## libp2p dependency
+
+- libp2p-free: `primitives`, `forks`, `spec`, `identity`, `api` (apart from the `Multiaddr` re-export), `builder` (almost), `bandwidth/*`, `localstore`, `redistribution`, `storer`, `rpc`, `test-utils`, `peers/peer-manager`, `peers/peer-score`.
+- libp2p-aware: `peers/peer` (uses `Multiaddr`, `PeerId`), `node`, `topology`.
+
+When in doubt: if you need a `NetworkBehaviour` or a `Swarm`, you are in `swarm/node` or `swarm/topology`. If you need only `Multiaddr` or `PeerId` you can be elsewhere, but justify it.
+
+## Nectar boundary
+
+Primitives and layer-2 constructs (chunks, addresses, BMT, manifests, feeds, postage, erasure) live in `nectar` (https://github.com/nxm-rs/nectar), not in vertex. Before adding a new type to `primitives`, `spec`, or any sibling crate, check the Repo split section in `/AGENTS.md`. If the new type is non-node-specific, file the PR against `nxm-rs/nectar` and consume it here through `vertex-swarm-primitives` once merged. The workspace pins all nectar deps to the same git rev (`/Cargo.toml`).
+
+## Dos
+
+- Treat `vertex-swarm-api` as the trait surface. New domain capabilities go in an api trait first, then in a concrete implementation crate.
+- Use `nectar-primitives` re-exports (`OverlayAddress`, `Bin`, `ProximityOrder`, `Nonce`, `Timestamp`) so the canonical types stay consistent across the workspace.
+- When `vertex-swarm-primitives` would host a new type that has no node dependency, push it upstream to `nectar` instead and re-export it here.
+- Error types are `thiserror` enums with `strum::IntoStaticStr` so they emit a `reason` label cleanly.
+- Use accounting units (AU) in bandwidth code. Never mix bytes, BZZ, and AU in the same struct field.
+- For node-type capabilities, branch on `SwarmNodeType` from the api crate rather than duplicating the enum.
+
+## Donts
+
+- Do not import `libp2p` in `api`, `spec`, `forks`, `primitives`, `bandwidth/*`, or `localstore`. These are the libp2p-free layer.
+- Do not use `underlay` in field names, error messages, or docs. The right word is `multiaddrs`.
+- Do not add `serde_json` to a re-enabled crate without a workspace conversation. Several siblings are disabled for exactly that reason.
+- Do not write architectural notes about the reference implementation inside crate-level rustdoc. If a comparison helps a reviewer, keep it short and factual, and never imply the reference is canonical.
+- Do not store `Arc<Identity>` clones in hot per-message paths. `Identity` is cheap to clone but the indirection compounds.
+
+## Tests
+
+- `cargo test -p vertex-swarm-<name>` per crate.
+- `vertex-swarm-test-utils` provides `MockIdentity`, `MockTopology`, and cluster-shaped fixtures behind the `cluster` feature.
+- `topology` and `node` rely on `libp2p-swarm-test` for behaviour tests; prefer that over hand-rolled mocks.
