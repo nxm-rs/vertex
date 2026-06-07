@@ -530,7 +530,16 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     /// Emits `CloseConnection` for each evicted peer. Existing event handlers
     /// (`handle_connection_closed`) handle cleanup of routing capacity and state.
     pub(crate) fn trim_overpopulated_bins(&mut self) {
-        let candidates = self.routing.eviction_candidates();
+        // Rank each candidate by reachability (the routing layer is overlay-keyed
+        // and has no peer-id mapping; we own both the registry and the tracker).
+        let tracker = self.nat_discovery.reachability();
+        let registry = &self.connection_registry;
+        let candidates = self.routing.eviction_candidates(|overlay| {
+            registry
+                .resolve_peer_id(overlay)
+                .map(|peer_id| tracker.status(&peer_id).rank())
+                .unwrap_or_else(|| crate::PeerReachability::Unknown.rank())
+        });
         if candidates.is_empty() {
             return;
         }

@@ -250,8 +250,19 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         );
     }
 
-    /// Identify peers to evict from overpopulated bins (handshaking first, then lowest-score active).
-    pub(crate) fn eviction_candidates(&self) -> Vec<EvictionCandidate> {
+    /// Identify peers to evict from overpopulated bins.
+    ///
+    /// Order: handshaking peers first (not yet established), then active peers
+    /// least worth keeping. Active victims are chosen by reachability then
+    /// score: `reachability_rank(overlay)` (lower = evict sooner, so
+    /// `Private` < `Unknown` < `Public`) breaks ties on the peer score. This
+    /// matches the reference implementation, whose prune prefers dropping
+    /// unreachable peers. `reachability_rank` is supplied by the caller, which
+    /// owns the overlay->peer-id mapping and the reachability tracker.
+    pub(crate) fn eviction_candidates(
+        &self,
+        reachability_rank: impl Fn(&OverlayAddress) -> u8,
+    ) -> Vec<EvictionCandidate> {
         let depth = self.depth();
         let phases = self.connection_phases.read();
         let mut candidates = Vec::new();
@@ -288,26 +299,32 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
                 }
             }
 
-            // Phase 2: Active peers with lowest scores (O(n) partial selection)
+            // Phase 2: Active peers, least-reachable first then lowest score
+            // (O(n) partial selection).
             if remaining > 0 {
                 let mut active_in_bin: Vec<_> = self
                     .connected_peers
                     .peers_in_bin(bin)
                     .into_iter()
                     .map(|overlay| {
+                        let rank = reachability_rank(&overlay);
                         let score = self.peer_manager.get_peer_score(&overlay).unwrap_or(0.0);
-                        (overlay, score)
+                        (overlay, rank, score)
                     })
                     .collect();
 
                 if remaining < active_in_bin.len() {
                     active_in_bin.select_nth_unstable_by(remaining, |a, b| {
-                        a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+                        // Evict least-reachable first (lower rank), breaking ties
+                        // on lowest score.
+                        a.1.cmp(&b.1).then_with(|| {
+                            a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal)
+                        })
                     });
                     active_in_bin.truncate(remaining);
                 }
 
-                for (overlay, _) in active_in_bin {
+                for (overlay, _, _) in active_in_bin {
                     candidates.push(EvictionCandidate {
                         overlay,
                         bin,
@@ -980,13 +997,13 @@ mod tests {
         let (routing, _pm) = make_routing(base, config);
 
         // No peers, no surplus
-        let candidates = routing.eviction_candidates();
+        let candidates = routing.eviction_candidates(|_| 1);
         assert!(candidates.is_empty());
 
         // Add peers below nominal - still no surplus
         let peer1 = SwarmAddress::with_first_byte(0x80); // bin=0
         SwarmRouting::connected(&*routing, peer1);
-        let candidates = routing.eviction_candidates();
+        let candidates = routing.eviction_candidates(|_| 1);
         assert!(candidates.is_empty());
     }
 
@@ -1041,7 +1058,7 @@ mod tests {
         // effective = 6 (5 active + 1 handshaking), surplus = 2
         routing.depth.store(8, Ordering::Relaxed);
 
-        let candidates = routing.eviction_candidates();
+        let candidates = routing.eviction_candidates(|_| 1);
         assert_eq!(candidates.len(), 2);
         // Handshaking peer should be selected
         assert!(
@@ -1074,11 +1091,46 @@ mod tests {
         // Simulate depth increase to 8 (bin 0 target = 4, surplus = 2)
         routing.depth.store(8, Ordering::Relaxed);
 
-        let candidates = routing.eviction_candidates();
+        let candidates = routing.eviction_candidates(|_| 1);
         assert_eq!(candidates.len(), 2);
         for c in &candidates {
             assert_eq!(c.phase, EvictionPhase::Active);
             assert_eq!(c.bin.get(), 0);
+        }
+    }
+
+    #[test]
+    fn test_eviction_prefers_least_reachable() {
+        let base = SwarmAddress::with_first_byte(0x00);
+        let (routing, _pm) = make_routing(base, KademliaConfig::default());
+
+        // 6 active peers in bin 0; at depth 8 the target is 4, so surplus is 2.
+        let peers: Vec<_> = (0..6)
+            .map(|i| {
+                let mut bytes = [0x00u8; 32];
+                bytes[0] = 0x80 + i;
+                OverlayAddress::from(bytes)
+            })
+            .collect();
+        for &peer in &peers {
+            force_active(&routing, peer);
+        }
+        routing.depth.store(8, Ordering::Relaxed);
+
+        // Two peers are least-reachable (rank 0); the rest are Public (rank 2).
+        // With equal scores, reachability decides: the two unreachable peers
+        // must be the eviction victims regardless of position.
+        let unreachable = [peers[1], peers[4]];
+        let candidates = routing
+            .eviction_candidates(|overlay| if unreachable.contains(overlay) { 0 } else { 2 });
+
+        assert_eq!(candidates.len(), 2);
+        let evicted: Vec<_> = candidates.iter().map(|c| c.overlay).collect();
+        for peer in unreachable {
+            assert!(
+                evicted.contains(&peer),
+                "least-reachable peer should be evicted before reachable ones"
+            );
         }
     }
 
@@ -1110,7 +1162,7 @@ mod tests {
 
         assert_eq!(routing.depth().get(), 2);
 
-        let candidates = routing.eviction_candidates();
+        let candidates = routing.eviction_candidates(|_| 1);
         // Below-depth bins (0, 1) overflow their small target; the neighborhood
         // bin (2) never produces candidates regardless of its population.
         assert!(!candidates.is_empty());
