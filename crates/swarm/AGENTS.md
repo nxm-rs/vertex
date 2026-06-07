@@ -7,7 +7,7 @@ Root-level rules in `/AGENTS.md` apply here too. The notes below are the area-sp
 ## Sub-area map
 
 - `primitives`, `forks`, `spec`, `identity`: pure data and configuration. `nectar-primitives` is the canonical source for chunk and address types.
-- `peers/peer`: the `SwarmPeer` record with EIP-191 handshake signature.
+- `peers/peer`: the `SwarmPeer` record with the EIP-191 handshake signature (distinct from postage EIP-191 signing, which lives upstream in `nectar-postage`). See the follow-up tracked at `nxm-rs/vertex` for extracting the sign-data primitive to nectar.
 - `peers/peer-manager`, `peers/peer-score`: lifecycle, persistence, scoring.
 - `bandwidth/{core,pricing,pseudosettle}`: per-peer balances in Accounting Units (AU). `swap` and `chequebook` are workspace-disabled.
 - `api`: the trait chain `SwarmPrimitives` to `SwarmNetworkTypes` to `SwarmClientTypes` to `SwarmStorerTypes`. Strictly libp2p-free with the documented `Multiaddr` exception.
@@ -23,7 +23,18 @@ Root-level rules in `/AGENTS.md` apply here too. The notes below are the area-sp
 - libp2p-free: `primitives`, `forks`, `spec`, `identity`, `api` (apart from the `Multiaddr` re-export), `builder` (almost), `bandwidth/*`, `localstore`, `redistribution`, `storer`, `rpc`, `test-utils`, `peers/peer-manager`, `peers/peer-score`.
 - libp2p-aware: `peers/peer` (uses `Multiaddr`, `PeerId`), `node`, `topology`.
 
-When in doubt: if you need a `NetworkBehaviour` or a `Swarm`, you are in `swarm/node` or `swarm/topology`. If you need only `Multiaddr` or `PeerId` you can be elsewhere, but justify it.
+When in doubt: if you need a `NetworkBehaviour` or a `Swarm`, you are in `swarm/node`, `swarm/topology`, or a future composite-behaviour crate for a node type. If you need only `Multiaddr` or `PeerId` you can be elsewhere, but justify it.
+
+### Composite behaviours for node types
+
+`swarm/topology` is the model for a composite `NetworkBehaviour` that owns several sub-protocols (kademlia routing, hive gossip, NAT discovery, reachability). The same pattern is planned for the Client and Storer node types: a single composite behaviour that brings together pricing, swap, pseudosettle, pushsync, retrieval, and similar role-specific protocols, exposed through one type to the libp2p `Swarm` in `swarm/node`.
+
+When such a crate lands (`vertex-swarm-client-behaviour`, `vertex-swarm-storer-behaviour`, or similar), it follows the same rules as `topology`:
+
+- Owns its sub-protocols, composes them with `#[derive(NetworkBehaviour)]`, exposes a single event enum.
+- Does not depend on a specific `Swarm` configuration; `swarm/node` selects the composite for the node type.
+- Lives in `crates/swarm/` (libp2p-aware tier), not in `crates/swarm/net/` (per-protocol tier).
+- Protocol crates under `crates/swarm/net/` stay one-protocol-per-crate. Composition happens here.
 
 ## Nectar boundary
 

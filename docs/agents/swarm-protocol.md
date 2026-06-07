@@ -67,6 +67,20 @@ Path: `docs/swarm/reference/book-of-swarm.txt`. Re-read before touching:
 - PSS, trojan chunks, envelopes: chapter 4.4.
 - Erasure, redundancy, recovery: chapter 5.1.
 
+### Wire-compat shims and SWIPs
+
+Some parts of the live Swarm wire format are not idiomatic protobuf. The reference implementation jams custom byte layouts into `bytes` fields (for example the `0x99`-prefixed multi-multiaddr block in the handshake), routes JSON inside protobuf payloads, and uses `big.Int.Bytes()` for variable-width numeric encodings where a fixed-width uint256 would be unambiguous. V1 conformance means we implement these shims byte-for-byte so peers interoperate, but every one of them is a code smell we want to retire upstream.
+
+How to handle a wire-compat shim:
+
+1. **Implement the shim faithfully.** The wire bytes must match the reference. Do not silently "improve" them; that breaks interop.
+2. **Tag the site with a greppable marker.** Use `// BEE-COMPAT(SWIP-NN): <short reason>` at the call site, the constant, or the type that carries the quirk. If no SWIP is filed yet, use `BEE-COMPAT(TBD): ...` and file the SWIP candidate before merging. A `grep -rn "BEE-COMPAT"` across the workspace must surface every such shim. Existing sites: `crates/swarm/peers/peer/src/serde_multiaddr.rs` (the `0x99` prefix); `vertex-swarm-net-pricing` (variable-width `big.Int.Bytes()` for the payment threshold). Add this marker whenever you introduce a new one.
+3. **File a SWIP candidate.** Open an issue in `nxm-rs/SWIPs` (our staging repo for upstream proposals) describing the current wire, the proposed fix, and the migration path through a Vertex hardfork. When the proposal is reviewed internally, mirror it upstream at `ethersphere/SWIPs`. Do not block Vertex work waiting for upstream review; Ethereum Swarm moves slowly.
+4. **Gate the corrected wire behind a `SwarmHardfork`.** When the SWIP lands, add a `SwarmHardfork` variant that flips the encoding at activation timestamp, and select via `ForkDigest` at handshake. The shim and the corrected path coexist until peers cut over.
+5. **Cross-link in code and tracker.** The `BEE-COMPAT(SWIP-NN)` marker references the issue number; the issue links back to the code site. When the hardfork ships, remove the marker.
+
+The point of the marker is to make the technical debt visible. A reader skimming `serde_multiaddr.rs` or the pricing codec should see immediately why a custom byte layout exists and where the open SWIP lives. Reviewers reject new wire-compat shims that arrive without a `BEE-COMPAT` marker and a linked SWIP candidate.
+
 ### Protocol error rules
 
 Summarised from `docs/protocol-errors.md`:

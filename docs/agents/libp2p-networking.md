@@ -33,7 +33,7 @@ Model new protocols on `libp2p::request_response` for one-shot exchanges and on 
 
 ### 4. PeerId vs OverlayAddress
 
-`PeerId` is libp2p transport identity. `OverlayAddress` is the Swarm Kademlia key derived from the Ethereum key. The mapping is owned by `vertex-swarm-node` (with the `PeerRegistry` in `vertex-net-peer-registry`). Never expose `PeerId` above `vertex-swarm-node`: traits in `vertex-swarm-api`, accounting, storer, RPC, and CLI all speak `OverlayAddress`. See `docs/client/architecture.md` for the dependency graph and `crates/swarm/peers/peer-manager/src/manager.rs` for the `DashMap<OverlayAddress, Arc<PeerEntry>>` model.
+`PeerId` is libp2p transport identity. `OverlayAddress` is the Swarm Kademlia key, derived as `keccak256(ethereum_address || network_id_le8 || nonce)` via `nectar_primitives::compute_overlay`. It is not the Ethereum key (or address) alone; the same operator identity yields different overlays across networks or with a new nonce, which is the property the redistribution game relies on. The `PeerId`/`OverlayAddress` mapping is owned by `vertex-swarm-node` (with the `PeerRegistry` in `vertex-net-peer-registry`). Never expose `PeerId` above `vertex-swarm-node`: traits in `vertex-swarm-api`, accounting, storer, RPC, and CLI all speak `OverlayAddress`. See `docs/client/architecture.md` for the dependency graph and `crates/swarm/peers/peer-manager/src/manager.rs` for the `DashMap<OverlayAddress, Arc<PeerEntry>>` model.
 
 ### 5. Connection lifecycle and backoff
 
