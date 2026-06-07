@@ -5,7 +5,7 @@
 //! - A rate limiter for inbound stream throttling
 //! - An outbound-pending flag to serialize outbound requests
 //!
-//! Protocol handlers (e.g., pingpong, hive) compose this struct instead of
+//! Protocol handlers (e.g., hive, pushsync) compose this struct instead of
 //! duplicating the same fields and logic.
 
 use std::collections::VecDeque;

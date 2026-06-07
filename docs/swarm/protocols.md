@@ -16,7 +16,7 @@ sequenceDiagram
     D->>L: Protocol Data (or receive, depends on protocol)
 ```
 
-**Headered protocols:** hive, pricing, pushsync, retrieval, pingpong, pullsync, pseudosettle
+**Headered protocols:** hive, pricing, pushsync, retrieval, pullsync, pseudosettle
 
 **Non-headered:** handshake (uses SYN/ACK directly)
 
@@ -47,7 +47,6 @@ Located in `vertex-swarm-peer`: `serialize_multiaddrs()` / `deserialize_multiadd
 | hive | Yes | Request/Response | Peer discovery, neighbour lists | `vertex-swarm-net-hive` |
 | pricing | Yes | Bidirectional | Bandwidth price negotiation | `vertex-swarm-net-pricing` |
 | pseudosettle | Yes | Bidirectional | Bandwidth settlement (soft accounting) | `vertex-swarm-net-pseudosettle` |
-| pingpong | Yes | Request/Response | Liveness checks | `vertex-swarm-net-pingpong` |
 | retrieval | Yes | Request/Response | Fetch chunks by address | `vertex-swarm-net-retrieval` |
 | pushsync | Yes | Request/Response | Push chunks to responsible peers | `vertex-swarm-net-pushsync` |
 | pullsync | Yes | Request/Response | Sync chunks in neighbourhood | (not yet implemented) |

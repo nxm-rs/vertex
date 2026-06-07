@@ -2,7 +2,7 @@
 //! pricing handler.
 //!
 //! A [`BootNode`] participates in peer discovery via handshake, hive, and
-//! pingpong and advertises the pricing protocol in listen-only mode so peers
+//! ping and advertises the pricing protocol in listen-only mode so peers
 //! that disconnect on a failed pricing handshake stay connected. It does not
 //! initiate any pricing announcement of its own and does not run the other
 //! client protocols (retrieval, pushsync, pseudosettle).
@@ -61,7 +61,7 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
     }
 
     /// Wire-protocol identifiers advertised by this behaviour above the
-    /// topology layer. Topology's protocols (handshake, hive, pingpong) are
+    /// topology layer. Topology's protocols (handshake, hive, ping) are
     /// owned by `topology` itself and are not enumerated here. Currently
     /// only the test below consumes this; the `dead_code` allow keeps the
     /// helper available for future diagnostics and operator-facing readouts.
@@ -101,7 +101,7 @@ impl From<ClientEvent> for BootnodeEvent {
 ///
 /// Unlike [`ClientNode`](super::ClientNode), this excludes all client protocols
 /// (pricing, retrieval, pushsync, settlement). Bootnodes only participate in
-/// peer discovery via handshake, hive, and pingpong.
+/// peer discovery via handshake, hive, and ping.
 pub struct BootNode<I: SwarmIdentity + Clone> {
     base: BaseNode<I, BootnodeBehaviour<I>>,
 }

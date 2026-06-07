@@ -1,17 +1,23 @@
 //! Composed protocol behaviours for topology.
 //!
-//! Uses libp2p's derive(NetworkBehaviour) to compose handshake, hive, and pingpong
-//! into a single behaviour with automatic handler composition.
+//! Uses libp2p's derive(NetworkBehaviour) to compose handshake, hive, and the
+//! stock libp2p ping protocol into a single behaviour with automatic handler
+//! composition.
+//!
+//! Liveness and RTT come from `libp2p::ping` (`/ipfs/ping`), the same protocol
+//! the reference implementation uses for per-peer reachability (its reacher
+//! pings over `/ipfs/ping`). The bee `/swarm/pingpong` protocol was an
+//! operator-only diagnostic and is not used here.
 
 use std::sync::Arc;
 
+use libp2p::ping;
 use libp2p::swarm::NetworkBehaviour;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_net_handshake::{HandshakeBehaviour, HandshakeEvent, SharedAdmissionControl};
 use vertex_swarm_net_hive::{
     DiscardSilently, HiveBehaviour, HiveEvent, HivePeerHandler, LearnAndDial,
 };
-use vertex_swarm_net_pingpong::{PingpongBehaviour, PingpongEvent};
 use vertex_swarm_primitives::SwarmNodeType;
 
 use crate::nat_discovery::LocalAddressManager;
@@ -21,7 +27,7 @@ use crate::nat_discovery::LocalAddressManager;
 pub enum ProtocolEvent {
     Handshake(HandshakeEvent),
     Hive(HiveEvent),
-    Pingpong(PingpongEvent),
+    Ping(ping::Event),
 }
 
 impl ProtocolEvent {
@@ -48,20 +54,9 @@ impl ProtocolEvent {
                 connection_id,
                 ..
             }) => (*peer_id, *connection_id),
-            Self::Pingpong(PingpongEvent::Pong {
-                peer_id,
-                connection_id,
-                ..
-            }) => (*peer_id, *connection_id),
-            Self::Pingpong(PingpongEvent::PingReceived {
-                peer_id,
-                connection_id,
-            }) => (*peer_id, *connection_id),
-            Self::Pingpong(PingpongEvent::Error {
-                peer_id,
-                connection_id,
-                ..
-            }) => (*peer_id, *connection_id),
+            Self::Ping(ping::Event {
+                peer, connection, ..
+            }) => (*peer, *connection),
         }
     }
 }
@@ -78,9 +73,9 @@ impl From<HiveEvent> for ProtocolEvent {
     }
 }
 
-impl From<PingpongEvent> for ProtocolEvent {
-    fn from(event: PingpongEvent) -> Self {
-        ProtocolEvent::Pingpong(event)
+impl From<ping::Event> for ProtocolEvent {
+    fn from(event: ping::Event) -> Self {
+        ProtocolEvent::Ping(event)
     }
 }
 
@@ -96,7 +91,7 @@ where
 {
     pub(crate) handshake: HandshakeBehaviour<I, LocalAddressManager>,
     pub(crate) hive: HiveBehaviour<I>,
-    pub(crate) pingpong: PingpongBehaviour,
+    pub(crate) ping: ping::Behaviour,
 }
 
 impl<I> ProtocolBehaviours<I>
@@ -127,7 +122,9 @@ where
             handshake: HandshakeBehaviour::new(identity.clone(), address_provider, "topology")
                 .with_admission_control(admission_control),
             hive: HiveBehaviour::with_peer_handler(identity, peer_handler),
-            pingpong: PingpongBehaviour::new(),
+            // Stock libp2p ping: periodic liveness + RTT over `/ipfs/ping`.
+            // Defaults (15s interval, 20s timeout) match typical libp2p usage.
+            ping: ping::Behaviour::new(ping::Config::new()),
         }
     }
 }

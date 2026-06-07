@@ -8,7 +8,6 @@ mod generated {
 pub use generated::handshake;
 pub use generated::headers;
 pub use generated::hive;
-pub use generated::pingpong;
 pub use generated::pricing;
 pub use generated::pseudosettle;
 pub use generated::pullsync;

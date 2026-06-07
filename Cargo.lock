@@ -7897,7 +7897,6 @@ dependencies = [
  "vertex-swarm-net-headers",
  "vertex-swarm-net-hive",
  "vertex-swarm-net-identify",
- "vertex-swarm-net-pingpong",
  "vertex-swarm-node",
  "vertex-swarm-peer-manager",
  "vertex-swarm-primitives",
@@ -8466,24 +8465,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vertex-swarm-net-pingpong"
-version = "0.1.0"
-dependencies = [
- "futures",
- "futures-bounded 0.2.4",
- "libp2p",
- "metrics",
- "strum 0.28.0",
- "tracing",
- "vertex-net-codec",
- "vertex-net-ratelimiter",
- "vertex-observability",
- "vertex-swarm-net-handler-core",
- "vertex-swarm-net-headers",
- "vertex-swarm-net-proto",
-]
-
-[[package]]
 name = "vertex-swarm-net-pricing"
 version = "0.1.0"
 dependencies = [
@@ -8827,7 +8808,6 @@ dependencies = [
  "vertex-swarm-net-headers",
  "vertex-swarm-net-hive",
  "vertex-swarm-net-identify",
- "vertex-swarm-net-pingpong",
  "vertex-swarm-peer",
  "vertex-swarm-peer-manager",
  "vertex-swarm-peer-score",

@@ -33,6 +33,4 @@ pub use handle::{BinStats, RoutingStats, TopologyHandle};
 
 pub use kademlia::saturation;
 pub use kademlia::{KademliaConfig, RoutingArgs};
-pub use reachability::{
-    HANDSHAKE_FAILURE_DECAY, HANDSHAKE_FAILURE_THRESHOLD, PeerReachability, ReachabilityTracker,
-};
+pub use reachability::{FAILURE_DECAY, FAILURE_THRESHOLD, PeerReachability, ReachabilityTracker};

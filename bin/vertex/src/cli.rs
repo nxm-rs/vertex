@@ -100,7 +100,6 @@ pub async fn run() -> Result<()> {
             .register_all(vertex_swarm_net_handshake::metrics::HISTOGRAM_BUCKETS)
             .register_all(vertex_swarm_net_hive::metrics::HISTOGRAM_BUCKETS)
             .register_all(vertex_swarm_net_identify::metrics::HISTOGRAM_BUCKETS)
-            .register_all(vertex_swarm_net_pingpong::metrics::HISTOGRAM_BUCKETS)
             .register_all(vertex_storage_redb::metrics::HISTOGRAM_BUCKETS)
             .build();
 
