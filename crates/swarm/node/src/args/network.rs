@@ -49,6 +49,12 @@ pub struct NetworkArgs {
     #[serde(rename = "no_discovery")]
     pub disable_discovery: bool,
 
+    /// Stop trusting same-subnet / private-LAN peers, making them ordinary
+    /// bin-trim eviction candidates. Local peers are trusted by default.
+    #[arg(long = "network.no-trust-local-peers")]
+    #[serde(rename = "no_trust_local_peers")]
+    pub no_trust_local_peers: bool,
+
     /// Comma-separated list of bootstrap node multiaddresses.
     #[arg(long = "network.bootnodes", value_delimiter = ',')]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -151,6 +157,7 @@ impl Default for NetworkArgs {
     fn default() -> Self {
         Self {
             disable_discovery: false,
+            no_trust_local_peers: false,
             bootnodes_raw: Vec::new(),
             trusted_peers_raw: Vec::new(),
             port: DEFAULT_P2P_PORT,
@@ -215,6 +222,7 @@ pub struct NetworkConfig<R = KademliaConfig> {
     upnp: bool,
     mdns: bool,
     discovery_enabled: bool,
+    trust_local_peers: bool,
     max_peers: usize,
     idle_timeout: Duration,
     peer: PeerConfig,
@@ -244,6 +252,7 @@ impl<R> NetworkConfig<R> {
             upnp: self.upnp,
             mdns: self.mdns,
             discovery_enabled: self.discovery_enabled,
+            trust_local_peers: self.trust_local_peers,
             max_peers: self.max_peers,
             idle_timeout: self.idle_timeout,
             peer: self.peer,
@@ -279,6 +288,7 @@ impl Default for NetworkConfig<KademliaConfig> {
             upnp: false,
             mdns: true,
             discovery_enabled: true,
+            trust_local_peers: true,
             max_peers: DEFAULT_MAX_PEERS,
             idle_timeout: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS),
             peer: PeerConfig::default(),
@@ -349,6 +359,7 @@ impl TryFrom<&NetworkArgs> for NetworkConfig<KademliaConfig> {
             upnp: args.upnp,
             mdns: args.mdns,
             discovery_enabled: !args.disable_discovery,
+            trust_local_peers: !args.no_trust_local_peers,
             max_peers: args.max_peers,
             idle_timeout: Duration::from_secs(args.idle_timeout_secs),
             peer: PeerConfig::from(&args.peer),
@@ -400,6 +411,10 @@ impl<R> SwarmNetworkConfig for NetworkConfig<R> {
 
     fn mdns_enabled(&self) -> bool {
         self.mdns
+    }
+
+    fn trust_local_peers(&self) -> bool {
+        self.trust_local_peers
     }
 }
 
@@ -472,6 +487,38 @@ mod tests {
     struct TestCli {
         #[command(flatten)]
         network: NetworkArgs,
+    }
+
+    #[test]
+    fn trust_local_peers_default_enabled() {
+        // Local peers are trusted by default and protected from bin trimming.
+        let config =
+            NetworkConfig::try_from(&NetworkArgs::default()).expect("default args should be valid");
+        assert!(config.trust_local_peers());
+    }
+
+    #[test]
+    fn no_trust_local_peers_flag_flips_default() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct TestCli {
+            #[command(flatten)]
+            network: NetworkArgs,
+        }
+
+        // Default leaves trust on; the negation flag disables it.
+        let default = TestCli::try_parse_from(["test"]).expect("default should parse");
+        let config = NetworkConfig::try_from(&default.network).expect("valid args");
+        assert!(config.trust_local_peers(), "trust is on by default");
+
+        let parsed = TestCli::try_parse_from(["test", "--network.no-trust-local-peers"])
+            .expect("flag should parse");
+        let config = NetworkConfig::try_from(&parsed.network).expect("valid args");
+        assert!(
+            !config.trust_local_peers(),
+            "negation flag disables local-peer trust"
+        );
     }
 
     #[test]

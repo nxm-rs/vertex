@@ -253,18 +253,19 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
     /// Identify peers to evict from overpopulated bins.
     ///
     /// Order: handshaking peers first (not yet established), then active peers
-    /// least worth keeping. Active victims are chosen by reachability then
-    /// score: `reachability(overlay)` (the lowest-ranked is evicted soonest)
-    /// breaks ties on the peer score. This matches the reference
-    /// implementation, whose prune prefers dropping unreachable peers.
-    /// `reachability` is supplied by the caller, which owns the
-    /// overlay->peer-id mapping and the reachability tracker; it returns any
-    /// `Ord` rank (the topology behaviour passes a `PeerReachability`, ordered
-    /// `Unreachable < Unknown < Reachable`), so this layer stays decoupled from
-    /// the reachability type.
+    /// least worth keeping. Active victims are chosen by rank then score:
+    /// `rank(overlay)` (the lowest-ranked is evicted soonest) breaks ties on the
+    /// peer score, preferring to drop unreachable peers.
+    /// `rank` is supplied by the caller, which owns the overlay->peer-id mapping
+    /// and the reachability tracker; it returns any `Ord` value, so this layer
+    /// stays decoupled from the rank type. The topology behaviour passes a
+    /// `PeerReachability` (ordered `Unreachable < Unknown < Reachable`), or a
+    /// `(PeerReachability, is_local)` tuple when local-peer trust is on: the
+    /// tuple orders lexicographically so a local peer ranks above a remote of
+    /// equal reachability and is evicted last.
     pub(crate) fn eviction_candidates<R: Ord>(
         &self,
-        reachability: impl Fn(&OverlayAddress) -> R,
+        rank: impl Fn(&OverlayAddress) -> R,
     ) -> Vec<EvictionCandidate> {
         let depth = self.depth();
         let phases = self.connection_phases.read();
@@ -302,7 +303,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
                 }
             }
 
-            // Phase 2: Active peers, least-reachable first then lowest score
+            // Phase 2: Active peers, lowest rank first then lowest score
             // (O(n) partial selection).
             if remaining > 0 {
                 let mut active_in_bin: Vec<_> = self
@@ -310,7 +311,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
                     .peers_in_bin(bin)
                     .into_iter()
                     .map(|overlay| {
-                        let rank = reachability(&overlay);
+                        let rank = rank(&overlay);
                         let score = self.peer_manager.get_peer_score(&overlay).unwrap_or(0.0);
                         (overlay, rank, score)
                     })
@@ -318,8 +319,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
 
                 if remaining < active_in_bin.len() {
                     active_in_bin.select_nth_unstable_by(remaining, |a, b| {
-                        // Evict least-reachable first (lower rank), breaking ties
-                        // on lowest score.
+                        // Evict lowest rank first, breaking ties on lowest score.
                         a.1.cmp(&b.1).then_with(|| {
                             a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal)
                         })
@@ -1135,6 +1135,82 @@ mod tests {
                 "least-reachable peer should be evicted before reachable ones"
             );
         }
+    }
+
+    #[test]
+    fn test_eviction_local_tiebreak_keeps_local_over_equal_remote() {
+        use crate::PeerReachability;
+
+        let base = SwarmAddress::with_first_byte(0x00);
+        let (routing, _pm) = make_routing(base, KademliaConfig::default());
+
+        // 6 active peers in bin 0; at depth 8 the target is 4, so surplus is 2.
+        let peers: Vec<_> = (0..6)
+            .map(|i| {
+                let mut bytes = [0x00u8; 32];
+                bytes[0] = 0x80 + i;
+                OverlayAddress::from(bytes)
+            })
+            .collect();
+        for &peer in &peers {
+            force_active(&routing, peer);
+        }
+        routing.depth.store(8, Ordering::Relaxed);
+
+        // Every peer has the same Unknown reachability; two are local. With the
+        // `(reachability, is_local)` tuple, `false < true`, so the two non-local
+        // peers rank lowest and are evicted while the locals are kept.
+        let local = [peers[1], peers[4]];
+        let candidates = routing
+            .eviction_candidates(|overlay| (PeerReachability::Unknown, local.contains(overlay)));
+
+        assert_eq!(candidates.len(), 2);
+        let evicted: Vec<_> = candidates.iter().map(|c| c.overlay).collect();
+        for peer in local {
+            assert!(
+                !evicted.contains(&peer),
+                "local peer must outrank a remote of equal reachability"
+            );
+        }
+    }
+
+    #[test]
+    fn test_eviction_remote_reachable_outranks_local_unreachable() {
+        use crate::PeerReachability;
+
+        let base = SwarmAddress::with_first_byte(0x00);
+        let (routing, _pm) = make_routing(base, KademliaConfig::default());
+
+        // 5 active peers in bin 0; at depth 8 the target is 4, so surplus is 1.
+        let peers: Vec<_> = (0..5)
+            .map(|i| {
+                let mut bytes = [0x00u8; 32];
+                bytes[0] = 0x80 + i;
+                OverlayAddress::from(bytes)
+            })
+            .collect();
+        for &peer in &peers {
+            force_active(&routing, peer);
+        }
+        routing.depth.store(8, Ordering::Relaxed);
+
+        // One local-but-unreachable peer; the rest are remote and reachable.
+        // Locality is the low-order tiebreak, so a genuine liveness failure
+        // (Unreachable) still ranks the local peer lowest and evicts it.
+        let dead_local = peers[2];
+        let candidates = routing.eviction_candidates(|overlay| {
+            if *overlay == dead_local {
+                (PeerReachability::Unreachable, true)
+            } else {
+                (PeerReachability::Reachable, false)
+            }
+        });
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].overlay, dead_local,
+            "an unreachable local is still evicted when it is the worst candidate"
+        );
     }
 
     #[test]

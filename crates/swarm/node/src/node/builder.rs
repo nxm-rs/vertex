@@ -135,6 +135,10 @@ impl<C: SwarmNetworkConfig> SwarmNetworkConfig for ConfigWithBootnodes<'_, C> {
     fn mdns_enabled(&self) -> bool {
         self.inner.mdns_enabled()
     }
+
+    fn trust_local_peers(&self) -> bool {
+        self.inner.trust_local_peers()
+    }
 }
 
 impl<C: SwarmPeerConfig> SwarmPeerConfig for ConfigWithBootnodes<'_, C> {
