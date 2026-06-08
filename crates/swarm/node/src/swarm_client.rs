@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use nectar_primitives::{AnyChunk, ChunkAddress};
 use vertex_swarm_api::{
-    BootnodeComponents, ClientComponents, HasAccounting, HasTopology, SwarmClient,
+    BootnodeComponents, ClientComponents, HasAccounting, HasTopology, StampedChunk, SwarmClient,
     SwarmClientAccounting, SwarmError, SwarmResult, SwarmTopologyRouting,
 };
 
@@ -79,8 +79,6 @@ where
     A: SwarmClientAccounting + Send + Sync + 'static,
     S: Send + Sync + 'static,
 {
-    type Storage = S;
-
     async fn get(&self, address: &ChunkAddress) -> SwarmResult<AnyChunk> {
         let _closest = self.components.topology().closest_to(address, 3);
         let _handle = &self.client_handle;
@@ -90,7 +88,7 @@ where
         Err(SwarmError::ChunkNotFound { address: *address })
     }
 
-    async fn put(&self, chunk: AnyChunk, _storage: &Self::Storage) -> SwarmResult<()> {
+    async fn put(&self, chunk: StampedChunk) -> SwarmResult<()> {
         let _closest = self.components.topology().closest_to(chunk.address(), 3);
         let _handle = &self.client_handle;
         let _accounting = self.components.accounting();

@@ -96,6 +96,6 @@ Summarised from `docs/protocol-errors.md`:
 - `multiaddrs`, never `underlay`. Underlay stays in bee. Applies to code, comments, docs, commits, PR bodies.
 - `OverlayAddress` is the 32-byte network identity. Do not call it "swarm address" (the book uses "swarm address" generically; in code we are specific).
 - `chunk` is the unit of storage. `CAC` is content-addressed chunk (BMT-hash addressed). `SOC` is single-owner chunk (keccak of id and owner). `feed` is the SOC-based mutable construct from book chapter 4.3.
-- `neighbourhood` (British spelling, matches book and existing docs). `bin` for kademlia bucket, `po` for proximity order, `depth` for the radius of responsibility.
+- `neighbourhood` (British spelling, matches book and existing docs). `bin` for kademlia bucket, `po` for proximity order. `depth` is the local node's connectivity boundary (`NeighborhoodDepth`, supply-side, local-only); `storage radius` is a node's reserve / storage-responsibility radius (`StorageRadius`, demand-side, valid for local or remote nodes). The two can diverge (Book of Swarm 3.3.4), so they are distinct types and are not interchangeable.
 - `PeerId` is the libp2p identity; `OverlayAddress` is the Swarm identity. Their boundary is enforced in `vertex-swarm-peer`.
 - `batch` and `stamp` are distinct: a batch is purchased on-chain, a stamp is an attestation derived from it for a specific chunk.

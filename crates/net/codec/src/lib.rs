@@ -36,6 +36,9 @@ macro_rules! assert_proto_roundtrip {
 /// plus a `From<Infallible>` impl. This macro generates those, and you can add
 /// protocol-specific variants after the macro invocation.
 ///
+/// Field-level attributes such as `#[from]` are supported on tuple-variant
+/// fields, so a decode variant can carry a typed source error directly.
+///
 /// # Example
 ///
 /// ```ignore
@@ -46,6 +49,10 @@ macro_rules! assert_proto_roundtrip {
 ///         #[error("invalid chunk address length: expected 32, got {0}")]
 ///         #[strum(serialize = "invalid_address_length")]
 ///         InvalidAddressLength(usize),
+///
+///         /// Malformed postage stamp, carrying the typed source error.
+///         #[error("invalid stamp: {0}")]
+///         InvalidStamp(#[from] nectar_postage::StampError),
 ///     }
 /// }
 /// ```
@@ -56,7 +63,7 @@ macro_rules! protocol_error {
         $vis:vis enum $name:ident {
             $(
                 $(#[$variant_meta:meta])*
-                $variant:ident $( ( $($field:ty),* $(,)? ) )? $( { $($struct_field:ident : $struct_ty:ty),* $(,)? } )?,
+                $variant:ident $( ( $($(#[$field_meta:meta])* $field:ty),* $(,)? ) )? $( { $($struct_field:ident : $struct_ty:ty),* $(,)? } )?,
             )*
         }
     ) => {
@@ -70,7 +77,7 @@ macro_rules! protocol_error {
 
             $(
                 $(#[$variant_meta])*
-                $variant $( ( $($field),* ) )? $( { $($struct_field : $struct_ty),* } )?,
+                $variant $( ( $($(#[$field_meta])* $field),* ) )? $( { $($struct_field : $struct_ty),* } )?,
             )*
 
             /// Protobuf encoding/decoding error.

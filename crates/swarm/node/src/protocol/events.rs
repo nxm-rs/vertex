@@ -15,12 +15,11 @@
 //! for routing to the respective settlement services. The behaviour routes these
 //! events based on optional senders configured at construction time.
 
-use alloy_primitives::U256;
-use bytes::Bytes;
+use alloy_primitives::{Signature, U256};
 use libp2p::PeerId;
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{ChunkAddress, Nonce};
 use vertex_swarm_net_pseudosettle::PaymentAck;
-use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
+use vertex_swarm_primitives::{OverlayAddress, StampedChunk, StorageRadius, SwarmNodeType};
 
 /// Events emitted by the client behaviour.
 #[derive(Debug, Clone)]
@@ -66,10 +65,8 @@ pub enum ClientEvent {
         peer: OverlayAddress,
         /// The chunk address.
         address: ChunkAddress,
-        /// The chunk data.
-        data: Bytes,
-        /// The postage stamp.
-        stamp: Bytes,
+        /// The received chunk and its postage stamp.
+        chunk: StampedChunk,
     },
 
     /// A chunk retrieval request failed.
@@ -93,10 +90,8 @@ pub enum ClientEvent {
         peer_id: PeerId,
         /// The chunk address.
         address: ChunkAddress,
-        /// The chunk data.
-        data: Bytes,
-        /// The postage stamp.
-        stamp: Bytes,
+        /// The pushed chunk and its postage stamp.
+        chunk: StampedChunk,
         /// Request ID for matching response.
         request_id: u64,
     },
@@ -108,11 +103,11 @@ pub enum ClientEvent {
         /// The chunk address.
         address: ChunkAddress,
         /// The receipt signature.
-        signature: Bytes,
+        signature: Signature,
         /// The receipt nonce.
-        nonce: Bytes,
+        nonce: Nonce,
         /// The peer's storage radius.
-        storage_radius: u8,
+        storage_radius: StorageRadius,
     },
 
     /// A chunk push failed.
@@ -231,10 +226,8 @@ pub enum ClientCommand {
         request_id: u64,
         /// The chunk address.
         address: ChunkAddress,
-        /// The chunk data.
-        data: Bytes,
-        /// The postage stamp.
-        stamp: Bytes,
+        /// The chunk and its postage stamp to serve.
+        chunk: StampedChunk,
     },
 
     /// Push a chunk to a peer.
@@ -243,10 +236,8 @@ pub enum ClientCommand {
         peer: OverlayAddress,
         /// The chunk address.
         address: ChunkAddress,
-        /// The chunk data.
-        data: Bytes,
-        /// The postage stamp.
-        stamp: Bytes,
+        /// The chunk and its postage stamp to push.
+        chunk: StampedChunk,
     },
 
     /// Send a receipt to a peer (response to ChunkPushReceived).
@@ -258,11 +249,11 @@ pub enum ClientCommand {
         /// The chunk address.
         address: ChunkAddress,
         /// The receipt signature.
-        signature: Bytes,
+        signature: Signature,
         /// The receipt nonce.
-        nonce: Bytes,
+        nonce: Nonce,
         /// Our storage radius.
-        storage_radius: u8,
+        storage_radius: StorageRadius,
     },
 
     /// Send a pseudosettle payment to a peer.

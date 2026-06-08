@@ -12,7 +12,7 @@ use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_net_pseudosettle::PaymentAck;
-use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_primitives::{OverlayAddress, StampedChunk};
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
 
 use crate::protocol::{ClientCommand, ClientEvent};
@@ -28,10 +28,8 @@ pub struct ClientHandle {
 
 /// Result of a chunk retrieval.
 pub struct RetrievalResult {
-    /// The chunk data.
-    pub data: bytes::Bytes,
-    /// The postage stamp.
-    pub stamp: bytes::Bytes,
+    /// The retrieved chunk and its postage stamp.
+    pub chunk: StampedChunk,
     /// The peer that served the chunk.
     pub peer: OverlayAddress,
 }
@@ -218,12 +216,11 @@ impl ClientService {
             ClientEvent::ChunkReceived {
                 peer,
                 address,
-                data,
-                stamp,
+                chunk,
             } => {
-                debug!(%peer, %address, data_len = data.len(), "Chunk received");
+                debug!(%peer, %address, "Chunk received");
                 self.handle
-                    .complete_retrieval(address, RetrievalResult { data, stamp, peer });
+                    .complete_retrieval(address, RetrievalResult { chunk, peer });
             }
 
             ClientEvent::ChunkRequested {
@@ -240,13 +237,12 @@ impl ClientService {
                 peer,
                 peer_id,
                 address,
-                data,
-                stamp,
+                chunk,
                 request_id,
             } => {
                 debug!(
                     %peer_id, %peer, %address, %request_id,
-                    data_len = data.len(), stamp_len = stamp.len(),
+                    stamp_batch = %chunk.stamp().batch(),
                     "Chunk push received"
                 );
                 // TODO: Validate chunk, store if responsible, send receipt
@@ -260,9 +256,8 @@ impl ClientService {
                 storage_radius,
             } => {
                 debug!(
-                    %peer, %address, %storage_radius,
-                    sig_len = signature.len(), nonce_len = nonce.len(),
-                    "Receipt received"
+                    %peer, %address, %storage_radius, %nonce,
+                    sig = %signature, "Receipt received"
                 );
                 // TODO: Verify receipt, complete push operation
             }
