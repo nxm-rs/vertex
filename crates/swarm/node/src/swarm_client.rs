@@ -9,6 +9,9 @@ use vertex_swarm_api::{
 
 use crate::ClientHandle;
 
+/// Number of closest peers to try, in order, for a retrieval.
+const CLOSEST_PEER_COUNT: usize = 3;
+
 /// Unified client for all Swarm node types.
 ///
 /// Generic over component type `C`:
@@ -80,21 +83,52 @@ where
     S: Send + Sync + 'static,
 {
     async fn get(&self, address: &ChunkAddress) -> SwarmResult<AnyChunk> {
-        let _closest = self.components.topology().closest_to(address, 3);
-        let _handle = &self.client_handle;
-        let _accounting = self.components.accounting();
+        let closest = self
+            .components
+            .topology()
+            .closest_to(address, CLOSEST_PEER_COUNT);
 
-        // TODO: Retrieval implementation
-        Err(SwarmError::ChunkNotFound { address: *address })
+        if closest.is_empty() {
+            return Err(SwarmError::NoStorer {
+                chunk_address: *address,
+            });
+        }
+
+        // Walk the closest peers in order and return the first response. The
+        // codec reconstructs the chunk against the requested address, so the
+        // retrieved chunk is already address-validated; no re-verification is
+        // needed here. Retrieval cannot yet be raced across peers for the same
+        // chunk: the client handle correlates a response to a pending request by
+        // chunk address alone, so two in-flight requests for one address would
+        // alias. Fanning out needs a per-request correlation id in the handle
+        // and handler, tracked as a follow-up; until then this is sequential.
+        let mut last_error: Option<SwarmError> = None;
+        for peer in closest {
+            match self.client_handle.retrieve_chunk(peer, *address).await {
+                Ok(result) => return Ok(result.chunk.into_parts().0),
+                Err(e) => last_error = Some(SwarmError::network_msg(e.to_string())),
+            }
+        }
+
+        Err(last_error.unwrap_or(SwarmError::ChunkNotFound { address: *address }))
     }
 
     async fn put(&self, chunk: StampedChunk) -> SwarmResult<()> {
-        let _closest = self.components.topology().closest_to(chunk.address(), 3);
-        let _handle = &self.client_handle;
-        let _accounting = self.components.accounting();
+        let address = *chunk.address();
+        let closest = self
+            .components
+            .topology()
+            .closest_to(&address, CLOSEST_PEER_COUNT);
 
-        // TODO: Push sync implementation
-        Ok(())
+        let peer = closest.into_iter().next().ok_or(SwarmError::NoStorer {
+            chunk_address: address,
+        })?;
+
+        self.client_handle
+            .push_chunk(peer, chunk)
+            .await
+            .map(|_receipt| ())
+            .map_err(|e| SwarmError::network_msg(e.to_string()))
     }
 }
 
@@ -147,5 +181,108 @@ mod tests {
 
         let peers = SwarmBandwidthAccounting::peers(client.accounting().bandwidth());
         assert!(peers.is_empty());
+    }
+
+    use crate::RetrievalError;
+    use alloy_primitives::{B256, Signature};
+    use nectar_primitives::{ContentChunk, Nonce};
+    use vertex_swarm_api::{PushReceipt, Stamp};
+    use vertex_swarm_primitives::{Bin, OverlayAddress, StorageRadius};
+
+    fn test_peer() -> OverlayAddress {
+        OverlayAddress::from([7u8; 32])
+    }
+
+    fn test_signature() -> Signature {
+        let mut raw = [0u8; 65];
+        raw[..64].fill(1);
+        raw[64] = 27;
+        Signature::try_from(&raw[..]).expect("valid signature bytes")
+    }
+
+    fn test_stamp() -> Stamp {
+        Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, test_signature())
+    }
+
+    fn test_stamped_chunk() -> StampedChunk {
+        let chunk = ContentChunk::new(&b"chunk-bytes"[..]).expect("valid content chunk");
+        StampedChunk::new(chunk.into(), test_stamp())
+    }
+
+    fn test_address() -> ChunkAddress {
+        *test_stamped_chunk().address()
+    }
+
+    #[tokio::test]
+    async fn push_chunk_emits_command_and_resolves_on_receipt() {
+        let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
+        let handle = ClientHandle::new(tx);
+
+        let peer = test_peer();
+        let stamped = test_stamped_chunk();
+        let address = *stamped.address();
+
+        let push = {
+            let handle = handle.clone();
+            tokio::spawn(async move { handle.push_chunk(peer, stamped).await })
+        };
+
+        // The handle must have emitted a PushChunk command for the target peer.
+        let cmd = rx.recv().await.expect("command emitted");
+        match cmd {
+            ClientCommand::PushChunk {
+                peer: p,
+                address: a,
+                chunk,
+            } => {
+                assert_eq!(p, peer);
+                assert_eq!(a, address);
+                assert_eq!(*chunk.address(), address);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        // Simulate the event processor delivering a typed receipt.
+        handle.complete_push(
+            address,
+            PushReceipt {
+                storer: peer,
+                signature: test_signature(),
+                nonce: Nonce::from([9u8; 32]),
+                storage_radius: StorageRadius::new(Bin::new(5).unwrap()),
+            },
+        );
+
+        let receipt = push.await.unwrap().expect("push resolves");
+        assert_eq!(receipt.storer, peer);
+        assert_eq!(receipt.signature, test_signature());
+        assert_eq!(receipt.nonce, Nonce::from([9u8; 32]));
+        assert_eq!(receipt.storage_radius.get(), 5);
+    }
+
+    #[tokio::test]
+    async fn push_chunk_fails_when_push_is_rejected() {
+        let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
+        let handle = ClientHandle::new(tx);
+
+        let peer = test_peer();
+        let stamped = test_stamped_chunk();
+        let address = test_address();
+
+        let push = {
+            let handle = handle.clone();
+            tokio::spawn(async move { handle.push_chunk(peer, stamped).await })
+        };
+
+        let _ = rx.recv().await.expect("command emitted");
+
+        // The event processor reports a storer rejection.
+        handle.fail_push(address, "rejected".to_string());
+
+        let result = push.await.unwrap();
+        match result {
+            Err(RetrievalError::PushRejected(reason)) => assert_eq!(reason, "rejected"),
+            other => panic!("expected PushRejected, got {other:?}"),
+        }
     }
 }
