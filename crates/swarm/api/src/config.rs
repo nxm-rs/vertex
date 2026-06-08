@@ -159,6 +159,13 @@ pub trait SwarmNetworkConfig {
     fn upnp_enabled(&self) -> bool {
         false
     }
+
+    /// Whether mDNS local peer discovery is enabled (default: true). Lets two
+    /// nodes on the same LAN discover and connect to each other without
+    /// bootnodes or NAT configuration. The multicast traffic stays link-local.
+    fn mdns_enabled(&self) -> bool {
+        true
+    }
 }
 
 /// Configuration for Swarm node identity.

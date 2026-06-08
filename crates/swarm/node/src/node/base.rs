@@ -2,6 +2,8 @@
 
 use eyre::Result;
 use libp2p::autonat::v2 as autonat;
+use libp2p::mdns;
+use libp2p::multiaddr::Protocol;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::upnp;
 use libp2p::{Multiaddr, PeerId, Swarm, swarm::NetworkBehaviour, swarm::SwarmEvent};
@@ -9,7 +11,7 @@ use nectar_primitives::SwarmAddress;
 use tracing::{debug, info, trace, warn};
 use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig};
 use vertex_swarm_net_identify as identify;
-use vertex_swarm_topology::{TopologyBehaviour, TopologyHandle};
+use vertex_swarm_topology::{TopologyBehaviour, TopologyCommand, TopologyHandle};
 
 /// Optional NAT-traversal behaviours shared by every node type.
 ///
@@ -21,18 +23,95 @@ pub(crate) struct NatBehaviours {
     pub(crate) autonat_client: Toggle<autonat::client::Behaviour>,
     pub(crate) autonat_server: Toggle<autonat::server::Behaviour>,
     pub(crate) upnp: Toggle<upnp::tokio::Behaviour>,
+    /// Whether mDNS discovery is enabled. The behaviour itself is built in the
+    /// node `from_parts`, where the local [`PeerId`] is available.
+    pub(crate) mdns_enabled: bool,
 }
 
 impl NatBehaviours {
     /// Build the NAT behaviours from a network configuration.
     ///
-    /// AutoNAT v2 is enabled by default for every node type; UPnP is opt-in.
+    /// AutoNAT v2 and mDNS are enabled by default for every node type; UPnP is
+    /// opt-in.
     pub(crate) fn from_config(config: &impl SwarmNetworkConfig) -> Self {
         let autonat = config.autonat_enabled();
         Self {
             autonat_client: Toggle::from(autonat.then(autonat::client::Behaviour::default)),
             autonat_server: Toggle::from(autonat.then(autonat::server::Behaviour::default)),
             upnp: Toggle::from(config.upnp_enabled().then(upnp::tokio::Behaviour::default)),
+            mdns_enabled: config.mdns_enabled(),
+        }
+    }
+}
+
+/// Build the mDNS discovery behaviour as a [`Toggle`].
+///
+/// mDNS construction is fallible (it binds a multicast socket) and needs the
+/// local [`PeerId`], so it is built in the node behaviour `from_parts` rather
+/// than alongside the config-only NAT behaviours. A bind failure never aborts
+/// node startup: the behaviour is logged and left disabled.
+///
+/// A future browser/wasm client would gate this off, since mDNS has no
+/// `wasm32-unknown-unknown` transport; the node crate is not in the wasm cone.
+pub(crate) fn build_mdns_toggle(enabled: bool, peer_id: PeerId) -> Toggle<mdns::tokio::Behaviour> {
+    if !enabled {
+        return Toggle::from(None);
+    }
+    match mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id) {
+        Ok(behaviour) => Toggle::from(Some(behaviour)),
+        Err(error) => {
+            warn!(%error, "mDNS discovery disabled: failed to start multicast listener");
+            Toggle::from(None)
+        }
+    }
+}
+
+/// Turn an mDNS-discovered `(peer, addr)` pair into a dialable multiaddr.
+///
+/// Returns `None` for our own [`PeerId`] (mDNS hears its own announcements).
+/// Otherwise appends `/p2p/<peer_id>` when the address lacks a peer component
+/// so the dial resolves to a concrete peer; an address that already carries a
+/// `/p2p/` is returned unchanged.
+pub(crate) fn mdns_dial_addr(
+    local_peer_id: &PeerId,
+    peer_id: PeerId,
+    addr: Multiaddr,
+) -> Option<Multiaddr> {
+    if peer_id == *local_peer_id {
+        return None;
+    }
+    let has_p2p = addr.iter().any(|p| matches!(p, Protocol::P2p(_)));
+    if has_p2p {
+        Some(addr)
+    } else {
+        Some(addr.with(Protocol::P2p(peer_id)))
+    }
+}
+
+/// Handle an mDNS event by dialing freshly discovered LAN peers.
+///
+/// `Discovered` peers are dialed as `DialTarget::Unknown` through the topology;
+/// the overlay address is learned at the Swarm handshake. `Expired` is only
+/// logged: an mDNS TTL lapse is not connection state and must not tear down a
+/// live connection.
+pub(crate) fn handle_mdns_event<I: SwarmIdentity + Clone>(
+    local_peer_id: PeerId,
+    topology: &mut TopologyBehaviour<I>,
+    event: mdns::Event,
+) {
+    match event {
+        mdns::Event::Discovered(peers) => {
+            for (peer_id, addr) in peers {
+                if let Some(dial_addr) = mdns_dial_addr(&local_peer_id, peer_id, addr) {
+                    debug!(%peer_id, %dial_addr, "Dialing mDNS-discovered LAN peer");
+                    topology.on_command(TopologyCommand::Dial(dial_addr));
+                }
+            }
+        }
+        mdns::Event::Expired(peers) => {
+            for (peer_id, addr) in peers {
+                debug!(%peer_id, %addr, "mDNS record expired");
+            }
         }
     }
 }
@@ -242,5 +321,50 @@ pub(crate) fn handle_identify_event(identify: &mut identify::Behaviour, event: i
         identify::Event::Error { peer_id, error, .. } => {
             warn!(%peer_id, %error, "Identify error");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use libp2p::identity::Keypair;
+
+    use super::*;
+
+    fn random_peer_id() -> PeerId {
+        Keypair::generate_ed25519().public().to_peer_id()
+    }
+
+    #[test]
+    fn mdns_dial_addr_appends_p2p_when_missing() {
+        let local = random_peer_id();
+        let peer = random_peer_id();
+        let addr: Multiaddr = "/ip4/192.168.1.10/tcp/1634".parse().expect("valid addr");
+
+        let dial = mdns_dial_addr(&local, peer, addr).expect("peer should be dialable");
+
+        let expected: Multiaddr = format!("/ip4/192.168.1.10/tcp/1634/p2p/{peer}")
+            .parse()
+            .expect("valid addr");
+        assert_eq!(dial, expected);
+    }
+
+    #[test]
+    fn mdns_dial_addr_keeps_existing_p2p() {
+        let local = random_peer_id();
+        let peer = random_peer_id();
+        let addr: Multiaddr = format!("/ip4/192.168.1.10/tcp/1634/p2p/{peer}")
+            .parse()
+            .expect("valid addr");
+
+        let dial = mdns_dial_addr(&local, peer, addr.clone()).expect("peer should be dialable");
+        assert_eq!(dial, addr);
+    }
+
+    #[test]
+    fn mdns_dial_addr_skips_self() {
+        let local = random_peer_id();
+        let addr: Multiaddr = "/ip4/127.0.0.1/tcp/1634".parse().expect("valid addr");
+
+        assert!(mdns_dial_addr(&local, local, addr).is_none());
     }
 }

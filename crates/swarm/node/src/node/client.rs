@@ -10,6 +10,7 @@ use std::sync::Arc;
 use eyre::Result;
 use futures::StreamExt;
 use libp2p::autonat::v2 as autonat;
+use libp2p::mdns;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::upnp;
 use libp2p::{Multiaddr, PeerId, identity::PublicKey, swarm::NetworkBehaviour, swarm::SwarmEvent};
@@ -41,6 +42,7 @@ pub(crate) struct ClientNodeBehaviour<I: SwarmIdentity + Clone> {
     pub(crate) autonat_client: Toggle<autonat::client::Behaviour>,
     pub(crate) autonat_server: Toggle<autonat::server::Behaviour>,
     pub(crate) upnp: Toggle<upnp::tokio::Behaviour>,
+    pub(crate) mdns: Toggle<mdns::tokio::Behaviour>,
     pub(crate) topology: TopologyBehaviour<I>,
     pub(crate) client: ClientBehaviour,
 }
@@ -52,6 +54,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
         nat: NatBehaviours,
     ) -> Self {
         let agent_versions = topology.agent_versions();
+        let peer_id = local_public_key.to_peer_id();
         Self {
             // Identify advertises addresses scoped to each peer (see
             // `addresses_for_remote`), so a public peer never receives our
@@ -65,6 +68,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
             autonat_client: nat.autonat_client,
             autonat_server: nat.autonat_server,
             upnp: nat.upnp,
+            mdns: super::base::build_mdns_toggle(nat.mdns_enabled, peer_id),
             topology,
             client: ClientBehaviour::new(ClientBehaviourConfig::default()),
         }
@@ -78,6 +82,7 @@ pub enum ClientNodeEvent {
     AutonatClient(autonat::client::Event),
     AutonatServer(autonat::server::Event),
     Upnp(upnp::Event),
+    Mdns(mdns::Event),
     Topology(()),
     Client(ClientEvent),
 }
@@ -103,6 +108,12 @@ impl From<autonat::server::Event> for ClientNodeEvent {
 impl From<upnp::Event> for ClientNodeEvent {
     fn from(event: upnp::Event) -> Self {
         ClientNodeEvent::Upnp(event)
+    }
+}
+
+impl From<mdns::Event> for ClientNodeEvent {
+    fn from(event: mdns::Event) -> Self {
+        ClientNodeEvent::Mdns(event)
     }
 }
 
@@ -243,6 +254,14 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
             }
             ClientNodeEvent::Upnp(event) => {
                 super::base::handle_upnp_event(event);
+            }
+            ClientNodeEvent::Mdns(event) => {
+                let local_peer_id = *self.base.swarm.local_peer_id();
+                super::base::handle_mdns_event(
+                    local_peer_id,
+                    &mut self.base.swarm.behaviour_mut().topology,
+                    event,
+                );
             }
             ClientNodeEvent::Topology(_) => {}
             ClientNodeEvent::Client(event) => {

@@ -34,6 +34,11 @@ fn default_autonat() -> bool {
     true
 }
 
+/// Default for mdns (local LAN peer discovery enabled by default).
+fn default_mdns() -> bool {
+    true
+}
+
 /// P2P network CLI arguments.
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
 #[command(next_help_heading = "Networking")]
@@ -82,6 +87,11 @@ pub struct NetworkArgs {
     #[serde(default)]
     pub upnp: bool,
 
+    /// Enable mDNS local LAN peer discovery (enabled by default).
+    #[arg(long = "network.mdns", default_value_t = true)]
+    #[serde(default = "default_mdns")]
+    pub mdns: bool,
+
     /// Maximum number of peers.
     #[arg(long = "network.max-peers", default_value_t = DEFAULT_MAX_PEERS)]
     pub max_peers: usize,
@@ -113,6 +123,7 @@ impl Default for NetworkArgs {
             nat_auto: true,
             autonat: true,
             upnp: false,
+            mdns: true,
             max_peers: DEFAULT_MAX_PEERS,
             idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
             peer: PeerArgs::default(),
@@ -166,6 +177,7 @@ pub struct NetworkConfig<R = KademliaConfig> {
     nat_auto: bool,
     autonat: bool,
     upnp: bool,
+    mdns: bool,
     discovery_enabled: bool,
     max_peers: usize,
     idle_timeout: Duration,
@@ -194,6 +206,7 @@ impl<R> NetworkConfig<R> {
             nat_auto: self.nat_auto,
             autonat: self.autonat,
             upnp: self.upnp,
+            mdns: self.mdns,
             discovery_enabled: self.discovery_enabled,
             max_peers: self.max_peers,
             idle_timeout: self.idle_timeout,
@@ -228,6 +241,7 @@ impl Default for NetworkConfig<KademliaConfig> {
             nat_auto: true,
             autonat: true,
             upnp: false,
+            mdns: true,
             discovery_enabled: true,
             max_peers: DEFAULT_MAX_PEERS,
             idle_timeout: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS),
@@ -297,6 +311,7 @@ impl TryFrom<&NetworkArgs> for NetworkConfig<KademliaConfig> {
             nat_auto: args.nat_auto,
             autonat: args.autonat,
             upnp: args.upnp,
+            mdns: args.mdns,
             discovery_enabled: !args.disable_discovery,
             max_peers: args.max_peers,
             idle_timeout: Duration::from_secs(args.idle_timeout_secs),
@@ -345,6 +360,10 @@ impl<R> SwarmNetworkConfig for NetworkConfig<R> {
 
     fn upnp_enabled(&self) -> bool {
         self.upnp
+    }
+
+    fn mdns_enabled(&self) -> bool {
+        self.mdns
     }
 }
 
@@ -403,6 +422,44 @@ mod tests {
         let config = NetworkConfig::try_from(&args).expect("valid args");
         assert!(!config.autonat_enabled());
         assert!(config.upnp_enabled());
+    }
+
+    #[test]
+    fn mdns_default_enabled() {
+        // mDNS local LAN discovery is on by default for zero-bootnode bootstrap.
+        let config =
+            NetworkConfig::try_from(&NetworkArgs::default()).expect("default args should be valid");
+        assert!(config.mdns_enabled());
+    }
+
+    #[test]
+    fn mdns_flag_parses() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct TestCli {
+            #[command(flatten)]
+            network: NetworkArgs,
+        }
+
+        // The flag is registered under its `network.mdns` long name and parses
+        // with no value, leaving mDNS enabled by default.
+        let parsed =
+            TestCli::try_parse_from(["test", "--network.mdns"]).expect("flag should parse");
+        assert!(parsed.network.mdns, "mDNS is enabled by default");
+
+        let default = TestCli::try_parse_from(["test"]).expect("default should parse");
+        assert!(default.network.mdns, "mDNS defaults to enabled");
+    }
+
+    #[test]
+    fn mdns_flag_propagates() {
+        let args = NetworkArgs {
+            mdns: false,
+            ..Default::default()
+        };
+        let config = NetworkConfig::try_from(&args).expect("valid args");
+        assert!(!config.mdns_enabled());
     }
 
     #[test]
