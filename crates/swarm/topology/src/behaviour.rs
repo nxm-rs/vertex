@@ -21,7 +21,9 @@ use libp2p::{
     },
 };
 use tracing::{debug, info};
-use vertex_net_local::{AddressScope, LocalCapabilities, classify_multiaddr, same_subnet};
+use vertex_net_local::{
+    AddressScope, LocalCapabilities, classify_multiaddr, is_globally_routable_ipv6, same_subnet,
+};
 use vertex_net_peer_store::NetPeerStore;
 use vertex_net_peer_store::error::StoreError;
 use vertex_swarm_api::SwarmScoreStore;
@@ -782,6 +784,18 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
                 let capability_became_known =
                     self.nat_discovery.on_new_listen_addr(info.addr.clone());
 
+                // A globally-routable IPv6 listen address is reachable end-to-end
+                // without a dial-back: IPv6 has no NAT, so binding a global unicast
+                // address is sufficient (subject only to a stateful firewall, which
+                // would equally fail AutoNAT). Self-confirm it as an external
+                // address so it lands in the verified tier immediately and AutoNAT
+                // can spend its candidate budget on the harder IPv4/NAT case.
+                if is_globally_routable_ipv6(info.addr) {
+                    debug!(address = %info.addr, "Self-confirming globally-routable IPv6 listen address");
+                    self.pending_actions
+                        .push_back(ToSwarm::ExternalAddrConfirmed(info.addr.clone()));
+                }
+
                 if capability_became_known {
                     debug!("Network capability now known, triggering immediate dial");
                     self.evaluator_handle.trigger_evaluation();
@@ -972,6 +986,12 @@ impl<I: SwarmIdentity + Clone> Drop for TopologyBehaviour<I> {
 mod tests {
     use super::*;
 
+    use std::task::{Context, Poll};
+
+    use libp2p::core::transport::ListenerId;
+    use libp2p::swarm::behaviour::NewListenAddr;
+    use vertex_swarm_identity::Identity;
+
     use crate::kademlia::KademliaConfig;
 
     use alloy_primitives::{Address, B256, Signature};
@@ -1045,5 +1065,149 @@ mod tests {
 
         assert_eq!(config.dial_interval, Duration::from_secs(10));
         assert_eq!(config.kademlia.limits.nominal(), 3);
+    }
+
+    /// Minimal `SwarmBootnodeConfig` for behaviour construction in tests.
+    #[derive(Default)]
+    struct TestNetworkConfig {
+        peer: TestPeerConfig,
+        routing: KademliaConfig,
+    }
+
+    impl vertex_swarm_api::SwarmNetworkConfig for TestNetworkConfig {
+        fn listen_addrs(&self) -> &[Multiaddr] {
+            &[]
+        }
+        fn bootnodes(&self) -> &[Multiaddr] {
+            &[]
+        }
+        fn trusted_peers(&self) -> &[Multiaddr] {
+            &[]
+        }
+        fn discovery_enabled(&self) -> bool {
+            true
+        }
+        fn max_peers(&self) -> usize {
+            16
+        }
+        fn idle_timeout(&self) -> Duration {
+            Duration::from_secs(30)
+        }
+        fn nat_addrs(&self) -> &[Multiaddr] {
+            &[]
+        }
+        fn nat_auto_enabled(&self) -> bool {
+            false
+        }
+    }
+
+    #[derive(Default)]
+    struct TestPeerConfig;
+
+    impl vertex_swarm_api::PeerConfigValues for TestPeerConfig {
+        fn ban_threshold(&self) -> f64 {
+            vertex_swarm_api::DEFAULT_PEER_BAN_THRESHOLD
+        }
+    }
+
+    impl vertex_swarm_api::SwarmPeerConfig for TestNetworkConfig {
+        type Peers = TestPeerConfig;
+        fn peers(&self) -> &Self::Peers {
+            &self.peer
+        }
+    }
+
+    impl vertex_swarm_api::SwarmRoutingConfig for TestNetworkConfig {
+        type Routing = KademliaConfig;
+        fn routing(&self) -> &Self::Routing {
+            &self.routing
+        }
+    }
+
+    /// Drive the behaviour's poll loop until it yields the first `ToSwarm`, or
+    /// return `None` once it parks. Tests only assert on the external-address
+    /// actions, so a bounded number of polls is sufficient.
+    fn poll_one(
+        behaviour: &mut TopologyBehaviour<Identity>,
+        cx: &mut Context<'_>,
+    ) -> Option<ToSwarm<(), THandlerInEvent<ProtocolBehaviours<Identity>>>> {
+        match behaviour.poll(cx) {
+            Poll::Ready(action) => Some(action),
+            Poll::Pending => None,
+        }
+    }
+
+    /// Collect every `ExternalAddrConfirmed` address emitted across a bounded
+    /// number of poll iterations.
+    fn drain_confirmed_external(behaviour: &mut TopologyBehaviour<Identity>) -> Vec<Multiaddr> {
+        let waker = futures::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let mut out = Vec::new();
+        for _ in 0..64 {
+            match poll_one(behaviour, &mut cx) {
+                Some(ToSwarm::ExternalAddrConfirmed(addr)) => out.push(addr),
+                Some(_) => {}
+                None => break,
+            }
+        }
+        out
+    }
+
+    fn new_listen_addr(behaviour: &mut TopologyBehaviour<Identity>, addr: &Multiaddr) {
+        behaviour.on_swarm_event(FromSwarm::NewListenAddr(NewListenAddr {
+            listener_id: ListenerId::next(),
+            addr,
+        }));
+    }
+
+    /// A globally-routable IPv6 listen address is self-confirmed as an external
+    /// address (IPv6 has no NAT), while a public IPv4 listen address is not (it
+    /// may sit behind NAT and still requires AutoNAT verification).
+    #[tokio::test]
+    async fn global_ipv6_listen_addr_self_confirmed_ipv4_not() {
+        // The topology stack expects a global TaskExecutor.
+        let _tm = vertex_tasks::TaskManager::current();
+
+        let identity = Identity::random(vertex_swarm_spec::init_testnet(), SwarmNodeType::Storer);
+        let (mut behaviour, _handle) = TopologyBehaviour::new(
+            identity,
+            TopologyConfig::new(),
+            &TestNetworkConfig::default(),
+            None,
+            None,
+        )
+        .expect("build topology behaviour");
+
+        // Drain the initial poll (no static NAT addresses configured here).
+        let _ = drain_confirmed_external(&mut behaviour);
+
+        let v6: Multiaddr = "/ip6/2606:4700:4700::1111/tcp/1634".parse().unwrap();
+        let v4: Multiaddr = "/ip4/8.8.8.8/tcp/1634".parse().unwrap();
+        let v6_ula: Multiaddr = "/ip6/fd00::1/tcp/1634".parse().unwrap();
+        let v6_unspec: Multiaddr = "/ip6/::/tcp/1634".parse().unwrap();
+
+        new_listen_addr(&mut behaviour, &v6);
+        new_listen_addr(&mut behaviour, &v4);
+        new_listen_addr(&mut behaviour, &v6_ula);
+        new_listen_addr(&mut behaviour, &v6_unspec);
+
+        let confirmed = drain_confirmed_external(&mut behaviour);
+
+        assert!(
+            confirmed.contains(&v6),
+            "global IPv6 listen address must be self-confirmed, got {confirmed:?}"
+        );
+        assert!(
+            !confirmed.contains(&v4),
+            "public IPv4 listen address must NOT be self-confirmed, got {confirmed:?}"
+        );
+        assert!(
+            !confirmed.contains(&v6_ula),
+            "unique-local IPv6 must NOT be self-confirmed, got {confirmed:?}"
+        );
+        assert!(
+            !confirmed.contains(&v6_unspec),
+            "unspecified IPv6 must NOT be self-confirmed, got {confirmed:?}"
+        );
     }
 }

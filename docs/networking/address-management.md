@@ -83,6 +83,7 @@ NAT traversal runs as a cluster of top-level libp2p behaviours that sit beside i
 - **AutoNAT v2 client** picks up each candidate, asks a peer that speaks `/libp2p/autonat/2/dial-request` to dial it back over a fresh port, and on success emits `ExternalAddrConfirmed`.
 - **AutoNAT v2 server** performs dial-backs for other peers. A completed dial-back proves the remote peer accepts inbound connections, so the node promotes it to `Reachable` in the topology reachability tracker via `on_autonat_peer_confirmed()`.
 - **UPnP** (`libp2p::upnp::tokio`) asks the LAN IGD gateway to map the listen port and emits `ExternalAddrConfirmed` for the mapped address.
+- **Globally-routable IPv6 listen addresses** are self-confirmed without a dial-back. When `vertex-swarm-topology` sees a `NewListenAddr` carrying a global unicast IPv6 address it actually binds, it emits `ExternalAddrConfirmed` for that address directly. IPv6 has no NAT, so a bound global unicast address is reachable end-to-end; the only caveat is a stateful firewall dropping unsolicited inbound packets, which is operator configuration and would equally fail an AutoNAT dial-back. This applies only to listen addresses we bind, never to observed or relayed candidates, and only to IPv6: a public-scope IPv4 listen address may still sit behind NAT and is left for AutoNAT to verify. The effect is that an IPv6 listen address reaches the verified advertisement tier immediately, letting the AutoNAT v2 client spend its score-ranked candidate budget on the harder IPv4/NAT case.
 
 The swarm broadcasts every `ExternalAddrConfirmed` to all behaviours, so the topology behaviour learns about verified addresses without any per-behaviour plumbing.
 
@@ -129,5 +130,5 @@ The record we sign during the handshake is what a full-node peer stores and goss
 
 ### IPv6 vs IPv4
 
-Most IPv6 addresses are globally routable (except loopback, link-local, ULA, and documentation ranges). IPv4 is more complex due to NAT prevalence. For IPv4, only explicitly public listen addresses or configured NAT addresses are trusted.
+Most IPv6 addresses are globally routable (except loopback, link-local, ULA, and documentation ranges). IPv4 is more complex due to NAT prevalence. For IPv4, only explicitly public listen addresses or configured NAT addresses are trusted. This asymmetry is also why a global unicast IPv6 listen address is self-confirmed as an external address while a public-scope IPv4 listen address is not (see the AutoNAT v2 and UPnP section).
 

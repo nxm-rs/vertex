@@ -85,6 +85,34 @@ pub fn classify_multiaddr(addr: &Multiaddr) -> Option<AddressScope> {
     extract_ip(addr).and_then(classify_ip)
 }
 
+/// Whether a multiaddr is a globally-routable IPv6 unicast address.
+///
+/// IPv6 has no NAT: a global unicast address bound on a local interface is
+/// reachable end-to-end by any peer, so a node listening on one can treat it as
+/// externally confirmed without a dial-back. The only caveat is a stateful
+/// firewall dropping unsolicited inbound packets; that is the operator's
+/// configuration, not an addressing question, and the same firewall would also
+/// fail an AutoNAT dial-back. Apply this only to listen addresses the node
+/// actually binds, never to observed or relayed addresses.
+///
+/// Returns `false` for IPv4 (which may sit behind NAT even when public-scope),
+/// for non-global IPv6 (loopback, unique-local, link-local, unspecified), and
+/// for family-less addresses (DNS).
+///
+/// ```
+/// use vertex_net_local::is_globally_routable_ipv6;
+///
+/// let global: libp2p::Multiaddr = "/ip6/2606:4700:4700::1111/tcp/1634".parse().unwrap();
+/// let ula: libp2p::Multiaddr = "/ip6/fd00::1/tcp/1634".parse().unwrap();
+/// let public_v4: libp2p::Multiaddr = "/ip4/8.8.8.8/tcp/1634".parse().unwrap();
+/// assert!(is_globally_routable_ipv6(&global));
+/// assert!(!is_globally_routable_ipv6(&ula));
+/// assert!(!is_globally_routable_ipv6(&public_v4));
+/// ```
+pub fn is_globally_routable_ipv6(addr: &Multiaddr) -> bool {
+    matches!(extract_ip(addr), Some(IpAddr::V6(ip)) if classify_ipv6(ip) == Some(AddressScope::Public))
+}
+
 /// IP version of an address (extracted from Protocol).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum IpVersion {
@@ -385,6 +413,35 @@ mod tests {
 
         let addr: Multiaddr = "/ip6/2607:f8b0:4004:800::200e/tcp/1234".parse().unwrap();
         assert_eq!(classify_multiaddr(&addr), Some(AddressScope::Public));
+    }
+
+    #[test]
+    fn test_is_globally_routable_ipv6() {
+        // Global unicast IPv6: yes.
+        let global: Multiaddr = "/ip6/2606:4700:4700::1111/tcp/1634".parse().unwrap();
+        assert!(is_globally_routable_ipv6(&global));
+        let global2: Multiaddr = "/ip6/2001:db8::1/tcp/1634".parse().unwrap();
+        assert!(is_globally_routable_ipv6(&global2));
+
+        // Non-global IPv6: no.
+        let ula: Multiaddr = "/ip6/fd00::1/tcp/1634".parse().unwrap();
+        assert!(!is_globally_routable_ipv6(&ula));
+        let link_local: Multiaddr = "/ip6/fe80::1/tcp/1634".parse().unwrap();
+        assert!(!is_globally_routable_ipv6(&link_local));
+        let loopback: Multiaddr = "/ip6/::1/tcp/1634".parse().unwrap();
+        assert!(!is_globally_routable_ipv6(&loopback));
+        let unspecified: Multiaddr = "/ip6/::/tcp/1634".parse().unwrap();
+        assert!(!is_globally_routable_ipv6(&unspecified));
+
+        // IPv4 (even public-scope): no, may sit behind NAT.
+        let public_v4: Multiaddr = "/ip4/8.8.8.8/tcp/1634".parse().unwrap();
+        assert!(!is_globally_routable_ipv6(&public_v4));
+        let private_v4: Multiaddr = "/ip4/192.168.1.1/tcp/1634".parse().unwrap();
+        assert!(!is_globally_routable_ipv6(&private_v4));
+
+        // Family-less (DNS): no.
+        let dns: Multiaddr = "/dns6/example.com/tcp/1634".parse().unwrap();
+        assert!(!is_globally_routable_ipv6(&dns));
     }
 
     #[test]
