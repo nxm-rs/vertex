@@ -85,7 +85,9 @@ pub use nectar_primitives::{
     AnyChunk, Chunk, ChunkAddress, ChunkType, ChunkTypeId, ChunkTypeSet, ContentChunk,
     SingleOwnerChunk, StandardChunkSet,
 };
-pub use vertex_swarm_primitives::{OverlayAddress, ValidatedChunk, ValidationError};
+pub use vertex_swarm_primitives::{
+    OverlayAddress, Stamp, StampedChunk, StorageRadius, ValidatedChunk, ValidationError,
+};
 
 // Re-export libp2p types used in config traits
 pub use libp2p::Multiaddr;

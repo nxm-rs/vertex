@@ -48,7 +48,7 @@ impl HeaderedInbound for PushsyncInboundInner {
                 .await?
                 .ok_or(PushsyncError::ConnectionClosed)?;
 
-            debug!(chunk_address = %delivery.address, "Pushsync: received delivery");
+            debug!(chunk_address = %delivery.chunk.address(), "Pushsync: received delivery");
 
             // Return the delivery and a responder to send the receipt.
             // Use into_parts() to preserve any buffered data across the codec switch.
@@ -115,7 +115,7 @@ impl HeaderedOutbound for PushsyncOutboundInner {
             let delivery_codec = DeliveryCodec::new(MAX_MESSAGE_SIZE);
             let mut framed = Framed::new(stream.into_inner(), delivery_codec);
 
-            debug!(chunk_address = %self.delivery.address, "Pushsync: Sending chunk delivery");
+            debug!(chunk_address = %self.delivery.chunk.address(), "Pushsync: Sending chunk delivery");
             framed.send(self.delivery).await?;
 
             // Switch to receipt codec and read response.

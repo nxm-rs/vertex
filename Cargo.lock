@@ -8429,6 +8429,7 @@ name = "vertex-swarm-net-retrieval"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-signer-local",
  "asynchronous-codec",
  "bytes",
  "futures",
@@ -8571,6 +8572,8 @@ dependencies = [
 name = "vertex-swarm-primitives"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
+ "alloy-signer-local",
  "nectar-postage",
  "nectar-primitives",
  "serde",

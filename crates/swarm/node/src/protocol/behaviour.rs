@@ -154,19 +154,14 @@ impl ClientBehaviour {
             ClientCommand::PushChunk {
                 peer,
                 address,
-                data,
-                stamp,
+                chunk,
             } => {
                 if let Some(&peer_id) = self.overlay_peers.get(&peer) {
                     debug!(%peer_id, %peer, %address, "Pushing chunk");
                     self.push_event(ToSwarm::NotifyHandler {
                         peer_id,
                         handler: libp2p::swarm::NotifyHandler::Any,
-                        event: HandlerCommand::PushChunk {
-                            address,
-                            data,
-                            stamp,
-                        },
+                        event: HandlerCommand::PushChunk { chunk },
                     });
                 } else {
                     debug!(%peer, "Unknown peer for push");
@@ -176,19 +171,14 @@ impl ClientBehaviour {
                 peer,
                 request_id,
                 address: _,
-                data,
-                stamp,
+                chunk,
             } => {
                 if let Some(&peer_id) = self.overlay_peers.get(&peer) {
                     debug!(%peer_id, %peer, %request_id, "Serving chunk");
                     self.push_event(ToSwarm::NotifyHandler {
                         peer_id,
                         handler: libp2p::swarm::NotifyHandler::Any,
-                        event: HandlerCommand::ServeChunk {
-                            request_id,
-                            data,
-                            stamp,
-                        },
+                        event: HandlerCommand::ServeChunk { request_id, chunk },
                     });
                 } else {
                     debug!(%peer, "Unknown peer for serve chunk");
@@ -299,30 +289,26 @@ impl ClientBehaviour {
             HandlerEvent::ChunkReceived {
                 overlay,
                 address,
-                data,
-                stamp,
+                chunk,
             } => {
                 self.pending_events
                     .push_back(ToSwarm::GenerateEvent(ClientEvent::ChunkReceived {
                         peer: overlay,
                         address,
-                        data,
-                        stamp,
+                        chunk,
                     }));
             }
             HandlerEvent::ChunkPushReceived {
                 overlay,
                 address,
-                data,
-                stamp,
+                chunk,
                 request_id,
             } => {
                 self.push_event(ToSwarm::GenerateEvent(ClientEvent::ChunkPushReceived {
                     peer: overlay,
                     peer_id,
                     address,
-                    data,
-                    stamp,
+                    chunk,
                     request_id,
                 }));
             }

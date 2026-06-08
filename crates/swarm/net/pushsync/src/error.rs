@@ -15,6 +15,10 @@ vertex_net_codec::protocol_error! {
         #[error("invalid stamp: {0}")]
         InvalidStamp(#[from] nectar_postage::StampError),
 
+        /// Chunk bytes did not match the delivery's address.
+        #[error("invalid chunk: {0}")]
+        InvalidChunk(#[from] vertex_swarm_primitives::ReconstructError),
+
         /// Malformed receipt signature.
         #[error("invalid signature: {0}")]
         InvalidSignature(#[from] alloy_primitives::SignatureError),

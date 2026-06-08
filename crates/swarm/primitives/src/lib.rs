@@ -36,8 +36,10 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+mod stamped;
 mod validated;
 
+pub use stamped::{ReconstructError, StampedChunk, reconstruct_chunk};
 pub use validated::{ValidatedChunk, ValidationError};
 
 // Re-export canonical Swarm primitives from nectar. See the crate-level docs

@@ -52,9 +52,14 @@ impl HeaderedInbound for RetrievalInboundInner {
 
             // Return the request and a responder to send the delivery.
             // Use into_parts() to preserve any buffered data across the codec switch.
+            // The responder only encodes deliveries, so the codec's expected
+            // address (used on decode) is the requested address for symmetry.
             let parts = framed.into_parts();
             let responder = RetrievalResponder {
-                framed: Framed::new(parts.io, DeliveryCodec::new(MAX_MESSAGE_SIZE)),
+                framed: Framed::new(
+                    parts.io,
+                    DeliveryCodec::new(MAX_MESSAGE_SIZE, request.address),
+                ),
             };
 
             Ok((request, responder))
@@ -68,14 +73,13 @@ pub struct RetrievalResponder {
 }
 
 impl RetrievalResponder {
-    /// Send a successful delivery with chunk data.
+    /// Send a successful delivery with the stamped chunk.
     pub async fn send_chunk(
         mut self,
-        data: bytes::Bytes,
-        stamp: vertex_swarm_primitives::Stamp,
+        chunk: vertex_swarm_primitives::StampedChunk,
     ) -> Result<(), RetrievalError> {
         debug!("Retrieval: Sending chunk delivery");
-        self.framed.send(Delivery::success(data, stamp)).await
+        self.framed.send(Delivery::success(chunk)).await
     }
 
     /// Send an error response.
@@ -118,10 +122,12 @@ impl HeaderedOutbound for RetrievalOutboundInner {
             debug!(chunk_address = %self.address, "Retrieval: Sending chunk request");
             framed.send(Request::new(self.address)).await?;
 
-            // Switch to delivery codec and read response.
+            // Switch to delivery codec and read response. The codec is given the
+            // requested address so it can reconstruct and validate the chunk;
+            // the retrieval wire frame carries no address of its own.
             // Use into_parts() to preserve any buffered data across the codec switch.
             let parts = framed.into_parts();
-            let delivery_codec = DeliveryCodec::new(MAX_MESSAGE_SIZE);
+            let delivery_codec = DeliveryCodec::new(MAX_MESSAGE_SIZE, self.address);
             let mut framed = Framed::new(parts.io, delivery_codec);
 
             debug!("Retrieval: Reading delivery response");
