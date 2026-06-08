@@ -9,10 +9,26 @@ vertex_net_codec::protocol_error! {
 
         /// Invalid chunk address encoding.
         #[error("invalid chunk address: {0}")]
-        InvalidAddress(String),
+        InvalidAddress(#[from] nectar_primitives::PrimitivesError),
 
-        /// Storage radius exceeds maximum (255).
-        #[error("invalid storage radius: {0} exceeds u8 range")]
+        /// Malformed postage stamp in the delivery.
+        #[error("invalid stamp: {0}")]
+        InvalidStamp(#[from] nectar_postage::StampError),
+
+        /// Chunk bytes did not match the delivery's address.
+        #[error("invalid chunk: {0}")]
+        InvalidChunk(#[from] vertex_swarm_primitives::ReconstructError),
+
+        /// Malformed receipt signature.
+        #[error("invalid signature: {0}")]
+        InvalidSignature(#[from] alloy_primitives::SignatureError),
+
+        /// Receipt nonce was not exactly 32 bytes.
+        #[error("invalid nonce length: expected 32, got {0}")]
+        InvalidNonceLength(usize),
+
+        /// Storage radius is outside the valid bin range.
+        #[error("invalid storage radius: {0}")]
         InvalidStorageRadius(u32),
     }
 }
