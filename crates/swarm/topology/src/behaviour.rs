@@ -234,7 +234,7 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
 
     /// Connection IDs of outbound dials whose remote address was public-scope.
     /// On handshake completion these promote the peer to
-    /// [`crate::PeerReachability::Public`] (we reached a dialable public
+    /// [`crate::PeerReachability::Reachable`] (we reached a dialable public
     /// address). Populated at `ConnectionEstablished`, consumed at handshake
     /// completion, and cleared at `ConnectionClosed`.
     pub(crate) outbound_public_dials: HashSet<ConnectionId>,
@@ -431,7 +431,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         self.nat_discovery.on_observed_addr(addr);
     }
 
-    /// Promote a peer to [`crate::PeerReachability::Public`] after our AutoNAT
+    /// Promote a peer to [`crate::PeerReachability::Reachable`] after our AutoNAT
     /// v2 server dialed it back successfully.
     ///
     /// Wired from the node layer that owns the `autonat::v2::server::Behaviour`:
@@ -552,8 +552,8 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         let candidates = self.routing.eviction_candidates(|overlay| {
             registry
                 .resolve_peer_id(overlay)
-                .map(|peer_id| tracker.status(&peer_id).rank())
-                .unwrap_or_else(|| crate::PeerReachability::Unknown.rank())
+                .map(|peer_id| tracker.status(&peer_id))
+                .unwrap_or(crate::PeerReachability::Unknown)
         });
         if candidates.is_empty() {
             return;
@@ -665,7 +665,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         match peer_max_scope {
             Some(AddressScope::Public) => {
                 // Public peer - need public addresses
-                self.nat_discovery.has_public_addresses()
+                self.nat_discovery.is_reachable()
             }
             Some(AddressScope::Private | AddressScope::LinkLocal) => {
                 // Private/link-local peer - check if we share a subnet

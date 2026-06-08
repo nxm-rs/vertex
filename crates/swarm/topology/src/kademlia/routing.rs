@@ -254,14 +254,17 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
     ///
     /// Order: handshaking peers first (not yet established), then active peers
     /// least worth keeping. Active victims are chosen by reachability then
-    /// score: `reachability_rank(overlay)` (lower = evict sooner, so
-    /// `Private` < `Unknown` < `Public`) breaks ties on the peer score. This
-    /// matches the reference implementation, whose prune prefers dropping
-    /// unreachable peers. `reachability_rank` is supplied by the caller, which
-    /// owns the overlay->peer-id mapping and the reachability tracker.
-    pub(crate) fn eviction_candidates(
+    /// score: `reachability(overlay)` (the lowest-ranked is evicted soonest)
+    /// breaks ties on the peer score. This matches the reference
+    /// implementation, whose prune prefers dropping unreachable peers.
+    /// `reachability` is supplied by the caller, which owns the
+    /// overlay->peer-id mapping and the reachability tracker; it returns any
+    /// `Ord` rank (the topology behaviour passes a `PeerReachability`, ordered
+    /// `Unreachable < Unknown < Reachable`), so this layer stays decoupled from
+    /// the reachability type.
+    pub(crate) fn eviction_candidates<R: Ord>(
         &self,
-        reachability_rank: impl Fn(&OverlayAddress) -> u8,
+        reachability: impl Fn(&OverlayAddress) -> R,
     ) -> Vec<EvictionCandidate> {
         let depth = self.depth();
         let phases = self.connection_phases.read();
@@ -307,7 +310,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
                     .peers_in_bin(bin)
                     .into_iter()
                     .map(|overlay| {
-                        let rank = reachability_rank(&overlay);
+                        let rank = reachability(&overlay);
                         let score = self.peer_manager.get_peer_score(&overlay).unwrap_or(0.0);
                         (overlay, rank, score)
                     })

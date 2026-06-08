@@ -90,5 +90,5 @@ async fn autonat_v2_dialback_confirms_reachability() {
     // topology reachability tracker on an Ok result.
     let tracker = ReachabilityTracker::new();
     tracker.on_autonat_peer_confirmed(server_event.client);
-    assert_eq!(tracker.status(&client_peer), PeerReachability::Public);
+    assert_eq!(tracker.status(&client_peer), PeerReachability::Reachable);
 }
