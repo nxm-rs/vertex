@@ -9,15 +9,15 @@ vertex_net_codec::protocol_error! {
 
         /// Invalid chunk address encoding.
         #[error("invalid chunk address: {0}")]
-        InvalidAddress(String),
+        InvalidAddress(#[from] nectar_primitives::PrimitivesError),
 
         /// Malformed postage stamp in the delivery.
         #[error("invalid stamp: {0}")]
-        InvalidStamp(String),
+        InvalidStamp(#[from] nectar_postage::StampError),
 
         /// Malformed receipt signature.
         #[error("invalid signature: {0}")]
-        InvalidSignature(String),
+        InvalidSignature(#[from] alloy_primitives::SignatureError),
 
         /// Receipt nonce was not exactly 32 bytes.
         #[error("invalid nonce length: expected 32, got {0}")]

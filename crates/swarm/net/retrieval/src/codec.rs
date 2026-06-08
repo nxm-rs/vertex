@@ -42,8 +42,7 @@ impl ProtoMessage for Request {
         if proto.addr.len() != 32 {
             return Err(RetrievalError::InvalidAddressLength(proto.addr.len()));
         }
-        let address = ChunkAddress::from_slice(&proto.addr)
-            .map_err(|e| RetrievalError::InvalidAddress(e.to_string()))?;
+        let address = ChunkAddress::from_slice(&proto.addr)?;
         Ok(Self { address })
     }
 }
@@ -107,8 +106,7 @@ impl ProtoMessage for Delivery {
         if !proto.err.is_empty() {
             return Ok(Self::error(proto.err));
         }
-        let stamp = Stamp::try_from_slice(&proto.stamp)
-            .map_err(|e| RetrievalError::InvalidStamp(e.to_string()))?;
+        let stamp = Stamp::try_from_slice(&proto.stamp)?;
         Ok(Self {
             data: Bytes::from(proto.data),
             stamp: Some(stamp),

@@ -53,10 +53,8 @@ impl ProtoMessage for Delivery {
         if proto.address.len() != 32 {
             return Err(PushsyncError::InvalidAddressLength(proto.address.len()));
         }
-        let address = ChunkAddress::from_slice(&proto.address)
-            .map_err(|e| PushsyncError::InvalidAddress(e.to_string()))?;
-        let stamp = Stamp::try_from_slice(&proto.stamp)
-            .map_err(|e| PushsyncError::InvalidStamp(e.to_string()))?;
+        let address = ChunkAddress::from_slice(&proto.address)?;
+        let stamp = Stamp::try_from_slice(&proto.stamp)?;
         Ok(Self {
             address,
             data: Bytes::from(proto.data),
@@ -140,8 +138,7 @@ impl ProtoMessage for Receipt {
         if proto.address.len() != 32 {
             return Err(PushsyncError::InvalidAddressLength(proto.address.len()));
         }
-        let address = ChunkAddress::from_slice(&proto.address)
-            .map_err(|e| PushsyncError::InvalidAddress(e.to_string()))?;
+        let address = ChunkAddress::from_slice(&proto.address)?;
         // An error receipt carries the `err` string and may leave the
         // signature, nonce, and radius fields empty or zeroed. Do not parse
         // those fields in that case: a remote error receipt is decodable from
@@ -150,8 +147,7 @@ impl ProtoMessage for Receipt {
         if !proto.err.is_empty() {
             return Ok(Self::error(address, proto.err));
         }
-        let signature = Signature::from_raw(&proto.signature)
-            .map_err(|e| PushsyncError::InvalidSignature(e.to_string()))?;
+        let signature = Signature::from_raw(&proto.signature)?;
         let nonce_bytes: [u8; 32] = proto
             .nonce
             .as_slice()

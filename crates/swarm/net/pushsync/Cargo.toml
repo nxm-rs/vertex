@@ -15,6 +15,7 @@ vertex-swarm-net-headers.workspace = true
 vertex-swarm-net-proto.workspace = true
 vertex-swarm-primitives.workspace = true
 nectar-primitives.workspace = true
+nectar-postage.workspace = true
 
 ## alloy
 alloy-primitives.workspace = true
