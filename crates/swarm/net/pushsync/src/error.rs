@@ -11,8 +11,20 @@ vertex_net_codec::protocol_error! {
         #[error("invalid chunk address: {0}")]
         InvalidAddress(String),
 
-        /// Storage radius exceeds maximum (255).
-        #[error("invalid storage radius: {0} exceeds u8 range")]
+        /// Malformed postage stamp in the delivery.
+        #[error("invalid stamp: {0}")]
+        InvalidStamp(String),
+
+        /// Malformed receipt signature.
+        #[error("invalid signature: {0}")]
+        InvalidSignature(String),
+
+        /// Receipt nonce was not exactly 32 bytes.
+        #[error("invalid nonce length: expected 32, got {0}")]
+        InvalidNonceLength(usize),
+
+        /// Storage radius is outside the valid bin range.
+        #[error("invalid storage radius: {0}")]
         InvalidStorageRadius(u32),
     }
 }

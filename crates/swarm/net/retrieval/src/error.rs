@@ -10,5 +10,9 @@ vertex_net_codec::protocol_error! {
         /// Invalid chunk address encoding.
         #[error("invalid chunk address: {0}")]
         InvalidAddress(String),
+
+        /// Malformed postage stamp in the delivery.
+        #[error("invalid stamp: {0}")]
+        InvalidStamp(String),
     }
 }

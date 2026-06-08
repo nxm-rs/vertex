@@ -12,7 +12,7 @@ use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_net_pseudosettle::PaymentAck;
-use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_primitives::{OverlayAddress, Stamp};
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
 
 use crate::protocol::{ClientCommand, ClientEvent};
@@ -31,7 +31,7 @@ pub struct RetrievalResult {
     /// The chunk data.
     pub data: bytes::Bytes,
     /// The postage stamp.
-    pub stamp: bytes::Bytes,
+    pub stamp: Stamp,
     /// The peer that served the chunk.
     pub peer: OverlayAddress,
 }
@@ -246,7 +246,7 @@ impl ClientService {
             } => {
                 debug!(
                     %peer_id, %peer, %address, %request_id,
-                    data_len = data.len(), stamp_len = stamp.len(),
+                    data_len = data.len(), stamp_batch = %stamp.batch(),
                     "Chunk push received"
                 );
                 // TODO: Validate chunk, store if responsible, send receipt
@@ -260,9 +260,8 @@ impl ClientService {
                 storage_radius,
             } => {
                 debug!(
-                    %peer, %address, %storage_radius,
-                    sig_len = signature.len(), nonce_len = nonce.len(),
-                    "Receipt received"
+                    %peer, %address, %storage_radius, %nonce,
+                    sig = %signature, "Receipt received"
                 );
                 // TODO: Verify receipt, complete push operation
             }

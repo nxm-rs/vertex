@@ -72,7 +72,7 @@ impl RetrievalResponder {
     pub async fn send_chunk(
         mut self,
         data: bytes::Bytes,
-        stamp: bytes::Bytes,
+        stamp: vertex_swarm_primitives::Stamp,
     ) -> Result<(), RetrievalError> {
         debug!("Retrieval: Sending chunk delivery");
         self.framed.send(Delivery::success(data, stamp)).await

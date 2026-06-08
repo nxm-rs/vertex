@@ -68,7 +68,7 @@ pub use self::error::{
 pub use self::identity::SwarmIdentity;
 pub use self::protocol::SwarmProtocol;
 pub use self::providers::{
-    ChunkRetrievalResult, ChunkSendReceipt, SwarmChunkProvider, SwarmChunkSender,
+    ChunkRetrievalResult, PushReceipt, SwarmChunkProvider, SwarmChunkSender,
 };
 pub use self::rpc::RpcProviders;
 pub use self::spec::{

@@ -13,7 +13,11 @@ description = "Swarm pushsync protocol for chunk push/receipt"
 vertex-net-codec.workspace = true
 vertex-swarm-net-headers.workspace = true
 vertex-swarm-net-proto.workspace = true
+vertex-swarm-primitives.workspace = true
 nectar-primitives.workspace = true
+
+## alloy
+alloy-primitives.workspace = true
 
 ## p2p
 libp2p.workspace = true

@@ -48,7 +48,7 @@ impl<P: SwarmChunkProvider> Chunk for ChunkService<P> {
         match self.provider.retrieve_chunk(&address).await {
             Ok(result) => Ok(Response::new(RetrieveChunkResponse {
                 data: result.data.to_vec(),
-                stamp: result.stamp.to_vec(),
+                stamp: result.stamp.to_bytes().to_vec(),
                 served_by: result.served_by.to_string(),
             })),
             Err(e) => Err(Status::internal(format!("Chunk retrieval failed: {}", e))),

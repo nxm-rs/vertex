@@ -3,6 +3,7 @@
 use bytes::Bytes;
 use nectar_primitives::ChunkAddress;
 use vertex_net_codec::{Codec, ProtoMessage};
+use vertex_swarm_primitives::Stamp;
 
 use crate::error::RetrievalError;
 
@@ -52,18 +53,18 @@ impl ProtoMessage for Request {
 pub struct Delivery {
     /// The chunk data (empty if error).
     pub data: Bytes,
-    /// The postage stamp attached to the chunk.
-    pub stamp: Bytes,
+    /// The postage stamp attached to the chunk. Absent on an error delivery.
+    pub stamp: Option<Stamp>,
     /// Error message if retrieval failed.
     pub error: Option<String>,
 }
 
 impl Delivery {
     /// Create a successful delivery.
-    pub fn success(data: Bytes, stamp: Bytes) -> Self {
+    pub fn success(data: Bytes, stamp: Stamp) -> Self {
         Self {
             data,
-            stamp,
+            stamp: Some(stamp),
             error: None,
         }
     }
@@ -72,7 +73,7 @@ impl Delivery {
     pub fn error(msg: impl Into<String>) -> Self {
         Self {
             data: Bytes::new(),
-            stamp: Bytes::new(),
+            stamp: None,
             error: Some(msg.into()),
         }
     }
@@ -91,21 +92,27 @@ impl ProtoMessage for Delivery {
     fn into_proto(self) -> Result<Self::Proto, Self::EncodeError> {
         Ok(vertex_swarm_net_proto::retrieval::Delivery {
             data: self.data.to_vec(),
-            stamp: self.stamp.to_vec(),
+            stamp: self
+                .stamp
+                .map(|s| s.to_bytes().to_vec())
+                .unwrap_or_default(),
             err: self.error.unwrap_or_default(),
         })
     }
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
-        let error = if proto.err.is_empty() {
-            None
-        } else {
-            Some(proto.err)
-        };
+        // An error delivery carries the `err` string and no stamp. Do not parse
+        // the stamp field in that case: the delivery is decodable from its
+        // `err` alone. Only a success delivery's stamp is parsed strictly.
+        if !proto.err.is_empty() {
+            return Ok(Self::error(proto.err));
+        }
+        let stamp = Stamp::try_from_slice(&proto.stamp)
+            .map_err(|e| RetrievalError::InvalidStamp(e.to_string()))?;
         Ok(Self {
             data: Bytes::from(proto.data),
-            stamp: Bytes::from(proto.stamp),
-            error,
+            stamp: Some(stamp),
+            error: None,
         })
     }
 }
@@ -113,7 +120,14 @@ impl ProtoMessage for Delivery {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::{B256, Signature};
     use vertex_net_codec::assert_proto_roundtrip;
+
+    /// A stamp with a deterministic, well-formed signature for roundtrip tests.
+    fn test_stamp() -> Stamp {
+        let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
+        Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig)
+    }
 
     #[test]
     fn test_request_roundtrip() {
@@ -122,7 +136,7 @@ mod tests {
 
     #[test]
     fn test_delivery_success_roundtrip() {
-        let original = Delivery::success(Bytes::from(vec![1, 2, 3, 4]), Bytes::from(vec![5, 6, 7]));
+        let original = Delivery::success(Bytes::from(vec![1, 2, 3, 4]), test_stamp());
         let proto = original.clone().into_proto().unwrap();
         let decoded = Delivery::from_proto(proto).unwrap();
         assert_eq!(original, decoded);

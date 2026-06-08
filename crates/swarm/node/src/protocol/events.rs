@@ -15,12 +15,12 @@
 //! for routing to the respective settlement services. The behaviour routes these
 //! events based on optional senders configured at construction time.
 
-use alloy_primitives::U256;
+use alloy_primitives::{Signature, U256};
 use bytes::Bytes;
 use libp2p::PeerId;
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{ChunkAddress, Nonce};
 use vertex_swarm_net_pseudosettle::PaymentAck;
-use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
+use vertex_swarm_primitives::{OverlayAddress, Stamp, StorageRadius, SwarmNodeType};
 
 /// Events emitted by the client behaviour.
 #[derive(Debug, Clone)]
@@ -69,7 +69,7 @@ pub enum ClientEvent {
         /// The chunk data.
         data: Bytes,
         /// The postage stamp.
-        stamp: Bytes,
+        stamp: Stamp,
     },
 
     /// A chunk retrieval request failed.
@@ -96,7 +96,7 @@ pub enum ClientEvent {
         /// The chunk data.
         data: Bytes,
         /// The postage stamp.
-        stamp: Bytes,
+        stamp: Stamp,
         /// Request ID for matching response.
         request_id: u64,
     },
@@ -108,11 +108,11 @@ pub enum ClientEvent {
         /// The chunk address.
         address: ChunkAddress,
         /// The receipt signature.
-        signature: Bytes,
+        signature: Signature,
         /// The receipt nonce.
-        nonce: Bytes,
+        nonce: Nonce,
         /// The peer's storage radius.
-        storage_radius: u8,
+        storage_radius: StorageRadius,
     },
 
     /// A chunk push failed.
@@ -234,7 +234,7 @@ pub enum ClientCommand {
         /// The chunk data.
         data: Bytes,
         /// The postage stamp.
-        stamp: Bytes,
+        stamp: Stamp,
     },
 
     /// Push a chunk to a peer.
@@ -246,7 +246,7 @@ pub enum ClientCommand {
         /// The chunk data.
         data: Bytes,
         /// The postage stamp.
-        stamp: Bytes,
+        stamp: Stamp,
     },
 
     /// Send a receipt to a peer (response to ChunkPushReceived).
@@ -258,11 +258,11 @@ pub enum ClientCommand {
         /// The chunk address.
         address: ChunkAddress,
         /// The receipt signature.
-        signature: Bytes,
+        signature: Signature,
         /// The receipt nonce.
-        nonce: Bytes,
+        nonce: Nonce,
         /// Our storage radius.
-        storage_radius: u8,
+        storage_radius: StorageRadius,
     },
 
     /// Send a pseudosettle payment to a peer.

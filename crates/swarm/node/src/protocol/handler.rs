@@ -24,7 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use alloy_primitives::U256;
+use alloy_primitives::{Signature, U256};
 use futures_bounded::Timeout;
 use libp2p::swarm::{
     SubstreamProtocol,
@@ -33,10 +33,10 @@ use libp2p::swarm::{
         FullyNegotiatedOutbound,
     },
 };
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{ChunkAddress, Nonce};
 use tracing::{debug, warn};
 use vertex_swarm_net_pseudosettle::PaymentAck;
-use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
+use vertex_swarm_primitives::{OverlayAddress, Stamp, StorageRadius, SwarmNodeType};
 
 use super::upgrade::{
     ClientInboundOutput, ClientInboundUpgrade, ClientOutboundInfo, ClientOutboundOutput,
@@ -108,7 +108,7 @@ pub(crate) enum HandlerCommand {
         /// The chunk data.
         data: bytes::Bytes,
         /// The postage stamp.
-        stamp: bytes::Bytes,
+        stamp: Stamp,
     },
     /// Send a pseudosettle payment to the peer.
     SendPseudosettle {
@@ -129,7 +129,7 @@ pub(crate) enum HandlerCommand {
         /// The chunk data.
         data: bytes::Bytes,
         /// The postage stamp.
-        stamp: bytes::Bytes,
+        stamp: Stamp,
     },
     /// Send a receipt to a peer (respond to pushsync delivery).
     SendReceipt {
@@ -138,11 +138,11 @@ pub(crate) enum HandlerCommand {
         /// The chunk address.
         address: ChunkAddress,
         /// The receipt signature.
-        signature: bytes::Bytes,
+        signature: Signature,
         /// The receipt nonce.
-        nonce: bytes::Bytes,
+        nonce: Nonce,
         /// Our storage radius.
-        storage_radius: u8,
+        storage_radius: StorageRadius,
     },
 }
 
@@ -184,7 +184,7 @@ pub(crate) enum HandlerEvent {
         /// The chunk data.
         data: bytes::Bytes,
         /// The postage stamp.
-        stamp: bytes::Bytes,
+        stamp: Stamp,
     },
     /// Received a chunk push from peer.
     ChunkPushReceived {
@@ -195,7 +195,7 @@ pub(crate) enum HandlerEvent {
         /// The chunk data.
         data: bytes::Bytes,
         /// The postage stamp.
-        stamp: bytes::Bytes,
+        stamp: Stamp,
         /// Request ID for correlating receipt.
         request_id: u64,
     },
@@ -206,11 +206,11 @@ pub(crate) enum HandlerEvent {
         /// The chunk address.
         address: ChunkAddress,
         /// The storer's signature.
-        signature: bytes::Bytes,
+        signature: Signature,
         /// The nonce used.
-        nonce: bytes::Bytes,
+        nonce: Nonce,
         /// The storer's storage radius.
-        storage_radius: u8,
+        storage_radius: StorageRadius,
     },
     /// Protocol error occurred.
     Error {
@@ -467,13 +467,20 @@ impl ClientHandler {
                     protocol: "retrieval",
                     error: err.clone(),
                 });
-            } else {
+            } else if let Some(stamp) = delivery.stamp {
                 debug!(%overlay, data_len = delivery.data.len(), "Received chunk");
                 self.push_event(HandlerEvent::ChunkReceived {
                     overlay,
                     address,
                     data: delivery.data,
-                    stamp: delivery.stamp,
+                    stamp,
+                });
+            } else {
+                debug!(%overlay, "Retrieval delivery missing stamp");
+                self.push_event(HandlerEvent::Error {
+                    overlay: Some(overlay),
+                    protocol: "retrieval",
+                    error: "delivery missing stamp".into(),
                 });
             }
         }
