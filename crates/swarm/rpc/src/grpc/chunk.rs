@@ -1,19 +1,20 @@
-//! Chunk service implementation for Swarm chunk retrieval.
+//! Chunk service implementation for Swarm chunk retrieval and upload.
 
 use hex::FromHex;
 use tonic::{Request, Response, Status};
 use vertex_swarm_api::{
-    AnyChunk, ChunkAddress, ContentChunk, SingleOwnerChunk, SwarmChunkProvider, SwarmChunkSender,
+    ChunkAddress, PushReceipt, Stamp, StampedChunk, SwarmChunkProvider, SwarmChunkSender,
 };
 
 use crate::proto::chunk::{
-    ChunkType, HasChunkRequest, HasChunkResponse, RetrieveChunkRequest, RetrieveChunkResponse,
+    HasChunkRequest, HasChunkResponse, RetrieveChunkRequest, RetrieveChunkResponse,
     UploadChunkRequest, UploadChunkResponse, chunk_server::Chunk,
 };
 
 /// Chunk service implementation.
 ///
-/// Provides gRPC endpoints for retrieving chunks from the Swarm network.
+/// Provides gRPC endpoints for retrieving and uploading chunks on the Swarm
+/// network.
 pub struct ChunkService<P> {
     provider: P,
 }
@@ -37,42 +38,23 @@ fn parse_chunk_address(hex: &str) -> Result<ChunkAddress, Status> {
     Ok(ChunkAddress::new(bytes))
 }
 
-/// Reconstruct an `AnyChunk` from an upload request payload.
+/// Build a [`StampedChunk`] from an upload request payload.
 ///
-/// The `data` field is interpreted according to `chunk_type`: a content chunk
-/// carries the BMT body, a single-owner chunk carries the full wire encoding.
-/// The reconstructed chunk is verified against the supplied address.
+/// The proto carries raw bytes at this boundary; convert them to typed values
+/// immediately. The chunk is reconstructed from `data` and verified against
+/// `address`: a lying address makes reconstruction fail, so the address is
+/// self-validating against the payload. The stamp is parsed from its wire bytes
+/// and paired with the chunk.
 #[allow(clippy::result_large_err)]
-fn reconstruct_chunk(req: &UploadChunkRequest) -> Result<AnyChunk, Status> {
+fn parse_stamped_chunk(req: &UploadChunkRequest) -> Result<StampedChunk, Status> {
     let address = parse_chunk_address(&req.address)?;
 
-    let chunk_type = ChunkType::try_from(req.chunk_type)
-        .map_err(|_| Status::invalid_argument(format!("Unknown chunk type: {}", req.chunk_type)))?;
+    let stamp = Stamp::try_from_slice(&req.stamp)
+        .map_err(|e| Status::invalid_argument(format!("Invalid postage stamp: {}", e)))?;
 
-    let chunk = match chunk_type {
-        ChunkType::Content => {
-            // Parse the full BMT body (span + data) from the wire encoding, the
-            // same shape `RetrieveChunk` returns, so a retrieved content chunk
-            // round-trips back into an upload. The BMT hash is recomputed from
-            // the body, letting the verify step below reject an address that
-            // lies about the payload.
-            let content = ContentChunk::try_from(req.data.as_slice())
-                .map_err(|e| Status::invalid_argument(format!("Invalid content chunk: {}", e)))?;
-            AnyChunk::Content(content)
-        }
-        ChunkType::SingleOwner => {
-            let soc = SingleOwnerChunk::try_from(req.data.as_slice()).map_err(|e| {
-                Status::invalid_argument(format!("Invalid single-owner chunk: {}", e))
-            })?;
-            AnyChunk::SingleOwner(soc)
-        }
-    };
-
-    chunk.verify(&address).map_err(|e| {
-        Status::invalid_argument(format!("Chunk address does not match payload: {}", e))
-    })?;
-
-    Ok(chunk)
+    StampedChunk::reconstruct(address, req.data.clone().into(), stamp).map_err(|e| {
+        Status::invalid_argument(format!("Chunk does not match the supplied address: {}", e))
+    })
 }
 
 #[tonic::async_trait]
@@ -112,25 +94,37 @@ impl<P: SwarmChunkProvider + SwarmChunkSender> Chunk for ChunkService<P> {
 
     /// Upload a pre-stamped chunk to the network.
     ///
-    /// The request carries the postage stamp in `stamp`; it is threaded to the
-    /// storer once `SwarmChunkSender` accepts the stamp alongside the chunk.
+    /// The chunk and its postage stamp travel together as a [`StampedChunk`] and
+    /// are forwarded to the responsible storer via PushSync. The response carries
+    /// the full [`PushReceipt`] so the caller receives the storer's proof of
+    /// acceptance.
     async fn upload_chunk(
         &self,
         request: Request<UploadChunkRequest>,
     ) -> Result<Response<UploadChunkResponse>, Status> {
         let req = request.into_inner();
-        let chunk = reconstruct_chunk(&req)?;
+        let stamped = parse_stamped_chunk(&req)?;
 
         // Pre-stamped uploads are trusted by default; opt in to validation.
         let receipt = if req.validate {
-            self.provider.send_chunk(chunk).await
+            self.provider.send_chunk(stamped).await
         } else {
-            self.provider.send_chunk_unchecked(chunk).await
+            self.provider.send_chunk_unchecked(stamped).await
         }
         .map_err(|e| Status::internal(format!("Chunk upload failed: {}", e)))?;
 
+        let PushReceipt {
+            storer,
+            signature,
+            nonce,
+            storage_radius,
+        } = receipt;
+
         Ok(Response::new(UploadChunkResponse {
-            storer: receipt.storer.to_string(),
+            storer: storer.to_string(),
+            signature: signature.as_bytes().to_vec(),
+            nonce: nonce.as_slice().to_vec(),
+            storage_radius: u32::from(storage_radius.get()),
         }))
     }
 }
@@ -138,9 +132,10 @@ impl<P: SwarmChunkProvider + SwarmChunkSender> Chunk for ChunkService<P> {
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use vertex_swarm_api::Chunk as _;
+    use vertex_swarm_api::{AnyChunk, Chunk as _, ContentChunk};
 
     use super::*;
+    use crate::proto::chunk::ChunkType;
 
     /// Build a content chunk from raw data and return its wire encoding (span +
     /// data) alongside its address, matching what the upload handler expects.
@@ -161,44 +156,45 @@ mod tests {
     }
 
     #[test]
-    fn reconstruct_content_chunk_roundtrips() {
+    fn parse_stamped_content_chunk_roundtrips() {
         let (wire, address) = content_wire(b"reconstruct me");
 
         let req = content_request(wire, &address);
-        let chunk = reconstruct_chunk(&req).expect("valid content chunk");
+        let stamped = parse_stamped_chunk(&req).expect("valid stamped chunk");
 
-        assert_eq!(chunk.address(), &address);
-        assert!(matches!(chunk, AnyChunk::Content(_)));
+        assert_eq!(stamped.address(), &address);
+        assert!(matches!(stamped.chunk(), AnyChunk::Content(_)));
     }
 
     #[test]
-    fn reconstruct_rejects_malformed_address() {
+    fn parse_rejects_malformed_address() {
         let (wire, _) = content_wire(b"any");
         let mut req = content_request(wire, &ChunkAddress::default());
         req.address = "not-hex".to_string();
 
-        let err = reconstruct_chunk(&req).expect_err("malformed address must fail");
+        let err = parse_stamped_chunk(&req).expect_err("malformed address must fail");
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
     }
 
     #[test]
-    fn reconstruct_rejects_address_mismatch() {
+    fn parse_rejects_address_mismatch() {
         let (wire, _) = content_wire(b"payload");
         // Address that does not match the BMT hash of the payload.
         let wrong = ChunkAddress::new([0xab; 32]);
 
         let req = content_request(wire, &wrong);
-        let err = reconstruct_chunk(&req).expect_err("address mismatch must fail");
+        let err = parse_stamped_chunk(&req).expect_err("address mismatch must fail");
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
     }
 
     #[test]
-    fn reconstruct_rejects_unknown_chunk_type() {
+    fn parse_rejects_malformed_stamp() {
         let (wire, address) = content_wire(b"payload");
         let mut req = content_request(wire, &address);
-        req.chunk_type = 99;
+        // A stamp shorter than the fixed wire size cannot parse.
+        req.stamp = vec![0u8; 10];
 
-        let err = reconstruct_chunk(&req).expect_err("unknown chunk type must fail");
+        let err = parse_stamped_chunk(&req).expect_err("malformed stamp must fail");
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
     }
 }

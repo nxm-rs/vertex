@@ -76,4 +76,13 @@ message UploadChunkRequest {
 message UploadChunkResponse {
   // Overlay address of the storer that accepted this chunk (hex encoded).
   string storer = 1;
+
+  // The storer's signature over the receipt (65 bytes).
+  bytes signature = 2;
+
+  // The nonce the storer used when signing the receipt (32 bytes).
+  bytes nonce = 3;
+
+  // The storer's storage radius at the time of acceptance.
+  uint32 storage_radius = 4;
 }
