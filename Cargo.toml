@@ -110,9 +110,10 @@ indexing_slicing = "warn"
 
 [workspace.dependencies]
 ## nectar
-# Pin all three nectar deps to the same rev so the workspace cannot resolve two
+# Pin all nectar deps to the same rev so the workspace cannot resolve two
 # distinct copies of shared nectar types via independent updates.
 nectar-contracts = { git = "https://github.com/nxm-rs/nectar", rev = "3c99edc4331781dc4f595485f4eea2e36bac38db" }
+nectar-postage = { git = "https://github.com/nxm-rs/nectar", rev = "3c99edc4331781dc4f595485f4eea2e36bac38db" }
 nectar-primitives = { git = "https://github.com/nxm-rs/nectar", rev = "3c99edc4331781dc4f595485f4eea2e36bac38db" }
 nectar-swarms = { git = "https://github.com/nxm-rs/nectar", rev = "3c99edc4331781dc4f595485f4eea2e36bac38db" }
 

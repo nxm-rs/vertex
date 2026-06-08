@@ -13,11 +13,12 @@ workspace = true
 
 [dependencies]
 nectar-primitives = { workspace = true }
+nectar-postage = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 
 [features]
 default = ["std"]
-std = ["nectar-primitives/std"]
-serde = ["dep:serde"]
+std = ["nectar-primitives/std", "nectar-postage/std"]
+serde = ["dep:serde", "nectar-postage/serde"]

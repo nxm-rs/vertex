@@ -7,12 +7,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use alloy_primitives::Signature;
 use nectar_primitives::ChunkAddress;
 use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_net_pseudosettle::PaymentAck;
-use vertex_swarm_primitives::OverlayAddress;
+use vertex_swarm_primitives::{Bin, NeighborhoodDepth, Nonce, OverlayAddress};
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
 
 use crate::protocol::{ClientCommand, ClientEvent};
@@ -40,17 +41,17 @@ pub struct RetrievalResult {
 /// Result of a chunk push.
 ///
 /// Carries the receipt fields returned by the storer after a successful
-/// pushsync round-trip.
+/// pushsync round-trip, parsed into their canonical typed forms.
 #[derive(Debug)]
 pub struct PushResult {
     /// The peer that issued the receipt.
     pub peer: OverlayAddress,
-    /// The receipt signature from the storer.
-    pub signature: bytes::Bytes,
-    /// The nonce used in signing the receipt.
-    pub nonce: bytes::Bytes,
-    /// The storer's storage radius.
-    pub storage_radius: u8,
+    /// The receipt signature from the storer over the chunk address and nonce.
+    pub signature: Signature,
+    /// The nonce mixed into the receipt signature.
+    pub nonce: Nonce,
+    /// The storer's storage radius (its neighborhood-depth boundary).
+    pub storage_radius: NeighborhoodDepth,
 }
 
 /// Outcome delivered to a pending push: a receipt on success or an error
@@ -73,9 +74,13 @@ pub enum RetrievalError {
     /// Chunk not found.
     #[error("Chunk not found: {0}")]
     NotFound(ChunkAddress),
-    /// Chunk push was rejected by the storer.
-    #[error("Push failed: {0}")]
+    /// The storer rejected the chunk. Carries the storer's wire error string.
+    #[error("Push rejected by storer: {0}")]
     PushRejected(String),
+    /// The storer returned a receipt whose fields could not be parsed into
+    /// their typed forms (malformed signature, nonce, or storage radius).
+    #[error("Malformed receipt: {0}")]
+    MalformedReceipt(String),
 }
 
 impl ClientHandle {
@@ -189,6 +194,49 @@ impl ClientHandle {
             let _ = tx.send(Err(RetrievalError::PushRejected(error)));
         }
     }
+
+    /// Fail a pending push because the receipt could not be parsed into its
+    /// typed fields.
+    pub(crate) fn reject_receipt(&self, address: ChunkAddress, reason: String) {
+        let mut pending = self.pending_pushes.lock();
+        if let Some(tx) = pending.remove(&address) {
+            let _ = tx.send(Err(RetrievalError::MalformedReceipt(reason)));
+        }
+    }
+}
+
+/// Parse the raw pushsync receipt fields into their canonical typed forms.
+///
+/// The wire carries the signature and nonce as opaque byte strings and the
+/// storage radius as a bare byte; this converts each into the workspace type
+/// (`Signature`, `Nonce`, `NeighborhoodDepth`) and rejects malformed input.
+fn parse_receipt(
+    peer: OverlayAddress,
+    signature: &[u8],
+    nonce: &[u8],
+    storage_radius: u8,
+) -> Result<PushResult, String> {
+    let signature =
+        Signature::try_from(signature).map_err(|e| format!("invalid receipt signature: {e}"))?;
+
+    let nonce: [u8; 32] = nonce.try_into().map_err(|_| {
+        format!(
+            "invalid receipt nonce length: {} (expected 32)",
+            nonce.len()
+        )
+    })?;
+    let nonce = Nonce::from(nonce);
+
+    let storage_radius = Bin::new(storage_radius)
+        .map(NeighborhoodDepth::new)
+        .map_err(|e| format!("invalid storage radius: {e}"))?;
+
+    Ok(PushResult {
+        peer,
+        signature,
+        nonce,
+        storage_radius,
+    })
 }
 
 /// Client service that processes network events.
@@ -337,15 +385,10 @@ impl ClientService {
                     sig_len = signature.len(), nonce_len = nonce.len(),
                     "Receipt received"
                 );
-                self.handle.complete_push(
-                    address,
-                    PushResult {
-                        peer,
-                        signature,
-                        nonce,
-                        storage_radius,
-                    },
-                );
+                match parse_receipt(peer, &signature, &nonce, storage_radius) {
+                    Ok(result) => self.handle.complete_push(address, result),
+                    Err(reason) => self.handle.reject_receipt(address, reason),
+                }
             }
 
             ClientEvent::PeerDisconnected { peer_id, overlay } => {

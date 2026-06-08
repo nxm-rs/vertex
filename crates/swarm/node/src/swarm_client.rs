@@ -6,10 +6,11 @@ use vertex_swarm_api::{
     BootnodeComponents, ClientComponents, HasAccounting, HasTopology, SwarmClient,
     SwarmClientAccounting, SwarmError, SwarmResult, SwarmTopologyRouting,
 };
+use vertex_swarm_primitives::Stamp;
 
 use crate::ClientHandle;
 
-/// Number of closest peers to attempt for retrieval and push operations.
+/// Number of closest peers to try, in order, for a retrieval.
 const CLOSEST_PEER_COUNT: usize = 3;
 
 /// Unified client for all Swarm node types.
@@ -17,19 +18,17 @@ const CLOSEST_PEER_COUNT: usize = 3;
 /// Generic over component type `C`:
 /// - [`BootnodeComponents<T>`] for bootnodes (topology only)
 /// - [`ClientComponents<T, A>`] for client/storer nodes (topology + accounting)
-pub struct Client<C, S = ()> {
+pub struct Client<C> {
     components: C,
     client_handle: ClientHandle,
-    _storage: std::marker::PhantomData<S>,
 }
 
-impl<C, S> Client<C, S> {
+impl<C> Client<C> {
     /// Create a client from components.
     pub fn new(components: C, client_handle: ClientHandle) -> Self {
         Self {
             components,
             client_handle,
-            _storage: std::marker::PhantomData,
         }
     }
 
@@ -44,14 +43,14 @@ impl<C, S> Client<C, S> {
     }
 }
 
-impl<C: HasTopology, S> Client<C, S> {
+impl<C: HasTopology> Client<C> {
     /// Get the topology.
     pub fn topology(&self) -> &C::Topology {
         self.components.topology()
     }
 }
 
-impl<C: HasAccounting, S> Client<C, S> {
+impl<C: HasAccounting> Client<C> {
     /// Get the accounting.
     pub fn accounting(&self) -> &C::Accounting {
         self.components.accounting()
@@ -59,7 +58,7 @@ impl<C: HasAccounting, S> Client<C, S> {
 }
 
 // Bootnode constructors
-impl<T> Client<BootnodeComponents<T>, ()> {
+impl<T> Client<BootnodeComponents<T>> {
     /// Create a bootnode client (topology only).
     pub fn bootnode(topology: T, client_handle: ClientHandle) -> Self {
         Self::new(BootnodeComponents::new(topology), client_handle)
@@ -67,7 +66,7 @@ impl<T> Client<BootnodeComponents<T>, ()> {
 }
 
 // Client constructors
-impl<T, A> Client<ClientComponents<T, A>, ()> {
+impl<T, A> Client<ClientComponents<T, A>> {
     /// Create a client node (topology + accounting).
     #[allow(clippy::self_named_constructors)]
     pub fn client(topology: T, accounting: A, client_handle: ClientHandle) -> Self {
@@ -75,20 +74,19 @@ impl<T, A> Client<ClientComponents<T, A>, ()> {
     }
 }
 
-/// Storage proof for an upload: the pre-computed postage stamp bytes that
-/// accompany a chunk on the pushsync wire.
+/// Storage proof for an upload is a postage [`Stamp`]: a typed, already-signed
+/// stamp that `put` serializes onto the pushsync wire.
 ///
 /// `put` is the client-side entry point for already-stamped chunks. The stamp
 /// is supplied as the storage proof rather than derived here, so the upload
 /// layer owns batch selection and stamp signing.
 #[async_trait]
-impl<T, A, S> SwarmClient for Client<ClientComponents<T, A>, S>
+impl<T, A> SwarmClient for Client<ClientComponents<T, A>>
 where
     T: SwarmTopologyRouting + Send + Sync + 'static,
     A: SwarmClientAccounting + Send + Sync + 'static,
-    S: AsRef<[u8]> + Send + Sync + 'static,
 {
-    type Storage = S;
+    type Storage = Stamp;
 
     async fn get(&self, address: &ChunkAddress) -> SwarmResult<AnyChunk> {
         let closest = self
@@ -102,25 +100,20 @@ where
             });
         }
 
+        // Walk the closest peers in order and return the first response that
+        // verifies against the requested address. Retrieval cannot yet be raced
+        // across peers for the same chunk: the client handle correlates a
+        // response to a pending request by chunk address alone, so two
+        // in-flight requests for one address would alias. Fanning out needs a
+        // per-request correlation id in the handle and handler, tracked as a
+        // follow-up; until then this is sequential.
         let mut last_error: Option<SwarmError> = None;
         for peer in closest {
             match self.client_handle.retrieve_chunk(peer, *address).await {
-                Ok(result) => {
-                    let chunk = ContentChunk::try_from(result.data).map_err(|e| {
-                        SwarmError::InvalidChunk {
-                            address: Some(*address),
-                            reason: e.to_string(),
-                        }
-                    })?;
-                    let chunk: AnyChunk = chunk.into();
-                    chunk
-                        .verify(address)
-                        .map_err(|e| SwarmError::InvalidChunk {
-                            address: Some(*address),
-                            reason: e.to_string(),
-                        })?;
-                    return Ok(chunk);
-                }
+                Ok(result) => match Self::verify_retrieved(address, result.data) {
+                    Ok(chunk) => return Ok(chunk),
+                    Err(e) => last_error = Some(e),
+                },
                 Err(e) => {
                     last_error = Some(SwarmError::network_msg(e.to_string()));
                 }
@@ -141,7 +134,7 @@ where
             chunk_address: address,
         })?;
 
-        let stamp = bytes::Bytes::copy_from_slice(storage.as_ref());
+        let stamp = bytes::Bytes::copy_from_slice(&storage.to_bytes());
         let data = chunk.into_bytes();
 
         self.client_handle
@@ -152,11 +145,30 @@ where
     }
 }
 
+impl<C> Client<C> {
+    /// Decode retrieved chunk bytes and verify they hash to the requested
+    /// address.
+    fn verify_retrieved(address: &ChunkAddress, data: bytes::Bytes) -> SwarmResult<AnyChunk> {
+        let chunk = ContentChunk::try_from(data).map_err(|e| SwarmError::InvalidChunk {
+            address: Some(*address),
+            reason: e.to_string(),
+        })?;
+        let chunk: AnyChunk = chunk.into();
+        chunk
+            .verify(address)
+            .map_err(|e| SwarmError::InvalidChunk {
+                address: Some(*address),
+                reason: e.to_string(),
+            })?;
+        Ok(chunk)
+    }
+}
+
 /// Bootnode client (topology only).
-pub type BootnodeClient<T> = Client<BootnodeComponents<T>, ()>;
+pub type BootnodeClient<T> = Client<BootnodeComponents<T>>;
 
 /// Full client (topology + accounting).
-pub type FullClient<T, A, S = ()> = Client<ClientComponents<T, A>, S>;
+pub type FullClient<T, A> = Client<ClientComponents<T, A>>;
 
 #[cfg(test)]
 mod tests {
@@ -205,10 +217,18 @@ mod tests {
 
     use crate::RetrievalError;
     use crate::client_service::PushResult;
-    use vertex_swarm_primitives::OverlayAddress;
+    use alloy_primitives::Signature;
+    use vertex_swarm_primitives::{Bin, NeighborhoodDepth, Nonce, OverlayAddress};
 
     fn test_peer() -> OverlayAddress {
         OverlayAddress::from([7u8; 32])
+    }
+
+    fn test_signature() -> Signature {
+        let mut raw = [0u8; 65];
+        raw[..64].fill(1);
+        raw[64] = 27;
+        Signature::try_from(&raw[..]).expect("valid signature bytes")
     }
 
     fn test_address() -> ChunkAddress {
@@ -247,21 +267,22 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
 
-        // Simulate the event processor delivering a receipt.
+        // Simulate the event processor delivering a parsed receipt.
         handle.complete_push(
             address,
             PushResult {
                 peer,
-                signature: bytes::Bytes::from_static(b"sig"),
-                nonce: bytes::Bytes::from_static(b"nonce"),
-                storage_radius: 5,
+                signature: test_signature(),
+                nonce: Nonce::from([9u8; 32]),
+                storage_radius: NeighborhoodDepth::new(Bin::new(5).unwrap()),
             },
         );
 
         let receipt = push.await.unwrap().expect("push resolves");
         assert_eq!(receipt.peer, peer);
-        assert_eq!(receipt.signature.as_ref(), b"sig");
-        assert_eq!(receipt.storage_radius, 5);
+        assert_eq!(receipt.signature, test_signature());
+        assert_eq!(receipt.nonce, Nonce::from([9u8; 32]));
+        assert_eq!(receipt.storage_radius.get(), 5);
     }
 
     #[tokio::test]
