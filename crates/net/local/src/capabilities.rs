@@ -9,6 +9,41 @@ use tracing::{debug, info};
 use crate::scope::{AddressScope, IpCapability, classify_multiaddr};
 use crate::system::same_subnet;
 
+/// Filter our candidate addresses to those appropriate to advertise to a peer
+/// of the given scope.
+///
+/// This is the single per-scope advertisement rule shared by every place that
+/// decides which of our own addresses a peer may learn (the handshake's
+/// [`LocalCapabilities::addresses_for_scope`], the identify behaviour, and the
+/// dial-eligibility check):
+/// - **public** peer: only public-scope candidates,
+/// - **private / link-local** peer: only candidates on the same subnet (requires
+///   `peer_addr`; without it none qualify),
+/// - **loopback** peer: loopback and private candidates.
+///
+/// Results are deduplicated, preserving input order.
+pub fn advertise_filter<'a>(
+    candidates: impl Iterator<Item = &'a Multiaddr>,
+    peer_scope: AddressScope,
+    peer_addr: Option<&Multiaddr>,
+) -> Vec<Multiaddr> {
+    let mut seen = HashSet::new();
+    candidates
+        .filter(|addr| match peer_scope {
+            AddressScope::Loopback => matches!(
+                classify_multiaddr(addr),
+                Some(AddressScope::Loopback | AddressScope::Private)
+            ),
+            AddressScope::Private | AddressScope::LinkLocal => {
+                peer_addr.is_some_and(|peer| same_subnet(addr, peer))
+            }
+            AddressScope::Public => classify_multiaddr(addr) == Some(AddressScope::Public),
+        })
+        .filter(|addr| seen.insert((*addr).clone()))
+        .cloned()
+        .collect()
+}
+
 /// Local node's network capabilities derived from libp2p listen addresses.
 ///
 /// Tracks listen addresses from libp2p events and computes IP capability.
@@ -82,46 +117,14 @@ impl LocalCapabilities {
     }
 
     /// Select listen addresses appropriate for a peer's network scope.
+    ///
+    /// Applies the shared [`advertise_filter`] rule over our listen addresses.
     pub fn addresses_for_scope(
         &self,
         peer_scope: AddressScope,
         peer_addr: Option<&Multiaddr>,
     ) -> Vec<Multiaddr> {
-        let listen = self.listen_addrs.read();
-
-        // Filter and deduplicate in one pass
-        let mut seen = HashSet::new();
-
-        match peer_scope {
-            AddressScope::Loopback => listen
-                .iter()
-                .filter(|addr| {
-                    matches!(
-                        classify_multiaddr(addr),
-                        Some(AddressScope::Loopback | AddressScope::Private)
-                    )
-                })
-                .filter(|addr| seen.insert((*addr).clone()))
-                .cloned()
-                .collect(),
-
-            AddressScope::Private | AddressScope::LinkLocal => match peer_addr {
-                Some(peer) => listen
-                    .iter()
-                    .filter(|addr| same_subnet(addr, peer))
-                    .filter(|addr| seen.insert((*addr).clone()))
-                    .cloned()
-                    .collect(),
-                None => Vec::new(),
-            },
-
-            AddressScope::Public => listen
-                .iter()
-                .filter(|addr| classify_multiaddr(addr) == Some(AddressScope::Public))
-                .filter(|addr| seen.insert((*addr).clone()))
-                .cloned()
-                .collect(),
-        }
+        advertise_filter(self.listen_addrs.read().iter(), peer_scope, peer_addr)
     }
 }
 

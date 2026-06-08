@@ -8,6 +8,6 @@ pub mod capabilities;
 pub mod scope;
 pub mod system;
 
-pub use capabilities::LocalCapabilities;
+pub use capabilities::{LocalCapabilities, advertise_filter};
 pub use scope::{AddressScope, IpCapability, classify_multiaddr, is_dialable};
 pub use system::{add_subnet, remove_subnet, same_subnet};

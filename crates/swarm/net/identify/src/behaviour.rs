@@ -24,7 +24,7 @@ use libp2p::swarm::{
     behaviour::{ConnectionClosed, ConnectionEstablished, DialFailure, FromSwarm},
 };
 
-use vertex_net_local::{AddressScope, classify_multiaddr, same_subnet};
+use vertex_net_local::{AddressScope, advertise_filter, classify_multiaddr};
 
 use crate::{
     Config,
@@ -95,23 +95,15 @@ fn select_addresses_for_remote<'a>(
     hide_listen_addrs: bool,
 ) -> HashSet<Multiaddr> {
     let scope = classify_multiaddr(remote_addr).unwrap_or(AddressScope::Public);
-    let mut addrs = HashSet::new();
 
-    if !hide_listen_addrs {
-        for listen in listen_addrs {
-            let keep = match scope {
-                AddressScope::Loopback => matches!(
-                    classify_multiaddr(listen),
-                    Some(AddressScope::Loopback | AddressScope::Private)
-                ),
-                AddressScope::Private | AddressScope::LinkLocal => same_subnet(listen, remote_addr),
-                AddressScope::Public => classify_multiaddr(listen) == Some(AddressScope::Public),
-            };
-            if keep {
-                addrs.insert(listen.clone());
-            }
-        }
-    }
+    // Scope-filter our listen addresses with the shared advertisement rule.
+    let mut addrs: HashSet<Multiaddr> = if hide_listen_addrs {
+        HashSet::new()
+    } else {
+        advertise_filter(listen_addrs, scope, Some(remote_addr))
+            .into_iter()
+            .collect()
+    };
 
     // Confirmed external addresses are public and dialable; advertise them to
     // any non-loopback peer (filtered to public scope defensively).
