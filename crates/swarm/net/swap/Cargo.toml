@@ -34,6 +34,9 @@ alloy-primitives.workspace = true
 bytes.workspace = true
 strum.workspace = true
 thiserror.workspace = true
+# serde_json: sanctioned for the swap cheque wire (transport-only JSON), per
+# crates/swarm/AGENTS.md. Not for any internal or public API surface.
+serde_json.workspace = true
 
 ## tracing
 tracing.workspace = true

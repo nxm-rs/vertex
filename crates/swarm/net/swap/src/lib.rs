@@ -1,11 +1,11 @@
 //! SWAP protocol for Swarm cheque-based bandwidth settlement.
 //!
 //! The signed cheque travels as a JSON object embedded in a protobuf `bytes`
-//! field. The JSON shape is fixed and byte-identical to the live network for
-//! interoperability; the encode/decode lives in
-//! [`vertex_swarm_bandwidth_chequebook::SignedCheque::to_json`] and
-//! [`from_json`](vertex_swarm_bandwidth_chequebook::SignedCheque::from_json),
-//! never in this crate.
+//! field, encoded and decoded with `serde_json` over
+//! [`vertex_swarm_bandwidth_chequebook::SignedCheque`]. The JSON is
+//! transport-only (the cheque signature is EIP-712 over the cheque fields, not
+//! over the JSON bytes) and is slated for protobuf replacement, tracked in issue
+//! #183.
 
 mod codec;
 mod error;

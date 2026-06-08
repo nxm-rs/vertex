@@ -31,13 +31,15 @@
 //! # Wire format
 //!
 //! A [`SignedCheque`] travels on the swap protocol as a JSON object embedded in
-//! a protobuf `bytes` field. JSON is tolerated here only because the object
-//! shape is fixed and must stay byte-identical to the live network so peers
-//! interoperate. The codec is driven by `serde_json` over a fixed-order wire
-//! struct: the keys are PascalCase, the addresses are lowercase `0x`-hex,
-//! `CumulativePayout` is a bare decimal JSON number spanning the full 256-bit
-//! range, and `Signature` is standard base64. See [`cheque`] for the codec and
-//! the conformance vectors under `tests/` for the pinned bytes.
+//! a protobuf `bytes` field. The JSON is transport-only: the signature is EIP-712
+//! over the cheque fields, not over the JSON bytes, so the encoding only needs to
+//! be cross-implementation parseable and value-preserving, not byte-identical.
+//! [`SignedCheque`] derives serde, so callers encode and decode with `serde_json`
+//! directly. The shape follows the field-value conventions other Swarm nodes
+//! emit: PascalCase keys, lowercase `0x`-hex addresses, `CumulativePayout` as a
+//! bare decimal JSON number spanning the full 256-bit range, and `Signature` as
+//! standard base64. This whole JSON path is slated for protobuf replacement,
+//! tracked in issue #183.
 
 pub mod cheque;
 
@@ -66,13 +68,4 @@ pub enum ChequeError {
     /// The cheque could not be encoded to wire JSON.
     #[error("failed to encode cheque json: {0}")]
     Encode(&'static str),
-
-    /// A field held a value the codec could not parse.
-    #[error("invalid cheque field {field}: {reason}")]
-    InvalidField {
-        /// The JSON key whose value failed to parse.
-        field: &'static str,
-        /// Why the value was rejected.
-        reason: &'static str,
-    },
 }

@@ -12,9 +12,14 @@ vertex_net_codec::protocol_error! {
         #[strum(serialize = "invalid_beneficiary")]
         InvalidBeneficiaryLength(usize),
 
-        /// Cheque JSON encode/decode failure, carrying the typed source error.
-        #[error("cheque codec: {0}")]
-        #[strum(serialize = "cheque_codec")]
-        Cheque(#[from] vertex_swarm_bandwidth_chequebook::ChequeError),
+        /// Cheque JSON encoding failure, carrying the typed source error.
+        #[error("cheque encode: {0}")]
+        #[strum(serialize = "cheque_encode")]
+        ChequeEncode(#[source] serde_json::Error),
+
+        /// Cheque JSON decoding failure, carrying the typed source error.
+        #[error("cheque decode: {0}")]
+        #[strum(serialize = "cheque_decode")]
+        ChequeDecode(#[source] serde_json::Error),
     }
 }
