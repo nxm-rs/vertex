@@ -84,7 +84,16 @@ impl ChequeExt for Cheque {
 pub struct SignedCheque {
     /// The unsigned cheque data.
     pub cheque: Cheque,
-    /// ECDSA signature (65 bytes: r[32] + s[32] + v[1]).
+    /// The raw signature payload (canonically 65 bytes: r[32] + s[32] + v[1]).
+    ///
+    /// Kept as opaque [`Bytes`] rather than a typed
+    /// [`alloy_primitives::Signature`] on purpose. The wire format is base64 of
+    /// whatever signature payload the peer sends, and the codec must round-trip
+    /// it byte-for-byte. A typed `Signature` fixes the length at 65 bytes,
+    /// rejects non-canonical `v` values, and renormalizes `v` to `27 + parity`
+    /// on re-encode, any of which would change the bytes and break wire
+    /// equivalence. The payload is parsed into a `Signature` only when verifying
+    /// or recovering a signer (see [`Self::recover_signer`]).
     pub signature: Bytes,
 }
 
