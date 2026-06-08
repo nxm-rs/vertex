@@ -131,6 +131,10 @@ impl<C: SwarmNetworkConfig> SwarmNetworkConfig for ConfigWithBootnodes<'_, C> {
     fn upnp_enabled(&self) -> bool {
         self.inner.upnp_enabled()
     }
+
+    fn mdns_enabled(&self) -> bool {
+        self.inner.mdns_enabled()
+    }
 }
 
 impl<C: SwarmPeerConfig> SwarmPeerConfig for ConfigWithBootnodes<'_, C> {

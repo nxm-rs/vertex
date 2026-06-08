@@ -242,6 +242,7 @@ libp2p = { git = "https://github.com/libp2p/rust-libp2p", rev = "3e72d4c071d5ec8
     "identify",
     "upnp",
     "autonat",
+    "mdns",
     "ping",
 ] }
 quick-protobuf = "0.8"
