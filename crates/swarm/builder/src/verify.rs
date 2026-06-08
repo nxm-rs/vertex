@@ -28,6 +28,10 @@ pub struct ChunkVerifyConfig {
 }
 
 impl Default for ChunkVerifyConfig {
+    // Hand-written rather than derived: the workspace derive set cannot express a
+    // field defaulting to `true`. `derive_more` ships no `Default` derive, and no
+    // field-level-default crate is a workspace dependency, so this matches the
+    // manual `impl Default` used by the sibling configs in this crate.
     fn default() -> Self {
         Self {
             verify_content: true,
