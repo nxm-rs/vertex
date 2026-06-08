@@ -50,8 +50,7 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
             {
                 Ok(result) => {
                     return Ok(ChunkRetrievalResult {
-                        data: result.data,
-                        stamp: result.stamp,
+                        chunk: result.chunk,
                         served_by: result.peer,
                     });
                 }

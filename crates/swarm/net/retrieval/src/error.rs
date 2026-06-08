@@ -9,6 +9,14 @@ vertex_net_codec::protocol_error! {
 
         /// Invalid chunk address encoding.
         #[error("invalid chunk address: {0}")]
-        InvalidAddress(String),
+        InvalidAddress(#[from] nectar_primitives::PrimitivesError),
+
+        /// Malformed postage stamp in the delivery.
+        #[error("invalid stamp: {0}")]
+        InvalidStamp(#[from] nectar_postage::StampError),
+
+        /// Chunk bytes did not match the requested address.
+        #[error("invalid chunk: {0}")]
+        InvalidChunk(#[from] vertex_swarm_primitives::ReconstructError),
     }
 }

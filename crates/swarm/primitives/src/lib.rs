@@ -5,8 +5,8 @@
 //!
 //! # Proximity types: keep them distinct
 //!
-//! Three types share the `0..=MAX_PO` (`u8`) range but mean different things.
-//! Conflating them (the bee `po: u8` habit) is the historical bug-surface, so
+//! Four types share the `0..=MAX_PO` (`u8`) range but mean different things.
+//! Conflating them (the historical `po: u8` habit) is the bug-surface, so
 //! the type system keeps them apart. Use the right one and the single named
 //! bridges between them:
 //!
@@ -17,11 +17,18 @@
 //!   The only `ProximityOrder -> Bin` bridge is `Bin::from` (relative to the
 //!   local overlay, capped at `max_po`). It keys per-bin storage and iteration.
 //!   It is NOT a free metric between arbitrary addresses.
-//! - [`NeighborhoodDepth`]: the distinguished **boundary** bin. Bins it
-//!   [`contains`](NeighborhoodDepth::contains) are the neighborhood (area of
-//!   responsibility); shallower bins are balanced. It is deliberately NOT
-//!   comparable with `Bin` - relate them only through `depth.contains(bin)` or
-//!   `depth.bin()`, so an accidental `bin >= depth` does not compile.
+//! - [`NeighborhoodDepth`]: the distinguished **boundary** bin, supply-side and
+//!   local-only. Bins it [`contains`](NeighborhoodDepth::contains) are the
+//!   neighborhood (the local node's connectivity boundary); shallower bins are
+//!   balanced. It is deliberately NOT comparable with `Bin` - relate them only
+//!   through `depth.contains(bin)` or `depth.bin()`, so an accidental
+//!   `bin >= depth` does not compile.
+//! - [`StorageRadius`]: a node's reserve / storage-responsibility radius,
+//!   demand-side, valid for the local node OR a remote node (e.g. a value read
+//!   from a pushsync receipt). It is a different metric from
+//!   [`NeighborhoodDepth`]: the two can diverge, so they are separate types and
+//!   not cross-comparable. It carries no `contains` membership method, since
+//!   that connotation belongs only to the local connectivity boundary.
 //!
 //! Enumerate the bin space only through [`all_bins`], [`balanced_bins`], and
 //! [`neighborhood_bins`] (the sole places a `Bin` is built from a raw index).
@@ -29,13 +36,19 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+mod stamped;
 mod validated;
 
+pub use stamped::{ReconstructError, StampedChunk, reconstruct_chunk};
 pub use validated::{ValidatedChunk, ValidationError};
 
 // Re-export canonical Swarm primitives from nectar. See the crate-level docs
 // for the ProximityOrder / Bin / NeighborhoodDepth distinction.
 pub use nectar_primitives::{Bin, NetworkId, Nonce, ProximityOrder, Timestamp, compute_overlay};
+
+// Re-export the postage stamp from nectar. The canonical proof-of-payment type
+// that travels with a chunk on the retrieval and pushsync wires.
+pub use nectar_postage::Stamp;
 
 use core::fmt;
 
@@ -97,6 +110,60 @@ impl NeighborhoodDepth {
 impl fmt::Display for NeighborhoodDepth {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "depth={}", self.0.get())
+    }
+}
+
+/// A node's reserve / storage-responsibility radius (demand-side).
+///
+/// The radius up to which a storer node accepts responsibility for chunks in
+/// its reserve. Valid for the local node or a remote node: a pushsync receipt
+/// carries the remote storer's `StorageRadius`, so this value is not always
+/// local.
+///
+/// This is a distinct metric from [`NeighborhoodDepth`], which is the local
+/// node's connectivity boundary (supply-side, local-only). The two can diverge,
+/// so they are separate types and intentionally not cross-comparable: relating
+/// a `StorageRadius` to a [`Bin`] or a [`NeighborhoodDepth`] with `<`/`==` does
+/// not compile. There is deliberately no `contains`-style membership method;
+/// that connotation belongs only to the local [`NeighborhoodDepth`].
+///
+/// A distinguished [`Bin`] in a specific *role*. `Ord` among radii is provided
+/// (larger radius is greater) for `max`/`>` on radii. Extract the raw `u8` with
+/// [`get`](Self::get) only at edges (logs, metrics, the wire).
+// TODO(nectar): migrate StorageRadius upstream to nectar-primitives once the
+// reserve/responsibility types move there; it is vertex-only for now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StorageRadius(Bin);
+
+impl StorageRadius {
+    /// The smallest radius.
+    pub const ZERO: Self = Self(Bin::ZERO);
+
+    /// Wrap a [`Bin`] as a storage radius.
+    #[inline]
+    #[must_use]
+    pub const fn new(bin: Bin) -> Self {
+        Self(bin)
+    }
+
+    /// The radius as a [`Bin`]. Use when you genuinely need it as an index.
+    #[inline]
+    #[must_use]
+    pub const fn bin(self) -> Bin {
+        self.0
+    }
+
+    /// The raw radius value. For edges only (metric labels, wire, logs).
+    #[inline]
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0.get()
+    }
+}
+
+impl fmt::Display for StorageRadius {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "radius={}", self.0.get())
     }
 }
 
@@ -260,6 +327,24 @@ mod tests {
     #[test]
     fn balanced_bins_empty_at_zero_depth() {
         assert_eq!(balanced_bins(NeighborhoodDepth::ZERO).count(), 0);
+    }
+
+    #[test]
+    fn storage_radius_round_trips_through_bin() {
+        let r = StorageRadius::new(b(8));
+        assert_eq!(r.bin(), b(8));
+        assert_eq!(r.get(), 8);
+        assert_eq!(StorageRadius::ZERO.get(), 0);
+        assert_eq!(StorageRadius::ZERO.bin(), Bin::ZERO);
+    }
+
+    #[test]
+    fn storage_radius_ord_is_by_value() {
+        assert!(StorageRadius::new(b(7)) > StorageRadius::new(b(3)));
+        assert_eq!(
+            StorageRadius::new(b(7)).max(StorageRadius::new(b(3))),
+            StorageRadius::new(b(7))
+        );
     }
 
     #[test]
