@@ -51,10 +51,12 @@ fn reconstruct_chunk(req: &UploadChunkRequest) -> Result<AnyChunk, Status> {
 
     let chunk = match chunk_type {
         ChunkType::Content => {
-            // Build from data so the BMT hash is recomputed rather than trusted,
-            // letting the verify step below catch an address that lies about the
-            // payload.
-            let content = ContentChunk::new(req.data.clone())
+            // Parse the full BMT body (span + data) from the wire encoding, the
+            // same shape `RetrieveChunk` returns, so a retrieved content chunk
+            // round-trips back into an upload. The BMT hash is recomputed from
+            // the body, letting the verify step below reject an address that
+            // lies about the payload.
+            let content = ContentChunk::try_from(req.data.as_slice())
                 .map_err(|e| Status::invalid_argument(format!("Invalid content chunk: {}", e)))?;
             AnyChunk::Content(content)
         }
@@ -131,9 +133,18 @@ impl<P: SwarmChunkProvider + SwarmChunkSender> Chunk for ChunkService<P> {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
     use vertex_swarm_api::Chunk as _;
 
     use super::*;
+
+    /// Build a content chunk from raw data and return its wire encoding (span +
+    /// data) alongside its address, matching what the upload handler expects.
+    fn content_wire(data: &[u8]) -> (Vec<u8>, ChunkAddress) {
+        let chunk: ContentChunk = ContentChunk::new(data.to_vec()).expect("valid content chunk");
+        let address = *chunk.address();
+        (Bytes::from(chunk).to_vec(), address)
+    }
 
     fn content_request(data: Vec<u8>, address: &ChunkAddress) -> UploadChunkRequest {
         UploadChunkRequest {
@@ -147,11 +158,9 @@ mod tests {
 
     #[test]
     fn reconstruct_content_chunk_roundtrips() {
-        let data = b"reconstruct me".to_vec();
-        let original: ContentChunk = ContentChunk::new(data.clone()).unwrap();
-        let address = *original.address();
+        let (wire, address) = content_wire(b"reconstruct me");
 
-        let req = content_request(data, &address);
+        let req = content_request(wire, &address);
         let chunk = reconstruct_chunk(&req).expect("valid content chunk");
 
         assert_eq!(chunk.address(), &address);
@@ -160,8 +169,8 @@ mod tests {
 
     #[test]
     fn reconstruct_rejects_malformed_address() {
-        let data = b"any".to_vec();
-        let mut req = content_request(data, &ChunkAddress::default());
+        let (wire, _) = content_wire(b"any");
+        let mut req = content_request(wire, &ChunkAddress::default());
         req.address = "not-hex".to_string();
 
         let err = reconstruct_chunk(&req).expect_err("malformed address must fail");
@@ -170,19 +179,19 @@ mod tests {
 
     #[test]
     fn reconstruct_rejects_address_mismatch() {
-        let data = b"payload".to_vec();
+        let (wire, _) = content_wire(b"payload");
         // Address that does not match the BMT hash of the payload.
         let wrong = ChunkAddress::new([0xab; 32]);
 
-        let req = content_request(data, &wrong);
+        let req = content_request(wire, &wrong);
         let err = reconstruct_chunk(&req).expect_err("address mismatch must fail");
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
     }
 
     #[test]
     fn reconstruct_rejects_unknown_chunk_type() {
-        let data = b"payload".to_vec();
-        let mut req = content_request(data, &ChunkAddress::default());
+        let (wire, address) = content_wire(b"payload");
+        let mut req = content_request(wire, &address);
         req.chunk_type = 99;
 
         let err = reconstruct_chunk(&req).expect_err("unknown chunk type must fail");

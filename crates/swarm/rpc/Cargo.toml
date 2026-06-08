@@ -24,6 +24,9 @@ tokio = { workspace = true, features = ["sync", "rt"] }
 tonic.workspace = true
 prost.workspace = true
 
+[dev-dependencies]
+bytes = { workspace = true }
+
 [build-dependencies]
 tonic-build.workspace = true
 
