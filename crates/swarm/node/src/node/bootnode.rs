@@ -244,8 +244,7 @@ impl<I: SwarmIdentity + Clone> BootNode<I> {
     }
 
     fn handle_identify_event(&mut self, event: identify::Event) {
-        let behaviour = self.base.swarm.behaviour_mut();
-        super::base::handle_identify_event(&behaviour.topology, &mut behaviour.identify, event);
+        super::base::handle_identify_event(&mut self.base.swarm.behaviour_mut().identify, event);
     }
 
     pub fn connected_peers(&self) -> usize {

@@ -66,8 +66,12 @@ All returned addresses include `/p2p/{local_peer_id}`.
 
 Two signals can flip the public connectivity flag, in increasing order of confidence:
 
-- `on_observed_addr()` is the weak signal. When a peer reports our address via identify and that address is public, the flag is set. The observed address itself is **not stored or advertised**, only the connectivity fact is recorded.
+- `on_observed_addr()` is the weak signal, and it is fed only from **inbound** handshakes. When a peer dials us and the address it reports observing us at is public, that is our genuinely reachable listen address (the peer reached it), so the flag is set. Observed addresses from outbound connections are deliberately ignored here: when we dial out, the remote sees our ephemeral NAT source port, which proves nothing about our reachability. The observed address itself is **not stored or advertised**, only the connectivity fact is recorded. Outbound-observed addresses still flow to the AutoNAT v2 client (via identify's `NewExternalAddrCandidate`) to be verified by dial-back.
 - `on_external_addr_confirmed()` is the strong signal. It fires on `FromSwarm::ExternalAddrConfirmed`, which the libp2p swarm raises only after AutoNAT v2 has dialed one of our candidate addresses back, or UPnP has mapped a port. This is hard to spoof because it requires a completed inbound connection on the address under test. Unlike the observed signal it is reversible: `on_external_addr_expired()` drops the address on `FromSwarm::ExternalAddrExpired` (for example a UPnP lease that fails to renew), so a node whose only public path was a mapping that lapsed stops advertising itself as reachable.
+
+### Peer reachability is not peer liveness
+
+The per-peer `ReachabilityTracker` makes the same distinction for *other* nodes. `Public` means a peer accepts new inbound connections at its advertised address, which is only proven by an AutoNAT v2 dial-back (`on_autonat_peer_confirmed()`) or by us successfully dialing the peer outbound at a public-scope address (`on_outbound_reachable()`). A completed handshake or a successful ping is treated as **liveness** only: it clears the failure streak and recovers a demoted peer to `Unknown`, but never sets `Public`. This guards against the ephemeral-port trap: a NAT'd peer that dials us answers pings over its connection-specific inbound port yet is unreachable by anyone else, so it must not be ranked as reachable for eviction.
 
 ## AutoNAT v2 and UPnP
 

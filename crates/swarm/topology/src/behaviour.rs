@@ -232,6 +232,13 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
     /// Overlays pending eviction from bin trimming (consumed by handle_connection_closed).
     pub(crate) pending_evictions: HashSet<OverlayAddress>,
 
+    /// Connection IDs of outbound dials whose remote address was public-scope.
+    /// On handshake completion these promote the peer to
+    /// [`crate::PeerReachability::Public`] (we reached a dialable public
+    /// address). Populated at `ConnectionEstablished`, consumed at handshake
+    /// completion, and cleared at `ConnectionClosed`.
+    pub(crate) outbound_public_dials: HashSet<ConnectionId>,
+
     /// Node type recorded at PeerReady time for symmetric metric decrement on disconnect.
     ///
     /// Without this, gossip re-verification can overwrite the handshake-confirmed
@@ -393,6 +400,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             }),
             early_disconnect_threshold: config.early_disconnect_threshold,
             pending_evictions: HashSet::new(),
+            outbound_public_dials: HashSet::new(),
             connected_node_types: HashMap::new(),
             ban_rx,
             peer_store,

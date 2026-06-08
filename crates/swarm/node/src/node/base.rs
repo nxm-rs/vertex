@@ -208,14 +208,11 @@ impl<I: SwarmIdentity, B: NetworkBehaviour> BaseNode<I, B> {
     }
 }
 
-/// Handle an identify event by recording observed addresses and pushing them back.
+/// Handle an identify event: push the peer-observed address back, and let the
+/// identify behaviour surface it as an AutoNAT external-address candidate.
 ///
 /// Shared between [`BootNode`](super::BootNode) and [`ClientNode`](super::ClientNode).
-pub(crate) fn handle_identify_event<I: SwarmIdentity + Clone>(
-    topology: &TopologyBehaviour<I>,
-    identify: &mut identify::Behaviour,
-    event: identify::Event,
-) {
+pub(crate) fn handle_identify_event(identify: &mut identify::Behaviour, event: identify::Event) {
     match event {
         identify::Event::Received { peer_id, info, .. } => {
             debug!(
@@ -226,8 +223,13 @@ pub(crate) fn handle_identify_event<I: SwarmIdentity + Clone>(
                 "Received identify info"
             );
 
+            // The observed address flows to the AutoNAT v2 client as an
+            // external-address candidate (emitted inside the identify
+            // behaviour) to be verified by dial-back; we do not treat it as
+            // proof of public connectivity here. Self-reachability is set only
+            // by a verified external address or an inbound handshake whose
+            // observed address is public (see the topology handshake handler).
             if !info.observed_addr.is_empty() {
-                topology.on_observed_addr(&info.observed_addr);
                 identify.push_with_addresses(peer_id, vec![info.observed_addr]);
             }
         }
