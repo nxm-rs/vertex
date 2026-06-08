@@ -9,5 +9,7 @@ pub mod scope;
 pub mod system;
 
 pub use capabilities::{LocalCapabilities, advertise_filter};
-pub use scope::{AddressScope, IpCapability, classify_multiaddr, is_dialable};
+pub use scope::{
+    AddressFamily, AddressScope, IpCapability, classify_multiaddr, family_order, is_dialable,
+};
 pub use system::{add_subnet, remove_subnet, same_subnet};
