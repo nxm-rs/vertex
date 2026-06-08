@@ -1,5 +1,3 @@
-compile_error!("vertex-swarm-bandwidth-chequebook is disabled: depends on serde_json which has been removed from the workspace. Remove serde_json dependency before re-enabling.");
-
 //! Chequebook types and signing for SWAP settlement.
 //!
 //! This crate provides the core types for SWAP chequebook-based settlement:
@@ -30,10 +28,15 @@ compile_error!("vertex-swarm-bandwidth-chequebook is disabled: depends on serde_
 //! let signed = SignedCheque::from_signature(cheque, sig);
 //! ```
 //!
-//! # Wire Format
+//! # Wire format
 //!
-//! Cheques are serialized as JSON for transmission over the SWAP protocol,
-//! matching Bee's format for interoperability.
+//! A [`SignedCheque`] travels on the swap protocol as a JSON object embedded in
+//! a protobuf `bytes` field. The encoding is hand-rolled rather than driven by a
+//! general JSON library: the object shape is fixed and must stay byte-identical
+//! to the live network so peers interoperate. The keys are PascalCase, the
+//! addresses are lowercase `0x`-hex, `CumulativePayout` is a bare decimal JSON
+//! number, and `Signature` is standard base64. See [`cheque`] for the codec and
+//! the conformance vectors under `tests/` for the pinned bytes.
 
 pub mod cheque;
 
@@ -44,12 +47,9 @@ pub use alloy_primitives::{Address, U256};
 pub use bytes::Bytes;
 
 /// Errors that can occur during cheque operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum ChequeError {
-    /// Cheque signing is not yet implemented.
-    #[error("cheque signing not implemented")]
-    SigningNotImplemented,
-
     /// Failed to recover signer from signature.
     #[error("failed to recover signer: {0}")]
     SignatureRecovery(String),
@@ -58,15 +58,16 @@ pub enum ChequeError {
     #[error("invalid signer: expected {expected}, got {actual}")]
     InvalidSigner { expected: Address, actual: Address },
 
-    /// Cheque serialization/deserialization failed.
-    #[error("serialization error: {0}")]
-    Serialization(String),
+    /// The JSON object was not well-formed for a signed cheque.
+    #[error("malformed cheque json: {0}")]
+    MalformedJson(&'static str),
 
-    /// Cheque amount is invalid.
-    #[error("invalid cheque amount: {0}")]
-    InvalidAmount(String),
-
-    /// Chequebook contract error.
-    #[error("chequebook error: {0}")]
-    Chequebook(String),
+    /// A field held a value the codec could not parse.
+    #[error("invalid cheque field {field}: {reason}")]
+    InvalidField {
+        /// The JSON key whose value failed to parse.
+        field: &'static str,
+        /// Why the value was rejected.
+        reason: &'static str,
+    },
 }

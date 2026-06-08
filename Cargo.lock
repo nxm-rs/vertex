@@ -8099,6 +8099,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "vertex-swarm-bandwidth-chequebook"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
+ "alloy-sol-types",
+ "bytes",
+ "nectar-contracts",
+ "strum 0.28.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "vertex-swarm-spec",
+]
+
+[[package]]
 name = "vertex-swarm-bandwidth-pricing"
 version = "0.1.0"
 dependencies = [
