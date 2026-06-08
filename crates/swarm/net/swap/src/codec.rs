@@ -4,7 +4,8 @@
 //! - `EmitChequeCodec` - Encodes/decodes `EmitCheque` messages
 //! - `HandshakeCodec` - Encodes/decodes `Handshake` messages
 //!
-//! Cheques are serialized as JSON, matching Bee's format for interoperability.
+//! Cheques are serialized via the chequebook crate's fixed-shape JSON codec,
+//! which is byte-identical to the live network for interoperability.
 
 use alloy_primitives::Address;
 use vertex_net_codec::{Codec, ProtoMessage};
@@ -29,15 +30,14 @@ impl ProtoMessage for EmitCheque {
     type DecodeError = SwapError;
 
     fn into_proto(self) -> Result<Self::Proto, Self::EncodeError> {
-        let cheque_json = serde_json::to_vec(&self.cheque)?;
+        let cheque_json = self.cheque.to_json()?;
         Ok(vertex_swarm_net_proto::swap::EmitCheque {
-            cheque: cheque_json,
+            cheque: cheque_json.into(),
         })
     }
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
-        let cheque: SignedCheque =
-            serde_json::from_slice(&proto.cheque).map_err(SwapError::from)?;
+        let cheque = SignedCheque::from_json(&proto.cheque)?;
         Ok(Self { cheque })
     }
 }

@@ -1,6 +1,11 @@
-compile_error!("vertex-swarm-net-swap is disabled: depends on serde_json which has been removed from the workspace. Remove serde_json dependency before re-enabling.");
-
 //! SWAP protocol for Swarm cheque-based bandwidth settlement.
+//!
+//! The signed cheque travels as a JSON object embedded in a protobuf `bytes`
+//! field. The JSON shape is fixed and byte-identical to the live network for
+//! interoperability; the encode/decode lives in
+//! [`vertex_swarm_bandwidth_chequebook::SignedCheque::to_json`] and
+//! [`from_json`](vertex_swarm_bandwidth_chequebook::SignedCheque::from_json),
+//! never in this crate.
 
 mod codec;
 mod error;
