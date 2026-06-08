@@ -13,10 +13,14 @@
 pub mod error;
 mod serde_multiaddr;
 pub mod swarm_peer;
+pub mod timestamp_policy;
 
 pub use error::SwarmPeerError;
 pub use serde_multiaddr::{deserialize_multiaddrs, serialize_multiaddrs};
 pub use swarm_peer::{Nonce, SwarmPeer, SwarmPeerWire, Timestamp};
+pub use timestamp_policy::{
+    MAX_CLOCK_SKEW, MIN_UPDATE_INTERVAL, TimestampRejection, check_timestamp,
+};
 
 pub use nectar_primitives::SwarmAddress;
 pub use nectar_swarms::{NamedSwarm, Swarm, SwarmKind};

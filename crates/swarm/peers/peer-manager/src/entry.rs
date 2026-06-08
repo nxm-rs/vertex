@@ -201,6 +201,11 @@ impl PeerEntry {
         self.identity.read().0.clone()
     }
 
+    /// Signed wall-clock timestamp of the currently held peer record.
+    pub(crate) fn timestamp(&self) -> vertex_swarm_peer::Timestamp {
+        self.identity.read().0.timestamp()
+    }
+
     pub(crate) fn ip_capability(&self) -> IpCapability {
         self.identity.read().0.ip_capability()
     }
