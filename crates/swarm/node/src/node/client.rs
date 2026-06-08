@@ -53,10 +53,11 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
     ) -> Self {
         let agent_versions = topology.agent_versions();
         Self {
-            // Send listen addresses (even private IPs) so bee's peerstore has entries.
-            // waitPeerAddrs() returns immediately if len(addrs) > 0, regardless of
-            // whether addresses match or are reachable. The handshake protocol uses
-            // RemoteMultiaddr directly. Private IPs in gossip are harmless.
+            // Identify advertises addresses scoped to each peer (see
+            // `addresses_for_remote`), so a public peer never receives our
+            // private or loopback addresses. A NAT'd node with no public address
+            // sends an empty listen set to public peers; bee tolerates this
+            // (it falls back to the connection's remote multiaddr).
             identify: identify::Behaviour::new(
                 identify::Config::new(local_public_key),
                 agent_versions,

@@ -57,10 +57,9 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
     ) -> Self {
         let agent_versions = topology.agent_versions();
         Self {
-            // Advertise listen addresses (even private IPs). Peers gate on
-            // "we have at least one addr" rather than reachability, and the
-            // handshake itself uses the libp2p-observed remote multiaddr, so
-            // private IPs in the identify payload are harmless.
+            // Identify advertises addresses scoped to each peer (see
+            // `addresses_for_remote`): a public peer never receives our private
+            // or loopback addresses, matching the handshake's policy.
             identify: identify::Behaviour::new(
                 identify::Config::new(local_public_key),
                 agent_versions,

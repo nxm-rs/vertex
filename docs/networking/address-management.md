@@ -79,7 +79,7 @@ The per-peer `ReachabilityTracker` makes the same distinction for *other* nodes,
 
 NAT traversal runs as a cluster of top-level libp2p behaviours that sit beside identify in each node type (`vertex-swarm-node`). They collaborate through the swarm external-address machinery rather than through direct calls.
 
-- **identify** observes the remote-reported address and emits it as a `NewExternalAddrCandidate`.
+- **identify** observes the remote-reported address and emits it as a `NewExternalAddrCandidate`. The addresses identify advertises to a peer are scope-filtered per recipient (`select_addresses_for_remote`), mirroring the handshake policy: a public peer never receives our private or loopback listen addresses, only public-scope and confirmed-external ones.
 - **AutoNAT v2 client** picks up each candidate, asks a peer that speaks `/libp2p/autonat/2/dial-request` to dial it back over a fresh port, and on success emits `ExternalAddrConfirmed`.
 - **AutoNAT v2 server** performs dial-backs for other peers. A completed dial-back proves the remote peer accepts inbound connections, so the node promotes it to `Reachable` in the topology reachability tracker via `on_autonat_peer_confirmed()`.
 - **UPnP** (`libp2p::upnp::tokio`) asks the LAN IGD gateway to map the listen port and emits `ExternalAddrConfirmed` for the mapped address.
@@ -109,7 +109,23 @@ NAT-mapped addresses contain ephemeral ports that are connection-specific. Each 
 
 ### What Bee Does
 
-Bee uses **static NAT configuration** (`--nat-addr`) for production deployments, not dynamic discovery. Bee also requires at least one underlay address in the handshake (empty underlays are rejected). The handshake protocol handles this by appending the peer-reported observed address as a last-resort fallback.
+Bee uses **static NAT configuration** (`--nat-addr`) for production deployments, not dynamic discovery.
+
+Two distinct address requirements are easy to conflate. Bee tolerates an empty *peerstore* when building its own observation of us: if libp2p identify has not yet populated addresses for us, bee waits briefly (up to 10s) and then falls back to the connection's remote multiaddr. But bee rejects a *signed record* that carries zero multiaddrs: `ParseAddress` returns `ErrInvalidAddress` when the decoded underlay count is zero (the `0x99`-prefixed empty-list form decodes to zero and is rejected too). So our signed handshake record must always carry at least one multiaddr.
+
+### Only full (storer) nodes are gossiped
+
+A crucial property bounds all of this: **only full nodes are ever gossiped about.** Bee never writes a light (non-`FullNode`) peer to its addressbook and never broadcasts it (light peers live in a separate address-only container with no signed record); it also never dials a light node. Vertex matches this exactly: every hive-gossip payload producer selects from storer-only peer views, and a non-storer peer is never placed in a broadcast. So a `Client` node's signed handshake record never enters the network.
+
+This is what makes the NAT'd outbound-only case clean: such a node runs as a `Client`, and whatever it puts in its handshake record to satisfy bee's non-empty requirement is never re-advertised, so it cannot pollute hive.
+
+### What we put in our signed record
+
+The record we sign during the handshake is what a full-node peer stores and gossips, so it must be both non-empty (for bee) and free of unreachable junk (to avoid polluting hive). We build it from our scope-filtered advertised addresses (the shared `advertise_filter` rule in `vertex-net-local`, also used by identify) and append the peer-observed address only when it is trustworthy:
+
+- **Inbound** connection: the peer dialed our actual listen address and reached it, so the observed address is genuinely reachable (this is how a port-forwarded node learns its public address without static config). We append it.
+- **Outbound** connection: the observed address is our ephemeral NAT source port, connection-specific and useless to other peers. We do not append it.
+- **Last resort**: a NAT'd, outbound-only node with no real address still needs one entry to satisfy bee. It includes the observed address. For a `Client` this is harmless (the record is never gossiped). For a `Storer` it means the node is unreachable and would advertise an undialable address, so the handshake logs an operator warning; the entry is transient and is superseded once AutoNAT v2 / UPnP / a static NAT address provides a real one (the newer-timestamp record wins, see the gossip conflict-resolution path).
 
 ### IPv6 vs IPv4
 

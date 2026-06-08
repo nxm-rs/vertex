@@ -19,6 +19,7 @@ futures-timer = "3.0"
 ## p2p
 libp2p.workspace = true
 libp2p-swarm.workspace = true
+vertex-net-local.workspace = true
 
 ## codec
 asynchronous-codec.workspace = true

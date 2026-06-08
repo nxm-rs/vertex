@@ -9,6 +9,41 @@ use tracing::{debug, info};
 use crate::scope::{AddressScope, IpCapability, classify_multiaddr};
 use crate::system::same_subnet;
 
+/// Filter our candidate addresses to those appropriate to advertise to a peer
+/// of the given scope.
+///
+/// This is the single per-scope advertisement rule shared by every place that
+/// decides which of our own addresses a peer may learn (the handshake's
+/// [`LocalCapabilities::addresses_for_scope`], the identify behaviour, and the
+/// dial-eligibility check):
+/// - **public** peer: only public-scope candidates,
+/// - **private / link-local** peer: only candidates on the same subnet (requires
+///   `peer_addr`; without it none qualify),
+/// - **loopback** peer: loopback and private candidates.
+///
+/// Results are deduplicated, preserving input order.
+pub fn advertise_filter<'a>(
+    candidates: impl Iterator<Item = &'a Multiaddr>,
+    peer_scope: AddressScope,
+    peer_addr: Option<&Multiaddr>,
+) -> Vec<Multiaddr> {
+    let mut seen = HashSet::new();
+    candidates
+        .filter(|addr| match peer_scope {
+            AddressScope::Loopback => matches!(
+                classify_multiaddr(addr),
+                Some(AddressScope::Loopback | AddressScope::Private)
+            ),
+            AddressScope::Private | AddressScope::LinkLocal => {
+                peer_addr.is_some_and(|peer| same_subnet(addr, peer))
+            }
+            AddressScope::Public => classify_multiaddr(addr) == Some(AddressScope::Public),
+        })
+        .filter(|addr| seen.insert((*addr).clone()))
+        .cloned()
+        .collect()
+}
+
 /// Local node's network capabilities derived from libp2p listen addresses.
 ///
 /// Tracks listen addresses from libp2p events and computes IP capability.
@@ -82,46 +117,14 @@ impl LocalCapabilities {
     }
 
     /// Select listen addresses appropriate for a peer's network scope.
+    ///
+    /// Applies the shared [`advertise_filter`] rule over our listen addresses.
     pub fn addresses_for_scope(
         &self,
         peer_scope: AddressScope,
         peer_addr: Option<&Multiaddr>,
     ) -> Vec<Multiaddr> {
-        let listen = self.listen_addrs.read();
-
-        // Filter and deduplicate in one pass
-        let mut seen = HashSet::new();
-
-        match peer_scope {
-            AddressScope::Loopback => listen
-                .iter()
-                .filter(|addr| {
-                    matches!(
-                        classify_multiaddr(addr),
-                        Some(AddressScope::Loopback | AddressScope::Private)
-                    )
-                })
-                .filter(|addr| seen.insert((*addr).clone()))
-                .cloned()
-                .collect(),
-
-            AddressScope::Private | AddressScope::LinkLocal => match peer_addr {
-                Some(peer) => listen
-                    .iter()
-                    .filter(|addr| same_subnet(addr, peer))
-                    .filter(|addr| seen.insert((*addr).clone()))
-                    .cloned()
-                    .collect(),
-                None => Vec::new(),
-            },
-
-            AddressScope::Public => listen
-                .iter()
-                .filter(|addr| classify_multiaddr(addr) == Some(AddressScope::Public))
-                .filter(|addr| seen.insert((*addr).clone()))
-                .cloned()
-                .collect(),
-        }
+        advertise_filter(self.listen_addrs.read().iter(), peer_scope, peer_addr)
     }
 }
 
@@ -200,5 +203,66 @@ mod tests {
 
         assert!(!addrs.iter().any(|a| a.to_string().contains("192.168")));
         assert!(addrs.iter().any(|a| a.to_string().contains("8.8.4.4")));
+    }
+
+    // IPv6 scope rules: `::1` is loopback, `fc00::/7` (ULA) is private,
+    // `fe80::/10` is link-local, and a global unicast address is public.
+
+    #[test]
+    fn advertise_filter_public_peer_keeps_only_global_ipv6() {
+        let candidates = [
+            parse_addr("/ip6/::1/tcp/1634"),                  // loopback
+            parse_addr("/ip6/fd00::1/tcp/1634"),              // ULA (private)
+            parse_addr("/ip6/fe80::1/tcp/1634"),              // link-local
+            parse_addr("/ip6/2606:4700:4700::1111/tcp/1634"), // global
+        ];
+        let peer = parse_addr("/ip6/2001:4860:4860::8888/tcp/5000"); // public peer
+        let out = advertise_filter(candidates.iter(), AddressScope::Public, Some(&peer));
+        assert_eq!(out, vec![parse_addr("/ip6/2606:4700:4700::1111/tcp/1634")]);
+    }
+
+    #[test]
+    fn advertise_filter_linklocal_ipv6_peer_keeps_same_subnet() {
+        // Two IPv6 link-local addresses are always same-subnet; a ULA is not
+        // same-subnet as a link-local peer.
+        let candidates = [
+            parse_addr("/ip6/fe80::abcd/tcp/1634"),
+            parse_addr("/ip6/fd00::1/tcp/1634"),
+        ];
+        let peer = parse_addr("/ip6/fe80::1234/tcp/5000");
+        let out = advertise_filter(candidates.iter(), AddressScope::LinkLocal, Some(&peer));
+        assert_eq!(out, vec![parse_addr("/ip6/fe80::abcd/tcp/1634")]);
+    }
+
+    #[test]
+    fn advertise_filter_loopback_peer_keeps_loopback_and_ula_ipv6() {
+        let candidates = [
+            parse_addr("/ip6/::1/tcp/1634"),                  // loopback
+            parse_addr("/ip6/fd00::1/tcp/1634"),              // ULA (private)
+            parse_addr("/ip6/2606:4700:4700::1111/tcp/1634"), // global
+        ];
+        let peer = parse_addr("/ip6/::1/tcp/5000");
+        let out = advertise_filter(candidates.iter(), AddressScope::Loopback, Some(&peer));
+        assert!(out.contains(&parse_addr("/ip6/::1/tcp/1634")));
+        assert!(out.contains(&parse_addr("/ip6/fd00::1/tcp/1634")));
+        assert!(!out.contains(&parse_addr("/ip6/2606:4700:4700::1111/tcp/1634")));
+    }
+
+    #[test]
+    fn advertise_filter_mixed_stack_public_peer() {
+        // A dual-stack node advertising to a public peer: both the public IPv4
+        // and public IPv6 are kept, private/link-local of either family dropped.
+        let candidates = [
+            parse_addr("/ip4/192.168.1.10/tcp/1634"),
+            parse_addr("/ip4/8.8.4.4/tcp/1634"),
+            parse_addr("/ip6/fd00::1/tcp/1634"),
+            parse_addr("/ip6/2606:4700:4700::1111/tcp/1634"),
+        ];
+        let peer = parse_addr("/ip4/8.8.8.8/tcp/5000");
+        let out = advertise_filter(candidates.iter(), AddressScope::Public, Some(&peer));
+        assert!(out.contains(&parse_addr("/ip4/8.8.4.4/tcp/1634")));
+        assert!(out.contains(&parse_addr("/ip6/2606:4700:4700::1111/tcp/1634")));
+        assert!(!out.contains(&parse_addr("/ip4/192.168.1.10/tcp/1634")));
+        assert!(!out.contains(&parse_addr("/ip6/fd00::1/tcp/1634")));
     }
 }
