@@ -210,7 +210,9 @@ impl LocalAddressManager {
     /// Select addresses to advertise to peer during handshake, filtered by peer
     /// scope and ordered by likely reachability.
     ///
-    /// Does NOT include observed addresses (handshake adds those separately).
+    /// Does NOT include observed addresses. The handshake signs this set as-is
+    /// into a cacheable, peer-independent record and only falls back to the
+    /// peer-observed address when this set is empty.
     ///
     /// The advertised list is built in reachability tiers and then ordered:
     /// 1. verified-reachable addresses (AutoNAT v2 / UPnP confirmed external),

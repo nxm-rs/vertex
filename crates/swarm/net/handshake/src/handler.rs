@@ -20,6 +20,7 @@ use libp2p::{
 };
 use tracing::{debug, warn};
 use vertex_swarm_api::SwarmIdentity;
+use vertex_swarm_peer::SwarmPeer;
 
 use crate::{
     AddressProvider, ConnectionDirection, HANDSHAKE_TIMEOUT, HandshakeError, HandshakeInfo,
@@ -91,6 +92,11 @@ pub struct HandshakeHandler<I, A> {
     address_provider: Arc<A>,
     /// Admission gate forwarded into [`HandshakeProtocol`].
     admission_control: SharedAdmissionControl,
+    /// Pre-signed self record from the behaviour cache, reused across
+    /// handshakes with an unchanged advertised address set. `None` when the
+    /// advertised set is empty, in which case the protocol signs a last-resort
+    /// record over the peer-observed address.
+    self_record: Option<SwarmPeer>,
     state: State,
     pending_event: Option<HandshakeHandlerEvent>,
     should_initiate: bool,
@@ -110,6 +116,7 @@ where
         remote_addr: Multiaddr,
         address_provider: Arc<A>,
         admission_control: SharedAdmissionControl,
+        self_record: Option<SwarmPeer>,
     ) -> Self {
         Self {
             config,
@@ -118,6 +125,7 @@ where
             remote_addr,
             address_provider,
             admission_control,
+            self_record,
             state: State::Pending,
             pending_event: None,
             should_initiate: false,
@@ -133,6 +141,7 @@ where
         remote_addr: Multiaddr,
         address_provider: Arc<A>,
         admission_control: SharedAdmissionControl,
+        self_record: Option<SwarmPeer>,
     ) -> Self {
         Self {
             config,
@@ -141,6 +150,7 @@ where
             remote_addr,
             address_provider,
             admission_control,
+            self_record,
             state: State::Pending,
             pending_event: None,
             should_initiate: true,
@@ -155,6 +165,7 @@ where
             remote_addr: self.remote_addr.clone(),
             address_provider: self.address_provider.clone(),
             admission_control: self.admission_control.clone(),
+            self_record: self.self_record.clone(),
             direction,
             purpose: self.config.purpose,
         }
@@ -295,6 +306,10 @@ pub struct HandshakeUpgrade<I, A> {
     /// Forwarded into [`HandshakeProtocol`] so admission control can run
     /// before the local side commits to the final exchange message.
     admission_control: SharedAdmissionControl,
+    /// Pre-signed self record from the behaviour cache. `None` means the
+    /// advertised set was empty and the protocol must do the last-resort
+    /// observed-address sign.
+    self_record: Option<SwarmPeer>,
     /// Direction this upgrade was created for; drives which arm of the
     /// protocol runs and which side the admission gate sees.
     direction: ConnectionDirection,
@@ -309,6 +324,7 @@ impl<I, A> Clone for HandshakeUpgrade<I, A> {
             remote_addr: self.remote_addr.clone(),
             address_provider: self.address_provider.clone(),
             admission_control: self.admission_control.clone(),
+            self_record: self.self_record.clone(),
             direction: self.direction,
             purpose: self.purpose,
         }
@@ -334,14 +350,13 @@ where
     A: AddressProvider + 'static,
 {
     fn build_protocol(self) -> HandshakeProtocol<Arc<I>> {
-        let additional_addrs = self.address_provider.addresses_for_peer(&self.remote_addr);
         let local_peer_id = self.address_provider.local_peer_id().copied();
 
         let mut protocol = HandshakeProtocol::new(
             self.identity,
             self.peer_id,
             self.remote_addr,
-            additional_addrs,
+            self.self_record,
             self.purpose,
         )
         .with_admission_control(self.admission_control, self.direction);
