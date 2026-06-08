@@ -92,6 +92,70 @@ pub(crate) enum IpVersion {
     V6,
 }
 
+/// Address-family rank for advertisement ordering.
+///
+/// Lower ranks sort first. IPv6 leads, then IPv4, then anything without an
+/// explicit family (DNS, dnsaddr). This is the family tiebreaker used when
+/// ordering the addresses a node advertises so peers lead with the families
+/// most likely to be globally routable.
+///
+/// Note: this orders only by family. A node's dial preference may differ; some
+/// peers deprioritise IPv6 when dialing. Advertising IPv6-first does not force
+/// a peer to dial it first, so this is safe to apply unconditionally on the
+/// advertisement path.
+///
+/// ```
+/// use vertex_net_local::AddressFamily;
+///
+/// let v6: libp2p::Multiaddr = "/ip6/2001:db8::1/tcp/1634".parse().unwrap();
+/// let v4: libp2p::Multiaddr = "/ip4/8.8.8.8/tcp/1634".parse().unwrap();
+/// let dns: libp2p::Multiaddr = "/dnsaddr/example.com/tcp/1634".parse().unwrap();
+/// assert!(AddressFamily::of(&v6) < AddressFamily::of(&v4));
+/// assert!(AddressFamily::of(&v4) < AddressFamily::of(&dns));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AddressFamily {
+    /// IPv6 (or `/dns6/`).
+    V6,
+    /// IPv4 (or `/dns4/`).
+    V4,
+    /// No explicit family (`/dns/`, `/dnsaddr/`, or no IP component).
+    Other,
+}
+
+impl AddressFamily {
+    /// Classify a multiaddr by family for advertisement ordering.
+    pub fn of(addr: &Multiaddr) -> Self {
+        match IpVersion::from_multiaddr(addr) {
+            Some(IpVersion::V6) => Self::V6,
+            Some(IpVersion::V4) => Self::V4,
+            None => Self::Other,
+        }
+    }
+}
+
+/// Compare two multiaddrs by family for advertisement ordering: IPv6 before
+/// IPv4 before family-less addresses.
+///
+/// This is a partial key, not a total order: addresses of the same family
+/// compare `Equal`, so use it with a stable sort to preserve the caller's
+/// existing within-family order (for example tier order, or listen-address
+/// discovery order).
+///
+/// ```
+/// use vertex_net_local::family_order;
+///
+/// let mut addrs: Vec<libp2p::Multiaddr> = vec![
+///     "/ip4/8.8.8.8/tcp/1634".parse().unwrap(),
+///     "/ip6/2001:db8::1/tcp/1634".parse().unwrap(),
+/// ];
+/// addrs.sort_by(family_order);
+/// assert!(addrs[0].to_string().contains("ip6"));
+/// ```
+pub fn family_order(a: &Multiaddr, b: &Multiaddr) -> std::cmp::Ordering {
+    AddressFamily::of(a).cmp(&AddressFamily::of(b))
+}
+
 /// Check if a multiaddr is dialable given local IP capability.
 ///
 /// Filters by IP version reachability and non-public subnet reachability.
@@ -570,6 +634,52 @@ mod tests {
                 cap
             );
         }
+    }
+
+    #[test]
+    fn test_address_family_of() {
+        let v6: Multiaddr = "/ip6/2001:db8::1/tcp/1634".parse().unwrap();
+        let v4: Multiaddr = "/ip4/8.8.8.8/tcp/1634".parse().unwrap();
+        let dns6: Multiaddr = "/dns6/example.com/tcp/1634".parse().unwrap();
+        let dns4: Multiaddr = "/dns4/example.com/tcp/1634".parse().unwrap();
+        let dnsaddr: Multiaddr = "/dnsaddr/example.com/tcp/1634".parse().unwrap();
+
+        assert_eq!(AddressFamily::of(&v6), AddressFamily::V6);
+        assert_eq!(AddressFamily::of(&v4), AddressFamily::V4);
+        assert_eq!(AddressFamily::of(&dns6), AddressFamily::V6);
+        assert_eq!(AddressFamily::of(&dns4), AddressFamily::V4);
+        assert_eq!(AddressFamily::of(&dnsaddr), AddressFamily::Other);
+    }
+
+    #[test]
+    fn test_family_order_ipv6_before_ipv4_before_other() {
+        assert!(AddressFamily::V6 < AddressFamily::V4);
+        assert!(AddressFamily::V4 < AddressFamily::Other);
+
+        let v6: Multiaddr = "/ip6/2001:db8::1/tcp/1634".parse().unwrap();
+        let v4: Multiaddr = "/ip4/8.8.8.8/tcp/1634".parse().unwrap();
+        let dns: Multiaddr = "/dnsaddr/example.com/tcp/1634".parse().unwrap();
+
+        assert_eq!(family_order(&v6, &v4), std::cmp::Ordering::Less);
+        assert_eq!(family_order(&v4, &v6), std::cmp::Ordering::Greater);
+        assert_eq!(family_order(&v4, &dns), std::cmp::Ordering::Less);
+        assert_eq!(family_order(&v6, &v6), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn test_family_order_stable_within_family() {
+        // A stable sort with this comparator must preserve input order among
+        // addresses of the same family.
+        let a: Multiaddr = "/ip4/8.8.8.8/tcp/1634".parse().unwrap();
+        let b: Multiaddr = "/ip4/1.1.1.1/tcp/1634".parse().unwrap();
+        let c: Multiaddr = "/ip6/2001:db8::1/tcp/1634".parse().unwrap();
+        let d: Multiaddr = "/ip6/2001:db8::2/tcp/1634".parse().unwrap();
+
+        let mut addrs = vec![a.clone(), b.clone(), c.clone(), d.clone()];
+        addrs.sort_by(family_order);
+
+        // IPv6 first, preserving c before d; then IPv4, preserving a before b.
+        assert_eq!(addrs, vec![c, d, a, b]);
     }
 
     #[test]

@@ -9,7 +9,10 @@ use libp2p::multiaddr::Protocol;
 use libp2p::{Multiaddr, PeerId};
 use parking_lot::Mutex;
 use tracing::{debug, info, warn};
-use vertex_net_local::{AddressScope, IpCapability, LocalCapabilities, classify_multiaddr};
+use vertex_net_local::{
+    AddressScope, IpCapability, LocalCapabilities, advertise_filter, classify_multiaddr,
+    family_order,
+};
 use vertex_swarm_net_handshake::AddressProvider;
 
 use crate::reachability::ReachabilityTracker;
@@ -204,26 +207,53 @@ impl LocalAddressManager {
             || self.observed_reachable.load(Ordering::Relaxed)
     }
 
-    /// Select addresses to advertise to peer during handshake, filtered by peer scope.
+    /// Select addresses to advertise to peer during handshake, filtered by peer
+    /// scope and ordered by likely reachability.
     ///
     /// Does NOT include observed addresses (handshake adds those separately).
+    ///
+    /// The advertised list is built in reachability tiers and then ordered:
+    /// 1. verified-reachable addresses (AutoNAT v2 / UPnP confirmed external),
+    /// 2. public listen addresses,
+    /// 3. static NAT addresses,
+    ///
+    /// and within each tier IPv6 leads IPv4. A peer reads this order as a hint
+    /// only; its own dial preference may reorder families, so leading with
+    /// verified-reachable IPv6 helps without removing any address a peer could
+    /// otherwise use.
     pub fn addresses_for_peer(&self, peer_addr: &Multiaddr) -> Vec<Multiaddr> {
         let peer_scope = classify_multiaddr(peer_addr).unwrap_or(AddressScope::Public);
 
-        // Start with addresses from local capabilities
-        let local_addrs = self.local.addresses_for_scope(peer_scope, Some(peer_addr));
+        // Tier 1: verified external addresses (public-scope by construction).
+        // Scope-filter consistently with the rest so they never leak to a
+        // loopback/private peer they do not apply to.
+        let confirmed = self.confirmed_external_addrs.lock();
+        let mut verified = advertise_filter(confirmed.iter(), peer_scope, Some(peer_addr));
+        drop(confirmed);
 
-        // NAT addresses for non-loopback peers
-        let nat_addrs = self
+        // Tier 2: public (or scope-appropriate) listen addresses.
+        let mut listen_addrs = self.local.addresses_for_scope(peer_scope, Some(peer_addr));
+
+        // Tier 3: static NAT addresses for non-loopback peers.
+        let mut nat_addrs: Vec<Multiaddr> = self
             .nat_addrs
             .iter()
             .filter(|_| peer_scope != AddressScope::Loopback)
-            .cloned();
+            .cloned()
+            .collect();
 
-        // Deduplicate
+        // Tier is the primary key; family (IPv6 before IPv4) is the secondary
+        // key within a tier. Stable-sort each tier independently, then chain in
+        // tier order, so a global family sort never reorders across tiers.
+        verified.sort_by(family_order);
+        listen_addrs.sort_by(family_order);
+        nat_addrs.sort_by(family_order);
+
+        // Deduplicate across tiers, preserving tier order.
         let mut seen = HashSet::new();
-        let addrs: Vec<Multiaddr> = local_addrs
+        let addrs: Vec<Multiaddr> = verified
             .into_iter()
+            .chain(listen_addrs)
             .chain(nat_addrs)
             .filter(|addr| seen.insert(addr.clone()))
             .collect();
@@ -245,15 +275,31 @@ impl LocalAddressManager {
             .collect()
     }
 
-    /// All known addresses (listen + NAT).
+    /// All known addresses, ordered by likely reachability.
+    ///
+    /// Tiers mirror [`Self::addresses_for_peer`]: verified external addresses,
+    /// then listen addresses, then static NAT addresses, with IPv6 leading IPv4
+    /// within each tier. No peer-scope filter is applied here; this is the full
+    /// local view.
     pub fn all_addresses(&self) -> Vec<Multiaddr> {
-        let listen_addrs = self.local.listen_addrs();
-        let nat_addrs = self.nat_addrs.iter().cloned();
+        let mut verified: Vec<Multiaddr> = self
+            .confirmed_external_addrs
+            .lock()
+            .iter()
+            .cloned()
+            .collect();
+        let mut listen_addrs = self.local.listen_addrs();
+        let mut nat_addrs = self.nat_addrs.clone();
 
-        // Deduplicate
+        verified.sort_by(family_order);
+        listen_addrs.sort_by(family_order);
+        nat_addrs.sort_by(family_order);
+
+        // Deduplicate across tiers, preserving tier order.
         let mut seen = HashSet::new();
-        listen_addrs
+        verified
             .into_iter()
+            .chain(listen_addrs)
             .chain(nat_addrs)
             .filter(|addr| seen.insert(addr.clone()))
             .collect()
@@ -352,6 +398,134 @@ mod tests {
         // Loopback peer should NOT see NAT address
         assert!(!addrs.iter().any(|a| a.to_string().contains("203.0.113.50")));
         assert!(addrs.iter().any(|a| a.to_string().contains("127.0.0.1")));
+    }
+
+    /// Index of the first address whose string contains `needle`.
+    fn position_of(addrs: &[Multiaddr], needle: &str) -> Option<usize> {
+        addrs.iter().position(|a| a.to_string().contains(needle))
+    }
+
+    #[test]
+    fn test_addresses_for_peer_includes_confirmed_external() {
+        let local = Arc::new(LocalCapabilities::new());
+        local.on_new_listen_addr(parse_addr("/ip4/8.8.4.4/tcp/1634"));
+        let manager = LocalAddressManager::new(local, vec![]);
+
+        // A verified external address must be advertised to a public peer.
+        manager.on_external_addr_confirmed(&parse_addr("/ip4/203.0.113.7/tcp/1634"));
+
+        let public_peer = parse_addr("/ip4/8.8.8.8/tcp/5000");
+        let addrs = manager.addresses_for_peer(&public_peer);
+
+        assert!(addrs.iter().any(|a| a.to_string().contains("203.0.113.7")));
+        assert!(addrs.iter().any(|a| a.to_string().contains("8.8.4.4")));
+    }
+
+    #[test]
+    fn test_addresses_for_peer_verified_first_then_ipv6_within_tier() {
+        let local = Arc::new(LocalCapabilities::new());
+        // Public listen addresses, both families.
+        local.on_new_listen_addr(parse_addr("/ip4/8.8.4.4/tcp/1634"));
+        local.on_new_listen_addr(parse_addr("/ip6/2606:4700:4700::1111/tcp/1634"));
+
+        // Static NAT address (tier 3).
+        let nat = parse_addr("/ip4/198.51.100.9/tcp/1634");
+        let manager = LocalAddressManager::new(local, vec![nat]);
+
+        // Verified external addresses (tier 1), both families.
+        manager.on_external_addr_confirmed(&parse_addr("/ip4/203.0.113.7/tcp/1634"));
+        manager.on_external_addr_confirmed(&parse_addr("/ip6/2001:db8::7/tcp/1634"));
+
+        let public_peer = parse_addr("/ip4/8.8.8.8/tcp/5000");
+        let addrs = manager.addresses_for_peer(&public_peer);
+
+        // Tier ordering: verified before listen before NAT.
+        let verified_v6 = position_of(&addrs, "2001:db8::7").unwrap();
+        let verified_v4 = position_of(&addrs, "203.0.113.7").unwrap();
+        let listen_v6 = position_of(&addrs, "2606:4700:4700::1111").unwrap();
+        let listen_v4 = position_of(&addrs, "8.8.4.4").unwrap();
+        let nat_v4 = position_of(&addrs, "198.51.100.9").unwrap();
+
+        // Within tier 1: IPv6 before IPv4.
+        assert!(verified_v6 < verified_v4);
+        // Tier 1 entirely before tier 2.
+        assert!(verified_v4 < listen_v6);
+        // Within tier 2: IPv6 before IPv4.
+        assert!(listen_v6 < listen_v4);
+        // Tier 2 entirely before tier 3.
+        assert!(listen_v4 < nat_v4);
+    }
+
+    #[test]
+    fn test_addresses_for_peer_ipv6_public_peer() {
+        let local = Arc::new(LocalCapabilities::new());
+        local.on_new_listen_addr(parse_addr("/ip6/2606:4700:4700::1111/tcp/1634"));
+        let manager = LocalAddressManager::new(local, vec![]);
+
+        manager.on_external_addr_confirmed(&parse_addr("/ip6/2001:db8::7/tcp/1634"));
+
+        let public_peer = parse_addr("/ip6/2001:4860:4860::8888/tcp/5000");
+        let addrs = manager.addresses_for_peer(&public_peer);
+
+        let verified = position_of(&addrs, "2001:db8::7").unwrap();
+        let listen = position_of(&addrs, "2606:4700:4700::1111").unwrap();
+        assert!(verified < listen);
+    }
+
+    #[test]
+    fn test_confirmed_external_not_leaked_to_loopback_peer() {
+        let local = Arc::new(LocalCapabilities::new());
+        local.on_new_listen_addr(parse_addr("/ip4/127.0.0.1/tcp/1634"));
+        let manager = LocalAddressManager::new(local, vec![]);
+
+        manager.on_external_addr_confirmed(&parse_addr("/ip4/203.0.113.7/tcp/1634"));
+
+        let loopback_peer = parse_addr("/ip4/127.0.0.2/tcp/5000");
+        let addrs = manager.addresses_for_peer(&loopback_peer);
+
+        // Loopback peer must not learn our public verified address.
+        assert!(!addrs.iter().any(|a| a.to_string().contains("203.0.113.7")));
+        assert!(addrs.iter().any(|a| a.to_string().contains("127.0.0.1")));
+    }
+
+    #[test]
+    fn test_confirmed_external_not_leaked_to_private_peer() {
+        let local = Arc::new(LocalCapabilities::new());
+        local.on_new_listen_addr(parse_addr("/ip4/192.168.1.10/tcp/1634"));
+        let manager = LocalAddressManager::new(local, vec![]);
+
+        manager.on_external_addr_confirmed(&parse_addr("/ip4/203.0.113.7/tcp/1634"));
+
+        // Private peer on a different subnet: public scope filter rejects the
+        // verified address (advertise_filter same-subnet rule).
+        let private_peer = parse_addr("/ip4/10.0.0.5/tcp/5000");
+        let addrs = manager.addresses_for_peer(&private_peer);
+
+        assert!(!addrs.iter().any(|a| a.to_string().contains("203.0.113.7")));
+    }
+
+    #[test]
+    fn test_all_addresses_orders_verified_first_then_ipv6() {
+        let local = Arc::new(LocalCapabilities::new());
+        local.on_new_listen_addr(parse_addr("/ip4/8.8.4.4/tcp/1634"));
+        local.on_new_listen_addr(parse_addr("/ip6/2606:4700:4700::1111/tcp/1634"));
+
+        let nat = parse_addr("/ip4/198.51.100.9/tcp/1634");
+        let manager = LocalAddressManager::new(local, vec![nat]);
+
+        manager.on_external_addr_confirmed(&parse_addr("/ip6/2001:db8::7/tcp/1634"));
+
+        let all = manager.all_addresses();
+
+        let verified_v6 = position_of(&all, "2001:db8::7").unwrap();
+        let listen_v6 = position_of(&all, "2606:4700:4700::1111").unwrap();
+        let listen_v4 = position_of(&all, "8.8.4.4").unwrap();
+        let nat_v4 = position_of(&all, "198.51.100.9").unwrap();
+
+        // Verified tier first, listen tier IPv6-before-IPv4, NAT tier last.
+        assert!(verified_v6 < listen_v6);
+        assert!(listen_v6 < listen_v4);
+        assert!(listen_v4 < nat_v4);
     }
 
     #[test]
