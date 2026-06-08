@@ -79,7 +79,7 @@ The per-peer `ReachabilityTracker` makes the same distinction for *other* nodes,
 
 NAT traversal runs as a cluster of top-level libp2p behaviours that sit beside identify in each node type (`vertex-swarm-node`). They collaborate through the swarm external-address machinery rather than through direct calls.
 
-- **identify** observes the remote-reported address and emits it as a `NewExternalAddrCandidate`.
+- **identify** observes the remote-reported address and emits it as a `NewExternalAddrCandidate`. The addresses identify advertises to a peer are scope-filtered per recipient (`select_addresses_for_remote`), mirroring the handshake policy: a public peer never receives our private or loopback listen addresses, only public-scope and confirmed-external ones.
 - **AutoNAT v2 client** picks up each candidate, asks a peer that speaks `/libp2p/autonat/2/dial-request` to dial it back over a fresh port, and on success emits `ExternalAddrConfirmed`.
 - **AutoNAT v2 server** performs dial-backs for other peers. A completed dial-back proves the remote peer accepts inbound connections, so the node promotes it to `Reachable` in the topology reachability tracker via `on_autonat_peer_confirmed()`.
 - **UPnP** (`libp2p::upnp::tokio`) asks the LAN IGD gateway to map the listen port and emits `ExternalAddrConfirmed` for the mapped address.
@@ -109,7 +109,7 @@ NAT-mapped addresses contain ephemeral ports that are connection-specific. Each 
 
 ### What Bee Does
 
-Bee uses **static NAT configuration** (`--nat-addr`) for production deployments, not dynamic discovery. Bee also requires at least one underlay address in the handshake (empty underlays are rejected). The handshake protocol handles this by appending the peer-reported observed address as a last-resort fallback.
+Bee uses **static NAT configuration** (`--nat-addr`) for production deployments, not dynamic discovery. Bee does not reject an empty multiaddr list in the handshake: when its peerstore has no addresses for us it waits briefly (up to 10s) and then falls back to the connection's remote multiaddr. The vertex handshake appends the peer-observed address as a last-resort fallback so the advertised list is never empty and that wait is avoided.
 
 ### IPv6 vs IPv4
 

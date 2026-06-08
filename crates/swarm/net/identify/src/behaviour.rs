@@ -24,6 +24,8 @@ use libp2p::swarm::{
     behaviour::{ConnectionClosed, ConnectionEstablished, DialFailure, FromSwarm},
 };
 
+use vertex_net_local::{AddressScope, classify_multiaddr, same_subnet};
+
 use crate::{
     Config,
     error::UpgradeError,
@@ -72,6 +74,56 @@ fn is_tcp_addr(addr: &Multiaddr) -> bool {
     };
 
     matches!(first, Ip4(_) | Ip6(_) | Dns(_) | Dns4(_) | Dns6(_)) && matches!(second, Tcp(_))
+}
+
+/// Select which of our addresses to advertise to a peer, filtered by the peer's
+/// address scope so internal addresses never leak to public peers.
+///
+/// Mirrors the handshake's `addresses_for_scope` policy so identify and the
+/// handshake agree on what a given peer may learn:
+/// - a public peer sees only public-scope listen addresses,
+/// - a private/link-local peer sees only same-subnet listen addresses,
+/// - a loopback peer sees loopback/private listen addresses.
+///
+/// Confirmed external addresses (public, e.g. AutoNAT v2 or UPnP) are advertised
+/// to any non-loopback peer. When `hide_listen_addrs` is set, listen addresses
+/// are omitted entirely and only external addresses are advertised.
+fn select_addresses_for_remote<'a>(
+    listen_addrs: impl Iterator<Item = &'a Multiaddr>,
+    external_addrs: impl Iterator<Item = &'a Multiaddr>,
+    remote_addr: &Multiaddr,
+    hide_listen_addrs: bool,
+) -> HashSet<Multiaddr> {
+    let scope = classify_multiaddr(remote_addr).unwrap_or(AddressScope::Public);
+    let mut addrs = HashSet::new();
+
+    if !hide_listen_addrs {
+        for listen in listen_addrs {
+            let keep = match scope {
+                AddressScope::Loopback => matches!(
+                    classify_multiaddr(listen),
+                    Some(AddressScope::Loopback | AddressScope::Private)
+                ),
+                AddressScope::Private | AddressScope::LinkLocal => same_subnet(listen, remote_addr),
+                AddressScope::Public => classify_multiaddr(listen) == Some(AddressScope::Public),
+            };
+            if keep {
+                addrs.insert(listen.clone());
+            }
+        }
+    }
+
+    // Confirmed external addresses are public and dialable; advertise them to
+    // any non-loopback peer (filtered to public scope defensively).
+    if scope != AddressScope::Loopback {
+        for external in external_addrs {
+            if classify_multiaddr(external) == Some(AddressScope::Public) {
+                addrs.insert(external.clone());
+            }
+        }
+    }
+
+    addrs
 }
 
 /// Maximum cached agent versions (bounds memory from peer churn).
@@ -274,12 +326,22 @@ impl Behaviour {
         }
     }
 
-    fn all_addresses(&self) -> HashSet<Multiaddr> {
-        let mut addrs = HashSet::from_iter(self.external_addresses.iter().cloned());
-        if !self.config.hide_listen_addrs {
-            addrs.extend(self.listen_addresses.iter().cloned());
-        };
-        addrs
+    /// Select which of our addresses to advertise to a peer, filtered by the
+    /// peer's address scope so internal addresses never leak to public peers.
+    ///
+    /// Mirrors the handshake's `addresses_for_scope` policy so identify and the
+    /// handshake agree on what a given peer may learn: a public peer sees only
+    /// public-scope listen addresses, a private/link-local peer sees only
+    /// same-subnet listen addresses, and a loopback peer sees loopback/private
+    /// addresses. Confirmed external addresses (public, e.g. AutoNAT v2 or UPnP)
+    /// are advertised to any non-loopback peer.
+    fn addresses_for_remote(&self, remote_addr: &Multiaddr) -> HashSet<Multiaddr> {
+        select_addresses_for_remote(
+            self.listen_addresses.iter(),
+            self.external_addresses.iter(),
+            remote_addr,
+            self.config.hide_listen_addrs,
+        )
     }
 
     fn emit_new_external_addr_candidate_event(
@@ -347,7 +409,7 @@ impl NetworkBehaviour for Behaviour {
             self.config.protocol_version.clone(),
             self.config.agent_version.clone(),
             remote_addr.clone(),
-            self.all_addresses(),
+            self.addresses_for_remote(remote_addr),
         ))
     }
 
@@ -376,7 +438,7 @@ impl NetworkBehaviour for Behaviour {
             self.config.protocol_version.clone(),
             self.config.agent_version.clone(),
             addr.clone(),
-            self.all_addresses(),
+            self.addresses_for_remote(&addr),
         ))
     }
 
@@ -504,15 +566,23 @@ impl NetworkBehaviour for Behaviour {
         let external_addr_changed = self.external_addresses.on_swarm_event(&event);
 
         if listen_addr_changed || external_addr_changed {
-            let change_events = self
+            // Recompute per connection: each peer's advertised set is scoped to
+            // its own remote address (stored at connection establishment), so a
+            // changed listen/external address never leaks across scopes.
+            let conns: Vec<(PeerId, ConnectionId, Multiaddr)> = self
                 .connected
                 .iter()
-                .flat_map(|(peer, map)| map.keys().map(|id| (*peer, id)))
-                .map(|(peer_id, connection_id)| ToSwarm::NotifyHandler {
-                    peer_id,
-                    handler: NotifyHandler::One(*connection_id),
-                    event: InEvent::AddressesChanged(self.all_addresses()),
-                })
+                .flat_map(|(peer, map)| map.iter().map(|(id, addr)| (*peer, *id, addr.clone())))
+                .collect();
+            let change_events = conns
+                .into_iter()
+                .map(
+                    |(peer_id, connection_id, remote_addr)| ToSwarm::NotifyHandler {
+                        peer_id,
+                        handler: NotifyHandler::One(connection_id),
+                        event: InEvent::AddressesChanged(self.addresses_for_remote(&remote_addr)),
+                    },
+                )
                 .collect::<Vec<_>>();
 
             self.events.extend(change_events)
@@ -634,5 +704,104 @@ impl KeyType {
             KeyType::PublicKey(pubkey) => pubkey,
             KeyType::Keypair { public_key, .. } => public_key,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn addr(s: &str) -> Multiaddr {
+        s.parse().expect("valid multiaddr")
+    }
+
+    fn select(
+        listen: &[Multiaddr],
+        external: &[Multiaddr],
+        remote: &str,
+        hide: bool,
+    ) -> HashSet<Multiaddr> {
+        select_addresses_for_remote(listen.iter(), external.iter(), &addr(remote), hide)
+    }
+
+    #[test]
+    fn public_peer_gets_only_public_addresses() {
+        let listen = vec![
+            addr("/ip4/127.0.0.1/tcp/1634"),
+            addr("/ip4/192.168.1.10/tcp/1634"),
+            addr("/ip4/8.8.4.4/tcp/1634"),
+        ];
+        let out = select(&listen, &[], "/ip4/8.8.8.8/tcp/5000", false);
+        assert!(out.contains(&addr("/ip4/8.8.4.4/tcp/1634")));
+        assert!(!out.contains(&addr("/ip4/127.0.0.1/tcp/1634")));
+        assert!(!out.contains(&addr("/ip4/192.168.1.10/tcp/1634")));
+    }
+
+    #[test]
+    fn public_peer_gets_confirmed_external_address() {
+        // A NAT'd node (private listen only) still advertises its verified
+        // external address to a public peer, and nothing private.
+        let listen = vec![addr("/ip4/192.168.1.10/tcp/1634")];
+        let external = vec![addr("/ip4/203.0.113.7/tcp/1634")];
+        let out = select(&listen, &external, "/ip4/8.8.8.8/tcp/5000", false);
+        assert_eq!(out.len(), 1);
+        assert!(out.contains(&addr("/ip4/203.0.113.7/tcp/1634")));
+    }
+
+    #[test]
+    fn public_peer_gets_empty_set_when_no_public_address() {
+        // A purely-private node leaks nothing to a public peer.
+        let listen = vec![
+            addr("/ip4/127.0.0.1/tcp/1634"),
+            addr("/ip4/10.0.0.5/tcp/1634"),
+        ];
+        let out = select(&listen, &[], "/ip4/8.8.8.8/tcp/5000", false);
+        assert!(out.is_empty());
+    }
+
+    // Link-local addresses are always same-subnet by definition, so they
+    // exercise the Private/LinkLocal branch deterministically (true private
+    // subnets depend on the host's interfaces).
+    #[test]
+    fn linklocal_peer_gets_same_subnet_address() {
+        let listen = vec![
+            addr("/ip4/169.254.1.10/tcp/1634"),
+            addr("/ip4/10.9.9.9/tcp/1634"),
+        ];
+        let out = select(&listen, &[], "/ip4/169.254.1.50/tcp/5000", false);
+        assert!(out.contains(&addr("/ip4/169.254.1.10/tcp/1634")));
+        // A non-link-local address is not same-subnet as a link-local peer.
+        assert!(!out.contains(&addr("/ip4/10.9.9.9/tcp/1634")));
+    }
+
+    #[test]
+    fn linklocal_peer_also_gets_public_external() {
+        let listen = vec![addr("/ip4/169.254.1.10/tcp/1634")];
+        let external = vec![addr("/ip4/203.0.113.7/tcp/1634")];
+        let out = select(&listen, &external, "/ip4/169.254.1.50/tcp/5000", false);
+        assert!(out.contains(&addr("/ip4/169.254.1.10/tcp/1634")));
+        assert!(out.contains(&addr("/ip4/203.0.113.7/tcp/1634")));
+    }
+
+    #[test]
+    fn loopback_peer_gets_loopback_and_private_but_no_external() {
+        let listen = vec![
+            addr("/ip4/127.0.0.1/tcp/1634"),
+            addr("/ip4/192.168.1.10/tcp/1634"),
+        ];
+        let external = vec![addr("/ip4/203.0.113.7/tcp/1634")];
+        let out = select(&listen, &external, "/ip4/127.0.0.2/tcp/5000", false);
+        assert!(out.contains(&addr("/ip4/127.0.0.1/tcp/1634")));
+        assert!(out.contains(&addr("/ip4/192.168.1.10/tcp/1634")));
+        assert!(!out.contains(&addr("/ip4/203.0.113.7/tcp/1634")));
+    }
+
+    #[test]
+    fn hide_listen_addrs_advertises_only_external() {
+        let listen = vec![addr("/ip4/8.8.4.4/tcp/1634")];
+        let external = vec![addr("/ip4/203.0.113.7/tcp/1634")];
+        let out = select(&listen, &external, "/ip4/8.8.8.8/tcp/5000", true);
+        assert_eq!(out.len(), 1);
+        assert!(out.contains(&addr("/ip4/203.0.113.7/tcp/1634")));
     }
 }
