@@ -40,63 +40,56 @@ fn validate_observed_addr(
 /// Select the addresses to put in our signed record for this peer, and report
 /// whether we had to fall back to the (ephemeral) observed address.
 ///
-/// `additional_addrs` are our already-scope-filtered advertised addresses. The
-/// observed address (the peer's view of us) is appended only when it is
-/// trustworthy as a reachable address (inbound), or as a last resort to satisfy
-/// the non-empty requirement (outbound with nothing real). The returned bool is
-/// `true` only in that last-resort case. See [`prepare_local_peer`].
+/// `additional_addrs` are our already-scope-filtered advertised addresses. A
+/// non-empty set is used as-is; the peer-observed address is never appended to
+/// it, so the resulting record is peer-independent and can be cached and reused
+/// across handshakes. The observed address is used only as a last resort, for
+/// both directions, when we have nothing real to advertise; the returned bool
+/// is `true` only in that case. See [`prepare_local_peer`].
+///
+/// The NAT-discovery role the inbound observed address used to serve (a
+/// port-forwarded node learning its public address) is now covered by AutoNAT
+/// v2 plus advertising confirmed-external addresses, so the observed address no
+/// longer needs to enter the common-case record.
 fn select_local_addrs(
     additional_addrs: &[Multiaddr],
     observed_addr: &Multiaddr,
-    direction: ConnectionDirection,
 ) -> (Vec<Multiaddr>, bool) {
-    let mut addrs: Vec<Multiaddr> = additional_addrs
+    let addrs: Vec<Multiaddr> = additional_addrs
         .iter()
         .filter(|a| *a != observed_addr)
         .cloned()
         .collect();
 
-    // Inbound: the observed address is genuinely reachable (the peer reached us
-    // at it), so it is a real address, not a fallback.
-    if direction == ConnectionDirection::Inbound {
-        addrs.push(observed_addr.clone());
+    // A non-empty advertised set is used as-is for both directions.
+    if !addrs.is_empty() {
         return (addrs, false);
     }
 
-    // Outbound: the observed address is our ephemeral NAT source port. Only use
-    // it as a last resort to keep the record non-empty for the >=1 requirement.
-    if addrs.is_empty() {
-        addrs.push(observed_addr.clone());
-        return (addrs, true);
-    }
-
-    (addrs, false)
+    // Last resort: with nothing real to advertise the observed address keeps the
+    // record non-empty for the >=1 requirement. Transient until AutoNAT v2 /
+    // UPnP / a static NAT address confirms a real one.
+    (vec![observed_addr.clone()], true)
 }
 
-/// Combine our scope-filtered addresses with the peer-observed address and
-/// create a signed `SwarmPeer` (the record the peer stores and gossips).
+/// Sign a last-resort `SwarmPeer` over the peer-observed address.
 ///
-/// The observed address is the peer's view of us. It is trustworthy as a
-/// reachable address only on an **inbound** connection, where the peer dialed
-/// our actual listen address and reached it; that case is the primary way a
-/// port-forwarded node learns its public address without static config, so we
-/// append it. On an **outbound** connection the observed address is our
-/// ephemeral NAT source port, which is connection-specific and would pollute
-/// hive gossip, so it is not added.
+/// Used only when the behaviour cache produced no record because the advertised
+/// address set was empty (a node with no listen, NAT, or confirmed-external
+/// address). The common case signs once per address-set change in the behaviour
+/// and reuses a cached, peer-independent record; this path keeps the handshake
+/// alive when there is nothing else to advertise.
 ///
 /// Both vertex and bee reject a signed record with zero multiaddrs
-/// (`SwarmPeer::sign` / bee `ParseAddress`), so when we have nothing else to
-/// advertise the observed address is included as a last resort to keep the
-/// handshake alive. Such an entry is transient: it is superseded once AutoNAT
-/// v2 / UPnP confirms a real external address (newer timestamp wins).
+/// (`SwarmPeer::sign` / bee `ParseAddress`), so the observed address is included
+/// to satisfy the non-empty requirement. Such an entry is transient: it is
+/// superseded once AutoNAT v2 / UPnP confirms a real external address (newer
+/// timestamp wins).
 fn prepare_local_peer<I: SwarmIdentity>(
     identity: &I,
-    additional_addrs: &[Multiaddr],
     observed_addr: &Multiaddr,
-    direction: ConnectionDirection,
 ) -> Result<SwarmPeer, HandshakeError> {
-    let (addrs, ephemeral_fallback) =
-        select_local_addrs(additional_addrs, observed_addr, direction);
+    let (addrs, ephemeral_fallback) = select_local_addrs(&[], observed_addr);
 
     // A full (storer) node's record is gossiped network-wide, so it must carry a
     // real reachable address. Falling back to the ephemeral observed address
@@ -135,7 +128,11 @@ pub(crate) struct HandshakeProtocol<I: SwarmIdentity> {
     peer_id: PeerId,
     local_peer_id: Option<PeerId>,
     remote_addr: Multiaddr,
-    additional_addrs: Vec<Multiaddr>,
+    /// Pre-signed self record from the behaviour cache, reused byte-identically
+    /// across handshakes with an unchanged advertised address set. `None` when
+    /// the advertised set was empty; the exchange then signs a last-resort
+    /// record over the peer-observed address via [`prepare_local_peer`].
+    self_record: Option<SwarmPeer>,
     /// Optional admission gate. When set, the protocol consults it as
     /// soon as the remote peer's identity is verified and aborts with
     /// [`HandshakeError::AdmissionRejected`] on a `Reject` decision.
@@ -148,7 +145,7 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
         identity: I,
         peer_id: PeerId,
         remote_addr: Multiaddr,
-        additional_addrs: Vec<Multiaddr>,
+        self_record: Option<SwarmPeer>,
         purpose: &'static str,
     ) -> Self {
         Self {
@@ -156,7 +153,7 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
             peer_id,
             local_peer_id: None,
             remote_addr,
-            additional_addrs,
+            self_record,
             admission_control: None,
             purpose,
         }
@@ -241,12 +238,13 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
             validate_observed_addr(&observed_multiaddr, local_peer_id)?;
         }
 
-        let local_peer = prepare_local_peer(
-            &self.identity,
-            &self.additional_addrs,
-            &observed_multiaddr,
-            ConnectionDirection::Inbound,
-        )?;
+        // Use the cached, peer-independent record when the behaviour produced
+        // one; otherwise the advertised set was empty, so sign a last-resort
+        // record over the address the peer observed.
+        let local_peer = match self.self_record.clone() {
+            Some(record) => record,
+            None => prepare_local_peer(&self.identity, &observed_multiaddr)?,
+        };
 
         // Echo what we observed about the dialer (their `remote_addr` as
         // libp2p reported it) back in the SYNACK; the dialer validates the
@@ -363,12 +361,13 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
             validate_observed_addr(&observed_multiaddr, local_peer_id)?;
         }
 
-        let local_peer = prepare_local_peer(
-            &self.identity,
-            &self.additional_addrs,
-            &observed_multiaddr,
-            ConnectionDirection::Outbound,
-        )?;
+        // Use the cached, peer-independent record when the behaviour produced
+        // one; otherwise the advertised set was empty, so sign a last-resort
+        // record over the address the peer observed.
+        let local_peer = match self.self_record.clone() {
+            Some(record) => record,
+            None => prepare_local_peer(&self.identity, &observed_multiaddr)?,
+        };
 
         // Consult admission control before sending ACK so a reject
         // aborts cleanly without committing to the exchange.
@@ -407,73 +406,71 @@ mod tests {
     }
 
     #[test]
-    fn inbound_appends_observed_reachable_address() {
-        // Inbound: the peer reached us at the observed address, so it is a real
-        // reachable address worth advertising (e.g. port-forward discovery), not
-        // an ephemeral fallback.
+    fn inbound_uses_advertised_set_without_observed() {
+        // A non-empty advertised set is used as-is. The observed address is no
+        // longer appended on inbound: the record stays peer-independent so it can
+        // be cached and reused across handshakes. AutoNAT v2 covers the
+        // NAT-discovery role the inbound observed-append used to serve.
         let additional = vec![addr("/ip4/8.8.4.4/tcp/1634")];
         let observed = addr("/ip4/203.0.113.7/tcp/1634");
-        let (out, fallback) =
-            select_local_addrs(&additional, &observed, ConnectionDirection::Inbound);
-        assert!(out.contains(&addr("/ip4/8.8.4.4/tcp/1634")));
-        assert!(out.contains(&observed));
-        assert!(!fallback);
-    }
-
-    #[test]
-    fn outbound_does_not_append_ephemeral_observed() {
-        // Outbound: the observed address is our ephemeral NAT source port, which
-        // must not pollute the gossiped record when we already advertise a real
-        // address.
-        let additional = vec![addr("/ip4/8.8.4.4/tcp/1634")];
-        let observed = addr("/ip4/203.0.113.7/tcp/54321");
-        let (out, fallback) =
-            select_local_addrs(&additional, &observed, ConnectionDirection::Outbound);
+        let (out, fallback) = select_local_addrs(&additional, &observed);
         assert_eq!(out, vec![addr("/ip4/8.8.4.4/tcp/1634")]);
         assert!(!out.contains(&observed));
         assert!(!fallback);
     }
 
     #[test]
-    fn outbound_uses_observed_only_as_last_resort() {
+    fn does_not_append_ephemeral_observed() {
+        // The observed address is never appended to a non-empty set, so an
+        // ephemeral NAT source port cannot pollute the gossiped record.
+        let additional = vec![addr("/ip4/8.8.4.4/tcp/1634")];
+        let observed = addr("/ip4/203.0.113.7/tcp/54321");
+        let (out, fallback) = select_local_addrs(&additional, &observed);
+        assert_eq!(out, vec![addr("/ip4/8.8.4.4/tcp/1634")]);
+        assert!(!out.contains(&observed));
+        assert!(!fallback);
+    }
+
+    #[test]
+    fn uses_observed_only_as_last_resort() {
         // With nothing real to advertise, the observed address keeps the record
-        // non-empty so the handshake completes (bee rejects zero-underlay
-        // records). The fallback flag is set so a full node can warn; the entry
+        // non-empty so the handshake completes (a zero-multiaddr record is
+        // rejected). The fallback flag is set so a full node can warn; the entry
         // is transient until AutoNAT v2 / UPnP confirms a real address.
         let observed = addr("/ip4/203.0.113.7/tcp/54321");
-        let (out, fallback) = select_local_addrs(&[], &observed, ConnectionDirection::Outbound);
+        let (out, fallback) = select_local_addrs(&[], &observed);
         assert_eq!(out, vec![observed]);
         assert!(fallback);
     }
 
     #[test]
-    fn ipv6_inbound_appends_global_observed() {
-        // The direction policy is address-family-agnostic: a global IPv6 observed
-        // address on an inbound connection is appended like its IPv4 peer.
+    fn ipv6_advertised_set_used_without_observed() {
+        // The policy is address-family-agnostic: a non-empty IPv6 advertised set
+        // is used as-is and the observed address is not appended.
         let additional = vec![addr("/ip6/2606:4700:4700::1111/tcp/1634")];
         let observed = addr("/ip6/2001:4860:4860::8888/tcp/1634");
-        let (out, fallback) =
-            select_local_addrs(&additional, &observed, ConnectionDirection::Inbound);
-        assert!(out.contains(&observed));
+        let (out, fallback) = select_local_addrs(&additional, &observed);
+        assert_eq!(out, vec![addr("/ip6/2606:4700:4700::1111/tcp/1634")]);
+        assert!(!out.contains(&observed));
         assert!(!fallback);
     }
 
     #[test]
-    fn ipv6_outbound_last_resort_sets_fallback() {
+    fn ipv6_last_resort_sets_fallback() {
         let observed = addr("/ip6/2001:4860:4860::8888/tcp/54321");
-        let (out, fallback) = select_local_addrs(&[], &observed, ConnectionDirection::Outbound);
+        let (out, fallback) = select_local_addrs(&[], &observed);
         assert_eq!(out, vec![observed]);
         assert!(fallback);
     }
 
     #[test]
-    fn observed_is_not_duplicated() {
-        // The observed address present in additional_addrs is not added twice.
+    fn observed_is_filtered_from_advertised_set() {
+        // If the observed address is already in the advertised set it is filtered
+        // out, and an otherwise-empty result falls back to the observed address.
         let observed = addr("/ip4/203.0.113.7/tcp/1634");
         let additional = vec![observed.clone()];
-        let (out, fallback) =
-            select_local_addrs(&additional, &observed, ConnectionDirection::Inbound);
+        let (out, fallback) = select_local_addrs(&additional, &observed);
         assert_eq!(out, vec![observed]);
-        assert!(!fallback);
+        assert!(fallback);
     }
 }

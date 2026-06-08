@@ -30,6 +30,8 @@ pub use behaviour::{HandshakeBehaviour, HandshakeEvent};
 
 mod handler;
 
+mod cache;
+
 mod codec;
 
 mod protocol;

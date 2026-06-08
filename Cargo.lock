@@ -8236,6 +8236,7 @@ dependencies = [
  "libp2p-swarm-test",
  "metrics",
  "nectar-primitives",
+ "parking_lot",
  "proptest",
  "proptest-arbitrary-interop",
  "quick-protobuf",
