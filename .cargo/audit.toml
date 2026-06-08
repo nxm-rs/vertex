@@ -17,6 +17,13 @@ ignore = [
     # Ref: https://github.com/alloy-rs/core/issues/897
     "RUSTSEC-2024-0436", # paste unmaintained - via alloy-primitives, netlink-packet-*
 
+    # proc-macro-error2 is unmaintained but pulled in by alloy-sol-macro &
+    # alloy-sol-macro-expander as a compile-time proc-macro dependency. The latest
+    # alloy-core (1.6.0) and its main branch still depend on it, so there is no
+    # upstream version to bump to. Build-time only, never shipped in the binary or
+    # wasm artifact, no runtime reachability.
+    "RUSTSEC-2026-0173", # proc-macro-error2 unmaintained - via alloy-sol-macro-expander
+
     # hickory-proto 0.25.x advisories, pinned via libp2p-dns 0.44 -> hickory-resolver 0.25.
     # Bumping requires upstream libp2p-dns to adopt hickory 0.26 (not yet released).
     #
