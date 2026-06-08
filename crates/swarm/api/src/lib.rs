@@ -68,7 +68,7 @@ pub use self::error::{
 pub use self::identity::SwarmIdentity;
 pub use self::protocol::SwarmProtocol;
 pub use self::providers::{
-    ChunkRetrievalResult, ChunkSendReceipt, SwarmChunkProvider, SwarmChunkSender,
+    ChunkRetrievalResult, PushReceipt, SwarmChunkProvider, SwarmChunkSender,
 };
 pub use self::rpc::RpcProviders;
 pub use self::spec::{
@@ -85,7 +85,9 @@ pub use nectar_primitives::{
     AnyChunk, Chunk, ChunkAddress, ChunkType, ChunkTypeId, ChunkTypeSet, ContentChunk,
     SingleOwnerChunk, StandardChunkSet,
 };
-pub use vertex_swarm_primitives::{OverlayAddress, ValidatedChunk, ValidationError};
+pub use vertex_swarm_primitives::{
+    OverlayAddress, Stamp, StampedChunk, StorageRadius, ValidatedChunk, ValidationError,
+};
 
 // Re-export libp2p types used in config traits
 pub use libp2p::Multiaddr;

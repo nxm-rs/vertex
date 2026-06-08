@@ -24,7 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use alloy_primitives::U256;
+use alloy_primitives::{Signature, U256};
 use futures_bounded::Timeout;
 use libp2p::swarm::{
     SubstreamProtocol,
@@ -33,10 +33,10 @@ use libp2p::swarm::{
         FullyNegotiatedOutbound,
     },
 };
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{ChunkAddress, Nonce};
 use tracing::{debug, warn};
 use vertex_swarm_net_pseudosettle::PaymentAck;
-use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
+use vertex_swarm_primitives::{OverlayAddress, StampedChunk, StorageRadius, SwarmNodeType};
 
 use super::upgrade::{
     ClientInboundOutput, ClientInboundUpgrade, ClientOutboundInfo, ClientOutboundOutput,
@@ -103,12 +103,8 @@ pub(crate) enum HandlerCommand {
     },
     /// Push a chunk to the peer for storage.
     PushChunk {
-        /// The chunk address.
-        address: ChunkAddress,
-        /// The chunk data.
-        data: bytes::Bytes,
-        /// The postage stamp.
-        stamp: bytes::Bytes,
+        /// The chunk and its postage stamp.
+        chunk: StampedChunk,
     },
     /// Send a pseudosettle payment to the peer.
     SendPseudosettle {
@@ -126,10 +122,8 @@ pub(crate) enum HandlerCommand {
     ServeChunk {
         /// Request ID from the ChunkRequested event.
         request_id: u64,
-        /// The chunk data.
-        data: bytes::Bytes,
-        /// The postage stamp.
-        stamp: bytes::Bytes,
+        /// The chunk and its postage stamp to serve.
+        chunk: StampedChunk,
     },
     /// Send a receipt to a peer (respond to pushsync delivery).
     SendReceipt {
@@ -138,11 +132,11 @@ pub(crate) enum HandlerCommand {
         /// The chunk address.
         address: ChunkAddress,
         /// The receipt signature.
-        signature: bytes::Bytes,
+        signature: Signature,
         /// The receipt nonce.
-        nonce: bytes::Bytes,
+        nonce: Nonce,
         /// Our storage radius.
-        storage_radius: u8,
+        storage_radius: StorageRadius,
     },
 }
 
@@ -181,10 +175,8 @@ pub(crate) enum HandlerEvent {
         overlay: OverlayAddress,
         /// The chunk address.
         address: ChunkAddress,
-        /// The chunk data.
-        data: bytes::Bytes,
-        /// The postage stamp.
-        stamp: bytes::Bytes,
+        /// The received chunk and its postage stamp.
+        chunk: StampedChunk,
     },
     /// Received a chunk push from peer.
     ChunkPushReceived {
@@ -192,10 +184,8 @@ pub(crate) enum HandlerEvent {
         overlay: OverlayAddress,
         /// The chunk address.
         address: ChunkAddress,
-        /// The chunk data.
-        data: bytes::Bytes,
-        /// The postage stamp.
-        stamp: bytes::Bytes,
+        /// The pushed chunk and its postage stamp.
+        chunk: StampedChunk,
         /// Request ID for correlating receipt.
         request_id: u64,
     },
@@ -206,11 +196,11 @@ pub(crate) enum HandlerEvent {
         /// The chunk address.
         address: ChunkAddress,
         /// The storer's signature.
-        signature: bytes::Bytes,
+        signature: Signature,
         /// The nonce used.
-        nonce: bytes::Bytes,
+        nonce: Nonce,
         /// The storer's storage radius.
-        storage_radius: u8,
+        storage_radius: StorageRadius,
     },
     /// Protocol error occurred.
     Error {
@@ -435,19 +425,19 @@ impl ClientHandler {
     ) {
         if let Some(overlay) = self.overlay() {
             let request_id = self.next_request_id();
-            debug!(%overlay, address = %delivery.address, %request_id, "Received pushsync delivery");
+            let address = *delivery.chunk.address();
+            debug!(%overlay, %address, %request_id, "Received pushsync delivery");
             self.pending_events
                 .push_back(HandlerEvent::ChunkPushReceived {
                     overlay,
-                    address: delivery.address,
-                    data: delivery.data,
-                    stamp: delivery.stamp,
+                    address,
+                    chunk: *delivery.chunk,
                     request_id,
                 });
             self.store_response(request_id, PendingResponse::Pushsync(responder));
         } else {
             warn!(
-                address = %delivery.address,
+                address = %delivery.chunk.address(),
                 "Received pushsync delivery in dormant state (peer may have cached old protocol list)"
             );
         }
@@ -460,21 +450,23 @@ impl ClientHandler {
         address: ChunkAddress,
     ) {
         if let Some(overlay) = self.overlay() {
-            if let Some(ref err) = delivery.error {
-                debug!(%overlay, error = %err, "Retrieval failed");
-                self.push_event(HandlerEvent::Error {
-                    overlay: Some(overlay),
-                    protocol: "retrieval",
-                    error: err.clone(),
-                });
-            } else {
-                debug!(%overlay, data_len = delivery.data.len(), "Received chunk");
-                self.push_event(HandlerEvent::ChunkReceived {
-                    overlay,
-                    address,
-                    data: delivery.data,
-                    stamp: delivery.stamp,
-                });
+            match delivery {
+                vertex_swarm_net_retrieval::Delivery::Error(err) => {
+                    debug!(%overlay, error = %err, "Retrieval failed");
+                    self.push_event(HandlerEvent::Error {
+                        overlay: Some(overlay),
+                        protocol: "retrieval",
+                        error: err,
+                    });
+                }
+                vertex_swarm_net_retrieval::Delivery::Chunk(chunk) => {
+                    debug!(%overlay, %address, "Received chunk");
+                    self.push_event(HandlerEvent::ChunkReceived {
+                        overlay,
+                        address,
+                        chunk: *chunk,
+                    });
+                }
             }
         }
     }
@@ -592,12 +584,9 @@ impl ConnectionHandler for ClientHandler {
                         .with_timeout(self.config.timeout),
                     });
                 }
-                HandlerCommand::PushChunk {
-                    address,
-                    data,
-                    stamp,
-                } => {
-                    let delivery = vertex_swarm_net_pushsync::Delivery::new(address, data, stamp);
+                HandlerCommand::PushChunk { chunk } => {
+                    let address = *chunk.address();
+                    let delivery = vertex_swarm_net_pushsync::Delivery::new(chunk);
                     let upgrade = ClientOutboundUpgrade::pushsync(delivery);
                     return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
                         protocol: SubstreamProtocol::new(
@@ -639,11 +628,7 @@ impl ConnectionHandler for ClientHandler {
                         warn!(%request_id, "No pseudosettle responder found for request_id");
                     }
                 }
-                HandlerCommand::ServeChunk {
-                    request_id,
-                    data,
-                    stamp,
-                } => {
+                HandlerCommand::ServeChunk { request_id, chunk } => {
                     if let Some(PendingResponse::Retrieval(responder)) =
                         self.take_response(request_id)
                     {
@@ -652,7 +637,7 @@ impl ConnectionHandler for ClientHandler {
                             .response_sends
                             .try_push(async move {
                                 responder
-                                    .send_chunk(data, stamp)
+                                    .send_chunk(chunk)
                                     .await
                                     .map_err(|e| format!("serve chunk: {e}"))
                             })

@@ -8405,10 +8405,12 @@ dependencies = [
 name = "vertex-swarm-net-pushsync"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "asynchronous-codec",
  "bytes",
  "futures",
  "libp2p",
+ "nectar-postage",
  "nectar-primitives",
  "quick-protobuf",
  "quick-protobuf-codec",
@@ -8419,16 +8421,20 @@ dependencies = [
  "vertex-net-codec",
  "vertex-swarm-net-headers",
  "vertex-swarm-net-proto",
+ "vertex-swarm-primitives",
 ]
 
 [[package]]
 name = "vertex-swarm-net-retrieval"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
+ "alloy-signer-local",
  "asynchronous-codec",
  "bytes",
  "futures",
  "libp2p",
+ "nectar-postage",
  "nectar-primitives",
  "quick-protobuf",
  "quick-protobuf-codec",
@@ -8439,6 +8445,7 @@ dependencies = [
  "vertex-net-codec",
  "vertex-swarm-net-headers",
  "vertex-swarm-net-proto",
+ "vertex-swarm-primitives",
 ]
 
 [[package]]
@@ -8565,6 +8572,8 @@ dependencies = [
 name = "vertex-swarm-primitives"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
+ "alloy-signer-local",
  "nectar-postage",
  "nectar-primitives",
  "serde",

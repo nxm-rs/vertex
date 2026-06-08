@@ -7,13 +7,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use alloy_primitives::Signature;
 use nectar_primitives::ChunkAddress;
 use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
+use vertex_swarm_api::PushReceipt;
 use vertex_swarm_net_pseudosettle::PaymentAck;
-use vertex_swarm_primitives::{Bin, NeighborhoodDepth, Nonce, OverlayAddress};
+use vertex_swarm_primitives::{OverlayAddress, StampedChunk};
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
 
 use crate::protocol::{ClientCommand, ClientEvent};
@@ -30,33 +30,15 @@ pub struct ClientHandle {
 
 /// Result of a chunk retrieval.
 pub struct RetrievalResult {
-    /// The chunk data.
-    pub data: bytes::Bytes,
-    /// The postage stamp.
-    pub stamp: bytes::Bytes,
+    /// The retrieved chunk and its postage stamp.
+    pub chunk: StampedChunk,
     /// The peer that served the chunk.
     pub peer: OverlayAddress,
 }
 
-/// Result of a chunk push.
-///
-/// Carries the receipt fields returned by the storer after a successful
-/// pushsync round-trip, parsed into their canonical typed forms.
-#[derive(Debug)]
-pub struct PushResult {
-    /// The peer that issued the receipt.
-    pub peer: OverlayAddress,
-    /// The receipt signature from the storer over the chunk address and nonce.
-    pub signature: Signature,
-    /// The nonce mixed into the receipt signature.
-    pub nonce: Nonce,
-    /// The storer's storage radius (its neighborhood-depth boundary).
-    pub storage_radius: NeighborhoodDepth,
-}
-
-/// Outcome delivered to a pending push: a receipt on success or an error
+/// Outcome delivered to a pending push: a [`PushReceipt`] on success or an error
 /// describing why the storer rejected the chunk.
-type PushOutcome = Result<PushResult, RetrievalError>;
+type PushOutcome = Result<PushReceipt, RetrievalError>;
 
 /// Error from retrieval operations.
 #[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
@@ -77,10 +59,6 @@ pub enum RetrievalError {
     /// The storer rejected the chunk. Carries the storer's wire error string.
     #[error("Push rejected by storer: {0}")]
     PushRejected(String),
-    /// The storer returned a receipt whose fields could not be parsed into
-    /// their typed forms (malformed signature, nonce, or storage radius).
-    #[error("Malformed receipt: {0}")]
-    MalformedReceipt(String),
 }
 
 impl ClientHandle {
@@ -147,16 +125,15 @@ impl ClientHandle {
         // The oneshot will be dropped, causing the receiver to get Cancelled
     }
 
-    /// Push a chunk to a specific peer.
+    /// Push a stamped chunk to a specific peer.
     ///
-    /// This sends a push command and waits for the storer's receipt.
+    /// This sends a push command and waits for the storer's [`PushReceipt`].
     pub async fn push_chunk(
         &self,
         peer: OverlayAddress,
-        address: ChunkAddress,
-        data: bytes::Bytes,
-        stamp: bytes::Bytes,
-    ) -> Result<PushResult, RetrievalError> {
+        chunk: StampedChunk,
+    ) -> Result<PushReceipt, RetrievalError> {
+        let address = *chunk.address();
         let (tx, rx) = oneshot::channel();
 
         // Register the pending push
@@ -169,8 +146,7 @@ impl ClientHandle {
         self.send_command(ClientCommand::PushChunk {
             peer,
             address,
-            data,
-            stamp,
+            chunk,
         })?;
 
         // Wait for the receipt or a failure report.
@@ -180,10 +156,10 @@ impl ClientHandle {
     /// Complete a pending push with a receipt.
     ///
     /// Called by the event processor when a receipt is received.
-    pub(crate) fn complete_push(&self, address: ChunkAddress, result: PushResult) {
+    pub(crate) fn complete_push(&self, address: ChunkAddress, receipt: PushReceipt) {
         let mut pending = self.pending_pushes.lock();
         if let Some(tx) = pending.remove(&address) {
-            let _ = tx.send(Ok(result));
+            let _ = tx.send(Ok(receipt));
         }
     }
 
@@ -194,49 +170,6 @@ impl ClientHandle {
             let _ = tx.send(Err(RetrievalError::PushRejected(error)));
         }
     }
-
-    /// Fail a pending push because the receipt could not be parsed into its
-    /// typed fields.
-    pub(crate) fn reject_receipt(&self, address: ChunkAddress, reason: String) {
-        let mut pending = self.pending_pushes.lock();
-        if let Some(tx) = pending.remove(&address) {
-            let _ = tx.send(Err(RetrievalError::MalformedReceipt(reason)));
-        }
-    }
-}
-
-/// Parse the raw pushsync receipt fields into their canonical typed forms.
-///
-/// The wire carries the signature and nonce as opaque byte strings and the
-/// storage radius as a bare byte; this converts each into the workspace type
-/// (`Signature`, `Nonce`, `NeighborhoodDepth`) and rejects malformed input.
-fn parse_receipt(
-    peer: OverlayAddress,
-    signature: &[u8],
-    nonce: &[u8],
-    storage_radius: u8,
-) -> Result<PushResult, String> {
-    let signature =
-        Signature::try_from(signature).map_err(|e| format!("invalid receipt signature: {e}"))?;
-
-    let nonce: [u8; 32] = nonce.try_into().map_err(|_| {
-        format!(
-            "invalid receipt nonce length: {} (expected 32)",
-            nonce.len()
-        )
-    })?;
-    let nonce = Nonce::from(nonce);
-
-    let storage_radius = Bin::new(storage_radius)
-        .map(NeighborhoodDepth::new)
-        .map_err(|e| format!("invalid storage radius: {e}"))?;
-
-    Ok(PushResult {
-        peer,
-        signature,
-        nonce,
-        storage_radius,
-    })
 }
 
 /// Client service that processes network events.
@@ -339,12 +272,11 @@ impl ClientService {
             ClientEvent::ChunkReceived {
                 peer,
                 address,
-                data,
-                stamp,
+                chunk,
             } => {
-                debug!(%peer, %address, data_len = data.len(), "Chunk received");
+                debug!(%peer, %address, "Chunk received");
                 self.handle
-                    .complete_retrieval(address, RetrievalResult { data, stamp, peer });
+                    .complete_retrieval(address, RetrievalResult { chunk, peer });
             }
 
             ClientEvent::ChunkRequested {
@@ -361,13 +293,12 @@ impl ClientService {
                 peer,
                 peer_id,
                 address,
-                data,
-                stamp,
+                chunk,
                 request_id,
             } => {
                 debug!(
                     %peer_id, %peer, %address, %request_id,
-                    data_len = data.len(), stamp_len = stamp.len(),
+                    stamp_batch = %chunk.stamp().batch(),
                     "Chunk push received"
                 );
                 // TODO: Validate chunk, store if responsible, send receipt
@@ -381,14 +312,18 @@ impl ClientService {
                 storage_radius,
             } => {
                 debug!(
-                    %peer, %address, %storage_radius,
-                    sig_len = signature.len(), nonce_len = nonce.len(),
-                    "Receipt received"
+                    %peer, %address, %storage_radius, %nonce,
+                    sig = %signature, "Receipt received"
                 );
-                match parse_receipt(peer, &signature, &nonce, storage_radius) {
-                    Ok(result) => self.handle.complete_push(address, result),
-                    Err(reason) => self.handle.reject_receipt(address, reason),
-                }
+                self.handle.complete_push(
+                    address,
+                    PushReceipt {
+                        storer: peer,
+                        signature,
+                        nonce,
+                        storage_radius,
+                    },
+                );
             }
 
             ClientEvent::PeerDisconnected { peer_id, overlay } => {
@@ -418,7 +353,6 @@ impl ClientService {
                 error,
             } => {
                 warn!(%peer, %address, %error, "Retrieval failed");
-                // TODO: Notify waiting retrieval request
                 self.handle.fail_retrieval(address, error);
             }
 
