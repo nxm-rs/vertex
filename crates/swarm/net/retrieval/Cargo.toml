@@ -13,7 +13,9 @@ description = "Swarm retrieval protocol for chunk request/response"
 vertex-net-codec.workspace = true
 vertex-swarm-net-headers.workspace = true
 vertex-swarm-net-proto.workspace = true
+vertex-swarm-primitives.workspace = true
 nectar-primitives.workspace = true
+nectar-postage.workspace = true
 
 ## p2p
 libp2p.workspace = true
@@ -33,6 +35,8 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+alloy-primitives = { workspace = true }
+alloy-signer-local = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
 
 [lints]
