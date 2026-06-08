@@ -93,6 +93,31 @@ pub fn test_swarm_peer(n: u8) -> SwarmPeer {
     )
 }
 
+/// Create a test peer for overlay `n` with an explicit timestamp and a
+/// distinguishable multiaddr port.
+///
+/// Same overlay/PeerId as [`test_swarm_peer`] but with a caller-chosen signed
+/// timestamp and a `port`-tagged multiaddr, so conflict-resolution tests can
+/// tell which record won by inspecting the stored multiaddrs.
+pub fn test_swarm_peer_with_timestamp(n: u8, timestamp: i64, port: u16) -> SwarmPeer {
+    let overlay = SwarmAddress::from(B256::repeat_byte(n));
+    let peer_id = test_peer_id(n);
+    let multiaddrs = vec![
+        format!("/ip4/127.0.0.{}/tcp/{}/p2p/{}", n, port, peer_id)
+            .parse()
+            .expect("valid multiaddr"),
+    ];
+    SwarmPeer::from_parts(
+        multiaddrs,
+        Signature::test_signature(),
+        overlay,
+        Nonce::ZERO,
+        Timestamp::from_seconds(timestamp),
+        None,
+        Address::ZERO,
+    )
+}
+
 /// Create a SwarmAddress with a specific first byte.
 ///
 /// The first byte is set to `byte`, remaining bytes are zero.

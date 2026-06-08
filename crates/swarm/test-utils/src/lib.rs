@@ -34,6 +34,7 @@ pub mod topology;
 pub use identity::{MockIdentity, test_identity, test_identity_arc, test_identity_with_type};
 pub use peer::{
     make_overlay, make_swarm_peer_minimal, test_overlay, test_peer, test_peer_id, test_swarm_peer,
+    test_swarm_peer_with_timestamp,
 };
 pub use spec::{TEST_NETWORK_ID, test_spec, test_spec_isolated, test_spec_with_network_id};
 pub use topology::MockTopology;

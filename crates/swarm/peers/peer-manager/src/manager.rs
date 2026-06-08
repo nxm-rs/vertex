@@ -26,14 +26,14 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use dashmap::{DashMap, DashSet};
-use metrics::gauge;
+use metrics::{counter, gauge};
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 use vertex_net_local::IpCapability;
 use vertex_net_peer_store::NetPeerStore;
 use vertex_net_peer_store::error::StoreError;
 use vertex_swarm_api::{SwarmIdentity, SwarmPeerResolver, SwarmScoreStore, SwarmSpec};
-use vertex_swarm_peer::SwarmPeer;
+use vertex_swarm_peer::{SwarmPeer, Timestamp, check_timestamp};
 use vertex_swarm_peer_score::{PeerScore, ScoreCallbacks, SwarmScoringConfig};
 use vertex_swarm_primitives::{Bin, OverlayAddress, SwarmNodeType};
 
@@ -469,6 +469,13 @@ impl<I: SwarmIdentity> PeerManager<I> {
 
     /// Store a single discovered peer.
     ///
+    /// Discovered peers arrive via hive gossip, so the gossip timestamp policy
+    /// (via [`check_timestamp`]) is applied before
+    /// any overwrite: a record that is stale, replayed, too frequent, or dated
+    /// implausibly far into the future is dropped rather than clobbering the
+    /// stored record. Rejections increment `peer_manager_gossip_timestamp_rejected_total`
+    /// with a `reason` label and the existing overlay is returned unchanged.
+    ///
     /// For hot peers, updates addresses (preserves handshake-confirmed node_type).
     /// For cold peers, just touches the LRU index.
     /// For new peers, adds to index and buffers a write to DB.
@@ -476,7 +483,11 @@ impl<I: SwarmIdentity> PeerManager<I> {
     pub fn store_discovered_peer(&self, swarm_peer: SwarmPeer) -> OverlayAddress {
         let overlay = OverlayAddress::from(*swarm_peer.overlay());
         if let Some(entry) = self.peers.get(&overlay) {
-            // Hot peer - update addresses (dirty flag set by entry)
+            // Hot peer - resolve the gossip timestamp against the stored record
+            // before overwriting, then update addresses (dirty flag set by entry).
+            if self.reject_stale_gossip(&overlay, swarm_peer.timestamp(), Some(entry.timestamp())) {
+                return overlay;
+            }
             entry.update_addresses(swarm_peer);
             self.index.touch(&overlay);
         } else if self.store.is_some() {
@@ -494,7 +505,17 @@ impl<I: SwarmIdentity> PeerManager<I> {
                     self.index.touch(&overlay);
                 }
                 Err(AddError::BinFull) => {
-                    // Bin at capacity - save to DB only, don't add to index
+                    // Bin at capacity - save to DB only, don't add to index.
+                    // Resolve against the persisted record's timestamp first so
+                    // a stale gossip record cannot overwrite a newer stored one.
+                    let existing = self
+                        .store
+                        .as_ref()
+                        .and_then(|s| s.get(&overlay).ok().flatten())
+                        .map(|r| r.peer.timestamp());
+                    if self.reject_stale_gossip(&overlay, swarm_peer.timestamp(), existing) {
+                        return overlay;
+                    }
                     let record = StoredPeer::new_discovered(swarm_peer);
                     if self.write_buffer.push(record) {
                         self.flush_write_buffer();
@@ -506,6 +527,39 @@ impl<I: SwarmIdentity> PeerManager<I> {
             self.insert_peer(overlay, swarm_peer, SwarmNodeType::Client);
         }
         overlay
+    }
+
+    /// Apply the gossip timestamp policy for a known peer.
+    ///
+    /// Returns `true` when the candidate record must be dropped (the caller
+    /// keeps the stored record untouched). On rejection a
+    /// `peer_manager_gossip_timestamp_rejected_total` counter is incremented
+    /// with the rejection `reason` label and a debug line is logged.
+    fn reject_stale_gossip(
+        &self,
+        overlay: &OverlayAddress,
+        candidate: Timestamp,
+        existing: Option<Timestamp>,
+    ) -> bool {
+        let now = Timestamp::from_seconds(unix_timestamp_secs() as i64);
+        match check_timestamp(candidate, existing, now) {
+            Ok(()) => false,
+            Err(rejection) => {
+                counter!(
+                    "peer_manager_gossip_timestamp_rejected_total",
+                    "reason" => rejection.reason(),
+                )
+                .increment(1);
+                debug!(
+                    ?overlay,
+                    reason = rejection.reason(),
+                    candidate = candidate.get(),
+                    existing = existing.map(|t| t.get()),
+                    "dropping stale gossip peer record"
+                );
+                true
+            }
+        }
     }
 
     /// Store multiple peers discovered via Hive gossip.
@@ -670,7 +724,9 @@ mod tests {
     use super::*;
     use vertex_net_peer_store::MemoryPeerStore;
     use vertex_swarm_api::SwarmScoreStore;
-    use vertex_swarm_test_utils::{MockIdentity, test_overlay, test_swarm_peer};
+    use vertex_swarm_test_utils::{
+        MockIdentity, test_overlay, test_swarm_peer, test_swarm_peer_with_timestamp,
+    };
 
     fn mock_identity() -> MockIdentity {
         MockIdentity::with_overlay(test_overlay(0))
@@ -686,6 +742,85 @@ mod tests {
         assert_eq!(stored, overlay);
         assert!(pm.get_swarm_peer(&overlay).is_some());
         assert!(pm.index().exists(&overlay));
+    }
+
+    #[test]
+    fn test_store_discovered_peer_rejects_older_timestamp() {
+        let pm = PeerManager::new(&mock_identity());
+        let overlay = test_overlay(1);
+        let base = 1_700_000_000;
+
+        // Seed a known peer with a recent record (port 1000).
+        let newer = test_swarm_peer_with_timestamp(1, base, 1000);
+        pm.store_discovered_peer(newer);
+        assert!(
+            pm.get_swarm_peer(&overlay)
+                .unwrap()
+                .multiaddr()
+                .unwrap()
+                .to_string()
+                .contains("/tcp/1000/")
+        );
+
+        // An older gossip record (port 2000) must NOT overwrite the stored one.
+        let older = test_swarm_peer_with_timestamp(1, base - 10_000, 2000);
+        let stored = pm.store_discovered_peer(older);
+        assert_eq!(stored, overlay);
+        assert!(
+            pm.get_swarm_peer(&overlay)
+                .unwrap()
+                .multiaddr()
+                .unwrap()
+                .to_string()
+                .contains("/tcp/1000/"),
+            "older gossip record must not clobber the newer stored addresses"
+        );
+    }
+
+    #[test]
+    fn test_store_discovered_peer_accepts_sufficiently_newer_timestamp() {
+        let pm = PeerManager::new(&mock_identity());
+        let overlay = test_overlay(1);
+        let base = 1_700_000_000;
+
+        // Seed with an old record (port 1000).
+        pm.store_discovered_peer(test_swarm_peer_with_timestamp(1, base, 1000));
+
+        // A record well beyond MIN_UPDATE_INTERVAL (port 3000) overwrites it.
+        let interval = vertex_swarm_peer::MIN_UPDATE_INTERVAL.as_secs() as i64;
+        let fresh = test_swarm_peer_with_timestamp(1, base + interval + 1, 3000);
+        pm.store_discovered_peer(fresh);
+        assert!(
+            pm.get_swarm_peer(&overlay)
+                .unwrap()
+                .multiaddr()
+                .unwrap()
+                .to_string()
+                .contains("/tcp/3000/"),
+            "a sufficiently newer record must replace the stored addresses"
+        );
+    }
+
+    #[test]
+    fn test_store_discovered_peer_rejects_too_soon_timestamp() {
+        let pm = PeerManager::new(&mock_identity());
+        let overlay = test_overlay(1);
+        let base = 1_700_000_000;
+
+        pm.store_discovered_peer(test_swarm_peer_with_timestamp(1, base, 1000));
+
+        // Newer, but inside MIN_UPDATE_INTERVAL: dropped as too_soon.
+        let too_soon = test_swarm_peer_with_timestamp(1, base + 10, 4000);
+        pm.store_discovered_peer(too_soon);
+        assert!(
+            pm.get_swarm_peer(&overlay)
+                .unwrap()
+                .multiaddr()
+                .unwrap()
+                .to_string()
+                .contains("/tcp/1000/"),
+            "a too-soon gossip record must not replace the stored addresses"
+        );
     }
 
     #[test]
