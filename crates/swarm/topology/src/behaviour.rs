@@ -21,7 +21,7 @@ use libp2p::{
     },
 };
 use tracing::{debug, info};
-use vertex_net_local::{AddressScope, LocalCapabilities, same_subnet};
+use vertex_net_local::{AddressScope, LocalCapabilities, classify_multiaddr, same_subnet};
 use vertex_net_peer_store::NetPeerStore;
 use vertex_net_peer_store::error::StoreError;
 use vertex_swarm_api::SwarmScoreStore;
@@ -254,6 +254,11 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
     /// Agent versions received via identify, shared with identify behaviour.
     pub(crate) agent_versions: identify::AgentVersions,
 
+    /// When set, same-subnet / private-LAN peers are protected from
+    /// capacity-driven bin trimming by ranking above remotes of equal
+    /// reachability. Liveness demotion and bans stay authoritative.
+    pub(crate) trust_local_peers: bool,
+
     // Metrics
     pub(crate) metrics: Arc<TopologyMetrics>,
 }
@@ -275,6 +280,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         let bootnodes = network_config.bootnodes().to_vec();
         let trusted_peers = network_config.trusted_peers().to_vec();
         let nat_addrs = network_config.nat_addrs().to_vec();
+        let trust_local_peers = network_config.trust_local_peers();
 
         let (event_tx, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let (command_tx, command_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
@@ -405,6 +411,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             ban_rx,
             peer_store,
             agent_versions,
+            trust_local_peers,
             pending_nat_external_addrs,
             metrics,
         };
@@ -547,13 +554,28 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     pub(crate) fn trim_overpopulated_bins(&mut self) {
         // Rank each candidate by reachability (the routing layer is overlay-keyed
         // and has no peer-id mapping; we own both the registry and the tracker).
+        // When local-peer trust is on, a same-subnet / private-LAN peer ranks
+        // above a remote peer of equal reachability: the tuple orders
+        // lexicographically and the routing layer evicts the lowest rank first,
+        // so `(reachability, is_local)` keeps locals last without ever
+        // overriding a liveness demotion (a remote `Reachable` still outranks a
+        // local `Unreachable`). With trust off, the locality bit is held at
+        // `false` so ranking matches the reachability-only behaviour.
         let tracker = self.nat_discovery.reachability();
+        let listen_addrs = self.nat_discovery.listen_addrs();
+        let trust_local = self.trust_local_peers;
+        let peer_manager = &self.peer_manager;
         let registry = &self.connection_registry;
         let candidates = self.routing.eviction_candidates(|overlay| {
-            registry
+            let reachability = registry
                 .resolve_peer_id(overlay)
                 .map(|peer_id| tracker.status(&peer_id))
-                .unwrap_or(crate::PeerReachability::Unknown)
+                .unwrap_or(crate::PeerReachability::Unknown);
+            let is_local = trust_local
+                && peer_manager
+                    .get_swarm_peer(overlay)
+                    .is_some_and(|peer| peer_is_local(&peer, &listen_addrs));
+            (reachability, is_local)
         });
         if candidates.is_empty() {
             return;
@@ -682,6 +704,27 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             }
         }
     }
+}
+
+/// Whether a peer is local: at least one of its multiaddrs is loopback,
+/// link-local, or on a directly-connected subnet shared with one of our listen
+/// addresses.
+///
+/// This is scope, not reachability. A same-subnet peer is
+/// [`AddressScope::Private`] yet locally reachable; the two stay distinct so
+/// trimming protection never masks a genuine liveness failure (tracked
+/// separately as [`crate::PeerReachability::Unreachable`]).
+pub(crate) fn peer_is_local(peer: &SwarmPeer, listen_addrs: &[Multiaddr]) -> bool {
+    peer.multiaddrs()
+        .iter()
+        .any(|peer_addr| match classify_multiaddr(peer_addr) {
+            Some(AddressScope::Loopback | AddressScope::LinkLocal) => true,
+            Some(AddressScope::Private) => listen_addrs
+                .iter()
+                .any(|our_addr| same_subnet(our_addr, peer_addr)),
+            // Public addresses (or addresses with no IP) are never local.
+            Some(AddressScope::Public) | None => false,
+        })
 }
 
 impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<I> {
@@ -930,6 +973,69 @@ mod tests {
     use super::*;
 
     use crate::kademlia::KademliaConfig;
+
+    use alloy_primitives::{Address, B256, Signature};
+    use nectar_primitives::SwarmAddress;
+    use vertex_swarm_peer::Timestamp;
+    use vertex_swarm_primitives::Nonce;
+
+    fn peer_with_addr(addr: &str) -> SwarmPeer {
+        SwarmPeer::from_parts(
+            vec![addr.parse().expect("valid multiaddr")],
+            Signature::test_signature(),
+            SwarmAddress::from(B256::repeat_byte(1)),
+            Nonce::ZERO,
+            Timestamp::from_seconds(1),
+            None,
+            Address::ZERO,
+        )
+    }
+
+    #[test]
+    fn peer_is_local_link_local_and_loopback() {
+        // Link-local and loopback are local without any listen-addr match; they
+        // are deterministic regardless of host interfaces.
+        let listen: Vec<Multiaddr> = Vec::new();
+        assert!(peer_is_local(
+            &peer_with_addr("/ip4/169.254.10.20/tcp/1634"),
+            &listen
+        ));
+        assert!(peer_is_local(
+            &peer_with_addr("/ip6/fe80::1/tcp/1634"),
+            &listen
+        ));
+        assert!(peer_is_local(
+            &peer_with_addr("/ip4/127.0.0.1/tcp/1634"),
+            &listen
+        ));
+    }
+
+    #[test]
+    fn peer_is_local_public_is_not_local() {
+        let listen = vec![
+            "/ip4/192.168.1.5/tcp/1634"
+                .parse::<Multiaddr>()
+                .expect("valid"),
+        ];
+        // An off-subnet public address is never local, even with a private
+        // listen address configured.
+        assert!(!peer_is_local(
+            &peer_with_addr("/ip4/8.8.8.8/tcp/1634"),
+            &listen
+        ));
+    }
+
+    #[test]
+    fn peer_is_local_private_requires_shared_subnet() {
+        // A private address with no matching listen subnet is not local: the
+        // same_subnet check is against our own listen addresses, so an empty
+        // listen set yields false for a private peer.
+        let listen: Vec<Multiaddr> = Vec::new();
+        assert!(!peer_is_local(
+            &peer_with_addr("/ip4/10.1.2.3/tcp/1634"),
+            &listen
+        ));
+    }
 
     #[test]
     fn test_topology_config() {

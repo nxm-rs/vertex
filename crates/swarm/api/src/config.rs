@@ -166,6 +166,16 @@ pub trait SwarmNetworkConfig {
     fn mdns_enabled(&self) -> bool {
         true
     }
+
+    /// Whether same-subnet / private-LAN peers are protected from
+    /// capacity-driven bin trimming (default: true). When enabled, a local peer
+    /// ranks above a remote peer of the same reachability so an overpopulated
+    /// bin sheds remotes first. It never overrides liveness demotion or bans:
+    /// an unreachable local peer can still be evicted if it is the only
+    /// candidate left.
+    fn trust_local_peers(&self) -> bool {
+        true
+    }
 }
 
 /// Configuration for Swarm node identity.
