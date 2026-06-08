@@ -73,22 +73,58 @@ pub struct NetworkArgs {
     pub nat_addrs_raw: Vec<String>,
 
     /// Enable auto-NAT discovery from peer-observed addresses (enabled by default).
-    #[arg(long = "network.nat-auto", default_value_t = true)]
+    ///
+    /// Accepts a bare `--network.nat-auto` (enables) or an explicit
+    /// `--network.nat-auto=true`/`--network.nat-auto=false`.
+    #[arg(
+        long = "network.nat-auto",
+        num_args = 0..=1,
+        default_value_t = true,
+        default_missing_value = "true",
+        action = clap::ArgAction::Set,
+    )]
     #[serde(default = "default_nat_auto")]
     pub nat_auto: bool,
 
     /// Enable AutoNAT v2 dial-back reachability verification (enabled by default).
-    #[arg(long = "network.autonat", default_value_t = true)]
+    ///
+    /// Accepts a bare `--network.autonat` (enables) or an explicit
+    /// `--network.autonat=true`/`--network.autonat=false`.
+    #[arg(
+        long = "network.autonat",
+        num_args = 0..=1,
+        default_value_t = true,
+        default_missing_value = "true",
+        action = clap::ArgAction::Set,
+    )]
     #[serde(default = "default_autonat")]
     pub autonat: bool,
 
     /// Enable UPnP automatic port mapping on the LAN gateway (disabled by default).
-    #[arg(long = "network.upnp", default_value_t = false)]
+    ///
+    /// Accepts a bare `--network.upnp` (enables) or an explicit
+    /// `--network.upnp=true`/`--network.upnp=false`.
+    #[arg(
+        long = "network.upnp",
+        num_args = 0..=1,
+        default_value_t = false,
+        default_missing_value = "true",
+        action = clap::ArgAction::Set,
+    )]
     #[serde(default)]
     pub upnp: bool,
 
     /// Enable mDNS local LAN peer discovery (enabled by default).
-    #[arg(long = "network.mdns", default_value_t = true)]
+    ///
+    /// Accepts a bare `--network.mdns` (enables) or an explicit
+    /// `--network.mdns=true`/`--network.mdns=false`.
+    #[arg(
+        long = "network.mdns",
+        num_args = 0..=1,
+        default_value_t = true,
+        default_missing_value = "true",
+        action = clap::ArgAction::Set,
+    )]
     #[serde(default = "default_mdns")]
     pub mdns: bool,
 
@@ -432,15 +468,15 @@ mod tests {
         assert!(config.mdns_enabled());
     }
 
+    #[derive(clap::Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        network: NetworkArgs,
+    }
+
     #[test]
     fn mdns_flag_parses() {
         use clap::Parser;
-
-        #[derive(Parser)]
-        struct TestCli {
-            #[command(flatten)]
-            network: NetworkArgs,
-        }
 
         // The flag is registered under its `network.mdns` long name and parses
         // with no value, leaving mDNS enabled by default.
@@ -450,6 +486,85 @@ mod tests {
 
         let default = TestCli::try_parse_from(["test"]).expect("default should parse");
         assert!(default.network.mdns, "mDNS defaults to enabled");
+    }
+
+    /// Each boolean networking flag must accept the bare form, an explicit
+    /// `=true`, an explicit `=false`, and yield its documented default when
+    /// omitted. This guards the CLI usability gap where a default-on flag could
+    /// not be disabled from the command line.
+    #[test]
+    fn boolean_network_flags_accept_explicit_values() {
+        use clap::Parser;
+
+        struct Case {
+            flag: &'static str,
+            default: bool,
+            bare: bool,
+            get: fn(&NetworkArgs) -> bool,
+        }
+
+        let cases = [
+            Case {
+                flag: "network.mdns",
+                default: true,
+                bare: true,
+                get: |a| a.mdns,
+            },
+            Case {
+                flag: "network.autonat",
+                default: true,
+                bare: true,
+                get: |a| a.autonat,
+            },
+            Case {
+                flag: "network.nat-auto",
+                default: true,
+                bare: true,
+                get: |a| a.nat_auto,
+            },
+            Case {
+                flag: "network.upnp",
+                default: false,
+                bare: true,
+                get: |a| a.upnp,
+            },
+        ];
+
+        for case in cases {
+            let long = format!("--{}", case.flag);
+
+            let omitted = TestCli::try_parse_from(["test"]).expect("default should parse");
+            assert_eq!(
+                (case.get)(&omitted.network),
+                case.default,
+                "{} omitted should yield default",
+                case.flag
+            );
+
+            let bare = TestCli::try_parse_from(["test", &long]).expect("bare form should parse");
+            assert_eq!(
+                (case.get)(&bare.network),
+                case.bare,
+                "{} bare form should enable",
+                case.flag
+            );
+
+            let enabled = TestCli::try_parse_from(["test", &format!("{long}=true")])
+                .expect("explicit true should parse");
+            assert!(
+                (case.get)(&enabled.network),
+                "{}=true should enable",
+                case.flag
+            );
+
+            let disabled = TestCli::try_parse_from(["test", &format!("{long}=false")])
+                .expect("explicit false should parse");
+            assert!(
+                !(case.get)(&disabled.network),
+                "{}=false should disable",
+                case.flag
+            );
+        }
     }
 
     #[test]
