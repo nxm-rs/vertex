@@ -32,7 +32,8 @@ pub trait GrpcServiceProvider {
 impl<Topo, Chunk> GrpcServiceProvider for vertex_swarm_api::RpcProviders<Topo, Chunk>
 where
     Topo: vertex_swarm_api::SwarmTopology + Clone + Send + Sync + 'static,
-    Chunk: vertex_swarm_api::SwarmChunkProvider + Clone + 'static,
+    Chunk:
+        vertex_swarm_api::SwarmChunkProvider + vertex_swarm_api::SwarmChunkSender + Clone + 'static,
 {
     fn register_grpc_services(
         &self,

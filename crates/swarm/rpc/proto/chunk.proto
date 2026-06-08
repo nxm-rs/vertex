@@ -9,6 +9,19 @@ service Chunk {
 
   // HasChunk checks if a chunk exists locally.
   rpc HasChunk(HasChunkRequest) returns (HasChunkResponse);
+
+  // UploadChunk pushes a pre-stamped chunk to the Swarm network.
+  // The chunk is forwarded to the responsible storer via PushSync.
+  rpc UploadChunk(UploadChunkRequest) returns (UploadChunkResponse);
+}
+
+// ChunkType identifies how the chunk data is reconstructed on upload.
+enum ChunkType {
+  // Content-addressed chunk (CAC): the address is the BMT hash of the data.
+  CHUNK_TYPE_CONTENT = 0;
+
+  // Single-owner chunk (SOC): the data carries id, signature, and BMT body.
+  CHUNK_TYPE_SINGLE_OWNER = 1;
 }
 
 message RetrieveChunkRequest {
@@ -35,4 +48,41 @@ message HasChunkRequest {
 message HasChunkResponse {
   // Whether the chunk exists locally.
   bool exists = 1;
+}
+
+message UploadChunkRequest {
+  // The chunk payload.
+  //
+  // For a content chunk this is the BMT body (span + data). For a single-owner
+  // chunk this is the full wire encoding (id + signature + BMT body).
+  bytes data = 1;
+
+  // Pre-computed postage stamp attached to this chunk.
+  bytes stamp = 2;
+
+  // Chunk address (hex encoded, 64 chars).
+  string address = 3;
+
+  // How the data field is interpreted when reconstructing the chunk.
+  ChunkType chunk_type = 4;
+
+  // Validate the stamp signature against the chunk before sending.
+  //
+  // Pre-stamped uploads are trusted by default. Set this to request signature
+  // validation prior to forwarding the chunk.
+  bool validate = 5;
+}
+
+message UploadChunkResponse {
+  // Overlay address of the storer that accepted this chunk (hex encoded).
+  string storer = 1;
+
+  // The storer's signature over the receipt (65 bytes).
+  bytes signature = 2;
+
+  // The nonce the storer used when signing the receipt (32 bytes).
+  bytes nonce = 3;
+
+  // The storer's storage radius at the time of acceptance.
+  uint32 storage_radius = 4;
 }

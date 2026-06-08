@@ -1,7 +1,7 @@
 //! RPC providers for Swarm nodes.
 
 use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
-use vertex_swarm_api::{HasTopology, SwarmChunkProvider, SwarmIdentity};
+use vertex_swarm_api::{HasTopology, SwarmChunkProvider, SwarmChunkSender, SwarmIdentity};
 use vertex_swarm_rpc::{ChunkService, NodeService, proto};
 use vertex_swarm_topology::TopologyHandle;
 
@@ -25,7 +25,7 @@ impl<I: SwarmIdentity, C: Send + Sync> HasTopology for ClientRpcProviders<I, C> 
     }
 }
 
-impl<I: SwarmIdentity, C: SwarmChunkProvider + Clone> RegistersGrpcServices
+impl<I: SwarmIdentity, C: SwarmChunkProvider + SwarmChunkSender + Clone> RegistersGrpcServices
     for ClientRpcProviders<I, C>
 {
     fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
@@ -90,7 +90,7 @@ impl<I: SwarmIdentity, C: Send + Sync> HasTopology for StorerRpcProviders<I, C> 
     }
 }
 
-impl<I: SwarmIdentity, C: SwarmChunkProvider + Clone> RegistersGrpcServices
+impl<I: SwarmIdentity, C: SwarmChunkProvider + SwarmChunkSender + Clone> RegistersGrpcServices
     for StorerRpcProviders<I, C>
 {
     fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
