@@ -447,6 +447,26 @@ mod tests {
     }
 
     #[test]
+    fn ipv6_inbound_appends_global_observed() {
+        // The direction policy is address-family-agnostic: a global IPv6 observed
+        // address on an inbound connection is appended like its IPv4 peer.
+        let additional = vec![addr("/ip6/2606:4700:4700::1111/tcp/1634")];
+        let observed = addr("/ip6/2001:4860:4860::8888/tcp/1634");
+        let (out, fallback) =
+            select_local_addrs(&additional, &observed, ConnectionDirection::Inbound);
+        assert!(out.contains(&observed));
+        assert!(!fallback);
+    }
+
+    #[test]
+    fn ipv6_outbound_last_resort_sets_fallback() {
+        let observed = addr("/ip6/2001:4860:4860::8888/tcp/54321");
+        let (out, fallback) = select_local_addrs(&[], &observed, ConnectionDirection::Outbound);
+        assert_eq!(out, vec![observed]);
+        assert!(fallback);
+    }
+
+    #[test]
     fn observed_is_not_duplicated() {
         // The observed address present in additional_addrs is not added twice.
         let observed = addr("/ip4/203.0.113.7/tcp/1634");

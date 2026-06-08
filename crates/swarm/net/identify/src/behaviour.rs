@@ -788,6 +788,35 @@ mod tests {
         assert!(!out.contains(&addr("/ip4/203.0.113.7/tcp/1634")));
     }
 
+    // IPv6: `::1` loopback, `fd00::/8` ULA (private), `fe80::/10` link-local,
+    // global unicast public.
+
+    #[test]
+    fn ipv6_public_peer_gets_only_global_listen_and_external() {
+        let listen = vec![
+            addr("/ip6/::1/tcp/1634"),
+            addr("/ip6/fd00::1/tcp/1634"),
+            addr("/ip6/2606:4700:4700::1111/tcp/1634"),
+        ];
+        let external = vec![addr("/ip6/2001:4860:4860::8888/tcp/1634")];
+        let out = select(&listen, &external, "/ip6/2a00:1450::1/tcp/5000", false);
+        assert!(out.contains(&addr("/ip6/2606:4700:4700::1111/tcp/1634")));
+        assert!(out.contains(&addr("/ip6/2001:4860:4860::8888/tcp/1634")));
+        assert!(!out.contains(&addr("/ip6/::1/tcp/1634")));
+        assert!(!out.contains(&addr("/ip6/fd00::1/tcp/1634")));
+    }
+
+    #[test]
+    fn ipv6_linklocal_peer_gets_same_subnet_listen() {
+        let listen = vec![
+            addr("/ip6/fe80::abcd/tcp/1634"),
+            addr("/ip6/fd00::1/tcp/1634"),
+        ];
+        let out = select(&listen, &[], "/ip6/fe80::1234/tcp/5000", false);
+        assert!(out.contains(&addr("/ip6/fe80::abcd/tcp/1634")));
+        assert!(!out.contains(&addr("/ip6/fd00::1/tcp/1634")));
+    }
+
     #[test]
     fn hide_listen_addrs_advertises_only_external() {
         let listen = vec![addr("/ip4/8.8.4.4/tcp/1634")];
