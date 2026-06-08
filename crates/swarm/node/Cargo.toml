@@ -81,8 +81,11 @@ vertex-swarm-redistribution = { workspace = true, optional = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
 vertex-swarm-test-utils = { workspace = true, features = ["cluster"] }
+vertex-swarm-topology.workspace = true
 eyre.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+libp2p-swarm-test.workspace = true
+rand_08.workspace = true
 
 [features]
 default = ["std"]

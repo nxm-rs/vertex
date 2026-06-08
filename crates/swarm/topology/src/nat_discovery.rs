@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use libp2p::multiaddr::Protocol;
 use libp2p::{Multiaddr, PeerId};
+use parking_lot::Mutex;
 use tracing::{debug, info, warn};
 use vertex_net_local::{AddressScope, IpCapability, LocalCapabilities, classify_multiaddr};
 use vertex_swarm_net_handshake::AddressProvider;
@@ -28,8 +29,16 @@ pub struct LocalAddressManager {
     nat_addrs: Vec<Multiaddr>,
     /// Local PeerId for appending /p2p/ to advertised addresses.
     local_peer_id: OnceLock<PeerId>,
-    /// Whether we've confirmed public connectivity (peer observed us from public IP).
+    /// Weak, sticky public-connectivity signal: a peer reported observing us at
+    /// a public address (see [`Self::on_observed_addr`]). Unverified, so it
+    /// never clears.
     has_public_connectivity: AtomicBool,
+    /// Verified public external addresses, confirmed by AutoNAT v2 dial-back or
+    /// UPnP port mapping. Unlike the observed signal this is reversible: an
+    /// address is removed on `ExternalAddrExpired` (e.g. a UPnP lease lapsing),
+    /// so a node whose only public path was a mapping that expired stops
+    /// reporting itself reachable.
+    confirmed_external_addrs: Mutex<HashSet<Multiaddr>>,
     /// Per-peer reachability bridge. AutoNAT v2 dial-back confirmations
     /// forwarded via [`LocalAddressManager::on_autonat_peer_confirmed`] flow
     /// into this tracker so the kademlia routing layer can score peers by
@@ -56,6 +65,7 @@ impl LocalAddressManager {
             nat_addrs,
             local_peer_id: OnceLock::new(),
             has_public_connectivity: AtomicBool::new(false),
+            confirmed_external_addrs: Mutex::new(HashSet::new()),
             reachability,
         }
     }
@@ -129,7 +139,12 @@ impl LocalAddressManager {
             return true;
         }
 
-        // Check if we've confirmed public connectivity
+        // A verified external address (AutoNAT v2 / UPnP) still mapped.
+        if !self.confirmed_external_addrs.lock().is_empty() {
+            return true;
+        }
+
+        // Weak observed-from-public signal.
         self.has_public_connectivity.load(Ordering::Relaxed)
     }
 
@@ -150,21 +165,43 @@ impl LocalAddressManager {
     /// Stronger than [`Self::on_observed_addr`]: this is driven by
     /// `FromSwarm::ExternalAddrConfirmed`, which fires only after AutoNAT v2
     /// dial-back or UPnP port mapping proves the address reachable. A confirmed
-    /// public address flips public connectivity on, enabling dials to other
-    /// public peers.
+    /// public address is tracked (reversibly) and enables dials to other public
+    /// peers.
     pub fn on_external_addr_confirmed(&self, addr: &Multiaddr) {
         let addr_for_classify = strip_peer_id(addr);
 
         if classify_multiaddr(&addr_for_classify) == Some(AddressScope::Public)
-            && !self.has_public_connectivity.swap(true, Ordering::Relaxed)
+            && self
+                .confirmed_external_addrs
+                .lock()
+                .insert(addr_for_classify)
         {
             info!(%addr, "Confirmed public connectivity via verified external address");
         }
     }
 
-    /// Check if public connectivity has been confirmed.
+    /// Drop a previously-confirmed external address.
+    ///
+    /// Driven by `FromSwarm::ExternalAddrExpired` (e.g. a UPnP lease that failed
+    /// to renew). Once the last verified public address expires, the verified
+    /// signal clears; the node may still be public via static NAT addresses,
+    /// public listen addresses, or the weak observed signal.
+    pub fn on_external_addr_expired(&self, addr: &Multiaddr) {
+        let addr_for_classify = strip_peer_id(addr);
+        if self
+            .confirmed_external_addrs
+            .lock()
+            .remove(&addr_for_classify)
+        {
+            debug!(%addr, "Verified external address expired");
+        }
+    }
+
+    /// Check if public connectivity has been confirmed, via either a verified
+    /// external address (reversible) or the weak observed signal (sticky).
     pub fn has_confirmed_public_connectivity(&self) -> bool {
-        self.has_public_connectivity.load(Ordering::Relaxed)
+        !self.confirmed_external_addrs.lock().is_empty()
+            || self.has_public_connectivity.load(Ordering::Relaxed)
     }
 
     /// Select addresses to advertise to peer during handshake, filtered by peer scope.
@@ -384,6 +421,36 @@ mod tests {
         let manager = create_manager(vec![]);
         manager.on_external_addr_confirmed(&parse_addr("/ip4/10.0.0.5/tcp/1634"));
         assert!(!manager.has_confirmed_public_connectivity());
+    }
+
+    #[test]
+    fn test_external_addr_expiry_clears_verified_signal() {
+        // A node whose only public path is a (UPnP) mapping must stop
+        // reporting public connectivity once that mapping expires.
+        let local = Arc::new(LocalCapabilities::new());
+        local.on_new_listen_addr(parse_addr("/ip4/192.168.1.1/tcp/1634"));
+        let manager = LocalAddressManager::new(local, vec![]);
+
+        let mapped = parse_addr("/ip4/203.0.113.7/tcp/1634");
+        manager.on_external_addr_confirmed(&mapped);
+        assert!(manager.has_public_addresses());
+
+        manager.on_external_addr_expired(&mapped);
+        assert!(!manager.has_confirmed_public_connectivity());
+        assert!(!manager.has_public_addresses());
+    }
+
+    #[test]
+    fn test_observed_signal_survives_external_addr_expiry() {
+        // The weak observed signal is sticky and independent of the reversible
+        // verified-address set.
+        let manager = create_manager(vec![]);
+        manager.on_observed_addr(&parse_addr("/ip4/91.189.35.149/tcp/1634"));
+        let mapped = parse_addr("/ip4/203.0.113.7/tcp/1634");
+        manager.on_external_addr_confirmed(&mapped);
+        manager.on_external_addr_expired(&mapped);
+        // Observed signal keeps us public.
+        assert!(manager.has_confirmed_public_connectivity());
     }
 
     #[test]

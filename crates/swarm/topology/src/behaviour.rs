@@ -746,6 +746,11 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
                 debug!(address = %info.addr, "External address confirmed");
                 self.nat_discovery.on_external_addr_confirmed(info.addr);
             }
+            FromSwarm::ExternalAddrExpired(info) => {
+                // A verified external address lapsed (e.g. UPnP lease expiry).
+                debug!(address = %info.addr, "External address expired");
+                self.nat_discovery.on_external_addr_expired(info.addr);
+            }
             _ => {}
         }
     }

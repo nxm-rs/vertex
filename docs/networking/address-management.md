@@ -67,7 +67,7 @@ All returned addresses include `/p2p/{local_peer_id}`.
 Two signals can flip the public connectivity flag, in increasing order of confidence:
 
 - `on_observed_addr()` is the weak signal. When a peer reports our address via identify and that address is public, the flag is set. The observed address itself is **not stored or advertised**, only the connectivity fact is recorded.
-- `on_external_addr_confirmed()` is the strong signal. It fires on `FromSwarm::ExternalAddrConfirmed`, which the libp2p swarm raises only after AutoNAT v2 has dialed one of our candidate addresses back, or UPnP has mapped a port. This is hard to spoof because it requires a completed inbound connection on the address under test.
+- `on_external_addr_confirmed()` is the strong signal. It fires on `FromSwarm::ExternalAddrConfirmed`, which the libp2p swarm raises only after AutoNAT v2 has dialed one of our candidate addresses back, or UPnP has mapped a port. This is hard to spoof because it requires a completed inbound connection on the address under test. Unlike the observed signal it is reversible: `on_external_addr_expired()` drops the address on `FromSwarm::ExternalAddrExpired` (for example a UPnP lease that fails to renew), so a node whose only public path was a mapping that lapsed stops advertising itself as reachable.
 
 ## AutoNAT v2 and UPnP
 
