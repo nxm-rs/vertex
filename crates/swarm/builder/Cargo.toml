@@ -56,3 +56,6 @@ tracing.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
+nectar-postage.workspace = true
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true

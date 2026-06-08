@@ -1,29 +1,36 @@
 //! Config-gated verification wrapper for downloaded chunks.
 //!
-//! Content integrity is cheap to check once the bytes are in hand: reconstruct
-//! the chunk from the returned data and confirm its derived address matches the
-//! requested one. This wrapper makes that check the default. Stamp verification
-//! is a separate, opt-in concern and is off by default.
+//! Content integrity is established before a chunk reaches this wrapper: the
+//! retrieval codec reconstructs the chunk from the wire bytes and accepts it only
+//! if it hashes to the requested address, so [`SwarmChunkProvider::retrieve_chunk`]
+//! cannot return a chunk whose address disagrees with the request. The expensive
+//! reconstruction-and-hash work therefore no longer lives here.
+//!
+//! What is left for this wrapper is two cheap residual checks: a defensive
+//! re-assertion that the returned chunk's address matches the request (on by
+//! default, effectively free now that retrieval guarantees it), and postage stamp
+//! signer recovery (off by default, the part reconstruction does not cover).
 //!
 //! [`VerifyingChunkProvider`] wraps any [`SwarmChunkProvider`] and applies the
 //! configured checks to every retrieved chunk before handing it back to the
 //! caller.
 
 use async_trait::async_trait;
-use nectar_primitives::{DefaultContentChunk, DefaultSingleOwnerChunk};
 use vertex_swarm_api::{
-    Chunk, ChunkAddress, ChunkRetrievalResult, SwarmChunkProvider, SwarmError, SwarmResult,
+    ChunkAddress, ChunkRetrievalResult, StampedChunk, SwarmChunkProvider, SwarmError, SwarmResult,
 };
 
 /// Which checks the [`VerifyingChunkProvider`] applies to retrieved chunks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChunkVerifyConfig {
-    /// Reconstruct the chunk from its bytes and confirm the derived address
-    /// matches the requested address. On by default: if the chunk verifies we
-    /// got the integrity guarantee for free.
+    /// Re-assert that the returned chunk's address matches the requested address.
+    /// On by default. Content integrity is already enforced during retrieval
+    /// decode, so this is a cheap defensive equality check, not a re-hash.
     pub verify_content: bool,
-    /// Verify the postage stamp signature against the chunk. Off by default;
-    /// callers that need delivery guarantees can opt in.
+    /// Recover the postage stamp signer for the chunk address. Off by default;
+    /// callers that need to confirm the stamp signature is well-formed can opt in.
+    /// This recovers the signer but does not check batch validity on-chain, which
+    /// is the storer's concern.
     pub verify_stamp: bool,
 }
 
@@ -55,29 +62,34 @@ impl<P> VerifyingChunkProvider<P> {
     }
 }
 
-/// Confirm the retrieved bytes derive the requested `address`.
+/// Re-assert that `chunk` carries the requested `address`.
 ///
-/// The retrieval wire form carries no chunk-type tag, so the bytes are
-/// interpreted by trying each concrete chunk type and keeping the first whose
-/// derived address matches `address`. A content-addressed chunk is tried first
-/// (the common case), then a single-owner chunk.
-fn verify_content(data: &bytes::Bytes, address: &ChunkAddress) -> SwarmResult<()> {
-    if let Ok(chunk) = DefaultContentChunk::try_from(data.clone())
-        && chunk.verify(address).is_ok()
-    {
-        return Ok(());
-    }
-
-    if let Ok(chunk) = DefaultSingleOwnerChunk::try_from(data.clone())
-        && chunk.verify(address).is_ok()
-    {
+/// Retrieval already reconstructs and address-validates the chunk during decode,
+/// so this is a defensive equality check that costs a single comparison.
+fn verify_content(chunk: &StampedChunk, address: &ChunkAddress) -> SwarmResult<()> {
+    if chunk.address() == address {
         return Ok(());
     }
 
     Err(SwarmError::InvalidChunk {
         address: Some(*address),
-        reason: "retrieved chunk failed content verification".to_string(),
+        reason: "retrieved chunk address does not match requested address".to_string(),
     })
+}
+
+/// Recover the postage stamp signer for the chunk address.
+///
+/// Confirms the stamp signature is well-formed and recovers cleanly for this
+/// chunk. It does not check that the recovered signer owns a valid batch on-chain.
+fn verify_stamp(chunk: &StampedChunk, address: &ChunkAddress) -> SwarmResult<()> {
+    chunk
+        .stamp()
+        .recover_signer(address)
+        .map(|_| ())
+        .map_err(|err| SwarmError::InvalidSignature {
+            chunk_address: *address,
+            reason: err.to_string(),
+        })
 }
 
 #[async_trait]
@@ -89,18 +101,11 @@ where
         let result = self.inner.retrieve_chunk(address).await?;
 
         if self.config.verify_content {
-            verify_content(&result.data, address)?;
+            verify_content(&result.chunk, address)?;
         }
 
         if self.config.verify_stamp {
-            // A stamp-verification helper that checks the signature against the
-            // chunk is not yet wired through here. Rather than silently passing
-            // an unchecked stamp, surface that the requested check is
-            // unavailable.
-            return Err(SwarmError::InvalidSignature {
-                chunk_address: *address,
-                reason: "stamp verification unavailable".to_string(),
-            });
+            verify_stamp(&result.chunk, address)?;
         }
 
         Ok(result)
@@ -115,11 +120,15 @@ where
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
-    use bytes::Bytes;
+    use alloy_primitives::B256;
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use nectar_postage::{Stamp, StampDigest, StampIndex};
+    use vertex_swarm_api::{AnyChunk, Chunk, ContentChunk};
 
-    /// In-test provider returning canned bytes and stamp for any request.
+    /// In-test provider returning a canned stamped chunk for any request.
     struct MockProvider {
-        data: Bytes,
+        chunk: StampedChunk,
         served_by: vertex_swarm_api::OverlayAddress,
     }
 
@@ -130,8 +139,7 @@ mod tests {
             _address: &ChunkAddress,
         ) -> SwarmResult<ChunkRetrievalResult> {
             Ok(ChunkRetrievalResult {
-                data: self.data.clone(),
-                stamp: Bytes::new(),
+                chunk: self.chunk.clone(),
                 served_by: self.served_by,
             })
         }
@@ -141,63 +149,81 @@ mod tests {
         }
     }
 
-    fn content_chunk() -> DefaultContentChunk {
-        DefaultContentChunk::new(&b"hello swarm"[..]).unwrap()
+    fn content_chunk() -> ContentChunk {
+        ContentChunk::new(&b"hello swarm"[..]).unwrap()
+    }
+
+    /// A stamp whose EIP-191 signature recovers cleanly for `address`.
+    fn valid_stamp(address: &ChunkAddress) -> Stamp {
+        let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).unwrap();
+        let batch = B256::repeat_byte(0x22);
+        let index = StampIndex::new(0, 0);
+        let timestamp = 12345u64;
+        let prehash = StampDigest::new(*address, batch, index, timestamp).to_prehash();
+        let sig = signer.sign_message_sync(prehash.as_slice()).unwrap();
+        Stamp::with_index(batch, index, timestamp, sig)
+    }
+
+    /// A stamp with an unrecoverable (all-zero) signature.
+    fn malformed_stamp() -> Stamp {
+        let sig = alloy_primitives::Signature::from_raw(&[0u8; 65]).unwrap();
+        Stamp::new(B256::repeat_byte(0xaa), 0, 0, 0, sig)
+    }
+
+    fn stamped(chunk: ContentChunk, stamp: Stamp) -> StampedChunk {
+        StampedChunk::new(AnyChunk::Content(chunk), stamp)
     }
 
     #[tokio::test]
-    async fn valid_content_chunk_verifies() {
+    async fn matching_address_passes_content_check() {
         let chunk = content_chunk();
         let address = *chunk.address();
-        let data = Bytes::from(chunk);
+        let stamped = stamped(chunk, valid_stamp(&address));
 
         let provider = VerifyingChunkProvider::new(
             MockProvider {
-                data,
+                chunk: stamped,
                 served_by: Default::default(),
             },
             ChunkVerifyConfig::default(),
         );
 
         let result = provider.retrieve_chunk(&address).await;
-        assert!(result.is_ok(), "valid chunk should verify: {result:?}");
+        assert!(result.is_ok(), "matching address should pass: {result:?}");
     }
 
     #[tokio::test]
-    async fn corrupted_data_fails_verification() {
+    async fn mismatched_address_fails_content_check() {
         let chunk = content_chunk();
         let address = *chunk.address();
-        let mut bytes = Bytes::from(chunk).to_vec();
-        // Flip a byte in the payload so the derived address no longer matches.
-        let last = bytes.len() - 1;
-        bytes[last] ^= 0xff;
+        let stamped = stamped(chunk, valid_stamp(&address));
+        let wrong = ChunkAddress::new([0xff; 32]);
 
         let provider = VerifyingChunkProvider::new(
             MockProvider {
-                data: Bytes::from(bytes),
+                chunk: stamped,
                 served_by: Default::default(),
             },
             ChunkVerifyConfig::default(),
         );
 
-        let result = provider.retrieve_chunk(&address).await;
+        let result = provider.retrieve_chunk(&wrong).await;
         assert!(
             matches!(result, Err(SwarmError::InvalidChunk { .. })),
-            "corrupted chunk should fail verification: {result:?}"
+            "mismatched address should fail content check: {result:?}"
         );
     }
 
     #[tokio::test]
-    async fn content_check_disabled_passes_corrupted_data() {
+    async fn content_check_disabled_skips_address_assertion() {
         let chunk = content_chunk();
         let address = *chunk.address();
-        let mut bytes = Bytes::from(chunk).to_vec();
-        let last = bytes.len() - 1;
-        bytes[last] ^= 0xff;
+        let stamped = stamped(chunk, valid_stamp(&address));
+        let wrong = ChunkAddress::new([0xff; 32]);
 
         let provider = VerifyingChunkProvider::new(
             MockProvider {
-                data: Bytes::from(bytes),
+                chunk: stamped,
                 served_by: Default::default(),
             },
             ChunkVerifyConfig {
@@ -206,19 +232,43 @@ mod tests {
             },
         );
 
-        let result = provider.retrieve_chunk(&address).await;
-        assert!(result.is_ok(), "content check off should not verify");
+        let result = provider.retrieve_chunk(&wrong).await;
+        assert!(
+            result.is_ok(),
+            "content check off should not assert address"
+        );
     }
 
     #[tokio::test]
-    async fn stamp_verification_reports_unavailable() {
+    async fn valid_stamp_recovers() {
         let chunk = content_chunk();
         let address = *chunk.address();
-        let data = Bytes::from(chunk);
+        let stamped = stamped(chunk, valid_stamp(&address));
 
         let provider = VerifyingChunkProvider::new(
             MockProvider {
-                data,
+                chunk: stamped,
+                served_by: Default::default(),
+            },
+            ChunkVerifyConfig {
+                verify_content: true,
+                verify_stamp: true,
+            },
+        );
+
+        let result = provider.retrieve_chunk(&address).await;
+        assert!(result.is_ok(), "valid stamp should recover: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn malformed_stamp_fails_signature_check() {
+        let chunk = content_chunk();
+        let address = *chunk.address();
+        let stamped = stamped(chunk, malformed_stamp());
+
+        let provider = VerifyingChunkProvider::new(
+            MockProvider {
+                chunk: stamped,
                 served_by: Default::default(),
             },
             ChunkVerifyConfig {
@@ -230,7 +280,7 @@ mod tests {
         let result = provider.retrieve_chunk(&address).await;
         assert!(
             matches!(result, Err(SwarmError::InvalidSignature { .. })),
-            "stamp verification should report unavailable: {result:?}"
+            "malformed stamp should fail signature recovery: {result:?}"
         );
     }
 }
