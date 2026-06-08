@@ -24,6 +24,7 @@ pub(crate) const DEFAULT_CHANNEL_CAPACITY: usize = 256;
 pub struct ClientHandle {
     command_tx: mpsc::Sender<ClientCommand>,
     pending_retrievals: Arc<Mutex<HashMap<ChunkAddress, oneshot::Sender<RetrievalResult>>>>,
+    pending_pushes: Arc<Mutex<HashMap<ChunkAddress, oneshot::Sender<PushOutcome>>>>,
 }
 
 /// Result of a chunk retrieval.
@@ -35,6 +36,26 @@ pub struct RetrievalResult {
     /// The peer that served the chunk.
     pub peer: OverlayAddress,
 }
+
+/// Result of a chunk push.
+///
+/// Carries the receipt fields returned by the storer after a successful
+/// pushsync round-trip.
+#[derive(Debug)]
+pub struct PushResult {
+    /// The peer that issued the receipt.
+    pub peer: OverlayAddress,
+    /// The receipt signature from the storer.
+    pub signature: bytes::Bytes,
+    /// The nonce used in signing the receipt.
+    pub nonce: bytes::Bytes,
+    /// The storer's storage radius.
+    pub storage_radius: u8,
+}
+
+/// Outcome delivered to a pending push: a receipt on success or an error
+/// describing why the storer rejected the chunk.
+type PushOutcome = Result<PushResult, RetrievalError>;
 
 /// Error from retrieval operations.
 #[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
@@ -52,6 +73,9 @@ pub enum RetrievalError {
     /// Chunk not found.
     #[error("Chunk not found: {0}")]
     NotFound(ChunkAddress),
+    /// Chunk push was rejected by the storer.
+    #[error("Push failed: {0}")]
+    PushRejected(String),
 }
 
 impl ClientHandle {
@@ -60,6 +84,7 @@ impl ClientHandle {
         Self {
             command_tx,
             pending_retrievals: Arc::new(Mutex::new(HashMap::new())),
+            pending_pushes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -115,6 +140,54 @@ impl ClientHandle {
         let mut pending = self.pending_retrievals.lock();
         pending.remove(&address);
         // The oneshot will be dropped, causing the receiver to get Cancelled
+    }
+
+    /// Push a chunk to a specific peer.
+    ///
+    /// This sends a push command and waits for the storer's receipt.
+    pub async fn push_chunk(
+        &self,
+        peer: OverlayAddress,
+        address: ChunkAddress,
+        data: bytes::Bytes,
+        stamp: bytes::Bytes,
+    ) -> Result<PushResult, RetrievalError> {
+        let (tx, rx) = oneshot::channel();
+
+        // Register the pending push
+        {
+            let mut pending = self.pending_pushes.lock();
+            pending.insert(address, tx);
+        }
+
+        // Send the push command
+        self.send_command(ClientCommand::PushChunk {
+            peer,
+            address,
+            data,
+            stamp,
+        })?;
+
+        // Wait for the receipt or a failure report.
+        rx.await.map_err(|_| RetrievalError::Cancelled)?
+    }
+
+    /// Complete a pending push with a receipt.
+    ///
+    /// Called by the event processor when a receipt is received.
+    pub(crate) fn complete_push(&self, address: ChunkAddress, result: PushResult) {
+        let mut pending = self.pending_pushes.lock();
+        if let Some(tx) = pending.remove(&address) {
+            let _ = tx.send(Ok(result));
+        }
+    }
+
+    /// Fail a pending push, surfacing the storer's rejection reason to the caller.
+    pub(crate) fn fail_push(&self, address: ChunkAddress, error: String) {
+        let mut pending = self.pending_pushes.lock();
+        if let Some(tx) = pending.remove(&address) {
+            let _ = tx.send(Err(RetrievalError::PushRejected(error)));
+        }
     }
 }
 
@@ -264,7 +337,15 @@ impl ClientService {
                     sig_len = signature.len(), nonce_len = nonce.len(),
                     "Receipt received"
                 );
-                // TODO: Verify receipt, complete push operation
+                self.handle.complete_push(
+                    address,
+                    PushResult {
+                        peer,
+                        signature,
+                        nonce,
+                        storage_radius,
+                    },
+                );
             }
 
             ClientEvent::PeerDisconnected { peer_id, overlay } => {
@@ -304,7 +385,7 @@ impl ClientService {
                 error,
             } => {
                 warn!(%peer, %address, %error, "Push failed");
-                // TODO: Notify waiting push request
+                self.handle.fail_push(address, error);
             }
 
             ClientEvent::SettlementNeeded { peer, balance } => {

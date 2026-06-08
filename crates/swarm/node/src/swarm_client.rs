@@ -1,13 +1,16 @@
 //! Unified client for Swarm nodes.
 
 use async_trait::async_trait;
-use nectar_primitives::{AnyChunk, ChunkAddress};
+use nectar_primitives::{AnyChunk, ChunkAddress, ContentChunk};
 use vertex_swarm_api::{
     BootnodeComponents, ClientComponents, HasAccounting, HasTopology, SwarmClient,
     SwarmClientAccounting, SwarmError, SwarmResult, SwarmTopologyRouting,
 };
 
 use crate::ClientHandle;
+
+/// Number of closest peers to attempt for retrieval and push operations.
+const CLOSEST_PEER_COUNT: usize = 3;
 
 /// Unified client for all Swarm node types.
 ///
@@ -72,31 +75,80 @@ impl<T, A> Client<ClientComponents<T, A>, ()> {
     }
 }
 
+/// Storage proof for an upload: the pre-computed postage stamp bytes that
+/// accompany a chunk on the pushsync wire.
+///
+/// `put` is the client-side entry point for already-stamped chunks. The stamp
+/// is supplied as the storage proof rather than derived here, so the upload
+/// layer owns batch selection and stamp signing.
 #[async_trait]
 impl<T, A, S> SwarmClient for Client<ClientComponents<T, A>, S>
 where
     T: SwarmTopologyRouting + Send + Sync + 'static,
     A: SwarmClientAccounting + Send + Sync + 'static,
-    S: Send + Sync + 'static,
+    S: AsRef<[u8]> + Send + Sync + 'static,
 {
     type Storage = S;
 
     async fn get(&self, address: &ChunkAddress) -> SwarmResult<AnyChunk> {
-        let _closest = self.components.topology().closest_to(address, 3);
-        let _handle = &self.client_handle;
-        let _accounting = self.components.accounting();
+        let closest = self
+            .components
+            .topology()
+            .closest_to(address, CLOSEST_PEER_COUNT);
 
-        // TODO: Retrieval implementation
-        Err(SwarmError::ChunkNotFound { address: *address })
+        if closest.is_empty() {
+            return Err(SwarmError::NoStorer {
+                chunk_address: *address,
+            });
+        }
+
+        let mut last_error: Option<SwarmError> = None;
+        for peer in closest {
+            match self.client_handle.retrieve_chunk(peer, *address).await {
+                Ok(result) => {
+                    let chunk = ContentChunk::try_from(result.data).map_err(|e| {
+                        SwarmError::InvalidChunk {
+                            address: Some(*address),
+                            reason: e.to_string(),
+                        }
+                    })?;
+                    let chunk: AnyChunk = chunk.into();
+                    chunk
+                        .verify(address)
+                        .map_err(|e| SwarmError::InvalidChunk {
+                            address: Some(*address),
+                            reason: e.to_string(),
+                        })?;
+                    return Ok(chunk);
+                }
+                Err(e) => {
+                    last_error = Some(SwarmError::network_msg(e.to_string()));
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or(SwarmError::ChunkNotFound { address: *address }))
     }
 
-    async fn put(&self, chunk: AnyChunk, _storage: &Self::Storage) -> SwarmResult<()> {
-        let _closest = self.components.topology().closest_to(chunk.address(), 3);
-        let _handle = &self.client_handle;
-        let _accounting = self.components.accounting();
+    async fn put(&self, chunk: AnyChunk, storage: &Self::Storage) -> SwarmResult<()> {
+        let address = *chunk.address();
+        let closest = self
+            .components
+            .topology()
+            .closest_to(&address, CLOSEST_PEER_COUNT);
 
-        // TODO: Push sync implementation
-        Ok(())
+        let peer = closest.into_iter().next().ok_or(SwarmError::NoStorer {
+            chunk_address: address,
+        })?;
+
+        let stamp = bytes::Bytes::copy_from_slice(storage.as_ref());
+        let data = chunk.into_bytes();
+
+        self.client_handle
+            .push_chunk(peer, address, data, stamp)
+            .await
+            .map(|_receipt| ())
+            .map_err(|e| SwarmError::network_msg(e.to_string()))
     }
 }
 
@@ -149,5 +201,100 @@ mod tests {
 
         let peers = SwarmBandwidthAccounting::peers(client.accounting().bandwidth());
         assert!(peers.is_empty());
+    }
+
+    use crate::RetrievalError;
+    use crate::client_service::PushResult;
+    use vertex_swarm_primitives::OverlayAddress;
+
+    fn test_peer() -> OverlayAddress {
+        OverlayAddress::from([7u8; 32])
+    }
+
+    fn test_address() -> ChunkAddress {
+        ChunkAddress::new([0x11; 32])
+    }
+
+    #[tokio::test]
+    async fn push_chunk_emits_command_and_resolves_on_receipt() {
+        let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
+        let handle = ClientHandle::new(tx);
+
+        let peer = test_peer();
+        let address = test_address();
+        let data = bytes::Bytes::from_static(b"chunk-bytes");
+        let stamp = bytes::Bytes::from_static(b"stamp-bytes");
+
+        let push = {
+            let handle = handle.clone();
+            tokio::spawn(async move { handle.push_chunk(peer, address, data, stamp).await })
+        };
+
+        // The handle must have emitted a PushChunk command for the closest peer.
+        let cmd = rx.recv().await.expect("command emitted");
+        match cmd {
+            ClientCommand::PushChunk {
+                peer: p,
+                address: a,
+                data,
+                stamp,
+            } => {
+                assert_eq!(p, peer);
+                assert_eq!(a, address);
+                assert_eq!(data.as_ref(), b"chunk-bytes");
+                assert_eq!(stamp.as_ref(), b"stamp-bytes");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        // Simulate the event processor delivering a receipt.
+        handle.complete_push(
+            address,
+            PushResult {
+                peer,
+                signature: bytes::Bytes::from_static(b"sig"),
+                nonce: bytes::Bytes::from_static(b"nonce"),
+                storage_radius: 5,
+            },
+        );
+
+        let receipt = push.await.unwrap().expect("push resolves");
+        assert_eq!(receipt.peer, peer);
+        assert_eq!(receipt.signature.as_ref(), b"sig");
+        assert_eq!(receipt.storage_radius, 5);
+    }
+
+    #[tokio::test]
+    async fn push_chunk_fails_when_push_is_rejected() {
+        let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
+        let handle = ClientHandle::new(tx);
+
+        let peer = test_peer();
+        let address = test_address();
+
+        let push = {
+            let handle = handle.clone();
+            tokio::spawn(async move {
+                handle
+                    .push_chunk(
+                        peer,
+                        address,
+                        bytes::Bytes::from_static(b"d"),
+                        bytes::Bytes::from_static(b"s"),
+                    )
+                    .await
+            })
+        };
+
+        let _ = rx.recv().await.expect("command emitted");
+
+        // The event processor reports a storer rejection.
+        handle.fail_push(address, "rejected".to_string());
+
+        let result = push.await.unwrap();
+        match result {
+            Err(RetrievalError::PushRejected(reason)) => assert_eq!(reason, "rejected"),
+            other => panic!("expected PushRejected, got {other:?}"),
+        }
     }
 }
