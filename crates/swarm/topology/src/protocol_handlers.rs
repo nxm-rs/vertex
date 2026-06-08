@@ -7,6 +7,7 @@ use libp2p::ping;
 use libp2p::swarm::{ConnectionId, ToSwarm};
 use metrics::gauge;
 use tracing::{debug, info, trace, warn};
+use vertex_net_local::{AddressScope, classify_multiaddr};
 use vertex_net_peer_registry::ActivateResult;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_net_handshake::HandshakeEvent;
@@ -196,13 +197,35 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         self.peer_manager
             .on_peer_ready(info.swarm_peer.clone(), info.node_type);
 
-        // Promote reachability BEFORE notifying routing: `trim_overpopulated_bins`
+        // Feed reachability BEFORE notifying routing: `trim_overpopulated_bins`
         // ranks eviction victims by reachability (least-reachable first), so the
-        // freshly-connected peer must be promoted before `routing.connected` and
-        // any resulting trim reads its rank.
-        self.nat_discovery
-            .reachability()
-            .update_from_handshake(peer_id, true);
+        // freshly-connected peer's status must be settled before
+        // `routing.connected` and any resulting trim reads its rank.
+        //
+        // A completed handshake is only a liveness signal. We promote to Public
+        // solely when *we* dialed the peer at a public-scope address (recorded
+        // at connection establishment): reaching a public address proves it is
+        // dialable. An inbound handshake (the peer dialed us over an ephemeral
+        // port) proves nothing about the peer's inbound reachability, so it
+        // stays liveness-only; AutoNAT v2 dial-back is the other promotion path.
+        let reachability = self.nat_discovery.reachability();
+        if self.outbound_public_dials.remove(&connection_id) {
+            reachability.on_outbound_reachable(peer_id);
+        } else {
+            reachability.update_from_handshake(peer_id, true);
+        }
+
+        // An inbound connection means the peer dialed us and reached us at the
+        // address it reports observing. If that address is public it is our
+        // genuinely reachable listen address (not an ephemeral outbound port),
+        // so record it as a weak public-connectivity signal for ourselves.
+        if direction == ConnectionDirection::Inbound
+            && !info.observed_multiaddr.is_empty()
+            && classify_multiaddr(&info.observed_multiaddr) == Some(AddressScope::Public)
+        {
+            self.nat_discovery
+                .on_observed_addr(&info.observed_multiaddr);
+        }
 
         let bin = self.bin_for(&overlay);
 

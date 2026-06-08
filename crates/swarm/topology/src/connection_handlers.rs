@@ -3,6 +3,7 @@
 use libp2p::swarm::ConnectionError;
 use metrics::gauge;
 use tracing::{debug, trace, warn};
+use vertex_net_local::{AddressScope, classify_multiaddr};
 use vertex_net_peer_registry::ConnectionState;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_net_handshake::HANDSHAKE_TIMEOUT;
@@ -30,6 +31,16 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         established: libp2p::swarm::behaviour::ConnectionEstablished,
     ) {
         if established.endpoint.is_dialer() {
+            // Record outbound dials to a public-scope address. A successful
+            // outbound connection proves the dialed address is reachable, so on
+            // handshake completion this promotes the peer to Public. Private/LAN
+            // successes prove only local reachability and are not recorded.
+            if classify_multiaddr(established.endpoint.get_remote_address())
+                == Some(AddressScope::Public)
+            {
+                self.outbound_public_dials.insert(established.connection_id);
+            }
+
             // Resolve from DialTracker (sole source of outbound dial tracking)
             if let Some(request) = self.dial_tracker.resolve(&established.peer_id) {
                 let overlay = request.id;
@@ -61,6 +72,10 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         &mut self,
         closed: libp2p::swarm::behaviour::ConnectionClosed,
     ) {
+        // Drop any outbound-public marker for this specific connection,
+        // regardless of whether other connections to the peer remain.
+        self.outbound_public_dials.remove(&closed.connection_id);
+
         if closed.remaining_established > 0 {
             return;
         }

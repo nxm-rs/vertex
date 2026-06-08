@@ -9,6 +9,9 @@ use std::sync::Arc;
 
 use eyre::Result;
 use futures::StreamExt;
+use libp2p::autonat::v2 as autonat;
+use libp2p::swarm::behaviour::toggle::Toggle;
+use libp2p::upnp;
 use libp2p::{Multiaddr, PeerId, identity::PublicKey, swarm::NetworkBehaviour, swarm::SwarmEvent};
 use nectar_primitives::SwarmAddress;
 use tokio::sync::mpsc;
@@ -22,7 +25,7 @@ use vertex_swarm_topology::{
 use vertex_tasks::GracefulShutdown;
 use vertex_tasks::TaskExecutor;
 
-use super::base::BaseNode;
+use super::base::{BaseNode, NatBehaviours};
 use super::builder::BuiltInfrastructure;
 use crate::protocol::{
     BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientCommand, ClientEvent,
@@ -35,12 +38,19 @@ use crate::{ClientHandle, ClientService};
 #[behaviour(to_swarm = "ClientNodeEvent")]
 pub(crate) struct ClientNodeBehaviour<I: SwarmIdentity + Clone> {
     pub(crate) identify: identify::Behaviour,
+    pub(crate) autonat_client: Toggle<autonat::client::Behaviour>,
+    pub(crate) autonat_server: Toggle<autonat::server::Behaviour>,
+    pub(crate) upnp: Toggle<upnp::tokio::Behaviour>,
     pub(crate) topology: TopologyBehaviour<I>,
     pub(crate) client: ClientBehaviour,
 }
 
 impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
-    pub(crate) fn from_parts(local_public_key: PublicKey, topology: TopologyBehaviour<I>) -> Self {
+    pub(crate) fn from_parts(
+        local_public_key: PublicKey,
+        topology: TopologyBehaviour<I>,
+        nat: NatBehaviours,
+    ) -> Self {
         let agent_versions = topology.agent_versions();
         Self {
             // Send listen addresses (even private IPs) so bee's peerstore has entries.
@@ -51,6 +61,9 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
                 identify::Config::new(local_public_key),
                 agent_versions,
             ),
+            autonat_client: nat.autonat_client,
+            autonat_server: nat.autonat_server,
+            upnp: nat.upnp,
             topology,
             client: ClientBehaviour::new(ClientBehaviourConfig::default()),
         }
@@ -61,6 +74,9 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
 #[allow(clippy::large_enum_variant)]
 pub enum ClientNodeEvent {
     Identify(Box<identify::Event>),
+    AutonatClient(autonat::client::Event),
+    AutonatServer(autonat::server::Event),
+    Upnp(upnp::Event),
     Topology(()),
     Client(ClientEvent),
 }
@@ -68,6 +84,24 @@ pub enum ClientNodeEvent {
 impl From<identify::Event> for ClientNodeEvent {
     fn from(event: identify::Event) -> Self {
         ClientNodeEvent::Identify(Box::new(event))
+    }
+}
+
+impl From<autonat::client::Event> for ClientNodeEvent {
+    fn from(event: autonat::client::Event) -> Self {
+        ClientNodeEvent::AutonatClient(event)
+    }
+}
+
+impl From<autonat::server::Event> for ClientNodeEvent {
+    fn from(event: autonat::server::Event) -> Self {
+        ClientNodeEvent::AutonatServer(event)
+    }
+}
+
+impl From<upnp::Event> for ClientNodeEvent {
+    fn from(event: upnp::Event) -> Self {
+        ClientNodeEvent::Upnp(event)
     }
 }
 
@@ -197,6 +231,18 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
             ClientNodeEvent::Identify(event) => {
                 self.handle_identify_event(*event);
             }
+            ClientNodeEvent::AutonatServer(event) => {
+                super::base::handle_autonat_server_event(
+                    &self.base.swarm.behaviour().topology,
+                    event,
+                );
+            }
+            ClientNodeEvent::AutonatClient(event) => {
+                super::base::handle_autonat_client_event(event);
+            }
+            ClientNodeEvent::Upnp(event) => {
+                super::base::handle_upnp_event(event);
+            }
             ClientNodeEvent::Topology(_) => {}
             ClientNodeEvent::Client(event) => {
                 self.route_client_event(event);
@@ -205,8 +251,7 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
     }
 
     fn handle_identify_event(&mut self, event: identify::Event) {
-        let behaviour = self.base.swarm.behaviour_mut();
-        super::base::handle_identify_event(&behaviour.topology, &mut behaviour.identify, event);
+        super::base::handle_identify_event(&mut self.base.swarm.behaviour_mut().identify, event);
     }
 
     fn handle_topology_service_event(&mut self, event: TopologyEvent) {
@@ -331,11 +376,12 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
             }
         };
 
+        let nat = NatBehaviours::from_config(network_config);
         let mut base = super::builder::build_base_node(
             infra,
             network_config,
             "Client node",
-            ClientNodeBehaviour::from_parts,
+            move |pk, topology| ClientNodeBehaviour::from_parts(pk, topology, nat),
         )
         .await?;
 

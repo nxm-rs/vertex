@@ -56,14 +56,48 @@ When selecting addresses for a peer during handshake:
 
 All returned addresses include `/p2p/{local_peer_id}`.
 
-### Public Connectivity Detection
+### Self-Reachability Detection
 
-`has_public_addresses()` returns true if any of:
-- NAT addresses are configured (static public addresses)
-- Local listen addresses include public IPs
-- Confirmed public connectivity via peer observation
+`is_reachable()` (whether other public peers can reach us) returns true if any of:
+- NAT addresses are configured (static public-scope addresses)
+- Local listen addresses include public-scope IPs
+- Reachability confirmed via inbound peer observation
+- A verified external address (AutoNAT v2 dial-back or UPnP map)
 
-When a peer reports our address via identify, `on_observed_addr()` sets a boolean public connectivity flag if the observed address is public. This flag enables dialing other public peers. The observed address itself is **not stored or advertised** - only the connectivity fact is recorded.
+Two signals can flip the self-reachability flag, in increasing order of confidence:
+
+- `on_observed_addr()` is the weak signal, and it is fed only from **inbound** handshakes. When a peer dials us and the address it reports observing us at is public-scope, that is our genuinely reachable listen address (the peer reached it), so the flag is set. Observed addresses from outbound connections are deliberately ignored here: when we dial out, the remote sees our ephemeral NAT source port, which proves nothing about our reachability. The observed address itself is **not stored or advertised**, only the connectivity fact is recorded. Outbound-observed addresses still flow to the AutoNAT v2 client (via identify's `NewExternalAddrCandidate`) to be verified by dial-back.
+- `on_external_addr_confirmed()` is the strong signal. It fires on `FromSwarm::ExternalAddrConfirmed`, which the libp2p swarm raises only after AutoNAT v2 has dialed one of our candidate addresses back, or UPnP has mapped a port. This is hard to spoof because it requires a completed inbound connection on the address under test. Unlike the observed signal it is reversible: `on_external_addr_expired()` drops the address on `FromSwarm::ExternalAddrExpired` (for example a UPnP lease that fails to renew), so a node whose only public path was a mapping that lapsed stops advertising itself as reachable.
+
+### Peer reachability is not peer liveness
+
+The per-peer `ReachabilityTracker` makes the same distinction for *other* nodes, and uses a vocabulary deliberately kept separate from address scope. Its verdict enum `PeerReachability` is `Unreachable`/`Unknown`/`Reachable` (ordered worst to best via `Ord`, so eviction drops the minimum first), never `Public`/`Private` - those words are reserved for `AddressScope`, the RFC IP-range classification. A peer can advertise a public-scope address yet be `Unreachable`, or sit on a private LAN address yet be `Reachable` to same-subnet peers.
+
+`Reachable` means a peer accepts new inbound connections at its advertised address, which is only proven by an AutoNAT v2 dial-back (`on_autonat_peer_confirmed()`) or by us successfully dialing the peer outbound at a public-scope address (`on_outbound_reachable()`). A completed handshake or a successful ping is treated as **liveness** only: it clears the failure streak and recovers a demoted peer to `Unknown`, but never sets `Reachable`. This guards against the ephemeral-port trap: a NAT'd peer that dials us answers pings over its connection-specific inbound port yet is unreachable by anyone else, so it must not be ranked as reachable for eviction.
+
+## AutoNAT v2 and UPnP
+
+NAT traversal runs as a cluster of top-level libp2p behaviours that sit beside identify in each node type (`vertex-swarm-node`). They collaborate through the swarm external-address machinery rather than through direct calls.
+
+- **identify** observes the remote-reported address and emits it as a `NewExternalAddrCandidate`.
+- **AutoNAT v2 client** picks up each candidate, asks a peer that speaks `/libp2p/autonat/2/dial-request` to dial it back over a fresh port, and on success emits `ExternalAddrConfirmed`.
+- **AutoNAT v2 server** performs dial-backs for other peers. A completed dial-back proves the remote peer accepts inbound connections, so the node promotes it to `Reachable` in the topology reachability tracker via `on_autonat_peer_confirmed()`.
+- **UPnP** (`libp2p::upnp::tokio`) asks the LAN IGD gateway to map the listen port and emits `ExternalAddrConfirmed` for the mapped address.
+
+The swarm broadcasts every `ExternalAddrConfirmed` to all behaviours, so the topology behaviour learns about verified addresses without any per-behaviour plumbing.
+
+### Defaults and configuration
+
+| Behaviour | Default | Flag |
+|-----------|---------|------|
+| AutoNAT v2 (client + server) | enabled for all node types | `--network.autonat` |
+| UPnP port mapping | disabled (opt-in) | `--network.upnp` |
+
+AutoNAT v2 runs both roles on every node type, including bootnodes, so the network always has dial-back verifiers. UPnP is opt-in because it actively probes the LAN gateway, which only helps home and NAT'd nodes and is noise on directly-routable hosts. Each behaviour is wrapped in a libp2p `Toggle`, so disabling one leaves an inert behaviour rather than changing the composed type.
+
+### Interop
+
+AutoNAT v2 (`/libp2p/autonat/2/dial-request`, `/libp2p/autonat/2/dial-back`) and UPnP are additive libp2p protocols. Peers that do not implement them simply never negotiate them, so the Swarm handshake and every `/swarm/...` protocol are unaffected. Until AutoNAT v2 support is widespread on the live network, a vertex node depends on other vertex nodes to act as its dial-back verifiers.
 
 ## Why Observed Addresses Are Not Stored
 

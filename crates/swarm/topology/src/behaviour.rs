@@ -232,6 +232,13 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
     /// Overlays pending eviction from bin trimming (consumed by handle_connection_closed).
     pub(crate) pending_evictions: HashSet<OverlayAddress>,
 
+    /// Connection IDs of outbound dials whose remote address was public-scope.
+    /// On handshake completion these promote the peer to
+    /// [`crate::PeerReachability::Reachable`] (we reached a dialable public
+    /// address). Populated at `ConnectionEstablished`, consumed at handshake
+    /// completion, and cleared at `ConnectionClosed`.
+    pub(crate) outbound_public_dials: HashSet<ConnectionId>,
+
     /// Node type recorded at PeerReady time for symmetric metric decrement on disconnect.
     ///
     /// Without this, gossip re-verification can overwrite the handshake-confirmed
@@ -393,6 +400,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             }),
             early_disconnect_threshold: config.early_disconnect_threshold,
             pending_evictions: HashSet::new(),
+            outbound_public_dials: HashSet::new(),
             connected_node_types: HashMap::new(),
             ban_rx,
             peer_store,
@@ -423,15 +431,14 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         self.nat_discovery.on_observed_addr(addr);
     }
 
-    /// Forward an AutoNAT event into the per-peer reachability tracker.
+    /// Promote a peer to [`crate::PeerReachability::Reachable`] after our AutoNAT
+    /// v2 server dialed it back successfully.
     ///
-    /// Wire this from whichever layer owns the `libp2p::autonat::Behaviour`
-    /// (the swarm-builder, typically). `OutboundProbe::Response` and
-    /// `InboundProbe::Response` promote the involved peer to
-    /// [`crate::PeerReachability::Public`]; other variants are ignored
-    /// (see [`crate::ReachabilityTracker::update_from_autonat`]).
-    pub fn on_autonat_event(&self, event: &libp2p::autonat::Event) {
-        self.nat_discovery.on_autonat_event(event);
+    /// Wired from the node layer that owns the `autonat::v2::server::Behaviour`:
+    /// for each `autonat::v2::server::Event` with an `Ok` result, the node
+    /// forwards the verified `client` peer here.
+    pub fn on_autonat_peer_confirmed(&self, peer: PeerId) {
+        self.nat_discovery.on_autonat_peer_confirmed(peer);
     }
 
     /// Shared per-peer reachability tracker; cheap to clone.
@@ -545,8 +552,8 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         let candidates = self.routing.eviction_candidates(|overlay| {
             registry
                 .resolve_peer_id(overlay)
-                .map(|peer_id| tracker.status(&peer_id).rank())
-                .unwrap_or_else(|| crate::PeerReachability::Unknown.rank())
+                .map(|peer_id| tracker.status(&peer_id))
+                .unwrap_or(crate::PeerReachability::Unknown)
         });
         if candidates.is_empty() {
             return;
@@ -658,7 +665,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         match peer_max_scope {
             Some(AddressScope::Public) => {
                 // Public peer - need public addresses
-                self.nat_discovery.has_public_addresses()
+                self.nat_discovery.is_reachable()
             }
             Some(AddressScope::Private | AddressScope::LinkLocal) => {
                 // Private/link-local peer - check if we share a subnet
@@ -740,6 +747,17 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
             FromSwarm::ExpiredListenAddr(info) => {
                 debug!(address = %info.addr, "Expired listen address");
                 self.nat_discovery.on_expired_listen_addr(info.addr);
+            }
+            FromSwarm::ExternalAddrConfirmed(info) => {
+                // Verified external address (AutoNAT v2 dial-back or UPnP map).
+                // A confirmed public address flips public connectivity on.
+                debug!(address = %info.addr, "External address confirmed");
+                self.nat_discovery.on_external_addr_confirmed(info.addr);
+            }
+            FromSwarm::ExternalAddrExpired(info) => {
+                // A verified external address lapsed (e.g. UPnP lease expiry).
+                debug!(address = %info.addr, "External address expired");
+                self.nat_discovery.on_external_addr_expired(info.addr);
             }
             _ => {}
         }

@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use libp2p::multiaddr::Protocol;
 use libp2p::{Multiaddr, PeerId};
+use parking_lot::Mutex;
 use tracing::{debug, info, warn};
 use vertex_net_local::{AddressScope, IpCapability, LocalCapabilities, classify_multiaddr};
 use vertex_swarm_net_handshake::AddressProvider;
@@ -21,18 +22,27 @@ fn strip_peer_id(addr: &Multiaddr) -> Multiaddr {
 
 /// Manages local addresses for advertisement during handshake.
 ///
-/// Wraps LocalCapabilities with static NAT addresses, public connectivity
+/// Wraps LocalCapabilities with static NAT addresses, reachability
 /// tracking, and local PeerId for advertised addresses.
 pub struct LocalAddressManager {
     local: Arc<LocalCapabilities>,
     nat_addrs: Vec<Multiaddr>,
     /// Local PeerId for appending /p2p/ to advertised addresses.
     local_peer_id: OnceLock<PeerId>,
-    /// Whether we've confirmed public connectivity (peer observed us from public IP).
-    has_public_connectivity: AtomicBool,
-    /// Per-peer reachability bridge. AutoNAT events forwarded via
-    /// [`LocalAddressManager::on_autonat_event`] flow into this tracker so
-    /// the kademlia routing layer can score peers by reachability.
+    /// Weak, sticky public-connectivity signal: a peer reported observing us at
+    /// a public address (see [`Self::on_observed_addr`]). Unverified, so it
+    /// never clears.
+    observed_reachable: AtomicBool,
+    /// Verified public external addresses, confirmed by AutoNAT v2 dial-back or
+    /// UPnP port mapping. Unlike the observed signal this is reversible: an
+    /// address is removed on `ExternalAddrExpired` (e.g. a UPnP lease lapsing),
+    /// so a node whose only public path was a mapping that expired stops
+    /// reporting itself reachable.
+    confirmed_external_addrs: Mutex<HashSet<Multiaddr>>,
+    /// Per-peer reachability bridge. AutoNAT v2 dial-back confirmations
+    /// forwarded via [`LocalAddressManager::on_autonat_peer_confirmed`] flow
+    /// into this tracker so the kademlia routing layer can score peers by
+    /// reachability.
     reachability: ReachabilityTracker,
 }
 
@@ -54,7 +64,8 @@ impl LocalAddressManager {
             local,
             nat_addrs,
             local_peer_id: OnceLock::new(),
-            has_public_connectivity: AtomicBool::new(false),
+            observed_reachable: AtomicBool::new(false),
+            confirmed_external_addrs: Mutex::new(HashSet::new()),
             reachability,
         }
     }
@@ -69,20 +80,12 @@ impl LocalAddressManager {
         self.reachability.clone()
     }
 
-    /// Forward an `libp2p::autonat::Event` to the reachability tracker.
+    /// Record that a peer has been confirmed publicly reachable via an
+    /// AutoNAT v2 dial-back.
     ///
-    /// This is the single AutoNAT entry point on the NAT-discovery side: the
-    /// swarm wiring that owns an `autonat::Behaviour` should call this for
-    /// each emitted event. Equivalent to `self.reachability().update_from_autonat(event)`.
-    pub fn on_autonat_event(&self, event: &libp2p::autonat::Event) {
-        self.reachability.update_from_autonat(event);
-    }
-
-    /// Record that a peer has been confirmed reachable via an AutoNAT probe.
-    ///
-    /// Convenience for wiring code that cannot synthesise a full
-    /// `libp2p::autonat::Event` (its internal `ProbeId` constructor is
-    /// crate-private).
+    /// The node wiring that owns the `autonat::v2::server::Behaviour` calls
+    /// this for each successful dial-back. Promotes the peer to
+    /// [`crate::PeerReachability::Reachable`] in the shared tracker.
     pub fn on_autonat_peer_confirmed(&self, peer: PeerId) {
         self.reachability.on_autonat_peer_confirmed(peer);
     }
@@ -116,7 +119,7 @@ impl LocalAddressManager {
     }
 
     /// Check if we have any public addresses to advertise.
-    pub fn has_public_addresses(&self) -> bool {
+    pub fn is_reachable(&self) -> bool {
         // Check static NAT addresses
         if self
             .nat_addrs
@@ -136,25 +139,69 @@ impl LocalAddressManager {
             return true;
         }
 
-        // Check if we've confirmed public connectivity
-        self.has_public_connectivity.load(Ordering::Relaxed)
+        // A verified external address (AutoNAT v2 / UPnP) still mapped.
+        if !self.confirmed_external_addrs.lock().is_empty() {
+            return true;
+        }
+
+        // Weak observed-from-public signal.
+        self.observed_reachable.load(Ordering::Relaxed)
     }
 
-    /// Record an observed address; sets public connectivity flag if address is public.
+    /// Record an observed address; sets the reachability flag if the observed address is public-scope.
     pub fn on_observed_addr(&self, addr: &Multiaddr) {
         // Strip /p2p/ suffix if present for classification
         let addr_for_classify = strip_peer_id(addr);
 
         if classify_multiaddr(&addr_for_classify) == Some(AddressScope::Public)
-            && !self.has_public_connectivity.swap(true, Ordering::Relaxed)
+            && !self.observed_reachable.swap(true, Ordering::Relaxed)
         {
-            info!("Confirmed public connectivity via peer observation");
+            info!("Confirmed reachability via peer observation");
         }
     }
 
-    /// Check if public connectivity has been confirmed.
-    pub fn has_confirmed_public_connectivity(&self) -> bool {
-        self.has_public_connectivity.load(Ordering::Relaxed)
+    /// Record a verified external address.
+    ///
+    /// Stronger than [`Self::on_observed_addr`]: this is driven by
+    /// `FromSwarm::ExternalAddrConfirmed`, which fires only after AutoNAT v2
+    /// dial-back or UPnP port mapping proves the address reachable. A confirmed
+    /// public address is tracked (reversibly) and enables dials to other public
+    /// peers.
+    pub fn on_external_addr_confirmed(&self, addr: &Multiaddr) {
+        let addr_for_classify = strip_peer_id(addr);
+
+        if classify_multiaddr(&addr_for_classify) == Some(AddressScope::Public)
+            && self
+                .confirmed_external_addrs
+                .lock()
+                .insert(addr_for_classify)
+        {
+            info!(%addr, "Confirmed reachability via verified external address");
+        }
+    }
+
+    /// Drop a previously-confirmed external address.
+    ///
+    /// Driven by `FromSwarm::ExternalAddrExpired` (e.g. a UPnP lease that failed
+    /// to renew). Once the last verified public address expires, the verified
+    /// signal clears; the node may still be public via static NAT addresses,
+    /// public listen addresses, or the weak observed signal.
+    pub fn on_external_addr_expired(&self, addr: &Multiaddr) {
+        let addr_for_classify = strip_peer_id(addr);
+        if self
+            .confirmed_external_addrs
+            .lock()
+            .remove(&addr_for_classify)
+        {
+            debug!(%addr, "Verified external address expired");
+        }
+    }
+
+    /// Check whether reachability has been confirmed, via either a verified
+    /// external address (reversible) or the weak observed signal (sticky).
+    pub fn has_confirmed_reachability(&self) -> bool {
+        !self.confirmed_external_addrs.lock().is_empty()
+            || self.observed_reachable.load(Ordering::Relaxed)
     }
 
     /// Select addresses to advertise to peer during handshake, filtered by peer scope.
@@ -250,29 +297,29 @@ mod tests {
     }
 
     #[test]
-    fn test_has_public_addresses_with_nat() {
+    fn test_is_reachable_with_nat() {
         let nat_addr = parse_addr("/ip4/203.0.113.50/tcp/1634");
         let manager = create_manager(vec![nat_addr]);
 
-        assert!(manager.has_public_addresses());
+        assert!(manager.is_reachable());
     }
 
     #[test]
-    fn test_has_public_addresses_with_public_listen() {
+    fn test_is_reachable_with_public_listen() {
         let local = Arc::new(LocalCapabilities::new());
         local.on_new_listen_addr(parse_addr("/ip4/8.8.8.8/tcp/1634"));
         let manager = LocalAddressManager::new(local, vec![]);
 
-        assert!(manager.has_public_addresses());
+        assert!(manager.is_reachable());
     }
 
     #[test]
-    fn test_has_public_addresses_none() {
+    fn test_is_reachable_none() {
         let local = Arc::new(LocalCapabilities::new());
         local.on_new_listen_addr(parse_addr("/ip4/192.168.1.1/tcp/1634"));
         let manager = LocalAddressManager::new(local, vec![]);
 
-        assert!(!manager.has_public_addresses());
+        assert!(!manager.is_reachable());
     }
 
     #[test]
@@ -334,35 +381,88 @@ mod tests {
     }
 
     #[test]
-    fn test_observed_public_address_enables_has_public() {
+    fn test_observed_public_address_enables_reachable() {
         // Start with no public addresses
         let local = Arc::new(LocalCapabilities::new());
         local.on_new_listen_addr(parse_addr("/ip4/192.168.1.1/tcp/1634"));
         let manager = LocalAddressManager::new(local, vec![]);
 
-        // Initially no public connectivity
-        assert!(!manager.has_public_addresses());
-        assert!(!manager.has_confirmed_public_connectivity());
+        // Initially no reachability
+        assert!(!manager.is_reachable());
+        assert!(!manager.has_confirmed_reachability());
 
         // Simulate peer reporting our public address
         let observed = parse_addr("/ip4/91.189.35.149/tcp/1634");
         manager.on_observed_addr(&observed);
 
-        // Now we have confirmed public connectivity
-        assert!(manager.has_public_addresses());
-        assert!(manager.has_confirmed_public_connectivity());
+        // Now we have confirmed reachability
+        assert!(manager.is_reachable());
+        assert!(manager.has_confirmed_reachability());
+    }
+
+    #[test]
+    fn test_external_addr_confirmed_enables_public() {
+        let local = Arc::new(LocalCapabilities::new());
+        local.on_new_listen_addr(parse_addr("/ip4/192.168.1.1/tcp/1634"));
+        let manager = LocalAddressManager::new(local, vec![]);
+
+        assert!(!manager.is_reachable());
+
+        // A verified external address (AutoNAT v2 dial-back or UPnP) flips
+        // reachability on.
+        manager.on_external_addr_confirmed(&parse_addr("/ip4/203.0.113.7/tcp/1634"));
+
+        assert!(manager.has_confirmed_reachability());
+        assert!(manager.is_reachable());
+    }
+
+    #[test]
+    fn test_external_addr_confirmed_private_ignored() {
+        let manager = create_manager(vec![]);
+        manager.on_external_addr_confirmed(&parse_addr("/ip4/10.0.0.5/tcp/1634"));
+        assert!(!manager.has_confirmed_reachability());
+    }
+
+    #[test]
+    fn test_external_addr_expiry_clears_verified_signal() {
+        // A node whose only public path is a (UPnP) mapping must stop
+        // reporting reachability once that mapping expires.
+        let local = Arc::new(LocalCapabilities::new());
+        local.on_new_listen_addr(parse_addr("/ip4/192.168.1.1/tcp/1634"));
+        let manager = LocalAddressManager::new(local, vec![]);
+
+        let mapped = parse_addr("/ip4/203.0.113.7/tcp/1634");
+        manager.on_external_addr_confirmed(&mapped);
+        assert!(manager.is_reachable());
+
+        manager.on_external_addr_expired(&mapped);
+        assert!(!manager.has_confirmed_reachability());
+        assert!(!manager.is_reachable());
+    }
+
+    #[test]
+    fn test_observed_signal_survives_external_addr_expiry() {
+        // The weak observed signal is sticky and independent of the reversible
+        // verified-address set.
+        let manager = create_manager(vec![]);
+        manager.on_observed_addr(&parse_addr("/ip4/91.189.35.149/tcp/1634"));
+        let mapped = parse_addr("/ip4/203.0.113.7/tcp/1634");
+        manager.on_external_addr_confirmed(&mapped);
+        manager.on_external_addr_expired(&mapped);
+        // Observed signal keeps us public.
+        assert!(manager.has_confirmed_reachability());
     }
 
     #[test]
     fn test_observed_private_address_ignored() {
         let manager = create_manager(vec![]);
 
-        // Private address shouldn't enable public connectivity
+        // Private address shouldn't enable reachability
         let private_observed = parse_addr("/ip4/192.168.1.100/tcp/1634");
         manager.on_observed_addr(&private_observed);
 
-        assert!(!manager.has_public_addresses());
-        assert!(!manager.has_confirmed_public_connectivity());
+        assert!(!manager.is_reachable());
+        assert!(!manager.has_confirmed_reachability());
     }
 
     #[test]
@@ -375,8 +475,8 @@ mod tests {
             parse_addr(&format!("/ip4/91.189.35.149/tcp/1634/p2p/{}", peer_id));
         manager.on_observed_addr(&observed_with_peer);
 
-        assert!(manager.has_public_addresses());
-        assert!(manager.has_confirmed_public_connectivity());
+        assert!(manager.is_reachable());
+        assert!(manager.has_confirmed_reachability());
     }
 
     #[test]
@@ -388,8 +488,8 @@ mod tests {
         manager.on_observed_addr(&observed);
         manager.on_observed_addr(&observed);
 
-        // Multiple observations still just mean we have public connectivity
-        assert!(manager.has_public_addresses());
-        assert!(manager.has_confirmed_public_connectivity());
+        // Multiple observations still just mean we have reachability
+        assert!(manager.is_reachable());
+        assert!(manager.has_confirmed_reachability());
     }
 }
