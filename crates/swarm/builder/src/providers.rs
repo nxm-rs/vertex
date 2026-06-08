@@ -9,6 +9,9 @@ use vertex_swarm_api::{
 use vertex_swarm_node::ClientHandle;
 use vertex_swarm_topology::TopologyHandle;
 
+/// Number of closest peers to try when pushing a chunk before giving up.
+const PUSH_CANDIDATE_COUNT: usize = 5;
+
 /// Chunk provider using ClientHandle for network retrieval.
 #[derive(Clone)]
 pub struct NetworkChunkProvider<I: SwarmIdentity> {
@@ -74,19 +77,54 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
     }
 }
 
+impl<I: SwarmIdentity> NetworkChunkProvider<I> {
+    /// Push `chunk` to the storer peers closest to its address, returning the
+    /// first receipt.
+    ///
+    /// Walks the closest candidates in order and returns the first storer that
+    /// accepts the chunk. The client handle correlates a push response to its
+    /// request by chunk address alone, so the candidates are tried sequentially
+    /// rather than raced.
+    async fn push_to_closest(&self, chunk: StampedChunk) -> SwarmResult<PushReceipt> {
+        let address = *chunk.address();
+        let closest = self.topology.closest_to(&address, PUSH_CANDIDATE_COUNT);
+
+        if closest.is_empty() {
+            return Err(SwarmError::NoStorer {
+                chunk_address: address,
+            });
+        }
+
+        let mut last_error = None;
+        for peer in closest {
+            match self.client_handle.push_chunk(peer, chunk.clone()).await {
+                Ok(receipt) => return Ok(receipt),
+                Err(e) => last_error = Some(SwarmError::network_msg(e.to_string())),
+            }
+        }
+
+        Err(last_error.unwrap_or(SwarmError::NoStorer {
+            chunk_address: address,
+        }))
+    }
+}
+
 #[async_trait]
 impl<I: SwarmIdentity> SwarmChunkSender for NetworkChunkProvider<I> {
-    async fn send_chunk_unchecked(&self, _chunk: StampedChunk) -> SwarmResult<PushReceipt> {
-        // PushSync forwarding is wired up alongside the client send path; until
-        // that lands the upload endpoint reports the capability as unavailable.
-        Err(SwarmError::internal_msg(
-            "chunk upload is not yet supported",
-        ))
+    async fn send_chunk_unchecked(&self, chunk: StampedChunk) -> SwarmResult<PushReceipt> {
+        self.push_to_closest(chunk).await
     }
 
-    async fn send_chunk(&self, _chunk: StampedChunk) -> SwarmResult<PushReceipt> {
-        Err(SwarmError::internal_msg(
-            "chunk upload is not yet supported",
-        ))
+    async fn send_chunk(&self, chunk: StampedChunk) -> SwarmResult<PushReceipt> {
+        let address = *chunk.address();
+        chunk
+            .stamp()
+            .recover_signer(&address)
+            .map_err(|err| SwarmError::InvalidSignature {
+                chunk_address: address,
+                reason: err.to_string(),
+            })?;
+
+        self.push_to_closest(chunk).await
     }
 }

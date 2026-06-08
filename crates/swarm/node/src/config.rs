@@ -15,7 +15,7 @@ use vertex_swarm_spec::Spec;
 
 use vertex_swarm_api::ConfigError;
 
-use crate::args::{NetworkArgs, NetworkConfig, ProtocolArgs};
+use crate::args::{NetworkArgs, NetworkConfig, ProtocolArgs, RetrievalArgs};
 
 /// Swarm protocol configuration (serializable Args layer).
 ///
@@ -29,6 +29,7 @@ pub struct ProtocolConfig {
     pub identity: IdentityArgs,
     pub network: NetworkArgs,
     pub bandwidth: BandwidthArgs,
+    pub retrieval: RetrievalArgs,
     pub localstore: LocalStoreArgs,
     pub redistribution: RedistributionArgs,
 }
@@ -58,6 +59,11 @@ impl ProtocolConfig {
     pub fn storage_config(&self) -> StorageConfig {
         self.redistribution.storage_config()
     }
+
+    /// Download-side chunk verification arguments.
+    pub fn retrieval(&self) -> &RetrievalArgs {
+        &self.retrieval
+    }
 }
 
 impl ProtocolConfig {
@@ -74,6 +80,7 @@ impl NodeProtocolConfig for ProtocolConfig {
         self.identity = args.identity.clone();
         self.network = args.network.clone();
         self.bandwidth = args.bandwidth.clone();
+        self.retrieval = args.retrieval.clone();
         self.localstore = args.localstore.clone();
         self.redistribution = args.redistribution.clone();
     }
