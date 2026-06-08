@@ -2,11 +2,13 @@
 
 use hex::FromHex;
 use tonic::{Request, Response, Status};
-use vertex_swarm_api::{ChunkAddress, SwarmChunkProvider};
+use vertex_swarm_api::{
+    AnyChunk, ChunkAddress, ContentChunk, SingleOwnerChunk, SwarmChunkProvider, SwarmChunkSender,
+};
 
 use crate::proto::chunk::{
-    HasChunkRequest, HasChunkResponse, RetrieveChunkRequest, RetrieveChunkResponse,
-    chunk_server::Chunk,
+    ChunkType, HasChunkRequest, HasChunkResponse, RetrieveChunkRequest, RetrieveChunkResponse,
+    UploadChunkRequest, UploadChunkResponse, chunk_server::Chunk,
 };
 
 /// Chunk service implementation.
@@ -35,8 +37,44 @@ fn parse_chunk_address(hex: &str) -> Result<ChunkAddress, Status> {
     Ok(ChunkAddress::new(bytes))
 }
 
+/// Reconstruct an `AnyChunk` from an upload request payload.
+///
+/// The `data` field is interpreted according to `chunk_type`: a content chunk
+/// carries the BMT body, a single-owner chunk carries the full wire encoding.
+/// The reconstructed chunk is verified against the supplied address.
+#[allow(clippy::result_large_err)]
+fn reconstruct_chunk(req: &UploadChunkRequest) -> Result<AnyChunk, Status> {
+    let address = parse_chunk_address(&req.address)?;
+
+    let chunk_type = ChunkType::try_from(req.chunk_type)
+        .map_err(|_| Status::invalid_argument(format!("Unknown chunk type: {}", req.chunk_type)))?;
+
+    let chunk = match chunk_type {
+        ChunkType::Content => {
+            // Build from data so the BMT hash is recomputed rather than trusted,
+            // letting the verify step below catch an address that lies about the
+            // payload.
+            let content = ContentChunk::new(req.data.clone())
+                .map_err(|e| Status::invalid_argument(format!("Invalid content chunk: {}", e)))?;
+            AnyChunk::Content(content)
+        }
+        ChunkType::SingleOwner => {
+            let soc = SingleOwnerChunk::try_from(req.data.as_slice()).map_err(|e| {
+                Status::invalid_argument(format!("Invalid single-owner chunk: {}", e))
+            })?;
+            AnyChunk::SingleOwner(soc)
+        }
+    };
+
+    chunk.verify(&address).map_err(|e| {
+        Status::invalid_argument(format!("Chunk address does not match payload: {}", e))
+    })?;
+
+    Ok(chunk)
+}
+
 #[tonic::async_trait]
-impl<P: SwarmChunkProvider> Chunk for ChunkService<P> {
+impl<P: SwarmChunkProvider + SwarmChunkSender> Chunk for ChunkService<P> {
     async fn retrieve_chunk(
         &self,
         request: Request<RetrieveChunkRequest>,
@@ -64,5 +102,90 @@ impl<P: SwarmChunkProvider> Chunk for ChunkService<P> {
 
         let exists = self.provider.has_chunk(&address);
         Ok(Response::new(HasChunkResponse { exists }))
+    }
+
+    /// Upload a pre-stamped chunk to the network.
+    ///
+    /// The request carries the postage stamp in `stamp`; it is threaded to the
+    /// storer once `SwarmChunkSender` accepts the stamp alongside the chunk.
+    async fn upload_chunk(
+        &self,
+        request: Request<UploadChunkRequest>,
+    ) -> Result<Response<UploadChunkResponse>, Status> {
+        let req = request.into_inner();
+        let chunk = reconstruct_chunk(&req)?;
+
+        // Pre-stamped uploads are trusted by default; opt in to validation.
+        let receipt = if req.validate {
+            self.provider.send_chunk(chunk).await
+        } else {
+            self.provider.send_chunk_unchecked(chunk).await
+        }
+        .map_err(|e| Status::internal(format!("Chunk upload failed: {}", e)))?;
+
+        Ok(Response::new(UploadChunkResponse {
+            storer: receipt.storer.to_string(),
+        }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use vertex_swarm_api::Chunk as _;
+
+    use super::*;
+
+    fn content_request(data: Vec<u8>, address: &ChunkAddress) -> UploadChunkRequest {
+        UploadChunkRequest {
+            data,
+            stamp: vec![0u8; 113],
+            address: hex::encode(address.as_bytes()),
+            chunk_type: ChunkType::Content as i32,
+            validate: false,
+        }
+    }
+
+    #[test]
+    fn reconstruct_content_chunk_roundtrips() {
+        let data = b"reconstruct me".to_vec();
+        let original: ContentChunk = ContentChunk::new(data.clone()).unwrap();
+        let address = *original.address();
+
+        let req = content_request(data, &address);
+        let chunk = reconstruct_chunk(&req).expect("valid content chunk");
+
+        assert_eq!(chunk.address(), &address);
+        assert!(matches!(chunk, AnyChunk::Content(_)));
+    }
+
+    #[test]
+    fn reconstruct_rejects_malformed_address() {
+        let data = b"any".to_vec();
+        let mut req = content_request(data, &ChunkAddress::default());
+        req.address = "not-hex".to_string();
+
+        let err = reconstruct_chunk(&req).expect_err("malformed address must fail");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn reconstruct_rejects_address_mismatch() {
+        let data = b"payload".to_vec();
+        // Address that does not match the BMT hash of the payload.
+        let wrong = ChunkAddress::new([0xab; 32]);
+
+        let req = content_request(data, &wrong);
+        let err = reconstruct_chunk(&req).expect_err("address mismatch must fail");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn reconstruct_rejects_unknown_chunk_type() {
+        let data = b"payload".to_vec();
+        let mut req = content_request(data, &ChunkAddress::default());
+        req.chunk_type = 99;
+
+        let err = reconstruct_chunk(&req).expect_err("unknown chunk type must fail");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
     }
 }

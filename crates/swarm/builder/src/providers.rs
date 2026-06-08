@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use nectar_primitives::SwarmAddress;
 use vertex_swarm_api::{
-    ChunkAddress, ChunkRetrievalResult, SwarmChunkProvider, SwarmError, SwarmIdentity, SwarmResult,
-    SwarmTopologyRouting,
+    AnyChunk, ChunkAddress, ChunkRetrievalResult, ChunkSendReceipt, SwarmChunkProvider,
+    SwarmChunkSender, SwarmError, SwarmIdentity, SwarmResult, SwarmTopologyRouting,
 };
 use vertex_swarm_node::ClientHandle;
 use vertex_swarm_topology::TopologyHandle;
@@ -72,5 +72,22 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
     fn has_chunk(&self, _address: &ChunkAddress) -> bool {
         // Client nodes don't have local storage
         false
+    }
+}
+
+#[async_trait]
+impl<I: SwarmIdentity> SwarmChunkSender for NetworkChunkProvider<I> {
+    async fn send_chunk_unchecked(&self, _chunk: AnyChunk) -> SwarmResult<ChunkSendReceipt> {
+        // PushSync forwarding is wired up alongside the client send path; until
+        // that lands the upload endpoint reports the capability as unavailable.
+        Err(SwarmError::internal_msg(
+            "chunk upload is not yet supported",
+        ))
+    }
+
+    async fn send_chunk(&self, _chunk: AnyChunk) -> SwarmResult<ChunkSendReceipt> {
+        Err(SwarmError::internal_msg(
+            "chunk upload is not yet supported",
+        ))
     }
 }
