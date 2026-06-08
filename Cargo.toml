@@ -212,6 +212,11 @@ alloy-signer = { version = "2.0" }
 alloy-signer-local = { version = "2.0", features = ["eip712", "keystore"] }
 alloy-sol-types = { version = "1.6" }
 alloy-chains = { version = "0.2", default-features = false }
+# On-chain interaction (RPC client + typed contract calls). Native-only; gated
+# behind per-crate `chain` features so the default and wasm dependency cones do
+# not pull an Ethereum RPC stack.
+alloy-provider = { version = "2.0" }
+alloy-contract = { version = "2.0" }
 
 ## tracing & telemetry
 tracing = "0.1"

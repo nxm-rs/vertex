@@ -41,6 +41,9 @@
 
 pub mod cheque;
 
+#[cfg(feature = "chain")]
+pub mod chain;
+
 pub use cheque::{Cheque, ChequeExt, SignedCheque};
 
 // Re-export commonly used types
