@@ -325,6 +325,11 @@ rand = "0.9"
 rand_08 = { package = "rand", version = "0.8" }
 rustc-hash = { version = "2.1", default-features = false }
 serde = { version = "1.0", default-features = false }
+serde_json = { version = "1.0", default-features = false, features = [
+    "alloc",
+    "raw_value",
+] }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 postcard = { version = "1", features = ["alloc"] }
 zstd = "0.13"
 toml = "0.8"

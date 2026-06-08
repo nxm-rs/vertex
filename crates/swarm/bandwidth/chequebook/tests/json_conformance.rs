@@ -63,7 +63,7 @@ fn build(v: &Vector) -> SignedCheque {
 fn encode_matches_reference_bytes() {
     for v in vectors() {
         let signed = build(&v);
-        let encoded = signed.to_json();
+        let encoded = signed.to_json().unwrap();
         assert_eq!(
             core::str::from_utf8(&encoded).unwrap(),
             v.json,
@@ -88,7 +88,7 @@ fn decode_reference_bytes() {
 fn round_trip_through_wire_bytes() {
     for v in vectors() {
         let signed = build(&v);
-        let bytes = signed.to_json();
+        let bytes = signed.to_json().unwrap();
         let back = SignedCheque::from_json(&bytes).unwrap();
         assert_eq!(signed, back);
     }

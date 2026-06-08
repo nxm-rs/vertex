@@ -54,7 +54,7 @@ Primitives and layer-2 constructs (chunks, addresses, BMT, manifests, feeds, pos
 
 - Do not import `libp2p` in `api`, `spec`, `forks`, `primitives`, `bandwidth/*`, or `localstore`. These are the libp2p-free layer.
 - Do not use `underlay` in field names, error messages, or docs. The right word is `multiaddrs`.
-- Do not add `serde_json` to a re-enabled crate without a workspace conversation. Several siblings are disabled for exactly that reason.
+- Do not add `serde_json` to a re-enabled crate without a workspace conversation. Several siblings are disabled for exactly that reason. The one settled exception is wire equivalence: a fixed-shape JSON object that must stay byte-identical to the live network (the swap cheque in `bandwidth/chequebook`) may use `serde_json` over a fixed-order wire struct. Tolerate JSON only for that, never for an internal or public API surface.
 - Do not write architectural notes about the reference implementation inside crate-level rustdoc. If a comparison helps a reviewer, keep it short and factual, and never imply the reference is canonical.
 - Do not store `Arc<Identity>` clones in hot per-message paths. `Identity` is cheap to clone but the indirection compounds.
 

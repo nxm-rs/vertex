@@ -31,11 +31,12 @@
 //! # Wire format
 //!
 //! A [`SignedCheque`] travels on the swap protocol as a JSON object embedded in
-//! a protobuf `bytes` field. The encoding is hand-rolled rather than driven by a
-//! general JSON library: the object shape is fixed and must stay byte-identical
-//! to the live network so peers interoperate. The keys are PascalCase, the
-//! addresses are lowercase `0x`-hex, `CumulativePayout` is a bare decimal JSON
-//! number, and `Signature` is standard base64. See [`cheque`] for the codec and
+//! a protobuf `bytes` field. JSON is tolerated here only because the object
+//! shape is fixed and must stay byte-identical to the live network so peers
+//! interoperate. The codec is driven by `serde_json` over a fixed-order wire
+//! struct: the keys are PascalCase, the addresses are lowercase `0x`-hex,
+//! `CumulativePayout` is a bare decimal JSON number spanning the full 256-bit
+//! range, and `Signature` is standard base64. See [`cheque`] for the codec and
 //! the conformance vectors under `tests/` for the pinned bytes.
 
 pub mod cheque;
@@ -61,6 +62,10 @@ pub enum ChequeError {
     /// The JSON object was not well-formed for a signed cheque.
     #[error("malformed cheque json: {0}")]
     MalformedJson(&'static str),
+
+    /// The cheque could not be encoded to wire JSON.
+    #[error("failed to encode cheque json: {0}")]
+    Encode(&'static str),
 
     /// A field held a value the codec could not parse.
     #[error("invalid cheque field {field}: {reason}")]

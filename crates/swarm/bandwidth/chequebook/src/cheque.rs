@@ -18,7 +18,11 @@
 
 use alloy_primitives::{Address, B256, Signature, U256, hex};
 use alloy_sol_types::{Eip712Domain, SolStruct, eip712_domain};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use bytes::Bytes;
+use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use vertex_swarm_spec::SwarmSpec;
 
 use crate::ChequeError;
@@ -139,46 +143,47 @@ impl SignedCheque {
     /// The output is byte-identical to the live network encoding: PascalCase
     /// keys in declaration order, lowercase `0x`-hex addresses, a bare decimal
     /// JSON number for the payout, and standard base64 for the signature.
-    // BEE-COMPAT(TBD): cheque rides the swap wire as JSON inside a protobuf
-    // bytes field. The shape below mirrors the reference encoder exactly so
-    // peers interoperate; retire once the swap payload moves to a binary codec.
     #[must_use = "serialization result should be checked"]
-    pub fn to_json(&self) -> Bytes {
-        let mut out = String::with_capacity(256);
-        out.push_str("{\"Chequebook\":\"0x");
-        out.push_str(&hex::encode(self.cheque.chequebook));
-        out.push_str("\",\"Beneficiary\":\"0x");
-        out.push_str(&hex::encode(self.cheque.beneficiary));
-        out.push_str("\",\"CumulativePayout\":");
-        // U256 Display is the canonical base-10 representation with no quotes,
-        // matching a JSON number for the full 256-bit range.
-        out.push_str(&self.cheque.cumulativePayout.to_string());
-        out.push_str(",\"Signature\":\"");
-        out.push_str(&base64::encode(&self.signature));
-        out.push_str("\"}");
-        Bytes::from(out.into_bytes())
+    pub fn to_json(&self) -> Result<Bytes, ChequeError> {
+        let payout = self.cheque.cumulativePayout.to_string();
+        // `CumulativePayout` is a bare JSON number spanning the full 256-bit
+        // range, so it cannot ride in a `u64`. Inject the decimal as a raw
+        // token; the decimal string from `U256::to_string` is valid JSON.
+        let payout = RawValue::from_string(payout)
+            .map_err(|_| ChequeError::Encode("payout is not a valid json number"))?;
+
+        let wire = WireCheque {
+            chequebook: lower_hex(self.cheque.chequebook),
+            beneficiary: lower_hex(self.cheque.beneficiary),
+            cumulative_payout: payout,
+            signature: BASE64.encode(&self.signature),
+        };
+
+        let bytes = serde_json::to_vec(&wire).map_err(|_| ChequeError::Encode("serialize"))?;
+        Ok(Bytes::from(bytes))
     }
 
     /// Deserialize from JSON bytes produced by [`Self::to_json`] or a conformant
     /// peer.
     ///
-    /// The parser is deliberately strict and shape-specific: it extracts the
-    /// four known fields by key and rejects anything it does not recognise. It
-    /// is not a general JSON parser.
+    /// Parsing is strict about the wire shape: the payout must be a bare JSON
+    /// number, the addresses must be `0x`-hex, and the signature must be
+    /// standard base64.
     #[must_use = "deserialization result should be checked"]
     pub fn from_json(data: &[u8]) -> Result<Self, ChequeError> {
-        let text = core::str::from_utf8(data)
-            .map_err(|_| ChequeError::MalformedJson("not valid utf-8"))?;
+        let wire: WireCheque = serde_json::from_slice(data)
+            .map_err(|_| ChequeError::MalformedJson("not a signed cheque object"))?;
 
-        let chequebook = parse_address(extract_string(text, "Chequebook")?, "Chequebook")?;
-        let beneficiary = parse_address(extract_string(text, "Beneficiary")?, "Beneficiary")?;
-        let cumulative_payout = parse_payout(extract_number(text, "CumulativePayout")?)?;
-        let signature = base64::decode(extract_string(text, "Signature")?).ok_or(
-            ChequeError::InvalidField {
-                field: "Signature",
-                reason: "invalid base64",
-            },
-        )?;
+        let chequebook = parse_address(&wire.chequebook, "Chequebook")?;
+        let beneficiary = parse_address(&wire.beneficiary, "Beneficiary")?;
+        let cumulative_payout = parse_payout(wire.cumulative_payout.get())?;
+        let signature =
+            BASE64
+                .decode(wire.signature.as_bytes())
+                .map_err(|_| ChequeError::InvalidField {
+                    field: "Signature",
+                    reason: "invalid base64",
+                })?;
 
         Ok(Self {
             cheque: Cheque {
@@ -191,63 +196,34 @@ impl SignedCheque {
     }
 }
 
-/// Locate `"<key>":` and return the byte offset of the first value byte after
-/// the colon, skipping insignificant whitespace.
-fn value_start(text: &str, key: &'static str) -> Result<usize, ChequeError> {
-    let needle = {
-        let mut s = String::with_capacity(key.len() + 3);
-        s.push('"');
-        s.push_str(key);
-        s.push_str("\":");
-        s
-    };
-    let key_pos = text.find(&needle).ok_or(ChequeError::InvalidField {
-        field: key,
-        reason: "missing field",
-    })?;
-    let after = key_pos + needle.len();
-    let rest = &text[after..];
-    let trimmed = rest.trim_start();
-    Ok(after + (rest.len() - trimmed.len()))
+/// The on-wire JSON shape of a signed cheque.
+///
+/// The field order and PascalCase rename pin the byte layout produced on the
+/// swap wire. `serde_json` preserves struct field order, so the encoder output
+/// matches the live network exactly. `CumulativePayout` is a [`RawValue`] so it
+/// stays a bare JSON number across the full 256-bit range; a quoted string is
+/// rejected on decode by [`parse_payout`].
+#[derive(Serialize, Deserialize)]
+struct WireCheque {
+    #[serde(rename = "Chequebook")]
+    chequebook: String,
+    #[serde(rename = "Beneficiary")]
+    beneficiary: String,
+    #[serde(rename = "CumulativePayout")]
+    cumulative_payout: Box<RawValue>,
+    #[serde(rename = "Signature")]
+    signature: String,
 }
 
-/// Extract the contents of a JSON string value for the given key (without the
-/// surrounding quotes). The known string fields contain no escape sequences.
-fn extract_string<'a>(text: &'a str, key: &'static str) -> Result<&'a str, ChequeError> {
-    let start = value_start(text, key)?;
-    let rest = &text[start..];
-    let body = rest.strip_prefix('"').ok_or(ChequeError::InvalidField {
-        field: key,
-        reason: "expected string value",
-    })?;
-    let end = body.find('"').ok_or(ChequeError::InvalidField {
-        field: key,
-        reason: "unterminated string",
-    })?;
-    let value = &body[..end];
-    if value.contains('\\') {
-        return Err(ChequeError::InvalidField {
-            field: key,
-            reason: "unexpected escape sequence",
-        });
-    }
-    Ok(value)
-}
-
-/// Extract a bare JSON number token for the given key.
-fn extract_number<'a>(text: &'a str, key: &'static str) -> Result<&'a str, ChequeError> {
-    let start = value_start(text, key)?;
-    let rest = &text[start..];
-    let end = rest
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(rest.len());
-    if end == 0 {
-        return Err(ChequeError::InvalidField {
-            field: key,
-            reason: "expected decimal number",
-        });
-    }
-    Ok(&rest[..end])
+/// Format an address as lowercase `0x`-hex, matching the swap wire encoding.
+///
+/// `Address`'s `Display` emits an EIP-55 mixed-case checksum, so the lowercase
+/// form is produced explicitly here.
+fn lower_hex(address: Address) -> String {
+    let mut s = String::with_capacity(42);
+    s.push_str("0x");
+    s.push_str(&hex::encode(address));
+    s
 }
 
 fn parse_address(value: &str, field: &'static str) -> Result<Address, ChequeError> {
@@ -259,105 +235,24 @@ fn parse_address(value: &str, field: &'static str) -> Result<Address, ChequeErro
         })
 }
 
+/// Parse the `CumulativePayout` raw JSON token as a `U256`.
+///
+/// The token must be a bare decimal number. A quoted string, a sign, a decimal
+/// point, or an exponent all fail here, which keeps the decoder strict about the
+/// wire shape.
 fn parse_payout(value: &str) -> Result<U256, ChequeError> {
+    if !value.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(ChequeError::InvalidField {
+            field: "CumulativePayout",
+            reason: "expected a bare decimal number",
+        });
+    }
     value
         .parse::<U256>()
         .map_err(|_| ChequeError::InvalidField {
             field: "CumulativePayout",
-            reason: "value out of range or non-decimal",
+            reason: "value out of range",
         })
-}
-
-/// Minimal standard-alphabet base64 (`+/`, `=` padding), matching the encoding
-/// used on the swap wire. Kept local to avoid a dependency in the wasm cone.
-mod base64 {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    /// Map a 6-bit value to its alphabet character. The mask keeps the index in
-    /// range, so the lookup is always `Some`.
-    fn symbol(sextet: u8) -> char {
-        ALPHABET
-            .get((sextet & 0x3f) as usize)
-            .copied()
-            .unwrap_or(b'A') as char
-    }
-
-    pub(super) fn encode(input: &[u8]) -> String {
-        let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
-        for chunk in input.chunks(3) {
-            let b0 = chunk.first().copied().unwrap_or(0);
-            let b1 = chunk.get(1).copied().unwrap_or(0);
-            let b2 = chunk.get(2).copied().unwrap_or(0);
-
-            out.push(symbol(b0 >> 2));
-            out.push(symbol((b0 << 4) | (b1 >> 4)));
-            if chunk.len() > 1 {
-                out.push(symbol((b1 << 2) | (b2 >> 6)));
-            } else {
-                out.push('=');
-            }
-            if chunk.len() > 2 {
-                out.push(symbol(b2));
-            } else {
-                out.push('=');
-            }
-        }
-        out
-    }
-
-    fn decode_char(c: u8) -> Option<u8> {
-        match c {
-            b'A'..=b'Z' => Some(c - b'A'),
-            b'a'..=b'z' => Some(c - b'a' + 26),
-            b'0'..=b'9' => Some(c - b'0' + 52),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
-        }
-    }
-
-    pub(super) fn decode(input: &str) -> Option<Vec<u8>> {
-        let bytes = input.as_bytes();
-        if !bytes.len().is_multiple_of(4) {
-            return None;
-        }
-        if bytes.is_empty() {
-            return Some(Vec::new());
-        }
-        let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
-        for chunk in bytes.chunks_exact(4) {
-            let pad = chunk.iter().rev().take_while(|&&c| c == b'=').count();
-            if pad > 2 {
-                return None;
-            }
-            let mut vals = [0u8; 4];
-            for (slot, &c) in vals.iter_mut().zip(chunk.iter()) {
-                if c == b'=' {
-                    // Padding is consumed by `pad`; a `=` before the padding run
-                    // means the slot was already covered, so leave it zero.
-                    continue;
-                }
-                *slot = decode_char(c)?;
-            }
-            // A `=` anywhere but the trailing run is invalid base64.
-            if chunk.iter().take(4 - pad).any(|&c| c == b'=') {
-                return None;
-            }
-            let [v0, v1, v2, v3] = vals;
-            let n = (u32::from(v0) << 18)
-                | (u32::from(v1) << 12)
-                | (u32::from(v2) << 6)
-                | u32::from(v3);
-            out.push((n >> 16) as u8);
-            if pad < 2 {
-                out.push((n >> 8) as u8);
-            }
-            if pad < 1 {
-                out.push(n as u8);
-            }
-        }
-        Some(out)
-    }
 }
 
 #[cfg(test)]
@@ -444,7 +339,7 @@ mod tests {
         let signature = Bytes::from(vec![0u8; 65]);
         let signed = SignedCheque::new(cheque, signature);
 
-        let json = signed.to_json();
+        let json = signed.to_json().unwrap();
         let decoded = SignedCheque::from_json(&json).unwrap();
         assert_eq!(signed, decoded);
     }
@@ -455,7 +350,7 @@ mod tests {
         // the signature is base64. This is the live-network shape; the codec is
         // strict about it for interoperability.
         let signed = SignedCheque::new(test_cheque(), Bytes::from(vec![0u8; 65]));
-        let json = String::from_utf8(signed.to_json().to_vec()).unwrap();
+        let json = String::from_utf8(signed.to_json().unwrap().to_vec()).unwrap();
         assert!(json.contains("\"CumulativePayout\":1000000"));
         assert!(json.contains("\"Chequebook\":\"0x"));
         assert!(json.contains("\"Beneficiary\":\"0x"));
