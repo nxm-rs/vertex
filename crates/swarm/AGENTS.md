@@ -9,7 +9,7 @@ Root-level rules in `/AGENTS.md` apply here too. The notes below are the area-sp
 - `primitives`, `forks`, `spec`, `identity`: pure data and configuration. `nectar-primitives` is the canonical source for chunk and address types.
 - `peers/peer`: the `SwarmPeer` record with the EIP-191 handshake signature (distinct from postage EIP-191 signing, which lives upstream in `nectar-postage`). See the follow-up tracked at `nxm-rs/vertex` for extracting the sign-data primitive to nectar.
 - `peers/peer-manager`, `peers/peer-score`: lifecycle, persistence, scoring.
-- `bandwidth/{core,pricing,pseudosettle}`: per-peer balances in Accounting Units (AU). `swap` and `chequebook` are workspace-disabled.
+- `bandwidth/{core,pricing,pseudosettle}`: per-peer balances in Accounting Units (AU). `chequebook` holds cheque types, signing, and the on-chain backend (the latter behind the default-off `chain` feature so the wasm cone stays lean). `swap` is workspace-disabled.
 - `api`: the trait chain `SwarmPrimitives` to `SwarmNetworkTypes` to `SwarmClientTypes` to `SwarmStorerTypes`. Strictly libp2p-free with the documented `Multiaddr` exception.
 - `builder`: layered builders that produce `BuiltBootnode`, `BuiltClient`, `BuiltStorer`.
 - `node`: composes the libp2p `NetworkBehaviour` and exposes `BootNode`, `ClientNode`, `StorerNode`. This is where libp2p shows up.

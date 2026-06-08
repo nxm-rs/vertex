@@ -214,8 +214,14 @@ alloy-sol-types = { version = "1.6" }
 alloy-chains = { version = "0.2", default-features = false }
 # On-chain interaction (RPC client + typed contract calls). Native-only; gated
 # behind per-crate `chain` features so the default and wasm dependency cones do
-# not pull an Ethereum RPC stack.
-alloy-provider = { version = "2.0" }
+# not pull an Ethereum RPC stack. The rustls TLS path drags in a platform
+# root-certs crate under a license outside the workspace allow-list, so the HTTP
+# transport uses native-tls (system OpenSSL) instead. This is native-only, which
+# matches the `chain` feature never entering the wasm cone.
+alloy-provider = { version = "2.0", default-features = false, features = [
+    "reqwest",
+    "reqwest-native-tls",
+] }
 alloy-contract = { version = "2.0" }
 
 ## tracing & telemetry
