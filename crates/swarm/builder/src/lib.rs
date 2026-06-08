@@ -14,6 +14,7 @@ mod launch;
 mod node;
 mod providers;
 mod rpc;
+pub mod verify;
 
 // Traits
 pub use node::BuilderExt;
@@ -30,6 +31,7 @@ pub use handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};
 // Providers
 pub use providers::NetworkChunkProvider;
 pub use rpc::{BootnodeRpcProviders, ClientRpcProviders, StorerRpcProviders};
+pub use verify::{ChunkVerifyConfig, VerifyingChunkProvider};
 
 // Configs
 pub use config::{BootnodeConfig, ClientConfig, StorerConfig};
