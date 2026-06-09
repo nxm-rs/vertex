@@ -14,6 +14,7 @@ workspace = true
 [dependencies]
 # nectar
 nectar-contracts = { workspace = true }
+nectar-swarms = { workspace = true }
 
 # alloy
 alloy-chains = { workspace = true }

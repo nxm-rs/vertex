@@ -6,8 +6,9 @@
 //! fillers directly. What this crate adds is the small amount that alloy does not
 //! cover for a Swarm node:
 //!
-//! - [`ChainConfig`]: the contract address book plus the settlement chain, keyed
-//!   on [`alloy_chains::NamedChain`].
+//! - [`ChainConfig`]: the contract address book plus the settlement chain. The
+//!   network-to-chain mapping comes from [`nectar_swarms`], the addresses from
+//!   `nectar_contracts`.
 //! - [`ChainError`] / [`TxError`]: typed errors over alloy's transport and
 //!   pending-transaction errors, with `strum::IntoStaticStr` `reason` labels.
 //! - [`ProviderExt`]: an extension trait on `alloy_provider::Provider` for the

@@ -3,17 +3,18 @@
 //! extension trait is exercised against a live transport in the service crate;
 //! there is no provider to mock here.
 
-use alloy_chains::NamedChain;
+use alloy_chains::{Chain, NamedChain};
 use alloy_primitives::{Address, TxHash, U256};
 use alloy_rpc_types_eth::TransactionRequest;
+use nectar_swarms::{NamedSwarm, Swarm};
 
 use crate::{ChainError, TxError, TxRequest};
 
 #[test]
 fn chain_config_constructors_agree() {
     let mainnet = crate::ChainConfig::mainnet();
-    assert_eq!(mainnet.chain, NamedChain::Gnosis);
-    assert_eq!(u64::from(mainnet.chain), 100);
+    assert_eq!(mainnet.chain, Chain::from(NamedChain::Gnosis));
+    assert_eq!(mainnet.chain.id(), 100);
     assert_eq!(
         mainnet.chequebook_factory,
         nectar_contracts::mainnet::CHEQUEBOOK_FACTORY.address
@@ -24,8 +25,8 @@ fn chain_config_constructors_agree() {
     );
 
     let testnet = crate::ChainConfig::testnet();
-    assert_eq!(testnet.chain, NamedChain::Sepolia);
-    assert_eq!(u64::from(testnet.chain), 11155111);
+    assert_eq!(testnet.chain, Chain::from(NamedChain::Sepolia));
+    assert_eq!(testnet.chain.id(), 11155111);
     assert_eq!(
         testnet.price_oracle,
         nectar_contracts::testnet::STORAGE_PRICE_ORACLE.address
@@ -38,6 +39,31 @@ fn chain_config_constructors_agree() {
         mainnet.price_oracle,
     );
     assert_eq!(manual, mainnet);
+}
+
+#[test]
+fn chain_config_derives_chain_from_nectar_swarms() {
+    // The named constructors delegate to `for_swarm`, which sources the chain
+    // from `nectar_swarms` rather than hardcoding it here.
+    assert_eq!(
+        crate::ChainConfig::for_swarm(NamedSwarm::Mainnet),
+        Some(crate::ChainConfig::mainnet())
+    );
+    assert_eq!(
+        crate::ChainConfig::for_swarm(NamedSwarm::Mainnet).map(|c| c.chain),
+        Some(NamedSwarm::Mainnet.chain())
+    );
+
+    // Dev and custom networks have no canonical deployment.
+    assert_eq!(crate::ChainConfig::for_swarm(NamedSwarm::Dev), None);
+    assert_eq!(
+        crate::ChainConfig::from_swarm(Swarm::from_id(999_999)),
+        None
+    );
+    assert_eq!(
+        crate::ChainConfig::from_swarm(Swarm::from_named(NamedSwarm::Testnet)),
+        Some(crate::ChainConfig::testnet())
+    );
 }
 
 #[test]
