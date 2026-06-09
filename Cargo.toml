@@ -214,6 +214,9 @@ vertex-chain-api = { path = "crates/chain/api" }
 ## alloy
 alloy-eip2124 = { version = "0.2", default-features = false }
 alloy-primitives = { version = "1.6", default-features = false }
+alloy-network = { version = "2.0", default-features = false }
+alloy-provider = { version = "2.0", default-features = false }
+alloy-rpc-types-eth = { version = "2.0", default-features = false }
 alloy-signer = { version = "2.0" }
 alloy-signer-local = { version = "2.0", features = ["eip712", "keystore"] }
 alloy-sol-types = { version = "1.6" }

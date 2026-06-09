@@ -19,6 +19,7 @@ nectar-contracts = { workspace = true }
 # `k256` enables secp256k1 signature recovery, which the cheque codec needs to
 # recover the signer of a cheque without pulling a full signer crate. `serde`
 # enables the address and integer serde impls the wire codec derives.
+alloy-chains = { workspace = true }
 alloy-primitives = { workspace = true, features = ["k256", "serde"] }
 alloy-sol-types = { workspace = true }
 

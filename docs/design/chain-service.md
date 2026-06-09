@@ -1,59 +1,40 @@
 # Chain service
 
-The chain (Ethereum RPC access) is a node-wide service, not a capability owned by any single consumer. A storer reads the price oracle and plays redistribution rounds; the SWAP settlement service deploys and cashes chequebooks; a future staking flow talks to the stake registry. All of them want one shared view of the chain, one transaction sender that owns nonce ordering, and one place that decides whether the chain is even enabled.
+The chain (Ethereum RPC access) is a node-wide service, not a capability owned by any single consumer. A storer reads the price oracle and plays redistribution rounds; the SWAP settlement service deploys and cashes chequebooks; a future staking flow talks to the stake registry. All of them want one shared view of the chain and one transaction sender that owns nonce ordering.
 
-This note records how that service is structured and why. It supersedes the earlier approach in #181, which embedded an alloy-provider-backed chequebook backend inside the chequebook crate behind a cargo feature. That put the provider in the wrong place: chain access leaked into a settlement primitive, and the cone purity of a default light node depended on a feature flag staying off rather than on a crate boundary.
+This note records how that service is structured and why.
 
-## Goal
+## Build on alloy, do not wrap it
 
-A light node is the default node type, and a client node must be able to run on `wasm32-unknown-unknown`. The default and wasm builds must contain zero chain transport in their dependency cone: no `alloy-provider`, no `alloy-contract`, no `reqwest`, no native-tls, no tokio net features. A storer, by contrast, requires the chain. The structure has to satisfy both from the same workspace without a consumer opting into a feature to stay lean.
+Alloy already provides everything a chain consumer needs: an `alloy_provider::Provider` reads state, runs `eth_call`, queries logs, submits transactions, and confirms them, with its fillers handling nonce selection, gas estimation, and fee pricing. Vertex shares one provider rather than defining its own reader, sender, or receipt types over the top. Re-describing alloy's surface in a parallel trait hierarchy is duplication, not abstraction.
 
-## Two-crate split
+Alloy providers run on `wasm32-unknown-unknown` with the right transport, so a client node, including the wasm client, can use the same provider as a native node. The chain code stays wasm-compatible by careful feature selection: depend on `alloy-provider` with `default-features = false` so the `Provider` trait comes in without reqwest or native TLS, and let the consumer pick a transport. There is no separate "chain-free" cone to protect; there is one provider type, and the build that needs no chain simply holds no provider.
 
-The chain service is two crates.
+## What the chain crate adds
 
-`vertex-chain-api` (crate at `crates/chain/api/`) is the wasm-safe trait and data surface. It is traits and plain data only. It depends on `alloy-primitives`, `alloy-sol-types`, `nectar-contracts`, `async-trait`, `auto_impl`, `thiserror`, `strum`, `bytes`, and the pure cheque codec in `vertex-swarm-bandwidth-chequebook` for the `SignedCheque` type. It pulls no transport. Consumers and the node builder depend only on this crate.
+`vertex-chain-api` (crate at `crates/chain/api/`) is a thin layer over alloy. It holds only the parts alloy does not cover for a Swarm node, and nothing that alloy already does:
 
-`vertex-chain-service` (later PR, native-only) holds the `alloy-provider`-backed implementations of those traits: the reader over a real RPC transport, the transaction sender with nonce management and fee bumping, the chequebook backend over the `nectar_contracts` bindings, and the health probe. It is an optional dependency of `bin/vertex` and of the storer builder path, and of nothing else.
+- `ChainConfig`: the contract address book (chequebook factory, BZZ token, price oracle) plus the settlement chain, keyed on `alloy_chains::NamedChain`. Constructors read the canonical `nectar_contracts` deployment constants for mainnet (Gnosis) and testnet (Sepolia). The chain is a `NamedChain`, not a bare integer, so the EIP-155 id, the chain name, and helper-set membership all come from one type.
+- `ChainError` and `TxError`: typed errors that carry alloy's own `TransportError` and `PendingTransactionError` through `#[from]` rather than flattening them into strings, with `strum::IntoStaticStr` discriminants for `reason` metric labels.
+- `ProviderExt`: an extension trait on `alloy_provider::Provider<Ethereum>` with a blanket impl, adding the pending-transaction operations alloy has no built-in for: `resend` (rebuild a stuck transaction at the same nonce with a bumped fee) and `cancel` (replace it with a zero-value self-send). Recovery of transactions left pending across a restart is deliberately not here: a provider holds no record of what a previous run broadcast, so that is application-persisted state, and the owning component reconstructs the hashes and calls `resend` or `cancel` on each.
+- `TxRequest`: a newtype over `alloy_rpc_types_eth::TransactionRequest` that attaches a `&'static str` description for logs and metrics. It derefs to the inner request, so all of alloy's builder methods and fillers apply directly.
 
-## Cone purity by crate boundary, not by feature
-
-The provider lives in a separate crate that library code never names. Because nothing in the default or wasm cone has `vertex-chain-service` in its dependency graph, those builds cannot pull a provider in even by accident. There is no feature to forget to turn off. A library crate that needs chain access takes a `vertex-chain-api` trait object (`Arc<dyn ChainReader>`, `Arc<dyn TransactionSender>`, `Arc<dyn ChequebookChain>`) and never sees the implementation. The binary and the storer builder are the only places that select the concrete service and inject it.
-
-This is verified the usual way: `cargo build -p vertex-chain-api --target wasm32-unknown-unknown` builds, and `cargo tree` over the api crate shows no provider crates.
-
-## Trait surface
-
-`vertex-chain-api` defines, all object-safe via `#[async_trait]` so they inject as `Arc<dyn ...>`:
-
-- `ChainReader`: read-only access. Chain id, head block number, block timestamp, native balance, `eth_call`, and log queries.
-- `ChainHealth: ChainReader`: adds `is_synced(max_delay)` so a node can refuse time-sensitive on-chain games while the transport lags the network head.
-- `TransactionSender`: `send`, `confirm`, a default `send_and_confirm`, plus `resend`, `cancel`, and `recover_pending` for replacement and restart recovery.
-- `ChequebookChain`: the consumer-facing trait the SWAP settlement service injects. Balance and payout reads keyed by chequebook address, factory deploy, and the two cashout paths over a `SignedCheque`.
-
-Data types: `TxRequest` carries the caller's intent and gas bounds as typed fields (`gas_limit`, `min_gas_limit`, `tip_boost_percent`), not values smuggled through a context side channel; `TxReceipt` is a confirmed-transaction summary; `LogFilter` is a small transport-agnostic query; `ChainConfig` is the contract address book plus chain id, with constructors that read the canonical `nectar_contracts` deployment constants. Errors are `thiserror` enums (`ProviderError`, `TxError`, `ChainError`) with `strum::IntoStaticStr` so each variant maps to a metric `reason` label; `TxError` carries `ProviderError` through `#[from]`.
-
-`DisabledChain` is a pure zero-implementation of every trait that returns `ProviderError::Disabled`. A chain-off node injects it so consumers wired for the chain surface compile and run with a clear typed answer instead of a panic or an `Option` threaded through every call.
+A consumer that needs chain access takes a shared `alloy_provider::Provider` (and `ChainConfig` for the addresses) and calls it directly, using `ProviderExt` and `TxRequest` where they help. A node with no chain configured holds no provider.
 
 ## Chequebook stays a pure codec
 
-`vertex-swarm-bandwidth-chequebook` remains a pure, wasm-safe cheque codec: cheque types, EIP-712 signing-hash derivation, signer recovery, and the byte-exact wire JSON. It does not embed a provider. To keep it wasm-safe it takes the settlement chain id as a `u64` for EIP-712 domain construction rather than depending on `vertex-swarm-spec`, and it depends on `alloy-primitives` with the `k256` feature for signer recovery rather than on a full signer crate. The settlement service consumes `ChequebookChain` from `vertex-chain-api`; the codec and the service agree on the shared `SignedCheque` type.
+`vertex-swarm-bandwidth-chequebook` remains a pure, wasm-safe cheque codec: cheque types, EIP-712 signing-hash derivation, signer recovery, and the wire JSON. It does not embed a provider. The settlement chain is passed in as an `alloy_chains::NamedChain` for EIP-712 domain construction rather than depending on the network spec, so the codec names the chain rather than a magic number. It depends on `alloy-primitives` with the `k256` feature for signer recovery rather than on a full signer crate.
 
-## Node-type to component matrix
+The on-chain chequebook client (deploy, cashout, balance reads over the `nectar_contracts` bindings) is an implementation detail of the SWAP settlement service. It lives in a dedicated chequebook chain crate (`vertex-swarm-bandwidth-chequebook` chain client), not in the generic chain crate. The chain crate knows nothing about chequebook semantics.
+
+## Node-type to chain access
 
 | Node type | Chain access |
 |---|---|
-| Bootnode | None. `DisabledChain` or no chain consumer at all. |
-| Client, light (default) | None. Wasm cone stays provider-free. |
-| Client, wasm | None. Provider crates excluded by target. |
-| Storer | Required. `vertex-chain-service` injected by the storer builder. |
-| Client with SWAP, native | Chain enabled behind a binary-level feature; the binary selects the service. |
+| Bootnode | None. No provider. |
+| Client, light (default) | None. No provider. |
+| Client, wasm | Optional. Same alloy provider over a wasm-compatible transport when enabled. |
+| Storer | Required. A provider injected by the storer builder. |
+| Client with SWAP | Required. A provider injected for the settlement service. |
 
-Wire bytes are never gated by a cargo feature. The presence or absence of the chain service is a node-configuration choice realized through dependency selection and trait injection, not a protocol fork.
-
-## PR stack
-
-1. `vertex-chain-api`: the wasm-safe traits and data crate. This PR. Also makes `vertex-swarm-bandwidth-chequebook` genuinely wasm-safe (drops its spec dependency, wires the `getrandom` browser backend for the secp256k1 stack) so the api crate can depend on it without dragging a native cone into wasm.
-2. `vertex-chain-service`: the native-only provider-backed implementations.
-3. Builder and binary wiring: inject the service for the storer and for the native SWAP client; inject `DisabledChain` elsewhere.
-4. Settlement and redistribution consumers move onto the trait objects.
+The presence or absence of chain access is a node-configuration choice realized through whether a provider is constructed, not a protocol fork. Wire bytes are never gated by a cargo feature.

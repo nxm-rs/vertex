@@ -1,24 +1,24 @@
 //! Chain address configuration.
 //!
-//! [`ChainConfig`] is the address book a chain service needs: the chain id plus
-//! the contract addresses the node interacts with. It is pure data so it lives
-//! in the wasm-safe api crate; the service crate consumes it to build a
-//! provider.
+//! [`ChainConfig`] is the address book a chain consumer needs: the settlement
+//! chain plus the contract addresses the node interacts with. It is pure data.
+//! A consumer builds an `alloy_provider::Provider` from a transport and reads
+//! these addresses to target the contracts.
 //!
-//! Addresses are supplied explicitly through [`ChainConfig::from_deployments`].
-//! Convenience constructors derive them from the canonical `nectar_contracts`
-//! deployment constants so a consumer that already knows it is on mainnet or
-//! testnet does not restate the addresses. Deriving from a full network spec is
-//! left to the consumer so this crate stays free of the spec dependency.
+//! The chain is an [`alloy_chains::NamedChain`], not a bare integer, so the
+//! EIP-155 id, the chain's name, and its membership in helper sets all come from
+//! one canonical type rather than a magic number passed around the codebase.
+//! Addresses come from the canonical `nectar_contracts` deployment constants.
 
+use alloy_chains::NamedChain;
 use alloy_primitives::Address;
 use nectar_contracts::{ChequebookFactory, StoragePriceOracle, Token};
 
-/// Contract addresses and chain identity for a chain service.
+/// Contract addresses and the settlement chain for chain access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChainConfig {
-    /// EIP-155 chain id (100 for Gnosis mainnet, 11155111 for Sepolia testnet).
-    pub chain_id: u64,
+    /// The settlement chain (Gnosis for mainnet, Sepolia for testnet).
+    pub chain: NamedChain,
 
     /// Chequebook factory (SimpleSwapFactory) address.
     pub chequebook_factory: Address,
@@ -31,33 +31,33 @@ pub struct ChainConfig {
 }
 
 impl ChainConfig {
-    /// Build a config from an explicit chain id and contract addresses.
-    pub fn from_deployments(
-        chain_id: u64,
+    /// Build a config from a chain and explicit contract addresses.
+    pub fn new(
+        chain: NamedChain,
         chequebook_factory: Address,
         bzz_token: Address,
         price_oracle: Address,
     ) -> Self {
         Self {
-            chain_id,
+            chain,
             chequebook_factory,
             bzz_token,
             price_oracle,
         }
     }
 
-    /// Build a config from `nectar_contracts` deployment structs and a chain id.
+    /// Build a config from `nectar_contracts` deployment structs and a chain.
     ///
     /// Lets a consumer pass the canonical `mainnet::*` / `testnet::*` deployment
     /// constants directly rather than peeling out each `.address`.
-    pub fn from_deployment_structs(
-        chain_id: u64,
+    pub fn from_deployments(
+        chain: NamedChain,
         chequebook_factory: ChequebookFactory,
         bzz_token: Token,
         price_oracle: StoragePriceOracle,
     ) -> Self {
-        Self::from_deployments(
-            chain_id,
+        Self::new(
+            chain,
             chequebook_factory.address,
             bzz_token.address,
             price_oracle.address,
@@ -67,8 +67,8 @@ impl ChainConfig {
     /// Gnosis Chain mainnet addresses.
     pub fn mainnet() -> Self {
         use nectar_contracts::mainnet;
-        Self::from_deployment_structs(
-            100,
+        Self::from_deployments(
+            NamedChain::Gnosis,
             mainnet::CHEQUEBOOK_FACTORY,
             mainnet::BZZ_TOKEN,
             mainnet::STORAGE_PRICE_ORACLE,
@@ -78,8 +78,8 @@ impl ChainConfig {
     /// Sepolia testnet addresses.
     pub fn testnet() -> Self {
         use nectar_contracts::testnet;
-        Self::from_deployment_structs(
-            11155111,
+        Self::from_deployments(
+            NamedChain::Sepolia,
             testnet::CHEQUEBOOK_FACTORY,
             testnet::BZZ_TOKEN,
             testnet::STORAGE_PRICE_ORACLE,

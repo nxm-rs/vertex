@@ -1,68 +1,37 @@
-//! Wasm-safe chain (Ethereum RPC) trait surface for Vertex.
+//! Chain (Ethereum RPC) configuration, errors, and provider extensions.
 //!
-//! This crate defines *what* a chain service offers, never *how* it talks to a
-//! node. It is traits and plain data only: no `alloy-provider`, no
-//! `alloy-contract`, no transport, no tokio net features. That keeps it inside
-//! the wasm cone so a light client (the default node, including
-//! `wasm32-unknown-unknown`) can depend on the chain trait surface without
-//! pulling a native RPC stack.
+//! This crate is a thin layer over [`alloy`]. It does not wrap or reimplement an
+//! alloy provider: reads, calls, balances, log queries, transaction submission,
+//! and confirmation are all done by an `alloy_provider::Provider` with its
+//! fillers directly. What this crate adds is the small amount that alloy does not
+//! cover for a Swarm node:
 //!
-//! # The two-crate split
+//! - [`ChainConfig`]: the contract address book plus the settlement chain, keyed
+//!   on [`alloy_chains::NamedChain`].
+//! - [`ChainError`] / [`TxError`]: typed errors over alloy's transport and
+//!   pending-transaction errors, with `strum::IntoStaticStr` `reason` labels.
+//! - [`ProviderExt`]: an extension trait on `alloy_provider::Provider` for the
+//!   three pending-transaction operations alloy has no built-in for (resend,
+//!   cancel, recover_pending).
+//! - [`TxRequest`]: a newtype over `alloy_rpc_types_eth::TransactionRequest` that
+//!   attaches a static description for logs and metrics.
 //!
-//! The chain is a node-wide service, not a feature of any one consumer. It
-//! splits across two crates:
+//! Alloy providers run on `wasm32-unknown-unknown` with the right transport, so
+//! this crate stays wasm-compatible by depending on `alloy-provider` with
+//! `default-features = false` (no reqwest, no native TLS). The concrete transport
+//! is selected by the consumer.
 //!
-//! - `vertex-chain-api` (this crate): wasm-safe traits and data. Consumers and
-//!   the node builder depend only on this.
-//! - `vertex-chain-service` (later, native-only): the `alloy-provider`-backed
-//!   implementations of these traits. It is an optional dependency of the
-//!   binary and the storer builder, never of a library crate.
-//!
-//! Cone purity is enforced by the crate boundary: because the provider lives in
-//! a separate crate that library code does not name, the default light-node and
-//! wasm builds cannot accidentally pull it in.
-//!
-//! # Traits
-//!
-//! - [`ChainReader`]: read-only chain access (id, head, balances, `eth_call`,
-//!   logs). Injectable as `Arc<dyn ChainReader>`.
-//! - [`ChainHealth`]: a [`ChainReader`] that also reports transport sync state.
-//! - [`TransactionSender`]: submit, confirm, replace, cancel, and recover
-//!   transactions through one node-wide sender.
-//! - [`ChequebookChain`]: chequebook semantics for the SWAP settlement service.
-//!
-//! # Data
-//!
-//! - [`TxRequest`] / [`TxReceipt`]: a transaction's intent and its confirmed
-//!   summary. Gas bounds are typed fields, not side-channel context values.
-//! - [`LogFilter`]: a small, transport-agnostic log query.
-//! - [`ChainConfig`]: contract addresses and chain id.
-//!
-//! [`DisabledChain`] implements every trait by returning
-//! [`ProviderError::Disabled`], for chain-off node configurations.
-//!
-//! The chequebook crate stays a pure cheque codec; it consumes
-//! [`ChequebookChain`] and never embeds a provider.
+//! [`alloy`]: alloy_provider
 
-mod chequebook;
 mod config;
-mod disabled;
 mod error;
-mod reader;
-mod sender;
+mod provider;
 mod tx;
 
 #[cfg(test)]
 mod tests;
 
-pub use chequebook::ChequebookChain;
 pub use config::ChainConfig;
-pub use disabled::DisabledChain;
-pub use error::{ChainError, ProviderError, TxError};
-pub use reader::{ChainHealth, ChainReader};
-pub use sender::TransactionSender;
-pub use tx::{LogFilter, TxReceipt, TxRequest, TxStatus};
-
-// Re-export the cheque type the chequebook trait consumes so callers depend on
-// one canonical path.
-pub use vertex_swarm_bandwidth_chequebook::SignedCheque;
+pub use error::{ChainError, TxError};
+pub use provider::ProviderExt;
+pub use tx::TxRequest;
