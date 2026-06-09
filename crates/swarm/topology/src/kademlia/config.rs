@@ -76,7 +76,6 @@ impl KademliaConfig {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
     use super::*;
     use vertex_swarm_primitives::{Bin, NeighborhoodDepth};
 

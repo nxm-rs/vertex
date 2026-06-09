@@ -300,7 +300,6 @@ impl GossipVerifier {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
     use super::*;
     use alloy_primitives::{Address, B256, Signature, U256};
     use vertex_swarm_test_utils::test_peer_id;

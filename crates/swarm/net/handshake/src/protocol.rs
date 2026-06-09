@@ -399,7 +399,6 @@ impl<I: SwarmIdentity> HandshakeProtocol<I> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
     use super::*;
 
     fn addr(s: &str) -> Multiaddr {

@@ -8,7 +8,6 @@ crate::impl_fixed_codec!(alloy_primitives::Address, 20);
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
     use crate::{Decode, Encode};
 
     #[cfg(feature = "nectar")]

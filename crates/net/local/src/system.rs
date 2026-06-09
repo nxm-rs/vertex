@@ -189,7 +189,6 @@ pub(crate) fn query_local_subnets() -> LocalSubnets {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]

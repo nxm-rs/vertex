@@ -295,7 +295,7 @@ impl LimitsSnapshot {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::indexing_slicing)]
+    #![allow(clippy::indexing_slicing)]
     use super::*;
 
     /// Shorthand to build a Bin in tests.

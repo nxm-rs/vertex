@@ -165,7 +165,6 @@ fn remaining_inner(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
     use super::*;
 
     const BASE: u64 = PeerBackoff::DEFAULT_BASE_SECS;

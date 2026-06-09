@@ -44,7 +44,6 @@ pub(crate) fn encode_synack(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
     use vertex_swarm_identity::Identity;

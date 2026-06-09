@@ -318,7 +318,6 @@ impl Default for TopologyMetrics {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::error::DialError;
     use crate::events::ConnectionDirection;

@@ -179,7 +179,6 @@ impl Reserve {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::traits::memory::MemoryChunkStore;
     use nectar_primitives::ChunkAddress;

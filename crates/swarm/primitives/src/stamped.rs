@@ -117,7 +117,6 @@ pub fn reconstruct_chunk(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
     use alloy_primitives::{B256, Signature};
     use alloy_signer_local::PrivateKeySigner;
     use nectar_primitives::{Chunk, ContentChunk, SingleOwnerChunk};

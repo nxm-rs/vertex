@@ -15,7 +15,6 @@ pub fn extract_peer_id(addr: &libp2p::Multiaddr) -> Option<PeerId> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]

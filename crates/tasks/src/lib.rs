@@ -724,7 +724,6 @@ pub struct NoCurrentTaskExecutorError;
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use std::{
         sync::atomic::{AtomicBool, AtomicUsize, Ordering},

@@ -26,7 +26,6 @@ pub(crate) fn encode_syn(observed: &Multiaddr) -> vertex_swarm_net_proto::handsh
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
     use super::*;
 
     fn test_multiaddr() -> Multiaddr {

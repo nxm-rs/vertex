@@ -112,7 +112,6 @@ impl<C: ChunkTypeSet> AsRef<AnyChunk> for ValidatedChunk<C> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
     use super::*;
     use nectar_primitives::{
         Chunk, ContentChunk, ContentOnlyChunkSet, StandardChunkSet, bytes::Bytes,

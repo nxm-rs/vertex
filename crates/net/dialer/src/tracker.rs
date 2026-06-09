@@ -517,7 +517,7 @@ impl<Id: Clone + Eq + Hash + Debug, D: Debug> DialTracker<Id, D> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+    #![allow(clippy::indexing_slicing)]
     use super::*;
     use std::time::Duration;
 

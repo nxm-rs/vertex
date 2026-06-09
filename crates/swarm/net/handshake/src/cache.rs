@@ -78,7 +78,6 @@ pub(crate) fn needs_resign(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
     use super::*;
 
     fn record_at(fingerprint: u64, signed_at: i64) -> CachedSelfRecord {

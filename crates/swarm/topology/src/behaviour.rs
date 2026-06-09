@@ -970,7 +970,6 @@ impl<I: SwarmIdentity + Clone> Drop for TopologyBehaviour<I> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
     use super::*;
 
     use crate::kademlia::KademliaConfig;
