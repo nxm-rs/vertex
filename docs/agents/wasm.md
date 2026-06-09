@@ -8,10 +8,16 @@ A wasm client unlocks light-client embeddings in dapps, indexer UIs, and the Nex
 
 ### Status
 
-- Already no_std capable with a `default = ["std"]` feature: `vertex-swarm-primitives`, `vertex-swarm-spec`, `vertex-swarm-forks`, `vertex-swarm-api`. These compile to wasm today.
+- Already no_std capable with a `default = ["std"]` feature: `vertex-swarm-primitives`, `vertex-swarm-spec`, `vertex-swarm-forks`, `vertex-swarm-api`. A plain `cargo build --target wasm32-unknown-unknown --no-default-features` for these does not yet succeed, and the blockers are wasm-incompatible deps, not chain code: `nectar-primitives` pulls `wasm-bindgen-rayon`, which needs a threaded-wasm toolchain (`atomics` + `bulk-memory` + `build-std`), and `vertex-swarm-spec`/`vertex-swarm-api` pull `vertex-tasks`, whose `tokio::select!` usage needs the wasm tokio feature set trimmed per the tokio audit below. Both are tracked work, not a regression. Fixing the `wasm-bindgen-rayon` pull is upstream work in nectar.
 - Nectar primitives (`nectar-primitives`, `nectar-mantaray`, `nectar-postage`) are the upstream wasm-friendly layer. The proof-of-concept `crates/wasm-demo` lives in nectar.
 - Legacy wasm bins in this repo (`bin/swarm-wasm-lib`, `bin/wasm-playground`) reference path deps to `crates/bmt` and `crates/postage` that no longer exist (they moved to nectar). They are stale and should not be treated as a working baseline; remove them or rewrite them against the current crate graph before adding new wasm code.
 - A real client-in-wasm shipping target does not exist yet. The work plan is in this document.
+
+### Chain code in wasm
+
+Chain code is wasm-compatible and is welcome in the wasm cone. `alloy-provider`, `alloy-contract`, and the alloy signer/transport stack build for `wasm32-unknown-unknown` when their features are selected to avoid wasm-incompatible or native-only deps (notably `native-tls`/`openssl`, a default `reqwest` TLS backend, and threaded `rayon`). Pick the wasm-friendly transport and TLS features for alloy, the same way every other crate trims its features for wasm, and the chain client compiles. Do not architect a "no chain in wasm" boundary: an earlier attempt to forbid chain code from the wasm and light-node cones created a structural bottleneck that pushed later PRs into reimplementing pieces of alloy by hand, which is wasted effort. The rule is "the wasm-targeted crates compile for wasm with our chosen features", not "chain code is absent".
+
+Strict primitive crates (pure data, no network and no database) should aim for `no_std` where it is sensible, since that keeps them trivially wasm-buildable and reusable by non-node consumers. Do not over-engineer this: if a primitive needs `alloc` or a small std-only dependency and the cost of going `no_std` is high, leave it `std` and move on. The goal is wasm-buildability, not `no_std` purity for its own sake.
 
 ### Crate boundary: who must compile for wasm
 
