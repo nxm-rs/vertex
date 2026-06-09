@@ -12,7 +12,7 @@ Alloy providers run on `wasm32-unknown-unknown` with the right transport, so a c
 
 ## What the chain crate adds
 
-`vertex-chain-api` (crate at `crates/chain/api/`) is a thin layer over alloy. It holds only the parts alloy does not cover for a Swarm node, and nothing that alloy already does:
+`vertex-chain` (crate at `crates/chain/`) is a thin layer over alloy. It holds only the parts alloy does not cover for a Swarm node, and nothing that alloy already does:
 
 - `ChainConfig`: the contract address book (chequebook factory, BZZ token, price oracle) plus the settlement chain, keyed on `alloy_chains::NamedChain`. Constructors read the canonical `nectar_contracts` deployment constants for mainnet (Gnosis) and testnet (Sepolia). The chain is a `NamedChain`, not a bare integer, so the EIP-155 id, the chain name, and helper-set membership all come from one type.
 - `ChainError` and `TxError`: typed errors that carry alloy's own `TransportError` and `PendingTransactionError` through `#[from]` rather than flattening them into strings, with `strum::IntoStaticStr` discriminants for `reason` metric labels.
@@ -25,7 +25,9 @@ A consumer that needs chain access takes a shared `alloy_provider::Provider` (an
 
 `vertex-swarm-bandwidth-chequebook` remains a pure, wasm-safe cheque codec: cheque types, EIP-712 signing-hash derivation, signer recovery, and the wire JSON. It does not embed a provider. The settlement chain is passed in as an `alloy_chains::NamedChain` for EIP-712 domain construction rather than depending on the network spec, so the codec names the chain rather than a magic number. It depends on `alloy-primitives` with the `k256` feature for signer recovery rather than on a full signer crate.
 
-The on-chain chequebook client (deploy, cashout, balance reads over the `nectar_contracts` bindings) is an implementation detail of the SWAP settlement service. It lives in a dedicated chequebook chain crate (`vertex-swarm-bandwidth-chequebook` chain client), not in the generic chain crate. The chain crate knows nothing about chequebook semantics.
+The on-chain chequebook client (deploy, cashout, balance reads over the `nectar_contracts` bindings) is an implementation detail of the SWAP settlement service. It lives in `vertex-swarm-bandwidth-chequebook` behind its optional `chain` feature, not in the generic chain crate. The chain crate knows nothing about chequebook semantics. Without the feature the crate stays a pure, wasm-safe codec; with it, `chain::ChequebookContract` holds a shared `alloy_provider::Provider`, assembles `nectar_contracts` `SolCall` calldata directly, and depends on `vertex-chain` for `ChainConfig`, the error types, and `ProviderExt`.
+
+There is one chain crate, not two. An earlier split into a wasm-safe trait crate and a native implementation crate was collapsed once the design settled on sharing an alloy provider directly: the trait surface was a parallel re-description of alloy, and the implementation crate only existed to back it. A block-paged log listener is not shipped yet either; it is event-decoding glue rather than a provider gap, so the first consumer that needs it (the postage event listener) builds it on an `alloy_provider::Provider`.
 
 ## Node-type to chain access
 

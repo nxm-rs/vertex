@@ -20,6 +20,10 @@ pub enum ChainError {
     /// The RPC transport failed, or the node returned an error response.
     #[error(transparent)]
     Transport(#[from] TransportError),
+
+    /// A contract call returned data that did not decode to the expected type.
+    #[error(transparent)]
+    Abi(#[from] alloy_sol_types::Error),
 }
 
 /// A failure sending, confirming, or replacing a transaction.

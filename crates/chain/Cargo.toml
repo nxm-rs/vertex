@@ -1,5 +1,5 @@
 [package]
-name = "vertex-chain-api"
+name = "vertex-chain"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -25,6 +25,7 @@ alloy-primitives = { workspace = true }
 alloy-provider = { workspace = true }
 alloy-network = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
+alloy-sol-types = { workspace = true }
 
 # misc
 strum = { workspace = true }

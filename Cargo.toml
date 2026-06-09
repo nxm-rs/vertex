@@ -90,8 +90,8 @@ members = [
     "crates/rpc/core",
     "crates/rpc/server",
 
-    # Chain (Ethereum RPC service)
-    "crates/chain/api",
+    # Chain (Ethereum RPC access)
+    "crates/chain",
 
     # Data
     # "crates/file",
@@ -208,8 +208,8 @@ vertex-swarm-storer = { path = "crates/swarm/storer" }
 vertex-rpc-core = { path = "crates/rpc/core" }
 vertex-rpc-server = { path = "crates/rpc/server" }
 
-# chain (Ethereum RPC service)
-vertex-chain-api = { path = "crates/chain/api" }
+# chain (Ethereum RPC access)
+vertex-chain = { path = "crates/chain" }
 
 ## alloy
 alloy-eip2124 = { version = "0.2", default-features = false }
