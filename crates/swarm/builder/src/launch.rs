@@ -166,11 +166,7 @@ async fn build_node_chain_provider(
         return Ok(None);
     };
 
-    let address_book = if spec.is_mainnet() {
-        ChainAddressBook::mainnet()
-    } else if spec.is_testnet() {
-        ChainAddressBook::testnet()
-    } else {
+    let Some(address_book) = ChainAddressBook::from_swarm(spec.swarm()) else {
         warn!("Chain has no canonical deployment for this network; chain access not enabled");
         return Ok(None);
     };

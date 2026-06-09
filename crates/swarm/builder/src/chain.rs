@@ -81,7 +81,7 @@ pub async fn build_chain_provider(
         .get_chain_id()
         .await
         .map_err(|e| SwarmNodeError::Chain(format!("chain id query failed: {e}")))?;
-    let expected = addresses.chain as u64;
+    let expected = addresses.chain.id();
     if connected != expected {
         return Err(SwarmNodeError::Chain(format!(
             "RPC endpoint reports chain id {connected}, expected {expected} ({})",
