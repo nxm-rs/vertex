@@ -71,6 +71,7 @@ impl CandidateQueues {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::indexing_slicing)]
     use super::*;
 
     fn b(n: u8) -> Bin {

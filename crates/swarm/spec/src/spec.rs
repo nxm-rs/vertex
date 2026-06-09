@@ -418,6 +418,7 @@ impl SwarmHardforksTrait for Spec {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::indexing_slicing)]
     use crate::SwarmSpec;
 
     use super::*;

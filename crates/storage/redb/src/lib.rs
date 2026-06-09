@@ -120,6 +120,7 @@ pub fn open_database(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::indexing_slicing)]
     use super::*;
     use vertex_storage::*;
 

@@ -1,4 +1,5 @@
 //! Benchmarks for topology lock contention and deduplication patterns.
+#![allow(clippy::indexing_slicing)]
 
 use std::collections::HashSet;
 use std::sync::Arc;

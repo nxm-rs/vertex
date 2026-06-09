@@ -333,6 +333,7 @@ impl AddressProvider for LocalAddressManager {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::indexing_slicing)]
     use super::*;
 
     fn parse_addr(s: &str) -> Multiaddr {

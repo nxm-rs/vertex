@@ -283,6 +283,7 @@ impl IpCapability {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::indexing_slicing)]
     use super::*;
     use crate::system::same_subnet;
 
