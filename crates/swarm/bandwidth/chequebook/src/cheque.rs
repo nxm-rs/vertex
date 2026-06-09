@@ -224,35 +224,15 @@ impl SignedCheque {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct WireCheque {
-    #[serde(with = "address_hex")]
+    // `Address`'s alloy serde emits a lowercase `0x`-hex string and parses any
+    // case, matching the field-value conventions other Swarm nodes emit, so the
+    // default serde needs no helper.
     chequebook: Address,
-    #[serde(with = "address_hex")]
     beneficiary: Address,
     #[serde(with = "payout_number")]
     cumulative_payout: U256,
     #[serde(with = "signature_base64")]
     signature: Bytes,
-}
-
-/// Lowercase `0x`-hex address serde.
-///
-/// `Address`'s alloy serde checksums to EIP-55 mixed case, so lowercase is
-/// produced explicitly here and parsing accepts any case.
-mod address_hex {
-    use alloy_primitives::{Address, hex};
-    use serde::{Deserialize, Deserializer, Serializer, de};
-
-    pub(super) fn serialize<S: Serializer>(addr: &Address, s: S) -> Result<S::Ok, S::Error> {
-        let mut out = String::with_capacity(42);
-        out.push_str("0x");
-        out.push_str(&hex::encode(addr));
-        s.serialize_str(&out)
-    }
-
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Address, D::Error> {
-        let s = <&str>::deserialize(d)?;
-        s.parse::<Address>().map_err(de::Error::custom)
-    }
 }
 
 /// Bare decimal JSON number serde for `U256`.
@@ -403,5 +383,44 @@ mod tests {
         assert!(json.contains("\"Chequebook\":\"0x"));
         assert!(json.contains("\"Beneficiary\":\"0x"));
         assert!(json.contains("\"Signature\":\""));
+    }
+
+    #[test]
+    fn test_address_fields_are_lowercase_hex() {
+        // Use addresses whose checksummed form has uppercase hex digits so a
+        // future alloy switch to EIP-55 mixed case would fail this assertion.
+        let cheque = Cheque::new(
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+                .parse()
+                .unwrap(),
+            "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+                .parse()
+                .unwrap(),
+            U256::from(1u64),
+        );
+        let signed = SignedCheque::new(cheque, Bytes::from(vec![0u8; 65]));
+        let json = String::from_utf8(signed.to_json().unwrap().to_vec()).unwrap();
+        assert!(json.contains("\"Chequebook\":\"0xabcdefabcdefabcdefabcdefabcdefabcdefabcd\""));
+        assert!(json.contains("\"Beneficiary\":\"0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef\""));
+    }
+
+    #[test]
+    fn test_checksummed_address_deserializes() {
+        // A peer emitting EIP-55 mixed-case addresses must still parse, since
+        // address parsing is case-insensitive.
+        let json = r#"{"Chequebook":"0xAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCd","Beneficiary":"0xDeAdBeEfDeAdBeEfDeAdBeEfDeAdBeEfDeAdBeEf","CumulativePayout":1,"Signature":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}"#;
+        let decoded = SignedCheque::from_json(json.as_bytes()).unwrap();
+        assert_eq!(
+            decoded.cheque.chequebook,
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+                .parse::<Address>()
+                .unwrap()
+        );
+        assert_eq!(
+            decoded.cheque.beneficiary,
+            "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+                .parse::<Address>()
+                .unwrap()
+        );
     }
 }
