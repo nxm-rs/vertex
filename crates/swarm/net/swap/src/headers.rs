@@ -92,7 +92,10 @@ pub(crate) fn parse_u256_bytes(bytes: &Bytes) -> Option<U256> {
 fn encode_u256_bytes(value: U256) -> Bytes {
     let bytes = value.to_be_bytes::<32>();
     match bytes.iter().position(|&b| b != 0) {
-        Some(pos) => Bytes::copy_from_slice(&bytes[pos..]),
+        Some(pos) => bytes
+            .get(pos..)
+            .map(Bytes::copy_from_slice)
+            .unwrap_or_default(),
         None => Bytes::new(),
     }
 }

@@ -43,7 +43,7 @@ members = [
     "crates/swarm/net/pseudosettle",
     "crates/swarm/net/pushsync",
     "crates/swarm/net/retrieval",
-    # "crates/swarm/net/swap",  # disabled: depends on serde_json
+    "crates/swarm/net/swap",
 
     # Node
     "crates/node/api",
@@ -150,7 +150,7 @@ vertex-swarm-net-pricing = { path = "crates/swarm/net/pricing" }
 vertex-swarm-net-pseudosettle = { path = "crates/swarm/net/pseudosettle" }
 vertex-swarm-net-pushsync = { path = "crates/swarm/net/pushsync" }
 vertex-swarm-net-retrieval = { path = "crates/swarm/net/retrieval" }
-# vertex-swarm-net-swap = { path = "crates/swarm/net/swap" }  # disabled
+vertex-swarm-net-swap = { path = "crates/swarm/net/swap" }
 
 # node
 vertex-node-api = { path = "crates/node/api" }
@@ -334,7 +334,7 @@ base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 postcard = { version = "1", features = ["alloc"] }
 zstd = "0.13"
 toml = "0.8"
-serde_with = { version = "3", default-features = false, features = ["macros"] }
+serde_with = { version = "3", default-features = false, features = ["macros", "base64"] }
 strum = { version = "0.28", features = ["derive"] }
 thiserror = { version = "2.0", default-features = false }
 vergen-gitcl = "9"

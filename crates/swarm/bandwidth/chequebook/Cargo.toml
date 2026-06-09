@@ -28,8 +28,8 @@ bytes = { workspace = true }
 thiserror.workspace = true
 strum = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+serde_with = { workspace = true, features = ["base64"] }
 serde_json = { workspace = true }
-base64 = { workspace = true }
 
 [dev-dependencies]
 alloy-signer-local = { workspace = true }

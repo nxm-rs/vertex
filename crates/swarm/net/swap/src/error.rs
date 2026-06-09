@@ -12,15 +12,14 @@ vertex_net_codec::protocol_error! {
         #[strum(serialize = "invalid_beneficiary")]
         InvalidBeneficiaryLength(usize),
 
-        /// JSON serialization/deserialization error.
-        #[error("json error: {0}")]
-        #[strum(serialize = "json_error")]
-        Json(String),
-    }
-}
+        /// Cheque JSON encoding failure, carrying the typed source error.
+        #[error("cheque encode: {0}")]
+        #[strum(serialize = "cheque_encode")]
+        ChequeEncode(#[source] serde_json::Error),
 
-impl From<serde_json::Error> for SwapError {
-    fn from(error: serde_json::Error) -> Self {
-        SwapError::Json(error.to_string())
+        /// Cheque JSON decoding failure, carrying the typed source error.
+        #[error("cheque decode: {0}")]
+        #[strum(serialize = "cheque_decode")]
+        ChequeDecode(#[source] serde_json::Error),
     }
 }
