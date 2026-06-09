@@ -15,6 +15,15 @@ impl<I: SwarmIdentity, C> ClientRpcProviders<I, C> {
     pub fn new(topology: TopologyHandle<I>, chunks: C) -> Self {
         Self { topology, chunks }
     }
+
+    /// Access the chunk provider that backs uploads and downloads.
+    ///
+    /// Embedders that drive a client directly (FFI, gRPC, or an example) borrow
+    /// this to call [`SwarmChunkSender`] and [`SwarmChunkProvider`] without going
+    /// through the gRPC surface.
+    pub fn chunks(&self) -> &C {
+        &self.chunks
+    }
 }
 
 impl<I: SwarmIdentity, C: Send + Sync> HasTopology for ClientRpcProviders<I, C> {

@@ -74,6 +74,55 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
         self.event_tx.subscribe()
     }
 
+    /// Resolve once the node is connected to at least one storer, the
+    /// deterministic point from which a chunk push or retrieval can route.
+    ///
+    /// Both [`SwarmChunkSender::send_chunk`](vertex_swarm_api::SwarmChunkSender)
+    /// and [`SwarmChunkProvider::retrieve_chunk`](vertex_swarm_api::SwarmChunkProvider)
+    /// pick the closest storers from the routing table; with none connected the
+    /// push fails with `NoStorer` and the retrieval has nowhere to ask. This gate
+    /// is state-driven, not timed: it returns as soon as a storer is present and
+    /// otherwise waits for the [`TopologyEvent::PeerReady`] that brings one in.
+    ///
+    /// The subscription is taken before the initial state read so a storer that
+    /// becomes ready between the two cannot be missed. Returns
+    /// [`TopologyError::ServiceShutdown`] if the topology service stops before a
+    /// storer connects.
+    ///
+    /// This is the minimal readiness condition for routing. A fuller surface
+    /// (neighborhood saturation, target depth) is tracked for storer-side
+    /// consumers; see the follow-up issue referenced from the chunk examples.
+    pub async fn wait_until_routable(&self) -> Result<(), TopologyError> {
+        let mut events = self.event_tx.subscribe();
+
+        if self.connected_storer_count() > 0 {
+            return Ok(());
+        }
+
+        loop {
+            match events.recv().await {
+                Ok(TopologyEvent::PeerReady { node_type, .. }) if node_type.requires_storage() => {
+                    return Ok(());
+                }
+                Ok(_) => continue,
+                // Lagged: events were dropped, so re-read state directly rather
+                // than trust the stream. A storer may have connected in the gap.
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    if self.connected_storer_count() > 0 {
+                        return Ok(());
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    return Err(TopologyError::ServiceShutdown);
+                }
+            }
+        }
+    }
+
+    fn connected_storer_count(&self) -> u64 {
+        self.metrics.connected_storers()
+    }
+
     /// Get direct access to the peer manager for scoring/banning queries.
     pub fn peer_manager(&self) -> &Arc<PeerManager<I>> {
         &self.peer_manager

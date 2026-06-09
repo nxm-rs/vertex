@@ -92,7 +92,18 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 nectar-postage.workspace = true
 alloy-signer.workspace = true
 alloy-signer-local.workspace = true
+
+# Client upload/download examples. They build a client through the public builder
+# and drive the chunk sender/provider directly, the way an FFI or gRPC embedder
+# would.
+[[example]]
+name = "upload_chunk"
+path = "examples/upload_chunk.rs"
+
+[[example]]
+name = "download_chunk"
+path = "examples/download_chunk.rs"
