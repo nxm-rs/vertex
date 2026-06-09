@@ -90,6 +90,9 @@ members = [
     "crates/rpc/core",
     "crates/rpc/server",
 
+    # Chain (Ethereum RPC service)
+    "crates/chain/api",
+
     # Data
     # "crates/file",
     # "crates/manifest",
@@ -205,6 +208,9 @@ vertex-swarm-storer = { path = "crates/swarm/storer" }
 vertex-rpc-core = { path = "crates/rpc/core" }
 vertex-rpc-server = { path = "crates/rpc/server" }
 
+# chain (Ethereum RPC service)
+vertex-chain-api = { path = "crates/chain/api" }
+
 ## alloy
 alloy-eip2124 = { version = "0.2", default-features = false }
 alloy-primitives = { version = "1.6", default-features = false }
@@ -317,6 +323,9 @@ eyre = "0.6"
 color-eyre = "0.6"
 hex = "0.4"
 generic-array = "0.14"
+# Pinned to the 0.2 line so the wasm `js` backend feature matches the version the
+# secp256k1 crypto stack resolves to.
+getrandom = { version = "0.2", default-features = false }
 paste = "1"
 once_cell = { version = "1.21", default-features = false, features = [
     "critical-section",

@@ -10,7 +10,7 @@
 //! Cheques use EIP-712 typed data signing with the domain:
 //! - Name: "Chequebook"
 //! - Version: "1.0"
-//! - ChainId: from SwarmSpec's chain
+//! - ChainId: the EIP-155 id of the settlement chain, passed in by the caller
 //!
 //! The cheque type is:
 //! ```text
@@ -23,7 +23,7 @@
 //! use alloy_signer::SignerSync;
 //!
 //! let cheque = Cheque::new(chequebook, beneficiary, amount);
-//! let hash = cheque.signing_hash(&spec);
+//! let hash = cheque.signing_hash(chain_id);
 //! let sig = signer.sign_hash_sync(&hash)?;
 //! let signed = SignedCheque::from_signature(cheque, sig);
 //! ```

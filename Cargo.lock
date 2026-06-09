@@ -7794,6 +7794,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "vertex-chain-api"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "async-trait",
+ "auto_impl",
+ "bytes",
+ "nectar-contracts",
+ "strum 0.28.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "vertex-swarm-bandwidth-chequebook",
+]
+
+[[package]]
 name = "vertex-metrics"
 version = "0.1.0"
 dependencies = [
@@ -8121,6 +8137,7 @@ dependencies = [
  "alloy-signer-local",
  "alloy-sol-types",
  "bytes",
+ "getrandom 0.2.17",
  "nectar-contracts",
  "serde",
  "serde_json",
@@ -8128,7 +8145,6 @@ dependencies = [
  "strum 0.28.0",
  "thiserror 2.0.18",
  "tokio",
- "vertex-swarm-spec",
 ]
 
 [[package]]

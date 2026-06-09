@@ -57,6 +57,7 @@ Production monitoring: metrics, tracing, and logging.
 Internal design documents for planned changes.
 
 - [**Chunk Size Const Generic**](design/chunk-size-const-generic.md) - Making chunk body size a compile-time const generic
+- [**Chain Service**](design/chain-service.md) - Node-wide chain access split into a wasm-safe trait crate and a native-only implementation
 
 ### Development
 
