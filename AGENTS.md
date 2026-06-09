@@ -103,6 +103,7 @@ Per-area `AGENTS.md` files apply when you edit code in that directory.
 | `crates/storage/AGENTS.md` | Storage abstraction and redb backend. |
 | `crates/node/AGENTS.md` | Protocol-agnostic node infrastructure. |
 | `crates/observability/AGENTS.md` | Logging, tracing, metrics infra. |
+| `crates/ffi/AGENTS.md` | Native FFI surface for embedding a client. |
 
 ## Doc map
 

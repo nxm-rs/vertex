@@ -93,6 +93,9 @@ members = [
     # Chain (Ethereum RPC access)
     "crates/chain",
 
+    # FFI (native embedding surface)
+    "crates/ffi",
+
     # Data
     # "crates/file",
     # "crates/manifest",
@@ -211,6 +214,9 @@ vertex-rpc-server = { path = "crates/rpc/server" }
 # chain (Ethereum RPC access)
 vertex-chain = { path = "crates/chain" }
 
+# ffi (native embedding surface)
+vertex-ffi = { path = "crates/ffi" }
+
 ## alloy
 alloy-eip2124 = { version = "0.2", default-features = false }
 alloy-primitives = { version = "1.6", default-features = false }
@@ -268,6 +274,9 @@ walkdir = "2.5.0"
 ## tokio
 tokio = { version = "1", default-features = false }
 tokio-stream = "0.1"
+
+## ffi (native embedding bindings)
+flutter_rust_bridge = "2.12"
 
 ## grpc
 tonic = "0.12"
