@@ -18,7 +18,7 @@ use vertex_swarm_api::SwarmProtocol;
 use vertex_swarm_bandwidth::DefaultBandwidthConfig;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
-use vertex_swarm_node::args::NetworkConfig;
+use vertex_swarm_node::args::{ChainConfig, NetworkConfig};
 use vertex_swarm_redistribution::StorageConfig;
 use vertex_swarm_spec::Spec;
 use vertex_swarm_topology::KademliaConfig;
@@ -90,6 +90,7 @@ pub struct ClientConfig {
     network: NetworkConfig<KademliaConfig>,
     bandwidth: DefaultBandwidthConfig,
     verify: ChunkVerifyConfig,
+    chain: ChainConfig,
 }
 
 impl ClientConfig {
@@ -99,6 +100,7 @@ impl ClientConfig {
         network: NetworkConfig<KademliaConfig>,
         bandwidth: DefaultBandwidthConfig,
         verify: ChunkVerifyConfig,
+        chain: ChainConfig,
     ) -> Self {
         Self {
             spec,
@@ -106,6 +108,7 @@ impl ClientConfig {
             network,
             bandwidth,
             verify,
+            chain,
         }
     }
 
@@ -116,6 +119,10 @@ impl ClientConfig {
     /// Verification checks applied to downloaded chunks.
     pub fn verify(&self) -> ChunkVerifyConfig {
         self.verify
+    }
+
+    pub fn chain(&self) -> &ChainConfig {
+        &self.chain
     }
 }
 
@@ -132,9 +139,14 @@ pub struct StorerConfig {
     local_store: LocalStoreConfig,
     storage: StorageConfig,
     verify: ChunkVerifyConfig,
+    chain: ChainConfig,
 }
 
 impl StorerConfig {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a storer aggregates every validated config section"
+    )]
     pub fn new(
         spec: Arc<Spec>,
         identity: Arc<Identity>,
@@ -143,6 +155,7 @@ impl StorerConfig {
         local_store: LocalStoreConfig,
         storage: StorageConfig,
         verify: ChunkVerifyConfig,
+        chain: ChainConfig,
     ) -> Self {
         Self {
             spec,
@@ -152,6 +165,7 @@ impl StorerConfig {
             local_store,
             storage,
             verify,
+            chain,
         }
     }
 
@@ -170,6 +184,10 @@ impl StorerConfig {
 
     pub fn storage(&self) -> &StorageConfig {
         &self.storage
+    }
+
+    pub fn chain(&self) -> &ChainConfig {
+        &self.chain
     }
 }
 

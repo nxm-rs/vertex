@@ -15,7 +15,9 @@ use vertex_swarm_spec::Spec;
 
 use vertex_swarm_api::ConfigError;
 
-use crate::args::{NetworkArgs, NetworkConfig, ProtocolArgs, RetrievalArgs};
+use crate::args::{
+    ChainArgs, ChainConfig, NetworkArgs, NetworkConfig, ProtocolArgs, RetrievalArgs,
+};
 
 /// Swarm protocol configuration (serializable Args layer).
 ///
@@ -32,6 +34,7 @@ pub struct ProtocolConfig {
     pub retrieval: RetrievalArgs,
     pub localstore: LocalStoreArgs,
     pub redistribution: RedistributionArgs,
+    pub chain: ChainArgs,
 }
 
 impl ProtocolConfig {
@@ -64,6 +67,11 @@ impl ProtocolConfig {
     pub fn retrieval(&self) -> &RetrievalArgs {
         &self.retrieval
     }
+
+    /// Create the validated chain configuration (RPC endpoint and tx tuning).
+    pub fn chain_config(&self) -> ChainConfig {
+        self.chain.chain_config()
+    }
 }
 
 impl ProtocolConfig {
@@ -83,5 +91,6 @@ impl NodeProtocolConfig for ProtocolConfig {
         self.retrieval = args.retrieval.clone();
         self.localstore = args.localstore.clone();
         self.redistribution = args.redistribution.clone();
+        self.chain = args.chain.clone();
     }
 }

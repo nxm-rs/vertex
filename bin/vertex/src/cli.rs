@@ -131,8 +131,10 @@ pub async fn run() -> Result<()> {
                     .protocol
                     .bandwidth_config()
                     .map_err(|e| eyre::eyre!("bandwidth config error: {}", e))?;
+                let chain = config.protocol.chain_config();
 
-                let node_config = ClientConfig::new(spec, identity, network, bandwidth, verify);
+                let node_config =
+                    ClientConfig::new(spec, identity, network, bandwidth, verify, chain);
 
                 let (task_fn, rpc_providers) = DefaultClientBuilder::from_config(node_config)
                     .build(&launch_ctx)
@@ -156,6 +158,7 @@ pub async fn run() -> Result<()> {
                     .map_err(|e| eyre::eyre!("bandwidth config error: {}", e))?;
                 let local_store = config.protocol.local_store_config();
                 let storage = config.protocol.storage_config();
+                let chain = config.protocol.chain_config();
 
                 let node_config = StorerConfig::new(
                     spec,
@@ -165,6 +168,7 @@ pub async fn run() -> Result<()> {
                     local_store,
                     storage,
                     verify,
+                    chain,
                 );
 
                 let (task_fn, rpc_providers) = DefaultStorerBuilder::from_config(node_config)

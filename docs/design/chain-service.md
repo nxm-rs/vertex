@@ -40,3 +40,11 @@ There is one chain crate, not two. An earlier split into a wasm-safe trait crate
 | Client with SWAP | Required. A provider injected for the settlement service. |
 
 The presence or absence of chain access is a node-configuration choice realized through whether a provider is constructed, not a protocol fork. Wire bytes are never gated by a cargo feature.
+
+## Constructing the provider
+
+`vertex-swarm-builder` owns the single seam that constructs the shared provider, behind its optional `chain` feature. Without the feature the builder compiles no alloy RPC stack: the default `vertex` binary and the wasm client resolve a chain-free cone, and the chain CLI knobs (`--chain.rpc-url` and the transaction tuning) are inert plain data on the node configs.
+
+With the feature, the launch path for a chain-needing node (a storer always, a client only when SWAP settlement is enabled, decided by `SwarmNodeType::needs_chain`) calls `build_chain_provider`. It selects the contract address book from the spec (Gnosis for mainnet, Sepolia for testnet), builds a wallet-filled native HTTP provider over the configured RPC URL signed by the node's Ethereum identity, and validates the connected chain id against the address book so an operator pointed at the wrong endpoint fails fast at startup. The result is a cloneable `SharedChainProvider` handle. There is no background chain task to spawn: the provider is the chain, and consumers borrow it.
+
+The first consumer is the SWAP settlement service in a later PR, which builds a `ChequebookContract` over a clone of the shared provider. Until that lands, the constructed provider is held alive for the node's lifetime so the construct-and-validate seam is real and exercised rather than dead scaffolding.

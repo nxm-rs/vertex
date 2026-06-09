@@ -8518,7 +8518,10 @@ dependencies = [
 name = "vertex-swarm-builder"
 version = "0.1.0"
 dependencies = [
+ "alloy-chains",
+ "alloy-network",
  "alloy-primitives",
+ "alloy-provider",
  "alloy-signer",
  "alloy-signer-local",
  "async-trait",
@@ -8530,6 +8533,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "vertex-chain",
  "vertex-net-peer-store",
  "vertex-node-api",
  "vertex-node-builder",
@@ -8539,6 +8543,7 @@ dependencies = [
  "vertex-storage-redb",
  "vertex-swarm-api",
  "vertex-swarm-bandwidth",
+ "vertex-swarm-bandwidth-chequebook",
  "vertex-swarm-bandwidth-pricing",
  "vertex-swarm-bandwidth-pseudosettle",
  "vertex-swarm-identity",
