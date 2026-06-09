@@ -5,6 +5,14 @@
 //! - [`Cheque`] - An unsigned cheque commitment (EIP-712 typed data)
 //! - [`SignedCheque`] - A signed cheque ready for transmission or cashing
 //!
+//! By default this is a pure, wasm-safe codec with no RPC stack, so light
+//! clients compile without an Ethereum provider. The optional `swap-chequebook`
+//! feature adds [`chain::ChequebookContract`], the native on-chain client that
+//! deploys, cashes, and reads chequebooks over a shared
+//! `alloy_provider::Provider`. A node role that settles over SWAP (the storer)
+//! turns the feature on. The chequebook owns its chain client because deploy and
+//! cashout are SWAP settlement details, not generic chain access.
+//!
 //! # EIP-712 Signing
 //!
 //! Cheques use EIP-712 typed data signing with the domain:
@@ -42,8 +50,12 @@
 //! standard base64. This whole JSON path is slated for protobuf replacement,
 //! tracked in issue #183.
 
+#[cfg(feature = "swap-chequebook")]
+pub mod chain;
 pub mod cheque;
 
+#[cfg(feature = "swap-chequebook")]
+pub use chain::ChequebookContract;
 pub use cheque::{Cheque, ChequeExt, SignedCheque};
 
 // Re-export commonly used types

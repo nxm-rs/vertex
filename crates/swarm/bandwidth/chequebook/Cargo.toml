@@ -11,6 +11,23 @@ description = "Chequebook types and signing for SWAP settlement"
 [lints]
 workspace = true
 
+[features]
+# Default is a pure, wasm-safe cheque codec with no RPC stack, so light clients
+# compile without an Ethereum provider.
+default = []
+# `swap-chequebook` adds the native on-chain chequebook client over a shared
+# alloy provider. It is off by default; a node role that settles over SWAP (the
+# storer) turns it on. It enables an HTTP transport with native-tls: the rustls
+# path drags in a platform root-certs crate under a license outside the
+# workspace allow-list, so the HTTP transport uses native-tls (system OpenSSL).
+swap-chequebook = [
+    "dep:vertex-chain",
+    "dep:alloy-contract",
+    "dep:alloy-provider",
+    "dep:alloy-network",
+    "dep:tracing",
+]
+
 [dependencies]
 # nectar
 nectar-contracts = { workspace = true }
@@ -22,6 +39,18 @@ nectar-contracts = { workspace = true }
 alloy-chains = { workspace = true }
 alloy-primitives = { workspace = true, features = ["k256", "serde"] }
 alloy-sol-types = { workspace = true }
+
+# swap-chequebook feature: the on-chain chequebook client over a shared alloy
+# provider, using `alloy-contract` `CallBuilder`s over the `nectar-contracts`
+# `sol!` interfaces.
+vertex-chain = { workspace = true, optional = true }
+alloy-contract = { workspace = true, optional = true }
+alloy-provider = { workspace = true, optional = true, features = [
+    "reqwest",
+    "reqwest-native-tls",
+] }
+alloy-network = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
 
 # misc
 bytes = { workspace = true }

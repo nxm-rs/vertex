@@ -12,8 +12,7 @@
 //! - [`ChainError`] / [`TxError`]: typed errors over alloy's transport and
 //!   pending-transaction errors, with `strum::IntoStaticStr` `reason` labels.
 //! - [`ProviderExt`]: an extension trait on `alloy_provider::Provider` for the
-//!   three pending-transaction operations alloy has no built-in for (resend,
-//!   cancel, recover_pending).
+//!   pending-transaction operations alloy has no built-in for (resend, cancel).
 //! - [`TxRequest`]: a newtype over `alloy_rpc_types_eth::TransactionRequest` that
 //!   attaches a static description for logs and metrics.
 //!
@@ -21,6 +20,11 @@
 //! this crate stays wasm-compatible by depending on `alloy-provider` with
 //! `default-features = false` (no reqwest, no native TLS). The concrete transport
 //! is selected by the consumer.
+//!
+//! A block-paged log listener (an `eth_getLogs` engine with a persisted cursor)
+//! is intentionally not shipped here yet. It is event-decoding glue rather than a
+//! provider gap, so the first consumer that needs it (the postage event listener)
+//! builds it directly on an `alloy_provider::Provider`.
 //!
 //! [`alloy`]: alloy_provider
 
