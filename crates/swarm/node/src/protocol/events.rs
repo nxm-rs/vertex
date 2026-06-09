@@ -19,6 +19,8 @@ use alloy_primitives::{Signature, U256};
 use libp2p::PeerId;
 use nectar_primitives::{ChunkAddress, Nonce};
 use vertex_swarm_net_pseudosettle::PaymentAck;
+#[cfg(feature = "swap")]
+use vertex_swarm_net_swap::SignedCheque;
 use vertex_swarm_primitives::{OverlayAddress, StampedChunk, StorageRadius, SwarmNodeType};
 
 /// Events emitted by the client behaviour.
@@ -153,6 +155,30 @@ pub enum ClientEvent {
         ack: PaymentAck,
     },
 
+    /// Received a swap cheque from a peer.
+    #[cfg(feature = "swap")]
+    SwapChequeReceived {
+        /// The peer that sent the cheque.
+        peer: OverlayAddress,
+        /// The libp2p peer ID.
+        peer_id: PeerId,
+        /// The signed cheque received.
+        cheque: SignedCheque,
+        /// The peer's advertised exchange rate, from the headers exchange.
+        peer_rate: U256,
+    },
+
+    /// Successfully sent a swap cheque to a peer.
+    #[cfg(feature = "swap")]
+    SwapChequeSent {
+        /// The peer we sent the cheque to.
+        peer: OverlayAddress,
+        /// The libp2p peer ID.
+        peer_id: PeerId,
+        /// The peer's advertised exchange rate, from the headers exchange.
+        peer_rate: U256,
+    },
+
     /// A peer's handler has been activated.
     ///
     /// This is emitted after the ActivatePeer command is processed.
@@ -274,6 +300,15 @@ pub enum ClientCommand {
         ack: PaymentAck,
     },
 
+    /// Send a swap cheque to a peer.
+    #[cfg(feature = "swap")]
+    SendCheque {
+        /// The peer to send the cheque to.
+        peer: OverlayAddress,
+        /// The signed cheque to send.
+        cheque: SignedCheque,
+    },
+
     /// Disconnect from a peer.
     ///
     /// Used when a peer fails validation (e.g., threshold too low).
@@ -306,5 +341,32 @@ pub enum PseudosettleEvent {
         amount: U256,
         /// Request ID for sending ack.
         request_id: u64,
+    },
+}
+
+/// Events routed to the swap settlement service.
+///
+/// These events are extracted from [`ClientEvent`] and sent to the swap
+/// service via a dedicated channel for type-safe handling. They carry strong
+/// types ([`SignedCheque`], typed peer, typed rate) so the service never sees
+/// raw wire bytes.
+#[cfg(feature = "swap")]
+#[derive(Debug, Clone)]
+pub enum SwapEvent {
+    /// We sent a cheque and the headers exchange completed.
+    ChequeSent {
+        /// The peer we sent the cheque to.
+        peer: OverlayAddress,
+        /// The peer's advertised exchange rate, from the headers exchange.
+        peer_rate: U256,
+    },
+    /// A peer sent us a cheque.
+    ChequeReceived {
+        /// The peer that sent the cheque.
+        peer: OverlayAddress,
+        /// The signed cheque received.
+        cheque: SignedCheque,
+        /// The peer's advertised exchange rate, from the headers exchange.
+        peer_rate: U256,
     },
 }

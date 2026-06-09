@@ -7,6 +7,7 @@
 //! - **Retrieval**: Chunk request/response
 //! - **PushSync**: Chunk push with receipt
 //! - **Pseudosettle**: Bandwidth accounting settlement
+//! - **Swap**: Cheque-based settlement wire plumbing (behind the `swap` feature)
 //!
 //! # Architecture
 //!
@@ -17,6 +18,24 @@
 //!
 //! Business logic (peer selection, threshold validation, settlement decisions)
 //! lives in the trait implementations (client/core, bandwidth crates).
+//!
+//! # Swap layering
+//!
+//! The swap integration here is the **wire plumbing only**. It composes the
+//! `/swarm/swap` protocol into the handler and upgrade, emits a cheque on
+//! [`ClientCommand::SendCheque`], and surfaces a received cheque as
+//! [`SwapEvent::ChequeReceived`] (and an outbound completion as
+//! [`SwapEvent::ChequeSent`]) with strong types: typed peer, the full
+//! `SignedCheque`, and the peer's exchange rate from the headers exchange.
+//!
+//! The settlement **policy** lives downstream, mirroring how pseudosettle is
+//! layered. When to issue a cheque (debt crossing the payment threshold), when
+//! to expect a cheque, and when to disconnect a peer that exceeds the
+//! disconnect threshold without paying are decided by the swap
+//! `SwarmSettlementProvider` in the `vertex-swarm-bandwidth-swap` crate, driven
+//! by the per-peer balance state, and connected to this wire layer by the node
+//! builder's accounting wiring. This crate carries no thresholds and makes no
+//! settlement decisions.
 //!
 //! # Handler Lifecycle
 //!
@@ -49,4 +68,6 @@ mod handler;
 pub(crate) mod upgrade;
 
 pub(crate) use behaviour::{ClientBehaviour, Config as BehaviourConfig};
+#[cfg(feature = "swap")]
+pub use events::SwapEvent;
 pub use events::{ClientCommand, ClientEvent, PseudosettleEvent};

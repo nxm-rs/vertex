@@ -36,6 +36,11 @@ use vertex_swarm_net_retrieval::{
     Request as RetrievalRequest, RetrievalInboundProtocol, RetrievalOutboundProtocol,
     RetrievalResponder,
 };
+#[cfg(feature = "swap")]
+use vertex_swarm_net_swap::{
+    PROTOCOL_NAME as SWAP_PROTOCOL, SettlementHeaders, SignedCheque, SwapInboundProtocol,
+    SwapOutboundProtocol,
+};
 /// Errors from client protocol upgrades.
 #[derive(Debug, Error)]
 pub(crate) enum ClientUpgradeError {
@@ -55,6 +60,11 @@ pub(crate) enum ClientUpgradeError {
     #[error("pseudosettle error: {0}")]
     Pseudosettle(#[source] ProtocolError),
 
+    /// Swap protocol error.
+    #[cfg(feature = "swap")]
+    #[error("swap error: {0}")]
+    Swap(#[source] ProtocolError),
+
     /// Unknown protocol negotiated.
     #[error("unknown protocol: {0}")]
     UnknownProtocol(String),
@@ -70,6 +80,9 @@ pub(crate) enum ClientInboundOutput {
     Pushsync(PushsyncDelivery, PushsyncResponder),
     /// Received pseudosettle payment (with responder to send ack).
     Pseudosettle(PseudosettleInboundResult),
+    /// Received a swap cheque with the peer's negotiated headers.
+    #[cfg(feature = "swap")]
+    Swap(SignedCheque, SettlementHeaders),
 }
 
 impl std::fmt::Debug for ClientInboundOutput {
@@ -91,6 +104,10 @@ impl std::fmt::Debug for ClientInboundOutput {
                 .field(&result.payment)
                 .field(&"<responder>")
                 .finish(),
+            #[cfg(feature = "swap")]
+            Self::Swap(cheque, headers) => {
+                f.debug_tuple("Swap").field(cheque).field(headers).finish()
+            }
         }
     }
 }
@@ -112,6 +129,9 @@ impl std::fmt::Debug for ClientInboundOutput {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ClientInboundUpgrade {
     advertised: ProtocolSet,
+    /// Our advertised swap exchange rate, sent in the headers exchange.
+    #[cfg(feature = "swap")]
+    swap_rate: U256,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -121,7 +141,7 @@ enum ProtocolSet {
     None,
     /// Bootnode-active: pricing only.
     PricingOnly,
-    /// Client/storer-active: pricing + retrieval + pushsync + pseudosettle.
+    /// Client/storer-active: pricing + retrieval + pushsync + pseudosettle (+ swap).
     Full,
 }
 
@@ -130,6 +150,8 @@ impl ClientInboundUpgrade {
     pub(crate) fn new() -> Self {
         Self {
             advertised: ProtocolSet::None,
+            #[cfg(feature = "swap")]
+            swap_rate: U256::ZERO,
         }
     }
 
@@ -142,7 +164,18 @@ impl ClientInboundUpgrade {
             vertex_swarm_primitives::SwarmNodeType::Client
             | vertex_swarm_primitives::SwarmNodeType::Storer => ProtocolSet::Full,
         };
-        Self { advertised }
+        Self {
+            advertised,
+            #[cfg(feature = "swap")]
+            swap_rate: U256::ZERO,
+        }
+    }
+
+    /// Set the swap exchange rate advertised in the headers exchange.
+    #[cfg(feature = "swap")]
+    pub(crate) fn with_swap_rate(mut self, rate: U256) -> Self {
+        self.swap_rate = rate;
+        self
     }
 }
 
@@ -154,13 +187,17 @@ impl UpgradeInfo for ClientInboundUpgrade {
         match self.advertised {
             ProtocolSet::None => Vec::new().into_iter(),
             ProtocolSet::PricingOnly => vec![PRICING_PROTOCOL].into_iter(),
-            ProtocolSet::Full => vec![
-                PRICING_PROTOCOL,
-                RETRIEVAL_PROTOCOL,
-                PUSHSYNC_PROTOCOL,
-                PSEUDOSETTLE_PROTOCOL,
-            ]
-            .into_iter(),
+            ProtocolSet::Full => {
+                let protocols = vec![
+                    PRICING_PROTOCOL,
+                    RETRIEVAL_PROTOCOL,
+                    PUSHSYNC_PROTOCOL,
+                    PSEUDOSETTLE_PROTOCOL,
+                    #[cfg(feature = "swap")]
+                    SWAP_PROTOCOL,
+                ];
+                protocols.into_iter()
+            }
         }
     }
 }
@@ -171,6 +208,8 @@ impl InboundUpgrade<Stream> for ClientInboundUpgrade {
     type Future = BoxFuture<'static, Result<Self::Output, Self::Error>>;
 
     fn upgrade_inbound(self, socket: Stream, info: Self::Info) -> Self::Future {
+        #[cfg(feature = "swap")]
+        let swap_rate = self.swap_rate;
         Box::pin(async move {
             match info {
                 PRICING_PROTOCOL => {
@@ -205,6 +244,15 @@ impl InboundUpgrade<Stream> for ClientInboundUpgrade {
                         .map_err(ClientUpgradeError::Pseudosettle)?;
                     Ok(ClientInboundOutput::Pseudosettle(result))
                 }
+                #[cfg(feature = "swap")]
+                SWAP_PROTOCOL => {
+                    let protocol: SwapInboundProtocol = vertex_swarm_net_swap::inbound(swap_rate);
+                    let (cheque, headers) = protocol
+                        .upgrade_inbound(socket, info)
+                        .await
+                        .map_err(ClientUpgradeError::Swap)?;
+                    Ok(ClientInboundOutput::Swap(cheque, headers))
+                }
                 other => Err(ClientUpgradeError::UnknownProtocol(other.to_string())),
             }
         })
@@ -222,6 +270,9 @@ pub(crate) enum ClientOutboundRequest {
     Pushsync(PushsyncDelivery),
     /// Send pseudosettle payment.
     Pseudosettle(Payment),
+    /// Send a swap cheque with our advertised exchange rate.
+    #[cfg(feature = "swap")]
+    Swap(SignedCheque, U256),
 }
 
 /// Output from a client outbound upgrade.
@@ -235,6 +286,9 @@ pub(crate) enum ClientOutboundOutput {
     Pushsync(PushsyncReceipt),
     /// Received pseudosettle ack.
     Pseudosettle(PaymentAck),
+    /// Cheque sent; carries the peer's negotiated headers.
+    #[cfg(feature = "swap")]
+    Swap(SettlementHeaders),
 }
 
 /// Combined outbound upgrade for client protocols.
@@ -274,6 +328,14 @@ impl ClientOutboundUpgrade {
         }
     }
 
+    /// Create a new swap outbound upgrade that emits a cheque.
+    #[cfg(feature = "swap")]
+    pub(crate) fn swap(cheque: SignedCheque, our_rate: U256) -> Self {
+        Self {
+            request: ClientOutboundRequest::Swap(cheque, our_rate),
+        }
+    }
+
     /// Get the protocol name for this request.
     fn protocol_name(&self) -> &'static str {
         match &self.request {
@@ -281,6 +343,8 @@ impl ClientOutboundUpgrade {
             ClientOutboundRequest::Retrieval(_) => RETRIEVAL_PROTOCOL,
             ClientOutboundRequest::Pushsync(_) => PUSHSYNC_PROTOCOL,
             ClientOutboundRequest::Pseudosettle(_) => PSEUDOSETTLE_PROTOCOL,
+            #[cfg(feature = "swap")]
+            ClientOutboundRequest::Swap(..) => SWAP_PROTOCOL,
         }
     }
 }
@@ -337,6 +401,16 @@ impl OutboundUpgrade<Stream> for ClientOutboundUpgrade {
                         .map_err(ClientUpgradeError::Pseudosettle)?;
                     Ok(ClientOutboundOutput::Pseudosettle(ack))
                 }
+                #[cfg(feature = "swap")]
+                ClientOutboundRequest::Swap(cheque, our_rate) => {
+                    let protocol: SwapOutboundProtocol =
+                        vertex_swarm_net_swap::outbound(cheque, our_rate);
+                    let headers = protocol
+                        .upgrade_outbound(socket, info)
+                        .await
+                        .map_err(ClientUpgradeError::Swap)?;
+                    Ok(ClientOutboundOutput::Swap(headers))
+                }
             }
         })
     }
@@ -353,6 +427,9 @@ pub(crate) enum ClientOutboundInfo {
     Pushsync { address: ChunkAddress },
     /// Pseudosettle payment with amount.
     Pseudosettle { amount: U256 },
+    /// Swap cheque emission.
+    #[cfg(feature = "swap")]
+    Swap,
 }
 
 #[cfg(test)]
@@ -385,6 +462,8 @@ mod tests {
                 RETRIEVAL_PROTOCOL,
                 PUSHSYNC_PROTOCOL,
                 PSEUDOSETTLE_PROTOCOL,
+                #[cfg(feature = "swap")]
+                SWAP_PROTOCOL,
             ]
         );
     }
@@ -400,7 +479,17 @@ mod tests {
                 RETRIEVAL_PROTOCOL,
                 PUSHSYNC_PROTOCOL,
                 PSEUDOSETTLE_PROTOCOL,
+                #[cfg(feature = "swap")]
+                SWAP_PROTOCOL,
             ]
         );
+    }
+
+    #[cfg(feature = "swap")]
+    #[test]
+    fn full_set_includes_swap_when_enabled() {
+        let upgrade = ClientInboundUpgrade::active_for(SwarmNodeType::Client);
+        let protocols: Vec<_> = upgrade.protocol_info().collect();
+        assert!(protocols.contains(&SWAP_PROTOCOL));
     }
 }

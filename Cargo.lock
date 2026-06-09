@@ -8883,6 +8883,7 @@ dependencies = [
  "vertex-swarm-net-pseudosettle",
  "vertex-swarm-net-pushsync",
  "vertex-swarm-net-retrieval",
+ "vertex-swarm-net-swap",
  "vertex-swarm-peer",
  "vertex-swarm-peer-manager",
  "vertex-swarm-peer-score",

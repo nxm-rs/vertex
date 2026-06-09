@@ -27,6 +27,8 @@ pub use node::{
 pub use vertex_swarm_api::SwarmNodeType;
 
 pub use client_service::{ClientHandle, ClientService, RetrievalError, RetrievalResult};
+#[cfg(feature = "swap")]
+pub use protocol::SwapEvent;
 pub use protocol::{ClientCommand, ClientEvent, PseudosettleEvent};
 
 pub use swarm_client::{BootnodeClient, Client, FullClient};

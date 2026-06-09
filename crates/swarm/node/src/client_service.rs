@@ -397,6 +397,27 @@ impl ClientService {
             ClientEvent::PseudosettleSent { peer, peer_id, ack } => {
                 debug!(%peer, %peer_id, amount = %ack.amount, timestamp = ack.timestamp, "Pseudosettle sent, received ack");
             }
+
+            #[cfg(feature = "swap")]
+            ClientEvent::SwapChequeReceived {
+                peer,
+                peer_id,
+                peer_rate,
+                ..
+            } => {
+                // The swap settlement service consumes cheques via the dedicated
+                // channel configured with `route_swap_events`.
+                debug!(%peer, %peer_id, %peer_rate, "Swap cheque received");
+            }
+
+            #[cfg(feature = "swap")]
+            ClientEvent::SwapChequeSent {
+                peer,
+                peer_id,
+                peer_rate,
+            } => {
+                debug!(%peer, %peer_id, %peer_rate, "Swap cheque sent");
+            }
         }
     }
 }

@@ -36,6 +36,8 @@ use libp2p::swarm::{
 use nectar_primitives::{ChunkAddress, Nonce};
 use tracing::{debug, warn};
 use vertex_swarm_net_pseudosettle::PaymentAck;
+#[cfg(feature = "swap")]
+use vertex_swarm_net_swap::SignedCheque;
 use vertex_swarm_primitives::{OverlayAddress, StampedChunk, StorageRadius, SwarmNodeType};
 
 use super::upgrade::{
@@ -68,6 +70,11 @@ pub(crate) struct Config {
     /// Bootnodes only speak pricing (listen-only) so the rest of the
     /// client surface is inert.
     pub(crate) local_role: SwarmNodeType,
+    /// Our advertised swap exchange rate, sent in the swap headers exchange.
+    /// Rate negotiation is owned by the settlement service; the handler only
+    /// carries the value onto the wire.
+    #[cfg(feature = "swap")]
+    pub(crate) swap_exchange_rate: U256,
 }
 
 impl Default for Config {
@@ -77,6 +84,8 @@ impl Default for Config {
             max_pending_commands: DEFAULT_MAX_PENDING_COMMANDS,
             max_pending_events: DEFAULT_MAX_PENDING_EVENTS,
             local_role: SwarmNodeType::Client,
+            #[cfg(feature = "swap")]
+            swap_exchange_rate: U256::ZERO,
         }
     }
 }
@@ -117,6 +126,12 @@ pub(crate) enum HandlerCommand {
         request_id: u64,
         /// The ack to send.
         ack: PaymentAck,
+    },
+    /// Send a swap cheque to the peer.
+    #[cfg(feature = "swap")]
+    SendCheque {
+        /// The signed cheque to send.
+        cheque: SignedCheque,
     },
     /// Serve a chunk to a peer (respond to retrieval request).
     ServeChunk {
@@ -226,6 +241,24 @@ pub(crate) enum HandlerEvent {
         overlay: OverlayAddress,
         /// The ack received.
         ack: PaymentAck,
+    },
+    /// Received a swap cheque from peer.
+    #[cfg(feature = "swap")]
+    SwapChequeReceived {
+        /// The peer's overlay address.
+        overlay: OverlayAddress,
+        /// The signed cheque received.
+        cheque: SignedCheque,
+        /// The peer's advertised exchange rate, from the headers exchange.
+        peer_rate: U256,
+    },
+    /// Successfully sent a swap cheque.
+    #[cfg(feature = "swap")]
+    SwapChequeSent {
+        /// The peer's overlay address.
+        overlay: OverlayAddress,
+        /// The peer's advertised exchange rate, from the headers exchange.
+        peer_rate: U256,
     },
 }
 
@@ -508,7 +541,12 @@ impl ConnectionHandler for ClientHandler {
 
     fn listen_protocol(&self) -> SubstreamProtocol<Self::InboundProtocol, Self::InboundOpenInfo> {
         let upgrade = match &self.state {
-            State::Active { .. } => ClientInboundUpgrade::active_for(self.config.local_role),
+            State::Active { .. } => {
+                let upgrade = ClientInboundUpgrade::active_for(self.config.local_role);
+                #[cfg(feature = "swap")]
+                let upgrade = upgrade.with_swap_rate(self.config.swap_exchange_rate);
+                upgrade
+            }
             State::Dormant => ClientInboundUpgrade::new(),
         };
         SubstreamProtocol::new(upgrade, ()).with_timeout(self.config.timeout)
@@ -605,6 +643,15 @@ impl ConnectionHandler for ClientHandler {
                             ClientOutboundInfo::Pseudosettle { amount },
                         )
                         .with_timeout(self.config.timeout),
+                    });
+                }
+                #[cfg(feature = "swap")]
+                HandlerCommand::SendCheque { cheque } => {
+                    let upgrade =
+                        ClientOutboundUpgrade::swap(cheque, self.config.swap_exchange_rate);
+                    return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
+                        protocol: SubstreamProtocol::new(upgrade, ClientOutboundInfo::Swap)
+                            .with_timeout(self.config.timeout),
                     });
                 }
                 HandlerCommand::AckPseudosettle { request_id, ack } => {
@@ -731,6 +778,8 @@ impl ConnectionHandler for ClientHandler {
                     ClientOutboundInfo::Retrieval { .. } => "retrieval",
                     ClientOutboundInfo::Pushsync { .. } => "pushsync",
                     ClientOutboundInfo::Pseudosettle { .. } => "pseudosettle",
+                    #[cfg(feature = "swap")]
+                    ClientOutboundInfo::Swap => "swap",
                 };
                 warn!(protocol, error = %e.error, "Client dial upgrade error");
                 self.push_event(HandlerEvent::Error {
@@ -780,6 +829,17 @@ impl ClientHandler {
                     self.store_response(request_id, PendingResponse::Pseudosettle(result));
                 }
             }
+            #[cfg(feature = "swap")]
+            ClientInboundOutput::Swap(cheque, headers) => {
+                if let Some(overlay) = self.overlay() {
+                    debug!(%overlay, peer_rate = %headers.exchange_rate, "Received swap cheque");
+                    self.push_event(HandlerEvent::SwapChequeReceived {
+                        overlay,
+                        cheque,
+                        peer_rate: headers.exchange_rate,
+                    });
+                }
+            }
         }
     }
 
@@ -822,6 +882,16 @@ impl ClientHandler {
                     debug!(%overlay, %amount, ack_amount = %ack.amount, "Pseudosettle sent");
                     self.pending_events
                         .push_back(HandlerEvent::PseudosettleSent { overlay, ack });
+                }
+            }
+            #[cfg(feature = "swap")]
+            (ClientOutboundOutput::Swap(headers), ClientOutboundInfo::Swap) => {
+                if let Some(overlay) = self.overlay() {
+                    debug!(%overlay, peer_rate = %headers.exchange_rate, "Swap cheque sent");
+                    self.push_event(HandlerEvent::SwapChequeSent {
+                        overlay,
+                        peer_rate: headers.exchange_rate,
+                    });
                 }
             }
             (output, info) => {

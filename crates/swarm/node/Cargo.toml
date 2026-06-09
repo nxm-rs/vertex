@@ -29,6 +29,9 @@ vertex-swarm-peer.workspace = true
 vertex-swarm-net-pushsync.workspace = true
 vertex-swarm-net-retrieval.workspace = true
 
+## vertex - settlement (optional, feature-gated)
+vertex-swarm-net-swap = { workspace = true, optional = true }
+
 ## vertex - topology
 vertex-swarm-topology.workspace = true
 vertex-swarm-peer-manager.workspace = true
@@ -90,6 +93,10 @@ rand_08.workspace = true
 [features]
 default = ["std"]
 std = []
+# SWAP cheque-based settlement. Pulls the swap wire protocol and surfaces
+# `SwapEvent` plus the `ClientCommand::SendCheque` variant for a settlement
+# service to consume.
+swap = ["dep:vertex-swarm-net-swap"]
 cli = [
     "dep:clap",
     "dep:serde",
