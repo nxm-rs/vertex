@@ -107,15 +107,15 @@ impl ClientBehaviour {
         self.pseudosettle_event_tx = Some(tx);
     }
 
-    /// Set the sender for swap events.
+    /// Route swap events to the given sink.
     ///
-    /// When set, swap-related events will be sent to this channel in addition
+    /// Once routed, swap-related events will be sent to this channel in addition
     /// to being emitted as [`ClientEvent`]. The node wires this up when a swap
     /// settlement service is present.
     #[cfg(feature = "swap")]
     // Wired by the node builder when the swap settlement service is present.
     #[allow(dead_code)]
-    pub(crate) fn set_swap_events(&mut self, tx: mpsc::UnboundedSender<SwapEvent>) {
+    pub(crate) fn route_swap_events(&mut self, tx: mpsc::UnboundedSender<SwapEvent>) {
         self.swap_event_tx = Some(tx);
     }
 

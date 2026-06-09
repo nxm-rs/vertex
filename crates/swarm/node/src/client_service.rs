@@ -406,7 +406,7 @@ impl ClientService {
                 ..
             } => {
                 // The swap settlement service consumes cheques via the dedicated
-                // channel configured with `set_swap_events`.
+                // channel configured with `route_swap_events`.
                 debug!(%peer, %peer_id, %peer_rate, "Swap cheque received");
             }
 
