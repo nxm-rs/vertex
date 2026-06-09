@@ -1,11 +1,13 @@
 //! CLI argument structs and validated configurations for Swarm.
 
+mod chain;
 mod network;
 mod peer;
 mod retrieval;
 mod spec;
 mod swarm;
 
+pub use chain::{ChainArgs, ChainConfig};
 pub use network::{NetworkArgs, NetworkConfig};
 pub use peer::{PeerArgs, PeerConfig};
 pub use retrieval::RetrievalArgs;

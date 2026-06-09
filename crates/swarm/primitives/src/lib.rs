@@ -258,6 +258,21 @@ impl SwarmNodeType {
     pub fn requires_persistent_nonce(&self) -> bool {
         matches!(self, SwarmNodeType::Bootnode | SwarmNodeType::Storer)
     }
+
+    /// Whether this node type needs an Ethereum chain connection.
+    ///
+    /// A storer always needs the chain: it stakes, reads the storage price
+    /// oracle, and settles. A bootnode never does. A client needs it only when
+    /// SWAP settlement is enabled, since a client that settles purely through
+    /// pseudosettle stays chain-free. The node builder consults this together
+    /// with a configured RPC URL before constructing a chain service.
+    pub fn needs_chain(&self, swap_enabled: bool) -> bool {
+        match self {
+            SwarmNodeType::Storer => true,
+            SwarmNodeType::Bootnode => false,
+            SwarmNodeType::Client => swap_enabled,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -375,6 +390,21 @@ mod tests {
         assert!(!t.requires_pullsync());
         assert!(!t.requires_storage());
         assert!(!t.supports_staking());
+    }
+
+    #[test]
+    fn needs_chain_by_node_type() {
+        // Storer always needs the chain (staking, oracle, settlement).
+        assert!(SwarmNodeType::Storer.needs_chain(false));
+        assert!(SwarmNodeType::Storer.needs_chain(true));
+
+        // Bootnode never needs the chain.
+        assert!(!SwarmNodeType::Bootnode.needs_chain(false));
+        assert!(!SwarmNodeType::Bootnode.needs_chain(true));
+
+        // Client needs the chain only when SWAP settlement is enabled.
+        assert!(!SwarmNodeType::Client.needs_chain(false));
+        assert!(SwarmNodeType::Client.needs_chain(true));
     }
 }
 

@@ -11,6 +11,22 @@ description = "Swarm node builder infrastructure"
 [lints]
 workspace = true
 
+[features]
+default = []
+# Construct a shared Ethereum alloy provider for chain-needing node types
+# (storer, and a client with SWAP enabled). Native-only: pulls the alloy RPC
+# stack (HTTP transport via reqwest) and the on-chain chequebook client. Off by
+# default so the light node and the wasm build stay completely chain-free; the
+# cone guard (`just check-cone`) enforces this.
+chain = [
+    "dep:vertex-chain",
+    "vertex-swarm-bandwidth-chequebook/chain",
+    "dep:alloy-provider",
+    "dep:alloy-network",
+    "dep:alloy-signer-local",
+    "dep:alloy-chains",
+]
+
 [dependencies]
 # vertex - node infrastructure
 vertex-node-api.workspace = true
@@ -37,11 +53,28 @@ vertex-swarm-identity.workspace = true
 vertex-swarm-rpc.workspace = true
 vertex-swarm-spec.workspace = true
 
+# vertex - chain (optional, native-only, behind the `chain` feature)
+vertex-chain = { workspace = true, optional = true }
+# The on-chain chequebook client. Pure cheque codec without the `chain` feature;
+# the builder enables `chain` on it to construct the SWAP settlement client.
+vertex-swarm-bandwidth-chequebook = { workspace = true, optional = true }
+
 # nectar
 nectar-primitives.workspace = true
 
 # alloy
 alloy-primitives.workspace = true
+# chain feature: native HTTP transport (reqwest + native-tls) and the wallet
+# signer built from the node Ethereum identity. native-tls (system OpenSSL) is
+# used because the rustls path drags in a root-certs crate outside the workspace
+# license allow-list.
+alloy-provider = { workspace = true, optional = true, features = [
+    "reqwest",
+    "reqwest-native-tls",
+] }
+alloy-network = { workspace = true, optional = true }
+alloy-signer-local = { workspace = true, optional = true }
+alloy-chains = { workspace = true, optional = true }
 
 # async
 tokio = { workspace = true, features = ["sync"] }

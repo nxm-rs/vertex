@@ -32,6 +32,16 @@ use crate::verify::VerifyingChunkProvider;
 /// Network chunk provider wrapped with config-gated download verification.
 type VerifiedChunkProvider = VerifyingChunkProvider<NetworkChunkProvider<Arc<Identity>>>;
 
+#[cfg(feature = "chain")]
+use vertex_swarm_api::{SwarmAccountingConfig, SwarmSpec};
+#[cfg(feature = "chain")]
+use vertex_swarm_node::SwarmNodeType;
+#[cfg(feature = "chain")]
+use vertex_swarm_node::args::ChainConfig;
+
+#[cfg(feature = "chain")]
+use crate::chain::SharedChainProvider;
+
 type PeerStore = Arc<dyn NetPeerStore<StoredPeer>>;
 type PeerScoreStore = Arc<dyn SwarmScoreStore<Score = PeerScore, Error = StoreError>>;
 
@@ -116,6 +126,59 @@ fn spawn_db_metrics_task(ctx: &dyn InfrastructureContext, db: Arc<RedbDatabase>)
                 }
             }
         });
+}
+
+/// Construct, validate, and log the shared chain provider for a chain-needing
+/// node.
+///
+/// Selects the network address book from the spec, then builds and validates a
+/// wallet-filled alloy provider over the configured RPC URL signed by the node's
+/// Ethereum identity. The chain is a shared provider, not a long-lived service,
+/// so there is nothing to spawn: the returned [`SharedChainProvider`] is a
+/// cloneable handle that future chain consumers (the SWAP settlement service in
+/// a later PR) borrow to build their clients (for example a
+/// `ChequebookContract`).
+///
+/// Returns:
+/// - `Ok(Some(provider))` when the chain is connected and validated.
+/// - `Ok(None)` when the chain is deliberately skipped (no RPC URL configured,
+///   or a development network with no canonical deployment).
+/// - `Err` only when a configured connection fails to connect or validate.
+#[cfg(feature = "chain")]
+async fn build_node_chain_provider(
+    spec: &Arc<Spec>,
+    identity: &Arc<Identity>,
+    node_type: SwarmNodeType,
+    swap_enabled: bool,
+    chain: &ChainConfig,
+) -> Result<Option<SharedChainProvider>, SwarmNodeError> {
+    use vertex_chain::ChainConfig as ChainAddressBook;
+    use vertex_swarm_api::SwarmIdentity;
+
+    if !node_type.needs_chain(swap_enabled) {
+        return Ok(None);
+    }
+
+    let Some(rpc_url) = chain.rpc_url.as_deref() else {
+        warn!(
+            "Chain required for this node but no --chain.rpc-url configured; chain access not enabled"
+        );
+        return Ok(None);
+    };
+
+    let address_book = if spec.is_mainnet() {
+        ChainAddressBook::mainnet()
+    } else if spec.is_testnet() {
+        ChainAddressBook::testnet()
+    } else {
+        warn!("Chain has no canonical deployment for this network; chain access not enabled");
+        return Ok(None);
+    };
+
+    let signer = (*identity.signer()).clone();
+    let provider = crate::chain::build_chain_provider(rpc_url, signer, address_book).await?;
+
+    Ok(Some(provider))
 }
 
 fn create_peer_store(
@@ -237,9 +300,27 @@ impl SwarmLaunchConfig for ClientConfig {
         ctx.executor()
             .spawn_service("swarm.client_service", client_service);
 
-        // Return node task - accounting is moved into the closure to keep it alive
+        // A client needs a chain only when SWAP settlement is enabled.
+        #[cfg(feature = "chain")]
+        let chain_provider = {
+            let swap_enabled = SwarmAccountingConfig::mode(self.bandwidth()).swap_enabled();
+            build_node_chain_provider(
+                self.spec(),
+                self.identity(),
+                SwarmNodeType::Client,
+                swap_enabled,
+                self.chain(),
+            )
+            .await?
+        };
+
+        // Return node task - accounting is moved into the closure to keep it
+        // alive. The chain provider is held alive the same way until the SWAP
+        // settlement service (a later PR) consumes it.
         let task = single_task(move |shutdown| async move {
             let _accounting = accounting;
+            #[cfg(feature = "chain")]
+            let _chain_provider = chain_provider;
             if let Err(e) = node.start_and_run(shutdown).await {
                 tracing::error!(error = %e, "ClientNode error");
             }
@@ -290,9 +371,27 @@ impl SwarmLaunchConfig for StorerConfig {
         ctx.executor()
             .spawn_service("swarm.client_service", client_service);
 
-        // Return node task - accounting is moved into the closure to keep it alive
+        // A storer always needs a chain (staking, oracle, settlement).
+        #[cfg(feature = "chain")]
+        let chain_provider = {
+            let swap_enabled = SwarmAccountingConfig::mode(self.bandwidth()).swap_enabled();
+            build_node_chain_provider(
+                self.spec(),
+                self.identity(),
+                SwarmNodeType::Storer,
+                swap_enabled,
+                self.chain(),
+            )
+            .await?
+        };
+
+        // Return node task - accounting is moved into the closure to keep it
+        // alive. The chain provider is held alive the same way until the SWAP
+        // settlement service (a later PR) consumes it.
         let task = single_task(move |shutdown| async move {
             let _accounting = accounting;
+            #[cfg(feature = "chain")]
+            let _chain_provider = chain_provider;
             if let Err(e) = node.start_and_run(shutdown).await {
                 tracing::error!(error = %e, "StorerNode error");
             }

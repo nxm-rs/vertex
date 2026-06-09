@@ -6,7 +6,30 @@
 //! - [`StorerNodeBuilder`] / [`DefaultStorerBuilder`] - Storer node builder
 //!
 //! Build returns [`BuiltNode`] which contains the task and RPC providers.
+//!
+//! # Build modes
+//!
+//! The crate has two build modes, selected by the `chain` cargo feature:
+//!
+//! - Default (`chain` off): the light, chain-free build. No Ethereum RPC stack
+//!   is compiled in; a storer or a SWAP-enabled client runs without on-chain
+//!   staking or settlement. This is what the default `vertex` binary and the
+//!   wasm client resolve, and the cone guard enforces that the chain crates and
+//!   their alloy RPC dependencies never reach this cone.
+//! - `chain` on: pulls `vertex-chain` and the on-chain chequebook client, and
+//!   constructs a shared Ethereum alloy provider for chain-needing node types.
+//!   The chain is a shared provider, not a long-lived service: the launch path
+//!   consults `SwarmNodeType::needs_chain` and a configured RPC URL, builds a
+//!   wallet-filled provider signed by the node identity, validates the connected
+//!   chain id at startup, and hands back a cloneable handle that future chain
+//!   consumers (the SWAP settlement service) borrow. There is no background
+//!   chain task to spawn.
+//!
+//! The chain knobs (RPC URL and transaction tuning) live on the node configs in
+//! every build; without the feature they are inert.
 
+#[cfg(feature = "chain")]
+mod chain;
 pub mod config;
 mod error;
 mod handle;
@@ -41,6 +64,10 @@ pub use launch::{BootnodeLaunchTypes, ClientLaunchTypes, StorerLaunchTypes};
 
 // Errors
 pub use error::SwarmNodeError;
+
+// Chain provider seam (behind the `chain` feature)
+#[cfg(feature = "chain")]
+pub use chain::{SharedChainProvider, build_chain_provider};
 
 // Re-exports
 pub use vertex_swarm_api::{BootnodeComponents, ClientComponents, StorerComponents};

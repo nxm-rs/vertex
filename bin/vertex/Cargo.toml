@@ -13,6 +13,11 @@ path = "src/main.rs"
 
 [features]
 default = []
+# Construct a shared native Ethereum alloy provider for chain-needing node
+# types. Off by default: the default binary is the light, chain-free build. The
+# cone guard (`just check-cone`) enforces that the default cone never resolves
+# chain code.
+chain = ["vertex-swarm-builder/chain"]
 jemalloc = ["tikv-jemallocator", "vertex-observability/jemalloc", "vertex-node-builder/jemalloc"]
 heap-profiling = ["jemalloc", "tikv-jemallocator/profiling", "vertex-observability/heap-profiling"]
 profiling = ["vertex-observability/profiling"]
