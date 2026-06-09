@@ -21,6 +21,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 use vertex_swarm_primitives::OverlayAddress;
 
+#[cfg(feature = "swap")]
+use super::SwapEvent;
 use super::{
     ClientCommand, ClientEvent, PseudosettleEvent,
     handler::{ClientHandler, Config as HandlerConfig, HandlerCommand, HandlerEvent},
@@ -78,6 +80,9 @@ pub(crate) struct ClientBehaviour {
     pending_events: VecDeque<ToSwarm<ClientEvent, HandlerCommand>>,
     /// Optional sender for pseudosettle events.
     pseudosettle_event_tx: Option<mpsc::UnboundedSender<PseudosettleEvent>>,
+    /// Optional sender for swap events.
+    #[cfg(feature = "swap")]
+    swap_event_tx: Option<mpsc::UnboundedSender<SwapEvent>>,
 }
 
 impl ClientBehaviour {
@@ -89,6 +94,8 @@ impl ClientBehaviour {
             overlay_peers: HashMap::new(),
             pending_events: VecDeque::new(),
             pseudosettle_event_tx: None,
+            #[cfg(feature = "swap")]
+            swap_event_tx: None,
         }
     }
 
@@ -98,6 +105,18 @@ impl ClientBehaviour {
     /// in addition to being emitted as [`ClientEvent`].
     pub(crate) fn set_pseudosettle_events(&mut self, tx: mpsc::UnboundedSender<PseudosettleEvent>) {
         self.pseudosettle_event_tx = Some(tx);
+    }
+
+    /// Set the sender for swap events.
+    ///
+    /// When set, swap-related events will be sent to this channel in addition
+    /// to being emitted as [`ClientEvent`]. The node wires this up when a swap
+    /// settlement service is present.
+    #[cfg(feature = "swap")]
+    // Wired by the node builder when the swap settlement service is present.
+    #[allow(dead_code)]
+    pub(crate) fn set_swap_events(&mut self, tx: mpsc::UnboundedSender<SwapEvent>) {
+        self.swap_event_tx = Some(tx);
     }
 
     /// Push an event if the queue isn't full, otherwise drop with a metric.
@@ -235,6 +254,19 @@ impl ClientBehaviour {
                     });
                 } else {
                     debug!(%peer, "Unknown peer for pseudosettle ack");
+                }
+            }
+            #[cfg(feature = "swap")]
+            ClientCommand::SendCheque { peer, cheque } => {
+                if let Some(&peer_id) = self.overlay_peers.get(&peer) {
+                    debug!(%peer_id, %peer, "Sending swap cheque");
+                    self.push_event(ToSwarm::NotifyHandler {
+                        peer_id,
+                        handler: libp2p::swarm::NotifyHandler::Any,
+                        event: HandlerCommand::SendCheque { cheque },
+                    });
+                } else {
+                    debug!(%peer, "Unknown peer for swap cheque");
                 }
             }
             ClientCommand::DisconnectPeer { peer, reason } => {
@@ -380,6 +412,50 @@ impl ClientBehaviour {
                     peer: overlay,
                     peer_id,
                     ack,
+                }));
+            }
+            #[cfg(feature = "swap")]
+            HandlerEvent::SwapChequeReceived {
+                overlay,
+                cheque,
+                peer_rate,
+            } => {
+                // Route to swap service if configured
+                if let Some(tx) = &self.swap_event_tx
+                    && tx
+                        .send(SwapEvent::ChequeReceived {
+                            peer: overlay,
+                            cheque: cheque.clone(),
+                            peer_rate,
+                        })
+                        .is_err()
+                {
+                    warn!(%overlay, "Swap event channel closed");
+                }
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::SwapChequeReceived {
+                    peer: overlay,
+                    peer_id,
+                    cheque,
+                    peer_rate,
+                }));
+            }
+            #[cfg(feature = "swap")]
+            HandlerEvent::SwapChequeSent { overlay, peer_rate } => {
+                // Route to swap service if configured
+                if let Some(tx) = &self.swap_event_tx
+                    && tx
+                        .send(SwapEvent::ChequeSent {
+                            peer: overlay,
+                            peer_rate,
+                        })
+                        .is_err()
+                {
+                    warn!(%overlay, "Swap event channel closed");
+                }
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::SwapChequeSent {
+                    peer: overlay,
+                    peer_id,
+                    peer_rate,
                 }));
             }
         }
