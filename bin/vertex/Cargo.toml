@@ -18,6 +18,10 @@ default = []
 # cone guard (`just check-cone`) enforces that the default cone never resolves
 # chain code.
 chain = ["vertex-swarm-builder/chain"]
+# Node role: a storer settles bandwidth over SWAP, so it turns the chain stack
+# and the on-chain chequebook client on. Equivalent to `chain` today; kept as a
+# distinct role feature so the storer build is selected by intent.
+storer = ["vertex-swarm-builder/storer"]
 jemalloc = ["tikv-jemallocator", "vertex-observability/jemalloc", "vertex-node-builder/jemalloc"]
 heap-profiling = ["jemalloc", "tikv-jemallocator/profiling", "vertex-observability/heap-profiling"]
 profiling = ["vertex-observability/profiling"]

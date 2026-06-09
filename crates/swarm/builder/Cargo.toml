@@ -20,12 +20,15 @@ default = []
 # cone guard (`just check-cone`) enforces this.
 chain = [
     "dep:vertex-chain",
-    "vertex-swarm-bandwidth-chequebook/chain",
+    "vertex-swarm-bandwidth-chequebook/swap-chequebook",
     "dep:alloy-provider",
     "dep:alloy-network",
     "dep:alloy-signer-local",
     "dep:alloy-chains",
 ]
+# Node role: the storer settles bandwidth over SWAP, so it pulls in the chain
+# stack and the on-chain chequebook client. Light clients leave this off.
+storer = ["chain"]
 
 [dependencies]
 # vertex - node infrastructure
@@ -55,8 +58,9 @@ vertex-swarm-spec.workspace = true
 
 # vertex - chain (optional, native-only, behind the `chain` feature)
 vertex-chain = { workspace = true, optional = true }
-# The on-chain chequebook client. Pure cheque codec without the `chain` feature;
-# the builder enables `chain` on it to construct the SWAP settlement client.
+# The on-chain chequebook client. Pure cheque codec by default; the builder's
+# `chain` feature enables `swap-chequebook` on it to construct the SWAP
+# settlement client.
 vertex-swarm-bandwidth-chequebook = { workspace = true, optional = true }
 
 # nectar

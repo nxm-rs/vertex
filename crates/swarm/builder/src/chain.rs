@@ -100,6 +100,7 @@ pub async fn build_chain_provider(
 }
 
 #[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
     use alloy_signer_local::PrivateKeySigner;
