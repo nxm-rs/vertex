@@ -8,7 +8,7 @@ A wasm client unlocks light-client embeddings in dapps, indexer UIs, and the Nex
 
 ### Status
 
-- Already no_std capable with a `default = ["std"]` feature: `vertex-swarm-primitives`, `vertex-swarm-spec`, `vertex-swarm-forks`, `vertex-swarm-api`. These compile to wasm today.
+- Already no_std capable with a `default = ["std"]` feature: `vertex-swarm-primitives`, `vertex-swarm-spec`, `vertex-swarm-forks`, `vertex-swarm-api`. Their dependency cone resolved for `wasm32-unknown-unknown` with `--no-default-features` is free of chain code and of `reqwest`, and `just check-cone` enforces that. A plain `cargo build` for wasm does not yet succeed: `nectar-primitives` pulls `wasm-bindgen-rayon`, which needs a threaded-wasm toolchain (`atomics` + `bulk-memory` + `build-std`), and `vertex-swarm-spec`/`vertex-swarm-api` pull `vertex-tasks`, whose `tokio::select!` usage needs the wasm tokio feature set trimmed per the tokio audit below. Both are tracked work, not a regression.
 - Nectar primitives (`nectar-primitives`, `nectar-mantaray`, `nectar-postage`) are the upstream wasm-friendly layer. The proof-of-concept `crates/wasm-demo` lives in nectar.
 - Legacy wasm bins in this repo (`bin/swarm-wasm-lib`, `bin/wasm-playground`) reference path deps to `crates/bmt` and `crates/postage` that no longer exist (they moved to nectar). They are stale and should not be treated as a working baseline; remove them or rewrite them against the current crate graph before adding new wasm code.
 - A real client-in-wasm shipping target does not exist yet. The work plan is in this document.
