@@ -23,6 +23,8 @@ use vertex_swarm_redistribution::StorageConfig;
 use vertex_swarm_spec::Spec;
 use vertex_swarm_topology::KademliaConfig;
 
+use crate::verify::ChunkVerifyConfig;
+
 /// Implement shared config getters: `spec()`, `identity()`, `network()`.
 macro_rules! impl_common_config_getters {
     ($ty:ident) => {
@@ -87,6 +89,7 @@ pub struct ClientConfig {
     identity: Arc<Identity>,
     network: NetworkConfig<KademliaConfig>,
     bandwidth: DefaultBandwidthConfig,
+    verify: ChunkVerifyConfig,
 }
 
 impl ClientConfig {
@@ -95,17 +98,24 @@ impl ClientConfig {
         identity: Arc<Identity>,
         network: NetworkConfig<KademliaConfig>,
         bandwidth: DefaultBandwidthConfig,
+        verify: ChunkVerifyConfig,
     ) -> Self {
         Self {
             spec,
             identity,
             network,
             bandwidth,
+            verify,
         }
     }
 
     pub fn bandwidth(&self) -> &DefaultBandwidthConfig {
         &self.bandwidth
+    }
+
+    /// Verification checks applied to downloaded chunks.
+    pub fn verify(&self) -> ChunkVerifyConfig {
+        self.verify
     }
 }
 
@@ -121,6 +131,7 @@ pub struct StorerConfig {
     bandwidth: DefaultBandwidthConfig,
     local_store: LocalStoreConfig,
     storage: StorageConfig,
+    verify: ChunkVerifyConfig,
 }
 
 impl StorerConfig {
@@ -131,6 +142,7 @@ impl StorerConfig {
         bandwidth: DefaultBandwidthConfig,
         local_store: LocalStoreConfig,
         storage: StorageConfig,
+        verify: ChunkVerifyConfig,
     ) -> Self {
         Self {
             spec,
@@ -139,11 +151,17 @@ impl StorerConfig {
             bandwidth,
             local_store,
             storage,
+            verify,
         }
     }
 
     pub fn bandwidth(&self) -> &DefaultBandwidthConfig {
         &self.bandwidth
+    }
+
+    /// Verification checks applied to downloaded chunks.
+    pub fn verify(&self) -> ChunkVerifyConfig {
+        self.verify
     }
 
     pub fn local_store(&self) -> &LocalStoreConfig {

@@ -27,6 +27,10 @@ use crate::config::{BootnodeConfig, ClientConfig, StorerConfig};
 use crate::error::SwarmNodeError;
 use crate::providers::NetworkChunkProvider;
 use crate::rpc::{BootnodeRpcProviders, ClientRpcProviders, StorerRpcProviders};
+use crate::verify::VerifyingChunkProvider;
+
+/// Network chunk provider wrapped with config-gated download verification.
+type VerifiedChunkProvider = VerifyingChunkProvider<NetworkChunkProvider<Arc<Identity>>>;
 
 type PeerStore = Arc<dyn NetPeerStore<StoredPeer>>;
 type PeerScoreStore = Arc<dyn SwarmScoreStore<Score = PeerScore, Error = StoreError>>;
@@ -201,7 +205,7 @@ impl SwarmLaunchConfig for BootnodeConfig {
 #[async_trait]
 impl SwarmLaunchConfig for ClientConfig {
     type Types = ClientLaunchTypes;
-    type Providers = ClientRpcProviders<Arc<Identity>, NetworkChunkProvider<Arc<Identity>>>;
+    type Providers = ClientRpcProviders<Arc<Identity>, VerifiedChunkProvider>;
     type Error = SwarmNodeError;
 
     async fn build(
@@ -226,7 +230,8 @@ impl SwarmLaunchConfig for ClientConfig {
 
         let topology = node.topology_handle().clone();
         let chunk_provider = NetworkChunkProvider::new(client_handle, topology.clone());
-        let providers = ClientRpcProviders::new(topology, chunk_provider);
+        let verified_provider = VerifyingChunkProvider::new(chunk_provider, self.verify());
+        let providers = ClientRpcProviders::new(topology, verified_provider);
 
         // Spawn client service as independent task with graceful shutdown
         ctx.executor()
@@ -248,7 +253,7 @@ impl SwarmLaunchConfig for ClientConfig {
 #[async_trait]
 impl SwarmLaunchConfig for StorerConfig {
     type Types = StorerLaunchTypes;
-    type Providers = StorerRpcProviders<Arc<Identity>, NetworkChunkProvider<Arc<Identity>>>;
+    type Providers = StorerRpcProviders<Arc<Identity>, VerifiedChunkProvider>;
     type Error = SwarmNodeError;
 
     async fn build(
@@ -278,7 +283,8 @@ impl SwarmLaunchConfig for StorerConfig {
 
         let topology = node.topology_handle().clone();
         let chunk_provider = NetworkChunkProvider::new(client_handle, topology.clone());
-        let providers = StorerRpcProviders::new(topology, chunk_provider);
+        let verified_provider = VerifyingChunkProvider::new(chunk_provider, self.verify());
+        let providers = StorerRpcProviders::new(topology, verified_provider);
 
         // Spawn client service as independent task with graceful shutdown
         ctx.executor()

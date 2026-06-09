@@ -22,6 +22,7 @@ use vertex_swarm_topology::KademliaConfig;
 use crate::config::{BootnodeConfig, ClientConfig, StorerConfig};
 use crate::error::SwarmNodeError;
 use crate::handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};
+use crate::verify::ChunkVerifyConfig;
 
 /// Fluent transformation API for builders.
 pub trait BuilderExt: Sized {
@@ -91,6 +92,7 @@ where
         ClientNodeBuilder {
             base: self,
             accounting,
+            verify: ChunkVerifyConfig::default(),
         }
     }
 }
@@ -104,6 +106,7 @@ where
 {
     base: NodeBuilder<I, N>,
     accounting: A,
+    verify: ChunkVerifyConfig,
 }
 
 impl<I, N, A> BuilderExt for ClientNodeBuilder<I, N, A>
@@ -122,6 +125,12 @@ where
 {
     pub fn spec(&self) -> &Arc<Spec> {
         self.base.spec()
+    }
+
+    /// Set the verification checks applied to downloaded chunks.
+    pub fn with_verify(mut self, verify: ChunkVerifyConfig) -> Self {
+        self.verify = verify;
+        self
     }
 
     /// Transition to storer builder by adding storage.
@@ -226,8 +235,11 @@ impl DefaultClientBuilder {
         identity: Arc<Identity>,
         network: NetworkConfig<KademliaConfig>,
         bandwidth: DefaultBandwidthConfig,
+        verify: ChunkVerifyConfig,
     ) -> Self {
-        NodeBuilder::new(spec, identity, network).with_accounting(bandwidth)
+        NodeBuilder::new(spec, identity, network)
+            .with_accounting(bandwidth)
+            .with_verify(verify)
     }
 
     pub fn from_config(config: ClientConfig) -> Self {
@@ -236,6 +248,7 @@ impl DefaultClientBuilder {
             config.identity().clone(),
             config.network().clone(),
             config.bandwidth().clone(),
+            config.verify(),
         )
     }
 
@@ -246,6 +259,7 @@ impl DefaultClientBuilder {
             self.base.identity,
             self.base.network,
             self.accounting,
+            self.verify,
         )
     }
 
@@ -268,9 +282,11 @@ impl DefaultStorerBuilder {
         bandwidth: DefaultBandwidthConfig,
         local_store: LocalStoreConfig,
         storage: StorageConfig,
+        verify: ChunkVerifyConfig,
     ) -> Self {
         NodeBuilder::new(spec, identity, network)
             .with_accounting(bandwidth)
+            .with_verify(verify)
             .with_storage(local_store, storage)
     }
 
@@ -282,6 +298,7 @@ impl DefaultStorerBuilder {
             config.bandwidth().clone(),
             config.local_store().clone(),
             config.storage().clone(),
+            config.verify(),
         )
     }
 
@@ -294,6 +311,7 @@ impl DefaultStorerBuilder {
             self.client.accounting,
             self.local_store,
             self.storage,
+            self.client.verify,
         )
     }
 

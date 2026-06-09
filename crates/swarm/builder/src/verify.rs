@@ -17,7 +17,8 @@
 
 use async_trait::async_trait;
 use vertex_swarm_api::{
-    ChunkAddress, ChunkRetrievalResult, StampedChunk, SwarmChunkProvider, SwarmError, SwarmResult,
+    ChunkAddress, ChunkRetrievalResult, PushReceipt, StampedChunk, SwarmChunkProvider,
+    SwarmChunkSender, SwarmError, SwarmResult,
 };
 
 /// Which checks the [`VerifyingChunkProvider`] applies to retrieved chunks.
@@ -116,6 +117,23 @@ where
     }
 }
 
+/// Uploads bypass the download-side verification and forward straight to the
+/// wrapped sender. [`ChunkVerifyConfig`] governs retrieved chunks only; the
+/// upload path keeps its own stamp validation in [`SwarmChunkSender::send_chunk`].
+#[async_trait]
+impl<P> SwarmChunkSender for VerifyingChunkProvider<P>
+where
+    P: SwarmChunkSender,
+{
+    async fn send_chunk_unchecked(&self, chunk: StampedChunk) -> SwarmResult<PushReceipt> {
+        self.inner.send_chunk_unchecked(chunk).await
+    }
+
+    async fn send_chunk(&self, chunk: StampedChunk) -> SwarmResult<PushReceipt> {
+        self.inner.send_chunk(chunk).await
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
@@ -124,7 +142,8 @@ mod tests {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use nectar_postage::{Stamp, StampDigest, StampIndex};
-    use vertex_swarm_api::{AnyChunk, Chunk, ContentChunk};
+    use nectar_primitives::Nonce;
+    use vertex_swarm_api::{AnyChunk, Chunk, ContentChunk, StorageRadius};
 
     /// In-test provider returning a canned stamped chunk for any request.
     struct MockProvider {
@@ -146,6 +165,22 @@ mod tests {
 
         fn has_chunk(&self, _address: &ChunkAddress) -> bool {
             true
+        }
+    }
+
+    #[async_trait]
+    impl SwarmChunkSender for MockProvider {
+        async fn send_chunk_unchecked(&self, _chunk: StampedChunk) -> SwarmResult<PushReceipt> {
+            Ok(PushReceipt {
+                storer: self.served_by,
+                signature: alloy_primitives::Signature::from_raw(&[1u8; 65]).unwrap(),
+                nonce: Nonce::new([0u8; 32]),
+                storage_radius: StorageRadius::ZERO,
+            })
+        }
+
+        async fn send_chunk(&self, chunk: StampedChunk) -> SwarmResult<PushReceipt> {
+            self.send_chunk_unchecked(chunk).await
         }
     }
 
@@ -281,6 +316,31 @@ mod tests {
         assert!(
             matches!(result, Err(SwarmError::InvalidSignature { .. })),
             "malformed stamp should fail signature recovery: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn upload_forwards_to_inner_sender() {
+        let chunk = content_chunk();
+        let address = *chunk.address();
+        let stamped = stamped(chunk, valid_stamp(&address));
+
+        // Download verification settings must not affect the upload path.
+        let provider = VerifyingChunkProvider::new(
+            MockProvider {
+                chunk: stamped.clone(),
+                served_by: Default::default(),
+            },
+            ChunkVerifyConfig {
+                verify_content: true,
+                verify_stamp: true,
+            },
+        );
+
+        let receipt = provider.send_chunk(stamped).await;
+        assert!(
+            receipt.is_ok(),
+            "upload should forward to inner: {receipt:?}"
         );
     }
 }

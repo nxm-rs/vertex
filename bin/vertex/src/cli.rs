@@ -10,8 +10,8 @@ use vertex_node_core::config::FullNodeConfig;
 use vertex_node_core::dirs::DataDirs;
 use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
 use vertex_swarm_builder::{
-    BootnodeConfig, ClientConfig, DefaultClientBuilder, DefaultNodeBuilder, DefaultStorerBuilder,
-    StorerConfig,
+    BootnodeConfig, ChunkVerifyConfig, ClientConfig, DefaultClientBuilder, DefaultNodeBuilder,
+    DefaultStorerBuilder, StorerConfig,
 };
 use vertex_swarm_node::ProtocolConfig;
 use vertex_swarm_node::args::ProtocolArgs;
@@ -118,6 +118,12 @@ pub async fn run() -> Result<()> {
         let identity = config.protocol.identity(spec.clone(), &dirs.network)?;
         let grpc_addr = socket_addr(&config.infra.api.grpc_addr, config.infra.api.grpc_port);
 
+        let retrieval = config.protocol.retrieval();
+        let verify = ChunkVerifyConfig {
+            verify_content: retrieval.verify_content,
+            verify_stamp: retrieval.verify_stamp,
+        };
+
         // Dispatch based on node type
         match node_type {
             SwarmNodeType::Client => {
@@ -126,7 +132,7 @@ pub async fn run() -> Result<()> {
                     .bandwidth_config()
                     .map_err(|e| eyre::eyre!("bandwidth config error: {}", e))?;
 
-                let node_config = ClientConfig::new(spec, identity, network, bandwidth);
+                let node_config = ClientConfig::new(spec, identity, network, bandwidth, verify);
 
                 let (task_fn, rpc_providers) = DefaultClientBuilder::from_config(node_config)
                     .build(&launch_ctx)
@@ -151,8 +157,15 @@ pub async fn run() -> Result<()> {
                 let local_store = config.protocol.local_store_config();
                 let storage = config.protocol.storage_config();
 
-                let node_config =
-                    StorerConfig::new(spec, identity, network, bandwidth, local_store, storage);
+                let node_config = StorerConfig::new(
+                    spec,
+                    identity,
+                    network,
+                    bandwidth,
+                    local_store,
+                    storage,
+                    verify,
+                );
 
                 let (task_fn, rpc_providers) = DefaultStorerBuilder::from_config(node_config)
                     .build(&launch_ctx)
