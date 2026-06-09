@@ -58,12 +58,13 @@ fn sign_serialize_deserialize_recovers_signer() {
 fn parses_peer_format_sample() {
     // A realistic sample in the field-value conventions other Swarm nodes emit:
     // PascalCase keys, lowercase 0x addresses, a bare-number payout spanning the
-    // full U256 range, and a standard base64 signature.
+    // full U256 range, and a standard base64 signature over the canonical 65-byte
+    // r||s||v payload.
     let sample = "{\
         \"Chequebook\":\"0xcafebabecafebabecafebabecafebabecafebabe\",\
         \"Beneficiary\":\"0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef\",\
         \"CumulativePayout\":115792089237316195423570985008687907853269984665640564039457584007913129639935,\
-        \"Signature\":\"3q2+7w==\"}";
+        \"Signature\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0A=\"}";
 
     let decoded: SignedCheque = serde_json::from_slice(sample.as_bytes()).unwrap();
 
@@ -80,7 +81,8 @@ fn parses_peer_format_sample() {
             .unwrap()
     );
     assert_eq!(decoded.cheque.cumulative_payout(), U256::MAX);
-    assert_eq!(decoded.signature.as_ref(), &[0xde, 0xad, 0xbe, 0xef]);
+    let expected_sig: Vec<u8> = (0u8..=64).collect();
+    assert_eq!(decoded.signature.as_ref(), expected_sig.as_slice());
 }
 
 #[test]
@@ -105,15 +107,23 @@ fn output_has_expected_keys_and_value_types() {
     assert!(payout.is_number(), "payout must be a JSON number");
     assert_eq!(payout.to_string(), "1000000");
 
-    // The signature is a base64 string, never a number array.
-    assert!(obj.get("Signature").unwrap().is_string());
+    // The signature is a standard-alphabet, padded base64 string (matching the
+    // `[]byte` encoding other Swarm nodes emit), never a number array. A 65-byte
+    // payload encodes to 88 characters ending in a single `=` pad.
+    let signature = obj.get("Signature").unwrap().as_str().unwrap();
+    assert_eq!(signature.len(), 88);
+    assert!(signature.ends_with('='));
+    assert_eq!(
+        signature,
+        "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0A="
+    );
 }
 
 #[test]
 fn payout_spans_full_u256_as_bare_number() {
     // The payout exceeds u64, so it must emit as a bare JSON number, not a quoted
     // string, and round-trip exactly.
-    let signed = sample_cheque(U256::MAX, vec![0x01]);
+    let signed = sample_cheque(U256::MAX, (0u8..=64).collect());
     let json = String::from_utf8(serde_json::to_vec(&signed).unwrap()).unwrap();
     assert!(json.contains(&format!("\"CumulativePayout\":{}", U256::MAX)));
 
@@ -130,6 +140,14 @@ fn decode_rejects_missing_field() {
 #[test]
 fn decode_rejects_bad_base64() {
     let json = "{\"Chequebook\":\"0x0101010101010101010101010101010101010101\",\"Beneficiary\":\"0x0202020202020202020202020202020202020202\",\"CumulativePayout\":1,\"Signature\":\"@@@\"}";
+    assert!(SignedCheque::from_json(json.as_bytes()).is_err());
+}
+
+#[test]
+fn decode_rejects_wrong_length_signature() {
+    // The signature field is the canonical 65-byte r||s||v payload, so a base64
+    // string that decodes to a different length is rejected at the JSON boundary.
+    let json = "{\"Chequebook\":\"0x0101010101010101010101010101010101010101\",\"Beneficiary\":\"0x0202020202020202020202020202020202020202\",\"CumulativePayout\":1,\"Signature\":\"3q2+7w==\"}";
     assert!(SignedCheque::from_json(json.as_bytes()).is_err());
 }
 

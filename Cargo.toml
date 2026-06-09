@@ -334,7 +334,7 @@ base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 postcard = { version = "1", features = ["alloc"] }
 zstd = "0.13"
 toml = "0.8"
-serde_with = { version = "3", default-features = false, features = ["macros"] }
+serde_with = { version = "3", default-features = false, features = ["macros", "base64"] }
 strum = { version = "0.28", features = ["derive"] }
 thiserror = { version = "2.0", default-features = false }
 vergen-gitcl = "9"

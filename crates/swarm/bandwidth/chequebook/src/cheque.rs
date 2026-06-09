@@ -37,7 +37,11 @@ use alloy_primitives::{Address, B256, Signature, U256};
 use alloy_sol_types::{Eip712Domain, SolStruct, eip712_domain};
 use bytes::Bytes;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_with::serde_as;
 use vertex_swarm_spec::SwarmSpec;
+
+/// Canonical signature length: r[32] + s[32] + v[1].
+const SIGNATURE_LEN: usize = 65;
 
 use crate::ChequeError;
 
@@ -119,11 +123,17 @@ pub struct SignedCheque {
 
 impl Serialize for SignedCheque {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let signature: [u8; SIGNATURE_LEN] = self.signature.as_ref().try_into().map_err(|_| {
+            serde::ser::Error::custom(format!(
+                "invalid signature length: expected {SIGNATURE_LEN}, got {}",
+                self.signature.len()
+            ))
+        })?;
         WireCheque {
             chequebook: self.cheque.chequebook,
             beneficiary: self.cheque.beneficiary,
             cumulative_payout: self.cheque.cumulativePayout,
-            signature: self.signature.clone(),
+            signature,
         }
         .serialize(serializer)
     }
@@ -138,7 +148,7 @@ impl<'de> Deserialize<'de> for SignedCheque {
                 beneficiary: wire.beneficiary,
                 cumulativePayout: wire.cumulative_payout,
             },
-            signature: wire.signature,
+            signature: Bytes::copy_from_slice(&wire.signature),
         })
     }
 }
@@ -221,6 +231,7 @@ impl SignedCheque {
 /// as a bare decimal JSON number across the full 256-bit range, and `Signature`
 /// as standard base64. The JSON is transport-only, so this shape only needs to be
 /// cross-implementation parseable and value-preserving, not byte-pinned.
+#[serde_as]
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct WireCheque {
@@ -229,17 +240,30 @@ struct WireCheque {
     // default serde needs no helper.
     chequebook: Address,
     beneficiary: Address,
+    // Bare decimal JSON number across the full 256-bit range. A helper is needed
+    // on both sides: `serde_json` is built here without `arbitrary_precision`, so
+    // its native number path tops out at `u64`/`i64` and a bee-sized payout would
+    // either fail to encode or decode lossily through `f64`. The helper carries
+    // the decimal token verbatim through a `RawValue`.
     #[serde(with = "payout_number")]
     cumulative_payout: U256,
-    #[serde(with = "signature_base64")]
-    signature: Bytes,
+    // Standard base64 (padded, standard alphabet) over the fixed 65-byte
+    // signature, matching the `[]byte` encoding other Swarm nodes emit.
+    #[serde_as(as = "serde_with::base64::Base64")]
+    signature: [u8; SIGNATURE_LEN],
 }
 
 /// Bare decimal JSON number serde for `U256`.
 ///
-/// `U256` exceeds `u64`, so a [`RawValue`] carries the decimal token. The decoder
-/// rejects anything that is not a bare decimal number (quoted strings, signs,
-/// decimal points, exponents), keeping the payout shape strict.
+/// This helper exists only because `serde_json` is built here without
+/// `arbitrary_precision`: its native number path tops out at `u64`/`i64`, so
+/// `U256`'s own serde cannot emit or accept a 256-bit value as a bare JSON
+/// number (encode would fall back to a `0x`-hex string, decode would coerce a
+/// bee-sized payout through a lossy `f64`). A [`RawValue`] carries the decimal
+/// token verbatim in both directions. The decoder rejects anything that is not a
+/// bare decimal number (quoted strings, signs, decimal points, exponents),
+/// keeping the payout shape strict. The whole helper disappears with the
+/// protobuf migration tracked in issue #183.
 mod payout_number {
     use alloy_primitives::U256;
     use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
@@ -257,29 +281,6 @@ mod payout_number {
             return Err(de::Error::custom("expected a bare decimal number"));
         }
         token.parse::<U256>().map_err(de::Error::custom)
-    }
-}
-
-/// Standard base64 serde for the signature payload.
-///
-/// `Vec<u8>` serializes as a JSON number array by default; base64 matches the
-/// `[]byte` encoding other Swarm nodes emit.
-mod signature_base64 {
-    use base64::Engine as _;
-    use base64::engine::general_purpose::STANDARD as BASE64;
-    use bytes::Bytes;
-    use serde::{Deserialize, Deserializer, Serializer, de};
-
-    pub(super) fn serialize<S: Serializer>(sig: &Bytes, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&BASE64.encode(sig))
-    }
-
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Bytes, D::Error> {
-        let s = <&str>::deserialize(d)?;
-        BASE64
-            .decode(s.as_bytes())
-            .map(Bytes::from)
-            .map_err(de::Error::custom)
     }
 }
 
@@ -402,6 +403,35 @@ mod tests {
         let json = String::from_utf8(signed.to_json().unwrap().to_vec()).unwrap();
         assert!(json.contains("\"Chequebook\":\"0xabcdefabcdefabcdefabcdefabcdefabcdefabcd\""));
         assert!(json.contains("\"Beneficiary\":\"0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef\""));
+    }
+
+    #[test]
+    fn test_bee_style_bare_number_payout_decodes() {
+        // A peer emitting the payout as a bare JSON number must parse, including
+        // values that fit in native range.
+        let json = r#"{"Chequebook":"0x0101010101010101010101010101010101010101","Beneficiary":"0x0202020202020202020202020202020202020202","CumulativePayout":1000000,"Signature":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}"#;
+        let decoded = SignedCheque::from_json(json.as_bytes()).unwrap();
+        assert_eq!(decoded.cheque.cumulative_payout(), U256::from(1_000_000u64));
+    }
+
+    #[test]
+    fn test_full_range_payout_roundtrips() {
+        // A payout near the top of the 256-bit range exceeds `u128` and must
+        // survive serialize -> deserialize as a bare decimal number.
+        let payout = U256::MAX - U256::from(1u64);
+        let cheque = Cheque::new(
+            Address::repeat_byte(0x01),
+            Address::repeat_byte(0x02),
+            payout,
+        );
+        let signed = SignedCheque::new(cheque, Bytes::from(vec![0u8; 65]));
+
+        let json = String::from_utf8(signed.to_json().unwrap().to_vec()).unwrap();
+        assert!(json.contains(&format!("\"CumulativePayout\":{payout}")));
+
+        let decoded = SignedCheque::from_json(json.as_bytes()).unwrap();
+        assert_eq!(decoded.cheque.cumulative_payout(), payout);
+        assert_eq!(decoded, signed);
     }
 
     #[test]
