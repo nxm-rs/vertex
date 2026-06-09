@@ -1,0 +1,16 @@
+# flutter_rust_bridge codegen configuration for the Vertex client FFI surface.
+#
+# The Rust API under `src/api/` is the single source of truth. Running
+# `flutter_rust_bridge_codegen generate` from this directory regenerates
+# `src/frb_generated.rs` (the C ABI dispatch and wire codecs) and the per-language
+# host bindings. The crate compiles without this step; regenerate only when a
+# host needs to call the latest bindings.
+rust_input: crate::api
+rust_root: .
+rust_output: src/frb_generated.rs
+# Host binding output. The Dart path is the canonical target; Swift and Kotlin
+# bindings follow the same generated surface for their respective hosts.
+dart_output: bindings/dart/vertex_ffi.dart
+# Emit the C header alongside the generated Rust so native (non-Dart) hosts have
+# a generated, never hand-maintained, ABI declaration.
+c_output: bindings/c/vertex_ffi.h
