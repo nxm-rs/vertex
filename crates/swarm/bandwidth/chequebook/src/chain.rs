@@ -5,27 +5,26 @@
 //! It is a SWAP settlement detail, so it lives with the cheque codec rather than
 //! in the generic chain crate, which knows nothing about chequebook semantics.
 //!
-//! The client holds a shared `alloy_provider::Provider` and assembles
-//! `nectar_contracts` `SolCall` calldata directly: reads go through
-//! `Provider::call` and decode the typed return, writes go through
-//! `Provider::send_transaction`. There is no parallel reader or sender
-//! abstraction over alloy. Fee bumping for stuck writes comes from
-//! [`vertex_chain::ProviderExt`].
+//! The client holds a shared `alloy_provider::Provider` and drives the
+//! `nectar_contracts` `sol!` interfaces through `alloy_contract` `CallBuilder`s:
+//! reads end in `.call()`, writes in `.send()`. There is no parallel reader or
+//! sender abstraction over alloy. Fee bumping for stuck writes comes from
+//! [`vertex_chain::ProviderExt`], which operates on the
+//! [`PendingTransactionBuilder`] a write returns.
 //!
-//! This module is gated behind the `chain` feature so the rest of the crate stays
-//! a pure, wasm-safe codec with no RPC stack. The factory address comes from
-//! [`vertex_chain::ChainConfig`]; per-chequebook reads and writes target the
-//! chequebook address supplied per call.
+//! This module is gated behind the `swap-chequebook` feature so the rest of the
+//! crate stays a pure, wasm-safe codec with no RPC stack. The factory address
+//! comes from [`vertex_chain::ChainConfig`]; per-chequebook reads and writes
+//! target the chequebook address supplied per call.
 
 use core::time::Duration;
 
+use alloy_contract::CallBuilder;
 use alloy_network::Ethereum;
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_provider::{PendingTransactionBuilder, Provider};
-use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
-use alloy_sol_types::SolCall;
 use nectar_contracts::{IChequebook, IChequebookFactory};
-use vertex_chain::{ChainConfig, ChainError, TxError, TxRequest};
+use vertex_chain::{ChainConfig, ChainError, TxError};
 
 use crate::SignedCheque;
 
@@ -59,49 +58,13 @@ impl<P> ChequebookContract<P> {
 }
 
 impl<P: Provider> ChequebookContract<P> {
-    /// Execute a chequebook read `eth_call` and decode the typed return.
-    async fn read_call<Call: SolCall>(
-        &self,
-        target: Address,
-        call: Call,
-    ) -> Result<Call::Return, ChainError> {
-        let request = TransactionRequest {
-            to: Some(target.into()),
-            input: TransactionInput::new(Bytes::from(call.abi_encode())),
-            ..Default::default()
-        };
-        let out = self.provider.call(request).await?;
-        Ok(Call::abi_decode_returns(out.as_ref())?)
-    }
-
-    /// Submit a write to `target` and return the pending transaction.
-    ///
-    /// The [`TxRequest`] description labels the transaction in logs and metrics.
-    /// The returned [`PendingTransactionBuilder`] lets the caller await a receipt
-    /// or take the hash, and [`vertex_chain::ProviderExt`] replaces it if it
-    /// stalls.
-    async fn send_call<Call: SolCall>(
-        &self,
-        target: Address,
-        call: Call,
-        description: &'static str,
-    ) -> Result<PendingTransactionBuilder<Ethereum>, TxError> {
-        let request = TxRequest::new(
-            TransactionRequest {
-                to: Some(target.into()),
-                input: TransactionInput::new(Bytes::from(call.abi_encode())),
-                ..Default::default()
-            },
-            description,
-        );
-        tracing::debug!(tx = request.description, %target, "sending chequebook transaction");
-        Ok(self.provider.send_transaction(request.request).await?)
-    }
-
     /// Read the chequebook's total balance.
     pub async fn balance(&self, chequebook: Address) -> Result<U256, ChainError> {
-        self.read_call(chequebook, IChequebook::balanceCall {})
-            .await
+        Ok(
+            CallBuilder::new_sol(&self.provider, &chequebook, &IChequebook::balanceCall {})
+                .call()
+                .await?,
+        )
     }
 
     /// Read the liquid balance available to a beneficiary.
@@ -110,11 +73,13 @@ impl<P: Provider> ChequebookContract<P> {
         chequebook: Address,
         beneficiary: Address,
     ) -> Result<U256, ChainError> {
-        self.read_call(
-            chequebook,
-            IChequebook::liquidBalanceForCall { beneficiary },
+        Ok(CallBuilder::new_sol(
+            &self.provider,
+            &chequebook,
+            &IChequebook::liquidBalanceForCall { beneficiary },
         )
-        .await
+        .call()
+        .await?)
     }
 
     /// Read the cumulative amount paid out to a beneficiary.
@@ -123,8 +88,13 @@ impl<P: Provider> ChequebookContract<P> {
         chequebook: Address,
         beneficiary: Address,
     ) -> Result<U256, ChainError> {
-        self.read_call(chequebook, IChequebook::paidOutCall { beneficiary })
-            .await
+        Ok(CallBuilder::new_sol(
+            &self.provider,
+            &chequebook,
+            &IChequebook::paidOutCall { beneficiary },
+        )
+        .call()
+        .await?)
     }
 
     /// Deploy a new chequebook for `issuer` through the factory.
@@ -134,16 +104,16 @@ impl<P: Provider> ChequebookContract<P> {
         timeout: Duration,
         salt: B256,
     ) -> Result<PendingTransactionBuilder<Ethereum>, TxError> {
-        self.send_call(
-            self.config.chequebook_factory,
-            IChequebookFactory::deploySimpleSwapCall {
-                issuer,
-                defaultHardDepositTimeoutDuration: U256::from(timeout.as_secs()),
-                salt,
-            },
-            "chequebook_deploy",
-        )
-        .await
+        let factory = self.config.chequebook_factory;
+        let call = IChequebookFactory::deploySimpleSwapCall {
+            issuer,
+            defaultHardDepositTimeoutDuration: U256::from(timeout.as_secs()),
+            salt,
+        };
+        tracing::debug!(tx = "chequebook_deploy", %factory, "sending chequebook transaction");
+        Ok(CallBuilder::new_sol(&self.provider, &factory, &call)
+            .send()
+            .await?)
     }
 
     /// Cash a cheque as its beneficiary, paying out to `recipient`.
@@ -152,16 +122,16 @@ impl<P: Provider> ChequebookContract<P> {
         cheque: &SignedCheque,
         recipient: Address,
     ) -> Result<PendingTransactionBuilder<Ethereum>, TxError> {
-        self.send_call(
-            cheque.cheque.chequebook,
-            IChequebook::cashChequeBeneficiaryCall {
-                recipient,
-                cumulativePayout: cheque.cheque.cumulativePayout,
-                issuerSig: Bytes::copy_from_slice(cheque.signature.as_ref()),
-            },
-            "cash_cheque_beneficiary",
-        )
-        .await
+        let target = cheque.cheque.chequebook;
+        let call = IChequebook::cashChequeBeneficiaryCall {
+            recipient,
+            cumulativePayout: cheque.cheque.cumulativePayout,
+            issuerSig: Bytes::copy_from_slice(cheque.signature.as_ref()),
+        };
+        tracing::debug!(tx = "cash_cheque_beneficiary", %target, "sending chequebook transaction");
+        Ok(CallBuilder::new_sol(&self.provider, &target, &call)
+            .send()
+            .await?)
     }
 
     /// Cash a cheque on behalf of its beneficiary, taking `payout` as the caller.
@@ -172,19 +142,19 @@ impl<P: Provider> ChequebookContract<P> {
         payout: U256,
         issuer_sig: bytes::Bytes,
     ) -> Result<PendingTransactionBuilder<Ethereum>, TxError> {
-        self.send_call(
-            cheque.cheque.chequebook,
-            IChequebook::cashChequeCall {
-                beneficiary: cheque.cheque.beneficiary,
-                recipient,
-                cumulativePayout: cheque.cheque.cumulativePayout,
-                beneficiarySig: Bytes::copy_from_slice(cheque.signature.as_ref()),
-                callerPayout: payout,
-                issuerSig: Bytes::copy_from_slice(issuer_sig.as_ref()),
-            },
-            "cash_cheque",
-        )
-        .await
+        let target = cheque.cheque.chequebook;
+        let call = IChequebook::cashChequeCall {
+            beneficiary: cheque.cheque.beneficiary,
+            recipient,
+            cumulativePayout: cheque.cheque.cumulativePayout,
+            beneficiarySig: Bytes::copy_from_slice(cheque.signature.as_ref()),
+            callerPayout: payout,
+            issuerSig: Bytes::copy_from_slice(issuer_sig.as_ref()),
+        };
+        tracing::debug!(tx = "cash_cheque", %target, "sending chequebook transaction");
+        Ok(CallBuilder::new_sol(&self.provider, &target, &call)
+            .send()
+            .await?)
     }
 }
 
@@ -193,17 +163,20 @@ impl<P: Provider> ChequebookContract<P> {
 mod tests {
     //! These tests exercise call and transaction *encoding* only.
     //!
-    //! There is no live chain in CI, so the calldata the bindings produce for
-    //! `cashCheque`, `cashChequeBeneficiary`, and `deploySimpleSwap` is checked
-    //! against `SolCall::abi_encode`, and a read return is exercised against
-    //! `SolCall::abi_decode_returns`. A real on-chain cashout (sending a signed
-    //! transaction to a node and confirming a receipt) is deliberately out of CI
-    //! scope.
+    //! There is no live chain in CI, so the calldata the `CallBuilder` produces
+    //! for `cashCheque`, `cashChequeBeneficiary`, and `deploySimpleSwap` is
+    //! checked against the `SolCall` selectors and arguments, a read is exercised
+    //! against an alloy mock provider, and the factory deploy calldata the
+    //! builder emits is asserted directly. A real on-chain cashout (sending a
+    //! signed transaction to a node and confirming a receipt) is deliberately
+    //! out of CI scope.
 
     use super::*;
     use crate::ChequeExt;
+    use alloy_contract::CallBuilder;
     use alloy_primitives::{address, b256};
-    use alloy_sol_types::SolValue;
+    use alloy_provider::{ProviderBuilder, mock::Asserter};
+    use alloy_sol_types::{SolCall, SolValue};
 
     fn cheque() -> SignedCheque {
         let c = crate::Cheque::new(
@@ -214,6 +187,16 @@ mod tests {
         SignedCheque::new(c, bytes::Bytes::from(vec![7u8; 65]))
     }
 
+    /// The mock provider has no wallet, so a `CallBuilder` cannot estimate gas or
+    /// sign. The calldata is independent of all that: assert it directly on the
+    /// builder before it ever reaches the transport.
+    fn builder_calldata<C: SolCall>(call: &C) -> Bytes {
+        let provider = ProviderBuilder::new().connect_mocked_client(Asserter::new());
+        CallBuilder::new_sol(&provider, &Address::ZERO, call)
+            .calldata()
+            .clone()
+    }
+
     #[test]
     fn cash_cheque_beneficiary_calldata() {
         let c = cheque();
@@ -222,13 +205,13 @@ mod tests {
             cumulativePayout: c.cheque.cumulativePayout,
             issuerSig: Bytes::copy_from_slice(c.signature.as_ref()),
         };
-        let encoded = call.abi_encode();
+        let calldata = builder_calldata(&call);
 
         assert_eq!(
-            encoded.get(..4).unwrap(),
+            calldata.get(..4).unwrap(),
             IChequebook::cashChequeBeneficiaryCall::SELECTOR
         );
-        let decoded = IChequebook::cashChequeBeneficiaryCall::abi_decode(&encoded).unwrap();
+        let decoded = IChequebook::cashChequeBeneficiaryCall::abi_decode(&calldata).unwrap();
         assert_eq!(decoded.recipient, call.recipient);
         assert_eq!(decoded.cumulativePayout, U256::from(1_000_000u64));
         assert_eq!(decoded.issuerSig, call.issuerSig);
@@ -246,13 +229,13 @@ mod tests {
             callerPayout: U256::from(42u64),
             issuerSig: Bytes::copy_from_slice(&issuer_sig),
         };
-        let encoded = call.abi_encode();
+        let calldata = builder_calldata(&call);
         assert_eq!(
-            encoded.get(..4).unwrap(),
+            calldata.get(..4).unwrap(),
             IChequebook::cashChequeCall::SELECTOR
         );
 
-        let decoded = IChequebook::cashChequeCall::abi_decode(&encoded).unwrap();
+        let decoded = IChequebook::cashChequeCall::abi_decode(&calldata).unwrap();
         assert_eq!(decoded.beneficiary, c.cheque.beneficiary);
         assert_eq!(decoded.beneficiarySig, call.beneficiarySig);
         assert_eq!(decoded.callerPayout, U256::from(42u64));
@@ -266,25 +249,35 @@ mod tests {
             defaultHardDepositTimeoutDuration: U256::from(86_400u64),
             salt: b256!("00000000000000000000000000000000000000000000000000000000000000aa"),
         };
-        let encoded = call.abi_encode();
+        let calldata = builder_calldata(&call);
         assert_eq!(
-            encoded.get(..4).unwrap(),
+            calldata.get(..4).unwrap(),
             IChequebookFactory::deploySimpleSwapCall::SELECTOR
         );
 
-        let decoded = IChequebookFactory::deploySimpleSwapCall::abi_decode(&encoded).unwrap();
+        let decoded = IChequebookFactory::deploySimpleSwapCall::abi_decode(&calldata).unwrap();
         assert_eq!(
             decoded.defaultHardDepositTimeoutDuration,
             U256::from(86_400u64)
         );
     }
 
-    #[test]
-    fn balance_return_decodes() {
+    #[tokio::test]
+    async fn balance_read_decodes_mock_response() {
+        // The mock provider returns a canned ABI-encoded u256 for eth_call; the
+        // `CallBuilder` decodes it back to the typed return.
+        let asserter = Asserter::new();
         let expected = U256::from(123_456_789u64);
-        let encoded = expected.abi_encode();
-        let decoded = IChequebook::balanceCall::abi_decode_returns(&encoded).unwrap();
-        assert_eq!(decoded, expected);
+        asserter.push_success(&Bytes::from(expected.abi_encode()));
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let client = ChequebookContract::new(provider, ChainConfig::mainnet());
+
+        let got = client
+            .balance(address!("5555555555555555555555555555555555555555"))
+            .await
+            .unwrap();
+        assert_eq!(got, expected);
     }
 
     #[test]

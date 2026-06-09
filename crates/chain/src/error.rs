@@ -11,8 +11,8 @@ use alloy_provider::{PendingTransactionError, transport::TransportError};
 /// A failure reading from or talking to the chain transport.
 ///
 /// Produced by read-path helpers and by the lower half of the send path. The
-/// alloy [`TransportError`] is carried whole so a consumer can inspect the RPC
-/// error code or the underlying transport failure.
+/// alloy [`TransportError`] and [`alloy_contract::Error`] are carried whole so a
+/// consumer can inspect the RPC error code or the underlying transport failure.
 #[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 #[non_exhaustive]
@@ -21,9 +21,11 @@ pub enum ChainError {
     #[error(transparent)]
     Transport(#[from] TransportError),
 
-    /// A contract call returned data that did not decode to the expected type.
+    /// A read driven through an `alloy_contract` `CallBuilder` failed: the call
+    /// reverted, the node returned no data, or the return did not decode to the
+    /// expected type.
     #[error(transparent)]
-    Abi(#[from] alloy_sol_types::Error),
+    Contract(#[from] alloy_contract::Error),
 }
 
 /// A failure sending, confirming, or replacing a transaction.
@@ -42,6 +44,10 @@ pub enum TxError {
     /// Watching or confirming a pending transaction failed.
     #[error(transparent)]
     Pending(#[from] PendingTransactionError),
+
+    /// A write driven through an `alloy_contract` `CallBuilder` failed to submit.
+    #[error(transparent)]
+    Contract(#[from] alloy_contract::Error),
 
     /// No pending transaction matched the supplied hash.
     #[error("no pending transaction for {hash}")]

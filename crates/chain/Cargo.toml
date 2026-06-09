@@ -26,6 +26,9 @@ alloy-provider = { workspace = true }
 alloy-network = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
 alloy-sol-types = { workspace = true }
+# `alloy-contract` errors flow into the chain error taxonomy so consumers that
+# drive contracts through `CallBuilder` propagate failures with `?`.
+alloy-contract = { workspace = true }
 
 # misc
 strum = { workspace = true }

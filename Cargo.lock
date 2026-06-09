@@ -145,6 +145,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloy-contract"
+version = "2.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ae8b60d71b92824e095b4003ff01fd2bc923017b7568997c5f459240e83499c"
+dependencies = [
+ "alloy-consensus",
+ "alloy-dyn-abi",
+ "alloy-json-abi",
+ "alloy-network",
+ "alloy-network-primitives",
+ "alloy-primitives",
+ "alloy-provider",
+ "alloy-rpc-types-eth",
+ "alloy-sol-types",
+ "alloy-transport",
+ "futures",
+ "futures-util",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "alloy-dyn-abi"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8101,6 +8124,7 @@ name = "vertex-chain"
 version = "0.1.0"
 dependencies = [
  "alloy-chains",
+ "alloy-contract",
  "alloy-network",
  "alloy-primitives",
  "alloy-provider",
@@ -8437,10 +8461,10 @@ name = "vertex-swarm-bandwidth-chequebook"
 version = "0.1.0"
 dependencies = [
  "alloy-chains",
+ "alloy-contract",
  "alloy-network",
  "alloy-primitives",
  "alloy-provider",
- "alloy-rpc-types-eth",
  "alloy-signer",
  "alloy-signer-local",
  "alloy-sol-types",
