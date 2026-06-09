@@ -159,7 +159,6 @@ impl<P: Provider> ChequebookContract<P> {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "tests")]
 mod tests {
     //! These tests exercise call and transaction *encoding* only.
     //!
