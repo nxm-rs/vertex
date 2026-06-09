@@ -72,7 +72,7 @@ How to apply this:
 
 ## Build, test, lint
 
-- Edition `2024`, MSRV `1.91`. Do not raise MSRV without bumping the workspace `Cargo.toml` in the same commit.
+- Edition `2024`, MSRV `1.92`. Do not raise MSRV without bumping the workspace `Cargo.toml` in the same commit.
 - `cargo build --release -p vertex` builds the binary into `target/release/vertex`.
 - `cargo test` runs workspace unit tests. Per-crate: `cargo test -p <crate>`. Integration tests live under each crate's `tests/`.
 - `cargo fmt --all` formats. `cargo clippy --all-targets --all-features -- -D warnings` lints. Both are required pre-commit.

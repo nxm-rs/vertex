@@ -326,6 +326,7 @@ pub(crate) fn handle_identify_event(identify: &mut identify::Behaviour, event: i
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
     use libp2p::identity::Keypair;
 
     use super::*;

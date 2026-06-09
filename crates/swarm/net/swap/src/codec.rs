@@ -79,6 +79,7 @@ pub type HandshakeCodec = Codec<Handshake, SwapError>;
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use alloy_primitives::U256;
     use asynchronous_codec::{Decoder, Encoder};

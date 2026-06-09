@@ -32,6 +32,7 @@ pub const POLL_DURATION: &[f64] = &[
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::indexing_slicing)]
     use super::*;
 
     fn assert_sorted(name: &str, buckets: &[f64]) {

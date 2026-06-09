@@ -213,6 +213,7 @@ fn check(cell: &Cell, tat: u64, now: u64, n: u32) -> Result<u64, RateLimitedErr>
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     fn quota_n_per(n: u32, seconds: u64) -> Quota {

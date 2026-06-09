@@ -303,6 +303,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
     use super::*;
     use vertex_swarm_test_utils::test_identity_arc;
 

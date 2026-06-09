@@ -436,6 +436,7 @@ impl<R: Default> SwarmRoutingConfig for NetworkConfig<R> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
     use super::*;
     use vertex_swarm_api::PeerConfigValues;
 

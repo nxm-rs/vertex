@@ -119,6 +119,7 @@ pub fn check_timestamp(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     const NOW: i64 = 1_700_000_000;

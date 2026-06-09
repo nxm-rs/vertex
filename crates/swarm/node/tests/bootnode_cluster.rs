@@ -13,6 +13,7 @@
 //! Wall-clock `tokio::time::timeout` is used because the underlying libp2p
 //! transport is real TCP (`tokio::time::pause()` would freeze timers without
 //! freezing the OS network stack).
+#![allow(clippy::expect_used)]
 
 use std::collections::HashSet;
 use std::time::Duration;

@@ -685,6 +685,7 @@ impl<I: SwarmIdentity + 'static> KademliaRouting<I> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::indexing_slicing)]
     use super::*;
     use nectar_primitives::SwarmAddress;
     use vertex_swarm_test_utils::{MockIdentity, make_swarm_peer_minimal};

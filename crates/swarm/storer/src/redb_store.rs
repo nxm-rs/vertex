@@ -122,6 +122,7 @@ impl ChunkStore for RedbChunkStore {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use tempfile::tempdir;
 

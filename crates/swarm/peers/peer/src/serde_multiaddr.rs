@@ -123,6 +123,7 @@ fn decode_uvarint(cursor: &mut Cursor<&[u8]>) -> Result<u64, std::io::Error> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
     use super::*;
 
     #[test]

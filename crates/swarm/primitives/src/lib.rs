@@ -262,6 +262,7 @@ impl SwarmNodeType {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
     use super::*;
 
     fn b(n: u8) -> Bin {

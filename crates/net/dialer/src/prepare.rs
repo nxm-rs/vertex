@@ -84,6 +84,7 @@ pub fn prepare_dial_opts(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
     use super::*;
 
     fn test_peer_id() -> PeerId {

@@ -130,6 +130,7 @@ impl LocalCapabilities {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     fn parse_addr(s: &str) -> Multiaddr {

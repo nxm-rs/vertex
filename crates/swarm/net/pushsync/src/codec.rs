@@ -166,6 +166,7 @@ impl ProtoMessage for Receipt {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use alloy_primitives::B256;
     use nectar_postage::Stamp;

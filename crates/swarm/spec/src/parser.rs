@@ -57,6 +57,7 @@ impl DefaultSpecParser {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use vertex_swarm_api::SwarmSpec;
 

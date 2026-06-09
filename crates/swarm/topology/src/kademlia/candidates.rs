@@ -254,6 +254,7 @@ pub(crate) fn select_balanced_candidates<I: SwarmIdentity>(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
     use super::super::DepthAwareLimits;
     use super::*;
     use vertex_swarm_test_utils::make_overlay;

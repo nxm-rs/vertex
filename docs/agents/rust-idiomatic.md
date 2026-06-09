@@ -4,7 +4,7 @@ This codebase targets a serious P2P client; treat it like `sigp/lighthouse` and 
 
 ### Toolchain and pre-commit
 
-- Edition `2024`, MSRV `1.91` (set in workspace `Cargo.toml`). Do not introduce features that raise MSRV without a workspace bump in the same commit.
+- Edition `2024`, MSRV `1.92` (set in workspace `Cargo.toml`). Do not introduce features that raise MSRV without a workspace bump in the same commit.
 - Before every commit, run `cargo fmt --all` and `cargo clippy --all-targets --all-features -- -D warnings`. Pushing unformatted code or clippy warnings is a hard fail; treat the justfile/CI as the source of truth, not your editor.
 - New crates inherit `[workspace.lints]` and use `#![cfg_attr(not(test), warn(unused_crate_dependencies))]` at the crate root (see `crates/tasks/src/lib.rs`).
 

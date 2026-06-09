@@ -137,6 +137,7 @@ pub fn outbound(cheque: SignedCheque, our_rate: alloy_primitives::U256) -> SwapO
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use alloy_primitives::{Address, U256};
     use vertex_swarm_bandwidth_chequebook::{Cheque, ChequeExt};

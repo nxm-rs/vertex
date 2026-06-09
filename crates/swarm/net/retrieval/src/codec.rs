@@ -167,6 +167,7 @@ impl Decoder for DeliveryCodec {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use alloy_primitives::{B256, Signature};
     use nectar_primitives::{AnyChunk, ContentChunk, SingleOwnerChunk};

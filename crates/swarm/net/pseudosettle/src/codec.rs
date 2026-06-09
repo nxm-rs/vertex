@@ -92,6 +92,7 @@ pub(crate) type PaymentAckCodec = Codec<PaymentAck, PseudosettleError>;
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use asynchronous_codec::{Decoder, Encoder};
     use bytes::BytesMut;

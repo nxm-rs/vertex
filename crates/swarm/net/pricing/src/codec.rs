@@ -52,6 +52,7 @@ impl ProtoMessage for AnnouncePaymentThreshold {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use vertex_net_codec::assert_proto_roundtrip;
 

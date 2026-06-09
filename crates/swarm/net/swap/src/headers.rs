@@ -102,6 +102,7 @@ fn encode_u256_bytes(value: U256) -> Bytes {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]

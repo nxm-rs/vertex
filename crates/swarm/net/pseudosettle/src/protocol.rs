@@ -168,6 +168,7 @@ pub fn outbound(payment: Payment) -> PseudosettleOutboundProtocol {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use alloy_primitives::U256;
 
