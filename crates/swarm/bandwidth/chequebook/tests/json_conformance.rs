@@ -9,13 +9,16 @@
 //! (keys and JSON value types), never a fixed byte string.
 #![allow(clippy::unwrap_used)]
 
+use alloy_chains::NamedChain;
 use alloy_primitives::{Address, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use bytes::Bytes;
 use serde_json::Value;
 use vertex_swarm_bandwidth_chequebook::{ChequeExt, SignedCheque, cheque::Cheque};
-use vertex_swarm_spec::init_mainnet;
+
+/// Gnosis Chain, the cheque signing chain on mainnet.
+const MAINNET_CHAIN: NamedChain = NamedChain::Gnosis;
 
 fn sample_cheque(payout: U256, signature: Vec<u8>) -> SignedCheque {
     SignedCheque::new(
@@ -30,7 +33,6 @@ fn sample_cheque(payout: U256, signature: Vec<u8>) -> SignedCheque {
 
 #[test]
 fn sign_serialize_deserialize_recovers_signer() {
-    let spec = init_mainnet();
     let signer = PrivateKeySigner::random();
 
     let cheque = Cheque::new(
@@ -38,7 +40,7 @@ fn sign_serialize_deserialize_recovers_signer() {
         Address::repeat_byte(0xbb),
         U256::from(123_456_789u64),
     );
-    let hash = cheque.signing_hash(&*spec);
+    let hash = cheque.signing_hash(MAINNET_CHAIN);
     let sig = signer.sign_hash_sync(&hash).unwrap();
     let signed = SignedCheque::from_signature(cheque.clone(), sig);
 
@@ -50,8 +52,11 @@ fn sign_serialize_deserialize_recovers_signer() {
     assert_eq!(decoded.signature, signed.signature);
 
     // The signature still recovers to the original signer after the round-trip.
-    assert_eq!(decoded.recover_signer(&*spec).unwrap(), signer.address());
-    decoded.verify(signer.address(), &*spec).unwrap();
+    assert_eq!(
+        decoded.recover_signer(MAINNET_CHAIN).unwrap(),
+        signer.address()
+    );
+    decoded.verify(signer.address(), MAINNET_CHAIN).unwrap();
 }
 
 #[test]

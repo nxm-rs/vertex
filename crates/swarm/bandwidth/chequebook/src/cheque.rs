@@ -9,7 +9,8 @@
 //! Cheques use EIP-712 typed data signing with the following domain:
 //! - Name: "Chequebook"
 //! - Version: "1.0"
-//! - ChainId: from SwarmSpec's chain
+//! - ChainId: the settlement chain, passed in by the caller as a
+//!   [`alloy_chains::NamedChain`]
 //!
 //! The cheque type is:
 //! ```text
@@ -33,12 +34,12 @@
 //! `CumulativePayout` as a bare decimal JSON number across the full 256-bit
 //! range, and `Signature` as standard base64.
 
+use alloy_chains::NamedChain;
 use alloy_primitives::{Address, B256, Signature, U256};
 use alloy_sol_types::{Eip712Domain, SolStruct, eip712_domain};
 use bytes::Bytes;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::serde_as;
-use vertex_swarm_spec::SwarmSpec;
 
 /// Canonical signature length: r[32] + s[32] + v[1].
 const SIGNATURE_LEN: usize = 65;
@@ -64,11 +65,14 @@ pub trait ChequeExt {
 
     /// Build the EIP-712 domain for cheque signing.
     ///
-    /// The chain ID is derived from the SwarmSpec's underlying chain.
-    fn domain(spec: &impl SwarmSpec) -> Eip712Domain;
+    /// The chain is the settlement chain (Gnosis for mainnet, Sepolia for
+    /// testnet). Its EIP-155 id is read from the [`NamedChain`], so a caller
+    /// names the chain rather than restating a magic number. This crate stays
+    /// free of the network-spec dependency so it remains a pure, wasm-safe codec.
+    fn domain(chain: NamedChain) -> Eip712Domain;
 
     /// Compute the EIP-712 signing hash for this cheque.
-    fn signing_hash(&self, spec: &impl SwarmSpec) -> B256;
+    fn signing_hash(&self, chain: NamedChain) -> B256;
 }
 
 impl ChequeExt for Cheque {
@@ -84,16 +88,16 @@ impl ChequeExt for Cheque {
         self.cumulativePayout
     }
 
-    fn domain(spec: &impl SwarmSpec) -> Eip712Domain {
+    fn domain(chain: NamedChain) -> Eip712Domain {
         eip712_domain! {
             name: DOMAIN_NAME,
             version: DOMAIN_VERSION,
-            chain_id: spec.chain().id(),
+            chain_id: u64::from(chain),
         }
     }
 
-    fn signing_hash(&self, spec: &impl SwarmSpec) -> B256 {
-        self.eip712_signing_hash(&Self::domain(spec))
+    fn signing_hash(&self, chain: NamedChain) -> B256 {
+        self.eip712_signing_hash(&Self::domain(chain))
     }
 }
 
@@ -182,9 +186,9 @@ impl SignedCheque {
 
     /// Recover the signer address from the signature.
     #[must_use = "signature recovery result should be checked"]
-    pub fn recover_signer(&self, spec: &impl SwarmSpec) -> Result<Address, ChequeError> {
+    pub fn recover_signer(&self, chain: NamedChain) -> Result<Address, ChequeError> {
         let sig = self.parse_signature()?;
-        let hash = self.cheque.signing_hash(spec);
+        let hash = self.cheque.signing_hash(chain);
 
         sig.recover_address_from_prehash(&hash)
             .map_err(|e| ChequeError::SignatureRecovery(format!("recovery failed: {e}")))
@@ -192,8 +196,8 @@ impl SignedCheque {
 
     /// Verify that this cheque was signed by the expected owner.
     #[must_use = "cheque verification result should be checked"]
-    pub fn verify(&self, owner: Address, spec: &impl SwarmSpec) -> Result<(), ChequeError> {
-        let signer = self.recover_signer(spec)?;
+    pub fn verify(&self, owner: Address, chain: NamedChain) -> Result<(), ChequeError> {
+        let signer = self.recover_signer(chain)?;
         if signer != owner {
             return Err(ChequeError::InvalidSigner {
                 expected: owner,
@@ -290,7 +294,9 @@ mod tests {
     use super::*;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
-    use vertex_swarm_spec::init_mainnet;
+
+    /// Gnosis Chain, the cheque signing chain on mainnet.
+    const MAINNET_CHAIN: NamedChain = NamedChain::Gnosis;
 
     fn test_cheque() -> Cheque {
         Cheque::new(
@@ -310,8 +316,7 @@ mod tests {
 
     #[test]
     fn test_domain_uses_chain_id() {
-        let spec = init_mainnet();
-        let domain = Cheque::domain(&*spec);
+        let domain = Cheque::domain(MAINNET_CHAIN);
 
         // Mainnet uses Gnosis chain (ID 100)
         assert_eq!(domain.chain_id, Some(U256::from(100u64)));
@@ -319,45 +324,42 @@ mod tests {
 
     #[test]
     fn test_signing_hash_deterministic() {
-        let spec = init_mainnet();
         let cheque = test_cheque();
 
-        let hash1 = cheque.signing_hash(&*spec);
-        let hash2 = cheque.signing_hash(&*spec);
+        let hash1 = cheque.signing_hash(MAINNET_CHAIN);
+        let hash2 = cheque.signing_hash(MAINNET_CHAIN);
         assert_eq!(hash1, hash2);
     }
 
     #[test]
     fn test_sign_and_recover() {
-        let spec = init_mainnet();
         let signer = PrivateKeySigner::random();
         let cheque = test_cheque();
 
         // Sign
-        let hash = cheque.signing_hash(&*spec);
+        let hash = cheque.signing_hash(MAINNET_CHAIN);
         let sig = signer.sign_hash_sync(&hash).unwrap();
         let signed = SignedCheque::from_signature(cheque, sig);
 
         // Recover and verify
-        let recovered = signed.recover_signer(&*spec).unwrap();
+        let recovered = signed.recover_signer(MAINNET_CHAIN).unwrap();
         assert_eq!(recovered, signer.address());
 
-        signed.verify(signer.address(), &*spec).unwrap();
+        signed.verify(signer.address(), MAINNET_CHAIN).unwrap();
     }
 
     #[test]
     fn test_verify_wrong_signer_fails() {
-        let spec = init_mainnet();
         let signer = PrivateKeySigner::random();
         let cheque = test_cheque();
 
-        let hash = cheque.signing_hash(&*spec);
+        let hash = cheque.signing_hash(MAINNET_CHAIN);
         let sig = signer.sign_hash_sync(&hash).unwrap();
         let signed = SignedCheque::from_signature(cheque, sig);
 
         let wrong = Address::repeat_byte(0x99);
         assert!(matches!(
-            signed.verify(wrong, &*spec),
+            signed.verify(wrong, MAINNET_CHAIN),
             Err(ChequeError::InvalidSigner { .. })
         ));
     }

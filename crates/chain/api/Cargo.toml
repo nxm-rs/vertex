@@ -1,0 +1,34 @@
+[package]
+name = "vertex-chain-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Chain (Ethereum RPC) configuration, errors, and provider extensions for Vertex"
+
+[lints]
+workspace = true
+
+[dependencies]
+# nectar
+nectar-contracts = { workspace = true }
+nectar-swarms = { workspace = true }
+
+# alloy
+alloy-chains = { workspace = true }
+alloy-primitives = { workspace = true }
+# The `Provider` trait alone, with no transport: `default-features = false` drops
+# reqwest and TLS so the extension trait stays wasm-compatible. A concrete
+# transport is selected by the consumer, not here.
+alloy-provider = { workspace = true }
+alloy-network = { workspace = true }
+alloy-rpc-types-eth = { workspace = true }
+
+# misc
+strum = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }

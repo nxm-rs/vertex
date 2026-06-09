@@ -15,13 +15,13 @@ workspace = true
 # nectar
 nectar-contracts = { workspace = true }
 
-# vertex
-vertex-swarm-spec = { workspace = true }
-
 # alloy
-alloy-primitives = { workspace = true }
+# `k256` enables secp256k1 signature recovery, which the cheque codec needs to
+# recover the signer of a cheque without pulling a full signer crate. `serde`
+# enables the address and integer serde impls the wire codec derives.
+alloy-chains = { workspace = true }
+alloy-primitives = { workspace = true, features = ["k256", "serde"] }
 alloy-sol-types = { workspace = true }
-alloy-signer = { workspace = true }
 
 # misc
 bytes = { workspace = true }
@@ -31,6 +31,13 @@ serde = { workspace = true, features = ["derive"] }
 serde_with = { workspace = true, features = ["base64"] }
 serde_json = { workspace = true }
 
+# On wasm, the secp256k1 backend pulled in by `alloy-primitives/k256` reaches
+# `getrandom`, which needs its browser backend selected explicitly. This is a
+# transitive build requirement, not a direct API use.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { workspace = true, features = ["js"] }
+
 [dev-dependencies]
+alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
