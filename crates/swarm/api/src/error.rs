@@ -23,6 +23,18 @@ pub enum SwarmError {
         chunk_address: ChunkAddress,
     },
 
+    /// Every candidate peer failed for a chunk operation.
+    #[error("all {attempts} candidate peers failed for chunk {address}")]
+    AllPeersFailed {
+        /// The chunk address the operation targeted.
+        address: ChunkAddress,
+        /// Number of peers attempted.
+        attempts: usize,
+        /// The error from the last attempt.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
     /// Invalid postage stamp signature.
     #[error("invalid stamp signature for {chunk_address}: {reason}")]
     InvalidSignature {
@@ -160,6 +172,7 @@ impl SwarmError {
                 | Self::PeerUnavailable { .. }
                 | Self::Accounting { .. }
                 | Self::NoStorer { .. }
+                | Self::AllPeersFailed { .. }
         )
     }
 

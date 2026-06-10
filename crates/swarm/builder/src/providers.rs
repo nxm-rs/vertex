@@ -12,6 +12,9 @@ use vertex_swarm_topology::TopologyHandle;
 /// Number of closest peers to try when pushing a chunk before giving up.
 const PUSH_CANDIDATE_COUNT: usize = 5;
 
+/// Number of closest peers to try when retrieving a chunk before giving up.
+const RETRIEVE_CANDIDATE_COUNT: usize = 3;
+
 /// Chunk provider using ClientHandle for network retrieval.
 #[derive(Clone)]
 pub struct NetworkChunkProvider<I: SwarmIdentity> {
@@ -32,20 +35,18 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
 impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
     async fn retrieve_chunk(&self, address: &ChunkAddress) -> SwarmResult<ChunkRetrievalResult> {
         let chunk_address = SwarmAddress::new(address.0.into());
+        let closest_peers = self
+            .topology
+            .closest_to(&chunk_address, RETRIEVE_CANDIDATE_COUNT);
+        let attempts = closest_peers.len();
 
-        // Get the closest peers to the chunk address (up to 5 candidates)
-        let closest_peers = self.topology.closest_to(&chunk_address, 5);
-
-        if closest_peers.is_empty() {
-            return Err(SwarmError::network_msg(
-                "No connected peers available for retrieval",
-            ));
-        }
-
-        // Try each peer in order until one succeeds
-        let mut last_error = None;
-        for peer_overlay in closest_peers.into_iter().take(3) {
-            // Try to retrieve from this peer
+        // Try each closest peer in order and return the first success. The
+        // seed error covers the no-candidates case; each failed attempt
+        // replaces it, so the value after the loop is always the last failure.
+        let mut outcome = Err(SwarmError::network_msg(
+            "no connected peers available for retrieval",
+        ));
+        for peer_overlay in closest_peers {
             match self
                 .client_handle
                 .retrieve_chunk(peer_overlay, chunk_address)
@@ -58,17 +59,16 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
                     });
                 }
                 Err(e) => {
-                    last_error = Some(e);
-                    // Continue to next peer
+                    outcome = Err(SwarmError::AllPeersFailed {
+                        address: *address,
+                        attempts,
+                        source: Box::new(e),
+                    });
                 }
             }
         }
 
-        // All peers failed
-        match last_error {
-            Some(e) => Err(SwarmError::network_msg(e.to_string())),
-            None => Err(SwarmError::ChunkNotFound { address: *address }),
-        }
+        outcome
     }
 
     fn has_chunk(&self, _address: &ChunkAddress) -> bool {
@@ -88,24 +88,28 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
     async fn push_to_closest(&self, chunk: StampedChunk) -> SwarmResult<PushReceipt> {
         let address = *chunk.address();
         let closest = self.topology.closest_to(&address, PUSH_CANDIDATE_COUNT);
+        let attempts = closest.len();
 
-        if closest.is_empty() {
-            return Err(SwarmError::NoStorer {
-                chunk_address: address,
-            });
-        }
-
-        let mut last_error = None;
+        // Try each closest peer in order and return the first receipt. The
+        // seed error covers the no-candidates case; each failed attempt
+        // replaces it, so the value after the loop is always the last failure.
+        let mut outcome = Err(SwarmError::NoStorer {
+            chunk_address: address,
+        });
         for peer in closest {
             match self.client_handle.push_chunk(peer, chunk.clone()).await {
                 Ok(receipt) => return Ok(receipt),
-                Err(e) => last_error = Some(SwarmError::network_msg(e.to_string())),
+                Err(e) => {
+                    outcome = Err(SwarmError::AllPeersFailed {
+                        address,
+                        attempts,
+                        source: Box::new(e),
+                    });
+                }
             }
         }
 
-        Err(last_error.unwrap_or(SwarmError::NoStorer {
-            chunk_address: address,
-        }))
+        outcome
     }
 }
 
