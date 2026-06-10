@@ -9,9 +9,10 @@ use metrics::gauge;
 use tracing::{debug, info, trace, warn};
 use vertex_net_local::{AddressScope, classify_multiaddr};
 use vertex_net_peer_registry::ActivateResult;
-use vertex_swarm_api::SwarmIdentity;
+use vertex_swarm_api::{ReportSource, SwarmIdentity, SwarmScoringEvent};
 use vertex_swarm_net_handshake::HandshakeEvent;
 use vertex_swarm_net_hive::HiveEvent;
+use vertex_swarm_peer_manager::TrustLevel;
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
 use crate::DialReason;
@@ -78,6 +79,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             .as_ref()
             .and_then(|s| s.direction())
             .unwrap_or(ConnectionDirection::Inbound);
+        let dial_reason = current_state.as_ref().and_then(|s| *s.reason());
 
         // Reject banned peers immediately (inbound peers bypass dial-time ban check).
         if self.peer_manager.is_banned(&overlay) {
@@ -161,8 +163,8 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 // Its registry entry is now overwritten, so handle_connection_closed
                 // will not emit PeerDisconnected -- we must decrement here.
                 // The peer manager holds the authoritative handshake-confirmed
-                // node type; on_peer_ready for the new connection has not run
-                // yet, so this still reads the old connection's value.
+                // node type; on_peer_connected for the new connection has not
+                // run yet, so this still reads the old connection's value.
                 let old_overlay = old_id.as_ref().unwrap_or(&overlay);
                 let old_node_type = self
                     .peer_manager
@@ -195,9 +197,28 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             ActivateResult::Accepted => {}
         }
 
-        // Store peer metadata
-        self.peer_manager
-            .on_peer_ready(info.swarm_peer.clone(), info.node_type);
+        // Store peer metadata and connection state. The trust level is
+        // computed here because topology owns the dial reason (explicitly
+        // configured peers dial with `DialReason::Trusted`) and the listen
+        // addresses needed to judge subnet locality; the peer manager stores
+        // the result so eviction ranking reads one atomic instead of
+        // re-deriving address scope per trim round.
+        let trust = if dial_reason == Some(DialReason::Trusted) {
+            TrustLevel::Trusted
+        } else if crate::behaviour::peer_is_local(
+            &info.swarm_peer,
+            &self.nat_discovery.listen_addrs(),
+        ) {
+            TrustLevel::LocalSubnet
+        } else {
+            TrustLevel::Normal
+        };
+        self.peer_manager.on_peer_connected(
+            info.swarm_peer.clone(),
+            info.node_type,
+            direction,
+            trust,
+        );
 
         // Feed reachability BEFORE notifying routing: `trim_overpopulated_bins`
         // ranks eviction victims by reachability (least-reachable first), so the
@@ -302,6 +323,17 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         if let Some(ref overlay) = overlay {
             self.routing.release_handshake(overlay);
             self.peer_manager.record_dial_failure(overlay);
+            // Score the failure only when the peer is unambiguously at
+            // fault, mirroring the reachability gate above; our own
+            // duplicate-connection evictions and shutdowns must not
+            // penalize innocent peers.
+            if is_peer_fault(&error) {
+                self.peer_manager.report_peer(
+                    overlay,
+                    SwarmScoringEvent::HandshakeFailure,
+                    ReportSource::Handshake,
+                );
+            }
         }
 
         self.emit_event(TopologyEvent::DialFailed {

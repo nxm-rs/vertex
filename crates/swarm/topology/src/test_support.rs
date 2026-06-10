@@ -30,8 +30,12 @@ impl TopologyTestContext {
 
     pub(crate) fn with_peers(self) -> Self {
         for n in 1..=10 {
-            self.peer_manager
-                .on_peer_ready(test_swarm_peer(n), SwarmNodeType::Storer);
+            self.peer_manager.on_peer_connected(
+                test_swarm_peer(n),
+                SwarmNodeType::Storer,
+                vertex_net_peer_registry::ConnectionDirection::Outbound,
+                vertex_swarm_peer_manager::TrustLevel::Normal,
+            );
         }
         self
     }

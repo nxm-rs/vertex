@@ -303,7 +303,11 @@ mod tests {
 
         // Banned peer (via PeerManager)
         peer_manager.store_discovered_peer(make_swarm_peer_minimal(2));
-        peer_manager.ban(&make_overlay(2), Some("test".into()));
+        peer_manager.ban(
+            &make_overlay(2),
+            vertex_swarm_api::BanCause::Requested,
+            Some("test".into()),
+        );
         assert!(!snapshot.is_eligible(&make_overlay(2), &peer_manager));
     }
 

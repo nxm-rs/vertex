@@ -514,7 +514,12 @@ mod tests {
         let overlay = test_overlay(1);
 
         // Handshake confirms the peer as a storer.
-        pm.on_peer_ready(peer.clone(), SwarmNodeType::Storer);
+        pm.on_peer_connected(
+            peer.clone(),
+            SwarmNodeType::Storer,
+            ConnectionDirection::Outbound,
+            vertex_swarm_peer_manager::TrustLevel::Normal,
+        );
         metrics.record_event(&TopologyEvent::PeerReady {
             overlay,
             peer_id: test_peer_id(1),

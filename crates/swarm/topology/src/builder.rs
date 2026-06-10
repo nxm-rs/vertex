@@ -150,7 +150,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
         let connection_registry = Arc::new(ConnectionRegistry::new());
         let agent_versions = identify::new_agent_versions();
 
-        let ban_rx = peer_manager.subscribe_bans();
+        let lifecycle_rx = peer_manager.subscribe();
 
         let routing = KademliaRouting::new(
             self.identity.clone(),
@@ -232,7 +232,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
             early_disconnect_threshold: self.config.early_disconnect_threshold,
             pending_evictions: HashSet::new(),
             outbound_public_dials: HashSet::new(),
-            ban_rx,
+            lifecycle_rx,
             peer_store: self.peer_store,
             agent_versions,
             trust_local_peers: self.trust_local_peers,
