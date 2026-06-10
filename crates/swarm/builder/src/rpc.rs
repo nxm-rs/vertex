@@ -5,6 +5,30 @@ use vertex_swarm_api::{HasTopology, SwarmChunkProvider, SwarmChunkSender, SwarmI
 use vertex_swarm_rpc::{ChunkService, NodeService, proto};
 use vertex_swarm_topology::TopologyHandle;
 
+/// Register the node status service and the reflection descriptor that every
+/// node type's gRPC surface shares.
+fn register_node_service<I: SwarmIdentity>(
+    registry: &mut GrpcRegistry,
+    topology: &TopologyHandle<I>,
+) {
+    let node_service = NodeService::new(topology.clone());
+    let node_server = proto::node::node_server::NodeServer::new(node_service);
+    registry.add_service(node_server);
+
+    registry.add_descriptor(proto::FILE_DESCRIPTOR_SET);
+}
+
+/// Register the chunk upload/download service that backs client and storer
+/// nodes.
+fn register_chunk_service<C>(registry: &mut GrpcRegistry, chunks: &C)
+where
+    C: SwarmChunkProvider + SwarmChunkSender + Clone,
+{
+    let chunk_service = ChunkService::new(chunks.clone());
+    let chunk_server = proto::chunk::chunk_server::ChunkServer::new(chunk_service);
+    registry.add_service(chunk_server);
+}
+
 /// RPC providers for client nodes (topology status + chunk retrieval).
 pub struct ClientRpcProviders<I: SwarmIdentity, C> {
     topology: TopologyHandle<I>,
@@ -12,6 +36,8 @@ pub struct ClientRpcProviders<I: SwarmIdentity, C> {
 }
 
 impl<I: SwarmIdentity, C> ClientRpcProviders<I, C> {
+    /// Create providers from the topology handle and chunk provider of a built
+    /// client node.
     pub fn new(topology: TopologyHandle<I>, chunks: C) -> Self {
         Self { topology, chunks }
     }
@@ -38,15 +64,8 @@ impl<I: SwarmIdentity, C: SwarmChunkProvider + SwarmChunkSender + Clone> Registe
     for ClientRpcProviders<I, C>
 {
     fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
-        let node_service = NodeService::new(self.topology.clone());
-        let node_server = proto::node::node_server::NodeServer::new(node_service);
-        registry.add_service(node_server);
-
-        let chunk_service = ChunkService::new(self.chunks.clone());
-        let chunk_server = proto::chunk::chunk_server::ChunkServer::new(chunk_service);
-        registry.add_service(chunk_server);
-
-        registry.add_descriptor(proto::FILE_DESCRIPTOR_SET);
+        register_node_service(registry, &self.topology);
+        register_chunk_service(registry, &self.chunks);
     }
 }
 
@@ -56,6 +75,7 @@ pub struct BootnodeRpcProviders<I: SwarmIdentity> {
 }
 
 impl<I: SwarmIdentity> BootnodeRpcProviders<I> {
+    /// Create providers from the topology handle of a built bootnode.
     pub fn new(topology: TopologyHandle<I>) -> Self {
         Self { topology }
     }
@@ -71,11 +91,7 @@ impl<I: SwarmIdentity> HasTopology for BootnodeRpcProviders<I> {
 
 impl<I: SwarmIdentity> RegistersGrpcServices for BootnodeRpcProviders<I> {
     fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
-        let node_service = NodeService::new(self.topology.clone());
-        let node_server = proto::node::node_server::NodeServer::new(node_service);
-        registry.add_service(node_server);
-
-        registry.add_descriptor(proto::FILE_DESCRIPTOR_SET);
+        register_node_service(registry, &self.topology);
     }
 }
 
@@ -86,6 +102,8 @@ pub struct StorerRpcProviders<I: SwarmIdentity, C> {
 }
 
 impl<I: SwarmIdentity, C> StorerRpcProviders<I, C> {
+    /// Create providers from the topology handle and chunk provider of a built
+    /// storer node.
     pub fn new(topology: TopologyHandle<I>, chunks: C) -> Self {
         Self { topology, chunks }
     }
@@ -103,16 +121,9 @@ impl<I: SwarmIdentity, C: SwarmChunkProvider + SwarmChunkSender + Clone> Registe
     for StorerRpcProviders<I, C>
 {
     fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
-        let node_service = NodeService::new(self.topology.clone());
-        let node_server = proto::node::node_server::NodeServer::new(node_service);
-        registry.add_service(node_server);
-
-        let chunk_service = ChunkService::new(self.chunks.clone());
-        let chunk_server = proto::chunk::chunk_server::ChunkServer::new(chunk_service);
-        registry.add_service(chunk_server);
+        register_node_service(registry, &self.topology);
+        register_chunk_service(registry, &self.chunks);
 
         // TODO: Add storer-specific RPC services (storage, redistribution, etc.)
-
-        registry.add_descriptor(proto::FILE_DESCRIPTOR_SET);
     }
 }
