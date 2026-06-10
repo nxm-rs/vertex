@@ -2,7 +2,9 @@
 
 use std::time::Duration;
 
-use vertex_swarm_api::{DEFAULT_PEER_BAN_THRESHOLD, DEFAULT_PEER_WARN_THRESHOLD};
+use vertex_swarm_api::{
+    DEFAULT_PEER_BAN_THRESHOLD, DEFAULT_PEER_DISCONNECT_THRESHOLD, DEFAULT_PEER_WARN_THRESHOLD,
+};
 
 // The scoring event vocabulary is defined in `vertex-swarm-api`; this crate
 // re-exports it so existing import paths keep working.
@@ -33,6 +35,7 @@ scoring_events! {
 
     ban_threshold = DEFAULT_PEER_BAN_THRESHOLD,
     warn_threshold = DEFAULT_PEER_WARN_THRESHOLD,
+    disconnect_threshold = DEFAULT_PEER_DISCONNECT_THRESHOLD,
 }
 
 impl SwarmScoringConfig {
@@ -76,15 +79,27 @@ impl SwarmScoringConfig {
             .build()
     }
 
+    /// True if score is at or below the ban threshold.
+    ///
+    /// Inclusive because scores clamp at the scale minimum: with the default
+    /// ban threshold equal to that minimum, a strict comparison could never
+    /// fire.
     #[must_use]
     pub fn should_ban(&self, score: f64) -> bool {
-        score < self.ban_threshold
+        score <= self.ban_threshold
+    }
+
+    /// True if score is at or below the disconnect threshold but above the
+    /// ban threshold.
+    #[must_use]
+    pub fn should_disconnect(&self, score: f64) -> bool {
+        score <= self.disconnect_threshold && !self.should_ban(score)
     }
 
     /// True if score is below warning threshold but above ban threshold.
     #[must_use]
     pub fn should_warn(&self, score: f64) -> bool {
-        score < self.warn_threshold && score >= self.ban_threshold
+        score < self.warn_threshold && !self.should_ban(score)
     }
 }
 
@@ -151,6 +166,8 @@ mod tests {
         let config = SwarmScoringConfig::default();
         assert!(!config.should_ban(0.0));
         assert!(!config.should_ban(-50.0));
+        // Inclusive: the score scale clamps at the default ban threshold.
+        assert!(config.should_ban(-100.0));
         assert!(config.should_ban(-101.0));
     }
 
@@ -159,7 +176,19 @@ mod tests {
         let config = SwarmScoringConfig::default();
         assert!(!config.should_warn(0.0));
         assert!(config.should_warn(-60.0));
+        assert!(!config.should_warn(-100.0));
         assert!(!config.should_warn(-101.0));
+    }
+
+    #[test]
+    fn test_should_disconnect() {
+        let config = SwarmScoringConfig::default();
+        assert!(!config.should_disconnect(0.0));
+        assert!(!config.should_disconnect(-60.0));
+        assert!(config.should_disconnect(-75.0));
+        assert!(config.should_disconnect(-80.0));
+        // At or below the ban threshold, ban takes over.
+        assert!(!config.should_disconnect(-100.0));
     }
 
     #[test]
