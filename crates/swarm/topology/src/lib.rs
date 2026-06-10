@@ -25,6 +25,10 @@
 //! - The dialer tracks at most 256 in-flight dials, each bounded by the
 //!   handshake timeout; the per-bin routing targets, not this cap, are the real
 //!   gate on how many become connections.
+//! - Gossip exchange and verification tuning (refresh cadence, queue bounds,
+//!   backoff and ban policy) lives in [`GossipConfig`], overridable through
+//!   [`TopologyConfig::with_gossip`]. The `gossip` module docs explain how the
+//!   limits relate.
 
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
@@ -52,6 +56,7 @@ pub(crate) mod test_support;
 pub use behaviour::{DEFAULT_DIAL_INTERVAL, TopologyBehaviour, TopologyConfig};
 pub use error::{DialError, DisconnectReason, RejectionReason, TopologyError, TopologyResult};
 pub use events::{ConnectionDirection, DialReason, TopologyCommand, TopologyEvent};
+pub use gossip::GossipConfig;
 pub use handle::{BinStats, RoutingStats, TopologyHandle};
 
 pub use kademlia::{KademliaConfig, RoutingArgs};

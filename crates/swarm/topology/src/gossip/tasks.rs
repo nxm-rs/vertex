@@ -22,32 +22,23 @@ use vertex_swarm_peer_manager::PeerManager;
 use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress};
 use vertex_swarm_spec::Spec;
 
-use super::GossipInput;
 use super::events::{GossipAction, GossipCheckOk, VerificationResult};
 use super::filter::{
     RecipientProfile, detect_depth_decrease, filter_peers_for_recipient, scoring_event_for,
     select_peers_for_distant,
 };
 use super::verifier::{GossipVerifier, Verification};
+use super::{GossipConfig, GossipInput};
 use crate::kademlia::RoutingEvaluatorHandle;
 use crate::kademlia::peer_selection;
 
 use crate::behaviour::ConnectionRegistry;
-
-/// Interval for refreshing neighborhood peers.
-const GOSSIP_REFRESH_INTERVAL: Duration = Duration::from_secs(600);
-
-/// Default delay before exchanging gossip with gossip-dial peers.
-const DEFAULT_HEALTH_CHECK_DELAY: Duration = Duration::from_millis(500);
 
 /// Channel capacity for gossip inputs.
 const INPUT_CHANNEL_CAPACITY: usize = 128;
 
 /// Channel capacity for gossip broadcast actions.
 const OUTPUT_CHANNEL_CAPACITY: usize = 128;
-
-/// Idle connection timeout for verification swarm.
-const VERIFICATION_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Lightweight behaviour for verification handshakes + identify push.
 #[derive(NetworkBehaviour)]
@@ -106,6 +97,7 @@ struct GossipTask<I: SwarmIdentity> {
     /// `PeerActivated` (connection succeeded) or `ConnectionClosed` (connection dropped).
     gossip_dial_peers: HashSet<PeerId>,
     health_check_delay: Duration,
+    refresh_interval: Duration,
     gossip_interval: Interval,
 
     // Delayed gossip exchange
@@ -488,15 +480,15 @@ impl<I: SwarmIdentity> GossipTask<I> {
         // Periodic cleanup: remove cancelled_exchanges entries with no pending future.
         // When pending_exchanges is empty, all futures have resolved so no cancellation
         // tokens are needed. Otherwise, retain only entries that could still match a
-        // pending future (conservatively keep all — they are removed on resolution).
+        // pending future (conservatively keep all; they are removed on resolution).
         if self.pending_exchanges.is_empty() {
             self.cancelled_exchanges.clear();
         }
 
         // Periodic cleanup: evict stale last_broadcast entries.
-        // Entries older than 2x the refresh interval are unlikely to be useful —
+        // Entries older than 2x the refresh interval are unlikely to be useful;
         // the peer has either disconnected or will be refreshed on the next tick.
-        let broadcast_expiry = GOSSIP_REFRESH_INTERVAL * 2;
+        let broadcast_expiry = self.refresh_interval * 2;
         self.last_broadcast
             .retain(|_, ts| now.duration_since(*ts) <= broadcast_expiry);
 
@@ -506,7 +498,7 @@ impl<I: SwarmIdentity> GossipTask<I> {
         let has_stale = neighbors.iter().any(|neighbor| {
             self.last_broadcast
                 .get(neighbor)
-                .map(|t| now.duration_since(*t) > GOSSIP_REFRESH_INTERVAL)
+                .map(|t| now.duration_since(*t) > self.refresh_interval)
                 .unwrap_or(true)
         });
 
@@ -521,7 +513,7 @@ impl<I: SwarmIdentity> GossipTask<I> {
             let is_stale = self
                 .last_broadcast
                 .get(&neighbor)
-                .map(|t| now.duration_since(*t) > GOSSIP_REFRESH_INTERVAL)
+                .map(|t| now.duration_since(*t) > self.refresh_interval)
                 .unwrap_or(true);
 
             if is_stale {
@@ -660,8 +652,10 @@ impl<I: SwarmIdentity> GossipTask<I> {
 }
 
 /// Spawn the gossip task. Returns a handle for sending inputs and receiving outputs.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_gossip_task<I: SwarmIdentity>(
     spec: Arc<Spec>,
+    config: GossipConfig,
     local_overlay: OverlayAddress,
     peer_manager: Arc<PeerManager<I>>,
     connection_registry: Arc<ConnectionRegistry>,
@@ -707,10 +701,10 @@ pub(crate) fn spawn_gossip_task<I: SwarmIdentity>(
             })
         })
         .map_err(|e| format!("Behaviour: {e}"))?
-        .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(VERIFICATION_IDLE_TIMEOUT))
+        .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(config.verification_idle_timeout))
         .build();
 
-    let verifier = GossipVerifier::new();
+    let verifier = GossipVerifier::new(&config);
 
     let task = GossipTask {
         input_rx,
@@ -725,8 +719,9 @@ pub(crate) fn spawn_gossip_task<I: SwarmIdentity>(
         last_depth: 0,
         last_broadcast: HashMap::new(),
         gossip_dial_peers: HashSet::new(),
-        health_check_delay: DEFAULT_HEALTH_CHECK_DELAY,
-        gossip_interval: tokio::time::interval(GOSSIP_REFRESH_INTERVAL),
+        health_check_delay: config.health_check_delay,
+        refresh_interval: config.refresh_interval,
+        gossip_interval: tokio::time::interval(config.refresh_interval),
         pending_exchanges: FuturesUnordered::new(),
         cancelled_exchanges: HashSet::new(),
         evaluator_handle,
