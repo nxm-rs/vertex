@@ -48,7 +48,10 @@ impl PeerScore {
     }
 
     /// Atomically adjust score, clamped to bounds.
-    pub fn add_score(&self, delta: f64) {
+    ///
+    /// Returns `(old, new)` from the successful update so callers can detect
+    /// threshold crossings without racing a separate load.
+    pub fn add_score(&self, delta: f64) -> (f64, f64) {
         loop {
             let current = self.score.load(Ordering::Acquire);
             let new_val = (current + delta).clamp(MIN_SCORE, MAX_SCORE);
@@ -57,7 +60,43 @@ impl PeerScore {
                 .compare_exchange_weak(current, new_val, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
-                break;
+                return (current, new_val);
+            }
+        }
+    }
+
+    /// Exponentially decay the score toward zero.
+    ///
+    /// After one half-life the score magnitude halves; both positive and
+    /// negative scores decay, so reputation is recency-weighted in either
+    /// direction. The crate holds no clock: callers measure `elapsed_secs`
+    /// themselves and drive decay from their own heartbeat.
+    ///
+    /// Accelerated recovery for connected peers needs no second method: decay
+    /// is scale-free in `elapsed_secs / half_life_secs`, so passing half the
+    /// configured half-life (or equivalently doubling the elapsed time)
+    /// decays a connected peer's negative score twice as fast.
+    ///
+    /// A `half_life_secs` of zero is treated as infinitely fast decay and
+    /// resets the score to zero.
+    pub fn decay(&self, half_life_secs: u64, elapsed_secs: u64) {
+        if elapsed_secs == 0 {
+            return;
+        }
+        if half_life_secs == 0 {
+            self.score.store(0.0, Ordering::Release);
+            return;
+        }
+        let factor = 0.5_f64.powf(elapsed_secs as f64 / half_life_secs as f64);
+        loop {
+            let current = self.score.load(Ordering::Acquire);
+            let new_val = current * factor;
+            if self
+                .score
+                .compare_exchange_weak(current, new_val, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return;
             }
         }
     }
@@ -203,6 +242,96 @@ mod tests {
         }
 
         assert!((score.score() - MAX_SCORE).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_add_score_returns_old_and_new() {
+        let score = PeerScore::new();
+
+        let (old, new) = score.add_score(10.0);
+        assert_eq!(old, 0.0);
+        assert!((new - 10.0).abs() < 0.001);
+
+        let (old, new) = score.add_score(-200.0);
+        assert!((old - 10.0).abs() < 0.001);
+        assert!((new - MIN_SCORE).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_decay_halves_over_one_half_life() {
+        let score = PeerScore::new();
+        score.set_score(80.0);
+        score.decay(600, 600);
+        assert!((score.score() - 40.0).abs() < 0.001);
+
+        // Negative scores decay toward zero too.
+        score.set_score(-80.0);
+        score.decay(600, 600);
+        assert!((score.score() + 40.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_decay_converges_to_zero() {
+        let score = PeerScore::new();
+        score.set_score(MAX_SCORE);
+        for _ in 0..100 {
+            score.decay(60, 60);
+        }
+        assert!(score.score().abs() < 1e-9);
+
+        score.set_score(MIN_SCORE);
+        for _ in 0..100 {
+            score.decay(60, 60);
+        }
+        assert!(score.score().abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_decay_edge_cases() {
+        let score = PeerScore::new();
+        score.set_score(50.0);
+
+        // Zero elapsed time is a no-op.
+        score.decay(600, 0);
+        assert!((score.score() - 50.0).abs() < 0.001);
+
+        // Halved half-life decays faster (accelerated recovery pattern).
+        let connected = PeerScore::new();
+        connected.set_score(-40.0);
+        connected.decay(300, 600);
+        assert!((connected.score() + 10.0).abs() < 0.001);
+
+        // Zero half-life resets to zero.
+        score.decay(0, 1);
+        assert_eq!(score.score(), 0.0);
+    }
+
+    #[test]
+    fn test_concurrent_add_and_decay() {
+        let score = Arc::new(PeerScore::new());
+        let mut handles = vec![];
+
+        for i in 0..8 {
+            let score = Arc::clone(&score);
+            handles.push(thread::spawn(move || {
+                for _ in 0..1000 {
+                    if i % 2 == 0 {
+                        score.add_score(1.0);
+                    } else {
+                        score.decay(60, 60);
+                    }
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // No torn reads or panics; final value stays within clamp bounds.
+        let final_score = score.score();
+        assert!(final_score.is_finite());
+        assert!((MIN_SCORE..=MAX_SCORE).contains(&final_score));
     }
 
     #[test]

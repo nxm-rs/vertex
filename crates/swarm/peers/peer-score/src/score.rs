@@ -21,7 +21,35 @@ pub type ShouldBanFn = Box<dyn Fn(&OverlayAddress, f64, &str) + Send + Sync>;
 /// Called on severe scoring events: `(overlay, event)`.
 pub type SevereEventFn = Box<dyn Fn(&OverlayAddress, &SwarmScoringEvent) + Send + Sync>;
 
+/// Action implied by a peer's score after recording an event.
+///
+/// Returned by [`SwarmPeerScore::record_event`] so the caller can act on
+/// threshold crossings through its own report path instead of wiring
+/// closures. `Warn` and `Disconnect` are edge-triggered: they are returned
+/// when the score crosses the threshold, not on every event below it. `Ban`
+/// is level-triggered: it is returned whenever the score is at or below the
+/// ban threshold, so severe events that drive the score straight past it
+/// surface immediately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScoreOutcome {
+    /// No threshold crossed; no action needed.
+    Ok,
+    /// Score crossed the warning threshold (emitted once per descent).
+    Warn,
+    /// Score crossed the disconnect threshold; the peer should be dropped.
+    Disconnect,
+    /// Score is at or below the ban threshold; the peer should be banned.
+    Ban,
+}
+
 /// Closure-based callbacks invoked on peer score changes.
+///
+/// Transitional surface: the successor is a single report path on the peer
+/// manager that consumes the [`ScoreOutcome`] returned by
+/// [`SwarmPeerScore::record_event`] and maps it to warn, disconnect, or ban
+/// actions itself. New consumers should branch on the returned outcome
+/// rather than registering callbacks; this type remains only until existing
+/// wiring migrates.
 pub struct ScoreCallbacks {
     pub on_score_changed: ScoreChangedFn,
     pub on_score_warning: ScoreWarningFn,
@@ -92,8 +120,13 @@ impl SwarmPeerScore {
     }
 
     /// Apply configured weight, update latency tracking, and notify observer.
-    pub fn record_event(&self, event: SwarmScoringEvent) {
-        let old_score = self.score.score();
+    ///
+    /// Returns the [`ScoreOutcome`] implied by the resulting score so the
+    /// caller can warn, disconnect, or ban without registering callbacks.
+    /// Threshold logic lives in one place here: warn and disconnect are
+    /// edge-triggered on the crossing, ban is level-triggered at or below
+    /// the ban threshold.
+    pub fn record_event(&self, event: SwarmScoringEvent) -> ScoreOutcome {
         let weight = self.config.weight_for(&event);
 
         // Record latency if present
@@ -102,10 +135,9 @@ impl SwarmPeerScore {
                 .record_latency(latency.as_nanos().min(u64::MAX as u128) as u64);
         }
 
-        // Apply weight
-        self.score.add_score(weight);
-
-        let new_score = self.score.score();
+        // Apply weight; old and new come from the same atomic update so
+        // threshold crossings are race-free under concurrent recording.
+        let (old_score, new_score) = self.score.add_score(weight);
 
         // Notify observer
         (self.callbacks.on_score_changed)(&self.overlay, old_score, new_score, &event);
@@ -116,7 +148,20 @@ impl SwarmPeerScore {
         }
 
         // Check thresholds
-        self.check_thresholds(new_score, &event);
+        self.check_thresholds(old_score, new_score, &event)
+    }
+
+    /// Exponentially decay the score toward zero.
+    ///
+    /// Delegates to [`PeerScore::decay`]; callers pass elapsed time from
+    /// their own heartbeat. Resets the one-shot warning state when the
+    /// decayed score has recovered above the warning threshold so a later
+    /// descent warns again.
+    pub fn decay(&self, half_life_secs: u64, elapsed_secs: u64) {
+        self.score.decay(half_life_secs, elapsed_secs);
+        if !self.config.should_warn(self.score.score()) {
+            self.warned.store(false, Ordering::Release);
+        }
     }
 
     /// Record latency without affecting score.
@@ -139,26 +184,45 @@ impl SwarmPeerScore {
         (*self.score).clone()
     }
 
-    fn check_thresholds(&self, score: f64, event: &SwarmScoringEvent) {
-        if self.config.should_ban(score) {
-            let reason = format!("score {:+.1} below threshold after {:?}", score, event);
-            (self.callbacks.on_should_ban)(&self.overlay, score, &reason);
-            return;
+    fn check_thresholds(
+        &self,
+        old_score: f64,
+        new_score: f64,
+        event: &SwarmScoringEvent,
+    ) -> ScoreOutcome {
+        if self.config.should_ban(new_score) {
+            let reason = format!("score {:+.1} below threshold after {:?}", new_score, event);
+            (self.callbacks.on_should_ban)(&self.overlay, new_score, &reason);
+            return ScoreOutcome::Ban;
         }
 
-        if self.config.should_warn(score) {
-            // Only warn once (CAS: false → true)
+        let mut warned_now = false;
+        if self.config.should_warn(new_score) {
+            // Only warn once (CAS: false -> true)
             if self
                 .warned
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
             {
-                (self.callbacks.on_score_warning)(&self.overlay, score);
+                (self.callbacks.on_score_warning)(&self.overlay, new_score);
+                warned_now = true;
             }
         } else {
             // Reset warning flag if score recovered
             self.warned.store(false, Ordering::Release);
         }
+
+        // Edge-triggered on the downward crossing only, so a recovery event
+        // climbing out of the ban range never reads as a fresh disconnect.
+        // Disconnect outranks warn when one event crosses both thresholds.
+        let disconnect_threshold = self.config.disconnect_threshold();
+        if old_score > disconnect_threshold && new_score <= disconnect_threshold {
+            return ScoreOutcome::Disconnect;
+        }
+        if warned_now {
+            return ScoreOutcome::Warn;
+        }
+        ScoreOutcome::Ok
     }
 }
 
@@ -345,6 +409,188 @@ mod tests {
 
         assert!(bans.load(Ordering::Relaxed) >= 1);
         assert!(score.should_ban());
+    }
+
+    #[test]
+    fn test_outcome_warn_is_one_shot_until_recovery() {
+        let config = SwarmScoringConfig::builder().warn_threshold(-10.0).build();
+        let score = SwarmPeerScore::new(
+            test_overlay(1),
+            PeerScore::new(),
+            Arc::new(config),
+            ScoreCallbacks::noop(),
+        );
+
+        // Six timeouts (-1.5 each) stay above -10: all Ok.
+        for _ in 0..6 {
+            assert_eq!(
+                score.record_event(SwarmScoringEvent::ConnectionTimeout),
+                ScoreOutcome::Ok
+            );
+        }
+
+        // Seventh crosses -10: Warn exactly once.
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::ConnectionTimeout),
+            ScoreOutcome::Warn
+        );
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::ConnectionTimeout),
+            ScoreOutcome::Ok
+        );
+
+        // Recover above the warn threshold, then descend again: warns again.
+        for _ in 0..3 {
+            score.record_event(SwarmScoringEvent::ConnectionSuccess { latency: None });
+        }
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::ConnectionTimeout),
+            ScoreOutcome::Warn
+        );
+    }
+
+    #[test]
+    fn test_outcome_disconnect_is_edge_triggered() {
+        let score = SwarmPeerScore::with_defaults(test_overlay(1));
+
+        // 0 -> -50: at the warn threshold but not below it.
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::MaliciousBehavior),
+            ScoreOutcome::Ok
+        );
+        // -50 -> -70: warn crossing.
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::AccountingViolation),
+            ScoreOutcome::Warn
+        );
+        // -70 -> -72: still above disconnect.
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::RetrievalFailure),
+            ScoreOutcome::Ok
+        );
+        // -72 -> -82: crosses -75 once.
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::InvalidData),
+            ScoreOutcome::Disconnect
+        );
+        // -82 -> -84: already below; edge-triggered means Ok.
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::RetrievalFailure),
+            ScoreOutcome::Ok
+        );
+    }
+
+    #[test]
+    fn test_outcome_ban_is_level_triggered() {
+        let score = SwarmPeerScore::with_defaults(test_overlay(1));
+
+        score.record_event(SwarmScoringEvent::InvalidData); // -10
+        for _ in 0..4 {
+            score.record_event(SwarmScoringEvent::AccountingViolation); // -90
+        }
+        // -90 -> -100 (clamped at the scale minimum): Ban.
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::AccountingViolation),
+            ScoreOutcome::Ban
+        );
+        // Still at the ban threshold: Ban on every event, not just the edge.
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::ConnectionTimeout),
+            ScoreOutcome::Ban
+        );
+        assert!(score.should_ban());
+    }
+
+    #[test]
+    fn test_outcome_recovery_from_ban_range_is_not_disconnect() {
+        let score = SwarmPeerScore::with_defaults(test_overlay(1));
+
+        // Drive the score to the ban threshold.
+        score.record_event(SwarmScoringEvent::MaliciousBehavior);
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::MaliciousBehavior),
+            ScoreOutcome::Ban
+        );
+
+        // A positive event climbing out of the ban range must not read as a
+        // fresh downward disconnect crossing. The peer was never warned (the
+        // descent jumped straight past the warn band into the ban branch),
+        // so the one-shot warning fires here instead.
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::ConnectionSuccess { latency: None }),
+            ScoreOutcome::Warn
+        );
+        // Subsequent events inside the warn band are quiet.
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::ConnectionSuccess { latency: None }),
+            ScoreOutcome::Ok
+        );
+    }
+
+    #[test]
+    fn test_decay_resets_warning_state() {
+        let score = SwarmPeerScore::with_defaults(test_overlay(1));
+
+        // Cross the warn threshold (-50) once.
+        score.record_event(SwarmScoringEvent::MaliciousBehavior); // -50
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::ProtocolError), // -53
+            ScoreOutcome::Warn
+        );
+
+        // Decay well above the warn threshold, then descend again: a fresh
+        // warning fires because decay reset the one-shot state.
+        score.decay(60, 600); // -53 * 2^-10, near zero
+        assert!(score.score() > -1.0);
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::AccountingViolation), // about -20
+            ScoreOutcome::Ok
+        );
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::AccountingViolation), // about -40
+            ScoreOutcome::Ok
+        );
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::AccountingViolation), // about -60
+            ScoreOutcome::Warn
+        );
+    }
+
+    #[test]
+    fn test_outcome_severe_fast_path() {
+        let (cb, _, _, bans, severe) = counting_callbacks();
+        let config = Arc::new(SwarmScoringConfig::default());
+        let score = SwarmPeerScore::new(test_overlay(1), PeerScore::new(), config, cb);
+
+        // Two severe events drive the score straight to the ban threshold.
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::MaliciousBehavior),
+            ScoreOutcome::Ok
+        );
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::MaliciousBehavior),
+            ScoreOutcome::Ban
+        );
+        assert_eq!(severe.load(Ordering::Relaxed), 2);
+        assert_eq!(bans.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn test_outcome_disconnect_outranks_warn_on_double_crossing() {
+        let (cb, _, warnings, _, _) = counting_callbacks();
+        let config = Arc::new(SwarmScoringConfig::default());
+        let score = SwarmPeerScore::new(test_overlay(1), PeerScore::new(), config, cb);
+
+        // 0 -> -30: above both thresholds.
+        score.record_event(SwarmScoringEvent::AccountingViolation);
+        score.record_event(SwarmScoringEvent::InvalidData);
+        // -30 -> -80 crosses warn (-50) and disconnect (-75) in one event:
+        // the outcome is Disconnect, but the warn callback shim still fires.
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::MaliciousBehavior),
+            ScoreOutcome::Disconnect
+        );
+        assert_eq!(warnings.load(Ordering::Relaxed), 1);
     }
 
     #[test]
