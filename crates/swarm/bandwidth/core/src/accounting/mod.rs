@@ -31,8 +31,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use vertex_swarm_api::{
-    Direction, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmIdentity, SwarmPeerBandwidth,
-    SwarmResult,
+    Direction, PeerAffordability, PeerReporter, ReportSource, SwarmAccountingConfig,
+    SwarmBandwidthAccounting, SwarmIdentity, SwarmPeerBandwidth, SwarmResult, SwarmScoringEvent,
 };
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -47,6 +47,7 @@ pub struct Accounting<C, I: SwarmIdentity> {
     identity: I,
     providers: Arc<[Box<dyn SwarmSettlementProvider>]>,
     peers: RwLock<HashMap<OverlayAddress, Arc<PeerState>>>,
+    reporter: Option<Arc<dyn PeerReporter>>,
 }
 
 impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
@@ -57,6 +58,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             identity,
             providers: Arc::from(Vec::new()),
             peers: RwLock::new(HashMap::new()),
+            reporter: None,
         }
     }
 
@@ -74,7 +76,17 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             identity,
             providers: Arc::from(providers),
             peers: RwLock::new(HashMap::new()),
+            reporter: None,
         }
+    }
+
+    /// Attach a peer reporter so accounting violations feed peer scoring.
+    ///
+    /// Reporting is best-effort and non-blocking. Without a reporter,
+    /// violations only surface as errors to the caller, exactly as before.
+    pub fn with_reporter(mut self, reporter: Arc<dyn PeerReporter>) -> Self {
+        self.reporter = Some(reporter);
+        self
     }
 
     /// Get a reference to the configuration.
@@ -108,12 +120,28 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
         let disconnect_threshold = self.config.disconnect_threshold();
         let threshold = -(disconnect_threshold as i64);
         if projected < threshold {
+            // Law broken: the peer stopped accepting settlement (refresh or
+            // payment), letting our debt reach the disconnect threshold.
+            //
+            // Reported once per breach episode: a successful grant ends the
+            // episode, so retries against an already-broken balance do not
+            // stack score penalties.
+            if state.mark_breach()
+                && let Some(reporter) = &self.reporter
+            {
+                reporter.report_peer(
+                    &peer,
+                    SwarmScoringEvent::AccountingViolation,
+                    ReportSource::Accounting,
+                );
+            }
             return Err(AccountingError::DisconnectThreshold {
                 peer,
                 balance: current_balance,
                 threshold: disconnect_threshold,
             });
         }
+        state.clear_breach();
 
         state.add_reserved(price);
         Ok(ReceiveAction::new(state, price))
@@ -213,6 +241,43 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmBandwidthAccounting for Ac
     fn prepare_provide(&self, peer: OverlayAddress, price: u64) -> SwarmResult<ProvideAction> {
         Accounting::prepare_provide(self, peer, price)
             .map_err(vertex_swarm_api::SwarmError::accounting)
+    }
+}
+
+/// Affordability queries for the receive side of accounting.
+///
+/// Sign convention: `balance` is the peer's debt to us in AU (positive means
+/// the peer owes us, negative means we owe the peer). Receiving service
+/// debits our side, so a request of `price` moves the balance by `-price`.
+/// A debit is affordable while the projected balance
+/// (`balance - price - reserved`) stays at or above the negated disconnect
+/// threshold, mirroring the guard in [`Accounting::prepare_receive`]. For
+/// peers tracked with the standard thresholds, `can_afford(peer, price)` is
+/// true exactly when a `prepare_receive` for `price` would succeed. The
+/// per-peer threshold is read, so for client-only peers with scaled
+/// thresholds affordability is stricter than the config-wide guard.
+///
+/// Unknown peers are treated as fresh zero-balance peers with the configured
+/// default thresholds, matching [`Accounting::get_or_create_peer`]. The
+/// queries are read-only and never insert peer state, so client-only
+/// threshold scaling applies only once the peer record exists.
+impl<C: SwarmAccountingConfig, I: SwarmIdentity> PeerAffordability for Accounting<C, I> {
+    fn can_afford(&self, overlay: &OverlayAddress, price: u64) -> bool {
+        price <= self.allowance_remaining(overlay)
+    }
+
+    fn allowance_remaining(&self, overlay: &OverlayAddress) -> u64 {
+        let (balance, reserved, threshold) = match self.peers.read().get(overlay) {
+            Some(state) => (
+                state.balance(),
+                state.reserved_balance(),
+                state.disconnect_threshold(),
+            ),
+            None => (0, 0, self.config.disconnect_threshold()),
+        };
+
+        let headroom = balance as i128 + threshold as i128 - reserved as i128;
+        headroom.clamp(0, u64::MAX as i128) as u64
     }
 }
 
@@ -507,5 +572,150 @@ mod tests {
 
         // Both providers should have adjusted the balance
         assert_eq!(handle.balance(), 300);
+    }
+
+    #[derive(Default)]
+    struct RecordingReporter {
+        reports: parking_lot::Mutex<Vec<(OverlayAddress, SwarmScoringEvent, ReportSource)>>,
+    }
+
+    impl PeerReporter for RecordingReporter {
+        fn report_peer(
+            &self,
+            overlay: &OverlayAddress,
+            event: SwarmScoringEvent,
+            source: ReportSource,
+        ) {
+            self.reports.lock().push((*overlay, event, source));
+        }
+    }
+
+    /// Config with payment threshold 1000 and 25% tolerance, so the
+    /// disconnect threshold is 1250.
+    fn small_config() -> BandwidthConfig {
+        BandwidthConfig::new(
+            vertex_swarm_api::BandwidthMode::Pseudosettle,
+            1000,
+            25,
+            0,
+            0,
+            5,
+            crate::FixedPricingConfig::default(),
+        )
+    }
+
+    const SMALL_DISCONNECT_THRESHOLD: u64 = 1250;
+
+    #[test]
+    fn test_violation_reported_once_per_breach_episode() {
+        let reporter = Arc::new(RecordingReporter::default());
+        let accounting = Accounting::new(small_config(), test_identity())
+            .with_reporter(Arc::clone(&reporter) as Arc<dyn PeerReporter>);
+        let peer = test_peer();
+
+        // First breach reports exactly once.
+        assert!(matches!(
+            accounting.prepare_receive(peer, 2000, true),
+            Err(AccountingError::DisconnectThreshold { .. })
+        ));
+        assert_eq!(reporter.reports.lock().len(), 1);
+        let (reported_peer, event, source) = reporter.reports.lock()[0];
+        assert_eq!(reported_peer, peer);
+        assert_eq!(event, SwarmScoringEvent::AccountingViolation);
+        assert_eq!(source, ReportSource::Accounting);
+
+        // Retrying against the same broken state does not stack reports.
+        assert!(accounting.prepare_receive(peer, 2000, true).is_err());
+        assert!(accounting.prepare_receive(peer, 3000, true).is_err());
+        assert_eq!(reporter.reports.lock().len(), 1);
+
+        // A successful grant ends the episode...
+        let action = accounting
+            .prepare_receive(peer, 100, true)
+            .expect("within threshold");
+        drop(action);
+        assert_eq!(reporter.reports.lock().len(), 1);
+
+        // ...so the next breach is a new episode and reports again.
+        assert!(accounting.prepare_receive(peer, 2000, true).is_err());
+        assert_eq!(reporter.reports.lock().len(), 2);
+    }
+
+    #[test]
+    fn test_no_reporter_behaviour_unchanged() {
+        let accounting = Accounting::new(small_config(), test_identity());
+        let peer = test_peer();
+
+        assert!(matches!(
+            accounting.prepare_receive(peer, 2000, true),
+            Err(AccountingError::DisconnectThreshold { .. })
+        ));
+
+        let action = accounting
+            .prepare_receive(peer, SMALL_DISCONNECT_THRESHOLD, true)
+            .expect("exactly at threshold is allowed");
+        action.apply();
+
+        let handle = accounting.for_peer(peer);
+        assert_eq!(handle.balance(), -(SMALL_DISCONNECT_THRESHOLD as i64));
+    }
+
+    #[test]
+    fn test_affordability_unknown_peer_is_fresh_and_read_only() {
+        let accounting = Accounting::new(small_config(), test_identity());
+        let peer = test_peer();
+
+        // Unknown peers are treated as fresh zero-balance peers.
+        assert_eq!(
+            accounting.allowance_remaining(&peer),
+            SMALL_DISCONNECT_THRESHOLD
+        );
+        assert!(accounting.can_afford(&peer, SMALL_DISCONNECT_THRESHOLD));
+        assert!(!accounting.can_afford(&peer, SMALL_DISCONNECT_THRESHOLD + 1));
+
+        // Affordability queries never insert peer state.
+        assert!(accounting.peers().is_empty());
+    }
+
+    #[test]
+    fn test_affordability_boundaries_match_prepare_receive() {
+        let accounting = Accounting::new(small_config(), test_identity());
+        let peer = test_peer();
+
+        // Build up debt: we owe the peer 500 AU.
+        let handle = accounting.for_peer(peer);
+        handle.record(500, Direction::Download);
+        assert_eq!(handle.balance(), -500);
+        assert_eq!(accounting.allowance_remaining(&peer), 750);
+
+        // Exactly at the threshold: affordable and grantable.
+        assert!(accounting.can_afford(&peer, 750));
+        assert!(accounting.prepare_receive(peer, 750, true).is_ok());
+
+        // Just over: refused by both.
+        assert!(!accounting.can_afford(&peer, 751));
+        assert!(accounting.prepare_receive(peer, 751, true).is_err());
+    }
+
+    #[test]
+    fn test_affordability_accounts_for_reservations() {
+        let accounting = Accounting::new(small_config(), test_identity());
+        let peer = test_peer();
+
+        let action = accounting
+            .prepare_receive(peer, 1000, true)
+            .expect("within threshold");
+
+        // The outstanding reservation consumes headroom.
+        assert_eq!(accounting.allowance_remaining(&peer), 250);
+        assert!(accounting.can_afford(&peer, 250));
+        assert!(!accounting.can_afford(&peer, 251));
+
+        // Releasing the reservation restores the headroom.
+        drop(action);
+        assert_eq!(
+            accounting.allowance_remaining(&peer),
+            SMALL_DISCONNECT_THRESHOLD
+        );
     }
 }

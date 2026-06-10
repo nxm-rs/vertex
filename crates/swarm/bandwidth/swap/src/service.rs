@@ -15,7 +15,10 @@ use alloy_primitives::{Address, U256};
 use alloy_signer::SignerSync;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
-use vertex_swarm_api::{Direction, SwarmBandwidthAccounting, SwarmPeerBandwidth};
+use vertex_swarm_api::{
+    Direction, PeerReporter, ReportSource, SwarmBandwidthAccounting, SwarmPeerBandwidth,
+    SwarmScoringEvent,
+};
 use vertex_swarm_bandwidth_chequebook::{Cheque, ChequeExt, SignedCheque};
 use vertex_swarm_node::{ClientCommand, SwapEvent};
 use vertex_swarm_primitives::OverlayAddress;
@@ -90,6 +93,8 @@ pub struct SwapService<A: SwarmBandwidthAccounting, S> {
     peers: HashMap<OverlayAddress, PeerChequeState>,
     /// Track pending outbound settlements (waiting for the wire ack).
     pending: HashMap<OverlayAddress, PendingSettlement>,
+    /// Optional reporter feeding settlement violations into peer scoring.
+    reporter: Option<Arc<dyn PeerReporter>>,
     /// Optional on-chain chequebook client for cashing received cheques.
     #[cfg(feature = "swap-chequebook")]
     cashout: Option<crate::cashout::Cashout>,
@@ -128,6 +133,7 @@ where
             chain,
             peers: HashMap::new(),
             pending: HashMap::new(),
+            reporter: None,
             #[cfg(feature = "swap-chequebook")]
             cashout: None,
         }
@@ -138,6 +144,26 @@ where
     pub fn with_cashout(mut self, cashout: crate::cashout::Cashout) -> Self {
         self.cashout = Some(cashout);
         self
+    }
+
+    /// Attach a peer reporter so settlement violations feed peer scoring.
+    ///
+    /// Reporting is best-effort and non-blocking. Without a reporter the
+    /// service behaves exactly as before.
+    pub fn with_reporter(mut self, reporter: Arc<dyn PeerReporter>) -> Self {
+        self.reporter = Some(reporter);
+        self
+    }
+
+    /// Report an accounting violation if a reporter is attached.
+    fn report_violation(&self, peer: &OverlayAddress) {
+        if let Some(reporter) = &self.reporter {
+            reporter.report_peer(
+                peer,
+                SwarmScoringEvent::AccountingViolation,
+                ReportSource::Accounting,
+            );
+        }
     }
 
     /// Run the service event loop with graceful shutdown support.
@@ -291,6 +317,15 @@ where
                         self.maybe_cash(peer, cheque).await;
                     }
                     Err(e) => {
+                        // An unknown identity can be local wiring lag (the
+                        // handshake info is not yet registered), so only
+                        // authenticated rejections count against the peer.
+                        if !matches!(e, SwapSettlementError::UnknownPeerIdentity) {
+                            // Law broken: a cheque must name our beneficiary,
+                            // authenticate against the peer's issuer, and
+                            // strictly increase the cumulative payout.
+                            self.report_violation(&peer);
+                        }
                         warn!(%peer, error = %e, "Rejected received cheque");
                     }
                 }
@@ -570,6 +605,102 @@ mod tests {
             svc.accept_cheque(peer, &cheque),
             Err(SwapSettlementError::UnknownPeerIdentity)
         ));
+    }
+
+    #[derive(Default)]
+    struct RecordingReporter {
+        reports: std::sync::Mutex<Vec<(OverlayAddress, SwarmScoringEvent, ReportSource)>>,
+    }
+
+    impl PeerReporter for RecordingReporter {
+        fn report_peer(
+            &self,
+            overlay: &OverlayAddress,
+            event: SwarmScoringEvent,
+            source: ReportSource,
+        ) {
+            self.reports.lock().unwrap().push((*overlay, event, source));
+        }
+    }
+
+    #[tokio::test]
+    async fn rejected_cheque_reports_violation() {
+        let issuer = PrivateKeySigner::random();
+        let reporter = Arc::new(RecordingReporter::default());
+        let mut svc = build_service(PrivateKeySigner::random())
+            .with_reporter(Arc::clone(&reporter) as Arc<dyn PeerReporter>);
+        let peer = test_peer();
+        svc.peers.entry(peer).or_default().info = Some(PeerSwapInfo {
+            beneficiary: Address::repeat_byte(0x22),
+            issuer: issuer.address(),
+        });
+
+        // A cheque drawn for someone else is an authenticated violation.
+        let cheque = peer_cheque(
+            &issuer,
+            Address::repeat_byte(0xaa),
+            Address::repeat_byte(0x77),
+            1_000,
+        );
+        svc.handle_event(SwapEvent::ChequeReceived {
+            peer,
+            cheque,
+            peer_rate: U256::ZERO,
+        })
+        .await;
+
+        let reports = reporter.reports.lock().unwrap();
+        assert_eq!(reports.len(), 1);
+        let (reported_peer, event, source) = *reports.first().unwrap();
+        assert_eq!(reported_peer, peer);
+        assert_eq!(event, SwarmScoringEvent::AccountingViolation);
+        assert_eq!(source, ReportSource::Accounting);
+    }
+
+    #[tokio::test]
+    async fn unknown_identity_rejection_does_not_report() {
+        let issuer = PrivateKeySigner::random();
+        let reporter = Arc::new(RecordingReporter::default());
+        let mut svc = build_service(PrivateKeySigner::random())
+            .with_reporter(Arc::clone(&reporter) as Arc<dyn PeerReporter>);
+        let peer = test_peer();
+
+        // No registered swap identity: the rejection may be local wiring
+        // lag, so it must not count against the peer.
+        let cheque = peer_cheque(&issuer, Address::repeat_byte(0xaa), OUR_BENEFICIARY, 1_000);
+        svc.handle_event(SwapEvent::ChequeReceived {
+            peer,
+            cheque,
+            peer_rate: U256::ZERO,
+        })
+        .await;
+
+        assert!(reporter.reports.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn accepted_cheque_does_not_report() {
+        let issuer = PrivateKeySigner::random();
+        let reporter = Arc::new(RecordingReporter::default());
+        let mut svc = build_service(PrivateKeySigner::random())
+            .with_reporter(Arc::clone(&reporter) as Arc<dyn PeerReporter>);
+        let peer = test_peer();
+        svc.peers.entry(peer).or_default().info = Some(PeerSwapInfo {
+            beneficiary: Address::repeat_byte(0x22),
+            issuer: issuer.address(),
+        });
+
+        let cheque = peer_cheque(&issuer, Address::repeat_byte(0xaa), OUR_BENEFICIARY, 1_000);
+        svc.handle_event(SwapEvent::ChequeReceived {
+            peer,
+            cheque,
+            peer_rate: U256::ZERO,
+        })
+        .await;
+
+        assert!(reporter.reports.lock().unwrap().is_empty());
+        let handle = svc.accounting.for_peer(peer);
+        assert_eq!(handle.balance(), -1_000);
     }
 
     #[test]
