@@ -87,12 +87,7 @@ where
             .components
             .topology()
             .closest_to(address, CLOSEST_PEER_COUNT);
-
-        if closest.is_empty() {
-            return Err(SwarmError::NoStorer {
-                chunk_address: *address,
-            });
-        }
+        let attempts = closest.len();
 
         // Walk the closest peers in order and return the first response. The
         // codec reconstructs the chunk against the requested address, so the
@@ -102,15 +97,26 @@ where
         // chunk address alone, so two in-flight requests for one address would
         // alias. Fanning out needs a per-request correlation id in the handle
         // and handler, tracked as a follow-up; until then this is sequential.
-        let mut last_error: Option<SwarmError> = None;
+        //
+        // The seed error covers the no-candidates case; each failed attempt
+        // replaces it, so the value after the loop is always the last failure.
+        let mut outcome = Err(SwarmError::NoStorer {
+            chunk_address: *address,
+        });
         for peer in closest {
             match self.client_handle.retrieve_chunk(peer, *address).await {
                 Ok(result) => return Ok(result.chunk.into_parts().0),
-                Err(e) => last_error = Some(SwarmError::network_msg(e.to_string())),
+                Err(e) => {
+                    outcome = Err(SwarmError::AllPeersFailed {
+                        address: *address,
+                        attempts,
+                        source: Box::new(e),
+                    });
+                }
             }
         }
 
-        Err(last_error.unwrap_or(SwarmError::ChunkNotFound { address: *address }))
+        outcome
     }
 
     async fn put(&self, chunk: StampedChunk) -> SwarmResult<()> {
@@ -211,6 +217,41 @@ mod tests {
 
     fn test_address() -> ChunkAddress {
         *test_stamped_chunk().address()
+    }
+
+    fn client_with_topology(topology: MockTopology) -> impl SwarmClient {
+        let bandwidth = Arc::new(Accounting::new(
+            DefaultBandwidthConfig::default(),
+            test_identity(),
+        ));
+        let pricer = FixedPricer::new(10_000, vertex_swarm_spec::init_mainnet());
+        let accounting = ClientAccounting::new(bandwidth, pricer);
+        Client::client(topology, accounting, create_test_handle())
+    }
+
+    #[tokio::test]
+    async fn get_fails_with_no_storer_without_candidates() {
+        let client = client_with_topology(MockTopology::default());
+
+        let err = client.get(&test_address()).await.unwrap_err();
+        assert!(matches!(err, SwarmError::NoStorer { .. }));
+    }
+
+    #[tokio::test]
+    async fn get_fails_with_all_peers_failed_when_every_peer_errors() {
+        let closest = vec![
+            OverlayAddress::from([1u8; 32]),
+            OverlayAddress::from([2u8; 32]),
+        ];
+        // The test handle's command channel is closed, so every retrieval
+        // attempt fails and the client must surface the all-peers-failed path.
+        let client = client_with_topology(MockTopology::default().with_closest(closest));
+
+        let err = client.get(&test_address()).await.unwrap_err();
+        assert!(matches!(
+            err,
+            SwarmError::AllPeersFailed { attempts: 2, .. }
+        ));
     }
 
     #[tokio::test]

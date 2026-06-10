@@ -23,6 +23,7 @@ pub struct MockTopology {
     stored: usize,
     pending: usize,
     depth: u8,
+    closest: Vec<OverlayAddress>,
 }
 
 impl Default for MockTopology {
@@ -34,6 +35,7 @@ impl Default for MockTopology {
             stored: 0,
             pending: 0,
             depth: 0,
+            closest: Vec::new(),
         }
     }
 }
@@ -59,6 +61,7 @@ impl MockTopology {
             stored: 0,
             pending: 0,
             depth,
+            closest: Vec::new(),
         }
     }
 
@@ -104,6 +107,13 @@ impl MockTopology {
         self
     }
 
+    /// Set the peers returned by [`SwarmTopologyRouting::closest_to`].
+    #[must_use]
+    pub fn with_closest(mut self, closest: Vec<OverlayAddress>) -> Self {
+        self.closest = closest;
+        self
+    }
+
     /// Get the overlay address as SwarmAddress.
     pub fn overlay(&self) -> SwarmAddress {
         self.identity.overlay_address()
@@ -134,8 +144,8 @@ impl SwarmTopologyState for MockTopology {
 }
 
 impl SwarmTopologyRouting for MockTopology {
-    fn closest_to(&self, _address: &ChunkAddress, _count: usize) -> Vec<OverlayAddress> {
-        Vec::new()
+    fn closest_to(&self, _address: &ChunkAddress, count: usize) -> Vec<OverlayAddress> {
+        self.closest.iter().take(count).copied().collect()
     }
 
     fn neighbors(&self, _depth: NeighborhoodDepth) -> Vec<OverlayAddress> {
