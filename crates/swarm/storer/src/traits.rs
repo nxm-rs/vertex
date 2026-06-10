@@ -1,7 +1,8 @@
 //! Chunk storage backend trait.
 //!
-//! The [`ChunkStore`] trait abstracts over different storage backends,
-//! allowing implementations like redb, sled, or in-memory for testing.
+//! The [`ChunkStore`] trait abstracts over different storage backends.
+//! The production implementation is [`crate::DbChunkStore`], generic over
+//! the vertex-storage `Database` trait.
 
 use crate::StorerResult;
 use nectar_primitives::ChunkAddress;
@@ -9,7 +10,7 @@ use nectar_primitives::ChunkAddress;
 /// Chunk storage backend trait.
 ///
 /// This is the low-level interface for chunk persistence.
-/// Different backends (redb, memory, etc.) implement this trait.
+/// Backends implement this trait over whatever storage they own.
 ///
 /// # Chunk Data Format
 ///

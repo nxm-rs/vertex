@@ -2,7 +2,7 @@
 //!
 //! This crate provides the storage layer for Storer nodes:
 //! - [`ChunkStore`] - Backend trait for chunk persistence
-//! - [`RedbChunkStore`] - redb-based implementation
+//! - [`DbChunkStore`] - Implementation over the vertex-storage `Database` trait
 //! - [`LocalStoreImpl`] - Implements [`LocalStore`] from swarm-api
 //! - [`Reserve`] - Capacity management and garbage collection
 //!
@@ -10,7 +10,7 @@
 //!
 //! ```text
 //! LocalStoreImpl
-//! ├── store: ChunkStore (redb backend)
+//! ├── store: ChunkStore (Database-trait backend)
 //! ├── cache: LRU cache for hot chunks
 //! └── reserve: Reserve (capacity tracking)
 //!
@@ -23,10 +23,10 @@
 //! # Usage
 //!
 //! ```ignore
-//! use vertex_swarm_storer::{RedbChunkStore, LocalStoreImpl, Reserve};
+//! use vertex_swarm_storer::{DbChunkStore, LocalStoreImpl, Reserve};
 //!
-//! // Create redb-backed store
-//! let chunk_store = RedbChunkStore::open("./chunks.redb")?;
+//! // Create a chunk store over the node's shared database handle
+//! let chunk_store = DbChunkStore::new(db.clone())?;
 //! let reserve = Reserve::new(1_000_000); // 1M chunks
 //!
 //! // Create LocalStore implementation
@@ -40,15 +40,15 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 mod cache;
+mod db_store;
 mod error;
-mod redb_store;
 mod reserve;
 mod store;
 mod traits;
 
 pub use cache::ChunkCache;
+pub use db_store::DbChunkStore;
 pub use error::StorerError;
-pub use redb_store::RedbChunkStore;
 pub use reserve::{EvictionStrategy, Reserve};
 pub use store::LocalStoreImpl;
 pub use traits::ChunkStore;
