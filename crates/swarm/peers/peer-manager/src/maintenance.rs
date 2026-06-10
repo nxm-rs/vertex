@@ -1,4 +1,5 @@
-//! Periodic maintenance: stale-peer purging and snapshot persistence.
+//! Periodic maintenance: score decay, ban expiry, stale-peer purging, and
+//! snapshot persistence.
 
 use metrics::gauge;
 use std::sync::atomic::Ordering;
@@ -13,11 +14,17 @@ impl<I: SwarmIdentity> PeerManager<I> {
     /// Single periodic entry point, driven from outside the crate (see
     /// [`crate::spawn_peer_manager_task`]).
     ///
-    /// Purges stale never-connected peers and writes a snapshot when one is
-    /// due ([`PeerManagerConfig::snapshot_interval`](crate::PeerManagerConfig)
+    /// In order: decays every peer's score toward zero (10 minute half-life
+    /// disconnected, 5 minutes connected), lifts expired timed bans
+    /// (resetting the score to the disconnect threshold and emitting
+    /// `Unbanned`), purges stale never-connected peers, and
+    /// writes a snapshot when one is due
+    /// ([`PeerManagerConfig::snapshot_interval`](crate::PeerManagerConfig)
     /// since the last write). `now_unix_secs` is injected so tests can drive
     /// the schedule without a clock.
     pub fn tick(&self, now_unix_secs: u64) {
+        self.decay_scores(now_unix_secs);
+        self.expire_bans(now_unix_secs);
         self.purge_stale();
 
         if self.store.is_none() {
@@ -51,6 +58,45 @@ impl<I: SwarmIdentity> PeerManager<I> {
         match store.store(&records) {
             Ok(()) => debug!(peers = records.len(), "wrote peer snapshot"),
             Err(e) => warn!(error = %e, "failed to write peer snapshot"),
+        }
+    }
+
+    /// Decay every peer's score toward zero for the time elapsed since the
+    /// peer's last decay pass.
+    ///
+    /// Disconnected peers decay at a 10 minute half-life, connected peers
+    /// at double rate (5 minutes); both positive and negative scores decay,
+    /// so reputation is recency-weighted. Elapsed time is tracked per peer
+    /// ([`PeerEntry::decay_score`]), so the decay is exact even when a tick
+    /// is missed. Banned peers are skipped: the unban path resets their
+    /// score outright.
+    fn decay_scores(&self, now_unix_secs: u64) {
+        for r in self.peers.iter() {
+            if let Some((old_score, new_score)) = r.value().decay_score(now_unix_secs) {
+                self.score_distribution
+                    .on_score_changed(old_score, new_score);
+            }
+        }
+    }
+
+    /// Lift every timed ban whose expiry has passed (`now >= until`).
+    ///
+    /// Permanent bans (expiry `None`) are never lifted here. Each expired
+    /// ban goes through [`Self::unban`]: banned-set removal, score reset to
+    /// the disconnect threshold, and a single
+    /// [`PeerLifecycleEvent::Unbanned`](vertex_swarm_api::PeerLifecycleEvent)
+    /// emission.
+    fn expire_bans(&self, now_unix_secs: u64) {
+        let expired: Vec<OverlayAddress> = self
+            .banned_set
+            .iter()
+            .filter(|r| r.value().is_some_and(|until| now_unix_secs >= until))
+            .map(|r| *r.key())
+            .collect();
+
+        for overlay in &expired {
+            debug!(?overlay, "ban expired; unbanning peer");
+            self.unban(overlay);
         }
     }
 

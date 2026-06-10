@@ -17,8 +17,11 @@ use crate::entry::unix_timestamp_secs;
 
 /// Default interval between maintenance ticks.
 ///
-/// Each tick purges stale peers; snapshots are written only when
-/// [`crate::PeerManagerConfig::snapshot_interval`] has elapsed.
+/// Each tick decays peer scores, lifts expired bans, and purges stale
+/// peers; snapshots are written only when
+/// [`crate::PeerManagerConfig::snapshot_interval`] has elapsed. Score decay
+/// is elapsed-based per peer, so a delayed or missed tick decays by the
+/// true elapsed time on the next run.
 pub const DEFAULT_TICK_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Spawn the periodic maintenance task driving [`PeerManager::tick`].

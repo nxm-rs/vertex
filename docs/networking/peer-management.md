@@ -117,18 +117,22 @@ Persistence is an opt-in, identity-only snapshot. The `PeerSnapshotStore` trait 
 
 The persisted record (`PeerSnapshot`) carries only the signed peer record, the last known node type, and a last-seen timestamp. Reputation never survives a restart: scores, bans, and dial backoff are runtime-only and the banned set starts empty on every startup. Bans are timed and re-earned within seconds of a misbehaving peer reconnecting, so persisting them buys nothing.
 
-Snapshots are written by `PeerManager::tick`, the single periodic maintenance entry point (snapshot when due, stale-peer purge every tick). The manager owns no timers; a thin driver (`spawn_peer_manager_task`) is spawned from the node launch path, and topology writes a final snapshot on graceful shutdown. Crash-loss story: a crash loses at most one snapshot interval (default 5 minutes) of newly discovered peers, which rediscovery via bootnodes and hive gossip replaces quickly.
+Snapshots are written by `PeerManager::tick`, the single periodic maintenance entry point (every tick: score decay, ban expiry, stale-peer purge; snapshot only when due). The manager owns no timers; a thin driver (`spawn_peer_manager_task`) is spawned from the node launch path, and topology writes a final snapshot on graceful shutdown. Crash-loss story: a crash loses at most one snapshot interval (default 5 minutes) of newly discovered peers, which rediscovery via bootnodes and hive gossip replaces quickly.
 
 ## Scoring
 
-Score is maintained atomically using fixed-point arithmetic (scaled by 100,000). Clamped to [-1,000,000, +1,000,000].
+Each peer's score is one atomic `f64` clamped to [-100, +100], owned by `vertex-net-peer-score` and wrapped with the Swarm threshold policy in `vertex-swarm-peer-score`. Every subsystem reports behaviour through `PeerManager::report_peer` (the `PeerReporter` trait); event weights are configured in `SwarmScoringConfig`.
 
-Default score adjustments:
-- `record_success()`: +1.0
-- `record_timeout()`: -1.5
-- `record_protocol_error()`: -3.0
+Default thresholds: warn at -50 (peer excluded from selection, `ScoreWarning` emitted once per descent), disconnect at -75 (`DisconnectRequested` plus dial backoff, edge-triggered), ban at -100 (timed ban, level-triggered).
 
-Custom adjustments via `add_score(delta)` or `set_score(value)`.
+### Lifecycle: decay, recovery, timed bans
+
+All lifecycle maintenance runs from `PeerManager::tick`, driven by the external periodic task; the manager owns no timers and `tick` takes the current unix time as a parameter.
+
+- **Decay.** Every tick, each peer's score decays exponentially toward zero: half-life 10 minutes while disconnected, 5 minutes while connected (double rate, so a connected peer that behaves recovers reputation twice as fast). Both positive and negative scores decay; reputation is recency-weighted in both directions. Elapsed time is tracked per peer, so a delayed or missed tick decays by the true elapsed time on the next run.
+- **Recovery.** When a decayed score climbs back above the warn threshold, the one-shot warning re-arms: a peer that recovers and then misbehaves again is warned again.
+- **Timed bans.** A ban lasts `PeerManagerConfig::ban_duration` (default 12 hours); the `Banned` lifecycle event carries the expiry as `until`. When the expiry passes, `tick` lifts the ban, emits `Unbanned` exactly once, and resets the score to the disconnect threshold: an unbanned peer must behave to climb back, it is not forgiven to neutral. Re-banning an already banned peer is a no-op (the original expiry stands), and score reports for banned peers are dropped entirely, so a repeat offender on a lingering stream can neither re-emit `Banned` nor extend its ban. Repeated offenders currently get the same fixed duration on each new ban; escalating durations are a possible follow-up.
+- **Permanent bans.** `PeerManager::ban_permanent` sets no expiry and the tick never lifts it. It is reserved for operator-initiated bans; the operator surface that calls it arrives with the gRPC work. All bans, timed or permanent, are runtime-only and cleared by a restart.
 
 ## IP association tracking
 

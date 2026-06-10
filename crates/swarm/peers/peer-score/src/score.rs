@@ -109,17 +109,35 @@ impl SwarmPeerScore {
         }
     }
 
-    /// Exponentially decay the score toward zero.
+    /// Exponentially decay the score toward zero, returning `(old, new)`.
     ///
     /// Delegates to [`PeerScore::decay`]; callers pass elapsed time from
     /// their own heartbeat. Resets the one-shot warning state when the
     /// decayed score has recovered above the warning threshold so a later
-    /// descent warns again.
-    pub fn decay(&self, half_life_secs: u64, elapsed_secs: u64) {
-        self.score.decay(half_life_secs, elapsed_secs);
-        if !self.config.should_warn(self.score.score()) {
+    /// descent warns again. The returned transition lets callers keep score
+    /// aggregates consistent under concurrent recording.
+    pub fn decay(&self, half_life_secs: u64, elapsed_secs: u64) -> (f64, f64) {
+        let (old_score, new_score) = self.score.decay(half_life_secs, elapsed_secs);
+        if !self.config.should_warn(new_score) {
             self.warned.store(false, Ordering::Release);
         }
+        (old_score, new_score)
+    }
+
+    /// Reset the score to `score` (clamped to the scale), returning
+    /// `(old, new)`.
+    ///
+    /// The one-shot warning state is aligned with the new value: a reset
+    /// into the warn band does not fire a fresh warning on the next
+    /// negative event (the caller already acted on the peer), while a reset
+    /// above the warn threshold re-arms the warning. The peer manager uses
+    /// this when a timed ban expires to restart the peer at the disconnect
+    /// threshold.
+    pub fn reset(&self, score: f64) -> (f64, f64) {
+        let (old_score, new_score) = self.score.set_score(score);
+        self.warned
+            .store(self.config.should_warn(new_score), Ordering::Release);
+        (old_score, new_score)
     }
 
     /// Record latency without affecting score.
@@ -358,6 +376,66 @@ mod tests {
             score.record_event(SwarmScoringEvent::AccountingViolation), // about -60
             ScoreOutcome::Warn
         );
+    }
+
+    #[test]
+    fn test_reset_returns_transition_and_aligns_warning() {
+        let score = SwarmPeerScore::with_defaults();
+
+        // Reset into the warn band (-75 is below the -50 warn threshold).
+        let (old, new) = score.reset(-75.0);
+        assert_eq!(old, 0.0);
+        assert_eq!(new, -75.0);
+        assert_eq!(score.score(), -75.0);
+
+        // The warning state matches the band: no fresh warning fires on the
+        // next negative event.
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::ProtocolError),
+            ScoreOutcome::Ok
+        );
+
+        // Decay back above the warn threshold re-arms the warning; a fresh
+        // descent warns again.
+        score.decay(60, 600);
+        assert!(score.score() > -1.0);
+        score.record_event(SwarmScoringEvent::AccountingViolation); // about -20
+        score.record_event(SwarmScoringEvent::AccountingViolation); // about -40
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::AccountingViolation), // about -60
+            ScoreOutcome::Warn
+        );
+    }
+
+    #[test]
+    fn test_reset_above_warn_rearms_warning() {
+        let score = SwarmPeerScore::with_defaults();
+
+        // Warn once on the way down.
+        score.record_event(SwarmScoringEvent::MaliciousBehavior); // -50
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::ProtocolError), // -53
+            ScoreOutcome::Warn
+        );
+
+        // Reset to neutral: warning is re-armed for the next descent.
+        let (old, new) = score.reset(0.0);
+        assert_eq!(old, -53.0);
+        assert_eq!(new, 0.0);
+        score.record_event(SwarmScoringEvent::MaliciousBehavior); // -50
+        assert_eq!(
+            score.record_event(SwarmScoringEvent::ProtocolError), // -53
+            ScoreOutcome::Warn
+        );
+    }
+
+    #[test]
+    fn test_decay_returns_transition() {
+        let score = SwarmPeerScore::with_defaults();
+        score.reset(-40.0);
+        let (old, new) = score.decay(600, 600);
+        assert!((old + 40.0).abs() < 0.001);
+        assert!((new + 20.0).abs() < 0.001);
     }
 
     #[test]
