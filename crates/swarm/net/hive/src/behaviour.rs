@@ -7,9 +7,9 @@ use std::{
 };
 
 use crate::HIVE_INBOUND_QUOTA;
+use crate::cache::PeerCache;
 use crate::handler::{HiveCommand, HiveHandler, HiveHandlerEvent};
 use crate::peer_handler::{HivePeerHandler, LearnAndDial};
-use crate::protocol::{PeerCache, new_peer_cache};
 use libp2p::{
     Multiaddr, PeerId,
     swarm::{
@@ -45,7 +45,7 @@ pub enum HiveEvent {
 /// Behaviour for the Swarm hive protocol.
 pub struct HiveBehaviour<I> {
     identity: Arc<I>,
-    cache: PeerCache,
+    cache: Arc<PeerCache>,
     events: VecDeque<ToSwarm<HiveEvent, HiveCommand>>,
     /// Cloned into each per-connection handler so the protocol reader can
     /// consult the inbound policy.
@@ -71,7 +71,7 @@ where
     pub fn with_peer_handler(identity: Arc<I>, peer_handler: Arc<dyn HivePeerHandler>) -> Self {
         Self {
             identity,
-            cache: new_peer_cache(),
+            cache: Arc::new(PeerCache::default()),
             events: VecDeque::new(),
             peer_handler,
             inbound_limit: Arc::new(KeyedRateLimiter::new(HIVE_INBOUND_QUOTA)),

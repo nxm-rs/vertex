@@ -32,8 +32,9 @@ use vertex_swarm_net_handler_core::HandlerCore;
 use vertex_swarm_net_headers::{Inbound, Outbound, ProtocolStreamError, UpgradeError};
 use vertex_swarm_peer::SwarmPeer;
 
+use crate::cache::PeerCache;
 use crate::peer_handler::HivePeerHandler;
-use crate::protocol::{HiveInner, HiveOutboundInner, HiveOutboundProtocol, PeerCache};
+use crate::protocol::{HiveInner, HiveOutboundInner, HiveOutboundProtocol};
 
 /// Timeout for stream processing (headers exchange + protobuf + validation).
 const STREAM_TIMEOUT: Duration = Duration::from_secs(10);
@@ -72,7 +73,7 @@ pub(crate) type HiveInboundProtocol<I> = Inbound<HiveInner<I>>;
 pub struct HiveHandler<I: SwarmIdentity> {
     remote_peer_id: PeerId,
     identity: Arc<I>,
-    cache: PeerCache,
+    cache: Arc<PeerCache>,
     /// Shared handler core: events, substream rate limiter, outbound flag.
     core: HandlerCore<HiveHandlerEvent>,
     /// Bounded by [`MAX_PENDING_BROADCASTS`].
@@ -90,7 +91,7 @@ where
     pub(crate) fn new(
         identity: Arc<I>,
         remote_peer_id: PeerId,
-        cache: PeerCache,
+        cache: Arc<PeerCache>,
         inbound_limit: Arc<KeyedRateLimiter<PeerId>>,
         peer_handler: Arc<dyn HivePeerHandler>,
     ) -> Self {

@@ -8884,6 +8884,8 @@ name = "vertex-swarm-net-hive"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "codspeed-criterion-compat",
+ "dashmap 6.2.1",
  "futures",
  "hashlink 0.10.0",
  "libp2p",

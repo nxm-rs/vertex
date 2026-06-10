@@ -3,12 +3,10 @@
 use std::sync::Arc;
 
 use libp2p::PeerId;
-use parking_lot::Mutex;
 use std::time::Instant;
 
 use alloy_primitives::{B256, Signature};
 use futures::future::BoxFuture;
-use hashlink::LruCache;
 use metrics::{counter, histogram};
 use tracing::{debug, warn};
 use vertex_net_codec::FramedProto;
@@ -22,6 +20,7 @@ use vertex_swarm_primitives::{NetworkId, Nonce};
 use vertex_tasks::TaskExecutor;
 
 use crate::PROTOCOL_NAME;
+use crate::cache::PeerCache;
 use crate::codec::encode_peers;
 use crate::error::ValidationFailure;
 use crate::metrics::{
@@ -34,18 +33,7 @@ use vertex_net_ratelimiter::KeyedRateLimiter;
 /// 32 KiB frame limit (fits ~100 peers at typical size).
 const MAX_MESSAGE_SIZE: usize = 32 * 1024;
 
-/// Maximum validated peers to cache (bounds memory).
-const PEER_CACHE_CAPACITY: usize = 256;
-
 type Framed = FramedProto<MAX_MESSAGE_SIZE>;
-
-/// Shared cache of recently validated peers, keyed by overlay address.
-pub(crate) type PeerCache = Arc<Mutex<LruCache<SwarmAddress, SwarmPeer>>>;
-
-/// Create a new peer validation cache.
-pub(crate) fn new_peer_cache() -> PeerCache {
-    Arc::new(Mutex::new(LruCache::new(PEER_CACHE_CAPACITY)))
-}
 
 /// Result of inbound peer validation.
 #[derive(Debug)]
@@ -56,7 +44,7 @@ pub struct ValidatedPeers {
 /// Inbound handler that receives and validates peers.
 pub struct HiveInner<I: SwarmIdentity> {
     identity: Arc<I>,
-    cache: PeerCache,
+    cache: Arc<PeerCache>,
     remote_peer_id: PeerId,
     inbound_limit: Arc<KeyedRateLimiter<PeerId>>,
     peer_handler: Arc<dyn HivePeerHandler>,
@@ -71,7 +59,7 @@ impl<I: SwarmIdentity> std::fmt::Debug for HiveInner<I> {
 impl<I: SwarmIdentity> HiveInner<I> {
     pub(crate) fn new(
         identity: Arc<I>,
-        cache: PeerCache,
+        cache: Arc<PeerCache>,
         remote_peer_id: PeerId,
         inbound_limit: Arc<KeyedRateLimiter<PeerId>>,
         peer_handler: Arc<dyn HivePeerHandler>,
@@ -159,7 +147,7 @@ async fn validate_batch_blocking(
     raw_peers: Vec<vertex_swarm_net_proto::hive::SwarmPeer>,
     network_id: NetworkId,
     local_overlay: SwarmAddress,
-    cache: PeerCache,
+    cache: Arc<PeerCache>,
 ) -> (Vec<SwarmPeer>, usize, usize) {
     let Ok(executor) = TaskExecutor::try_current() else {
         return validate_batch(raw_peers, network_id, &local_overlay, &cache);
@@ -181,7 +169,7 @@ fn validate_batch(
     raw_peers: Vec<vertex_swarm_net_proto::hive::SwarmPeer>,
     network_id: NetworkId,
     local_overlay: &SwarmAddress,
-    cache: &Mutex<LruCache<SwarmAddress, SwarmPeer>>,
+    cache: &PeerCache,
 ) -> (Vec<SwarmPeer>, usize, usize) {
     let validation_start = Instant::now();
     let mut valid_count = 0usize;
@@ -219,7 +207,7 @@ fn validate_proto_peer(
     p: vertex_swarm_net_proto::hive::SwarmPeer,
     network_id: NetworkId,
     local_overlay: &SwarmAddress,
-    cache: &Mutex<LruCache<SwarmAddress, SwarmPeer>>,
+    cache: &PeerCache,
 ) -> Result<SwarmPeer, ValidationFailure> {
     let overlay = B256::try_from(p.overlay.as_slice()).map_err(ValidationFailure::OverlayLength)?;
 
@@ -234,14 +222,9 @@ fn validate_proto_peer(
 
     // Tier 1: Check LRU cache - validated earlier in this session.
     // On signature mismatch, falls through to tier 2 which re-validates and overwrites.
-    {
-        let mut guard = cache.lock();
-        if let Some(cached) = guard.get(&peer_overlay)
-            && *cached.signature() == signature
-        {
-            counter!("hive_validation_cache_total", "outcome" => "cache_hit").increment(1);
-            return Ok(cached.clone());
-        }
+    if let Some(cached) = cache.get(&peer_overlay, &signature) {
+        counter!("hive_validation_cache_total", "outcome" => "cache_hit").increment(1);
+        return Ok(cached);
     }
     counter!("hive_validation_cache_total", "outcome" => "miss").increment(1);
 
@@ -277,8 +260,8 @@ fn validate_proto_peer(
         return Err(ValidationFailure::MissingPeerId);
     }
 
-    // Store validated peer in LRU cache.
-    cache.lock().insert(peer_overlay, peer.clone());
+    // Store validated peer in the cache.
+    cache.insert(peer_overlay, peer.clone());
 
     Ok(peer)
 }

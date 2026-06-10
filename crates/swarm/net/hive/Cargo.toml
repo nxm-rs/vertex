@@ -49,3 +49,10 @@ strum.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
+dashmap.workspace = true
+vertex-swarm-peer = { workspace = true, features = ["test-utils"] }
+
+[[bench]]
+name = "peer_cache"
+harness = false
