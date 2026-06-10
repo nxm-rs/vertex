@@ -67,7 +67,7 @@ mod tests {
     use super::*;
 
     use crate::kademlia::{KademliaConfig, RoutingCapacity};
-    use vertex_swarm_peer_manager::PeerManager;
+    use vertex_swarm_peer_manager::{PeerManager, PeerManagerConfig};
     use vertex_swarm_test_utils::MockIdentity;
 
     fn make_routing(
@@ -75,7 +75,7 @@ mod tests {
         config: KademliaConfig,
     ) -> Arc<KademliaRouting<MockIdentity>> {
         let identity = MockIdentity::with_overlay(base);
-        let peer_manager = PeerManager::new(&identity);
+        let peer_manager = PeerManager::new(&identity, PeerManagerConfig::default());
         KademliaRouting::new(identity, config, peer_manager)
     }
 

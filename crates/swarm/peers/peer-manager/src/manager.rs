@@ -4,22 +4,9 @@
 //! All known overlays are tracked in the ProximityIndex. Peer data for
 //! cold peers lives in the database and is loaded on demand.
 //!
-//! # Capacity defaults
-//!
-//! These bounds size the in-memory structures; they are not specified by the
-//! Book of Swarm and can be overridden at construction.
-//!
-//! - `DEFAULT_MAX_PER_BIN` (128) bounds how many overlays the proximity index
-//!   keeps per bin. Topology targets 3-35 connected peers per bin, so 128 leaves
-//!   3.7-42x headroom for the known-but-unconnected candidates a bin draws from.
-//! - `DEFAULT_MAX_HOT_PEERS` (500) bounds the hot DashMap cache of full peer
-//!   records. It comfortably covers the connected set (total target ~160 plus
-//!   inbound headroom) and the recently-touched cold peers a dial round visits,
-//!   so a steady-state node serves from memory while colder peers spill to the
-//!   database.
-//! - `DEFAULT_WRITE_BUFFER_CAPACITY` (64) is the number of dirty records buffered
-//!   before an automatic flush, amortizing store writes without holding enough in
-//!   memory to lose much on a crash.
+//! Capacity bounds and persistence handles are carried by
+//! [`PeerManagerConfig`]; see its documentation for how the defaults relate
+//! to the topology routing targets and the storage layout.
 
 use std::marker::PhantomData;
 use std::sync::{Arc, Weak};
@@ -45,21 +32,80 @@ use crate::proximity_index::{AddError, ProximityIndex};
 use crate::score_distribution::ScoreDistribution;
 use crate::write_buffer::WriteBuffer;
 
-/// Default maximum peers per proximity bin in the index.
+/// Configuration for [`PeerManager`].
 ///
-/// With topology targets of 3-35 peers per bin, 128 gives 3.7-42x headroom.
-pub(crate) const DEFAULT_MAX_PER_BIN: usize = 128;
+/// Carries the scoring policy, the capacity bounds for the in-memory
+/// structures, and the optional persistence handles. `Default` yields an
+/// ephemeral manager: no store, no score store, every peer held in memory.
+///
+/// # Capacity defaults
+///
+/// The capacity bounds size the in-memory structures; they are not specified
+/// by the Book of Swarm and exist relative to each other:
+///
+/// - [`Self::DEFAULT_MAX_PER_BIN`] (128) bounds how many overlays the
+///   proximity index keeps per bin. Topology targets 3-35 connected peers per
+///   bin, so 128 leaves 3.7-42x headroom for the known-but-unconnected
+///   candidates a bin draws dials from when it is below target.
+/// - [`Self::DEFAULT_MAX_HOT_PEERS`] (500) bounds the hot DashMap cache of
+///   full peer records before eviction to cold storage. It comfortably covers
+///   the connected set (total routing target ~160 plus inbound headroom) and
+///   the recently-touched cold peers a dial round visits, so a steady-state
+///   node serves from memory while colder peers spill to the database.
+/// - [`Self::DEFAULT_WRITE_BUFFER_CAPACITY`] (64) is the number of dirty
+///   records buffered before an automatic flush. A buffered record is a few
+///   hundred bytes (overlay, multiaddrs, handshake signature, nonce,
+///   timestamps), so a full flush writes on the order of 10-20KB in one batch,
+///   amortizing store writes without holding enough in memory to lose much on
+///   a crash.
+#[derive(Clone)]
+pub struct PeerManagerConfig {
+    /// Peer scoring weights and ban/warn thresholds.
+    pub scoring: SwarmScoringConfig,
+    /// Maximum overlays tracked per proximity bin in the index.
+    pub max_per_bin: usize,
+    /// Maximum peers in the hot cache before eviction to cold storage.
+    pub max_hot_peers: usize,
+    /// Number of dirty records buffered before an automatic flush.
+    pub write_buffer_capacity: usize,
+    /// Cold-storage backend; `None` keeps every peer in memory.
+    pub store: Option<Arc<dyn NetPeerStore<StoredPeer>>>,
+    /// Score persistence; `None` keeps scores in memory only.
+    pub score_store: Option<Arc<dyn SwarmScoreStore<Score = PeerScore, Error = StoreError>>>,
+}
 
-/// Default maximum hot peers in the DashMap cache.
-///
-/// Covers the connected set plus recently-touched cold peers; see the
-/// module-level capacity notes.
-const DEFAULT_MAX_HOT_PEERS: usize = 500;
+impl PeerManagerConfig {
+    /// Default maximum overlays per proximity bin in the index.
+    ///
+    /// With topology routing targets of 3-35 connected peers per bin, 128
+    /// gives 3.7-42x headroom for unconnected dial candidates.
+    pub const DEFAULT_MAX_PER_BIN: usize = 128;
 
-/// Default number of dirty records buffered before an automatic flush.
-///
-/// Amortizes store writes; see the module-level capacity notes.
-const DEFAULT_WRITE_BUFFER_CAPACITY: usize = 64;
+    /// Default maximum hot peers in the DashMap cache.
+    ///
+    /// Covers the connected set plus recently-touched cold peers; see the
+    /// capacity notes on [`PeerManagerConfig`].
+    pub const DEFAULT_MAX_HOT_PEERS: usize = 500;
+
+    /// Default number of dirty records buffered before an automatic flush.
+    ///
+    /// Amortizes store writes; see the capacity notes on
+    /// [`PeerManagerConfig`].
+    pub const DEFAULT_WRITE_BUFFER_CAPACITY: usize = 64;
+}
+
+impl Default for PeerManagerConfig {
+    fn default() -> Self {
+        Self {
+            scoring: SwarmScoringConfig::default(),
+            max_per_bin: Self::DEFAULT_MAX_PER_BIN,
+            max_hot_peers: Self::DEFAULT_MAX_HOT_PEERS,
+            write_buffer_capacity: Self::DEFAULT_WRITE_BUFFER_CAPACITY,
+            store: None,
+            score_store: None,
+        }
+    }
+}
 
 /// Peer lifecycle manager with hot/cold storage architecture.
 ///
@@ -96,64 +142,27 @@ pub struct PeerManager<I: SwarmIdentity> {
 }
 
 impl<I: SwarmIdentity> PeerManager<I> {
-    /// Create with identity and default settings (no persistent store).
-    pub fn new(identity: &I) -> Arc<Self> {
-        Self::with_config(identity, SwarmScoringConfig::default(), DEFAULT_MAX_PER_BIN)
-    }
-
-    /// Create with specified scoring config and per-bin limit (no persistent store).
-    pub fn with_config(
-        identity: &I,
-        scoring_config: SwarmScoringConfig,
-        max_per_bin: usize,
-    ) -> Arc<Self> {
-        Self::build(
-            identity,
-            scoring_config,
-            max_per_bin,
-            None,
-            None,
-            DEFAULT_MAX_HOT_PEERS,
-        )
-    }
-
-    /// Create with a database-backed persistent store.
+    /// Create a peer manager for `identity` from `config`.
     ///
-    /// Loads the overlay index and banned set from the store on construction.
-    /// Hot cache starts empty; peers are promoted on access.
-    /// Scores are loaded lazily when peers are promoted to the hot cache.
-    pub fn with_store(
-        identity: &I,
-        store: Arc<dyn NetPeerStore<StoredPeer>>,
-        score_store: Option<Arc<dyn SwarmScoreStore<Score = PeerScore, Error = StoreError>>>,
-        scoring_config: SwarmScoringConfig,
-        max_per_bin: usize,
-    ) -> Arc<Self> {
-        let pm = Self::build(
-            identity,
-            scoring_config,
+    /// With `config.store` set, the overlay index and banned set are loaded
+    /// from the store on construction; the hot cache starts empty, peers are
+    /// promoted on access, and scores are loaded lazily from
+    /// `config.score_store` during promotion. Without a store, all peers live
+    /// in the hot cache.
+    pub fn new(identity: &I, config: PeerManagerConfig) -> Arc<Self> {
+        let PeerManagerConfig {
+            scoring,
             max_per_bin,
-            Some(store),
+            max_hot_peers,
+            write_buffer_capacity,
+            store,
             score_store,
-            DEFAULT_MAX_HOT_PEERS,
-        );
-        pm.load_index_from_store();
-        pm
-    }
-
-    pub(crate) fn build(
-        identity: &I,
-        scoring_config: SwarmScoringConfig,
-        max_per_bin: usize,
-        store: Option<Arc<dyn NetPeerStore<StoredPeer>>>,
-        score_store: Option<Arc<dyn SwarmScoreStore<Score = PeerScore, Error = StoreError>>>,
-        max_hot_peers: usize,
-    ) -> Arc<Self> {
+        } = config;
         let local_overlay = identity.overlay_address();
         let max_po = identity.spec().max_po();
         let (ban_tx, _) = broadcast::channel(64);
         let score_distribution = Arc::new(ScoreDistribution::new());
-        Arc::new_cyclic(|weak: &Weak<Self>| {
+        let pm = Arc::new_cyclic(|weak: &Weak<Self>| {
             let callbacks = Arc::new(ScoreCallbacks {
                 on_score_changed: {
                     let sd = Arc::clone(&score_distribution);
@@ -184,14 +193,18 @@ impl<I: SwarmIdentity> PeerManager<I> {
                 store,
                 score_store,
                 banned_set: DashSet::new(),
-                write_buffer: WriteBuffer::new(DEFAULT_WRITE_BUFFER_CAPACITY),
-                scoring_config: Arc::new(scoring_config),
+                write_buffer: WriteBuffer::new(write_buffer_capacity),
+                scoring_config: Arc::new(scoring),
                 max_hot_peers,
                 callbacks,
                 score_distribution,
                 ban_tx,
             }
-        })
+        });
+        if pm.store.is_some() {
+            pm.load_index_from_store();
+        }
+        pm
     }
 
     /// Get the score distribution tracker for emitting gauge metrics.
@@ -732,9 +745,29 @@ mod tests {
         MockIdentity::with_overlay(test_overlay(0))
     }
 
+    /// Ephemeral manager with default config.
+    fn manager() -> Arc<PeerManager<MockIdentity>> {
+        PeerManager::new(&mock_identity(), PeerManagerConfig::default())
+    }
+
+    /// Manager backed by `store`, otherwise default config.
+    fn manager_with_store(
+        store: Arc<dyn NetPeerStore<StoredPeer>>,
+        score_store: Option<Arc<dyn SwarmScoreStore<Score = PeerScore, Error = StoreError>>>,
+    ) -> Arc<PeerManager<MockIdentity>> {
+        PeerManager::new(
+            &mock_identity(),
+            PeerManagerConfig {
+                store: Some(store),
+                score_store,
+                ..Default::default()
+            },
+        )
+    }
+
     #[test]
     fn test_store_discovered_peer() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
         let swarm_peer = test_swarm_peer(1);
         let overlay = test_overlay(1);
 
@@ -746,7 +779,7 @@ mod tests {
 
     #[test]
     fn test_store_discovered_peer_rejects_older_timestamp() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
         let overlay = test_overlay(1);
         let base = 1_700_000_000;
 
@@ -779,7 +812,7 @@ mod tests {
 
     #[test]
     fn test_store_discovered_peer_accepts_sufficiently_newer_timestamp() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
         let overlay = test_overlay(1);
         let base = 1_700_000_000;
 
@@ -803,7 +836,7 @@ mod tests {
 
     #[test]
     fn test_store_discovered_peer_rejects_too_soon_timestamp() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
         let overlay = test_overlay(1);
         let base = 1_700_000_000;
 
@@ -825,7 +858,7 @@ mod tests {
 
     #[test]
     fn test_on_peer_ready() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
         let swarm_peer = test_swarm_peer(1);
         let overlay = test_overlay(1);
 
@@ -836,7 +869,7 @@ mod tests {
 
     #[test]
     fn test_peer_lifecycle() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
         let swarm_peer = test_swarm_peer(1);
         let overlay = test_overlay(1);
 
@@ -849,7 +882,7 @@ mod tests {
 
     #[test]
     fn test_ban() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
         let swarm_peer = test_swarm_peer(1);
         let overlay = test_overlay(1);
 
@@ -862,7 +895,7 @@ mod tests {
 
     #[test]
     fn test_get_dialable_peers() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
 
         for n in 1..=5 {
             pm.store_discovered_peer(test_swarm_peer(n));
@@ -879,14 +912,20 @@ mod tests {
     #[test]
     fn test_custom_scoring_config() {
         let config = SwarmScoringConfig::lenient();
-        let pm = PeerManager::with_config(&mock_identity(), config, DEFAULT_MAX_PER_BIN);
+        let pm = PeerManager::new(
+            &mock_identity(),
+            PeerManagerConfig {
+                scoring: config,
+                ..Default::default()
+            },
+        );
 
         assert!(pm.scoring_config.ban_threshold() < 0.0);
     }
 
     #[test]
     fn test_known_storer_overlays() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
 
         pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Storer);
         pm.on_peer_ready(test_swarm_peer(2), SwarmNodeType::Client);
@@ -902,7 +941,7 @@ mod tests {
 
     #[test]
     fn test_get_swarm_peers() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
 
         for n in 1..=5 {
             pm.on_peer_ready(test_swarm_peer(n), SwarmNodeType::Storer);
@@ -916,7 +955,7 @@ mod tests {
 
     #[test]
     fn test_get_swarm_peers_missing() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
 
         pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Storer);
 
@@ -928,7 +967,7 @@ mod tests {
 
     #[test]
     fn test_node_type_variants() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
 
         pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Bootnode);
         pm.on_peer_ready(test_swarm_peer(2), SwarmNodeType::Client);
@@ -944,7 +983,7 @@ mod tests {
 
     #[test]
     fn test_bin_index_integration() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
 
         for n in 1..=5 {
             pm.store_discovered_peer(test_swarm_peer(n));
@@ -961,7 +1000,7 @@ mod tests {
 
     #[test]
     fn test_lru_ordering_preserved() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
 
         pm.store_discovered_peer(test_swarm_peer(1));
         pm.store_discovered_peer(test_swarm_peer(2));
@@ -972,7 +1011,7 @@ mod tests {
 
     #[test]
     fn test_dialable_in_bin() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
 
         let p1 = OverlayAddress::from([0x80; 32]);
         let p2 = OverlayAddress::from([0xc0; 32]);
@@ -1024,7 +1063,7 @@ mod tests {
 
     #[test]
     fn test_get_swarm_peer() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
         let swarm_peer = test_swarm_peer(1);
         let overlay = test_overlay(1);
 
@@ -1038,13 +1077,7 @@ mod tests {
         let store: Arc<dyn NetPeerStore<StoredPeer>> =
             Arc::new(MemoryPeerStore::<StoredPeer>::new());
 
-        let pm1 = PeerManager::with_store(
-            &mock_identity(),
-            store.clone(),
-            None,
-            SwarmScoringConfig::default(),
-            DEFAULT_MAX_PER_BIN,
-        );
+        let pm1 = manager_with_store(store.clone(), None);
 
         for n in 1..=5 {
             pm1.on_peer_ready(test_swarm_peer(n), SwarmNodeType::Storer);
@@ -1053,13 +1086,7 @@ mod tests {
         pm1.collect_dirty();
         pm1.flush_write_buffer();
 
-        let pm2 = PeerManager::with_store(
-            &mock_identity(),
-            store,
-            None,
-            SwarmScoringConfig::default(),
-            DEFAULT_MAX_PER_BIN,
-        );
+        let pm2 = manager_with_store(store, None);
         assert_eq!(pm2.index().len(), 5);
         assert!(pm2.is_banned(&test_overlay(1)));
         assert!(!pm2.is_banned(&test_overlay(2)));
@@ -1067,7 +1094,7 @@ mod tests {
 
     #[test]
     fn test_store_discovered_peer_preserves_node_type() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
         let swarm_peer = test_swarm_peer(1);
         let overlay = test_overlay(1);
 
@@ -1080,7 +1107,7 @@ mod tests {
 
     #[test]
     fn test_store_discovered_peer_defaults_to_client() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
         let swarm_peer = test_swarm_peer(1);
         let overlay = test_overlay(1);
 
@@ -1090,7 +1117,7 @@ mod tests {
 
     #[test]
     fn test_store_discovered_peers_preserves_node_type() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
 
         pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Storer);
         pm.on_peer_ready(test_swarm_peer(2), SwarmNodeType::Storer);
@@ -1105,7 +1132,7 @@ mod tests {
 
     #[test]
     fn test_banned_count_tracking() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
 
         for n in 1..=5 {
             pm.store_discovered_peer(test_swarm_peer(n));
@@ -1125,13 +1152,7 @@ mod tests {
     fn test_gossip_peers_cold() {
         let store: Arc<dyn NetPeerStore<StoredPeer>> =
             Arc::new(MemoryPeerStore::<StoredPeer>::new());
-        let pm = PeerManager::with_store(
-            &mock_identity(),
-            store.clone(),
-            None,
-            SwarmScoringConfig::default(),
-            DEFAULT_MAX_PER_BIN,
-        );
+        let pm = manager_with_store(store.clone(), None);
 
         pm.store_discovered_peer(test_swarm_peer(1));
         pm.store_discovered_peer(test_swarm_peer(2));
@@ -1144,13 +1165,7 @@ mod tests {
     fn test_connected_peers_always_hot() {
         let store: Arc<dyn NetPeerStore<StoredPeer>> =
             Arc::new(MemoryPeerStore::<StoredPeer>::new());
-        let pm = PeerManager::with_store(
-            &mock_identity(),
-            store,
-            None,
-            SwarmScoringConfig::default(),
-            DEFAULT_MAX_PER_BIN,
-        );
+        let pm = manager_with_store(store, None);
 
         pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Client);
 
@@ -1162,25 +1177,13 @@ mod tests {
     fn test_get_or_load_promotes() {
         let store: Arc<dyn NetPeerStore<StoredPeer>> =
             Arc::new(MemoryPeerStore::<StoredPeer>::new());
-        let pm = PeerManager::with_store(
-            &mock_identity(),
-            store.clone(),
-            None,
-            SwarmScoringConfig::default(),
-            DEFAULT_MAX_PER_BIN,
-        );
+        let pm = manager_with_store(store.clone(), None);
 
         pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Storer);
         pm.collect_dirty();
         pm.flush_write_buffer();
 
-        let pm2 = PeerManager::with_store(
-            &mock_identity(),
-            store,
-            None,
-            SwarmScoringConfig::default(),
-            DEFAULT_MAX_PER_BIN,
-        );
+        let pm2 = manager_with_store(store, None);
         assert_eq!(pm2.peers.len(), 0);
 
         let peer = pm2.get_swarm_peer(&test_overlay(1));
@@ -1190,7 +1193,7 @@ mod tests {
 
     #[test]
     fn test_banned_set_o1() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
 
         pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Client);
         pm.ban(&test_overlay(1), None);
@@ -1204,13 +1207,7 @@ mod tests {
     fn test_write_buffer_flush() {
         let store: Arc<dyn NetPeerStore<StoredPeer>> =
             Arc::new(MemoryPeerStore::<StoredPeer>::new());
-        let pm = PeerManager::with_store(
-            &mock_identity(),
-            store.clone(),
-            None,
-            SwarmScoringConfig::default(),
-            DEFAULT_MAX_PER_BIN,
-        );
+        let pm = manager_with_store(store.clone(), None);
 
         pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Client);
         pm.collect_dirty();
@@ -1223,13 +1220,7 @@ mod tests {
     fn test_ban_bypasses_buffer() {
         let store: Arc<dyn NetPeerStore<StoredPeer>> =
             Arc::new(MemoryPeerStore::<StoredPeer>::new());
-        let pm = PeerManager::with_store(
-            &mock_identity(),
-            store.clone(),
-            None,
-            SwarmScoringConfig::default(),
-            DEFAULT_MAX_PER_BIN,
-        );
+        let pm = manager_with_store(store.clone(), None);
 
         pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Client);
         pm.collect_dirty();
@@ -1243,7 +1234,7 @@ mod tests {
 
     #[test]
     fn test_eligible_count_o1() {
-        let pm = PeerManager::new(&mock_identity());
+        let pm = manager();
 
         for n in 1..=10 {
             pm.store_discovered_peer(test_swarm_peer(n));
@@ -1259,13 +1250,7 @@ mod tests {
     fn test_db_roundtrip_hot_cold() {
         let store: Arc<dyn NetPeerStore<StoredPeer>> =
             Arc::new(MemoryPeerStore::<StoredPeer>::new());
-        let pm = PeerManager::with_store(
-            &mock_identity(),
-            store.clone(),
-            None,
-            SwarmScoringConfig::default(),
-            DEFAULT_MAX_PER_BIN,
-        );
+        let pm = manager_with_store(store.clone(), None);
 
         pm.store_discovered_peer(test_swarm_peer(1));
         assert_eq!(pm.peers.len(), 0);
@@ -1276,13 +1261,7 @@ mod tests {
         pm.collect_dirty();
         pm.flush_write_buffer();
 
-        let pm2 = PeerManager::with_store(
-            &mock_identity(),
-            store,
-            None,
-            SwarmScoringConfig::default(),
-            DEFAULT_MAX_PER_BIN,
-        );
+        let pm2 = manager_with_store(store, None);
         assert_eq!(pm2.index().len(), 1);
         assert_eq!(pm2.peers.len(), 0);
 
@@ -1294,13 +1273,13 @@ mod tests {
     fn test_evict_cold() {
         let store: Arc<dyn NetPeerStore<StoredPeer>> =
             Arc::new(MemoryPeerStore::<StoredPeer>::new());
-        let pm = PeerManager::build(
+        let pm = PeerManager::new(
             &mock_identity(),
-            SwarmScoringConfig::default(),
-            DEFAULT_MAX_PER_BIN,
-            Some(store),
-            None,
-            10,
+            PeerManagerConfig {
+                store: Some(store),
+                max_hot_peers: 10,
+                ..Default::default()
+            },
         );
 
         for n in 1..=20 {
@@ -1327,13 +1306,7 @@ mod tests {
 
         let store: Arc<dyn NetPeerStore<StoredPeer>> =
             Arc::new(MemoryPeerStore::<StoredPeer>::new());
-        let pm = PeerManager::with_store(
-            &mock_identity(),
-            store,
-            None,
-            SwarmScoringConfig::default(),
-            DEFAULT_MAX_PER_BIN,
-        );
+        let pm = manager_with_store(store, None);
         let pm = Arc::new(pm);
 
         let mut handles = vec![];
@@ -1368,13 +1341,7 @@ mod tests {
     fn test_discover_flush_reload() {
         let store: Arc<dyn NetPeerStore<StoredPeer>> =
             Arc::new(MemoryPeerStore::<StoredPeer>::new());
-        let pm = PeerManager::with_store(
-            &mock_identity(),
-            store.clone(),
-            None,
-            SwarmScoringConfig::default(),
-            DEFAULT_MAX_PER_BIN,
-        );
+        let pm = manager_with_store(store.clone(), None);
 
         for n in 1..=10 {
             pm.store_discovered_peer(test_swarm_peer(n));
@@ -1385,13 +1352,7 @@ mod tests {
         pm.flush_write_buffer();
         assert_eq!(store.count().unwrap(), 10);
 
-        let pm2 = PeerManager::with_store(
-            &mock_identity(),
-            store,
-            None,
-            SwarmScoringConfig::default(),
-            DEFAULT_MAX_PER_BIN,
-        );
+        let pm2 = manager_with_store(store, None);
         assert_eq!(pm2.index().len(), 10);
         assert_eq!(pm2.peers.len(), 0);
 
@@ -1417,13 +1378,7 @@ mod tests {
                     >,
             >,
         > = Some(Arc::clone(&db_store) as _);
-        let pm = PeerManager::with_store(
-            &mock_identity(),
-            store.clone(),
-            score_store.clone(),
-            SwarmScoringConfig::default(),
-            DEFAULT_MAX_PER_BIN,
-        );
+        let pm = manager_with_store(store.clone(), score_store.clone());
 
         pm.store_discovered_peer(test_swarm_peer(1));
         assert_eq!(pm.peers.len(), 0);
@@ -1440,13 +1395,7 @@ mod tests {
         pm.collect_dirty();
         pm.flush_write_buffer();
 
-        let pm2 = PeerManager::with_store(
-            &mock_identity(),
-            store,
-            score_store,
-            SwarmScoringConfig::default(),
-            DEFAULT_MAX_PER_BIN,
-        );
+        let pm2 = manager_with_store(store, score_store);
         assert_eq!(pm2.index().len(), 1);
         assert_eq!(pm2.peers.len(), 0);
 
@@ -1461,13 +1410,7 @@ mod tests {
     fn test_ban_persistence() {
         let store: Arc<dyn NetPeerStore<StoredPeer>> =
             Arc::new(MemoryPeerStore::<StoredPeer>::new());
-        let pm = PeerManager::with_store(
-            &mock_identity(),
-            store.clone(),
-            None,
-            SwarmScoringConfig::default(),
-            DEFAULT_MAX_PER_BIN,
-        );
+        let pm = manager_with_store(store.clone(), None);
 
         pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Client);
         pm.collect_dirty();
@@ -1477,13 +1420,7 @@ mod tests {
         let record = store.get(&test_overlay(1)).unwrap().unwrap();
         assert!(record.ban_info.is_some());
 
-        let pm2 = PeerManager::with_store(
-            &mock_identity(),
-            store,
-            None,
-            SwarmScoringConfig::default(),
-            DEFAULT_MAX_PER_BIN,
-        );
+        let pm2 = manager_with_store(store, None);
         assert!(pm2.is_banned(&test_overlay(1)));
         assert!(!pm2.eligible_peers().contains(&test_overlay(1)));
     }
@@ -1494,13 +1431,7 @@ mod tests {
 
         let store: Arc<dyn NetPeerStore<StoredPeer>> =
             Arc::new(MemoryPeerStore::<StoredPeer>::new());
-        let pm = PeerManager::with_store(
-            &mock_identity(),
-            store,
-            None,
-            SwarmScoringConfig::default(),
-            DEFAULT_MAX_PER_BIN,
-        );
+        let pm = manager_with_store(store, None);
         let pm = Arc::new(pm);
 
         let mut handles = vec![];
@@ -1546,13 +1477,7 @@ mod tests {
     fn test_memory_bounded() {
         let store: Arc<dyn NetPeerStore<StoredPeer>> =
             Arc::new(MemoryPeerStore::<StoredPeer>::new());
-        let pm = PeerManager::with_store(
-            &mock_identity(),
-            store,
-            None,
-            SwarmScoringConfig::default(),
-            DEFAULT_MAX_PER_BIN,
-        );
+        let pm = manager_with_store(store, None);
 
         for n in 1..=200 {
             pm.store_discovered_peer(test_swarm_peer(n));

@@ -18,8 +18,7 @@ use nectar_primitives::{ChunkAddress, recompute_neighborhood_depth};
 use parking_lot::RwLock;
 use tracing::{debug, info, trace};
 use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
-use vertex_swarm_peer_manager::PeerManager;
-use vertex_swarm_peer_manager::ProximityIndex;
+use vertex_swarm_peer_manager::{PeerManager, ProximityIndex};
 use vertex_swarm_primitives::{
     Bin, NeighborhoodDepth, OverlayAddress, SwarmNodeType, all_bins, balanced_bins,
     neighborhood_bins,
@@ -688,6 +687,7 @@ mod tests {
     #![allow(clippy::indexing_slicing)]
     use super::*;
     use nectar_primitives::SwarmAddress;
+    use vertex_swarm_peer_manager::PeerManagerConfig;
     use vertex_swarm_test_utils::{MockIdentity, make_swarm_peer_minimal};
 
     fn b(n: u8) -> Bin {
@@ -706,7 +706,7 @@ mod tests {
         Arc<PeerManager<MockIdentity>>,
     ) {
         let identity = MockIdentity::with_overlay(base);
-        let peer_manager = PeerManager::new(&identity);
+        let peer_manager = PeerManager::new(&identity, PeerManagerConfig::default());
         let routing = KademliaRouting::new(identity, config, peer_manager.clone());
         (routing, peer_manager)
     }

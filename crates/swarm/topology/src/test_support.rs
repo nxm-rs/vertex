@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use vertex_swarm_api::SwarmNodeType;
-use vertex_swarm_peer_manager::PeerManager;
+use vertex_swarm_peer_manager::{PeerManager, PeerManagerConfig};
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_test_utils::{MockIdentity, test_overlay, test_swarm_peer};
 
@@ -19,7 +19,7 @@ impl TopologyTestContext {
     pub(crate) fn new() -> Self {
         let local = test_overlay(0);
         let identity = MockIdentity::with_overlay(local);
-        let pm = PeerManager::new(&identity);
+        let pm = PeerManager::new(&identity, PeerManagerConfig::default());
         let cr = Arc::new(ConnectionRegistry::new());
         Self {
             local_overlay: local,
