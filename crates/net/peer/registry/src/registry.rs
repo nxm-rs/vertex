@@ -4,10 +4,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Instant;
 
 use libp2p::{PeerId, swarm::ConnectionId};
 use parking_lot::RwLock;
+use web_time::Instant;
 
 use crate::ActivateResult;
 use crate::ConnectionDirection;

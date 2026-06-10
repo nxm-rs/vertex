@@ -1,8 +1,7 @@
 //! Connection state for peers in the registry.
 
-use std::time::Instant;
-
 use libp2p::{PeerId, swarm::ConnectionId};
+use web_time::Instant;
 
 use crate::ConnectionDirection;
 

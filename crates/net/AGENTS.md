@@ -7,7 +7,7 @@ Root-level rules in `/AGENTS.md` apply here too. The notes below are the area-sp
 ## Scope
 
 - `dnsaddr`, `local`, `utils`: address handling and IP classification.
-- `peer/backoff`, `peer/score`, `peer/store`, `peer/registry`: peer state primitives that hold no protocol logic.
+- `peer/backoff`, `peer/score`, `peer/store`, `peer/registry`: peer state primitives that hold no protocol logic. Together with `local` they sit in the wasm compilation cone of the Swarm peer stack: keep them building for `wasm32-unknown-unknown` (the `wasm` CI job enforces this through `vertex-swarm-peer-manager`) and take wall clocks and monotonic time from `web-time`, not `std::time`. See `docs/agents/wasm.md`.
 - `dialer`: generic dial-request tracker with bounded queue and in-flight management.
 - `codec`: protobuf framing (`FramedProto`) plus the `protocol_error!` macro for protocol-shaped error enums.
 - `ratelimiter`: single-bucket and keyed GCRA limiters used by handlers.

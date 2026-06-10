@@ -1,6 +1,6 @@
 [package]
 name = "vertex-swarm-peer-score"
-description = "Swarm-specific peer scoring with configurable policies and callbacks"
+description = "Swarm-specific peer scoring with configurable policies"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,9 +14,6 @@ vertex-net-peer-score = { workspace = true }
 
 # Swarm API (canonical default constants)
 vertex-swarm-api = { workspace = true }
-
-# Swarm primitives
-vertex-swarm-primitives = { workspace = true }
 
 # Core
 paste = { workspace = true }

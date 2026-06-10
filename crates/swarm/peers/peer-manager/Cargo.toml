@@ -25,7 +25,6 @@ vertex-swarm-peer-score = { workspace = true }
 vertex-tasks = { workspace = true }
 
 # Observability
-vertex-observability = { workspace = true }
 metrics = { workspace = true }
 
 # Storage
@@ -37,6 +36,8 @@ tracing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 strum = { workspace = true }
 thiserror = { workspace = true }
+# std::time re-export on native, browser clock on wasm32.
+web-time = { workspace = true }
 
 # Concurrency
 dashmap = { workspace = true }

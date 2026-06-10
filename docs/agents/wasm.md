@@ -8,7 +8,9 @@ A wasm client unlocks light-client embeddings in dapps, indexer UIs, and the Nex
 
 ### Status
 
-- Already no_std capable with a `default = ["std"]` feature: `vertex-swarm-primitives`, `vertex-swarm-spec`, `vertex-swarm-forks`, `vertex-swarm-api`. A plain `cargo build --target wasm32-unknown-unknown --no-default-features` for these does not yet succeed, and the blockers are wasm-incompatible deps, not chain code: `nectar-primitives` pulls `wasm-bindgen-rayon`, which needs a threaded-wasm toolchain (`atomics` + `bulk-memory` + `build-std`), and `vertex-swarm-spec`/`vertex-swarm-api` pull `vertex-tasks`, whose `tokio::select!` usage needs the wasm tokio feature set trimmed per the tokio audit below. Both are tracked work, not a regression. Fixing the `wasm-bindgen-rayon` pull is upstream work in nectar.
+- Already no_std capable with a `default = ["std"]` feature: `vertex-swarm-primitives`, `vertex-swarm-spec`, `vertex-swarm-forks`, `vertex-swarm-api`.
+- The peer stack (`vertex-swarm-peer`, `vertex-swarm-peer-score`, `vertex-swarm-peer-manager` plus their `vertex-net-peer-*` and `vertex-net-local` deps) builds for `wasm32-unknown-unknown` and CI enforces it (the `wasm` job in `.github/workflows/unit.yml`). The build currently requires a nightly toolchain: `nectar-primitives` pulls `wasm-bindgen-rayon` on wasm32, which needs the unstable `atomics` target feature that stable rustc does not expose. The required rustflags (`+atomics,+bulk-memory,+mutable-globals` and the `getrandom_backend="wasm_js"` cfg) live in `.cargo/config.toml` under `[target.wasm32-unknown-unknown]`, mirroring nectar's own config. Run it with `cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-peer-score -p vertex-swarm-peer-manager`. Making this buildable on stable is upstream work in nectar (gate the `wasm-bindgen-rayon` pull behind a feature).
+- Clock discipline for the wasm cone is `web-time` (a `std::time` re-export on native, browser clock on wasm32); `vertex-swarm-peer-manager` and `vertex-net-peer-registry` already use it. The remaining `SystemTime` cleanups are tracked in issue #62.
 - Nectar primitives (`nectar-primitives`, `nectar-mantaray`, `nectar-postage`) are the upstream wasm-friendly layer. The proof-of-concept `crates/wasm-demo` lives in nectar.
 - Legacy wasm bins in this repo (`bin/swarm-wasm-lib`, `bin/wasm-playground`) reference path deps to `crates/bmt` and `crates/postage` that no longer exist (they moved to nectar). They are stale and should not be treated as a working baseline; remove them or rewrite them against the current crate graph before adding new wasm code.
 - A real client-in-wasm shipping target does not exist yet. The work plan is in this document.
@@ -26,6 +28,8 @@ The wasm cone (must remain wasm-compatible):
 - `vertex-swarm-primitives`, `vertex-swarm-spec`, `vertex-swarm-forks`, `vertex-swarm-identity`.
 - `vertex-swarm-api` and any trait surface a client consumes.
 - `vertex-swarm-bandwidth-core`, `vertex-swarm-bandwidth-pricing`, `vertex-swarm-bandwidth-pseudosettle` (accounting logic; no IO).
+- The peer stack: `vertex-swarm-peer`, `vertex-swarm-peer-score`, `vertex-swarm-peer-manager`, and their net-layer deps `vertex-net-peer-backoff`, `vertex-net-peer-score`, `vertex-net-peer-store`, `vertex-net-peer-registry`. These are tick-driven and timer-free; the periodic driver runs on the composition side.
+- `crates/net/local`: pure multiaddr scope classification and capability tracking, no socket IO; it sits in the peer stack's dependency cone.
 - `vertex-swarm-builder`'s client variant.
 - All `nectar-*` deps.
 
@@ -33,7 +37,7 @@ Native-only (must NOT pull into the wasm cone):
 
 - `vertex-storage-redb` and anything pulling in `mmap`-style IO. Use an alternative `Database` backend in wasm (in-memory or IndexedDB-backed).
 - `crates/swarm/topology`'s NAT discovery and netdev paths; the wasm client uses libp2p browser transports (websockets, WebTransport) and skips local-network classification.
-- `crates/net/local`, `crates/net/dialer` (assumes native dial semantics), `crates/net/dnsaddr` (will need a wasm DNS-over-HTTPS shim if used at all).
+- `crates/net/dialer` (assumes native dial semantics), `crates/net/dnsaddr` (will need a wasm DNS-over-HTTPS shim if used at all).
 - Storer node, bootnode, redistribution agent, RPC server.
 - `bin/vertex` itself; the binary is native-only.
 
@@ -86,7 +90,7 @@ Audit `Cargo.toml` entries for `tokio` regularly. The default-features-on form (
 ### Plan to a working client-in-wasm
 
 1. Remove or rewrite `bin/swarm-wasm-lib` and `bin/wasm-playground` so they reflect the current crate graph (or delete them with a follow-up to re-add when ready).
-2. Add a `wasm32-unknown-unknown` build step to CI for the wasm-cone crates listed above. Start with `cargo build --target wasm32-unknown-unknown --no-default-features -p vertex-swarm-primitives -p vertex-swarm-spec -p vertex-swarm-forks -p vertex-swarm-api`.
+2. Add a `wasm32-unknown-unknown` build step to CI for the wasm-cone crates listed above. Done for the peer stack (the `wasm` job builds `vertex-swarm-peer-score` and `vertex-swarm-peer-manager`, which pulls the whole peer cone); extend the `-p` list as more cone crates become buildable.
 3. Audit tokio features in every wasm-cone crate; trim to the minimum.
 4. Add an `IndexedDb` `Database` backend (likely under `crates/storage/indexeddb`) gated on `cfg(target_arch = "wasm32")`.
 5. Add `libp2p-websocket-websys` to `crates/swarm/node`'s client variant under wasm cfg.

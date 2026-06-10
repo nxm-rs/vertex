@@ -18,13 +18,12 @@ vertex-swarm-api = { workspace = true }
 vertex-swarm-spec.workspace = true
 vertex-swarm-primitives = { workspace = true, features = ["serde"] }
 
-alloy-primitives = { workspace = true, features = ["arbitrary"] }
+alloy-primitives = { workspace = true }
 alloy-signer.workspace = true
 
 libp2p.workspace = true
 vertex-net-local.workspace = true
-arbitrary = { workspace = true, features = ["derive"] }
-proptest.workspace = true
+arbitrary = { workspace = true, features = ["derive"], optional = true }
 strum.workspace = true
 thiserror.workspace = true
 auto_impl = "1.1"
@@ -37,11 +36,11 @@ serde = { workspace = true, features = ["derive"], optional = true }
 [features]
 default = []
 serde = ["dep:serde", "alloy-primitives/serde", "nectar-primitives/serde"]
-test-utils = []
+test-utils = ["dep:arbitrary"]
 
 [dev-dependencies]
 alloy-signer-local.workspace = true
-arbitrary.workspace = true
+arbitrary = { workspace = true, features = ["derive"] }
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
 rand.workspace = true
