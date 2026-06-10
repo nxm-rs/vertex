@@ -46,7 +46,7 @@ use crate::composed::ProtocolBehaviours;
 use crate::error::TopologyError;
 use crate::events::TopologyEvent;
 use crate::extract_peer_id;
-use crate::gossip::{GossipHandle, spawn_gossip_task};
+use crate::gossip::{GossipConfig, GossipHandle, spawn_gossip_task};
 use crate::handle::TopologyHandle;
 use crate::kademlia::{
     KademliaConfig, KademliaRouting, RoutingEvaluatorHandle, SwarmRouting,
@@ -129,6 +129,8 @@ impl DialTarget {
 #[derive(Debug, Clone)]
 pub struct TopologyConfig {
     pub kademlia: KademliaConfig,
+    /// Tuning knobs for gossip peer exchange and verification.
+    pub gossip: GossipConfig,
     pub dial_interval: Duration,
     pub early_disconnect_threshold: Duration,
     pub peer_save_interval: Duration,
@@ -138,6 +140,7 @@ impl Default for TopologyConfig {
     fn default() -> Self {
         Self {
             kademlia: KademliaConfig::default(),
+            gossip: GossipConfig::default(),
             dial_interval: DEFAULT_DIAL_INTERVAL,
             early_disconnect_threshold: DEFAULT_EARLY_DISCONNECT_THRESHOLD,
             peer_save_interval: DEFAULT_PEER_SAVE_INTERVAL,
@@ -152,6 +155,12 @@ impl TopologyConfig {
 
     pub fn with_kademlia(mut self, config: KademliaConfig) -> Self {
         self.kademlia = config;
+        self
+    }
+
+    /// Override the gossip tuning knobs.
+    pub fn with_gossip(mut self, config: GossipConfig) -> Self {
+        self.gossip = config;
         self
     }
 
@@ -369,6 +378,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         let spec = <I as HasSpec>::spec(&*identity).clone();
         let gossip = spawn_gossip_task(
             spec,
+            config.gossip.clone(),
             local_overlay,
             peer_manager.clone(),
             connection_registry.clone(),

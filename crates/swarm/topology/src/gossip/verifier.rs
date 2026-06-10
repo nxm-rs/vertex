@@ -4,7 +4,7 @@
 //! being stored in the peer manager. This prevents storage exhaustion attacks
 //! and ensures only cryptographically valid peers enter our peer store.
 
-use std::{sync::LazyLock, time::Duration};
+use std::sync::LazyLock;
 
 use hashlink::LruCache;
 use libp2p::PeerId;
@@ -13,6 +13,7 @@ use tracing::{debug, warn};
 use vertex_net_dialer::{DialRequest, DialTracker, DialTrackerConfig, EnqueueError};
 use vertex_swarm_peer::{SwarmAddress, SwarmPeer};
 
+use super::config::GossipConfig;
 use super::error::{GossipCheckError, VerificationFailure};
 use super::events::{GossipCheckOk, VerificationResult};
 use crate::extract_peer_id;
@@ -20,27 +21,10 @@ use crate::extract_peer_id;
 type OverlayAddress = SwarmAddress;
 
 /// Fallback dial address used when the gossiped peer has no multiaddrs.
-/// This should never happen — `check_gossip` validates non-empty addrs.
+/// This should never happen; `check_gossip` validates non-empty addrs.
 #[allow(clippy::unwrap_used)]
 static FALLBACK_ADDR: LazyLock<libp2p::Multiaddr> =
     LazyLock::new(|| "/ip4/0.0.0.0/tcp/0".parse().unwrap());
-
-const MAX_PENDING_PER_GOSSIPER: usize = 64;
-/// ~32 concurrent connections x ~30 gossiped peers each = 960, rounded to 1024.
-const MAX_TOTAL_PENDING: usize = 1024;
-const PENDING_EXPIRY: Duration = Duration::from_secs(60);
-const MAX_CONCURRENT_VERIFICATIONS: usize = 32;
-const MAX_TRACKED_GOSSIPERS: usize = 1024;
-/// Interval between expired entry cleanup runs.
-const CLEANUP_INTERVAL: Duration = Duration::from_secs(10);
-
-/// Backoff/ban configuration for unreachable gossiped peers.
-const BACKOFF_CAPACITY: usize = 1024;
-const BACKOFF_BASE_SECS: u64 = 5;
-const BACKOFF_MAX_SECS: u64 = 20;
-const BAN_CAPACITY: usize = 8192;
-const BAN_AFTER_FAILURES: u32 = 3;
-const BAN_TTL_SECS: u64 = 3600;
 
 /// Data carried with each verification dial request.
 #[derive(Debug)]
@@ -77,28 +61,31 @@ pub(super) enum Verification {
 pub(super) struct GossipVerifier {
     /// Per-gossiper pending count for rate limiting (LRU-bounded).
     per_gossiper_count: LruCache<OverlayAddress, usize>,
+    /// Maximum pending verifications a single gossiper may hold.
+    max_pending_per_gossiper: usize,
     dial_tracker: DialTracker<OverlayAddress, VerificationData>,
 }
 
 impl GossipVerifier {
-    pub(super) fn new() -> Self {
-        let config = DialTrackerConfig {
-            max_pending: MAX_TOTAL_PENDING,
-            max_in_flight: MAX_CONCURRENT_VERIFICATIONS,
-            pending_ttl: PENDING_EXPIRY,
-            in_flight_timeout: PENDING_EXPIRY,
-            cleanup_interval: CLEANUP_INTERVAL,
+    pub(super) fn new(config: &GossipConfig) -> Self {
+        let tracker_config = DialTrackerConfig {
+            max_pending: config.max_total_pending,
+            max_in_flight: config.max_concurrent_verifications,
+            pending_ttl: config.pending_expiry,
+            in_flight_timeout: config.pending_expiry,
+            cleanup_interval: config.cleanup_interval,
             metrics_label: Some("gossip"),
-            backoff_capacity: BACKOFF_CAPACITY,
-            backoff_base_secs: BACKOFF_BASE_SECS,
-            backoff_max_secs: BACKOFF_MAX_SECS,
-            ban_capacity: BAN_CAPACITY,
-            ban_after_failures: BAN_AFTER_FAILURES,
-            ban_ttl_secs: BAN_TTL_SECS,
+            backoff_capacity: config.backoff_capacity,
+            backoff_base_secs: config.backoff_base.as_secs(),
+            backoff_max_secs: config.backoff_max.as_secs(),
+            ban_capacity: config.ban_capacity,
+            ban_after_failures: config.ban_after_failures,
+            ban_ttl_secs: config.ban_ttl.as_secs(),
         };
         Self {
-            per_gossiper_count: LruCache::new(MAX_TRACKED_GOSSIPERS),
-            dial_tracker: DialTracker::new(config),
+            per_gossiper_count: LruCache::new(config.max_tracked_gossipers),
+            max_pending_per_gossiper: config.max_pending_per_gossiper,
+            dial_tracker: DialTracker::new(tracker_config),
         }
     }
 
@@ -132,7 +119,7 @@ impl GossipVerifier {
         }
 
         let gossiper_count = self.per_gossiper_count.get(gossiper).copied().unwrap_or(0);
-        if gossiper_count >= MAX_PENDING_PER_GOSSIPER {
+        if gossiper_count >= self.max_pending_per_gossiper {
             return Err(GossipCheckError::GossiperRateLimited);
         }
 
@@ -194,7 +181,7 @@ impl GossipVerifier {
                 .addrs
                 .into_iter()
                 .next()
-                // Should never happen — check_gossip validates non-empty multiaddrs
+                // Should never happen; check_gossip validates non-empty multiaddrs
                 .unwrap_or_else(|| FALLBACK_ADDR.clone()),
         })
     }
@@ -357,7 +344,7 @@ mod tests {
 
     #[test]
     fn test_rejects_no_peer_id() {
-        let mut verifier = GossipVerifier::new();
+        let mut verifier = GossipVerifier::new(&GossipConfig::default());
 
         // Multiaddr without /p2p/ component
         let peer = mock_swarm_peer_no_p2p([2u8; 32], "/ip4/1.2.3.4/tcp/1634");
@@ -369,7 +356,7 @@ mod tests {
 
     #[test]
     fn test_already_known_with_matching_signature() {
-        let mut verifier = GossipVerifier::new();
+        let mut verifier = GossipVerifier::new(&GossipConfig::default());
 
         let peer_id = test_peer_id(2);
         let peer = mock_swarm_peer_with_peer_id([2u8; 32], "/ip4/1.2.3.4/tcp/1634", peer_id);
@@ -382,7 +369,7 @@ mod tests {
 
     #[test]
     fn test_needs_verification_for_new_peer() {
-        let mut verifier = GossipVerifier::new();
+        let mut verifier = GossipVerifier::new(&GossipConfig::default());
 
         let peer_id = test_peer_id(2);
         let peer = mock_swarm_peer_with_peer_id([2u8; 32], "/ip4/1.2.3.4/tcp/1634", peer_id);
@@ -395,11 +382,18 @@ mod tests {
 
     #[test]
     fn test_rate_limit_per_gossiper() {
-        let mut verifier = GossipVerifier::new();
+        // Tightened config: a small per-gossiper cap keeps the test fast and
+        // proves the limit is config-driven rather than hardcoded.
+        let max_pending_per_gossiper = 4;
+        let config = GossipConfig {
+            max_pending_per_gossiper,
+            ..Default::default()
+        };
+        let mut verifier = GossipVerifier::new(&config);
         let gossiper = OverlayAddress::from(B256::from([3u8; 32]));
 
-        // Add MAX_PENDING_PER_GOSSIPER peers
-        for i in 0..MAX_PENDING_PER_GOSSIPER {
+        // Fill the per-gossiper budget
+        for i in 0..max_pending_per_gossiper {
             let peer_id = test_peer_id((i + 10) as u8);
             let mut overlay_bytes = [0u8; 32];
             overlay_bytes[0] = (i + 10) as u8;
@@ -418,7 +412,7 @@ mod tests {
 
     #[test]
     fn test_verification_success() {
-        let mut verifier = GossipVerifier::new();
+        let mut verifier = GossipVerifier::new(&GossipConfig::default());
 
         let peer_id = test_peer_id(2);
         let peer = mock_swarm_peer_with_peer_id([2u8; 32], "/ip4/1.2.3.4/tcp/1634", peer_id);
@@ -445,7 +439,7 @@ mod tests {
 
     #[test]
     fn test_verification_identity_updated() {
-        let mut verifier = GossipVerifier::new();
+        let mut verifier = GossipVerifier::new(&GossipConfig::default());
 
         let peer_id = test_peer_id(2);
         // Gossiped peer with signature (1, 2)
@@ -477,7 +471,7 @@ mod tests {
 
     #[test]
     fn test_verification_different_peer_at_address() {
-        let mut verifier = GossipVerifier::new();
+        let mut verifier = GossipVerifier::new(&GossipConfig::default());
 
         let peer_id = test_peer_id(2);
         let gossiped_peer =
@@ -517,7 +511,7 @@ mod tests {
 
     #[test]
     fn test_is_in_flight() {
-        let mut verifier = GossipVerifier::new();
+        let mut verifier = GossipVerifier::new(&GossipConfig::default());
 
         let peer_id = test_peer_id(2);
         let peer = mock_swarm_peer_with_peer_id([2u8; 32], "/ip4/1.2.3.4/tcp/1634", peer_id);
@@ -538,7 +532,7 @@ mod tests {
 
     #[test]
     fn test_resolve_in_flight_on_dial_failure() {
-        let mut verifier = GossipVerifier::new();
+        let mut verifier = GossipVerifier::new(&GossipConfig::default());
 
         let peer_id = test_peer_id(2);
         let peer = mock_swarm_peer_with_peer_id([2u8; 32], "/ip4/1.2.3.4/tcp/1634", peer_id);
@@ -561,11 +555,18 @@ mod tests {
 
     #[test]
     fn test_total_pending_limit() {
-        let mut verifier = GossipVerifier::new();
+        // Tightened config: a small global cap exercises the limit without
+        // enqueueing the production-sized queue.
+        let max_total_pending = 8;
+        let config = GossipConfig {
+            max_total_pending,
+            ..Default::default()
+        };
+        let mut verifier = GossipVerifier::new(&config);
 
         // Use many gossipers to avoid per-gossiper rate limit.
         // PeerId::random() ensures unique peer IDs beyond the u8 limit of test_peer_id.
-        for i in 0..MAX_TOTAL_PENDING {
+        for i in 0..max_total_pending {
             let peer_id = PeerId::random();
             let mut overlay_bytes = [0u8; 32];
             overlay_bytes[0] = (i % 256) as u8;
@@ -590,7 +591,7 @@ mod tests {
             );
         }
 
-        assert_eq!(verifier.dial_tracker.pending_count(), MAX_TOTAL_PENDING);
+        assert_eq!(verifier.dial_tracker.pending_count(), max_total_pending);
 
         // Next should be rejected with QueueFull
         let peer_id = PeerId::random();
@@ -605,7 +606,7 @@ mod tests {
 
     #[test]
     fn test_multiple_gossipers_tracked() {
-        let mut verifier = GossipVerifier::new();
+        let mut verifier = GossipVerifier::new(&GossipConfig::default());
 
         // Track multiple gossipers to verify LRU doesn't break rate limiting
         for g in 0..10 {
@@ -629,10 +630,16 @@ mod tests {
 
     #[test]
     fn test_concurrent_verifications_limit() {
-        let mut verifier = GossipVerifier::new();
+        // Tightened config: a small in-flight cap exercises the limit quickly.
+        let max_concurrent_verifications = 4;
+        let config = GossipConfig {
+            max_concurrent_verifications,
+            ..Default::default()
+        };
+        let mut verifier = GossipVerifier::new(&config);
 
-        // Add more peers than MAX_CONCURRENT_VERIFICATIONS
-        for i in 0..MAX_CONCURRENT_VERIFICATIONS + 5 {
+        // Add more peers than the concurrency limit
+        for i in 0..max_concurrent_verifications + 5 {
             let peer_id = test_peer_id((i + 10) as u8);
             let mut overlay_bytes = [0u8; 32];
             overlay_bytes[0] = (i + 10) as u8;
@@ -642,8 +649,8 @@ mod tests {
             verifier.check_gossip(&peer, &gossiper, None).unwrap();
         }
 
-        // Start MAX_CONCURRENT_VERIFICATIONS dials
-        for _ in 0..MAX_CONCURRENT_VERIFICATIONS {
+        // Start dials up to the concurrency limit
+        for _ in 0..max_concurrent_verifications {
             assert!(verifier.next_verification_dial().is_some());
         }
 
@@ -653,7 +660,7 @@ mod tests {
 
     #[test]
     fn test_verification_batch() {
-        let mut verifier = GossipVerifier::new();
+        let mut verifier = GossipVerifier::new(&GossipConfig::default());
 
         // Add 10 peers
         for i in 0..10 {
@@ -689,7 +696,7 @@ mod tests {
 
     #[test]
     fn test_backoff_rejects_different_gossiper() {
-        let mut verifier = GossipVerifier::new();
+        let mut verifier = GossipVerifier::new(&GossipConfig::default());
 
         let peer_id = test_peer_id(2);
         let overlay_bytes = [2u8; 32];
@@ -711,7 +718,7 @@ mod tests {
 
     #[test]
     fn test_clear_backoff_allows_re_verification() {
-        let mut verifier = GossipVerifier::new();
+        let mut verifier = GossipVerifier::new(&GossipConfig::default());
 
         let peer_id = test_peer_id(2);
         let overlay_bytes = [2u8; 32];
