@@ -20,7 +20,7 @@ pub enum AddressScope {
 }
 
 /// Extract the IP address from a multiaddr, if any.
-pub(crate) fn extract_ip(addr: &Multiaddr) -> Option<IpAddr> {
+pub fn extract_ip(addr: &Multiaddr) -> Option<IpAddr> {
     for proto in addr.iter() {
         match proto {
             Protocol::Ip4(ip) => return Some(IpAddr::V4(ip)),

@@ -35,6 +35,7 @@ impl TopologyTestContext {
                 SwarmNodeType::Storer,
                 vertex_net_peer_registry::ConnectionDirection::Outbound,
                 vertex_swarm_peer_manager::TrustLevel::Normal,
+                None,
             );
         }
         self

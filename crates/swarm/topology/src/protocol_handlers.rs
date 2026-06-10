@@ -213,11 +213,13 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         } else {
             TrustLevel::Normal
         };
+        let remote_ip = self.connection_remote_ips.get(&connection_id).copied();
         self.peer_manager.on_peer_connected(
             info.swarm_peer.clone(),
             info.node_type,
             direction,
             trust,
+            remote_ip,
         );
 
         // Feed reachability BEFORE notifying routing: `trim_overpopulated_bins`

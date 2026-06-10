@@ -1,8 +1,9 @@
 //! Network topology behaviour managing peer connections via handshake, hive, and ping.
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     future::Future,
+    net::IpAddr,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -249,6 +250,12 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
     /// address). Populated at `ConnectionEstablished`, consumed at handshake
     /// completion, and cleared at `ConnectionClosed`.
     pub(crate) outbound_public_dials: HashSet<ConnectionId>,
+
+    /// Remote IP of each established connection. Populated at
+    /// `ConnectionEstablished`, read at handshake completion so the peer
+    /// manager can associate the confirmed overlay with the IP the
+    /// connection actually came from, and cleared at `ConnectionClosed`.
+    pub(crate) connection_remote_ips: HashMap<ConnectionId, IpAddr>,
 
     /// Receiver for the peer lifecycle event stream from PeerManager.
     ///
