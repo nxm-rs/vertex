@@ -2,7 +2,7 @@
 //!
 //! - [`BootNode`] - Topology only (bootnode servers)
 //! - [`ClientNode`] - Topology + client protocols (chunk read/write)
-//! - [`StorerNode`] - Client + storage protocols (full node)
+//! - [`StorerNode`] - Client + storage protocols (chunk storage and staking)
 
 mod base;
 #[allow(unreachable_pub)]

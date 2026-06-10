@@ -158,7 +158,7 @@ mod tests {
 
         assert!(!identity.ethereum_address().is_zero());
         assert!(!identity.overlay_address().is_zero());
-        assert!(identity.is_full_node());
+        assert!(identity.is_storer());
     }
 
     #[test]

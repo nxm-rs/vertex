@@ -12,7 +12,7 @@ description = "Chequebook types and signing for SWAP settlement"
 workspace = true
 
 [features]
-# Default is a pure, wasm-safe cheque codec with no RPC stack, so light clients
+# Default is a pure, wasm-safe cheque codec with no RPC stack, so client nodes
 # compile without an Ethereum provider.
 default = []
 # `swap-chequebook` adds the native on-chain chequebook client over a shared

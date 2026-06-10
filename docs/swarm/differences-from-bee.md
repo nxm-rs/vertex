@@ -19,7 +19,7 @@ Vertex introduces a `SwarmSpec` trait that defines network identity and protocol
 - Bandwidth pricing
 - Cache strategies
 
-This separation allows light clients and full nodes to share the same spec while differing in operational parameters.
+This separation allows Clients and Storers to share the same spec while differing in operational parameters.
 
 ### Hardfork Support
 

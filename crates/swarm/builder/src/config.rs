@@ -82,7 +82,7 @@ impl BootnodeConfig {
 impl_common_config_getters!(BootnodeConfig);
 impl_builds_protocol!(BootnodeConfig, "Swarm Bootnode");
 
-/// Validated configuration for client (light) node with bandwidth accounting.
+/// Validated configuration for a Client node with bandwidth accounting.
 #[derive(Clone)]
 pub struct ClientConfig {
     spec: Arc<Spec>,

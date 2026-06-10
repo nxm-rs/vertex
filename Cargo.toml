@@ -83,7 +83,7 @@ members = [
     # Redistribution (storage incentives)
     "crates/swarm/redistribution",
 
-    # Storer (full node storage)
+    # Storer (chunk storage and staking)
     "crates/swarm/storer",
 
     # RPC
@@ -204,7 +204,7 @@ vertex-swarm-localstore = { path = "crates/swarm/localstore" }
 # redistribution (storage incentives)
 vertex-swarm-redistribution = { path = "crates/swarm/redistribution" }
 
-# storer (full node storage)
+# storer (chunk storage and staking)
 vertex-swarm-storer = { path = "crates/swarm/storer" }
 
 # rpc

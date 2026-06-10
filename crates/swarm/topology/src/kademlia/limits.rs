@@ -420,9 +420,9 @@ mod tests {
 
     #[test]
     fn test_various_total_targets() {
-        // Light client
-        let light = DepthAwareLimits::new(32, 2);
-        assert!(light.target(b(7), d(8)) < 10);
+        // Client with a small connection budget
+        let client = DepthAwareLimits::new(32, 2);
+        assert!(client.target(b(7), d(8)) < 10);
 
         // Robust retrieval
         let robust = DepthAwareLimits::new(256, 4);

@@ -44,7 +44,7 @@
 //! the node sends an `ActivatePeer` command which transitions the handler to
 //! active state with:
 //! - Peer's overlay address
-//! - Node type (full or light)
+//! - Node type (`SwarmNodeType`)
 //!
 //! # Event/Command Interface
 //!

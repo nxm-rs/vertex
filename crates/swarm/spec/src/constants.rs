@@ -14,7 +14,7 @@
 //!
 //! # Storage Capacity Constants
 //!
-//! - [`DEFAULT_RESERVE_CAPACITY`]: Default number of chunks for a full node (2^22)
+//! - [`DEFAULT_RESERVE_CAPACITY`]: Default number of chunks for a Storer (2^22)
 //!
 //! # Contract Addresses
 //!
@@ -57,9 +57,9 @@ pub const DEFAULT_CHUNK_SIZE: usize = 1 << DEFAULT_CHUNK_SIZE_LOG2;
 /// This is the canonical definition. `DEFAULT_RESERVE_CAPACITY = 2^DEFAULT_RESERVE_CAPACITY_LOG2`
 pub const DEFAULT_RESERVE_CAPACITY_LOG2: u32 = 22;
 
-/// Default reserve capacity in number of chunks for a full node.
+/// Default reserve capacity in number of chunks for a Storer.
 ///
-/// This is the target number of chunks a full storage node should hold.
+/// This is the target number of chunks a Storer should hold.
 /// When the node's reserve exceeds this capacity, it may trigger radius
 /// adjustments to maintain the target.
 ///
@@ -69,13 +69,13 @@ pub const DEFAULT_RESERVE_CAPACITY_LOG2: u32 = 22;
 /// (not including metadata and indexing overhead).
 pub const DEFAULT_RESERVE_CAPACITY: u64 = 1 << DEFAULT_RESERVE_CAPACITY_LOG2;
 
-/// Default cache capacity for light nodes as a power of 2 exponent.
+/// Default cache capacity for Clients as a power of 2 exponent.
 ///
 /// This is the canonical definition for memory-constrained devices.
 /// `DEFAULT_CACHE_CAPACITY = 2^DEFAULT_CACHE_CAPACITY_LOG2`
 pub const DEFAULT_CACHE_CAPACITY_LOG2: u32 = 16;
 
-/// Default cache capacity in number of chunks for light nodes.
+/// Default cache capacity in number of chunks for Clients.
 ///
 /// In-memory cache for retrieval/pushsync on non-storage nodes.
 /// Suitable for memory-constrained devices.

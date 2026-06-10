@@ -73,7 +73,7 @@ pub struct Spec {
     #[serde(default)]
     pub genesis_timestamp: u64,
 
-    /// Reserve capacity in number of chunks for full nodes (typically 2^22)
+    /// Reserve capacity in number of chunks for Storers (typically 2^22)
     #[serde(default = "default_reserve_capacity")]
     pub reserve_capacity: u64,
 }
