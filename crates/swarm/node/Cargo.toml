@@ -105,4 +105,5 @@ cli = [
     "dep:vertex-swarm-localstore",
     "dep:vertex-swarm-redistribution",
     "vertex-swarm-primitives/serde",
+    "alloy-primitives/serde",
 ]

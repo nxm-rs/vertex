@@ -26,7 +26,7 @@ use vertex_swarm_api::{
 };
 use vertex_swarm_builder::{ChunkVerifyConfig, ClientConfig, DefaultClientBuilder};
 use vertex_swarm_identity::Identity;
-use vertex_swarm_node::args::{ChainConfig, NetworkConfig};
+use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
 use vertex_swarm_spec::init_dev;
 use vertex_tasks::TaskExecutor;
 
@@ -73,6 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Default::default(),
         ChunkVerifyConfig::default(),
         ChainConfig::default(),
+        SwapConfig::default(),
     );
     let ctx = ExampleContext {
         executor: executor.clone(),

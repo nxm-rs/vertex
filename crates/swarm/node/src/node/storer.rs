@@ -111,6 +111,8 @@ pub struct StorerNodeBuilder<I: SwarmIdentity + Clone> {
     identity: I,
     kademlia_config: Option<KademliaConfig>,
     pseudosettle_event_tx: Option<mpsc::UnboundedSender<PseudosettleEvent>>,
+    #[cfg(feature = "swap")]
+    swap_event_tx: Option<mpsc::UnboundedSender<crate::protocol::SwapEvent>>,
 }
 
 impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
@@ -120,6 +122,8 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
             identity,
             kademlia_config: None,
             pseudosettle_event_tx: None,
+            #[cfg(feature = "swap")]
+            swap_event_tx: None,
         }
     }
 
@@ -135,6 +139,16 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
         tx: mpsc::UnboundedSender<PseudosettleEvent>,
     ) -> Self {
         self.pseudosettle_event_tx = Some(tx);
+        self
+    }
+
+    /// Set the sender for routing swap wire events to the settlement service.
+    #[cfg(feature = "swap")]
+    pub fn with_swap_events(
+        mut self,
+        tx: mpsc::UnboundedSender<crate::protocol::SwapEvent>,
+    ) -> Self {
+        self.swap_event_tx = Some(tx);
         self
     }
 }
@@ -172,6 +186,10 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
         }
         if let Some(tx) = self.pseudosettle_event_tx {
             client_builder = client_builder.with_pseudosettle_events(tx);
+        }
+        #[cfg(feature = "swap")]
+        if let Some(tx) = self.swap_event_tx {
+            client_builder = client_builder.with_swap_events(tx);
         }
 
         let (client, service, handle) = client_builder

@@ -11,7 +11,7 @@ use vertex_swarm_localstore::LocalStoreArgs;
 use vertex_swarm_primitives::SwarmNodeType;
 use vertex_swarm_redistribution::RedistributionArgs;
 
-use super::{ChainArgs, NetworkArgs, RetrievalArgs, SwarmSpecArgs};
+use super::{ChainArgs, NetworkArgs, RetrievalArgs, SwapArgs, SwarmSpecArgs};
 
 /// CLI argument for node mode selection. Maps to [`SwarmNodeType`].
 #[derive(
@@ -92,4 +92,8 @@ pub struct ProtocolArgs {
     /// Ethereum chain connection (RPC endpoint and transaction tuning).
     #[command(flatten)]
     pub chain: ChainArgs,
+
+    /// SWAP settlement (chequebook, beneficiary, deploy).
+    #[command(flatten)]
+    pub swap: SwapArgs,
 }

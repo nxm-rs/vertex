@@ -326,6 +326,8 @@ pub struct ClientNodeBuilder<I: SwarmIdentity + Clone> {
     infra: Option<BuiltInfrastructure<I>>,
     kademlia_config: Option<KademliaConfig>,
     pseudosettle_event_tx: Option<mpsc::UnboundedSender<PseudosettleEvent>>,
+    #[cfg(feature = "swap")]
+    swap_event_tx: Option<mpsc::UnboundedSender<crate::protocol::SwapEvent>>,
 }
 
 impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
@@ -335,6 +337,8 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
             infra: None,
             kademlia_config: None,
             pseudosettle_event_tx: None,
+            #[cfg(feature = "swap")]
+            swap_event_tx: None,
         }
     }
 
@@ -353,6 +357,20 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
         tx: mpsc::UnboundedSender<PseudosettleEvent>,
     ) -> Self {
         self.pseudosettle_event_tx = Some(tx);
+        self
+    }
+
+    /// Route swap wire events to the SWAP settlement service.
+    ///
+    /// When set, swap cheque events are forwarded to this channel so the
+    /// settlement service can validate and credit received cheques and complete
+    /// outbound settlements.
+    #[cfg(feature = "swap")]
+    pub fn with_swap_events(
+        mut self,
+        tx: mpsc::UnboundedSender<crate::protocol::SwapEvent>,
+    ) -> Self {
+        self.swap_event_tx = Some(tx);
         self
     }
 }
@@ -416,6 +434,11 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
                 .behaviour_mut()
                 .client
                 .set_pseudosettle_events(tx);
+        }
+
+        #[cfg(feature = "swap")]
+        if let Some(tx) = self.swap_event_tx {
+            base.swarm.behaviour_mut().client.route_swap_events(tx);
         }
 
         let executor = TaskExecutor::current();
