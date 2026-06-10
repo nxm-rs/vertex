@@ -26,7 +26,9 @@ use alloy_signer_local::PrivateKeySigner;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use vertex_node_api::InfrastructureContext;
-use vertex_swarm_api::{SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmIdentity, SwarmSpec};
+use vertex_swarm_api::{
+    PeerReporter, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmIdentity, SwarmSpec,
+};
 use vertex_swarm_bandwidth_swap::service::SwapCommand;
 use vertex_swarm_bandwidth_swap::{SwapEvent, SwapHandle, SwapProvider, SwapService};
 use vertex_swarm_identity::Identity;
@@ -135,15 +137,17 @@ impl SwapWiring {
     ///
     /// The service records cheque-driven balance changes against `accounting`
     /// (the same instance the provider settles through), drains the provider's
-    /// command channel, and consumes routed swap wire events. Its `SendCheque`
-    /// commands are forwarded to the node through `client_handle`. With the
-    /// `chain` feature and a connected provider, received cheques are also cashed
-    /// on chain, paying out to our beneficiary.
+    /// command channel, and consumes routed swap wire events. Cheque violations
+    /// are reported through `reporter` so they feed peer scoring. Its
+    /// `SendCheque` commands are forwarded to the node through `client_handle`.
+    /// With the `chain` feature and a connected provider, received cheques are
+    /// also cashed on chain, paying out to our beneficiary.
     pub(crate) fn spawn<A>(
         self,
         ctx: &dyn InfrastructureContext,
         accounting: Arc<A>,
         client_handle: ClientHandle,
+        reporter: Arc<dyn PeerReporter>,
         #[cfg(feature = "chain")] chain_provider: Option<&SharedChainProvider>,
     ) where
         A: SwarmBandwidthAccounting + 'static,
@@ -163,7 +167,8 @@ impl SwapWiring {
             self.chequebook,
             self.beneficiary,
             self.chain,
-        );
+        )
+        .with_reporter(reporter);
 
         #[cfg(feature = "chain")]
         let service = attach_cashout(service, chain_provider, self.beneficiary);

@@ -66,6 +66,7 @@ metrics.workspace = true
 vertex-net-peer-store.workspace = true
 
 ## misc
+auto_impl.workspace = true
 bytes.workspace = true
 eyre.workspace = true
 parking_lot.workspace = true

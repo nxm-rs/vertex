@@ -12,7 +12,7 @@ Root-level rules in `/AGENTS.md` apply here too. The notes below are the area-sp
 - `bandwidth/{core,pricing,pseudosettle,swap,chequebook}`: per-peer balances in Accounting Units (AU) and the settlement providers. `Accounting` implements `PeerAffordability` and the accounting and settlement services take an optional `PeerReporter` (both from `api`) so violations feed peer scoring; the node layer does the wiring.
 - `api`: the trait chain `SwarmPrimitives` to `SwarmNetworkTypes` to `SwarmClientTypes` to `SwarmStorerTypes`. Strictly libp2p-free with the documented `Multiaddr` exception.
 - `builder`: layered builders that produce `BuiltBootnode`, `BuiltClient`, `BuiltStorer`.
-- `node`: composes the libp2p `NetworkBehaviour` and exposes `BootNode`, `ClientNode`, `StorerNode`. This is where libp2p shows up.
+- `node`: composes the libp2p `NetworkBehaviour` and exposes `BootNode`, `ClientNode`, `StorerNode`. This is where libp2p shows up. Also owns `PeerSelector`: retrieval and pushsync candidate selection ordered by peer score and affordability on top of proximity. The builder wires it from the topology handle (scores via the peer manager) and the bandwidth accounting (affordability, per-peer chunk price, best-effort settlement trigger).
 - `topology`: libp2p behaviour for peer discovery, kademlia routing, reachability tracking.
 - `localstore`, `storer`, `redistribution`: storer-side configuration and the chunk-store/reserve implementation.
 - `rpc`: tonic-generated gRPC services and a `GrpcServiceProvider` trait.

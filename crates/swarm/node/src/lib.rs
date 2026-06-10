@@ -17,6 +17,7 @@ mod bootnodes;
 mod client_service;
 mod node;
 mod protocol;
+mod selection;
 mod swarm_client;
 
 pub use node::{
@@ -31,6 +32,7 @@ pub use client_service::{ClientHandle, ClientService, RetrievalError, RetrievalR
 pub use protocol::SwapEvent;
 pub use protocol::{ClientCommand, ClientEvent, PseudosettleEvent};
 
+pub use selection::{AccountingSettlement, PeerScores, PeerSelector, SettlementTrigger};
 pub use swarm_client::{BootnodeClient, Client, FullClient};
 
 pub use bootnodes::BootnodeProvider;

@@ -9,15 +9,16 @@ use tracing::{info, warn};
 use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
-#[cfg(feature = "swap")]
-use vertex_swarm_api::SwarmClientAccounting;
-use vertex_swarm_api::{PeerConfigValues, SwarmLaunchConfig, SwarmNodeType, SwarmPeerConfig};
+use vertex_swarm_api::{
+    PeerConfigValues, PeerReporter, SwarmClientAccounting, SwarmLaunchConfig, SwarmNodeType,
+    SwarmPeerConfig,
+};
 use vertex_swarm_bandwidth::{
     Accounting, AccountingBuilder, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::NetworkConfig;
-use vertex_swarm_node::{BootNode, ClientNode};
+use vertex_swarm_node::{AccountingSettlement, BootNode, ClientNode, PeerSelector};
 use vertex_swarm_peer_manager::{
     DEFAULT_TICK_INTERVAL, DbPeerSnapshotStore, PeerSnapshot, spawn_peer_manager_task,
 };
@@ -60,58 +61,6 @@ where
     match network.peers().store_path() {
         Some(path) => info!(path = %path.display(), "Peers database"),
         None => info!("Peers database: ephemeral"),
-    }
-}
-
-#[cfg(not(feature = "swap"))]
-#[allow(clippy::type_complexity)]
-fn build_accounting<A>(
-    spec: Arc<Spec>,
-    identity: &Arc<Identity>,
-    config: A,
-) -> ClientAccounting<
-    Arc<vertex_swarm_bandwidth::Accounting<A, Arc<Identity>>>,
-    <A::Pricing as vertex_swarm_api::SwarmPricingBuilder<Spec>>::Pricer,
->
-where
-    A: vertex_swarm_api::SwarmAccountingConfig
-        + vertex_swarm_api::SwarmPricingConfig
-        + Clone
-        + 'static,
-    A::Pricing: vertex_swarm_api::SwarmPricingBuilder<Spec>,
-{
-    AccountingBuilder::new(config)
-        .with_pricer_from_config(spec)
-        .build(identity)
-}
-
-/// Build client accounting, embedding the SWAP settlement provider when enabled.
-///
-/// Returns the accounting plus the swap wiring to spawn after the node command
-/// channel exists. When SWAP is not enabled the wiring is `None` and the
-/// accounting is identical to [`build_accounting`].
-#[cfg(feature = "swap")]
-#[allow(clippy::type_complexity)]
-fn build_accounting_with_swap(
-    spec: &Arc<Spec>,
-    identity: &Arc<Identity>,
-    config: &DefaultBandwidthConfig,
-    swap_config: &SwapConfig,
-) -> (
-    ClientAccounting<
-        Arc<vertex_swarm_bandwidth::Accounting<DefaultBandwidthConfig, Arc<Identity>>>,
-        FixedPricer<Spec>,
-    >,
-    Option<crate::swap::SwapWiring>,
-) {
-    let builder = AccountingBuilder::new(config.clone()).with_pricer_from_config(Arc::clone(spec));
-
-    match crate::swap::SwapWiring::prepare(spec, identity, config, swap_config) {
-        Some((provider, wiring)) => (
-            builder.with_settlement(provider).build(identity),
-            Some(wiring),
-        ),
-        None => (builder.build(identity), None),
     }
 }
 
@@ -294,11 +243,13 @@ struct ClientNodeParts {
 /// Shared launch path for the node types backed by a client node (client and
 /// storer).
 ///
-/// Builds the bandwidth accounting (with SWAP settlement embedded when enabled),
-/// constructs the node and the verified chunk provider, spawns the client
-/// service and the SWAP settlement service, connects the chain provider when the
-/// node type requires one, and wraps the node run loop in a task that owns the
-/// accounting and chain handles for the node's lifetime.
+/// Builds the node, then the bandwidth accounting (reporting violations to the
+/// peer manager, with SWAP settlement embedded when enabled) and the verified
+/// chunk provider with score- and affordability-aware candidate selection,
+/// spawns the client service and the SWAP settlement service, connects the
+/// chain provider when the node type requires one, and wraps the node run loop
+/// in a task that owns the accounting and chain handles for the node's
+/// lifetime.
 async fn build_client_backed_node(
     ctx: &dyn InfrastructureContext,
     params: ClientNodeParams<'_>,
@@ -312,14 +263,13 @@ async fn build_client_backed_node(
     // Prepare SWAP settlement first: the provider must be embedded in the
     // accounting, and the swap event sink must be routed at node build time.
     #[cfg(feature = "swap")]
-    let (accounting, swap_wiring) =
-        build_accounting_with_swap(params.spec, params.identity, params.bandwidth, params.swap);
-    #[cfg(not(feature = "swap"))]
-    let accounting = build_accounting(
-        params.spec.clone(),
+    let (swap_provider, swap_wiring) = crate::swap::SwapWiring::prepare(
+        params.spec,
         params.identity,
-        params.bandwidth.clone(),
-    );
+        params.bandwidth,
+        params.swap,
+    )
+    .unzip();
 
     let node_builder = ClientNode::builder(params.identity.clone());
     #[cfg(feature = "swap")]
@@ -338,7 +288,36 @@ async fn build_client_backed_node(
         DEFAULT_TICK_INTERVAL,
         ctx.executor(),
     );
-    let chunk_provider = NetworkChunkProvider::new(client_handle.clone(), topology.clone());
+
+    // The peer manager behind the topology handle is the reporting authority:
+    // accounting and the settlement services report violations through it so
+    // misbehaving peers are scored down.
+    let reporter: Arc<dyn PeerReporter> = topology.peer_manager().clone();
+
+    let accounting_builder = AccountingBuilder::new(params.bandwidth.clone())
+        .with_pricer_from_config(Arc::clone(params.spec))
+        .with_reporter(Arc::clone(&reporter));
+    #[cfg(feature = "swap")]
+    let accounting = match swap_provider {
+        Some(provider) => accounting_builder
+            .with_settlement(provider)
+            .build(params.identity),
+        None => accounting_builder.build(params.identity),
+    };
+    #[cfg(not(feature = "swap"))]
+    let accounting = accounting_builder.build(params.identity);
+
+    // Retrieval and pushsync candidate selection consults peer scores and
+    // affordability on top of proximity order.
+    let selector = Arc::new(PeerSelector::new(
+        Arc::new(topology.clone()),
+        accounting.bandwidth().clone(),
+        Arc::new(accounting.pricing().clone()),
+        Arc::new(AccountingSettlement::new(accounting.bandwidth().clone())),
+    ));
+
+    let chunk_provider =
+        NetworkChunkProvider::new(client_handle.clone(), topology.clone()).with_selector(selector);
     let chunks = VerifyingChunkProvider::new(chunk_provider, params.verify);
 
     // Spawn client service as independent task with graceful shutdown
@@ -369,6 +348,7 @@ async fn build_client_backed_node(
             ctx,
             accounting.bandwidth().clone(),
             client_handle,
+            Arc::clone(&reporter),
             #[cfg(feature = "chain")]
             chain_provider.as_ref(),
         );
@@ -496,5 +476,47 @@ impl SwarmLaunchConfig for StorerConfig {
 
         let providers = StorerRpcProviders::new(parts.topology, parts.chunks);
         Ok((parts.task, providers))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use vertex_swarm_api::{SwarmAccountingConfig, SwarmIdentity};
+    use vertex_swarm_peer_manager::{PeerManager, PeerManagerConfig};
+    use vertex_swarm_test_utils::{test_identity_arc, test_swarm_peer};
+
+    /// The launch path hands the peer manager to the accounting builder as the
+    /// peer reporter. Verify that composition end to end: an accounting
+    /// violation must reach the peer manager and lower the peer's score.
+    #[test]
+    fn accounting_violation_reaches_peer_manager() {
+        let identity = test_identity_arc();
+        let peer_manager = PeerManager::new(&identity, PeerManagerConfig::default());
+        let overlay = peer_manager.store_discovered_peer(test_swarm_peer(0xab));
+        let baseline = peer_manager
+            .get_peer_score(&overlay)
+            .expect("stored peer has a score");
+
+        let reporter: Arc<dyn PeerReporter> = peer_manager.clone();
+        let config = DefaultBandwidthConfig::default();
+        let over_limit = config.disconnect_threshold() + 1;
+        let accounting = AccountingBuilder::new(config)
+            .with_pricer_from_config(identity.spec().clone())
+            .with_reporter(reporter)
+            .build(&identity);
+
+        // A debit projected past the disconnect threshold is the violation the
+        // accounting reports.
+        let result = accounting
+            .bandwidth()
+            .prepare_receive(overlay, over_limit, true);
+        assert!(result.is_err());
+
+        let after = peer_manager
+            .get_peer_score(&overlay)
+            .expect("peer still scored");
+        assert!(after < baseline, "violation must lower the score");
     }
 }
