@@ -66,6 +66,8 @@ The node database is in-memory by default: nothing is written to disk and all da
 
 When both `--db.path` and `--db.persist` are given, the explicit path wins.
 
+What persistence covers: peer snapshots (the identity-only records described in [Peer Management](../networking/peer-management.md)), written periodically and on shutdown so a restarted node warm-starts its peer set. Peer scores, bans, and dial backoff are runtime-only and are never persisted in either mode. If the configured database cannot be opened, the node logs a warning and continues fully in-memory rather than aborting.
+
 ## Bandwidth Modes
 
 | Mode | Description | Use Case |

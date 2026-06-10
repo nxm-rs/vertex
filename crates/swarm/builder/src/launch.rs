@@ -9,10 +9,7 @@ use tracing::{info, warn};
 use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
-use vertex_swarm_api::{
-    PeerConfigValues, PeerReporter, SwarmClientAccounting, SwarmLaunchConfig, SwarmNodeType,
-    SwarmPeerConfig,
-};
+use vertex_swarm_api::{PeerReporter, SwarmClientAccounting, SwarmLaunchConfig, SwarmNodeType};
 use vertex_swarm_bandwidth::{
     Accounting, AccountingBuilder, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
 };
@@ -50,18 +47,9 @@ type PeerStore = Arc<dyn PeerSnapshotStore<PeerSnapshot>>;
 /// Stats collection interval for database metrics.
 const DB_METRICS_INTERVAL: Duration = Duration::from_secs(30);
 
-fn log_build_start<N>(node_type: SwarmNodeType, spec: &Spec, network: &N)
-where
-    N: SwarmPeerConfig,
-    N::Peers: PeerConfigValues,
-{
+fn log_build_start(node_type: SwarmNodeType, spec: &Spec) {
     info!(%node_type, "Building node...");
     spec.log();
-
-    match network.peers().store_path() {
-        Some(path) => info!(path = %path.display(), "Peers database"),
-        None => info!("Peers database: ephemeral"),
-    }
 }
 
 /// Wrap a future factory as a NodeTaskFn with graceful shutdown support.
@@ -73,16 +61,31 @@ where
     Box::new(move |shutdown| Box::pin(f(shutdown)))
 }
 
+/// Open the shared database when persistence is configured.
+///
+/// `ctx.db_path()` is the single source of truth for the storage mode: `None`
+/// means the node runs fully in-memory and no database is opened, `Some(path)`
+/// opens (or creates) the database file there and spawns the periodic metrics
+/// task. An open failure on a configured path degrades to in-memory operation
+/// instead of aborting the node; the warning spells out what is lost.
 fn open_shared_database(ctx: &dyn InfrastructureContext) -> Option<Arc<RedbDatabase>> {
-    let path = ctx.data_dir().join("db").join("vertex.redb");
-    match vertex_storage_redb::open_database(Some(&path), false) {
+    let Some(path) = ctx.db_path() else {
+        info!("Node storage: in-memory (opt into persistence with --db.persist or --db.path)");
+        return None;
+    };
+    match vertex_storage_redb::open_database(Some(path), false) {
         Ok(db) => {
-            info!(path = %path.display(), "Shared database opened");
+            info!(path = %path.display(), "Node storage: persistent");
             spawn_db_metrics_task(ctx, db.clone());
             Some(db)
         }
         Err(e) => {
-            warn!(error = %e, "Failed to open shared database");
+            warn!(
+                error = %e,
+                path = %path.display(),
+                "Failed to open database at configured path; degrading to in-memory storage, \
+                 peer snapshots will not be persisted and known peers are lost on shutdown"
+            );
             None
         }
     }
@@ -255,7 +258,7 @@ async fn build_client_backed_node(
     params: ClientNodeParams<'_>,
 ) -> Result<ClientNodeParts, SwarmNodeError> {
     let node_type = params.node_type;
-    log_build_start(node_type, params.spec, params.network);
+    log_build_start(node_type, params.spec);
 
     let db = open_shared_database(ctx);
     let peer_store = create_peer_store(&db);
@@ -382,7 +385,7 @@ impl SwarmLaunchConfig for BootnodeConfig {
         self,
         ctx: &dyn InfrastructureContext,
     ) -> Result<(NodeTaskFn, Self::Providers), Self::Error> {
-        log_build_start(SwarmNodeType::Bootnode, self.spec(), self.network());
+        log_build_start(SwarmNodeType::Bootnode, self.spec());
 
         let db = open_shared_database(ctx);
         let peer_store = create_peer_store(&db);
@@ -483,9 +486,152 @@ impl SwarmLaunchConfig for StorerConfig {
 mod tests {
     use super::*;
 
+    use std::path::{Path, PathBuf};
+
+    use nectar_primitives::Nonce;
     use vertex_swarm_api::{SwarmAccountingConfig, SwarmIdentity};
+    use vertex_swarm_node::args::NetworkArgs;
     use vertex_swarm_peer_manager::{PeerManager, PeerManagerConfig};
+    use vertex_swarm_spec::init_dev;
     use vertex_swarm_test_utils::{test_identity_arc, test_swarm_peer};
+    use vertex_tasks::{TaskExecutor, TaskManager};
+
+    /// Minimal infrastructure context for exercising the storage-mode flip.
+    struct TestContext {
+        executor: TaskExecutor,
+        data_dir: PathBuf,
+        db_path: Option<PathBuf>,
+    }
+
+    impl InfrastructureContext for TestContext {
+        fn executor(&self) -> &TaskExecutor {
+            &self.executor
+        }
+
+        fn data_dir(&self) -> &Path {
+            &self.data_dir
+        }
+
+        fn db_path(&self) -> Option<&Path> {
+            self.db_path.as_deref()
+        }
+    }
+
+    /// A network config suitable for tests: OS-assigned port, no mDNS, no
+    /// discovery, so nothing leaves the process.
+    fn test_network_config() -> NetworkConfig<KademliaConfig> {
+        let args = NetworkArgs {
+            port: 0,
+            mdns: false,
+            disable_discovery: true,
+            ..Default::default()
+        };
+        NetworkConfig::try_from(&args).expect("test network args are valid")
+    }
+
+    /// Without a configured database path the launch path must not open a
+    /// database, and no consumer may fall back to a hardcoded location.
+    #[tokio::test]
+    async fn no_db_path_means_no_database_and_no_files() {
+        let manager = TaskManager::current();
+        let data_dir = tempfile::tempdir().expect("create tempdir");
+        let ctx = TestContext {
+            executor: manager.executor(),
+            data_dir: data_dir.path().to_path_buf(),
+            db_path: None,
+        };
+
+        let db = open_shared_database(&ctx);
+        assert!(db.is_none(), "no db path must mean no database");
+        assert!(
+            create_peer_store(&db).is_none(),
+            "peer snapshot store must be skipped without a database"
+        );
+        assert!(
+            std::fs::read_dir(data_dir.path())
+                .expect("read data dir")
+                .next()
+                .is_none(),
+            "in-memory mode must not create files under the data dir"
+        );
+    }
+
+    /// A configured database path is honored exactly: parent directories are
+    /// created and the database file appears at the configured location.
+    #[tokio::test]
+    async fn db_path_opens_database_at_configured_location() {
+        let manager = TaskManager::current();
+        let data_dir = tempfile::tempdir().expect("create tempdir");
+        let db_path = data_dir.path().join("custom").join("vertex.redb");
+        let ctx = TestContext {
+            executor: manager.executor(),
+            data_dir: data_dir.path().to_path_buf(),
+            db_path: Some(db_path.clone()),
+        };
+
+        let db = open_shared_database(&ctx);
+        assert!(db.is_some(), "configured path must open a database");
+        assert!(db_path.is_file(), "database file must exist at the path");
+        assert!(
+            create_peer_store(&db).is_some(),
+            "peer snapshot store must back onto the opened database"
+        );
+    }
+
+    /// An open failure on a configured path degrades to in-memory operation
+    /// instead of failing the node build.
+    #[tokio::test]
+    async fn db_open_failure_degrades_to_in_memory() {
+        let manager = TaskManager::current();
+        let data_dir = tempfile::tempdir().expect("create tempdir");
+        // The configured path nests under a regular file, so creating the
+        // parent directory must fail.
+        let blocker = data_dir.path().join("blocker");
+        std::fs::write(&blocker, b"not a directory").expect("write blocker file");
+        let ctx = TestContext {
+            executor: manager.executor(),
+            data_dir: data_dir.path().to_path_buf(),
+            db_path: Some(blocker.join("vertex.redb")),
+        };
+
+        let db = open_shared_database(&ctx);
+        assert!(db.is_none(), "open failure must degrade to in-memory");
+        assert!(create_peer_store(&db).is_none());
+    }
+
+    /// Building a full bootnode with `db_path() == None` leaves the data dir
+    /// untouched: the node is fully in-memory.
+    #[tokio::test]
+    async fn bootnode_build_without_db_path_creates_no_files() {
+        let manager = TaskManager::current();
+        let data_dir = tempfile::tempdir().expect("create tempdir");
+        let ctx = TestContext {
+            executor: manager.executor(),
+            data_dir: data_dir.path().to_path_buf(),
+            db_path: None,
+        };
+
+        let spec = init_dev();
+        // Bootnodes reject ephemeral identities, so build one through the
+        // persistent constructor.
+        let identity = Arc::new(Identity::new(
+            alloy_signer_local::PrivateKeySigner::random(),
+            Nonce::random(),
+            spec.clone(),
+            vertex_swarm_api::SwarmNodeType::Bootnode,
+        ));
+        let config = crate::config::BootnodeConfig::new(spec, identity, test_network_config());
+
+        let (_task, _providers) = config.build(&ctx).await.expect("bootnode build succeeds");
+
+        assert!(
+            std::fs::read_dir(data_dir.path())
+                .expect("read data dir")
+                .next()
+                .is_none(),
+            "in-memory bootnode build must not create files under the data dir"
+        );
+    }
 
     /// The launch path hands the peer manager to the accounting builder as the
     /// peer reporter. Verify that composition end to end: an accounting

@@ -84,11 +84,6 @@ pub trait PeerConfigValues {
     fn max_per_bin(&self) -> usize {
         DEFAULT_PEER_MAX_PER_BIN
     }
-
-    /// Path for peer store persistence. None uses ephemeral in-memory storage.
-    fn store_path(&self) -> Option<std::path::PathBuf> {
-        None
-    }
 }
 
 /// Default peer management configuration.
@@ -100,8 +95,6 @@ pub struct DefaultPeerConfig {
     pub warn_threshold: f64,
     /// Maximum peers per proximity bin.
     pub max_per_bin: usize,
-    /// Path for peer store persistence.
-    pub store_path: Option<std::path::PathBuf>,
 }
 
 impl Default for DefaultPeerConfig {
@@ -110,7 +103,6 @@ impl Default for DefaultPeerConfig {
             ban_threshold: DEFAULT_PEER_BAN_THRESHOLD,
             warn_threshold: DEFAULT_PEER_WARN_THRESHOLD,
             max_per_bin: DEFAULT_PEER_MAX_PER_BIN,
-            store_path: None,
         }
     }
 }
@@ -126,10 +118,6 @@ impl PeerConfigValues for DefaultPeerConfig {
 
     fn max_per_bin(&self) -> usize {
         self.max_per_bin
-    }
-
-    fn store_path(&self) -> Option<std::path::PathBuf> {
-        self.store_path.clone()
     }
 }
 

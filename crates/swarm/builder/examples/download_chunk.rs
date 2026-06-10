@@ -25,8 +25,9 @@ use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
 use vertex_swarm_spec::init_dev;
 use vertex_tasks::TaskExecutor;
 
-/// Minimal [`InfrastructureContext`]: a task executor for the client's services
-/// and a data directory for its database.
+/// Minimal [`InfrastructureContext`]: a task executor for the client's
+/// services and a data directory. No database path is configured, so the
+/// client runs fully in-memory.
 struct ExampleContext {
     executor: TaskExecutor,
     data_dir: PathBuf,

@@ -266,11 +266,6 @@ impl<R> NetworkConfig<R> {
     pub fn override_bootnodes(&mut self, bootnodes: Vec<Multiaddr>) {
         self.bootnodes = bootnodes;
     }
-
-    /// Fill in the default peer store path if none was configured via CLI.
-    pub fn apply_default_peer_store_path(&mut self, path: std::path::PathBuf) {
-        self.peer.apply_default_store_path(path);
-    }
 }
 
 impl Default for NetworkConfig<KademliaConfig> {
@@ -439,7 +434,7 @@ impl<R: Default> SwarmRoutingConfig for NetworkConfig<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vertex_swarm_api::PeerConfigValues;
+    use vertex_swarm_api::{DEFAULT_PEER_MAX_PER_BIN, PeerConfigValues};
 
     #[test]
     fn network_config_from_default_args() {
@@ -665,21 +660,6 @@ mod tests {
         let args = PeerArgs::default();
         let config = PeerConfig::from(&args);
 
-        assert!(config.store_path().is_none());
-    }
-
-    #[test]
-    fn peer_config_with_store_path() {
-        let args = PeerArgs {
-            store_path: Some(std::path::PathBuf::from("/tmp/peers.json")),
-            ..Default::default()
-        };
-
-        let config = PeerConfig::from(&args);
-
-        assert_eq!(
-            config.store_path(),
-            Some(std::path::PathBuf::from("/tmp/peers.json"))
-        );
+        assert_eq!(config.max_per_bin(), DEFAULT_PEER_MAX_PER_BIN);
     }
 }
