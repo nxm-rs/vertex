@@ -13,8 +13,8 @@
 //!
 //! What a spec deliberately excludes is node-level policy: how much storage to allocate,
 //! bandwidth pricing, cache strategies. These vary per operator and belong in node
-//! configuration, not network specification. This separation allows light clients and
-//! full nodes to share the same spec while differing in operational parameters.
+//! configuration, not network specification. This separation allows Clients and
+//! Storers to share the same spec while differing in operational parameters.
 //!
 //! # Core Types
 //!

@@ -34,7 +34,7 @@ There is one chain crate, not two. An earlier split into a wasm-safe trait crate
 | Node type | Chain access |
 |---|---|
 | Bootnode | None. No provider. |
-| Client, light (default) | None. No provider. |
+| Client (default) | None. No provider. |
 | Client, wasm | Optional. Same alloy provider over a wasm-compatible transport when enabled. |
 | Storer | Required. A provider injected by the storer builder. |
 | Client with SWAP | Required. A provider injected for the settlement service. |

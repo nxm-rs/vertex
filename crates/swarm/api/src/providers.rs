@@ -26,7 +26,7 @@ pub trait SwarmChunkProvider: Send + Sync + 'static {
 
     /// Check if a chunk exists locally.
     ///
-    /// Returns false for light nodes that don't have local storage.
+    /// Returns false for Clients, which have no local storage.
     fn has_chunk(&self, address: &ChunkAddress) -> bool;
 }
 

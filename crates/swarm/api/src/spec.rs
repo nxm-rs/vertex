@@ -113,9 +113,9 @@ pub trait SwarmSpec: Send + Sync + 'static {
         Self::ChunkSet::BODY_SIZE
     }
 
-    /// Returns the reserve capacity in number of chunks for full nodes.
+    /// Returns the reserve capacity in number of chunks for Storers.
     ///
-    /// This is the target number of chunks a full storage node should hold.
+    /// This is the target number of chunks a Storer should hold.
     /// Standard networks use 2^22 = 4,194,304 chunks.
     fn reserve_capacity(&self) -> u64;
 

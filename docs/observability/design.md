@@ -95,7 +95,7 @@ Labels add dimensions but must have **bounded cardinality**:
 |-------|----------------|-------------|
 | `direction` | `inbound`, `outbound` | 2 |
 | `outcome` | `success`, `failure` | 2 |
-| `peer_type` | `full`, `light` | 2 |
+| `peer_type` | `storer`, `client` | 2 |
 | `reason` | Error enum variants | ~10-20 |
 | `protocol` | Protocol names | ~10 |
 

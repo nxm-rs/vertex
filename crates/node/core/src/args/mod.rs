@@ -97,7 +97,7 @@ pub struct InfraArgs {
     pub observability: ObservabilityArgs,
 }
 
-/// Full node infrastructure arguments including logging and tracing.
+/// Complete set of node infrastructure arguments including logging and tracing.
 ///
 /// This struct combines all generic infrastructure CLI arguments including
 /// logging and tracing. Use [`InfraArgs`] if logging/tracing are handled

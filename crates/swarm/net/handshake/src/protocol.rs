@@ -100,7 +100,7 @@ fn prepare_local_peer<I: SwarmIdentity>(
     if ephemeral_fallback && identity.is_full_node() {
         warn!(
             observed = %observed_addr,
-            "full node has no reachable address; advertising an ephemeral address that peers \
+            "storer has no reachable address; advertising an ephemeral address that peers \
              cannot dial. Configure --network.nat-addr or enable AutoNAT v2 / UPnP."
         );
     }
@@ -435,7 +435,7 @@ mod tests {
     fn uses_observed_only_as_last_resort() {
         // With nothing real to advertise, the observed address keeps the record
         // non-empty so the handshake completes (a zero-multiaddr record is
-        // rejected). The fallback flag is set so a full node can warn; the entry
+        // rejected). The fallback flag is set so a storer can warn; the entry
         // is transient until AutoNAT v2 / UPnP confirms a real address.
         let observed = addr("/ip4/203.0.113.7/tcp/54321");
         let (out, fallback) = select_local_addrs(&[], &observed);

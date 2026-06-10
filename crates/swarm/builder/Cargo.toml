@@ -16,7 +16,7 @@ default = []
 # Construct a shared Ethereum alloy provider for chain-needing node types
 # (storer, and a client with SWAP enabled). Native-only: pulls the alloy RPC
 # stack (HTTP transport via reqwest) and the on-chain chequebook client. Off by
-# default so the light node and the wasm build stay completely chain-free; the
+# default so the client node and the wasm build stay completely chain-free; the
 # cone guard (`just check-cone`) enforces this.
 chain = [
     "dep:vertex-chain",
@@ -33,7 +33,7 @@ chain = [
 # bandwidth accounting and routes the swap wire events. Chain-free on its own:
 # cheque exchange (sign, send, validate, credit) needs no chain. Combine with
 # `chain` to enable on-chain cashout of received cheques. Off by default so the
-# light, chain-free node stays the default cone.
+# chain-free client node stays the default cone.
 swap = [
     "dep:vertex-swarm-bandwidth-swap",
     "vertex-swarm-node/swap",
@@ -42,8 +42,8 @@ swap = [
     "dep:alloy-signer-local",
 ]
 # Node role: the storer settles bandwidth over SWAP, so it pulls in the chain
-# stack, the on-chain chequebook client, and the swap settlement service. Light
-# clients leave this off.
+# stack, the on-chain chequebook client, and the swap settlement service.
+# Client nodes leave this off.
 storer = ["chain", "swap"]
 
 [dependencies]

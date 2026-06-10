@@ -150,8 +150,9 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
             .clone()
     }
 
-    /// Get or create peer state for a light node.
-    pub fn get_or_create_light_peer(&self, peer: OverlayAddress) -> Arc<PeerState> {
+    /// Get or create peer state for a Client peer, with thresholds scaled
+    /// by the client-only factor.
+    pub fn get_or_create_client_peer(&self, peer: OverlayAddress) -> Arc<PeerState> {
         if let Some(state) = self.peers.read().get(&peer) {
             return Arc::clone(state);
         }

@@ -53,7 +53,7 @@ Extends `SwarmNetworkTypes` with bandwidth accounting for data transfer operatio
 
 ### SwarmStorerTypes
 
-Full storage node capabilities with local chunk persistence.
+Storer capabilities with local chunk persistence.
 
 | Associated Type | Bound | Purpose |
 |----------------|-------|---------|
@@ -119,7 +119,7 @@ Accounting uses overlay addresses (not `PeerId`) because:
 | Payment threshold | 13,500,000 AU |
 | Tolerance | 25% |
 | Early payment | 50% |
-| Light factor | 10 |
+| Client-only factor | 10 |
 
 ## See Also
 

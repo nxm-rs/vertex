@@ -228,7 +228,8 @@ pub enum ClientCommand {
 
     /// Announce our payment threshold to a peer.
     ///
-    /// The threshold value depends on peer type (full vs light) and configuration.
+    /// The threshold value depends on the peer's node type (Storer vs Client)
+    /// and configuration.
     AnnouncePricing {
         /// The peer to announce to.
         peer: OverlayAddress,

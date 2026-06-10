@@ -5,8 +5,8 @@
 //! - [`Cheque`] - An unsigned cheque commitment (EIP-712 typed data)
 //! - [`SignedCheque`] - A signed cheque ready for transmission or cashing
 //!
-//! By default this is a pure, wasm-safe codec with no RPC stack, so light
-//! clients compile without an Ethereum provider. The optional `swap-chequebook`
+//! By default this is a pure, wasm-safe codec with no RPC stack, so client
+//! nodes compile without an Ethereum provider. The optional `swap-chequebook`
 //! feature adds [`chain::ChequebookContract`], the native on-chain client that
 //! deploys, cashes, and reads chequebooks over a shared
 //! `alloy_provider::Provider`. A node role that settles over SWAP (the storer)

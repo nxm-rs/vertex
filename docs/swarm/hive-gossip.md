@@ -25,9 +25,9 @@ Distant peers receive a targeted bootstrap set:
 1. **Close peers**: peers near the recipient's overlay address (help find their neighbourhood)
 2. **Diverse sample**: one peer from each bin for routing diversity
 
-### Light Nodes
+### Clients
 
-Light nodes are invisible to gossip:
+Clients are invisible to gossip:
 - Never gossiped about (they do not store chunks)
 - Receive no peer lists (they connect to storers directly)
 
@@ -35,7 +35,7 @@ Light nodes are invisible to gossip:
 
 | Event | Action |
 |-------|--------|
-| Full node connects | Gossip based on neighbour/distant rules |
+| Storer connects | Gossip based on neighbour/distant rules |
 | Depth decreases | Notify newly-promoted neighbours |
 | Periodic tick | Refresh stale neighbourhood peers |
 

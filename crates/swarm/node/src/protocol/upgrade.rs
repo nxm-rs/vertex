@@ -8,8 +8,8 @@
 //! The client handler needs to accept multiple inbound protocols:
 //! - Pricing: Payment threshold exchange (symmetric - both peers announce)
 //! - Pseudosettle: Bandwidth settlement (symmetric)
-//! - Retrieval: Chunk request/response (full nodes only)
-//! - Pushsync: Chunk push with receipt (full nodes only)
+//! - Retrieval: Chunk request/response (Storers only)
+//! - Pushsync: Chunk push with receipt (Storers only)
 //!
 //! We use a custom `ClientInboundUpgrade` that implements `UpgradeInfo`
 //! with all protocol names and dispatches based on the negotiated protocol.

@@ -317,7 +317,7 @@ pub trait SwarmLaunchConfig: Send + Sync + 'static {
     ) -> Result<(NodeTaskFn, Self::Providers), Self::Error>;
 }
 
-/// Launch config for client (light) nodes.
+/// Launch config for Client nodes.
 ///
 /// Client nodes can retrieve and upload chunks but don't store them locally.
 /// This is the default node type for most users.
