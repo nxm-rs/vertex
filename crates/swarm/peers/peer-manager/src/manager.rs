@@ -524,20 +524,31 @@ impl<I: SwarmIdentity> PeerManager<I> {
                     let existing = self
                         .store
                         .as_ref()
-                        .and_then(|s| s.get(&overlay).ok().flatten())
-                        .map(|r| r.peer.timestamp());
-                    if self.reject_stale_gossip(&overlay, swarm_peer.timestamp(), existing) {
+                        .and_then(|s| s.get(&overlay).ok().flatten());
+                    if self.reject_stale_gossip(
+                        &overlay,
+                        swarm_peer.timestamp(),
+                        existing.as_ref().map(|r| r.peer.timestamp()),
+                    ) {
                         return overlay;
                     }
-                    let record = StoredPeer::new_discovered(swarm_peer);
+                    let mut record = StoredPeer::new_discovered(swarm_peer);
+                    if let Some(existing) = existing {
+                        // Gossip refreshes addresses; it never changes a
+                        // previously stored node type.
+                        record.node_type = existing.node_type;
+                    }
                     if self.write_buffer.push(record) {
                         self.flush_write_buffer();
                     }
                 }
             }
         } else {
-            // No store - insert into DashMap (backward compat)
-            self.insert_peer(overlay, swarm_peer, SwarmNodeType::Client);
+            // No store - insert into DashMap (backward compat). The
+            // provisional refresh is dropped if a concurrent handshake has
+            // already confirmed the node type.
+            let entry = self.insert_peer(overlay, swarm_peer, SwarmNodeType::Client);
+            entry.set_provisional_node_type(SwarmNodeType::Client);
         }
         overlay
     }
@@ -596,16 +607,18 @@ impl<I: SwarmIdentity> PeerManager<I> {
     }
 
     /// Called when a peer completes handshake. Always inserts into hot cache.
+    ///
+    /// Confirms the handshake-asserted node type: from here on gossip cannot
+    /// change it, and only a later handshake may re-confirm a different value.
     pub fn on_peer_ready(&self, swarm_peer: SwarmPeer, node_type: SwarmNodeType) {
         let overlay = OverlayAddress::from(*swarm_peer.overlay());
         debug!(?overlay, ?node_type, "storing peer");
 
-        self.insert_peer(overlay, swarm_peer, node_type);
-        if let Some(entry) = self.peers.get(&overlay) {
-            let old_state = entry.health_state();
-            entry.record_success(Duration::ZERO);
-            on_health_changed(old_state, entry.health_state());
-        }
+        let entry = self.insert_peer(overlay, swarm_peer, node_type);
+        entry.confirm_node_type(node_type);
+        let old_state = entry.health_state();
+        entry.record_success(Duration::ZERO);
+        on_health_changed(old_state, entry.health_state());
     }
 
     /// Total peers persisted in the backing store (or hot cache size if no store).
@@ -671,14 +684,26 @@ impl<I: SwarmIdentity> PeerManager<I> {
         record.is_dialable()
     }
 
-    /// Insert or update a peer in the hot cache.
-    fn insert_peer(&self, overlay: OverlayAddress, peer: SwarmPeer, node_type: SwarmNodeType) {
+    /// Insert or update a peer in the hot cache, returning the entry.
+    ///
+    /// `node_type` only seeds new entries (as a provisional value); existing
+    /// entries get their addresses refreshed and keep their node type.
+    /// Callers apply the source-appropriate node type write on the returned
+    /// entry: `confirm_node_type` for handshakes, `set_provisional_node_type`
+    /// for gossip.
+    fn insert_peer(
+        &self,
+        overlay: OverlayAddress,
+        peer: SwarmPeer,
+        node_type: SwarmNodeType,
+    ) -> Arc<PeerEntry> {
         use dashmap::mapref::entry::Entry;
 
         match self.peers.entry(overlay) {
             Entry::Occupied(e) => {
-                e.get().update_peer(peer, node_type);
+                e.get().update_addresses(peer);
                 self.index.touch(&overlay);
+                Arc::clone(e.get())
             }
             Entry::Vacant(e) => {
                 let entry = Arc::new(PeerEntry::with_config(
@@ -689,6 +714,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
                     Arc::clone(&self.callbacks),
                 ));
                 let initial_score = entry.score();
+                let cloned = Arc::clone(&entry);
                 e.insert(entry);
                 if self.index.add(overlay).is_ok() {
                     gauge!("peer_manager_total_peers").increment(1.0);
@@ -696,6 +722,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
                 gauge!("peer_manager_hot_peers").set(self.peers.len() as f64);
                 self.score_distribution.on_peer_added(initial_score);
                 on_health_added(HealthState::Healthy);
+                cloned
             }
         }
     }
@@ -1102,6 +1129,27 @@ mod tests {
         assert_eq!(pm.node_type(&overlay), Some(SwarmNodeType::Storer));
 
         pm.store_discovered_peer(swarm_peer);
+        assert_eq!(pm.node_type(&overlay), Some(SwarmNodeType::Storer));
+    }
+
+    #[test]
+    fn test_reconnect_handshake_reconfirms_node_type() {
+        let pm = PeerManager::new(&mock_identity(), PeerManagerConfig::default());
+        let overlay = test_overlay(1);
+
+        pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Client);
+        assert_eq!(pm.node_type(&overlay), Some(SwarmNodeType::Client));
+
+        // Gossip cannot change the confirmed type.
+        pm.store_discovered_peer(test_swarm_peer(1));
+        assert_eq!(pm.node_type(&overlay), Some(SwarmNodeType::Client));
+
+        // The node upgraded between sessions; the new handshake re-confirms.
+        pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Storer);
+        assert_eq!(pm.node_type(&overlay), Some(SwarmNodeType::Storer));
+
+        // Gossip still cannot change it afterwards.
+        pm.store_discovered_peer(test_swarm_peer(1));
         assert_eq!(pm.node_type(&overlay), Some(SwarmNodeType::Storer));
     }
 

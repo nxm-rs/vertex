@@ -160,11 +160,13 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 // The old connection was already counted by a prior PeerReady event.
                 // Its registry entry is now overwritten, so handle_connection_closed
                 // will not emit PeerDisconnected -- we must decrement here.
-                // Use connected_node_types (recorded at PeerReady time) for symmetric decrement.
+                // The peer manager holds the authoritative handshake-confirmed
+                // node type; on_peer_ready for the new connection has not run
+                // yet, so this still reads the old connection's value.
                 let old_overlay = old_id.as_ref().unwrap_or(&overlay);
                 let old_node_type = self
-                    .connected_node_types
-                    .remove(old_overlay)
+                    .peer_manager
+                    .node_type(old_overlay)
                     .unwrap_or(SwarmNodeType::Client);
                 self.metrics.decrement_connected(old_node_type);
                 gauge!("peer_registry_active_connections").decrement(1.0);
@@ -247,9 +249,6 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 self.trim_overpopulated_bins();
             }
         }
-
-        // Record node_type for symmetric decrement on disconnect.
-        self.connected_node_types.insert(overlay, node_type);
 
         self.emit_event(TopologyEvent::PeerReady {
             overlay,
