@@ -91,13 +91,13 @@ fn prepare_local_peer<I: SwarmIdentity>(
 ) -> Result<SwarmPeer, HandshakeError> {
     let (addrs, ephemeral_fallback) = select_local_addrs(&[], observed_addr);
 
-    // A full (storer) node's record is gossiped network-wide, so it must carry a
-    // real reachable address. Falling back to the ephemeral observed address
+    // A storer's record is gossiped network-wide, so it must carry a real
+    // reachable address. Falling back to the ephemeral observed address
     // means this storer is unreachable and is about to advertise an address no
-    // peer can dial. A light (client) node is never gossiped, so its fallback is
+    // peer can dial. A client node is never gossiped, so its fallback is
     // harmless and silent. The fallback self-heals once AutoNAT v2 / UPnP / a
     // static NAT address provides a real one.
-    if ephemeral_fallback && identity.is_full_node() {
+    if ephemeral_fallback && identity.is_storer() {
         warn!(
             observed = %observed_addr,
             "storer has no reachable address; advertising an ephemeral address that peers \

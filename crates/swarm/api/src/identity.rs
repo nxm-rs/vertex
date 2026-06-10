@@ -45,9 +45,11 @@ pub trait SwarmIdentity: Send + Sync + 'static {
         self.signer().address()
     }
 
-    /// Whether this node sets the wire-level full node flag in the
-    /// handshake. The flag is set for Storers, which store chunks.
-    fn is_full_node(&self) -> bool {
+    /// Whether this node is a Storer (stores chunks).
+    ///
+    /// Storers announce the storer flag in the handshake and are the only
+    /// node type gossiped network-wide.
+    fn is_storer(&self) -> bool {
         self.node_type().requires_storage()
     }
 
