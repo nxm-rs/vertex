@@ -9,7 +9,7 @@ Peer management is split across four crates:
 | Crate | Responsibility |
 |-------|---------------|
 | `vertex-net-peer-registry` | Bidirectional Id ↔ PeerId mapping, peer registration lifecycle |
-| `vertex-net-peer-store` | Peer persistence (snapshot save/load, memory and file backends) |
+| `vertex-net-peer-store` | Identity-only snapshot persistence (`PeerSnapshotStore`: load once, full-replace store) |
 | `vertex-net-peer-score` | Atomic peer scoring with fixed-point arithmetic |
 | `vertex-net-peer-backoff` | Exponential backoff for failed connections |
 
@@ -100,14 +100,24 @@ Two invariants hold around this stream:
 
 Slow subscribers drop the oldest events independently (no backpressure on other subscribers). Observability subscribers tolerate the gap; topology treats a lagged receiver as a resynchronization point and sweeps connected peers against the banned set, so a dropped `Banned` event can never leave a banned peer connected. A `DisconnectRequested` lost to lag is not replayed; continued misbehaviour escalates to the level-triggered ban threshold, which is reconciled exactly.
 
+## In-memory peer set
+
+The Swarm-layer peer manager (`vertex-swarm-peer-manager`) holds the entire known peer set in memory: one `DashMap` of peer entries, with a `ProximityIndex` as a pure bin-membership index over it. At the default cap of 128 peers per bin this is a few MB of RAM, so there is no hot/cold split and no on-demand loading; every query is served from memory.
+
+The per-bin cap is enforced at admission time. When a bin is full and a new peer is discovered, the manager replaces the worst disconnected record (stale entries first, then lowest score). Connected peers are never evicted by admission; if every slot in the bin is held by a connected peer, the newcomer is rejected.
+
 ## Persistence
 
-The `NetPeerStore` trait provides snapshot-based persistence with `load_all`, `save`, `save_batch`, `remove`, `get`, `count`, `clear`, and `flush` operations. Auto-impl provided for `&T`, `Box<T>`, `Arc<T>`.
+Persistence is an opt-in, identity-only snapshot. The `PeerSnapshotStore` trait (`vertex-net-peer-store`) has exactly two operations: `load` (once, at startup) and `store` (full replace of the persisted set in one transaction). Auto-impl provided for `&T`, `Box<T>`, `Arc<T>`.
 
 | Store | Use Case |
 |-------|----------|
 | `MemoryPeerStore` | Testing, no persistence |
-| `FilePeerStore` | JSON file, atomic writes via temp file + rename |
+| `DbPeerSnapshotStore` | Snapshot table over the shared database (`vertex-swarm-peer-manager`) |
+
+The persisted record (`PeerSnapshot`) carries only the signed peer record, the last known node type, and a last-seen timestamp. Reputation never survives a restart: scores, bans, and dial backoff are runtime-only and the banned set starts empty on every startup. Bans are timed and re-earned within seconds of a misbehaving peer reconnecting, so persisting them buys nothing.
+
+Snapshots are written by `PeerManager::tick`, the single periodic maintenance entry point (snapshot when due, stale-peer purge every tick). The manager owns no timers; a thin driver (`spawn_peer_manager_task`) is spawned from the node launch path, and topology writes a final snapshot on graceful shutdown. Crash-loss story: a crash loses at most one snapshot interval (default 5 minutes) of newly discovered peers, which rediscovery via bootnodes and hive gossip replaces quickly.
 
 ## Scoring
 

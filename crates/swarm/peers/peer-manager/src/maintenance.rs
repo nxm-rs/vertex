@@ -1,15 +1,59 @@
-//! Maintenance and persistence methods for hot/cold peer lifecycle.
+//! Periodic maintenance: stale-peer purging and snapshot persistence.
 
 use metrics::gauge;
-use tracing::{debug, warn};
-use vertex_net_peer_store::NetRecord;
-use vertex_swarm_api::{SwarmIdentity, SwarmScoreStore};
+use std::sync::atomic::Ordering;
+use tracing::{debug, info, warn};
+use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_primitives::OverlayAddress;
 
-use crate::entry::on_health_removed;
+use crate::entry::{PeerEntry, PeerSnapshot, on_health_added};
 use crate::manager::PeerManager;
 
 impl<I: SwarmIdentity> PeerManager<I> {
+    /// Single periodic entry point, driven from outside the crate (see
+    /// [`crate::spawn_peer_manager_task`]).
+    ///
+    /// Purges stale never-connected peers and writes a snapshot when one is
+    /// due ([`PeerManagerConfig::snapshot_interval`](crate::PeerManagerConfig)
+    /// since the last write). `now_unix_secs` is injected so tests can drive
+    /// the schedule without a clock.
+    pub fn tick(&self, now_unix_secs: u64) {
+        self.purge_stale();
+
+        if self.store.is_none() {
+            return;
+        }
+        let last = self.last_snapshot.load(Ordering::Acquire);
+        if now_unix_secs.saturating_sub(last) < self.snapshot_interval.as_secs() {
+            return;
+        }
+        // CAS so concurrent ticks write at most one snapshot per interval.
+        if self
+            .last_snapshot
+            .compare_exchange(last, now_unix_secs, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            self.snapshot();
+        }
+    }
+
+    /// Write the full peer set to the snapshot store (no-op without one).
+    ///
+    /// Called by [`Self::tick`] on schedule and by topology on graceful
+    /// shutdown so the final state is not lost to the snapshot interval.
+    pub fn snapshot(&self) {
+        let Some(ref store) = self.store else { return };
+        let records: Vec<PeerSnapshot> = self
+            .peers
+            .iter()
+            .map(|r| PeerSnapshot::from(r.value().as_ref()))
+            .collect();
+        match store.store(&records) {
+            Ok(()) => debug!(peers = records.len(), "wrote peer snapshot"),
+            Err(e) => warn!(error = %e, "failed to write peer snapshot"),
+        }
+    }
+
     /// Remove stale peers unconditionally.
     pub fn purge_stale(&self) {
         let stale: Vec<OverlayAddress> = self
@@ -34,204 +78,43 @@ impl<I: SwarmIdentity> PeerManager<I> {
         );
     }
 
-    /// Collect dirty hot peers into the write buffer for batched DB flush.
-    pub fn collect_dirty(&self) {
-        if self.store.is_none() {
-            return;
-        }
-        for entry in self.peers.iter() {
-            if entry.value().take_dirty() {
-                self.buffer_entry(*entry.key(), entry.value());
-            }
-        }
-    }
-
-    /// Flush the write buffer to the DB (peer records and scores).
-    pub fn flush_write_buffer(&self) {
-        if let Some(ref store) = self.store
-            && let Err(e) = self.write_buffer.flush(store.as_ref())
-        {
-            warn!(error = %e, "failed to flush write buffer");
-        }
-        if let Some(ref ss) = self.score_store {
-            let scores = self.write_buffer.drain_scores();
-            if !scores.is_empty()
-                && let Err(e) = ss.save_score_batch(&scores)
-            {
-                warn!(error = %e, "failed to flush score buffer");
-            }
-        }
-    }
-
-    /// Evict non-connected peers from the hot cache to keep it bounded.
+    /// Seed the peer set from the snapshot store.
     ///
-    /// Candidates are peers with consecutive failures > 0 and no live
-    /// connection (a score-driven disconnect request applies backoff while
-    /// the peer is still briefly connected, so the failure count alone no
-    /// longer implies disconnected). Their state is saved to DB before
-    /// removal.
-    pub fn evict_cold(&self) {
-        if self.store.is_none() {
-            return;
-        }
-        let current = self.peers.len();
-        if current <= self.max_hot_peers {
-            return;
-        }
-
-        let to_evict = current.saturating_sub(self.max_hot_peers);
-
-        // Collect eviction candidates: failing peers without a connection.
-        let mut candidates: Vec<(OverlayAddress, u64)> = self
-            .peers
-            .iter()
-            .filter(|r| r.value().consecutive_failures() > 0 && !r.value().is_connected())
-            .map(|r| (*r.key(), r.value().last_seen()))
-            .collect();
-
-        // Sort by last_seen ascending (oldest first)
-        candidates.sort_unstable_by_key(|&(_, last_seen)| last_seen);
-
-        let mut evicted = 0;
-        for (overlay, _) in candidates.into_iter().take(to_evict) {
-            // Remove from hot cache and snapshot to DB in one lookup
-            if let Some((_, entry)) = self.peers.remove(&overlay) {
-                self.buffer_entry(overlay, &entry);
-                self.score_distribution.on_peer_removed(entry.score());
-                on_health_removed(entry.health_state());
-            }
-            evicted += 1;
-        }
-
-        if evicted > 0 {
-            self.flush_write_buffer();
-            gauge!("peer_manager_hot_peers").set(self.peers.len() as f64);
-            debug!(
-                evicted,
-                remaining_hot = self.peers.len(),
-                "evicted cold peers from hot cache"
-            );
-        }
-    }
-
-    /// Replenish depleted proximity bins from the database.
-    ///
-    /// Scans bins below half capacity (low-water mark), then streams DB keys
-    /// to fill them. Runs periodically from the persistence task.
-    pub fn replenish_bins(&self) {
+    /// Called once during construction. Entries that would exceed the
+    /// per-bin cap are dropped; rediscovery via gossip refills them if they
+    /// are still alive.
+    pub(crate) fn load_from_store(&self) {
         let Some(ref store) = self.store else { return };
 
-        let max_per_bin = self.index.max_per_bin();
-        if max_per_bin == 0 {
-            return; // Unbounded index, nothing to replenish
-        }
-
-        // Build per-bin remaining capacity array for O(1) lookup.
-        let low_water = max_per_bin / 2;
-        let bin_sizes = self.index.bin_sizes();
-        let max_po = self.index.max_po() as usize;
-        let mut remaining = vec![0usize; max_po + 1];
-        let mut any_depleted = false;
-        for (bin, &size) in bin_sizes.iter().enumerate() {
-            if size < low_water {
-                remaining[bin] = max_per_bin.saturating_sub(size);
-                any_depleted = true;
-            }
-        }
-        if !any_depleted {
-            return;
-        }
-
-        // Key-only scan: loads overlay addresses without deserializing values.
-        let overlays = match store.load_ids() {
-            Ok(ids) => ids,
+        let records = match store.load() {
+            Ok(records) => records,
             Err(e) => {
-                warn!(error = %e, "failed to load peer IDs for bin replenishment");
+                warn!(error = %e, "failed to load peer snapshot");
                 return;
             }
         };
 
-        let mut added = 0usize;
-        for overlay in &overlays {
-            if self.index.exists(overlay) {
+        let total = records.len();
+        let mut loaded = 0usize;
+        for snapshot in records {
+            let overlay = OverlayAddress::from(*snapshot.peer.overlay());
+            if self.index.add(overlay).is_err() {
                 continue;
             }
-            let bin = self.index.bin_for(overlay).as_index();
-            if remaining[bin] > 0 && self.index.add(*overlay).is_ok() {
-                added += 1;
-                remaining[bin] -= 1;
-            }
+            let entry = std::sync::Arc::new(PeerEntry::from_snapshot(
+                snapshot,
+                std::sync::Arc::clone(&self.scoring_config),
+            ));
+            self.score_distribution.on_peer_added(entry.score());
+            on_health_added(entry.health_state());
+            self.peers.insert(overlay, entry);
+            loaded += 1;
         }
 
-        if added > 0 {
-            gauge!("peer_manager_total_peers").set(self.index.len() as f64);
-            debug!(added, "replenished depleted proximity bins from store");
-        }
-    }
+        gauge!("peer_manager_total_peers").set(self.index.len() as f64);
 
-    /// Load the overlay index and banned set from the store.
-    ///
-    /// Uses key-only scan for the overlay index (no value deserialization),
-    /// then loads banned overlays separately.
-    /// Called once during construction. Does NOT populate the DashMap;
-    /// peers are loaded on demand via `get_or_load`.
-    pub(crate) fn load_index_from_store(&self) {
-        let Some(ref store) = self.store else { return };
-
-        // Phase 1: Key-only scan for overlay index (no value deserialization).
-        let overlays = match store.load_ids() {
-            Ok(ids) => ids,
-            Err(e) => {
-                warn!(error = %e, "failed to load peer IDs from store");
-                return;
-            }
-        };
-
-        let total_stored = overlays.len();
-        let mut indexed = 0;
-        for overlay in &overlays {
-            if self.index.add(*overlay).is_ok() {
-                indexed += 1;
-            }
-        }
-
-        // Phase 2: Load banned overlays (needs value deserialization for ban_info).
-        let mut banned = 0;
-        if let Some(ref ss) = self.score_store {
-            match ss.load_banned_overlays() {
-                Ok(banned_overlays) => {
-                    for overlay in &banned_overlays {
-                        self.banned_set.insert(*overlay);
-                    }
-                    banned = banned_overlays.len();
-                }
-                Err(e) => warn!(error = %e, "failed to load banned peers"),
-            }
-        } else {
-            // No score store — fall back to full record scan for ban info.
-            match store.load_all() {
-                Ok(records) => {
-                    for record in &records {
-                        if record.is_banned() {
-                            self.banned_set.insert(*record.id());
-                            banned += 1;
-                        }
-                    }
-                }
-                Err(e) => warn!(error = %e, "failed to load ban info from store"),
-            }
-        }
-
-        gauge!("peer_manager_total_peers").set(indexed as f64);
-        gauge!("peer_manager_banned_peers").set(banned as f64);
-        gauge!("peer_manager_hot_peers").set(0.0f64);
-        gauge!("peer_manager_stored_peers").set(total_stored as f64);
-
-        if total_stored > 0 {
-            debug!(
-                total_stored,
-                indexed, banned, "loaded peer index from store"
-            );
+        if total > 0 {
+            info!(loaded, total, "loaded peer set from snapshot");
         }
     }
 }

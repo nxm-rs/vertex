@@ -11,7 +11,7 @@ pub use self::bandwidth::{
     SwarmClientAccounting, SwarmPeerBandwidth, SwarmPeerState, SwarmSettlementProvider,
 };
 pub use self::localstore::{SwarmLocalStore, SwarmLocalStoreConfig};
-pub use self::peers::{SwarmPeerResolver, SwarmScoreStore};
+pub use self::peers::SwarmPeerResolver;
 pub use self::pricing::{SwarmPricing, SwarmPricingBuilder, SwarmPricingConfig};
 pub use self::topology::{
     SwarmTopology, SwarmTopologyBins, SwarmTopologyCommands, SwarmTopologyPeers,

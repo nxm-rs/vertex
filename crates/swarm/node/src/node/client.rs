@@ -379,19 +379,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
     pub async fn build<C>(
         self,
         network_config: &C,
-        peer_store: Option<
-            std::sync::Arc<
-                dyn vertex_net_peer_store::NetPeerStore<vertex_swarm_peer_manager::StoredPeer>,
-            >,
-        >,
-        score_store: Option<
-            std::sync::Arc<
-                dyn vertex_swarm_api::SwarmScoreStore<
-                        Score = vertex_swarm_peer_score::PeerScore,
-                        Error = vertex_net_peer_store::error::StoreError,
-                    >,
-            >,
-        >,
+        peer_store: Option<super::builder::PeerStore>,
     ) -> Result<(ClientNode<I>, ClientService, ClientHandle)>
     where
         I: vertex_swarm_spec::HasSpec,
@@ -409,7 +397,6 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
                     network_config,
                     topology_config,
                     peer_store,
-                    score_store,
                 )?
             }
         };

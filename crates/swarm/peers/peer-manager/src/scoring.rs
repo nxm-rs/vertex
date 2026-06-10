@@ -16,7 +16,7 @@ use vertex_swarm_api::{
 use vertex_swarm_peer_score::ScoreOutcome;
 use vertex_swarm_primitives::OverlayAddress;
 
-use crate::entry::{on_health_changed, unix_timestamp_secs};
+use crate::entry::on_health_changed;
 use crate::manager::PeerManager;
 
 impl<I: SwarmIdentity> PeerManager<I> {
@@ -32,8 +32,8 @@ impl<I: SwarmIdentity> PeerManager<I> {
     /// - `Ban`: ban the peer ([`Self::ban`]), which emits
     ///   [`PeerLifecycleEvent::Banned`].
     ///
-    /// Reports for peers outside the hot cache are dropped: scoring only
-    /// applies to peers we are interacting with, and those are always hot.
+    /// Reports for unknown peers are dropped: scoring only applies to peers
+    /// the manager tracks.
     pub fn report_peer(
         &self,
         overlay: &OverlayAddress,
@@ -145,15 +145,6 @@ impl<I: SwarmIdentity> PeerManager<I> {
                 backoff_secs = backoff.map(|d| d.as_secs()),
                 "recorded dial failure with backoff"
             );
-        } else if let Some(ref store) = self.store {
-            // Cold peer - load, modify, route through write buffer
-            if let Ok(Some(mut record)) = store.get(overlay) {
-                record.consecutive_failures += 1;
-                record.last_dial_attempt = unix_timestamp_secs();
-                if self.write_buffer.push(record) {
-                    self.flush_write_buffer();
-                }
-            }
         }
     }
 

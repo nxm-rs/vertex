@@ -11,13 +11,11 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::info;
 use vertex_net_dialer::{DialTracker, DialTrackerConfig};
 use vertex_net_local::LocalCapabilities;
-use vertex_net_peer_store::NetPeerStore;
-use vertex_net_peer_store::error::StoreError;
-use vertex_swarm_api::{PeerConfigValues, SwarmBootnodeConfig, SwarmIdentity, SwarmScoreStore};
+use vertex_swarm_api::{PeerConfigValues, SwarmBootnodeConfig, SwarmIdentity};
 use vertex_swarm_net_handshake::HANDSHAKE_TIMEOUT;
 use vertex_swarm_net_identify as identify;
-use vertex_swarm_peer_manager::{PeerManager, PeerManagerConfig, StoredPeer};
-use vertex_swarm_peer_score::{PeerScore, SwarmScoringConfig};
+use vertex_swarm_peer_manager::{PeerManager, PeerManagerConfig};
+use vertex_swarm_peer_score::SwarmScoringConfig;
 use vertex_swarm_spec::{HasSpec, Spec};
 
 use crate::behaviour::{
@@ -33,9 +31,6 @@ use crate::kademlia::{
 };
 use crate::metrics::TopologyMetrics;
 use crate::nat_discovery::LocalAddressManager;
-
-/// Type-erased peer score store.
-type ScoreStore = Arc<dyn SwarmScoreStore<Score = PeerScore, Error = StoreError>>;
 
 /// Inputs the background tasks need, captured at build time so that
 /// [`TopologyBehaviour::spawn_tasks`] can start them later without re-deriving
@@ -69,7 +64,6 @@ pub struct TopologyBehaviourBuilder<I: SwarmIdentity + Clone> {
     scoring_config: SwarmScoringConfig,
     max_per_bin: usize,
     peer_store: Option<PeerStore>,
-    score_store: Option<ScoreStore>,
 }
 
 impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
@@ -92,7 +86,6 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
                 .build(),
             max_per_bin: peer_config.max_per_bin(),
             peer_store: None,
-            score_store: None,
         }
     }
 
@@ -102,24 +95,13 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
         self
     }
 
-    /// Set the persistent peer store.
+    /// Set the peer snapshot store.
     ///
     /// Without one the node runs ephemeral: peers learned in this session are
-    /// lost on shutdown.
-    pub fn with_peer_store(mut self, store: Arc<dyn NetPeerStore<StoredPeer>>) -> Self {
+    /// lost on shutdown. With one, the peer set is loaded at startup and
+    /// snapshotted periodically and on shutdown.
+    pub fn with_peer_store(mut self, store: PeerStore) -> Self {
         self.peer_store = Some(store);
-        self
-    }
-
-    /// Set the persistent score store.
-    ///
-    /// Only consulted when a peer store is also set; scores are loaded lazily
-    /// as peers are promoted into the hot cache.
-    pub fn with_score_store(
-        mut self,
-        store: Arc<dyn SwarmScoreStore<Score = PeerScore, Error = StoreError>>,
-    ) -> Self {
-        self.score_store = Some(store);
         self
     }
 
@@ -141,8 +123,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
             PeerManagerConfig {
                 scoring: self.scoring_config,
                 max_per_bin: self.max_per_bin,
-                store: self.peer_store.clone(),
-                score_store: self.score_store,
+                store: self.peer_store,
                 ..Default::default()
             },
         );
@@ -217,7 +198,6 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
             pending_actions: VecDeque::new(),
             gossip,
             dial_interval: LazyInterval::new(self.config.dial_interval),
-            peer_save_interval: LazyInterval::new(self.config.peer_save_interval),
             pending_bootnode_resolution: None,
             evaluator_handle,
             dial_tracker: DialTracker::new(DialTrackerConfig {
@@ -233,7 +213,6 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
             pending_evictions: HashSet::new(),
             outbound_public_dials: HashSet::new(),
             lifecycle_rx,
-            peer_store: self.peer_store,
             agent_versions,
             trust_local_peers: self.trust_local_peers,
             pending_nat_external_addrs,
