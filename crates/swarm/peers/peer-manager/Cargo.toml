@@ -13,7 +13,7 @@ repository.workspace = true
 vertex-net-local = { workspace = true }
 vertex-net-peer-backoff = { workspace = true }
 vertex-net-peer-registry = { workspace = true }
-vertex-net-peer-store = { workspace = true, features = ["test-utils"] }
+vertex-net-peer-store = { workspace = true }
 
 # Swarm-specific
 vertex-swarm-api = { workspace = true }
@@ -30,10 +30,8 @@ metrics = { workspace = true }
 
 # Storage
 vertex-storage = { workspace = true, features = ["nectar", "alloy"] }
-alloy-primitives = { workspace = true }
 
 # Core
-libp2p = { workspace = true }
 parking_lot = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -43,12 +41,10 @@ thiserror = { workspace = true }
 # Concurrency
 dashmap = { workspace = true }
 hashlink = { workspace = true }
-scopeguard = { workspace = true }
-tokio = { workspace = true, features = ["time", "sync"] }
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "time"] }
-tempfile = "3"
+vertex-net-peer-store = { workspace = true, features = ["test-utils"] }
 postcard = { workspace = true }
 vertex-swarm-peer = { workspace = true, features = ["serde", "test-utils"] }
 vertex-swarm-test-utils = { workspace = true }

@@ -12,17 +12,19 @@ use vertex_swarm_primitives::{Bin, OverlayAddress};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum AddError {
-    /// Peer already exists in the index (LRU position was touched).
+    /// Peer already exists in the index.
     #[error("peer already present in index")]
     AlreadyPresent,
-    /// Bin is at capacity; peer should be saved to DB only.
+    /// Bin is at capacity; the caller decides whether to replace a member.
     #[error("bin at capacity")]
     BinFull,
 }
 
-/// Proximity-ordered storage with per-bin locking and LRU ordering.
+/// Proximity-ordered storage with per-bin locking.
 ///
-/// Stores overlay addresses by proximity order bins for Kademlia-style routing.
+/// Stores overlay addresses by proximity order bins for Kademlia-style
+/// routing. Pure bin-membership index: the peer manager owns the records and
+/// the per-bin admission policy.
 pub struct ProximityIndex {
     local_overlay: OverlayAddress,
     max_po: u8,
@@ -112,7 +114,7 @@ impl ProximityIndex {
     ///
     /// Returns `Ok(())` if newly added. Returns `Err(AlreadyPresent)` if the
     /// address is already in the index. Returns `Err(BinFull)` if the bin is
-    /// at capacity (peer should be saved to DB only).
+    /// at capacity.
     pub fn add(&self, addr: OverlayAddress) -> Result<(), AddError> {
         let bin = self.bin_for(&addr);
         let mut bucket = self.bins[bin.as_index()].write();
@@ -152,15 +154,6 @@ impl ProximityIndex {
         true
     }
 
-    /// Move an address to the back of its bin (most recently used).
-    ///
-    /// Returns true if the address existed and was moved.
-    pub fn touch(&self, addr: &OverlayAddress) -> bool {
-        let bin = self.bin_for(addr);
-        let mut bucket = self.bins[bin.as_index()].write();
-        bucket.to_back(addr)
-    }
-
     /// Check if an address exists.
     #[must_use]
     pub fn exists(&self, addr: &OverlayAddress) -> bool {
@@ -168,14 +161,15 @@ impl ProximityIndex {
         self.bins[bin.as_index()].read().contains(addr)
     }
 
-    /// Get all addresses in a specific bin (LRU to MRU order).
+    /// Get all addresses in a specific bin (insertion order).
     pub fn peers_in_bin(&self, bin: Bin) -> Vec<OverlayAddress> {
         self.bins
             .get(bin.as_index())
             .map_or_else(Vec::new, |bucket| bucket.read().iter().copied().collect())
     }
 
-    /// Get up to `count` addresses from a bin that match `predicate` (LRU first).
+    /// Get up to `count` addresses from a bin that match `predicate`
+    /// (insertion order).
     ///
     /// Iterates under the read lock with early exit once `count` matches are found,
     /// avoiding materializing the entire bin into a Vec.
@@ -199,15 +193,6 @@ impl ProximityIndex {
             }
         }
         result
-    }
-
-    /// Get up to `count` addresses from a bin (LRU first).
-    pub fn take_lru_from_bin(&self, bin: Bin, count: usize) -> Vec<OverlayAddress> {
-        self.bins
-            .get(bin.as_index())
-            .map_or_else(Vec::new, |bucket| {
-                bucket.read().iter().take(count).copied().collect()
-            })
     }
 
     /// Iterate from shallowest to deepest proximity order (ascending PO).
@@ -242,7 +227,7 @@ impl ProximityIndex {
     ///
     /// Items are collected from bins *before* acquiring the cache write lock
     /// to avoid holding the cache lock while reading bins (which would block
-    /// concurrent add/remove/touch operations).
+    /// concurrent add/remove operations).
     fn get_sorted(&self) -> Arc<Vec<(Bin, OverlayAddress)>> {
         let current_gen = self.generation.load(Ordering::Acquire);
 
@@ -255,7 +240,7 @@ impl ProximityIndex {
         }
 
         // Collect items WITHOUT holding the cache lock, so concurrent
-        // add/remove/touch can proceed on bins without blocking.
+        // add/remove can proceed on bins without blocking.
         let mut items = Vec::with_capacity(self.len());
         for (idx, bucket) in self.bins.iter().enumerate() {
             let bin = Bin::new(idx as u8).unwrap_or(Bin::MAX);
@@ -539,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lru_insertion_order() {
+    fn test_insertion_order_preserved() {
         let index = ProximityIndex::new(local_overlay(), 31, 0);
 
         // All in bin 0
@@ -552,66 +537,7 @@ mod tests {
         index.add(addr3).unwrap();
 
         let peers = index.peers_in_bin(b(0));
-        assert_eq!(peers.len(), 3);
-        assert_eq!(peers[0], addr1); // First added = LRU
-        assert_eq!(peers[1], addr2);
-        assert_eq!(peers[2], addr3); // Last added = MRU
-    }
-
-    #[test]
-    fn test_touch_moves_to_back() {
-        let index = ProximityIndex::new(local_overlay(), 31, 0);
-
-        let addr1 = OverlayAddress::from([0x80; 32]);
-        let addr2 = OverlayAddress::from([0xc0; 32]);
-        let addr3 = OverlayAddress::from([0xa0; 32]);
-
-        index.add(addr1).unwrap();
-        index.add(addr2).unwrap();
-        index.add(addr3).unwrap();
-
-        // Touch addr1 (move from front to back)
-        assert!(index.touch(&addr1));
-
-        let peers = index.peers_in_bin(b(0));
-        assert_eq!(peers[0], addr2); // Now LRU
-        assert_eq!(peers[1], addr3);
-        assert_eq!(peers[2], addr1); // Now MRU
-    }
-
-    #[test]
-    fn test_touch_nonexistent_returns_false() {
-        let index = ProximityIndex::new(local_overlay(), 31, 0);
-
-        let addr = OverlayAddress::from([0x80; 32]);
-        assert!(!index.touch(&addr));
-    }
-
-    #[test]
-    fn test_take_lru_from_bin() {
-        let index = ProximityIndex::new(local_overlay(), 31, 0);
-
-        let addr1 = OverlayAddress::from([0x80; 32]);
-        let addr2 = OverlayAddress::from([0xc0; 32]);
-        let addr3 = OverlayAddress::from([0xa0; 32]);
-
-        index.add(addr1).unwrap();
-        index.add(addr2).unwrap();
-        index.add(addr3).unwrap();
-
-        // Take 2 LRU peers
-        let taken = index.take_lru_from_bin(b(0), 2);
-        assert_eq!(taken.len(), 2);
-        assert_eq!(taken[0], addr1);
-        assert_eq!(taken[1], addr2);
-
-        // Take more than available
-        let taken_all = index.take_lru_from_bin(b(0), 10);
-        assert_eq!(taken_all.len(), 3);
-
-        // Take 0
-        let taken_none = index.take_lru_from_bin(b(0), 0);
-        assert!(taken_none.is_empty());
+        assert_eq!(peers, vec![addr1, addr2, addr3]);
     }
 
     #[test]

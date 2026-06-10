@@ -8404,7 +8404,6 @@ version = "0.1.0"
 dependencies = [
  "auto_impl",
  "parking_lot",
- "serde",
  "strum 0.28.0",
  "thiserror 2.0.18",
 ]
@@ -9133,17 +9132,13 @@ dependencies = [
 name = "vertex-swarm-peer-manager"
 version = "0.1.0"
 dependencies = [
- "alloy-primitives",
  "dashmap 6.2.1",
  "hashlink 0.10.0",
- "libp2p",
  "metrics",
  "parking_lot",
  "postcard",
- "scopeguard",
  "serde",
  "strum 0.28.0",
- "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

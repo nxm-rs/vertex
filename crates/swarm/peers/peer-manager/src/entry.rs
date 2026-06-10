@@ -1,7 +1,7 @@
-//! Per-peer state with lock-free scoring and persistence types.
+//! Per-peer state with lock-free scoring and the snapshot record.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use metrics::gauge;
@@ -11,7 +11,6 @@ use tracing::debug;
 use vertex_net_local::IpCapability;
 use vertex_net_peer_backoff::PeerBackoff;
 use vertex_net_peer_registry::ConnectionDirection;
-use vertex_net_peer_store::NetRecord;
 use vertex_swarm_api::SwarmScoringEvent;
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_score::{PeerScore, ScoreChange, SwarmPeerScore, SwarmScoringConfig};
@@ -58,68 +57,22 @@ const STALE_THRESHOLD_SECS: u64 = 24 * 3600;
 /// Stale regardless of last_seen after this many consecutive failures (~48h of persistent failure).
 const STALE_FAILURE_THRESHOLD: u32 = 48;
 
-/// `(banned_at_unix_secs, reason)`.
-pub type BanInfo = (u64, String);
+/// `(banned_at_unix_secs, reason)`. Runtime-only; never persisted.
+pub(crate) type BanInfo = (u64, String);
 
-/// Persistence record for a Swarm peer.
+/// Identity-only persistence record for a Swarm peer.
 ///
-/// Score data is stored separately in `ScoreTable` to allow lazy loading.
+/// Deliberately slim: bans, dial backoff, and scores are runtime state that
+/// is re-earned within seconds of reconnecting, so none of it is persisted.
+/// A snapshot carries just enough to redial the peer after a restart.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredPeer {
+pub struct PeerSnapshot {
+    /// The signed peer record (overlay, multiaddrs, handshake signature).
     pub peer: SwarmPeer,
+    /// Last known node type; provisional until the next handshake confirms it.
     pub node_type: SwarmNodeType,
-    pub ban_info: Option<BanInfo>,
-    pub first_seen: u64,
+    /// Unix seconds the peer was last seen healthy.
     pub last_seen: u64,
-    pub last_dial_attempt: u64,
-    pub consecutive_failures: u32,
-}
-
-impl StoredPeer {
-    /// Create a default record for a newly discovered peer (via gossip).
-    pub fn new_discovered(peer: SwarmPeer) -> Self {
-        let now = unix_timestamp_secs();
-        Self {
-            peer,
-            node_type: SwarmNodeType::Client,
-            ban_info: None,
-            first_seen: now,
-            last_seen: now,
-            last_dial_attempt: 0,
-            consecutive_failures: 0,
-        }
-    }
-
-    pub fn is_banned(&self) -> bool {
-        self.ban_info.is_some()
-    }
-
-    /// Check if the stored peer is dialable (not banned and not in backoff).
-    pub fn is_dialable(&self) -> bool {
-        if self.ban_info.is_some() {
-            return false;
-        }
-        if self.consecutive_failures == 0 {
-            return true;
-        }
-        if self.last_dial_attempt == 0 {
-            return true;
-        }
-        let backoff =
-            PeerBackoff::from_persisted(self.last_dial_attempt, self.consecutive_failures);
-        let overlay = OverlayAddress::from(*self.peer.overlay());
-        let jitter_seed = jitter_seed_from_overlay(&overlay);
-        backoff
-            .remaining_jittered(unix_timestamp_secs(), jitter_seed)
-            .is_none()
-    }
-}
-
-impl NetRecord for StoredPeer {
-    type Id = OverlayAddress;
-    fn id(&self) -> &OverlayAddress {
-        self.peer.overlay()
-    }
 }
 
 pub(crate) fn unix_timestamp_secs() -> u64 {
@@ -181,7 +134,7 @@ pub enum TrustLevel {
 /// a different value, since a node can legitimately change its type between
 /// sessions (for example upgrading from client to storer).
 ///
-/// The confirmed bit is process-local: records restored from the peer store
+/// The confirmed bit is process-local: records restored from a snapshot
 /// start unconfirmed until the next handshake.
 #[derive(Debug)]
 pub(crate) struct NodeTypeCell(AtomicU8);
@@ -248,12 +201,10 @@ pub(crate) struct PeerEntry {
     peer: RwLock<SwarmPeer>,
     node_type: NodeTypeCell,
     scoring: SwarmPeerScore,
-    first_seen: AtomicU64,
     last_seen: AtomicU64,
     backoff: PeerBackoff,
     ban_info: RwLock<Option<BanInfo>>,
     jitter_seed: u64,
-    dirty: AtomicBool,
     /// Unix seconds since the current connection completed its handshake;
     /// 0 while disconnected. Process-local, never persisted.
     connected_since: AtomicU64,
@@ -276,50 +227,35 @@ impl PeerEntry {
             peer: RwLock::new(peer),
             node_type: NodeTypeCell::provisional(node_type),
             scoring: SwarmPeerScore::new(PeerScore::new(), config),
-            first_seen: AtomicU64::new(now),
             last_seen: AtomicU64::new(now),
             backoff: PeerBackoff::new(),
             ban_info: RwLock::new(None),
             jitter_seed: jitter_seed_from_overlay(&overlay),
-            dirty: AtomicBool::new(true),
             connected_since: AtomicU64::new(0),
             direction: AtomicU8::new(DIRECTION_NONE),
             trust: AtomicU8::new(TrustLevel::Normal as u8),
         }
     }
 
-    pub(crate) fn from_record(
-        record: StoredPeer,
-        scoring: Option<PeerScore>,
-        config: Arc<SwarmScoringConfig>,
-    ) -> Self {
-        let overlay = OverlayAddress::from(*record.peer.overlay());
+    /// Rebuild an entry from a persisted snapshot.
+    ///
+    /// Only identity survives a restart: the score starts at zero, the
+    /// backoff is clear, and the node type is provisional until the next
+    /// handshake confirms it.
+    pub(crate) fn from_snapshot(snapshot: PeerSnapshot, config: Arc<SwarmScoringConfig>) -> Self {
+        let overlay = OverlayAddress::from(*snapshot.peer.overlay());
         Self {
-            node_type: NodeTypeCell::provisional(record.node_type),
-            peer: RwLock::new(record.peer),
-            scoring: SwarmPeerScore::new(scoring.unwrap_or_default(), config),
-            first_seen: AtomicU64::new(record.first_seen),
-            last_seen: AtomicU64::new(record.last_seen),
-            backoff: PeerBackoff::from_persisted(
-                record.last_dial_attempt,
-                record.consecutive_failures,
-            ),
-            ban_info: RwLock::new(record.ban_info),
+            node_type: NodeTypeCell::provisional(snapshot.node_type),
+            peer: RwLock::new(snapshot.peer),
+            scoring: SwarmPeerScore::new(PeerScore::new(), config),
+            last_seen: AtomicU64::new(snapshot.last_seen),
+            backoff: PeerBackoff::new(),
+            ban_info: RwLock::new(None),
             jitter_seed: jitter_seed_from_overlay(&overlay),
-            dirty: AtomicBool::new(false),
             connected_since: AtomicU64::new(0),
             direction: AtomicU8::new(DIRECTION_NONE),
             trust: AtomicU8::new(TrustLevel::Normal as u8),
         }
-    }
-
-    pub(crate) fn mark_dirty(&self) {
-        self.dirty.store(true, Ordering::Release);
-    }
-
-    /// Atomically clears the dirty flag and returns its previous value.
-    pub(crate) fn take_dirty(&self) -> bool {
-        self.dirty.swap(false, Ordering::AcqRel)
     }
 
     pub(crate) fn swarm_peer(&self) -> SwarmPeer {
@@ -343,10 +279,6 @@ impl PeerEntry {
         self.scoring.score()
     }
 
-    pub(crate) fn first_seen(&self) -> u64 {
-        self.first_seen.load(Ordering::Relaxed)
-    }
-
     pub(crate) fn last_seen(&self) -> u64 {
         self.last_seen.load(Ordering::Relaxed)
     }
@@ -363,13 +295,12 @@ impl PeerEntry {
     /// Only refreshes `last_seen` if the peer has no active failures.
     /// This prevents gossip re-verification from keeping permanently
     /// unreachable peers alive; only successful connections
-    /// (`record_success`) should reset the staleness clock for failed peers.
+    /// (via `set_connected`) should reset the staleness clock for failed peers.
     pub(crate) fn update_addresses(&self, peer: SwarmPeer) {
         *self.peer.write() = peer;
         if self.consecutive_failures() == 0 {
             self.touch();
         }
-        self.mark_dirty();
     }
 
     /// Refresh the provisional node type (gossip path).
@@ -377,9 +308,7 @@ impl PeerEntry {
     /// Ignored once a handshake has confirmed the node type; a differing
     /// proposal is debug-logged and dropped.
     pub(crate) fn set_provisional_node_type(&self, node_type: SwarmNodeType) {
-        if self.node_type.set_provisional(node_type) {
-            self.mark_dirty();
-        } else if self.node_type.get() != node_type {
+        if !self.node_type.set_provisional(node_type) && self.node_type.get() != node_type {
             debug!(
                 proposed = %node_type,
                 confirmed = %self.node_type.get(),
@@ -394,7 +323,6 @@ impl PeerEntry {
     /// type between sessions. Gossip can never change a confirmed value.
     pub(crate) fn confirm_node_type(&self, node_type: SwarmNodeType) {
         self.node_type.confirm(node_type);
-        self.mark_dirty();
     }
 
     /// Apply a scoring event, returning the outcome and score transition.
@@ -402,9 +330,7 @@ impl PeerEntry {
     /// Score changes flow exclusively through the peer manager's report
     /// path; this is the only entry-level scoring write.
     pub(crate) fn record_event(&self, event: SwarmScoringEvent) -> ScoreChange {
-        let change = self.scoring.record_event_change(event);
-        self.mark_dirty();
-        change
+        self.scoring.record_event_change(event)
     }
 
     /// Record connection state at handshake completion.
@@ -421,7 +347,6 @@ impl PeerEntry {
         self.trust.store(trust as u8, Ordering::Release);
         self.reset_failures();
         self.touch();
-        self.mark_dirty();
     }
 
     /// Clear connection state when the last connection to the peer closes.
@@ -456,17 +381,14 @@ impl PeerEntry {
 
     pub(crate) fn record_latency(&self, rtt: Duration) {
         self.scoring.record_latency(rtt);
-        self.mark_dirty();
     }
 
     pub(crate) fn ban(&self, reason: Option<String>) {
         *self.ban_info.write() = Some((unix_timestamp_secs(), reason.unwrap_or_default()));
-        self.mark_dirty();
     }
 
     pub(crate) fn record_dial_failure(&self) {
         self.backoff.record_failure(unix_timestamp_secs());
-        self.mark_dirty();
     }
 
     pub(crate) fn is_banned(&self) -> bool {
@@ -521,23 +443,13 @@ impl PeerEntry {
     }
 }
 
-impl From<&PeerEntry> for StoredPeer {
+impl From<&PeerEntry> for PeerSnapshot {
     fn from(entry: &PeerEntry) -> Self {
         Self {
             peer: entry.peer.read().clone(),
             node_type: entry.node_type.get(),
-            ban_info: entry.ban_info.read().clone(),
-            first_seen: entry.first_seen(),
             last_seen: entry.last_seen(),
-            last_dial_attempt: entry.backoff.last_attempt(),
-            consecutive_failures: entry.consecutive_failures(),
         }
-    }
-}
-
-impl PeerEntry {
-    pub(crate) fn score_snapshot(&self) -> PeerScore {
-        self.scoring.snapshot()
     }
 }
 
@@ -573,7 +485,7 @@ mod tests {
         assert!(!entry.is_banned());
         assert!(entry.is_dialable());
         assert_eq!(entry.node_type(), SwarmNodeType::Storer);
-        assert!(entry.first_seen() > 0);
+        assert!(entry.last_seen() > 0);
     }
 
     #[test]
@@ -594,31 +506,22 @@ mod tests {
     }
 
     #[test]
-    fn test_record_roundtrip() {
+    fn test_snapshot_roundtrip_resets_runtime_state() {
         let entry = test_entry(1, SwarmNodeType::Storer);
         record_success(&entry, Duration::from_millis(100));
-
-        let record = StoredPeer::from(&entry);
-        let score = entry.score_snapshot();
-        let restored =
-            PeerEntry::from_record(record, Some(score), Arc::new(SwarmScoringConfig::default()));
-
-        assert!((restored.score() - entry.score()).abs() < 0.01);
-        assert_eq!(restored.node_type(), entry.node_type());
-    }
-
-    #[test]
-    fn test_ban_record_roundtrip() {
-        let entry = test_entry(1, SwarmNodeType::Client);
         entry.ban(Some("test reason".to_string()));
+        entry.record_dial_failure();
 
-        let record = StoredPeer::from(&entry);
-        assert!(record.is_banned());
+        let snapshot = PeerSnapshot::from(&entry);
+        assert_eq!(snapshot.node_type, SwarmNodeType::Storer);
 
-        let restored =
-            PeerEntry::from_record(record, None, Arc::new(SwarmScoringConfig::default()));
-        assert!(restored.is_banned());
-        assert!(!restored.is_dialable());
+        let restored = PeerEntry::from_snapshot(snapshot, Arc::new(SwarmScoringConfig::default()));
+        assert_eq!(restored.node_type(), SwarmNodeType::Storer);
+        // Reputation, bans, and backoff never survive a restart.
+        assert_eq!(restored.score(), 0.0);
+        assert!(!restored.is_banned());
+        assert_eq!(restored.consecutive_failures(), 0);
+        assert!(restored.is_dialable());
     }
 
     #[test]
@@ -648,21 +551,6 @@ mod tests {
         record_success(&entry, Duration::from_millis(50));
         assert_eq!(entry.consecutive_failures(), 0);
         assert!(entry.is_dialable());
-    }
-
-    #[test]
-    fn test_backoff_record_roundtrip() {
-        let entry = test_entry(1, SwarmNodeType::Client);
-        entry.record_dial_failure();
-        entry.record_dial_failure();
-
-        let record = StoredPeer::from(&entry);
-        assert_eq!(record.consecutive_failures, 2);
-        assert!(record.last_dial_attempt > 0);
-
-        let restored =
-            PeerEntry::from_record(record, None, Arc::new(SwarmScoringConfig::default()));
-        assert_eq!(restored.consecutive_failures(), 2);
     }
 
     #[test]
@@ -753,19 +641,14 @@ mod tests {
     #[test]
     fn test_serialization_roundtrip() {
         let peer = test_swarm_peer(1);
-        let record = StoredPeer {
+        let record = PeerSnapshot {
             peer,
             node_type: SwarmNodeType::Storer,
-            ban_info: Some((100, "test".into())),
-            first_seen: 100,
             last_seen: 200,
-            last_dial_attempt: 150,
-            consecutive_failures: 3,
         };
         let bytes = postcard::to_allocvec(&record).unwrap();
-        let restored: StoredPeer = postcard::from_bytes(&bytes).unwrap();
+        let restored: PeerSnapshot = postcard::from_bytes(&bytes).unwrap();
         assert_eq!(restored.node_type, SwarmNodeType::Storer);
-        assert_eq!(restored.first_seen, 100);
-        assert!(restored.ban_info.is_some());
+        assert_eq!(restored.last_seen, 200);
     }
 }
