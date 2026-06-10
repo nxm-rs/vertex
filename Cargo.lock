@@ -8757,6 +8757,7 @@ dependencies = [
  "vertex-swarm-redistribution",
  "vertex-swarm-rpc",
  "vertex-swarm-spec",
+ "vertex-swarm-test-utils",
  "vertex-swarm-topology",
  "vertex-tasks",
 ]
@@ -9057,6 +9058,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "async-trait",
+ "auto_impl",
  "bytes",
  "clap 4.6.1",
  "eyre",

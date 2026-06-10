@@ -1,13 +1,16 @@
 //! Unified client for Swarm nodes.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use nectar_primitives::{AnyChunk, ChunkAddress};
 use vertex_swarm_api::{
     BootnodeComponents, ClientComponents, HasAccounting, HasTopology, StampedChunk, SwarmClient,
     SwarmClientAccounting, SwarmError, SwarmResult, SwarmTopologyRouting,
 };
+use vertex_swarm_primitives::OverlayAddress;
 
-use crate::ClientHandle;
+use crate::{ClientHandle, PeerSelector};
 
 /// Number of closest peers to try, in order, for a retrieval.
 const CLOSEST_PEER_COUNT: usize = 3;
@@ -20,6 +23,7 @@ const CLOSEST_PEER_COUNT: usize = 3;
 pub struct Client<C, S = ()> {
     components: C,
     client_handle: ClientHandle,
+    selector: Option<Arc<PeerSelector>>,
     _storage: std::marker::PhantomData<S>,
 }
 
@@ -29,7 +33,23 @@ impl<C, S> Client<C, S> {
         Self {
             components,
             client_handle,
+            selector: None,
             _storage: std::marker::PhantomData,
+        }
+    }
+
+    /// Order retrieval and pushsync candidates with `selector` (score- and
+    /// affordability-aware) instead of plain proximity order.
+    pub fn with_selector(mut self, selector: Arc<PeerSelector>) -> Self {
+        self.selector = Some(selector);
+        self
+    }
+
+    /// Order proximity-sorted `candidates` for a request on `chunk`.
+    fn select(&self, candidates: Vec<OverlayAddress>, chunk: &ChunkAddress) -> Vec<OverlayAddress> {
+        match &self.selector {
+            Some(selector) => selector.order(candidates, chunk),
+            None => candidates,
         }
     }
 
@@ -87,6 +107,7 @@ where
             .components
             .topology()
             .closest_to(address, CLOSEST_PEER_COUNT);
+        let closest = self.select(closest, address);
         let attempts = closest.len();
 
         // Walk the closest peers in order and return the first response. The
@@ -125,6 +146,7 @@ where
             .components
             .topology()
             .closest_to(&address, CLOSEST_PEER_COUNT);
+        let closest = self.select(closest, &address);
 
         let peer = closest.into_iter().next().ok_or(SwarmError::NoStorer {
             chunk_address: address,
@@ -299,6 +321,90 @@ mod tests {
         assert_eq!(receipt.signature, test_signature());
         assert_eq!(receipt.nonce, Nonce::from([9u8; 32]));
         assert_eq!(receipt.storage_radius.get(), 5);
+    }
+
+    #[tokio::test]
+    async fn put_prefers_affordable_candidate_over_closer_unaffordable_one() {
+        use crate::{PeerScores, PeerSelector, SettlementTrigger};
+        use vertex_swarm_api::{PeerAffordability, SwarmPricing};
+
+        struct NoScores;
+        impl PeerScores for NoScores {
+            fn peer_score(&self, _overlay: &OverlayAddress) -> Option<f64> {
+                None
+            }
+        }
+
+        struct AllUnaffordableExcept(OverlayAddress);
+        impl PeerAffordability for AllUnaffordableExcept {
+            fn can_afford(&self, overlay: &OverlayAddress, _price: u64) -> bool {
+                *overlay == self.0
+            }
+
+            fn allowance_remaining(&self, _overlay: &OverlayAddress) -> u64 {
+                0
+            }
+        }
+
+        struct UnitPricer;
+        impl SwarmPricing for UnitPricer {
+            fn price(&self, _chunk: &ChunkAddress) -> u64 {
+                1
+            }
+
+            fn peer_price(&self, _peer: &OverlayAddress, _chunk: &ChunkAddress) -> u64 {
+                1
+            }
+        }
+
+        struct NoSettlement;
+        impl SettlementTrigger for NoSettlement {
+            fn trigger_settlement(&self, _peer: OverlayAddress) {}
+        }
+
+        let closer = OverlayAddress::from([1u8; 32]);
+        let affordable = OverlayAddress::from([2u8; 32]);
+        let selector = Arc::new(PeerSelector::new(
+            Arc::new(NoScores),
+            Arc::new(AllUnaffordableExcept(affordable)),
+            Arc::new(UnitPricer),
+            Arc::new(NoSettlement),
+        ));
+
+        let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
+        let handle = ClientHandle::new(tx);
+        let topology = MockTopology::default().with_closest(vec![closer, affordable]);
+        let bandwidth = Arc::new(Accounting::new(
+            DefaultBandwidthConfig::default(),
+            test_identity(),
+        ));
+        let pricer = FixedPricer::new(10_000, vertex_swarm_spec::init_mainnet());
+        let accounting = ClientAccounting::new(bandwidth, pricer);
+        let client = Client::client(topology, accounting, handle.clone()).with_selector(selector);
+
+        let stamped = test_stamped_chunk();
+        let put = tokio::spawn(async move { client.put(stamped).await });
+
+        // The push must target the affordable candidate even though another
+        // candidate is closer in proximity order.
+        let cmd = rx.recv().await.expect("command emitted");
+        match cmd {
+            ClientCommand::PushChunk { peer, address, .. } => {
+                assert_eq!(peer, affordable);
+                handle.complete_push(
+                    address,
+                    PushReceipt {
+                        storer: affordable,
+                        signature: test_signature(),
+                        nonce: Nonce::from([9u8; 32]),
+                        storage_radius: StorageRadius::new(Bin::new(5).unwrap()),
+                    },
+                );
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        put.await.unwrap().expect("push resolves");
     }
 
     #[tokio::test]

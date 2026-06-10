@@ -1,12 +1,14 @@
 //! RPC provider implementations for Swarm nodes.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use nectar_primitives::SwarmAddress;
 use vertex_swarm_api::{
     ChunkAddress, ChunkRetrievalResult, PushReceipt, StampedChunk, SwarmChunkProvider,
     SwarmChunkSender, SwarmError, SwarmIdentity, SwarmResult, SwarmTopologyRouting,
 };
-use vertex_swarm_node::ClientHandle;
+use vertex_swarm_node::{ClientHandle, PeerSelector};
 use vertex_swarm_topology::TopologyHandle;
 
 /// Number of closest peers to try when pushing a chunk before giving up.
@@ -20,6 +22,7 @@ const RETRIEVE_CANDIDATE_COUNT: usize = 3;
 pub struct NetworkChunkProvider<I: SwarmIdentity> {
     client_handle: ClientHandle,
     topology: TopologyHandle<I>,
+    selector: Option<Arc<PeerSelector>>,
 }
 
 impl<I: SwarmIdentity> NetworkChunkProvider<I> {
@@ -27,6 +30,22 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
         Self {
             client_handle,
             topology,
+            selector: None,
+        }
+    }
+
+    /// Order retrieval and pushsync candidates with `selector` (score- and
+    /// affordability-aware) instead of plain proximity order.
+    pub fn with_selector(mut self, selector: Arc<PeerSelector>) -> Self {
+        self.selector = Some(selector);
+        self
+    }
+
+    /// Order proximity-sorted `candidates` for a request on `chunk`.
+    fn select(&self, candidates: Vec<SwarmAddress>, chunk: &ChunkAddress) -> Vec<SwarmAddress> {
+        match &self.selector {
+            Some(selector) => selector.order(candidates, chunk),
+            None => candidates,
         }
     }
 }
@@ -38,6 +57,7 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
         let closest_peers = self
             .topology
             .closest_to(&chunk_address, RETRIEVE_CANDIDATE_COUNT);
+        let closest_peers = self.select(closest_peers, &chunk_address);
         let attempts = closest_peers.len();
 
         // Try each closest peer in order and return the first success. The
@@ -88,6 +108,7 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
     async fn push_to_closest(&self, chunk: StampedChunk) -> SwarmResult<PushReceipt> {
         let address = *chunk.address();
         let closest = self.topology.closest_to(&address, PUSH_CANDIDATE_COUNT);
+        let closest = self.select(closest, &address);
         let attempts = closest.len();
 
         // Try each closest peer in order and return the first receipt. The
