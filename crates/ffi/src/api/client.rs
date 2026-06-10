@@ -181,9 +181,9 @@ impl Drop for VertexClient {
 /// Minimal infrastructure context for building the client outside the CLI.
 ///
 /// The launch path needs an executor and a data directory. The FFI client runs
-/// without persistent on-disk state, so the data directory is a temporary path
-/// derived from the system temp dir; the peer store falls back to ephemeral when
-/// the database cannot be opened there.
+/// fully in-memory: `db_path()` stays `None`, so no database is opened and no
+/// peer snapshots are persisted. The data directory is a temporary path derived
+/// from the system temp dir and is never written to by the launch path.
 struct LaunchContext {
     executor: TaskExecutor,
     data_dir: std::path::PathBuf,

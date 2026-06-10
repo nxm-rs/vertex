@@ -108,7 +108,7 @@ The per-bin cap is enforced at admission time. When a bin is full and a new peer
 
 ## Persistence
 
-Persistence is an opt-in, identity-only snapshot. The `PeerSnapshotStore` trait (`vertex-net-peer-store`) has exactly two operations: `load` (once, at startup) and `store` (full replace of the persisted set in one transaction). Auto-impl provided for `&T`, `Box<T>`, `Arc<T>`.
+Persistence is an opt-in, identity-only snapshot over the shared node database, which is in-memory by default: without `--db.persist` or `--db.path` no snapshot store exists and the peer set lives purely in memory. The `PeerSnapshotStore` trait (`vertex-net-peer-store`) has exactly two operations: `load` (once, at startup) and `store` (full replace of the persisted set in one transaction). Auto-impl provided for `&T`, `Box<T>`, `Arc<T>`.
 
 | Store | Use Case |
 |-------|----------|
