@@ -1,79 +1,28 @@
-//! Peer persistence with generic record storage.
+//! Identity-only peer snapshot persistence.
+//!
+//! The peer set lives entirely in memory; persistence is a periodic
+//! whole-set snapshot plus a single load at startup. There is no
+//! random-access record store: a crash loses at most one snapshot
+//! interval of newly discovered peers, which rediscovery via bootnodes
+//! and gossip replaces in seconds.
 
 pub mod error;
 
-use std::fmt::Debug;
-use std::hash::Hash;
-
 use auto_impl::auto_impl;
 use error::StoreError;
-use serde::{Deserialize, Serialize};
 
-/// Peer identifier type.
-pub trait NetPeerId:
-    Clone + Eq + Hash + Send + Sync + Debug + Serialize + for<'de> Deserialize<'de> + 'static
-{
-}
-
-impl<T> NetPeerId for T where
-    T: Clone + Eq + Hash + Send + Sync + Debug + Serialize + for<'de> Deserialize<'de> + 'static
-{
-}
-
-/// Serializable peer record with an associated ID.
-pub trait NetRecord:
-    Clone + Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static
-{
-    type Id: NetPeerId;
-    fn id(&self) -> &Self::Id;
-}
-
-/// Peer persistence trait with auto-impl for &, Box, Arc.
+/// Whole-set snapshot persistence for peer records.
+///
+/// `load` runs once at startup to seed the in-memory peer set; `store`
+/// replaces the persisted set wholesale (clear plus put, one transaction).
+/// Implementations decide the backing medium (database table, memory).
 #[auto_impl(&, Box, Arc)]
-pub trait NetPeerStore<R: NetRecord>: Send + Sync {
-    /// Load all peer records.
-    fn load_all(&self) -> Result<Vec<R>, StoreError>;
+pub trait PeerSnapshotStore<R>: Send + Sync {
+    /// Load the persisted snapshot. Called once, at startup.
+    fn load(&self) -> Result<Vec<R>, StoreError>;
 
-    /// Load only the IDs of all stored records (no value deserialization).
-    fn load_ids(&self) -> Result<Vec<R::Id>, StoreError> {
-        Ok(self
-            .load_all()?
-            .into_iter()
-            .map(|r| r.id().clone())
-            .collect())
-    }
-
-    /// Save a peer record (insert or update).
-    fn save(&self, record: &R) -> Result<(), StoreError>;
-
-    /// Save multiple peer records.
-    fn save_batch(&self, records: &[R]) -> Result<(), StoreError> {
-        for record in records {
-            self.save(record)?;
-        }
-        Ok(())
-    }
-
-    /// Remove a peer by ID. Returns true if a record was removed.
-    fn remove(&self, id: &R::Id) -> Result<bool, StoreError>;
-
-    /// Get a peer record by ID.
-    fn get(&self, id: &R::Id) -> Result<Option<R>, StoreError>;
-
-    fn contains(&self, id: &R::Id) -> Result<bool, StoreError> {
-        Ok(self.get(id)?.is_some())
-    }
-
-    /// Count stored peers.
-    fn count(&self) -> Result<usize, StoreError>;
-
-    /// Remove all peers.
-    fn clear(&self) -> Result<(), StoreError>;
-
-    /// Flush pending writes to storage (no-op for synchronous stores).
-    fn flush(&self) -> Result<(), StoreError> {
-        Ok(())
-    }
+    /// Replace the persisted snapshot with `records` in one transaction.
+    fn store(&self, records: &[R]) -> Result<(), StoreError>;
 }
 
 #[cfg(any(test, feature = "test-utils"))]
