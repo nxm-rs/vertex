@@ -421,6 +421,23 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         self.connected_peers.len()
     }
 
+    /// Connected peers whose handshake-confirmed node type stores chunks.
+    ///
+    /// Walks the connected-peer index (bounded by the connection targets)
+    /// and resolves each node type from the peer manager, the authoritative
+    /// holder of handshake-confirmed types.
+    pub(crate) fn connected_storer_total(&self) -> usize {
+        self.connected_peers
+            .all_peers()
+            .into_iter()
+            .filter(|overlay| {
+                self.peer_manager
+                    .node_type(overlay)
+                    .is_some_and(|node_type| node_type.requires_storage())
+            })
+            .count()
+    }
+
     pub(crate) fn connected_overlays_in_bin(&self, bin: Bin) -> Vec<OverlayAddress> {
         self.connected_peers.peers_in_bin(bin)
     }

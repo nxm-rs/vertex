@@ -13,7 +13,7 @@ Root-level rules in `/AGENTS.md` apply here too. The notes below are the area-sp
 - `api`: the trait chain `SwarmPrimitives` to `SwarmNetworkTypes` to `SwarmClientTypes` to `SwarmStorerTypes`. Strictly libp2p-free with the documented `Multiaddr` exception.
 - `builder`: layered builders that produce `BuiltBootnode`, `BuiltClient`, `BuiltStorer`.
 - `node`: composes the libp2p `NetworkBehaviour` and exposes `BootNode`, `ClientNode`, `StorerNode`. This is where libp2p shows up. Also owns `PeerSelector`: retrieval and pushsync candidate selection ordered by peer score and affordability on top of proximity. The builder wires it from the topology handle (scores via the peer manager) and the bandwidth accounting (affordability, per-peer chunk price, best-effort settlement trigger).
-- `topology`: libp2p behaviour for peer discovery, kademlia routing, reachability tracking.
+- `topology`: libp2p behaviour for peer discovery, kademlia routing, reachability tracking. Also owns the deterministic readiness surface: `TopologyHandle::readiness` snapshots exact connected counts, depth, and per-bin shortfalls from the routing table and peer manager (never from metrics), and `wait_until` plus its shorthands (`wait_until_routable`, `wait_until_depth`, `wait_until_saturated`, `wait_until_ready`) await readiness conditions event-driven via the `TopologyEvent` broadcast.
 - `localstore`, `storer`, `redistribution`: storer-side configuration and the chunk-store/reserve implementation.
 - `rpc`: tonic-generated gRPC services and a `GrpcServiceProvider` trait.
 - `test-utils`: `MockIdentity`, `MockTopology`, and fixtures.

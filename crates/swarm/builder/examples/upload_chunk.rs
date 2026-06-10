@@ -4,11 +4,11 @@
 //! `DefaultClientBuilder`, spawn its event loop, dial bootnodes, await a
 //! deterministic readiness gate, then push a pre-stamped chunk.
 //!
-//! Readiness is `TopologyHandle::wait_until_routable`, which resolves the
-//! moment a storer is connected. That is the state from which a push can reach
-//! the closest storers; it is event-driven, never a timed guess. A fuller
-//! readiness surface (target depth, neighborhood saturation) is tracked in
-//! <https://github.com/nxm-rs/vertex/issues/194>.
+//! Readiness is `TopologyHandle::wait_until_ready`, the composite warm gate:
+//! for a client it resolves the moment a storer is connected, the state from
+//! which a push can reach the closest storers. It is event-driven, never a
+//! timed guess. Stronger conditions (target depth, neighborhood saturation)
+//! are available through `TopologyHandle::wait_until` and its shorthands.
 //!
 //! Run with: `cargo run -p vertex-swarm-builder --example upload_chunk`
 
@@ -89,8 +89,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     executor.spawn_critical_with_graceful_shutdown_signal("swarm.node", task_fn);
     providers.topology().connect_bootnodes().await?;
 
-    // Deterministic readiness: resolve once a storer is connected.
-    providers.topology().wait_until_routable().await?;
+    // Deterministic readiness: the warm gate for a client resolves once a
+    // storer is connected.
+    providers.topology().wait_until_ready().await?;
 
     let chunk = ContentChunk::new(&b"hello swarm"[..])?;
     let address = *chunk.address();
