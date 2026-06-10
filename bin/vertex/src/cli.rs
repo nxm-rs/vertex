@@ -88,7 +88,7 @@ pub async fn run() -> Result<()> {
             None
         })?;
         config.apply_args(&args.infra, &args.protocol);
-        config.protocol.set_node_type(node_type);
+        config.protocol.override_node_type(node_type);
 
         // Build metrics config from CLI args
         let metrics_config = args.infra.observability.metrics.metrics_config();

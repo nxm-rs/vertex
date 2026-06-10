@@ -39,13 +39,13 @@ impl SwapHandle {
 
     /// Register the SWAP identity (beneficiary and chequebook issuer) learned for
     /// a peer during the swap handshake.
-    pub fn set_peer_info(
+    pub fn register_peer_info(
         &self,
         peer: OverlayAddress,
         info: PeerSwapInfo,
     ) -> Result<(), SwapSettlementError> {
         self.command_tx
-            .send(SwapCommand::SetPeerInfo { peer, info })
+            .send(SwapCommand::RegisterPeerInfo { peer, info })
             .map_err(|_| SwapSettlementError::ServiceStopped)
     }
 }

@@ -120,7 +120,7 @@ impl SwarmPeerScore {
     }
 
     /// Record latency without affecting score.
-    pub fn set_latency(&self, rtt: Duration) {
+    pub fn record_latency(&self, rtt: Duration) {
         self.score.record_latency(rtt.as_nanos() as u64);
     }
 

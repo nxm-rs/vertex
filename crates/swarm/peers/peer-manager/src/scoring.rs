@@ -13,7 +13,7 @@ use crate::manager::PeerManager;
 impl<I: SwarmIdentity> PeerManager<I> {
     pub fn record_latency(&self, overlay: &OverlayAddress, rtt: Duration) {
         if let Some(entry) = self.peers.get(overlay) {
-            entry.set_latency(rtt);
+            entry.record_latency(rtt);
             trace!(?overlay, ?rtt, "recorded latency");
         }
     }

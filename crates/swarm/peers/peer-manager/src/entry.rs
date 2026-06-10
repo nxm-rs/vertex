@@ -273,8 +273,8 @@ impl PeerEntry {
         self.mark_dirty();
     }
 
-    pub(crate) fn set_latency(&self, rtt: Duration) {
-        self.scoring.set_latency(rtt);
+    pub(crate) fn record_latency(&self, rtt: Duration) {
+        self.scoring.record_latency(rtt);
         self.mark_dirty();
     }
 

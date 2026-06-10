@@ -93,10 +93,10 @@ impl LocalAddressManager {
         self.reachability.on_autonat_peer_confirmed(peer);
     }
 
-    /// Set the local PeerId for appending /p2p/ to advertised addresses.
+    /// Register the local PeerId for appending /p2p/ to advertised addresses.
     ///
-    /// Must be called after the libp2p Swarm is built. Can only be set once.
-    pub fn set_local_peer_id(&self, peer_id: PeerId) {
+    /// Must be called after the libp2p Swarm is built. Can only be registered once.
+    pub fn register_local_peer_id(&self, peer_id: PeerId) {
         if self.local_peer_id.set(peer_id).is_err() {
             warn!("local_peer_id already set, ignoring duplicate call");
         } else {
@@ -548,7 +548,7 @@ mod tests {
     fn test_with_peer_id_appends() {
         let manager = create_manager(vec![]);
         let peer_id = PeerId::random();
-        manager.set_local_peer_id(peer_id);
+        manager.register_local_peer_id(peer_id);
 
         let addr = parse_addr("/ip4/8.8.8.8/tcp/1634");
         let with_peer_id = manager.with_peer_id(vec![addr]);

@@ -68,7 +68,7 @@ impl Config {
 /// # Event Routing
 ///
 /// Settlement events can be routed directly to settlement services via optional
-/// event senders. Use [`set_pseudosettle_events`](Self::set_pseudosettle_events)
+/// event senders. Use [`route_pseudosettle_events`](Self::route_pseudosettle_events)
 /// to configure routing. Events are still emitted as [`ClientEvent`] for other consumers.
 pub(crate) struct ClientBehaviour {
     config: Config,
@@ -99,11 +99,14 @@ impl ClientBehaviour {
         }
     }
 
-    /// Set the sender for pseudosettle events.
+    /// Route pseudosettle events to the given sink.
     ///
-    /// When set, pseudosettle-related events will be sent to this channel
+    /// Once routed, pseudosettle-related events will be sent to this channel
     /// in addition to being emitted as [`ClientEvent`].
-    pub(crate) fn set_pseudosettle_events(&mut self, tx: mpsc::UnboundedSender<PseudosettleEvent>) {
+    pub(crate) fn route_pseudosettle_events(
+        &mut self,
+        tx: mpsc::UnboundedSender<PseudosettleEvent>,
+    ) {
         self.pseudosettle_event_tx = Some(tx);
     }
 

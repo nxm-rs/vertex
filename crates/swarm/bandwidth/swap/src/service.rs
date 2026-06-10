@@ -27,7 +27,7 @@ use crate::error::SwapSettlementError;
 ///
 /// The beneficiary is the address a cheque we issue to this peer must pay; the
 /// issuer is the chequebook owner whose key must sign cheques the peer sends us.
-/// Populated through [`SwapCommand::SetPeerInfo`] by the node layer (handshake
+/// Populated through [`SwapCommand::RegisterPeerInfo`] by the node layer (handshake
 /// wiring is the builder's job).
 #[derive(Debug, Clone, Copy)]
 pub struct PeerSwapInfo {
@@ -49,7 +49,7 @@ pub enum SwapCommand {
         response_tx: oneshot::Sender<Result<u64, SwapSettlementError>>,
     },
     /// Register the SWAP identity learned for a peer during the handshake.
-    SetPeerInfo {
+    RegisterPeerInfo {
         /// The peer the identity belongs to.
         peer: OverlayAddress,
         /// The peer's beneficiary and chequebook issuer.
@@ -168,7 +168,7 @@ where
 
     async fn handle_command(&mut self, cmd: SwapCommand) {
         match cmd {
-            SwapCommand::SetPeerInfo { peer, info } => {
+            SwapCommand::RegisterPeerInfo { peer, info } => {
                 debug!(
                     %peer,
                     beneficiary = %info.beneficiary,

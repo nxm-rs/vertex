@@ -136,7 +136,7 @@ impl PeerReachabilityRecord {
 
 /// Thread-safe per-peer reachability tracker.
 ///
-/// Cheap to clone; internally an `Arc<RwLock<...>>`. Never panics —
+/// Cheap to clone; internally an `Arc<RwLock<...>>`. Never panics:
 /// `parking_lot::RwLock` does not poison and all map accesses go through
 /// `entry`/`get`.
 #[derive(Debug, Clone, Default)]
@@ -197,7 +197,7 @@ impl ReachabilityTracker {
     /// accepts inbound connections on that address, so we promote it to
     /// [`PeerReachability::Reachable`].
     pub fn on_autonat_peer_confirmed(&self, peer: PeerId) {
-        self.set_reachable(peer, "autonat");
+        self.record_reachable(peer, "autonat");
     }
 
     /// Record that a peer is reachable because *we* dialed it outbound at a
@@ -208,7 +208,7 @@ impl ReachabilityTracker {
     /// address must not be routed here (it only proves local reachability); the
     /// topology behaviour gates on the dialed address scope.
     pub fn on_outbound_reachable(&self, peer: PeerId) {
-        self.set_reachable(peer, "outbound");
+        self.record_reachable(peer, "outbound");
     }
 
     /// Update from a `libp2p::ping` round-trip outcome.
@@ -240,7 +240,7 @@ impl ReachabilityTracker {
     // Internal helpers
     // ---------------------------------------------------------------------
 
-    fn set_reachable(&self, peer: PeerId, source: &'static str) {
+    fn record_reachable(&self, peer: PeerId, source: &'static str) {
         let mut guard = self.inner.write();
         let entry = guard
             .entry(peer)

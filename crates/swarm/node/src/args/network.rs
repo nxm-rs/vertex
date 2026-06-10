@@ -200,7 +200,7 @@ impl NetworkArgs {
                     })
                 })
                 .collect();
-            config.set_bootnodes(parsed?);
+            config.override_bootnodes(parsed?);
         }
 
         Ok(config)
@@ -260,14 +260,16 @@ impl<R> NetworkConfig<R> {
         }
     }
 
-    /// Set bootnodes (for spec fallback).
-    pub fn set_bootnodes(&mut self, bootnodes: Vec<Multiaddr>) {
+    /// Replace the configured bootnodes with a list from a higher-precedence
+    /// source (spec defaults when the CLI gave none, or host-supplied
+    /// multiaddrs at the FFI boundary).
+    pub fn override_bootnodes(&mut self, bootnodes: Vec<Multiaddr>) {
         self.bootnodes = bootnodes;
     }
 
-    /// Set default peer store path if not already configured via CLI.
-    pub fn set_default_peer_store_path(&mut self, path: std::path::PathBuf) {
-        self.peer.set_default_store_path(path);
+    /// Fill in the default peer store path if none was configured via CLI.
+    pub fn apply_default_peer_store_path(&mut self, path: std::path::PathBuf) {
+        self.peer.apply_default_store_path(path);
     }
 }
 
