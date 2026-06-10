@@ -21,7 +21,7 @@
 use std::sync::Arc;
 
 use alloy_chains::NamedChain;
-use alloy_primitives::{Address, U256};
+use alloy_primitives::Address;
 use alloy_signer_local::PrivateKeySigner;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -47,7 +47,6 @@ pub(crate) struct SwapWiring {
     swap_event_tx: mpsc::UnboundedSender<SwapEvent>,
     swap_event_rx: mpsc::UnboundedReceiver<SwapEvent>,
     signer: Arc<PrivateKeySigner>,
-    our_rate: U256,
     chequebook: Address,
     beneficiary: Address,
     chain: NamedChain,
@@ -119,7 +118,6 @@ impl SwapWiring {
             swap_event_tx,
             swap_event_rx,
             signer: identity.signer(),
-            our_rate: U256::from(config.refresh_rate()),
             chequebook,
             beneficiary,
             chain,
@@ -161,7 +159,6 @@ impl SwapWiring {
             self.swap_event_rx,
             client_command_tx,
             accounting,
-            self.our_rate,
             self.signer,
             self.chequebook,
             self.beneficiary,

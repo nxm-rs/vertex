@@ -78,9 +78,6 @@ pub struct SwapService<A: SwarmBandwidthAccounting, S> {
     command_tx: mpsc::UnboundedSender<ClientCommand>,
     /// Reference to accounting for balance updates.
     accounting: Arc<A>,
-    /// Our exchange rate.
-    #[allow(dead_code)]
-    our_rate: U256,
     /// The Ethereum signer used to sign cheques.
     signer: Arc<S>,
     /// Our chequebook address (the drawer of cheques we issue).
@@ -115,7 +112,6 @@ where
         event_rx: mpsc::UnboundedReceiver<SwapEvent>,
         command_tx: mpsc::UnboundedSender<ClientCommand>,
         accounting: Arc<A>,
-        our_rate: U256,
         signer: Arc<S>,
         chequebook: Address,
         beneficiary: Address,
@@ -126,7 +122,6 @@ where
             event_rx,
             command_tx,
             accounting,
-            our_rate,
             signer,
             chequebook,
             beneficiary,
@@ -405,7 +400,6 @@ mod tests {
             event_rx,
             client_tx,
             accounting,
-            U256::ZERO,
             Arc::new(signer),
             Address::repeat_byte(0xcb),
             OUR_BENEFICIARY,

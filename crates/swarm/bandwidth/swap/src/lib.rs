@@ -31,7 +31,7 @@ pub mod service;
 use std::sync::Arc;
 
 use alloy_chains::NamedChain;
-use alloy_primitives::{Address, U256};
+use alloy_primitives::Address;
 use alloy_signer::SignerSync;
 use tokio::sync::mpsc;
 use vertex_swarm_api::{
@@ -142,12 +142,10 @@ impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for SwapProvide
 /// node's chequebook (the drawer), `beneficiary` is our payout address (the only
 /// address a cheque sent to us may name), and `chain` binds the EIP-712 domain to
 /// the settlement chain.
-#[allow(clippy::too_many_arguments)]
 pub fn create_swap_actor<A, S>(
     event_rx: mpsc::UnboundedReceiver<SwapEvent>,
     client_command_tx: mpsc::UnboundedSender<ClientCommand>,
     accounting: Arc<A>,
-    our_rate: U256,
     signer: Arc<S>,
     chequebook: Address,
     beneficiary: Address,
@@ -164,7 +162,6 @@ where
         event_rx,
         client_command_tx,
         accounting,
-        our_rate,
         signer,
         chequebook,
         beneficiary,
