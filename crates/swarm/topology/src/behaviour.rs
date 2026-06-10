@@ -21,42 +21,32 @@ use libp2p::{
     },
 };
 use tracing::{debug, info};
-use vertex_net_local::{AddressScope, LocalCapabilities, classify_multiaddr, same_subnet};
+use vertex_net_local::{AddressScope, classify_multiaddr, same_subnet};
 use vertex_net_peer_store::NetPeerStore;
-use vertex_net_peer_store::error::StoreError;
-use vertex_swarm_api::SwarmScoreStore;
-use vertex_swarm_api::{PeerConfigValues, SwarmBootnodeConfig, SwarmIdentity};
-use vertex_swarm_net_handshake::HANDSHAKE_TIMEOUT;
+use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_net_hive::MAX_BATCH_SIZE;
 use vertex_swarm_net_identify as identify;
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_manager::{PeerManager, StoredPeer};
-use vertex_swarm_peer_score::PeerScore;
-use vertex_swarm_peer_score::SwarmScoringConfig;
 use vertex_swarm_primitives::{Bin, OverlayAddress, SwarmNodeType, all_bins};
-use vertex_swarm_spec::HasSpec;
 
 use crate::DialReason;
-use vertex_net_dialer::{DialTracker, DialTrackerConfig};
+use vertex_net_dialer::DialTracker;
 use vertex_net_peer_registry::PeerRegistry;
 
 pub(crate) type ConnectionRegistry = PeerRegistry<OverlayAddress, Option<DialReason>>;
 use crate::TopologyCommand;
+use crate::builder::PendingTopologyTasks;
 use crate::composed::ProtocolBehaviours;
-use crate::error::TopologyError;
 use crate::events::TopologyEvent;
 use crate::extract_peer_id;
-use crate::gossip::{GossipConfig, GossipHandle, spawn_gossip_task};
-use crate::handle::TopologyHandle;
-use crate::kademlia::{
-    KademliaConfig, KademliaRouting, RoutingEvaluatorHandle, SwarmRouting,
-    kademlia_admission_control,
-};
+use crate::gossip::{GossipConfig, GossipHandle};
+use crate::kademlia::{KademliaConfig, KademliaRouting, RoutingEvaluatorHandle, SwarmRouting};
 use crate::metrics::{TopologyMetrics, po_label};
 use crate::nat_discovery::LocalAddressManager;
 
 /// Type-erased peer store supporting both file-based and database-backed storage.
-type PeerStore = Arc<dyn NetPeerStore<StoredPeer>>;
+pub(crate) type PeerStore = Arc<dyn NetPeerStore<StoredPeer>>;
 
 /// Default interval between connection-evaluation rounds.
 ///
@@ -76,10 +66,38 @@ const DEFAULT_EARLY_DISCONNECT_THRESHOLD: Duration = Duration::from_secs(30);
 const DEFAULT_PEER_SAVE_INTERVAL: Duration = Duration::from_secs(300);
 
 /// Event broadcast buffer (256 allows burst without blocking poll loop).
-const EVENT_CHANNEL_CAPACITY: usize = 256;
+pub(crate) const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 /// Command buffer (64 is sufficient for typical dial/disconnect rate).
-const COMMAND_CHANNEL_CAPACITY: usize = 64;
+pub(crate) const COMMAND_CHANNEL_CAPACITY: usize = 64;
+
+/// Periodic interval whose underlying timer is created on first poll.
+///
+/// `tokio::time::interval` requires a running runtime, so deferring creation
+/// to the first [`Self::poll_tick`] (always inside the behaviour's poll loop)
+/// lets the behaviour be constructed without one. The first tick still
+/// completes immediately, matching an interval created at construction time.
+pub(crate) struct LazyInterval {
+    period: Duration,
+    interval: Option<Interval>,
+}
+
+impl LazyInterval {
+    /// Create a lazy interval with the given period.
+    pub(crate) fn new(period: Duration) -> Self {
+        Self {
+            period,
+            interval: None,
+        }
+    }
+
+    /// Poll for the next tick, creating the interval on first use.
+    pub(crate) fn poll_tick(&mut self, cx: &mut Context<'_>) -> Poll<tokio::time::Instant> {
+        self.interval
+            .get_or_insert_with(|| tokio::time::interval(self.period))
+            .poll_tick(cx)
+    }
+}
 
 /// Target for dialing a peer (internal).
 ///
@@ -214,10 +232,10 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
     pub(crate) gossip: GossipHandle,
 
     // Periodic dial interval
-    pub(crate) dial_interval: Pin<Box<Interval>>,
+    pub(crate) dial_interval: LazyInterval,
 
     // Periodic peer save interval (only ticks when peer_store is Some)
-    pub(crate) peer_save_interval: Pin<Box<Interval>>,
+    pub(crate) peer_save_interval: LazyInterval,
 
     // Pending dnsaddr resolution for bootnodes (resolved_bootnodes, resolved_trusted)
     #[allow(clippy::type_complexity)]
@@ -270,165 +288,14 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
 
     // Metrics
     pub(crate) metrics: Arc<TopologyMetrics>,
+
+    /// Background-task inputs captured by [`crate::TopologyBehaviourBuilder`]
+    /// and consumed by [`TopologyBehaviour::spawn_tasks`]. `None` once the
+    /// tasks are running.
+    pub(crate) pending_tasks: Option<PendingTopologyTasks>,
 }
 
 impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
-    // Constructor
-
-    /// Create topology behaviour and handle.
-    pub fn new(
-        identity: I,
-        config: TopologyConfig,
-        network_config: &impl SwarmBootnodeConfig,
-        peer_store: Option<Arc<dyn NetPeerStore<StoredPeer>>>,
-        score_store: Option<Arc<dyn SwarmScoreStore<Score = PeerScore, Error = StoreError>>>,
-    ) -> Result<(Self, TopologyHandle<I>), TopologyError>
-    where
-        I: HasSpec,
-    {
-        let bootnodes = network_config.bootnodes().to_vec();
-        let trusted_peers = network_config.trusted_peers().to_vec();
-        let nat_addrs = network_config.nat_addrs().to_vec();
-        let trust_local_peers = network_config.trust_local_peers();
-
-        let (event_tx, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
-        let (command_tx, command_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
-
-        let peer_config = network_config.peers();
-        let scoring_config = SwarmScoringConfig::builder()
-            .ban_threshold(peer_config.ban_threshold())
-            .warn_threshold(peer_config.warn_threshold())
-            .build();
-        let peer_manager = if let Some(ref store) = peer_store {
-            PeerManager::with_store(
-                &identity,
-                store.clone(),
-                score_store,
-                scoring_config,
-                peer_config.max_per_bin(),
-            )
-        } else {
-            PeerManager::with_config(&identity, scoring_config, peer_config.max_per_bin())
-        };
-
-        let local_overlay = identity.overlay_address();
-
-        let connection_registry = Arc::new(ConnectionRegistry::new());
-        let agent_versions = identify::new_agent_versions();
-
-        let ban_rx = peer_manager.subscribe_bans();
-
-        let routing = KademliaRouting::new(
-            identity.clone(),
-            config.kademlia.clone(),
-            peer_manager.clone(),
-        );
-
-        let local_capabilities = Arc::new(LocalCapabilities::new());
-
-        // LocalAddressManager handles NAT address advertisement
-        // Note: We no longer track peer-observed addresses - they contain
-        // ephemeral NAT ports that only work for the specific peer connection.
-        let nat_discovery = Arc::new(if !nat_addrs.is_empty() {
-            info!(count = nat_addrs.len(), "NAT addresses configured");
-            LocalAddressManager::new(local_capabilities.clone(), nat_addrs)
-        } else {
-            LocalAddressManager::disabled(local_capabilities.clone())
-        });
-
-        let identity = Arc::new(identity);
-
-        // Wire kademlia routing as the handshake admission gate so the
-        // routing layer can veto a peer before the local side commits
-        // to its final exchange message.
-        let admission_control = kademlia_admission_control(routing.clone());
-
-        // Create composed protocol behaviours
-        let protocols =
-            ProtocolBehaviours::new(identity.clone(), nat_discovery.clone(), admission_control);
-
-        let metrics = Arc::new(TopologyMetrics::new());
-
-        let handle = TopologyHandle::new(
-            identity.clone(),
-            routing.clone(),
-            connection_registry.clone(),
-            peer_manager.clone(),
-            command_tx,
-            event_tx.clone(),
-            agent_versions.clone(),
-            metrics.clone(),
-        );
-
-        let dial_interval = config.dial_interval;
-
-        // Queue static NAT addresses to emit as external addresses on first poll
-        let pending_nat_external_addrs = nat_discovery.nat_addrs().to_vec();
-
-        let executor = vertex_tasks::TaskExecutor::try_current()
-            .map_err(|e| TopologyError::TaskSpawn(e.to_string()))?;
-
-        // Spawn background connection evaluator
-        let evaluator_handle = crate::kademlia::spawn_evaluator(routing.clone(), &executor);
-
-        // Spawn interface watcher for push-based subnet discovery.
-        crate::tasks::spawn_interface_watcher(&executor);
-
-        // Spawn the gossip task (merged peer exchange + verification).
-        let spec = <I as HasSpec>::spec(&*identity).clone();
-        let gossip = spawn_gossip_task(
-            spec,
-            config.gossip.clone(),
-            local_overlay,
-            peer_manager.clone(),
-            connection_registry.clone(),
-            evaluator_handle.clone(),
-            local_capabilities.clone(),
-            &executor,
-        )
-        .map_err(|e| TopologyError::TaskSpawn(e.to_string()))?;
-
-        let behaviour = Self {
-            identity,
-            protocols,
-            routing,
-            peer_manager,
-            connection_registry,
-            nat_discovery,
-            bootnodes,
-            trusted_peers,
-            command_rx,
-            event_tx,
-            pending_actions: VecDeque::new(),
-            gossip,
-            dial_interval: Box::pin(tokio::time::interval(dial_interval)),
-            peer_save_interval: Box::pin(tokio::time::interval(config.peer_save_interval)),
-            pending_bootnode_resolution: None,
-            evaluator_handle,
-            dial_tracker: DialTracker::new(DialTrackerConfig {
-                max_pending: 0,     // not used as a queue, only for direct in-flight tracking
-                max_in_flight: 256, // generous limit; routing capacity is the real gate
-                pending_ttl: HANDSHAKE_TIMEOUT,
-                in_flight_timeout: HANDSHAKE_TIMEOUT,
-                cleanup_interval: Duration::from_secs(30),
-                metrics_label: Some("topology"),
-                ..Default::default()
-            }),
-            early_disconnect_threshold: config.early_disconnect_threshold,
-            pending_evictions: HashSet::new(),
-            outbound_public_dials: HashSet::new(),
-            connected_node_types: HashMap::new(),
-            ban_rx,
-            peer_store,
-            agent_versions,
-            trust_local_peers,
-            pending_nat_external_addrs,
-            metrics,
-        };
-
-        Ok((behaviour, handle))
-    }
-
     // Public methods
 
     /// Register the local PeerId for address advertisement in handshakes.
@@ -869,13 +736,13 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
         }
 
         // Check for periodic dial candidate evaluation
-        if self.dial_interval.as_mut().poll_tick(cx).is_ready() {
+        if self.dial_interval.poll_tick(cx).is_ready() {
             self.cleanup_stale_pending();
             self.evaluator_handle.trigger_evaluation();
         }
 
         // Periodic peer save (safety net against crashes)
-        if self.peer_store.is_some() && self.peer_save_interval.as_mut().poll_tick(cx).is_ready() {
+        if self.peer_store.is_some() && self.peer_save_interval.poll_tick(cx).is_ready() {
             self.save_peers();
         }
 

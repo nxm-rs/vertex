@@ -37,7 +37,7 @@ use tokio::sync::mpsc;
 
 pub use config::GossipConfig;
 pub(crate) use events::{GossipAction, GossipInput};
-pub(crate) use tasks::spawn_gossip_task;
+pub(crate) use tasks::{GossipChannels, gossip_channel, spawn_gossip_task};
 
 /// Handle for communicating with the gossip task.
 pub(crate) struct GossipHandle {
