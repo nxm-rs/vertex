@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 use metrics::{counter, gauge};
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
@@ -68,6 +68,12 @@ pub struct PeerManagerConfig {
     pub max_per_bin: usize,
     /// Minimum time between periodic snapshots written by [`PeerManager::tick`].
     pub snapshot_interval: Duration,
+    /// How long a timed ban lasts before [`PeerManager::tick`] lifts it.
+    ///
+    /// Applies to every ban except [`PeerManager::ban_permanent`]. On expiry
+    /// the peer's score is reset to the disconnect threshold, so it must
+    /// behave to climb back; it is not forgiven to neutral.
+    pub ban_duration: Duration,
     /// Snapshot persistence; `None` keeps the peer set memory-only.
     pub store: Option<Arc<dyn PeerSnapshotStore<PeerSnapshot>>>,
 }
@@ -84,6 +90,13 @@ impl PeerManagerConfig {
     /// Trades snapshot-write frequency against how many freshly learned
     /// peers a crash can lose.
     pub const DEFAULT_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(300);
+
+    /// Default timed ban duration (12 hours).
+    ///
+    /// Long enough that a misbehaving peer cannot grind through ban cycles
+    /// cheaply, short enough that a transiently broken peer is not lost for
+    /// good; bans never survive a restart either way.
+    pub const DEFAULT_BAN_DURATION: Duration = Duration::from_secs(12 * 3600);
 }
 
 impl Default for PeerManagerConfig {
@@ -92,6 +105,7 @@ impl Default for PeerManagerConfig {
             scoring: SwarmScoringConfig::default(),
             max_per_bin: Self::DEFAULT_MAX_PER_BIN,
             snapshot_interval: Self::DEFAULT_SNAPSHOT_INTERVAL,
+            ban_duration: Self::DEFAULT_BAN_DURATION,
             store: None,
         }
     }
@@ -111,12 +125,16 @@ pub struct PeerManager<I: SwarmIdentity> {
     pub(crate) peers: DashMap<OverlayAddress, Arc<PeerEntry>>,
     /// Snapshot persistence (None for ephemeral/test mode).
     pub(crate) store: Option<Arc<dyn PeerSnapshotStore<PeerSnapshot>>>,
-    /// O(1) ban checks. Starts empty on every startup: bans are runtime-only.
-    pub(crate) banned_set: DashSet<OverlayAddress>,
+    /// O(1) ban checks, mapping each banned overlay to its ban expiry in
+    /// unix seconds (`None` for a permanent ban). Starts empty on every
+    /// startup: bans are runtime-only.
+    pub(crate) banned_set: DashMap<OverlayAddress, Option<u64>>,
     /// Scoring configuration.
     pub(crate) scoring_config: Arc<SwarmScoringConfig>,
     /// Minimum time between periodic snapshots.
     pub(crate) snapshot_interval: Duration,
+    /// Duration of a timed ban.
+    pub(crate) ban_duration: Duration,
     /// Unix seconds of the last periodic snapshot.
     pub(crate) last_snapshot: AtomicU64,
     /// Per-bucket gauge tracking of score distribution.
@@ -137,6 +155,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
             scoring,
             max_per_bin,
             snapshot_interval,
+            ban_duration,
             store,
         } = config;
         let local_overlay = identity.overlay_address();
@@ -147,9 +166,10 @@ impl<I: SwarmIdentity> PeerManager<I> {
             index: ProximityIndex::new(local_overlay, max_po, max_per_bin),
             peers: DashMap::new(),
             store,
-            banned_set: DashSet::new(),
+            banned_set: DashMap::new(),
             scoring_config: Arc::new(scoring),
             snapshot_interval,
+            ban_duration,
             last_snapshot: AtomicU64::new(unix_timestamp_secs()),
             score_distribution: Arc::new(ScoreDistribution::new()),
             lifecycle_tx,
@@ -196,7 +216,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
             .iter_by_proximity()
             .map(|(_, overlay)| overlay)
             .filter(|overlay| {
-                !self.banned_set.contains(overlay)
+                !self.banned_set.contains_key(overlay)
                     && self
                         .peers
                         .get(overlay)
@@ -209,7 +229,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
     #[must_use]
     pub fn storer_overlays_in_bin(&self, bin: Bin, count: usize) -> Vec<OverlayAddress> {
         self.index.filter_bin(bin, count, |overlay| {
-            !self.banned_set.contains(overlay)
+            !self.banned_set.contains_key(overlay)
                 && self
                     .peers
                     .get(overlay)
@@ -232,7 +252,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
         candidates
             .iter()
             .filter_map(|overlay| {
-                if self.banned_set.contains(overlay) {
+                if self.banned_set.contains_key(overlay) {
                     return None;
                 }
                 let entry = self.peers.get(overlay)?;
@@ -244,7 +264,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
     /// Get dialable overlay addresses from a specific bin (not banned, not in backoff).
     pub fn dialable_overlays_in_bin(&self, bin: Bin, count: usize) -> Vec<OverlayAddress> {
         self.index.filter_bin(bin, count, |overlay| {
-            !self.banned_set.contains(overlay)
+            !self.banned_set.contains_key(overlay)
                 && self.peers.get(overlay).is_some_and(|e| e.is_dialable())
         })
     }
@@ -274,7 +294,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
     /// Get a snapshot of all banned peer overlays.
     #[must_use]
     pub fn banned_set(&self) -> std::collections::HashSet<OverlayAddress> {
-        self.banned_set.iter().map(|r| *r).collect()
+        self.banned_set.iter().map(|r| *r.key()).collect()
     }
 
     /// Get a snapshot of all peers currently in backoff.
@@ -293,10 +313,10 @@ impl<I: SwarmIdentity> PeerManager<I> {
         self.peers.get(overlay).is_some_and(|e| e.is_in_backoff())
     }
 
-    /// Check if peer is banned (O(1) via DashSet).
+    /// Check if peer is banned (O(1) via the banned map).
     #[must_use]
     pub fn is_banned(&self, overlay: &OverlayAddress) -> bool {
-        self.banned_set.contains(overlay)
+        self.banned_set.contains_key(overlay)
     }
 
     /// Number of currently banned peers (O(1)).
@@ -305,14 +325,44 @@ impl<I: SwarmIdentity> PeerManager<I> {
         self.banned_set.len()
     }
 
-    /// Ban a peer (prevents dialing) and emit [`PeerLifecycleEvent::Banned`].
+    /// Ban a peer for [`PeerManagerConfig::ban_duration`] and emit
+    /// [`PeerLifecycleEvent::Banned`] with the expiry.
     ///
     /// Topology subscribes to the lifecycle stream and closes the banned
-    /// peer's connection. Bans are runtime-only: they never persist across a
-    /// restart and currently have no scheduled expiry within a session.
+    /// peer's connection. [`Self::tick`] lifts the ban once the expiry
+    /// passes, resetting the score to the disconnect threshold and emitting
+    /// [`PeerLifecycleEvent::Unbanned`]. Banning an already banned peer is a
+    /// no-op: the original expiry stands and no second event is emitted.
+    /// Bans are runtime-only and never persist across a restart.
     pub fn ban(&self, overlay: &OverlayAddress, cause: BanCause, reason: Option<String>) {
-        if !self.banned_set.insert(*overlay) {
-            return; // Already banned
+        let until = unix_timestamp_secs() + self.ban_duration.as_secs();
+        self.ban_with_expiry(overlay, cause, reason, Some(until));
+    }
+
+    /// Ban a peer with no scheduled expiry; [`Self::tick`] never lifts it,
+    /// so only a restart clears it (bans never persist).
+    ///
+    /// Reserved for operator-initiated bans; the operator surface that calls
+    /// this arrives with the gRPC work.
+    pub fn ban_permanent(&self, overlay: &OverlayAddress, cause: BanCause, reason: Option<String>) {
+        self.ban_with_expiry(overlay, cause, reason, None);
+    }
+
+    fn ban_with_expiry(
+        &self,
+        overlay: &OverlayAddress,
+        cause: BanCause,
+        reason: Option<String>,
+        until: Option<u64>,
+    ) {
+        use dashmap::mapref::entry::Entry;
+
+        match self.banned_set.entry(*overlay) {
+            // Already banned: keep the original expiry, emit nothing.
+            Entry::Occupied(_) => return,
+            Entry::Vacant(vacant) => {
+                vacant.insert(until);
+            }
         }
 
         gauge!("peer_manager_banned_peers").increment(1.0);
@@ -321,22 +371,44 @@ impl<I: SwarmIdentity> PeerManager<I> {
             && !entry.is_banned()
         {
             let old_state = entry.health_state();
-            warn!(?overlay, %cause, ?reason, "banning peer");
+            warn!(?overlay, %cause, ?reason, until, "banning peer");
             entry.ban(reason);
             on_health_changed(old_state, HealthState::Banned);
         }
 
         self.emit(PeerLifecycleEvent::Banned {
             overlay: *overlay,
-            until: None,
+            until,
             reason: cause,
         });
+    }
+
+    /// Lift a peer's ban: clear the ban state, reset the score to the
+    /// disconnect threshold, and emit [`PeerLifecycleEvent::Unbanned`].
+    ///
+    /// The score reset means an unbanned peer must behave to climb back; it
+    /// is not forgiven to neutral. The event is emitted exactly once per
+    /// ban (guarded by the banned-set removal).
+    pub(crate) fn unban(&self, overlay: &OverlayAddress) {
+        if let Some(entry) = self.peers.get(overlay) {
+            let old_state = entry.health_state();
+            entry.clear_ban();
+            let (old_score, new_score) =
+                entry.reset_score(self.scoring_config.disconnect_threshold());
+            self.score_distribution
+                .on_score_changed(old_score, new_score);
+            on_health_changed(old_state, entry.health_state());
+        }
+        if self.banned_set.remove(overlay).is_some() {
+            gauge!("peer_manager_banned_peers").decrement(1.0);
+            self.emit(PeerLifecycleEvent::Unbanned { overlay: *overlay });
+        }
     }
 
     /// Subscribe to the peer lifecycle event stream.
     ///
     /// The stream carries every [`PeerLifecycleEvent`]: connects,
-    /// disconnects, score warnings, disconnect requests, and bans.
+    /// disconnects, score warnings, disconnect requests, bans, and unbans.
     ///
     /// # Lagged-receiver policy
     ///
@@ -1594,6 +1666,273 @@ mod tests {
 
         assert_eq!(pm.node_type(&overlay), Some(SwarmNodeType::Storer));
         assert_eq!(pm.trust_level(&overlay), TrustLevel::Trusted);
+    }
+
+    #[test]
+    fn test_tick_decays_disconnected_score_across_ticks() {
+        let pm = manager();
+        let overlay = test_overlay(1);
+        pm.store_discovered_peer(test_swarm_peer(1));
+        for _ in 0..4 {
+            pm.report_peer(
+                &overlay,
+                SwarmScoringEvent::ProtocolError,
+                ReportSource::Topology,
+            );
+        }
+        assert_eq!(pm.get_peer_score(&overlay), Some(-12.0));
+
+        // Two ticks spanning one disconnected half-life (10 minutes).
+        let start = unix_timestamp_secs();
+        pm.tick(start + 300);
+        pm.tick(start + 600);
+
+        let score = pm.get_peer_score(&overlay).unwrap();
+        assert!(
+            (score + 6.0).abs() < 0.1,
+            "one disconnected half-life must halve the score, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_tick_decays_connected_score_at_double_rate() {
+        let pm = manager();
+        let overlay = test_overlay(1);
+        connect(&pm, 1, SwarmNodeType::Client); // ConnectionSuccess: +1
+        for _ in 0..4 {
+            pm.report_peer(
+                &overlay,
+                SwarmScoringEvent::ProtocolError,
+                ReportSource::Topology,
+            );
+        }
+        assert_eq!(pm.get_peer_score(&overlay), Some(-11.0));
+
+        // 10 minutes is two connected half-lives: the score quarters.
+        let start = unix_timestamp_secs();
+        pm.tick(start + 600);
+
+        let score = pm.get_peer_score(&overlay).unwrap();
+        assert!(
+            (score + 2.75).abs() < 0.1,
+            "two connected half-lives must quarter the score, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_decay_is_robust_to_missed_ticks() {
+        let pm = manager();
+        let overlay = test_overlay(1);
+        pm.store_discovered_peer(test_swarm_peer(1));
+        for _ in 0..4 {
+            pm.report_peer(
+                &overlay,
+                SwarmScoringEvent::ProtocolError,
+                ReportSource::Topology,
+            );
+        }
+
+        // A single late tick spanning two half-lives decays by the true
+        // elapsed time, not by one tick interval.
+        let start = unix_timestamp_secs();
+        pm.tick(start + 1200);
+
+        let score = pm.get_peer_score(&overlay).unwrap();
+        assert!(
+            (score + 3.0).abs() < 0.1,
+            "a missed tick must still decay by the full elapsed time, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_positive_scores_decay_too() {
+        let pm = manager();
+        let overlay = test_overlay(1);
+        connect(&pm, 1, SwarmNodeType::Client); // +1
+
+        let start = unix_timestamp_secs();
+        pm.tick(start + 300); // one connected half-life
+
+        let score = pm.get_peer_score(&overlay).unwrap();
+        assert!(
+            (score - 0.5).abs() < 0.05,
+            "positive reputation is recency-weighted and decays, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_ban_expiry_resets_score_and_emits_unbanned_once() {
+        let pm = manager();
+        let overlay = test_overlay(1);
+        connect(&pm, 1, SwarmNodeType::Client);
+        let mut rx = pm.subscribe();
+
+        pm.ban(&overlay, BanCause::Requested, Some("test".into()));
+        let until = drain_events(&mut rx)
+            .iter()
+            .find_map(|e| match e {
+                PeerLifecycleEvent::Banned {
+                    overlay: o, until, ..
+                } if *o == overlay => *until,
+                _ => None,
+            })
+            .expect("timed ban must carry an expiry");
+
+        // One second before expiry: still banned.
+        pm.tick(until - 1);
+        assert!(pm.is_banned(&overlay));
+        assert!(
+            drain_events(&mut rx)
+                .iter()
+                .all(|e| !matches!(e, PeerLifecycleEvent::Unbanned { .. }))
+        );
+
+        // Exactly at expiry (now >= until): unbanned, score reset to the
+        // disconnect threshold so the peer must behave to climb back.
+        pm.tick(until);
+        assert!(!pm.is_banned(&overlay));
+        assert_eq!(pm.banned_count(), 0);
+        assert!(pm.eligible_peers().contains(&overlay));
+        assert_eq!(
+            pm.get_peer_score(&overlay),
+            Some(pm.scoring_config.disconnect_threshold()),
+            "an expired ban resets the score to the disconnect threshold"
+        );
+        let unbans = drain_events(&mut rx)
+            .iter()
+            .filter(|e| matches!(e, PeerLifecycleEvent::Unbanned { overlay: o } if *o == overlay))
+            .count();
+        assert_eq!(unbans, 1, "Unbanned must be emitted exactly once");
+
+        // Later ticks do not re-emit.
+        pm.tick(until + 600);
+        assert!(
+            drain_events(&mut rx)
+                .iter()
+                .all(|e| !matches!(e, PeerLifecycleEvent::Unbanned { .. }))
+        );
+    }
+
+    #[test]
+    fn test_permanent_ban_never_expires() {
+        let pm = manager();
+        let overlay = test_overlay(1);
+        connect(&pm, 1, SwarmNodeType::Client);
+        let mut rx = pm.subscribe();
+
+        pm.ban_permanent(&overlay, BanCause::Requested, Some("operator".into()));
+        assert!(drain_events(&mut rx).iter().any(|e| matches!(
+            e,
+            PeerLifecycleEvent::Banned {
+                overlay: o,
+                until: None,
+                ..
+            } if *o == overlay
+        )));
+
+        let start = unix_timestamp_secs();
+        pm.tick(start + 365 * 24 * 3600);
+        assert!(pm.is_banned(&overlay), "permanent bans never expire");
+        assert!(
+            drain_events(&mut rx)
+                .iter()
+                .all(|e| !matches!(e, PeerLifecycleEvent::Unbanned { .. }))
+        );
+    }
+
+    #[test]
+    fn test_reports_for_banned_peer_are_dropped() {
+        let pm = thresholds_manager();
+        let overlay = test_overlay(1);
+        connect(&pm, 1, SwarmNodeType::Client);
+        let mut rx = pm.subscribe();
+
+        // Drive the peer to the ban threshold.
+        for _ in 0..15 {
+            pm.report_peer(
+                &overlay,
+                SwarmScoringEvent::ProtocolError,
+                ReportSource::Protocol("test"),
+            );
+        }
+        assert!(pm.is_banned(&overlay));
+        let until = drain_events(&mut rx)
+            .iter()
+            .find_map(|e| match e {
+                PeerLifecycleEvent::Banned {
+                    overlay: o, until, ..
+                } if *o == overlay => *until,
+                _ => None,
+            })
+            .expect("auto-ban must carry an expiry");
+        let score_at_ban = pm.get_peer_score(&overlay).unwrap();
+
+        // Lingering streams keep reporting: every report is dropped.
+        for _ in 0..5 {
+            pm.report_peer(
+                &overlay,
+                SwarmScoringEvent::ProtocolError,
+                ReportSource::Protocol("test"),
+            );
+        }
+        assert_eq!(
+            pm.get_peer_score(&overlay),
+            Some(score_at_ban),
+            "reports while banned must not change the score"
+        );
+        assert!(
+            drain_events(&mut rx).is_empty(),
+            "reports while banned must not emit lifecycle events"
+        );
+
+        // The original expiry stands: the extra reports did not extend it.
+        pm.tick(until);
+        assert!(
+            !pm.is_banned(&overlay),
+            "reports during the ban must not extend the expiry"
+        );
+    }
+
+    #[test]
+    fn test_warning_fires_again_after_decay_recovery() {
+        let pm = thresholds_manager();
+        let overlay = test_overlay(1);
+        connect(&pm, 1, SwarmNodeType::Client); // +1
+        let mut rx = pm.subscribe();
+
+        // +1 -> -11: crosses the warn threshold (-10) once.
+        for _ in 0..4 {
+            pm.report_peer(
+                &overlay,
+                SwarmScoringEvent::ProtocolError,
+                ReportSource::Topology,
+            );
+        }
+        let warnings = drain_events(&mut rx)
+            .iter()
+            .filter(|e| matches!(e, PeerLifecycleEvent::ScoreWarning { .. }))
+            .count();
+        assert_eq!(warnings, 1);
+
+        // One connected half-life halves -11 to about -5.5, above the warn
+        // threshold: the one-shot warning re-arms.
+        let start = unix_timestamp_secs();
+        pm.tick(start + 300);
+        assert!(pm.get_peer_score(&overlay).unwrap() > -10.0);
+
+        // Descend again: about -8.5 then about -11.5, warning fires again.
+        for _ in 0..2 {
+            pm.report_peer(
+                &overlay,
+                SwarmScoringEvent::ProtocolError,
+                ReportSource::Topology,
+            );
+        }
+        let warnings = drain_events(&mut rx)
+            .iter()
+            .filter(|e| matches!(e, PeerLifecycleEvent::ScoreWarning { .. }))
+            .count();
+        assert_eq!(warnings, 1, "a recovered peer must be warnable again");
     }
 
     #[test]

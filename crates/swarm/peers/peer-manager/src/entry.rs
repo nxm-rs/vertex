@@ -57,6 +57,16 @@ const STALE_THRESHOLD_SECS: u64 = 24 * 3600;
 /// Stale regardless of last_seen after this many consecutive failures (~48h of persistent failure).
 const STALE_FAILURE_THRESHOLD: u32 = 48;
 
+/// Score half-life for disconnected peers (10 minutes).
+pub(crate) const DISCONNECTED_SCORE_HALF_LIFE_SECS: u64 = 600;
+
+/// Score half-life for connected peers (5 minutes).
+///
+/// Double-rate decay: a connected peer that keeps behaving recovers its
+/// reputation twice as fast as a disconnected one, while a connected peer
+/// coasting on past goodwill loses it twice as fast too.
+pub(crate) const CONNECTED_SCORE_HALF_LIFE_SECS: u64 = 300;
+
 /// `(banned_at_unix_secs, reason)`. Runtime-only; never persisted.
 pub(crate) type BanInfo = (u64, String);
 
@@ -204,6 +214,13 @@ pub(crate) struct PeerEntry {
     last_seen: AtomicU64,
     backoff: PeerBackoff,
     ban_info: RwLock<Option<BanInfo>>,
+    /// Unix seconds of the last score decay pass over this entry.
+    ///
+    /// Updated by every tick (banned or not), so elapsed time is measured
+    /// against real ticks rather than an assumed cadence: a missed tick
+    /// decays by the true elapsed time on the next one, and a freshly
+    /// unbanned peer decays only from the tick that lifted the ban.
+    last_decay: AtomicU64,
     jitter_seed: u64,
     /// Unix seconds since the current connection completed its handshake;
     /// 0 while disconnected. Process-local, never persisted.
@@ -230,6 +247,7 @@ impl PeerEntry {
             last_seen: AtomicU64::new(now),
             backoff: PeerBackoff::new(),
             ban_info: RwLock::new(None),
+            last_decay: AtomicU64::new(now),
             jitter_seed: jitter_seed_from_overlay(&overlay),
             connected_since: AtomicU64::new(0),
             direction: AtomicU8::new(DIRECTION_NONE),
@@ -251,6 +269,7 @@ impl PeerEntry {
             last_seen: AtomicU64::new(snapshot.last_seen),
             backoff: PeerBackoff::new(),
             ban_info: RwLock::new(None),
+            last_decay: AtomicU64::new(unix_timestamp_secs()),
             jitter_seed: jitter_seed_from_overlay(&overlay),
             connected_since: AtomicU64::new(0),
             direction: AtomicU8::new(DIRECTION_NONE),
@@ -328,9 +347,42 @@ impl PeerEntry {
     /// Apply a scoring event, returning the outcome and score transition.
     ///
     /// Score changes flow exclusively through the peer manager's report
-    /// path; this is the only entry-level scoring write.
+    /// path; the only other scoring writes are the tick-driven
+    /// [`Self::decay_score`] and the unban-path [`Self::reset_score`].
     pub(crate) fn record_event(&self, event: SwarmScoringEvent) -> ScoreChange {
         self.scoring.record_event_change(event)
+    }
+
+    /// Decay the score toward zero for the time elapsed since the last
+    /// decay pass, returning `(old, new)` when a decay was applied.
+    ///
+    /// Connected peers decay at double rate
+    /// ([`CONNECTED_SCORE_HALF_LIFE_SECS`] vs
+    /// [`DISCONNECTED_SCORE_HALF_LIFE_SECS`]); both positive and negative
+    /// scores decay, so reputation is recency-weighted in either direction.
+    /// The elapsed clock always advances, but banned peers skip the decay
+    /// itself: their score is overwritten by the reset when the ban expires.
+    pub(crate) fn decay_score(&self, now_unix_secs: u64) -> Option<(f64, f64)> {
+        let prev = self.last_decay.swap(now_unix_secs, Ordering::AcqRel);
+        let elapsed = now_unix_secs.saturating_sub(prev);
+        if elapsed == 0 || self.is_banned() || self.score() == 0.0 {
+            return None;
+        }
+        let half_life = if self.is_connected() {
+            CONNECTED_SCORE_HALF_LIFE_SECS
+        } else {
+            DISCONNECTED_SCORE_HALF_LIFE_SECS
+        };
+        Some(self.scoring.decay(half_life, elapsed))
+    }
+
+    /// Reset the score to `score`, returning `(old, new)`.
+    ///
+    /// Used by the unban path to restart an expired ban at the disconnect
+    /// threshold; see [`SwarmPeerScore::reset`] for the warning-state
+    /// semantics.
+    pub(crate) fn reset_score(&self, score: f64) -> (f64, f64) {
+        self.scoring.reset(score)
     }
 
     /// Record connection state at handshake completion.
@@ -385,6 +437,12 @@ impl PeerEntry {
 
     pub(crate) fn ban(&self, reason: Option<String>) {
         *self.ban_info.write() = Some((unix_timestamp_secs(), reason.unwrap_or_default()));
+    }
+
+    /// Clear the ban marker (the manager's unban path owns the rest of the
+    /// unban bookkeeping: banned-set removal, score reset, lifecycle event).
+    pub(crate) fn clear_ban(&self) {
+        *self.ban_info.write() = None;
     }
 
     pub(crate) fn record_dial_failure(&self) {

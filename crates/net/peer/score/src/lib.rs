@@ -79,13 +79,17 @@ impl PeerScore {
     ///
     /// A `half_life_secs` of zero is treated as infinitely fast decay and
     /// resets the score to zero.
-    pub fn decay(&self, half_life_secs: u64, elapsed_secs: u64) {
+    ///
+    /// Returns `(old, new)` from the successful update so callers can keep
+    /// score aggregates consistent without racing a separate load.
+    pub fn decay(&self, half_life_secs: u64, elapsed_secs: u64) -> (f64, f64) {
         if elapsed_secs == 0 {
-            return;
+            let current = self.score.load(Ordering::Acquire);
+            return (current, current);
         }
         if half_life_secs == 0 {
-            self.score.store(0.0, Ordering::Release);
-            return;
+            let old = self.score.swap(0.0, Ordering::AcqRel);
+            return (old, 0.0);
         }
         let factor = 0.5_f64.powf(elapsed_secs as f64 / half_life_secs as f64);
         loop {
@@ -96,14 +100,16 @@ impl PeerScore {
                 .compare_exchange_weak(current, new_val, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
-                return;
+                return (current, new_val);
             }
         }
     }
 
-    pub fn set_score(&self, score: f64) {
+    /// Set the score directly, clamped to bounds; returns `(old, new)`.
+    pub fn set_score(&self, score: f64) -> (f64, f64) {
         let clamped = score.clamp(MIN_SCORE, MAX_SCORE);
-        self.score.store(clamped, Ordering::Release);
+        let old = self.score.swap(clamped, Ordering::AcqRel);
+        (old, clamped)
     }
 
     pub fn should_ban(&self, threshold: f64) -> bool {
@@ -258,10 +264,25 @@ mod tests {
     }
 
     #[test]
+    fn test_set_score_returns_old_and_new() {
+        let score = PeerScore::new();
+        let (old, new) = score.set_score(42.0);
+        assert_eq!(old, 0.0);
+        assert!((new - 42.0).abs() < 0.001);
+
+        // Clamped values report the clamped new score.
+        let (old, new) = score.set_score(-200.0);
+        assert!((old - 42.0).abs() < 0.001);
+        assert!((new - MIN_SCORE).abs() < 0.001);
+    }
+
+    #[test]
     fn test_decay_halves_over_one_half_life() {
         let score = PeerScore::new();
         score.set_score(80.0);
-        score.decay(600, 600);
+        let (old, new) = score.decay(600, 600);
+        assert!((old - 80.0).abs() < 0.001);
+        assert!((new - 40.0).abs() < 0.001);
         assert!((score.score() - 40.0).abs() < 0.001);
 
         // Negative scores decay toward zero too.

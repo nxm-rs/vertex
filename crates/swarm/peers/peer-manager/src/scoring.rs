@@ -34,12 +34,22 @@ impl<I: SwarmIdentity> PeerManager<I> {
     ///
     /// Reports for unknown peers are dropped: scoring only applies to peers
     /// the manager tracks.
+    ///
+    /// Reports for banned peers are dropped entirely. A banned peer's
+    /// lingering streams can keep producing events until topology closes
+    /// the connection; ignoring them guarantees a repeat offender cannot
+    /// re-emit `Banned`, extend its ban expiry, or perturb the score that
+    /// the unban path resets to the disconnect threshold.
     pub fn report_peer(
         &self,
         overlay: &OverlayAddress,
         event: SwarmScoringEvent,
         source: ReportSource,
     ) {
+        if self.banned_set.contains_key(overlay) {
+            trace!(?overlay, ?event, "dropping report for banned peer");
+            return;
+        }
         let Some(entry) = self
             .peers
             .get(overlay)
