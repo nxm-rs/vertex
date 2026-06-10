@@ -44,7 +44,6 @@ alloy-primitives.workspace = true
 bytes.workspace = true
 
 ## misc
-async-trait = "0.1"
 thiserror.workspace = true
 rand.workspace = true
 parking_lot.workspace = true

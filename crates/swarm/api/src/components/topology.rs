@@ -1,7 +1,9 @@
 //! Topology and neighborhood awareness using overlay addresses.
 
-use nectar_primitives::ChunkAddress;
+use core::future::Future;
 use std::vec::Vec;
+
+use nectar_primitives::ChunkAddress;
 
 use crate::SwarmIdentity;
 use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress};
@@ -75,34 +77,41 @@ pub trait SwarmTopologyStats: SwarmTopologyBins {
 }
 
 /// Write operations for topology control.
-#[async_trait::async_trait]
+///
+/// Consumed only through concrete handle types (never as a trait object), so
+/// the methods return `impl Future + Send` natively; the `Send` bounds keep the
+/// futures usable from spawned, multi-threaded contexts.
 pub trait SwarmTopologyCommands: Send + Sync {
     /// The error type for command failures.
     type Error: std::error::Error + Send + Sync;
 
     /// Trigger connection to bootnodes and trusted peers.
     #[must_use = "connection failures should be handled"]
-    async fn connect_bootnodes(&self) -> Result<(), Self::Error>;
+    fn connect_bootnodes(&self) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Initiate dial to peer address, queuing connection attempt.
     #[must_use = "dial failures should be handled"]
-    async fn dial(&self, addr: libp2p::Multiaddr) -> Result<(), Self::Error>;
+    fn dial(&self, addr: libp2p::Multiaddr)
+    -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Disconnect from peer, closing all connections.
     #[must_use = "disconnect failures should be handled"]
-    async fn disconnect(&self, peer: OverlayAddress) -> Result<(), Self::Error>;
+    fn disconnect(
+        &self,
+        peer: OverlayAddress,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Ban a peer and remove from routing.
     #[must_use = "ban failures should be handled"]
-    async fn ban_peer(
+    fn ban_peer(
         &self,
         peer: OverlayAddress,
         reason: Option<String>,
-    ) -> Result<(), Self::Error>;
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Flush known peers to persistent storage.
     #[must_use = "save failures should be handled"]
-    async fn save_peers(&self) -> Result<(), Self::Error>;
+    fn save_peers(&self) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
 
 /// Full topology interface combining state, routing, peers, and stats.

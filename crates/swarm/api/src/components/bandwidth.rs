@@ -11,6 +11,7 @@
 //!
 //! Providers are configured via [`SwarmAccountingConfig`] which specifies the [`BandwidthMode`].
 
+use core::future::Future;
 use std::vec::Vec;
 
 use nectar_primitives::ChunkAddress;
@@ -58,7 +59,11 @@ pub trait SwarmPeerState: Send + Sync {
 ///
 /// Providers are called at `pre_allow()` (before allowing transfers) and
 /// `settle()` (when explicit settlement is requested).
+///
+/// Injected into the accounting core as `Box<dyn SwarmSettlementProvider>`, so
+/// the trait stays object-safe via `async_trait`.
 #[async_trait::async_trait]
+#[auto_impl::auto_impl(&, Arc, Box)]
 pub trait SwarmSettlementProvider: Send + Sync + 'static {
     /// The bandwidth mode this provider supports.
     fn supported_mode(&self) -> BandwidthMode;
@@ -120,7 +125,10 @@ pub trait SwarmAccountingConfig: Send + Sync {
 }
 
 /// Per-peer bandwidth accounting handle.
-#[async_trait::async_trait]
+///
+/// Reached through the [`SwarmBandwidthAccounting::Peer`] associated type
+/// (never as a trait object), so `settle` returns `impl Future + Send`
+/// natively; the `Send` bound keeps settlement awaitable from spawned tasks.
 pub trait SwarmPeerBandwidth: Send + Sync {
     /// Record bandwidth usage (lock-free, must not block).
     fn record(&self, bytes: u64, direction: Direction);
@@ -132,7 +140,7 @@ pub trait SwarmPeerBandwidth: Send + Sync {
     fn balance(&self) -> i64;
 
     /// Request settlement (may involve network I/O).
-    async fn settle(&self) -> SwarmResult<()>;
+    fn settle(&self) -> impl Future<Output = SwarmResult<()>> + Send;
 
     /// Get the peer's overlay address.
     fn peer(&self) -> OverlayAddress;

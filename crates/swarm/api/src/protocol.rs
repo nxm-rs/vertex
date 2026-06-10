@@ -19,7 +19,6 @@ impl<Cfg> Default for SwarmProtocol<Cfg> {
     }
 }
 
-#[async_trait::async_trait]
 impl<Cfg> NodeProtocol for SwarmProtocol<Cfg>
 where
     Cfg: SwarmLaunchConfig,

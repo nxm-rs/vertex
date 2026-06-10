@@ -1,5 +1,6 @@
 //! Configuration traits for Swarm protocol components.
 
+use core::future::Future;
 use core::time::Duration;
 
 use libp2p::Multiaddr;
@@ -296,7 +297,10 @@ pub fn estimate_chunks_for_bytes(available_bytes: u64, chunk_size: usize) -> u64
 ///
 /// Build produces a task function (accepting graceful shutdown) and providers for RPC.
 /// The provider type varies by node capability (client vs storer).
-#[async_trait::async_trait]
+///
+/// Consumed by value through concrete config types (never as a trait object), so
+/// `build` returns `impl Future + Send` natively; the `Send` bound keeps the
+/// future spawnable when `SwarmProtocol::launch` awaits it.
 pub trait SwarmLaunchConfig: Send + Sync + 'static {
     /// The Swarm types for this configuration.
     type Types: SwarmNetworkTypes;
@@ -311,10 +315,10 @@ pub trait SwarmLaunchConfig: Send + Sync + 'static {
     ///
     /// Returns a task function that accepts a `GracefulShutdown` signal.
     /// When the signal fires, the task should clean up and exit gracefully.
-    async fn build(
+    fn build(
         self,
         ctx: &dyn InfrastructureContext,
-    ) -> Result<(NodeTaskFn, Self::Providers), Self::Error>;
+    ) -> impl Future<Output = Result<(NodeTaskFn, Self::Providers), Self::Error>> + Send;
 }
 
 /// Launch config for Client nodes.

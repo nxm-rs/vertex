@@ -4,7 +4,6 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use tracing::{info, warn};
 
 use vertex_net_peer_store::NetPeerStore;
@@ -398,7 +397,6 @@ async fn build_client_backed_node(
     })
 }
 
-#[async_trait]
 impl SwarmLaunchConfig for BootnodeConfig {
     type Types = BootnodeLaunchTypes;
     type Providers = BootnodeRpcProviders<Arc<Identity>>;
@@ -432,7 +430,6 @@ impl SwarmLaunchConfig for BootnodeConfig {
     }
 }
 
-#[async_trait]
 impl SwarmLaunchConfig for ClientConfig {
     type Types = ClientLaunchTypes;
     type Providers = ClientRpcProviders<Arc<Identity>, VerifiedChunkProvider>;
@@ -464,7 +461,6 @@ impl SwarmLaunchConfig for ClientConfig {
     }
 }
 
-#[async_trait]
 impl SwarmLaunchConfig for StorerConfig {
     type Types = StorerLaunchTypes;
     type Providers = StorerRpcProviders<Arc<Identity>, VerifiedChunkProvider>;
