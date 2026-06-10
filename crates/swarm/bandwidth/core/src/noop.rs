@@ -26,7 +26,6 @@ pub struct NoPeerBandwidth {
     peer: OverlayAddress,
 }
 
-#[async_trait::async_trait]
 impl SwarmPeerBandwidth for NoPeerBandwidth {
     fn record(&self, _bytes: u64, _direction: Direction) {}
 

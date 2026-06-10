@@ -1,6 +1,6 @@
 //! Protocol lifecycle trait for node infrastructure integration.
 
-use async_trait::async_trait;
+use core::future::Future;
 
 use crate::InfrastructureContext;
 
@@ -43,6 +43,12 @@ pub trait NodeBuildsProtocol: Send + Sync + 'static {
 /// Services (background tasks like SwarmNode, ClientService) are spawned
 /// internally by `launch()` and don't appear in the trait signature.
 ///
+/// # Dispatch
+///
+/// Launched only with concrete protocol types (never as a trait object), so
+/// `launch` returns `impl Future + Send` natively; the `Send` bound lets the
+/// node builder await it inside spawned, multi-threaded contexts.
+///
 /// # Example
 ///
 /// ```ignore
@@ -50,7 +56,6 @@ pub trait NodeBuildsProtocol: Send + Sync + 'static {
 ///
 /// struct MyProtocol;
 ///
-/// #[async_trait]
 /// impl NodeProtocol for MyProtocol {
 ///     type Config = MyConfig;
 ///     type Components = MyComponents;
@@ -71,7 +76,6 @@ pub trait NodeBuildsProtocol: Send + Sync + 'static {
 ///     }
 /// }
 /// ```
-#[async_trait]
 pub trait NodeProtocol: Sized + Send + Sync + 'static {
     /// Protocol-specific configuration.
     type Config: Send + Sync + 'static;
@@ -92,8 +96,8 @@ pub trait NodeProtocol: Sized + Send + Sync + 'static {
     /// 3. Returns components for continued use (RPC, metrics, etc.)
     ///
     /// Services are spawned as critical tasks - if they fail, the node shuts down.
-    async fn launch(
+    fn launch(
         config: Self::Config,
         ctx: &dyn InfrastructureContext,
-    ) -> Result<Self::Components, Self::BuildError>;
+    ) -> impl Future<Output = Result<Self::Components, Self::BuildError>> + Send;
 }

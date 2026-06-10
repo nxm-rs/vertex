@@ -278,7 +278,6 @@ impl AccountingPeerHandle {
     }
 }
 
-#[async_trait::async_trait]
 impl SwarmPeerBandwidth for AccountingPeerHandle {
     fn record(&self, bytes: u64, direction: Direction) {
         match direction {

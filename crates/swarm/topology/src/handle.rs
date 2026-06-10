@@ -210,7 +210,6 @@ impl<I: SwarmIdentity> SwarmTopologyStats for TopologyHandle<I> {
     }
 }
 
-#[async_trait::async_trait]
 impl<I: SwarmIdentity> SwarmTopologyCommands for TopologyHandle<I> {
     type Error = TopologyError;
 

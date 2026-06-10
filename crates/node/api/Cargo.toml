@@ -10,7 +10,6 @@ workspace = true
 
 [dependencies]
 # Core dependencies
-async-trait = "0.1"
 vertex-tasks.workspace = true
 
 # Feature-gated dependencies
