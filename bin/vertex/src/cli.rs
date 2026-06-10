@@ -90,6 +90,13 @@ pub async fn run() -> Result<()> {
         config.apply_args(&args.infra, &args.protocol);
         config.protocol.override_node_type(node_type);
 
+        // Resolve database config from CLI args (in-memory unless persistence
+        // is opted into via --db.path or --db.persist)
+        let database_config = config
+            .infra
+            .database
+            .database_config(dirs.network.join("db").join("vertex.redb"));
+
         // Build metrics config from CLI args
         let metrics_config = args.infra.observability.metrics.metrics_config();
 
@@ -107,6 +114,7 @@ pub async fn run() -> Result<()> {
         let executor = TaskExecutor::current();
         let launch_ctx = (executor.clone(), dirs.clone())
             .with_metrics(metrics_config, &histogram_buckets)?
+            .with_database_config(database_config)
             .start_metrics_server()
             .await?;
 

@@ -4,6 +4,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 
 use vertex_node_api::{InfrastructureContext, NodeBuildsProtocol, NodeProtocol, NodeRpcConfig};
+use vertex_node_core::args::DatabaseConfig;
 use vertex_node_core::dirs::DataDirs;
 use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
 use vertex_tasks::TaskExecutor;
@@ -16,16 +17,25 @@ pub struct LaunchContext<A = ()> {
     pub executor: TaskExecutor,
     pub dirs: DataDirs,
     pub api: A,
+    pub database: DatabaseConfig,
 }
 
 impl<A> LaunchContext<A> {
-    /// Create a new launch context.
+    /// Create a new launch context with an in-memory database configuration.
     pub fn new(executor: TaskExecutor, dirs: DataDirs, api: A) -> Self {
         Self {
             executor,
             dirs,
             api,
+            database: DatabaseConfig::default(),
         }
+    }
+
+    /// Set the resolved database configuration.
+    #[must_use]
+    pub fn with_database_config(mut self, database: DatabaseConfig) -> Self {
+        self.database = database;
+        self
     }
 
     /// Get the data directory root.
@@ -41,6 +51,10 @@ impl<A: Send + Sync> InfrastructureContext for LaunchContext<A> {
 
     fn data_dir(&self) -> &Path {
         &self.dirs.network
+    }
+
+    fn db_path(&self) -> Option<&Path> {
+        self.database.path.as_deref()
     }
 }
 
@@ -97,6 +111,13 @@ impl<A> WithLaunchContext<A> {
     /// Get a reference to the launch context.
     pub fn context(&self) -> &LaunchContext<A> {
         &self.ctx
+    }
+
+    /// Set the resolved database configuration on the launch context.
+    #[must_use]
+    pub fn with_database_config(mut self, database: DatabaseConfig) -> Self {
+        self.ctx = self.ctx.with_database_config(database);
+        self
     }
 
     /// Get the data directories.
