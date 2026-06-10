@@ -82,8 +82,9 @@ impl ProtocolConfig {
 }
 
 impl ProtocolConfig {
-    /// Set the node type.
-    pub fn set_node_type(&mut self, node_type: SwarmNodeType) {
+    /// Override the node type with the CLI-selected value, taking precedence
+    /// over whatever the loaded config file carried.
+    pub fn override_node_type(&mut self, node_type: SwarmNodeType) {
         self.node_type = node_type;
     }
 }

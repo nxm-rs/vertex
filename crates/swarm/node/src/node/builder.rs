@@ -164,7 +164,7 @@ impl<C: SwarmRoutingConfig> SwarmRoutingConfig for ConfigWithBootnodes<'_, C> {
 ///
 /// The `behaviour_fn` receives the libp2p public key and the topology behaviour,
 /// and must return both the composed NetworkBehaviour and a reference to its
-/// topology so we can call `set_local_peer_id`.
+/// topology so we can call `register_local_peer_id`.
 pub(crate) async fn build_base_node<I, B, C, F>(
     mut infra: BuiltInfrastructure<I>,
     network_config: &C,

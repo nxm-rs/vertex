@@ -255,7 +255,7 @@ fn build_network(bootnodes: Vec<String>) -> NetworkConfig {
             .filter_map(|addr| addr.parse().ok())
             .collect();
         if !parsed.is_empty() {
-            network.set_bootnodes(parsed);
+            network.override_bootnodes(parsed);
         }
     }
     network

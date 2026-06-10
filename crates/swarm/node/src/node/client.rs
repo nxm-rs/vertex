@@ -423,17 +423,17 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
         )
         .await?;
 
-        // Set local PeerId for address advertisement in handshakes
+        // Register the local PeerId for address advertisement in handshakes
         base.swarm
             .behaviour()
             .topology
-            .set_local_peer_id(*base.swarm.local_peer_id());
+            .register_local_peer_id(*base.swarm.local_peer_id());
 
         if let Some(tx) = self.pseudosettle_event_tx {
             base.swarm
                 .behaviour_mut()
                 .client
-                .set_pseudosettle_events(tx);
+                .route_pseudosettle_events(tx);
         }
 
         #[cfg(feature = "swap")]

@@ -421,12 +421,12 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
     // Public methods
 
-    /// Set the local PeerId for address advertisement in handshakes.
+    /// Register the local PeerId for address advertisement in handshakes.
     ///
     /// Must be called after the libp2p Swarm is built. All multiaddrs
     /// advertised to peers will include `/p2p/{peer_id}`.
-    pub fn set_local_peer_id(&self, peer_id: PeerId) {
-        self.nat_discovery.set_local_peer_id(peer_id);
+    pub fn register_local_peer_id(&self, peer_id: PeerId) {
+        self.nat_discovery.register_local_peer_id(peer_id);
     }
 
     /// Record an observed address reported by a peer.

@@ -45,8 +45,8 @@ impl From<&PeerArgs> for PeerConfig {
 }
 
 impl PeerConfig {
-    /// Set the store path if not already set.
-    pub fn set_default_store_path(&mut self, path: PathBuf) {
+    /// Fill in the default store path if none was configured.
+    pub fn apply_default_store_path(&mut self, path: PathBuf) {
         if self.store_path.is_none() {
             self.store_path = Some(path);
         }
