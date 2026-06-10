@@ -130,6 +130,16 @@ Default score adjustments:
 
 Custom adjustments via `add_score(delta)` or `set_score(value)`.
 
+## IP association tracking
+
+The peer manager tracks which remote IP each handshake-completed connection came from to detect identity cycling: an attacker that keeps one IP but rotates nonces (and therefore overlay addresses) to shed bans and reputation. Topology records the connection's remote IP at establishment and passes it to `on_peer_connected`; gossiped or self-asserted addresses are never used.
+
+Sightings are grouped per exact IPv4 address and per IPv6 /64 prefix (the standard end-site allocation, so one host cannot evade the cap by rotating interface identifiers). Each group holds a bounded deque of `(overlay, seen_at)` sightings with a sliding window, and a reverse index maps each overlay to its groups so removal from the peer set cleans the tracker in O(1) without scanning. Stale-peer purges in `PeerManager::tick` and admission replacements both flow through this cleanup.
+
+When the number of distinct overlays seen from one group within the window exceeds the configured cap (`IpTrackerConfig`, default 16 in 15 minutes), each further NEW overlay from that group is reported through the single scoring path as `RateLimitExceeded`. The response is deliberately score-based rather than an outright ban: a shared IPv4 address (CGNAT, campus NAT) can front many legitimate peers, and a direct ban would punish the cohort for one abuser. Peers with `TrustLevel::LocalSubnet` or `Trusted` are exempt entirely, so several nodes on one home LAN never trip the detector.
+
+Consumers can query the tracker through `PeerManager::overlays_seen_from_ip` and `PeerManager::ip_cycling_suspected`; the planned inbound handshake rate limiter uses these to throttle signature-recovery work for suspect source IPs. Observability: the `peer_manager_tracked_ips` gauge and the `peer_manager_ip_cycling_detections_total` counter.
+
 ## Thread Safety
 
 All types are `Send + Sync`. The design ensures:

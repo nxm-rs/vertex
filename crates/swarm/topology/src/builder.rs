@@ -1,7 +1,7 @@
 //! Builder for [`TopologyBehaviour`], separating construction from task spawning.
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
     time::Duration,
 };
@@ -212,6 +212,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
             early_disconnect_threshold: self.config.early_disconnect_threshold,
             pending_evictions: HashSet::new(),
             outbound_public_dials: HashSet::new(),
+            connection_remote_ips: HashMap::new(),
             lifecycle_rx,
             agent_versions,
             trust_local_peers: self.trust_local_peers,

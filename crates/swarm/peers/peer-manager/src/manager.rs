@@ -8,12 +8,14 @@
 //! peers, which bootnodes and hive gossip rediscover in seconds.
 
 use std::marker::PhantomData;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use dashmap::{DashMap, DashSet};
 use metrics::{counter, gauge};
+use parking_lot::Mutex;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 use vertex_net_local::IpCapability;
@@ -31,6 +33,7 @@ use crate::entry::{
     HealthState, PeerEntry, PeerSnapshot, TrustLevel, on_health_added, on_health_changed,
     on_health_removed, unix_timestamp_secs,
 };
+use crate::ip_tracker::{IpGroup, IpTracker, IpTrackerConfig, RecordOutcome};
 use crate::proximity_index::{AddError, ProximityIndex};
 use crate::score_distribution::ScoreDistribution;
 
@@ -70,6 +73,8 @@ pub struct PeerManagerConfig {
     pub snapshot_interval: Duration,
     /// Snapshot persistence; `None` keeps the peer set memory-only.
     pub store: Option<Arc<dyn PeerSnapshotStore<PeerSnapshot>>>,
+    /// IP association tracking thresholds for identity-cycling detection.
+    pub ip_tracker: IpTrackerConfig,
 }
 
 impl PeerManagerConfig {
@@ -93,6 +98,7 @@ impl Default for PeerManagerConfig {
             max_per_bin: Self::DEFAULT_MAX_PER_BIN,
             snapshot_interval: Self::DEFAULT_SNAPSHOT_INTERVAL,
             store: None,
+            ip_tracker: IpTrackerConfig::default(),
         }
     }
 }
@@ -123,6 +129,11 @@ pub struct PeerManager<I: SwarmIdentity> {
     pub(crate) score_distribution: Arc<ScoreDistribution>,
     /// Peer lifecycle event broadcast (see [`Self::subscribe`]).
     pub(crate) lifecycle_tx: broadcast::Sender<PeerLifecycleEvent>,
+    /// Remote-IP association tracking for identity-cycling detection.
+    ///
+    /// One short lock per handshake completion and overlay removal; never
+    /// touched on per-message paths.
+    pub(crate) ip_tracker: Mutex<IpTracker>,
 }
 
 impl<I: SwarmIdentity> PeerManager<I> {
@@ -138,6 +149,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
             max_per_bin,
             snapshot_interval,
             store,
+            ip_tracker,
         } = config;
         let local_overlay = identity.overlay_address();
         let max_po = identity.spec().max_po();
@@ -153,6 +165,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
             last_snapshot: AtomicU64::new(unix_timestamp_secs()),
             score_distribution: Arc::new(ScoreDistribution::new()),
             lifecycle_tx,
+            ip_tracker: Mutex::new(IpTracker::new(ip_tracker)),
         });
         pm.load_from_store();
         pm
@@ -452,12 +465,20 @@ impl<I: SwarmIdentity> PeerManager<I> {
     /// topology-computed [`TrustLevel`] on the entry, emits
     /// [`PeerLifecycleEvent::Connected`], and reports the connection success
     /// through [`Self::report_peer`].
+    ///
+    /// `remote_ip` is the IP the connection actually came from (not a
+    /// gossiped or self-asserted address) and feeds IP association
+    /// tracking; see [`Self::overlays_seen_from_ip`]. Peers trusted at
+    /// [`TrustLevel::LocalSubnet`] or above are exempt: several nodes on
+    /// one home LAN share an IP legitimately and must never trip the
+    /// cycling detector.
     pub fn on_peer_connected(
         &self,
         swarm_peer: SwarmPeer,
         node_type: SwarmNodeType,
         direction: ConnectionDirection,
         trust: TrustLevel,
+        remote_ip: Option<IpAddr>,
     ) {
         let overlay = OverlayAddress::from(*swarm_peer.overlay());
         debug!(?overlay, ?node_type, %direction, %trust, "peer connected");
@@ -483,6 +504,70 @@ impl<I: SwarmIdentity> PeerManager<I> {
             SwarmScoringEvent::ConnectionSuccess { latency: None },
             ReportSource::Topology,
         );
+
+        if let Some(ip) = remote_ip
+            && trust < TrustLevel::LocalSubnet
+        {
+            self.track_ip_association(overlay, ip);
+        }
+    }
+
+    /// Record an overlay sighting from `ip` and act on a cap crossing.
+    ///
+    /// Detection is score-based, not dial-filter-based: the flagged overlay
+    /// is reported through the single scoring path
+    /// ([`SwarmScoringEvent::RateLimitExceeded`]) rather than banned
+    /// outright, because a shared IPv4 address (CGNAT, campus NAT) can
+    /// front many legitimate peers and a direct ban would punish a cohort
+    /// for one abuser. Sustained cycling keeps producing fresh flagged
+    /// identities; the inbound handshake rate limiter is the enforcement
+    /// point that makes that expensive, and it reads the per-IP counts via
+    /// [`Self::overlays_seen_from_ip`].
+    fn track_ip_association(&self, overlay: OverlayAddress, ip: IpAddr) {
+        let now = unix_timestamp_secs();
+        let (outcome, tracked) = {
+            let mut tracker = self.ip_tracker.lock();
+            let outcome = tracker.record(overlay, IpGroup::from(ip), now);
+            (outcome, tracker.tracked_ips())
+        };
+        gauge!("peer_manager_tracked_ips").set(tracked as f64);
+
+        if let RecordOutcome::CyclingDetected { distinct } = outcome {
+            counter!("peer_manager_ip_cycling_detections_total").increment(1);
+            warn!(
+                ?overlay,
+                %ip,
+                distinct,
+                "identity cycling suspected: too many distinct overlays from one IP"
+            );
+            self.report_peer(
+                &overlay,
+                SwarmScoringEvent::RateLimitExceeded,
+                ReportSource::Topology,
+            );
+        }
+    }
+
+    /// Distinct overlays seen from `ip`'s tracking group (exact address
+    /// for IPv4, /64 prefix for IPv6) within the sighting window.
+    ///
+    /// Consulted by inbound admission logic such as the handshake rate
+    /// limiter to judge whether a source IP is cycling identities before
+    /// spending signature recovery on it.
+    #[must_use]
+    pub fn overlays_seen_from_ip(&self, ip: IpAddr) -> usize {
+        self.ip_tracker
+            .lock()
+            .distinct_overlays(ip, unix_timestamp_secs())
+    }
+
+    /// Whether `ip`'s tracking group has shown more distinct overlays
+    /// within the window than the configured cap tolerates.
+    #[must_use]
+    pub fn ip_cycling_suspected(&self, ip: IpAddr) -> bool {
+        let mut tracker = self.ip_tracker.lock();
+        let cap = tracker.config().max_overlays_per_ip;
+        tracker.distinct_overlays(ip, unix_timestamp_secs()) > cap
     }
 
     /// Called by topology when the last connection to a peer closes.
@@ -647,7 +732,8 @@ impl<I: SwarmIdentity> PeerManager<I> {
         best.map(|(overlay, _, _)| overlay)
     }
 
-    /// Fully remove a peer from all data structures (index, peer set, banned set).
+    /// Fully remove a peer from all data structures (index, peer set,
+    /// banned set, IP tracker reverse index).
     pub(crate) fn remove_peer(&self, overlay: &OverlayAddress) {
         if let Some((_, entry)) = self.peers.remove(overlay) {
             self.score_distribution.on_peer_removed(entry.score());
@@ -659,6 +745,12 @@ impl<I: SwarmIdentity> PeerManager<I> {
         if self.banned_set.remove(overlay).is_some() {
             gauge!("peer_manager_banned_peers").decrement(1.0);
         }
+        let tracked = {
+            let mut tracker = self.ip_tracker.lock();
+            tracker.on_overlay_removed(overlay);
+            tracker.tracked_ips()
+        };
+        gauge!("peer_manager_tracked_ips").set(tracked as f64);
     }
 }
 
@@ -712,6 +804,18 @@ mod tests {
             node_type,
             ConnectionDirection::Outbound,
             TrustLevel::Normal,
+            None,
+        );
+    }
+
+    /// Connect peer `n` asserting it arrived from `ip` with `trust`.
+    fn connect_from_ip(pm: &PeerManager<MockIdentity>, n: u8, ip: IpAddr, trust: TrustLevel) {
+        pm.on_peer_connected(
+            test_swarm_peer(n),
+            SwarmNodeType::Client,
+            ConnectionDirection::Inbound,
+            trust,
+            Some(ip),
         );
     }
 
@@ -1218,6 +1322,7 @@ mod tests {
                 SwarmNodeType::Client,
                 ConnectionDirection::Outbound,
                 TrustLevel::Normal,
+                None,
             );
         }
 
@@ -1250,6 +1355,7 @@ mod tests {
             SwarmNodeType::Client,
             ConnectionDirection::Outbound,
             TrustLevel::Normal,
+            None,
         );
         pm.store_discovered_peer(make_swarm_peer_minimal(0xc0));
         let connected = OverlayAddress::from(*make_swarm_peer_minimal(0x80).overlay());
@@ -1549,6 +1655,7 @@ mod tests {
             SwarmNodeType::Storer,
             ConnectionDirection::Inbound,
             TrustLevel::LocalSubnet,
+            None,
         );
         assert!(pm.is_connected(&overlay));
         assert!(pm.connected_since(&overlay).is_some());
@@ -1588,12 +1695,143 @@ mod tests {
             SwarmNodeType::Storer,
             ConnectionDirection::Outbound,
             TrustLevel::Trusted,
+            None,
         );
 
         pm.store_discovered_peer(test_swarm_peer(1));
 
         assert_eq!(pm.node_type(&overlay), Some(SwarmNodeType::Storer));
         assert_eq!(pm.trust_level(&overlay), TrustLevel::Trusted);
+    }
+
+    /// Manager with a small IP-cycling cap so tests stay compact.
+    fn ip_manager(cap: usize) -> Arc<PeerManager<MockIdentity>> {
+        PeerManager::new(
+            &mock_identity(),
+            PeerManagerConfig {
+                ip_tracker: IpTrackerConfig {
+                    max_overlays_per_ip: cap,
+                    window: Duration::from_secs(900),
+                    max_sightings_per_ip: cap * 4,
+                },
+                ..Default::default()
+            },
+        )
+    }
+
+    const ATTACKER_IP: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 7));
+
+    #[test]
+    fn test_ip_cycling_detected_past_cap() {
+        let pm = ip_manager(3);
+
+        // A NAT-sized cohort: exactly cap distinct overlays, no penalty.
+        for n in 1..=3 {
+            connect_from_ip(&pm, n, ATTACKER_IP, TrustLevel::Normal);
+        }
+        assert!(!pm.ip_cycling_suspected(ATTACKER_IP));
+        for n in 1..=3 {
+            assert!(pm.get_peer_score(&test_overlay(n)).unwrap() > 0.0);
+        }
+
+        // The cap+1th NEW overlay from the same IP is flagged and penalized.
+        connect_from_ip(&pm, 4, ATTACKER_IP, TrustLevel::Normal);
+        assert!(pm.ip_cycling_suspected(ATTACKER_IP));
+        assert_eq!(pm.overlays_seen_from_ip(ATTACKER_IP), 4);
+        assert!(
+            pm.get_peer_score(&test_overlay(4)).unwrap() < 0.0,
+            "the new identity from the over-cap IP must take the penalty"
+        );
+        // Earlier identities from that IP are not retroactively punished.
+        for n in 1..=3 {
+            assert!(pm.get_peer_score(&test_overlay(n)).unwrap() > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_ip_reconnect_of_known_overlay_is_not_cycling() {
+        let pm = ip_manager(2);
+
+        for n in 1..=2 {
+            connect_from_ip(&pm, n, ATTACKER_IP, TrustLevel::Normal);
+        }
+        // The same peers reconnecting from the same IP must not count as
+        // new identities.
+        for n in 1..=2 {
+            connect_from_ip(&pm, n, ATTACKER_IP, TrustLevel::Normal);
+        }
+        assert!(!pm.ip_cycling_suspected(ATTACKER_IP));
+        assert_eq!(pm.overlays_seen_from_ip(ATTACKER_IP), 2);
+        for n in 1..=2 {
+            assert!(pm.get_peer_score(&test_overlay(n)).unwrap() > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_ip_tracking_exempts_local_and_trusted_peers() {
+        let pm = ip_manager(2);
+
+        // A home LAN: many nodes behind one IP, all local or explicitly
+        // trusted. None of them may be recorded, let alone penalized.
+        for n in 1..=4 {
+            connect_from_ip(&pm, n, ATTACKER_IP, TrustLevel::LocalSubnet);
+        }
+        for n in 5..=6 {
+            connect_from_ip(&pm, n, ATTACKER_IP, TrustLevel::Trusted);
+        }
+
+        assert_eq!(pm.overlays_seen_from_ip(ATTACKER_IP), 0);
+        assert!(!pm.ip_cycling_suspected(ATTACKER_IP));
+        for n in 1..=6 {
+            assert!(pm.get_peer_score(&test_overlay(n)).unwrap() > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_ip_reverse_index_cleaned_on_purge() {
+        let pm = ip_manager(3);
+
+        for n in 1..=3 {
+            connect_from_ip(&pm, n, ATTACKER_IP, TrustLevel::Normal);
+        }
+        assert_eq!(pm.overlays_seen_from_ip(ATTACKER_IP), 3);
+
+        // Drive peer 2 stale and purge it via the tick path.
+        pm.on_peer_disconnected(&test_overlay(2), "test");
+        for _ in 0..48 {
+            pm.record_dial_failure(&test_overlay(2));
+        }
+        pm.tick(unix_timestamp_secs());
+        assert!(pm.get_swarm_peer(&test_overlay(2)).is_none());
+
+        // The purge freed the IP slot, so a new overlay stays under the cap.
+        assert_eq!(pm.overlays_seen_from_ip(ATTACKER_IP), 2);
+        connect_from_ip(&pm, 4, ATTACKER_IP, TrustLevel::Normal);
+        assert!(!pm.ip_cycling_suspected(ATTACKER_IP));
+        assert!(pm.get_peer_score(&test_overlay(4)).unwrap() > 0.0);
+    }
+
+    #[test]
+    fn test_ip_tracking_groups_ipv6_by_slash64() {
+        let pm = ip_manager(2);
+        let a: IpAddr = "2001:db8:42:1::1".parse().unwrap();
+        let b: IpAddr = "2001:db8:42:1:dead:beef::1".parse().unwrap();
+        let other: IpAddr = "2001:db8:42:2::1".parse().unwrap();
+
+        connect_from_ip(&pm, 1, a, TrustLevel::Normal);
+        connect_from_ip(&pm, 2, b, TrustLevel::Normal);
+        // Third overlay from the same /64 (different interface id) trips
+        // the cap.
+        connect_from_ip(&pm, 3, a, TrustLevel::Normal);
+
+        assert!(pm.ip_cycling_suspected(a));
+        assert!(pm.ip_cycling_suspected(b), "queries group by /64 too");
+        assert!(pm.get_peer_score(&test_overlay(3)).unwrap() < 0.0);
+
+        // A neighbouring /64 is unaffected.
+        assert!(!pm.ip_cycling_suspected(other));
+        connect_from_ip(&pm, 4, other, TrustLevel::Normal);
+        assert!(pm.get_peer_score(&test_overlay(4)).unwrap() > 0.0);
     }
 
     #[test]
