@@ -22,12 +22,12 @@ use libp2p::{
 };
 use tracing::{debug, info, warn};
 use vertex_net_local::{AddressScope, classify_multiaddr, same_subnet};
-use vertex_net_peer_store::NetPeerStore;
+use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_swarm_api::{BanCause, PeerLifecycleEvent, SwarmIdentity};
 use vertex_swarm_net_hive::MAX_BATCH_SIZE;
 use vertex_swarm_net_identify as identify;
 use vertex_swarm_peer::SwarmPeer;
-use vertex_swarm_peer_manager::{PeerManager, StoredPeer, TrustLevel};
+use vertex_swarm_peer_manager::{PeerManager, PeerSnapshot, TrustLevel};
 use vertex_swarm_primitives::{Bin, OverlayAddress, all_bins};
 
 use crate::DialReason;
@@ -45,8 +45,8 @@ use crate::kademlia::{KademliaConfig, KademliaRouting, RoutingEvaluatorHandle, S
 use crate::metrics::{TopologyMetrics, po_label};
 use crate::nat_discovery::LocalAddressManager;
 
-/// Type-erased peer store supporting both file-based and database-backed storage.
-pub(crate) type PeerStore = Arc<dyn NetPeerStore<StoredPeer>>;
+/// Type-erased peer snapshot store.
+pub(crate) type PeerStore = Arc<dyn PeerSnapshotStore<PeerSnapshot>>;
 
 /// Default interval between connection-evaluation rounds.
 ///
@@ -58,12 +58,6 @@ pub const DEFAULT_DIAL_INTERVAL: Duration = Duration::from_secs(5);
 /// disconnects, so a peer that repeatedly connects and immediately leaves is
 /// scored down.
 const DEFAULT_EARLY_DISCONNECT_THRESHOLD: Duration = Duration::from_secs(30);
-
-/// Default interval between periodic peer saves to persistent storage.
-///
-/// Trades store-write frequency against how many freshly learned peers a crash
-/// can lose.
-const DEFAULT_PEER_SAVE_INTERVAL: Duration = Duration::from_secs(300);
 
 /// Event broadcast buffer (256 allows burst without blocking poll loop).
 pub(crate) const EVENT_CHANNEL_CAPACITY: usize = 256;
@@ -151,7 +145,6 @@ pub struct TopologyConfig {
     pub gossip: GossipConfig,
     pub dial_interval: Duration,
     pub early_disconnect_threshold: Duration,
-    pub peer_save_interval: Duration,
 }
 
 impl Default for TopologyConfig {
@@ -161,7 +154,6 @@ impl Default for TopologyConfig {
             gossip: GossipConfig::default(),
             dial_interval: DEFAULT_DIAL_INTERVAL,
             early_disconnect_threshold: DEFAULT_EARLY_DISCONNECT_THRESHOLD,
-            peer_save_interval: DEFAULT_PEER_SAVE_INTERVAL,
         }
     }
 }
@@ -189,11 +181,6 @@ impl TopologyConfig {
 
     pub fn with_early_disconnect_threshold(mut self, threshold: Duration) -> Self {
         self.early_disconnect_threshold = threshold;
-        self
-    }
-
-    pub fn with_peer_save_interval(mut self, interval: Duration) -> Self {
-        self.peer_save_interval = interval;
         self
     }
 }
@@ -234,9 +221,6 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
     // Periodic dial interval
     pub(crate) dial_interval: LazyInterval,
 
-    // Periodic peer save interval (only ticks when peer_store is Some)
-    pub(crate) peer_save_interval: LazyInterval,
-
     // Pending dnsaddr resolution for bootnodes (resolved_bootnodes, resolved_trusted)
     #[allow(clippy::type_complexity)]
     pub(crate) pending_bootnode_resolution:
@@ -274,9 +258,6 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
     /// set is reconciled so a dropped `Banned` event cannot strand a banned
     /// peer connected (see [`PeerManager::subscribe`]).
     pub(crate) lifecycle_rx: broadcast::Receiver<PeerLifecycleEvent>,
-
-    /// Persistent peer store (None for ephemeral mode).
-    pub(crate) peer_store: Option<PeerStore>,
 
     /// Agent versions received via identify, shared with identify behaviour.
     pub(crate) agent_versions: identify::AgentVersions,
@@ -380,16 +361,13 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
     // Peer store
 
-    /// Collect dirty hot peers and flush all pending writes to persistent storage.
+    /// Write the full peer set to the snapshot store (no-op without one).
     pub(crate) fn save_peers(&self) {
-        if self.peer_store.is_some() {
-            self.peer_manager.collect_dirty();
-            self.peer_manager.flush_write_buffer();
-            debug!(
-                peers = self.peer_manager.index().len(),
-                "Flushed peers to store"
-            );
-        }
+        self.peer_manager.snapshot();
+        debug!(
+            peers = self.peer_manager.index().len(),
+            "Saved peer snapshot"
+        );
     }
 
     pub(crate) fn broadcast_peers(&mut self, to: OverlayAddress, peers: Vec<SwarmPeer>) {
@@ -796,11 +774,6 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
             self.evaluator_handle.trigger_evaluation();
         }
 
-        // Periodic peer save (safety net against crashes)
-        if self.peer_store.is_some() && self.peer_save_interval.poll_tick(cx).is_ready() {
-            self.save_peers();
-        }
-
         // Poll composed protocols and process their events
         loop {
             match self.protocols.poll(cx) {
@@ -889,11 +862,9 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
 
 impl<I: SwarmIdentity + Clone> Drop for TopologyBehaviour<I> {
     fn drop(&mut self) {
-        // Collect dirty hot peers and flush pending writes on shutdown
-        if self.peer_store.is_some() {
-            self.peer_manager.collect_dirty();
-            self.peer_manager.flush_write_buffer();
-        }
+        // Final snapshot so shutdown state is not lost to the periodic
+        // snapshot interval.
+        self.peer_manager.snapshot();
 
         let active = self.connection_registry.active_count();
         let pending = self.connection_registry.pending_count();

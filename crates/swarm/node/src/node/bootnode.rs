@@ -301,19 +301,7 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
     pub async fn build<C>(
         self,
         network_config: &C,
-        peer_store: Option<
-            std::sync::Arc<
-                dyn vertex_net_peer_store::NetPeerStore<vertex_swarm_peer_manager::StoredPeer>,
-            >,
-        >,
-        score_store: Option<
-            std::sync::Arc<
-                dyn vertex_swarm_api::SwarmScoreStore<
-                        Score = vertex_swarm_peer_score::PeerScore,
-                        Error = vertex_net_peer_store::error::StoreError,
-                    >,
-            >,
-        >,
+        peer_store: Option<super::builder::PeerStore>,
     ) -> Result<BootNode<I>>
     where
         I: vertex_swarm_spec::HasSpec + SwarmIdentityConfig,
@@ -337,7 +325,6 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
                     network_config,
                     topology_config,
                     peer_store,
-                    score_store,
                 )?
             }
         };
@@ -447,9 +434,7 @@ mod tests {
 
         let network = TestConfig::new();
 
-        let result = BootNode::builder(identity)
-            .build(&network, None, None)
-            .await;
+        let result = BootNode::builder(identity).build(&network, None).await;
 
         let err = match result {
             Ok(_) => panic!("ephemeral bootnode must fail to build"),

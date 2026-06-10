@@ -441,7 +441,7 @@ async fn spawn_bootnode(
 
     let overlay = identity.overlay_address();
     let mut bootnode = BootNode::builder(identity)
-        .build(&network_config, None, None)
+        .build(&network_config, None)
         .await
         .wrap_err("failed to build bootnode")?;
     bootnode
@@ -477,7 +477,7 @@ async fn spawn_client(
 
     let overlay = identity.overlay_address();
     let (mut client, _service, _handle) = ClientNode::builder(identity)
-        .build(&network_config, None, None)
+        .build(&network_config, None)
         .await
         .wrap_err("failed to build client node")?;
     client

@@ -6,23 +6,21 @@ use std::time::Duration;
 
 use tracing::{info, warn};
 
-use vertex_net_peer_store::NetPeerStore;
-use vertex_net_peer_store::error::StoreError;
+use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
 #[cfg(feature = "swap")]
 use vertex_swarm_api::SwarmClientAccounting;
-use vertex_swarm_api::{
-    PeerConfigValues, SwarmLaunchConfig, SwarmNodeType, SwarmPeerConfig, SwarmScoreStore,
-};
+use vertex_swarm_api::{PeerConfigValues, SwarmLaunchConfig, SwarmNodeType, SwarmPeerConfig};
 use vertex_swarm_bandwidth::{
     Accounting, AccountingBuilder, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::NetworkConfig;
 use vertex_swarm_node::{BootNode, ClientNode};
-use vertex_swarm_peer_manager::{DbPeerStore, StoredPeer};
-use vertex_swarm_peer_score::PeerScore;
+use vertex_swarm_peer_manager::{
+    DEFAULT_TICK_INTERVAL, DbPeerSnapshotStore, PeerSnapshot, spawn_peer_manager_task,
+};
 use vertex_swarm_spec::{Loggable, Spec};
 use vertex_swarm_topology::{KademliaConfig, TopologyHandle};
 use vertex_tasks::{GracefulShutdown, NodeTaskFn};
@@ -46,8 +44,7 @@ use vertex_swarm_node::args::SwapConfig;
 #[cfg(feature = "chain")]
 use crate::chain::SharedChainProvider;
 
-type PeerStore = Arc<dyn NetPeerStore<StoredPeer>>;
-type PeerScoreStore = Arc<dyn SwarmScoreStore<Score = PeerScore, Error = StoreError>>;
+type PeerStore = Arc<dyn PeerSnapshotStore<PeerSnapshot>>;
 
 /// Stats collection interval for database metrics.
 const DB_METRICS_INTERVAL: Duration = Duration::from_secs(30);
@@ -212,23 +209,17 @@ async fn build_node_chain_provider(
     Ok(Some(provider))
 }
 
-fn create_peer_store(
-    db: &Option<Arc<RedbDatabase>>,
-) -> (Option<PeerStore>, Option<PeerScoreStore>) {
-    let Some(db) = db.as_ref() else {
-        return (None, None);
-    };
-    let store = Arc::new(DbPeerStore::new(db.clone()));
+fn create_peer_store(db: &Option<Arc<RedbDatabase>>) -> Option<PeerStore> {
+    let db = db.as_ref()?;
+    let store = Arc::new(DbPeerSnapshotStore::new(db.clone()));
     match store.init() {
         Ok(()) => {
-            info!("Peer store: shared database");
-            let peer_store: PeerStore = Arc::clone(&store) as _;
-            let score_store: PeerScoreStore = store as _;
-            (Some(peer_store), Some(score_store))
+            info!("Peer snapshot store: shared database");
+            Some(store as PeerStore)
         }
         Err(e) => {
-            warn!(error = %e, "Failed to init peer table");
-            (None, None)
+            warn!(error = %e, "Failed to init peer snapshot table");
+            None
         }
     }
 }
@@ -316,7 +307,7 @@ async fn build_client_backed_node(
     log_build_start(node_type, params.spec, params.network);
 
     let db = open_shared_database(ctx);
-    let (peer_store, score_store) = create_peer_store(&db);
+    let peer_store = create_peer_store(&db);
 
     // Prepare SWAP settlement first: the provider must be embedded in the
     // accounting, and the swap event sink must be routed at node build time.
@@ -337,11 +328,16 @@ async fn build_client_backed_node(
         None => node_builder,
     };
     let (node, client_service, client_handle) = node_builder
-        .build(params.network, peer_store, score_store)
+        .build(params.network, peer_store)
         .await
         .map_err(|e| SwarmNodeError::Build(e.into()))?;
 
     let topology = node.topology_handle().clone();
+    spawn_peer_manager_task(
+        Arc::clone(topology.peer_manager()),
+        DEFAULT_TICK_INTERVAL,
+        ctx.executor(),
+    );
     let chunk_provider = NetworkChunkProvider::new(client_handle.clone(), topology.clone());
     let chunks = VerifyingChunkProvider::new(chunk_provider, params.verify);
 
@@ -409,14 +405,19 @@ impl SwarmLaunchConfig for BootnodeConfig {
         log_build_start(SwarmNodeType::Bootnode, self.spec(), self.network());
 
         let db = open_shared_database(ctx);
-        let (peer_store, score_store) = create_peer_store(&db);
+        let peer_store = create_peer_store(&db);
 
         let node = BootNode::builder(self.identity().clone())
-            .build(self.network(), peer_store, score_store)
+            .build(self.network(), peer_store)
             .await
             .map_err(|e| SwarmNodeError::Build(e.into()))?;
 
         let topology = node.topology_handle().clone();
+        spawn_peer_manager_task(
+            Arc::clone(topology.peer_manager()),
+            DEFAULT_TICK_INTERVAL,
+            ctx.executor(),
+        );
         let providers = BootnodeRpcProviders::new(topology);
 
         let task = single_task(move |shutdown| async move {

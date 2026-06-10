@@ -7,14 +7,11 @@ use libp2p::{
     Multiaddr, SwarmBuilder, identity::PublicKey, noise, swarm::NetworkBehaviour, tcp, yamux,
 };
 use tracing::{info, warn};
-use vertex_net_peer_store::NetPeerStore;
-use vertex_net_peer_store::error::StoreError;
-use vertex_swarm_api::SwarmScoreStore;
+use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_swarm_api::{
     SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig, SwarmTopologyCommands,
 };
-use vertex_swarm_peer_manager::StoredPeer;
-use vertex_swarm_peer_score::PeerScore;
+use vertex_swarm_peer_manager::PeerSnapshot;
 use vertex_swarm_spec::HasSpec;
 use vertex_swarm_topology::{
     KademliaConfig, TopologyBehaviour, TopologyBehaviourBuilder, TopologyConfig, TopologyHandle,
@@ -25,8 +22,7 @@ use super::error::NodeBuildError;
 
 use crate::BootnodeProvider;
 
-type PeerStore = std::sync::Arc<dyn NetPeerStore<StoredPeer>>;
-type PeerScoreStore = std::sync::Arc<dyn SwarmScoreStore<Score = PeerScore, Error = StoreError>>;
+pub(crate) type PeerStore = std::sync::Arc<dyn PeerSnapshotStore<PeerSnapshot>>;
 
 /// Pre-built infrastructure components ready for swarm assembly.
 pub struct BuiltInfrastructure<I: SwarmIdentity + Clone> {
@@ -54,7 +50,6 @@ impl<I: SwarmIdentity + Clone> BuiltInfrastructure<I> {
         network_config: &C,
         topology_config: TopologyConfig,
         peer_store: Option<PeerStore>,
-        score_store: Option<PeerScoreStore>,
     ) -> Result<Self>
     where
         I: HasSpec,
@@ -75,9 +70,6 @@ impl<I: SwarmIdentity + Clone> BuiltInfrastructure<I> {
             .with_config(topology_config);
         if let Some(store) = peer_store {
             builder = builder.with_peer_store(store);
-        }
-        if let Some(store) = score_store {
-            builder = builder.with_score_store(store);
         }
         let (mut topology_behaviour, topology_handle) = builder
             .try_build()
