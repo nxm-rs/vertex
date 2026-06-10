@@ -13,14 +13,11 @@ workspace = true
 
 [dependencies]
 ## vertex
-nectar-primitives.workspace = true
+nectar-primitives = { workspace = true, features = ["serde"] }
 vertex-metrics.workspace = true
-vertex-storage.workspace = true
+vertex-storage = { workspace = true, features = ["nectar"] }
 vertex-swarm-primitives.workspace = true
 vertex-swarm-api.workspace = true
-
-## storage
-redb = "2"
 
 ## async
 async-trait.workspace = true
@@ -41,6 +38,7 @@ tracing.workspace = true
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["rt", "macros"] }
+vertex-storage-redb.workspace = true
 
 [features]
 default = ["std"]

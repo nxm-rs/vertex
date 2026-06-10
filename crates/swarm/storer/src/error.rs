@@ -35,39 +35,3 @@ pub enum StorerError {
 impl StorerError {
     vertex_metrics::impl_record_error!("storer_errors_total");
 }
-
-impl From<redb::DatabaseError> for StorerError {
-    fn from(err: redb::DatabaseError) -> Self {
-        StorerError::Database(DatabaseError::open_err(err))
-    }
-}
-
-impl From<redb::TransactionError> for StorerError {
-    fn from(err: redb::TransactionError) -> Self {
-        StorerError::Database(DatabaseError::InitTx(
-            vertex_storage::DatabaseErrorInfo::from_err(err),
-        ))
-    }
-}
-
-impl From<redb::TableError> for StorerError {
-    fn from(err: redb::TableError) -> Self {
-        StorerError::Database(DatabaseError::Read(
-            vertex_storage::DatabaseErrorInfo::from_err(err),
-        ))
-    }
-}
-
-impl From<redb::StorageError> for StorerError {
-    fn from(err: redb::StorageError) -> Self {
-        StorerError::Database(DatabaseError::Read(
-            vertex_storage::DatabaseErrorInfo::from_err(err),
-        ))
-    }
-}
-
-impl From<redb::CommitError> for StorerError {
-    fn from(err: redb::CommitError) -> Self {
-        StorerError::Database(DatabaseError::commit_err(err))
-    }
-}

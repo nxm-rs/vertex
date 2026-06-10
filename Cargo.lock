@@ -9243,7 +9243,6 @@ dependencies = [
  "metrics",
  "nectar-primitives",
  "parking_lot",
- "redb",
  "strum 0.28.0",
  "tempfile",
  "thiserror 2.0.18",
@@ -9251,6 +9250,7 @@ dependencies = [
  "tracing",
  "vertex-metrics",
  "vertex-storage",
+ "vertex-storage-redb",
  "vertex-swarm-api",
  "vertex-swarm-primitives",
 ]
