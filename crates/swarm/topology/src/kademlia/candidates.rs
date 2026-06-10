@@ -256,6 +256,7 @@ pub(crate) fn select_balanced_candidates<I: SwarmIdentity>(
 mod tests {
     use super::super::DepthAwareLimits;
     use super::*;
+    use vertex_swarm_peer_manager::PeerManagerConfig;
     use vertex_swarm_test_utils::make_overlay;
 
     fn b(n: u8) -> Bin {
@@ -275,7 +276,7 @@ mod tests {
         use vertex_swarm_test_utils::{MockIdentity, make_swarm_peer_minimal};
 
         let identity = MockIdentity::with_first_byte(0x00);
-        let peer_manager = PeerManager::new(&identity);
+        let peer_manager = PeerManager::new(&identity, PeerManagerConfig::default());
 
         let mut in_progress = HashSet::new();
         in_progress.insert(make_overlay(1));

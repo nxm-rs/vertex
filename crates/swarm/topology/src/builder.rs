@@ -16,7 +16,7 @@ use vertex_net_peer_store::error::StoreError;
 use vertex_swarm_api::{PeerConfigValues, SwarmBootnodeConfig, SwarmIdentity, SwarmScoreStore};
 use vertex_swarm_net_handshake::HANDSHAKE_TIMEOUT;
 use vertex_swarm_net_identify as identify;
-use vertex_swarm_peer_manager::{PeerManager, StoredPeer};
+use vertex_swarm_peer_manager::{PeerManager, PeerManagerConfig, StoredPeer};
 use vertex_swarm_peer_score::{PeerScore, SwarmScoringConfig};
 use vertex_swarm_spec::{HasSpec, Spec};
 
@@ -136,17 +136,16 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
         let (event_tx, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let (command_tx, command_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
 
-        let peer_manager = if let Some(ref store) = self.peer_store {
-            PeerManager::with_store(
-                &self.identity,
-                store.clone(),
-                self.score_store,
-                self.scoring_config,
-                self.max_per_bin,
-            )
-        } else {
-            PeerManager::with_config(&self.identity, self.scoring_config, self.max_per_bin)
-        };
+        let peer_manager = PeerManager::new(
+            &self.identity,
+            PeerManagerConfig {
+                scoring: self.scoring_config,
+                max_per_bin: self.max_per_bin,
+                store: self.peer_store.clone(),
+                score_store: self.score_store,
+                ..Default::default()
+            },
+        );
 
         let connection_registry = Arc::new(ConnectionRegistry::new());
         let agent_versions = identify::new_agent_versions();
