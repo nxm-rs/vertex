@@ -651,7 +651,33 @@ impl<I: SwarmIdentity> GossipTask<I> {
     }
 }
 
-/// Spawn the gossip task. Returns a handle for sending inputs and receiving outputs.
+/// Task-side endpoints of the gossip channels, created by [`gossip_channel`]
+/// and consumed when the task is spawned.
+pub(crate) struct GossipChannels {
+    input_rx: mpsc::Receiver<GossipInput>,
+    output_tx: mpsc::Sender<GossipAction>,
+}
+
+/// Create the gossip handle and task channel pair without spawning the task.
+///
+/// Inputs sent through the handle before the task starts are buffered up to
+/// the channel capacity.
+pub(crate) fn gossip_channel() -> (super::GossipHandle, GossipChannels) {
+    let (input_tx, input_rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
+    let (output_tx, output_rx) = mpsc::channel(OUTPUT_CHANNEL_CAPACITY);
+    (
+        super::GossipHandle {
+            input_tx,
+            output_rx,
+        },
+        GossipChannels {
+            input_rx,
+            output_tx,
+        },
+    )
+}
+
+/// Spawn the gossip task on the channel endpoints created by [`gossip_channel`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_gossip_task<I: SwarmIdentity>(
     spec: Arc<Spec>,
@@ -661,10 +687,13 @@ pub(crate) fn spawn_gossip_task<I: SwarmIdentity>(
     connection_registry: Arc<ConnectionRegistry>,
     evaluator_handle: RoutingEvaluatorHandle,
     local_capabilities: Arc<vertex_net_local::LocalCapabilities>,
+    channels: GossipChannels,
     executor: &vertex_tasks::TaskExecutor,
-) -> Result<super::GossipHandle, Box<dyn std::error::Error + Send + Sync>> {
-    let (input_tx, input_rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
-    let (output_tx, output_rx) = mpsc::channel(OUTPUT_CHANNEL_CAPACITY);
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let GossipChannels {
+        input_rx,
+        output_tx,
+    } = channels;
 
     // Build ephemeral identity for the verification swarm
     let verifier_identity = Arc::new(
@@ -739,10 +768,7 @@ pub(crate) fn spawn_gossip_task<I: SwarmIdentity>(
         },
     );
 
-    Ok(super::GossipHandle {
-        input_tx,
-        output_rx,
-    })
+    Ok(())
 }
 
 #[cfg(test)]

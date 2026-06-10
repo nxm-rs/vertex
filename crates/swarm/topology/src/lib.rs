@@ -3,6 +3,11 @@
 //! Provides libp2p behaviour, handlers, and Kademlia routing for Swarm peer
 //! discovery and connection management.
 //!
+//! Construction goes through [`TopologyBehaviourBuilder`], which builds the
+//! behaviour and its [`TopologyHandle`] without spawning background tasks;
+//! [`TopologyBehaviour::spawn_tasks`] starts the connection evaluator,
+//! interface watcher, and gossip tasks once a runtime is available.
+//!
 //! # Timing and capacity assumptions
 //!
 //! These defaults are not specified by the Book of Swarm; they trade
@@ -35,6 +40,7 @@
 pub(crate) use vertex_net_utils::extract_peer_id;
 
 mod behaviour;
+mod builder;
 mod connection_handlers;
 mod dialing;
 mod events;
@@ -54,6 +60,7 @@ mod tasks;
 pub(crate) mod test_support;
 
 pub use behaviour::{DEFAULT_DIAL_INTERVAL, TopologyBehaviour, TopologyConfig};
+pub use builder::TopologyBehaviourBuilder;
 pub use error::{DialError, DisconnectReason, RejectionReason, TopologyError, TopologyResult};
 pub use events::{ConnectionDirection, DialReason, TopologyCommand, TopologyEvent};
 pub use gossip::GossipConfig;

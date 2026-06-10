@@ -98,6 +98,10 @@ pub enum TopologyError {
     /// Failed to spawn a background task.
     #[error("failed to spawn task: {0}")]
     TaskSpawn(String),
+
+    /// Background tasks were already spawned for this behaviour.
+    #[error("background tasks already spawned")]
+    TasksAlreadySpawned,
 }
 
 impl TopologyError {

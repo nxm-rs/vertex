@@ -16,7 +16,9 @@ use vertex_swarm_api::{
 use vertex_swarm_peer_manager::StoredPeer;
 use vertex_swarm_peer_score::PeerScore;
 use vertex_swarm_spec::HasSpec;
-use vertex_swarm_topology::{KademliaConfig, TopologyBehaviour, TopologyConfig, TopologyHandle};
+use vertex_swarm_topology::{
+    KademliaConfig, TopologyBehaviour, TopologyBehaviourBuilder, TopologyConfig, TopologyHandle,
+};
 
 use super::base::BaseNode;
 use super::error::NodeBuildError;
@@ -69,14 +71,20 @@ impl<I: SwarmIdentity + Clone> BuiltInfrastructure<I> {
             bootnodes,
         };
 
-        let (topology_behaviour, topology_handle) = TopologyBehaviour::new(
-            identity.clone(),
-            topology_config,
-            &config_with_bootnodes,
-            peer_store,
-            score_store,
-        )
-        .wrap_err("failed to create topology behaviour")?;
+        let mut builder = TopologyBehaviourBuilder::new(identity.clone(), &config_with_bootnodes)
+            .with_config(topology_config);
+        if let Some(store) = peer_store {
+            builder = builder.with_peer_store(store);
+        }
+        if let Some(store) = score_store {
+            builder = builder.with_score_store(store);
+        }
+        let (mut topology_behaviour, topology_handle) = builder
+            .try_build()
+            .wrap_err("failed to create topology behaviour")?;
+        topology_behaviour
+            .spawn_tasks()
+            .wrap_err("failed to spawn topology background tasks")?;
 
         Ok(Self {
             identity,
