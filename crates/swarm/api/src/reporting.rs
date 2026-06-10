@@ -283,8 +283,9 @@ pub enum PeerLifecycleEvent {
     Banned {
         /// The peer's overlay address.
         overlay: OverlayAddress,
-        /// Unix timestamp in seconds at which the ban expires.
-        until: u64,
+        /// Unix timestamp in seconds at which the ban expires, or `None` for
+        /// a ban with no scheduled expiry.
+        until: Option<u64>,
         /// Why the peer was banned.
         reason: BanCause,
     },
@@ -433,7 +434,7 @@ mod tests {
     fn lifecycle_event_is_cloneable() {
         let event = PeerLifecycleEvent::Banned {
             overlay: OverlayAddress::zero(),
-            until: 1_750_000_000,
+            until: Some(1_750_000_000),
             reason: BanCause::LowScore,
         };
         let cloned = event.clone();
