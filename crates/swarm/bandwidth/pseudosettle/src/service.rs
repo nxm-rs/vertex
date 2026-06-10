@@ -7,7 +7,10 @@ use std::sync::Arc;
 use alloy_primitives::U256;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
-use vertex_swarm_api::{Direction, SwarmBandwidthAccounting, SwarmPeerBandwidth};
+use vertex_swarm_api::{
+    Direction, PeerReporter, ReportSource, SwarmBandwidthAccounting, SwarmPeerBandwidth,
+    SwarmScoringEvent,
+};
 use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_node::{ClientCommand, PseudosettleEvent};
 use vertex_swarm_primitives::OverlayAddress;
@@ -28,6 +31,14 @@ pub enum PseudosettleCommand {
     },
 }
 
+/// An outbound settlement awaiting the peer's ack.
+struct PendingSettlement {
+    /// The amount we offered to settle.
+    amount: u64,
+    /// Channel completing the originating settle request.
+    response_tx: oneshot::Sender<Result<u64, PseudosettleSettlementError>>,
+}
+
 /// Processes settlement commands from handles and network events.
 pub struct PseudosettleService<A: SwarmBandwidthAccounting> {
     /// Receive commands from handles.
@@ -41,9 +52,11 @@ pub struct PseudosettleService<A: SwarmBandwidthAccounting> {
     /// Tokens per second for rate limiting settlements.
     refresh_rate: u64,
     /// Track pending outbound settlements (waiting for ack).
-    pending: HashMap<OverlayAddress, oneshot::Sender<Result<u64, PseudosettleSettlementError>>>,
+    pending: HashMap<OverlayAddress, PendingSettlement>,
     /// Track last settlement time per peer (for rate limiting).
     last_settlement: HashMap<OverlayAddress, u64>,
+    /// Optional reporter feeding settlement violations into peer scoring.
+    reporter: Option<Arc<dyn PeerReporter>>,
 }
 
 impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
@@ -63,6 +76,27 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
             refresh_rate,
             pending: HashMap::new(),
             last_settlement: HashMap::new(),
+            reporter: None,
+        }
+    }
+
+    /// Attach a peer reporter so settlement violations feed peer scoring.
+    ///
+    /// Reporting is best-effort and non-blocking. Without a reporter the
+    /// service behaves exactly as before.
+    pub fn with_reporter(mut self, reporter: Arc<dyn PeerReporter>) -> Self {
+        self.reporter = Some(reporter);
+        self
+    }
+
+    /// Report an accounting violation if a reporter is attached.
+    fn report_violation(&self, peer: &OverlayAddress) {
+        if let Some(reporter) = &self.reporter {
+            reporter.report_peer(
+                peer,
+                SwarmScoringEvent::AccountingViolation,
+                ReportSource::Accounting,
+            );
         }
     }
 
@@ -115,8 +149,14 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
                     return;
                 }
 
-                // Store the response channel for when we get the ack
-                self.pending.insert(peer, response_tx);
+                // Store the offer and response channel for when we get the ack
+                self.pending.insert(
+                    peer,
+                    PendingSettlement {
+                        amount,
+                        response_tx,
+                    },
+                );
                 self.last_settlement.insert(peer, now);
 
                 debug!(%peer, %amount, "Sending pseudosettle request");
@@ -128,10 +168,10 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
                 }) {
                     warn!(%peer, error = ?e, "Failed to send pseudosettle command");
                     // Remove the pending entry and notify failure
-                    if let Some(tx) = self.pending.remove(&peer) {
-                        let _ = tx.send(Err(PseudosettleSettlementError::NetworkError(
-                            e.to_string(),
-                        )));
+                    if let Some(pending) = self.pending.remove(&peer) {
+                        let _ = pending.response_tx.send(Err(
+                            PseudosettleSettlementError::NetworkError(e.to_string()),
+                        ));
                     }
                 }
             }
@@ -144,12 +184,19 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
                 debug!(%peer, amount = %ack.amount, "Pseudosettle ack received");
 
                 // Complete pending request with accepted amount
-                if let Some(tx) = self.pending.remove(&peer) {
+                if let Some(pending) = self.pending.remove(&peer) {
+                    if ack.amount > U256::from(pending.amount) {
+                        // Law broken: an ack may accept at most the amount
+                        // offered for settlement; over-acceptance desyncs
+                        // the mutual books.
+                        self.report_violation(&peer);
+                    }
+
                     // Credit our balance (we paid, debt reduced)
                     let handle = self.accounting.for_peer(peer);
                     handle.record(ack.amount.as_limbs()[0], Direction::Upload);
 
-                    let _ = tx.send(Ok(ack.amount.as_limbs()[0]));
+                    let _ = pending.response_tx.send(Ok(ack.amount.as_limbs()[0]));
                 } else {
                     warn!(%peer, "Received ack for unknown settlement");
                 }
@@ -239,4 +286,141 @@ fn current_timestamp() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use vertex_swarm_bandwidth::{Accounting, BandwidthConfig};
+    use vertex_swarm_test_utils::{Identity, test_identity, test_peer};
+
+    type TestService = PseudosettleService<Accounting<BandwidthConfig, Identity>>;
+
+    #[derive(Default)]
+    struct RecordingReporter {
+        reports: parking_lot::Mutex<Vec<(OverlayAddress, SwarmScoringEvent, ReportSource)>>,
+    }
+
+    impl PeerReporter for RecordingReporter {
+        fn report_peer(
+            &self,
+            overlay: &OverlayAddress,
+            event: SwarmScoringEvent,
+            source: ReportSource,
+        ) {
+            self.reports.lock().push((*overlay, event, source));
+        }
+    }
+
+    fn build_service() -> TestService {
+        let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
+        let (_evt_tx, event_rx) = mpsc::unbounded_channel();
+        let (client_tx, _client_rx) = mpsc::unbounded_channel();
+        let accounting = Arc::new(Accounting::new(BandwidthConfig::default(), test_identity()));
+
+        PseudosettleService::new(command_rx, event_rx, client_tx, accounting, 4_500_000)
+    }
+
+    fn insert_pending(
+        svc: &mut TestService,
+        peer: OverlayAddress,
+        amount: u64,
+    ) -> oneshot::Receiver<Result<u64, PseudosettleSettlementError>> {
+        let (response_tx, response_rx) = oneshot::channel();
+        svc.pending.insert(
+            peer,
+            PendingSettlement {
+                amount,
+                response_tx,
+            },
+        );
+        response_rx
+    }
+
+    #[tokio::test]
+    async fn over_acceptance_reports_violation_per_message() {
+        let reporter = Arc::new(RecordingReporter::default());
+        let mut svc = build_service().with_reporter(Arc::clone(&reporter) as Arc<dyn PeerReporter>);
+        let peer = test_peer();
+
+        // The peer acks more than we offered.
+        let mut rx = insert_pending(&mut svc, peer, 100);
+        svc.handle_event(PseudosettleEvent::Sent {
+            peer,
+            ack: PaymentAck::now(U256::from(200u64)),
+        })
+        .await;
+
+        assert_eq!(reporter.reports.lock().len(), 1);
+        let (reported_peer, event, source) = reporter.reports.lock()[0];
+        assert_eq!(reported_peer, peer);
+        assert_eq!(event, SwarmScoringEvent::AccountingViolation);
+        assert_eq!(source, ReportSource::Accounting);
+        // The accounting effect of the ack is unchanged by reporting.
+        assert_eq!(rx.try_recv().unwrap().unwrap(), 200);
+
+        // Every over-acceptance ack is an independent wire-level violation,
+        // so a repeat offence reports again (no debounce).
+        let _rx = insert_pending(&mut svc, peer, 100);
+        svc.handle_event(PseudosettleEvent::Sent {
+            peer,
+            ack: PaymentAck::now(U256::from(300u64)),
+        })
+        .await;
+        assert_eq!(reporter.reports.lock().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn lawful_acks_do_not_report() {
+        let reporter = Arc::new(RecordingReporter::default());
+        let mut svc = build_service().with_reporter(Arc::clone(&reporter) as Arc<dyn PeerReporter>);
+        let peer = test_peer();
+
+        // Full acceptance is lawful.
+        let mut rx = insert_pending(&mut svc, peer, 100);
+        svc.handle_event(PseudosettleEvent::Sent {
+            peer,
+            ack: PaymentAck::now(U256::from(100u64)),
+        })
+        .await;
+        assert_eq!(rx.try_recv().unwrap().unwrap(), 100);
+
+        // Underpayment (time-capped acceptance) is lawful too.
+        let mut rx = insert_pending(&mut svc, peer, 100);
+        svc.handle_event(PseudosettleEvent::Sent {
+            peer,
+            ack: PaymentAck::now(U256::from(10u64)),
+        })
+        .await;
+        assert_eq!(rx.try_recv().unwrap().unwrap(), 10);
+
+        // An ack with no pending settlement is ignored, not reported: it can
+        // be a local race rather than provable peer misbehaviour.
+        svc.handle_event(PseudosettleEvent::Sent {
+            peer,
+            ack: PaymentAck::now(U256::from(10u64)),
+        })
+        .await;
+
+        assert!(reporter.reports.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn no_reporter_behaviour_unchanged() {
+        let mut svc = build_service();
+        let peer = test_peer();
+
+        let mut rx = insert_pending(&mut svc, peer, 100);
+        svc.handle_event(PseudosettleEvent::Sent {
+            peer,
+            ack: PaymentAck::now(U256::from(200u64)),
+        })
+        .await;
+
+        // Same outcome as with a reporter: the ack completes the settlement.
+        assert_eq!(rx.try_recv().unwrap().unwrap(), 200);
+        let handle = svc.accounting.for_peer(peer);
+        assert_eq!(handle.balance(), 200);
+    }
 }

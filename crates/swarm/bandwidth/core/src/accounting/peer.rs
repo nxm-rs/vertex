@@ -1,6 +1,6 @@
 //! Atomic per-peer balance tracking for lock-free bandwidth recording.
 
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use vertex_swarm_api::SwarmPeerState;
@@ -20,6 +20,9 @@ pub struct PeerState {
     payment_threshold: u64,
     disconnect_threshold: u64,
     last_refresh: AtomicU64,
+    /// True while a disconnect-threshold breach episode is in progress and
+    /// has already been reported.
+    breach_reported: AtomicBool,
 }
 
 impl PeerState {
@@ -33,6 +36,7 @@ impl PeerState {
             payment_threshold,
             disconnect_threshold,
             last_refresh: AtomicU64::new(0),
+            breach_reported: AtomicBool::new(false),
         }
     }
 
@@ -117,6 +121,19 @@ impl PeerState {
     pub fn set_last_refresh(&self, timestamp: u64) {
         self.last_refresh.store(timestamp, Ordering::Relaxed);
     }
+
+    /// Mark the start of a disconnect-threshold breach episode.
+    ///
+    /// Returns true only on the first call of an episode, so a breach is
+    /// reported once until `clear_breach` starts a new episode.
+    pub(crate) fn mark_breach(&self) -> bool {
+        !self.breach_reported.swap(true, Ordering::Relaxed)
+    }
+
+    /// End the current breach episode (the peer was granted service again).
+    pub(crate) fn clear_breach(&self) {
+        self.breach_reported.store(false, Ordering::Relaxed);
+    }
 }
 
 impl SwarmPeerState for PeerState {
@@ -177,6 +194,7 @@ impl PeerState {
             payment_threshold: snapshot.payment_threshold,
             disconnect_threshold: snapshot.disconnect_threshold,
             last_refresh: AtomicU64::new(snapshot.last_refresh),
+            breach_reported: AtomicBool::new(false),
         }
     }
 }
