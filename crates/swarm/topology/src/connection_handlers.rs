@@ -106,10 +106,13 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             return;
         };
 
-        // Use the node_type recorded at PeerReady time for symmetric metric decrement.
+        // Read the authoritative node type from the peer manager. It is
+        // handshake-confirmed there, so gossip received during the connection
+        // cannot have changed it and the metric decrement stays symmetric
+        // with the increment recorded at PeerReady time.
         let node_type = self
-            .connected_node_types
-            .remove(&overlay)
+            .peer_manager
+            .node_type(&overlay)
             .unwrap_or(SwarmNodeType::Client);
 
         let connection_duration = connected_at.map(|t| t.elapsed());

@@ -1,12 +1,13 @@
 //! Per-peer state with lock-free scoring and persistence types.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use metrics::gauge;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 use vertex_net_local::IpCapability;
 use vertex_net_peer_backoff::PeerBackoff;
 use vertex_net_peer_store::NetRecord;
@@ -134,8 +135,62 @@ pub(crate) fn jitter_seed_from_overlay(overlay: &OverlayAddress) -> u64 {
     u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
 }
 
+/// A [`SwarmNodeType`] plus a confirmed bit, packed into one atomic byte.
+///
+/// A peer's node type flows in from two sources with different trust levels:
+/// hive gossip (provisional, unverified) and the handshake (asserted by the
+/// peer itself). Gossip may set or refresh the provisional value only while
+/// the cell is unconfirmed. A completed handshake confirms the value; from
+/// then on provisional writes are ignored. A later handshake may re-confirm
+/// a different value, since a node can legitimately change its type between
+/// sessions (for example upgrading from client to storer).
+///
+/// The confirmed bit is process-local: records restored from the peer store
+/// start unconfirmed until the next handshake.
+#[derive(Debug)]
+pub(crate) struct NodeTypeCell(AtomicU8);
+
+/// High bit marks the node type as handshake-confirmed; the low bits hold
+/// the [`SwarmNodeType`] discriminant.
+const CONFIRMED_BIT: u8 = 0x80;
+
+impl NodeTypeCell {
+    pub(crate) fn provisional(node_type: SwarmNodeType) -> Self {
+        Self(AtomicU8::new(node_type as u8))
+    }
+
+    pub(crate) fn get(&self) -> SwarmNodeType {
+        SwarmNodeType::from_repr(self.0.load(Ordering::Acquire) & !CONFIRMED_BIT)
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_confirmed(&self) -> bool {
+        self.0.load(Ordering::Acquire) & CONFIRMED_BIT != 0
+    }
+
+    /// Set the provisional value (gossip path).
+    ///
+    /// Returns `false` and leaves the cell untouched once the value has been
+    /// handshake-confirmed.
+    pub(crate) fn set_provisional(&self, node_type: SwarmNodeType) -> bool {
+        self.0
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current & CONFIRMED_BIT == 0).then_some(node_type as u8)
+            })
+            .is_ok()
+    }
+
+    /// Store the asserted value and mark the cell confirmed (handshake path).
+    pub(crate) fn confirm(&self, node_type: SwarmNodeType) {
+        self.0
+            .store(node_type as u8 | CONFIRMED_BIT, Ordering::Release);
+    }
+}
+
 pub(crate) struct PeerEntry {
-    identity: RwLock<(SwarmPeer, SwarmNodeType)>,
+    peer: RwLock<SwarmPeer>,
+    node_type: NodeTypeCell,
     scoring: SwarmPeerScore,
     first_seen: AtomicU64,
     last_seen: AtomicU64,
@@ -155,7 +210,8 @@ impl PeerEntry {
     ) -> Self {
         let now = unix_timestamp_secs();
         Self {
-            identity: RwLock::new((peer, node_type)),
+            peer: RwLock::new(peer),
+            node_type: NodeTypeCell::provisional(node_type),
             scoring: SwarmPeerScore::new(overlay, PeerScore::new(), config, callbacks),
             first_seen: AtomicU64::new(now),
             last_seen: AtomicU64::new(now),
@@ -174,7 +230,8 @@ impl PeerEntry {
     ) -> Self {
         let overlay = OverlayAddress::from(*record.peer.overlay());
         Self {
-            identity: RwLock::new((record.peer, record.node_type)),
+            node_type: NodeTypeCell::provisional(record.node_type),
+            peer: RwLock::new(record.peer),
             scoring: SwarmPeerScore::new(overlay, scoring.unwrap_or_default(), config, callbacks),
             first_seen: AtomicU64::new(record.first_seen),
             last_seen: AtomicU64::new(record.last_seen),
@@ -198,20 +255,20 @@ impl PeerEntry {
     }
 
     pub(crate) fn swarm_peer(&self) -> SwarmPeer {
-        self.identity.read().0.clone()
+        self.peer.read().clone()
     }
 
     /// Signed wall-clock timestamp of the currently held peer record.
     pub(crate) fn timestamp(&self) -> vertex_swarm_peer::Timestamp {
-        self.identity.read().0.timestamp()
+        self.peer.read().timestamp()
     }
 
     pub(crate) fn ip_capability(&self) -> IpCapability {
-        self.identity.read().0.ip_capability()
+        self.peer.read().ip_capability()
     }
 
     pub(crate) fn node_type(&self) -> SwarmNodeType {
-        self.identity.read().1
+        self.node_type.get()
     }
 
     pub(crate) fn score(&self) -> f64 {
@@ -230,34 +287,45 @@ impl PeerEntry {
         self.backoff.consecutive_failures()
     }
 
-    /// Update the peer identity and node type.
+    /// Update peer addresses without changing the node type.
+    ///
+    /// Used by gossip discovery to refresh multiaddrs for already-known peers
+    /// without overwriting the handshake-confirmed node type.
     ///
     /// Only refreshes `last_seen` if the peer has no active failures.
-    /// This prevents gossip re-verification from keeping permanently unreachable
-    /// peers alive — only successful connections (`record_success`) should reset
-    /// the staleness clock for failed peers.
-    pub(crate) fn update_peer(&self, peer: SwarmPeer, node_type: SwarmNodeType) {
-        let mut guard = self.identity.write();
-        guard.0 = peer;
-        guard.1 = node_type;
-        drop(guard);
+    /// This prevents gossip re-verification from keeping permanently
+    /// unreachable peers alive; only successful connections
+    /// (`record_success`) should reset the staleness clock for failed peers.
+    pub(crate) fn update_addresses(&self, peer: SwarmPeer) {
+        *self.peer.write() = peer;
         if self.consecutive_failures() == 0 {
             self.touch();
         }
         self.mark_dirty();
     }
 
-    /// Update peer addresses without changing the node type.
+    /// Refresh the provisional node type (gossip path).
     ///
-    /// Used by gossip discovery to refresh multiaddrs for already-known peers
-    /// without overwriting the handshake-confirmed node type.
-    pub(crate) fn update_addresses(&self, peer: SwarmPeer) {
-        let mut guard = self.identity.write();
-        guard.0 = peer;
-        drop(guard);
-        if self.consecutive_failures() == 0 {
-            self.touch();
+    /// Ignored once a handshake has confirmed the node type; a differing
+    /// proposal is debug-logged and dropped.
+    pub(crate) fn set_provisional_node_type(&self, node_type: SwarmNodeType) {
+        if self.node_type.set_provisional(node_type) {
+            self.mark_dirty();
+        } else if self.node_type.get() != node_type {
+            debug!(
+                proposed = %node_type,
+                confirmed = %self.node_type.get(),
+                "ignoring provisional node type for handshake-confirmed peer"
+            );
         }
+    }
+
+    /// Confirm the peer-asserted node type (handshake path).
+    ///
+    /// May re-confirm a different value on reconnect: a node can change its
+    /// type between sessions. Gossip can never change a confirmed value.
+    pub(crate) fn confirm_node_type(&self, node_type: SwarmNodeType) {
+        self.node_type.confirm(node_type);
         self.mark_dirty();
     }
 
@@ -350,10 +418,9 @@ impl PeerEntry {
 
 impl From<&PeerEntry> for StoredPeer {
     fn from(entry: &PeerEntry) -> Self {
-        let (ref peer, node_type) = *entry.identity.read();
         Self {
-            peer: peer.clone(),
-            node_type,
+            peer: entry.peer.read().clone(),
+            node_type: entry.node_type.get(),
             ban_info: entry.ban_info.read().clone(),
             first_seen: entry.first_seen(),
             last_seen: entry.last_seen(),
@@ -520,6 +587,67 @@ mod tests {
 
         // Node type must remain Storer
         assert_eq!(entry.node_type(), SwarmNodeType::Storer);
+    }
+
+    #[test]
+    fn test_node_type_cell_gossip_then_handshake() {
+        let cell = NodeTypeCell::provisional(SwarmNodeType::Client);
+        assert!(!cell.is_confirmed());
+        assert_eq!(cell.get(), SwarmNodeType::Client);
+
+        // Gossip may refresh the provisional value while unconfirmed.
+        assert!(cell.set_provisional(SwarmNodeType::Bootnode));
+        assert_eq!(cell.get(), SwarmNodeType::Bootnode);
+        assert!(!cell.is_confirmed());
+
+        // The handshake confirms the asserted value.
+        cell.confirm(SwarmNodeType::Storer);
+        assert!(cell.is_confirmed());
+        assert_eq!(cell.get(), SwarmNodeType::Storer);
+    }
+
+    #[test]
+    fn test_node_type_cell_gossip_ignored_after_confirm() {
+        let cell = NodeTypeCell::provisional(SwarmNodeType::Client);
+        cell.confirm(SwarmNodeType::Storer);
+
+        assert!(!cell.set_provisional(SwarmNodeType::Client));
+        assert_eq!(cell.get(), SwarmNodeType::Storer);
+        assert!(cell.is_confirmed());
+    }
+
+    #[test]
+    fn test_node_type_cell_reconfirm_on_reconnect() {
+        let cell = NodeTypeCell::provisional(SwarmNodeType::Client);
+        cell.confirm(SwarmNodeType::Client);
+
+        // The peer reconnects asserting a different type: the handshake path
+        // re-confirms (a node can upgrade from client to storer between
+        // sessions).
+        cell.confirm(SwarmNodeType::Storer);
+        assert_eq!(cell.get(), SwarmNodeType::Storer);
+
+        // Gossip still cannot change the confirmed value.
+        assert!(!cell.set_provisional(SwarmNodeType::Client));
+        assert_eq!(cell.get(), SwarmNodeType::Storer);
+    }
+
+    #[test]
+    fn test_entry_provisional_node_type_ignored_after_confirm() {
+        let entry = test_entry(1, SwarmNodeType::Client);
+
+        // Unconfirmed: gossip may refresh the provisional value.
+        entry.set_provisional_node_type(SwarmNodeType::Bootnode);
+        assert_eq!(entry.node_type(), SwarmNodeType::Bootnode);
+
+        // Handshake confirms; later gossip proposals are dropped.
+        entry.confirm_node_type(SwarmNodeType::Storer);
+        entry.set_provisional_node_type(SwarmNodeType::Client);
+        assert_eq!(entry.node_type(), SwarmNodeType::Storer);
+
+        // A reconnect handshake may still re-confirm a different type.
+        entry.confirm_node_type(SwarmNodeType::Client);
+        assert_eq!(entry.node_type(), SwarmNodeType::Client);
     }
 
     #[test]

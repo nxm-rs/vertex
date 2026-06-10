@@ -1,7 +1,7 @@
 //! Network topology behaviour managing peer connections via handshake, hive, and ping.
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashSet, VecDeque},
     future::Future,
     pin::Pin,
     sync::Arc,
@@ -28,7 +28,7 @@ use vertex_swarm_net_hive::MAX_BATCH_SIZE;
 use vertex_swarm_net_identify as identify;
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_manager::{PeerManager, StoredPeer};
-use vertex_swarm_primitives::{Bin, OverlayAddress, SwarmNodeType, all_bins};
+use vertex_swarm_primitives::{Bin, OverlayAddress, all_bins};
 
 use crate::DialReason;
 use vertex_net_dialer::DialTracker;
@@ -265,12 +265,6 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
     /// address). Populated at `ConnectionEstablished`, consumed at handshake
     /// completion, and cleared at `ConnectionClosed`.
     pub(crate) outbound_public_dials: HashSet<ConnectionId>,
-
-    /// Node type recorded at PeerReady time for symmetric metric decrement on disconnect.
-    ///
-    /// Without this, gossip re-verification can overwrite the handshake-confirmed
-    /// node_type in PeerManager, causing the disconnect to decrement the wrong counter.
-    pub(crate) connected_node_types: HashMap<OverlayAddress, SwarmNodeType>,
 
     /// Receiver for peer ban notifications from PeerManager.
     pub(crate) ban_rx: broadcast::Receiver<OverlayAddress>,

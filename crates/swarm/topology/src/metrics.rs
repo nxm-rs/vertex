@@ -496,34 +496,47 @@ mod tests {
         assert_eq!(metrics.connected_clients(), 0);
     }
 
-    /// Demonstrates the bug scenario: connect as Storer, disconnect as Client causes drift.
-    /// The fix is in TopologyBehaviour which records node_type at PeerReady time.
+    /// Connect/disconnect with an interleaved gossip overwrite attempt stays
+    /// balanced: the disconnect path reads the authoritative node type from
+    /// the peer manager, where the handshake-confirmed value is write-once
+    /// and gossip cannot change it.
     #[test]
-    fn test_asymmetric_node_type_causes_drift() {
-        let metrics = TopologyMetrics::new();
+    fn test_gossip_overwrite_attempt_causes_no_drift() {
+        use vertex_swarm_peer_manager::{PeerManager, PeerManagerConfig};
+        use vertex_swarm_test_utils::{MockIdentity, test_swarm_peer};
 
-        // Peer connects as Storer (from handshake)
+        let metrics = TopologyMetrics::new();
+        let pm = PeerManager::new(
+            &MockIdentity::with_overlay(test_overlay(0)),
+            PeerManagerConfig::default(),
+        );
+        let peer = test_swarm_peer(1);
+        let overlay = test_overlay(1);
+
+        // Handshake confirms the peer as a storer.
+        pm.on_peer_ready(peer.clone(), SwarmNodeType::Storer);
         metrics.record_event(&TopologyEvent::PeerReady {
-            overlay: test_overlay(1),
+            overlay,
             peer_id: test_peer_id(1),
-            node_type: SwarmNodeType::Storer,
+            node_type: pm.node_type(&overlay).unwrap(),
             direction: ConnectionDirection::Outbound,
         });
         assert_eq!(metrics.connected_storers(), 1);
         assert_eq!(metrics.connected_clients(), 0);
 
-        // BUG SCENARIO: If gossip overwrites node_type to Client in PeerManager,
-        // disconnect would decrement clients instead of storers.
-        // This test documents the asymmetry — TopologyBehaviour's connected_node_types
-        // HashMap prevents this by recording the type at connect time.
+        // A gossip re-discovery of the same peer cannot overwrite the
+        // handshake-confirmed node type.
+        pm.store_discovered_peer(peer);
+        assert_eq!(pm.node_type(&overlay), Some(SwarmNodeType::Storer));
+
+        // Disconnect reads the same authoritative value: gauges return to zero.
         metrics.record_event(&TopologyEvent::PeerDisconnected {
-            overlay: test_overlay(1),
+            overlay,
             reason: DisconnectReason::ConnectionError,
             connection_duration: Some(Duration::from_secs(120)),
-            node_type: SwarmNodeType::Client, // Wrong type!
+            node_type: pm.node_type(&overlay).unwrap(),
         });
-        // Storer counter is now stuck at 1 (drift), client saturated at 0
-        assert_eq!(metrics.connected_storers(), 1);
+        assert_eq!(metrics.connected_storers(), 0);
         assert_eq!(metrics.connected_clients(), 0);
     }
 

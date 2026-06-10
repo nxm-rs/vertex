@@ -64,9 +64,9 @@ Any type implementing `Clone + Eq + Hash + Send + Sync + Debug + Serialize + Des
 
 Per-peer state with atomic hot paths and per-peer locked cold paths.
 
-**Atomic fields (hot path):** score, connection state, latency, connection counters, last-seen timestamp.
+**Atomic fields (hot path):** score, connection state, latency, connection counters, last-seen timestamp, node type (a write-once-confirmed cell: gossip sets a provisional value, the handshake confirms it, and only a later handshake can change it).
 
-**Locked fields (cold path):** peer record (multiaddrs, node type), ban metadata.
+**Locked fields (cold path):** peer record (multiaddrs), ban metadata.
 
 ### ConnectionState
 
