@@ -37,6 +37,7 @@ The `SwarmSpec` provides network-level constants (network ID, bootnodes, contrac
 | **Bandwidth** | `--bandwidth.*` | Client, Storer | Accounting mode, pricing, thresholds |
 | **Storage** | `--storage.*` | Storer | Reserve capacity, cache size, redistribution |
 | **Identity** | `--password`, `--nonce`, etc. | All | Keystore, overlay nonce, ephemeral mode |
+| **Database** | `--db.*` | All | Opt-in database persistence and cache size |
 | **Network selection** | `--mainnet`, `--testnet` | All | Which Swarm network to join |
 
 Run `vertex node --help` for the full argument listing with defaults.
@@ -52,6 +53,18 @@ The merge order is:
 3. **CLI argument** overrides (highest priority)
 
 This ensures operators can set base configuration in a file and selectively override individual values from the command line.
+
+## Database Persistence
+
+The node database is in-memory by default: nothing is written to disk and all database state is lost on shutdown. Persistence is opt-in:
+
+| Flag | Effect |
+|------|--------|
+| `--db.persist` | Persist the database at the default location `<datadir>/<network>/db/vertex.redb` |
+| `--db.path <PATH>` | Persist the database at a custom file path (implies `--db.persist`) |
+| `--db.cache <MB>` | Database cache size in megabytes |
+
+When both `--db.path` and `--db.persist` are given, the explicit path wins.
 
 ## Bandwidth Modes
 

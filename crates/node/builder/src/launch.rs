@@ -4,6 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use vertex_node_api::InfrastructureContext;
+use vertex_node_core::args::DatabaseConfig;
 use vertex_node_core::dirs::DataDirs;
 use vertex_observability::{
     HistogramBucketConfig, Hooks, MetricsServer, MetricsServerConfig, PrometheusRecorder,
@@ -61,6 +62,7 @@ impl<L, R> Attached<L, R> {
 pub struct LaunchContextWith<T> {
     executor: TaskExecutor,
     dirs: DataDirs,
+    database: DatabaseConfig,
     attachment: T,
 }
 
@@ -69,6 +71,7 @@ impl<T> LaunchContextWith<T> {
         Self {
             executor,
             dirs,
+            database: DatabaseConfig::default(),
             attachment,
         }
     }
@@ -81,6 +84,18 @@ impl<T> LaunchContextWith<T> {
         &self.dirs
     }
 
+    /// Get the resolved database configuration.
+    pub fn database(&self) -> &DatabaseConfig {
+        &self.database
+    }
+
+    /// Set the resolved database configuration.
+    #[must_use]
+    pub fn with_database_config(mut self, database: DatabaseConfig) -> Self {
+        self.database = database;
+        self
+    }
+
     pub fn attachment(&self) -> &T {
         &self.attachment
     }
@@ -91,11 +106,12 @@ impl<T> LaunchContextWith<T> {
 
     /// Attach another value, preserving access to previous state.
     pub fn attach<A>(self, attachment: A) -> LaunchContextWith<Attached<T, A>> {
-        LaunchContextWith::new(
-            self.executor,
-            self.dirs,
-            Attached::new(self.attachment, attachment),
-        )
+        LaunchContextWith {
+            executor: self.executor,
+            dirs: self.dirs,
+            database: self.database,
+            attachment: Attached::new(self.attachment, attachment),
+        }
     }
 
     pub fn inspect<F>(self, f: F) -> Self
@@ -148,6 +164,10 @@ impl<T: Send + Sync> InfrastructureContext for LaunchContextWith<T> {
 
     fn data_dir(&self) -> &Path {
         &self.dirs.network
+    }
+
+    fn db_path(&self) -> Option<&Path> {
+        self.database.path.as_deref()
     }
 }
 
