@@ -28,6 +28,15 @@
 //!
 //! [`SwarmProtocol`] implements [`vertex_node_api::NodeProtocol`], bridging the
 //! Swarm domain with the generic node infrastructure.
+//!
+//! # Peer Reporting
+//!
+//! [`PeerReporter`] is the single sanctioned path for subsystems to affect a
+//! peer's score, with [`SwarmScoringEvent`] as the shared event vocabulary.
+//! [`PeerAffordability`] lets protocol handlers ask bandwidth accounting
+//! whether a peer can pay for a request, and [`PeerLifecycleEvent`] carries
+//! the resulting lifecycle decisions (warnings, disconnects, bans) to
+//! subscribers such as topology.
 
 #![warn(missing_docs)]
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -40,6 +49,7 @@ mod error;
 mod identity;
 mod protocol;
 mod providers;
+mod reporting;
 mod rpc;
 mod spec;
 mod swarm;
@@ -55,12 +65,12 @@ pub use self::components::{
     SwarmTopologyStats,
 };
 pub use self::config::{
-    DEFAULT_PEER_BAN_THRESHOLD, DEFAULT_PEER_MAX_PER_BIN, DEFAULT_PEER_WARN_THRESHOLD,
-    DefaultPeerConfig, DefaultStorageConfig, METADATA_OVERHEAD_FACTOR, NodeTask, NodeTaskFn,
-    PeerConfigValues, SwarmBootnodeConfig, SwarmClientConfig, SwarmClientLaunchConfig,
-    SwarmIdentityConfig, SwarmLaunchConfig, SwarmNetworkConfig, SwarmPeerConfig,
-    SwarmRoutingConfig, SwarmStorageConfig, SwarmStorerConfig, SwarmStorerLaunchConfig,
-    estimate_chunks_for_bytes, estimate_storage_bytes,
+    DEFAULT_PEER_BAN_THRESHOLD, DEFAULT_PEER_DISCONNECT_THRESHOLD, DEFAULT_PEER_MAX_PER_BIN,
+    DEFAULT_PEER_WARN_THRESHOLD, DefaultPeerConfig, DefaultStorageConfig, METADATA_OVERHEAD_FACTOR,
+    NodeTask, NodeTaskFn, PeerConfigValues, SwarmBootnodeConfig, SwarmClientConfig,
+    SwarmClientLaunchConfig, SwarmIdentityConfig, SwarmLaunchConfig, SwarmNetworkConfig,
+    SwarmPeerConfig, SwarmRoutingConfig, SwarmStorageConfig, SwarmStorerConfig,
+    SwarmStorerLaunchConfig, estimate_chunks_for_bytes, estimate_storage_bytes,
 };
 pub use self::error::{
     ConfigAddressKind, ConfigError, ConfigResult, IdentityError, SwarmError, SwarmResult,
@@ -69,6 +79,10 @@ pub use self::identity::SwarmIdentity;
 pub use self::protocol::SwarmProtocol;
 pub use self::providers::{
     ChunkRetrievalResult, PushReceipt, SwarmChunkProvider, SwarmChunkSender,
+};
+pub use self::reporting::{
+    BanCause, DisconnectCause, PeerAffordability, PeerLifecycleEvent, PeerReporter, ReportSource,
+    SwarmScoringEvent,
 };
 pub use self::rpc::RpcProviders;
 pub use self::spec::{

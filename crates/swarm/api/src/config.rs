@@ -31,10 +31,32 @@ pub trait SwarmRoutingConfig {
 }
 
 /// Default ban threshold for peer scoring (-100.0).
+///
+/// Third tier of the score response: a peer whose score falls below this
+/// threshold receives a timed ban.
 pub const DEFAULT_PEER_BAN_THRESHOLD: f64 = -100.0;
 
+/// Default disconnect threshold for peer scoring (-75.0).
+///
+/// Second tier of the score response: a peer whose score falls below this
+/// threshold has its connection closed and is backed off before redial.
+/// The full mapping is warn ([`DEFAULT_PEER_WARN_THRESHOLD`]) -> excluded
+/// from selection, disconnect -> connection closed plus backoff, ban
+/// ([`DEFAULT_PEER_BAN_THRESHOLD`]) -> timed ban.
+pub const DEFAULT_PEER_DISCONNECT_THRESHOLD: f64 = -75.0;
+
 /// Default warn threshold for peer scoring (-50.0).
+///
+/// First tier of the score response: a peer whose score falls below this
+/// threshold stays connected but is excluded from peer selection.
 pub const DEFAULT_PEER_WARN_THRESHOLD: f64 = -50.0;
+
+// The three response tiers must stay strictly ordered.
+const _: () = {
+    assert!(DEFAULT_PEER_BAN_THRESHOLD < DEFAULT_PEER_DISCONNECT_THRESHOLD);
+    assert!(DEFAULT_PEER_DISCONNECT_THRESHOLD < DEFAULT_PEER_WARN_THRESHOLD);
+    assert!(DEFAULT_PEER_WARN_THRESHOLD < 0.0);
+};
 
 /// Default maximum peers per proximity bin in the index.
 pub const DEFAULT_PEER_MAX_PER_BIN: usize = 128;

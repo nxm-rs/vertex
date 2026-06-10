@@ -1,113 +1,38 @@
-//! Scoring events, configurable weights, and builder.
+//! Configurable scoring weights and builder.
 
 use std::time::Duration;
 
 use vertex_swarm_api::{DEFAULT_PEER_BAN_THRESHOLD, DEFAULT_PEER_WARN_THRESHOLD};
 
+// The scoring event vocabulary is defined in `vertex-swarm-api`; this crate
+// re-exports it so existing import paths keep working.
+pub use vertex_swarm_api::SwarmScoringEvent;
+
 scoring_events! {
-    /// Successful connection with optional latency.
-    ConnectionSuccess { latency: Option<Duration> }
-        => connection_success = 1.0,
-    /// Connection attempt timed out.
-    ConnectionTimeout
-        => connection_timeout = -1.5,
-    /// Connection was refused by peer.
-    ConnectionRefused
-        => connection_refused = -1.0,
-    /// Handshake protocol failed.
-    HandshakeFailure
-        => handshake_failure = -5.0,
-    /// Protocol-level error during communication.
-    ProtocolError
-        => protocol_error = -3.0,
-    /// Peer disconnected shortly after completing handshake (connection instability).
-    EarlyDisconnect { duration: Duration }
-        => early_disconnect = -3.0,
-    /// Successful chunk retrieval.
-    RetrievalSuccess { latency: Duration }
-        => retrieval_success = 0.5,
-    /// Chunk retrieval failed.
-    RetrievalFailure
-        => retrieval_failure = -2.0,
-    /// Successful chunk push.
-    PushSuccess { latency: Duration }
-        => push_success = 0.5,
-    /// Chunk push failed.
-    PushFailure
-        => push_failure = -2.0,
-    /// Peer provided invalid data (chunk, signature, etc.).
-    InvalidData
-        => invalid_data = -10.0,
-    /// Peer is behaving maliciously.
-    MaliciousBehavior
-        => malicious_behavior = -50.0,
-    /// Bandwidth accounting violation.
-    AccountingViolation
-        => accounting_violation = -20.0,
-    /// Peer exceeded rate limits.
-    RateLimitExceeded
-        => rate_limit_exceeded = -5.0,
-    /// Successful ping/pong.
-    PingSuccess { latency: Duration }
-        => ping_success = 0.1,
-    /// Ping timed out.
-    PingTimeout
-        => ping_timeout = -0.5,
-    /// Hive gossip received useful peers.
-    GossipUseful
-        => gossip_useful = 0.2,
-    /// Hive gossip contained stale/invalid peers.
-    GossipStale
-        => gossip_stale = -0.1,
-    /// Gossiped peer was verified via handshake (signature, overlay, multiaddr all match).
-    GossipVerified
-        => gossip_verified = 1.0,
-    /// Gossiped peer failed verification (overlay, signature, or multiaddr mismatch).
-    GossipInvalid
-        => gossip_invalid = -15.0,
-    /// Gossiped peer could not be reached for verification.
-    GossipUnreachable
-        => gossip_unreachable = -0.5;
+    ConnectionSuccess { latency: Option<Duration> } => connection_success,
+    ConnectionTimeout => connection_timeout,
+    ConnectionRefused => connection_refused,
+    HandshakeFailure => handshake_failure,
+    ProtocolError => protocol_error,
+    EarlyDisconnect { duration: Duration } => early_disconnect,
+    RetrievalSuccess { latency: Duration } => retrieval_success,
+    RetrievalFailure => retrieval_failure,
+    PushSuccess { latency: Duration } => push_success,
+    PushFailure => push_failure,
+    InvalidData => invalid_data,
+    MaliciousBehavior => malicious_behavior,
+    AccountingViolation => accounting_violation,
+    RateLimitExceeded => rate_limit_exceeded,
+    PingSuccess { latency: Duration } => ping_success,
+    PingTimeout => ping_timeout,
+    GossipUseful => gossip_useful,
+    GossipStale => gossip_stale,
+    GossipVerified => gossip_verified,
+    GossipInvalid => gossip_invalid,
+    GossipUnreachable => gossip_unreachable;
 
     ban_threshold = DEFAULT_PEER_BAN_THRESHOLD,
     warn_threshold = DEFAULT_PEER_WARN_THRESHOLD,
-}
-
-impl SwarmScoringEvent {
-    /// Extract latency if this event includes timing information.
-    #[must_use]
-    pub fn latency(&self) -> Option<Duration> {
-        match self {
-            Self::ConnectionSuccess { latency } => *latency,
-            Self::RetrievalSuccess { latency }
-            | Self::PushSuccess { latency }
-            | Self::PingSuccess { latency } => Some(*latency),
-            _ => None,
-        }
-    }
-
-    pub fn is_connection_success(&self) -> bool {
-        matches!(self, Self::ConnectionSuccess { .. })
-    }
-
-    pub fn is_connection_timeout(&self) -> bool {
-        matches!(self, Self::ConnectionTimeout)
-    }
-
-    pub fn is_protocol_error(&self) -> bool {
-        matches!(self, Self::ProtocolError)
-    }
-
-    /// True for events that should trigger an immediate ban check.
-    pub fn is_severe(&self) -> bool {
-        matches!(
-            self,
-            Self::InvalidData
-                | Self::MaliciousBehavior
-                | Self::AccountingViolation
-                | Self::GossipInvalid
-        )
-    }
 }
 
 impl SwarmScoringConfig {
@@ -176,6 +101,30 @@ mod tests {
     }
 
     #[test]
+    fn test_default_weights_match_events() {
+        let config = SwarmScoringConfig::default();
+        let events = [
+            SwarmScoringEvent::ConnectionSuccess { latency: None },
+            SwarmScoringEvent::ConnectionTimeout,
+            SwarmScoringEvent::HandshakeFailure,
+            SwarmScoringEvent::EarlyDisconnect {
+                duration: Duration::ZERO,
+            },
+            SwarmScoringEvent::RetrievalSuccess {
+                latency: Duration::ZERO,
+            },
+            SwarmScoringEvent::MaliciousBehavior,
+            SwarmScoringEvent::GossipUnreachable,
+        ];
+        for event in events {
+            assert!(
+                (config.weight_for(&event) - event.default_weight()).abs() < f64::EPSILON,
+                "default config weight diverges from default_weight for {event:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_builder() {
         let config = SwarmScoringConfig::builder()
             .connection_success(2.0)
@@ -219,41 +168,5 @@ mod tests {
         let bytes = postcard::to_allocvec(&config).unwrap();
         let restored: SwarmScoringConfig = postcard::from_bytes(&bytes).unwrap();
         assert!((config.connection_success() - restored.connection_success()).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_event_weights() {
-        assert!(SwarmScoringEvent::ConnectionSuccess { latency: None }.default_weight() > 0.0);
-        assert!(
-            SwarmScoringEvent::RetrievalSuccess {
-                latency: Duration::ZERO
-            }
-            .default_weight()
-                > 0.0
-        );
-        assert!(SwarmScoringEvent::GossipUseful.default_weight() > 0.0);
-
-        assert!(SwarmScoringEvent::ConnectionTimeout.default_weight() < 0.0);
-        assert!(SwarmScoringEvent::HandshakeFailure.default_weight() < 0.0);
-        assert!(SwarmScoringEvent::MaliciousBehavior.default_weight() < -10.0);
-    }
-
-    #[test]
-    fn test_latency_extraction() {
-        let event = SwarmScoringEvent::ConnectionSuccess {
-            latency: Some(Duration::from_millis(50)),
-        };
-        assert_eq!(event.latency(), Some(Duration::from_millis(50)));
-
-        let event = SwarmScoringEvent::ConnectionTimeout;
-        assert_eq!(event.latency(), None);
-    }
-
-    #[test]
-    fn test_severe_events() {
-        assert!(SwarmScoringEvent::MaliciousBehavior.is_severe());
-        assert!(SwarmScoringEvent::InvalidData.is_severe());
-        assert!(SwarmScoringEvent::AccountingViolation.is_severe());
-        assert!(!SwarmScoringEvent::ConnectionTimeout.is_severe());
     }
 }

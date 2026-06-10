@@ -1,38 +1,19 @@
-//! Internal macro for generating scoring events and config.
+//! Internal macro for generating the scoring config from the event table.
 
-/// Generates `SwarmScoringEvent`, `SwarmScoringConfig`, and `SwarmScoringConfigBuilder`
-/// from a single declaration table mapping event variants to config fields and defaults.
+/// Generates `SwarmScoringConfig`, `SwarmScoringConfigBuilder`, and the
+/// per-event `record_*` convenience methods from a declaration table mapping
+/// `SwarmScoringEvent` variants to config fields.
+///
+/// Default weights come from [`SwarmScoringEvent::default_weight`], so the
+/// event vocabulary and its defaults are declared once in `vertex-swarm-api`.
 macro_rules! scoring_events {
     (
         $(
-            $(#[doc = $doc:expr])*
-            $variant:ident $({ $($field:ident : $fty:ty),* $(,)? })?
-                => $config_field:ident = $default:expr
+            $variant:ident $({ $($field:ident : $fty:ty),* $(,)? })? => $config_field:ident
         ),* $(,)?
         ;
         $( $extra_field:ident = $extra_default:expr ),* $(,)?
     ) => {
-        /// Swarm-specific peer scoring events.
-        #[derive(Debug)]
-        pub enum SwarmScoringEvent {
-            $(
-                $(#[doc = $doc])*
-                $variant $({ $($field: $fty),* })?,
-            )*
-        }
-
-        impl SwarmScoringEvent {
-            /// Get the default weight for this event.
-            ///
-            /// Positive weights improve score, negative weights decrease it.
-            /// These are default values; use [`SwarmScoringConfig`] for customization.
-            pub fn default_weight(&self) -> f64 {
-                match self {
-                    $( Self::$variant $({ $($field: _),* })? => $default, )*
-                }
-            }
-        }
-
         /// Configuration for Swarm peer scoring weights.
         ///
         /// All weights can be customized. Positive values improve score,
@@ -47,7 +28,11 @@ macro_rules! scoring_events {
         impl Default for SwarmScoringConfig {
             fn default() -> Self {
                 Self {
-                    $( $config_field: $default, )*
+                    $(
+                        $config_field: SwarmScoringEvent::$variant
+                            $({ $($field: Default::default()),* })?
+                            .default_weight(),
+                    )*
                     $( $extra_field: $extra_default, )*
                 }
             }
@@ -55,10 +40,12 @@ macro_rules! scoring_events {
 
         impl SwarmScoringConfig {
             $(
+                #[doc = concat!("Weight applied for [`SwarmScoringEvent::", stringify!($variant), "`].")]
                 #[must_use]
                 pub fn $config_field(&self) -> f64 { self.$config_field }
             )*
             $(
+                #[doc = concat!("The configured `", stringify!($extra_field), "` value.")]
                 #[must_use]
                 pub fn $extra_field(&self) -> f64 { self.$extra_field }
             )*
@@ -94,6 +81,7 @@ macro_rules! scoring_events {
             pub fn build(self) -> SwarmScoringConfig { self.config }
 
             $(
+                #[doc = concat!("Set the weight for [`SwarmScoringEvent::", stringify!($variant), "`].")]
                 #[must_use]
                 pub fn $config_field(mut self, value: f64) -> Self {
                     self.config.$config_field = value;
@@ -101,6 +89,7 @@ macro_rules! scoring_events {
                 }
             )*
             $(
+                #[doc = concat!("Set the `", stringify!($extra_field), "` value.")]
                 #[must_use]
                 pub fn $extra_field(mut self, value: f64) -> Self {
                     self.config.$extra_field = value;
@@ -113,7 +102,7 @@ macro_rules! scoring_events {
         paste::paste! {
             impl crate::score::SwarmPeerScore {
                 $(
-                    $(#[doc = $doc])*
+                    #[doc = concat!("Record a [`SwarmScoringEvent::", stringify!($variant), "`] event.")]
                     pub fn [<record_ $config_field>](&self $(, $($field: $fty),*)?) {
                         self.record_event(SwarmScoringEvent::$variant $({ $($field),* })?);
                     }
