@@ -9,28 +9,48 @@
 //! to the topology routing targets and the storage layout.
 
 use std::marker::PhantomData;
-use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::sync::Arc;
 
 use dashmap::{DashMap, DashSet};
 use metrics::{counter, gauge};
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 use vertex_net_local::IpCapability;
+use vertex_net_peer_registry::ConnectionDirection;
 use vertex_net_peer_store::NetPeerStore;
 use vertex_net_peer_store::error::StoreError;
-use vertex_swarm_api::{SwarmIdentity, SwarmPeerResolver, SwarmScoreStore, SwarmSpec};
+use vertex_swarm_api::{
+    BanCause, PeerLifecycleEvent, ReportSource, SwarmIdentity, SwarmPeerResolver, SwarmScoreStore,
+    SwarmScoringEvent, SwarmSpec,
+};
 use vertex_swarm_peer::{SwarmPeer, Timestamp, check_timestamp};
-use vertex_swarm_peer_score::{PeerScore, ScoreCallbacks, SwarmScoringConfig};
+use vertex_swarm_peer_score::{PeerScore, SwarmScoringConfig};
 use vertex_swarm_primitives::{Bin, OverlayAddress, SwarmNodeType};
 
 use crate::entry::{
-    HealthState, PeerEntry, StoredPeer, on_health_added, on_health_changed, on_health_removed,
-    unix_timestamp_secs,
+    HealthState, PeerEntry, StoredPeer, TrustLevel, on_health_added, on_health_changed,
+    on_health_removed, unix_timestamp_secs,
 };
 use crate::proximity_index::{AddError, ProximityIndex};
 use crate::score_distribution::ScoreDistribution;
 use crate::write_buffer::WriteBuffer;
+
+/// Cheap-to-clone handle onto the peer manager.
+///
+/// The manager is always shared behind an `Arc`; cloning the handle is a
+/// reference-count bump. The handle is the surface other subsystems hold:
+/// it implements [`PeerReporter`](vertex_swarm_api::PeerReporter) (via the
+/// trait's `Arc` auto-impl) so protocol handlers, gossip, and topology
+/// report scoring events through [`PeerManager::report_peer`], and it
+/// exposes [`PeerManager::subscribe`] for the peer lifecycle event stream.
+pub type PeerManagerHandle<I> = Arc<PeerManager<I>>;
+
+/// Capacity of the peer lifecycle broadcast channel.
+///
+/// Sized for connection churn bursts (mass disconnects, trim rounds) so the
+/// action-executing subscriber rarely lags. See [`PeerManager::subscribe`]
+/// for the lagged-receiver policy.
+pub const LIFECYCLE_CHANNEL_CAPACITY: usize = 256;
 
 /// Configuration for [`PeerManager`].
 ///
@@ -133,12 +153,10 @@ pub struct PeerManager<I: SwarmIdentity> {
     pub(crate) scoring_config: Arc<SwarmScoringConfig>,
     /// Maximum peers in hot DashMap cache before eviction.
     pub(crate) max_hot_peers: usize,
-    /// Callbacks shared with all PeerEntries.
-    pub(crate) callbacks: Arc<ScoreCallbacks>,
     /// Per-bucket gauge tracking of score distribution.
     pub(crate) score_distribution: Arc<ScoreDistribution>,
-    /// Channel for notifying topology of banned peers.
-    pub(crate) ban_tx: broadcast::Sender<OverlayAddress>,
+    /// Peer lifecycle event broadcast (see [`Self::subscribe`]).
+    pub(crate) lifecycle_tx: broadcast::Sender<PeerLifecycleEvent>,
 }
 
 impl<I: SwarmIdentity> PeerManager<I> {
@@ -160,46 +178,19 @@ impl<I: SwarmIdentity> PeerManager<I> {
         } = config;
         let local_overlay = identity.overlay_address();
         let max_po = identity.spec().max_po();
-        let (ban_tx, _) = broadcast::channel(64);
-        let score_distribution = Arc::new(ScoreDistribution::new());
-        let pm = Arc::new_cyclic(|weak: &Weak<Self>| {
-            let callbacks = Arc::new(ScoreCallbacks {
-                on_score_changed: {
-                    let sd = Arc::clone(&score_distribution);
-                    Box::new(move |_overlay, old, new, _event| {
-                        sd.on_score_changed(old, new);
-                    })
-                },
-                on_score_warning: Box::new(|overlay, score| {
-                    warn!(?overlay, score, "peer score warning");
-                }),
-                on_should_ban: {
-                    let w = weak.clone();
-                    Box::new(move |overlay, score, reason| {
-                        if let Some(manager) = w.upgrade() {
-                            warn!(?overlay, score, reason, "auto-banning peer");
-                            manager.ban(overlay, Some(reason.to_string()));
-                        }
-                    })
-                },
-                on_severe_event: Box::new(|overlay, event| {
-                    debug!(?overlay, ?event, "severe scoring event");
-                }),
-            });
-            Self {
-                _identity: PhantomData,
-                index: ProximityIndex::new(local_overlay, max_po, max_per_bin),
-                peers: DashMap::new(),
-                store,
-                score_store,
-                banned_set: DashSet::new(),
-                write_buffer: WriteBuffer::new(write_buffer_capacity),
-                scoring_config: Arc::new(scoring),
-                max_hot_peers,
-                callbacks,
-                score_distribution,
-                ban_tx,
-            }
+        let (lifecycle_tx, _) = broadcast::channel(LIFECYCLE_CHANNEL_CAPACITY);
+        let pm = Arc::new(Self {
+            _identity: PhantomData,
+            index: ProximityIndex::new(local_overlay, max_po, max_per_bin),
+            peers: DashMap::new(),
+            store,
+            score_store,
+            banned_set: DashSet::new(),
+            write_buffer: WriteBuffer::new(write_buffer_capacity),
+            scoring_config: Arc::new(scoring),
+            max_hot_peers,
+            score_distribution: Arc::new(ScoreDistribution::new()),
+            lifecycle_tx,
         });
         if pm.store.is_some() {
             pm.load_index_from_store();
@@ -442,10 +433,12 @@ impl<I: SwarmIdentity> PeerManager<I> {
         self.banned_set.len()
     }
 
-    /// Ban a peer (prevents dialing). Notifies ban subscribers for disconnect.
+    /// Ban a peer (prevents dialing) and emit [`PeerLifecycleEvent::Banned`].
     ///
-    /// Bans are written directly to DB (bypassing the write buffer) for immediacy.
-    pub fn ban(&self, overlay: &OverlayAddress, reason: Option<String>) {
+    /// Topology subscribes to the lifecycle stream and closes the banned
+    /// peer's connection. Bans are written directly to the DB (bypassing the
+    /// write buffer) for immediacy. Bans currently have no scheduled expiry.
+    pub fn ban(&self, overlay: &OverlayAddress, cause: BanCause, reason: Option<String>) {
         if !self.banned_set.insert(*overlay) {
             return; // Already banned
         }
@@ -456,12 +449,12 @@ impl<I: SwarmIdentity> PeerManager<I> {
         if let Some(entry) = self.peers.get(overlay) {
             if !entry.is_banned() {
                 let old_state = entry.health_state();
-                warn!(?overlay, ?reason, "banning peer");
+                warn!(?overlay, %cause, ?reason, "banning peer");
                 entry.ban(reason.clone());
                 on_health_changed(old_state, HealthState::Banned);
             }
         } else {
-            warn!(?overlay, ?reason, "banning cold peer");
+            warn!(?overlay, %cause, ?reason, "banning cold peer");
         }
 
         // Write ban directly to DB (bypass buffer for immediacy)
@@ -472,12 +465,39 @@ impl<I: SwarmIdentity> PeerManager<I> {
             let _ = store.save(&record);
         }
 
-        let _ = self.ban_tx.send(*overlay);
+        self.emit(PeerLifecycleEvent::Banned {
+            overlay: *overlay,
+            until: None,
+            reason: cause,
+        });
     }
 
-    /// Subscribe to ban notifications for disconnecting banned peers.
-    pub fn subscribe_bans(&self) -> broadcast::Receiver<OverlayAddress> {
-        self.ban_tx.subscribe()
+    /// Subscribe to the peer lifecycle event stream.
+    ///
+    /// The stream carries every [`PeerLifecycleEvent`]: connects,
+    /// disconnects, score warnings, disconnect requests, and bans.
+    ///
+    /// # Lagged-receiver policy
+    ///
+    /// The channel holds [`LIFECYCLE_CHANNEL_CAPACITY`] events; a receiver
+    /// that falls further behind observes `RecvError::Lagged` and loses the
+    /// oldest events. Observability subscribers simply tolerate the gap. The
+    /// one action-executing subscriber (topology, which closes connections
+    /// for `DisconnectRequested` and `Banned`) must treat `Lagged` as a
+    /// resynchronization point: it re-reads the banned set (via
+    /// [`Self::is_banned`]) and closes
+    /// any still-connected banned peer, so a lagged stream can never strand
+    /// a banned peer connected. A `DisconnectRequested` lost to lag is not
+    /// replayed; the peer stays connected until its score next crosses a
+    /// threshold (the ban threshold is level-triggered, so continued abuse
+    /// escalates to a ban that is reconciled exactly).
+    pub fn subscribe(&self) -> broadcast::Receiver<PeerLifecycleEvent> {
+        self.lifecycle_tx.subscribe()
+    }
+
+    /// Broadcast a lifecycle event, ignoring the no-subscriber case.
+    pub(crate) fn emit(&self, event: PeerLifecycleEvent) {
+        let _ = self.lifecycle_tx.send(event);
     }
 
     /// Store a single discovered peer.
@@ -606,19 +626,82 @@ impl<I: SwarmIdentity> PeerManager<I> {
         stored_overlays
     }
 
-    /// Called when a peer completes handshake. Always inserts into hot cache.
+    /// Called by topology when a peer completes the handshake.
     ///
-    /// Confirms the handshake-asserted node type: from here on gossip cannot
-    /// change it, and only a later handshake may re-confirm a different value.
-    pub fn on_peer_ready(&self, swarm_peer: SwarmPeer, node_type: SwarmNodeType) {
+    /// Always inserts into the hot cache. Confirms the handshake-asserted
+    /// node type (from here on gossip cannot change it; only a later
+    /// handshake may re-confirm a different value), records the connection
+    /// state (connected-since, direction) and the topology-computed
+    /// [`TrustLevel`] on the entry, emits [`PeerLifecycleEvent::Connected`],
+    /// and reports the connection success through [`Self::report_peer`].
+    pub fn on_peer_connected(
+        &self,
+        swarm_peer: SwarmPeer,
+        node_type: SwarmNodeType,
+        direction: ConnectionDirection,
+        trust: TrustLevel,
+    ) {
         let overlay = OverlayAddress::from(*swarm_peer.overlay());
-        debug!(?overlay, ?node_type, "storing peer");
+        debug!(?overlay, ?node_type, %direction, %trust, "peer connected");
 
         let entry = self.insert_peer(overlay, swarm_peer, node_type);
         entry.confirm_node_type(node_type);
         let old_state = entry.health_state();
-        entry.record_success(Duration::ZERO);
+        entry.set_connected(direction, trust);
         on_health_changed(old_state, entry.health_state());
+
+        self.emit(PeerLifecycleEvent::Connected { overlay, node_type });
+        self.report_peer(
+            &overlay,
+            SwarmScoringEvent::ConnectionSuccess { latency: None },
+            ReportSource::Topology,
+        );
+    }
+
+    /// Called by topology when the last connection to a peer closes.
+    ///
+    /// Clears the connection state recorded by [`Self::on_peer_connected`]
+    /// and emits [`PeerLifecycleEvent::Disconnected`]. `reason` is a static
+    /// label for the debug log; scoring consequences (early-disconnect
+    /// penalties) go through [`Self::record_early_disconnect`].
+    pub fn on_peer_disconnected(&self, overlay: &OverlayAddress, reason: &'static str) {
+        debug!(?overlay, reason, "peer disconnected");
+        if let Some(entry) = self.peers.get(overlay) {
+            entry.clear_connected();
+        }
+        self.emit(PeerLifecycleEvent::Disconnected { overlay: *overlay });
+    }
+
+    /// Stored [`TrustLevel`] for a peer (one atomic load on the hot entry).
+    ///
+    /// Defaults to [`TrustLevel::Normal`] for cold or unknown peers; the
+    /// level is process-local and recomputed at every handshake.
+    #[must_use]
+    pub fn trust_level(&self, overlay: &OverlayAddress) -> TrustLevel {
+        self.peers
+            .get(overlay)
+            .map(|e| e.trust_level())
+            .unwrap_or_default()
+    }
+
+    /// Whether the peer currently has a handshake-complete connection.
+    #[must_use]
+    pub fn is_connected(&self, overlay: &OverlayAddress) -> bool {
+        self.peers.get(overlay).is_some_and(|e| e.is_connected())
+    }
+
+    /// Unix seconds at which the peer's current connection completed its
+    /// handshake, or `None` while disconnected.
+    #[must_use]
+    pub fn connected_since(&self, overlay: &OverlayAddress) -> Option<u64> {
+        self.peers.get(overlay).and_then(|e| e.connected_since())
+    }
+
+    /// Direction of the peer's current connection, or `None` while
+    /// disconnected.
+    #[must_use]
+    pub fn connection_direction(&self, overlay: &OverlayAddress) -> Option<ConnectionDirection> {
+        self.peers.get(overlay).and_then(|e| e.direction())
     }
 
     /// Total peers persisted in the backing store (or hot cache size if no store).
@@ -651,7 +734,6 @@ impl<I: SwarmIdentity> PeerManager<I> {
                     record,
                     score,
                     Arc::clone(&self.scoring_config),
-                    Arc::clone(&self.callbacks),
                 ));
                 let cloned = Arc::clone(&entry);
                 self.score_distribution.on_peer_added(cloned.score());
@@ -711,7 +793,6 @@ impl<I: SwarmIdentity> PeerManager<I> {
                     node_type,
                     overlay,
                     Arc::clone(&self.scoring_config),
-                    Arc::clone(&self.callbacks),
                 ));
                 let initial_score = entry.score();
                 let cloned = Arc::clone(&entry);
@@ -762,7 +843,9 @@ impl<I: SwarmIdentity> SwarmPeerResolver for PeerManager<I> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use vertex_net_peer_store::MemoryPeerStore;
+    use vertex_swarm_api::DisconnectCause;
     use vertex_swarm_api::SwarmScoreStore;
     use vertex_swarm_test_utils::{
         MockIdentity, test_overlay, test_swarm_peer, test_swarm_peer_with_timestamp,
@@ -884,12 +967,17 @@ mod tests {
     }
 
     #[test]
-    fn test_on_peer_ready() {
+    fn test_on_peer_connected() {
         let pm = manager();
         let swarm_peer = test_swarm_peer(1);
         let overlay = test_overlay(1);
 
-        pm.on_peer_ready(swarm_peer, SwarmNodeType::Storer);
+        pm.on_peer_connected(
+            swarm_peer,
+            SwarmNodeType::Storer,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
         assert_eq!(pm.node_type(&overlay), Some(SwarmNodeType::Storer));
         assert!(pm.index().exists(&overlay));
     }
@@ -903,7 +991,12 @@ mod tests {
         pm.store_discovered_peer(swarm_peer.clone());
         assert!(pm.eligible_peers().contains(&overlay));
 
-        pm.on_peer_ready(swarm_peer, SwarmNodeType::Client);
+        pm.on_peer_connected(
+            swarm_peer,
+            SwarmNodeType::Client,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
         assert!(pm.eligible_peers().contains(&overlay));
     }
 
@@ -913,8 +1006,17 @@ mod tests {
         let swarm_peer = test_swarm_peer(1);
         let overlay = test_overlay(1);
 
-        pm.on_peer_ready(swarm_peer, SwarmNodeType::Client);
-        pm.ban(&overlay, Some("misbehaving".to_string()));
+        pm.on_peer_connected(
+            swarm_peer,
+            SwarmNodeType::Client,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
+        pm.ban(
+            &overlay,
+            BanCause::Requested,
+            Some("misbehaving".to_string()),
+        );
 
         assert!(pm.is_banned(&overlay));
         assert!(!pm.eligible_peers().contains(&overlay));
@@ -928,7 +1030,7 @@ mod tests {
             pm.store_discovered_peer(test_swarm_peer(n));
         }
 
-        pm.ban(&test_overlay(1), None);
+        pm.ban(&test_overlay(1), BanCause::Requested, None);
 
         let all_overlays: Vec<_> = (1..=5).map(test_overlay).collect();
         let dialable = pm.get_dialable_peers(&all_overlays);
@@ -954,12 +1056,32 @@ mod tests {
     fn test_known_storer_overlays() {
         let pm = manager();
 
-        pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Storer);
-        pm.on_peer_ready(test_swarm_peer(2), SwarmNodeType::Client);
-        pm.on_peer_ready(test_swarm_peer(3), SwarmNodeType::Storer);
-        pm.on_peer_ready(test_swarm_peer(4), SwarmNodeType::Client);
+        pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Storer,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
+        pm.on_peer_connected(
+            test_swarm_peer(2),
+            SwarmNodeType::Client,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
+        pm.on_peer_connected(
+            test_swarm_peer(3),
+            SwarmNodeType::Storer,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
+        pm.on_peer_connected(
+            test_swarm_peer(4),
+            SwarmNodeType::Client,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
 
-        pm.ban(&test_overlay(1), None);
+        pm.ban(&test_overlay(1), BanCause::Requested, None);
 
         let storers = pm.known_storer_overlays();
         assert_eq!(storers.len(), 1);
@@ -971,7 +1093,12 @@ mod tests {
         let pm = manager();
 
         for n in 1..=5 {
-            pm.on_peer_ready(test_swarm_peer(n), SwarmNodeType::Storer);
+            pm.on_peer_connected(
+                test_swarm_peer(n),
+                SwarmNodeType::Storer,
+                ConnectionDirection::Outbound,
+                TrustLevel::Normal,
+            );
         }
 
         let overlays = vec![test_overlay(1), test_overlay(3), test_overlay(5)];
@@ -984,7 +1111,12 @@ mod tests {
     fn test_get_swarm_peers_missing() {
         let pm = manager();
 
-        pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Storer);
+        pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Storer,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
 
         let overlays = vec![test_overlay(1), test_overlay(99)];
         let peers = pm.get_swarm_peers(&overlays);
@@ -996,9 +1128,24 @@ mod tests {
     fn test_node_type_variants() {
         let pm = manager();
 
-        pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Bootnode);
-        pm.on_peer_ready(test_swarm_peer(2), SwarmNodeType::Client);
-        pm.on_peer_ready(test_swarm_peer(3), SwarmNodeType::Storer);
+        pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Bootnode,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
+        pm.on_peer_connected(
+            test_swarm_peer(2),
+            SwarmNodeType::Client,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
+        pm.on_peer_connected(
+            test_swarm_peer(3),
+            SwarmNodeType::Storer,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
 
         assert_eq!(
             pm.node_type(&test_overlay(1)),
@@ -1058,7 +1205,6 @@ mod tests {
                 SwarmNodeType::Client,
                 p1,
                 Arc::clone(&pm.scoring_config),
-                Arc::clone(&pm.callbacks),
             )),
         );
         pm.peers.insert(
@@ -1068,7 +1214,6 @@ mod tests {
                 SwarmNodeType::Client,
                 p2,
                 Arc::clone(&pm.scoring_config),
-                Arc::clone(&pm.callbacks),
             )),
         );
         pm.peers.insert(
@@ -1078,11 +1223,10 @@ mod tests {
                 SwarmNodeType::Client,
                 p3,
                 Arc::clone(&pm.scoring_config),
-                Arc::clone(&pm.callbacks),
             )),
         );
 
-        pm.ban(&p1, None);
+        pm.ban(&p1, BanCause::Requested, None);
 
         let dialable = pm.dialable_in_bin(Bin::new(0).unwrap(), 2);
         assert_eq!(dialable.len(), 2);
@@ -1107,9 +1251,18 @@ mod tests {
         let pm1 = manager_with_store(store.clone(), None);
 
         for n in 1..=5 {
-            pm1.on_peer_ready(test_swarm_peer(n), SwarmNodeType::Storer);
+            pm1.on_peer_connected(
+                test_swarm_peer(n),
+                SwarmNodeType::Storer,
+                ConnectionDirection::Outbound,
+                TrustLevel::Normal,
+            );
         }
-        pm1.ban(&test_overlay(1), Some("bad".to_string()));
+        pm1.ban(
+            &test_overlay(1),
+            BanCause::Requested,
+            Some("bad".to_string()),
+        );
         pm1.collect_dirty();
         pm1.flush_write_buffer();
 
@@ -1125,7 +1278,12 @@ mod tests {
         let swarm_peer = test_swarm_peer(1);
         let overlay = test_overlay(1);
 
-        pm.on_peer_ready(swarm_peer.clone(), SwarmNodeType::Storer);
+        pm.on_peer_connected(
+            swarm_peer.clone(),
+            SwarmNodeType::Storer,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
         assert_eq!(pm.node_type(&overlay), Some(SwarmNodeType::Storer));
 
         pm.store_discovered_peer(swarm_peer);
@@ -1137,7 +1295,12 @@ mod tests {
         let pm = PeerManager::new(&mock_identity(), PeerManagerConfig::default());
         let overlay = test_overlay(1);
 
-        pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Client);
+        pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Client,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
         assert_eq!(pm.node_type(&overlay), Some(SwarmNodeType::Client));
 
         // Gossip cannot change the confirmed type.
@@ -1145,7 +1308,12 @@ mod tests {
         assert_eq!(pm.node_type(&overlay), Some(SwarmNodeType::Client));
 
         // The node upgraded between sessions; the new handshake re-confirms.
-        pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Storer);
+        pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Storer,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
         assert_eq!(pm.node_type(&overlay), Some(SwarmNodeType::Storer));
 
         // Gossip still cannot change it afterwards.
@@ -1167,8 +1335,18 @@ mod tests {
     fn test_store_discovered_peers_preserves_node_type() {
         let pm = manager();
 
-        pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Storer);
-        pm.on_peer_ready(test_swarm_peer(2), SwarmNodeType::Storer);
+        pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Storer,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
+        pm.on_peer_connected(
+            test_swarm_peer(2),
+            SwarmNodeType::Storer,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
 
         let peers = vec![test_swarm_peer(1), test_swarm_peer(2), test_swarm_peer(3)];
         pm.store_discovered_peers(peers);
@@ -1187,12 +1365,12 @@ mod tests {
         }
 
         assert_eq!(pm.eligible_count(), 5);
-        pm.ban(&test_overlay(1), None);
+        pm.ban(&test_overlay(1), BanCause::Requested, None);
         assert_eq!(pm.eligible_count(), 4);
-        pm.ban(&test_overlay(2), None);
+        pm.ban(&test_overlay(2), BanCause::Requested, None);
         assert_eq!(pm.eligible_count(), 3);
 
-        pm.ban(&test_overlay(1), None);
+        pm.ban(&test_overlay(1), BanCause::Requested, None);
         assert_eq!(pm.eligible_count(), 3);
     }
 
@@ -1215,7 +1393,12 @@ mod tests {
             Arc::new(MemoryPeerStore::<StoredPeer>::new());
         let pm = manager_with_store(store, None);
 
-        pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Client);
+        pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Client,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
 
         assert_eq!(pm.index().len(), 1);
         assert_eq!(pm.peers.len(), 1);
@@ -1227,7 +1410,12 @@ mod tests {
             Arc::new(MemoryPeerStore::<StoredPeer>::new());
         let pm = manager_with_store(store.clone(), None);
 
-        pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Storer);
+        pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Storer,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
         pm.collect_dirty();
         pm.flush_write_buffer();
 
@@ -1243,8 +1431,13 @@ mod tests {
     fn test_banned_set_o1() {
         let pm = manager();
 
-        pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Client);
-        pm.ban(&test_overlay(1), None);
+        pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Client,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
+        pm.ban(&test_overlay(1), BanCause::Requested, None);
 
         assert!(pm.is_banned(&test_overlay(1)));
         assert!(!pm.is_banned(&test_overlay(2)));
@@ -1257,7 +1450,12 @@ mod tests {
             Arc::new(MemoryPeerStore::<StoredPeer>::new());
         let pm = manager_with_store(store.clone(), None);
 
-        pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Client);
+        pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Client,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
         pm.collect_dirty();
         pm.flush_write_buffer();
 
@@ -1270,11 +1468,16 @@ mod tests {
             Arc::new(MemoryPeerStore::<StoredPeer>::new());
         let pm = manager_with_store(store.clone(), None);
 
-        pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Client);
+        pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Client,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
         pm.collect_dirty();
         pm.flush_write_buffer();
 
-        pm.ban(&test_overlay(1), Some("test".into()));
+        pm.ban(&test_overlay(1), BanCause::Requested, Some("test".into()));
 
         let record = store.get(&test_overlay(1)).unwrap().unwrap();
         assert!(record.ban_info.is_some());
@@ -1289,8 +1492,8 @@ mod tests {
         }
 
         assert_eq!(pm.eligible_count(), 10);
-        pm.ban(&test_overlay(1), None);
-        pm.ban(&test_overlay(2), None);
+        pm.ban(&test_overlay(1), BanCause::Requested, None);
+        pm.ban(&test_overlay(2), BanCause::Requested, None);
         assert_eq!(pm.eligible_count(), 8);
     }
 
@@ -1303,7 +1506,12 @@ mod tests {
         pm.store_discovered_peer(test_swarm_peer(1));
         assert_eq!(pm.peers.len(), 0);
 
-        pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Storer);
+        pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Storer,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
         assert_eq!(pm.peers.len(), 1);
 
         pm.collect_dirty();
@@ -1331,11 +1539,19 @@ mod tests {
         );
 
         for n in 1..=20 {
-            pm.on_peer_ready(test_swarm_peer(n), SwarmNodeType::Client);
+            pm.on_peer_connected(
+                test_swarm_peer(n),
+                SwarmNodeType::Client,
+                ConnectionDirection::Outbound,
+                TrustLevel::Normal,
+            );
         }
         assert_eq!(pm.peers.len(), 20);
 
+        // Disconnect and fail the first fifteen; connected peers are never
+        // eviction candidates regardless of their failure count.
         for n in 1..=15 {
+            pm.on_peer_disconnected(&test_overlay(n), "test");
             pm.record_dial_failure(&test_overlay(n));
         }
 
@@ -1431,12 +1647,19 @@ mod tests {
         pm.store_discovered_peer(test_swarm_peer(1));
         assert_eq!(pm.peers.len(), 0);
 
-        pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Storer);
+        pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Storer,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
         assert_eq!(pm.peers.len(), 1);
 
         {
             let entry = pm.peers.get(&test_overlay(1)).unwrap();
-            entry.record_success(Duration::from_millis(50));
+            entry.record_event(SwarmScoringEvent::ConnectionSuccess {
+                latency: Some(Duration::from_millis(50)),
+            });
             assert!(entry.score() > 0.0);
         }
 
@@ -1460,10 +1683,19 @@ mod tests {
             Arc::new(MemoryPeerStore::<StoredPeer>::new());
         let pm = manager_with_store(store.clone(), None);
 
-        pm.on_peer_ready(test_swarm_peer(1), SwarmNodeType::Client);
+        pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Client,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
         pm.collect_dirty();
         pm.flush_write_buffer();
-        pm.ban(&test_overlay(1), Some("test ban".into()));
+        pm.ban(
+            &test_overlay(1),
+            BanCause::Requested,
+            Some("test ban".into()),
+        );
 
         let record = store.get(&test_overlay(1)).unwrap().unwrap();
         assert!(record.ban_info.is_some());
@@ -1519,6 +1751,238 @@ mod tests {
         }
 
         assert_eq!(pm.index().len(), 100);
+    }
+
+    fn drain_events(rx: &mut broadcast::Receiver<PeerLifecycleEvent>) -> Vec<PeerLifecycleEvent> {
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        events
+    }
+
+    /// Manager with tight thresholds so a handful of reports walks the score
+    /// through warn (-10), disconnect (-20), and ban (-30).
+    fn thresholds_manager() -> Arc<PeerManager<MockIdentity>> {
+        let scoring = SwarmScoringConfig::builder()
+            .warn_threshold(-10.0)
+            .disconnect_threshold(-20.0)
+            .ban_threshold(-30.0)
+            .build();
+        PeerManager::new(
+            &mock_identity(),
+            PeerManagerConfig {
+                scoring,
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn test_report_peer_warn_crossing_emits_score_warning() {
+        let pm = thresholds_manager();
+        let overlay = test_overlay(1);
+        pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Client,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
+        let mut rx = pm.subscribe();
+
+        // ConnectionSuccess left the score at +1; ProtocolError is -3 each.
+        // Four reports reach -11, crossing the warn threshold once.
+        for _ in 0..4 {
+            pm.report_peer(
+                &overlay,
+                SwarmScoringEvent::ProtocolError,
+                ReportSource::Protocol("test"),
+            );
+        }
+
+        let events = drain_events(&mut rx);
+        let warnings = events
+            .iter()
+            .filter(|e| matches!(e, PeerLifecycleEvent::ScoreWarning { overlay: o, .. } if *o == overlay))
+            .count();
+        assert_eq!(warnings, 1, "warn is edge-triggered: exactly one event");
+        assert!(!pm.is_banned(&overlay));
+        assert!(!pm.peer_is_in_backoff(&overlay));
+    }
+
+    #[test]
+    fn test_report_peer_disconnect_crossing_emits_request_and_backoff() {
+        let pm = thresholds_manager();
+        let overlay = test_overlay(1);
+        pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Client,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
+        let mut rx = pm.subscribe();
+
+        // +1 -> -20: seven ProtocolError reports cross the disconnect
+        // threshold on the last one.
+        for _ in 0..7 {
+            pm.report_peer(
+                &overlay,
+                SwarmScoringEvent::ProtocolError,
+                ReportSource::Topology,
+            );
+        }
+
+        let events = drain_events(&mut rx);
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                PeerLifecycleEvent::DisconnectRequested {
+                    overlay: o,
+                    reason: DisconnectCause::LowScore,
+                } if *o == overlay
+            )),
+            "disconnect crossing must emit DisconnectRequested"
+        );
+        assert!(
+            pm.peer_is_in_backoff(&overlay),
+            "disconnect outcome must apply dial backoff"
+        );
+        assert!(!pm.is_banned(&overlay));
+    }
+
+    #[test]
+    fn test_report_peer_ban_threshold_bans_once() {
+        let pm = thresholds_manager();
+        let overlay = test_overlay(1);
+        pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Client,
+            ConnectionDirection::Outbound,
+            TrustLevel::Normal,
+        );
+        let mut rx = pm.subscribe();
+
+        // Drive well past the ban threshold; ban is level-triggered but the
+        // ban action (and its event) must fire exactly once.
+        for _ in 0..15 {
+            pm.report_peer(
+                &overlay,
+                SwarmScoringEvent::ProtocolError,
+                ReportSource::Accounting,
+            );
+        }
+
+        assert!(pm.is_banned(&overlay));
+        assert!(!pm.eligible_peers().contains(&overlay));
+        let events = drain_events(&mut rx);
+        let bans = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    PeerLifecycleEvent::Banned {
+                        overlay: o,
+                        reason: BanCause::LowScore,
+                        ..
+                    } if *o == overlay
+                )
+            })
+            .count();
+        assert_eq!(bans, 1, "repeated Ban outcomes must not re-emit Banned");
+    }
+
+    #[test]
+    fn test_report_peer_unknown_overlay_is_dropped() {
+        let pm = manager();
+        // No entry exists; the report must be a no-op, not a panic or insert.
+        pm.report_peer(
+            &test_overlay(9),
+            SwarmScoringEvent::MaliciousBehavior,
+            ReportSource::Rpc,
+        );
+        assert!(pm.get_peer_score(&test_overlay(9)).is_none());
+    }
+
+    #[test]
+    fn test_lifecycle_connect_disconnect_events_and_state() {
+        let pm = manager();
+        let overlay = test_overlay(1);
+        let mut rx = pm.subscribe();
+
+        pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Storer,
+            ConnectionDirection::Inbound,
+            TrustLevel::LocalSubnet,
+        );
+        assert!(pm.is_connected(&overlay));
+        assert!(pm.connected_since(&overlay).is_some());
+        assert_eq!(
+            pm.connection_direction(&overlay),
+            Some(ConnectionDirection::Inbound)
+        );
+        assert_eq!(pm.trust_level(&overlay), TrustLevel::LocalSubnet);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(PeerLifecycleEvent::Connected {
+                overlay: o,
+                node_type: SwarmNodeType::Storer,
+            }) if o == overlay
+        ));
+
+        pm.on_peer_disconnected(&overlay, "test");
+        assert!(!pm.is_connected(&overlay));
+        assert!(pm.connected_since(&overlay).is_none());
+        assert_eq!(pm.connection_direction(&overlay), None);
+        // Trust describes the peer, not the connection: it survives until
+        // the next handshake recomputes it.
+        assert_eq!(pm.trust_level(&overlay), TrustLevel::LocalSubnet);
+        let events = drain_events(&mut rx);
+        assert!(events.iter().any(
+            |e| matches!(e, PeerLifecycleEvent::Disconnected { overlay: o } if *o == overlay)
+        ));
+    }
+
+    #[test]
+    fn test_gossip_cannot_mutate_trust_or_node_type() {
+        let pm = manager();
+        let overlay = test_overlay(1);
+
+        pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Storer,
+            ConnectionDirection::Outbound,
+            TrustLevel::Trusted,
+        );
+
+        pm.store_discovered_peer(test_swarm_peer(1));
+
+        assert_eq!(pm.node_type(&overlay), Some(SwarmNodeType::Storer));
+        assert_eq!(pm.trust_level(&overlay), TrustLevel::Trusted);
+    }
+
+    #[test]
+    fn test_subscriber_lag_drops_oldest_then_resumes() {
+        let pm = manager();
+        let overlay = test_overlay(1);
+        let mut rx = pm.subscribe();
+
+        for _ in 0..(LIFECYCLE_CHANNEL_CAPACITY + 16) {
+            pm.on_peer_disconnected(&overlay, "test");
+        }
+
+        // The documented policy: a lagged receiver sees Lagged once, losing
+        // the oldest events, then resumes from the oldest retained event.
+        match rx.try_recv() {
+            Err(broadcast::error::TryRecvError::Lagged(missed)) => {
+                assert!(missed >= 1, "lag must report dropped events");
+            }
+            other => panic!("expected lagged receiver, got {other:?}"),
+        }
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(PeerLifecycleEvent::Disconnected { .. })
+        ));
     }
 
     #[test]
