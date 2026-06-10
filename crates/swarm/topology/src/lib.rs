@@ -54,6 +54,7 @@ mod composed;
 mod error;
 mod gossip;
 mod reachability;
+mod readiness;
 mod tasks;
 
 #[cfg(test)]
@@ -68,3 +69,4 @@ pub use handle::{BinStats, RoutingStats, TopologyHandle};
 
 pub use kademlia::{KademliaConfig, RoutingArgs};
 pub use reachability::{FAILURE_DECAY, FAILURE_THRESHOLD, PeerReachability, ReachabilityTracker};
+pub use readiness::{BinReadiness, ReadinessSnapshot};

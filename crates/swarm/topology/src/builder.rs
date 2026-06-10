@@ -173,7 +173,6 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
             command_tx,
             event_tx.clone(),
             agent_versions.clone(),
-            metrics.clone(),
         );
 
         // Queue static NAT addresses to emit as external addresses on first poll
