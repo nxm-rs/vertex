@@ -1,5 +1,7 @@
 //! SWAP settlement errors.
 
+use alloy_primitives::{Address, U256};
+
 /// Errors that can occur during swap operations.
 #[derive(Debug, Clone, thiserror::Error, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
@@ -16,19 +18,55 @@ pub enum SwapSettlementError {
     #[error("network error: {0}")]
     NetworkError(String),
 
+    /// The peer's beneficiary has not been learned from the swap handshake yet.
+    #[error("unknown beneficiary for peer")]
+    UnknownBeneficiary,
+
+    /// A cheque arrived from a peer whose swap identity has not been learned, so
+    /// its issuer cannot be authenticated.
+    #[error("no swap identity learned for peer; cannot authenticate cheque")]
+    UnknownPeerIdentity,
+
+    /// A received cheque names a beneficiary that is not our payout address.
+    #[error("cheque beneficiary mismatch: expected {expected}, got {got}")]
+    BeneficiaryMismatch {
+        /// Our own beneficiary, the only address a cheque to us may name.
+        expected: Address,
+        /// The beneficiary the received cheque actually names.
+        got: Address,
+    },
+
     /// Cheque signing failed.
     #[error("cheque signing failed: {0}")]
     SigningFailed(String),
 
-    /// Chequebook has insufficient balance.
-    #[error("insufficient chequebook balance")]
-    InsufficientBalance,
+    /// A received cheque's signature did not recover to the expected issuer.
+    #[error("cheque issuer mismatch: expected {expected}, recovered {recovered}")]
+    IssuerMismatch {
+        /// The chequebook issuer expected for this peer.
+        expected: Address,
+        /// The address actually recovered from the cheque signature.
+        recovered: Address,
+    },
+
+    /// A received cheque did not increase the cumulative payout.
+    #[error("cumulative payout did not increase: last {last}, received {received}")]
+    NonIncreasingPayout {
+        /// The cumulative payout of the last accepted cheque.
+        last: U256,
+        /// The cumulative payout of the received cheque.
+        received: U256,
+    },
+
+    /// The incremental cheque amount did not fit the accounting unit type.
+    #[error("cheque amount overflows accounting unit: {0}")]
+    AmountOverflow(U256),
 
     /// Cheque validation failed.
     #[error("cheque validation failed: {0}")]
     ValidationFailed(String),
 
-    /// Chain backend not available.
+    /// Chain backend not available for the requested cashout.
     #[error("chain backend not available")]
     NoChainBackend,
 }

@@ -8692,6 +8692,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "vertex-swarm-bandwidth-swap"
+version = "0.1.0"
+dependencies = [
+ "alloy-chains",
+ "alloy-contract",
+ "alloy-primitives",
+ "alloy-provider",
+ "alloy-signer",
+ "alloy-signer-local",
+ "alloy-sol-types",
+ "async-trait",
+ "nectar-contracts",
+ "strum 0.28.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "vertex-chain",
+ "vertex-swarm-api",
+ "vertex-swarm-bandwidth",
+ "vertex-swarm-bandwidth-chequebook",
+ "vertex-swarm-node",
+ "vertex-swarm-primitives",
+ "vertex-swarm-test-utils",
+ "vertex-tasks",
+]
+
+[[package]]
 name = "vertex-swarm-builder"
 version = "0.1.0"
 dependencies = [

@@ -4,7 +4,7 @@ use tokio::sync::{mpsc, oneshot};
 use vertex_swarm_primitives::OverlayAddress;
 
 use crate::error::SwapSettlementError;
-use crate::service::SwapCommand;
+use crate::service::{PeerSwapInfo, SwapCommand};
 
 /// Cloneable handle for requesting cheque settlements from the service.
 #[derive(Clone)]
@@ -19,7 +19,11 @@ impl SwapHandle {
     }
 
     /// Request cheque settlement. Returns the amount settled.
-    pub async fn settle(&self, peer: OverlayAddress, amount: u64) -> Result<u64, SwapSettlementError> {
+    pub async fn settle(
+        &self,
+        peer: OverlayAddress,
+        amount: u64,
+    ) -> Result<u64, SwapSettlementError> {
         let (tx, rx) = oneshot::channel();
 
         self.command_tx
@@ -31,5 +35,17 @@ impl SwapHandle {
             .map_err(|_| SwapSettlementError::ServiceStopped)?;
 
         rx.await.map_err(|_| SwapSettlementError::ServiceStopped)?
+    }
+
+    /// Register the SWAP identity (beneficiary and chequebook issuer) learned for
+    /// a peer during the swap handshake.
+    pub fn set_peer_info(
+        &self,
+        peer: OverlayAddress,
+        info: PeerSwapInfo,
+    ) -> Result<(), SwapSettlementError> {
+        self.command_tx
+            .send(SwapCommand::SetPeerInfo { peer, info })
+            .map_err(|_| SwapSettlementError::ServiceStopped)
     }
 }

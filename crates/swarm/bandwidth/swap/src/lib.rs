@@ -1,15 +1,20 @@
-compile_error!("vertex-swarm-bandwidth-swap is disabled: depends on serde_json which has been removed from the workspace. Remove serde_json dependency before re-enabling.");
-
 //! Chequebook-based settlement provider for bandwidth accounting.
 //!
-//! When debt exceeds the payment threshold, the debtor issues a signed cheque.
-//! The creditor stores cheques and can cash them on-chain at any time.
+//! When debt crosses the payment threshold, the debtor issues a signed cheque
+//! whose cumulative payout advances monotonically. The creditor validates the
+//! cheque (signature recovers to the expected issuer, payout strictly increases)
+//! and credits the incremental amount. Cheque exchange is fully chain-free; the
+//! optional `swap-chequebook` feature adds an on-chain client for redeeming
+//! received cheques.
+//!
+//! Swap is one of the pluggable [`SwarmSettlementProvider`]s selected by
+//! [`BandwidthMode`], alongside pseudosettle. The two compose: pseudosettle
+//! forgives debt up to a time-based allowance, swap pays the remainder.
 //!
 //! # Usage
 //!
-//! Use [`create_swap_actor`] to create a service/handle pair.
-//! The [`SwapProvider`] implements [`SwarmSettlementProvider`] for
-//! integration with [`Accounting`].
+//! Use [`create_swap_actor`] to create a service/handle pair. Spawn the service
+//! as a background task and build a [`SwapProvider`] from the handle.
 //!
 //! [`SwarmSettlementProvider`]: vertex_swarm_api::SwarmSettlementProvider
 
@@ -17,31 +22,36 @@ compile_error!("vertex-swarm-bandwidth-swap is disabled: depends on serde_json w
 
 extern crate alloc;
 
+#[cfg(feature = "swap-chequebook")]
+pub mod cashout;
 pub mod error;
 pub mod handle;
 pub mod service;
 
 use std::sync::Arc;
 
-use alloy_primitives::U256;
+use alloy_chains::NamedChain;
+use alloy_primitives::{Address, U256};
+use alloy_signer::SignerSync;
 use tokio::sync::mpsc;
 use vertex_swarm_api::{
-    BandwidthMode, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmError, SwarmIdentity,
-    SwarmPeerState, SwarmResult, SwarmSettlementProvider,
+    BandwidthMode, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmError, SwarmPeerState,
+    SwarmResult, SwarmSettlementProvider,
 };
-use vertex_swarm_bandwidth::{Accounting, AccountingPeerHandle};
 use vertex_swarm_node::ClientCommand;
 use vertex_swarm_primitives::OverlayAddress;
 
 pub use error::SwapSettlementError;
 pub use handle::SwapHandle;
-pub use service::{SwapCommand, SwapService};
+pub use service::{PeerSwapInfo, SwapCommand, SwapService};
 pub use vertex_swarm_node::SwapEvent;
 
 /// Chequebook-based settlement provider.
 ///
-/// On `settle()`, issues a cheque for outstanding debt exceeding the threshold.
-/// With a handle, delegates to the network service; without, returns Ok(0).
+/// On `settle()`, when the peer's debt crosses the payment threshold the
+/// provider delegates to the service, which issues and sends a signed cheque.
+/// Without a handle it is inert (it never issues cheques on its own), so it
+/// composes safely with pseudosettle in [`BandwidthMode::Both`].
 pub struct SwapProvider<C> {
     config: C,
     /// Optional handle for delegating to the service.
@@ -72,6 +82,14 @@ impl<C: SwarmAccountingConfig> SwapProvider<C> {
     pub fn config(&self) -> &C {
         &self.config
     }
+
+    /// The early-payment trigger: pay once debt reaches this fraction of the
+    /// payment threshold, mirroring pseudosettle's early-payment behaviour.
+    fn early_payment_trigger(&self) -> u64 {
+        let threshold = self.config.payment_threshold();
+        let early = self.config.early_payment_percent().min(100);
+        threshold.saturating_mul(100 - early) / 100
+    }
 }
 
 #[async_trait::async_trait]
@@ -81,52 +99,35 @@ impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for SwapProvide
     }
 
     fn pre_allow(&self, _peer: OverlayAddress, _state: &dyn SwarmPeerState) -> i64 {
-        // SWAP doesn't modify balance during allow check
+        // SWAP does not modify the balance during the allow check; payment is
+        // driven by `settle()` once debt crosses the threshold.
         0
     }
 
     async fn settle(&self, peer: OverlayAddress, state: &dyn SwarmPeerState) -> SwarmResult<i64> {
-        // If we have a handle, delegate to the service
-        if let Some(handle) = &self.handle {
-            let balance = state.balance();
-            if balance >= 0 {
-                return Ok(0); // Nothing to settle
-            }
-
-            let amount = (-balance) as u64;
-            let accepted =
-                handle
-                    .settle(peer, amount)
-                    .await
-                    .map_err(SwarmError::payment_required)?;
-
-            Ok(accepted as i64)
-        } else {
-            // No handle - stub implementation
-            let balance = state.balance();
-
-            // Only settle if balance exceeds payment threshold (we owe them)
-            if balance >= 0 {
-                return Ok(0);
-            }
-
-            let debt = (-balance) as u64;
-            let threshold = self.config.payment_threshold();
-
-            if debt < threshold {
-                return Ok(0);
-            }
-
-            tracing::debug!(
-                %peer,
-                balance = balance,
-                debt = debt,
-                "SWAP settlement stub - no-op (cheque would be issued here)"
-            );
-
-            // For now, just log and return 0 (no settlement occurred)
-            Ok(0)
+        let balance = state.balance();
+        // Positive balance means the peer owes us; nothing for us to pay.
+        if balance >= 0 {
+            return Ok(0);
         }
+
+        let debt = balance.unsigned_abs();
+        // Only pay once debt reaches the early-payment trigger.
+        if debt < self.early_payment_trigger() {
+            return Ok(0);
+        }
+
+        let Some(handle) = &self.handle else {
+            // Without a service handle the provider cannot issue cheques.
+            return Ok(0);
+        };
+
+        let accepted = handle
+            .settle(peer, debt)
+            .await
+            .map_err(SwarmError::payment_required)?;
+
+        Ok(i64::try_from(accepted).unwrap_or(i64::MAX))
     }
 
     fn name(&self) -> &'static str {
@@ -136,14 +137,26 @@ impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for SwapProvide
 
 /// Create a swap actor (service + handle pair).
 ///
-/// Spawn the service as a background task. Use the handle to create
-/// a [`SwapProvider`].
-pub fn create_swap_actor<A: SwarmBandwidthAccounting + 'static>(
+/// Spawn the service as a background task. Use the handle to create a
+/// [`SwapProvider`]. The `signer` signs issued cheques, `chequebook` is this
+/// node's chequebook (the drawer), `beneficiary` is our payout address (the only
+/// address a cheque sent to us may name), and `chain` binds the EIP-712 domain to
+/// the settlement chain.
+#[allow(clippy::too_many_arguments)]
+pub fn create_swap_actor<A, S>(
     event_rx: mpsc::UnboundedReceiver<SwapEvent>,
     client_command_tx: mpsc::UnboundedSender<ClientCommand>,
     accounting: Arc<A>,
     our_rate: U256,
-) -> (SwapService<A>, SwapHandle) {
+    signer: Arc<S>,
+    chequebook: Address,
+    beneficiary: Address,
+    chain: NamedChain,
+) -> (SwapService<A, S>, SwapHandle)
+where
+    A: SwarmBandwidthAccounting + 'static,
+    S: SignerSync + Send + Sync + 'static,
+{
     let (command_tx, command_rx) = mpsc::unbounded_channel();
 
     let service = SwapService::new(
@@ -152,6 +165,10 @@ pub fn create_swap_actor<A: SwarmBandwidthAccounting + 'static>(
         client_command_tx,
         accounting,
         our_rate,
+        signer,
+        chequebook,
+        beneficiary,
+        chain,
     );
 
     let handle = SwapHandle::new(command_tx);
@@ -159,34 +176,16 @@ pub fn create_swap_actor<A: SwarmBandwidthAccounting + 'static>(
     (service, handle)
 }
 
-/// Type alias for the SWAP peer handle.
-pub type SwapPeerHandle = AccountingPeerHandle;
-
-/// Create a new SWAP-only accounting instance.
-///
-/// This is a convenience function that creates a `Accounting` with
-/// a `SwapProvider`.
-pub fn new_swap_accounting<C: SwarmAccountingConfig + Clone + 'static, I: SwarmIdentity>(
-    config: C,
-    identity: I,
-) -> Accounting<C, I> {
-    Accounting::with_providers(
-        config.clone(),
-        identity,
-        vec![Box::new(SwapProvider::new(config))],
-    )
-}
-
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use vertex_swarm_api::{
-        BandwidthMode, Direction, SwarmAccountingConfig, SwarmBandwidthAccounting,
-        SwarmPeerBandwidth,
-    };
-    use vertex_swarm_bandwidth::BandwidthConfig;
-    use vertex_swarm_bandwidth::PeerState;
-    use vertex_swarm_test_utils::{test_identity, test_peer};
+    use alloy_primitives::{Address, U256};
+    use alloy_signer_local::PrivateKeySigner;
+    use vertex_swarm_api::{BandwidthMode, SwarmAccountingConfig};
+    use vertex_swarm_bandwidth_chequebook::{Cheque, ChequeExt, SignedCheque};
+
+    const CHAIN: NamedChain = NamedChain::Gnosis;
 
     struct SwapTestConfig;
 
@@ -217,34 +216,31 @@ mod tests {
     }
 
     #[test]
-    fn test_swap_provider_name() {
+    fn provider_name() {
         let provider = SwapProvider::new(SwapTestConfig);
         assert_eq!(provider.name(), "swap");
     }
 
     #[test]
-    fn test_swap_accounting_basic() {
-        let accounting = new_swap_accounting(BandwidthConfig::default(), test_identity());
-
-        let handle = accounting.for_peer(test_peer());
-        assert_eq!(handle.balance(), 0);
-
-        handle.record(1000, Direction::Upload);
-        assert_eq!(handle.balance(), 1000);
-
-        handle.record(500, Direction::Download);
-        assert_eq!(handle.balance(), 500);
+    fn early_payment_trigger_is_fraction_of_threshold() {
+        let provider = SwapProvider::new(SwapTestConfig);
+        // 50% early payment => trigger at 50% of the 13_500_000 threshold.
+        assert_eq!(provider.early_payment_trigger(), 6_750_000);
     }
 
+    /// A signed cheque must recover to the signer that produced it.
     #[test]
-    fn test_swap_pre_allow_no_change() {
-        let provider = SwapProvider::new(SwapTestConfig);
-        let state = PeerState::new(13_500_000, 16_875_000);
-        state.add_balance(-1000);
+    fn cheque_sign_recover_roundtrip() {
+        let signer = PrivateKeySigner::random();
+        let cheque = Cheque::new(
+            Address::repeat_byte(0x11),
+            Address::repeat_byte(0x22),
+            U256::from(1_000u64),
+        );
+        let hash = cheque.signing_hash(CHAIN);
+        let sig = signer.sign_hash_sync(&hash).unwrap();
+        let signed = SignedCheque::from_signature(cheque, sig);
 
-        let adjustment = provider.pre_allow(test_peer(), &state);
-
-        assert_eq!(adjustment, 0);
-        assert_eq!(state.balance(), -1000);
+        assert_eq!(signed.recover_signer(CHAIN).unwrap(), signer.address());
     }
 }
