@@ -4,3 +4,18 @@
 # Enable tokio's unstable APIs for tokio-console support.
 # Force frame pointers for CPU profiling with pprof.
 rustflags = ["--cfg", "tokio_unstable", "-C", "force-frame-pointers=yes"]
+
+# Threaded-wasm flags for wasm32 builds. nectar-primitives requires the
+# atomics, bulk-memory, and mutable-globals target features on wasm32
+# (SharedArrayBuffer-backed parallelism), and the getrandom 0.3+/0.4 lines
+# require an explicit browser backend selection via the `getrandom_backend`
+# cfg. Target-specific rustflags replace [build] rustflags, which is correct
+# here: tokio_unstable and frame pointers are native-only concerns.
+# Building for this target currently requires a nightly toolchain because
+# the atomics target feature is unstable; see docs/agents/wasm.md.
+[target.wasm32-unknown-unknown]
+rustflags = [
+  "-Ctarget-feature=+atomics,+bulk-memory,+mutable-globals",
+  "--cfg",
+  'getrandom_backend="wasm_js"',
+]

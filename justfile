@@ -20,6 +20,12 @@ nextest:
 check:
     cargo check --all-features
 
+# Wasm conformance build for the peer stack. Needs a nightly toolchain with
+# the wasm32-unknown-unknown target; rustflags come from .cargo/config.toml.
+# See docs/agents/wasm.md.
+wasm-peers:
+    cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-peer-score -p vertex-swarm-peer-manager
+
 build:
     cargo build --all-features
 

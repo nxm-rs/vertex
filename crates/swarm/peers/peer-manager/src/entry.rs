@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use metrics::gauge;
 use parking_lot::RwLock;
@@ -15,6 +15,7 @@ use vertex_swarm_api::SwarmScoringEvent;
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_score::{PeerScore, ScoreChange, SwarmPeerScore, SwarmScoringConfig};
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 /// Exclusive health state for a peer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +86,11 @@ pub struct PeerSnapshot {
     pub last_seen: u64,
 }
 
+/// Current wall-clock time in unix seconds.
+///
+/// Uses `web_time` so the same code path compiles for native targets (where
+/// it is a re-export of `std::time`) and for wasm32 (where the browser clock
+/// backs it).
 pub(crate) fn unix_timestamp_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

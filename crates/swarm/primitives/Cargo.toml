@@ -18,6 +18,16 @@ strum = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 
+# On wasm, nectar-primitives leaves the alloy-primitives `getrandom` feature
+# unselected even though its nonce generation calls `B256::random()`. Select
+# it here, together with the browser backend of the getrandom crate, so the
+# wasm cone resolves a working entropy source. These are transitive build
+# requirements, not direct API uses.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+alloy-primitives = { workspace = true, features = ["getrandom"] }
+getrandom = { workspace = true, features = ["js"] }
+getrandom_04 = { workspace = true, features = ["wasm_js"] }
+
 [dev-dependencies]
 alloy-primitives = { workspace = true }
 alloy-signer-local = { workspace = true }
