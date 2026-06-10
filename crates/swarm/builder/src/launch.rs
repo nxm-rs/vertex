@@ -11,6 +11,8 @@ use vertex_net_peer_store::NetPeerStore;
 use vertex_net_peer_store::error::StoreError;
 use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
+#[cfg(feature = "swap")]
+use vertex_swarm_api::SwarmClientAccounting;
 use vertex_swarm_api::{PeerConfigValues, SwarmLaunchConfig, SwarmPeerConfig, SwarmScoreStore};
 use vertex_swarm_bandwidth::{
     Accounting, AccountingBuilder, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
@@ -62,6 +64,7 @@ where
     }
 }
 
+#[cfg(not(feature = "swap"))]
 #[allow(clippy::type_complexity)]
 fn build_accounting<A>(
     spec: Arc<Spec>,
@@ -81,6 +84,36 @@ where
     AccountingBuilder::new(config)
         .with_pricer_from_config(spec)
         .build(identity)
+}
+
+/// Build client accounting, embedding the SWAP settlement provider when enabled.
+///
+/// Returns the accounting plus the swap wiring to spawn after the node command
+/// channel exists. When SWAP is not enabled the wiring is `None` and the
+/// accounting is identical to [`build_accounting`].
+#[cfg(feature = "swap")]
+#[allow(clippy::type_complexity)]
+fn build_accounting_with_swap(
+    spec: &Arc<Spec>,
+    identity: &Arc<Identity>,
+    config: &DefaultBandwidthConfig,
+    swap_config: &vertex_swarm_node::args::SwapConfig,
+) -> (
+    ClientAccounting<
+        Arc<vertex_swarm_bandwidth::Accounting<DefaultBandwidthConfig, Arc<Identity>>>,
+        FixedPricer<Spec>,
+    >,
+    Option<crate::swap::SwapWiring>,
+) {
+    let builder = AccountingBuilder::new(config.clone()).with_pricer_from_config(Arc::clone(spec));
+
+    match crate::swap::SwapWiring::prepare(spec, identity, config, swap_config) {
+        Some((provider, wiring)) => (
+            builder.with_settlement(provider).build(identity),
+            Some(wiring),
+        ),
+        None => (builder.build(identity), None),
+    }
 }
 
 /// Wrap a future factory as a NodeTaskFn with graceful shutdown support.
@@ -276,19 +309,31 @@ impl SwarmLaunchConfig for ClientConfig {
         let db = open_shared_database(ctx);
         let (peer_store, score_store) = create_peer_store(&db);
 
+        // Prepare SWAP settlement first: the provider must be embedded in the
+        // accounting, and the swap event sink must be routed at node build time.
+        #[cfg(feature = "swap")]
+        let (accounting, swap_wiring) =
+            build_accounting_with_swap(self.spec(), self.identity(), self.bandwidth(), self.swap());
+        #[cfg(not(feature = "swap"))]
         let accounting = build_accounting(
             self.spec().clone(),
             self.identity(),
             self.bandwidth().clone(),
         );
 
-        let (node, client_service, client_handle) = ClientNode::builder(self.identity().clone())
+        let node_builder = ClientNode::builder(self.identity().clone());
+        #[cfg(feature = "swap")]
+        let node_builder = match swap_wiring.as_ref() {
+            Some(wiring) => node_builder.with_swap_events(wiring.swap_event_sender()),
+            None => node_builder,
+        };
+        let (node, client_service, client_handle) = node_builder
             .build(self.network(), peer_store, score_store)
             .await
             .map_err(|e| SwarmNodeError::Build(e.into()))?;
 
         let topology = node.topology_handle().clone();
-        let chunk_provider = NetworkChunkProvider::new(client_handle, topology.clone());
+        let chunk_provider = NetworkChunkProvider::new(client_handle.clone(), topology.clone());
         let verified_provider = VerifyingChunkProvider::new(chunk_provider, self.verify());
         let providers = ClientRpcProviders::new(topology, verified_provider);
 
@@ -310,9 +355,22 @@ impl SwarmLaunchConfig for ClientConfig {
             .await?
         };
 
+        // Spawn the SWAP settlement service over the shared accounting instance,
+        // forwarding its cheque commands to the node and cashing received cheques
+        // on chain when a provider is present.
+        #[cfg(feature = "swap")]
+        if let Some(wiring) = swap_wiring {
+            wiring.spawn(
+                ctx,
+                accounting.bandwidth().clone(),
+                client_handle,
+                #[cfg(feature = "chain")]
+                chain_provider.as_ref(),
+            );
+        }
+
         // Return node task - accounting is moved into the closure to keep it
-        // alive. The chain provider is held alive the same way until the SWAP
-        // settlement service (a later PR) consumes it.
+        // alive. The chain provider is held alive the same way.
         let task = single_task(move |shutdown| async move {
             let _accounting = accounting;
             #[cfg(feature = "chain")]
@@ -342,6 +400,12 @@ impl SwarmLaunchConfig for StorerConfig {
         let db = open_shared_database(ctx);
         let (peer_store, score_store) = create_peer_store(&db);
 
+        // Prepare SWAP settlement first: the provider must be embedded in the
+        // accounting, and the swap event sink must be routed at node build time.
+        #[cfg(feature = "swap")]
+        let (accounting, swap_wiring) =
+            build_accounting_with_swap(self.spec(), self.identity(), self.bandwidth(), self.swap());
+        #[cfg(not(feature = "swap"))]
         let accounting = build_accounting(
             self.spec().clone(),
             self.identity(),
@@ -353,13 +417,19 @@ impl SwarmLaunchConfig for StorerConfig {
         let _ = self.storage();
 
         // Build as ClientNode for now (storer components not yet implemented)
-        let (node, client_service, client_handle) = ClientNode::builder(self.identity().clone())
+        let node_builder = ClientNode::builder(self.identity().clone());
+        #[cfg(feature = "swap")]
+        let node_builder = match swap_wiring.as_ref() {
+            Some(wiring) => node_builder.with_swap_events(wiring.swap_event_sender()),
+            None => node_builder,
+        };
+        let (node, client_service, client_handle) = node_builder
             .build(self.network(), peer_store, score_store)
             .await
             .map_err(|e| SwarmNodeError::Build(e.into()))?;
 
         let topology = node.topology_handle().clone();
-        let chunk_provider = NetworkChunkProvider::new(client_handle, topology.clone());
+        let chunk_provider = NetworkChunkProvider::new(client_handle.clone(), topology.clone());
         let verified_provider = VerifyingChunkProvider::new(chunk_provider, self.verify());
         let providers = StorerRpcProviders::new(topology, verified_provider);
 
@@ -381,9 +451,22 @@ impl SwarmLaunchConfig for StorerConfig {
             .await?
         };
 
+        // Spawn the SWAP settlement service over the shared accounting instance,
+        // forwarding its cheque commands to the node and cashing received cheques
+        // on chain when a provider is present.
+        #[cfg(feature = "swap")]
+        if let Some(wiring) = swap_wiring {
+            wiring.spawn(
+                ctx,
+                accounting.bandwidth().clone(),
+                client_handle,
+                #[cfg(feature = "chain")]
+                chain_provider.as_ref(),
+            );
+        }
+
         // Return node task - accounting is moved into the closure to keep it
-        // alive. The chain provider is held alive the same way until the SWAP
-        // settlement service (a later PR) consumes it.
+        // alive. The chain provider is held alive the same way.
         let task = single_task(move |shutdown| async move {
             let _accounting = accounting;
             #[cfg(feature = "chain")]

@@ -18,7 +18,7 @@ use vertex_swarm_api::SwarmProtocol;
 use vertex_swarm_bandwidth::DefaultBandwidthConfig;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
-use vertex_swarm_node::args::{ChainConfig, NetworkConfig};
+use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
 use vertex_swarm_redistribution::StorageConfig;
 use vertex_swarm_spec::Spec;
 use vertex_swarm_topology::KademliaConfig;
@@ -91,6 +91,7 @@ pub struct ClientConfig {
     bandwidth: DefaultBandwidthConfig,
     verify: ChunkVerifyConfig,
     chain: ChainConfig,
+    swap: SwapConfig,
 }
 
 impl ClientConfig {
@@ -101,6 +102,7 @@ impl ClientConfig {
         bandwidth: DefaultBandwidthConfig,
         verify: ChunkVerifyConfig,
         chain: ChainConfig,
+        swap: SwapConfig,
     ) -> Self {
         Self {
             spec,
@@ -109,6 +111,7 @@ impl ClientConfig {
             bandwidth,
             verify,
             chain,
+            swap,
         }
     }
 
@@ -123,6 +126,11 @@ impl ClientConfig {
 
     pub fn chain(&self) -> &ChainConfig {
         &self.chain
+    }
+
+    /// SWAP settlement configuration (chequebook, beneficiary, deploy).
+    pub fn swap(&self) -> &SwapConfig {
+        &self.swap
     }
 }
 
@@ -140,6 +148,7 @@ pub struct StorerConfig {
     storage: StorageConfig,
     verify: ChunkVerifyConfig,
     chain: ChainConfig,
+    swap: SwapConfig,
 }
 
 impl StorerConfig {
@@ -156,6 +165,7 @@ impl StorerConfig {
         storage: StorageConfig,
         verify: ChunkVerifyConfig,
         chain: ChainConfig,
+        swap: SwapConfig,
     ) -> Self {
         Self {
             spec,
@@ -166,6 +176,7 @@ impl StorerConfig {
             storage,
             verify,
             chain,
+            swap,
         }
     }
 
@@ -188,6 +199,11 @@ impl StorerConfig {
 
     pub fn chain(&self) -> &ChainConfig {
         &self.chain
+    }
+
+    /// SWAP settlement configuration (chequebook, beneficiary, deploy).
+    pub fn swap(&self) -> &SwapConfig {
+        &self.swap
     }
 }
 

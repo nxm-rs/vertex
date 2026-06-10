@@ -37,6 +37,8 @@ mod launch;
 mod node;
 mod providers;
 mod rpc;
+#[cfg(feature = "swap")]
+mod swap;
 pub mod verify;
 
 // Traits

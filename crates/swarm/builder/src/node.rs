@@ -14,7 +14,7 @@ use vertex_swarm_api::{
 use vertex_swarm_bandwidth::DefaultBandwidthConfig;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
-use vertex_swarm_node::args::{ChainConfig, NetworkConfig};
+use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
 use vertex_swarm_redistribution::StorageConfig;
 use vertex_swarm_spec::Spec;
 use vertex_swarm_topology::KademliaConfig;
@@ -94,6 +94,7 @@ where
             accounting,
             verify: ChunkVerifyConfig::default(),
             chain: ChainConfig::default(),
+            swap: SwapConfig::default(),
         }
     }
 }
@@ -109,6 +110,7 @@ where
     accounting: A,
     verify: ChunkVerifyConfig,
     chain: ChainConfig,
+    swap: SwapConfig,
 }
 
 impl<I, N, A> BuilderExt for ClientNodeBuilder<I, N, A>
@@ -138,6 +140,12 @@ where
     /// Set the chain configuration (RPC endpoint and transaction tuning).
     pub fn with_chain(mut self, chain: ChainConfig) -> Self {
         self.chain = chain;
+        self
+    }
+
+    /// Set the SWAP settlement configuration (chequebook, beneficiary, deploy).
+    pub fn with_swap(mut self, swap: SwapConfig) -> Self {
+        self.swap = swap;
         self
     }
 
@@ -259,6 +267,7 @@ impl DefaultClientBuilder {
             config.verify(),
         )
         .with_chain(config.chain().clone())
+        .with_swap(config.swap().clone())
     }
 
     /// Convert to config for building.
@@ -270,6 +279,7 @@ impl DefaultClientBuilder {
             self.accounting,
             self.verify,
             self.chain,
+            self.swap,
         )
     }
 
@@ -302,6 +312,7 @@ impl DefaultStorerBuilder {
 
     pub fn from_config(config: StorerConfig) -> Self {
         let chain = config.chain().clone();
+        let swap = config.swap().clone();
         let mut builder = Self::from_parts(
             config.spec().clone(),
             config.identity().clone(),
@@ -311,7 +322,7 @@ impl DefaultStorerBuilder {
             config.storage().clone(),
             config.verify(),
         );
-        builder.client = builder.client.with_chain(chain);
+        builder.client = builder.client.with_chain(chain).with_swap(swap);
         builder
     }
 
@@ -326,6 +337,7 @@ impl DefaultStorerBuilder {
             self.storage,
             self.client.verify,
             self.client.chain,
+            self.client.swap,
         )
     }
 

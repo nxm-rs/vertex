@@ -8750,6 +8750,7 @@ dependencies = [
  "vertex-swarm-bandwidth-chequebook",
  "vertex-swarm-bandwidth-pricing",
  "vertex-swarm-bandwidth-pseudosettle",
+ "vertex-swarm-bandwidth-swap",
  "vertex-swarm-identity",
  "vertex-swarm-localstore",
  "vertex-swarm-node",

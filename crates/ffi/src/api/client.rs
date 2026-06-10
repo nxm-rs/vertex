@@ -23,7 +23,7 @@ use vertex_swarm_builder::{
     NetworkChunkProvider, VerifyingChunkProvider,
 };
 use vertex_swarm_identity::Identity;
-use vertex_swarm_node::args::{ChainConfig, NetworkConfig};
+use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
 use vertex_swarm_primitives::{Nonce, SwarmNodeType};
 use vertex_swarm_spec::{Spec, init_dev, init_mainnet, init_testnet};
 use vertex_tasks::{TaskExecutor, TaskManager};
@@ -88,6 +88,7 @@ impl VertexClient {
             Default::default(),
             ChunkVerifyConfig::default(),
             ChainConfig::default(),
+            SwapConfig::default(),
         );
 
         let launch = LaunchContext::new(executor.clone());

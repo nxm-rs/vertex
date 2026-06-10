@@ -25,10 +25,26 @@ chain = [
     "dep:alloy-network",
     "dep:alloy-signer-local",
     "dep:alloy-chains",
+    # When the swap service is also present, the chain unlocks on-chain cashout
+    # of received cheques. Without `swap` this is a no-op.
+    "vertex-swarm-bandwidth-swap?/swap-chequebook",
+]
+# SWAP cheque-based settlement. Wires the chequebook settlement service into
+# bandwidth accounting and routes the swap wire events. Chain-free on its own:
+# cheque exchange (sign, send, validate, credit) needs no chain. Combine with
+# `chain` to enable on-chain cashout of received cheques. Off by default so the
+# light, chain-free node stays the default cone.
+swap = [
+    "dep:vertex-swarm-bandwidth-swap",
+    "vertex-swarm-node/swap",
+    "dep:alloy-chains",
+    "dep:alloy-signer",
+    "dep:alloy-signer-local",
 ]
 # Node role: the storer settles bandwidth over SWAP, so it pulls in the chain
-# stack and the on-chain chequebook client. Light clients leave this off.
-storer = ["chain"]
+# stack, the on-chain chequebook client, and the swap settlement service. Light
+# clients leave this off.
+storer = ["chain", "swap"]
 
 [dependencies]
 # vertex - node infrastructure
@@ -62,6 +78,10 @@ vertex-chain = { workspace = true, optional = true }
 # `chain` feature enables `swap-chequebook` on it to construct the SWAP
 # settlement client.
 vertex-swarm-bandwidth-chequebook = { workspace = true, optional = true }
+# The chequebook settlement service (optional, behind the `swap` feature). Cheque
+# exchange is chain-free; `swap` + `chain` turns on the service's `swap-chequebook`
+# cashout path.
+vertex-swarm-bandwidth-swap = { workspace = true, optional = true }
 
 # nectar
 nectar-primitives.workspace = true
@@ -77,6 +97,7 @@ alloy-provider = { workspace = true, optional = true, features = [
     "reqwest-native-tls",
 ] }
 alloy-network = { workspace = true, optional = true }
+alloy-signer = { workspace = true, optional = true }
 alloy-signer-local = { workspace = true, optional = true }
 alloy-chains = { workspace = true, optional = true }
 

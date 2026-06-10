@@ -16,7 +16,8 @@ use vertex_swarm_spec::Spec;
 use vertex_swarm_api::ConfigError;
 
 use crate::args::{
-    ChainArgs, ChainConfig, NetworkArgs, NetworkConfig, ProtocolArgs, RetrievalArgs,
+    ChainArgs, ChainConfig, NetworkArgs, NetworkConfig, ProtocolArgs, RetrievalArgs, SwapArgs,
+    SwapConfig,
 };
 
 /// Swarm protocol configuration (serializable Args layer).
@@ -35,6 +36,7 @@ pub struct ProtocolConfig {
     pub localstore: LocalStoreArgs,
     pub redistribution: RedistributionArgs,
     pub chain: ChainArgs,
+    pub swap: SwapArgs,
 }
 
 impl ProtocolConfig {
@@ -72,6 +74,11 @@ impl ProtocolConfig {
     pub fn chain_config(&self) -> ChainConfig {
         self.chain.chain_config()
     }
+
+    /// Create the validated SWAP configuration (chequebook, beneficiary, deploy).
+    pub fn swap_config(&self) -> SwapConfig {
+        self.swap.swap_config()
+    }
 }
 
 impl ProtocolConfig {
@@ -92,5 +99,6 @@ impl NodeProtocolConfig for ProtocolConfig {
         self.localstore = args.localstore.clone();
         self.redistribution = args.redistribution.clone();
         self.chain = args.chain.clone();
+        self.swap = args.swap.clone();
     }
 }
