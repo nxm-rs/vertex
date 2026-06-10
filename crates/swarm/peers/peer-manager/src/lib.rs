@@ -13,8 +13,8 @@ mod tasks;
 mod write_buffer;
 
 pub use db_store::DbPeerStore;
-pub use entry::StoredPeer;
-pub use manager::{PeerManager, PeerManagerConfig};
+pub use entry::{StoredPeer, TrustLevel};
+pub use manager::{LIFECYCLE_CHANNEL_CAPACITY, PeerManager, PeerManagerConfig, PeerManagerHandle};
 pub use proximity_index::{AddError, ProximityIndex};
 pub use score_distribution::ScoreDistribution;
 pub use tasks::{PersistenceConfig, PurgeConfig, spawn_persistence_task, spawn_purge_task};

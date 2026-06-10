@@ -87,11 +87,18 @@ Handles:
 - Same peer, same PeerId reconnection (returns `RegisterResult::SamePeer`)
 - Peer changing overlay address (old mapping removed)
 
-### EventEmitter
+### Peer lifecycle events
 
-Non-blocking broadcast channel for peer events: `Discovered`, `Connecting`, `Connected`, `Disconnected`, `Banned`, `Unbanned`, `StateChanged`, `ScoreBelowThreshold`.
+The Swarm-layer peer manager (`vertex-swarm-peer-manager`) is the authoritative peer hub. It broadcasts `PeerLifecycleEvent` (defined in `vertex-swarm-api`) on a non-blocking channel; any subsystem can subscribe via the manager handle.
 
-Slow subscribers drop events independently (no backpressure on other subscribers).
+Events: `Connected`, `Disconnected`, `ScoreWarning`, `DisconnectRequested`, `Banned`, `Unbanned`.
+
+Two invariants hold around this stream:
+
+- **One way to change a score.** Every subsystem reports peer behaviour through the `PeerReporter` trait (`report_peer(overlay, event, source)`), implemented by the peer manager. The manager applies the event, checks the warn/disconnect/ban thresholds, and emits the matching lifecycle event itself. Nothing else mutates scores.
+- **Topology executes the actions.** Topology subscribes and closes connections for `DisconnectRequested` and `Banned`; all other events are observability-only for it. Disconnect execution is owned by topology, never by the manager.
+
+Slow subscribers drop the oldest events independently (no backpressure on other subscribers). Observability subscribers tolerate the gap; topology treats a lagged receiver as a resynchronization point and sweeps connected peers against the banned set, so a dropped `Banned` event can never leave a banned peer connected. A `DisconnectRequested` lost to lag is not replayed; continued misbehaviour escalates to the level-triggered ban threshold, which is reconciled exactly.
 
 ## Persistence
 

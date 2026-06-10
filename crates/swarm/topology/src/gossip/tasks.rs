@@ -13,7 +13,7 @@ use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use tokio::sync::mpsc;
 use tokio::time::Interval;
 use tracing::{debug, info, trace, warn};
-use vertex_swarm_api::{SwarmIdentity, SwarmNodeType};
+use vertex_swarm_api::{ReportSource, SwarmIdentity, SwarmNodeType};
 use vertex_swarm_identity::Identity;
 use vertex_swarm_net_handshake::{HandshakeBehaviour, HandshakeEvent, NoAddresses};
 use vertex_swarm_net_identify as identify;
@@ -376,7 +376,7 @@ impl<I: SwarmIdentity> GossipTask<I> {
         }
 
         self.peer_manager
-            .record_scoring_event(&gossiper, scoring_event);
+            .report_peer(&gossiper, scoring_event, ReportSource::Gossip);
     }
 
     fn schedule_exchange(

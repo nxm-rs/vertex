@@ -65,8 +65,11 @@ impl<I: SwarmIdentity> PeerManager<I> {
 
     /// Evict non-connected peers from the hot cache to keep it bounded.
     ///
-    /// Peers with consecutive failures > 0 are considered disconnected and
-    /// eligible for eviction. Their state is saved to DB before removal.
+    /// Candidates are peers with consecutive failures > 0 and no live
+    /// connection (a score-driven disconnect request applies backoff while
+    /// the peer is still briefly connected, so the failure count alone no
+    /// longer implies disconnected). Their state is saved to DB before
+    /// removal.
     pub fn evict_cold(&self) {
         if self.store.is_none() {
             return;
@@ -78,11 +81,11 @@ impl<I: SwarmIdentity> PeerManager<I> {
 
         let to_evict = current.saturating_sub(self.max_hot_peers);
 
-        // Collect eviction candidates: peers with failures (not connected)
+        // Collect eviction candidates: failing peers without a connection.
         let mut candidates: Vec<(OverlayAddress, u64)> = self
             .peers
             .iter()
-            .filter(|r| r.value().consecutive_failures() > 0)
+            .filter(|r| r.value().consecutive_failures() > 0 && !r.value().is_connected())
             .map(|r| (*r.key(), r.value().last_seen()))
             .collect();
 

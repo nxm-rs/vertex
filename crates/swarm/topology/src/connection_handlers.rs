@@ -5,7 +5,7 @@ use metrics::gauge;
 use tracing::{debug, trace, warn};
 use vertex_net_local::{AddressScope, classify_multiaddr};
 use vertex_net_peer_registry::ConnectionState;
-use vertex_swarm_api::SwarmIdentity;
+use vertex_swarm_api::{ReportSource, SwarmIdentity, SwarmScoringEvent};
 use vertex_swarm_net_handshake::HANDSHAKE_TIMEOUT;
 use vertex_swarm_primitives::SwarmNodeType;
 
@@ -169,6 +169,11 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             self.metrics.record_early_disconnect(disconnect_reason);
         }
 
+        // Clear the connection state on the peer record and emit the
+        // Disconnected lifecycle event for subscribers.
+        self.peer_manager
+            .on_peer_disconnected(&overlay, disconnect_reason.into());
+
         self.emit_event(TopologyEvent::PeerDisconnected {
             overlay,
             reason: disconnect_reason,
@@ -211,15 +216,13 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             self.routing.release_dial(overlay);
             self.peer_manager.record_dial_failure(overlay);
 
-            // Score penalty based on error type
-            use vertex_swarm_peer_score::SwarmScoringEvent;
+            // Score penalty based on error type, through the single report path
             let scoring_event = match &classified_error {
-                DialError::Timeout | DialError::Stale => SwarmScoringEvent::ConnectionTimeout,
                 DialError::ConnectionRefused => SwarmScoringEvent::ConnectionRefused,
                 _ => SwarmScoringEvent::ConnectionTimeout,
             };
             self.peer_manager
-                .record_scoring_event(overlay, scoring_event);
+                .report_peer(overlay, scoring_event, ReportSource::Topology);
         }
 
         warn!(

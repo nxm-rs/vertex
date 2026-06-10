@@ -8,7 +8,7 @@ Root-level rules in `/AGENTS.md` apply here too. The notes below are the area-sp
 
 - `primitives`, `forks`, `spec`, `identity`: pure data and configuration. `nectar-primitives` is the canonical source for chunk and address types.
 - `peers/peer`: the `SwarmPeer` record with the EIP-191 handshake signature (distinct from postage EIP-191 signing, which lives upstream in `nectar-postage`). See the follow-up tracked at `nxm-rs/vertex` for extracting the sign-data primitive to nectar.
-- `peers/peer-manager`, `peers/peer-score`: lifecycle, persistence, scoring.
+- `peers/peer-manager`, `peers/peer-score`: lifecycle, persistence, scoring. The manager is the authoritative peer hub: subsystems change a peer's score only through `PeerManager::report_peer` (the `PeerReporter` trait from `api`), and the manager broadcasts `PeerLifecycleEvent`s that topology consumes to execute disconnects and bans. `peer-score` is policy-only: `record_event` returns a `ScoreOutcome`, it never executes actions and has no callback hooks.
 - `bandwidth/{core,pricing,pseudosettle,swap,chequebook}`: per-peer balances in Accounting Units (AU) and the settlement providers. `Accounting` implements `PeerAffordability` and the accounting and settlement services take an optional `PeerReporter` (both from `api`) so violations feed peer scoring; the node layer does the wiring.
 - `api`: the trait chain `SwarmPrimitives` to `SwarmNetworkTypes` to `SwarmClientTypes` to `SwarmStorerTypes`. Strictly libp2p-free with the documented `Multiaddr` exception.
 - `builder`: layered builders that produce `BuiltBootnode`, `BuiltClient`, `BuiltStorer`.

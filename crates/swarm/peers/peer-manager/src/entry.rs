@@ -10,11 +10,11 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 use vertex_net_local::IpCapability;
 use vertex_net_peer_backoff::PeerBackoff;
+use vertex_net_peer_registry::ConnectionDirection;
 use vertex_net_peer_store::NetRecord;
+use vertex_swarm_api::SwarmScoringEvent;
 use vertex_swarm_peer::SwarmPeer;
-use vertex_swarm_peer_score::{
-    PeerScore, ScoreCallbacks, SwarmPeerScore, SwarmScoringConfig, SwarmScoringEvent,
-};
+use vertex_swarm_peer_score::{PeerScore, ScoreChange, SwarmPeerScore, SwarmScoringConfig};
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
 /// Exclusive health state for a peer.
@@ -135,6 +135,42 @@ pub(crate) fn jitter_seed_from_overlay(overlay: &OverlayAddress) -> u64 {
     u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
 }
 
+/// How much the local node trusts a peer when ranking it for eviction.
+///
+/// Computed once at handshake completion by topology (which owns the listen
+/// addresses and the dial reason) and stored on the peer entry, so eviction
+/// ranking reads one atomic instead of re-deriving address scope per trim
+/// round. The value is process-local and refreshed on every connect; gossip
+/// never writes it.
+///
+/// Ordered from least to most protected: `Normal < LocalSubnet < Trusted`.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    strum::Display,
+    strum::IntoStaticStr,
+    strum::FromRepr,
+)]
+#[strum(serialize_all = "snake_case")]
+#[repr(u8)]
+pub enum TrustLevel {
+    /// No special standing; ranked purely by reachability.
+    #[default]
+    Normal = 0,
+    /// Loopback, link-local, or same-subnet peer; protected from
+    /// capacity-driven trimming when local-peer trust is enabled.
+    LocalSubnet = 1,
+    /// Explicitly configured peer (static/trusted multiaddrs); never evicted
+    /// by bin trimming.
+    Trusted = 2,
+}
+
 /// A [`SwarmNodeType`] plus a confirmed bit, packed into one atomic byte.
 ///
 /// A peer's node type flows in from two sources with different trust levels:
@@ -188,6 +224,26 @@ impl NodeTypeCell {
     }
 }
 
+/// Encoding of `Option<ConnectionDirection>` in one atomic byte.
+const DIRECTION_NONE: u8 = 0;
+const DIRECTION_OUTBOUND: u8 = 1;
+const DIRECTION_INBOUND: u8 = 2;
+
+fn direction_to_repr(direction: ConnectionDirection) -> u8 {
+    match direction {
+        ConnectionDirection::Outbound => DIRECTION_OUTBOUND,
+        ConnectionDirection::Inbound => DIRECTION_INBOUND,
+    }
+}
+
+fn direction_from_repr(repr: u8) -> Option<ConnectionDirection> {
+    match repr {
+        DIRECTION_OUTBOUND => Some(ConnectionDirection::Outbound),
+        DIRECTION_INBOUND => Some(ConnectionDirection::Inbound),
+        _ => None,
+    }
+}
+
 pub(crate) struct PeerEntry {
     peer: RwLock<SwarmPeer>,
     node_type: NodeTypeCell,
@@ -198,6 +254,14 @@ pub(crate) struct PeerEntry {
     ban_info: RwLock<Option<BanInfo>>,
     jitter_seed: u64,
     dirty: AtomicBool,
+    /// Unix seconds since the current connection completed its handshake;
+    /// 0 while disconnected. Process-local, never persisted.
+    connected_since: AtomicU64,
+    /// Direction of the current connection ([`DIRECTION_NONE`] while
+    /// disconnected). Process-local, never persisted.
+    direction: AtomicU8,
+    /// [`TrustLevel`] discriminant, written at handshake completion only.
+    trust: AtomicU8,
 }
 
 impl PeerEntry {
@@ -206,19 +270,21 @@ impl PeerEntry {
         node_type: SwarmNodeType,
         overlay: OverlayAddress,
         config: Arc<SwarmScoringConfig>,
-        callbacks: Arc<ScoreCallbacks>,
     ) -> Self {
         let now = unix_timestamp_secs();
         Self {
             peer: RwLock::new(peer),
             node_type: NodeTypeCell::provisional(node_type),
-            scoring: SwarmPeerScore::new(overlay, PeerScore::new(), config, callbacks),
+            scoring: SwarmPeerScore::new(PeerScore::new(), config),
             first_seen: AtomicU64::new(now),
             last_seen: AtomicU64::new(now),
             backoff: PeerBackoff::new(),
             ban_info: RwLock::new(None),
             jitter_seed: jitter_seed_from_overlay(&overlay),
             dirty: AtomicBool::new(true),
+            connected_since: AtomicU64::new(0),
+            direction: AtomicU8::new(DIRECTION_NONE),
+            trust: AtomicU8::new(TrustLevel::Normal as u8),
         }
     }
 
@@ -226,13 +292,12 @@ impl PeerEntry {
         record: StoredPeer,
         scoring: Option<PeerScore>,
         config: Arc<SwarmScoringConfig>,
-        callbacks: Arc<ScoreCallbacks>,
     ) -> Self {
         let overlay = OverlayAddress::from(*record.peer.overlay());
         Self {
             node_type: NodeTypeCell::provisional(record.node_type),
             peer: RwLock::new(record.peer),
-            scoring: SwarmPeerScore::new(overlay, scoring.unwrap_or_default(), config, callbacks),
+            scoring: SwarmPeerScore::new(scoring.unwrap_or_default(), config),
             first_seen: AtomicU64::new(record.first_seen),
             last_seen: AtomicU64::new(record.last_seen),
             backoff: PeerBackoff::from_persisted(
@@ -242,6 +307,9 @@ impl PeerEntry {
             ban_info: RwLock::new(record.ban_info),
             jitter_seed: jitter_seed_from_overlay(&overlay),
             dirty: AtomicBool::new(false),
+            connected_since: AtomicU64::new(0),
+            direction: AtomicU8::new(DIRECTION_NONE),
+            trust: AtomicU8::new(TrustLevel::Normal as u8),
         }
     }
 
@@ -329,16 +397,61 @@ impl PeerEntry {
         self.mark_dirty();
     }
 
-    pub(crate) fn record_event(&self, event: SwarmScoringEvent) {
-        self.scoring.record_event(event);
+    /// Apply a scoring event, returning the outcome and score transition.
+    ///
+    /// Score changes flow exclusively through the peer manager's report
+    /// path; this is the only entry-level scoring write.
+    pub(crate) fn record_event(&self, event: SwarmScoringEvent) -> ScoreChange {
+        let change = self.scoring.record_event_change(event);
         self.mark_dirty();
+        change
     }
 
-    pub(crate) fn record_success(&self, latency: Duration) {
-        self.scoring.record_connection_success(Some(latency));
+    /// Record connection state at handshake completion.
+    ///
+    /// Stores connected-since, direction, and the topology-computed
+    /// [`TrustLevel`], resets the failure backoff, and refreshes `last_seen`.
+    /// Scoring is not touched here; the manager reports the connection
+    /// success through its report path.
+    pub(crate) fn set_connected(&self, direction: ConnectionDirection, trust: TrustLevel) {
+        self.connected_since
+            .store(unix_timestamp_secs(), Ordering::Release);
+        self.direction
+            .store(direction_to_repr(direction), Ordering::Release);
+        self.trust.store(trust as u8, Ordering::Release);
         self.reset_failures();
         self.touch();
         self.mark_dirty();
+    }
+
+    /// Clear connection state when the last connection to the peer closes.
+    ///
+    /// The stored [`TrustLevel`] is kept: it describes the peer, not the
+    /// connection, and the next handshake recomputes it.
+    pub(crate) fn clear_connected(&self) {
+        self.connected_since.store(0, Ordering::Release);
+        self.direction.store(DIRECTION_NONE, Ordering::Release);
+    }
+
+    pub(crate) fn is_connected(&self) -> bool {
+        self.connected_since.load(Ordering::Acquire) != 0
+    }
+
+    /// Unix seconds at which the current connection completed its handshake,
+    /// or `None` while disconnected.
+    pub(crate) fn connected_since(&self) -> Option<u64> {
+        match self.connected_since.load(Ordering::Acquire) {
+            0 => None,
+            since => Some(since),
+        }
+    }
+
+    pub(crate) fn direction(&self) -> Option<ConnectionDirection> {
+        direction_from_repr(self.direction.load(Ordering::Acquire))
+    }
+
+    pub(crate) fn trust_level(&self) -> TrustLevel {
+        TrustLevel::from_repr(self.trust.load(Ordering::Acquire)).unwrap_or_default()
     }
 
     pub(crate) fn record_latency(&self, rtt: Duration) {
@@ -352,14 +465,6 @@ impl PeerEntry {
     }
 
     pub(crate) fn record_dial_failure(&self) {
-        self.backoff.record_failure(unix_timestamp_secs());
-        self.mark_dirty();
-    }
-
-    /// Re-increments `consecutive_failures` so backoff applies even though
-    /// `record_success()` already reset it during handshake.
-    pub(crate) fn record_early_disconnect(&self, duration: Duration) {
-        self.scoring.record_early_disconnect(duration);
         self.backoff.record_failure(unix_timestamp_secs());
         self.mark_dirty();
     }
@@ -439,7 +544,6 @@ impl PeerEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vertex_swarm_peer_score::ScoreCallbacks;
     use vertex_swarm_test_utils::test_swarm_peer;
 
     fn test_entry(n: u8, node_type: SwarmNodeType) -> PeerEntry {
@@ -450,8 +554,16 @@ mod tests {
             node_type,
             overlay,
             Arc::new(SwarmScoringConfig::default()),
-            ScoreCallbacks::noop(),
         )
+    }
+
+    /// Connection-success scoring plus the bookkeeping `set_connected` does,
+    /// mirroring what `PeerManager::on_peer_connected` performs.
+    fn record_success(entry: &PeerEntry, latency: Duration) {
+        entry.set_connected(ConnectionDirection::Outbound, TrustLevel::Normal);
+        entry.record_event(SwarmScoringEvent::ConnectionSuccess {
+            latency: Some(latency),
+        });
     }
 
     #[test]
@@ -467,7 +579,7 @@ mod tests {
     #[test]
     fn test_scoring_on_success() {
         let entry = test_entry(1, SwarmNodeType::Client);
-        entry.record_success(Duration::from_millis(50));
+        record_success(&entry, Duration::from_millis(50));
         assert!(entry.score() > 0.0);
     }
 
@@ -484,16 +596,12 @@ mod tests {
     #[test]
     fn test_record_roundtrip() {
         let entry = test_entry(1, SwarmNodeType::Storer);
-        entry.record_success(Duration::from_millis(100));
+        record_success(&entry, Duration::from_millis(100));
 
         let record = StoredPeer::from(&entry);
         let score = entry.score_snapshot();
-        let restored = PeerEntry::from_record(
-            record,
-            Some(score),
-            Arc::new(SwarmScoringConfig::default()),
-            ScoreCallbacks::noop(),
-        );
+        let restored =
+            PeerEntry::from_record(record, Some(score), Arc::new(SwarmScoringConfig::default()));
 
         assert!((restored.score() - entry.score()).abs() < 0.01);
         assert_eq!(restored.node_type(), entry.node_type());
@@ -507,12 +615,8 @@ mod tests {
         let record = StoredPeer::from(&entry);
         assert!(record.is_banned());
 
-        let restored = PeerEntry::from_record(
-            record,
-            None,
-            Arc::new(SwarmScoringConfig::default()),
-            ScoreCallbacks::noop(),
-        );
+        let restored =
+            PeerEntry::from_record(record, None, Arc::new(SwarmScoringConfig::default()));
         assert!(restored.is_banned());
         assert!(!restored.is_dialable());
     }
@@ -541,7 +645,7 @@ mod tests {
         }
         assert_eq!(entry.consecutive_failures(), 3);
 
-        entry.record_success(Duration::from_millis(50));
+        record_success(&entry, Duration::from_millis(50));
         assert_eq!(entry.consecutive_failures(), 0);
         assert!(entry.is_dialable());
     }
@@ -556,12 +660,8 @@ mod tests {
         assert_eq!(record.consecutive_failures, 2);
         assert!(record.last_dial_attempt > 0);
 
-        let restored = PeerEntry::from_record(
-            record,
-            None,
-            Arc::new(SwarmScoringConfig::default()),
-            ScoreCallbacks::noop(),
-        );
+        let restored =
+            PeerEntry::from_record(record, None, Arc::new(SwarmScoringConfig::default()));
         assert_eq!(restored.consecutive_failures(), 2);
     }
 

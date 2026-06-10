@@ -20,14 +20,14 @@ use libp2p::{
         THandlerOutEvent, ToSwarm,
     },
 };
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use vertex_net_local::{AddressScope, classify_multiaddr, same_subnet};
 use vertex_net_peer_store::NetPeerStore;
-use vertex_swarm_api::SwarmIdentity;
+use vertex_swarm_api::{BanCause, PeerLifecycleEvent, SwarmIdentity};
 use vertex_swarm_net_hive::MAX_BATCH_SIZE;
 use vertex_swarm_net_identify as identify;
 use vertex_swarm_peer::SwarmPeer;
-use vertex_swarm_peer_manager::{PeerManager, StoredPeer};
+use vertex_swarm_peer_manager::{PeerManager, StoredPeer, TrustLevel};
 use vertex_swarm_primitives::{Bin, OverlayAddress, all_bins};
 
 use crate::DialReason;
@@ -266,8 +266,14 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
     /// completion, and cleared at `ConnectionClosed`.
     pub(crate) outbound_public_dials: HashSet<ConnectionId>,
 
-    /// Receiver for peer ban notifications from PeerManager.
-    pub(crate) ban_rx: broadcast::Receiver<OverlayAddress>,
+    /// Receiver for the peer lifecycle event stream from PeerManager.
+    ///
+    /// Topology is the action-executing subscriber: `DisconnectRequested`
+    /// and `Banned` events close the peer's connection; the remaining
+    /// events are observability-only and ignored here. On lag the banned
+    /// set is reconciled so a dropped `Banned` event cannot strand a banned
+    /// peer connected (see [`PeerManager::subscribe`]).
+    pub(crate) lifecycle_rx: broadcast::Receiver<PeerLifecycleEvent>,
 
     /// Persistent peer store (None for ephemeral mode).
     pub(crate) peer_store: Option<PeerStore>,
@@ -355,7 +361,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 });
             }
             TopologyCommand::BanPeer { overlay, reason } => {
-                self.peer_manager.ban(&overlay, reason);
+                self.peer_manager.ban(&overlay, BanCause::Requested, reason);
                 SwarmRouting::remove_peer(&*self.routing, &overlay);
                 if let Some(peer_id) = self.connection_registry.resolve_peer_id(&overlay) {
                     debug!(%overlay, %peer_id, "Disconnecting banned peer via command");
@@ -432,8 +438,11 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         // overriding a liveness demotion (a remote `Reachable` still outranks a
         // local `Unreachable`). With trust off, the locality bit is held at
         // `false` so ranking matches the reachability-only behaviour.
+        //
+        // Locality comes from the `TrustLevel` the peer manager stored at
+        // handshake completion: one atomic load per candidate instead of
+        // re-deriving address scope every trim round.
         let tracker = self.nat_discovery.reachability();
-        let listen_addrs = self.nat_discovery.listen_addrs();
         let trust_local = self.trust_local_peers;
         let peer_manager = &self.peer_manager;
         let registry = &self.connection_registry;
@@ -442,10 +451,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 .resolve_peer_id(overlay)
                 .map(|peer_id| tracker.status(&peer_id))
                 .unwrap_or(crate::PeerReachability::Unknown);
-            let is_local = trust_local
-                && peer_manager
-                    .get_swarm_peer(overlay)
-                    .is_some_and(|peer| peer_is_local(&peer, &listen_addrs));
+            let is_local = trust_local && peer_manager.trust_level(overlay) != TrustLevel::Normal;
             (reachability, is_local)
         });
         if candidates.is_empty() {
@@ -454,11 +460,8 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
         let mut trimmed = 0;
         for candidate in &candidates {
-            let reason = self
-                .connection_registry
-                .get(&candidate.overlay)
-                .and_then(|s| *s.reason());
-            if matches!(reason, Some(DialReason::Trusted)) {
+            // Explicitly configured peers are never evicted by trimming.
+            if self.peer_manager.trust_level(&candidate.overlay) == TrustLevel::Trusted {
                 continue;
             }
 
@@ -488,6 +491,64 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 total_candidates = candidates.len(),
                 "Trimmed overpopulated bins"
             );
+        }
+    }
+
+    // Peer lifecycle actions
+
+    /// Execute the network-side consequence of a peer lifecycle event.
+    ///
+    /// `DisconnectRequested` closes the peer's connection; `Banned`
+    /// additionally removes the peer from routing. All other events are
+    /// observability-only here and remain available to any subscriber via
+    /// the peer manager's lifecycle stream.
+    pub(crate) fn on_lifecycle_event(&mut self, event: PeerLifecycleEvent) {
+        match event {
+            PeerLifecycleEvent::DisconnectRequested { overlay, reason } => {
+                if let Some(peer_id) = self.connection_registry.resolve_peer_id(&overlay) {
+                    debug!(%overlay, %peer_id, %reason, "Disconnecting peer on request");
+                    self.pending_actions.push_back(ToSwarm::CloseConnection {
+                        peer_id,
+                        connection: libp2p::swarm::CloseConnection::All,
+                    });
+                }
+            }
+            PeerLifecycleEvent::Banned { overlay, .. } => {
+                SwarmRouting::remove_peer(&*self.routing, &overlay);
+                if let Some(peer_id) = self.connection_registry.resolve_peer_id(&overlay) {
+                    debug!(%overlay, %peer_id, "Disconnecting banned peer");
+                    self.pending_actions.push_back(ToSwarm::CloseConnection {
+                        peer_id,
+                        connection: libp2p::swarm::CloseConnection::All,
+                    });
+                }
+            }
+            PeerLifecycleEvent::Connected { .. }
+            | PeerLifecycleEvent::Disconnected { .. }
+            | PeerLifecycleEvent::ScoreWarning { .. }
+            | PeerLifecycleEvent::Unbanned { .. } => {}
+        }
+    }
+
+    /// Close any still-connected banned peer.
+    ///
+    /// Called when the lifecycle receiver lags: dropped events may have
+    /// included `Banned`, so the banned set is the source of truth to
+    /// resynchronize against. A `DisconnectRequested` lost to lag is not
+    /// replayed (see the lagged-receiver policy on `PeerManager::subscribe`).
+    pub(crate) fn reconcile_banned_connections(&mut self) {
+        for overlay in self.connection_registry.active_ids() {
+            if !self.peer_manager.is_banned(&overlay) {
+                continue;
+            }
+            SwarmRouting::remove_peer(&*self.routing, &overlay);
+            if let Some(peer_id) = self.connection_registry.resolve_peer_id(&overlay) {
+                debug!(%overlay, %peer_id, "Disconnecting banned peer found during reconciliation");
+                self.pending_actions.push_back(ToSwarm::CloseConnection {
+                    peer_id,
+                    connection: libp2p::swarm::CloseConnection::All,
+                });
+            }
         }
     }
 
@@ -797,16 +858,24 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
         // Drain candidates produced by the background evaluator task.
         self.drain_candidate_queues();
 
-        // Drain ban notifications and disconnect banned peers.
-        // Catches auto-bans from scoring events processed above.
-        while let Ok(overlay) = self.ban_rx.try_recv() {
-            if let Some(peer_id) = self.connection_registry.resolve_peer_id(&overlay) {
-                debug!(%overlay, %peer_id, "Disconnecting auto-banned peer");
-                SwarmRouting::remove_peer(&*self.routing, &overlay);
-                self.pending_actions.push_back(ToSwarm::CloseConnection {
-                    peer_id,
-                    connection: libp2p::swarm::CloseConnection::All,
-                });
+        // Drain peer lifecycle events and execute the network-side actions
+        // (disconnects and bans). Catches auto-bans from scoring events
+        // processed above.
+        loop {
+            match self.lifecycle_rx.try_recv() {
+                Ok(event) => self.on_lifecycle_event(event),
+                Err(broadcast::error::TryRecvError::Lagged(missed)) => {
+                    // Dropped events may include Banned: resynchronize from
+                    // the banned set so no banned peer stays connected.
+                    warn!(
+                        missed,
+                        "peer lifecycle stream lagged; reconciling banned peers"
+                    );
+                    self.reconcile_banned_connections();
+                }
+                Err(
+                    broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed,
+                ) => break,
             }
         }
 
@@ -916,5 +985,174 @@ mod tests {
 
         assert_eq!(config.dial_interval, Duration::from_secs(10));
         assert_eq!(config.kademlia.limits.nominal(), 3);
+    }
+
+    mod lifecycle {
+        use super::*;
+
+        use libp2p::swarm::ConnectionId;
+        use vertex_swarm_api::{
+            BanCause, DefaultPeerConfig, SwarmNetworkConfig, SwarmNodeType, SwarmPeerConfig,
+            SwarmRoutingConfig,
+        };
+        use vertex_swarm_identity::Identity;
+        use vertex_swarm_peer_manager::LIFECYCLE_CHANNEL_CAPACITY;
+        use vertex_swarm_test_utils::test_overlay;
+
+        use crate::TopologyBehaviourBuilder;
+
+        /// Minimal network configuration for behaviour tests.
+        struct EventTestConfig {
+            peers: DefaultPeerConfig,
+            routing: KademliaConfig,
+            empty_addrs: Vec<Multiaddr>,
+        }
+
+        impl EventTestConfig {
+            fn new() -> Self {
+                Self {
+                    peers: DefaultPeerConfig::default(),
+                    routing: KademliaConfig::default(),
+                    empty_addrs: Vec::new(),
+                }
+            }
+        }
+
+        impl SwarmNetworkConfig for EventTestConfig {
+            fn listen_addrs(&self) -> &[Multiaddr] {
+                &self.empty_addrs
+            }
+            fn bootnodes(&self) -> &[Multiaddr] {
+                &self.empty_addrs
+            }
+            fn discovery_enabled(&self) -> bool {
+                true
+            }
+            fn max_peers(&self) -> usize {
+                32
+            }
+            fn idle_timeout(&self) -> Duration {
+                Duration::from_secs(60)
+            }
+        }
+
+        impl SwarmPeerConfig for EventTestConfig {
+            type Peers = DefaultPeerConfig;
+            fn peers(&self) -> &Self::Peers {
+                &self.peers
+            }
+        }
+
+        impl SwarmRoutingConfig for EventTestConfig {
+            type Routing = KademliaConfig;
+            fn routing(&self) -> &Self::Routing {
+                &self.routing
+            }
+        }
+
+        fn test_behaviour() -> TopologyBehaviour<Identity> {
+            let identity =
+                Identity::random(vertex_swarm_spec::init_testnet(), SwarmNodeType::Client);
+            let (behaviour, _handle) =
+                TopologyBehaviourBuilder::new(identity, &EventTestConfig::new())
+                    .try_build()
+                    .expect("build without runtime");
+            behaviour
+        }
+
+        /// Register an active (handshake-complete) connection in the registry.
+        fn activate_connection(
+            behaviour: &TopologyBehaviour<Identity>,
+            overlay: OverlayAddress,
+        ) -> PeerId {
+            let peer_id = PeerId::random();
+            let connection_id = ConnectionId::new_unchecked(1);
+            behaviour
+                .connection_registry
+                .connected_inbound(peer_id, connection_id);
+            behaviour
+                .connection_registry
+                .activate(peer_id, connection_id, overlay);
+            peer_id
+        }
+
+        async fn next_action(
+            behaviour: &mut TopologyBehaviour<Identity>,
+        ) -> ToSwarm<(), THandlerInEvent<ProtocolBehaviours<Identity>>> {
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                std::future::poll_fn(|cx| behaviour.poll(cx)),
+            )
+            .await
+            .expect("behaviour must emit an action")
+        }
+
+        /// A `Banned` lifecycle event drained in poll closes the peer's
+        /// connection.
+        #[tokio::test]
+        async fn banned_peer_connection_closed_via_lifecycle_event() {
+            let mut behaviour = test_behaviour();
+            let overlay = test_overlay(1);
+            let peer_id = activate_connection(&behaviour, overlay);
+
+            behaviour
+                .peer_manager
+                .ban(&overlay, BanCause::Requested, Some("test".into()));
+
+            match next_action(&mut behaviour).await {
+                ToSwarm::CloseConnection {
+                    peer_id: closed, ..
+                } => assert_eq!(closed, peer_id),
+                _ => panic!("expected CloseConnection for the banned peer"),
+            }
+        }
+
+        /// When the lifecycle receiver lags past a `Banned` event, the poll
+        /// loop reconciles against the banned set so the peer still gets
+        /// disconnected (the documented lagged-receiver policy).
+        #[tokio::test]
+        async fn lagged_lifecycle_stream_reconciles_banned_peers() {
+            let mut behaviour = test_behaviour();
+            let overlay = test_overlay(1);
+            let peer_id = activate_connection(&behaviour, overlay);
+
+            behaviour
+                .peer_manager
+                .ban(&overlay, BanCause::Requested, None);
+
+            // Flood the channel so the Banned event is dropped before the
+            // behaviour drains its receiver.
+            let other = test_overlay(2);
+            for _ in 0..(2 * LIFECYCLE_CHANNEL_CAPACITY) {
+                behaviour.peer_manager.on_peer_disconnected(&other, "test");
+            }
+
+            match next_action(&mut behaviour).await {
+                ToSwarm::CloseConnection {
+                    peer_id: closed, ..
+                } => assert_eq!(closed, peer_id),
+                _ => panic!("expected CloseConnection from banned-set reconciliation"),
+            }
+        }
+
+        /// A `DisconnectRequested` lifecycle event closes the connection.
+        #[tokio::test]
+        async fn disconnect_requested_closes_connection() {
+            let mut behaviour = test_behaviour();
+            let overlay = test_overlay(1);
+            let peer_id = activate_connection(&behaviour, overlay);
+
+            behaviour.on_lifecycle_event(PeerLifecycleEvent::DisconnectRequested {
+                overlay,
+                reason: vertex_swarm_api::DisconnectCause::LowScore,
+            });
+
+            match next_action(&mut behaviour).await {
+                ToSwarm::CloseConnection {
+                    peer_id: closed, ..
+                } => assert_eq!(closed, peer_id),
+                _ => panic!("expected CloseConnection for the disconnect request"),
+            }
+        }
     }
 }

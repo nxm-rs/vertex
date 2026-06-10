@@ -21,6 +21,7 @@ vertex-swarm-primitives = { workspace = true }
 # Core
 paste = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+strum = { workspace = true }
 
 [dev-dependencies]
 postcard = { workspace = true }
