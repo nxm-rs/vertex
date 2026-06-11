@@ -173,12 +173,7 @@ mod tests {
 
     /// Validate that a timestamp is within acceptable bounds of the current time.
     fn validate_timestamp(timestamp: i64, tolerance_secs: u64) -> Result<(), PseudosettleError> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| {
-                PseudosettleError::InvalidTimestamp("system time before unix epoch".into())
-            })?
-            .as_nanos() as i64;
+        let now = vertex_util_runtime::time::now_unix_nanos();
 
         let tolerance_nanos = (tolerance_secs as i64) * 1_000_000_000;
         let diff = (now - timestamp).abs();
@@ -197,10 +192,7 @@ mod tests {
 
     #[test]
     fn test_validate_timestamp_valid() {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as i64;
+        let now = vertex_util_runtime::time::now_unix_nanos();
 
         assert!(validate_timestamp(now, 3).is_ok());
         assert!(validate_timestamp(now - 1_000_000_000, 3).is_ok());
@@ -209,10 +201,7 @@ mod tests {
 
     #[test]
     fn test_validate_timestamp_invalid() {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as i64;
+        let now = vertex_util_runtime::time::now_unix_nanos();
 
         assert!(validate_timestamp(now - 5_000_000_000, 3).is_err());
         assert!(validate_timestamp(now + 10_000_000_000, 3).is_err());

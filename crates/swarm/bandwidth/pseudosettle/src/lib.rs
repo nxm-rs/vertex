@@ -20,7 +20,6 @@ mod handle;
 mod service;
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::mpsc;
 use vertex_swarm_api::{
@@ -175,10 +174,7 @@ fn refresh_allowance(state: &dyn SwarmPeerState, refresh_rate: u64) -> i64 {
 
 /// Get current timestamp in seconds.
 fn current_timestamp() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    vertex_util_runtime::time::now_unix_secs()
 }
 
 /// Create a new pseudosettle-only accounting instance.

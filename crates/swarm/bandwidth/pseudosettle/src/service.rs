@@ -282,10 +282,7 @@ impl<A: SwarmBandwidthAccounting + 'static> SpawnableTask for PseudosettleServic
 
 /// Get current timestamp in seconds.
 fn current_timestamp() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    vertex_util_runtime::time::now_unix_secs()
 }
 
 #[cfg(test)]
