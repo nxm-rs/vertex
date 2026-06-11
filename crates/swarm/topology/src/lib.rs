@@ -34,10 +34,10 @@
 //! - In-flight dials are bounded by the profile's dial concurrency, each
 //!   bounded by the handshake timeout; the per-bin routing targets, not this
 //!   cap, are the real gate on how many become connections.
-//! - Gossip exchange and verification tuning (refresh cadence, queue bounds,
-//!   backoff and ban policy) lives in [`GossipConfig`], overridable through
-//!   [`TopologyConfig::with_gossip`]. The `gossip` module docs explain how the
-//!   limits relate.
+//! - Gossip exchange and record-intake tuning (refresh cadence, record
+//!   cooldown, per-gossiper budgets) lives in [`GossipConfig`], overridable
+//!   through [`TopologyConfig::with_gossip`]. The `gossip` module docs explain
+//!   how the limits relate.
 
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 

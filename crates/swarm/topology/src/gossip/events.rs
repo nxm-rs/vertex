@@ -1,10 +1,8 @@
-//! Gossip input events, actions, and verification result types.
+//! Gossip input events, actions, and intake outcomes.
 
 use libp2p::PeerId;
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
-
-use super::error::VerificationFailure;
 
 /// Input events sent from topology to the gossip task.
 pub(crate) enum GossipInput {
@@ -23,7 +21,7 @@ pub(crate) enum GossipInput {
     },
     /// Routing depth changed.
     DepthChanged(u8),
-    /// Gossiped peers received — verify and store.
+    /// Gossiped peers received — admit through intake into the known table.
     PeersReceived {
         gossiper: OverlayAddress,
         peers: Vec<SwarmPeer>,
@@ -36,43 +34,11 @@ pub(crate) struct GossipAction {
     pub peers: Vec<SwarmPeer>,
 }
 
-/// Successful outcome of checking a gossiped peer.
+/// Successful outcome of checking a gossiped record at intake.
 #[derive(Debug)]
 pub(super) enum GossipCheckOk {
-    /// Peer already exists with matching signature - skip verification.
+    /// Record matches the stored one (same signature and addresses) - skip.
     AlreadyKnown,
-    /// Peer enqueued for verification dial.
-    Enqueued,
-}
-
-/// Result of verifying a gossiped peer against handshake data.
-#[derive(Debug)]
-pub(super) enum VerificationResult {
-    /// Signatures match - fully verified.
-    Verified {
-        /// The verified peer from handshake (authoritative).
-        verified_peer: SwarmPeer,
-    },
-    /// Same overlay, different signature - identity rotation.
-    IdentityUpdated {
-        /// The verified peer from handshake (authoritative).
-        verified_peer: SwarmPeer,
-    },
-    /// Different overlay - wrong gossip info, but real peer discovered.
-    DifferentPeerAtAddress {
-        /// The verified peer from handshake (authoritative).
-        verified_peer: SwarmPeer,
-        /// The overlay that was gossiped (incorrect).
-        gossiped_overlay: OverlayAddress,
-    },
-    /// Verification failed - penalize gossiper.
-    Failed {
-        /// Why verification failed.
-        reason: VerificationFailure,
-    },
-    /// Peer was unreachable (dial failed).
-    Unreachable {
-        /// The overlay of the unreachable peer.
-        gossiped_overlay: OverlayAddress,
-    },
+    /// Record admitted; the caller stores it as an unverified peer.
+    Admitted,
 }

@@ -151,7 +151,7 @@ impl DialTarget {
 #[derive(Debug, Clone)]
 pub struct TopologyConfig {
     pub kademlia: KademliaConfig,
-    /// Tuning knobs for gossip peer exchange and verification.
+    /// Tuning knobs for gossip peer exchange and record intake.
     pub gossip: GossipConfig,
     /// Explicit pacing profile; `None` defers to the network configuration
     /// and then the node-type default.

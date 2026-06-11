@@ -476,9 +476,13 @@ impl<I: SwarmIdentity> PeerManager<I> {
     /// with a `reason` label and the existing overlay is returned unchanged.
     ///
     /// For known peers, updates addresses (preserving any handshake-confirmed
-    /// node type). New peers go through per-bin admission: a full bin may
+    /// node type and the verified bit: a record refresh for a verified peer
+    /// needs only the signature validation already done at intake, never a
+    /// dial). New peers go through per-bin admission: a full bin may
     /// replace its worst disconnected member, but never a connected one; if
-    /// every slot is connected the newcomer is dropped.
+    /// every slot is connected the newcomer is dropped. Admitted peers start
+    /// unverified and dialable; candidate selection may dial them, and the
+    /// first completed handshake verifies the record in the same round trip.
     pub fn store_discovered_peer(&self, swarm_peer: SwarmPeer) -> OverlayAddress {
         let overlay = OverlayAddress::from(*swarm_peer.overlay());
         if let Some(entry) = self.peers.get(&overlay) {
@@ -553,10 +557,12 @@ impl<I: SwarmIdentity> PeerManager<I> {
     ///
     /// Confirms the handshake-asserted node type (from here on gossip cannot
     /// change it; only a later handshake may re-confirm a different value),
-    /// records the connection state (connected-since, direction) and the
-    /// topology-computed [`TrustLevel`] on the entry, emits
-    /// [`PeerLifecycleEvent::Connected`], and reports the connection success
-    /// through [`Self::report_peer`].
+    /// marks the entry verified (the completed handshake IS the verification
+    /// of a gossip-admitted record: overlay, signature, and multiaddrs all
+    /// come from the peer itself), records the connection state
+    /// (connected-since, direction) and the topology-computed [`TrustLevel`]
+    /// on the entry, emits [`PeerLifecycleEvent::Connected`], and reports
+    /// the connection success through [`Self::report_peer`].
     ///
     /// `remote_ip` is the IP the connection actually came from (not a
     /// gossiped or self-asserted address) and feeds IP association
@@ -586,6 +592,9 @@ impl<I: SwarmIdentity> PeerManager<I> {
             return;
         };
         entry.confirm_node_type(node_type);
+        if entry.mark_verified() {
+            gauge!("peer_manager_unverified_peers").decrement(1.0);
+        }
         let old_state = entry.health_state();
         entry.set_connected(direction, trust);
         on_health_changed(old_state, entry.health_state());
@@ -694,6 +703,50 @@ impl<I: SwarmIdentity> PeerManager<I> {
         self.peers.get(overlay).is_some_and(|e| e.is_connected())
     }
 
+    /// Whether a completed handshake has confirmed this peer's identity in
+    /// this process.
+    ///
+    /// Gossip-admitted records start unverified and stay fully dialable;
+    /// the first completed handshake on a real connection verifies them
+    /// (see [`Self::on_peer_connected`]). The bit is process-local:
+    /// snapshot-restored entries start unverified again.
+    #[must_use]
+    pub fn is_verified(&self, overlay: &OverlayAddress) -> bool {
+        self.peers.get(overlay).is_some_and(|e| e.is_verified())
+    }
+
+    /// Called by topology when a dial guided by the record for
+    /// `dialed_overlay` completed a handshake that asserted a different
+    /// overlay: the address belongs to another peer.
+    ///
+    /// The peer that actually answered is stored and verified through the
+    /// normal [`Self::on_peer_connected`] path; this handles the record
+    /// that pointed there. An unverified record was a wrong gossip claim
+    /// and is removed outright. A once-verified record keeps its history
+    /// but takes a dial failure, so backoff and the stale purge retire it
+    /// if its addresses now consistently reach someone else.
+    pub fn on_dialed_overlay_mismatch(&self, dialed_overlay: &OverlayAddress) {
+        let Some(entry) = self.peers.get(dialed_overlay) else {
+            return;
+        };
+        if entry.is_verified() {
+            drop(entry);
+            debug!(
+                ?dialed_overlay,
+                "verified peer's address answered as a different overlay; recording dial failure"
+            );
+            self.record_dial_failure(dialed_overlay);
+        } else {
+            drop(entry);
+            counter!("peer_manager_overlay_mismatch_removed_total").increment(1);
+            debug!(
+                ?dialed_overlay,
+                "removing unverified record: address answered as a different overlay"
+            );
+            self.remove_peer(dialed_overlay);
+        }
+    }
+
     /// Unix seconds at which the peer's current connection completed its
     /// handshake, or `None` while disconnected.
     #[must_use]
@@ -760,6 +813,9 @@ impl<I: SwarmIdentity> PeerManager<I> {
                 let cloned = Arc::clone(&entry);
                 e.insert(entry);
                 gauge!("peer_manager_total_peers").set(self.index.len() as f64);
+                // Entries start unverified; the handshake path decrements
+                // when it flips the bit.
+                gauge!("peer_manager_unverified_peers").increment(1.0);
                 self.score_distribution.on_peer_added(initial_score);
                 on_health_added(HealthState::Healthy);
                 Some(cloned)
@@ -830,6 +886,9 @@ impl<I: SwarmIdentity> PeerManager<I> {
         if let Some((_, entry)) = self.peers.remove(overlay) {
             self.score_distribution.on_peer_removed(entry.score());
             on_health_removed(entry.health_state());
+            if !entry.is_verified() {
+                gauge!("peer_manager_unverified_peers").decrement(1.0);
+            }
         }
         if self.index.remove(overlay) {
             gauge!("peer_manager_total_peers").set(self.index.len() as f64);
@@ -1055,6 +1114,131 @@ mod tests {
         let dialable = pm.get_dialable_peers(&all_overlays);
 
         assert_eq!(dialable.len(), 4);
+    }
+
+    #[test]
+    fn test_gossip_admission_is_unverified_and_dialable() {
+        let pm = manager();
+        let overlay = test_overlay(1);
+
+        pm.store_discovered_peer(test_swarm_peer(1));
+        assert!(!pm.is_verified(&overlay), "gossip admission is unverified");
+        assert!(
+            pm.eligible_peers().contains(&overlay),
+            "unverified peers must be dialable candidates"
+        );
+        assert_eq!(pm.get_dialable_peers(&[overlay]).len(), 1);
+    }
+
+    #[test]
+    fn test_handshake_verifies_gossip_admitted_peer() {
+        let pm = manager();
+        let overlay = test_overlay(1);
+
+        pm.store_discovered_peer(test_swarm_peer(1));
+        assert!(!pm.is_verified(&overlay));
+
+        connect(&pm, 1, SwarmNodeType::Storer);
+        assert!(
+            pm.is_verified(&overlay),
+            "the handshake IS the verification"
+        );
+    }
+
+    #[test]
+    fn test_record_update_keeps_peer_verified() {
+        let pm = manager();
+        let overlay = test_overlay(1);
+
+        connect(&pm, 1, SwarmNodeType::Storer);
+        pm.store_discovered_peer(test_swarm_peer(1));
+        assert!(
+            pm.is_verified(&overlay),
+            "a gossiped record refresh must not demote a verified peer"
+        );
+    }
+
+    #[test]
+    fn test_tick_purges_unverified_after_short_failure_budget() {
+        let pm = manager();
+        pm.store_discovered_peer(test_swarm_peer(1));
+        connect(&pm, 2, SwarmNodeType::Storer);
+        pm.on_peer_disconnected(&test_overlay(2), "test");
+
+        for n in [1, 2] {
+            for _ in 0..3 {
+                pm.record_dial_failure(&test_overlay(n));
+            }
+        }
+
+        pm.tick(unix_timestamp_secs());
+
+        assert!(
+            pm.get_swarm_peer(&test_overlay(1)).is_none(),
+            "unverified entry purged after three failed dials"
+        );
+        assert!(
+            pm.get_swarm_peer(&test_overlay(2)).is_some(),
+            "verified peer keeps the long failure budget"
+        );
+    }
+
+    #[test]
+    fn test_snapshot_skips_unverified_entries() {
+        let store = memory_store();
+        let pm1 = manager_with_store(Arc::clone(&store));
+
+        connect(&pm1, 1, SwarmNodeType::Storer);
+        pm1.store_discovered_peer(test_swarm_peer(2));
+        pm1.snapshot();
+
+        let pm2 = manager_with_store(store);
+        assert!(
+            pm2.get_swarm_peer(&test_overlay(1)).is_some(),
+            "verified peers persist"
+        );
+        assert!(
+            pm2.get_swarm_peer(&test_overlay(2)).is_none(),
+            "unverified gossip claims never persist"
+        );
+        assert!(
+            !pm2.is_verified(&test_overlay(1)),
+            "restored peers re-earn verification on the next handshake"
+        );
+    }
+
+    #[test]
+    fn test_overlay_mismatch_removes_unverified_record() {
+        let pm = manager();
+        let overlay = test_overlay(1);
+
+        pm.store_discovered_peer(test_swarm_peer(1));
+        pm.on_dialed_overlay_mismatch(&overlay);
+
+        assert!(
+            pm.get_swarm_peer(&overlay).is_none(),
+            "wrong gossip claim removed outright"
+        );
+        assert!(!pm.index().exists(&overlay));
+    }
+
+    #[test]
+    fn test_overlay_mismatch_demotes_verified_record() {
+        let pm = manager();
+        let overlay = test_overlay(1);
+
+        connect(&pm, 1, SwarmNodeType::Storer);
+        pm.on_peer_disconnected(&overlay, "test");
+        pm.on_dialed_overlay_mismatch(&overlay);
+
+        assert!(
+            pm.get_swarm_peer(&overlay).is_some(),
+            "once-verified peers keep their record"
+        );
+        assert!(
+            pm.peer_is_in_backoff(&overlay),
+            "but take a dial failure so the stale machinery can retire them"
+        );
     }
 
     #[test]

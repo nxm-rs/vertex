@@ -236,13 +236,13 @@ Uses `le` (upper bound) labels for native Grafana heatmap compatibility: `-100`,
 
 Updated event-driven via `ScoreObserver` callbacks; O(1) per score change rather than periodic O(n) iteration.
 
-### Gossip Verification
+### Gossip Intake
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `topology_gossip_pending` | Gauge | Pending verifications |
-| `topology_gossip_in_flight` | Gauge | Active verification dials |
 | `topology_gossip_tracked_gossipers` | Gauge | Unique gossipers tracked |
+| `topology_gossip_tracked_cooldowns` | Gauge | Overlays with an active record cooldown |
+| `peer_manager_unverified_peers` | Gauge | Known peers awaiting first-dial verification |
 
 ### Proximity Cache
 
@@ -276,7 +276,7 @@ All other histograms use the default Prometheus buckets (0.005s to 10s).
 
 1. Check `allocated` vs `active` ratio for fragmentation
 2. Look for connection/peer count growth
-3. Check gossip verifier queue depth
+3. Check unverified peer count (`peer_manager_unverified_peers`)
 
 ### Lock Contention
 
@@ -289,8 +289,7 @@ All other histograms use the default Prometheus buckets (0.005s to 10s).
 
 1. Check `handshake_duration_seconds` histogram
 2. Review per-stage timing via `handshake_stage_duration_seconds`
-3. Monitor gossip verification queue depth
-4. Check for DNS resolution delays with bootnodes
+3. Check for DNS resolution delays with bootnodes
 
 ## Prometheus Queries
 

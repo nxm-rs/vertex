@@ -15,7 +15,7 @@ pub(crate) use crate::error::{DialError, DisconnectReason, RejectionReason};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, strum::IntoStaticStr)]
 #[strum(serialize_all = "lowercase")]
 pub enum DialReason {
-    /// Peer discovered via Hive protocol (already verified or from peer store).
+    /// Peer discovered via Hive protocol or restored from the peer store.
     Discovery,
     /// Connecting to a bootnode.
     Bootnode,
