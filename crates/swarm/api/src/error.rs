@@ -232,6 +232,12 @@ pub enum ConfigError {
         #[source]
         source: multiaddr::Error,
     },
+
+    /// The maximum-peers cap was set to zero. The transport enforces it as a
+    /// hard cap on established connections, so zero would deny every
+    /// connection and isolate the node.
+    #[error("max peers must be at least 1; 0 would deny every connection")]
+    ZeroMaxPeers,
 }
 
 /// Result type for configuration operations.

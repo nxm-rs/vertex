@@ -7,9 +7,12 @@
 //! initiate any pricing announcement of its own and does not run the other
 //! client protocols (retrieval, pushsync, pseudosettle).
 
+use std::convert::Infallible;
+
 use eyre::Result;
 use futures::StreamExt;
 use libp2p::autonat::v2 as autonat;
+use libp2p::connection_limits;
 use libp2p::mdns;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::upnp;
@@ -41,6 +44,10 @@ use crate::protocol::{BehaviourConfig as ClientBehaviourConfig, ClientBehaviour,
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "BootnodeEvent")]
 pub(crate) struct BootnodeBehaviour<I: SwarmIdentity + Clone> {
+    /// Transport-level connection caps (total, per-peer, pending). Listed
+    /// first so a denied connection is rejected before the other behaviours
+    /// allocate per-connection state.
+    pub(crate) connection_limits: connection_limits::Behaviour,
     pub(crate) identify: identify::Behaviour,
     pub(crate) autonat_client: Toggle<autonat::client::Behaviour>,
     pub(crate) autonat_server: Toggle<autonat::server::Behaviour>,
@@ -56,10 +63,12 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
         local_public_key: PublicKey,
         topology: TopologyBehaviour<I>,
         nat: NatBehaviours,
+        connection_limits: connection_limits::Behaviour,
     ) -> Self {
         let agent_versions = topology.agent_versions();
         let peer_id = local_public_key.to_peer_id();
         Self {
+            connection_limits,
             // Identify advertises addresses scoped to each peer (see
             // `addresses_for_remote`): a public peer never receives our private
             // or loopback addresses, matching the handshake's policy.
@@ -97,6 +106,13 @@ pub enum BootnodeEvent {
     Mdns(mdns::Event),
     Topology(()),
     Client(ClientEvent),
+}
+
+impl From<Infallible> for BootnodeEvent {
+    fn from(event: Infallible) -> Self {
+        // The connection-limits behaviour never emits events.
+        match event {}
+    }
 }
 
 impl From<identify::Event> for BootnodeEvent {
@@ -330,11 +346,12 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
         };
 
         let nat = NatBehaviours::from_config(network_config);
+        let connection_limits = super::base::build_connection_limits(network_config);
         let base = super::builder::build_base_node(
             infra,
             network_config,
             "Bootnode",
-            move |pk, topology| BootnodeBehaviour::from_parts(pk, topology, nat),
+            move |pk, topology| BootnodeBehaviour::from_parts(pk, topology, nat, connection_limits),
         )
         .await?;
 

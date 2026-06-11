@@ -2,6 +2,7 @@
 
 use eyre::Result;
 use libp2p::autonat::v2 as autonat;
+use libp2p::connection_limits::{self, ConnectionLimits};
 use libp2p::mdns;
 use libp2p::multiaddr::Protocol;
 use libp2p::swarm::behaviour::toggle::Toggle;
@@ -42,6 +43,46 @@ impl NatBehaviours {
             mdns_enabled: config.mdns_enabled(),
         }
     }
+}
+
+/// Maximum half-open inbound connections (accepted at the transport but not
+/// yet upgraded). Bounds the resources an accept flood can pin before any
+/// protocol negotiation happens.
+const MAX_PENDING_INCOMING: u32 = 64;
+
+/// Maximum in-flight outbound dials. The topology dialer paces its own dials
+/// at 32 concurrent attempts (`vertex-net-dialer`); the transport cap sits at
+/// twice that to leave room for bootnode dials, mDNS-discovered LAN dials,
+/// and operator-issued dial commands that do not flow through the tracker.
+const MAX_PENDING_OUTGOING: u32 = 64;
+
+/// Maximum established connections per peer. One connection per peer is the
+/// norm on this network; 2 tolerates the simultaneous-open race where both
+/// ends dial each other and a duplicate exists briefly. The topology layer
+/// detects and closes duplicate connections itself.
+const MAX_ESTABLISHED_PER_PEER: u32 = 2;
+
+/// Build the transport-level connection-limits behaviour from the network
+/// configuration.
+///
+/// The total established cap comes from `--network.max-peers` and is a
+/// resource backstop (file descriptors, memory, bandwidth), enforced by the
+/// swarm independently of kademlia bin logic. Topology keeps full ownership
+/// of connection composition: per-bin targets, saturation, inbound ceilings,
+/// and trimming. The transport cap only bounds how many connections can
+/// exist at all, so it must sit above topology's own steady-state total
+/// (see the `--network.max-peers` default rationale in the args module).
+pub(crate) fn build_connection_limits(
+    config: &impl SwarmNetworkConfig,
+) -> connection_limits::Behaviour {
+    let max_established = u32::try_from(config.max_peers()).unwrap_or(u32::MAX);
+    connection_limits::Behaviour::new(
+        ConnectionLimits::default()
+            .with_max_established(Some(max_established))
+            .with_max_established_per_peer(Some(MAX_ESTABLISHED_PER_PEER))
+            .with_max_pending_incoming(Some(MAX_PENDING_INCOMING))
+            .with_max_pending_outgoing(Some(MAX_PENDING_OUTGOING)),
+    )
 }
 
 /// Build the mDNS discovery behaviour as a [`Toggle`].
@@ -325,13 +366,100 @@ pub(crate) fn handle_identify_event(identify: &mut identify::Behaviour, event: i
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
+    use std::time::Duration;
+
     use libp2p::identity::Keypair;
+    use libp2p::swarm::{ListenError, SwarmEvent};
+    use libp2p_swarm_test::SwarmExt as _;
 
     use super::*;
 
     fn random_peer_id() -> PeerId {
         Keypair::generate_ed25519().public().to_peer_id()
+    }
+
+    /// Minimal network configuration carrying only the connection cap.
+    struct CapConfig {
+        max_peers: usize,
+    }
+
+    impl SwarmNetworkConfig for CapConfig {
+        fn listen_addrs(&self) -> &[Multiaddr] {
+            &[]
+        }
+        fn bootnodes(&self) -> &[Multiaddr] {
+            &[]
+        }
+        fn discovery_enabled(&self) -> bool {
+            false
+        }
+        fn max_peers(&self) -> usize {
+            self.max_peers
+        }
+        fn idle_timeout(&self) -> Duration {
+            Duration::from_secs(30)
+        }
+    }
+
+    /// Behaviour carrying only the connection-limits backstop, mirroring its
+    /// position as the admission gate in the node-type compositions.
+    #[derive(libp2p::swarm::NetworkBehaviour)]
+    struct LimitsOnly {
+        limits: connection_limits::Behaviour,
+    }
+
+    fn limits_swarm(max_peers: usize) -> Swarm<LimitsOnly> {
+        Swarm::new_ephemeral_tokio(|_| LimitsOnly {
+            limits: build_connection_limits(&CapConfig { max_peers }),
+        })
+    }
+
+    /// `--network.max-peers` flows into the transport cap: with a cap of 1,
+    /// the first connection is admitted and the second inbound connection is
+    /// denied with a connection-limits `Exceeded` cause.
+    #[tokio::test]
+    async fn max_peers_caps_established_connections() {
+        let mut listener = limits_swarm(1);
+        let mut first = limits_swarm(16);
+        let mut second = limits_swarm(16);
+
+        listener.listen().with_memory_addr_external().await;
+        first.connect(&mut listener).await;
+
+        let listen_addr = listener
+            .external_addresses()
+            .next()
+            .cloned()
+            .expect("listener has an external address");
+        second.dial(listen_addr).expect("dial is initiated");
+
+        let denial = async {
+            loop {
+                tokio::select! {
+                    event = listener.next_swarm_event() => {
+                        if let SwarmEvent::IncomingConnectionError {
+                            error: ListenError::Denied { cause },
+                            ..
+                        } = event
+                        {
+                            return cause;
+                        }
+                    }
+                    _ = first.next_swarm_event() => {}
+                    _ = second.next_swarm_event() => {}
+                }
+            }
+        };
+        let cause = tokio::time::timeout(Duration::from_secs(10), denial)
+            .await
+            .expect("listener denies the second connection");
+
+        let exceeded = cause
+            .downcast::<libp2p::connection_limits::Exceeded>()
+            .expect("denial cause is a connection-limits Exceeded");
+        assert_eq!(exceeded.limit(), 1, "the cap comes from max_peers");
     }
 
     #[test]

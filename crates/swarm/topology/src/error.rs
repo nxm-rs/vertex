@@ -37,6 +37,11 @@ pub enum DialError {
     /// Protocol negotiation failed (no common protocols).
     #[error("protocol negotiation failed")]
     NegotiationFailed,
+    /// Dial denied by local connection-admission policy (for example the
+    /// transport connection-limits cap) before reaching the network. Not a
+    /// peer fault: the peer was never contacted.
+    #[error("dial denied by local connection limits")]
+    Denied,
     /// Stale connection attempt cleaned up.
     #[error("stale connection attempt")]
     Stale,
