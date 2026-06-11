@@ -35,7 +35,7 @@ Protocol-agnostic network utilities.
 
 - [**Address Management**](networking/address-management.md) - Address classification, NAT, local network detection
 - [**Peer Management**](networking/peer-management.md) - Arc-per-peer state, registry, scoring, events
-- [**Peer Dialing Strategy**](networking/peer-dialing-strategy.md) - Bootstrapping, backoff, candidate selection
+- [**Peer Dialing Strategy**](networking/peer-dialing-strategy.md) - Bin allocation, depth coupling, candidate selection, backoff, trimming
 
 ### CLI
 
