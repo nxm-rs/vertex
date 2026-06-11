@@ -19,3 +19,4 @@ quick-protobuf-codec.workspace = true
 quick-protobuf.workspace = true
 strum.workspace = true
 thiserror.workspace = true
+vertex-util-runtime.workspace = true

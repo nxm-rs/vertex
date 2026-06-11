@@ -1,9 +1,9 @@
 //! Types for dial tracking.
 
 use std::fmt::Debug;
-use std::time::Instant;
 
 use libp2p::{Multiaddr, PeerId};
+use vertex_util_runtime::time::Instant;
 
 /// Why a dial request could not be enqueued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error, strum::IntoStaticStr)]
