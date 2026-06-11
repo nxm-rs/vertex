@@ -20,6 +20,9 @@ members = [
     # Tasks
     "crates/tasks",
 
+    # Util (cfg-gated foundation utilities: time and randomness)
+    "crates/util/runtime",
+
     # Network (protocol-agnostic utilities)
     "crates/net/dnsaddr",
     "crates/net/local",
@@ -172,6 +175,9 @@ vertex-observability = { path = "crates/observability" }
 
 # tasks
 vertex-tasks = { path = "crates/tasks" }
+
+# util (cfg-gated time and randomness foundation)
+vertex-util-runtime = { path = "crates/util/runtime" }
 
 # swarm
 vertex-swarm-identity = { path = "crates/swarm/identity" }
@@ -343,6 +349,10 @@ getrandom = { version = "0.2", default-features = false }
 # browser backend (`wasm_js` feature plus the `getrandom_backend` cfg set in
 # .cargo/config.toml for the wasm32 target).
 getrandom_04 = { package = "getrandom", version = "0.4", default-features = false }
+# The 0.3 line is what rand 0.9's rand_core resolves to. The wasm cone selects
+# its browser backend with the `wasm_js` feature plus the `getrandom_backend`
+# cfg set in .cargo/config.toml for the wasm32 target.
+getrandom_03 = { package = "getrandom", version = "0.3", default-features = false }
 paste = "1"
 once_cell = { version = "1.21", default-features = false, features = [
     "critical-section",
@@ -350,6 +360,8 @@ once_cell = { version = "1.21", default-features = false, features = [
 critical-section = { version = "1.2", features = ["std"] }
 rand = "0.9"
 rand_08 = { package = "rand", version = "0.8" }
+# Matches the rand 0.9 stack (rand_core 0.9, getrandom 0.3) for seeded CSPRNGs.
+rand_chacha = "0.9"
 rustc-hash = { version = "2.1", default-features = false }
 serde = { version = "1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false, features = [
