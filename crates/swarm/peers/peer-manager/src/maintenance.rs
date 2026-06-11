@@ -44,15 +44,19 @@ impl<I: SwarmIdentity> PeerManager<I> {
         }
     }
 
-    /// Write the full peer set to the snapshot store (no-op without one).
+    /// Write the verified peer set to the snapshot store (no-op without one).
     ///
     /// Called by [`Self::tick`] on schedule and by topology on graceful
     /// shutdown so the final state is not lost to the snapshot interval.
+    /// Unverified entries are skipped: they carry only a relayed gossip
+    /// claim, and persisting them would let junk records survive restarts.
+    /// Gossip re-delivers any that are real.
     pub fn snapshot(&self) {
         let Some(ref store) = self.store else { return };
         let records: Vec<PeerSnapshot> = self
             .peers
             .iter()
+            .filter(|r| r.value().is_verified())
             .map(|r| PeerSnapshot::from(r.value().as_ref()))
             .collect();
         match store.store(&records) {
@@ -158,6 +162,8 @@ impl<I: SwarmIdentity> PeerManager<I> {
         }
 
         gauge!("peer_manager_total_peers").set(self.index.len() as f64);
+        // Restored entries start unverified until their next handshake.
+        gauge!("peer_manager_unverified_peers").increment(loaded as f64);
 
         if total > 0 {
             info!(loaded, total, "loaded peer set from snapshot");

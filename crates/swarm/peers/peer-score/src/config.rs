@@ -28,10 +28,7 @@ scoring_events! {
     PingSuccess { latency: Duration } => ping_success,
     PingTimeout => ping_timeout,
     GossipUseful => gossip_useful,
-    GossipStale => gossip_stale,
-    GossipVerified => gossip_verified,
-    GossipInvalid => gossip_invalid,
-    GossipUnreachable => gossip_unreachable;
+    GossipStale => gossip_stale;
 
     ban_threshold = DEFAULT_PEER_BAN_THRESHOLD,
     warn_threshold = DEFAULT_PEER_WARN_THRESHOLD,
@@ -129,7 +126,7 @@ mod tests {
                 latency: Duration::ZERO,
             },
             SwarmScoringEvent::MaliciousBehavior,
-            SwarmScoringEvent::GossipUnreachable,
+            SwarmScoringEvent::GossipStale,
         ];
         for event in events {
             assert!(

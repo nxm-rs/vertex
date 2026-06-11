@@ -1,7 +1,7 @@
 //! Per-peer state with lock-free scoring and the snapshot record.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::Duration;
 
 use metrics::gauge;
@@ -58,6 +58,15 @@ const STALE_THRESHOLD_SECS: u64 = 24 * 3600;
 /// Stale regardless of last_seen after this many consecutive failures (~48h of persistent failure).
 const STALE_FAILURE_THRESHOLD: u32 = 48;
 
+/// Consecutive dial failures before an unverified entry is stale.
+///
+/// Unverified entries carry only a gossiped claim, so they get a short
+/// audition: a few failed dials and the record is purged rather than
+/// occupying bin capacity and candidate supply for the full
+/// [`STALE_FAILURE_THRESHOLD`] that once-verified peers earn. Re-gossip can
+/// re-admit the peer later; the gossip intake cooldown bounds how often.
+const UNVERIFIED_STALE_FAILURE_THRESHOLD: u32 = 3;
+
 /// Score half-life for disconnected peers (10 minutes).
 pub(crate) const DISCONNECTED_SCORE_HALF_LIFE_SECS: u64 = 600;
 
@@ -76,6 +85,12 @@ pub(crate) type BanInfo = (u64, String);
 /// Deliberately slim: bans, dial backoff, and scores are runtime state that
 /// is re-earned within seconds of reconnecting, so none of it is persisted.
 /// A snapshot carries just enough to redial the peer after a restart.
+///
+/// Only entries verified by a completed handshake are snapshotted, so every
+/// restored peer carries identity evidence we gathered first-hand rather
+/// than a relayed gossip claim. The verified bit itself is still not
+/// persisted: restored entries start unverified and re-earn the bit on
+/// their next handshake, mirroring the node-type confirmed bit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerSnapshot {
     /// The signed peer record (overlay, multiaddrs, handshake signature).
@@ -236,6 +251,15 @@ pub(crate) struct PeerEntry {
     direction: AtomicU8,
     /// [`TrustLevel`] discriminant, written at handshake completion only.
     trust: AtomicU8,
+    /// Whether a completed handshake has ever confirmed this peer's identity
+    /// in this process (see [`Self::is_verified`]).
+    ///
+    /// Process-local, like the confirmed bit on [`NodeTypeCell`]: entries
+    /// restored from a snapshot start unverified and re-earn the bit on
+    /// their next handshake. The bit describes the peer, not the stored
+    /// record: a gossiped address refresh on a verified peer does not clear
+    /// it.
+    verified: AtomicBool,
 }
 
 impl PeerEntry {
@@ -258,14 +282,17 @@ impl PeerEntry {
             connected_since: AtomicU64::new(0),
             direction: AtomicU8::new(DIRECTION_NONE),
             trust: AtomicU8::new(TrustLevel::Normal as u8),
+            verified: AtomicBool::new(false),
         }
     }
 
     /// Rebuild an entry from a persisted snapshot.
     ///
     /// Only identity survives a restart: the score starts at zero, the
-    /// backoff is clear, and the node type is provisional until the next
-    /// handshake confirms it.
+    /// backoff is clear, the node type is provisional until the next
+    /// handshake confirms it, and the entry is unverified until the next
+    /// handshake completes (its addresses may have gone stale while the
+    /// node was down).
     pub(crate) fn from_snapshot(snapshot: PeerSnapshot, config: Arc<SwarmScoringConfig>) -> Self {
         let overlay = OverlayAddress::from(*snapshot.peer.overlay());
         Self {
@@ -280,6 +307,7 @@ impl PeerEntry {
             connected_since: AtomicU64::new(0),
             direction: AtomicU8::new(DIRECTION_NONE),
             trust: AtomicU8::new(TrustLevel::Normal as u8),
+            verified: AtomicBool::new(false),
         }
     }
 
@@ -348,6 +376,25 @@ impl PeerEntry {
     /// type between sessions. Gossip can never change a confirmed value.
     pub(crate) fn confirm_node_type(&self, node_type: SwarmNodeType) {
         self.node_type.confirm(node_type);
+    }
+
+    /// Whether a completed handshake has confirmed this peer's identity in
+    /// this process.
+    ///
+    /// Gossip-admitted entries start unverified; the first completed
+    /// handshake on a real connection verifies them. Unverified entries are
+    /// fully dialable (that dial IS the verification) but expire on a much
+    /// shorter failure budget, see [`Self::is_stale`].
+    pub(crate) fn is_verified(&self) -> bool {
+        self.verified.load(Ordering::Acquire)
+    }
+
+    /// Mark the peer verified (handshake completion path).
+    ///
+    /// Returns `true` if this call flipped the bit, `false` if the peer was
+    /// already verified.
+    pub(crate) fn mark_verified(&self) -> bool {
+        !self.verified.swap(true, Ordering::AcqRel)
     }
 
     /// Apply a scoring event, returning the outcome and score transition.
@@ -473,12 +520,24 @@ impl PeerEntry {
         self.backoff_remaining().is_some()
     }
 
+    /// Whether this entry should be purged as stale.
+    ///
+    /// A peer with no failures is never stale. With failures, the entry is
+    /// stale after a failure budget that depends on the verified bit
+    /// ([`UNVERIFIED_STALE_FAILURE_THRESHOLD`] for gossip-only records,
+    /// [`STALE_FAILURE_THRESHOLD`] for once-verified peers), or once it has
+    /// not been seen healthy for [`STALE_THRESHOLD_SECS`].
     pub(crate) fn is_stale(&self) -> bool {
         let failures = self.consecutive_failures();
         if failures == 0 {
             return false;
         }
-        if failures >= STALE_FAILURE_THRESHOLD {
+        let failure_budget = if self.is_verified() {
+            STALE_FAILURE_THRESHOLD
+        } else {
+            UNVERIFIED_STALE_FAILURE_THRESHOLD
+        };
+        if failures >= failure_budget {
             return true;
         }
         unix_timestamp_secs().saturating_sub(self.last_seen()) > STALE_THRESHOLD_SECS
@@ -700,6 +759,63 @@ mod tests {
         // A reconnect handshake may still re-confirm a different type.
         entry.confirm_node_type(SwarmNodeType::Client);
         assert_eq!(entry.node_type(), SwarmNodeType::Client);
+    }
+
+    #[test]
+    fn test_new_entry_is_unverified_and_dialable() {
+        let entry = test_entry(1, SwarmNodeType::Storer);
+        assert!(!entry.is_verified());
+        assert!(entry.is_dialable(), "unverified entries must be dialable");
+    }
+
+    #[test]
+    fn test_mark_verified_flips_once() {
+        let entry = test_entry(1, SwarmNodeType::Storer);
+        assert!(entry.mark_verified(), "first call flips the bit");
+        assert!(entry.is_verified());
+        assert!(!entry.mark_verified(), "second call is a no-op");
+    }
+
+    #[test]
+    fn test_unverified_stale_after_short_failure_budget() {
+        let entry = test_entry(1, SwarmNodeType::Storer);
+        for _ in 0..UNVERIFIED_STALE_FAILURE_THRESHOLD {
+            entry.record_dial_failure();
+        }
+        assert!(
+            entry.is_stale(),
+            "unverified entries expire on the short failure budget"
+        );
+
+        let verified = test_entry(2, SwarmNodeType::Storer);
+        verified.mark_verified();
+        for _ in 0..UNVERIFIED_STALE_FAILURE_THRESHOLD {
+            verified.record_dial_failure();
+        }
+        assert!(
+            !verified.is_stale(),
+            "verified peers keep the long failure budget"
+        );
+    }
+
+    #[test]
+    fn test_update_addresses_keeps_verified_bit() {
+        let entry = test_entry(1, SwarmNodeType::Storer);
+        entry.mark_verified();
+        entry.update_addresses(test_swarm_peer(1));
+        assert!(
+            entry.is_verified(),
+            "a gossiped address refresh must not clear verification"
+        );
+    }
+
+    #[test]
+    fn test_snapshot_restore_starts_unverified() {
+        let entry = test_entry(1, SwarmNodeType::Storer);
+        entry.mark_verified();
+        let snapshot = PeerSnapshot::from(&entry);
+        let restored = PeerEntry::from_snapshot(snapshot, Arc::new(SwarmScoringConfig::default()));
+        assert!(!restored.is_verified(), "verification never persists");
     }
 
     #[test]

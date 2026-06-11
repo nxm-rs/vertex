@@ -64,7 +64,7 @@ Any type implementing `Clone + Eq + Hash + Send + Sync + Debug + Serialize + Des
 
 Per-peer state with atomic hot paths and per-peer locked cold paths.
 
-**Atomic fields (hot path):** score, connection state, latency, connection counters, last-seen timestamp, node type (a write-once-confirmed cell: gossip sets a provisional value, the handshake confirms it, and only a later handshake can change it).
+**Atomic fields (hot path):** score, connection state, latency, connection counters, last-seen timestamp, node type (a write-once-confirmed cell: gossip sets a provisional value, the handshake confirms it, and only a later handshake can change it), verified bit (gossip-admitted entries start unverified; the first completed handshake flips it and gossip can never clear it).
 
 **Locked fields (cold path):** peer record (multiaddrs), ban metadata.
 
@@ -106,6 +106,17 @@ The Swarm-layer peer manager (`vertex-swarm-peer-manager`) holds the entire know
 
 The per-bin cap is enforced at admission time. When a bin is full and a new peer is discovered, the manager replaces the worst disconnected record (stale entries first, then lowest score). Connected peers are never evicted by admission; if every slot in the bin is held by a connected peer, the newcomer is rejected.
 
+### Unverified tier: verify on first dial
+
+Records admitted via hive gossip enter the table **unverified**: the record's signature was validated at the protocol layer, but no connection has ever confirmed that the multiaddrs actually belong to the claimed overlay. Unverified entries are fully dialable and feed candidate selection like any other supply; the first completed handshake on a real connection flips the entry to verified in the same round trip (`on_peer_connected`), so verification costs no extra handshake and no separate prober identity. There is no ranking preference between verified and unverified candidates; selection stays bin-driven.
+
+The verified bit shapes two policies:
+
+- **Stale budget.** A peer with consecutive dial failures is purged by the tick once it exhausts its failure budget: 3 failures for unverified entries (a gossip claim gets a short audition), 48 for once-verified peers. This keeps junk gossip from polluting candidate supply while letting a flaky known-good peer ride out an outage.
+- **Snapshot scope.** Only verified entries are written to the peer snapshot, so persisted records always carry first-hand identity evidence. The bit itself still resets on restart (like the node-type confirmed bit): restored entries are dialable immediately and re-earn verification on their next handshake.
+
+If a dial guided by a stored record completes a handshake asserting a *different* overlay, topology calls `on_dialed_overlay_mismatch`: an unverified record is removed outright (the claim was wrong), while a once-verified record takes a dial failure so backoff and the stale purge retire it if its addresses now consistently reach someone else. The peer that actually answered is stored and verified through the normal connection path.
+
 ## Persistence
 
 Persistence is an opt-in, identity-only snapshot over the shared node database, which is in-memory by default: without `--db.persist` or `--db.path` no snapshot store exists and the peer set lives purely in memory. The `PeerSnapshotStore` trait (`vertex-net-peer-store`) has exactly two operations: `load` (once, at startup) and `store` (full replace of the persisted set in one transaction). Auto-impl provided for `&T`, `Box<T>`, `Arc<T>`.
@@ -115,7 +126,7 @@ Persistence is an opt-in, identity-only snapshot over the shared node database, 
 | `MemoryPeerStore` | Testing, no persistence |
 | `DbPeerSnapshotStore` | Snapshot table over the shared database (`vertex-swarm-peer-manager`) |
 
-The persisted record (`PeerSnapshot`) carries only the signed peer record, the last known node type, and a last-seen timestamp. Reputation never survives a restart: scores, bans, and dial backoff are runtime-only and the banned set starts empty on every startup. Bans are timed and re-earned within seconds of a misbehaving peer reconnecting, so persisting them buys nothing.
+The persisted record (`PeerSnapshot`) carries only the signed peer record, the last known node type, and a last-seen timestamp, and is written only for verified entries (see the unverified tier above). Reputation never survives a restart: scores, bans, dial backoff, and the verified bit are runtime-only and the banned set starts empty on every startup. Bans are timed and re-earned within seconds of a misbehaving peer reconnecting, so persisting them buys nothing.
 
 Snapshots are written by `PeerManager::tick`, the single periodic maintenance entry point (every tick: score decay, ban expiry, stale-peer purge; snapshot only when due). The manager owns no timers; a thin driver (`spawn_peer_manager_task`) is spawned from the node launch path, and topology writes a final snapshot on graceful shutdown. Crash-loss story: a crash loses at most one snapshot interval (default 5 minutes) of newly discovered peers, which rediscovery via bootnodes and hive gossip replaces quickly.
 

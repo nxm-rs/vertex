@@ -4,10 +4,9 @@
 //! subsystems that observe or judge peers:
 //!
 //! - [`PeerReporter`] is the single sanctioned path for scoring input. The
-//!   peer manager implements it via its handle; topology, gossip
-//!   verification, handshake, protocol handlers, bandwidth accounting, and
-//!   the RPC surface all report through it instead of mutating scores
-//!   directly.
+//!   peer manager implements it via its handle; topology, gossip,
+//!   handshake, protocol handlers, bandwidth accounting, and the RPC
+//!   surface all report through it instead of mutating scores directly.
 //! - [`PeerAffordability`] is implemented by bandwidth accounting so that
 //!   protocol handlers can check whether a peer can pay for a request
 //!   before doing the work.
@@ -81,12 +80,6 @@ pub enum SwarmScoringEvent {
     GossipUseful,
     /// Hive gossip contained stale/invalid peers.
     GossipStale,
-    /// Gossiped peer was verified via handshake (signature, overlay, multiaddr all match).
-    GossipVerified,
-    /// Gossiped peer failed verification (overlay, signature, or multiaddr mismatch).
-    GossipInvalid,
-    /// Gossiped peer could not be reached for verification.
-    GossipUnreachable,
 }
 
 impl SwarmScoringEvent {
@@ -116,9 +109,6 @@ impl SwarmScoringEvent {
             Self::PingTimeout => -0.5,
             Self::GossipUseful => 0.2,
             Self::GossipStale => -0.1,
-            Self::GossipVerified => 1.0,
-            Self::GossipInvalid => -15.0,
-            Self::GossipUnreachable => -0.5,
         }
     }
 
@@ -157,10 +147,7 @@ impl SwarmScoringEvent {
     pub fn is_severe(&self) -> bool {
         matches!(
             self,
-            Self::InvalidData
-                | Self::MaliciousBehavior
-                | Self::AccountingViolation
-                | Self::GossipInvalid
+            Self::InvalidData | Self::MaliciousBehavior | Self::AccountingViolation
         )
     }
 }
@@ -174,7 +161,7 @@ impl SwarmScoringEvent {
 pub enum ReportSource {
     /// Topology management (dialing, connection lifecycle, kademlia).
     Topology,
-    /// Hive gossip verification.
+    /// Hive gossip.
     Gossip,
     /// Handshake protocol.
     Handshake,
@@ -401,7 +388,6 @@ mod tests {
         assert!(SwarmScoringEvent::MaliciousBehavior.is_severe());
         assert!(SwarmScoringEvent::InvalidData.is_severe());
         assert!(SwarmScoringEvent::AccountingViolation.is_severe());
-        assert!(SwarmScoringEvent::GossipInvalid.is_severe());
         assert!(!SwarmScoringEvent::ConnectionTimeout.is_severe());
     }
 
@@ -413,8 +399,8 @@ mod tests {
         let copy = event;
         assert_eq!(event, copy);
 
-        let label: &'static str = SwarmScoringEvent::GossipInvalid.into();
-        assert_eq!(label, "gossip_invalid");
+        let label: &'static str = SwarmScoringEvent::GossipStale.into();
+        assert_eq!(label, "gossip_stale");
     }
 
     #[test]
