@@ -24,6 +24,7 @@ vertex-swarm-peer.workspace = true
 vertex-swarm-api.workspace = true
 vertex-swarm-primitives.workspace = true
 vertex-swarm-spec.workspace = true
+vertex-util-runtime.workspace = true
 
 # CLI
 clap = { workspace = true, features = ["derive"] }
@@ -31,8 +32,17 @@ serde = { workspace = true }
 
 # Utilities
 eyre.workspace = true
-rand.workspace = true
+# rand_08 is required only for the alloy eth-keystore call (it pins rand 0.8);
+# all other randomness flows through vertex-util-runtime.
 rand_08.workspace = true
+strum.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
+
+# Keystore creation and decryption are native-only: the alloy `keystore` feature
+# pulls `eth-keystore`, which does not build for wasm32. Enabling it here (rather
+# than in the shared workspace dep) keeps the rest of the workspace wasm-clean.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+alloy-signer-local = { workspace = true, features = ["keystore"] }
 
 [dev-dependencies]
