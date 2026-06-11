@@ -57,6 +57,7 @@ impl RoutingArgs {
                 .max_balanced_candidates
                 .unwrap_or(defaults.max_balanced_candidates),
             neighborhood_stability_window: defaults.neighborhood_stability_window,
+            depth_lower_window: defaults.depth_lower_window,
         }
     }
 }

@@ -153,13 +153,26 @@ fn select_trim_victims<R: Ord>(
     victims
 }
 
+/// Saturation deficit (in peers, summed across the bins below the published
+/// depth) up to which a depth lowering is treated as churn noise and held
+/// for the stability window instead of being published immediately.
+const DEPTH_LOWER_DEFICIT_TOLERANCE: usize = 1;
+
 /// Kademlia-based peer routing table.
 pub(crate) struct KademliaRouting<I: SwarmIdentity> {
     identity: I,
     max_po: u8,
     pub(crate) connected_peers: ProximityIndex,
     peer_manager: Arc<PeerManager<I>>,
+    /// Published neighborhood depth. Lowering passes through hysteresis
+    /// (see [`Self::publish_depth_at`]); every consumer reads this value
+    /// through [`Self::depth`].
     depth: AtomicU8,
+    /// Start of the stability window during which a marginal depth lowering
+    /// is held back. `Some` while the instantaneous depth sits below the
+    /// published depth with a saturation deficit within
+    /// [`DEPTH_LOWER_DEFICIT_TOLERANCE`].
+    pending_depth_lower: Mutex<Option<Instant>>,
     config: KademliaConfig,
     candidate_queues: CandidateQueues,
     dialing_counts: Vec<AtomicUsize>,
@@ -189,6 +202,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
             connected_peers: ProximityIndex::new(local_overlay, max_po, 0),
             peer_manager,
             depth: AtomicU8::new(0),
+            pending_depth_lower: Mutex::new(None),
             config,
             candidate_queues: CandidateQueues::new(num_bins, 16),
             dialing_counts: make_atomic_vec(num_bins),
@@ -285,19 +299,18 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         }
     }
 
-    /// Recompute neighborhood depth from the connected-peer bin distribution.
+    /// Recompute neighborhood depth from the given connected-peer bin sizes.
     ///
     /// Delegates to [`recompute_neighborhood_depth`], the canonical port that
     /// walks shallow to deep to find the unsaturated frontier and then anchors
     /// the neighborhood by the low watermark. Crucially this caps depth at the
     /// shallowest empty or unsaturated bin, so a gap below the deepest populated
     /// bin pulls depth shallower rather than reporting a too-deep neighborhood.
-    fn recalc_depth(&self) -> NeighborhoodDepth {
+    fn recalc_depth(&self, sizes: &[usize]) -> NeighborhoodDepth {
         let spec = self.identity.spec();
-        let sizes = self.connected_peers.bin_sizes();
         let mut counts = [0u8; 32];
         for (slot, size) in counts.iter_mut().zip(sizes) {
-            *slot = u8::try_from(size).unwrap_or(u8::MAX);
+            *slot = u8::try_from(*size).unwrap_or(u8::MAX);
         }
 
         // Saturation comes from the limits so the depth frontier and the
@@ -308,6 +321,105 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         let depth =
             recompute_neighborhood_depth(&counts, saturation, spec.neighborhood_low_watermark());
         NeighborhoodDepth::new(Bin::new(depth.get().min(self.max_po)).unwrap_or(Bin::MAX))
+    }
+
+    /// Total saturation deficit (in peers) across the bins below `depth`,
+    /// computed from the given connected-peer bin sizes.
+    ///
+    /// Zero when every bin below the depth holds at least `saturation`
+    /// connected peers, which is exactly the state in which `depth` was
+    /// published; after disconnections it measures how many peers short of
+    /// re-validating that depth the table is.
+    fn saturation_deficit_below(&self, depth: NeighborhoodDepth, sizes: &[usize]) -> usize {
+        let saturation = self.config.limits.saturation();
+        all_bins(self.max_bin())
+            .filter(|bin| !depth.contains(*bin))
+            .map(|bin| saturation.saturating_sub(sizes.get(bin.as_index()).copied().unwrap_or(0)))
+            .sum()
+    }
+
+    /// Recompute the instantaneous depth and fold it through the lowering
+    /// hysteresis, updating the published depth.
+    ///
+    /// Raising (or holding) depth is applied immediately and clears any
+    /// pending lower: over-connection is harmless and the trim floor
+    /// protects the climb. Lowering is applied immediately only when the
+    /// saturation deficit below the published depth exceeds
+    /// [`DEPTH_LOWER_DEFICIT_TOLERANCE`] (real capacity loss: a bin two or
+    /// more peers short, or several bins each one short). A marginal
+    /// deficit, the signature of a single churning frontier peer, holds the
+    /// published depth and starts (or continues) the stability window; the
+    /// lower depth is published only once the instantaneous depth has
+    /// stayed below the published depth for the whole window.
+    ///
+    /// While a lower is pending every consumer, including
+    /// [`Self::evaluate_connections`] (and through it the effective-depth
+    /// taper) and bin trimming, keeps seeing the held published depth, so
+    /// a one-peer flap never retargets allocation.
+    ///
+    /// Returns `true` when the published depth was mutated, so callers that
+    /// reach this without a routing-table mutation (the periodic tick) can
+    /// re-anchor the neighborhood-stability clock; the connect and
+    /// disconnect handlers re-anchor unconditionally for the membership
+    /// change regardless of the return value.
+    fn publish_depth_at(&self, now: Instant) -> bool {
+        // One snapshot feeds both the depth recompute and the deficit so the
+        // two can never disagree about the table state.
+        let sizes = self.connected_peers.bin_sizes();
+        let raw = self.recalc_depth(&sizes);
+        let published = self.depth();
+
+        if raw >= published {
+            // Raise or no change: apply immediately; the table recovered,
+            // so drop any pending lower.
+            *self.pending_depth_lower.lock() = None;
+            self.depth.store(raw.get(), Ordering::Relaxed);
+            return raw != published;
+        }
+
+        if self.saturation_deficit_below(published, &sizes) > DEPTH_LOWER_DEFICIT_TOLERANCE {
+            *self.pending_depth_lower.lock() = None;
+            self.depth.store(raw.get(), Ordering::Relaxed);
+            return true;
+        }
+
+        let mut pending = self.pending_depth_lower.lock();
+        match *pending {
+            None => {
+                *pending = Some(now);
+                false
+            }
+            Some(since) if now.duration_since(since) >= self.config.depth_lower_window => {
+                *pending = None;
+                self.depth.store(raw.get(), Ordering::Relaxed);
+                true
+            }
+            Some(_) => false,
+        }
+    }
+
+    /// Re-run the depth hysteresis against the current table.
+    ///
+    /// Called from the topology behaviour's periodic tick so a pending
+    /// lower publishes once its stability window expires even when no
+    /// further connect or disconnect events arrive. The caller observes a
+    /// resulting change by comparing [`Self::depth`] before and after, the
+    /// same pattern the connection handlers use.
+    ///
+    /// When the tick publishes a new depth there is no connect or disconnect
+    /// to re-anchor the neighborhood-stability clock, so this path re-anchors
+    /// it directly; otherwise the clock would measure elapsed time against
+    /// the stale pre-change anchor depth.
+    pub(crate) fn refresh_depth(&self) {
+        self.refresh_depth_at(Instant::now());
+    }
+
+    /// [`Self::refresh_depth`] against an explicit clock, so paused-time tests
+    /// can drive the stability window and re-anchoring deterministically.
+    fn refresh_depth_at(&self, now: Instant) {
+        if self.publish_depth_at(now) {
+            self.update_neighborhood_stability();
+        }
     }
 
     /// Log the current routing status showing bin populations.
@@ -434,6 +546,12 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         candidates
     }
 
+    /// The published neighborhood depth.
+    ///
+    /// This is the hysteresis-filtered value (see [`Self::publish_depth_at`]):
+    /// while a marginal lowering is pending its stability window the held,
+    /// previous depth is returned. The raw instantaneous recompute is never
+    /// exposed outside this type.
     pub(crate) fn depth(&self) -> NeighborhoodDepth {
         NeighborhoodDepth::new(Bin::new(self.depth.load(Ordering::Relaxed)).unwrap_or(Bin::MAX))
     }
@@ -593,8 +711,8 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
 
         if self.connected_peers.add(peer).is_ok() {
             let old_depth = self.depth();
-            let new_depth = self.recalc_depth();
-            self.depth.store(new_depth.get(), Ordering::Relaxed);
+            self.publish_depth_at(Instant::now());
+            let new_depth = self.depth();
             self.update_neighborhood_stability();
 
             debug!(
@@ -621,8 +739,8 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
             let bin = self.bin_for(peer);
 
             let old_depth = self.depth();
-            let new_depth = self.recalc_depth();
-            self.depth.store(new_depth.get(), Ordering::Relaxed);
+            self.publish_depth_at(Instant::now());
+            let new_depth = self.depth();
             self.update_neighborhood_stability();
 
             debug!(
@@ -1107,6 +1225,184 @@ mod tests {
         SwarmRouting::remove_peer(&*routing, &addr_in_bin(1, 0));
         SwarmRouting::remove_peer(&*routing, &addr_in_bin(1, 1));
         assert!(routing.neighborhood_stable_for().is_none());
+    }
+
+    /// A depth lowering published by the periodic tick (no connect or
+    /// disconnect event) must re-anchor the neighborhood-stability clock
+    /// against the newly published depth, not leave it measuring against the
+    /// stale pre-change anchor.
+    #[test]
+    fn test_refresh_depth_reanchors_neighborhood_stability() {
+        // bin0=8, bin1=5, bin2=3, bin3=1: depth anchors at 1 and the
+        // neighborhood (bins >= 1, holding 9) is saturated, so the stability
+        // clock is anchored at depth 1.
+        let base = SwarmAddress::with_first_byte(0x00);
+        let (routing, _pm) = make_routing(base, KademliaConfig::default());
+        saturate_to_depth_one(&routing);
+        assert_eq!(routing.depth().get(), 1);
+        let anchored_at_depth_1 = routing
+            .neighborhood_stability
+            .lock()
+            .as_ref()
+            .map(|stable| stable.depth);
+        assert_eq!(
+            anchored_at_depth_1,
+            Some(routing.depth()),
+            "clock must start anchored at the depth-1 neighborhood"
+        );
+
+        // Drop one peer from bin 0 (below depth): a single-peer deficit, so
+        // the lower depth is deferred and the published depth holds at 1 with
+        // a pending window. No connection event publishes it.
+        SwarmRouting::on_peer_disconnected(&*routing, &addr_in_bin(0, 0));
+        assert_eq!(
+            routing.depth().get(),
+            1,
+            "single-peer deficit must defer the lower"
+        );
+        assert!(routing.pending_depth_lower.lock().is_some());
+
+        // The periodic tick fires after the window expires and publishes the
+        // lower depth (0). The clock must observe the change even though no
+        // connect or disconnect occurred: at depth 0 the neighborhood is no
+        // longer saturated, so the clock clears rather than staying anchored
+        // at the stale depth 1.
+        let after_window = Instant::now() + routing.config.depth_lower_window;
+        routing.refresh_depth_at(after_window);
+        assert_eq!(
+            routing.depth().get(),
+            0,
+            "expired window must publish the lower depth through the tick"
+        );
+        assert!(
+            routing.neighborhood_stability.lock().is_none(),
+            "the tick-driven lower must re-anchor (here clear) the stability clock"
+        );
+    }
+
+    /// Depth-3 fixture: bins 0..=2 saturated (8 peers each, the default
+    /// saturation), bin 3 holding the low watermark (3 peers).
+    fn routing_at_depth_3() -> Arc<KademliaRouting<MockIdentity>> {
+        let base = SwarmAddress::with_first_byte(0x00);
+        let (routing, _pm) = make_routing(base, KademliaConfig::default());
+        for bin in 0..3 {
+            for idx in 0..8 {
+                SwarmRouting::connected(&*routing, addr_in_bin(bin, idx));
+            }
+        }
+        for idx in 0..3 {
+            SwarmRouting::connected(&*routing, addr_in_bin(3, idx));
+        }
+        assert_eq!(routing.depth().get(), 3, "fixture must start at depth 3");
+        routing
+    }
+
+    #[test]
+    fn test_depth_lower_deferred_on_single_peer_deficit() {
+        // One disconnect in a frontier bin sitting exactly at saturation
+        // leaves a single-peer deficit: the published depth holds and the
+        // stability window starts.
+        let routing = routing_at_depth_3();
+
+        SwarmRouting::on_peer_disconnected(&*routing, &addr_in_bin(1, 0));
+
+        assert_eq!(
+            routing.depth().get(),
+            3,
+            "single-peer deficit must not lower the published depth"
+        );
+        assert!(
+            routing.pending_depth_lower.lock().is_some(),
+            "a stability window must be pending"
+        );
+    }
+
+    #[test]
+    fn test_depth_recovery_within_window_publishes_nothing() {
+        let routing = routing_at_depth_3();
+        let peer = addr_in_bin(1, 0);
+
+        SwarmRouting::on_peer_disconnected(&*routing, &peer);
+        assert_eq!(routing.depth().get(), 3);
+
+        // The bin refills before the window expires: pending lower clears.
+        SwarmRouting::connected(&*routing, peer);
+        assert_eq!(routing.depth().get(), 3);
+        assert!(
+            routing.pending_depth_lower.lock().is_none(),
+            "recovery must clear the pending lower"
+        );
+
+        // Even a refresh long after the original window would have expired
+        // publishes nothing.
+        let after_window = Instant::now() + routing.config.depth_lower_window;
+        routing.publish_depth_at(after_window);
+        assert_eq!(routing.depth().get(), 3);
+    }
+
+    #[test]
+    fn test_depth_lowers_immediately_on_two_peer_deficit() {
+        // Two peers gone from the same frontier bin (saturation - 2) is real
+        // capacity loss: the lower depth publishes with no window.
+        let routing = routing_at_depth_3();
+
+        SwarmRouting::on_peer_disconnected(&*routing, &addr_in_bin(1, 0));
+        SwarmRouting::on_peer_disconnected(&*routing, &addr_in_bin(1, 1));
+
+        assert_eq!(routing.depth().get(), 1);
+        assert!(routing.pending_depth_lower.lock().is_none());
+    }
+
+    #[test]
+    fn test_depth_lowers_immediately_when_two_bins_fall_below() {
+        // Two frontier bins each one peer short also exceeds the one-peer
+        // tolerance: the lower depth publishes immediately.
+        let routing = routing_at_depth_3();
+
+        SwarmRouting::on_peer_disconnected(&*routing, &addr_in_bin(0, 0));
+        assert_eq!(routing.depth().get(), 3, "first loss is deferred");
+
+        SwarmRouting::on_peer_disconnected(&*routing, &addr_in_bin(1, 0));
+        assert_eq!(routing.depth().get(), 0);
+        assert!(routing.pending_depth_lower.lock().is_none());
+    }
+
+    #[test]
+    fn test_depth_lower_publishes_after_window_expiry() {
+        let routing = routing_at_depth_3();
+
+        SwarmRouting::on_peer_disconnected(&*routing, &addr_in_bin(1, 0));
+        assert_eq!(routing.depth().get(), 3);
+
+        // Re-checks inside the window keep holding the published depth.
+        routing.publish_depth_at(Instant::now());
+        assert_eq!(routing.depth().get(), 3);
+
+        // A refresh after the window expires publishes the lower depth.
+        let after_window = Instant::now() + routing.config.depth_lower_window;
+        routing.publish_depth_at(after_window);
+        assert_eq!(
+            routing.depth().get(),
+            1,
+            "expired window must publish the lower depth"
+        );
+        assert!(routing.pending_depth_lower.lock().is_none());
+    }
+
+    #[test]
+    fn test_churn_flap_never_changes_published_depth() {
+        // Alternating disconnect/reconnect of one frontier peer (classic
+        // churn) must never flap the published depth.
+        let routing = routing_at_depth_3();
+        let churner = addr_in_bin(1, 0);
+
+        for _ in 0..10 {
+            SwarmRouting::on_peer_disconnected(&*routing, &churner);
+            assert_eq!(routing.depth().get(), 3);
+            SwarmRouting::connected(&*routing, churner);
+            assert_eq!(routing.depth().get(), 3);
+        }
+        assert!(routing.pending_depth_lower.lock().is_none());
     }
 
     #[test]

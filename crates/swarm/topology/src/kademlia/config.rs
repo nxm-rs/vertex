@@ -25,6 +25,16 @@ const DEFAULT_MAX_BALANCED_CANDIDATES: usize = 16;
 /// enough that a converged storer can start pull-syncing promptly.
 const DEFAULT_NEIGHBORHOOD_STABILITY_WINDOW: Duration = Duration::from_secs(30);
 
+/// Default stability window before a marginal depth lowering is published.
+///
+/// A recomputed depth below the published depth with a saturation deficit of
+/// at most one peer is held back for this long; if the deficit persists for
+/// the whole window the lower depth is published, and if the table recovers
+/// in the meantime nothing is ever published. Thirty seconds rides out a
+/// reconnect cycle of a single churning frontier peer without letting a real
+/// (slow) capacity loss go unreported for long.
+const DEFAULT_DEPTH_LOWER_WINDOW: Duration = Duration::from_secs(30);
+
 /// Configuration for Kademlia routing.
 #[derive(Debug, Clone)]
 pub struct KademliaConfig {
@@ -37,6 +47,10 @@ pub struct KademliaConfig {
     /// How long the neighborhood must stay saturated at an unchanged depth
     /// before it is considered stable (the gate pull-syncing waits on).
     pub(crate) neighborhood_stability_window: Duration,
+    /// Stability window for lowering the published neighborhood depth when
+    /// the saturation deficit is a single peer (see
+    /// [`Self::with_depth_lower_window`]).
+    pub(crate) depth_lower_window: Duration,
 }
 
 impl Default for KademliaConfig {
@@ -46,6 +60,7 @@ impl Default for KademliaConfig {
             max_neighbor_candidates: DEFAULT_MAX_NEIGHBOR_CANDIDATES,
             max_balanced_candidates: DEFAULT_MAX_BALANCED_CANDIDATES,
             neighborhood_stability_window: DEFAULT_NEIGHBORHOOD_STABILITY_WINDOW,
+            depth_lower_window: DEFAULT_DEPTH_LOWER_WINDOW,
         }
     }
 }
@@ -79,6 +94,20 @@ impl KademliaConfig {
     /// not a transiently well-connected one.
     pub fn with_neighborhood_stability_window(mut self, window: Duration) -> Self {
         self.neighborhood_stability_window = window;
+        self
+    }
+
+    /// Set the stability window for publishing a marginal depth lowering.
+    ///
+    /// Raising depth is always applied immediately: over-connection is
+    /// harmless and the trim floor protects the climb. Lowering is applied
+    /// immediately only when the saturation deficit across the bins below
+    /// the published depth exceeds one peer (real capacity loss). A
+    /// single-peer deficit, the signature of one churning frontier peer, is
+    /// instead held for this window and published only if the recomputed
+    /// depth stays below the published depth for the whole window.
+    pub fn with_depth_lower_window(mut self, window: Duration) -> Self {
+        self.depth_lower_window = window;
         self
     }
 }
