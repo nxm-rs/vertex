@@ -275,6 +275,49 @@ impl SwarmNodeType {
     }
 }
 
+/// Named bundle of topology pacing parameters.
+///
+/// A profile selects how aggressively a node builds out its routing table:
+/// connection-evaluation cadence, discovery dial rate, dial concurrency,
+/// bootstrap fill level, and per-evaluation candidate budgets. Profiles only
+/// set numbers; no topology logic branches on the variant. The concrete
+/// pacing bundle each variant maps to is defined by the topology layer
+/// (`vertex-swarm-topology`), which is also where the numbers are documented.
+///
+/// The default is derived from the node type ([`Self::default_for`]) and can
+/// be overridden per node (CLI: `--network.connection-profile`).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, strum::EnumString, strum::IntoStaticStr,
+)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+#[strum(serialize_all = "lowercase", ascii_case_insensitive)]
+pub enum ConnectionProfile {
+    /// Fast table build-out: short evaluation interval and a high dial rate.
+    /// Suited to nodes that want retrieval-ready routing quickly.
+    Aggressive,
+    /// Steady build-out matching the established topology defaults.
+    Balanced,
+    /// Slow, low-impact build-out for constrained environments (metered
+    /// links, battery, tiny hosts).
+    Conservative,
+}
+
+impl ConnectionProfile {
+    /// The default profile for a node type.
+    ///
+    /// Clients default to [`Self::Aggressive`]: they are typically short-lived
+    /// and user-facing, so time-to-usable-topology dominates. Storers and
+    /// bootnodes default to [`Self::Balanced`]: they are long-lived, so steady
+    /// convergence costs nothing and avoids dial bursts against the network.
+    pub const fn default_for(node_type: SwarmNodeType) -> Self {
+        match node_type {
+            SwarmNodeType::Client => Self::Aggressive,
+            SwarmNodeType::Bootnode | SwarmNodeType::Storer => Self::Balanced,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,6 +448,37 @@ mod tests {
         // Client needs the chain only when SWAP settlement is enabled.
         assert!(!SwarmNodeType::Client.needs_chain(false));
         assert!(SwarmNodeType::Client.needs_chain(true));
+    }
+
+    #[test]
+    fn connection_profile_default_by_node_type() {
+        assert_eq!(
+            ConnectionProfile::default_for(SwarmNodeType::Client),
+            ConnectionProfile::Aggressive
+        );
+        assert_eq!(
+            ConnectionProfile::default_for(SwarmNodeType::Storer),
+            ConnectionProfile::Balanced
+        );
+        assert_eq!(
+            ConnectionProfile::default_for(SwarmNodeType::Bootnode),
+            ConnectionProfile::Balanced
+        );
+    }
+
+    #[test]
+    fn connection_profile_string_round_trip() {
+        use std::str::FromStr;
+
+        for (profile, name) in [
+            (ConnectionProfile::Aggressive, "aggressive"),
+            (ConnectionProfile::Balanced, "balanced"),
+            (ConnectionProfile::Conservative, "conservative"),
+        ] {
+            assert_eq!(profile.to_string(), name);
+            assert_eq!(ConnectionProfile::from_str(name).expect("parses"), profile);
+        }
+        assert!(ConnectionProfile::from_str("turbo").is_err());
     }
 }
 

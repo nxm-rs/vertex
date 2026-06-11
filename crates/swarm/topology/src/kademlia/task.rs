@@ -39,12 +39,14 @@ struct RoutingEvaluatorTask<I: SwarmIdentity> {
     routing: Arc<KademliaRouting<I>>,
     notify: Arc<Notify>,
     event_tx: broadcast::Sender<TopologyEvent>,
+    /// Fallback cadence between evaluations when no trigger arrives, from the
+    /// node's connection profile.
+    periodic: Duration,
 }
 
 impl<I: SwarmIdentity + 'static> RoutingEvaluatorTask<I> {
     async fn run(self, shutdown: GracefulShutdown) {
         let debounce = Duration::from_millis(100);
-        let periodic = Duration::from_secs(5);
         let mut shutdown = std::pin::pin!(shutdown);
 
         loop {
@@ -57,7 +59,7 @@ impl<I: SwarmIdentity + 'static> RoutingEvaluatorTask<I> {
                 _ = self.notify.notified() => {
                     tokio::time::sleep(debounce).await;
                 }
-                _ = tokio::time::sleep(periodic) => {}
+                _ = tokio::time::sleep(self.periodic) => {}
             }
             self.routing.evaluate_connections();
 
@@ -76,7 +78,8 @@ impl<I: SwarmIdentity + 'static> RoutingEvaluatorTask<I> {
     }
 }
 
-/// Spawn the routing evaluator task driven by the given handle's trigger.
+/// Spawn the routing evaluator task driven by the given handle's trigger,
+/// with `periodic` as the trigger-free fallback cadence.
 ///
 /// `event_tx` is the topology event channel; the task broadcasts
 /// [`TopologyEvent::PhaseChanged`] for phase transitions its periodic
@@ -85,12 +88,14 @@ pub(crate) fn spawn_evaluator<I: SwarmIdentity + 'static>(
     routing: Arc<KademliaRouting<I>>,
     handle: &RoutingEvaluatorHandle,
     event_tx: broadcast::Sender<TopologyEvent>,
+    periodic: Duration,
     executor: &TaskExecutor,
 ) {
     let task = RoutingEvaluatorTask {
         routing,
         notify: Arc::clone(&handle.notify),
         event_tx,
+        periodic,
     };
 
     executor.spawn_critical_with_graceful_shutdown_signal("topology.evaluator", move |shutdown| {

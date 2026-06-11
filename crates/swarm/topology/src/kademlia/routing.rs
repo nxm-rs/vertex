@@ -196,6 +196,12 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         let max_po = identity.spec().max_po();
         let local_overlay = identity.overlay_address();
         let num_bins = (max_po as usize) + 1;
+        // A single bin must be able to hold a full evaluation round's worth
+        // of candidates for its category, or part of the round is silently
+        // dropped while it waits for the rate-shaped drain.
+        let queue_cap = config
+            .max_neighbor_candidates
+            .max(config.max_balanced_candidates);
 
         let topology_phase = Mutex::new(PhaseTracker::new(
             config.phase_stability_window,
@@ -214,7 +220,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
             depth: AtomicU8::new(0),
             pending_depth_lower: Mutex::new(None),
             config,
-            candidate_queues: CandidateQueues::new(num_bins, 16),
+            candidate_queues: CandidateQueues::new(num_bins, queue_cap),
             dialing_counts: make_atomic_vec(num_bins),
             handshaking_counts: make_atomic_vec(num_bins),
             active_counts: make_atomic_vec(num_bins),
@@ -227,6 +233,12 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
     /// Depth-aware per-bin capacity limits.
     pub(crate) fn limits(&self) -> &DepthAwareLimits {
         &self.config.limits
+    }
+
+    /// The resolved routing configuration (build-time pacing assertions).
+    #[cfg(test)]
+    pub(crate) fn config(&self) -> &KademliaConfig {
+        &self.config
     }
 
     /// Admission decision for a peer whose handshake is currently in
@@ -956,9 +968,18 @@ impl<I: SwarmIdentity> SwarmRouting<I> for KademliaRouting<I> {
 // Methods internalized from the poll loop — called only by the background evaluator task
 // and topology behaviour within the routing module.
 impl<I: SwarmIdentity + 'static> KademliaRouting<I> {
-    /// Drain all pending candidates (called from poll loop). O(bins).
-    pub(crate) fn drain_candidates(&self) -> Vec<OverlayAddress> {
-        self.candidate_queues.drain_all()
+    /// Pop the next pending dial candidate, highest bin first (called from
+    /// the poll loop's rate-shaped drain). O(bins).
+    pub(crate) fn pop_candidate(&self) -> Option<OverlayAddress> {
+        self.candidate_queues.pop_next()
+    }
+
+    /// Return a popped candidate to its bin queue, e.g. when the dial-rate
+    /// bucket ran out before it could be dialed. Re-enters the dedup set so
+    /// the evaluator does not select it again while it waits.
+    pub(crate) fn requeue_candidate(&self, peer: OverlayAddress) {
+        let bin = self.bin_for(&peer);
+        let _ = self.candidate_queues.push(bin, peer);
     }
 
     /// Evaluate connections and enqueue candidates into per-bin queues.

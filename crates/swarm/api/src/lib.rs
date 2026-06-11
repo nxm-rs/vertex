@@ -100,7 +100,8 @@ pub use nectar_primitives::{
     SingleOwnerChunk, StandardChunkSet,
 };
 pub use vertex_swarm_primitives::{
-    OverlayAddress, Stamp, StampedChunk, StorageRadius, ValidatedChunk, ValidationError,
+    ConnectionProfile, OverlayAddress, Stamp, StampedChunk, StorageRadius, ValidatedChunk,
+    ValidationError,
 };
 
 // Re-export libp2p types used in config traits

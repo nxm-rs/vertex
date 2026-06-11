@@ -9310,6 +9310,7 @@ dependencies = [
  "vertex-net-local",
  "vertex-net-peer-registry",
  "vertex-net-peer-store",
+ "vertex-net-ratelimiter",
  "vertex-net-utils",
  "vertex-observability",
  "vertex-swarm-api",

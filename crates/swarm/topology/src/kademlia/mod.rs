@@ -18,6 +18,8 @@ pub(crate) use candidates::{
     select_neighborhood_candidates,
 };
 pub use config::KademliaConfig;
+pub(crate) use config::{DEFAULT_MAX_BALANCED_CANDIDATES, DEFAULT_MAX_NEIGHBOR_CANDIDATES};
+pub(crate) use limits::DEFAULT_BOOTSTRAP_TARGET;
 pub(crate) use limits::DepthAwareLimits;
 pub(crate) use limits::LimitsSnapshot;
 pub use phase::TopologyPhase;

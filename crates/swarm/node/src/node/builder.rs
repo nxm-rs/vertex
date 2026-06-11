@@ -139,6 +139,10 @@ impl<C: SwarmNetworkConfig> SwarmNetworkConfig for ConfigWithBootnodes<'_, C> {
     fn trust_local_peers(&self) -> bool {
         self.inner.trust_local_peers()
     }
+
+    fn connection_profile(&self) -> Option<vertex_swarm_api::ConnectionProfile> {
+        self.inner.connection_profile()
+    }
 }
 
 impl<C: SwarmPeerConfig> SwarmPeerConfig for ConfigWithBootnodes<'_, C> {

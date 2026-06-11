@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 use super::{DepthAwareLimits, KademliaConfig};
 
 /// Kademlia routing CLI arguments.
+///
+/// Pacing knobs (candidate budgets, evaluation cadence, dial rate) are not
+/// exposed here: they are bundled per connection profile and selected via
+/// `--network.connection-profile`.
 #[derive(Debug, Args, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct RoutingArgs {
@@ -23,16 +27,6 @@ pub struct RoutingArgs {
     #[arg(long = "network.routing.inbound-headroom")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inbound_headroom: Option<usize>,
-
-    /// Max pending connections for neighbor bins.
-    #[arg(long = "network.routing.max-neighbor-candidates")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_neighbor_candidates: Option<usize>,
-
-    /// Max pending connections for balanced bins.
-    #[arg(long = "network.routing.max-balanced-candidates")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_balanced_candidates: Option<usize>,
 }
 
 impl RoutingArgs {
@@ -48,17 +42,6 @@ impl RoutingArgs {
             limits = limits.with_inbound_headroom(headroom);
         }
 
-        KademliaConfig {
-            limits,
-            max_neighbor_candidates: self
-                .max_neighbor_candidates
-                .unwrap_or(defaults.max_neighbor_candidates),
-            max_balanced_candidates: self
-                .max_balanced_candidates
-                .unwrap_or(defaults.max_balanced_candidates),
-            neighborhood_stability_window: defaults.neighborhood_stability_window,
-            depth_lower_window: defaults.depth_lower_window,
-            phase_stability_window: defaults.phase_stability_window,
-        }
+        KademliaConfig { limits, ..defaults }
     }
 }

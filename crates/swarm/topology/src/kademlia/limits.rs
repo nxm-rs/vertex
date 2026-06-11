@@ -122,6 +122,17 @@ impl DepthAwareLimits {
         self
     }
 
+    /// Set the per-bin bootstrap fill target used while `depth == 0`
+    /// (production threads it from the connection profile).
+    ///
+    /// Targets are floored at saturation inside [`Self::target`], so a
+    /// bootstrap target below the saturation threshold has no effect on its
+    /// own and can never deadlock the depth climb.
+    pub(crate) fn with_bootstrap_target(mut self, target: usize) -> Self {
+        self.bootstrap_target = target;
+        self
+    }
+
     /// Set the total connected-peer dial budget, preserving all other fields.
     pub(crate) fn with_total_target(mut self, total_target: usize) -> Self {
         self.total_target = total_target;
@@ -286,18 +297,6 @@ impl DepthAwareLimits {
 
 #[cfg(test)]
 impl DepthAwareLimits {
-    /// Set the per-bin bootstrap fill target used while `depth == 0`.
-    ///
-    /// Small-scale fixtures usually pair this with [`Self::with_saturation`]
-    /// and [`Self::with_oversaturation_peers`]; targets are floored at
-    /// saturation, so a bootstrap target below the (default 8) saturation
-    /// has no effect on its own, and the trim floor and inbound ceiling
-    /// follow the (default 18) oversaturation level, not this knob.
-    pub(crate) fn with_bootstrap_target(mut self, target: usize) -> Self {
-        self.bootstrap_target = target;
-        self
-    }
-
     /// Set the per-bin oversaturation level (trim floor and minimum inbound
     /// ceiling).
     ///
@@ -308,7 +307,6 @@ impl DepthAwareLimits {
         self.oversaturation_peers = oversaturation;
         self
     }
-
     /// Expected available peers in bin (exponential estimate from uniform distribution).
     pub(crate) fn expected_available(&self, bin: Bin, depth: NeighborhoodDepth) -> usize {
         if depth == NeighborhoodDepth::ZERO || depth.contains(bin) {

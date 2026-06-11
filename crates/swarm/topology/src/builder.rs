@@ -11,7 +11,10 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::info;
 use vertex_net_dialer::{DialTracker, DialTrackerConfig};
 use vertex_net_local::LocalCapabilities;
-use vertex_swarm_api::{PeerConfigValues, SwarmBootnodeConfig, SwarmIdentity, SwarmSpec};
+use vertex_net_ratelimiter::RateLimiter;
+use vertex_swarm_api::{
+    ConnectionProfile, PeerConfigValues, SwarmBootnodeConfig, SwarmIdentity, SwarmSpec,
+};
 use vertex_swarm_net_handshake::HANDSHAKE_TIMEOUT;
 use vertex_swarm_net_identify as identify;
 use vertex_swarm_peer_manager::{PeerManager, PeerManagerConfig};
@@ -31,6 +34,7 @@ use crate::kademlia::{
 };
 use crate::metrics::TopologyMetrics;
 use crate::nat_discovery::LocalAddressManager;
+use crate::profile::PacingProfile;
 
 /// Inputs the background tasks need, captured at build time so that
 /// [`TopologyBehaviour::spawn_tasks`] can start them later without re-deriving
@@ -44,6 +48,8 @@ pub(crate) struct PendingTopologyTasks {
     local_capabilities: Arc<LocalCapabilities>,
     /// Task-side gossip channel endpoints.
     gossip_channels: GossipChannels,
+    /// Profile-resolved cadence for the background connection evaluator.
+    evaluation_interval: Duration,
 }
 
 /// Builder for [`TopologyBehaviour`] and its [`TopologyHandle`].
@@ -64,6 +70,10 @@ pub struct TopologyBehaviourBuilder<I: SwarmIdentity + Clone> {
     scoring_config: SwarmScoringConfig,
     max_per_bin: usize,
     peer_store: Option<PeerStore>,
+    /// Connection profile selected in the network configuration (CLI/config
+    /// file). Overridden by an explicit [`TopologyConfig::with_connection_profile`];
+    /// falls back to the node-type default when both are unset.
+    network_profile: Option<ConnectionProfile>,
 }
 
 impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
@@ -86,6 +96,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
                 .build(),
             max_per_bin: peer_config.max_per_bin(),
             peer_store: None,
+            network_profile: network_config.connection_profile(),
         }
     }
 
@@ -133,15 +144,39 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
 
         let lifecycle_rx = peer_manager.subscribe();
 
-        // Allocation floors and depth recomputation must use the same
-        // saturation threshold (see the DepthAwareLimits invariants), so the
-        // spec value overrides whatever the kademlia config carried.
-        let mut kademlia_config = self.config.kademlia.clone();
+        // Resolve the pacing profile: explicit topology config, then network
+        // config (CLI/config file), then the node-type default. The profile
+        // only sets numbers on existing knobs; no logic branches on it.
+        let profile = self
+            .config
+            .connection_profile
+            .or(self.network_profile)
+            .unwrap_or_else(|| ConnectionProfile::default_for(self.identity.node_type()));
+        let pacing = PacingProfile::from(profile);
+        info!(%profile, "Connection profile selected");
+
+        // Pacing knobs come from the profile; allocation floors and depth
+        // recomputation must additionally use the same saturation threshold
+        // (see the DepthAwareLimits invariants), so the spec value overrides
+        // whatever the kademlia config carried.
+        let mut kademlia_config = self
+            .config
+            .kademlia
+            .clone()
+            .with_bootstrap_target(pacing.bootstrap_target);
+        kademlia_config.max_neighbor_candidates = pacing.max_neighbor_candidates;
+        kademlia_config.max_balanced_candidates = pacing.max_balanced_candidates;
         kademlia_config.limits = kademlia_config.limits.with_saturation(usize::from(
             SwarmIdentity::spec(&self.identity).saturation_peers(),
         ));
         let routing =
             KademliaRouting::new(self.identity.clone(), kademlia_config, peer_manager.clone());
+
+        let evaluation_interval = self
+            .config
+            .dial_interval
+            .unwrap_or(pacing.evaluation_interval);
+        let dial_quota = self.config.dial_quota.unwrap_or(pacing.dial_quota);
 
         let local_capabilities = Arc::new(LocalCapabilities::new());
 
@@ -200,12 +235,16 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
             event_tx,
             pending_actions: VecDeque::new(),
             gossip,
-            dial_interval: LazyInterval::new(self.config.dial_interval),
+            dial_interval: LazyInterval::new(evaluation_interval),
+            dial_rate: RateLimiter::new(dial_quota),
+            dial_rate_timer: None,
             pending_bootnode_resolution: None,
             evaluator_handle,
             dial_tracker: DialTracker::new(DialTrackerConfig {
-                max_pending: 0,     // not used as a queue, only for direct in-flight tracking
-                max_in_flight: 256, // generous limit; routing capacity is the real gate
+                max_pending: 0, // not used as a queue, only for direct in-flight tracking
+                // Generous limit from the profile; routing capacity is the
+                // real gate on how many dials become connections.
+                max_in_flight: pacing.dial_concurrency,
                 pending_ttl: HANDSHAKE_TIMEOUT,
                 in_flight_timeout: HANDSHAKE_TIMEOUT,
                 cleanup_interval: Duration::from_secs(30),
@@ -226,6 +265,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
                 gossip_config,
                 local_capabilities,
                 gossip_channels,
+                evaluation_interval,
             }),
         };
 
@@ -258,6 +298,7 @@ impl<I: SwarmIdentity + Clone + 'static> TopologyBehaviour<I> {
             self.routing.clone(),
             &self.evaluator_handle,
             self.event_tx.clone(),
+            pending.evaluation_interval,
             &executor,
         );
 
@@ -294,6 +335,7 @@ mod tests {
     use vertex_swarm_identity::Identity;
 
     use crate::kademlia::KademliaConfig;
+    use crate::profile::PacingProfile;
 
     /// Minimal network configuration for exercising the builder.
     struct TestConfig {
@@ -301,6 +343,7 @@ mod tests {
         routing: KademliaConfig,
         bootnodes: Vec<Multiaddr>,
         empty_addrs: Vec<Multiaddr>,
+        connection_profile: Option<ConnectionProfile>,
     }
 
     impl TestConfig {
@@ -310,6 +353,7 @@ mod tests {
                 routing: KademliaConfig::default(),
                 bootnodes: vec!["/ip4/127.0.0.1/tcp/1634".parse().expect("valid multiaddr")],
                 empty_addrs: Vec::new(),
+                connection_profile: None,
             }
         }
     }
@@ -329,6 +373,9 @@ mod tests {
         }
         fn idle_timeout(&self) -> Duration {
             Duration::from_secs(60)
+        }
+        fn connection_profile(&self) -> Option<ConnectionProfile> {
+            self.connection_profile
         }
     }
 
@@ -401,5 +448,123 @@ mod tests {
             behaviour.spawn_tasks(),
             Err(TopologyError::TasksAlreadySpawned)
         ));
+    }
+
+    fn identity_of(node_type: SwarmNodeType) -> Identity {
+        Identity::random(vertex_swarm_spec::init_testnet(), node_type)
+    }
+
+    /// Assert that a built behaviour carries the pacing numbers of `profile`.
+    fn assert_pacing(behaviour: &TopologyBehaviour<Identity>, profile: ConnectionProfile) {
+        let pacing = PacingProfile::from(profile);
+        assert_eq!(behaviour.dial_interval.period(), pacing.evaluation_interval);
+        let config = behaviour.routing.config();
+        assert_eq!(
+            config.max_neighbor_candidates,
+            pacing.max_neighbor_candidates
+        );
+        assert_eq!(
+            config.max_balanced_candidates,
+            pacing.max_balanced_candidates
+        );
+    }
+
+    /// Without an explicit selection, the profile follows the node type.
+    #[test]
+    fn profile_defaults_by_node_type() {
+        for (node_type, expected) in [
+            (SwarmNodeType::Client, ConnectionProfile::Aggressive),
+            (SwarmNodeType::Storer, ConnectionProfile::Balanced),
+            (SwarmNodeType::Bootnode, ConnectionProfile::Balanced),
+        ] {
+            let (behaviour, _handle) =
+                TopologyBehaviourBuilder::new(identity_of(node_type), &TestConfig::new())
+                    .try_build()
+                    .expect("build without runtime");
+            assert_pacing(&behaviour, expected);
+        }
+    }
+
+    /// The network configuration's profile choice overrides the node-type
+    /// default.
+    #[test]
+    fn network_config_profile_overrides_node_type_default() {
+        let config = TestConfig {
+            connection_profile: Some(ConnectionProfile::Conservative),
+            ..TestConfig::new()
+        };
+        let (behaviour, _handle) =
+            TopologyBehaviourBuilder::new(identity_of(SwarmNodeType::Client), &config)
+                .try_build()
+                .expect("build without runtime");
+        assert_pacing(&behaviour, ConnectionProfile::Conservative);
+    }
+
+    /// An explicit topology config selection beats the network configuration.
+    #[test]
+    fn topology_config_profile_overrides_network_config() {
+        let config = TestConfig {
+            connection_profile: Some(ConnectionProfile::Conservative),
+            ..TestConfig::new()
+        };
+        let (behaviour, _handle) =
+            TopologyBehaviourBuilder::new(identity_of(SwarmNodeType::Client), &config)
+                .with_config(
+                    TopologyConfig::default().with_connection_profile(ConnectionProfile::Balanced),
+                )
+                .try_build()
+                .expect("build without runtime");
+        assert_pacing(&behaviour, ConnectionProfile::Balanced);
+    }
+
+    /// A pinned dial interval wins over the profile's evaluation interval
+    /// while the rest of the pacing still comes from the profile.
+    #[test]
+    fn explicit_dial_interval_overrides_profile() {
+        let (behaviour, _handle) =
+            TopologyBehaviourBuilder::new(identity_of(SwarmNodeType::Storer), &TestConfig::new())
+                .with_config(TopologyConfig::default().with_dial_interval(Duration::from_secs(7)))
+                .try_build()
+                .expect("build without runtime");
+
+        assert_eq!(behaviour.dial_interval.period(), Duration::from_secs(7));
+        let pacing = PacingProfile::from(ConnectionProfile::Balanced);
+        assert_eq!(
+            behaviour.routing.config().max_neighbor_candidates,
+            pacing.max_neighbor_candidates
+        );
+    }
+
+    /// The profile's bootstrap fill level flows into the depth-aware limits:
+    /// the depth-0 target is the bootstrap target (all profile values exceed
+    /// the testnet saturation floor).
+    #[test]
+    fn bootstrap_target_flows_from_profile() {
+        use vertex_swarm_primitives::{Bin, NeighborhoodDepth};
+
+        for profile in [
+            ConnectionProfile::Aggressive,
+            ConnectionProfile::Balanced,
+            ConnectionProfile::Conservative,
+        ] {
+            let (behaviour, _handle) = TopologyBehaviourBuilder::new(
+                identity_of(SwarmNodeType::Client),
+                &TestConfig::new(),
+            )
+            .with_config(TopologyConfig::default().with_connection_profile(profile))
+            .try_build()
+            .expect("build without runtime");
+
+            let pacing = PacingProfile::from(profile);
+            let saturation = behaviour.routing.limits().saturation();
+            let bin = Bin::new(0).expect("valid bin");
+            assert_eq!(
+                behaviour
+                    .routing
+                    .limits()
+                    .target(bin, NeighborhoodDepth::ZERO),
+                pacing.bootstrap_target.max(saturation),
+            );
+        }
     }
 }
