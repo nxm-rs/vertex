@@ -29,7 +29,7 @@ use vertex_swarm_net_hive::MAX_BATCH_SIZE;
 use vertex_swarm_net_identify as identify;
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_manager::{PeerManager, PeerSnapshot, TrustLevel};
-use vertex_swarm_primitives::{Bin, OverlayAddress, all_bins};
+use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress, all_bins};
 
 use crate::DialReason;
 use vertex_net_dialer::DialTracker;
@@ -41,7 +41,7 @@ use crate::builder::PendingTopologyTasks;
 use crate::composed::ProtocolBehaviours;
 use crate::events::TopologyEvent;
 use crate::extract_peer_id;
-use crate::gossip::{GossipConfig, GossipHandle};
+use crate::gossip::{GossipConfig, GossipHandle, GossipInput};
 use crate::kademlia::{KademliaConfig, KademliaRouting, RoutingEvaluatorHandle, SwarmRouting};
 use crate::metrics::{TopologyMetrics, po_label};
 use crate::nat_discovery::LocalAddressManager;
@@ -406,6 +406,45 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
         for swarm_peer in dialable {
             self.dial(DialTarget::Known(swarm_peer), DialReason::Discovery);
+        }
+    }
+
+    /// Emit the consumer-facing side effects of a published depth change:
+    /// refreshed bin-target gauges, the gossip depth broadcast, the
+    /// [`TopologyEvent::DepthChanged`] event (which drives the readiness
+    /// snapshots and metrics), and bin trimming on a raise.
+    ///
+    /// All of these observe the published (hysteresis-filtered) depth; a
+    /// lowering held back by the stability window emits nothing until it is
+    /// actually published.
+    pub(crate) fn on_depth_changed(
+        &mut self,
+        old_depth: NeighborhoodDepth,
+        new_depth: NeighborhoodDepth,
+    ) {
+        self.push_bin_targets();
+        self.gossip.send(GossipInput::DepthChanged(new_depth.get()));
+        self.emit_event(TopologyEvent::DepthChanged {
+            old_depth: old_depth.get(),
+            new_depth: new_depth.get(),
+        });
+        if new_depth > old_depth {
+            self.trim_overpopulated_bins();
+        }
+    }
+
+    /// Re-run the depth hysteresis and emit the depth-change side effects
+    /// if the published depth moved.
+    ///
+    /// Called from the periodic poll tick so a pending depth lowering
+    /// publishes once its stability window expires even when no further
+    /// connection events arrive.
+    pub(crate) fn refresh_published_depth(&mut self) {
+        let old_depth = self.routing.depth();
+        self.routing.refresh_depth();
+        let new_depth = self.routing.depth();
+        if new_depth != old_depth {
+            self.on_depth_changed(old_depth, new_depth);
         }
     }
 
@@ -778,6 +817,9 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
         // Check for periodic dial candidate evaluation
         if self.dial_interval.poll_tick(cx).is_ready() {
             self.cleanup_stale_pending();
+            // Publish a pending depth lowering whose stability window has
+            // expired; connection events are the other publication path.
+            self.refresh_published_depth();
             self.evaluator_handle.trigger_evaluation();
         }
 

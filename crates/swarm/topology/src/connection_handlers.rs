@@ -192,15 +192,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         });
 
         if new_depth != old_depth {
-            self.push_bin_targets();
-            self.gossip.send(GossipInput::DepthChanged(new_depth.get()));
-            self.emit_event(TopologyEvent::DepthChanged {
-                old_depth: old_depth.get(),
-                new_depth: new_depth.get(),
-            });
-            if new_depth > old_depth {
-                self.trim_overpopulated_bins();
-            }
+            self.on_depth_changed(old_depth, new_depth);
         }
     }
 
