@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use libp2p::PeerId;
-use std::time::Instant;
 
 use alloy_primitives::{B256, Signature};
 use futures::future::BoxFuture;
@@ -18,6 +17,7 @@ use vertex_swarm_net_headers::{
 use vertex_swarm_peer::{SwarmAddress, SwarmPeer, Timestamp};
 use vertex_swarm_primitives::{NetworkId, Nonce};
 use vertex_tasks::TaskExecutor;
+use vertex_util_runtime::time::Instant;
 
 use crate::PROTOCOL_NAME;
 use crate::cache::PeerCache;

@@ -16,8 +16,11 @@ workspace = true
 tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 futures-util = { workspace = true, features = ["std"] }
 
-# metrics
+# internal crates
 vertex-metrics = { workspace = true }
+vertex-util-runtime = { workspace = true }
+
+# metrics
 metrics.workspace = true
 
 # misc

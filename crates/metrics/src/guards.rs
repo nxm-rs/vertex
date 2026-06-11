@@ -1,9 +1,9 @@
 //! Drop-based RAII guards for automatic metric updates.
 
 use core::fmt;
-use std::time::Instant;
 
 use metrics::{Counter, Gauge, Histogram};
+use vertex_util_runtime::time::Instant;
 
 /// Increments a counter when dropped.
 pub struct CounterGuard(Counter);

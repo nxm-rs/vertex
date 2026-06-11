@@ -12,6 +12,9 @@ description = "Lightweight metric primitives for Vertex: RAII guards, lazy macro
 workspace = true
 
 [dependencies]
+# internal crates
+vertex-util-runtime = { workspace = true }
+
 # metrics
 metrics = { workspace = true }
 

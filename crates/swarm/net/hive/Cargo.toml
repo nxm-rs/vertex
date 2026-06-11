@@ -23,6 +23,7 @@ vertex-swarm-api.workspace = true
 vertex-net-utils.workspace = true
 vertex-swarm-spec.workspace = true
 vertex-tasks.workspace = true
+vertex-util-runtime.workspace = true
 
 ## async
 futures.workspace = true

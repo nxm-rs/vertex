@@ -20,6 +20,7 @@ vertex-swarm-net-proto.workspace = true
 vertex-swarm-peer.workspace = true
 vertex-net-utils.workspace = true
 vertex-swarm-spec.workspace = true
+vertex-util-runtime.workspace = true
 
 ## alloy
 alloy-primitives.workspace = true

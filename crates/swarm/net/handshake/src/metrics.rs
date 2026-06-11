@@ -1,13 +1,12 @@
 //! Metrics and tracing for the handshake protocol.
 
-use std::time::Instant;
-
 use metrics::{counter, gauge, histogram};
 use vertex_observability::{
     DURATION_FINE, DURATION_SECONDS, HistogramBucketConfig, LabelValue, StreamGuard,
     labels::{direction, outcome},
 };
 use vertex_swarm_peer::SwarmNodeType;
+use vertex_util_runtime::time::Instant;
 
 use crate::{HandshakeError, HandshakeInfo};
 
