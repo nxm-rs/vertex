@@ -19,16 +19,18 @@ use futures_util::{
     Future, FutureExt, TryFutureExt,
     future::{BoxFuture, Either, select},
 };
-use tokio::{
-    runtime::Handle,
-    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
-    task::JoinHandle,
-};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tracing::{debug, error, info, warn};
 use vertex_metrics::OperationGuard;
 
+#[cfg(not(target_arch = "wasm32"))]
+use tokio::runtime::Handle;
+
 pub mod metrics;
 pub mod shutdown;
+mod task_handle;
+
+pub use task_handle::TaskHandle;
 
 use crate::metrics::TaskExecutorMetrics;
 use crate::shutdown::GracefulShutdownCounter;
@@ -100,21 +102,20 @@ static GLOBAL_EXECUTOR: OnceLock<TaskExecutor> = OnceLock::new();
 #[auto_impl::auto_impl(&, Arc)]
 pub trait TaskSpawner: Send + Sync + Unpin + std::fmt::Debug + DynClone {
     /// Spawns the task onto the runtime.
-    /// See also [`Handle::spawn`].
-    fn spawn(&self, fut: BoxFuture<'static, ()>) -> JoinHandle<()>;
+    fn spawn(&self, fut: BoxFuture<'static, ()>) -> TaskHandle;
 
     /// This spawns a critical task onto the runtime.
-    fn spawn_critical(&self, name: &'static str, fut: BoxFuture<'static, ()>) -> JoinHandle<()>;
+    fn spawn_critical(&self, name: &'static str, fut: BoxFuture<'static, ()>) -> TaskHandle;
 
     /// Spawns a blocking task onto the runtime.
-    fn spawn_blocking(&self, name: &'static str, fut: BoxFuture<'static, ()>) -> JoinHandle<()>;
+    fn spawn_blocking(&self, name: &'static str, fut: BoxFuture<'static, ()>) -> TaskHandle;
 
     /// This spawns a critical blocking task onto the runtime.
     fn spawn_critical_blocking(
         &self,
         name: &'static str,
         fut: BoxFuture<'static, ()>,
-    ) -> JoinHandle<()>;
+    ) -> TaskHandle;
 }
 
 dyn_clone::clone_trait_object!(TaskSpawner);
@@ -131,16 +132,17 @@ impl TokioTaskExecutor {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl TaskSpawner for TokioTaskExecutor {
-    fn spawn(&self, fut: BoxFuture<'static, ()>) -> JoinHandle<()> {
+    fn spawn(&self, fut: BoxFuture<'static, ()>) -> TaskHandle {
         tokio::task::spawn(fut)
     }
 
-    fn spawn_critical(&self, _name: &'static str, fut: BoxFuture<'static, ()>) -> JoinHandle<()> {
+    fn spawn_critical(&self, _name: &'static str, fut: BoxFuture<'static, ()>) -> TaskHandle {
         tokio::task::spawn(fut)
     }
 
-    fn spawn_blocking(&self, _name: &'static str, fut: BoxFuture<'static, ()>) -> JoinHandle<()> {
+    fn spawn_blocking(&self, _name: &'static str, fut: BoxFuture<'static, ()>) -> TaskHandle {
         tokio::task::spawn_blocking(move || tokio::runtime::Handle::current().block_on(fut))
     }
 
@@ -148,9 +150,50 @@ impl TaskSpawner for TokioTaskExecutor {
         &self,
         _name: &'static str,
         fut: BoxFuture<'static, ()>,
-    ) -> JoinHandle<()> {
+    ) -> TaskHandle {
         tokio::task::spawn_blocking(move || tokio::runtime::Handle::current().block_on(fut))
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl TaskSpawner for TokioTaskExecutor {
+    fn spawn(&self, fut: BoxFuture<'static, ()>) -> TaskHandle {
+        spawn_local_abortable(fut)
+    }
+
+    fn spawn_critical(&self, _name: &'static str, fut: BoxFuture<'static, ()>) -> TaskHandle {
+        spawn_local_abortable(fut)
+    }
+
+    fn spawn_blocking(&self, _name: &'static str, fut: BoxFuture<'static, ()>) -> TaskHandle {
+        spawn_local_abortable(fut)
+    }
+
+    fn spawn_critical_blocking(
+        &self,
+        _name: &'static str,
+        fut: BoxFuture<'static, ()>,
+    ) -> TaskHandle {
+        spawn_local_abortable(fut)
+    }
+}
+
+/// Spawns `fut` onto the browser event loop and returns an abortable [`TaskHandle`].
+///
+/// The future is wrapped in a [`futures_util::future::Abortable`] so the returned handle can
+/// cancel it. Both default and blocking task kinds map here, since wasm has no separate blocking
+/// pool.
+#[cfg(target_arch = "wasm32")]
+fn spawn_local_abortable<F>(fut: F) -> TaskHandle
+where
+    F: Future<Output = ()> + 'static,
+{
+    let (abort_handle, abort_registration) = futures_util::future::AbortHandle::new_pair();
+    let abortable = futures_util::future::Abortable::new(fut, abort_registration);
+    wasm_bindgen_futures::spawn_local(async move {
+        let _ = abortable.await;
+    });
+    TaskHandle::new(abort_handle)
 }
 
 /// Many vertex components require to spawn tasks for long-running jobs. For example network
@@ -169,6 +212,9 @@ impl TaskSpawner for TokioTaskExecutor {
 #[must_use = "TaskManager must be polled to monitor critical tasks"]
 pub struct TaskManager {
     /// Handle to the tokio runtime this task manager is associated with.
+    ///
+    /// Native only: wasm spawns onto the browser event loop and has no runtime handle.
+    #[cfg(not(target_arch = "wasm32"))]
     handle: Handle,
     /// Sender half for sending task events to this type
     task_events_tx: UnboundedSender<TaskEvent>,
@@ -194,14 +240,25 @@ impl TaskManager {
     /// # Panics
     ///
     /// This will panic if called outside the context of a Tokio runtime.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn current() -> Self {
         let handle = Handle::current();
         Self::new(handle)
     }
 
+    /// Returns a __new__ [`TaskManager`] for the wasm event loop.
+    ///
+    /// Wasm has no tokio runtime handle; tasks spawn onto the browser event loop via
+    /// [`wasm_bindgen_futures::spawn_local`].
+    #[cfg(target_arch = "wasm32")]
+    pub fn current() -> Self {
+        Self::new()
+    }
+
     /// Create a new instance connected to the given handle's tokio runtime.
     ///
     /// This also sets the global [`TaskExecutor`].
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(handle: Handle) -> Self {
         let (task_events_tx, task_events_rx) = unbounded_channel();
         let (signal, on_shutdown) = signal();
@@ -222,10 +279,36 @@ impl TaskManager {
         manager
     }
 
+    /// Create a new instance that spawns onto the wasm event loop.
+    ///
+    /// This also sets the global [`TaskExecutor`]. Unlike the native constructor there is no
+    /// runtime handle to pass; tasks run via [`wasm_bindgen_futures::spawn_local`].
+    #[cfg(target_arch = "wasm32")]
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        let (task_events_tx, task_events_rx) = unbounded_channel();
+        let (signal, on_shutdown) = signal();
+        let manager = Self {
+            task_events_tx,
+            task_events_rx,
+            signal: Some(signal),
+            on_shutdown,
+            graceful_tasks: Arc::new(GracefulShutdownCounter::new()),
+        };
+
+        let _ = GLOBAL_EXECUTOR
+            .set(manager.executor())
+            .inspect_err(|_| warn!("Global executor already set; TaskExecutor::current() will return the first instance"));
+
+        info!("TaskManager initialized");
+        manager
+    }
+
     /// Returns a new [`TaskExecutor`] that can spawn new tasks onto the tokio runtime this type is
     /// connected to.
     pub fn executor(&self) -> TaskExecutor {
         TaskExecutor {
+            #[cfg(not(target_arch = "wasm32"))]
             handle: self.handle.clone(),
             on_shutdown: self.on_shutdown.clone(),
             task_events_tx: self.task_events_tx.clone(),
@@ -329,6 +412,9 @@ enum TaskEvent {
 #[derive(Debug, Clone)]
 pub struct TaskExecutor {
     /// Handle to the tokio runtime this task manager is associated with.
+    ///
+    /// Native only: wasm spawns onto the browser event loop and has no runtime handle.
+    #[cfg(not(target_arch = "wasm32"))]
     handle: Handle,
     /// Receiver of the shutdown signal.
     on_shutdown: Shutdown,
@@ -363,6 +449,9 @@ impl TaskExecutor {
     }
 
     /// Returns the [Handle] to the tokio runtime.
+    ///
+    /// Native only: wasm spawns onto the browser event loop and exposes no runtime handle.
+    #[cfg(not(target_arch = "wasm32"))]
     pub const fn handle(&self) -> &Handle {
         &self.handle
     }
@@ -380,8 +469,11 @@ impl TaskExecutor {
         )
     }
 
-    /// Spawns a future on the tokio runtime depending on the [`TaskKind`]
-    fn spawn_on_rt<F>(&self, fut: F, task_kind: TaskKind) -> JoinHandle<()>
+    /// Spawns a future on the tokio runtime depending on the [`TaskKind`].
+    ///
+    /// This is the single spawn choke point for all public spawners on native targets.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn spawn_on_rt<F>(&self, fut: F, task_kind: TaskKind) -> TaskHandle
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -394,6 +486,19 @@ impl TaskExecutor {
         }
     }
 
+    /// Spawns a future onto the wasm event loop.
+    ///
+    /// This is the single spawn choke point for all public spawners on wasm. There is no separate
+    /// blocking pool in the browser, so both [`TaskKind::Default`] and [`TaskKind::Blocking`] map
+    /// to the same non-thread [`wasm_bindgen_futures::spawn_local`] spawn.
+    #[cfg(target_arch = "wasm32")]
+    fn spawn_on_rt<F>(&self, fut: F, _task_kind: TaskKind) -> TaskHandle
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        spawn_local_abortable(fut)
+    }
+
     /// Single implementation for all regular (non-critical) tasks.
     ///
     /// Takes a pre-composed future. Callers handle shutdown composition before calling this.
@@ -403,7 +508,7 @@ impl TaskExecutor {
         task_kind: TaskKind,
         task_name: &'static str,
         graceful: bool,
-    ) -> JoinHandle<()>
+    ) -> TaskHandle
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -442,7 +547,7 @@ impl TaskExecutor {
         fut: F,
         task_kind: TaskKind,
         graceful: bool,
-    ) -> JoinHandle<()>
+    ) -> TaskHandle
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -483,7 +588,7 @@ impl TaskExecutor {
     /// The given future resolves as soon as the [Shutdown] signal is received.
     ///
     /// See also [`Handle::spawn`].
-    pub fn spawn<F>(&self, fut: F) -> JoinHandle<()>
+    pub fn spawn<F>(&self, fut: F) -> TaskHandle
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -499,7 +604,7 @@ impl TaskExecutor {
     /// The given future resolves as soon as the [Shutdown] signal is received.
     ///
     /// See also [`Handle::spawn_blocking`].
-    pub fn spawn_blocking<F>(&self, name: &'static str, fut: F) -> JoinHandle<()>
+    pub fn spawn_blocking<F>(&self, name: &'static str, fut: F) -> TaskHandle
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -515,7 +620,7 @@ impl TaskExecutor {
     /// The given future resolves as soon as the [Shutdown] signal is received.
     ///
     /// If this task panics, the [`TaskManager`] is notified.
-    pub fn spawn_critical<F>(&self, name: &'static str, fut: F) -> JoinHandle<()>
+    pub fn spawn_critical<F>(&self, name: &'static str, fut: F) -> TaskHandle
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -539,7 +644,7 @@ impl TaskExecutor {
     /// The given future resolves as soon as the [Shutdown] signal is received.
     ///
     /// If this task panics, the [`TaskManager`] is notified.
-    pub fn spawn_critical_blocking<F>(&self, name: &'static str, fut: F) -> JoinHandle<()>
+    pub fn spawn_critical_blocking<F>(&self, name: &'static str, fut: F) -> TaskHandle
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -575,7 +680,7 @@ impl TaskExecutor {
         &self,
         name: &'static str,
         f: impl FnOnce(GracefulShutdown) -> F,
-    ) -> JoinHandle<()>
+    ) -> TaskHandle
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -607,7 +712,7 @@ impl TaskExecutor {
         &self,
         name: &'static str,
         f: impl FnOnce(GracefulShutdown) -> F,
-    ) -> JoinHandle<()>
+    ) -> TaskHandle
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -621,11 +726,7 @@ impl TaskExecutor {
     /// This is the preferred way to spawn long-running services that implement
     /// [`SpawnableTask`]. The service receives a [`GracefulShutdown`] signal and
     /// is monitored for panics.
-    pub fn spawn_service<S: SpawnableTask>(
-        &self,
-        name: &'static str,
-        service: S,
-    ) -> JoinHandle<()> {
+    pub fn spawn_service<S: SpawnableTask>(&self, name: &'static str, service: S) -> TaskHandle {
         self.spawn_critical_with_graceful_shutdown_signal(name, |shutdown| {
             service.into_task(shutdown)
         })
@@ -687,15 +788,15 @@ impl TaskExecutor {
 }
 
 impl TaskSpawner for TaskExecutor {
-    fn spawn(&self, fut: BoxFuture<'static, ()>) -> JoinHandle<()> {
+    fn spawn(&self, fut: BoxFuture<'static, ()>) -> TaskHandle {
         Self::spawn(self, fut)
     }
 
-    fn spawn_critical(&self, name: &'static str, fut: BoxFuture<'static, ()>) -> JoinHandle<()> {
+    fn spawn_critical(&self, name: &'static str, fut: BoxFuture<'static, ()>) -> TaskHandle {
         Self::spawn_critical(self, name, fut)
     }
 
-    fn spawn_blocking(&self, name: &'static str, fut: BoxFuture<'static, ()>) -> JoinHandle<()> {
+    fn spawn_blocking(&self, name: &'static str, fut: BoxFuture<'static, ()>) -> TaskHandle {
         Self::spawn_blocking(self, name, fut)
     }
 
@@ -703,7 +804,7 @@ impl TaskSpawner for TaskExecutor {
         &self,
         name: &'static str,
         fut: BoxFuture<'static, ()>,
-    ) -> JoinHandle<()> {
+    ) -> TaskHandle {
         Self::spawn_critical_blocking(self, name, fut)
     }
 }

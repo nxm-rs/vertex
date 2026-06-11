@@ -44,7 +44,7 @@ Native-only (must NOT pull into the wasm cone):
 
 The grey zone (must be cfg-gated):
 
-- `vertex-tasks`: the wasm client uses `wasm-bindgen-futures::spawn_local`, not multi-thread tokio. Gate the executor type.
+- `vertex-tasks`: the wasm client uses `wasm-bindgen-futures::spawn_local`, not multi-thread tokio. Done: the spawn choke point (`TaskExecutor::spawn_on_rt`) and the `TaskHandle` return type are cfg-gated (Pattern A). Native `TaskHandle` is `tokio::task::JoinHandle<()>` so the native API is byte-identical; the wasm sibling is an abortable no-op wrapper over a `futures_util::future::AbortHandle`, and both Default and Blocking task kinds map to the same `spawn_local`. The `wasm` job in CI builds `-p vertex-tasks`.
 - `vertex-observability`: tracing-subscriber works in wasm via `tracing-wasm`; Prometheus HTTP server does not. Gate the exporter and HTTP server modules.
 - Anything pulling `tokio` features: under wasm we need `rt` only, no `rt-multi-thread`, no `net`, no `signal`, no `fs`.
 - `getrandom`: three major lines coexist because different transitive deps pin different versions. The 0.3 and 0.4 lines select their browser backend through the `getrandom_backend="wasm_js"` cfg in `.cargo/config.toml`; the 0.2 line (reached transitively through `k256`/`rand_core 0.6` and the libp2p/TLS stack) selects its backend through the `js` cargo feature instead. Two crates carry hand-written `cfg(target_arch = "wasm32")` getrandom feature tables for that 0.2 line: `vertex-swarm-primitives` (the alloy-primitives `getrandom` feature plus the 0.4 `wasm_js` backend, required by alloy nonce generation) and `vertex-swarm-bandwidth-chequebook` (the 0.2 `js` feature, required by the k256 secp256k1 backend). Both are load-bearing transitive build requirements; removing either breaks the wasm build with a getrandom no-backend error. Application randomness goes through `vertex_util_runtime::rand`, not a direct getrandom dependency.
@@ -91,7 +91,7 @@ Audit `Cargo.toml` entries for `tokio` regularly. The default-features-on form (
 ### Plan to a working client-in-wasm
 
 1. Remove or rewrite `bin/swarm-wasm-lib` and `bin/wasm-playground` so they reflect the current crate graph (or delete them with a follow-up to re-add when ready).
-2. Add a `wasm32-unknown-unknown` build step to CI for the wasm-cone crates listed above. Done for the peer stack (the `wasm` job builds `vertex-swarm-peer-score` and `vertex-swarm-peer-manager`, which pulls the whole peer cone); extend the `-p` list as more cone crates become buildable.
+2. Add a `wasm32-unknown-unknown` build step to CI for the wasm-cone crates listed above. Done for the peer stack (the `wasm` job builds `vertex-swarm-peer-score` and `vertex-swarm-peer-manager`, which pulls the whole peer cone) and for `vertex-tasks`; extend the `-p` list as more cone crates become buildable.
 3. Audit tokio features in every wasm-cone crate; trim to the minimum.
 4. Add an `IndexedDb` `Database` backend (likely under `crates/storage/indexeddb`) gated on `cfg(target_arch = "wasm32")`.
 5. Add `libp2p-websocket-websys` to `crates/swarm/node`'s client variant under wasm cfg.

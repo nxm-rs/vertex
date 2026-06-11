@@ -9355,6 +9355,7 @@ dependencies = [
  "tracing",
  "vertex-metrics",
  "vertex-util-runtime",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

@@ -13,7 +13,6 @@ workspace = true
 
 [dependencies]
 # async
-tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 futures-util = { workspace = true, features = ["std"] }
 
 # internal crates
@@ -29,6 +28,16 @@ parking_lot.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 dyn-clone.workspace = true
+
+# Native spawns onto the multi-thread tokio runtime via a runtime handle.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
+
+# Wasm spawns onto the browser event loop via wasm-bindgen-futures. Single-thread
+# tokio only: no rt-multi-thread, no net, no signal.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+wasm-bindgen-futures = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "time", "macros"] }

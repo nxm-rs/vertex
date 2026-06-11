@@ -296,6 +296,7 @@ prost = "0.13"
 ## async
 futures = "0.3"
 futures-util = "0.3"
+wasm-bindgen-futures = "0.4"
 
 ## atomics
 portable-atomic = { version = "1", features = ["float", "serde"] }
