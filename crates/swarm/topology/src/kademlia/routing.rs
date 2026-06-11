@@ -25,7 +25,7 @@ use vertex_swarm_primitives::{
     Bin, NeighborhoodDepth, OverlayAddress, ProximityOrder, SwarmNodeType, all_bins, balanced_bins,
     neighborhood_bins,
 };
-use web_time::Instant as PhaseInstant;
+use vertex_util_runtime::time::Instant as PhaseInstant;
 
 /// Connection phase for capacity tracking.
 #[derive(PartialEq, Eq)]
