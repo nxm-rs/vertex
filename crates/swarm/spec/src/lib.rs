@@ -79,7 +79,7 @@ pub use nectar_primitives::{ChunkTypeSet, StandardChunkSet};
 pub use parser::DefaultSpecParser;
 #[cfg(feature = "std")]
 pub use spec::{DEV, MAINNET, TESTNET};
-pub use spec::{Spec, SpecBuilder};
+pub use spec::{Spec, SpecBuilder, mainnet_wss_bootnodes};
 pub use token::Token;
 pub use vertex_swarm_api::{
     StaticSwarmSpecProvider, SwarmSpec, SwarmSpecParser, SwarmSpecProvider, SwarmToken,

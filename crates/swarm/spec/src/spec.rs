@@ -338,14 +338,70 @@ impl From<&Spec> for SpecBuilder {
     }
 }
 
-/// Mainnet bootnodes using dnsaddr for dynamic resolution.
+/// Mainnet bootnodes for native targets, using dnsaddr for dynamic resolution.
 ///
 /// The `/dnsaddr/mainnet.ethswarm.org` multiaddr is resolved at runtime via DNS TXT
-/// records, allowing the Swarm team to update bootnode IPs without client changes.
-/// Resolution should happen in the networking layer.
-#[cfg(feature = "std")]
+/// records, allowing bootnode IPs to change without client updates. Resolution
+/// happens in the networking layer.
+///
+/// Browsers cannot perform raw DNS TXT lookups, so the wasm build substitutes an
+/// embedded snapshot via [`mainnet_wss_bootnodes`]. See that function for details.
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 fn mainnet_bootnodes() -> Vec<String> {
     vec!["/dnsaddr/mainnet.ethswarm.org".to_string()]
+}
+
+/// Mainnet bootnodes for wasm targets, sourced from the embedded wss snapshot.
+///
+/// A browser has no raw DNS TXT capability, so the dnsaddr tree under
+/// `_dnsaddr.mainnet.ethswarm.org` cannot be resolved at runtime. This path returns
+/// the embedded browser-dialable snapshot from [`mainnet_wss_bootnodes`] instead.
+#[cfg(all(feature = "std", target_arch = "wasm32"))]
+fn mainnet_bootnodes() -> Vec<String> {
+    mainnet_wss_bootnodes()
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Browser-dialable mainnet bootnode multiaddrs as a v1 embedded snapshot.
+///
+/// Each entry is a secure WebSocket (`/tls/.../ws`) multiaddr terminating in a
+/// `/p2p/` peer id, the form a browser can dial directly. These are the wss leaves
+/// of the live `_dnsaddr.mainnet.ethswarm.org` tree, captured because a browser
+/// cannot resolve DNS TXT records at runtime to discover them itself. The native
+/// build keeps using `/dnsaddr/mainnet.ethswarm.org` and never reads this snapshot.
+///
+/// This is a v1 snapshot and will drift as operators rotate bootnodes. The future
+/// refinement is dnsaddr resolution over DNS-over-HTTPS so the browser can rebuild
+/// this set at runtime; until that lands, refresh the snapshot manually with the
+/// command documented below.
+///
+/// # Refresh
+///
+/// Re-resolve the live dnsaddr tree and extract the wss (`/ws/`) leaves, excluding
+/// the plain tcp/1634 siblings:
+///
+/// ```sh
+/// for region in apac emea amer; do
+///   for city in $(host -t TXT _dnsaddr.$region.mainnet.ethswarm.org \
+///     | grep -o '/dnsaddr/[a-z]*' | cut -d/ -f3); do
+///     host -t TXT _dnsaddr.$city.mainnet.ethswarm.org
+///   done
+/// done | grep -o 'dnsaddr=/ip4/[^"]*/ws/p2p/[A-Za-z0-9]*' \
+///   | sed 's#^dnsaddr=##' | sort -u
+/// ```
+pub const fn mainnet_wss_bootnodes() -> &'static [&'static str] {
+    &[
+        "/ip4/5.78.94.214/tcp/1635/tls/sni/5-78-94-214.k2k4r8pobzefjwtmnob5hb4aw8idrmzh8epsvcjo007e79s2hf8073z3.libp2p.direct/ws/p2p/QmfEugihe2Pm78YomGupdxSt46Uxgg4DLpjkzgzzeouiKg",
+        "/ip4/135.181.84.53/tcp/1635/tls/sni/135-181-84-53.k2k4r8lhx184arxdov09iapfz4owvt508bfm0d6uwz8e885qawyr02ek.libp2p.direct/ws/p2p/QmTxX73q8dDiVbmXU7GqMNwG3gWmjSFECuMoCsTW4xp6CK",
+        "/ip4/139.84.229.70/tcp/1635/tls/sni/139-84-229-70.k2k4r8km3ne7jbr6cny32ahqkpv126i45h2vk60m8d85ehqbbekpbjs2.libp2p.direct/ws/p2p/QmRa6rSrUWJ7s68MNmV94bo2KAa9pYcp6YbFLMHZ3r7n2M",
+        "/ip4/159.223.6.181/tcp/1635/tls/sni/159-223-6-181.k2k4r8jpsxkovxvl3sf2u8bkg59z4mxmgfhs9r7ir8mcwduokkrcmku5.libp2p.direct/ws/p2p/QmP9b7MxjyEfrJrch5jUThmuFaGzvUPpWEJewCpx5Ln6i8",
+        "/ip4/170.64.184.25/tcp/1635/tls/sni/170-64-184-25.k2k4r8ph06jd5i74egz22ovhwa18ynknrm51cebnfowfqw1onzpo4juu.libp2p.direct/ws/p2p/Qmeh2e7U2FWrSooyrjWjnNKGceJWbRxLLx8Ppy5CimzsGH",
+        "/ip4/172.104.43.205/tcp/1635/tls/sni/172-104-43-205.k2k4r8pilafrzmfmcuk85niui1oe8zktpdrdh83ybbo07etczux6q2ol.libp2p.direct/ws/p2p/QmeovveLJmgyfjiA9mJnvFTawHyisuJMCYicJffdWdxNmr",
+        "/ip4/172.105.9.172/tcp/1635/tls/sni/172-105-9-172.k2k4r8kc7zu3c3zfz0cikt64hl2psn0hy0fvlx3qg0jdoh52vztmvree.libp2p.direct/ws/p2p/QmQq7zXgZ2Up5NF1tsCP2odgxzU4N3Evx2trkmFYnHm27w",
+        "/ip4/216.238.102.247/tcp/1635/tls/sni/216-238-102-247.k2k4r8k8ccrb8q7ccsm6qfhq7s8g9ycdc7fe4abv8fnjs56mshu4ri7x.libp2p.direct/ws/p2p/QmQYFDafiKuWUDknur8VcTUVgJgNxJevLxzYRKDKKvvv1r",
+    ]
 }
 
 /// Testnet bootnodes using dnsaddr for dynamic resolution.
@@ -498,6 +554,40 @@ mod tests {
         let dev_builder = SpecBuilder::dev();
         let dev_spec = dev_builder.build();
         assert_eq!(dev_spec.chain, Chain::from(NamedChain::Dev));
+    }
+
+    #[test]
+    fn test_mainnet_wss_bootnodes_snapshot() {
+        use libp2p::Multiaddr;
+        use libp2p::multiaddr::Protocol;
+
+        let snapshot = mainnet_wss_bootnodes();
+        assert!(
+            !snapshot.is_empty(),
+            "embedded wss bootnode snapshot must not be empty"
+        );
+
+        for entry in snapshot {
+            let addr: Multiaddr = entry
+                .parse()
+                .unwrap_or_else(|e| panic!("entry is not a valid Multiaddr: {entry}: {e}"));
+
+            let mut has_tls = false;
+            let mut has_ws = false;
+            let mut has_p2p = false;
+            for proto in addr.iter() {
+                match proto {
+                    Protocol::Tls => has_tls = true,
+                    Protocol::Ws(_) => has_ws = true,
+                    Protocol::P2p(_) => has_p2p = true,
+                    _ => {}
+                }
+            }
+
+            assert!(has_tls, "entry must carry a /tls segment: {entry}");
+            assert!(has_ws, "entry must carry a /ws segment: {entry}");
+            assert!(has_p2p, "entry must carry a /p2p peer id: {entry}");
+        }
     }
 
     #[test]
