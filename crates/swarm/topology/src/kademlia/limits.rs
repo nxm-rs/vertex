@@ -3,10 +3,13 @@
 //! Allocates more peers to higher bins (closer neighbors) where peers are
 //! scarcer and more valuable for retrieval parallelization.
 
+use vertex_swarm_api::DEFAULT_SATURATION_PEERS;
 use vertex_swarm_primitives::{Bin, NeighborhoodDepth};
 
-/// Default minimum peers per bin (floor for the linear taper and for depth
-/// estimation). A bin is considered populated once it holds this many peers.
+/// Default minimum peers per bin for depth estimation. A bin is considered
+/// populated once it holds this many peers. Note this is NOT the taper floor:
+/// allocation targets are additionally floored at `saturation` so every
+/// balanced bin can reach the depth frontier (see [`DepthAwareLimits::target`]).
 const DEFAULT_NOMINAL: usize = 3;
 
 /// Default total connected-peer target across all bins. The linear taper
@@ -19,27 +22,50 @@ const DEFAULT_TOTAL_TARGET: usize = 160;
 /// single bin grow unbounded.
 pub(crate) const DEFAULT_INBOUND_HEADROOM: usize = 4;
 
-/// Default per-bin fill target during bootstrap (`depth == 0`).
+/// Default per-bin oversaturation level: the bootstrap fill target
+/// (`depth == 0`), the floor below which trimming never evicts
+/// ([`DepthAwareLimits::surplus`]), and the minimum inbound ceiling
+/// ([`DepthAwareLimits::ceiling`]).
 ///
-/// Before a neighborhood is established every bin is filled aggressively toward
-/// this bound so bins reach the saturation frontier quickly and depth can climb.
-/// Must be `>= SwarmSpec::saturation_peers()` or depth can never advance past 0.
-/// Bounded (not `usize::MAX`) so a node that has not yet established a
-/// neighborhood cannot be flooded by inbound connections. Matches the reference
-/// network's oversaturation level.
+/// Together with the saturation floor this defines the per-bin band: dial
+/// toward `max(taper, saturation)`, accept inbound up to this level, trim
+/// only above it. Before a neighborhood is established every bin is filled
+/// aggressively toward this bound so bins reach the saturation frontier
+/// quickly and depth can climb. Bounded (not `usize::MAX`) so a node that
+/// has not yet established a neighborhood cannot be flooded by inbound
+/// connections.
 pub(crate) const DEFAULT_BOOTSTRAP_TARGET: usize = 18;
 
 /// Depth-aware peer allocation with linear tapering across Kademlia bins.
 ///
 /// Stateless: callers provide depth explicitly to avoid dual-source-of-truth bugs.
+///
+/// # Depth coupling invariants
+///
+/// Neighborhood depth is recomputed from connected-peer bin counts against
+/// this type's `saturation` (threaded from `SwarmSpec::saturation_peers()`
+/// at behaviour construction): the shallowest bin below saturation caps the
+/// depth. Allocation and trimming must therefore never hold or cut a
+/// balanced bin below saturation, or depth deadlocks at that bin with no
+/// error signal. Both properties are structural, not asserted:
+///
+/// - every allocation target (bootstrap and taper) is floored at
+///   `saturation` inside [`Self::target`], so no configuration can produce
+///   a target below it,
+/// - trimming ([`Self::surplus`]) only reclaims peers above
+///   `max(target, bootstrap_target)`, never toward a dial target.
 #[derive(Debug, Clone)]
 pub(crate) struct DepthAwareLimits {
     total_target: usize,
-    /// Minimum peers per bin.
+    /// Minimum peers per bin for depth estimation.
     nominal: usize,
     inbound_headroom: usize,
     /// Per-bin fill target during bootstrap (`depth == 0`).
     bootstrap_target: usize,
+    /// Per-bin saturation threshold from `SwarmSpec::saturation_peers()`.
+    /// Floors every balanced-bin allocation target so bins can reach the
+    /// depth frontier.
+    saturation: usize,
 }
 
 impl Default for DepthAwareLimits {
@@ -56,6 +82,7 @@ impl DepthAwareLimits {
             nominal,
             inbound_headroom: DEFAULT_INBOUND_HEADROOM,
             bootstrap_target: DEFAULT_BOOTSTRAP_TARGET,
+            saturation: DEFAULT_SATURATION_PEERS as usize,
         }
     }
 
@@ -63,6 +90,35 @@ impl DepthAwareLimits {
     pub(crate) fn with_inbound_headroom(mut self, headroom: usize) -> Self {
         self.inbound_headroom = headroom;
         self
+    }
+
+    /// Set the saturation threshold from `SwarmSpec::saturation_peers()`.
+    ///
+    /// Depth recomputation reads it back via [`Self::saturation`], so
+    /// allocation and the depth frontier always agree. Every allocation
+    /// target is floored at this value inside [`Self::target`], so no
+    /// combination with `bootstrap_target` can deadlock depth.
+    pub(crate) fn with_saturation(mut self, saturation: usize) -> Self {
+        self.saturation = saturation;
+        self
+    }
+
+    /// Set the total connected-peer dial budget, preserving all other fields.
+    pub(crate) fn with_total_target(mut self, total_target: usize) -> Self {
+        self.total_target = total_target;
+        self
+    }
+
+    /// Set the per-bin depth-estimation minimum, preserving all other fields.
+    pub(crate) fn with_nominal(mut self, nominal: usize) -> Self {
+        self.nominal = nominal;
+        self
+    }
+
+    /// Per-bin saturation threshold; the depth frontier and all allocation
+    /// floors derive from this single value.
+    pub(crate) fn saturation(&self) -> usize {
+        self.saturation
     }
 
     /// Minimum peers per bin (floor).
@@ -82,8 +138,9 @@ impl DepthAwareLimits {
             // Bootstrap: no neighborhood established yet. Fill every bin
             // aggressively toward `bootstrap_target` so bins reach the
             // saturation frontier quickly and depth can climb. Bounded so a
-            // not-yet-established node cannot be flooded by inbound.
-            return self.bootstrap_target;
+            // not-yet-established node cannot be flooded by inbound. Floored
+            // at saturation so no configuration can pin depth at 0.
+            return self.bootstrap_target.max(self.saturation);
         }
 
         if depth.contains(bin) {
@@ -96,7 +153,11 @@ impl DepthAwareLimits {
             let d = depth.get() as usize;
             let weight_sum = d * (d + 1) / 2;
             let allocated = self.total_target.saturating_mul(weight) / weight_sum;
-            allocated.max(self.nominal)
+            // Floor at saturation: depth is capped by the shallowest bin below
+            // `saturation_peers`, so a target below it would pin depth at that
+            // bin forever (the taper alone gives shallow bins as few as
+            // total_target / weight_sum peers).
+            allocated.max(self.nominal).max(self.saturation)
         }
     }
 
@@ -122,40 +183,49 @@ impl DepthAwareLimits {
         }
     }
 
-    /// Surplus above target at specified depth (0 if at or below target).
+    /// Surplus eligible for trimming at the specified depth.
+    ///
+    /// Trimming reclaims peers only above `max(target, bootstrap_target)`,
+    /// never down to the taper target itself. The taper target is a dial
+    /// goal, not an eviction bound: evicting toward it after a depth increase
+    /// cuts shallow bins below saturation, which immediately collapses depth
+    /// back to the cut bin (observed live: depth 7 -> 0 with bins trimmed to
+    /// the exact taper targets).
     pub(crate) fn surplus(&self, bin: Bin, depth: NeighborhoodDepth, connected: usize) -> usize {
         let target = self.target(bin, depth);
         if target == usize::MAX {
             0
         } else {
-            connected.saturating_sub(target)
+            connected.saturating_sub(target.max(self.bootstrap_target))
         }
     }
 
-    /// Target + inbound headroom (max before rejecting inbound). `usize::MAX` for neighborhood.
+    /// Maximum bin population before rejecting inbound. `usize::MAX` for
+    /// neighborhood bins.
+    ///
+    /// `max(target + headroom, bootstrap_target)`: shallow bins whose dial
+    /// target sits at the saturation floor still accept inbound up to the
+    /// oversaturation level, so churn erodes them toward `bootstrap_target`
+    /// rather than toward the depth frontier (dial to saturation, accept to
+    /// oversaturation, trim above it). This also keeps the ceiling aligned
+    /// with the trim floor in [`Self::surplus`].
     pub(crate) fn ceiling(&self, bin: Bin, depth: NeighborhoodDepth) -> usize {
         let target = self.target(bin, depth);
         if target == usize::MAX {
             usize::MAX
         } else {
-            target + self.inbound_headroom
+            (target + self.inbound_headroom).max(self.bootstrap_target)
         }
     }
 
-    /// Check if bin should accept inbound (allows headroom above target).
+    /// Check if bin should accept inbound (up to [`Self::ceiling`]).
     pub(crate) fn should_accept_inbound(
         &self,
         bin: Bin,
         depth: NeighborhoodDepth,
         connected: usize,
     ) -> bool {
-        let target = self.target(bin, depth);
-        if target == usize::MAX {
-            // Neighborhood: always accept
-            true
-        } else {
-            connected < target + self.inbound_headroom
-        }
+        connected < self.ceiling(bin, depth)
     }
 
     /// Estimate depth from known peer distribution (highest bin with >= nominal peers).
@@ -183,6 +253,10 @@ impl DepthAwareLimits {
 #[cfg(test)]
 impl DepthAwareLimits {
     /// Set the per-bin bootstrap fill target used while `depth == 0`.
+    ///
+    /// Small-scale fixtures usually pair this with [`Self::with_saturation`];
+    /// targets are floored at saturation, so a bootstrap target below the
+    /// (default 8) saturation has no effect on its own.
     pub(crate) fn with_bootstrap_target(mut self, target: usize) -> Self {
         self.bootstrap_target = target;
         self
@@ -313,15 +387,113 @@ mod tests {
 
         // Weight sum for depth 8: 8 × 9 / 2 = 36
         // Bin 7: 160 × 8 / 36 = 35.5 → 35
-        // Bin 0: 160 × 1 / 36 = 4.4 → max(4, 3) = 4
+        // Bin 0: 160 × 1 / 36 = 4.4 → floored at saturation (8)
 
         assert_eq!(limits.target(b(7), d(8)), 35);
         assert_eq!(limits.target(b(6), d(8)), 31); // 160 × 7 / 36 = 31.1
-        assert_eq!(limits.target(b(0), d(8)), 4); // 160 × 1 / 36 = 4.4
+        assert_eq!(limits.target(b(0), d(8)), 8); // taper 4.4, saturation floor
 
         // Neighborhood (bin >= depth) returns MAX
         assert_eq!(limits.target(b(8), d(8)), usize::MAX);
         assert_eq!(limits.target(b(10), d(8)), usize::MAX);
+    }
+
+    #[test]
+    fn test_taper_floored_at_saturation_for_all_depths() {
+        // Depth is capped by the shallowest bin below saturation, so every
+        // balanced-bin target must be at least the saturation threshold or
+        // depth deadlocks at that bin.
+        let saturation = 8usize;
+        let limits = DepthAwareLimits::new(160, 3).with_saturation(saturation);
+
+        for depth in 1..=31u8 {
+            for bin in 0..depth {
+                let target = limits.target(b(bin), d(depth));
+                assert!(
+                    target >= saturation,
+                    "target {target} < saturation {saturation} at bin {bin}, depth {depth}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_trim_floor_never_cuts_below_bootstrap_target() {
+        // Trimming reclaims only above max(target, bootstrap_target): the
+        // taper target is a dial goal, not an eviction bound.
+        let limits = DepthAwareLimits::new(160, 3).with_saturation(8);
+
+        // At depth 7 the raw taper gives bin 0 only 160/28 = 5 (floored to 8),
+        // but trim must leave up to bootstrap_target (18) untouched.
+        assert_eq!(limits.surplus(b(0), d(7), 18), 0);
+        assert_eq!(limits.surplus(b(0), d(7), 26), 8);
+        assert_eq!(limits.surplus(b(1), d(7), 25), 7);
+
+        // Targets above the floor trim to the target as before.
+        assert_eq!(limits.surplus(b(7), d(8), 40), 5); // target 35
+    }
+
+    #[test]
+    fn test_trim_preserves_depth_regression() {
+        // Regression for the 2026-06-10 mainnet capture: depth climbed to 7,
+        // the depth-change trim cut bins 0/1/2 down to the raw taper targets
+        // (5/11/17), bin 0 fell below saturation and depth collapsed 7 -> 0
+        // permanently. With the trim and taper floors, applying the trim to
+        // the captured pre-trim populations must not reduce the recomputed
+        // depth.
+        let saturation = 8u8;
+        let low_watermark = 3u8;
+        let limits = DepthAwareLimits::new(160, 3).with_saturation(saturation as usize);
+        let depth = d(7);
+
+        // Connected-per-bin populations captured right before the trim.
+        let mut connected = [0usize; 32];
+        for (bin, count) in [
+            (0, 26),
+            (1, 25),
+            (2, 23),
+            (3, 16),
+            (4, 9),
+            (5, 11),
+            (6, 13),
+            (7, 14),
+            (8, 9),
+            (9, 3),
+        ] {
+            connected[bin] = count;
+        }
+
+        let before_depth = nectar_primitives::recompute_neighborhood_depth(
+            &connected.map(|c| c as u8),
+            saturation,
+            low_watermark,
+        );
+        assert!(before_depth.get() >= 7, "capture state supports depth 7");
+
+        // Apply the trim: every balanced bin loses its surplus.
+        let mut after = [0u8; 32];
+        for (i, slot) in after.iter_mut().enumerate() {
+            let bin = b(i as u8);
+            let surplus = if depth.contains(bin) {
+                0
+            } else {
+                limits.surplus(bin, depth, connected[i])
+            };
+            *slot = (connected[i] - surplus) as u8;
+        }
+
+        let after_depth =
+            nectar_primitives::recompute_neighborhood_depth(&after, saturation, low_watermark);
+        // The pre-trim state supports depth 9 via the sparse tail (bins 8-9);
+        // the invariant under test is that trimming never cuts depth below
+        // the climb the trim was triggered by (7), not that the tail anchor
+        // survives, hence the min.
+        assert!(
+            after_depth.get() >= before_depth.get().min(7),
+            "trim collapsed depth: before={} after={}",
+            before_depth.get(),
+            after_depth.get()
+        );
     }
 
     #[test]

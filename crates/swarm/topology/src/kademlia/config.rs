@@ -38,15 +38,15 @@ impl Default for KademliaConfig {
 }
 
 impl KademliaConfig {
-    /// Create with custom total target peers.
+    /// Create with custom total target peers, preserving all other limits.
     pub fn with_total_target(mut self, total: usize) -> Self {
-        self.limits = DepthAwareLimits::new(total, self.limits.nominal());
+        self.limits = self.limits.with_total_target(total);
         self
     }
 
-    /// Create with custom nominal minimum per bin.
+    /// Create with custom nominal minimum per bin, preserving all other limits.
     pub fn with_nominal(mut self, nominal: usize) -> Self {
-        self.limits = DepthAwareLimits::new(self.limits.total_target(), nominal);
+        self.limits = self.limits.with_nominal(nominal);
         self
     }
 
@@ -70,6 +70,12 @@ impl KademliaConfig {
     /// Set the per-bin bootstrap fill target used while `depth == 0`.
     pub(crate) fn with_bootstrap_target(mut self, target: usize) -> Self {
         self.limits = self.limits.with_bootstrap_target(target);
+        self
+    }
+
+    /// Set the saturation threshold (production threads it from the spec).
+    pub(crate) fn with_saturation(mut self, saturation: usize) -> Self {
+        self.limits = self.limits.with_saturation(saturation);
         self
     }
 }
@@ -106,6 +112,21 @@ mod tests {
         let config = KademliaConfig::default().with_nominal(5);
         assert_eq!(config.limits.nominal(), 5);
         assert_eq!(config.limits.total_target(), 160);
+    }
+
+    #[test]
+    fn test_builders_preserve_sibling_fields() {
+        // Builders must not silently reset other limits to defaults.
+        let config = KademliaConfig::default()
+            .with_inbound_headroom(8)
+            .with_total_target(64)
+            .with_nominal(5);
+        assert_eq!(config.limits.total_target(), 64);
+        assert_eq!(config.limits.nominal(), 5);
+        // Headroom survived the later builders: bin 7 at depth 8 has target
+        // 64 * 8 / 36 = 14, ceiling = max(14 + 8, 18) = 22.
+        assert!(config.limits.should_accept_inbound(b(7), d(8), 21));
+        assert!(!config.limits.should_accept_inbound(b(7), d(8), 22));
     }
 
     #[test]

@@ -101,7 +101,8 @@ mod tests {
         let config = KademliaConfig::default()
             .with_nominal(1)
             .with_inbound_headroom(0)
-            .with_bootstrap_target(1);
+            .with_bootstrap_target(1)
+            .with_saturation(1);
         let routing = make_routing(base, config);
 
         let ac = KademliaAdmissionControl::new(routing);
@@ -119,7 +120,8 @@ mod tests {
         let config = KademliaConfig::default()
             .with_nominal(1)
             .with_inbound_headroom(0)
-            .with_bootstrap_target(1);
+            .with_bootstrap_target(1)
+            .with_saturation(1);
         let routing = make_routing(base, config);
 
         let occupied = SwarmAddress::with_first_byte(0xc0);
@@ -143,7 +145,8 @@ mod tests {
         let config = KademliaConfig::default()
             .with_nominal(1)
             .with_inbound_headroom(0)
-            .with_bootstrap_target(1);
+            .with_bootstrap_target(1)
+            .with_saturation(1);
         let routing = make_routing(base, config);
 
         let peer = SwarmAddress::with_first_byte(0x80);
@@ -168,7 +171,8 @@ mod tests {
         let config = KademliaConfig::default()
             .with_nominal(1)
             .with_inbound_headroom(0)
-            .with_bootstrap_target(1);
+            .with_bootstrap_target(1)
+            .with_saturation(1);
         let routing = make_routing(base, config);
 
         let peer1 = SwarmAddress::with_first_byte(0x80);

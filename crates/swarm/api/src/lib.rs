@@ -85,7 +85,8 @@ pub use self::reporting::{
 };
 pub use self::rpc::RpcProviders;
 pub use self::spec::{
-    StaticSwarmSpecProvider, SwarmSpec, SwarmSpecParser, SwarmSpecProvider, SwarmToken,
+    DEFAULT_SATURATION_PEERS, StaticSwarmSpecProvider, SwarmSpec, SwarmSpecParser,
+    SwarmSpecProvider, SwarmToken,
 };
 pub use self::swarm::{SwarmClient, SwarmStorer};
 pub use self::types::{

@@ -276,8 +276,25 @@ impl<I: SwarmIdentity> PeerManager<I> {
 
     /// Get dialable overlay addresses from a specific bin (not banned, not in backoff).
     pub fn dialable_overlays_in_bin(&self, bin: Bin, count: usize) -> Vec<OverlayAddress> {
+        self.dialable_overlays_in_bin_excluding(bin, count, |_| false)
+    }
+
+    /// Get dialable overlay addresses from a bin, skipping excluded overlays.
+    ///
+    /// `exclude` lets the caller remove overlays that are dialable but useless
+    /// as candidates, typically peers it is already connected to. Without the
+    /// exclusion, connected peers (hot and dialable) fill the returned slice
+    /// first and a bin with more connections than `count` yields no usable
+    /// candidates even when many unconnected peers are known.
+    pub fn dialable_overlays_in_bin_excluding(
+        &self,
+        bin: Bin,
+        count: usize,
+        exclude: impl Fn(&OverlayAddress) -> bool,
+    ) -> Vec<OverlayAddress> {
         self.index.filter_bin(bin, count, |overlay| {
             !self.banned_set.contains_key(overlay)
+                && !exclude(overlay)
                 && self.peers.get(overlay).is_some_and(|e| e.is_dialable())
         })
     }
@@ -1065,6 +1082,33 @@ mod tests {
         let storers = pm.known_storer_overlays();
         assert_eq!(storers.len(), 1);
         assert!(storers.contains(&test_overlay(3)));
+    }
+
+    #[test]
+    fn test_overlays_in_bin_accept_max_count() {
+        let pm = manager();
+        connect(&pm, 1, SwarmNodeType::Storer);
+
+        let bin = Bin::from(test_overlay(0).proximity(&test_overlay(1)));
+
+        let storers = pm.storer_overlays_in_bin(bin, usize::MAX);
+        assert_eq!(storers, vec![test_overlay(1)]);
+
+        let dialable = pm.dialable_overlays_in_bin(bin, usize::MAX);
+        assert_eq!(dialable, vec![test_overlay(1)]);
+    }
+
+    #[test]
+    fn test_dialable_overlays_excluding() {
+        let pm = manager();
+        connect(&pm, 1, SwarmNodeType::Storer);
+        connect(&pm, 2, SwarmNodeType::Storer);
+
+        let bin = Bin::from(test_overlay(0).proximity(&test_overlay(1)));
+        let excluded = test_overlay(1);
+
+        let dialable = pm.dialable_overlays_in_bin_excluding(bin, usize::MAX, |o| *o == excluded);
+        assert!(!dialable.contains(&excluded));
     }
 
     #[test]
