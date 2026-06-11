@@ -38,3 +38,4 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+vertex-util-runtime = { workspace = true }

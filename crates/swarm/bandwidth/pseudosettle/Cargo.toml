@@ -15,6 +15,7 @@ vertex-swarm-net-pseudosettle = { workspace = true }
 vertex-swarm-primitives = { workspace = true }
 vertex-swarm-api = { workspace = true }
 vertex-tasks = { workspace = true }
+vertex-util-runtime = { workspace = true }
 alloy-primitives = { workspace = true }
 async-trait = { workspace = true }
 parking_lot = { workspace = true }

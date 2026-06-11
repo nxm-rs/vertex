@@ -8690,6 +8690,7 @@ dependencies = [
  "vertex-swarm-primitives",
  "vertex-swarm-test-utils",
  "vertex-tasks",
+ "vertex-util-runtime",
 ]
 
 [[package]]
@@ -8986,6 +8987,7 @@ dependencies = [
  "vertex-net-codec",
  "vertex-swarm-net-headers",
  "vertex-swarm-net-proto",
+ "vertex-util-runtime",
 ]
 
 [[package]]
