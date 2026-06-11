@@ -9329,6 +9329,7 @@ dependencies = [
  "vertex-swarm-spec",
  "vertex-swarm-test-utils",
  "vertex-tasks",
+ "vertex-util-runtime",
  "web-time",
 ]
 

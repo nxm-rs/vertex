@@ -10,6 +10,7 @@ use vertex_net_dnsaddr::{is_dnsaddr, resolve_all};
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_primitives::SwarmNodeType;
+use vertex_util_runtime::rand::non_crypto_rng;
 
 use crate::DialReason;
 use crate::gossip::GossipInput;
@@ -122,7 +123,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
     pub(crate) fn connect_bootnodes(&mut self) {
         let mut bootnodes = self.bootnodes.clone();
-        bootnodes.shuffle(&mut rand::rng());
+        bootnodes.shuffle(&mut non_crypto_rng());
         let trusted_peers = self.trusted_peers.clone();
 
         if bootnodes.is_empty() && trusted_peers.is_empty() {

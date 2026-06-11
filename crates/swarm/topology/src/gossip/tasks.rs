@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
@@ -16,6 +16,7 @@ use vertex_swarm_api::{SwarmIdentity, SwarmNodeType};
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_manager::PeerManager;
 use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress};
+use vertex_util_runtime::time::Instant;
 
 use super::events::{GossipAction, GossipCheckOk};
 use super::filter::{
