@@ -1,7 +1,6 @@
 //! Codec utility functions for common encoding patterns.
 
 use alloy_primitives::U256;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Encode a U256 as big-endian bytes with leading zeros trimmed.
 ///
@@ -32,10 +31,7 @@ pub fn decode_u256_be(bytes: &[u8]) -> U256 {
 /// Returns the current Unix timestamp in nanoseconds (0 if clock is before epoch).
 #[inline]
 pub fn current_unix_timestamp_nanos() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as i64)
-        .unwrap_or(0)
+    vertex_util_runtime::time::now_unix_nanos()
 }
 
 #[cfg(test)]
