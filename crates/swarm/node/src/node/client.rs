@@ -10,10 +10,14 @@ use std::sync::Arc;
 
 use eyre::Result;
 use futures::StreamExt;
+#[cfg(not(target_arch = "wasm32"))]
 use libp2p::autonat::v2 as autonat;
 use libp2p::connection_limits;
+#[cfg(not(target_arch = "wasm32"))]
 use libp2p::mdns;
+#[cfg(not(target_arch = "wasm32"))]
 use libp2p::swarm::behaviour::toggle::Toggle;
+#[cfg(not(target_arch = "wasm32"))]
 use libp2p::upnp;
 use libp2p::{Multiaddr, PeerId, identity::PublicKey, swarm::NetworkBehaviour, swarm::SwarmEvent};
 use nectar_primitives::SwarmAddress;
@@ -28,7 +32,9 @@ use vertex_swarm_topology::{
 use vertex_tasks::GracefulShutdown;
 use vertex_tasks::TaskExecutor;
 
-use super::base::{BaseNode, NatBehaviours};
+use super::base::BaseNode;
+#[cfg(not(target_arch = "wasm32"))]
+use super::base::NatBehaviours;
 use super::builder::BuiltInfrastructure;
 use crate::protocol::{
     BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientCommand, ClientEvent,
@@ -45,14 +51,23 @@ pub(crate) struct ClientNodeBehaviour<I: SwarmIdentity + Clone> {
     /// allocate per-connection state.
     pub(crate) connection_limits: connection_limits::Behaviour,
     pub(crate) identify: identify::Behaviour,
+    // NAT traversal (AutoNAT v2, UPnP) and LAN discovery (mDNS) are native-only.
+    // The browser client dials over websockets, never listens, and the wasm
+    // dependency set drops the `autonat`, `upnp`, and `mdns` libp2p features, so
+    // these fields are absent from the wasm composite.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) autonat_client: Toggle<autonat::client::Behaviour>,
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) autonat_server: Toggle<autonat::server::Behaviour>,
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) upnp: Toggle<upnp::tokio::Behaviour>,
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) mdns: Toggle<mdns::tokio::Behaviour>,
     pub(crate) topology: TopologyBehaviour<I>,
     pub(crate) client: ClientBehaviour,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
     pub(crate) fn from_parts(
         local_public_key: PublicKey,
@@ -67,8 +82,9 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
             // Identify advertises addresses scoped to each peer (see
             // `addresses_for_remote`), so a public peer never receives our
             // private or loopback addresses. A NAT'd node with no public address
-            // sends an empty listen set to public peers; bee tolerates this
-            // (it falls back to the connection's remote multiaddr).
+            // sends an empty listen set to public peers; the reference peer
+            // tolerates this (it falls back to the connection's remote
+            // multiaddr).
             identify: identify::Behaviour::new(
                 identify::Config::new(local_public_key),
                 agent_versions,
@@ -83,13 +99,78 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
     }
 }
 
+/// The browser client composite has no NAT-traversal behaviours: it dials over
+/// websockets, never listens, and the `autonat`, `upnp`, and `mdns` libp2p
+/// features are dropped from the wasm dependency set.
+#[cfg(target_arch = "wasm32")]
+impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
+    pub(crate) fn from_parts(
+        local_public_key: PublicKey,
+        topology: TopologyBehaviour<I>,
+        connection_limits: connection_limits::Behaviour,
+    ) -> Self {
+        let agent_versions = topology.agent_versions();
+        Self {
+            connection_limits,
+            identify: identify::Behaviour::new(
+                identify::Config::new(local_public_key),
+                agent_versions,
+            ),
+            topology,
+            client: ClientBehaviour::new(ClientBehaviourConfig::default()),
+        }
+    }
+}
+
+/// Assemble the client base node natively, wiring the NAT-traversal behaviours
+/// (AutoNAT v2, UPnP) and LAN discovery (mDNS) into the composite.
+#[cfg(not(target_arch = "wasm32"))]
+async fn build_client_base<I, C>(
+    infra: BuiltInfrastructure<I>,
+    network_config: &C,
+) -> Result<BaseNode<I, ClientNodeBehaviour<I>>>
+where
+    I: SwarmIdentity + Clone,
+    C: SwarmNetworkConfig,
+{
+    let nat = NatBehaviours::from_config(network_config);
+    let connection_limits = super::base::build_connection_limits(network_config);
+    super::builder::build_base_node(infra, network_config, "Client node", move |pk, topology| {
+        ClientNodeBehaviour::from_parts(pk, topology, nat, connection_limits)
+    })
+    .await
+}
+
+/// Assemble the browser client base node. The wasm composite carries only the
+/// connection-limits gate, identify, topology, and the client protocols; the
+/// NAT-traversal behaviours are absent.
+#[cfg(target_arch = "wasm32")]
+async fn build_client_base<I, C>(
+    infra: BuiltInfrastructure<I>,
+    network_config: &C,
+) -> Result<BaseNode<I, ClientNodeBehaviour<I>>>
+where
+    I: SwarmIdentity + Clone,
+    C: SwarmNetworkConfig,
+{
+    let connection_limits = super::base::build_connection_limits(network_config);
+    super::builder::build_base_node(infra, network_config, "Client node", move |pk, topology| {
+        ClientNodeBehaviour::from_parts(pk, topology, connection_limits)
+    })
+    .await
+}
+
 /// Events from the client node behaviour.
 #[allow(clippy::large_enum_variant)]
 pub enum ClientNodeEvent {
     Identify(Box<identify::Event>),
+    #[cfg(not(target_arch = "wasm32"))]
     AutonatClient(autonat::client::Event),
+    #[cfg(not(target_arch = "wasm32"))]
     AutonatServer(autonat::server::Event),
+    #[cfg(not(target_arch = "wasm32"))]
     Upnp(upnp::Event),
+    #[cfg(not(target_arch = "wasm32"))]
     Mdns(mdns::Event),
     Topology(()),
     Client(ClientEvent),
@@ -108,24 +189,28 @@ impl From<identify::Event> for ClientNodeEvent {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl From<autonat::client::Event> for ClientNodeEvent {
     fn from(event: autonat::client::Event) -> Self {
         ClientNodeEvent::AutonatClient(event)
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl From<autonat::server::Event> for ClientNodeEvent {
     fn from(event: autonat::server::Event) -> Self {
         ClientNodeEvent::AutonatServer(event)
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl From<upnp::Event> for ClientNodeEvent {
     fn from(event: upnp::Event) -> Self {
         ClientNodeEvent::Upnp(event)
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl From<mdns::Event> for ClientNodeEvent {
     fn from(event: mdns::Event) -> Self {
         ClientNodeEvent::Mdns(event)
@@ -258,18 +343,22 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
             ClientNodeEvent::Identify(event) => {
                 self.handle_identify_event(*event);
             }
+            #[cfg(not(target_arch = "wasm32"))]
             ClientNodeEvent::AutonatServer(event) => {
                 super::base::handle_autonat_server_event(
                     &self.base.swarm.behaviour().topology,
                     event,
                 );
             }
+            #[cfg(not(target_arch = "wasm32"))]
             ClientNodeEvent::AutonatClient(event) => {
                 super::base::handle_autonat_client_event(event);
             }
+            #[cfg(not(target_arch = "wasm32"))]
             ClientNodeEvent::Upnp(event) => {
                 super::base::handle_upnp_event(event);
             }
+            #[cfg(not(target_arch = "wasm32"))]
             ClientNodeEvent::Mdns(event) => {
                 let local_peer_id = *self.base.swarm.local_peer_id();
                 super::base::handle_mdns_event(
@@ -417,17 +506,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
             }
         };
 
-        let nat = NatBehaviours::from_config(network_config);
-        let connection_limits = super::base::build_connection_limits(network_config);
-        let mut base = super::builder::build_base_node(
-            infra,
-            network_config,
-            "Client node",
-            move |pk, topology| {
-                ClientNodeBehaviour::from_parts(pk, topology, nat, connection_limits)
-            },
-        )
-        .await?;
+        let mut base = build_client_base(infra, network_config).await?;
 
         // Register the local PeerId for address advertisement in handshakes
         base.swarm

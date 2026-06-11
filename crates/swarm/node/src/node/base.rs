@@ -1,25 +1,38 @@
 //! Shared infrastructure for all node types.
 
 use eyre::Result;
+#[cfg(not(target_arch = "wasm32"))]
 use libp2p::autonat::v2 as autonat;
 use libp2p::connection_limits::{self, ConnectionLimits};
+#[cfg(not(target_arch = "wasm32"))]
 use libp2p::mdns;
+#[cfg(not(target_arch = "wasm32"))]
 use libp2p::multiaddr::Protocol;
+#[cfg(not(target_arch = "wasm32"))]
 use libp2p::swarm::behaviour::toggle::Toggle;
+#[cfg(not(target_arch = "wasm32"))]
 use libp2p::upnp;
 use libp2p::{Multiaddr, PeerId, Swarm, swarm::NetworkBehaviour, swarm::SwarmEvent};
 use nectar_primitives::SwarmAddress;
 use tracing::{debug, info, trace, warn};
 use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig};
 use vertex_swarm_net_identify as identify;
-use vertex_swarm_topology::{TopologyBehaviour, TopologyCommand, TopologyHandle};
+#[cfg(not(target_arch = "wasm32"))]
+use vertex_swarm_topology::TopologyCommand;
+use vertex_swarm_topology::{TopologyBehaviour, TopologyHandle};
 
-/// Optional NAT-traversal behaviours shared by every node type.
+/// Optional NAT-traversal behaviours shared by every native node type.
 ///
 /// AutoNAT v2 (client + server) and UPnP are wired as top-level siblings of
 /// identify so the libp2p swarm propagates verified external addresses between
 /// them automatically. Each is wrapped in a [`Toggle`] so an operator can
 /// disable it without changing the behaviour type.
+///
+/// The browser client has no NAT-traversal surface: it dials over websockets,
+/// never listens, and the `mdns`, `upnp`, and `autonat` libp2p features are
+/// dropped from the wasm dependency set. The struct and its wiring are
+/// therefore native-only.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct NatBehaviours {
     pub(crate) autonat_client: Toggle<autonat::client::Behaviour>,
     pub(crate) autonat_server: Toggle<autonat::server::Behaviour>,
@@ -29,6 +42,7 @@ pub(crate) struct NatBehaviours {
     pub(crate) mdns_enabled: bool,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl NatBehaviours {
     /// Build the NAT behaviours from a network configuration.
     ///
@@ -92,8 +106,9 @@ pub(crate) fn build_connection_limits(
 /// than alongside the config-only NAT behaviours. A bind failure never aborts
 /// node startup: the behaviour is logged and left disabled.
 ///
-/// A future browser/wasm client would gate this off, since mDNS has no
-/// `wasm32-unknown-unknown` transport; the node crate is not in the wasm cone.
+/// mDNS has no `wasm32-unknown-unknown` transport, so this is native-only; the
+/// browser client composite drops the mDNS field entirely.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn build_mdns_toggle(enabled: bool, peer_id: PeerId) -> Toggle<mdns::tokio::Behaviour> {
     if !enabled {
         return Toggle::from(None);
@@ -113,6 +128,7 @@ pub(crate) fn build_mdns_toggle(enabled: bool, peer_id: PeerId) -> Toggle<mdns::
 /// Otherwise appends `/p2p/<peer_id>` when the address lacks a peer component
 /// so the dial resolves to a concrete peer; an address that already carries a
 /// `/p2p/` is returned unchanged.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn mdns_dial_addr(
     local_peer_id: &PeerId,
     peer_id: PeerId,
@@ -135,6 +151,7 @@ pub(crate) fn mdns_dial_addr(
 /// the overlay address is learned at the Swarm handshake. `Expired` is only
 /// logged: an mDNS TTL lapse is not connection state and must not tear down a
 /// live connection.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn handle_mdns_event<I: SwarmIdentity + Clone>(
     local_peer_id: PeerId,
     topology: &mut TopologyBehaviour<I>,
@@ -161,6 +178,7 @@ pub(crate) fn handle_mdns_event<I: SwarmIdentity + Clone>(
 ///
 /// A successful dial-back proves the `client` peer accepts inbound
 /// connections, so we forward it into the topology reachability tracker.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn handle_autonat_server_event<I: SwarmIdentity + Clone>(
     topology: &TopologyBehaviour<I>,
     event: autonat::server::Event,
@@ -181,6 +199,7 @@ pub(crate) fn handle_autonat_server_event<I: SwarmIdentity + Clone>(
 /// On success the swarm marks the address confirmed and broadcasts
 /// `FromSwarm::ExternalAddrConfirmed`, which the topology behaviour consumes to
 /// flip public connectivity. Here we only log the outcome.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn handle_autonat_client_event(event: autonat::client::Event) {
     match event.result {
         Ok(()) => debug!(
@@ -200,6 +219,7 @@ pub(crate) fn handle_autonat_client_event(event: autonat::client::Event) {
 /// Handle a UPnP event. Port-map confirmations reach the topology behaviour as
 /// `FromSwarm::ExternalAddrConfirmed`; here we only surface operator-facing
 /// gateway diagnostics.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn handle_upnp_event(event: upnp::Event) {
     match event {
         upnp::Event::NewExternalAddr { external_addr, .. } => {

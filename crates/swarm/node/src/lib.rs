@@ -20,10 +20,9 @@ mod protocol;
 mod selection;
 mod swarm_client;
 
-pub use node::{
-    BaseNode, BootNode, BootNodeBuilder, BuiltInfrastructure, ClientNode, ClientNodeBuilder,
-    NodeBuildError, StorerNode, StorerNodeBuilder,
-};
+pub use node::{BaseNode, BuiltInfrastructure, ClientNode, ClientNodeBuilder, NodeBuildError};
+#[cfg(not(target_arch = "wasm32"))]
+pub use node::{BootNode, BootNodeBuilder, StorerNode, StorerNodeBuilder};
 
 pub use vertex_swarm_api::SwarmNodeType;
 
