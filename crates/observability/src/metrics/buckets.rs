@@ -1,5 +1,22 @@
 //! Histogram bucket presets for common metric patterns.
 
+/// Custom histogram bucket configuration for a metric family.
+///
+/// Each crate that records histograms should export its bucket requirements
+/// as a `pub const HISTOGRAM_BUCKETS: &[HistogramBucketConfig]` next to where
+/// the histograms are recorded. The recorder collects these at install time.
+///
+/// This is pure configuration data with no platform dependency, so it stays
+/// available even when the native server stack (the `server` feature) is off,
+/// letting wire-protocol crates declare their bucket presets in a wasm build.
+#[derive(Debug, Clone, Copy)]
+pub struct HistogramBucketConfig {
+    /// Metric name suffix to match (e.g. `"handshake_duration_seconds"`).
+    pub suffix: &'static str,
+    /// Custom bucket boundaries (must be sorted ascending).
+    pub buckets: &'static [f64],
+}
+
 /// Total handshake duration: 1ms–15s (13 buckets).
 pub const DURATION_SECONDS: &[f64] = &[
     0.001, 0.005, 0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.0, 2.5, 5.0, 10.0, 15.0,

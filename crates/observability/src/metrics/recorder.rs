@@ -11,21 +11,9 @@ use std::sync::{
 use vertex_tasks::TaskExecutor;
 
 use crate::MetricsServerConfig;
+use crate::metrics::buckets::HistogramBucketConfig;
 
 static PROMETHEUS_RECORDER: OnceLock<PrometheusRecorder> = OnceLock::new();
-
-/// Custom histogram bucket configuration for a metric family.
-///
-/// Each crate that records histograms should export its bucket requirements
-/// as a `pub const HISTOGRAM_BUCKETS: &[HistogramBucketConfig]` next to where
-/// the histograms are recorded. The recorder collects these at install time.
-#[derive(Debug, Clone, Copy)]
-pub struct HistogramBucketConfig {
-    /// Metric name suffix to match (e.g. `"handshake_duration_seconds"`).
-    pub suffix: &'static str,
-    /// Custom bucket boundaries (must be sorted ascending).
-    pub buckets: &'static [f64],
-}
 
 /// Install the prometheus recorder with default "vertex" prefix and no custom buckets.
 pub fn install_prometheus_recorder() -> eyre::Result<PrometheusRecorder> {

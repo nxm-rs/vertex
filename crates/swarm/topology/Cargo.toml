@@ -13,8 +13,11 @@ repository.workspace = true
 vertex-metrics.workspace = true
 vertex-swarm-primitives.workspace = true
 vertex-swarm-api.workspace = true
+# Topology only uses the platform-neutral metric primitives (recording macros,
+# timing guards, bucket presets), never the native server stack, so it takes the
+# workspace default (`server` off) and stays wasm-buildable. The binary turns the
+# `server` feature back on through the node builder.
 vertex-observability.workspace = true
-vertex-net-dialer.workspace = true
 vertex-net-local.workspace = true
 vertex-net-ratelimiter.workspace = true
 vertex-net-utils.workspace = true
@@ -32,12 +35,16 @@ vertex-swarm-peer-score.workspace = true
 nectar-primitives.workspace = true
 
 ## p2p
-libp2p.workspace = true
+# The native dial tracker speaks libp2p `Multiaddr`/`PeerId`/`ConnectionId`
+# vocabulary only; it builds on both targets with the trimmed wasm libp2p.
+vertex-net-dialer.workspace = true
 
 ## async
 futures.workspace = true
-tokio.workspace = true
-if-watch.workspace = true
+# Topology drives timers (`tokio::time`) and channels (`tokio::sync`) and uses
+# `tokio::select!`. None of `net`, `rt-multi-thread`, `fs`, or `signal` is
+# needed, so the wasm build stays clean.
+tokio = { workspace = true, features = ["sync", "time", "macros"] }
 
 ## crypto/primitives
 alloy-primitives.workspace = true
@@ -59,8 +66,32 @@ serde.workspace = true
 tracing.workspace = true
 metrics.workspace = true
 
-# DNS resolution (for bootnode dnsaddr resolution)
+# Native transport (tcp/dns/mdns/upnp/autonat) plus the netdev interface watcher
+# and system-DNS bootnode resolution. The browser client dials over a websocket
+# transport selected in `vertex-swarm-node`, has no netdev to watch, and
+# resolves `/dnsaddr/` bootnodes over DNS-over-HTTPS instead.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+libp2p.workspace = true
+if-watch.workspace = true
 vertex-net-dnsaddr.workspace = true
+
+# Browser build: a trimmed libp2p with only the wire-protocol and crypto
+# features the topology behaviour composes, mirroring the wasm libp2p in
+# `vertex-swarm-node`. Bootnode `/dnsaddr/` resolution goes through
+# `vertex-net-dnsaddr-doh` (DNS-over-HTTPS) with the embedded wss snapshot as
+# the fallback.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+libp2p = { git = "https://github.com/libp2p/rust-libp2p", rev = "3e72d4c071d5ec8815d2f6f7ee3602600ff51798", default-features = false, features = [
+    "noise",
+    "yamux",
+    "macros",
+    "ecdsa",
+    "identify",
+    "ping",
+] }
+vertex-net-dnsaddr-doh.workspace = true
+# The embedded wss bootnode snapshot is the DoH fallback for the browser client.
+vertex-swarm-spec.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time", "test-util"] }

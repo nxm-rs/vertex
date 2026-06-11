@@ -9395,6 +9395,7 @@ dependencies = [
  "vertex-metrics",
  "vertex-net-dialer",
  "vertex-net-dnsaddr",
+ "vertex-net-dnsaddr-doh",
  "vertex-net-local",
  "vertex-net-peer-registry",
  "vertex-net-peer-store",

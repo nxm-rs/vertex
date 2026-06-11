@@ -6,13 +6,13 @@ use libp2p::swarm::ToSwarm;
 use rand::seq::SliceRandom;
 use tracing::{debug, info, trace, warn};
 use vertex_net_dialer::error::PrepareError;
-use vertex_net_dnsaddr::{is_dnsaddr, resolve_all};
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_primitives::SwarmNodeType;
 use vertex_util_runtime::rand::non_crypto_rng;
 
 use crate::DialReason;
+use crate::behaviour::BootnodeResolutionFuture;
 use crate::gossip::GossipInput;
 use crate::kademlia::RoutingCapacity;
 
@@ -130,27 +130,13 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             return;
         }
 
-        // Check if any addresses need dnsaddr resolution
-        let needs_resolution =
-            bootnodes.iter().any(is_dnsaddr) || trusted_peers.iter().any(is_dnsaddr);
-
-        if needs_resolution {
-            info!(
-                bootnodes = bootnodes.len(),
-                trusted = trusted_peers.len(),
-                "Resolving dnsaddr entries for bootnodes..."
-            );
-
-            // Resolve bootnodes and trusted peers separately to preserve DialReason
-            let future = Box::pin(async move {
-                let resolved_bootnodes = resolve_all(bootnodes.iter()).await;
-                let resolved_trusted = resolve_all(trusted_peers.iter()).await;
-                (resolved_bootnodes, resolved_trusted)
-            });
-            self.pending_bootnode_resolution = Some(future);
-        } else {
-            // No resolution needed, dial immediately
-            self.dial_bootnodes(bootnodes, trusted_peers);
+        // `/dnsaddr/` entries need resolution to dialable multiaddrs before they
+        // can be dialed. Native does this over the system resolver; the browser
+        // does it over DNS-over-HTTPS. When nothing needs resolving the helper
+        // returns `None` and we dial the literal addresses immediately.
+        match start_bootnode_resolution(bootnodes.clone(), trusted_peers.clone()) {
+            Some(future) => self.pending_bootnode_resolution = Some(future),
+            None => self.dial_bootnodes(bootnodes, trusted_peers),
         }
     }
 
@@ -177,4 +163,87 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     pub(crate) fn is_peer_tracked(&self, peer_id: &PeerId) -> bool {
         self.connection_registry.contains_peer(peer_id) || self.dial_tracker.contains_peer(peer_id)
     }
+}
+
+/// Start resolving `/dnsaddr/` bootnode and trusted-peer entries to dialable
+/// multiaddrs, using the system resolver.
+///
+/// Returns `None` when no entry needs resolution so the caller dials the literal
+/// addresses directly. Bootnodes and trusted peers are resolved separately so
+/// the caller can preserve the per-list dial reason.
+#[cfg(not(target_arch = "wasm32"))]
+fn start_bootnode_resolution(
+    bootnodes: Vec<Multiaddr>,
+    trusted_peers: Vec<Multiaddr>,
+) -> Option<BootnodeResolutionFuture> {
+    use vertex_net_dnsaddr::{is_dnsaddr, resolve_all};
+
+    let needs_resolution = bootnodes.iter().any(is_dnsaddr) || trusted_peers.iter().any(is_dnsaddr);
+    if !needs_resolution {
+        return None;
+    }
+
+    info!(
+        bootnodes = bootnodes.len(),
+        trusted = trusted_peers.len(),
+        "Resolving dnsaddr entries for bootnodes..."
+    );
+
+    Some(Box::pin(async move {
+        let resolved_bootnodes = resolve_all(bootnodes.iter()).await;
+        let resolved_trusted = resolve_all(trusted_peers.iter()).await;
+        (resolved_bootnodes, resolved_trusted)
+    }))
+}
+
+/// Start resolving `/dnsaddr/` bootnodes over DNS-over-HTTPS for the browser
+/// client.
+///
+/// A browser cannot issue raw DNS TXT lookups, so the mainnet `/dnsaddr/`
+/// indirection is resolved over DoH (Cloudflare by default) with the embedded
+/// wss snapshot ([`vertex_swarm_spec::mainnet_wss_bootnodes`]) as the fallback
+/// whenever the live path yields nothing. Trusted peers are expected to be
+/// literal browser-dialable multiaddrs; any `/dnsaddr/` trusted entry is dropped
+/// because the browser resolves only the mainnet name.
+///
+/// Returns `None` when no bootnode needs resolution so the caller dials the
+/// literal addresses directly.
+#[cfg(target_arch = "wasm32")]
+fn start_bootnode_resolution(
+    bootnodes: Vec<Multiaddr>,
+    trusted_peers: Vec<Multiaddr>,
+) -> Option<BootnodeResolutionFuture> {
+    use libp2p::multiaddr::Protocol;
+    use vertex_net_dnsaddr_doh::{DohClient, resolve_mainnet_wss_bootnodes};
+
+    let is_dnsaddr = |addr: &Multiaddr| addr.iter().any(|p| matches!(p, Protocol::Dnsaddr(_)));
+
+    let needs_resolution = bootnodes.iter().any(is_dnsaddr);
+    let literal_trusted: Vec<Multiaddr> = trusted_peers
+        .into_iter()
+        .filter(|a| !is_dnsaddr(a))
+        .collect();
+    let literal_bootnodes: Vec<Multiaddr> = bootnodes
+        .iter()
+        .filter(|a| !is_dnsaddr(a))
+        .cloned()
+        .collect();
+
+    if !needs_resolution {
+        return None;
+    }
+
+    info!(
+        bootnodes = bootnodes.len(),
+        "Resolving dnsaddr bootnodes over DNS-over-HTTPS..."
+    );
+
+    Some(Box::pin(async move {
+        let client = DohClient::default();
+        let mut resolved =
+            resolve_mainnet_wss_bootnodes(&client, vertex_swarm_spec::mainnet_wss_bootnodes())
+                .await;
+        resolved.extend(literal_bootnodes);
+        (resolved, literal_trusted)
+    }))
 }

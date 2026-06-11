@@ -34,7 +34,9 @@ tokio-console = ["console-subscriber", "vertex-observability/tokio-console", "to
 
 [dependencies]
 # vertex - node infrastructure
-vertex-observability.workspace = true
+# The binary installs the metrics server and tracing, so it needs the native
+# server stack.
+vertex-observability = { workspace = true, features = ["server"] }
 vertex-node-api.workspace = true
 vertex-node-builder.workspace = true
 vertex-node-commands.workspace = true
