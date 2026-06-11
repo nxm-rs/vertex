@@ -85,6 +85,12 @@ impl<'a> CandidateSelector<'a> {
         self.bin_selections.get(&bin).copied().unwrap_or(0)
     }
 
+    /// The connected-peer index, with the selector's full borrow lifetime so
+    /// callers can hold it across mutable selector use.
+    pub(crate) fn connected_index(&self) -> &'a ProximityIndex {
+        self.connected_peers
+    }
+
     /// Try to add a peer as candidate (test-only, no ban/backoff check).
     ///
     /// Returns true if added, false if ineligible or at capacity.
@@ -167,6 +173,10 @@ pub(crate) fn select_neighborhood_candidates<I: SwarmIdentity>(
     max_bin: Bin,
 ) {
     let depth = selector.snapshot().limits.depth;
+    // Connected peers are dialable but useless as candidates; without the
+    // exclusion a bin with more connections than the requested count yields
+    // only already-connected overlays and starves.
+    let connected = selector.connected_index();
 
     // Iterate from highest PO down to depth
     for bin in neighborhood_bins(depth, max_bin).rev() {
@@ -186,7 +196,11 @@ pub(crate) fn select_neighborhood_candidates<I: SwarmIdentity>(
         }
 
         // Get peers from this bin (LRU order via KnownPeers)
-        for peer in peer_manager.dialable_overlays_in_bin(bin, selector.remaining()) {
+        for peer in
+            peer_manager.dialable_overlays_in_bin_excluding(bin, selector.remaining(), |overlay| {
+                connected.exists(overlay)
+            })
+        {
             if !selector.try_add_with_bin_capacity(peer, bin, effective, peer_manager) {
                 continue;
             }
@@ -232,6 +246,10 @@ pub(crate) fn select_balanced_candidates<I: SwarmIdentity>(
     // Sort by PO descending (prioritize higher bins)
     bin_stats.sort_by_key(|b| std::cmp::Reverse(b.0));
 
+    // See select_neighborhood_candidates: exclude connected peers from the
+    // candidate supply or saturating bins starve their own refill.
+    let connected = selector.connected_index();
+
     for (bin, effective, deficit) in bin_stats {
         if selector.is_full() {
             break;
@@ -241,7 +259,9 @@ pub(crate) fn select_balanced_candidates<I: SwarmIdentity>(
         let to_add = deficit.min(selector.remaining());
         let mut added = 0;
 
-        for peer in peer_manager.dialable_overlays_in_bin(bin, to_add) {
+        for peer in peer_manager
+            .dialable_overlays_in_bin_excluding(bin, to_add, |overlay| connected.exists(overlay))
+        {
             if added >= to_add || selector.is_full() {
                 break;
             }
@@ -269,6 +289,55 @@ mod tests {
 
     fn test_proximity_index() -> ProximityIndex {
         ProximityIndex::new(OverlayAddress::from([0u8; 32]), 31, 0)
+    }
+
+    #[test]
+    fn test_balanced_selection_skips_connected_supply() {
+        use vertex_swarm_test_utils::{MockIdentity, make_swarm_peer_minimal};
+
+        // Regression: connected peers are hot and dialable, so without the
+        // exclusion they fill the candidate slice first and a bin with more
+        // connections than its deficit yields no usable candidates, starving
+        // refill (observed live: every bin froze once connected >= deficit).
+        let identity = MockIdentity::with_first_byte(0x00);
+        let peer_manager = PeerManager::new(&identity);
+
+        // Seven known bin-0 peers; the first five are already connected.
+        let overlays: Vec<OverlayAddress> = (0..7u8).map(|i| make_overlay(0x80 + i)).collect();
+        for i in 0..7u8 {
+            peer_manager.store_discovered_peer(make_swarm_peer_minimal(0x80 + i));
+        }
+        let connected_index = test_proximity_index();
+        for overlay in overlays.iter().take(5) {
+            connected_index.add(*overlay).expect("add connected");
+        }
+
+        let limits = DepthAwareLimits::new(160, 3);
+        let snapshot = CandidateSnapshot {
+            limits: LimitsSnapshot::capture(&limits, d(8)),
+            in_progress: HashSet::new(),
+            queued: HashSet::new(),
+        };
+        let mut selector = CandidateSelector::new(&snapshot, &connected_index, 32);
+
+        // Bin 0 holds 5 connected against a saturation-floored target of 8:
+        // deficit 3, and exactly two unconnected candidates are known.
+        select_balanced_candidates(&mut selector, &peer_manager, |bin| {
+            if bin == b(0) { 5 } else { 0 }
+        });
+
+        let candidates = selector.finish();
+        assert_eq!(
+            candidates.len(),
+            2,
+            "the unconnected peers must be selected despite connected > deficit"
+        );
+        for c in &candidates {
+            assert!(
+                overlays.iter().skip(5).any(|o| o == c),
+                "selected a connected peer"
+            );
+        }
     }
 
     #[test]

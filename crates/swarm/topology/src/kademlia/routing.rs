@@ -1005,8 +1005,8 @@ mod tests {
         // At depth 8, targets should vary by bin
         // Bin 7: 160 × 8 / 36 = 35
         assert_eq!(routing.config.limits.target(b(7), d(8)), 35);
-        // Bin 0: 160 × 1 / 36 = 4
-        assert_eq!(routing.config.limits.target(b(0), d(8)), 4);
+        // Bin 0: taper gives 160 × 1 / 36 = 4, floored at saturation (8)
+        assert_eq!(routing.config.limits.target(b(0), d(8)), 8);
         // Neighborhood (bin >= depth) returns MAX
         assert_eq!(routing.config.limits.target(b(8), d(8)), usize::MAX);
     }
@@ -1052,7 +1052,11 @@ mod tests {
     #[test]
     fn test_eviction_candidates_handshaking_first() {
         let base = SwarmAddress::with_first_byte(0x00);
-        let config = KademliaConfig::default(); // nominal=3, total_target=160
+        // Pin bootstrap_target (the trim floor) to 4 so a small bin-0
+        // population yields a surplus; this also clamps the test saturation
+        // floor to 4, keeping the depth-8 bin-0 target at 4 as the original
+        // scenario assumed.
+        let config = KademliaConfig::default().with_bootstrap_target(4);
         let (routing, _pm) = make_routing(base, config);
 
         // Place 5 active peers in bin 0 (bin=0)
@@ -1094,7 +1098,8 @@ mod tests {
     #[test]
     fn test_eviction_candidates_active_lowest_score() {
         let base = SwarmAddress::with_first_byte(0x00);
-        let config = KademliaConfig::default(); // nominal=3, total_target=160
+        // Trim floor pinned to 4; see test_eviction_candidates_handshaking_first.
+        let config = KademliaConfig::default().with_bootstrap_target(4);
         let (routing, _pm) = make_routing(base, config);
 
         // Place 6 active peers in bin 0
@@ -1123,7 +1128,8 @@ mod tests {
     #[test]
     fn test_eviction_prefers_least_reachable() {
         let base = SwarmAddress::with_first_byte(0x00);
-        let (routing, _pm) = make_routing(base, KademliaConfig::default());
+        // Trim floor pinned to 4; see test_eviction_candidates_handshaking_first.
+        let (routing, _pm) = make_routing(base, KademliaConfig::default().with_bootstrap_target(4));
 
         // 6 active peers in bin 0; at depth 8 the target is 4, so surplus is 2.
         let peers: Vec<_> = (0..6)
@@ -1160,7 +1166,8 @@ mod tests {
         use crate::PeerReachability;
 
         let base = SwarmAddress::with_first_byte(0x00);
-        let (routing, _pm) = make_routing(base, KademliaConfig::default());
+        // Trim floor pinned to 4; see test_eviction_candidates_handshaking_first.
+        let (routing, _pm) = make_routing(base, KademliaConfig::default().with_bootstrap_target(4));
 
         // 6 active peers in bin 0; at depth 8 the target is 4, so surplus is 2.
         let peers: Vec<_> = (0..6)
@@ -1197,7 +1204,8 @@ mod tests {
         use crate::PeerReachability;
 
         let base = SwarmAddress::with_first_byte(0x00);
-        let (routing, _pm) = make_routing(base, KademliaConfig::default());
+        // Trim floor pinned to 4; see test_eviction_candidates_handshaking_first.
+        let (routing, _pm) = make_routing(base, KademliaConfig::default().with_bootstrap_target(4));
 
         // 5 active peers in bin 0; at depth 8 the target is 4, so surplus is 1.
         let peers: Vec<_> = (0..5)
@@ -1234,9 +1242,13 @@ mod tests {
     #[test]
     fn test_eviction_candidates_neighborhood_never_evicted() {
         let base = SwarmAddress::with_first_byte(0x00);
-        // Small total target so below-depth bins overflow their tapered target
-        // and actually yield eviction candidates.
-        let config = KademliaConfig::default().with_total_target(8);
+        // Small total target plus a trim floor of 6 so below-depth bins
+        // (8 connected each) overflow and actually yield eviction candidates,
+        // while depth recomputation still sees them as saturated (spec
+        // saturation is 8).
+        let config = KademliaConfig::default()
+            .with_total_target(8)
+            .with_bootstrap_target(6);
         let (routing, _pm) = make_routing(base, config);
 
         let connect = |peer: OverlayAddress| {

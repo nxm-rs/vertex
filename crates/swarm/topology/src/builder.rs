@@ -11,7 +11,7 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::info;
 use vertex_net_dialer::{DialTracker, DialTrackerConfig};
 use vertex_net_local::LocalCapabilities;
-use vertex_swarm_api::{PeerConfigValues, SwarmBootnodeConfig, SwarmIdentity};
+use vertex_swarm_api::{PeerConfigValues, SwarmBootnodeConfig, SwarmIdentity, SwarmSpec};
 use vertex_swarm_net_handshake::HANDSHAKE_TIMEOUT;
 use vertex_swarm_net_identify as identify;
 use vertex_swarm_peer_manager::{PeerManager, PeerManagerConfig};
@@ -133,11 +133,14 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
 
         let lifecycle_rx = peer_manager.subscribe();
 
-        let routing = KademliaRouting::new(
-            self.identity.clone(),
-            self.config.kademlia.clone(),
-            peer_manager.clone(),
-        );
+        // Allocation floors and depth recomputation must use the same
+        // saturation threshold (see the DepthAwareLimits invariants), so the
+        // spec value overrides whatever the kademlia config carried.
+        let mut kademlia_config = self.config.kademlia.clone();
+        kademlia_config.limits = kademlia_config.limits.with_saturation(usize::from(
+            SwarmIdentity::spec(&self.identity).saturation_peers(),
+        ));
+        let routing = KademliaRouting::new(self.identity.clone(), kademlia_config, peer_manager.clone());
 
         let local_capabilities = Arc::new(LocalCapabilities::new());
 
