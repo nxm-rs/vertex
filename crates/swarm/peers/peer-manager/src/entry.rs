@@ -15,7 +15,6 @@ use vertex_swarm_api::SwarmScoringEvent;
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_score::{PeerScore, ScoreChange, SwarmPeerScore, SwarmScoringConfig};
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
-use web_time::{SystemTime, UNIX_EPOCH};
 
 /// Exclusive health state for a peer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,14 +102,11 @@ pub struct PeerSnapshot {
 
 /// Current wall-clock time in unix seconds.
 ///
-/// Uses `web_time` so the same code path compiles for native targets (where
-/// it is a re-export of `std::time`) and for wasm32 (where the browser clock
-/// backs it).
+/// Delegates to [`vertex_util_runtime::time::now_unix_secs`], the single
+/// cfg-gated clock source for the workspace (native `std::time`, browser clock
+/// on wasm32).
 pub(crate) fn unix_timestamp_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    vertex_util_runtime::time::now_unix_secs()
 }
 
 pub(crate) fn jitter_seed_from_overlay(overlay: &OverlayAddress) -> u64 {

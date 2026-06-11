@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use libp2p::{PeerId, swarm::ConnectionId};
 use parking_lot::RwLock;
-use web_time::Instant;
+use vertex_util_runtime::time::Instant;
 
 use crate::ActivateResult;
 use crate::ConnectionDirection;
