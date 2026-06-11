@@ -18,8 +18,17 @@ const DEFAULT_P2P_PORT: u16 = 1634;
 /// Default listen address.
 const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0";
 
-/// Default maximum peers.
-const DEFAULT_MAX_PEERS: usize = 50;
+/// Default maximum established connections, enforced at the transport layer
+/// by the swarm's connection-limits behaviour.
+///
+/// This is a resource backstop, not a topology-shaping knob: the kademlia
+/// topology already budgets its own dials (a 160-peer taper across balanced
+/// bins by default) and additionally connects to every available
+/// neighborhood peer and accepts a few inbound per bin above target. A
+/// healthy saturated table therefore sits in the 200-300 connection range,
+/// so the transport cap defaults comfortably above that. Setting it near or
+/// below topology's own totals starves the routing table and stalls depth.
+const DEFAULT_MAX_PEERS: usize = 400;
 
 /// Default idle timeout in seconds.
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 60;
@@ -134,7 +143,11 @@ pub struct NetworkArgs {
     #[serde(default = "default_mdns")]
     pub mdns: bool,
 
-    /// Maximum number of peers.
+    /// Maximum number of established connections (transport-level hard cap).
+    ///
+    /// Enforced by the swarm independently of kademlia bin logic. Lowering
+    /// this below the topology's own connection totals (about 200-300 for a
+    /// saturated table) limits routing table health.
     #[arg(long = "network.max-peers", default_value_t = DEFAULT_MAX_PEERS)]
     pub max_peers: usize,
 
@@ -298,6 +311,12 @@ impl TryFrom<&NetworkArgs> for NetworkConfig<KademliaConfig> {
     type Error = ConfigError;
 
     fn try_from(args: &NetworkArgs) -> Result<Self, Self::Error> {
+        // The cap is enforced at the transport layer, so zero would deny
+        // every connection and isolate the node. Fail fast instead.
+        if args.max_peers == 0 {
+            return Err(ConfigError::ZeroMaxPeers);
+        }
+
         let listen_addr_str = format!("/ip4/{}/tcp/{}", args.addr, args.port);
         let listen_addrs =
             vec![
@@ -642,6 +661,19 @@ mod tests {
 
         let result = NetworkConfig::try_from(&args);
         assert!(result.is_err());
+    }
+
+    /// The transport enforces max-peers as a hard cap, so a zero value would
+    /// isolate the node; configuration validation rejects it up front.
+    #[test]
+    fn network_config_fails_on_zero_max_peers() {
+        let args = NetworkArgs {
+            max_peers: 0,
+            ..Default::default()
+        };
+
+        let result = NetworkConfig::try_from(&args);
+        assert!(matches!(result, Err(ConfigError::ZeroMaxPeers)));
     }
 
     #[test]

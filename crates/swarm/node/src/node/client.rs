@@ -5,11 +5,13 @@
 //!
 //! Use this for nodes that need to read from and write to the Swarm network.
 
+use std::convert::Infallible;
 use std::sync::Arc;
 
 use eyre::Result;
 use futures::StreamExt;
 use libp2p::autonat::v2 as autonat;
+use libp2p::connection_limits;
 use libp2p::mdns;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::upnp;
@@ -38,6 +40,10 @@ use crate::{ClientHandle, ClientService};
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "ClientNodeEvent")]
 pub(crate) struct ClientNodeBehaviour<I: SwarmIdentity + Clone> {
+    /// Transport-level connection caps (total, per-peer, pending). Listed
+    /// first so a denied connection is rejected before the other behaviours
+    /// allocate per-connection state.
+    pub(crate) connection_limits: connection_limits::Behaviour,
     pub(crate) identify: identify::Behaviour,
     pub(crate) autonat_client: Toggle<autonat::client::Behaviour>,
     pub(crate) autonat_server: Toggle<autonat::server::Behaviour>,
@@ -52,10 +58,12 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
         local_public_key: PublicKey,
         topology: TopologyBehaviour<I>,
         nat: NatBehaviours,
+        connection_limits: connection_limits::Behaviour,
     ) -> Self {
         let agent_versions = topology.agent_versions();
         let peer_id = local_public_key.to_peer_id();
         Self {
+            connection_limits,
             // Identify advertises addresses scoped to each peer (see
             // `addresses_for_remote`), so a public peer never receives our
             // private or loopback addresses. A NAT'd node with no public address
@@ -85,6 +93,13 @@ pub enum ClientNodeEvent {
     Mdns(mdns::Event),
     Topology(()),
     Client(ClientEvent),
+}
+
+impl From<Infallible> for ClientNodeEvent {
+    fn from(event: Infallible) -> Self {
+        // The connection-limits behaviour never emits events.
+        match event {}
+    }
 }
 
 impl From<identify::Event> for ClientNodeEvent {
@@ -402,11 +417,14 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
         };
 
         let nat = NatBehaviours::from_config(network_config);
+        let connection_limits = super::base::build_connection_limits(network_config);
         let mut base = super::builder::build_base_node(
             infra,
             network_config,
             "Client node",
-            move |pk, topology| ClientNodeBehaviour::from_parts(pk, topology, nat),
+            move |pk, topology| {
+                ClientNodeBehaviour::from_parts(pk, topology, nat, connection_limits)
+            },
         )
         .await?;
 

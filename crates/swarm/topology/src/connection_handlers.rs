@@ -224,15 +224,18 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         // Release routing capacity for this failed dial
         if let Some(overlay) = &overlay {
             self.routing.release_dial(overlay);
+            // Backoff applies even to locally-denied dials: redialing while
+            // the transport cap is exhausted would be denied again, so pacing
+            // the retry is correct either way.
             self.peer_manager.record_dial_failure(overlay);
 
-            // Score penalty based on error type, through the single report path
-            let scoring_event = match &classified_error {
-                DialError::ConnectionRefused => SwarmScoringEvent::ConnectionRefused,
-                _ => SwarmScoringEvent::ConnectionTimeout,
-            };
-            self.peer_manager
-                .report_peer(overlay, scoring_event, ReportSource::Topology);
+            // Score penalty based on error type, through the single report
+            // path. Locally-denied dials carry no penalty: the peer was never
+            // contacted, so the failure says nothing about the peer.
+            if let Some(scoring_event) = scoring_event_for_dial_error(&classified_error) {
+                self.peer_manager
+                    .report_peer(overlay, scoring_event, ReportSource::Topology);
+            }
         }
 
         warn!(
@@ -312,6 +315,21 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     }
 }
 
+/// Map a classified dial error to the scoring event reported against the
+/// peer, or `None` when the failure is not attributable to the peer.
+///
+/// [`DialError::Denied`] means a local admission policy (the transport
+/// connection-limits cap) rejected the dial before any packet left the host;
+/// penalizing the peer for it would degrade and eventually ban peers purely
+/// because the local node was busy.
+pub(crate) fn scoring_event_for_dial_error(error: &DialError) -> Option<SwarmScoringEvent> {
+    match error {
+        DialError::Denied => None,
+        DialError::ConnectionRefused => Some(SwarmScoringEvent::ConnectionRefused),
+        _ => Some(SwarmScoringEvent::ConnectionTimeout),
+    }
+}
+
 /// Classify a libp2p dial error into a structured `DialError` variant.
 pub(crate) fn classify_dial_error(error: &libp2p::swarm::DialError) -> DialError {
     use libp2p::core::transport::TransportError;
@@ -357,9 +375,45 @@ pub(crate) fn classify_dial_error(error: &libp2p::swarm::DialError) -> DialError
         libp2p::swarm::DialError::Aborted | libp2p::swarm::DialError::DialPeerConditionFalse(_) => {
             DialError::Stale
         }
-        libp2p::swarm::DialError::Denied { .. } => DialError::NegotiationFailed,
+        // A composed behaviour (the transport connection-limits cap) denied
+        // the dial locally; the peer was never contacted.
+        libp2p::swarm::DialError::Denied { .. } => DialError::Denied,
         libp2p::swarm::DialError::NoAddresses => DialError::NoRoute,
         libp2p::swarm::DialError::LocalPeerId { .. }
         | libp2p::swarm::DialError::WrongPeerId { .. } => DialError::Other(format!("{error:?}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A dial denied by a composed admission behaviour (the transport
+    /// connection-limits cap) classifies as `Denied`, not as a peer-side
+    /// negotiation failure.
+    #[test]
+    fn denied_dial_classifies_as_denied() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("connection limit exceeded")]
+        struct Exceeded;
+
+        let error = libp2p::swarm::DialError::Denied {
+            cause: libp2p::swarm::ConnectionDenied::new(Exceeded),
+        };
+        assert_eq!(classify_dial_error(&error), DialError::Denied);
+    }
+
+    /// Locally-denied dials carry no score penalty; network failures do.
+    #[test]
+    fn scoring_event_skips_locally_denied_dials() {
+        assert_eq!(scoring_event_for_dial_error(&DialError::Denied), None);
+        assert_eq!(
+            scoring_event_for_dial_error(&DialError::ConnectionRefused),
+            Some(SwarmScoringEvent::ConnectionRefused)
+        );
+        assert_eq!(
+            scoring_event_for_dial_error(&DialError::Timeout),
+            Some(SwarmScoringEvent::ConnectionTimeout)
+        );
     }
 }

@@ -141,7 +141,10 @@ pub trait SwarmNetworkConfig {
     /// Whether peer discovery is enabled.
     fn discovery_enabled(&self) -> bool;
 
-    /// Maximum number of peer connections.
+    /// Maximum number of established peer connections.
+    ///
+    /// Enforced at the transport layer as a hard cap on total established
+    /// connections, independent of the topology's per-bin accounting.
     fn max_peers(&self) -> usize;
 
     /// Connection idle timeout.

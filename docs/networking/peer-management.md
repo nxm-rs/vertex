@@ -144,6 +144,21 @@ When the number of distinct overlays seen from one group within the window excee
 
 Consumers can query the tracker through `PeerManager::overlays_seen_from_ip` and `PeerManager::ip_cycling_suspected`; the planned inbound handshake rate limiter uses these to throttle signature-recovery work for suspect source IPs. Observability: the `peer_manager_tracked_ips` gauge and the `peer_manager_ip_cycling_detections_total` counter.
 
+## Transport connection limits
+
+The swarm composes `libp2p::connection_limits` into every node-type behaviour (bootnode, client, storer) as a transport-level backstop, enforced before any other behaviour allocates per-connection state. The caps, built in `vertex-swarm-node` from the network configuration:
+
+| Limit | Source | Default |
+|-------|--------|---------|
+| Established total | `--network.max-peers` | 400 |
+| Established per peer | constant | 2 |
+| Pending incoming | constant | 64 |
+| Pending outgoing | constant | 64 |
+
+Division of responsibility: topology owns connection composition (per-bin targets, saturation, inbound ceilings, trimming) and its steady-state totals sit well below the transport cap; the transport cap only bounds resource consumption (file descriptors, memory) when topology accounting is bypassed or overwhelmed. The per-peer cap of 2 tolerates the simultaneous-open race; topology closes duplicate connections itself. The pending-outgoing cap of 64 sits at twice the dialer's 32 concurrent in-flight dials to leave room for bootnode, mDNS, and operator-issued dials.
+
+A dial denied by the limits surfaces to topology as `DialError::Denied` and carries no score penalty: the peer was never contacted, so the failure says nothing about it. The peer still receives normal dial backoff, which paces retries while the cap is exhausted. The hive gossip verifier uses its own short-lived swarm and is not subject to the main swarm's limits.
+
 ## Thread Safety
 
 All types are `Send + Sync`. The design ensures:
