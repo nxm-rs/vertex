@@ -168,7 +168,7 @@ The swarm composes `libp2p::connection_limits` into every node-type behaviour (b
 
 Division of responsibility: topology owns connection composition (per-bin targets, saturation, inbound ceilings, trimming) and its steady-state totals sit well below the transport cap; the transport cap only bounds resource consumption (file descriptors, memory) when topology accounting is bypassed or overwhelmed. The per-peer cap of 2 tolerates the simultaneous-open race; topology closes duplicate connections itself. The pending-outgoing cap of 64 sits at twice the dialer's 32 concurrent in-flight dials to leave room for bootnode, mDNS, and operator-issued dials.
 
-A dial denied by the limits surfaces to topology as `DialError::Denied` and carries no score penalty: the peer was never contacted, so the failure says nothing about it. The peer still receives normal dial backoff, which paces retries while the cap is exhausted. The hive gossip verifier uses its own short-lived swarm and is not subject to the main swarm's limits.
+A dial denied by the limits surfaces to topology as `DialError::Denied` and carries no score penalty: the peer was never contacted, so the failure says nothing about it. The peer still receives normal dial backoff, which paces retries while the cap is exhausted. Gossip-admitted records are dialed through this same swarm and are subject to the same limits; there is no separate verification swarm.
 
 ## Thread Safety
 

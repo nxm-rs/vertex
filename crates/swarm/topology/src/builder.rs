@@ -19,7 +19,6 @@ use vertex_swarm_net_handshake::HANDSHAKE_TIMEOUT;
 use vertex_swarm_net_identify as identify;
 use vertex_swarm_peer_manager::{PeerManager, PeerManagerConfig};
 use vertex_swarm_peer_score::SwarmScoringConfig;
-use vertex_swarm_spec::{HasSpec, Spec};
 
 use crate::behaviour::{
     COMMAND_CHANNEL_CAPACITY, ConnectionRegistry, EVENT_CHANNEL_CAPACITY, LazyInterval, PeerStore,
@@ -40,12 +39,8 @@ use crate::profile::PacingProfile;
 /// [`TopologyBehaviour::spawn_tasks`] can start them later without re-deriving
 /// state from the behaviour.
 pub(crate) struct PendingTopologyTasks {
-    /// Network spec for the gossip task's ephemeral verifier identity.
-    spec: Arc<Spec>,
-    /// Tuning knobs for the gossip task and its verifier.
+    /// Tuning knobs for the gossip task.
     gossip_config: GossipConfig,
-    /// Shared local capability tracker, also held by the address manager.
-    local_capabilities: Arc<LocalCapabilities>,
     /// Task-side gossip channel endpoints.
     gossip_channels: GossipChannels,
     /// Profile-resolved cadence for the background connection evaluator.
@@ -122,10 +117,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
     /// [`TopologyBehaviour::spawn_tasks`] from within a tokio runtime to start
     /// the connection evaluator, interface watcher, and gossip tasks.
     /// Construction itself needs no runtime.
-    pub fn try_build(self) -> Result<(TopologyBehaviour<I>, TopologyHandle<I>), TopologyError>
-    where
-        I: HasSpec,
-    {
+    pub fn try_build(self) -> Result<(TopologyBehaviour<I>, TopologyHandle<I>), TopologyError> {
         let (event_tx, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let (command_tx, command_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
 
@@ -190,7 +182,6 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
             LocalAddressManager::disabled(local_capabilities.clone())
         });
 
-        let spec = <I as HasSpec>::spec(&self.identity).clone();
         let identity = Arc::new(self.identity);
 
         // Wire kademlia routing as the handshake admission gate so the
@@ -261,9 +252,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
             pending_nat_external_addrs,
             metrics,
             pending_tasks: Some(PendingTopologyTasks {
-                spec,
                 gossip_config,
-                local_capabilities,
                 gossip_channels,
                 evaluation_interval,
             }),
@@ -276,7 +265,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
 impl<I: SwarmIdentity + Clone + 'static> TopologyBehaviour<I> {
     /// Spawn the background tasks that drive this behaviour: the kademlia
     /// connection evaluator, the network interface watcher, and the gossip
-    /// task (peer exchange and verification).
+    /// task (peer exchange and record intake).
     ///
     /// Requires a [`vertex_tasks::TaskExecutor`] reachable through
     /// [`vertex_tasks::TaskExecutor::try_current`]. The captured task inputs
@@ -305,19 +294,16 @@ impl<I: SwarmIdentity + Clone + 'static> TopologyBehaviour<I> {
         // Spawn interface watcher for push-based subnet discovery.
         crate::tasks::spawn_interface_watcher(&executor);
 
-        // Spawn the gossip task (merged peer exchange + verification).
+        // Spawn the gossip task (peer exchange + record intake).
         spawn_gossip_task(
-            pending.spec,
             pending.gossip_config,
             self.identity.overlay_address(),
             self.peer_manager.clone(),
             self.connection_registry.clone(),
             self.evaluator_handle.clone(),
-            pending.local_capabilities,
             pending.gossip_channels,
             &executor,
-        )
-        .map_err(|e| TopologyError::TaskSpawn(e.to_string()))?;
+        );
 
         Ok(())
     }

@@ -102,6 +102,35 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             return;
         }
 
+        // An outbound dial was guided by a stored record; if the handshake
+        // asserts a different overlay, that record's address belongs to
+        // another peer. The peer that answered proceeds normally (and is
+        // stored and verified below); the record that pointed here is
+        // demoted: removed if it was an unverified gossip claim, or given a
+        // dial failure if it was verified once. The dialed overlay's
+        // handshake reservation is released since the completion below is
+        // keyed by the asserted overlay. This runs after the ban check: on
+        // the banned early return the close handler releases the dialed
+        // overlay's reservation itself, and reserving a slot for the
+        // asserted overlay there would leak it.
+        if let Some(dialed_overlay) = current_state.as_ref().and_then(|s| s.id())
+            && dialed_overlay != overlay
+        {
+            warn!(
+                %peer_id,
+                dialed = %dialed_overlay,
+                asserted = %overlay,
+                "handshake asserted a different overlay than the dialed record"
+            );
+            self.routing.release_handshake(&dialed_overlay);
+            self.peer_manager
+                .on_dialed_overlay_mismatch(&dialed_overlay);
+            // The asserted overlay holds no reservation of its own; account
+            // for it like an unsolicited inbound peer so the capacity
+            // counters stay symmetric with the disconnect path.
+            RoutingCapacity::reserve_inbound(&*self.routing, &overlay);
+        }
+
         // For inbound connections, check bin capacity and reserve a slot before
         // transitioning to active. Outbound connections already reserved capacity
         // at dial time via try_reserve_dial.

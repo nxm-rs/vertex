@@ -89,7 +89,7 @@ Selected candidates land in per-bin queues (`CandidateQueues`, bounded per bin) 
 The routing evaluator (`kademlia::task`) is a background task woken two ways:
 
 - A periodic tick every 5 seconds.
-- A debounced trigger (`RoutingEvaluatorHandle::trigger_evaluation`, 100 ms debounce) fired when capacity or supply changes: a handshake completes, a connection closes, a gossiped peer passes verification, or the node's network capability becomes known from its first listen address.
+- A debounced trigger (`RoutingEvaluatorHandle::trigger_evaluation`, 100 ms debounce) fired when capacity or supply changes: a handshake completes, a connection closes, a gossiped record is admitted to the peer table, or the node's network capability becomes known from its first listen address.
 
 The behaviour's poll loop runs its own tick at `DEFAULT_DIAL_INTERVAL` (5 seconds), which also triggers an evaluation round.
 
@@ -141,7 +141,7 @@ Explicitly configured (trusted) peers are never evicted. Evicted overlays are ma
 
 ## Gossip-driven supply
 
-The known-peer table that candidate selection draws from is fed by hive gossip. Peers learned through gossip are untrusted until a verification handshake on a separate lightweight swarm confirms their identity; only verified peers are stored in the `PeerManager`, and each newly verified peer triggers an evaluation round so fresh supply is considered immediately. The verification pipeline has its own admission caps, backoff, and ban damping, separate from the dial backoff described above.
+The known-peer table that candidate selection draws from is fed by hive gossip. Records learned through gossip pass full signature validation at the protocol layer and then enter the `PeerManager` as unverified entries, which are fully dialable: candidate selection treats them like any other supply, with no separate verification dial and no warm-up phase. The first real handshake both verifies the record and connects in one round trip, and that handshake is the verification (overlay, signature, and multiaddrs come from the peer itself). Unverified entries expire on a short failure budget so junk gossip cannot pollute supply, and a record whose dial answered as a different overlay is demoted (an unverified claim is removed; a once-verified peer takes a dial failure). A lightweight intake gate (per-overlay cooldown plus per-gossiper budget) bounds churn before admission, and each admitted record triggers an evaluation round so fresh supply is considered immediately.
 
 See [Hive Gossip Strategy](../swarm/hive-gossip.md) for the gossip rules, triggers, and configuration.
 

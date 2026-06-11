@@ -4,10 +4,8 @@ use vertex_net_local::IpCapability;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_peer::{AddressScope, SwarmPeer};
 use vertex_swarm_peer_manager::PeerManager;
-use vertex_swarm_peer_score::SwarmScoringEvent;
 use vertex_swarm_primitives::OverlayAddress;
 
-use super::events::VerificationResult;
 use crate::kademlia::peer_selection;
 
 /// Reachability profile of a gossip recipient.
@@ -30,19 +28,6 @@ impl RecipientProfile {
             .and_then(|p| p.max_scope())
             .unwrap_or(AddressScope::Public);
         Self { capability, scope }
-    }
-}
-
-/// Map a verification result to its corresponding scoring event.
-pub(crate) fn scoring_event_for(result: &VerificationResult) -> SwarmScoringEvent {
-    match result {
-        VerificationResult::Verified { .. } | VerificationResult::IdentityUpdated { .. } => {
-            SwarmScoringEvent::GossipVerified
-        }
-        VerificationResult::DifferentPeerAtAddress { .. } | VerificationResult::Failed { .. } => {
-            SwarmScoringEvent::GossipInvalid
-        }
-        VerificationResult::Unreachable { .. } => SwarmScoringEvent::GossipUnreachable,
     }
 }
 

@@ -14,8 +14,6 @@ vertex-metrics.workspace = true
 vertex-swarm-primitives.workspace = true
 vertex-swarm-api.workspace = true
 vertex-observability.workspace = true
-vertex-swarm-identity.workspace = true
-vertex-swarm-spec.workspace = true
 vertex-net-dialer.workspace = true
 vertex-net-local.workspace = true
 vertex-net-ratelimiter.workspace = true
@@ -66,6 +64,8 @@ vertex-net-dnsaddr.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time", "test-util"] }
+vertex-swarm-identity.workspace = true
+vertex-swarm-spec.workspace = true
 tracing-subscriber.workspace = true
 vertex-swarm-peer = { workspace = true, features = ["test-utils"] }
 vertex-swarm-test-utils = { workspace = true }
