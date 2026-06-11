@@ -19,7 +19,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 console_error_panic_hook = "0.1.7"
 tracing-wasm = "0.2.1"
-rand = { workspace = true }
+vertex-util-runtime = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 

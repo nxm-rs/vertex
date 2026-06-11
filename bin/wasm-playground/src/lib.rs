@@ -3,7 +3,6 @@ use std::convert::TryInto;
 use ethers_signers::LocalWallet;
 use ethers_signers::Signer;
 use postage::batch;
-use rand::RngCore;
 use tracing::{debug, error, info, trace, warn};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -257,11 +256,9 @@ fn main() -> Result<(), JsValue> {
     // the closure that runs when the private key "Generate" button is clicked
     let pk_input_clone = pk_input.clone();
     let pk_closure = Closure::wrap(Box::new(move |_event: Event| {
-        // Generate a private key
-        // use rand to get a random 32 byte array
-        let mut rng = rand::thread_rng();
+        // Generate a private key: a wasm-safe CSPRNG draw of 32 bytes.
         let mut pk = [0u8; 32];
-        rng.fill_bytes(&mut pk);
+        vertex_util_runtime::rand::fill_bytes(&mut pk);
         pk_input_clone.set_value(hex::encode(pk).as_str());
     }) as Box<dyn FnMut(Event)>);
 
@@ -271,11 +268,9 @@ fn main() -> Result<(), JsValue> {
     // the closure that runs when the batch id "Generate" button is clicked
     let batch_id_input_clone = batch_id_input.clone();
     let batch_id_closure = Closure::wrap(Box::new(move |_event: Event| {
-        // Generate a batch id
-        // use rand to get a random 32 byte array
-        let mut rng = rand::thread_rng();
+        // Generate a batch id: a wasm-safe CSPRNG draw of 32 bytes.
         let mut batch_id = [0u8; 32];
-        rng.fill_bytes(&mut batch_id);
+        vertex_util_runtime::rand::fill_bytes(&mut batch_id);
         batch_id_input_clone.set_value(hex::encode(batch_id).as_str());
     }) as Box<dyn FnMut(Event)>);
 
