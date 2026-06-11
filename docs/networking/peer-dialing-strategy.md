@@ -1,130 +1,143 @@
 # Peer Dialing Strategy
 
-Design notes for peer discovery, bootstrapping, and connection retry logic.
+How `vertex-swarm-topology` decides which peers to dial, how many connections each Kademlia bin holds, and how neighborhood depth and connection allocation stay coupled.
 
-## Goals
+The components involved:
 
-1. **Fast bootstrapping**: Connect to the network quickly on startup
-2. **Resilient retry**: Do not give up on peers that temporarily reject us
-3. **Efficient resource use**: Do not waste bandwidth on peers unlikely to accept
-4. **Bin coverage**: Maintain Kademlia bin targets for proper routing
+| Component | Crate | Role |
+|---|---|---|
+| `DepthAwareLimits` | `vertex-swarm-topology` (`kademlia::limits`) | Per-bin connection targets, trim floor, inbound ceiling |
+| `KademliaRouting` | `vertex-swarm-topology` (`kademlia::routing`) | Connected-peer table, depth recomputation, phase accounting, eviction candidates |
+| Candidate selection | `vertex-swarm-topology` (`kademlia::candidates`) | Picks dialable peers per bin under a per-round budget |
+| Routing evaluator | `vertex-swarm-topology` (`kademlia::task`) | Background task that runs evaluation rounds |
+| `PeerManager` | `vertex-swarm-peer-manager` | Known-peer table, dialable filtering, ban and backoff state |
+| `PeerBackoff` | `vertex-net-peer-backoff` | Exponential dial backoff with per-peer jitter |
+| `DialTracker` | `vertex-net-dialer` | In-flight dial tracking and stale-dial cleanup |
 
-## Why Peers Reject Connections
+Pacing specifics (evaluation cadence, per-round budgets, fixed connection counts) are expected to evolve when per-node-type connection profiles land; this page describes current behaviour only.
 
-A peer disconnecting or refusing a connection does not mean they are bad:
+## Connection lifecycle
 
-| Reason | Action |
-|--------|--------|
-| Peer is full (connection limit) | Retry later with backoff |
-| Transient network issue | Retry later with backoff |
-| Peer is restarting | Retry later with backoff |
-| Protocol mismatch | Mark as incompatible, deprioritize |
-| Peer banned us | Stop retrying (if detectable) |
-| Peer offline permanently | Eventually prune after many failures |
-
-**Key insight**: Most rejections are temporary. Aggressive deletion loses valuable peer knowledge.
-
-## Connection States
+Every outbound connection attempt moves through three phases tracked per bin by `KademliaRouting`:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Known
-    Known --> Connecting
-    Connecting --> Connected
-    Connecting --> Failed : dial failed
-    Connected --> Disconnected
-    Disconnected --> Failed : connection lost
-    Failed --> Known : after backoff expires
+    [*] --> Dialing : try_reserve_dial
+    Dialing --> Handshaking : connection established
+    Dialing --> [*] : dial failed (release + backoff)
+    Handshaking --> Active : handshake completed
+    Handshaking --> [*] : handshake failed or stale (release + backoff)
+    Active --> [*] : disconnected
 ```
 
-## Dial Tracking Fields
+The capacity question "how full is this bin?" is always answered with the effective count: dialing + handshaking + active. Reserving a `Dialing` slot before the dial starts means a burst of evaluation rounds cannot oversubscribe a bin; the slot is released on every failure path.
 
-The `PeerState` struct should include the following dial tracking fields:
+Inbound connections reserve no slot until the handshake event is processed, so the inbound admission check (`admission_within_capacity`) adds one to the effective count to model the slot that will be reserved on success. Outbound handshakes already hold a slot, so they check with no adjustment.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `last_dial_attempt` | `Option<Instant>` | When we last attempted to dial this peer |
-| `consecutive_failures` | `u32` | Consecutive dial failures; reset on success |
-| `total_dial_attempts` | `u64` | Total lifetime dial attempts |
-| `total_connections` | `u64` | Total lifetime successful connections |
-| `last_connected` | `Option<Instant>` | Last successful connection time |
+## Per-bin allocation
 
-## Exponential Backoff
+`DepthAwareLimits` is the single source of per-bin numbers. It is stateless: callers pass the depth explicitly. Defaults:
 
-After a failed dial, wait before retrying. The delay is calculated as the minimum of `base_delay * 2^consecutive_failures` and `max_delay`, where `base_delay` is 30 seconds and `max_delay` is 1 hour.
+| Constant | Value | Meaning |
+|---|---|---|
+| `DEFAULT_TOTAL_TARGET` | 160 | Total connected-peer dial budget across balanced bins |
+| `DEFAULT_NOMINAL` | 3 | Minimum known peers per bin for depth estimation |
+| `DEFAULT_SATURATION_PEERS` (`vertex-swarm-api`) | 8 | Per-bin saturation threshold; floors every balanced-bin target |
+| `DEFAULT_BOOTSTRAP_TARGET` | 18 | Per-bin fill target at depth 0; also the trim floor and minimum inbound ceiling |
+| `DEFAULT_INBOUND_HEADROOM` | 4 | Inbound slots accepted above a bin's dial target |
 
-| Failures | Delay |
-|----------|-------|
-| 0 | 0 (first attempt) |
-| 1 | 30s |
-| 2 | 1m |
-| 3 | 2m |
-| 4 | 4m |
-| 5 | 8m |
-| 6 | 16m |
-| 7+ | 1h (capped) |
+`DepthAwareLimits::target(bin, depth)` returns the dial target for a bin:
 
-**Jitter**: Add random jitter (0-25% of delay) to prevent thundering herd.
+- **Depth 0 (bootstrap):** every bin fills toward `bootstrap_target.max(saturation)`. No neighborhood is established yet, so all bins are filled aggressively to push them past the saturation frontier and let depth climb. The target is bounded (not unlimited) so a node that has not yet established a neighborhood cannot be flooded.
+- **Neighborhood bins (`depth.contains(bin)`):** `usize::MAX`. The node connects to every available peer inside its neighborhood.
+- **Balanced bins (below depth):** a linear taper. Bin `i` gets weight `i + 1` out of a weight sum of `depth * (depth + 1) / 2`, applied to `total_target`, so deeper bins (scarcer, more valuable for routing) get more of the budget. The result is floored at `max(nominal, saturation)`.
 
-## Dial Candidate Selection
+The saturation floor is the depth-coupling invariant: depth is capped by the shallowest bin below saturation, so any allocation target below saturation would pin depth at that bin forever. The floor is structural inside `target()`, so no configuration can produce a deadlocking target.
 
-When Kademlia needs connections for a bin, candidates are selected by filtering known peers for dialability and backoff expiry, then sorting by priority, and taking up to a maximum number of candidates.
+Around the dial target sit two more levels, forming a per-bin band:
 
-The backoff check is straightforward: if a peer has never been dialled, it is immediately eligible. Otherwise, the elapsed time since the last attempt must exceed the calculated backoff delay.
+- `ceiling(bin, depth)` = `max(target + inbound_headroom, bootstrap_target)`. Inbound connections are accepted while the effective count is below this. Shallow bins whose dial target sits at the saturation floor still accept inbound up to the bootstrap level, so churn erodes them toward `bootstrap_target` rather than toward the depth frontier.
+- `surplus(bin, depth, connected)` = `connected - max(target, bootstrap_target)`, clamped at zero. Trimming reclaims peers only above this floor. The taper target is a dial goal, not an eviction bound: evicting down to it after a depth increase would cut shallow bins below saturation and immediately collapse depth back to the cut bin.
 
-The priority ordering (highest priority first) is:
+In short: dial toward `max(taper, saturation)`, accept inbound up to `max(target + headroom, bootstrap_target)`, trim only above `max(target, bootstrap_target)`. Neighborhood bins are unbounded at every level and never produce trim surplus.
 
-| Priority | Criterion |
-|----------|-----------|
-| 1 | Never attempted (newest discoveries first for freshness) |
-| 2 | Previously connected (proven to work) |
-| 3 | Fewer consecutive failures |
-| 4 | Longer since last attempt (LRU) |
+## Depth recomputation
 
-## Bootstrapping Strategy
+`KademliaRouting::recalc_depth` runs on every connect and disconnect. It feeds the connected-peer bin sizes to `nectar_primitives::recompute_neighborhood_depth`, which walks bins shallow to deep to find the unsaturated frontier and anchors the neighborhood by the low watermark (`SwarmSpec::neighborhood_low_watermark`, default 3 from `DEFAULT_NEIGHBORHOOD_LOW_WATERMARK` in `vertex-swarm-api`). A gap below the deepest populated bin pulls depth shallower rather than reporting a too-deep neighborhood.
 
-### Phase 1: Bootnode Connection
+The saturation argument comes from `DepthAwareLimits::saturation()`, not read separately from the spec, so the depth frontier and the allocation floors can never disagree on any construction path. Production threads `SwarmSpec::saturation_peers()` into the limits once, at behaviour construction.
 
-1. Dial bootnodes in parallel (configured list)
-2. Stop after reaching `min_bootnode_connections` (default: 3)
-3. Do not wait for slow bootnodes; move on after first success
+For candidate selection (not for the reported depth), evaluation uses an effective depth: the maximum of the connected depth and a depth estimated from the known-peer table (the highest bin holding at least `nominal` known peers). This lets a bootstrapping node allocate as if its neighborhood were already established once it knows enough peers, instead of dialing every bin flat.
 
-### Phase 2: Hive Discovery
+## Candidate selection
 
-1. Connected peers send us their known peers via Hive protocol
-2. Store dialable peers in PeerManager with multiaddrs
-3. Add stored overlays to Kademlia (only those we can actually dial)
-4. Kademlia evaluates which bins need filling
+The background evaluator runs `KademliaRouting::evaluate_connections`. Each round:
 
-### Phase 3: Bin Filling
+1. Captures a `CandidateSnapshot`: the limits at the effective depth, the set of peers currently in a connection phase, and the set already queued for dialing. Ban and backoff status are checked live against the `PeerManager` rather than snapshotted.
+2. Creates a `CandidateSelector` with a budget of `max_neighbor_candidates + max_balanced_candidates` (16 + 16 by default, set in `KademliaConfig`), roughly one slot per bin so a single round can make progress everywhere without flooding the dialer.
+3. `select_neighborhood_candidates` runs first: it walks neighborhood bins from the highest proximity order down to depth, skipping bins that do not need more peers.
+4. `select_balanced_candidates` runs on the remaining budget: it computes each balanced bin's deficit against its target, sorts bins by proximity order descending, and fills deficits in that order. At depth 0 it does nothing (the neighborhood pass already covers every bin).
 
-1. Kademlia identifies bins below target (e.g., < 4 connected)
-2. For each underfilled bin, select dial candidates (respecting backoff)
-3. Dial candidates, update tracking on success/failure
-4. TopologyBehaviour initiates dials after evaluating connection candidates
+Both passes draw supply from `PeerManager::dialable_overlays_in_bin_excluding`, which filters the known-peer table for peers that are not banned and not in backoff, and additionally excludes overlays the caller is already connected to. The exclusion matters: connected peers are hot in the table and trivially dialable, so without it a bin with more connections than the requested count would yield only already-connected overlays and starve its own refill.
 
-### Continuous Maintenance
+A peer becomes a candidate only if it passes every check: not already connected, not in a connection phase, not already queued, not banned, not in backoff, not a duplicate within the round, and its bin still needs more peers counting candidates already selected this round (`needs_more` against effective count plus per-bin selections).
 
-After initial bootstrap:
+Selected candidates land in per-bin queues (`CandidateQueues`, bounded per bin) and are drained by the behaviour's poll loop, which resolves them to full peer records, filters by advertisability, and dials them with `DialReason::Discovery`.
 
-1. **Periodic evaluation**: Kademlia's manage loop checks bin health
-2. **Event-driven dialing**: New hive peers trigger immediate evaluation
-3. **Backoff expiry**: Peers become dialable again after backoff
-4. **Connection churn**: Disconnections trigger replacement searches
+## Dialing and pacing
 
-## Pruning Strategy
+The routing evaluator (`kademlia::task`) is a background task woken two ways:
 
-Peers should not be deleted aggressively. A peer is a candidate for pruning only when all of the following conditions are met: it has not been connected in the last 24 hours, it has at least 10 consecutive failures, it has never had a successful connection, and it was discovered more than 7 days ago.
+- A periodic tick every 5 seconds.
+- A debounced trigger (`RoutingEvaluatorHandle::trigger_evaluation`, 100 ms debounce) fired when capacity or supply changes: a handshake completes, a connection closes, a gossiped peer passes verification, or the node's network capability becomes known from its first listen address.
 
-**Rationale**: A peer we connected to yesterday might be temporarily offline. A peer we discovered a week ago and never successfully connected to is likely invalid.
+The behaviour's poll loop runs its own tick at `DEFAULT_DIAL_INTERVAL` (5 seconds), which also triggers an evaluation round.
 
-## Metrics to Track
+Before a dial is issued, `RoutingCapacity::try_reserve_dial` must succeed: it refuses peers already in a connection phase and bins that no longer need more peers at the current depth. The reservation is released on every failure path. A dial failure is additionally recorded against backoff when the attempt actually failed (no reachable addresses, transport-level dial failure, handshake failure, or staleness), but not when dispatch merely skipped the peer (already tracked, or in backoff or banned at dispatch time).
+
+In-flight dials are tracked by `DialTracker` (`vertex-net-dialer`), whose pending TTL and in-flight timeout both reuse `vertex_swarm_net_handshake::HANDSHAKE_TIMEOUT` (15 seconds, the bound on the whole handshake exchange). The behaviour's periodic tick sweeps stale dials and stale pending handshakes, releasing their capacity slots and recording dial failures.
+
+Bootstrap is not a special mode of the evaluator: bootnodes and trusted peers from configuration are dialed directly at startup (with dnsaddr resolution where needed) as `DialTarget::Unknown`, since their overlay addresses are not yet known and no capacity reservation applies. Everything after that first contact flows through gossip supply and the evaluation loop above.
+
+## Backoff
+
+Dial backoff lives in `PeerBackoff` (`vertex-net-peer-backoff`) and is tracked per peer by the `PeerManager`:
+
+- Exponential: `base * 2^(failures - 1)`, base 30 seconds (`PeerBackoff::DEFAULT_BASE_SECS`), capped at 1 hour (`PeerBackoff::DEFAULT_MAX_SECS`).
+- Deterministic per-peer jitter of +/-25%, seeded from the peer so the same peer always gets the same factor while different peers spread their retries.
+- Reset on a successful handshake; re-armed when a fresh connection disconnects early (the success would otherwise have cleared it) and when scoring crosses the disconnect threshold.
+- Runtime-only: backoff state, like scores and bans, never survives a restart (see [Peer Management](peer-management.md)).
+
+A peer in backoff is excluded from the dialable supply, so candidate selection never has to re-check it.
+
+## Trimming and eviction
+
+When depth increases, balanced bins that were filled under the previous depth's larger targets may now exceed their band. Both depth-change sites (handshake completion in the protocol handlers and connection close in the connection handlers) call `trim_overpopulated_bins` only when the new depth is strictly greater than the old.
+
+`KademliaRouting::eviction_candidates` computes each balanced bin's surplus from its evictable population only: handshaking plus active connections, excluding in-flight dials. A dial holds a capacity slot but cannot be evicted; counting it into the surplus would force active evictions to pay for slots the evictable population does not own, cutting the bin below saturation and flapping depth. Neighborhood bins never produce candidates.
+
+Victims are chosen per bin in order:
+
+1. Handshaking peers first; they are not yet established.
+2. Active peers ranked lowest first by a caller-supplied rank, with ties broken by lowest peer score. The topology behaviour ranks by `(reachability, is_local)`: least-reachable peers go first, and when local-peer trust is enabled a same-subnet peer outranks a remote peer of equal reachability without ever overriding a liveness demotion.
+
+Explicitly configured (trusted) peers are never evicted. Evicted overlays are marked so their disconnect is attributed to bin trimming rather than peer misbehaviour, which exempts them from the early-disconnect score penalty.
+
+## Gossip-driven supply
+
+The known-peer table that candidate selection draws from is fed by hive gossip. Peers learned through gossip are untrusted until a verification handshake on a separate lightweight swarm confirms their identity; only verified peers are stored in the `PeerManager`, and each newly verified peer triggers an evaluation round so fresh supply is considered immediately. The verification pipeline has its own admission caps, backoff, and ban damping, separate from the dial backoff described above.
+
+See [Hive Gossip Strategy](../swarm/hive-gossip.md) for the gossip rules, triggers, and configuration.
+
+## Metrics
+
+The dialing path emits, among others:
 
 | Metric | Purpose |
-|--------|---------|
-| `peer_dial_attempts_total` | Total dial attempts (label: result) |
-| `peer_dial_backoff_seconds` | Histogram of backoff durations |
-| `peer_consecutive_failures` | Histogram of failure counts |
-| `kademlia_bin_fill_ratio` | Connected/target per bin |
-| `peer_store_size` | Total known peers |
-| `peer_dialable_count` | Peers eligible for dialing now |
+|---|---|
+| `topology_phase_transitions_total` | Connection phase transitions, labelled `from`/`to` |
+| `topology_dial_failures_total` | Dial failures, labelled by reason and error type |
+| `topology_depth` plus `topology_depth_{increases,decreases}_total` | Depth value and change direction |
+| `topology_bin_{connected_peers,known_peers,dialing,handshaking,active,effective}` | Per-bin populations, labelled `po`, pushed on connect/disconnect |
+
+Readiness questions ("am I saturated yet?") are answered by the deterministic readiness surface on `TopologyHandle`, which snapshots exact counts from the routing table rather than metrics.
