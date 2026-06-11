@@ -49,9 +49,6 @@ vertex-swarm-spec.workspace = true
 vertex-swarm-bandwidth.workspace = true
 vertex-tasks.workspace = true
 
-## p2p
-libp2p.workspace = true
-
 ## crypto
 alloy-primitives.workspace = true
 
@@ -81,6 +78,22 @@ vertex-node-api = { workspace = true, optional = true }
 vertex-swarm-bandwidth-pricing = { workspace = true, optional = true, features = ["cli"] }
 vertex-swarm-localstore = { workspace = true, optional = true }
 vertex-swarm-redistribution = { workspace = true, optional = true }
+
+# p2p: the native transport pulls tcp/dns/mdns/upnp/autonat; the browser build
+# trims to the wire-protocol features and dials over a websocket transport.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+libp2p.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+libp2p = { git = "https://github.com/libp2p/rust-libp2p", rev = "3e72d4c071d5ec8815d2f6f7ee3602600ff51798", default-features = false, features = [
+    "noise",
+    "yamux",
+    "macros",
+    "ecdsa",
+    "identify",
+    "ping",
+] }
+libp2p-websocket-websys.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
