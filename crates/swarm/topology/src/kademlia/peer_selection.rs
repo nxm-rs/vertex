@@ -42,7 +42,7 @@ pub(crate) fn known_neighborhood_peers<I: SwarmIdentity>(
     let max_bin = Bin::new(peer_manager.index().max_po()).unwrap_or(Bin::MAX);
     let mut overlays = Vec::new();
     for bin in neighborhood_bins(depth, max_bin) {
-        for overlay in peer_manager.storer_overlays_in_bin(bin, usize::MAX) {
+        for overlay in peer_manager.storer_overlays_in_bin(bin) {
             if exclude.is_some_and(|e| &overlay == e) {
                 continue;
             }
@@ -54,7 +54,7 @@ pub(crate) fn known_neighborhood_peers<I: SwarmIdentity>(
 
 /// 3-phase distant selection: close-to-recipient + per-bin + fill.
 ///
-/// Returns unfiltered peers with their bin — caller applies IP/scope filtering.
+/// Returns unfiltered peers with their bin; caller applies IP/scope filtering.
 pub(crate) fn select_for_distant<I: SwarmIdentity>(
     local_overlay: &OverlayAddress,
     peer_manager: &PeerManager<I>,

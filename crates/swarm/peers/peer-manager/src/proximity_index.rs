@@ -162,37 +162,14 @@ impl ProximityIndex {
     }
 
     /// Get all addresses in a specific bin (insertion order).
+    ///
+    /// Returns a snapshot taken under the bin's read lock; the result does
+    /// not observe later membership changes. With a nonzero `max_per_bin`
+    /// the snapshot is bounded by that cap.
     pub fn peers_in_bin(&self, bin: Bin) -> Vec<OverlayAddress> {
         self.bins
             .get(bin.as_index())
             .map_or_else(Vec::new, |bucket| bucket.read().iter().copied().collect())
-    }
-
-    /// Get up to `count` addresses from a bin that match `predicate`
-    /// (insertion order).
-    ///
-    /// Iterates under the read lock with early exit once `count` matches are found,
-    /// avoiding materializing the entire bin into a Vec.
-    pub fn filter_bin(
-        &self,
-        bin: Bin,
-        count: usize,
-        mut predicate: impl FnMut(&OverlayAddress) -> bool,
-    ) -> Vec<OverlayAddress> {
-        let Some(bucket) = self.bins.get(bin.as_index()) else {
-            return Vec::new();
-        };
-        let bucket = bucket.read();
-        let mut result = Vec::with_capacity(count.min(bucket.len()));
-        for addr in bucket.iter() {
-            if result.len() >= count {
-                break;
-            }
-            if predicate(addr) {
-                result.push(*addr);
-            }
-        }
-        result
     }
 
     /// Iterate from shallowest to deepest proximity order (ascending PO).
@@ -578,35 +555,13 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_bin() {
-        let index = ProximityIndex::new(local_overlay(), 31, 0);
+    fn test_peers_in_bin_empty_and_out_of_range() {
+        let index = ProximityIndex::new(local_overlay(), 3, 0);
 
-        // All in bin 0
-        let addr1 = OverlayAddress::from([0x80; 32]);
-        let addr2 = OverlayAddress::from([0xc0; 32]);
-        let addr3 = OverlayAddress::from([0xa0; 32]);
-        let addr4 = OverlayAddress::from([0xb0; 32]);
+        // Empty bin yields an empty snapshot.
+        assert!(index.peers_in_bin(b(2)).is_empty());
 
-        index.add(addr1).unwrap();
-        index.add(addr2).unwrap();
-        index.add(addr3).unwrap();
-        index.add(addr4).unwrap();
-
-        // Filter with predicate that rejects addr2
-        let result = index.filter_bin(b(0), 3, |a| *a != addr2);
-        assert_eq!(result.len(), 3);
-        assert!(!result.contains(&addr2));
-
-        // Filter with count limit (early exit)
-        let result = index.filter_bin(b(0), 1, |_| true);
-        assert_eq!(result.len(), 1);
-
-        // Filter with no matches
-        let result = index.filter_bin(b(0), 10, |_| false);
-        assert!(result.is_empty());
-
-        // Filter on empty bin
-        let result = index.filter_bin(b(5), 10, |_| true);
-        assert!(result.is_empty());
+        // A bin index beyond max_po is out of range, not a panic.
+        assert!(index.peers_in_bin(b(31)).is_empty());
     }
 }

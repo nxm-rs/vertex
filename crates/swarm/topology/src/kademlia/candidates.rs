@@ -174,9 +174,8 @@ pub(crate) fn select_neighborhood_candidates<I: SwarmIdentity>(
     max_bin: Bin,
 ) {
     let depth = selector.snapshot().limits.depth;
-    // Connected peers are dialable but useless as candidates; without the
-    // exclusion a bin with more connections than the requested count yields
-    // only already-connected overlays and starves.
+    // Connected peers are dialable but useless as candidates; exclude them
+    // so the supply yields only overlays the node can actually dial.
     let connected = selector.connected_index();
 
     // Iterate from highest PO down to depth
@@ -196,12 +195,22 @@ pub(crate) fn select_neighborhood_candidates<I: SwarmIdentity>(
             continue;
         }
 
-        // Get peers from this bin (LRU order via KnownPeers)
-        for peer in
-            peer_manager.dialable_overlays_in_bin_excluding(bin, selector.remaining(), |overlay| {
-                connected.exists(overlay)
-            })
+        // Pull lazily from the bin's dialable supply until the selector
+        // fills or the bin reaches its target; rejected peers (queued,
+        // duplicate) simply advance to the next one.
+        for peer in peer_manager
+            .dialable_overlays_in_bin_excluding(bin, |overlay| connected.exists(overlay))
         {
+            if selector.is_full() {
+                break;
+            }
+            if !selector
+                .snapshot()
+                .limits
+                .needs_more(bin, effective + selector.bin_selected(bin))
+            {
+                break;
+            }
             if !selector.try_add_with_bin_capacity(peer, bin, effective, peer_manager) {
                 continue;
             }
@@ -261,7 +270,7 @@ pub(crate) fn select_balanced_candidates<I: SwarmIdentity>(
         let mut added = 0;
 
         for peer in peer_manager
-            .dialable_overlays_in_bin_excluding(bin, to_add, |overlay| connected.exists(overlay))
+            .dialable_overlays_in_bin_excluding(bin, |overlay| connected.exists(overlay))
         {
             if added >= to_add || selector.is_full() {
                 break;
