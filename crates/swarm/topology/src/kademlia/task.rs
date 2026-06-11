@@ -3,12 +3,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::Notify;
+use tokio::sync::{Notify, broadcast};
 use tracing::debug;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_tasks::{GracefulShutdown, TaskExecutor};
 
 use super::routing::KademliaRouting;
+use crate::events::TopologyEvent;
 
 /// Handle for triggering evaluation from the topology behaviour.
 #[derive(Clone)]
@@ -37,6 +38,7 @@ impl RoutingEvaluatorHandle {
 struct RoutingEvaluatorTask<I: SwarmIdentity> {
     routing: Arc<KademliaRouting<I>>,
     notify: Arc<Notify>,
+    event_tx: broadcast::Sender<TopologyEvent>,
 }
 
 impl<I: SwarmIdentity + 'static> RoutingEvaluatorTask<I> {
@@ -58,19 +60,37 @@ impl<I: SwarmIdentity + 'static> RoutingEvaluatorTask<I> {
                 _ = tokio::time::sleep(periodic) => {}
             }
             self.routing.evaluate_connections();
+
+            // The periodic tick is the only place that observes the
+            // time-driven Converging -> Stable settle: the behaviour
+            // re-derives the phase on connect/disconnect, but a quiet
+            // table changes phase purely by the stability window passing.
+            if let Some(transition) = self.routing.evaluate_phase() {
+                let _ = self.event_tx.send(TopologyEvent::PhaseChanged {
+                    from: transition.from,
+                    to: transition.to,
+                    depth: transition.depth.get(),
+                });
+            }
         }
     }
 }
 
 /// Spawn the routing evaluator task driven by the given handle's trigger.
+///
+/// `event_tx` is the topology event channel; the task broadcasts
+/// [`TopologyEvent::PhaseChanged`] for phase transitions its periodic
+/// evaluation commits.
 pub(crate) fn spawn_evaluator<I: SwarmIdentity + 'static>(
     routing: Arc<KademliaRouting<I>>,
     handle: &RoutingEvaluatorHandle,
+    event_tx: broadcast::Sender<TopologyEvent>,
     executor: &TaskExecutor,
 ) {
     let task = RoutingEvaluatorTask {
         routing,
         notify: Arc::clone(&handle.notify),
+        event_tx,
     };
 
     executor.spawn_critical_with_graceful_shutdown_signal("topology.evaluator", move |shutdown| {

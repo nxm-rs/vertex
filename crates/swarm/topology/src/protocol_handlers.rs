@@ -265,6 +265,8 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             self.on_depth_changed(old_depth, new_depth);
         }
 
+        self.refresh_topology_phase();
+
         self.emit_event(TopologyEvent::PeerReady {
             overlay,
             peer_id,

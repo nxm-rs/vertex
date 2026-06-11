@@ -310,6 +310,7 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
             TopologyEvent::PeerDisconnected { .. } => {}
             TopologyEvent::PeerRejected { .. } => {}
             TopologyEvent::DepthChanged { .. } => {}
+            TopologyEvent::PhaseChanged { .. } => {}
             TopologyEvent::DialFailed { .. } => {}
             TopologyEvent::PingCompleted { .. } => {}
         }

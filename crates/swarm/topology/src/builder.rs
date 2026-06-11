@@ -254,7 +254,12 @@ impl<I: SwarmIdentity + Clone + 'static> TopologyBehaviour<I> {
         };
 
         // Spawn background connection evaluator
-        spawn_evaluator(self.routing.clone(), &self.evaluator_handle, &executor);
+        spawn_evaluator(
+            self.routing.clone(),
+            &self.evaluator_handle,
+            self.event_tx.clone(),
+            &executor,
+        );
 
         // Spawn interface watcher for push-based subnet discovery.
         crate::tasks::spawn_interface_watcher(&executor);

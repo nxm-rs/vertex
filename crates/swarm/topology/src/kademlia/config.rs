@@ -17,6 +17,8 @@ use super::limits::DepthAwareLimits;
 const DEFAULT_MAX_NEIGHBOR_CANDIDATES: usize = 16;
 /// Max new balanced (non-depth-bin) candidates enqueued per evaluation round.
 const DEFAULT_MAX_BALANCED_CANDIDATES: usize = 16;
+/// Default stability window for the topology phase machine.
+const DEFAULT_PHASE_STABILITY_WINDOW: Duration = Duration::from_secs(60);
 
 /// Default window the neighborhood must stay saturated at an unchanged depth
 /// before it counts as ready (see `TopologyHandle::wait_until_neighborhood_ready`).
@@ -51,6 +53,12 @@ pub struct KademliaConfig {
     /// the saturation deficit is a single peer (see
     /// [`Self::with_depth_lower_window`]).
     pub(crate) depth_lower_window: Duration,
+    /// How long the neighborhood depth must hold still (with a saturated
+    /// neighborhood) before the topology phase machine reports
+    /// [`super::TopologyPhase::Stable`]. Any depth movement inside the
+    /// window keeps the node in `Converging`, so churn cannot flap the
+    /// phase. Default 60s.
+    pub(crate) phase_stability_window: Duration,
 }
 
 impl Default for KademliaConfig {
@@ -61,6 +69,7 @@ impl Default for KademliaConfig {
             max_balanced_candidates: DEFAULT_MAX_BALANCED_CANDIDATES,
             neighborhood_stability_window: DEFAULT_NEIGHBORHOOD_STABILITY_WINDOW,
             depth_lower_window: DEFAULT_DEPTH_LOWER_WINDOW,
+            phase_stability_window: DEFAULT_PHASE_STABILITY_WINDOW,
         }
     }
 }
@@ -108,6 +117,14 @@ impl KademliaConfig {
     /// depth stays below the published depth for the whole window.
     pub fn with_depth_lower_window(mut self, window: Duration) -> Self {
         self.depth_lower_window = window;
+        self
+    }
+
+    /// Set the phase-machine stability window: how long depth must hold
+    /// still, with a saturated neighborhood, before the topology phase
+    /// reports `Stable`.
+    pub fn with_phase_stability_window(mut self, window: Duration) -> Self {
+        self.phase_stability_window = window;
         self
     }
 }

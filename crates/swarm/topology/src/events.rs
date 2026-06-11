@@ -5,6 +5,8 @@ use std::time::Duration;
 use libp2p::{Multiaddr, PeerId};
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
+use crate::kademlia::TopologyPhase;
+
 pub use vertex_net_peer_registry::ConnectionDirection;
 
 pub(crate) use crate::error::{DialError, DisconnectReason, RejectionReason};
@@ -54,6 +56,15 @@ pub enum TopologyEvent {
     },
     /// Neighborhood depth changed.
     DepthChanged { old_depth: u8, new_depth: u8 },
+    /// The topology phase machine transitioned.
+    PhaseChanged {
+        /// Phase before the transition.
+        from: TopologyPhase,
+        /// Phase after the transition.
+        to: TopologyPhase,
+        /// Neighborhood depth at the transition.
+        depth: u8,
+    },
     /// Dial attempt failed (all addresses exhausted).
     DialFailed {
         /// Overlay address if known.

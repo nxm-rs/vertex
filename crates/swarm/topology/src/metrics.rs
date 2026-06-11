@@ -11,9 +11,9 @@ use vertex_observability::{
 };
 use vertex_swarm_primitives::SwarmNodeType;
 
-use crate::DialReason;
 use crate::error::{DialError, DisconnectReason, RejectionReason};
 use crate::events::{ConnectionDirection, TopologyEvent};
+use crate::{DialReason, TopologyPhase};
 
 /// Pre-computed proximity order labels (`&'static str`) to avoid per-call allocation.
 /// Covers bins 0-31 which is the full practical range for Kademlia routing.
@@ -130,6 +130,12 @@ impl TopologyMetrics {
             }
             TopologyEvent::PingCompleted { rtt, .. } => {
                 self.record_ping_completed(*rtt);
+            }
+            TopologyEvent::PhaseChanged { .. } => {
+                // Recorded where the transition is committed
+                // (`record_topology_phase_change` in the routing layer),
+                // which also covers transitions found by the background
+                // evaluator task that do not flow through `emit_event`.
             }
         }
     }
@@ -300,6 +306,29 @@ impl TopologyMetrics {
 /// Record connection phase transition metrics.
 pub(crate) fn record_phase_transition(from: &'static str, to: &'static str) {
     counter!("topology_phase_transitions_total", "from" => from, "to" => to).increment(1);
+}
+
+/// Publish the one-hot `topology_phase` gauge: 1 for the current phase,
+/// 0 for every other, so the current phase reads as the label whose gauge
+/// is 1. Called once at startup (Bootstrap) and on every transition.
+pub(crate) fn set_topology_phase(current: TopologyPhase) {
+    for phase in TopologyPhase::ALL {
+        let label: &'static str = phase.into();
+        gauge!("topology_phase", "phase" => label).set(if phase == current { 1.0 } else { 0.0 });
+    }
+}
+
+/// Record a topology phase machine transition: a `from`/`to` labelled
+/// counter plus the [`set_topology_phase`] gauge update.
+///
+/// Distinct from [`record_phase_transition`], which tracks per-connection
+/// dialing/handshaking/active slots; this tracks the node-level
+/// bootstrap/converging/stable lifecycle.
+pub(crate) fn record_topology_phase_change(from: TopologyPhase, to: TopologyPhase) {
+    let from_label: &'static str = from.into();
+    let to_label: &'static str = to.into();
+    counter!("topology_phase_changes_total", "from" => from_label, "to" => to_label).increment(1);
+    set_topology_phase(to);
 }
 
 /// Phase transition labels.

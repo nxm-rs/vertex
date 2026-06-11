@@ -583,6 +583,19 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         let _ = self.event_tx.send(event);
     }
 
+    /// Re-derive the topology phase after a connected-set or depth change
+    /// and broadcast the transition when the phase moved. The periodic
+    /// evaluator task covers the time-driven transitions between ticks.
+    pub(crate) fn refresh_topology_phase(&self) {
+        if let Some(transition) = self.routing.evaluate_phase() {
+            self.emit_event(TopologyEvent::PhaseChanged {
+                from: transition.from,
+                to: transition.to,
+                depth: transition.depth.get(),
+            });
+        }
+    }
+
     /// Push routing gauges for a single bin and global totals.
     pub(crate) fn push_routing_gauges(&self, bin: Bin) {
         // The metric label key stays "po" (the established observability name).

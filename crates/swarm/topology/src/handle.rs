@@ -110,6 +110,8 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
             })
             .collect();
 
+        let (phase, time_in_phase) = self.routing.phase_status();
+
         ReadinessSnapshot {
             local_node_type: self.identity.node_type(),
             connected_peers,
@@ -121,6 +123,8 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
             bins_at_target,
             neighborhood_stable_for: self.routing.neighborhood_stable_for(),
             neighborhood_stability_window: self.routing.neighborhood_stability_window(),
+            phase,
+            time_in_phase,
         }
     }
 
@@ -128,8 +132,8 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
     ///
     /// State-driven, not timed: the predicate is evaluated immediately and
     /// then re-evaluated on every [`TopologyEvent::PeerReady`],
-    /// [`TopologyEvent::PeerDisconnected`], and
-    /// [`TopologyEvent::DepthChanged`], the events that change snapshot
+    /// [`TopologyEvent::PeerDisconnected`], [`TopologyEvent::DepthChanged`],
+    /// and [`TopologyEvent::PhaseChanged`], the events that change snapshot
     /// state. The subscription is taken before the initial evaluation so a
     /// state change between the two cannot be missed.
     ///
@@ -155,7 +159,8 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
                 Ok(
                     TopologyEvent::PeerReady { .. }
                     | TopologyEvent::PeerDisconnected { .. }
-                    | TopologyEvent::DepthChanged { .. },
+                    | TopologyEvent::DepthChanged { .. }
+                    | TopologyEvent::PhaseChanged { .. },
                 ) => {
                     if predicate(&self.readiness()) {
                         return Ok(());
@@ -577,6 +582,7 @@ mod tests {
         assert!(!s.is_saturated());
         assert!(!s.is_warm());
         assert_eq!(s.bins_at_target, 0);
+        assert_eq!(s.phase, crate::TopologyPhase::Bootstrap);
 
         // Every bin reports the bootstrap-phase target while depth is 0.
         assert!(!s.bins.is_empty());
@@ -643,6 +649,15 @@ mod tests {
         assert!(bin0.target.is_some());
         // Neighborhood bins report no finite target.
         assert!(s.bins[1].target.is_none());
+
+        // The phase machine sees the depth climb on its next evaluation
+        // (depth moved within the stability window: Converging) and the
+        // snapshot exposes the committed phase.
+        h.routing
+            .evaluate_phase()
+            .expect("depth climb commits a phase transition");
+        let s = h.handle.readiness();
+        assert_eq!(s.phase, crate::TopologyPhase::Converging);
     }
 
     #[tokio::test]

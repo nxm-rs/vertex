@@ -23,7 +23,7 @@ use tokio::time::timeout;
 use vertex_swarm_api::{SwarmTopologyPeers as _, SwarmTopologyState as _, SwarmTopologyStats as _};
 use vertex_swarm_primitives::{Bin, NeighborhoodDepth, all_bins};
 use vertex_swarm_test_utils::cluster::{ClusterBuilder, NodeRole};
-use vertex_swarm_topology::TopologyEvent;
+use vertex_swarm_topology::{TopologyEvent, TopologyPhase};
 
 /// Cap on wall-clock time the test will wait for handshakes to complete.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -162,6 +162,18 @@ async fn three_node_convergence() -> Result<()> {
             depth,
             NeighborhoodDepth::ZERO,
             "client {idx} kademlia depth should be 0 (small-PO peers only), got {depth}"
+        );
+    }
+
+    // The topology phase machine mirrors the depth result: a three-node
+    // cluster cannot anchor a neighborhood, so every node reports the
+    // Bootstrap phase on its readiness surface.
+    for (idx, client) in clients.iter().enumerate() {
+        let readiness = client.topology.readiness();
+        assert_eq!(
+            readiness.phase,
+            TopologyPhase::Bootstrap,
+            "client {idx} should report Bootstrap phase at depth 0"
         );
     }
 

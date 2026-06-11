@@ -194,6 +194,8 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         if new_depth != old_depth {
             self.on_depth_changed(old_depth, new_depth);
         }
+
+        self.refresh_topology_phase();
     }
 
     pub(crate) fn handle_dial_failure(&mut self, failure: libp2p::swarm::behaviour::DialFailure) {

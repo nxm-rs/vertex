@@ -7,6 +7,7 @@ mod candidates;
 mod config;
 mod limits;
 pub(crate) mod peer_selection;
+mod phase;
 mod routing;
 mod task;
 
@@ -19,6 +20,8 @@ pub(crate) use candidates::{
 pub use config::KademliaConfig;
 pub(crate) use limits::DepthAwareLimits;
 pub(crate) use limits::LimitsSnapshot;
+pub use phase::TopologyPhase;
+pub(crate) use phase::{PhaseTracker, PhaseTransition};
 pub(crate) use routing::KademliaRouting;
 pub(crate) use task::{RoutingEvaluatorHandle, spawn_evaluator};
 
