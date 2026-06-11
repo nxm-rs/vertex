@@ -5,6 +5,7 @@ use core::time::Duration;
 
 use libp2p::Multiaddr;
 use vertex_node_api::InfrastructureContext;
+use vertex_swarm_primitives::ConnectionProfile;
 
 use crate::components::{SwarmAccountingConfig, SwarmLocalStoreConfig, SwarmPricingConfig};
 use crate::{SwarmClientTypes, SwarmNetworkTypes, SwarmStorerTypes};
@@ -189,6 +190,14 @@ pub trait SwarmNetworkConfig {
     /// candidate left.
     fn trust_local_peers(&self) -> bool {
         true
+    }
+
+    /// Explicitly selected connection pacing profile, if any (default: none).
+    ///
+    /// `None` means the topology derives the profile from the node type via
+    /// [`ConnectionProfile::default_for`].
+    fn connection_profile(&self) -> Option<ConnectionProfile> {
+        None
     }
 }
 

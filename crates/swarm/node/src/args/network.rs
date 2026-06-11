@@ -5,8 +5,8 @@ use std::time::Duration;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 use vertex_swarm_api::{
-    ConfigAddressKind, ConfigError, Multiaddr, SwarmNetworkConfig, SwarmPeerConfig,
-    SwarmRoutingConfig,
+    ConfigAddressKind, ConfigError, ConnectionProfile, Multiaddr, SwarmNetworkConfig,
+    SwarmPeerConfig, SwarmRoutingConfig,
 };
 use vertex_swarm_topology::{KademliaConfig, RoutingArgs};
 
@@ -143,6 +143,12 @@ pub struct NetworkArgs {
     #[serde(default = "default_mdns")]
     pub mdns: bool,
 
+    /// Connection pacing profile: aggressive, balanced, or conservative.
+    /// Defaults by node mode: client = aggressive, bootnode/storer = balanced.
+    #[arg(long = "network.connection-profile", value_name = "PROFILE")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_profile: Option<ConnectionProfile>,
+
     /// Maximum number of established connections (transport-level hard cap).
     ///
     /// Enforced by the swarm independently of kademlia bin logic. Lowering
@@ -180,6 +186,7 @@ impl Default for NetworkArgs {
             autonat: true,
             upnp: false,
             mdns: true,
+            connection_profile: None,
             max_peers: DEFAULT_MAX_PEERS,
             idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
             peer: PeerArgs::default(),
@@ -236,6 +243,7 @@ pub struct NetworkConfig<R = KademliaConfig> {
     mdns: bool,
     discovery_enabled: bool,
     trust_local_peers: bool,
+    connection_profile: Option<ConnectionProfile>,
     max_peers: usize,
     idle_timeout: Duration,
     peer: PeerConfig,
@@ -266,6 +274,7 @@ impl<R> NetworkConfig<R> {
             mdns: self.mdns,
             discovery_enabled: self.discovery_enabled,
             trust_local_peers: self.trust_local_peers,
+            connection_profile: self.connection_profile,
             max_peers: self.max_peers,
             idle_timeout: self.idle_timeout,
             peer: self.peer,
@@ -299,6 +308,7 @@ impl Default for NetworkConfig<KademliaConfig> {
             mdns: true,
             discovery_enabled: true,
             trust_local_peers: true,
+            connection_profile: None,
             max_peers: DEFAULT_MAX_PEERS,
             idle_timeout: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS),
             peer: PeerConfig::default(),
@@ -376,6 +386,7 @@ impl TryFrom<&NetworkArgs> for NetworkConfig<KademliaConfig> {
             mdns: args.mdns,
             discovery_enabled: !args.disable_discovery,
             trust_local_peers: !args.no_trust_local_peers,
+            connection_profile: args.connection_profile,
             max_peers: args.max_peers,
             idle_timeout: Duration::from_secs(args.idle_timeout_secs),
             peer: PeerConfig::from(&args.peer),
@@ -431,6 +442,10 @@ impl<R> SwarmNetworkConfig for NetworkConfig<R> {
 
     fn trust_local_peers(&self) -> bool {
         self.trust_local_peers
+    }
+
+    fn connection_profile(&self) -> Option<ConnectionProfile> {
+        self.connection_profile
     }
 }
 
@@ -693,5 +708,60 @@ mod tests {
         let config = PeerConfig::from(&args);
 
         assert_eq!(config.max_per_bin(), DEFAULT_PEER_MAX_PER_BIN);
+    }
+
+    #[test]
+    fn connection_profile_default_is_unset() {
+        use clap::Parser;
+
+        // No flag: the profile stays unset so the topology can derive the
+        // node-type default at build time.
+        let parsed = TestCli::try_parse_from(["test"]).expect("default should parse");
+        assert_eq!(parsed.network.connection_profile, None);
+
+        let config = NetworkConfig::try_from(&parsed.network).expect("valid args");
+        assert_eq!(config.connection_profile(), None);
+    }
+
+    #[test]
+    fn connection_profile_flag_parses_and_propagates() {
+        use clap::Parser;
+
+        for (value, expected) in [
+            ("aggressive", ConnectionProfile::Aggressive),
+            ("balanced", ConnectionProfile::Balanced),
+            ("conservative", ConnectionProfile::Conservative),
+        ] {
+            let parsed = TestCli::try_parse_from(["test", "--network.connection-profile", value])
+                .expect("profile value should parse");
+            assert_eq!(parsed.network.connection_profile, Some(expected));
+
+            let config = NetworkConfig::try_from(&parsed.network).expect("valid args");
+            assert_eq!(config.connection_profile(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn connection_profile_rejects_unknown_value() {
+        use clap::Parser;
+
+        assert!(
+            TestCli::try_parse_from(["test", "--network.connection-profile", "turbo"]).is_err()
+        );
+    }
+
+    #[test]
+    fn connection_profile_survives_with_routing() {
+        use clap::Parser;
+
+        let parsed = TestCli::try_parse_from(["test", "--network.connection-profile=conservative"])
+            .expect("profile value should parse");
+        let config = NetworkConfig::try_from(&parsed.network).expect("valid args");
+        // The type-changing routing swap must carry the profile through.
+        let swapped = config.with_routing(KademliaConfig::default());
+        assert_eq!(
+            swapped.connection_profile(),
+            Some(ConnectionProfile::Conservative)
+        );
     }
 }

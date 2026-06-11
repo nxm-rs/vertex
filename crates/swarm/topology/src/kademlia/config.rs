@@ -8,15 +8,20 @@
 //! per round, roughly one slot per Kademlia bin, so a single round can make
 //! progress on every bin without flooding the dialer. The depth-aware targets,
 //! not this budget, decide how many candidates actually become connections.
+//!
+//! The budgets and the bootstrap fill level are pacing knobs: production
+//! resolves them from the node's connection profile (see `crate::profile`)
+//! at behaviour construction, with the defaults here matching the Balanced
+//! profile.
 
 use std::time::Duration;
 
 use super::limits::DepthAwareLimits;
 
 /// Max new neighborhood (depth-bin) candidates enqueued per evaluation round.
-const DEFAULT_MAX_NEIGHBOR_CANDIDATES: usize = 16;
+pub(crate) const DEFAULT_MAX_NEIGHBOR_CANDIDATES: usize = 16;
 /// Max new balanced (non-depth-bin) candidates enqueued per evaluation round.
-const DEFAULT_MAX_BALANCED_CANDIDATES: usize = 16;
+pub(crate) const DEFAULT_MAX_BALANCED_CANDIDATES: usize = 16;
 /// Default stability window for the topology phase machine.
 const DEFAULT_PHASE_STABILITY_WINDOW: Duration = Duration::from_secs(60);
 
@@ -127,6 +132,13 @@ impl KademliaConfig {
         self.phase_stability_window = window;
         self
     }
+
+    /// Set the per-bin bootstrap fill target used while `depth == 0`
+    /// (production threads it from the connection profile).
+    pub(crate) fn with_bootstrap_target(mut self, target: usize) -> Self {
+        self.limits = self.limits.with_bootstrap_target(target);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -137,12 +149,6 @@ impl KademliaConfig {
             limits,
             ..Default::default()
         }
-    }
-
-    /// Set the per-bin bootstrap fill target used while `depth == 0`.
-    pub(crate) fn with_bootstrap_target(mut self, target: usize) -> Self {
-        self.limits = self.limits.with_bootstrap_target(target);
-        self
     }
 
     /// Set the per-bin oversaturation level (trim floor and minimum

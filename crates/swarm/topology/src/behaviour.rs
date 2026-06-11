@@ -24,7 +24,8 @@ use libp2p::{
 use tracing::{debug, info, warn};
 use vertex_net_local::{AddressScope, classify_multiaddr, same_subnet};
 use vertex_net_peer_store::PeerSnapshotStore;
-use vertex_swarm_api::{BanCause, PeerLifecycleEvent, SwarmIdentity};
+use vertex_net_ratelimiter::{Quota, RateLimitedErr, RateLimiter};
+use vertex_swarm_api::{BanCause, ConnectionProfile, PeerLifecycleEvent, SwarmIdentity};
 use vertex_swarm_net_hive::MAX_BATCH_SIZE;
 use vertex_swarm_net_identify as identify;
 use vertex_swarm_peer::SwarmPeer;
@@ -48,12 +49,6 @@ use crate::nat_discovery::LocalAddressManager;
 
 /// Type-erased peer snapshot store.
 pub(crate) type PeerStore = Arc<dyn PeerSnapshotStore<PeerSnapshot>>;
-
-/// Default interval between connection-evaluation rounds.
-///
-/// Each round reconsiders which bins are under target and issues new dials.
-/// Shorter wastes work on a stable table; longer slows convergence after churn.
-pub const DEFAULT_DIAL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Post-handshake connections shorter than this are penalized as early
 /// disconnects, so a peer that repeatedly connects and immediately leaves is
@@ -91,6 +86,12 @@ impl LazyInterval {
         self.interval
             .get_or_insert_with(|| tokio::time::interval(self.period))
             .poll_tick(cx)
+    }
+
+    /// The configured period (build-time pacing assertions).
+    #[cfg(test)]
+    pub(crate) fn period(&self) -> Duration {
+        self.period
     }
 }
 
@@ -139,12 +140,27 @@ impl DialTarget {
 }
 
 /// Configuration for topology behaviour.
+///
+/// Pacing (evaluation cadence, dial-rate quota, dial concurrency, bootstrap
+/// fill, candidate budgets) is resolved from a [`ConnectionProfile`] at build
+/// time: the explicit [`Self::with_connection_profile`] selection wins,
+/// otherwise the network configuration's choice, otherwise the node-type
+/// default. The `Option` overrides here ([`Self::with_dial_interval`],
+/// [`Self::with_dial_quota`]) pin single knobs over whatever the profile
+/// resolves to, for tests and embedders.
 #[derive(Debug, Clone)]
 pub struct TopologyConfig {
     pub kademlia: KademliaConfig,
     /// Tuning knobs for gossip peer exchange and verification.
     pub gossip: GossipConfig,
-    pub dial_interval: Duration,
+    /// Explicit pacing profile; `None` defers to the network configuration
+    /// and then the node-type default.
+    pub connection_profile: Option<ConnectionProfile>,
+    /// Explicit connection-evaluation cadence; `None` uses the profile's
+    /// evaluation interval.
+    pub dial_interval: Option<Duration>,
+    /// Explicit discovery dial-rate quota; `None` uses the profile's quota.
+    pub dial_quota: Option<Quota>,
     pub early_disconnect_threshold: Duration,
 }
 
@@ -153,7 +169,9 @@ impl Default for TopologyConfig {
         Self {
             kademlia: KademliaConfig::default(),
             gossip: GossipConfig::default(),
-            dial_interval: DEFAULT_DIAL_INTERVAL,
+            connection_profile: None,
+            dial_interval: None,
+            dial_quota: None,
             early_disconnect_threshold: DEFAULT_EARLY_DISCONNECT_THRESHOLD,
         }
     }
@@ -175,8 +193,22 @@ impl TopologyConfig {
         self
     }
 
+    /// Select the connection pacing profile, overriding the network
+    /// configuration and the node-type default.
+    pub fn with_connection_profile(mut self, profile: ConnectionProfile) -> Self {
+        self.connection_profile = Some(profile);
+        self
+    }
+
+    /// Pin the connection-evaluation cadence over the profile's value.
     pub fn with_dial_interval(mut self, interval: Duration) -> Self {
-        self.dial_interval = interval;
+        self.dial_interval = Some(interval);
+        self
+    }
+
+    /// Pin the discovery dial-rate quota over the profile's value.
+    pub fn with_dial_quota(mut self, quota: Quota) -> Self {
+        self.dial_quota = Some(quota);
         self
     }
 
@@ -221,6 +253,16 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
 
     // Periodic dial interval
     pub(crate) dial_interval: LazyInterval,
+
+    /// GCRA bucket shaping the discovery dial rate. Bursts after a candidate
+    /// influx drain immediately up to the bucket size; beyond it, candidates
+    /// stay queued in routing until tokens replenish.
+    pub(crate) dial_rate: RateLimiter,
+
+    /// Armed when the dial-rate bucket refused a candidate: fires when the
+    /// next token is available so the drain resumes without waiting for the
+    /// evaluation tick.
+    pub(crate) dial_rate_timer: Option<Pin<Box<tokio::time::Sleep>>>,
 
     // Pending dnsaddr resolution for bootnodes (resolved_bootnodes, resolved_trusted)
     #[allow(clippy::type_complexity)]
@@ -394,18 +436,55 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
 
     // Routing
 
-    /// Drain candidates from the background evaluator's per-bin queues and dial them.
-    pub(crate) fn drain_candidate_queues(&mut self) {
-        let candidates = self.routing.drain_candidates();
-        if candidates.is_empty() {
-            return;
+    /// Drain candidates from the background evaluator's per-bin queues and
+    /// dial them, shaped by the dial-rate bucket.
+    ///
+    /// Each dialable candidate costs one token. When the bucket runs dry the
+    /// candidate returns to its queue and a timer is armed for the bucket's
+    /// reported wait, so the drain resumes as soon as a token replenishes
+    /// instead of waiting for the next evaluation tick. Candidates that are
+    /// no longer dialable (record gone, banned, in backoff, wrong address
+    /// scope) are dropped without spending a token.
+    pub(crate) fn drain_candidate_queues(&mut self, cx: &mut Context<'_>) {
+        if let Some(timer) = self.dial_rate_timer.as_mut() {
+            match timer.as_mut().poll(cx) {
+                Poll::Ready(()) => self.dial_rate_timer = None,
+                Poll::Pending => return,
+            }
         }
 
-        let mut dialable = self.peer_manager.get_dialable_peers(&candidates);
-        dialable.retain(|peer| self.can_advertise_to(peer));
+        while let Some(overlay) = self.routing.pop_candidate() {
+            let Some(swarm_peer) = self
+                .peer_manager
+                .get_dialable_peers(std::slice::from_ref(&overlay))
+                .pop()
+            else {
+                continue;
+            };
+            if !self.can_advertise_to(&swarm_peer) {
+                continue;
+            }
 
-        for swarm_peer in dialable {
-            self.dial(DialTarget::Known(swarm_peer), DialReason::Discovery);
+            match self.dial_rate.try_consume() {
+                Ok(()) => self.dial(DialTarget::Known(swarm_peer), DialReason::Discovery),
+                Err(RateLimitedErr::TooSoon(wait)) => {
+                    metrics::counter!("topology_dials_throttled_total").increment(1);
+                    self.routing.requeue_candidate(overlay);
+                    let mut timer = Box::pin(tokio::time::sleep(wait));
+                    if timer.as_mut().poll(cx).is_ready() {
+                        // Sub-millisecond wait already elapsed; keep draining.
+                        continue;
+                    }
+                    self.dial_rate_timer = Some(timer);
+                    return;
+                }
+                Err(RateLimitedErr::TooLarge) => {
+                    // Unreachable: a single token never exceeds the non-zero
+                    // bucket size. Requeue and stop draining defensively.
+                    self.routing.requeue_candidate(overlay);
+                    return;
+                }
+            }
         }
     }
 
@@ -890,8 +969,9 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
             }
         }
 
-        // Drain candidates produced by the background evaluator task.
-        self.drain_candidate_queues();
+        // Drain candidates produced by the background evaluator task, shaped
+        // by the dial-rate bucket (arms a wake-up timer when throttled).
+        self.drain_candidate_queues(cx);
 
         // Drain peer lifecycle events and execute the network-side actions
         // (disconnects and bans). Catches auto-bans from scoring events
@@ -1014,84 +1094,110 @@ mod tests {
     fn test_topology_config() {
         let config = TopologyConfig::new()
             .with_kademlia(KademliaConfig::default().with_nominal(3))
-            .with_dial_interval(Duration::from_secs(10));
+            .with_dial_interval(Duration::from_secs(10))
+            .with_connection_profile(ConnectionProfile::Conservative);
 
-        assert_eq!(config.dial_interval, Duration::from_secs(10));
+        assert_eq!(config.dial_interval, Some(Duration::from_secs(10)));
+        assert_eq!(
+            config.connection_profile,
+            Some(ConnectionProfile::Conservative)
+        );
         assert_eq!(config.kademlia.limits.nominal(), 3);
+
+        // Unset pacing knobs stay unresolved until build time.
+        let default = TopologyConfig::default();
+        assert_eq!(default.connection_profile, None);
+        assert_eq!(default.dial_interval, None);
+        assert!(default.dial_quota.is_none());
+    }
+
+    use vertex_swarm_api::{
+        DefaultPeerConfig, SwarmNetworkConfig, SwarmNodeType, SwarmPeerConfig, SwarmRoutingConfig,
+    };
+    use vertex_swarm_identity::Identity;
+
+    use crate::TopologyBehaviourBuilder;
+
+    /// Minimal network configuration for behaviour tests.
+    struct EventTestConfig {
+        peers: DefaultPeerConfig,
+        routing: KademliaConfig,
+        empty_addrs: Vec<Multiaddr>,
+    }
+
+    impl EventTestConfig {
+        fn new() -> Self {
+            Self {
+                peers: DefaultPeerConfig::default(),
+                routing: KademliaConfig::default(),
+                empty_addrs: Vec::new(),
+            }
+        }
+    }
+
+    impl SwarmNetworkConfig for EventTestConfig {
+        fn listen_addrs(&self) -> &[Multiaddr] {
+            &self.empty_addrs
+        }
+        fn bootnodes(&self) -> &[Multiaddr] {
+            &self.empty_addrs
+        }
+        fn discovery_enabled(&self) -> bool {
+            true
+        }
+        fn max_peers(&self) -> usize {
+            32
+        }
+        fn idle_timeout(&self) -> Duration {
+            Duration::from_secs(60)
+        }
+    }
+
+    impl SwarmPeerConfig for EventTestConfig {
+        type Peers = DefaultPeerConfig;
+        fn peers(&self) -> &Self::Peers {
+            &self.peers
+        }
+    }
+
+    impl SwarmRoutingConfig for EventTestConfig {
+        type Routing = KademliaConfig;
+        fn routing(&self) -> &Self::Routing {
+            &self.routing
+        }
+    }
+
+    fn test_behaviour_with(config: TopologyConfig) -> TopologyBehaviour<Identity> {
+        let identity = Identity::random(vertex_swarm_spec::init_testnet(), SwarmNodeType::Client);
+        let (behaviour, _handle) = TopologyBehaviourBuilder::new(identity, &EventTestConfig::new())
+            .with_config(config)
+            .try_build()
+            .expect("build without runtime");
+        behaviour
+    }
+
+    fn test_behaviour() -> TopologyBehaviour<Identity> {
+        test_behaviour_with(TopologyConfig::default())
+    }
+
+    async fn next_action(
+        behaviour: &mut TopologyBehaviour<Identity>,
+    ) -> ToSwarm<(), THandlerInEvent<ProtocolBehaviours<Identity>>> {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            std::future::poll_fn(|cx| behaviour.poll(cx)),
+        )
+        .await
+        .expect("behaviour must emit an action")
     }
 
     mod lifecycle {
         use super::*;
 
         use libp2p::swarm::ConnectionId;
-        use vertex_swarm_api::{
-            BanCause, DefaultPeerConfig, SwarmNetworkConfig, SwarmNodeType, SwarmPeerConfig,
-            SwarmRoutingConfig,
-        };
-        use vertex_swarm_identity::Identity;
+        use vertex_swarm_api::BanCause;
         use vertex_swarm_peer_manager::LIFECYCLE_CHANNEL_CAPACITY;
         use vertex_swarm_test_utils::test_overlay;
-
-        use crate::TopologyBehaviourBuilder;
-
-        /// Minimal network configuration for behaviour tests.
-        struct EventTestConfig {
-            peers: DefaultPeerConfig,
-            routing: KademliaConfig,
-            empty_addrs: Vec<Multiaddr>,
-        }
-
-        impl EventTestConfig {
-            fn new() -> Self {
-                Self {
-                    peers: DefaultPeerConfig::default(),
-                    routing: KademliaConfig::default(),
-                    empty_addrs: Vec::new(),
-                }
-            }
-        }
-
-        impl SwarmNetworkConfig for EventTestConfig {
-            fn listen_addrs(&self) -> &[Multiaddr] {
-                &self.empty_addrs
-            }
-            fn bootnodes(&self) -> &[Multiaddr] {
-                &self.empty_addrs
-            }
-            fn discovery_enabled(&self) -> bool {
-                true
-            }
-            fn max_peers(&self) -> usize {
-                32
-            }
-            fn idle_timeout(&self) -> Duration {
-                Duration::from_secs(60)
-            }
-        }
-
-        impl SwarmPeerConfig for EventTestConfig {
-            type Peers = DefaultPeerConfig;
-            fn peers(&self) -> &Self::Peers {
-                &self.peers
-            }
-        }
-
-        impl SwarmRoutingConfig for EventTestConfig {
-            type Routing = KademliaConfig;
-            fn routing(&self) -> &Self::Routing {
-                &self.routing
-            }
-        }
-
-        fn test_behaviour() -> TopologyBehaviour<Identity> {
-            let identity =
-                Identity::random(vertex_swarm_spec::init_testnet(), SwarmNodeType::Client);
-            let (behaviour, _handle) =
-                TopologyBehaviourBuilder::new(identity, &EventTestConfig::new())
-                    .try_build()
-                    .expect("build without runtime");
-            behaviour
-        }
 
         /// Register an active (handshake-complete) connection in the registry.
         fn activate_connection(
@@ -1107,17 +1213,6 @@ mod tests {
                 .connection_registry
                 .activate(peer_id, connection_id, overlay);
             peer_id
-        }
-
-        async fn next_action(
-            behaviour: &mut TopologyBehaviour<Identity>,
-        ) -> ToSwarm<(), THandlerInEvent<ProtocolBehaviours<Identity>>> {
-            tokio::time::timeout(
-                Duration::from_secs(5),
-                std::future::poll_fn(|cx| behaviour.poll(cx)),
-            )
-            .await
-            .expect("behaviour must emit an action")
         }
 
         /// A `Banned` lifecycle event drained in poll closes the peer's
@@ -1185,6 +1280,102 @@ mod tests {
                     peer_id: closed, ..
                 } => assert_eq!(closed, peer_id),
                 _ => panic!("expected CloseConnection for the disconnect request"),
+            }
+        }
+    }
+
+    mod dial_rate {
+        use super::*;
+
+        use std::num::NonZeroU32;
+
+        use vertex_net_ratelimiter::Quota;
+        use vertex_swarm_test_utils::test_swarm_peer;
+
+        fn nz(n: u32) -> NonZeroU32 {
+            NonZeroU32::new(n).expect("non-zero")
+        }
+
+        /// Build a behaviour whose dial-rate bucket holds `burst` tokens over
+        /// `window`, with a known loopback listen address so candidate
+        /// multiaddrs pass the reachability filter.
+        fn throttled_behaviour(burst: u32, window: Duration) -> TopologyBehaviour<Identity> {
+            let behaviour = test_behaviour_with(
+                TopologyConfig::default().with_dial_quota(Quota::n_every(nz(burst), window)),
+            );
+            behaviour
+                .nat_discovery
+                .on_new_listen_addr("/ip4/127.0.0.1/tcp/1634".parse().expect("valid multiaddr"));
+            behaviour
+        }
+
+        /// Store a dialable loopback peer and queue it as a dial candidate.
+        fn queue_candidate(behaviour: &TopologyBehaviour<Identity>, n: u8) {
+            let peer = test_swarm_peer(n);
+            let overlay = OverlayAddress::from(*peer.overlay());
+            behaviour.peer_manager.store_discovered_peer(peer);
+            behaviour.routing.requeue_candidate(overlay);
+        }
+
+        /// Poll the behaviour once with a no-op waker.
+        fn poll_once(
+            behaviour: &mut TopologyBehaviour<Identity>,
+        ) -> Poll<ToSwarm<(), THandlerInEvent<ProtocolBehaviours<Identity>>>> {
+            let waker = futures::task::noop_waker();
+            let mut cx = Context::from_waker(&waker);
+            behaviour.poll(&mut cx)
+        }
+
+        /// The bucket absorbs a burst up to its size, then defers the rest:
+        /// the third candidate stays queued and a wake-up timer is armed.
+        #[tokio::test]
+        async fn burst_dials_immediately_then_throttles() {
+            let mut behaviour = throttled_behaviour(2, Duration::from_secs(600));
+            for n in [0x10, 0x20, 0x30] {
+                queue_candidate(&behaviour, n);
+            }
+
+            let mut dials = 0;
+            loop {
+                match poll_once(&mut behaviour) {
+                    Poll::Ready(ToSwarm::Dial { .. }) => dials += 1,
+                    Poll::Ready(_) => {}
+                    Poll::Pending => break,
+                }
+            }
+
+            assert_eq!(dials, 2, "burst must equal the bucket size");
+            assert!(
+                behaviour.dial_rate_timer.is_some(),
+                "throttled drain must arm the replenish timer"
+            );
+            assert!(
+                behaviour.routing.pop_candidate().is_some(),
+                "the throttled candidate must stay queued"
+            );
+        }
+
+        /// When tokens replenish, the armed timer wakes the poll loop and the
+        /// deferred candidate is dialed without waiting for the next
+        /// evaluation tick.
+        #[tokio::test]
+        async fn timer_resumes_drain_after_replenish() {
+            // 1 token per 100ms of real time: the second candidate defers,
+            // then drains when the timer fires.
+            let mut behaviour = throttled_behaviour(1, Duration::from_millis(100));
+            queue_candidate(&behaviour, 0x10);
+            queue_candidate(&behaviour, 0x20);
+
+            match next_action(&mut behaviour).await {
+                ToSwarm::Dial { .. } => {}
+                other => panic!("expected first Dial, got {other:?}"),
+            }
+            assert!(behaviour.dial_rate_timer.is_some());
+
+            // The awaited poll wakes via the armed timer once a token is back.
+            match next_action(&mut behaviour).await {
+                ToSwarm::Dial { .. } => {}
+                other => panic!("expected deferred Dial after replenish, got {other:?}"),
             }
         }
     }

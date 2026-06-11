@@ -99,6 +99,22 @@ In-flight dials are tracked by `DialTracker` (`vertex-net-dialer`), whose pendin
 
 Bootstrap is not a special mode of the evaluator: bootnodes and trusted peers from configuration are dialed directly at startup (with dnsaddr resolution where needed) as `DialTarget::Unknown`, since their overlay addresses are not yet known and no capacity reservation applies. Everything after that first contact flows through gossip supply and the evaluation loop above.
 
+## Connection profiles and dial-rate shaping
+
+How aggressively the node builds out its table is bundled into a named connection profile (`aggressive`, `balanced`, `conservative`), selected by node type (client defaults to `aggressive`, storer and bootnode to `balanced`) and overridable with `--network.connection-profile`. A profile only sets numbers on existing knobs: the evaluation cadence, the per-evaluation candidate budgets, the bootstrap fill level, the dial-concurrency cap, and the discovery dial-rate quota. No topology logic branches on the profile.
+
+Discovery dials are not issued as fixed per-tick batches. The evaluator refreshes per-bin candidate queues on its cadence (and immediately on triggers such as gossip influx), and the dial pipeline drains those queues through a GCRA token bucket:
+
+| Profile | Evaluation interval | Candidate budget (neighbor + balanced) | Dial rate (burst / sustained) | Bootstrap fill |
+|---------|---------------------|----------------------------------------|-------------------------------|----------------|
+| aggressive | 2s | 24 + 24 | 32 / 12.8 per s | 24 |
+| balanced | 5s | 16 + 16 | 32 / 6.4 per s | 18 |
+| conservative | 10s | 8 + 8 | 8 / 0.8 per s | 12 |
+
+A burst of fresh candidates (typically right after a gossip exchange) is dialed immediately up to the bucket size; beyond that, candidates stay queued and a timer resumes the drain as soon as a token replenishes, so the node neither hammers the network after an influx nor waits a full evaluation interval to use newly arrived supply. Bootnode dials, trusted-peer dials, and explicit dial commands bypass the bucket.
+
+The bootstrap fill level is floored at the spec saturation threshold inside the depth-aware limits, so no profile can configure a fill too low for the depth climb. The profile bundle is also the intended home for future pacing knobs (for example per-protocol timeout tuning).
+
 ## Backoff
 
 Dial backoff lives in `PeerBackoff` (`vertex-net-peer-backoff`) and is tracked per peer by the `PeerManager`:

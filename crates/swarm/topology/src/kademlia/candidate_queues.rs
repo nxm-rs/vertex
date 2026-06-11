@@ -48,7 +48,21 @@ impl CandidateQueues {
         true
     }
 
+    /// Pop the next candidate, highest bin first (deepest bins are the
+    /// scarcest and most valuable). Returns `None` when every bin is empty.
+    pub(super) fn pop_next(&self) -> Option<OverlayAddress> {
+        let mut pending = self.pending.lock();
+        for queue in self.bins.iter().rev() {
+            if let Some(peer) = queue.lock().pop_front() {
+                pending.remove(&peer);
+                return Some(peer);
+            }
+        }
+        None
+    }
+
     /// Drain all bins (highest PO first) into a single Vec.
+    #[cfg(test)]
     pub(super) fn drain_all(&self) -> Vec<OverlayAddress> {
         let mut pending = self.pending.lock();
         let mut result = Vec::new();
@@ -140,5 +154,23 @@ mod tests {
         // Bin 5 doesn't exist (only 0-3)
         assert!(!queues.push(b(5), peer));
         assert!(queues.snapshot_queued().is_empty());
+    }
+
+    #[test]
+    fn test_pop_next_highest_bin_first() {
+        let queues = CandidateQueues::new(32, 16);
+        let lo = SwarmAddress::with_first_byte(0x80);
+        let hi = SwarmAddress::with_first_byte(0x40);
+
+        queues.push(b(0), lo);
+        queues.push(b(1), hi);
+
+        assert_eq!(queues.pop_next(), Some(hi));
+        assert_eq!(queues.pop_next(), Some(lo));
+        assert_eq!(queues.pop_next(), None);
+
+        // Popped candidates leave the dedup set, so they can be re-queued.
+        assert!(queues.push(b(0), lo));
+        assert_eq!(queues.pop_next(), Some(lo));
     }
 }

@@ -18,6 +18,7 @@ vertex-swarm-identity.workspace = true
 vertex-swarm-spec.workspace = true
 vertex-net-dialer.workspace = true
 vertex-net-local.workspace = true
+vertex-net-ratelimiter.workspace = true
 vertex-net-utils.workspace = true
 vertex-net-peer-store.workspace = true
 vertex-tasks.workspace = true
