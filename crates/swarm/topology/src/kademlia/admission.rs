@@ -102,6 +102,7 @@ mod tests {
             .with_nominal(1)
             .with_inbound_headroom(0)
             .with_bootstrap_target(1)
+            .with_oversaturation_peers(1)
             .with_saturation(1);
         let routing = make_routing(base, config);
 
@@ -121,6 +122,7 @@ mod tests {
             .with_nominal(1)
             .with_inbound_headroom(0)
             .with_bootstrap_target(1)
+            .with_oversaturation_peers(1)
             .with_saturation(1);
         let routing = make_routing(base, config);
 
@@ -146,6 +148,7 @@ mod tests {
             .with_nominal(1)
             .with_inbound_headroom(0)
             .with_bootstrap_target(1)
+            .with_oversaturation_peers(1)
             .with_saturation(1);
         let routing = make_routing(base, config);
 
@@ -172,6 +175,7 @@ mod tests {
             .with_nominal(1)
             .with_inbound_headroom(0)
             .with_bootstrap_target(1)
+            .with_oversaturation_peers(1)
             .with_saturation(1);
         let routing = make_routing(base, config);
 

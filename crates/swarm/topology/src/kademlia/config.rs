@@ -73,6 +73,13 @@ impl KademliaConfig {
         self
     }
 
+    /// Set the per-bin oversaturation level (trim floor and minimum
+    /// inbound ceiling).
+    pub(crate) fn with_oversaturation_peers(mut self, oversaturation: usize) -> Self {
+        self.limits = self.limits.with_oversaturation_peers(oversaturation);
+        self
+    }
+
     /// Set the saturation threshold (production threads it from the spec).
     pub(crate) fn with_saturation(mut self, saturation: usize) -> Self {
         self.limits = self.limits.with_saturation(saturation);
