@@ -238,16 +238,22 @@ impl<I: SwarmIdentity> PeerManager<I> {
             .collect()
     }
 
-    /// Get known storer overlays in a specific proximity bin (not banned).
-    #[must_use]
-    pub fn storer_overlays_in_bin(&self, bin: Bin, count: usize) -> Vec<OverlayAddress> {
-        self.index.filter_bin(bin, count, |overlay| {
-            !self.banned_set.contains_key(overlay)
-                && self
-                    .peers
-                    .get(overlay)
-                    .is_some_and(|e| e.node_type() == SwarmNodeType::Storer)
-        })
+    /// Iterate known storer overlays in a specific proximity bin (not banned).
+    ///
+    /// Lazy over a snapshot of the bin's membership: the node-type and ban
+    /// checks run per item as the caller advances, so callers take only
+    /// what they need.
+    pub fn storer_overlays_in_bin(&self, bin: Bin) -> impl Iterator<Item = OverlayAddress> + '_ {
+        self.index
+            .peers_in_bin(bin)
+            .into_iter()
+            .filter(move |overlay| {
+                !self.banned_set.contains_key(overlay)
+                    && self
+                        .peers
+                        .get(overlay)
+                        .is_some_and(|e| e.node_type() == SwarmNodeType::Storer)
+            })
     }
 
     /// Get SwarmPeer data for multiple overlays.
@@ -274,35 +280,32 @@ impl<I: SwarmIdentity> PeerManager<I> {
             .collect()
     }
 
-    /// Get dialable overlay addresses from a specific bin (not banned, not in backoff).
-    pub fn dialable_overlays_in_bin(&self, bin: Bin, count: usize) -> Vec<OverlayAddress> {
-        self.dialable_overlays_in_bin_excluding(bin, count, |_| false)
+    /// Iterate dialable overlay addresses in a specific bin (not banned, not
+    /// in backoff).
+    pub fn dialable_overlays_in_bin(&self, bin: Bin) -> impl Iterator<Item = OverlayAddress> + '_ {
+        self.dialable_overlays_in_bin_excluding(bin, |_| false)
     }
 
-    /// Get dialable overlay addresses from a bin, skipping excluded overlays.
+    /// Iterate dialable overlay addresses in a bin, skipping excluded overlays.
     ///
     /// `exclude` lets the caller remove overlays that are dialable but useless
-    /// as candidates, typically peers it is already connected to. Without the
-    /// exclusion, connected peers (hot and dialable) fill the returned slice
-    /// first and a bin with more connections than `count` yields no usable
-    /// candidates even when many unconnected peers are known.
-    pub fn dialable_overlays_in_bin_excluding(
-        &self,
+    /// as candidates, typically peers it is already connected to. The iterator
+    /// is lazy over a snapshot of the bin's membership: exclusion, ban, and
+    /// dialability checks run per item as the caller advances, so callers take
+    /// only what they need and never pay for the rest of the bin.
+    pub fn dialable_overlays_in_bin_excluding<'a>(
+        &'a self,
         bin: Bin,
-        count: usize,
-        exclude: impl Fn(&OverlayAddress) -> bool,
-    ) -> Vec<OverlayAddress> {
-        self.index.filter_bin(bin, count, |overlay| {
-            !self.banned_set.contains_key(overlay)
-                && !exclude(overlay)
-                && self.peers.get(overlay).is_some_and(|e| e.is_dialable())
-        })
-    }
-
-    /// Get dialable peers from a specific bin (not banned, not in backoff).
-    pub fn dialable_in_bin(&self, bin: Bin, count: usize) -> Vec<SwarmPeer> {
-        let overlays = self.dialable_overlays_in_bin(bin, count);
-        self.get_swarm_peers(&overlays)
+        exclude: impl Fn(&OverlayAddress) -> bool + 'a,
+    ) -> impl Iterator<Item = OverlayAddress> + 'a {
+        self.index
+            .peers_in_bin(bin)
+            .into_iter()
+            .filter(move |overlay| {
+                !self.banned_set.contains_key(overlay)
+                    && !exclude(overlay)
+                    && self.peers.get(overlay).is_some_and(|e| e.is_dialable())
+            })
     }
 
     #[must_use]
@@ -1085,30 +1088,35 @@ mod tests {
     }
 
     #[test]
-    fn test_overlays_in_bin_accept_max_count() {
+    fn test_overlays_in_bin_yield_full_supply() {
         let pm = manager();
         connect(&pm, 1, SwarmNodeType::Storer);
 
         let bin = Bin::from(test_overlay(0).proximity(&test_overlay(1)));
 
-        let storers = pm.storer_overlays_in_bin(bin, usize::MAX);
+        let storers: Vec<_> = pm.storer_overlays_in_bin(bin).collect();
         assert_eq!(storers, vec![test_overlay(1)]);
 
-        let dialable = pm.dialable_overlays_in_bin(bin, usize::MAX);
+        let dialable: Vec<_> = pm.dialable_overlays_in_bin(bin).collect();
         assert_eq!(dialable, vec![test_overlay(1)]);
     }
 
     #[test]
     fn test_dialable_overlays_excluding() {
         let pm = manager();
-        connect(&pm, 1, SwarmNodeType::Storer);
+        // Overlays 2 and 3 share a proximity bin relative to the zero local
+        // overlay.
         connect(&pm, 2, SwarmNodeType::Storer);
+        connect(&pm, 3, SwarmNodeType::Storer);
 
-        let bin = Bin::from(test_overlay(0).proximity(&test_overlay(1)));
-        let excluded = test_overlay(1);
+        let bin = Bin::from(test_overlay(0).proximity(&test_overlay(2)));
+        let excluded = test_overlay(2);
 
-        let dialable = pm.dialable_overlays_in_bin_excluding(bin, usize::MAX, |o| *o == excluded);
+        let dialable: Vec<_> = pm
+            .dialable_overlays_in_bin_excluding(bin, |o| *o == excluded)
+            .collect();
         assert!(!dialable.contains(&excluded));
+        assert!(dialable.contains(&test_overlay(3)));
     }
 
     #[test]
@@ -1171,7 +1179,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialable_in_bin() {
+    fn test_dialable_in_bin_skips_banned() {
         let pm = manager();
 
         // First bytes 0x80, 0xc0, 0xa0: all bin 0 relative to the zero local
@@ -1183,8 +1191,9 @@ mod tests {
         let p1 = OverlayAddress::from(*make_swarm_peer_minimal(0x80).overlay());
         pm.ban(&p1, BanCause::Requested, None);
 
-        let dialable = pm.dialable_in_bin(Bin::new(0).unwrap(), 2);
+        let dialable: Vec<_> = pm.dialable_overlays_in_bin(Bin::new(0).unwrap()).collect();
         assert_eq!(dialable.len(), 2);
+        assert!(!dialable.contains(&p1));
     }
 
     #[test]

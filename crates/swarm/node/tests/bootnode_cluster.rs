@@ -120,10 +120,7 @@ async fn three_node_convergence() -> Result<()> {
     // *Client* peers (today the gossip task short-circuits in
     // `vertex_swarm_topology::gossip::tasks::on_peer_authenticated` via
     // `!node_type.requires_storage()`, so two Client nodes never gossip
-    // about each other through a bootnode). Flipping the cluster to
-    // Storer-typed identities surfaces a separate `usize::MAX`-overflow
-    // bug in `vertex_swarm_peer_manager::storer_overlays_in_bin`, so we
-    // hold this assertion until those land separately.
+    // about each other through a bootnode).
     //
     // Until then, we assert the *necessary* precondition: each client
     // has its own routing snapshot of the bootnode (the only peer it
