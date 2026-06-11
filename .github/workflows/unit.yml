@@ -101,7 +101,7 @@ jobs:
       # `+nightly` is load-bearing: rust-toolchain.toml pins the stable
       # channel and would otherwise override the installed nightly.
       - name: Build peer stack for wasm32
-        run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-util-runtime -p vertex-swarm-peer-score -p vertex-swarm-peer-manager
+        run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-util-runtime -p vertex-swarm-peer-score -p vertex-swarm-peer-manager -p vertex-tasks
 
   ci-success:
     name: ci success
