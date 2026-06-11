@@ -1,0 +1,35 @@
+[package]
+name = "vertex-net-dnsaddr-doh"
+description = "Browser dnsaddr resolution over DNS-over-HTTPS for wasm Swarm clients"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+libp2p = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["std"] }
+strum = { workspace = true }
+thiserror = { workspace = true, features = ["std"] }
+tracing = { workspace = true }
+
+# Browser fetch is only available on wasm; the live DoH path is gated to wasm32.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-net = { workspace = true }
+
+# libp2p pulls getrandom 0.3 transitively; on wasm32 its browser backend needs the
+# `wasm_js` feature (the matching `getrandom_backend="wasm_js"` cfg is set in
+# .cargo/config.toml). This is a transitive build requirement, not a direct API use.
+getrandom_03 = { workspace = true, features = ["wasm_js"] }
+
+[dev-dependencies]
+futures = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = { workspace = true }

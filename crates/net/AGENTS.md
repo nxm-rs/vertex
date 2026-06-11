@@ -7,6 +7,7 @@ Root-level rules in `/AGENTS.md` apply here too. The notes below are the area-sp
 ## Scope
 
 - `dnsaddr`, `local`, `utils`: address handling and IP classification.
+- `dnsaddr-doh`: wasm-only dnsaddr resolution over DNS-over-HTTPS for browser clients that have no raw DNS TXT capability. The recursion driver is generic over a `TxtFetcher` so its parsing, bounded-depth recursion, and wss-leaf filtering test natively against fixtures; the `fetch`-backed `DohClient` is `cfg(target_arch = "wasm32")`. It returns dialable leaves only and stays free of `crates/swarm/` types: the snapshot-fallback policy lives at the bootnode-selection site (`resolve_or_fallback` takes a caller-supplied snapshot slice). See `docs/agents/wasm.md`.
 - `peer/backoff`, `peer/score`, `peer/store`, `peer/registry`: peer state primitives that hold no protocol logic. Together with `local` they sit in the wasm compilation cone of the Swarm peer stack: keep them building for `wasm32-unknown-unknown` (the `wasm` CI job enforces this through `vertex-swarm-peer-manager`) and take wall clocks and monotonic time from `web-time`, not `std::time`. See `docs/agents/wasm.md`.
 - `dialer`: generic dial-request tracker with bounded queue and in-flight management.
 - `codec`: protobuf framing (`FramedProto`) plus the `protocol_error!` macro for protocol-shaped error enums.

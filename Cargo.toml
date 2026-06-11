@@ -25,6 +25,7 @@ members = [
 
     # Network (protocol-agnostic utilities)
     "crates/net/dnsaddr",
+    "crates/net/dnsaddr-doh",
     "crates/net/local",
     "crates/net/peer/backoff",
     "crates/net/peer/store",
@@ -138,6 +139,7 @@ vertex-swarm-peer = { path = "crates/swarm/peers/peer" }
 
 # network
 vertex-net-dnsaddr = { path = "crates/net/dnsaddr" }
+vertex-net-dnsaddr-doh = { path = "crates/net/dnsaddr-doh" }
 vertex-net-local = { path = "crates/net/local" }
 vertex-net-peer-backoff = { path = "crates/net/peer/backoff" }
 vertex-net-peer-store = { path = "crates/net/peer/store" }
@@ -300,6 +302,10 @@ prost = "0.13"
 futures = "0.3"
 futures-util = "0.3"
 wasm-bindgen-futures = "0.4"
+
+## wasm browser HTTP (fetch) and test harness
+gloo-net = { version = "0.6", default-features = false, features = ["http"] }
+wasm-bindgen-test = "0.3"
 
 ## atomics
 portable-atomic = { version = "1", features = ["float", "serde"] }
