@@ -20,7 +20,7 @@ use tracing::{debug, info, trace};
 use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 use vertex_swarm_peer_manager::{PeerManager, ProximityIndex};
 use vertex_swarm_primitives::{
-    Bin, NeighborhoodDepth, OverlayAddress, SwarmNodeType, all_bins, balanced_bins,
+    Bin, NeighborhoodDepth, OverlayAddress, ProximityOrder, SwarmNodeType, all_bins, balanced_bins,
     neighborhood_bins,
 };
 
@@ -65,6 +65,73 @@ fn atomic_load(vec: &[AtomicUsize], bin: Bin) -> usize {
 
 fn make_atomic_vec(n: usize) -> Vec<AtomicUsize> {
     (0..n).map(|_| AtomicUsize::new(0)).collect()
+}
+
+/// Select `count` trim victims from one bin's active peers, worst first.
+///
+/// Each pool entry carries the caller's rank and the peer score. The primary
+/// order is unchanged from plain rank-based trimming: the lowest `(rank,
+/// score)` pair is evicted soonest. Among peers still tied on both, prefix
+/// diversity decides: the victim is the tied peer whose address shares the
+/// longest prefix (highest [`ProximityOrder`]) with any other remaining peer,
+/// so the retained set stays spread across the bin's sub-tries - the same
+/// balance goal candidate selection pursues when filling the bin. A residual
+/// tie falls back to overlay order so selection is deterministic.
+///
+/// Greedy and incremental: one victim per round, with redundancy recomputed
+/// against the survivors, O(count * n^2) for a bin of `n` peers. Bins hold at
+/// most a few dozen peers, so the quadratic term is negligible.
+fn select_trim_victims<R: Ord>(
+    mut pool: Vec<(OverlayAddress, R, f64)>,
+    count: usize,
+) -> Vec<OverlayAddress> {
+    use std::cmp::Ordering;
+
+    if count >= pool.len() {
+        return pool.into_iter().map(|(overlay, _, _)| overlay).collect();
+    }
+
+    /// Worst-first primary order: rank, then score (`NaN`-tolerant).
+    fn by_rank_then_score<R: Ord>(
+        a: &(OverlayAddress, R, f64),
+        b: &(OverlayAddress, R, f64),
+    ) -> Ordering {
+        a.1.cmp(&b.1)
+            .then_with(|| a.2.partial_cmp(&b.2).unwrap_or(Ordering::Equal))
+    }
+
+    let mut victims = Vec::with_capacity(count);
+    while victims.len() < count {
+        // Redundancy of each survivor: the longest prefix it shares with any
+        // other survivor. A high value means a same-sub-trie sibling remains,
+        // so evicting this peer costs the least diversity.
+        let redundancy: Vec<Option<ProximityOrder>> = pool
+            .iter()
+            .map(|(overlay, _, _)| {
+                pool.iter()
+                    .filter(|(other, _, _)| other != overlay)
+                    .map(|(other, _, _)| overlay.proximity(other))
+                    .max()
+            })
+            .collect();
+
+        let victim = pool
+            .iter()
+            .zip(&redundancy)
+            .enumerate()
+            .min_by(|(_, (a, a_redundancy)), (_, (b, b_redundancy))| {
+                by_rank_then_score(a, b)
+                    // Higher redundancy is evicted first (min_by, so reversed).
+                    .then_with(|| b_redundancy.cmp(a_redundancy))
+                    .then_with(|| a.0.cmp(&b.0))
+            })
+            .map(|(idx, _)| idx);
+
+        let Some(idx) = victim else { break };
+        victims.push(pool.swap_remove(idx).0);
+    }
+
+    victims
 }
 
 /// Kademlia-based peer routing table.
@@ -263,9 +330,12 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
     /// Identify peers to evict from overpopulated bins.
     ///
     /// Order: handshaking peers first (not yet established), then active peers
-    /// least worth keeping. Active victims are chosen by rank then score:
-    /// `rank(overlay)` (the lowest-ranked is evicted soonest) breaks ties on the
-    /// peer score, preferring to drop unreachable peers.
+    /// least worth keeping. Active victims are chosen by rank, then score,
+    /// then prefix diversity: `rank(overlay)` (the lowest-ranked is evicted
+    /// soonest) breaks ties on the peer score, preferring to drop unreachable
+    /// peers; peers tied on both are decided by [`select_trim_victims`], which
+    /// prefers evicting a peer that shares a long address prefix with a
+    /// retained peer so the kept set stays spread across the bin's sub-tries.
     /// `rank` is supplied by the caller, which owns the overlay->peer-id mapping
     /// and the reachability tracker; it returns any `Ord` value, so this layer
     /// stays decoupled from the rank type. The topology behaviour passes a
@@ -313,10 +383,10 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
                 }
             }
 
-            // Phase 2: Active peers, lowest rank first then lowest score
-            // (O(n) partial selection).
+            // Phase 2: Active peers, lowest rank first, then lowest score,
+            // then prefix diversity among full ties.
             if remaining > 0 {
-                let mut active_in_bin: Vec<_> = self
+                let active_in_bin: Vec<_> = self
                     .connected_peers
                     .peers_in_bin(bin)
                     .into_iter()
@@ -327,17 +397,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
                     })
                     .collect();
 
-                if remaining < active_in_bin.len() {
-                    active_in_bin.select_nth_unstable_by(remaining, |a, b| {
-                        // Evict lowest rank first, breaking ties on lowest score.
-                        a.1.cmp(&b.1).then_with(|| {
-                            a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                    });
-                    active_in_bin.truncate(remaining);
-                }
-
-                for (overlay, _, _) in active_in_bin {
+                for overlay in select_trim_victims(active_in_bin, remaining) {
                     candidates.push(EvictionCandidate {
                         overlay,
                         bin,
@@ -1307,6 +1367,126 @@ mod tests {
             candidates[0].overlay, dead_local,
             "an unreachable local is still evicted when it is the worst candidate"
         );
+    }
+
+    #[test]
+    fn test_select_trim_victims_prefix_diversity_within_ties() {
+        // Two sub-tries inside one bin: a tight cluster sharing a long prefix
+        // (first bytes 0x80..0x83, mutual proximity >= 6) and a spread pair
+        // (0xC0 and 0xE0, mutual proximity 2). With every (rank, score) equal,
+        // both victims must come from the tight cluster so the kept set still
+        // covers both sub-tries.
+        let cluster: Vec<OverlayAddress> =
+            (0x80..=0x83u8).map(SwarmAddress::with_first_byte).collect();
+        let spread = [
+            SwarmAddress::with_first_byte(0xc0),
+            SwarmAddress::with_first_byte(0xe0),
+        ];
+
+        let pool: Vec<(OverlayAddress, u8, f64)> = cluster
+            .iter()
+            .chain(spread.iter())
+            .map(|overlay| (*overlay, 1u8, 0.0))
+            .collect();
+
+        let victims = select_trim_victims(pool, 2);
+        assert_eq!(victims.len(), 2);
+        for victim in &victims {
+            assert!(
+                cluster.contains(victim),
+                "victim {victim} should come from the clustered sub-trie"
+            );
+        }
+    }
+
+    #[test]
+    fn test_select_trim_victims_rank_and_score_dominate() {
+        // The diversity tie-break never overrides the primary order: a
+        // prefix-diverse peer with the worst rank (or, at equal rank, the
+        // lowest score) is still evicted first.
+        let clustered_a = SwarmAddress::with_first_byte(0x80);
+        let clustered_b = SwarmAddress::with_first_byte(0x81);
+        let diverse = SwarmAddress::with_first_byte(0xc0);
+
+        // Worst rank loses despite being the diversity-preferred keep.
+        let pool = vec![
+            (clustered_a, 2u8, 0.0),
+            (clustered_b, 2u8, 0.0),
+            (diverse, 0u8, 0.0),
+        ];
+        assert_eq!(select_trim_victims(pool, 1), vec![diverse]);
+
+        // Equal rank: lowest score loses despite diversity.
+        let pool = vec![
+            (clustered_a, 1u8, 0.0),
+            (clustered_b, 1u8, 0.0),
+            (diverse, 1u8, -1.0),
+        ];
+        assert_eq!(select_trim_victims(pool, 1), vec![diverse]);
+    }
+
+    #[test]
+    fn test_select_trim_victims_spreads_across_equal_clusters() {
+        // Two equally tight clusters and one victim slot per round: the
+        // incremental recompute alternates clusters instead of draining one,
+        // keeping the survivors spread.
+        let cluster_a: Vec<OverlayAddress> =
+            (0x80..=0x81u8).map(SwarmAddress::with_first_byte).collect();
+        let cluster_b: Vec<OverlayAddress> =
+            (0xc0..=0xc1u8).map(SwarmAddress::with_first_byte).collect();
+
+        let pool: Vec<(OverlayAddress, u8, f64)> = cluster_a
+            .iter()
+            .chain(cluster_b.iter())
+            .map(|overlay| (*overlay, 1u8, 0.0))
+            .collect();
+
+        let victims = select_trim_victims(pool, 2);
+        assert_eq!(victims.len(), 2);
+        assert_eq!(
+            victims.iter().filter(|v| cluster_a.contains(v)).count(),
+            1,
+            "one victim from each cluster keeps both sub-tries represented"
+        );
+    }
+
+    #[test]
+    fn test_eviction_tiebreak_keeps_bin_prefix_spread() {
+        let base = SwarmAddress::with_first_byte(0x00);
+        // Trim floor pinned to 4; see test_eviction_candidates_handshaking_first.
+        let (routing, _pm) = make_routing(
+            base,
+            KademliaConfig::default()
+                .with_bootstrap_target(4)
+                .with_saturation(4),
+        );
+
+        // Bin 0 holds two sub-tries: four clustered peers (0x80..0x83) and two
+        // spread peers (0xC0, 0xE0). At depth 8 the target is 4, so surplus is
+        // 2. All ranks and scores are equal, so prefix diversity decides: both
+        // victims come from the cluster and the kept set covers both sub-tries.
+        let cluster: Vec<OverlayAddress> =
+            (0x80..=0x83u8).map(SwarmAddress::with_first_byte).collect();
+        let spread = [
+            SwarmAddress::with_first_byte(0xc0),
+            SwarmAddress::with_first_byte(0xe0),
+        ];
+        for peer in cluster.iter().chain(spread.iter()) {
+            force_active(&routing, *peer);
+        }
+        routing.depth.store(8, Ordering::Relaxed);
+
+        let candidates = routing.eviction_candidates(|_| 1);
+        assert_eq!(candidates.len(), 2);
+        for c in &candidates {
+            assert_eq!(c.phase, EvictionPhase::Active);
+            assert!(
+                cluster.contains(&c.overlay),
+                "evicted {} from the spread sub-trie; the kept set must stay \
+                 spread across the bin's sub-tries",
+                c.overlay
+            );
+        }
     }
 
     #[test]
