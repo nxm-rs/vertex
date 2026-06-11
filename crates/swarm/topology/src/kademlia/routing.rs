@@ -1598,6 +1598,7 @@ mod tests {
             base,
             KademliaConfig::default()
                 .with_bootstrap_target(4)
+                .with_oversaturation_peers(4)
                 .with_saturation(4),
         );
 
