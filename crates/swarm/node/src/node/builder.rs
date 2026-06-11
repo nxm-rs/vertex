@@ -3,9 +3,7 @@
 use std::time::Duration;
 
 use eyre::{Result, WrapErr};
-use libp2p::{
-    Multiaddr, SwarmBuilder, identity::PublicKey, noise, swarm::NetworkBehaviour, tcp, yamux,
-};
+use libp2p::{Multiaddr, Swarm, identity::PublicKey, swarm::NetworkBehaviour};
 use tracing::{info, warn};
 use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_swarm_api::{
@@ -189,24 +187,19 @@ where
 
     let topology_cell = std::sync::Mutex::new(Some(topology_behaviour));
 
-    let swarm = SwarmBuilder::with_new_identity()
-        .with_tokio()
-        .with_tcp(
-            tcp::Config::default(),
-            noise::Config::new,
-            yamux::Config::default,
-        )?
-        .with_dns()?
-        .with_behaviour(|keypair| {
-            let topology = topology_cell
-                .lock()
-                .map_err(|_| NodeBuildError::TopologyCellPoisoned)?
-                .take()
-                .ok_or(NodeBuildError::TopologyBehaviourTaken)?;
-            Ok(behaviour_fn(keypair.public().clone(), topology))
-        })?
-        .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(idle_timeout))
-        .build();
+    let behaviour_builder = |keypair: &libp2p::identity::Keypair| {
+        let topology = topology_cell
+            .lock()
+            .map_err(|_| NodeBuildError::TopologyCellPoisoned)?
+            .take()
+            .ok_or(NodeBuildError::TopologyBehaviourTaken)?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(behaviour_fn(
+            keypair.public().clone(),
+            topology,
+        ))
+    };
+
+    let swarm = build_swarm(idle_timeout, behaviour_builder)?;
 
     let local_peer_id = *swarm.local_peer_id();
     info!(%local_peer_id, "{} peer ID", node_type_name);
@@ -222,4 +215,64 @@ where
         listen_addrs,
         topology_handle: infra.topology_handle,
     })
+}
+
+/// Assemble the libp2p [`Swarm`] for native targets over a TCP transport with
+/// DNS resolution, Noise authentication, and Yamux multiplexing.
+#[cfg(not(target_arch = "wasm32"))]
+fn build_swarm<B, F>(idle_timeout: Duration, behaviour_builder: F) -> Result<Swarm<B>>
+where
+    B: NetworkBehaviour,
+    F: FnOnce(
+        &libp2p::identity::Keypair,
+    ) -> std::result::Result<B, Box<dyn std::error::Error + Send + Sync>>,
+{
+    use libp2p::{SwarmBuilder, noise, tcp, yamux};
+
+    let swarm = SwarmBuilder::with_new_identity()
+        .with_tokio()
+        .with_tcp(
+            tcp::Config::default(),
+            noise::Config::new,
+            yamux::Config::default,
+        )?
+        .with_dns()?
+        .with_behaviour(behaviour_builder)?
+        .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(idle_timeout))
+        .build();
+
+    Ok(swarm)
+}
+
+/// Assemble the libp2p [`Swarm`] for the browser over a websocket transport.
+///
+/// The browser cannot open listeners, so this path only dials. It builds the
+/// websocket transport from `libp2p-websocket-websys`, which dials the bee
+/// AutoTLS `/tls/sni/<host>/ws` multiaddrs (the browser performs TLS and SNI
+/// natively), then upgrades it with Noise and Yamux to match the native
+/// authentication and multiplexing.
+#[cfg(target_arch = "wasm32")]
+fn build_swarm<B, F>(idle_timeout: Duration, behaviour_builder: F) -> Result<Swarm<B>>
+where
+    B: NetworkBehaviour,
+    F: FnOnce(
+        &libp2p::identity::Keypair,
+    ) -> std::result::Result<B, Box<dyn std::error::Error + Send + Sync>>,
+{
+    use libp2p::{SwarmBuilder, Transport as _, core::upgrade::Version, noise, yamux};
+
+    let swarm = SwarmBuilder::with_new_identity()
+        .with_wasm_bindgen()
+        .with_other_transport(|keypair| {
+            let transport = libp2p_websocket_websys::Transport::default()
+                .upgrade(Version::V1)
+                .authenticate(noise::Config::new(keypair)?)
+                .multiplex(yamux::Config::default());
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(transport)
+        })?
+        .with_behaviour(behaviour_builder)?
+        .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(idle_timeout))
+        .build();
+
+    Ok(swarm)
 }
