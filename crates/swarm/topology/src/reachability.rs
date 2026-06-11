@@ -37,11 +37,11 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
 
 use libp2p::PeerId;
 use parking_lot::RwLock;
 use tracing::{debug, trace};
+use vertex_util_runtime::time::Instant;
 
 /// Number of consecutive negative liveness signals (failed ping or handshake
 /// fault) within [`FAILURE_DECAY`] that flip a peer to
