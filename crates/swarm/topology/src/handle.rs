@@ -119,6 +119,8 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
             saturation_threshold,
             bins,
             bins_at_target,
+            neighborhood_stable_for: self.routing.neighborhood_stable_for(),
+            neighborhood_stability_window: self.routing.neighborhood_stability_window(),
         }
     }
 
@@ -214,6 +216,69 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
     /// [`Self::wait_until`] for the event semantics.
     pub async fn wait_until_ready(&self) -> Result<(), TopologyError> {
         self.wait_until(ReadinessSnapshot::is_warm).await
+    }
+
+    /// Resolve once the neighborhood is ready for pull-syncing:
+    /// continuously saturated at an unchanged depth for the configured
+    /// stability window (`KademliaConfig::with_neighborhood_stability_window`).
+    ///
+    /// See [`ReadinessSnapshot::is_neighborhood_ready`] for the condition
+    /// and why chunk synchronization gates on it. Unlike the purely
+    /// event-driven waits, this condition can also become true by time
+    /// alone, so while the neighborhood is saturated a timer is armed for
+    /// the remainder of the window alongside the event subscription; every
+    /// wake (event, lag, or timer) re-evaluates against fresh state, so a
+    /// missed event cannot strand the waiter. Cancel-safe: dropping the
+    /// returned future drops the subscription and the timer. Returns
+    /// [`TopologyError::ServiceShutdown`] if the topology event channel
+    /// closes before the condition holds.
+    pub async fn wait_until_neighborhood_ready(&self) -> Result<(), TopologyError> {
+        let mut events = self.event_tx.subscribe();
+
+        loop {
+            let snapshot = self.readiness();
+            if snapshot.is_neighborhood_ready() {
+                return Ok(());
+            }
+
+            // Saturated but the window has not been served yet: arm a timer
+            // for the remainder. Below saturation only a state change (an
+            // event) can make progress, so park on the subscription alone.
+            let remaining = snapshot.neighborhood_stable_for.map(|stable| {
+                snapshot
+                    .neighborhood_stability_window
+                    .saturating_sub(stable)
+            });
+            let window_elapsed = async {
+                match remaining {
+                    Some(remaining) => tokio::time::sleep(remaining).await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::pin!(window_elapsed);
+
+            // Park until a wake that can change the verdict: the armed
+            // timer, an event that changes snapshot state, or a lagged
+            // stream (which may have dropped one). Other events park again
+            // without rebuilding the snapshot or re-arming the timer.
+            loop {
+                tokio::select! {
+                    () = &mut window_elapsed => break,
+                    event = events.recv() => match event {
+                        Ok(
+                            TopologyEvent::PeerReady { .. }
+                            | TopologyEvent::PeerDisconnected { .. }
+                            | TopologyEvent::DepthChanged { .. },
+                        )
+                        | Err(broadcast::error::RecvError::Lagged(_)) => break,
+                        Ok(_) => {}
+                        Err(broadcast::error::RecvError::Closed) => {
+                            return Err(TopologyError::ServiceShutdown);
+                        }
+                    },
+                }
+            }
+        }
     }
 
     /// Get direct access to the peer manager for scoring/banning queries.
@@ -641,6 +706,110 @@ mod tests {
             .await
             .expect("depth gate must resolve on DepthChanged")
             .expect("wait_until_depth must succeed");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn neighborhood_ready_requires_stability_window() {
+        let h = harness(SwarmNodeType::Storer, 64);
+        assert!(h.handle.readiness().neighborhood_stable_for.is_none());
+
+        saturate_to_depth_one(&h);
+        let s = h.handle.readiness();
+        assert!(s.is_saturated());
+        let stable = s
+            .neighborhood_stable_for
+            .expect("saturated neighborhood must track stability");
+        assert!(stable < s.neighborhood_stability_window);
+        assert!(!s.is_neighborhood_ready(), "window not served yet");
+
+        tokio::time::advance(s.neighborhood_stability_window).await;
+        assert!(h.handle.readiness().is_neighborhood_ready());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn neighborhood_stability_resets_on_saturation_dip() {
+        let h = harness(SwarmNodeType::Storer, 64);
+        saturate_to_depth_one(&h);
+        tokio::time::advance(Duration::from_secs(20)).await;
+
+        // Drop the neighborhood (9 connected at depth 1) below the
+        // threshold (8): the clock must clear, not pause.
+        for n in [0x40, 0x41] {
+            let overlay = test_overlay(n);
+            SwarmRouting::on_peer_disconnected(&*h.routing, &overlay);
+            h.peer_manager.on_peer_disconnected(&overlay, "test");
+        }
+        assert!(
+            h.handle.readiness().neighborhood_stable_for.is_none(),
+            "saturation dip must clear the stability clock"
+        );
+
+        // Recovering restarts the clock from zero, not the pre-dip anchor.
+        h.connect(0x40, SwarmNodeType::Storer);
+        h.connect(0x41, SwarmNodeType::Storer);
+        tokio::time::advance(Duration::from_secs(15)).await;
+        let s = h.handle.readiness();
+        assert_eq!(s.neighborhood_stable_for, Some(Duration::from_secs(15)));
+        assert!(!s.is_neighborhood_ready());
+
+        tokio::time::advance(Duration::from_secs(15)).await;
+        assert!(h.handle.readiness().is_neighborhood_ready());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn neighborhood_stability_resets_on_depth_change() {
+        let h = harness(SwarmNodeType::Storer, 64);
+        saturate_to_depth_one(&h);
+        tokio::time::advance(Duration::from_secs(20)).await;
+
+        // Grow bin 2 to 7 peers: depth (anchored at unsaturated bin 1) and
+        // saturation are unchanged, so the clock keeps running.
+        for n in 0x23..0x27 {
+            h.connect(n, SwarmNodeType::Storer);
+        }
+        let s = h.handle.readiness();
+        assert_eq!(s.depth.get(), 1);
+        assert_eq!(
+            s.neighborhood_stable_for,
+            Some(Duration::from_secs(20)),
+            "mutations that move neither depth nor saturation keep the clock"
+        );
+
+        // Saturate bin 1 (5 -> 8): the unsaturated frontier moves to bin 2
+        // and depth climbs. Bins at and above 2 hold 7 + 1 = 8 connected,
+        // so the neighborhood is still saturated, but the boundary moved:
+        // the clock must restart.
+        for n in 0x45..0x48 {
+            h.connect(n, SwarmNodeType::Storer);
+        }
+        let s = h.handle.readiness();
+        assert_eq!(s.depth.get(), 2);
+        assert!(s.is_saturated());
+        assert_eq!(
+            s.neighborhood_stable_for,
+            Some(Duration::ZERO),
+            "depth change must restart the stability clock"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_until_neighborhood_ready_resolves_after_window() {
+        let h = harness(SwarmNodeType::Storer, 64);
+
+        let mut waiter = Box::pin(h.handle.wait_until_neighborhood_ready());
+        assert!(futures::poll!(waiter.as_mut()).is_pending());
+
+        saturate_to_depth_one(&h);
+        h.emit_peer_ready(0x80, SwarmNodeType::Storer);
+        // Saturation alone must not resolve the gate; the window has to pass.
+        assert!(futures::poll!(waiter.as_mut()).is_pending());
+
+        // Paused time auto-advances to the armed window timer once the
+        // runtime is otherwise idle.
+        tokio::time::timeout(Duration::from_secs(60), waiter)
+            .await
+            .expect("neighborhood gate must resolve once the window elapses")
+            .expect("wait_until_neighborhood_ready must succeed");
     }
 
     #[tokio::test]
