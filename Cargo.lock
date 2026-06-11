@@ -9236,6 +9236,7 @@ dependencies = [
  "clap 4.6.1",
  "eyre",
  "humansize",
+ "libp2p",
  "nectar-contracts",
  "nectar-primitives",
  "nectar-swarms",

@@ -43,6 +43,9 @@ tracing = { workspace = true, optional = true }
 # Test utilities
 proptest = { workspace = true }
 arbitrary = { workspace = true }
+# Multiaddr parsing for the embedded wss bootnode snapshot test (test-only,
+# keeps the library itself wasm-clean and libp2p-free)
+libp2p = { workspace = true }
 
 [features]
 default = ["std"]
