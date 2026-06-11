@@ -969,11 +969,13 @@ mod tests {
     #[test]
     fn test_inbound_capacity() {
         let base = SwarmAddress::with_first_byte(0x00);
-        // With bootstrap target 2 and headroom 0, depth-0 inbound ceiling = 2
+        // With bootstrap and oversaturation pinned to 2 and headroom 0, the
+        // depth-0 inbound ceiling = 2
         let config = KademliaConfig::default()
             .with_nominal(2)
             .with_inbound_headroom(0)
             .with_bootstrap_target(2)
+            .with_oversaturation_peers(2)
             .with_saturation(2);
         let (routing, _pm) = make_routing(base, config);
 
@@ -1065,11 +1067,12 @@ mod tests {
     #[test]
     fn test_eviction_candidates_handshaking_first() {
         let base = SwarmAddress::with_first_byte(0x00);
-        // Pin the trim floor (bootstrap_target) and saturation to 4 so a
-        // small bin-0 population yields a surplus and the depth-8 bin-0
+        // Pin the trim floor (oversaturation_peers) and saturation to 4 so
+        // a small bin-0 population yields a surplus and the depth-8 bin-0
         // target stays at 4 as the original scenario assumed.
         let config = KademliaConfig::default()
             .with_bootstrap_target(4)
+            .with_oversaturation_peers(4)
             .with_saturation(4);
         let (routing, _pm) = make_routing(base, config);
 
@@ -1115,6 +1118,7 @@ mod tests {
         // Trim floor pinned to 4; see test_eviction_candidates_handshaking_first.
         let config = KademliaConfig::default()
             .with_bootstrap_target(4)
+            .with_oversaturation_peers(4)
             .with_saturation(4);
         let (routing, _pm) = make_routing(base, config);
 
@@ -1147,6 +1151,7 @@ mod tests {
         // Trim floor pinned to 4; see test_eviction_candidates_handshaking_first.
         let config = KademliaConfig::default()
             .with_bootstrap_target(4)
+            .with_oversaturation_peers(4)
             .with_saturation(4);
         let (routing, _pm) = make_routing(base, config);
 
@@ -1188,6 +1193,7 @@ mod tests {
             base,
             KademliaConfig::default()
                 .with_bootstrap_target(4)
+                .with_oversaturation_peers(4)
                 .with_saturation(4),
         );
 
@@ -1231,6 +1237,7 @@ mod tests {
             base,
             KademliaConfig::default()
                 .with_bootstrap_target(4)
+                .with_oversaturation_peers(4)
                 .with_saturation(4),
         );
 
@@ -1274,6 +1281,7 @@ mod tests {
             base,
             KademliaConfig::default()
                 .with_bootstrap_target(4)
+                .with_oversaturation_peers(4)
                 .with_saturation(4),
         );
 
@@ -1317,7 +1325,8 @@ mod tests {
         // must arrive through the inbound headroom band.
         let config = KademliaConfig::default()
             .with_total_target(8)
-            .with_bootstrap_target(8);
+            .with_bootstrap_target(8)
+            .with_oversaturation_peers(8);
         let (routing, _pm) = make_routing(base, config);
 
         let connect = |peer: OverlayAddress| {
