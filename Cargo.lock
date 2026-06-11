@@ -8387,7 +8387,7 @@ dependencies = [
  "parking_lot",
  "strum 0.28.0",
  "tokio",
- "web-time",
+ "vertex-util-runtime",
 ]
 
 [[package]]
@@ -9159,7 +9159,7 @@ dependencies = [
  "vertex-swarm-primitives",
  "vertex-swarm-test-utils",
  "vertex-tasks",
- "web-time",
+ "vertex-util-runtime",
 ]
 
 [[package]]
