@@ -21,6 +21,17 @@ pub use keystore::{create_and_save_signer, load_signer_from_keystore, resolve_pa
 pub use vertex_swarm_api::IdentityError;
 pub use vertex_swarm_api::SwarmIdentity as IdentityTrait;
 
+/// Samples a cryptographically random [`Nonce`] from the runtime CSPRNG facade.
+///
+/// A nonce is 32 random bytes with no key-derivation step, so filling it from
+/// the wasm-safe facade keeps the same entropy guarantee as the upstream
+/// `Nonce::random()` while avoiding its thread-local RNG.
+pub(crate) fn random_nonce() -> Nonce {
+    let mut bytes = [0u8; 32];
+    vertex_util_runtime::rand::fill_bytes(&mut bytes);
+    Nonce::new(bytes)
+}
+
 /// Local node identity containing signing key, nonce, and network spec.
 ///
 /// Holds an `Arc<Spec>` for shared access to the network specification.
@@ -72,8 +83,14 @@ impl Identity {
 
     /// Creates a random ephemeral identity for testing.
     pub fn random(spec: Arc<Spec>, node_type: SwarmNodeType) -> Self {
-        let nonce = Nonce::random();
-        let signer = LocalSigner::random();
+        // Avoid the upstream `*::random()` helpers, which seed from a
+        // thread-local RNG. The nonce is filled from the wasm-safe runtime
+        // facade. The signer keygen runs through alloy, which pins rand 0.8,
+        // so it takes a rand 0.8 OS RNG (getrandom-backed, no thread-local)
+        // rather than the rand 0.9 facade; the pin tracks the alloy dependency,
+        // not a wasm gap.
+        let nonce = random_nonce();
+        let signer = LocalSigner::random_with(&mut rand_08::rngs::OsRng);
         let overlay = compute_overlay(&signer.address(), spec.network_id(), &nonce);
         Self {
             spec,

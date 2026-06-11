@@ -91,7 +91,7 @@ impl IdentityArgs {
 
         let nonce = self.nonce.map(Nonce::from).unwrap_or_else(|| {
             debug!("Generated new nonce");
-            Nonce::random()
+            crate::random_nonce()
         });
 
         Ok(Arc::new(Identity::new(signer, nonce, spec, node_type)))

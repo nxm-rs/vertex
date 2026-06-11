@@ -8796,13 +8796,15 @@ dependencies = [
  "eyre",
  "nectar-primitives",
  "rand 0.8.6",
- "rand 0.9.4",
  "serde",
+ "strum 0.28.0",
+ "thiserror 2.0.18",
  "tracing",
  "vertex-swarm-api",
  "vertex-swarm-peer",
  "vertex-swarm-primitives",
  "vertex-swarm-spec",
+ "vertex-util-runtime",
 ]
 
 [[package]]

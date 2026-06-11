@@ -1,10 +1,30 @@
 //! Keystore utilities for identity management.
+//!
+//! Keystore creation is native-only: it relies on the alloy eth-keystore
+//! encoder, which does not build for `wasm32-unknown-unknown`. This is not a
+//! gap, because only bootnodes and storers persist a keystore and those node
+//! types never run in the browser; the wasm client uses an ephemeral
+//! [`crate::Identity::random`] identity instead. The wasm sibling of
+//! [`create_and_save_signer`] therefore returns [`KeystoreError::WasmUnsupported`].
 
 use alloy_signer_local::PrivateKeySigner;
 use eyre::{Result, WrapErr};
 use std::fs;
 use std::path::Path;
+
+#[cfg(not(target_arch = "wasm32"))]
 use tracing::info;
+
+/// Errors specific to keystore handling.
+#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+#[non_exhaustive]
+pub enum KeystoreError {
+    /// Keystore creation was requested on `wasm32`, where the eth-keystore
+    /// encoder is unavailable. Persistent identities are native-only.
+    #[error("keystore creation is not supported on wasm32; use an ephemeral identity")]
+    WasmUnsupported,
+}
 
 /// Resolve password from direct value or file.
 pub fn resolve_password(password: Option<&str>, password_file: Option<&str>) -> Result<String> {
@@ -25,6 +45,11 @@ pub fn resolve_password(password: Option<&str>, password_file: Option<&str>) -> 
 }
 
 /// Load a signer from an Ethereum keystore file.
+///
+/// Native-only: keystore decryption goes through the alloy eth-keystore decoder,
+/// which is unavailable on wasm. The wasm sibling returns
+/// [`KeystoreError::WasmUnsupported`].
+#[cfg(not(target_arch = "wasm32"))]
 pub fn load_signer_from_keystore(keystore_path: &Path, password: &str) -> Result<PrivateKeySigner> {
     info!(
         "Loading signing key from keystore: {}",
@@ -34,7 +59,23 @@ pub fn load_signer_from_keystore(keystore_path: &Path, password: &str) -> Result
         .wrap_err_with(|| format!("Failed to decrypt keystore at {}", keystore_path.display()))
 }
 
+/// Wasm sibling of [`load_signer_from_keystore`].
+///
+/// Keystore decryption is native-only, so this always fails with
+/// [`KeystoreError::WasmUnsupported`].
+#[cfg(target_arch = "wasm32")]
+pub fn load_signer_from_keystore(
+    _keystore_path: &Path,
+    _password: &str,
+) -> Result<PrivateKeySigner> {
+    Err(KeystoreError::WasmUnsupported.into())
+}
+
 /// Create a new random signer and save it to a keystore.
+///
+/// Native-only: see the module docs for why keystore creation is unavailable on
+/// wasm. The wasm sibling returns [`KeystoreError::WasmUnsupported`].
+#[cfg(not(target_arch = "wasm32"))]
 pub fn create_and_save_signer(keystore_path: &Path, password: &str) -> Result<PrivateKeySigner> {
     info!("Generating new signing key");
 
@@ -49,9 +90,11 @@ pub fn create_and_save_signer(keystore_path: &Path, password: &str) -> Result<Pr
 
     let dir = keystore_path.parent().unwrap_or(Path::new("."));
 
-    // Use rand 0.8 for alloy keystore compatibility
+    // The alloy eth-keystore API pins rand 0.8, so this one call site uses a
+    // rand 0.8 RNG rather than the workspace facade (which is rand 0.9). OsRng
+    // is getrandom-backed; the version pin here tracks the alloy dependency.
     let (signer, _uuid) =
-        PrivateKeySigner::new_keystore(dir, &mut rand_08::thread_rng(), password, Some(name))
+        PrivateKeySigner::new_keystore(dir, &mut rand_08::rngs::OsRng, password, Some(name))
             .wrap_err("Failed to create keystore")?;
 
     #[cfg(unix)]
@@ -63,4 +106,14 @@ pub fn create_and_save_signer(keystore_path: &Path, password: &str) -> Result<Pr
     }
 
     Ok(signer)
+}
+
+/// Wasm sibling of [`create_and_save_signer`].
+///
+/// Keystore creation is native-only, so this always fails with
+/// [`KeystoreError::WasmUnsupported`]. The wasm client uses an ephemeral
+/// identity and never reaches this path.
+#[cfg(target_arch = "wasm32")]
+pub fn create_and_save_signer(_keystore_path: &Path, _password: &str) -> Result<PrivateKeySigner> {
+    Err(KeystoreError::WasmUnsupported.into())
 }
