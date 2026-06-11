@@ -9,12 +9,21 @@
 //! progress on every bin without flooding the dialer. The depth-aware targets,
 //! not this budget, decide how many candidates actually become connections.
 
+use std::time::Duration;
+
 use super::limits::DepthAwareLimits;
 
 /// Max new neighborhood (depth-bin) candidates enqueued per evaluation round.
 const DEFAULT_MAX_NEIGHBOR_CANDIDATES: usize = 16;
 /// Max new balanced (non-depth-bin) candidates enqueued per evaluation round.
 const DEFAULT_MAX_BALANCED_CANDIDATES: usize = 16;
+
+/// Default window the neighborhood must stay saturated at an unchanged depth
+/// before it counts as ready (see `TopologyHandle::wait_until_neighborhood_ready`).
+///
+/// Long enough to absorb the connect/evict churn of the first dial rounds, short
+/// enough that a converged storer can start pull-syncing promptly.
+const DEFAULT_NEIGHBORHOOD_STABILITY_WINDOW: Duration = Duration::from_secs(30);
 
 /// Configuration for Kademlia routing.
 #[derive(Debug, Clone)]
@@ -25,6 +34,9 @@ pub struct KademliaConfig {
     pub(crate) max_neighbor_candidates: usize,
     /// Maximum concurrent pending candidates for balanced (non-depth) bins.
     pub(crate) max_balanced_candidates: usize,
+    /// How long the neighborhood must stay saturated at an unchanged depth
+    /// before it is considered stable (the gate pull-syncing waits on).
+    pub(crate) neighborhood_stability_window: Duration,
 }
 
 impl Default for KademliaConfig {
@@ -33,6 +45,7 @@ impl Default for KademliaConfig {
             limits: DepthAwareLimits::default(),
             max_neighbor_candidates: DEFAULT_MAX_NEIGHBOR_CANDIDATES,
             max_balanced_candidates: DEFAULT_MAX_BALANCED_CANDIDATES,
+            neighborhood_stability_window: DEFAULT_NEIGHBORHOOD_STABILITY_WINDOW,
         }
     }
 }
@@ -53,6 +66,19 @@ impl KademliaConfig {
     /// Create with custom inbound headroom.
     pub fn with_inbound_headroom(mut self, headroom: usize) -> Self {
         self.limits = self.limits.with_inbound_headroom(headroom);
+        self
+    }
+
+    /// Set the neighborhood stability window, preserving all other fields.
+    ///
+    /// The window is how long the neighborhood (bins at and above the current
+    /// depth) must stay saturated without the depth moving before
+    /// `ReadinessSnapshot::is_neighborhood_ready` reports true. Any depth
+    /// change or saturation dip restarts the clock. Pull-syncing is the
+    /// intended consumer: it should start against a settled neighborhood,
+    /// not a transiently well-connected one.
+    pub fn with_neighborhood_stability_window(mut self, window: Duration) -> Self {
+        self.neighborhood_stability_window = window;
         self
     }
 }
@@ -138,6 +164,20 @@ mod tests {
         assert!(config.limits.should_accept_inbound(b(7), d(8), 35 + 7));
         // At target + 8 = 43, should not accept
         assert!(!config.limits.should_accept_inbound(b(7), d(8), 35 + 8));
+    }
+
+    #[test]
+    fn test_with_neighborhood_stability_window() {
+        let config = KademliaConfig::default();
+        assert_eq!(
+            config.neighborhood_stability_window,
+            Duration::from_secs(30)
+        );
+
+        let config = config.with_neighborhood_stability_window(Duration::from_secs(5));
+        assert_eq!(config.neighborhood_stability_window, Duration::from_secs(5));
+        // Sibling fields are preserved.
+        assert_eq!(config.limits.total_target(), 160);
     }
 
     #[test]

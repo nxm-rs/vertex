@@ -64,7 +64,7 @@ metrics.workspace = true
 vertex-net-dnsaddr.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "time"] }
+tokio = { workspace = true, features = ["rt", "macros", "time", "test-util"] }
 tracing-subscriber.workspace = true
 vertex-swarm-peer = { workspace = true, features = ["test-utils"] }
 vertex-swarm-test-utils = { workspace = true }

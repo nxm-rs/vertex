@@ -6,6 +6,7 @@ use std::{
         Arc,
         atomic::{AtomicU8, AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 use super::{
@@ -15,7 +16,8 @@ use super::{
 };
 use crate::metrics::{phase, record_phase_transition};
 use nectar_primitives::{ChunkAddress, recompute_neighborhood_depth};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
+use tokio::time::Instant;
 use tracing::{debug, info, trace};
 use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 use vertex_swarm_peer_manager::{PeerManager, ProximityIndex};
@@ -44,6 +46,23 @@ pub(crate) struct EvictionCandidate {
     pub(crate) overlay: OverlayAddress,
     pub(crate) bin: Bin,
     pub(crate) phase: EvictionPhase,
+}
+
+/// The saturated-neighborhood state the stability clock is anchored to.
+///
+/// Held while the neighborhood (bins at and above `depth`) collectively
+/// holds at least the saturation threshold in connected peers. A depth
+/// change replaces the anchor (restarting the clock); a saturation dip
+/// clears it.
+struct NeighborhoodStable {
+    /// The depth at which the neighborhood became saturated.
+    depth: NeighborhoodDepth,
+    /// When the neighborhood became saturated at `depth`.
+    ///
+    /// `tokio::time::Instant` rather than `std::time::Instant` so paused-time
+    /// tests can drive the stability window deterministically; outside a
+    /// tokio runtime it falls back to the real clock.
+    since: Instant,
 }
 
 fn atomic_inc(vec: &[AtomicUsize], bin: Bin) {
@@ -80,6 +99,10 @@ pub(crate) struct KademliaRouting<I: SwarmIdentity> {
     handshaking_counts: Vec<AtomicUsize>,
     active_counts: Vec<AtomicUsize>,
     connection_phases: RwLock<HashMap<OverlayAddress, ConnectionPhase>>,
+    /// Stability clock for the saturated neighborhood; `None` while the
+    /// neighborhood is below saturation. Updated on every routing-table
+    /// mutation so dips between snapshots are never missed.
+    neighborhood_stability: Mutex<Option<NeighborhoodStable>>,
 }
 
 impl<I: SwarmIdentity> KademliaRouting<I> {
@@ -105,6 +128,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
             handshaking_counts: make_atomic_vec(num_bins),
             active_counts: make_atomic_vec(num_bins),
             connection_phases: RwLock::new(HashMap::new()),
+            neighborhood_stability: Mutex::new(None),
         })
     }
 
@@ -354,6 +378,57 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         NeighborhoodDepth::new(Bin::new(self.depth.load(Ordering::Relaxed)).unwrap_or(Bin::MAX))
     }
 
+    /// Connected peers in bins at and above `depth`.
+    fn neighborhood_connected(&self, depth: NeighborhoodDepth) -> usize {
+        neighborhood_bins(depth, self.max_bin())
+            .map(|bin| self.connected_peers.bin_size(bin))
+            .sum()
+    }
+
+    /// Re-anchor the neighborhood-stability clock from current state.
+    ///
+    /// Called after every routing-table mutation, so a saturation dip
+    /// between two reads can never go unobserved. The neighborhood counts
+    /// as saturated while a depth boundary is established (depth above
+    /// zero) and the bins it contains collectively hold at least the
+    /// saturation threshold in connected peers; the threshold is the same
+    /// one the depth frontier derives from (see [`Self::recalc_depth`]),
+    /// so the clock and the depth can never disagree about saturation.
+    ///
+    /// The clock survives mutations that keep both the depth and the
+    /// saturated state unchanged; a depth change restarts it and a dip
+    /// below saturation clears it.
+    fn update_neighborhood_stability(&self) {
+        let depth = self.depth();
+        let saturated = depth > NeighborhoodDepth::ZERO
+            && self.neighborhood_connected(depth) >= self.config.limits.saturation();
+
+        let mut state = self.neighborhood_stability.lock();
+        if !saturated {
+            *state = None;
+        } else if state.as_ref().is_none_or(|stable| stable.depth != depth) {
+            *state = Some(NeighborhoodStable {
+                depth,
+                since: Instant::now(),
+            });
+        }
+    }
+
+    /// How long the neighborhood has been continuously saturated at an
+    /// unchanged depth, or `None` while it is below saturation.
+    pub(crate) fn neighborhood_stable_for(&self) -> Option<Duration> {
+        self.neighborhood_stability
+            .lock()
+            .as_ref()
+            .map(|stable| stable.since.elapsed())
+    }
+
+    /// The configured window [`Self::neighborhood_stable_for`] must reach
+    /// before the neighborhood counts as ready for pull-syncing.
+    pub(crate) fn neighborhood_stability_window(&self) -> Duration {
+        self.config.neighborhood_stability_window
+    }
+
     /// Connected peers in the neighborhood (bins >= depth).
     pub(crate) fn neighbors(&self, depth: NeighborhoodDepth) -> Vec<OverlayAddress> {
         let mut result = Vec::new();
@@ -460,6 +535,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
             let old_depth = self.depth();
             let new_depth = self.recalc_depth();
             self.depth.store(new_depth.get(), Ordering::Relaxed);
+            self.update_neighborhood_stability();
 
             debug!(
                 %peer,
@@ -487,6 +563,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
             let old_depth = self.depth();
             let new_depth = self.recalc_depth();
             self.depth.store(new_depth.get(), Ordering::Relaxed);
+            self.update_neighborhood_stability();
 
             debug!(
                 %peer,
@@ -635,6 +712,7 @@ impl<I: SwarmIdentity> SwarmRouting<I> for KademliaRouting<I> {
 
     fn remove_peer(&self, peer: &OverlayAddress) {
         self.connected_peers.remove(peer);
+        self.update_neighborhood_stability();
         debug!(%peer, "removed peer from routing");
     }
 }
@@ -915,6 +993,60 @@ mod tests {
         }
 
         assert_eq!(routing.depth().get(), 3);
+    }
+
+    /// Bin 0 saturated, bins 1..=3 holding 5 + 3 + 1 peers: depth anchors at
+    /// 1 and the neighborhood (bins at and above 1) holds 9 connected.
+    fn saturate_to_depth_one(routing: &KademliaRouting<MockIdentity>) {
+        for idx in 0..8 {
+            SwarmRouting::connected(routing, addr_in_bin(0, idx));
+        }
+        for idx in 0..5 {
+            SwarmRouting::connected(routing, addr_in_bin(1, idx));
+        }
+        for idx in 0..3 {
+            SwarmRouting::connected(routing, addr_in_bin(2, idx));
+        }
+        SwarmRouting::connected(routing, addr_in_bin(3, 0));
+    }
+
+    #[test]
+    fn test_neighborhood_stability_tracks_saturation() {
+        let base = SwarmAddress::with_first_byte(0x00);
+        let (routing, _pm) = make_routing(base, KademliaConfig::default());
+
+        assert!(
+            routing.neighborhood_stable_for().is_none(),
+            "empty table is not saturated"
+        );
+
+        saturate_to_depth_one(&routing);
+        assert_eq!(routing.depth().get(), 1);
+        assert!(
+            routing.neighborhood_stable_for().is_some(),
+            "saturated neighborhood must carry a stability clock"
+        );
+
+        // Disconnecting two neighborhood peers (9 -> 7) drops below the
+        // saturation threshold (8) and clears the clock.
+        SwarmRouting::on_peer_disconnected(&*routing, &addr_in_bin(1, 0));
+        SwarmRouting::on_peer_disconnected(&*routing, &addr_in_bin(1, 1));
+        assert!(routing.neighborhood_stable_for().is_none());
+    }
+
+    #[test]
+    fn test_neighborhood_stability_cleared_by_remove_peer() {
+        // remove_peer (the ban path) bypasses the disconnect bookkeeping but
+        // still shrinks the neighborhood; the clock must observe it.
+        let base = SwarmAddress::with_first_byte(0x00);
+        let (routing, _pm) = make_routing(base, KademliaConfig::default());
+
+        saturate_to_depth_one(&routing);
+        assert!(routing.neighborhood_stable_for().is_some());
+
+        SwarmRouting::remove_peer(&*routing, &addr_in_bin(1, 0));
+        SwarmRouting::remove_peer(&*routing, &addr_in_bin(1, 1));
+        assert!(routing.neighborhood_stable_for().is_none());
     }
 
     #[test]

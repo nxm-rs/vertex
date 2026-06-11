@@ -6,8 +6,11 @@
 //! depth-aware bin targets) and the peer manager (handshake-confirmed node
 //! types). The predicate methods on the snapshot define the readiness
 //! conditions that `TopologyHandle::wait_until` and its named shorthands
-//! await: routability, target depth, neighborhood saturation, and the
-//! composite warm signal selected by the local node type.
+//! await: routability, target depth, neighborhood saturation, the
+//! composite warm signal selected by the local node type, and the
+//! time-stable neighborhood readiness that gates pull-syncing.
+
+use std::time::Duration;
 
 use vertex_swarm_primitives::{Bin, NeighborhoodDepth, SwarmNodeType};
 
@@ -53,6 +56,17 @@ pub struct ReadinessSnapshot {
     pub bins: Vec<BinReadiness>,
     /// Bins with a finite target whose connected count meets it.
     pub bins_at_target: usize,
+    /// How long the neighborhood has been continuously saturated at an
+    /// unchanged depth as of this snapshot, or `None` while it is below
+    /// saturation. Tracked by the routing table on every mutation, so a
+    /// dip between two snapshots restarts the clock even if no snapshot
+    /// observed it. The clock's saturation threshold is the one the depth
+    /// frontier derives from, which on production construction paths is
+    /// the same spec value as [`Self::saturation_threshold`].
+    pub neighborhood_stable_for: Option<Duration>,
+    /// The configured window [`Self::neighborhood_stable_for`] must reach
+    /// for [`Self::is_neighborhood_ready`].
+    pub neighborhood_stability_window: Duration,
 }
 
 impl ReadinessSnapshot {
@@ -79,6 +93,23 @@ impl ReadinessSnapshot {
     pub fn is_saturated(&self) -> bool {
         self.depth > NeighborhoodDepth::ZERO
             && self.neighborhood_connected >= self.saturation_threshold
+    }
+
+    /// Whether the neighborhood is ready for pull-syncing: continuously
+    /// saturated at an unchanged depth for at least
+    /// [`Self::neighborhood_stability_window`].
+    ///
+    /// Storage radius is a distinct value from connection depth, so
+    /// chunk synchronization must not start on total connectivity alone:
+    /// it needs the bins at and above the depth boundary to be both
+    /// saturated and settled, or the responsibility boundary it syncs
+    /// against is still moving. Any depth change or saturation dip
+    /// restarts the clock. Stricter than [`Self::is_saturated`], which is
+    /// instantaneous.
+    #[must_use]
+    pub fn is_neighborhood_ready(&self) -> bool {
+        self.neighborhood_stable_for
+            .is_some_and(|stable| stable >= self.neighborhood_stability_window)
     }
 
     /// The composite warm signal for the local node type.
@@ -115,6 +146,8 @@ mod tests {
             saturation_threshold: 8,
             bins: Vec::new(),
             bins_at_target: 0,
+            neighborhood_stable_for: None,
+            neighborhood_stability_window: Duration::from_secs(30),
         }
     }
 
@@ -173,6 +206,31 @@ mod tests {
 
         s.neighborhood_connected = 8;
         assert!(s.is_saturated());
+    }
+
+    #[test]
+    fn neighborhood_ready_requires_full_window() {
+        let mut s = snapshot(SwarmNodeType::Storer);
+        assert!(!s.is_neighborhood_ready(), "unsaturated is never ready");
+
+        s.neighborhood_stable_for = Some(Duration::from_secs(29));
+        assert!(!s.is_neighborhood_ready(), "window not yet served");
+
+        s.neighborhood_stable_for = Some(Duration::from_secs(30));
+        assert!(s.is_neighborhood_ready(), "window boundary is inclusive");
+
+        s.neighborhood_stable_for = Some(Duration::from_secs(31));
+        assert!(s.is_neighborhood_ready());
+    }
+
+    #[test]
+    fn neighborhood_ready_with_zero_window_is_saturation() {
+        let mut s = snapshot(SwarmNodeType::Storer);
+        s.neighborhood_stability_window = Duration::ZERO;
+        assert!(!s.is_neighborhood_ready(), "still needs saturation");
+
+        s.neighborhood_stable_for = Some(Duration::ZERO);
+        assert!(s.is_neighborhood_ready());
     }
 
     #[test]
