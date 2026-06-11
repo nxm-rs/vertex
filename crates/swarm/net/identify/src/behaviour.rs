@@ -25,6 +25,7 @@ use libp2p::swarm::{
 };
 
 use vertex_net_local::{AddressScope, advertise_filter, classify_multiaddr};
+use vertex_util_runtime::time::Instant;
 
 use crate::{
     Config,
@@ -144,7 +145,7 @@ pub struct Behaviour {
     listen_addresses: ListenAddresses,
     external_addresses: ExternalAddresses,
     /// Per-connection start times for measuring identify exchange duration.
-    connection_timers: HashMap<ConnectionId, std::time::Instant>,
+    connection_timers: HashMap<ConnectionId, Instant>,
     /// Agent versions received via identify, shared with topology.
     agent_versions: AgentVersions,
 }
@@ -308,8 +309,7 @@ impl Behaviour {
             .or_default()
             .insert(conn, addr);
 
-        self.connection_timers
-            .insert(conn, std::time::Instant::now());
+        self.connection_timers.insert(conn, Instant::now());
 
         if let Some(cache) = self.discovered_peers.0.as_mut() {
             for addr in failed_addresses {

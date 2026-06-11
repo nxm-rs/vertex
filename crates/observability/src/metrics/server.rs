@@ -183,10 +183,7 @@ async fn heap_dump_handler() -> Response {
             .into_response();
     }
 
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let timestamp = vertex_util_runtime::time::now_unix_secs();
     let path = std::path::PathBuf::from(format!("/tmp/vertex_heap_{timestamp}.heap"));
 
     match profiling::heap_dump(&path) {

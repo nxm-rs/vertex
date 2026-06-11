@@ -16,6 +16,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::oneshot;
+use vertex_util_runtime::time::Instant;
 
 /// A Future that resolves when the shutdown event has been fired.
 #[derive(Debug)]
@@ -115,10 +116,10 @@ impl GracefulShutdownCounter {
     /// Block until all graceful tasks complete or timeout expires.
     /// Returns `true` if all tasks completed, `false` on timeout.
     pub(crate) fn wait_timeout(&self, timeout: Duration) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
+        let deadline = Instant::now() + timeout;
         let mut guard = self.mutex.lock();
         while self.count.load(Ordering::SeqCst) > 0 {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return false;
             }

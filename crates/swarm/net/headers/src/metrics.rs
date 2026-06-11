@@ -1,10 +1,9 @@
 //! Unified protocol exchange metrics for all headered protocols.
 
-use std::time::Instant;
-
 use metrics::{counter, histogram};
 use vertex_metrics::labels::{direction, outcome, reason};
 use vertex_observability::HistogramBucketConfig;
+use vertex_util_runtime::time::Instant;
 
 /// Histogram bucket configurations for protocol exchange metrics.
 pub const HISTOGRAM_BUCKETS: &[HistogramBucketConfig] = &[HistogramBucketConfig {

@@ -3,13 +3,13 @@
 use std::collections::HashSet;
 use std::mem::ManuallyDrop;
 use std::sync::OnceLock;
-use std::time::Instant;
 
 use parking_lot::Mutex;
 
 use metrics::{counter, histogram};
 use redb::{ReadableTable, ReadableTableMetadata, TableDefinition};
 use vertex_storage::{DatabaseError, DatabaseErrorInfo, DbTx, DbTxMut, Decode, Encode, Table};
+use vertex_util_runtime::time::Instant;
 
 use crate::metrics::{mode, operation};
 

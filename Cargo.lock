@@ -8323,6 +8323,7 @@ dependencies = [
  "metrics",
  "parking_lot",
  "strum 0.28.0",
+ "vertex-util-runtime",
 ]
 
 [[package]]
@@ -8526,6 +8527,7 @@ dependencies = [
  "tracing-subscriber",
  "vertex-metrics",
  "vertex-tasks",
+ "vertex-util-runtime",
 ]
 
 [[package]]
@@ -8581,6 +8583,7 @@ dependencies = [
  "tracing",
  "vertex-observability",
  "vertex-storage",
+ "vertex-util-runtime",
  "zstd",
 ]
 
@@ -8858,6 +8861,7 @@ dependencies = [
  "vertex-swarm-peer",
  "vertex-swarm-spec",
  "vertex-swarm-test-utils",
+ "vertex-util-runtime",
 ]
 
 [[package]]
@@ -8881,6 +8885,7 @@ dependencies = [
  "vertex-observability",
  "vertex-swarm-net-proto",
  "vertex-swarm-primitives",
+ "vertex-util-runtime",
 ]
 
 [[package]]
@@ -8912,6 +8917,7 @@ dependencies = [
  "vertex-swarm-primitives",
  "vertex-swarm-spec",
  "vertex-tasks",
+ "vertex-util-runtime",
 ]
 
 [[package]]
@@ -8939,6 +8945,7 @@ dependencies = [
  "vertex-metrics",
  "vertex-net-local",
  "vertex-observability",
+ "vertex-util-runtime",
  "void",
 ]
 
@@ -9346,6 +9353,7 @@ dependencies = [
  "tokio",
  "tracing",
  "vertex-metrics",
+ "vertex-util-runtime",
 ]
 
 [[package]]

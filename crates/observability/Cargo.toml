@@ -22,6 +22,7 @@ tokio-console = ["console-subscriber"]
 # Internal crates
 vertex-metrics = { workspace = true }
 vertex-tasks = { workspace = true }
+vertex-util-runtime = { workspace = true }
 
 # Metrics
 metrics = { workspace = true }
