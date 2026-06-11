@@ -22,15 +22,18 @@ const DEFAULT_TOTAL_TARGET: usize = 160;
 /// single bin grow unbounded.
 pub(crate) const DEFAULT_INBOUND_HEADROOM: usize = 4;
 
-/// Default per-bin fill target during bootstrap (`depth == 0`), and the
-/// per-bin floor below which trimming never evicts ([`DepthAwareLimits::surplus`]).
+/// Default per-bin oversaturation level: the bootstrap fill target
+/// (`depth == 0`), the floor below which trimming never evicts
+/// ([`DepthAwareLimits::surplus`]), and the minimum inbound ceiling
+/// ([`DepthAwareLimits::ceiling`]).
 ///
-/// Before a neighborhood is established every bin is filled aggressively toward
-/// this bound so bins reach the saturation frontier quickly and depth can climb.
-/// Must be `>= SwarmSpec::saturation_peers()` or depth can never advance past 0.
-/// Bounded (not `usize::MAX`) so a node that has not yet established a
-/// neighborhood cannot be flooded by inbound connections. Matches the reference
-/// network's oversaturation level, which is also its prune floor.
+/// Together with the saturation floor this defines the per-bin band: dial
+/// toward `max(taper, saturation)`, accept inbound up to this level, trim
+/// only above it. Before a neighborhood is established every bin is filled
+/// aggressively toward this bound so bins reach the saturation frontier
+/// quickly and depth can climb. Bounded (not `usize::MAX`) so a node that
+/// has not yet established a neighborhood cannot be flooded by inbound
+/// connections.
 pub(crate) const DEFAULT_BOOTSTRAP_TARGET: usize = 18;
 
 /// Depth-aware peer allocation with linear tapering across Kademlia bins.
@@ -40,16 +43,17 @@ pub(crate) const DEFAULT_BOOTSTRAP_TARGET: usize = 18;
 /// # Depth coupling invariants
 ///
 /// Neighborhood depth is recomputed from connected-peer bin counts against
-/// `SwarmSpec::saturation_peers()`: the shallowest bin below saturation caps
-/// the depth. Allocation and trimming must therefore never hold or cut a
+/// this type's `saturation` (threaded from `SwarmSpec::saturation_peers()`
+/// at behaviour construction): the shallowest bin below saturation caps the
+/// depth. Allocation and trimming must therefore never hold or cut a
 /// balanced bin below saturation, or depth deadlocks at that bin with no
-/// error signal:
+/// error signal. Both properties are structural, not asserted:
 ///
-/// - every allocation target (bootstrap, taper) is floored at `saturation`,
+/// - every allocation target (bootstrap and taper) is floored at
+///   `saturation` inside [`Self::target`], so no configuration can produce
+///   a target below it,
 /// - trimming ([`Self::surplus`]) only reclaims peers above
-///   `max(target, bootstrap_target)`, mirroring the reference network which
-///   prunes only above its oversaturation level (18) and never toward an
-///   allocation target.
+///   `max(target, bootstrap_target)`, never toward a dial target.
 #[derive(Debug, Clone)]
 pub(crate) struct DepthAwareLimits {
     total_target: usize,
@@ -88,18 +92,33 @@ impl DepthAwareLimits {
         self
     }
 
-    /// Set the saturation floor from `SwarmSpec::saturation_peers()`.
+    /// Set the saturation threshold from `SwarmSpec::saturation_peers()`.
     ///
-    /// Must match the value the depth recomputation uses, and must not exceed
-    /// `bootstrap_target` (see the type-level invariants).
+    /// Depth recomputation reads it back via [`Self::saturation`], so
+    /// allocation and the depth frontier always agree. Every allocation
+    /// target is floored at this value inside [`Self::target`], so no
+    /// combination with `bootstrap_target` can deadlock depth.
     pub(crate) fn with_saturation(mut self, saturation: usize) -> Self {
-        debug_assert!(
-            saturation <= self.bootstrap_target,
-            "saturation ({saturation}) must be <= bootstrap_target ({}) or depth cannot climb",
-            self.bootstrap_target
-        );
         self.saturation = saturation;
         self
+    }
+
+    /// Set the total connected-peer dial budget, preserving all other fields.
+    pub(crate) fn with_total_target(mut self, total_target: usize) -> Self {
+        self.total_target = total_target;
+        self
+    }
+
+    /// Set the per-bin depth-estimation minimum, preserving all other fields.
+    pub(crate) fn with_nominal(mut self, nominal: usize) -> Self {
+        self.nominal = nominal;
+        self
+    }
+
+    /// Per-bin saturation threshold; the depth frontier and all allocation
+    /// floors derive from this single value.
+    pub(crate) fn saturation(&self) -> usize {
+        self.saturation
     }
 
     /// Minimum peers per bin (floor).
@@ -119,8 +138,9 @@ impl DepthAwareLimits {
             // Bootstrap: no neighborhood established yet. Fill every bin
             // aggressively toward `bootstrap_target` so bins reach the
             // saturation frontier quickly and depth can climb. Bounded so a
-            // not-yet-established node cannot be flooded by inbound.
-            return self.bootstrap_target;
+            // not-yet-established node cannot be flooded by inbound. Floored
+            // at saturation so no configuration can pin depth at 0.
+            return self.bootstrap_target.max(self.saturation);
         }
 
         if depth.contains(bin) {
@@ -170,8 +190,7 @@ impl DepthAwareLimits {
     /// goal, not an eviction bound: evicting toward it after a depth increase
     /// cuts shallow bins below saturation, which immediately collapses depth
     /// back to the cut bin (observed live: depth 7 -> 0 with bins trimmed to
-    /// the exact taper targets). The reference network likewise prunes only
-    /// above its oversaturation level (18) regardless of allocation.
+    /// the exact taper targets).
     pub(crate) fn surplus(&self, bin: Bin, depth: NeighborhoodDepth, connected: usize) -> usize {
         let target = self.target(bin, depth);
         if target == usize::MAX {
@@ -181,30 +200,32 @@ impl DepthAwareLimits {
         }
     }
 
-    /// Target + inbound headroom (max before rejecting inbound). `usize::MAX` for neighborhood.
+    /// Maximum bin population before rejecting inbound. `usize::MAX` for
+    /// neighborhood bins.
+    ///
+    /// `max(target + headroom, bootstrap_target)`: shallow bins whose dial
+    /// target sits at the saturation floor still accept inbound up to the
+    /// oversaturation level, so churn erodes them toward `bootstrap_target`
+    /// rather than toward the depth frontier (dial to saturation, accept to
+    /// oversaturation, trim above it). This also keeps the ceiling aligned
+    /// with the trim floor in [`Self::surplus`].
     pub(crate) fn ceiling(&self, bin: Bin, depth: NeighborhoodDepth) -> usize {
         let target = self.target(bin, depth);
         if target == usize::MAX {
             usize::MAX
         } else {
-            target + self.inbound_headroom
+            (target + self.inbound_headroom).max(self.bootstrap_target)
         }
     }
 
-    /// Check if bin should accept inbound (allows headroom above target).
+    /// Check if bin should accept inbound (up to [`Self::ceiling`]).
     pub(crate) fn should_accept_inbound(
         &self,
         bin: Bin,
         depth: NeighborhoodDepth,
         connected: usize,
     ) -> bool {
-        let target = self.target(bin, depth);
-        if target == usize::MAX {
-            // Neighborhood: always accept
-            true
-        } else {
-            connected < target + self.inbound_headroom
-        }
+        connected < self.ceiling(bin, depth)
     }
 
     /// Estimate depth from known peer distribution (highest bin with >= nominal peers).
@@ -233,11 +254,11 @@ impl DepthAwareLimits {
 impl DepthAwareLimits {
     /// Set the per-bin bootstrap fill target used while `depth == 0`.
     ///
-    /// Clamps the saturation floor down to the target so small-scale test
-    /// fixtures keep the `saturation <= bootstrap_target` invariant.
+    /// Small-scale fixtures usually pair this with [`Self::with_saturation`];
+    /// targets are floored at saturation, so a bootstrap target below the
+    /// (default 8) saturation has no effect on its own.
     pub(crate) fn with_bootstrap_target(mut self, target: usize) -> Self {
         self.bootstrap_target = target;
-        self.saturation = self.saturation.min(target);
         self
     }
 
@@ -463,6 +484,10 @@ mod tests {
 
         let after_depth =
             nectar_primitives::recompute_neighborhood_depth(&after, saturation, low_watermark);
+        // The pre-trim state supports depth 9 via the sparse tail (bins 8-9);
+        // the invariant under test is that trimming never cuts depth below
+        // the climb the trim was triggered by (7), not that the tail anchor
+        // survives, hence the min.
         assert!(
             after_depth.get() >= before_depth.get().min(7),
             "trim collapsed depth: before={} after={}",

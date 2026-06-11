@@ -140,7 +140,8 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
         kademlia_config.limits = kademlia_config.limits.with_saturation(usize::from(
             SwarmIdentity::spec(&self.identity).saturation_peers(),
         ));
-        let routing = KademliaRouting::new(self.identity.clone(), kademlia_config, peer_manager.clone());
+        let routing =
+            KademliaRouting::new(self.identity.clone(), kademlia_config, peer_manager.clone());
 
         let local_capabilities = Arc::new(LocalCapabilities::new());
 

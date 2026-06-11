@@ -151,6 +151,15 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
             + atomic_load(&self.active_counts, bin)
     }
 
+    /// Peers in a bin that eviction can actually act on (handshaking and
+    /// active). In-flight dials hold capacity but cannot be evicted; counting
+    /// them into the trim surplus would force active evictions to pay for
+    /// slots the evictable population does not own, cutting the bin below
+    /// saturation and flapping depth.
+    fn evictable_count(&self, bin: Bin) -> usize {
+        atomic_load(&self.handshaking_counts, bin) + atomic_load(&self.active_counts, bin)
+    }
+
     /// The deepest bin in this routing table, as a typed [`Bin`].
     pub(crate) fn max_bin(&self) -> Bin {
         Bin::new(self.max_po).unwrap_or(Bin::MAX)
@@ -200,11 +209,13 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
             *slot = u8::try_from(size).unwrap_or(u8::MAX);
         }
 
-        let depth = recompute_neighborhood_depth(
-            &counts,
-            spec.saturation_peers(),
-            spec.neighborhood_low_watermark(),
-        );
+        // Saturation comes from the limits so the depth frontier and the
+        // allocation floors can never disagree, on any construction path;
+        // production threads `SwarmSpec::saturation_peers()` into the limits
+        // at behaviour construction.
+        let saturation = u8::try_from(self.config.limits.saturation()).unwrap_or(u8::MAX);
+        let depth =
+            recompute_neighborhood_depth(&counts, saturation, spec.neighborhood_low_watermark());
         NeighborhoodDepth::new(Bin::new(depth.get().min(self.max_po)).unwrap_or(Bin::MAX))
     }
 
@@ -282,8 +293,8 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         }
 
         for bin in balanced_bins(depth) {
-            let effective = self.effective_count(bin);
-            let surplus = self.config.limits.surplus(bin, depth, effective);
+            let evictable = self.evictable_count(bin);
+            let surplus = self.config.limits.surplus(bin, depth, evictable);
             if surplus == 0 {
                 continue;
             }
@@ -767,7 +778,8 @@ mod tests {
         // exercised with small numbers (default bootstrap fill is generous).
         let config = KademliaConfig::default()
             .with_nominal(2)
-            .with_bootstrap_target(2);
+            .with_bootstrap_target(2)
+            .with_saturation(2);
         let (routing, _pm) = make_routing(base, config);
 
         let peer1 = SwarmAddress::with_first_byte(0x80); // bin=0
@@ -961,7 +973,8 @@ mod tests {
         let config = KademliaConfig::default()
             .with_nominal(2)
             .with_inbound_headroom(0)
-            .with_bootstrap_target(2);
+            .with_bootstrap_target(2)
+            .with_saturation(2);
         let (routing, _pm) = make_routing(base, config);
 
         let peer1 = SwarmAddress::with_first_byte(0x80);
@@ -1052,11 +1065,12 @@ mod tests {
     #[test]
     fn test_eviction_candidates_handshaking_first() {
         let base = SwarmAddress::with_first_byte(0x00);
-        // Pin bootstrap_target (the trim floor) to 4 so a small bin-0
-        // population yields a surplus; this also clamps the test saturation
-        // floor to 4, keeping the depth-8 bin-0 target at 4 as the original
-        // scenario assumed.
-        let config = KademliaConfig::default().with_bootstrap_target(4);
+        // Pin the trim floor (bootstrap_target) and saturation to 4 so a
+        // small bin-0 population yields a surplus and the depth-8 bin-0
+        // target stays at 4 as the original scenario assumed.
+        let config = KademliaConfig::default()
+            .with_bootstrap_target(4)
+            .with_saturation(4);
         let (routing, _pm) = make_routing(base, config);
 
         // Place 5 active peers in bin 0 (bin=0)
@@ -1099,7 +1113,9 @@ mod tests {
     fn test_eviction_candidates_active_lowest_score() {
         let base = SwarmAddress::with_first_byte(0x00);
         // Trim floor pinned to 4; see test_eviction_candidates_handshaking_first.
-        let config = KademliaConfig::default().with_bootstrap_target(4);
+        let config = KademliaConfig::default()
+            .with_bootstrap_target(4)
+            .with_saturation(4);
         let (routing, _pm) = make_routing(base, config);
 
         // Place 6 active peers in bin 0
@@ -1126,10 +1142,54 @@ mod tests {
     }
 
     #[test]
+    fn test_eviction_ignores_in_flight_dials() {
+        let base = SwarmAddress::with_first_byte(0x00);
+        // Trim floor pinned to 4; see test_eviction_candidates_handshaking_first.
+        let config = KademliaConfig::default()
+            .with_bootstrap_target(4)
+            .with_saturation(4);
+        let (routing, _pm) = make_routing(base, config);
+
+        // 5 active peers and 3 in-flight dials in bin 0. At depth 8 the trim
+        // floor is 4: the evictable population (5 active) carries a surplus
+        // of 1. Counting the dials in would claim a surplus of 4 and cut the
+        // bin's active set to 1, far below saturation, flapping depth.
+        for i in 0..5 {
+            let mut bytes = [0x00u8; 32];
+            bytes[0] = 0x80 + i;
+            force_active(&routing, OverlayAddress::from(bytes));
+        }
+        for i in 0..3 {
+            let mut bytes = [0x00u8; 32];
+            bytes[0] = 0x90 + i;
+            let peer = OverlayAddress::from(bytes);
+            atomic_inc(&routing.dialing_counts, routing.bin_for(&peer));
+            routing
+                .connection_phases
+                .write()
+                .insert(peer, ConnectionPhase::Dialing);
+        }
+        routing.depth.store(8, Ordering::Relaxed);
+
+        let candidates = routing.eviction_candidates(|_| 1);
+        assert_eq!(
+            candidates.len(),
+            1,
+            "surplus must be computed from the evictable population only"
+        );
+        assert_eq!(candidates[0].phase, EvictionPhase::Active);
+    }
+
+    #[test]
     fn test_eviction_prefers_least_reachable() {
         let base = SwarmAddress::with_first_byte(0x00);
         // Trim floor pinned to 4; see test_eviction_candidates_handshaking_first.
-        let (routing, _pm) = make_routing(base, KademliaConfig::default().with_bootstrap_target(4));
+        let (routing, _pm) = make_routing(
+            base,
+            KademliaConfig::default()
+                .with_bootstrap_target(4)
+                .with_saturation(4),
+        );
 
         // 6 active peers in bin 0; at depth 8 the target is 4, so surplus is 2.
         let peers: Vec<_> = (0..6)
@@ -1167,7 +1227,12 @@ mod tests {
 
         let base = SwarmAddress::with_first_byte(0x00);
         // Trim floor pinned to 4; see test_eviction_candidates_handshaking_first.
-        let (routing, _pm) = make_routing(base, KademliaConfig::default().with_bootstrap_target(4));
+        let (routing, _pm) = make_routing(
+            base,
+            KademliaConfig::default()
+                .with_bootstrap_target(4)
+                .with_saturation(4),
+        );
 
         // 6 active peers in bin 0; at depth 8 the target is 4, so surplus is 2.
         let peers: Vec<_> = (0..6)
@@ -1205,7 +1270,12 @@ mod tests {
 
         let base = SwarmAddress::with_first_byte(0x00);
         // Trim floor pinned to 4; see test_eviction_candidates_handshaking_first.
-        let (routing, _pm) = make_routing(base, KademliaConfig::default().with_bootstrap_target(4));
+        let (routing, _pm) = make_routing(
+            base,
+            KademliaConfig::default()
+                .with_bootstrap_target(4)
+                .with_saturation(4),
+        );
 
         // 5 active peers in bin 0; at depth 8 the target is 4, so surplus is 1.
         let peers: Vec<_> = (0..5)
@@ -1242,13 +1312,12 @@ mod tests {
     #[test]
     fn test_eviction_candidates_neighborhood_never_evicted() {
         let base = SwarmAddress::with_first_byte(0x00);
-        // Small total target plus a trim floor of 6 so below-depth bins
-        // (8 connected each) overflow and actually yield eviction candidates,
-        // while depth recomputation still sees them as saturated (spec
-        // saturation is 8).
+        // Trim floor pinned to the saturation default (8); dialing alone can
+        // never exceed it, so the overflow that yields eviction candidates
+        // must arrive through the inbound headroom band.
         let config = KademliaConfig::default()
             .with_total_target(8)
-            .with_bootstrap_target(6);
+            .with_bootstrap_target(8);
         let (routing, _pm) = make_routing(base, config);
 
         let connect = |peer: OverlayAddress| {
@@ -1257,12 +1326,21 @@ mod tests {
             routing.handshake_completed(&peer);
             SwarmRouting::connected(&*routing, peer);
         };
+        let accept_inbound = |peer: OverlayAddress| {
+            routing.reserve_inbound(&peer);
+            routing.handshake_completed(&peer);
+            SwarmRouting::connected(&*routing, peer);
+        };
 
-        // Saturate bins 0 and 1 (>= saturation) and anchor bin 2 with the low
-        // watermark so depth climbs to 2; bin 2 is then a neighborhood bin.
+        // Fill bins 0 and 1 to the trim floor by dialing, then overfill them
+        // through the inbound band; anchor bin 2 with the low watermark so
+        // depth climbs to 2 and bin 2 becomes a neighborhood bin.
         for bin in 0..2 {
             for idx in 0..8 {
                 connect(addr_in_bin(bin, idx));
+            }
+            for idx in 8..10 {
+                accept_inbound(addr_in_bin(bin, idx));
             }
         }
         for idx in 0..6 {

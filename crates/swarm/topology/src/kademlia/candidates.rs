@@ -85,8 +85,8 @@ impl<'a> CandidateSelector<'a> {
         self.bin_selections.get(&bin).copied().unwrap_or(0)
     }
 
-    /// The connected-peer index, with the selector's full borrow lifetime so
-    /// callers can hold it across mutable selector use.
+    /// The connected-peer index, with the borrowed data's lifetime so callers
+    /// can hold it across mutable selector use.
     pub(crate) fn connected_index(&self) -> &'a ProximityIndex {
         self.connected_peers
     }
@@ -154,8 +154,9 @@ impl<'a> CandidateSelector<'a> {
         true
     }
 
-    /// Access the snapshot.
-    pub(crate) fn snapshot(&self) -> &CandidateSnapshot {
+    /// Access the snapshot, with the borrowed data's lifetime so callers can
+    /// hold it across mutable selector use.
+    pub(crate) fn snapshot(&self) -> &'a CandidateSnapshot {
         self.snapshot
     }
 
@@ -300,7 +301,7 @@ mod tests {
         // connections than its deficit yields no usable candidates, starving
         // refill (observed live: every bin froze once connected >= deficit).
         let identity = MockIdentity::with_first_byte(0x00);
-        let peer_manager = PeerManager::new(&identity);
+        let peer_manager = PeerManager::new(&identity, PeerManagerConfig::default());
 
         // Seven known bin-0 peers; the first five are already connected.
         let overlays: Vec<OverlayAddress> = (0..7u8).map(|i| make_overlay(0x80 + i)).collect();
@@ -312,7 +313,7 @@ mod tests {
             connected_index.add(*overlay).expect("add connected");
         }
 
-        let limits = DepthAwareLimits::new(160, 3);
+        let limits = DepthAwareLimits::new(160, 3).with_saturation(8);
         let snapshot = CandidateSnapshot {
             limits: LimitsSnapshot::capture(&limits, d(8)),
             in_progress: HashSet::new(),

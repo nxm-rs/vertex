@@ -1107,8 +1107,7 @@ mod tests {
         let bin = Bin::from(test_overlay(0).proximity(&test_overlay(1)));
         let excluded = test_overlay(1);
 
-        let dialable =
-            pm.dialable_overlays_in_bin_excluding(bin, usize::MAX, |o| *o == excluded);
+        let dialable = pm.dialable_overlays_in_bin_excluding(bin, usize::MAX, |o| *o == excluded);
         assert!(!dialable.contains(&excluded));
     }
 
