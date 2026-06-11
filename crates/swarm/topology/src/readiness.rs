@@ -14,6 +14,8 @@ use std::time::Duration;
 
 use vertex_swarm_primitives::{Bin, NeighborhoodDepth, SwarmNodeType};
 
+use crate::kademlia::TopologyPhase;
+
 /// Connection shortfall for one bin relative to its depth-aware target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BinReadiness {
@@ -67,6 +69,12 @@ pub struct ReadinessSnapshot {
     /// The configured window [`Self::neighborhood_stable_for`] must reach
     /// for [`Self::is_neighborhood_ready`].
     pub neighborhood_stability_window: Duration,
+    /// Current topology phase, as last committed by the phase machine
+    /// (re-derived on every connect, disconnect, and periodic evaluation
+    /// tick, so it can lag a quiet table by at most one tick).
+    pub phase: TopologyPhase,
+    /// Time spent in the current phase.
+    pub time_in_phase: Duration,
 }
 
 impl ReadinessSnapshot {
@@ -148,6 +156,8 @@ mod tests {
             bins_at_target: 0,
             neighborhood_stable_for: None,
             neighborhood_stability_window: Duration::from_secs(30),
+            phase: TopologyPhase::Bootstrap,
+            time_in_phase: Duration::ZERO,
         }
     }
 

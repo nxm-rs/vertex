@@ -67,6 +67,6 @@ pub use events::{ConnectionDirection, DialReason, TopologyCommand, TopologyEvent
 pub use gossip::GossipConfig;
 pub use handle::{BinStats, RoutingStats, TopologyHandle};
 
-pub use kademlia::{KademliaConfig, RoutingArgs};
+pub use kademlia::{KademliaConfig, RoutingArgs, TopologyPhase};
 pub use reachability::{FAILURE_DECAY, FAILURE_THRESHOLD, PeerReachability, ReachabilityTracker};
 pub use readiness::{BinReadiness, ReadinessSnapshot};

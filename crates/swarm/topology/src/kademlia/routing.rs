@@ -11,10 +11,10 @@ use std::{
 
 use super::{
     CandidateSelector, CandidateSnapshot, DepthAwareLimits, KademliaConfig, LimitsSnapshot,
-    RoutingCapacity, SwarmRouting, candidate_queues::CandidateQueues, select_balanced_candidates,
-    select_neighborhood_candidates,
+    PhaseTracker, PhaseTransition, RoutingCapacity, SwarmRouting, TopologyPhase,
+    candidate_queues::CandidateQueues, select_balanced_candidates, select_neighborhood_candidates,
 };
-use crate::metrics::{phase, record_phase_transition};
+use crate::metrics::{phase, record_phase_transition, record_topology_phase_change};
 use nectar_primitives::{ChunkAddress, recompute_neighborhood_depth};
 use parking_lot::{Mutex, RwLock};
 use tokio::time::Instant;
@@ -25,6 +25,7 @@ use vertex_swarm_primitives::{
     Bin, NeighborhoodDepth, OverlayAddress, ProximityOrder, SwarmNodeType, all_bins, balanced_bins,
     neighborhood_bins,
 };
+use web_time::Instant as PhaseInstant;
 
 /// Connection phase for capacity tracking.
 #[derive(PartialEq, Eq)]
@@ -183,6 +184,7 @@ pub(crate) struct KademliaRouting<I: SwarmIdentity> {
     /// neighborhood is below saturation. Updated on every routing-table
     /// mutation so dips between snapshots are never missed.
     neighborhood_stability: Mutex<Option<NeighborhoodStable>>,
+    topology_phase: Mutex<PhaseTracker>,
 }
 
 impl<I: SwarmIdentity> KademliaRouting<I> {
@@ -194,6 +196,14 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
         let max_po = identity.spec().max_po();
         let local_overlay = identity.overlay_address();
         let num_bins = (max_po as usize) + 1;
+
+        let topology_phase = Mutex::new(PhaseTracker::new(
+            config.phase_stability_window,
+            PhaseInstant::now(),
+        ));
+        // Publish the initial phase gauge so operators see Bootstrap from
+        // startup rather than no phase until the first transition.
+        crate::metrics::set_topology_phase(TopologyPhase::Bootstrap);
 
         Arc::new(Self {
             identity,
@@ -210,6 +220,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
             active_counts: make_atomic_vec(num_bins),
             connection_phases: RwLock::new(HashMap::new()),
             neighborhood_stability: Mutex::new(None),
+            topology_phase,
         })
     }
 
@@ -605,6 +616,53 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
     /// before the neighborhood counts as ready for pull-syncing.
     pub(crate) fn neighborhood_stability_window(&self) -> Duration {
         self.config.neighborhood_stability_window
+    }
+
+    /// Whether the neighborhood is saturated: a depth boundary is
+    /// established and the bins inside it together hold at least the
+    /// saturation threshold in connected peers, the same condition as
+    /// [`crate::ReadinessSnapshot::is_saturated`].
+    fn neighborhood_saturated(&self, depth: NeighborhoodDepth) -> bool {
+        if depth == NeighborhoodDepth::ZERO {
+            return false;
+        }
+        self.neighborhood_connected(depth) >= self.config.limits.saturation()
+    }
+
+    /// Re-derive the topology phase from the published depth and current
+    /// neighborhood saturation, committing a transition when it moved.
+    ///
+    /// Driven from the depth-publication points (peer connect and
+    /// disconnect through the behaviour) and from the periodic connection
+    /// evaluator, which alone observes the time-based `Converging` to
+    /// `Stable` settle. On transition this logs one operator-facing line
+    /// and records the phase metrics; callers broadcast the matching
+    /// [`crate::TopologyEvent::PhaseChanged`] where they hold the event
+    /// channel.
+    pub(crate) fn evaluate_phase(&self) -> Option<PhaseTransition> {
+        let depth = self.depth();
+        let saturated = self.neighborhood_saturated(depth);
+        let mut tracker = self.topology_phase.lock();
+        let transition = tracker.evaluate(depth, saturated, PhaseInstant::now())?;
+
+        // Record while the tracker lock is held so concurrent evaluations
+        // committing back-to-back transitions cannot interleave their logs
+        // and gauge updates out of order.
+        info!(
+            from = %transition.from,
+            to = %transition.to,
+            depth = transition.depth.get(),
+            time_in_phase = ?transition.time_in_phase,
+            "topology phase changed"
+        );
+        record_topology_phase_change(transition.from, transition.to);
+        Some(transition)
+    }
+
+    /// Current topology phase and the time spent in it.
+    pub(crate) fn phase_status(&self) -> (TopologyPhase, Duration) {
+        let tracker = self.topology_phase.lock();
+        (tracker.phase(), tracker.time_in_phase(PhaseInstant::now()))
     }
 
     /// Connected peers in the neighborhood (bins >= depth).
@@ -1403,6 +1461,84 @@ mod tests {
             assert_eq!(routing.depth().get(), 3);
         }
         assert!(routing.pending_depth_lower.lock().is_none());
+    }
+
+    #[test]
+    fn test_phase_starts_bootstrap_and_converges_on_depth_climb() {
+        let base = SwarmAddress::with_first_byte(0x00);
+        let (routing, _pm) = make_routing(base, KademliaConfig::default());
+
+        assert_eq!(routing.phase_status().0, TopologyPhase::Bootstrap);
+        assert!(
+            routing.evaluate_phase().is_none(),
+            "no transition while depth stays 0"
+        );
+
+        // Same shape as test_depth_climbs_with_saturated_bins: depth -> 3.
+        for bin in 0..3 {
+            for idx in 0..8 {
+                SwarmRouting::connected(&*routing, addr_in_bin(bin, idx));
+            }
+        }
+        for idx in 0..3 {
+            SwarmRouting::connected(&*routing, addr_in_bin(3, idx));
+        }
+        assert_eq!(routing.depth().get(), 3);
+
+        let transition = routing.evaluate_phase().expect("depth climb transitions");
+        assert_eq!(transition.from, TopologyPhase::Bootstrap);
+        assert_eq!(transition.to, TopologyPhase::Converging);
+        assert_eq!(transition.depth.get(), 3);
+
+        assert!(
+            routing.evaluate_phase().is_none(),
+            "re-evaluation without state change commits nothing"
+        );
+        assert_eq!(routing.phase_status().0, TopologyPhase::Converging);
+    }
+
+    #[test]
+    fn test_phase_full_lifecycle_with_zero_window() {
+        // A zero stability window makes the time gate pass immediately, so
+        // the saturation condition alone drives Converging vs Stable and
+        // the lifecycle is testable without simulated clocks.
+        let base = SwarmAddress::with_first_byte(0x00);
+        let config = KademliaConfig::default().with_phase_stability_window(Duration::ZERO);
+        let (routing, _pm) = make_routing(base, config);
+
+        // Saturate bin 0 (depth anchors at 1) and hold 9 connected peers in
+        // the neighborhood, above the saturation threshold of 8.
+        for idx in 0..8 {
+            SwarmRouting::connected(&*routing, addr_in_bin(0, idx));
+        }
+        for idx in 0..5 {
+            SwarmRouting::connected(&*routing, addr_in_bin(1, idx));
+        }
+        for idx in 0..3 {
+            SwarmRouting::connected(&*routing, addr_in_bin(2, idx));
+        }
+        SwarmRouting::connected(&*routing, addr_in_bin(3, 0));
+        assert_eq!(routing.depth().get(), 1);
+
+        let transition = routing.evaluate_phase().expect("saturated neighborhood");
+        assert_eq!(transition.to, TopologyPhase::Stable);
+
+        // Losing neighborhood saturation (9 -> 7 connected at depth 1)
+        // falls back to Converging.
+        SwarmRouting::on_peer_disconnected(&*routing, &addr_in_bin(1, 3));
+        SwarmRouting::on_peer_disconnected(&*routing, &addr_in_bin(1, 4));
+        assert_eq!(routing.depth().get(), 1);
+        let transition = routing.evaluate_phase().expect("saturation lost");
+        assert_eq!(transition.from, TopologyPhase::Stable);
+        assert_eq!(transition.to, TopologyPhase::Converging);
+
+        // Depth collapsing to 0 falls all the way back to Bootstrap.
+        for idx in 0..8 {
+            SwarmRouting::on_peer_disconnected(&*routing, &addr_in_bin(0, idx));
+        }
+        assert_eq!(routing.depth().get(), 0);
+        let transition = routing.evaluate_phase().expect("depth collapsed");
+        assert_eq!(transition.to, TopologyPhase::Bootstrap);
     }
 
     #[test]
