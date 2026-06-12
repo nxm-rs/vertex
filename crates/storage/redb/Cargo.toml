@@ -10,7 +10,7 @@ description = "redb backend for vertex-storage"
 
 [dependencies]
 vertex-storage.workspace = true
-vertex-observability.workspace = true
+vertex-metrics.workspace = true
 vertex-util-runtime.workspace = true
 metrics.workspace = true
 parking_lot.workspace = true

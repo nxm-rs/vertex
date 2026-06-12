@@ -309,7 +309,7 @@ impl<I: SwarmIdentity> KademliaRouting<I> {
     #[tracing::instrument(skip(self), level = "trace")]
     fn capture_candidate_state(&self, effective_depth: NeighborhoodDepth) -> CandidateSnapshot {
         let queued_set = self.candidate_queues.snapshot_queued();
-        let in_progress: HashSet<OverlayAddress> = vertex_observability::timed_read(
+        let in_progress: HashSet<OverlayAddress> = vertex_metrics::timed_read(
             &self.connection_phases,
             metrics::histogram!("topology_routing_phases_lock_seconds"),
         )
@@ -928,7 +928,7 @@ impl<I: SwarmIdentity> RoutingCapacity for KademliaRouting<I> {
         let bin = self.bin_for(overlay);
         let effective = self.effective_count(bin);
 
-        let phases = vertex_observability::timed_read(
+        let phases = vertex_metrics::timed_read(
             &self.connection_phases,
             metrics::histogram!("topology_routing_phases_lock_seconds"),
         );

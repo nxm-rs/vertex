@@ -1,7 +1,7 @@
 //! Metrics for the identify protocol.
 
 use metrics::{counter, histogram};
-use vertex_observability::{
+use vertex_metrics::{
     DURATION_SECONDS, HistogramBucketConfig, LabelValue,
     labels::{direction, outcome},
 };

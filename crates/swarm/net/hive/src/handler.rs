@@ -25,8 +25,8 @@ use libp2p::{
 };
 use metrics::counter;
 use tracing::{debug, trace, warn};
+use vertex_metrics::labels::direction;
 use vertex_net_ratelimiter::{KeyedRateLimiter, Quota};
-use vertex_observability::labels::direction;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_net_handler_core::HandlerCore;
 use vertex_swarm_net_headers::{Inbound, Outbound, ProtocolStreamError, UpgradeError};

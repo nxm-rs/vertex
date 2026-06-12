@@ -854,9 +854,8 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
         cx: &mut Context<'_>,
     ) -> Poll<ToSwarm<Self::ToSwarm, THandlerInEvent<Self>>> {
         // Use TimingGuard for automatic poll duration recording
-        let _poll_timer = vertex_observability::TimingGuard::new(metrics::histogram!(
-            "topology_poll_duration_seconds"
-        ));
+        let _poll_timer =
+            vertex_metrics::TimingGuard::new(metrics::histogram!("topology_poll_duration_seconds"));
 
         // Emit any pending static NAT addresses as external addresses (one-time on startup)
         if !self.pending_nat_external_addrs.is_empty() {

@@ -1,11 +1,14 @@
 //! Prometheus metrics infrastructure.
 //!
 //! The bucket presets and [`buckets::HistogramBucketConfig`] are platform
-//! neutral and always available. The recorder, HTTP server, process hooks, and
-//! upkeep task live behind the `server` feature because they pull `axum` ->
-//! `tokio[net]` -> `mio`, which does not build for `wasm32`.
+//! neutral and always available; they live in the [`vertex_metrics`] leaf and
+//! are re-exported here as `metrics::buckets` for source compatibility. The
+//! recorder, HTTP server, process hooks, and upkeep task live behind the
+//! `server` feature because they pull `axum` -> `tokio[net]` -> `mio`, which
+//! does not build for `wasm32`.
 
-pub mod buckets;
+/// Histogram bucket presets, re-exported from the [`vertex_metrics`] leaf.
+pub use vertex_metrics::buckets;
 #[cfg(feature = "server")]
 mod hooks;
 #[cfg(feature = "server")]
