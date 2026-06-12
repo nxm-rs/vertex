@@ -47,7 +47,16 @@ flutter_rust_bridge.workspace = true
 thiserror.workspace = true
 strum.workspace = true
 
-# Native runtime owned by the client handle. The FFI cdylib is native-only, so
-# the multi-thread tokio runtime is unconditional here.
+# Logging surface for embedding hosts. The host installs a subscriber that
+# forwards events to a Dart stream. A custom Layer (not VertexTracer) lives in
+# `api::logging` so the event extraction targets the flat `LogLine` shape; that
+# keeps the FFI cone free of the observability server stack (no prometheus, no
+# OTLP appender) which the `just check-cone` guard asserts.
+tracing.workspace = true
+
+# Native runtime owned by the client handle plus the tracing subscriber. The FFI
+# cdylib is native-only, so both are unconditional here; the wasm cone never
+# pulls them in.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+tracing-subscriber = { workspace = true }

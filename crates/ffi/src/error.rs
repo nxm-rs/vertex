@@ -60,6 +60,22 @@ pub enum FfiError {
         /// Why the download failed.
         reason: String,
     },
+
+    /// Installing the logging subscriber failed.
+    #[error("logging setup failed: {reason}")]
+    Logging {
+        /// Why logging setup failed (an unparseable filter or a subscriber that
+        /// could not be installed).
+        reason: String,
+    },
+
+    /// Logging was already initialized for this process.
+    ///
+    /// A process has exactly one global tracing subscriber, so the first
+    /// `init_logging` call wins and a later call is rejected without disturbing
+    /// the installed subscriber.
+    #[error("logging is already initialized for this process")]
+    LoggingAlreadyInitialized,
 }
 
 /// Convenience alias for results crossing the FFI boundary.
