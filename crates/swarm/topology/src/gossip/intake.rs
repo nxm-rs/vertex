@@ -9,7 +9,8 @@
 //! on a real connection verifies them.
 
 use std::hash::{Hash, Hasher};
-use std::time::Instant;
+
+use vertex_util_runtime::time::Instant;
 
 use hashlink::LruCache;
 use metrics::gauge;

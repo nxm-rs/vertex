@@ -38,6 +38,10 @@ tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 wasm-bindgen-futures = { workspace = true }
+# tokio's timer driver does not run on wasm32-unknown-unknown (it reaches the std
+# unsupported-platform clock and panics), so wasm timers use the browser's
+# setTimeout through gloo-timers instead. See the `time` module.
+gloo-timers = { workspace = true, features = ["futures"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "time", "macros"] }

@@ -256,7 +256,7 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
             });
             let window_elapsed = async {
                 match remaining {
-                    Some(remaining) => tokio::time::sleep(remaining).await,
+                    Some(remaining) => vertex_tasks::time::sleep(remaining).await,
                     None => std::future::pending().await,
                 }
             };

@@ -2,6 +2,8 @@
 
 A browser WebAssembly app that runs a real Vertex Swarm client node. It mints an ephemeral identity, resolves the live mainnet bootnodes over DNS-over-HTTPS (with an embedded snapshot fallback), dials them over secure WebSockets, and renders the Kademlia topology building up: connected peer count, neighborhood depth, per-bin fill, the topology phase, and a scrolling log of topology events.
 
+Deployed at https://nxm-rs.github.io/vertex/ via `.github/workflows/pages.yml`.
+
 This crate is wasm-only (`crate-type = ["cdylib"]`) and is intentionally **not** a member of the workspace `[workspace] members`. It depends on the wasm-only client launch path (`vertex_swarm_node::launch_client`) and never builds for native, so adding it to the default workspace would break native `cargo build`. Build it with the wasm toolchain and Trunk as below.
 
 ## How it is wired
@@ -15,7 +17,7 @@ The wasm-bindgen surface in `src/lib.rs` is small: a `#[wasm_bindgen(start)]` `m
 
 ## Build
 
-The build needs a nightly toolchain (the `+atomics` target feature pulled in transitively by `nectar-primitives` is unstable), the `wasm32-unknown-unknown` target with `rust-src`, Trunk, and `wasm-bindgen-cli`. The required rustflags (`+atomics,+bulk-memory,+mutable-globals` and `getrandom_backend="wasm_js"`) live in the workspace `.cargo/config.toml` under `[target.wasm32-unknown-unknown]` and Trunk passes them through.
+The build needs a nightly toolchain (the `+atomics` target feature pulled in transitively by `nectar-primitives` is unstable, and the threaded build rebuilds std from source), the `wasm32-unknown-unknown` target with `rust-src`, Trunk, and `wasm-bindgen-cli`. The threaded-wasm linker recipe (shared memory, the TLS and heap exports, `build-std`, and `getrandom_backend="wasm_js"`) lives in this crate's own `.cargo/config.toml` under `[target.wasm32-unknown-unknown]`, which fully replaces the workspace config because this crate is its own workspace root. Trunk passes it through, so a plain `trunk build --release` needs no extra flags.
 
 On the project's Nix host, the whole toolchain is available through a one-off shell:
 
@@ -56,10 +58,12 @@ Then open http://127.0.0.1:8080. `trunk serve` sends the `Cross-Origin-Opener-Po
 
 GitHub Pages cannot set response headers, so the vendored `coi-serviceworker.js` (referenced from `index.html` and copied into `dist/`) registers a service worker that re-serves every response with the COOP/COEP headers, making the page cross-origin isolated client-side. Locally it is a harmless no-op since Trunk already sets the headers. Wiring the Pages deploy is a later phase; this crate just ships the shim and the reference.
 
-## A note on the live connection and threaded wasm
+## Threaded wasm and the rayon thread pool
 
-A live mainnet connection needs a real browser and network reachability to the bootnodes. The CI-able proof for this crate is the clean `trunk build` plus the wasm client-construction code compiling for `wasm32`. The live connect is verified by loading the deployed page in a browser, where peers appear over the first tens of seconds and the bins fill in.
+The wasm cone is compiled with `+atomics` because `nectar-primitives` pulls `wasm-bindgen-rayon`. That has one runtime consequence the connect/topology demo actually depends on: `wasm-bindgen-futures` schedules its task queue with `Atomics.waitAsync`, which only works on a `SharedArrayBuffer`. So the module is linked with shared, importable memory (`--shared-memory --import-memory --max-memory` plus the TLS and heap exports) and `build-std`, all from `.cargo/config.toml`.
 
-What a headless browser smoke confirmed against this build: the wasm module boots, the UI panel mounts, an ephemeral overlay address is minted, and the app reaches the bootnode-resolution step. The page is cross-origin isolated and `SharedArrayBuffer` is available.
+The demo never calls `initThreadPool` and never spawns a rayon worker: its connect and topology path does no parallel hashing (BMT hashing on wasm is sequential, and the demo uploads nothing). Shared memory alone is what makes the executor run; with it, no worker pool is needed and the rayon worker-URL question never arises. `Trunk.toml` keeps `filehash = false` so the emitted module names stay stable, which is what would let the rayon worker bootstrap resolve its relative module URL if a future feature did spin up the pool.
 
-There is one open item for the fully-live in-browser run. `nectar-primitives` compiles its parallel BMT hashing on a `wasm-bindgen-rayon` Web Worker thread pool, so the module is built with `+atomics` and uses `Atomics.wait`/`waitAsync` on shared memory. Driving that to completion needs the module linked with shared, importable memory (`--shared-memory`/`--import-memory`/`--max-memory`/`--export=__heap_base` plus the TLS exports), `-Z build-std`, and a `wasm-bindgen-rayon` `initThreadPool(...)` call wired into the bootstrap before the client runs. That linker recipe builds cleanly and `wasm-bindgen` emits the worker glue, but the worker-module URL the rayon bootstrap requests did not resolve under the local static server used for the smoke, so the worker pool did not come up there. Resolving the worker-URL wiring is folded into the phase-4 GitHub Pages deploy, where the served paths are stable; this crate ships the non-threaded boot that renders the UI, and the build pipeline plus the COOP/COEP and `coi-serviceworker.js` isolation are in place for it.
+## Verifying the live connection
+
+A headless browser run against this build (served with COOP/COEP) boots the module, mounts the UI, mints an overlay, resolves the mainnet bootnodes over DoH, and dials them over secure WebSockets: the wss/TLS connection to the live `libp2p.direct` AutoTLS endpoint opens and the libp2p upgrade (noise/multistream) is attempted. Completing the upgrade to a connected peer needs network reachability to the bee nodes behind that endpoint, which a sandboxed CI network may not have. The CI-checkable proof is the clean `trunk build` plus the wasm client cone compiling; the live connect is confirmed by loading the deployed page in a real browser, where peers appear and the bins fill in.

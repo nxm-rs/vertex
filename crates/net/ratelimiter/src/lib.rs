@@ -29,7 +29,9 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::num::NonZeroU32;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use vertex_util_runtime::time::Instant;
 
 /// Why a charge against a rate-limited bucket was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

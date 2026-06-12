@@ -127,8 +127,14 @@ fn resolve_into<'a, F: TxtFetcher>(
                     seen_leaves,
                 )
                 .await;
-            } else if is_browser_dialable_wss(&addr) && seen_leaves.insert(addr.to_string()) {
-                leaves.push(addr);
+            } else if is_browser_dialable_wss(&addr) {
+                // The network advertises its AutoTLS leaves as
+                // `/ip4/.../tls/sni/<host>/ws`; the browser websocket transport
+                // dials that form directly (it opens the secure socket against
+                // the `/sni` host), so the leaf is kept as-is.
+                if seen_leaves.insert(addr.to_string()) {
+                    leaves.push(addr);
+                }
             }
         }
     })
@@ -211,7 +217,12 @@ mod tests {
         ));
 
         assert_eq!(leaves.len(), 1);
-        assert_eq!(leaves[0].to_string(), wss);
+        // The network's `/ip4/.../tls/sni/<host>/ws` AutoTLS leaf is kept as-is;
+        // the browser websocket transport dials that form directly.
+        assert_eq!(
+            leaves[0].to_string(),
+            "/ip4/5.78.94.214/tcp/1635/tls/sni/example.libp2p.direct/ws/p2p/QmfEugihe2Pm78YomGupdxSt46Uxgg4DLpjkzgzzeouiKg"
+        );
     }
 
     #[test]

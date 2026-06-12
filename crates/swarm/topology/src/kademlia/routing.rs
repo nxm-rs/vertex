@@ -17,6 +17,12 @@ use super::{
 use crate::metrics::{phase, record_phase_transition, record_topology_phase_change};
 use nectar_primitives::{ChunkAddress, recompute_neighborhood_depth};
 use parking_lot::{Mutex, RwLock};
+// The neighborhood stability clock is a `tokio::time::Instant` on native so the
+// paused-time tests can advance it deterministically. tokio's clock reaches the
+// std monotonic clock, which panics on wasm32-unknown-unknown, so the browser
+// build uses the `web-time` clock instead. Both expose `now`, `elapsed`, and the
+// duration arithmetic this module uses.
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::time::Instant;
 use tracing::{debug, info, trace};
 use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
@@ -25,6 +31,8 @@ use vertex_swarm_primitives::{
     Bin, NeighborhoodDepth, OverlayAddress, ProximityOrder, SwarmNodeType, all_bins, balanced_bins,
     neighborhood_bins,
 };
+#[cfg(target_arch = "wasm32")]
+use vertex_util_runtime::time::Instant;
 use vertex_util_runtime::time::Instant as PhaseInstant;
 
 /// Connection phase for capacity tracking.

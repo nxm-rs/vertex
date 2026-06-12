@@ -11,7 +11,6 @@ use std::{
 };
 
 use tokio::sync::{broadcast, mpsc};
-use tokio::time::Interval;
 
 use libp2p::{
     Multiaddr, PeerId,
@@ -54,6 +53,17 @@ pub(crate) type BootnodeResolutionFuture =
 #[cfg(target_arch = "wasm32")]
 pub(crate) type BootnodeResolutionFuture =
     Pin<Box<dyn Future<Output = (Vec<Multiaddr>, Vec<Multiaddr>)>>>;
+
+/// Boxed timer future used for the behaviour's internal pacing (dial-rate and
+/// periodic ticks). `Send` on native so the behaviour stays `Send` for the
+/// libp2p swarm; the bound is dropped on wasm32, where the browser timer future
+/// (`gloo-timers`) is `!Send` and the swarm is single-threaded.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type TimerFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+/// Boxed timer future for the browser build (see the native definition).
+#[cfg(target_arch = "wasm32")]
+pub(crate) type TimerFuture = Pin<Box<dyn Future<Output = ()>>>;
 use crate::TopologyCommand;
 use crate::builder::PendingTopologyTasks;
 use crate::composed::ProtocolBehaviours;
@@ -80,13 +90,18 @@ pub(crate) const COMMAND_CHANNEL_CAPACITY: usize = 64;
 
 /// Periodic interval whose underlying timer is created on first poll.
 ///
-/// `tokio::time::interval` requires a running runtime, so deferring creation
-/// to the first [`Self::poll_tick`] (always inside the behaviour's poll loop)
-/// lets the behaviour be constructed without one. The first tick still
-/// completes immediately, matching an interval created at construction time.
+/// The tick is a re-armable `sleep` future rather than a `tokio::time::Interval`
+/// so the same behaviour runs on wasm32, where tokio's timer driver is absent.
+/// The timer is armed on first [`Self::poll_tick`] (always inside the
+/// behaviour's poll loop), so the behaviour can be constructed without a running
+/// runtime. The first tick fires immediately and subsequent ticks fire one
+/// period apart, matching `tokio::time::interval`.
 pub(crate) struct LazyInterval {
     period: Duration,
-    interval: Option<Interval>,
+    timer: Option<TimerFuture>,
+    /// `tokio::time::interval` yields its first tick immediately; this flag
+    /// reproduces that so the first poll readies a tick before any wait.
+    first_tick_pending: bool,
 }
 
 impl LazyInterval {
@@ -94,15 +109,31 @@ impl LazyInterval {
     pub(crate) fn new(period: Duration) -> Self {
         Self {
             period,
-            interval: None,
+            timer: None,
+            first_tick_pending: true,
         }
     }
 
-    /// Poll for the next tick, creating the interval on first use.
-    pub(crate) fn poll_tick(&mut self, cx: &mut Context<'_>) -> Poll<tokio::time::Instant> {
-        self.interval
-            .get_or_insert_with(|| tokio::time::interval(self.period))
-            .poll_tick(cx)
+    /// Poll for the next tick, arming the timer on first use and re-arming it
+    /// after each fire.
+    pub(crate) fn poll_tick(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        // The first tick is immediate, matching `tokio::time::interval`.
+        if self.first_tick_pending {
+            self.first_tick_pending = false;
+            self.timer = Some(Box::pin(vertex_tasks::time::sleep(self.period)));
+            return Poll::Ready(());
+        }
+        let period = self.period;
+        let timer = self
+            .timer
+            .get_or_insert_with(|| Box::pin(vertex_tasks::time::sleep(period)));
+        match timer.as_mut().poll(cx) {
+            Poll::Ready(()) => {
+                self.timer = Some(Box::pin(vertex_tasks::time::sleep(period)));
+                Poll::Ready(())
+            }
+            Poll::Pending => Poll::Pending,
+        }
     }
 
     /// The configured period (build-time pacing assertions).
@@ -278,8 +309,9 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
 
     /// Armed when the dial-rate bucket refused a candidate: fires when the
     /// next token is available so the drain resumes without waiting for the
-    /// evaluation tick.
-    pub(crate) dial_rate_timer: Option<Pin<Box<tokio::time::Sleep>>>,
+    /// evaluation tick. A boxed `sleep` future rather than a
+    /// `tokio::time::Sleep` so the timer runs on wasm32 too.
+    pub(crate) dial_rate_timer: Option<TimerFuture>,
 
     // Pending dnsaddr resolution for bootnodes (resolved_bootnodes, resolved_trusted)
     pub(crate) pending_bootnode_resolution: Option<BootnodeResolutionFuture>,
@@ -485,7 +517,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 Err(RateLimitedErr::TooSoon(wait)) => {
                     metrics::counter!("topology_dials_throttled_total").increment(1);
                     self.routing.requeue_candidate(overlay);
-                    let mut timer = Box::pin(tokio::time::sleep(wait));
+                    let mut timer: TimerFuture = Box::pin(vertex_tasks::time::sleep(wait));
                     if timer.as_mut().poll(cx).is_ready() {
                         // Sub-millisecond wait already elapsed; keep draining.
                         continue;

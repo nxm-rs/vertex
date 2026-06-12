@@ -29,6 +29,7 @@ use vertex_swarm_identity::Identity;
 use vertex_swarm_node::{SwarmNodeType, launch_client};
 use vertex_swarm_spec::{init_mainnet, mainnet_wss_bootnodes};
 use vertex_swarm_topology::{TopologyEvent, TopologyHandle};
+use vertex_tasks::TaskManager;
 use wasm_bindgen::prelude::*;
 
 /// Maximum topology events buffered between UI drains.
@@ -48,6 +49,9 @@ pub struct SwarmDemo {
     topology: TopologyHandle<Identity>,
     events: std::rc::Rc<std::cell::RefCell<VecDeque<TopologyEvent>>>,
     overlay: String,
+    // The task manager owns the global executor the node tasks were spawned
+    // through. Held for the session so the spawned tasks keep running.
+    _task_manager: TaskManager,
 }
 
 #[wasm_bindgen]
@@ -164,6 +168,12 @@ pub async fn start() -> Result<SwarmDemo, JsValue> {
 
     info!("starting browser Swarm client demo");
 
+    // Establish the global executor before building the node: the topology
+    // tasks, peer-manager tick, and client service all resolve their spawner
+    // through `TaskExecutor::current`, which reads the executor this manager
+    // installs. The manager is held in the returned handle for the session.
+    let task_manager = TaskManager::current();
+
     let spec = init_mainnet();
     let identity = Identity::random(spec, SwarmNodeType::Client);
     let overlay = identity.overlay_address().to_string();
@@ -195,6 +205,7 @@ pub async fn start() -> Result<SwarmDemo, JsValue> {
         topology,
         events,
         overlay,
+        _task_manager: task_manager,
     };
     Ok(demo)
 }

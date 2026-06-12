@@ -70,6 +70,8 @@ pub async fn resolve_or_fallback<F: TxtFetcher>(
             %name,
             "DoH dnsaddr resolution yielded no leaves, using embedded snapshot"
         );
+        // The snapshot carries the network's `/ip4/.../tls/sni/<host>/ws`
+        // AutoTLS leaves, which the browser websocket transport dials directly.
         snapshot.iter().filter_map(|s| s.parse().ok()).collect()
     } else {
         tracing::info!(

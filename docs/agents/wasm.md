@@ -90,13 +90,36 @@ Rules that apply to both:
 
 Audit `Cargo.toml` entries for `tokio` regularly. The default-features-on form (`tokio = "1"`) is a wasm break waiting to happen because it pulls `net`, `fs`, `signal`. Library crates should request the exact features they use (`features = ["sync", "macros", "rt"]`) and let the binary turn on `rt-multi-thread`.
 
+### Wall clocks and timers in the wasm cone
+
+Two distinct hazards, both of which surface only at runtime (a clean wasm build still panics on the first clock read):
+
+- Wall clock and monotonic time go through `web-time`, never `std::time`. On `wasm32-unknown-unknown` the std clock is the unsupported-platform stub and panics ("time not implemented on this platform"). Reach for `vertex_util_runtime::time::{Instant, SystemTime, now_unix_secs}`, which re-export `web-time`. The same rule holds upstream: `nectar_primitives::Timestamp::now` and the postage stamp timestamp also read the clock through `web-time` (nectar 0.2.0+). When pulling a transitive dependency that reads `std::time` (for example `futures-timer`, which libp2p uses for connection-handler delays), turn on its wasm browser-clock feature (`futures-timer/wasm-bindgen`) so it does not reach the std clock.
+- Timers go through `vertex_tasks::time::sleep`, never `tokio::time`. The tokio timer driver does not run on wasm32: `tokio::time::{sleep, interval, Instant::now}` reach the std clock and panic. `vertex_tasks::time::sleep` is `tokio::time::sleep` on native and `gloo-timers` (browser `setTimeout`) on wasm. The browser timer future is `!Send`, so a struct field or task that holds one needs a cfg-gated boxed-future type (`Send` on native, unbounded on wasm); see `TimerFuture` in `vertex-swarm-topology`'s behaviour. A periodic loop uses a re-armable `sleep` future rather than a `tokio::time::Interval`. Tasks that own such a future spawn through the executor's local (`!Send`) path on wasm.
+
+### Browser dial capability
+
+A browser client has no listen addresses, so the listen-address-derived `IpCapability` heuristic leaves it at `None` and the dialer filters every candidate as unreachable. The browser can in fact open outbound connections to either address family, so `vertex_net_local::LocalCapabilities::capability` returns `IpCapability::Dual` on wasm32. The bee AutoTLS wss leaf form `/ip4/<ip>/tcp/<port>/tls/sni/<host>/ws` is not dialable by `libp2p-websocket-websys` (it rejects the `/sni` component); `vertex-net-dnsaddr-doh` rewrites accepted leaves to `/dns4/<host>/tcp/<port>/tls/ws`, which the browser dials by hostname with the TLS SNI following from it.
+
+### The browser demo: `bin/swarm-demo`
+
+`bin/swarm-demo` is a wasm-only `cdylib` that runs a real client node in the browser: it mints an ephemeral identity, resolves the mainnet bootnodes over DoH, dials them over secure websockets, and renders the live Kademlia topology. It is its own workspace root (an empty `[workspace]` table) and is excluded from the native workspace, so `cargo build` never tries to compile it for native.
+
+Build and serve with Trunk (`bin/swarm-demo/README.md` has the full toolchain shell):
+
+- `trunk build --release` (nightly toolchain) produces `dist/` with the wasm module, the wasm-bindgen glue, the HTML shell, the stylesheet, and the vendored `coi-serviceworker.js`.
+- The threaded-wasm linker recipe lives in `bin/swarm-demo/.cargo/config.toml`: `build-std` plus shared, importable memory (`--shared-memory --import-memory --max-memory`) and the TLS/heap exports the wasm-bindgen threading transform needs. Shared memory is required not for rayon (the connect path never parallelizes and never calls `initThreadPool`) but because `wasm-bindgen-futures` schedules its task queue with `Atomics.waitAsync`, which only works on a `SharedArrayBuffer`. `Trunk.toml` sets `filehash = false` (so the rayon worker bootstrap's relative module URL still resolves) and `wasm_opt = false` (binaryen needs `--enable-threads` for the shared-memory module).
+- SharedArrayBuffer needs cross-origin isolation (COOP/COEP). `trunk serve` sets those headers directly; on GitHub Pages, which cannot set response headers, the vendored `coi-serviceworker.js` injects them client-side.
+
+Deploy: `.github/workflows/pages.yml` builds the demo with `--public-url /vertex/` (the Pages subpath for `nxm-rs/vertex`) and publishes `dist/` through `actions/deploy-pages`. The demo is the whole Pages site.
+
 ### Plan to a working client-in-wasm
 
-1. Remove or rewrite `bin/swarm-wasm-lib` and `bin/wasm-playground` so they reflect the current crate graph (or delete them with a follow-up to re-add when ready).
+1. Done: `bin/swarm-wasm-lib` and `bin/wasm-playground` removed; `bin/swarm-demo` is the live browser client.
 2. Add a `wasm32-unknown-unknown` build step to CI for the wasm-cone crates listed above. Done for the peer stack (the `wasm` job builds `vertex-swarm-peer-score` and `vertex-swarm-peer-manager`, which pulls the whole peer cone) and for `vertex-tasks`; extend the `-p` list as more cone crates become buildable.
 3. Audit tokio features in every wasm-cone crate; trim to the minimum.
 4. Add an `IndexedDb` `Database` backend (likely under `crates/storage/indexeddb`) gated on `cfg(target_arch = "wasm32")`.
-5. Add `libp2p-websocket-websys` to `crates/swarm/node`'s client variant under wasm cfg.
-6. Build `bin/vertex-wasm-client` (new) that composes the client builder, the wasm transport, the IndexedDB backend, and `wasm-bindgen-futures` as the executor.
+5. Done: `libp2p-websocket-websys` is wired into `crates/swarm/node`'s client variant under wasm cfg (`build_swarm`).
+6. Build a richer browser client on top of `vertex_swarm_node::launch_client` that adds the IndexedDB backend and upload/download flows.
 
 Each step is its own PR. Do not bundle.

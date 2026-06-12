@@ -1,0 +1,78 @@
+name: Pages
+
+# Builds the browser Swarm client demo (bin/swarm-demo) and deploys it to GitHub
+# Pages. The demo is the entire Pages site, served from the `/vertex/` base path
+# that matches https://nxm-rs.github.io/vertex/.
+#
+# The build job runs on every push to main and on manual dispatch; the deploy job
+# publishes the built `dist/` as the Pages artifact. The build is the part CI can
+# verify on a PR (the workflow itself is validated by the existing checks); the
+# actual deploy runs only after merge to main.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Allow the deploy job to publish to Pages via OIDC.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One in-flight Pages deploy at a time; do not cancel a running deploy.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      # Nightly with rust-src: the demo is a threaded-wasm build that rebuilds
+      # std from source (build-std) with the unstable atomics target feature, and
+      # links shared memory. The flags live in bin/swarm-demo/.cargo/config.toml;
+      # see docs/agents/wasm.md.
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # nightly
+        with:
+          toolchain: nightly
+          targets: wasm32-unknown-unknown
+          components: rust-src
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          cache-on-failure: true
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b  # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install trunk and wasm-bindgen-cli
+        uses: taiki-e/install-action@1b57bc699ba2af96a06eb2a2a0d32b43a7d8e8b8  # v2
+        with:
+          tool: trunk,wasm-bindgen-cli
+      # `--public-url /vertex/` matches the Pages subpath for nxm-rs/vertex
+      # (https://nxm-rs.github.io/vertex/). `+nightly` is load-bearing:
+      # rust-toolchain.toml pins stable and would otherwise shadow the installed
+      # nightly that the atomics target feature needs.
+      - name: Build the demo
+        working-directory: bin/swarm-demo
+        env:
+          RUSTUP_TOOLCHAIN: nightly
+        run: trunk build --release --public-url /vertex/
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b  # v4.0.0
+        with:
+          path: bin/swarm-demo/dist
+
+  deploy:
+    name: deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e  # v4.0.5
