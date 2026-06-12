@@ -12,36 +12,61 @@ description = "Unified observability (logging, tracing, metrics) for Vertex Swar
 workspace = true
 
 [features]
-# The native server stack: tracing subscriber, OTLP exporters, the Prometheus
-# recorder, the metrics HTTP server, and profiling. On by default so a native
-# node gets the full observability infrastructure. A wasm client turns this off
-# (`default-features = false`) and keeps only the platform-neutral metric
-# primitives (recording macros, guards, label utilities, and the histogram
-# bucket presets re-exported from `vertex-metrics`). The server stack pulls
-# `axum` -> `tokio[net]` -> `mio`, which does not build for `wasm32`.
-default = ["server"]
-server = [
-    "dep:metrics-exporter-prometheus",
-    "dep:metrics-process",
-    "dep:metrics-util",
-    "dep:tracing-subscriber",
+# Orthogonal slices of the native observability stack plus a `host` umbrella that
+# unions them. The plain config structs (`StdoutConfig`, `OtlpConfig`,
+# `OtlpLogsConfig`, `MetricsServerConfig`, `LogFormat`) and the platform-neutral
+# metric primitives (recording macros, guards, label utilities, histogram bucket
+# presets re-exported from `vertex-metrics`) compile with NO features enabled, so
+# a wasm client or a config-only consumer keeps the light surface. The heavy
+# slices pull `axum` -> `tokio[net]` -> `mio`, which does not build for `wasm32`.
+default = ["host"]
+
+# Tracing subscriber: console/stdout layer, the `LogFormat -> layer` conversion,
+# `VertexTracer`, `TracingGuard`, and `build_and_init`. Gates `layers.rs`,
+# `guard.rs`, and `tracer.rs`.
+subscriber = ["dep:tracing-subscriber", "dep:eyre"]
+
+# OTLP trace and log export layers on top of the subscriber. Pulls the
+# OpenTelemetry SDK and exporters and registers the W3C `TraceContextPropagator`.
+otlp = [
+    "subscriber",
     "dep:opentelemetry",
     "dep:opentelemetry_sdk",
     "dep:opentelemetry-otlp",
     "dep:tracing-opentelemetry",
     "dep:opentelemetry-appender-tracing",
-    "dep:tokio",
+]
+
+# Prometheus recorder, histogram registry, and the process/jemalloc hooks. Pulls
+# `vertex-tasks` for the recorder upkeep task and `eyre` for the install path.
+prometheus = [
+    "dep:metrics-exporter-prometheus",
+    "dep:metrics-util",
+    "dep:metrics-process",
+    "dep:vertex-tasks",
+    "dep:eyre",
+]
+
+# Axum metrics HTTP server (the `/metrics`, `/health`, and profiling endpoints).
+# Implies `prometheus` because it serves the recorder's handle. `serde` carries
+# the server's query/response (de)serialization and the `MemoryStats` shape.
+http-server = [
+    "prometheus",
     "dep:axum",
     "dep:tower",
     "dep:tower-http",
-    "dep:eyre",
+    "dep:tokio",
     "dep:serde",
-    "dep:vertex-tasks",
 ]
-profiling = ["server", "pprof"]
-jemalloc = ["server", "tikv-jemalloc-ctl"]
+
+# Umbrella that preserves the full native stack: subscriber, OTLP export, the
+# Prometheus recorder, and the HTTP metrics server.
+host = ["subscriber", "otlp", "prometheus", "http-server"]
+
+profiling = ["host", "pprof"]
+jemalloc = ["host", "dep:tikv-jemalloc-ctl"]
 heap-profiling = ["jemalloc"]
-tokio-console = ["server", "console-subscriber"]
+tokio-console = ["subscriber", "dep:console-subscriber"]
 
 [dependencies]
 # Internal crates

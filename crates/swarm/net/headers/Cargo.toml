@@ -35,7 +35,14 @@ bytes.workspace = true
 strum.workspace = true
 thiserror.workspace = true
 
-## tracing & telemetry
+## tracing
 tracing.workspace = true
+
+## telemetry (native only)
+# W3C trace-context propagation is native-only: the browser client has no OTLP
+# backend to propagate to, so the wasm sibling (`tracing_wasm.rs`) provides no-op
+# inject/extract. Keeping these off the wasm cone avoids dragging the
+# OpenTelemetry stack into the browser build.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tracing-opentelemetry.workspace = true
 opentelemetry.workspace = true

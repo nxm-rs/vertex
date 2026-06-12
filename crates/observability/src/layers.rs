@@ -1,7 +1,10 @@
 //! Internal layer building for tracing-subscriber.
 
+#[cfg(feature = "otlp")]
 use opentelemetry::trace::TracerProvider as _;
+#[cfg(feature = "otlp")]
 use opentelemetry_otlp::WithExportConfig;
+#[cfg(feature = "otlp")]
 use opentelemetry_sdk::{
     Resource,
     logs::SdkLoggerProvider,
@@ -9,7 +12,9 @@ use opentelemetry_sdk::{
 };
 use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::{LogFormat, OtlpConfig, OtlpLogsConfig, StdoutConfig, TracingGuard};
+use crate::{LogFormat, StdoutConfig, TracingGuard};
+#[cfg(feature = "otlp")]
+use crate::{OtlpConfig, OtlpLogsConfig};
 
 /// Boxed tracing layer, used in return types to reduce complexity.
 type BoxedLayer<S> = Box<dyn Layer<S> + Send + Sync + 'static>;
@@ -17,11 +22,14 @@ type BoxedLayer<S> = Box<dyn Layer<S> + Send + Sync + 'static>;
 /// Build the complete subscriber from configs and initialize it.
 pub(crate) fn build_and_init(
     stdout: Option<&StdoutConfig>,
-    otlp: Option<&OtlpConfig>,
-    otlp_logs: Option<&OtlpLogsConfig>,
+    #[cfg(feature = "otlp")] otlp: Option<&OtlpConfig>,
+    #[cfg(feature = "otlp")] otlp_logs: Option<&OtlpLogsConfig>,
 ) -> eyre::Result<TracingGuard> {
     let (console_layer, env_filter) = build_console_layer(stdout);
+
+    #[cfg(feature = "otlp")]
     let (otel_layer, tracer_provider) = build_otel_layer(otlp)?;
+    #[cfg(feature = "otlp")]
     let (otel_logs_layer, logger_provider) = build_otel_logs_layer(otlp_logs)?;
 
     // Build tokio-console layer if feature enabled.
@@ -32,15 +40,19 @@ pub(crate) fn build_and_init(
     #[cfg(not(feature = "tokio-console"))]
     let tokio_console_layer: Option<tracing_subscriber::layer::Identity> = None;
 
-    tracing_subscriber::registry()
+    let registry = tracing_subscriber::registry()
         .with(env_filter)
-        .with(console_layer)
-        .with(otel_layer)
-        .with(otel_logs_layer)
+        .with(console_layer);
+
+    #[cfg(feature = "otlp")]
+    let registry = registry.with(otel_layer).with(otel_logs_layer);
+
+    registry
         .with(tokio_console_layer)
         .try_init()
         .map_err(|e| eyre::eyre!("Failed to initialize tracing subscriber: {e}"))?;
 
+    #[cfg(feature = "otlp")]
     if let Some(cfg) = otlp {
         tracing::info!(
             service_name = %cfg.service_name(),
@@ -49,6 +61,7 @@ pub(crate) fn build_and_init(
         );
     }
 
+    #[cfg(feature = "otlp")]
     if let Some(cfg) = otlp_logs {
         tracing::info!(
             endpoint = %cfg.endpoint(),
@@ -56,7 +69,12 @@ pub(crate) fn build_and_init(
         );
     }
 
-    Ok(TracingGuard::new(tracer_provider, logger_provider))
+    #[cfg(feature = "otlp")]
+    let guard = TracingGuard::new(tracer_provider, logger_provider);
+    #[cfg(not(feature = "otlp"))]
+    let guard = TracingGuard::noop();
+
+    Ok(guard)
 }
 
 fn build_console_layer<S>(config: Option<&StdoutConfig>) -> (Option<BoxedLayer<S>>, EnvFilter)
@@ -91,6 +109,7 @@ where
     (Some(layer), filter)
 }
 
+#[cfg(feature = "otlp")]
 fn build_otel_layer<S>(
     config: Option<&OtlpConfig>,
 ) -> eyre::Result<(Option<BoxedLayer<S>>, Option<SdkTracerProvider>)>
@@ -105,6 +124,14 @@ where
     };
 
     use opentelemetry::KeyValue;
+
+    // Register the W3C trace-context propagator so span context injected into and
+    // extracted from request headers (see vertex-swarm-net-headers) uses the
+    // standard `traceparent` format. Without a global propagator the inject and
+    // extract calls are no-ops.
+    opentelemetry::global::set_text_map_propagator(
+        opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+    );
 
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
@@ -139,6 +166,7 @@ where
     Ok((Some(Box::new(layer)), Some(provider)))
 }
 
+#[cfg(feature = "otlp")]
 fn build_otel_logs_layer<S>(
     config: Option<&OtlpLogsConfig>,
 ) -> eyre::Result<(Option<BoxedLayer<S>>, Option<SdkLoggerProvider>)>

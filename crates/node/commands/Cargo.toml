@@ -15,8 +15,9 @@ workspace = true
 # vertex - generic infrastructure only
 vertex-node-builder.workspace = true
 vertex-node-core.workspace = true
-# Sets up the tracing subscriber via the native server stack.
-vertex-observability = { workspace = true, features = ["server"] }
+# Sets up the tracing subscriber and OTLP export via VertexTracer. `otlp` pulls
+# `subscriber` transitively.
+vertex-observability = { workspace = true, features = ["otlp"] }
 vertex-tasks.workspace = true
 
 # cli

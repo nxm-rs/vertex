@@ -4,6 +4,10 @@ mod codec;
 mod error;
 pub mod metrics;
 mod stream;
+// Trace-context propagation has a native implementation over OpenTelemetry and a
+// no-op wasm sibling (the browser client has no OTLP backend). Both export the
+// same item names with identical signatures so `upgrade.rs` compiles unchanged.
+#[cfg_attr(target_arch = "wasm32", path = "tracing_wasm.rs")]
 mod tracing;
 mod traits;
 mod upgrade;
