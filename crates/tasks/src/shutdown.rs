@@ -48,7 +48,7 @@ impl Future for GracefulShutdown {
         ready!(self.shutdown.poll_unpin(cx));
         match self.get_mut().guard.take() {
             Some(guard) => Poll::Ready(guard),
-            // Already completed — safe idle if re-polled.
+            // Already completed; safe idle if re-polled.
             None => Poll::Pending,
         }
     }

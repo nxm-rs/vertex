@@ -39,6 +39,28 @@ use crate::shutdown::GracefulShutdownCounter;
 // Re-export key types
 pub use shutdown::{GracefulShutdown, GracefulShutdownGuard, Shutdown, Signal, signal};
 
+/// A boxed future whose `Send` bound follows the platform executor.
+///
+/// On native the executor is multi-thread tokio, so the boxed future is `Send`.
+/// On `wasm32` the executor is the single-threaded browser event loop, where
+/// timer and fetch futures are `!Send`, so the alias carries no `Send` bound.
+///
+/// This is the single canonical home for the platform `Send` divergence; crates
+/// must not define per-crate cfg-gated siblings of this alias.
+#[cfg(not(target_arch = "wasm32"))]
+pub type MaybeSendBoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
+
+/// A boxed future whose `Send` bound follows the platform executor.
+///
+/// On native the executor is multi-thread tokio, so the boxed future is `Send`.
+/// On `wasm32` the executor is the single-threaded browser event loop, where
+/// timer and fetch futures are `!Send`, so the alias carries no `Send` bound.
+///
+/// This is the single canonical home for the platform `Send` divergence; crates
+/// must not define per-crate cfg-gated siblings of this alias.
+#[cfg(target_arch = "wasm32")]
+pub type MaybeSendBoxFuture<T> = Pin<Box<dyn Future<Output = T>>>;
+
 /// A boxed future representing a node's main event loop.
 pub type NodeTask = Pin<Box<dyn Future<Output = ()> + Send>>;
 
@@ -773,8 +795,9 @@ impl TaskExecutor {
     /// # }
     /// ```
     ///
-    /// The timer is `crate::time::sleep`, which works on both native and wasm32.
-    /// On native the task spawns through the Send-bounded spawner; the wasm
+    /// The timer is [`crate::time::interval_after`], which works on both native
+    /// and wasm32 and delays the first callback by one full `interval`. On
+    /// native the task spawns through the Send-bounded spawner; the wasm
     /// sibling drops the `Send` bound and spawns on the browser event loop,
     /// because the browser timer future is `!Send`.
     #[cfg(not(target_arch = "wasm32"))]
@@ -786,13 +809,14 @@ impl TaskExecutor {
     ) {
         self.spawn_with_graceful_shutdown_signal(name, move |shutdown| async move {
             let mut shutdown = std::pin::pin!(shutdown);
+            let mut ticker = crate::time::interval_after(interval, interval);
             loop {
                 tokio::select! {
                     guard = &mut shutdown => {
                         drop(guard);
                         break;
                     }
-                    _ = crate::time::sleep(interval) => {
+                    () = ticker.tick() => {
                         f();
                     }
                 }
@@ -814,13 +838,14 @@ impl TaskExecutor {
     ) {
         self.spawn_local_with_graceful_shutdown_signal(name, move |shutdown| async move {
             let mut shutdown = std::pin::pin!(shutdown);
+            let mut ticker = crate::time::interval_after(interval, interval);
             loop {
                 tokio::select! {
                     guard = &mut shutdown => {
                         drop(guard);
                         break;
                     }
-                    _ = crate::time::sleep(interval) => {
+                    () = ticker.tick() => {
                         f();
                     }
                 }

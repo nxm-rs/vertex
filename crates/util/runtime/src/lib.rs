@@ -21,8 +21,10 @@
 //! - The async runtime. Task spawning (`tokio::spawn` versus
 //!   `wasm_bindgen_futures::spawn_local`) lives in the task-executor layer, not
 //!   here.
-//! - Paused-time test clocks. Deterministic time control for tests stays with
-//!   `tokio::time`; this crate only provides the real platform clock.
+//! - Timers. `sleep`, `interval`, `timeout`, and the timer-coherent `Instant`
+//!   (tokio's pause-aware clock on native, the browser clock on wasm32) live in
+//!   `vertex_tasks::time`; this crate only provides the real platform wall and
+//!   monotonic clocks for timer-free code.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 

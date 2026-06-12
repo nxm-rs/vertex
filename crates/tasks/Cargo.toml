@@ -44,4 +44,4 @@ wasm-bindgen-futures = { workspace = true }
 gloo-timers = { workspace = true, features = ["futures"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "time", "macros"] }
+tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "time", "macros", "test-util"] }
