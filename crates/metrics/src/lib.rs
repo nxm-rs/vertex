@@ -2,12 +2,17 @@
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+pub mod buckets;
 pub mod guards;
 mod label_value;
 pub mod labels;
 mod macros;
 pub mod protocol;
 
+pub use buckets::{
+    CONNECTION_LIFETIME, DURATION_FINE, DURATION_NETWORK, DURATION_SECONDS, HistogramBucketConfig,
+    LOCK_CONTENTION, POLL_DURATION,
+};
 pub use guards::{
     CounterGuard, GaugeGuard, OperationGuard, TimingGuard, timed_lock, timed_read, timed_write,
 };

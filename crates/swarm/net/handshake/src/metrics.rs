@@ -1,7 +1,7 @@
 //! Metrics and tracing for the handshake protocol.
 
 use metrics::{counter, gauge, histogram};
-use vertex_observability::{
+use vertex_metrics::{
     DURATION_FINE, DURATION_SECONDS, HistogramBucketConfig, LabelValue, StreamGuard,
     labels::{direction, outcome},
 };
@@ -12,8 +12,8 @@ use crate::{HandshakeError, HandshakeInfo};
 
 /// Histogram bucket configurations for handshake metrics.
 ///
-/// Collect these at recorder install time via
-/// [`vertex_observability::install_prometheus_recorder_with_buckets`].
+/// Collect these at recorder install time via the host-side
+/// `install_prometheus_recorder_with_buckets` entry point.
 pub const HISTOGRAM_BUCKETS: &[HistogramBucketConfig] = &[
     HistogramBucketConfig {
         suffix: "handshake_duration_seconds",

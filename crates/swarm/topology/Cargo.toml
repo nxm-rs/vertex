@@ -10,14 +10,12 @@ repository.workspace = true
 
 [dependencies]
 ## vertex
+# Topology only uses the platform-neutral metric primitives (recording macros,
+# timing guards, bucket presets), all of which live in the `vertex-metrics`
+# leaf, so it never pulls the native server stack and stays wasm-buildable.
 vertex-metrics.workspace = true
 vertex-swarm-primitives.workspace = true
 vertex-swarm-api.workspace = true
-# Topology only uses the platform-neutral metric primitives (recording macros,
-# timing guards, bucket presets), never the native server stack, so it takes the
-# workspace default (`server` off) and stays wasm-buildable. The binary turns the
-# `server` feature back on through the node builder.
-vertex-observability.workspace = true
 vertex-net-local.workspace = true
 vertex-net-ratelimiter.workspace = true
 vertex-net-utils.workspace = true

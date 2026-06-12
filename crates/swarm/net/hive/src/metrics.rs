@@ -3,7 +3,7 @@
 //! Exchange-level metrics (exchanges_total, outcomes, duration) are emitted
 //! by the headers crate's `ProtocolMetrics`.
 
-use vertex_observability::{DURATION_FINE, HistogramBucketConfig};
+use vertex_metrics::{DURATION_FINE, HistogramBucketConfig};
 
 /// Counter of peer batches discarded by the hive layer.
 ///

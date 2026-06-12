@@ -1,8 +1,8 @@
 //! Unified protocol exchange metrics for all headered protocols.
 
 use metrics::{counter, histogram};
+use vertex_metrics::HistogramBucketConfig;
 use vertex_metrics::labels::{direction, outcome, reason};
-use vertex_observability::HistogramBucketConfig;
 use vertex_util_runtime::time::Instant;
 
 /// Histogram bucket configurations for protocol exchange metrics.

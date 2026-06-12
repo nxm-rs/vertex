@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use metrics::{counter, gauge, histogram};
-use vertex_observability::labels::outcome;
-use vertex_observability::{
+use vertex_metrics::labels::outcome;
+use vertex_metrics::{
     CONNECTION_LIFETIME, DURATION_NETWORK, HistogramBucketConfig, LOCK_CONTENTION, LabelValue,
     POLL_DURATION,
 };

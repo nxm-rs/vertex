@@ -1,6 +1,6 @@
 //! Metrics constants and histogram buckets for database operations.
 
-use vertex_observability::HistogramBucketConfig;
+use vertex_metrics::HistogramBucketConfig;
 
 /// Histogram bucket configurations for database operation metrics.
 pub const HISTOGRAM_BUCKETS: &[HistogramBucketConfig] = &[

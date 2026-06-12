@@ -43,7 +43,7 @@ parking_lot.workspace = true
 ## tracing & metrics
 tracing.workspace = true
 metrics.workspace = true
-vertex-observability.workspace = true
+vertex-metrics.workspace = true
 strum.workspace = true
 
 ## error handling
