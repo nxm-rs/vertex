@@ -121,6 +121,12 @@ impl LocalAddressManager {
         self.local.capability()
     }
 
+    /// The combined dial filter (IP capability plus platform transport
+    /// suites); see [`LocalCapabilities::dial_capability`].
+    pub fn dial_capability(&self) -> vertex_net_local::DialCapability {
+        self.local.dial_capability()
+    }
+
     /// Check if we have any public addresses to advertise.
     pub fn is_reachable(&self) -> bool {
         // Check static NAT addresses

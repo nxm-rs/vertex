@@ -5,7 +5,7 @@ use std::time::Duration;
 use libp2p::PeerId;
 use libp2p::ping;
 use libp2p::swarm::{ConnectionId, ToSwarm};
-use metrics::gauge;
+use metrics::{counter, gauge};
 use tracing::{debug, info, trace, warn};
 use vertex_net_local::{AddressScope, classify_multiaddr};
 use vertex_net_peer_registry::ActivateResult;
@@ -382,29 +382,25 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             return;
         }
 
-        // Filter peers we can't reach based on our IP capability.
-        let local_capability = self.nat_discovery.capability();
-        let peers: Vec<vertex_swarm_peer::SwarmPeer> = if local_capability.is_known() {
-            peers
-                .into_iter()
-                .filter(|peer| {
-                    let peer_cap = peer.ip_capability();
-                    let reachable = local_capability.can_reach(&peer_cap);
-                    if !reachable {
-                        trace!(
-                            overlay = %peer.overlay(),
-                            ?local_capability,
-                            ?peer_cap,
-                            "filtering unreachable gossiped peer"
-                        );
-                    }
-                    reachable
-                })
-                .collect()
-        } else {
-            // Capability unknown (no listen addrs yet) -- let all through
-            peers
-        };
+        // Filter records this node cannot dial, so they never enter the
+        // known table as dial candidates.
+        let dial_capability = self.nat_discovery.dial_capability();
+        let peers: Vec<vertex_swarm_peer::SwarmPeer> = peers
+            .into_iter()
+            .filter(|peer| {
+                let dialable = record_dialable(peer, dial_capability);
+                if !dialable {
+                    trace!(
+                        overlay = %peer.overlay(),
+                        ?dial_capability,
+                        "filtering undialable gossiped peer"
+                    );
+                    counter!("topology_gossip_rejected_total", "reason" => "not_dialable")
+                        .increment(1);
+                }
+                dialable
+            })
+            .collect();
 
         if peers.is_empty() {
             return;
@@ -469,6 +465,30 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     }
 }
 
+/// Whether a gossiped record carries at least one multiaddr this node can
+/// dial.
+///
+/// The transport half of the capability is static (the assembled stack
+/// never changes), so it always applies: a secure-websocket-only client
+/// drops records carrying nothing but raw TCP multiaddrs instead of
+/// queuing dials that can only fail inside the transport. The IP half
+/// applies once the capability is known; while it is unknown (no listen
+/// addresses registered yet) only the transport check runs, so a briefly
+/// capability-less node does not permanently reject otherwise good
+/// records.
+fn record_dialable(
+    peer: &vertex_swarm_peer::SwarmPeer,
+    capability: vertex_net_local::DialCapability,
+) -> bool {
+    if capability.ip.is_known() {
+        capability.can_dial_any(peer.multiaddrs())
+    } else {
+        peer.multiaddrs()
+            .iter()
+            .any(|addr| capability.transport.can_dial(addr))
+    }
+}
+
 /// Classify a handshake error: only protocol violations the peer is solely
 /// responsible for should feed the reachability tracker. Timeouts, IO
 /// errors, and bare connection-close events can be caused by our own side
@@ -489,4 +509,78 @@ fn is_peer_fault(error: &vertex_swarm_net_handshake::HandshakeError) -> bool {
             | E::InvalidObservedAddress
             | E::Protobuf(_)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::{Address, B256, Signature, U256};
+    use vertex_net_local::{DialCapability, IpCapability, TransportCapability};
+    use vertex_swarm_peer::SwarmPeer;
+
+    fn record_with_addrs(addrs: &[&str]) -> SwarmPeer {
+        let multiaddrs = addrs
+            .iter()
+            .map(|s| s.parse().expect("valid multiaddr"))
+            .collect();
+        SwarmPeer::from_parts(
+            multiaddrs,
+            Signature::new(U256::from(1u64), U256::from(1u64), false),
+            B256::repeat_byte(0x42).into(),
+            vertex_swarm_primitives::Nonce::ZERO,
+            vertex_swarm_peer::Timestamp::from_seconds(1),
+            None,
+            Address::ZERO,
+        )
+    }
+
+    const TCP: &str = "/ip4/8.8.8.8/tcp/1634";
+    const WSS: &str = "/ip4/5.78.94.214/tcp/1635/tls/sni/example.libp2p.direct/ws";
+
+    #[test]
+    fn wss_only_client_rejects_tcp_only_records() {
+        // The browser shape: dual-stack IP, secure-websocket-only transport.
+        let capability = DialCapability {
+            ip: IpCapability::Dual,
+            transport: TransportCapability::SecureWebsocket,
+        };
+        assert!(!record_dialable(&record_with_addrs(&[TCP]), capability));
+        assert!(record_dialable(&record_with_addrs(&[WSS]), capability));
+        assert!(record_dialable(&record_with_addrs(&[TCP, WSS]), capability));
+    }
+
+    #[test]
+    fn tcp_client_rejects_wss_only_records() {
+        let capability = DialCapability {
+            ip: IpCapability::Dual,
+            transport: TransportCapability::Tcp,
+        };
+        assert!(record_dialable(&record_with_addrs(&[TCP]), capability));
+        assert!(!record_dialable(&record_with_addrs(&[WSS]), capability));
+        assert!(record_dialable(&record_with_addrs(&[TCP, WSS]), capability));
+    }
+
+    #[test]
+    fn unknown_ip_capability_applies_only_the_transport_half() {
+        // A listening native node before its first listener registers: the
+        // IP half must not reject records, but the transport half still
+        // filters websocket-only ones.
+        let capability = DialCapability {
+            ip: IpCapability::None,
+            transport: TransportCapability::Tcp,
+        };
+        assert!(record_dialable(&record_with_addrs(&[TCP]), capability));
+        assert!(!record_dialable(&record_with_addrs(&[WSS]), capability));
+    }
+
+    #[test]
+    fn known_ip_capability_filters_by_family() {
+        let capability = DialCapability {
+            ip: IpCapability::V4Only,
+            transport: TransportCapability::Tcp,
+        };
+        let v6_only = record_with_addrs(&["/ip6/2001:db8::1/tcp/1634"]);
+        assert!(!record_dialable(&v6_only, capability));
+        assert!(record_dialable(&record_with_addrs(&[TCP]), capability));
+    }
 }
