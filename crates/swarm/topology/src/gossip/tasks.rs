@@ -10,12 +10,12 @@ use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use libp2p::PeerId;
 use tokio::sync::mpsc;
-use tokio::time::Interval;
 use tracing::{debug, trace};
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeType};
 use vertex_swarm_peer::SwarmPeer;
 use vertex_swarm_peer_manager::PeerManager;
 use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress};
+use vertex_tasks::time::sleep;
 use vertex_util_runtime::time::Instant;
 
 use super::events::{GossipAction, GossipCheckOk};
@@ -42,6 +42,16 @@ struct PendingExchange {
     node_type: SwarmNodeType,
 }
 
+/// Boxed delayed-exchange future. `Send` on native so the gossip task spawns
+/// through the Send-bounded spawner; the bound is dropped on wasm32, where the
+/// browser timer future is `!Send` and the task runs on the browser event loop.
+#[cfg(not(target_arch = "wasm32"))]
+type PendingExchangeFuture = Pin<Box<dyn Future<Output = PendingExchange> + Send>>;
+
+/// Boxed delayed-exchange future for the browser build (see the native one).
+#[cfg(target_arch = "wasm32")]
+type PendingExchangeFuture = Pin<Box<dyn Future<Output = PendingExchange>>>;
+
 /// Gossip exchange coordinator task.
 struct GossipTask<I: SwarmIdentity> {
     // Channels
@@ -64,10 +74,13 @@ struct GossipTask<I: SwarmIdentity> {
     gossip_dial_peers: HashSet<PeerId>,
     health_check_delay: Duration,
     refresh_interval: Duration,
-    gossip_interval: Interval,
+    /// Re-armable periodic tick. tokio's timer driver does not run on wasm32, so
+    /// the cadence is a `sleep` future that is recreated after each fire rather
+    /// than a `tokio::time::Interval`.
+    gossip_tick: crate::behaviour::TimerFuture,
 
     // Delayed gossip exchange
-    pending_exchanges: FuturesUnordered<Pin<Box<dyn Future<Output = PendingExchange> + Send>>>,
+    pending_exchanges: FuturesUnordered<PendingExchangeFuture>,
     cancelled_exchanges: HashSet<PeerId>,
 
     // Triggers routing evaluation after admitting new dialable supply
@@ -81,7 +94,8 @@ impl<I: SwarmIdentity> GossipTask<I> {
                 Some(input) = self.input_rx.recv() => {
                     self.handle_input(input);
                 }
-                _ = self.gossip_interval.tick() => {
+                _ = &mut self.gossip_tick => {
+                    self.gossip_tick = Box::pin(sleep(self.refresh_interval));
                     self.on_tick();
                 }
                 Some(exchange) = self.pending_exchanges.next() => {
@@ -197,7 +211,7 @@ impl<I: SwarmIdentity> GossipTask<I> {
     ) {
         let delay = self.health_check_delay;
         self.pending_exchanges.push(Box::pin(async move {
-            tokio::time::sleep(delay).await;
+            sleep(delay).await;
             PendingExchange {
                 peer_id,
                 swarm_peer,
@@ -517,12 +531,16 @@ pub(crate) fn spawn_gossip_task<I: SwarmIdentity>(
         gossip_dial_peers: HashSet::new(),
         health_check_delay: config.health_check_delay,
         refresh_interval: config.refresh_interval,
-        gossip_interval: tokio::time::interval(config.refresh_interval),
+        gossip_tick: Box::pin(sleep(config.refresh_interval)),
         pending_exchanges: FuturesUnordered::new(),
         cancelled_exchanges: HashSet::new(),
         evaluator_handle,
     };
 
+    // The gossip task owns browser timer futures (`gossip_tick`,
+    // `pending_exchanges`) that are `!Send` on wasm32, so it runs on the browser
+    // event loop there; on native it is a Send-bounded critical task.
+    #[cfg(not(target_arch = "wasm32"))]
     executor.spawn_critical_with_graceful_shutdown_signal(
         "topology.gossip",
         |shutdown| async move {
@@ -534,6 +552,16 @@ pub(crate) fn spawn_gossip_task<I: SwarmIdentity>(
             }
         },
     );
+
+    #[cfg(target_arch = "wasm32")]
+    executor.spawn_local_with_graceful_shutdown_signal("topology.gossip", |shutdown| async move {
+        tokio::select! {
+            _ = task.run() => {}
+            guard = shutdown => {
+                drop(guard);
+            }
+        }
+    });
 }
 
 #[cfg(test)]

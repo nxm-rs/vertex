@@ -21,8 +21,10 @@
 use std::{
     collections::{HashMap, VecDeque},
     task::{Context, Poll},
-    time::{Duration, Instant},
+    time::Duration,
 };
+
+use vertex_util_runtime::time::Instant;
 
 use alloy_primitives::{Signature, U256};
 use futures_bounded::Timeout;

@@ -48,6 +48,7 @@ vertex-swarm-spec.workspace = true
 ## vertex - infrastructure
 vertex-swarm-bandwidth.workspace = true
 vertex-tasks.workspace = true
+vertex-util-runtime.workspace = true
 
 ## crypto
 alloy-primitives.workspace = true
@@ -94,6 +95,11 @@ libp2p = { git = "https://github.com/libp2p/rust-libp2p", rev = "3e72d4c071d5ec8
     "ping",
 ] }
 libp2p-websocket-websys.workspace = true
+# Turn on futures-timer's browser backend so libp2p's connection-handler delays
+# use the browser clock instead of the std clock, which panics on wasm32. This
+# crate does not call futures-timer directly; the dependency exists to enable the
+# `wasm-bindgen` feature across the wasm build via feature unification.
+futures-timer = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }

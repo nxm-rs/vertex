@@ -108,12 +108,9 @@ members = [
 # Wasm-only crates that must never enter the native default workspace build.
 # `bin/swarm-demo` is a browser `cdylib` that depends on the wasm-only client
 # launch path and never compiles for native, so it is excluded here and built
-# with the Trunk pipeline documented in its README. The legacy `bin/wasm-*` bins
-# are stale and excluded for the same reason pending their phase-4 removal.
+# with the Trunk pipeline documented in its README.
 exclude = [
     "bin/swarm-demo",
-    "bin/swarm-wasm-lib",
-    "bin/wasm-playground",
 ]
 
 # Explicitly set the resolver to version 2, which is the default for packages with edition >= 2021
@@ -133,10 +130,10 @@ indexing_slicing = "warn"
 ## nectar
 # Pin all nectar deps to the same rev so the workspace cannot resolve two
 # distinct copies of shared nectar types via independent updates.
-nectar-contracts = { git = "https://github.com/nxm-rs/nectar", rev = "3c99edc4331781dc4f595485f4eea2e36bac38db" }
-nectar-postage = { git = "https://github.com/nxm-rs/nectar", rev = "3c99edc4331781dc4f595485f4eea2e36bac38db" }
-nectar-primitives = { git = "https://github.com/nxm-rs/nectar", rev = "3c99edc4331781dc4f595485f4eea2e36bac38db" }
-nectar-swarms = { git = "https://github.com/nxm-rs/nectar", rev = "3c99edc4331781dc4f595485f4eea2e36bac38db" }
+nectar-contracts = { git = "https://github.com/nxm-rs/nectar", rev = "6a0e0e3d420acb736a8e0c7a9079b7e176552f5e" }
+nectar-postage = { git = "https://github.com/nxm-rs/nectar", rev = "6a0e0e3d420acb736a8e0c7a9079b7e176552f5e" }
+nectar-primitives = { git = "https://github.com/nxm-rs/nectar", rev = "6a0e0e3d420acb736a8e0c7a9079b7e176552f5e" }
+nectar-swarms = { git = "https://github.com/nxm-rs/nectar", rev = "6a0e0e3d420acb736a8e0c7a9079b7e176552f5e" }
 
 digest = "0.10"
 
@@ -330,6 +327,12 @@ web-sys = "0.3"
 gloo-timers = { version = "0.3", features = ["futures"] }
 console_error_panic_hook = "0.1"
 tracing-wasm = "0.2"
+# libp2p pulls futures-timer transitively for its connection-handler delays. On
+# wasm32 those delays must use the browser clock; the `wasm-bindgen` feature
+# routes them through gloo-timers instead of the std clock (which panics on
+# wasm32-unknown-unknown). Declared here so the node crate can turn the feature
+# on for the wasm build via feature unification.
+futures-timer = { version = "3", features = ["wasm-bindgen"] }
 
 ## atomics
 portable-atomic = { version = "1", features = ["float", "serde"] }

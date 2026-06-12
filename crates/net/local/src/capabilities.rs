@@ -107,8 +107,24 @@ impl LocalCapabilities {
         }
     }
 
+    /// The locally observed IP dial capability.
+    ///
+    /// On native targets this is derived from the node's own listen addresses
+    /// (a node with no IPv6 listener does not dial IPv6 peers, and so on). A
+    /// browser client has no listeners, so the listen-address heuristic would
+    /// leave it at [`IpCapability::None`] and reject every dial. The browser can
+    /// in fact open outbound connections to either address family through its
+    /// own network stack, so on wasm32 the capability is fixed at
+    /// [`IpCapability::Dual`].
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn capability(&self) -> IpCapability {
         *self.capability.read()
+    }
+
+    /// Browser dial capability: see the native definition for the rationale.
+    #[cfg(target_arch = "wasm32")]
+    pub fn capability(&self) -> IpCapability {
+        IpCapability::Dual
     }
 
     /// Get a clone of listen addresses.

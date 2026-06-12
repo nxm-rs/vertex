@@ -102,10 +102,77 @@ pub fn is_browser_dialable_wss(addr: &Multiaddr) -> bool {
     secure_ws && has_p2p
 }
 
+/// Rewrite a network wss leaf into the form the browser websocket transport
+/// dials.
+///
+/// The live network advertises its AutoTLS wss leaves over a raw IP with the
+/// TLS server name carried as a separate `/sni/<host>` component:
+/// `/ip4/<ip>/tcp/<port>/tls/sni/<host>/ws/p2p/<peer>`. The browser websocket
+/// transport (`libp2p-websocket-websys`) cannot dial that shape: it builds the
+/// `wss://` URL from a leading `/ip4|/ip6|/dns*` host followed immediately by
+/// `/tcp` then `/tls/ws`, and rejects the intervening `/sni` component.
+///
+/// The browser opens the socket by hostname and the TLS SNI follows from that
+/// hostname, so the dialable equivalent is `/dns4/<host>/tcp/<port>/tls/ws`
+/// (carrying the `/p2p/<peer>` through unchanged). This rewrites a leaf into
+/// that form by promoting the `/sni/<host>` value to a leading `/dns4` host and
+/// dropping the raw `/ip4|/ip6` and `/sni` components. Leaves that already use a
+/// `/dns*` host or a `/wss` leaf, or that carry no `/sni`, are returned
+/// unchanged.
+#[must_use]
+pub fn to_browser_dialable_wss(addr: &Multiaddr) -> Multiaddr {
+    use libp2p::multiaddr::Protocol;
+
+    // Pull out the SNI host; nothing to rewrite without it.
+    let Some(sni_host) = addr.iter().find_map(|p| match p {
+        Protocol::Sni(host) => Some(host.to_string()),
+        _ => None,
+    }) else {
+        return addr.clone();
+    };
+
+    let mut rewritten = Multiaddr::empty();
+    // Lead with the SNI host as a DNS name; the browser connects to it by name.
+    rewritten.push(Protocol::Dns4(sni_host.clone().into()));
+
+    for protocol in addr.iter() {
+        match protocol {
+            // The raw IP host and the SNI component are folded into the leading
+            // `/dns4` host above.
+            Protocol::Ip4(_) | Protocol::Ip6(_) | Protocol::Sni(_) => {}
+            other => rewritten.push(other),
+        }
+    }
+
+    rewritten
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::indexing_slicing)]
     use super::*;
+
+    #[test]
+    fn rewrites_autotls_sni_leaf_to_dns4() {
+        let leaf: Multiaddr =
+            "/ip4/5.78.94.214/tcp/1635/tls/sni/example.libp2p.direct/ws/p2p/QmfEugihe2Pm78YomGupdxSt46Uxgg4DLpjkzgzzeouiKg"
+                .parse()
+                .expect("valid leaf");
+        let dialable = to_browser_dialable_wss(&leaf);
+        assert_eq!(
+            dialable.to_string(),
+            "/dns4/example.libp2p.direct/tcp/1635/tls/ws/p2p/QmfEugihe2Pm78YomGupdxSt46Uxgg4DLpjkzgzzeouiKg"
+        );
+    }
+
+    #[test]
+    fn leaves_without_sni_pass_through_unchanged() {
+        let leaf: Multiaddr =
+            "/dns4/host.example/tcp/443/tls/ws/p2p/QmfEugihe2Pm78YomGupdxSt46Uxgg4DLpjkzgzzeouiKg"
+                .parse()
+                .expect("valid leaf");
+        assert_eq!(to_browser_dialable_wss(&leaf), leaf);
+    }
 
     /// A captured Cloudflare DNS-JSON response for the dnsaddr root, with the
     /// double-quoted `data` field the provider returns.

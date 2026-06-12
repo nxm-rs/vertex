@@ -35,6 +35,10 @@ vertex-swarm-spec = { path = "../../crates/swarm/spec" }
 vertex-swarm-topology = { path = "../../crates/swarm/topology" }
 vertex-swarm-primitives = { path = "../../crates/swarm/primitives" }
 vertex-net-dnsaddr-doh = { path = "../../crates/net/dnsaddr-doh" }
+# The task manager establishes the global executor that the node spawn paths
+# (topology tasks, peer-manager tick, client service) resolve through
+# `TaskExecutor::current`. The demo owns it for the page session.
+vertex-tasks = { path = "../../crates/tasks" }
 
 # libp2p Multiaddr only; the trimmed wasm feature set mirrors the node crate.
 libp2p = { git = "https://github.com/libp2p/rust-libp2p", rev = "3e72d4c071d5ec8815d2f6f7ee3602600ff51798", default-features = false }

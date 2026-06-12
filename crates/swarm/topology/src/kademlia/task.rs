@@ -6,6 +6,7 @@ use std::time::Duration;
 use tokio::sync::{Notify, broadcast};
 use tracing::debug;
 use vertex_swarm_api::SwarmIdentity;
+use vertex_tasks::time::sleep;
 use vertex_tasks::{GracefulShutdown, TaskExecutor};
 
 use super::routing::KademliaRouting;
@@ -57,9 +58,9 @@ impl<I: SwarmIdentity + 'static> RoutingEvaluatorTask<I> {
                     return;
                 }
                 _ = self.notify.notified() => {
-                    tokio::time::sleep(debounce).await;
+                    sleep(debounce).await;
                 }
-                _ = tokio::time::sleep(self.periodic) => {}
+                _ = sleep(self.periodic) => {}
             }
             self.routing.evaluate_connections();
 
@@ -98,7 +99,16 @@ pub(crate) fn spawn_evaluator<I: SwarmIdentity + 'static>(
         periodic,
     };
 
+    // `task.run` awaits browser timer futures that are `!Send` on wasm32, so the
+    // evaluator runs on the browser event loop there; on native it is a
+    // Send-bounded critical task.
+    #[cfg(not(target_arch = "wasm32"))]
     executor.spawn_critical_with_graceful_shutdown_signal("topology.evaluator", move |shutdown| {
+        task.run(shutdown)
+    });
+
+    #[cfg(target_arch = "wasm32")]
+    executor.spawn_local_with_graceful_shutdown_signal("topology.evaluator", move |shutdown| {
         task.run(shutdown)
     });
 }

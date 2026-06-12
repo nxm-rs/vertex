@@ -29,6 +29,7 @@ use tokio::runtime::Handle;
 pub mod metrics;
 pub mod shutdown;
 mod task_handle;
+pub mod time;
 
 pub use task_handle::TaskHandle;
 
@@ -771,6 +772,12 @@ impl TaskExecutor {
     /// });
     /// # }
     /// ```
+    ///
+    /// The timer is `crate::time::sleep`, which works on both native and wasm32.
+    /// On native the task spawns through the Send-bounded spawner; the wasm
+    /// sibling drops the `Send` bound and spawns on the browser event loop,
+    /// because the browser timer future is `!Send`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn spawn_periodic(
         &self,
         name: &'static str,
@@ -785,7 +792,35 @@ impl TaskExecutor {
                         drop(guard);
                         break;
                     }
-                    _ = tokio::time::sleep(interval) => {
+                    _ = crate::time::sleep(interval) => {
+                        f();
+                    }
+                }
+            }
+        });
+    }
+
+    /// Browser variant of [`Self::spawn_periodic`].
+    ///
+    /// The wasm timer future (`gloo-timers`) is `!Send`, so the periodic task
+    /// runs on the browser event loop through the local spawner rather than the
+    /// Send-bounded one. The callback is correspondingly not `Send`-bounded.
+    #[cfg(target_arch = "wasm32")]
+    pub fn spawn_periodic(
+        &self,
+        name: &'static str,
+        interval: Duration,
+        mut f: impl FnMut() + 'static,
+    ) {
+        self.spawn_local_with_graceful_shutdown_signal(name, move |shutdown| async move {
+            let mut shutdown = std::pin::pin!(shutdown);
+            loop {
+                tokio::select! {
+                    guard = &mut shutdown => {
+                        drop(guard);
+                        break;
+                    }
+                    _ = crate::time::sleep(interval) => {
                         f();
                     }
                 }

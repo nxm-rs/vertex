@@ -14,7 +14,9 @@ use libp2p::multiaddr::Protocol;
 use tracing::{debug, warn};
 
 use crate::error::DohError;
-use crate::parse::{extract_dnsaddr_values, is_browser_dialable_wss, parse_dns_json};
+use crate::parse::{
+    extract_dnsaddr_values, is_browser_dialable_wss, parse_dns_json, to_browser_dialable_wss,
+};
 
 /// Default maximum dnsaddr recursion depth.
 ///
@@ -127,8 +129,14 @@ fn resolve_into<'a, F: TxtFetcher>(
                     seen_leaves,
                 )
                 .await;
-            } else if is_browser_dialable_wss(&addr) && seen_leaves.insert(addr.to_string()) {
-                leaves.push(addr);
+            } else if is_browser_dialable_wss(&addr) {
+                // Rewrite the network's `/ip4/.../tls/sni/<host>/ws` AutoTLS form
+                // into the `/dns4/<host>/tcp/<port>/tls/ws` shape the browser
+                // websocket transport can dial, deduplicating on the dialable form.
+                let dialable = to_browser_dialable_wss(&addr);
+                if seen_leaves.insert(dialable.to_string()) {
+                    leaves.push(dialable);
+                }
             }
         }
     })
@@ -211,7 +219,12 @@ mod tests {
         ));
 
         assert_eq!(leaves.len(), 1);
-        assert_eq!(leaves[0].to_string(), wss);
+        // The resolver rewrites the network's `/ip4/.../tls/sni/<host>/ws` form
+        // into the `/dns4/<host>/tcp/<port>/tls/ws` shape the browser dials.
+        assert_eq!(
+            leaves[0].to_string(),
+            "/dns4/example.libp2p.direct/tcp/1635/tls/ws/p2p/QmfEugihe2Pm78YomGupdxSt46Uxgg4DLpjkzgzzeouiKg"
+        );
     }
 
     #[test]
