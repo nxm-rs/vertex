@@ -270,9 +270,14 @@ opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "http-proto",
 opentelemetry-appender-tracing = { version = "0.31", features = ["experimental_use_tracing_span_context"] }
 
 ## p2p
-# Pinned to rust-libp2p master to pick up libp2p-dns 0.45.0 against hickory 0.26.1
-# (RUSTSEC-2026-0119 / RUSTSEC-2026-0118). Revisit when libp2p 0.57 is released.
-libp2p = { git = "https://github.com/libp2p/rust-libp2p", rev = "3e72d4c071d5ec8815d2f6f7ee3602600ff51798", features = [
+# Pinned to the nxm-rs rust-libp2p fork, branched from upstream rev
+# 3e72d4c071d5ec8815d2f6f7ee3602600ff51798 (master, for libp2p-dns 0.45.0 against
+# hickory 0.26.1, RUSTSEC-2026-0119 / RUSTSEC-2026-0118). The fork carries a single
+# fix on top: `libp2p-websocket-websys` no longer blocks `poll_flush` on the browser
+# WebSocket `bufferedAmount` draining to zero, which stalled the wasm client mid
+# handshake and tore the connection down with `BrokenPipe`. Revisit when the fix is
+# upstreamed and libp2p 0.57 is released.
+libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "6454fdf3450f91fdbb6e3306daa7a9a4e633c133", features = [
     "tokio",
     "noise",
     "tcp",
@@ -289,11 +294,13 @@ libp2p = { git = "https://github.com/libp2p/rust-libp2p", rev = "3e72d4c071d5ec8
 quick-protobuf = "0.8"
 quick-protobuf-codec = "0.3.1"
 asynchronous-codec = "0.7.0"
-libp2p-swarm = { git = "https://github.com/libp2p/rust-libp2p", rev = "3e72d4c071d5ec8815d2f6f7ee3602600ff51798" }
-libp2p-swarm-test = { git = "https://github.com/libp2p/rust-libp2p", rev = "3e72d4c071d5ec8815d2f6f7ee3602600ff51798" }
+libp2p-swarm = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "6454fdf3450f91fdbb6e3306daa7a9a4e633c133" }
+libp2p-swarm-test = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "6454fdf3450f91fdbb6e3306daa7a9a4e633c133" }
 # Browser websocket transport for the wasm client. Dials the bee AutoTLS
-# `/tls/sni/<host>/ws` form; the browser performs TLS and SNI natively.
-libp2p-websocket-websys = { git = "https://github.com/libp2p/rust-libp2p", rev = "3e72d4c071d5ec8815d2f6f7ee3602600ff51798" }
+# `/tls/sni/<host>/ws` form; the browser performs TLS and SNI natively. Pinned to
+# the nxm-rs fork for the `poll_flush` browser WebSocket flush fix (see the `libp2p`
+# entry above).
+libp2p-websocket-websys = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "6454fdf3450f91fdbb6e3306daa7a9a4e633c133" }
 quickcheck = "1.0.3"
 pb-rs = "0.10"
 walkdir = "2.5.0"
