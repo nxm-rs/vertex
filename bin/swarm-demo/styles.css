@@ -1,0 +1,147 @@
+:root {
+  color-scheme: dark;
+  --bg: #0f1115;
+  --panel: #171a21;
+  --line: #262b36;
+  --text: #d7dce4;
+  --muted: #8b93a1;
+  --accent: #4ea1ff;
+  --good: #51cf66;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.panel {
+  max-width: 860px;
+  margin: 2rem auto;
+  padding: 0 1.25rem;
+}
+
+h1 {
+  font-size: 1.3rem;
+  margin: 0 0 0.25rem;
+}
+
+h2 {
+  font-size: 1rem;
+  margin: 1.5rem 0 0.5rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.overlay {
+  margin: 0 0 0.5rem;
+  color: var(--muted);
+}
+
+.overlay code {
+  color: var(--accent);
+  word-break: break-all;
+}
+
+.status {
+  margin: 0.25rem 0 1rem;
+  padding: 0.4rem 0.7rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--accent);
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.5rem;
+}
+
+.stat {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.5rem 0.7rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.stat .k {
+  color: var(--muted);
+}
+
+.stat .v {
+  font-weight: 600;
+}
+
+table.bins {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+table.bins th,
+table.bins td {
+  padding: 0.3rem 0.6rem;
+  text-align: right;
+  border-bottom: 1px solid var(--line);
+}
+
+table.bins th:first-child,
+table.bins td:first-child {
+  text-align: left;
+}
+
+table.bins th {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+table.bins tr.filled td {
+  color: var(--good);
+}
+
+.log {
+  height: 260px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+}
+
+.event {
+  display: flex;
+  gap: 0.6rem;
+  padding: 0.1rem 0;
+  border-bottom: 1px solid transparent;
+}
+
+.event .kind {
+  flex: 0 0 9rem;
+  color: var(--muted);
+}
+
+.event.peer_ready .kind {
+  color: var(--good);
+}
+
+.event.dial_failed .kind,
+.event.peer_rejected .kind {
+  color: #ff8787;
+}
+
+.event .detail {
+  color: var(--text);
+  word-break: break-all;
+}

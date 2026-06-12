@@ -1,0 +1,7 @@
+# Trunk build output.
+/dist
+# Cargo build output (this standalone wasm crate may build into its own target).
+/target
+# Resolved lockfile: the demo pins its deps through the workspace crates it
+# depends on, so the standalone lock is a build artifact, not a committed input.
+/Cargo.lock

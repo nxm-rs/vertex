@@ -18,8 +18,10 @@ use tracing::{debug, info, trace, warn};
 use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig};
 use vertex_swarm_net_identify as identify;
 #[cfg(not(target_arch = "wasm32"))]
+use vertex_swarm_topology::TopologyBehaviour;
+#[cfg(not(target_arch = "wasm32"))]
 use vertex_swarm_topology::TopologyCommand;
-use vertex_swarm_topology::{TopologyBehaviour, TopologyHandle};
+use vertex_swarm_topology::TopologyHandle;
 
 /// Optional NAT-traversal behaviours shared by every native node type.
 ///

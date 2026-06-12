@@ -1,0 +1,67 @@
+# Browser wasm demo: an ephemeral Swarm client node that dials live mainnet over
+# secure websockets and renders its Kademlia topology building up.
+#
+# This crate is wasm-only (`cdylib`) and is intentionally NOT a member of the
+# workspace `[workspace] members`: it depends on the wasm-only client launch
+# path and never builds for native, so adding it to the default workspace would
+# break `cargo build` on native CI. Build it with the documented `trunk build`
+# pipeline (see README.md) against the wasm32-unknown-unknown target.
+[package]
+name = "swarm-demo"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+# Standalone wasm-only crate: an empty workspace table keeps it out of the parent
+# native workspace so `cargo build` at the repo root never tries to compile it
+# for native. Build it with the Trunk pipeline in README.md.
+[workspace]
+
+[lints.rust]
+# The demo is exercised only on wasm32; flag any code that would not run there.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_arch, values("wasm32"))'] }
+
+[dependencies]
+# The wasm client launch path and topology monitoring surface.
+vertex-swarm-node = { path = "../../crates/swarm/node" }
+vertex-swarm-api = { path = "../../crates/swarm/api" }
+vertex-swarm-identity = { path = "../../crates/swarm/identity" }
+vertex-swarm-spec = { path = "../../crates/swarm/spec" }
+vertex-swarm-topology = { path = "../../crates/swarm/topology" }
+vertex-swarm-primitives = { path = "../../crates/swarm/primitives" }
+vertex-net-dnsaddr-doh = { path = "../../crates/net/dnsaddr-doh" }
+
+# libp2p Multiaddr only; the trimmed wasm feature set mirrors the node crate.
+libp2p = { git = "https://github.com/libp2p/rust-libp2p", rev = "3e72d4c071d5ec8815d2f6f7ee3602600ff51798", default-features = false }
+
+# wasm-bindgen surface and browser bindings.
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Window",
+    "Element",
+    "HtmlElement",
+    "Node",
+    "Text",
+] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+console_error_panic_hook = "0.1"
+tracing = "0.1"
+tracing-wasm = "0.2"
+
+# The topology event stream is a tokio broadcast channel; only the sync feature
+# is needed in the browser (no runtime, no net).
+tokio = { version = "1", default-features = false, features = ["sync"] }
+
+# libp2p (and the alloy nonce path) pull getrandom 0.3 transitively; on wasm32
+# its browser backend needs the `wasm_js` feature. The matching
+# `getrandom_backend="wasm_js"` cfg is set in .cargo/config.toml. This is a
+# transitive build requirement, not a direct API use.
+getrandom_03 = { package = "getrandom", version = "0.3", default-features = false, features = ["wasm_js"] }
