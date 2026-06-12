@@ -4,13 +4,13 @@ A browser WebAssembly app that runs a real Vertex Swarm client node. It mints an
 
 Deployed at https://nxm-rs.github.io/vertex/ via `.github/workflows/pages.yml`.
 
-This crate is wasm-only (`crate-type = ["cdylib"]`) and is intentionally **not** a member of the workspace `[workspace] members`. It depends on the wasm-only client launch path (`vertex_swarm_node::launch_client`) and never builds for native, so adding it to the default workspace would break native `cargo build`. Build it with the wasm toolchain and Trunk as below.
+This crate is wasm-only (`crate-type = ["cdylib"]`) and is intentionally **not** a member of the workspace `[workspace] members`. It targets the browser shape of the client launch path and never builds for native, so adding it to the default workspace would break native `cargo build`. Build it with the wasm toolchain and Trunk as below.
 
 ## How it is wired
 
-The native node builder (`vertex-swarm-builder`) pulls the redb database, the chain provider, the SWAP settlement service, and the gRPC server, none of which build for `wasm32`. So the demo does not use it. Instead it calls a narrow, wasm-buildable launch entrypoint added to `vertex-swarm-node`:
+The native node builder (`vertex-swarm-builder`) pulls the redb database, the chain provider, the SWAP settlement service, and the gRPC server, none of which build for `wasm32`. So the demo does not use it. Instead it goes through the fluent launcher in `vertex-swarm-node`, shared by native embedders and the browser:
 
-- `vertex_swarm_node::launch_client(identity, bootnodes)` composes a `ClientNode` (connection-limits + identify + topology + client protocols) over the browser WebSocket transport, spawns the node run loop and the peer-manager tick on the wasm executor, and returns the `TopologyHandle`.
+- `vertex_swarm_node::ClientLauncher::new(identity).with_bootnodes(bootnodes).launch()` composes a `ClientNode` (connection-limits + identify + topology + client protocols) over the browser WebSocket transport, spawns the node run loop and the peer-manager tick on the wasm executor, and returns a `LaunchedClient` whose `topology()` accessor hands the demo its `TopologyHandle`.
 - The node run loop owns a `!Send` libp2p swarm (the websocket transport futures are `!Send`), so it is spawned through `TaskExecutor::spawn_local_with_graceful_shutdown_signal`, a wasm-only sibling of the Send-bounded spawner that routes through `wasm_bindgen_futures::spawn_local`.
 
 The wasm-bindgen surface in `src/lib.rs` is small: a `#[wasm_bindgen(start)]` `main` that calls the exported async `start`, plus a `SwarmDemo` handle exposing `readiness()` (a JS snapshot object) and `drainEvents()` (the buffered topology events). The UI in `src/ui.rs` renders into the document via `web-sys`, updated on a one-second poll loop.

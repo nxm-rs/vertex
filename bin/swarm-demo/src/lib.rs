@@ -26,7 +26,7 @@ use tracing::info;
 use vertex_net_dnsaddr_doh::{DohClient, resolve_mainnet_wss_bootnodes};
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_identity::Identity;
-use vertex_swarm_node::{SwarmNodeType, launch_client};
+use vertex_swarm_node::{ClientLauncher, SwarmNodeType};
 use vertex_swarm_spec::{init_mainnet, mainnet_wss_bootnodes};
 use vertex_swarm_topology::{TopologyEvent, TopologyHandle};
 use vertex_tasks::TaskManager;
@@ -189,9 +189,12 @@ pub async fn start() -> Result<SwarmDemo, JsValue> {
         bootnodes.len()
     ));
 
-    let topology = launch_client(identity, bootnodes)
+    let client = ClientLauncher::new(identity)
+        .with_bootnodes(bootnodes)
+        .launch()
         .await
         .map_err(|e| JsValue::from_str(&format!("failed to launch client: {e}")))?;
+    let topology = client.topology().clone();
 
     let events = std::rc::Rc::new(std::cell::RefCell::new(VecDeque::with_capacity(
         EVENT_BUFFER_CAP,
