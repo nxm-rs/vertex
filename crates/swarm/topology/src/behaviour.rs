@@ -2,9 +2,7 @@
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    future::Future,
     net::IpAddr,
-    pin::Pin,
     sync::Arc,
     task::{Context, Poll},
     time::Duration,
@@ -40,30 +38,12 @@ pub(crate) type ConnectionRegistry = PeerRegistry<OverlayAddress, Option<DialRea
 /// Boxed future that resolves `/dnsaddr/` bootnodes and trusted peers into
 /// dialable multiaddrs (resolved bootnodes, resolved trusted).
 ///
-/// Native resolution runs on the multi-threaded executor, so the future is
-/// `Send`. In the browser, DNS-over-HTTPS resolution is backed by `fetch`,
-/// whose future is `!Send`; the wasm swarm is single-threaded, so the `Send`
-/// bound is dropped there.
-#[cfg(not(target_arch = "wasm32"))]
+/// The `Send` bound follows the platform executor via
+/// [`vertex_tasks::MaybeSendBoxFuture`]: `Send` on native, unbounded on wasm32
+/// where DNS-over-HTTPS resolution is backed by `fetch`, whose future is
+/// `!Send`, and the swarm is single-threaded.
 pub(crate) type BootnodeResolutionFuture =
-    Pin<Box<dyn Future<Output = (Vec<Multiaddr>, Vec<Multiaddr>)> + Send>>;
-
-/// Boxed bootnode-resolution future for the browser build (see the native
-/// definition for the `Send` rationale).
-#[cfg(target_arch = "wasm32")]
-pub(crate) type BootnodeResolutionFuture =
-    Pin<Box<dyn Future<Output = (Vec<Multiaddr>, Vec<Multiaddr>)>>>;
-
-/// Boxed timer future used for the behaviour's internal pacing (dial-rate and
-/// periodic ticks). `Send` on native so the behaviour stays `Send` for the
-/// libp2p swarm; the bound is dropped on wasm32, where the browser timer future
-/// (`gloo-timers`) is `!Send` and the swarm is single-threaded.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) type TimerFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
-
-/// Boxed timer future for the browser build (see the native definition).
-#[cfg(target_arch = "wasm32")]
-pub(crate) type TimerFuture = Pin<Box<dyn Future<Output = ()>>>;
+    vertex_tasks::MaybeSendBoxFuture<(Vec<Multiaddr>, Vec<Multiaddr>)>;
 use crate::TopologyCommand;
 use crate::builder::PendingTopologyTasks;
 use crate::composed::ProtocolBehaviours;
@@ -87,61 +67,6 @@ pub(crate) const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 /// Command buffer (64 is sufficient for typical dial/disconnect rate).
 pub(crate) const COMMAND_CHANNEL_CAPACITY: usize = 64;
-
-/// Periodic interval whose underlying timer is created on first poll.
-///
-/// The tick is a re-armable `sleep` future rather than a `tokio::time::Interval`
-/// so the same behaviour runs on wasm32, where tokio's timer driver is absent.
-/// The timer is armed on first [`Self::poll_tick`] (always inside the
-/// behaviour's poll loop), so the behaviour can be constructed without a running
-/// runtime. The first tick fires immediately and subsequent ticks fire one
-/// period apart, matching `tokio::time::interval`.
-pub(crate) struct LazyInterval {
-    period: Duration,
-    timer: Option<TimerFuture>,
-    /// `tokio::time::interval` yields its first tick immediately; this flag
-    /// reproduces that so the first poll readies a tick before any wait.
-    first_tick_pending: bool,
-}
-
-impl LazyInterval {
-    /// Create a lazy interval with the given period.
-    pub(crate) fn new(period: Duration) -> Self {
-        Self {
-            period,
-            timer: None,
-            first_tick_pending: true,
-        }
-    }
-
-    /// Poll for the next tick, arming the timer on first use and re-arming it
-    /// after each fire.
-    pub(crate) fn poll_tick(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        // The first tick is immediate, matching `tokio::time::interval`.
-        if self.first_tick_pending {
-            self.first_tick_pending = false;
-            self.timer = Some(Box::pin(vertex_tasks::time::sleep(self.period)));
-            return Poll::Ready(());
-        }
-        let period = self.period;
-        let timer = self
-            .timer
-            .get_or_insert_with(|| Box::pin(vertex_tasks::time::sleep(period)));
-        match timer.as_mut().poll(cx) {
-            Poll::Ready(()) => {
-                self.timer = Some(Box::pin(vertex_tasks::time::sleep(period)));
-                Poll::Ready(())
-            }
-            Poll::Pending => Poll::Pending,
-        }
-    }
-
-    /// The configured period (build-time pacing assertions).
-    #[cfg(test)]
-    pub(crate) fn period(&self) -> Duration {
-        self.period
-    }
-}
 
 /// Target for dialing a peer (internal).
 ///
@@ -300,7 +225,7 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
     pub(crate) gossip: GossipHandle,
 
     // Periodic dial interval
-    pub(crate) dial_interval: LazyInterval,
+    pub(crate) dial_interval: vertex_tasks::time::Interval,
 
     /// GCRA bucket shaping the discovery dial rate. Bursts after a candidate
     /// influx drain immediately up to the bucket size; beyond it, candidates
@@ -309,9 +234,8 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
 
     /// Armed when the dial-rate bucket refused a candidate: fires when the
     /// next token is available so the drain resumes without waiting for the
-    /// evaluation tick. A boxed `sleep` future rather than a
-    /// `tokio::time::Sleep` so the timer runs on wasm32 too.
-    pub(crate) dial_rate_timer: Option<TimerFuture>,
+    /// evaluation tick.
+    pub(crate) dial_rate_timer: Option<vertex_tasks::time::BoxTimerFuture>,
 
     // Pending dnsaddr resolution for bootnodes (resolved_bootnodes, resolved_trusted)
     pub(crate) pending_bootnode_resolution: Option<BootnodeResolutionFuture>,
@@ -517,7 +441,8 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 Err(RateLimitedErr::TooSoon(wait)) => {
                     metrics::counter!("topology_dials_throttled_total").increment(1);
                     self.routing.requeue_candidate(overlay);
-                    let mut timer: TimerFuture = Box::pin(vertex_tasks::time::sleep(wait));
+                    let mut timer: vertex_tasks::time::BoxTimerFuture =
+                        Box::pin(vertex_tasks::time::sleep(wait));
                     if timer.as_mut().poll(cx).is_ready() {
                         // Sub-millisecond wait already elapsed; keep draining.
                         continue;

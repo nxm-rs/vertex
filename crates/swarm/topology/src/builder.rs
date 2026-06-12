@@ -21,7 +21,7 @@ use vertex_swarm_peer_manager::{PeerManager, PeerManagerConfig};
 use vertex_swarm_peer_score::SwarmScoringConfig;
 
 use crate::behaviour::{
-    COMMAND_CHANNEL_CAPACITY, ConnectionRegistry, EVENT_CHANNEL_CAPACITY, LazyInterval, PeerStore,
+    COMMAND_CHANNEL_CAPACITY, ConnectionRegistry, EVENT_CHANNEL_CAPACITY, PeerStore,
     TopologyBehaviour, TopologyConfig,
 };
 use crate::composed::ProtocolBehaviours;
@@ -226,7 +226,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
             event_tx,
             pending_actions: VecDeque::new(),
             gossip,
-            dial_interval: LazyInterval::new(evaluation_interval),
+            dial_interval: vertex_tasks::time::interval(evaluation_interval),
             dial_rate: RateLimiter::new(dial_quota),
             dial_rate_timer: None,
             pending_bootnode_resolution: None,

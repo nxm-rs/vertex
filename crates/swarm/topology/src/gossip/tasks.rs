@@ -1,8 +1,6 @@
 //! Gossip exchange coordinator task.
 
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -42,15 +40,12 @@ struct PendingExchange {
     node_type: SwarmNodeType,
 }
 
-/// Boxed delayed-exchange future. `Send` on native so the gossip task spawns
-/// through the Send-bounded spawner; the bound is dropped on wasm32, where the
-/// browser timer future is `!Send` and the task runs on the browser event loop.
-#[cfg(not(target_arch = "wasm32"))]
-type PendingExchangeFuture = Pin<Box<dyn Future<Output = PendingExchange> + Send>>;
-
-/// Boxed delayed-exchange future for the browser build (see the native one).
-#[cfg(target_arch = "wasm32")]
-type PendingExchangeFuture = Pin<Box<dyn Future<Output = PendingExchange>>>;
+/// Boxed delayed-exchange future. The `Send` bound follows the platform
+/// executor via [`vertex_tasks::MaybeSendBoxFuture`]: `Send` on native so the
+/// gossip task spawns through the Send-bounded spawner, unbounded on wasm32
+/// where the browser timer future is `!Send` and the task runs on the browser
+/// event loop.
+type PendingExchangeFuture = vertex_tasks::MaybeSendBoxFuture<PendingExchange>;
 
 /// Gossip exchange coordinator task.
 struct GossipTask<I: SwarmIdentity> {
@@ -74,10 +69,8 @@ struct GossipTask<I: SwarmIdentity> {
     gossip_dial_peers: HashSet<PeerId>,
     health_check_delay: Duration,
     refresh_interval: Duration,
-    /// Re-armable periodic tick. tokio's timer driver does not run on wasm32, so
-    /// the cadence is a `sleep` future that is recreated after each fire rather
-    /// than a `tokio::time::Interval`.
-    gossip_tick: crate::behaviour::TimerFuture,
+    /// Periodic refresh tick; first fire one full period after spawn.
+    gossip_tick: vertex_tasks::time::Interval,
 
     // Delayed gossip exchange
     pending_exchanges: FuturesUnordered<PendingExchangeFuture>,
@@ -94,8 +87,7 @@ impl<I: SwarmIdentity> GossipTask<I> {
                 Some(input) = self.input_rx.recv() => {
                     self.handle_input(input);
                 }
-                _ = &mut self.gossip_tick => {
-                    self.gossip_tick = Box::pin(sleep(self.refresh_interval));
+                _ = self.gossip_tick.tick() => {
                     self.on_tick();
                 }
                 Some(exchange) = self.pending_exchanges.next() => {
@@ -531,7 +523,10 @@ pub(crate) fn spawn_gossip_task<I: SwarmIdentity>(
         gossip_dial_peers: HashSet::new(),
         health_check_delay: config.health_check_delay,
         refresh_interval: config.refresh_interval,
-        gossip_tick: Box::pin(sleep(config.refresh_interval)),
+        gossip_tick: vertex_tasks::time::interval_after(
+            config.refresh_interval,
+            config.refresh_interval,
+        ),
         pending_exchanges: FuturesUnordered::new(),
         cancelled_exchanges: HashSet::new(),
         evaluator_handle,
