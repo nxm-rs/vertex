@@ -17,6 +17,7 @@ mod builder;
 #[allow(unreachable_pub)]
 mod client;
 mod error;
+mod launch;
 // NAT traversal and LAN discovery only exist natively. The browser client
 // dials over websockets and never listens, so the wasm sibling exposes the
 // same item names and signatures over a no-op behaviour.
@@ -35,7 +36,9 @@ pub use bootnode::{BootNode, BootNodeBuilder};
 pub use builder::BuiltInfrastructure;
 pub use client::{ClientNode, ClientNodeBuilder};
 pub use error::NodeBuildError;
+pub use launch::{ClientLauncher, LaunchedClient};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storer::{StorerNode, StorerNodeBuilder};
 #[cfg(target_arch = "wasm32")]
-pub use wasm_client::{WasmClientConfig, launch_client};
+#[allow(deprecated)]
+pub use wasm_client::launch_client;

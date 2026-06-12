@@ -128,6 +128,6 @@ Deploy: `.github/workflows/pages.yml` builds the demo with `--public-url /vertex
 3. Audit tokio features in every wasm-cone crate; trim to the minimum.
 4. Add an `IndexedDb` `Database` backend (likely under `crates/storage/indexeddb`) gated on `cfg(target_arch = "wasm32")`.
 5. Done: `libp2p-websocket-websys` is wired into `crates/swarm/node`'s client variant under wasm cfg (`build_swarm`).
-6. Build a richer browser client on top of `vertex_swarm_node::launch_client` that adds the IndexedDB backend and upload/download flows.
+6. Build a richer browser client on top of `vertex_swarm_node::ClientLauncher` (the fluent launcher shared by native embedders and the browser; the deprecated `launch_client` wrapper remains until the demo migrates) that adds the IndexedDB backend and upload/download flows.
 
 Each step is its own PR. Do not bundle.
