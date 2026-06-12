@@ -4,17 +4,22 @@ This document describes the observability helpers available for instrumenting Ve
 
 ## Crate Structure
 
+The observability surface is split across two crates by weight:
+
 | Crate | Purpose |
 |-------|---------|
-| `vertex-observability` | Node-generic observability (guards, labels, macros, tracing, metrics server) |
+| `vertex-metrics` | The light leaf: the `LabelValue` trait, RAII guards, lazy metric macros, label constants, histogram bucket presets (`vertex_metrics::buckets`), and the `StreamGuard`/`ProtocolMetrics` helpers. Builds for `wasm32-unknown-unknown`. |
+| `vertex-observability` | The heavy infrastructure: tracing subscriber, OTLP exporters, the Prometheus recorder, the `axum` metrics HTTP server, and profiling. Re-exports the `vertex-metrics` surface so most consumers depend only on this crate. |
+
+Instrumented library crates (topology, the `/swarm/...` wire crates, `vertex-storage-redb`) depend on `vertex-metrics` directly and never pull `vertex-observability`. The bucket presets and `LabelValue` trait physically live in `vertex-metrics`, not in `vertex-observability`; `vertex-observability` only re-exports them.
 
 ## LabelValue Trait + Strum Integration
 
-The `LabelValue` trait provides type-safe conversion from enums to metric label strings. It integrates with strum for zero-boilerplate support.
+The `LabelValue` trait (defined in `vertex-metrics`, re-exported from `vertex-observability`) provides type-safe conversion from enums to metric label strings. It integrates with strum for zero-boilerplate support.
 
 ### Usage
 
-Derive `IntoStaticStr` from strum on your enum and annotate it with `#[strum(serialize_all = "snake_case")]`. The `LabelValue` trait is automatically implemented via a blanket impl for any type that implements `Into<&'static str>`. Calling `.label_value()` on a variant returns the snake_case string (e.g., `ConnectionDirection::Inbound` yields `"inbound"`). These strings can be passed directly to metric label positions.
+Derive `IntoStaticStr` from strum on your enum and annotate it with `#[strum(serialize_all = "snake_case")]`. The `LabelValue` trait is automatically implemented via a blanket impl for any type whose shared reference implements `Into<&'static str>`. Calling `.label_value()` on a variant returns the snake_case string (e.g., `ConnectionDirection::Inbound` yields `"inbound"`). These strings can be passed directly to metric label positions.
 
 ### Strum Attributes
 
@@ -27,27 +32,19 @@ The `snake_case` serialization is the most common choice for metric labels.
 
 ## Common Labels
 
-### Node-Generic (`vertex_observability::labels`)
+### Shared Label Constants (`vertex_metrics::labels`)
 
-The `vertex_observability::labels` module provides pre-defined label constants organized by category:
+The `vertex_metrics::labels` module (re-exported as `vertex_observability::labels`) provides pre-defined `&'static str` label constants organized by category:
 
 | Module | Constants | Purpose |
 |--------|-----------|---------|
 | `direction` | `INBOUND`, `OUTBOUND` | Traffic direction |
 | `outcome` | `SUCCESS`, `FAILURE` | Operation result |
-| `boolean` | `from_bool(val)` function | Feature flags, enabled/disabled |
+| `reason` | `NONE`, `UNKNOWN` | Generic reason fallbacks |
 | `cache` | `HIT`, `MISS` | Cache lookup results |
+| `boolean` | `TRUE`, `FALSE`, `from_bool(val)` | Feature flags, enabled/disabled |
 
-### Swarm-Specific (`vertex_observability::labels`)
-
-Additional label modules for swarm-layer metrics:
-
-| Module | Constants | Purpose |
-|--------|-----------|---------|
-| `node_type` | `CLIENT`, `STORER` | Node classification |
-| `protocol` | `HIVE`, `PUSHSYNC`, etc. | Protocol names |
-| `disconnect` | `REMOTE`, `LOCAL`, etc. | Disconnect reasons |
-| `transport` | Transport type constants | Network transport |
+That is the complete shared module set. Domain-specific label values (node type, disconnect reason, protocol name, handshake stage, dial error) are not shared constant modules: each comes from a `strum::IntoStaticStr` enum in its owning crate and reaches the label position through `LabelValue::label_value`. This keeps each label's cardinality visible at the enum definition rather than in a central table.
 
 ## Drop-Based Guards
 
@@ -64,7 +61,7 @@ All guards implement `Drop`, so the cleanup action runs regardless of how the sc
 
 ## Lazy Metric Macros
 
-For static metrics that should initialize after the recorder is installed, use the lazy metric macros. These produce `LazyLock` values that defer metric registration until first access, avoiding issues with recorder installation ordering.
+For static metrics that should initialize after the recorder is installed, use the lazy metric macros (exported from `vertex-metrics`). These produce `LazyLock` values that defer metric registration until first access, avoiding issues with recorder installation ordering.
 
 | Macro | Produces | Example |
 |-------|----------|---------|
