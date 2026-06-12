@@ -19,7 +19,10 @@ workspace = true
 # presets re-exported from `vertex-metrics`) compile with NO features enabled, so
 # a wasm client or a config-only consumer keeps the light surface. The heavy
 # slices pull `axum` -> `tokio[net]` -> `mio`, which does not build for `wasm32`.
-default = ["host"]
+# Default to the light surface (library-first): the binary and node crates opt
+# into the slice they need; embedders and the wasm cone get nothing heavy by
+# default and never have to remember `default-features = false`.
+default = []
 
 # Tracing subscriber: console/stdout layer, the `LogFormat -> layer` conversion,
 # `VertexTracer`, `TracingGuard`, and `build_and_init`. Gates `layers.rs`,

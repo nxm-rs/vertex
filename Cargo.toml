@@ -181,13 +181,12 @@ vertex-node-commands = { path = "crates/node/commands" }
 vertex-metrics = { path = "crates/metrics" }
 
 # observability
-# Default the native stack (axum metrics HTTP server, OTLP exporters, Prometheus
-# recorder, tracing subscriber, profiling) off at the workspace level so the wasm
-# cone (topology and the `/swarm/...` wire crates) stays buildable with only the
-# platform-neutral metric primitives and the dependency-free config structs.
+# The crate defaults to the light surface (no features): the platform-neutral
+# metric primitives and the dependency-free config structs. The wasm cone
+# (topology and the `/swarm/...` wire crates) and embedders get this for free.
 # Native consumers opt into the minimal slice they use (`subscriber`, `otlp`,
 # `prometheus`, `http-server`, or the `host` umbrella).
-vertex-observability = { path = "crates/observability", default-features = false }
+vertex-observability = { path = "crates/observability" }
 
 # tasks
 vertex-tasks = { path = "crates/tasks" }
