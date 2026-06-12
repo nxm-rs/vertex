@@ -1,12 +1,15 @@
 //! Background tasks for metrics infrastructure.
 
-use axum::Router;
 use metrics_exporter_prometheus::PrometheusHandle;
-use tokio::net::TcpListener;
 use vertex_tasks::TaskExecutor;
 
 /// Spawn the metrics HTTP server as a critical task with graceful shutdown.
-pub(super) fn spawn_server_task(executor: &TaskExecutor, listener: TcpListener, app: Router) {
+#[cfg(feature = "http-server")]
+pub(super) fn spawn_server_task(
+    executor: &TaskExecutor,
+    listener: tokio::net::TcpListener,
+    app: axum::Router,
+) {
     executor.spawn_critical_with_graceful_shutdown_signal(
         "metrics.server",
         move |shutdown| async move {

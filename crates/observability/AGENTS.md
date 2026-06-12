@@ -4,9 +4,21 @@ Two crates split by weight. `vertex-metrics` is the leaf with guards, macros, la
 
 Root-level rules in `/AGENTS.md` apply here too. The notes below are the area-specific overlay.
 
-## Feature split: `server` vs the wasm-safe core
+## Feature split: orthogonal slices plus the `host` umbrella
 
-`vertex-observability` carries the native infrastructure behind a default-on `server` feature: the tracing subscriber, OTLP exporters, the Prometheus recorder, the `axum` metrics HTTP server, the process hooks, and profiling. That stack pulls `axum` -> `tokio[net]` -> `mio`, which does not build for `wasm32`, so the workspace dependency sets `default-features = false`. With the server off, the crate still exposes the platform-neutral surface: the `vertex-metrics` re-exports (recording macros, RAII guards, label utilities, `LabelValue`) and the histogram bucket presets plus `HistogramBucketConfig`. The bucket presets and `HistogramBucketConfig` physically live in the `vertex-metrics` leaf as `vertex_metrics::buckets`; `vertex-observability` re-exports them as `metrics::buckets` and at its crate root so the host-side recorder and node crates compile unchanged. Instrumented library crates (topology, the `/swarm/...` wire crates, and `vertex-storage-redb`) depend on `vertex-metrics` only and never on `vertex-observability`. Native consumers that serve metrics or set up tracing (`vertex-node-builder`, `vertex-node-core`, `vertex-node-commands`, `bin/vertex`) depend on `vertex-observability` with `features = ["server"]`; those four are the only remaining `vertex-observability` consumers. `profiling`, `jemalloc`, and `tokio-console` all imply `server`. A wasm wire crate declares its `HISTOGRAM_BUCKETS` against `vertex_metrics::buckets` (server-free) at the leaf.
+`vertex-observability` carries the native infrastructure behind four orthogonal features and a `host` umbrella that unions them. The plain config structs (`StdoutConfig`, `OtlpConfig`, `OtlpLogsConfig`, `MetricsServerConfig`) and the `LogFormat` enum are dependency-free data that compile with no features enabled, so a config-only or wasm consumer can name these types without pulling the heavy stack.
+
+The slices:
+
+- `subscriber` (`tracing-subscriber`, `eyre`): the console/stdout layer, the `LogFormat -> layer` conversion, `VertexTracer`, `TracingGuard`, and `build_and_init`. Gates `layers.rs`, `guard.rs`, `tracer.rs`.
+- `otlp` (implies `subscriber`; OpenTelemetry SDK and exporters): the OTLP trace and log export layers and the W3C `TraceContextPropagator` registration.
+- `prometheus` (`metrics-exporter-prometheus`, `metrics-util`, `metrics-process`, `vertex-tasks`, `eyre`): the Prometheus recorder, `HistogramRegistry`, process and jemalloc hooks, and the recorder upkeep task.
+- `http-server` (implies `prometheus`; `axum`, `tower`, `tower-http`, `tokio`, `serde`): the `MetricsServer` and its profiling endpoints.
+- `host` = `subscriber + otlp + prometheus + http-server`: the full native stack.
+
+The `http-server` slice pulls `axum` -> `tokio[net]` -> `mio`, which does not build for `wasm32`, so the workspace dependency sets `default-features = false` and wasm-cone crates get only the platform-neutral surface: the `vertex-metrics` re-exports (recording macros, RAII guards, label utilities, `LabelValue`) and the histogram bucket presets plus `HistogramBucketConfig`. The bucket presets and `HistogramBucketConfig` physically live in the `vertex-metrics` leaf as `vertex_metrics::buckets`; `vertex-observability` re-exports them as `metrics::buckets` and at its crate root so the host-side recorder and node crates compile unchanged. Instrumented library crates (topology, the `/swarm/...` wire crates, and `vertex-storage-redb`) depend on `vertex-metrics` only and never on `vertex-observability`.
+
+The four remaining `vertex-observability` consumers each enable the minimal slice they use: `vertex-node-core` enables nothing (it names only the plain config structs), `vertex-node-commands` enables `otlp` (it sets up `VertexTracer`), `vertex-node-builder` enables `http-server` (it installs the Prometheus recorder and the metrics server), and `bin/vertex` enables `host` (the full stack). `profiling` and `jemalloc` imply `host`; `tokio-console` implies `subscriber`. `default = ["host"]` keeps the native build full for now; flipping the default to `[]` is a separate follow-up. A wasm wire crate declares its `HISTOGRAM_BUCKETS` against `vertex_metrics::buckets` (slice-free) at the leaf.
 
 ## Dos
 

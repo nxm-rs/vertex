@@ -1,15 +1,19 @@
 //! VertexTracer builder for unified observability initialization.
 
-use crate::{OtlpConfig, OtlpLogsConfig, StdoutConfig, TracingGuard, layers};
+#[cfg(feature = "otlp")]
+use crate::{OtlpConfig, OtlpLogsConfig};
+use crate::{StdoutConfig, TracingGuard, layers};
 
 /// Builder for initializing the tracing/logging stack.
 ///
-/// Configures stdout, OTLP trace, and OTLP log layers, then initializes
-/// them as a unified subscriber.
+/// Configures the stdout layer and, with the `otlp` feature, the OTLP trace and
+/// log layers, then initializes them as a unified subscriber.
 #[derive(Debug, Default)]
 pub struct VertexTracer {
     stdout: Option<StdoutConfig>,
+    #[cfg(feature = "otlp")]
     otlp: Option<OtlpConfig>,
+    #[cfg(feature = "otlp")]
     otlp_logs: Option<OtlpLogsConfig>,
 }
 
@@ -26,12 +30,14 @@ impl VertexTracer {
     }
 
     /// Configure OpenTelemetry OTLP tracing.
+    #[cfg(feature = "otlp")]
     pub fn with_otlp(mut self, config: OtlpConfig) -> Self {
         self.otlp = Some(config);
         self
     }
 
     /// Configure OTLP log export (e.g., to Loki).
+    #[cfg(feature = "otlp")]
     pub fn with_otlp_logs(mut self, config: OtlpLogsConfig) -> Self {
         self.otlp_logs = Some(config);
         self
@@ -43,7 +49,9 @@ impl VertexTracer {
     pub fn init(self) -> eyre::Result<TracingGuard> {
         layers::build_and_init(
             self.stdout.as_ref(),
+            #[cfg(feature = "otlp")]
             self.otlp.as_ref(),
+            #[cfg(feature = "otlp")]
             self.otlp_logs.as_ref(),
         )
     }

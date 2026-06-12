@@ -12,7 +12,7 @@ Root-level rules in `/AGENTS.md` apply here too. The notes below are the area-sp
 - `pseudosettle`: `/swarm/pseudosettle/1.0.0/pseudosettle`. Bandwidth micro-payments.
 - `pushsync`: `/swarm/pushsync/1.3.1/pushsync`. Chunk push with receipts.
 - `retrieval`: `/swarm/retrieval/1.4.0/retrieval`. Chunk request and delivery.
-- `headers`: shared header frame used by request-response protocols, with trace-context propagation.
+- `headers`: shared header frame used by request-response protocols, with trace-context propagation. W3C propagation over OpenTelemetry is native-only (`tracing.rs`); the wasm sibling (`tracing_wasm.rs`, Pattern C) is no-op inject/extract since a browser client has no OTLP backend. The on-wire `tracing-span-context` field is unaffected.
 - `handler-core`: shared `HandlerCore<E>` for handlers (pending events, GCRA, outbound-pending flag).
 - `identify`: vendored libp2p-identify with targeted-push extension.
 - `proto`: consolidated protobuf modules. Re-exports `handshake`, `hive`, `pricing`, `pseudosettle`, `pushsync`, `retrieval`, `headers`, `pullsync`, `swap`.

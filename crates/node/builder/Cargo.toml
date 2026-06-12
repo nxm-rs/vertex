@@ -12,9 +12,9 @@ description = "Type-state node builder for Vertex"
 workspace = true
 
 [dependencies]
-# The builder installs the Prometheus recorder and metrics server, so it needs
-# the native server stack.
-vertex-observability = { workspace = true, features = ["server"] }
+# The builder installs the Prometheus recorder and the axum metrics server.
+# `http-server` pulls `prometheus` transitively.
+vertex-observability = { workspace = true, features = ["http-server"] }
 vertex-node-api.workspace = true
 vertex-node-core.workspace = true
 vertex-rpc-server.workspace = true
