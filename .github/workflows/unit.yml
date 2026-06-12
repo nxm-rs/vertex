@@ -45,6 +45,22 @@ jobs:
         run: cargo clippy --lib --all-features -- -D warnings
       - name: Clippy (tests)
         run: cargo clippy --tests --benches --all-features -- -D warnings -A clippy::unwrap_used -A clippy::expect_used -A clippy::indexing_slicing
+      # Keep the embedded FFI cone free of the native observability server stack
+      # (Prometheus exporter, OTLP appender). Pure `cargo tree`, no compile.
+      - name: Cone guard (ffi)
+        run: |
+          tree="$(cargo tree -p vertex-ffi -e normal)"
+          leaked=""
+          for crate in metrics-exporter-prometheus opentelemetry-appender-tracing; do
+            if grep -q "$crate" <<<"$tree"; then
+              leaked="$leaked $crate"
+            fi
+          done
+          if [ -n "$leaked" ]; then
+            echo "cone guard: vertex-ffi pulls the observability server stack:$leaked" >&2
+            exit 1
+          fi
+          echo "cone guard: vertex-ffi is free of the observability server stack"
 
   test:
     name: test

@@ -49,9 +49,6 @@ storer = ["chain", "swap"]
 [dependencies]
 # vertex - node infrastructure
 vertex-node-api.workspace = true
-vertex-node-builder.workspace = true
-vertex-node-commands.workspace = true
-vertex-node-core.workspace = true
 vertex-tasks.workspace = true
 
 # vertex - swarm protocol
