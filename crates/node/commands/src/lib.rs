@@ -88,7 +88,9 @@ where
             info!("Received Ctrl+C, initiating graceful shutdown...");
             match executor.initiate_graceful_shutdown() {
                 Ok(graceful_shutdown) => {
-                    match tokio::time::timeout(GRACEFUL_SHUTDOWN_TIMEOUT, graceful_shutdown).await {
+                    match vertex_tasks::time::timeout(GRACEFUL_SHUTDOWN_TIMEOUT, graceful_shutdown)
+                        .await
+                    {
                         Ok(_guard) => info!("Graceful shutdown complete"),
                         Err(_) => warn!(
                             "Graceful shutdown timed out after {:?}, forcing exit",
