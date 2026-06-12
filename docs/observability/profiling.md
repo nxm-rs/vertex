@@ -43,16 +43,18 @@ cargo build --release --features "profiling,jemalloc,tokio-console"
 
 ### Generating Flamegraphs
 
-When built with `--features profiling`, the metrics server exposes a pprof endpoint:
+When built with `--features profiling`, the metrics server exposes a pprof endpoint. The metrics server is enabled with `--metrics` and listens on `127.0.0.1:1637` by default (`--metrics.addr`, `--metrics.port`):
 
 ```bash
 # Profile for 30 seconds and save flamegraph
-curl "http://localhost:9191/debug/pprof/profile?seconds=30" > flamegraph.svg
+curl "http://localhost:1637/debug/pprof/profile?seconds=30" > flamegraph.svg
 
 # View in browser
 open flamegraph.svg  # macOS
 xdg-open flamegraph.svg  # Linux
 ```
+
+These `/debug/*` routes are unauthenticated. Keep the metrics endpoint bound to localhost or behind a firewall (see the [Local Stack README](../../observability/README.md)).
 
 ### Interpreting Flamegraphs
 
@@ -71,7 +73,7 @@ Key functions are instrumented with `#[tracing::instrument]` for fine-grained ti
 
 ```bash
 # Run with OTLP export enabled
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 vertex ...
+vertex node --tracing --tracing.endpoint http://localhost:4317
 ```
 
 ## Memory Profiling
@@ -82,7 +84,7 @@ When built with `--features jemalloc`, jemalloc replaces the system allocator wi
 
 ```bash
 # Get current memory stats
-curl http://localhost:9191/debug/memory
+curl http://localhost:1637/debug/memory
 ```
 
 Response format:
@@ -147,27 +149,47 @@ All metrics are prefixed with `vertex_` when exported (e.g. `topology_depth` bec
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `topology_connected_peers` | Gauge | `node_type` | Connected peers by type (storer/client). Use `sum(topology_connected_peers)` for total. |
-| `topology_known_peers_total` | Gauge | | Total known peers in routing table |
 | `topology_depth` | Gauge | | Current Kademlia depth |
 | `topology_connections_total` | Counter | `node_type`, `direction`, `outcome` | Connection attempts |
 | `topology_connections_rejected_total` | Counter | `reason`, `direction` | Rejected connections |
-| `topology_disconnections_total` | Counter | `reason`, `node_type` | Disconnections |
+| `topology_disconnections_total` | Counter | `connection_type`, `reason`, `node_type` | Disconnections (`connection_type` is `peer` or `unknown`; the `unknown` series omits `node_type`) |
 | `topology_connection_duration_seconds` | Histogram | `node_type` | Duration of closed connections |
 | `topology_depth_increases_total` | Counter | | Depth increase events |
 | `topology_depth_decreases_total` | Counter | | Depth decrease events |
-| `topology_banned_peers` | Gauge | | Banned peer count |
-| `topology_backoff_peers` | Gauge | | Peers in backoff |
+| `topology_early_disconnects_total` | Counter | `reason` | Post-handshake connections that failed quickly |
+
+Banned-peer and backoff counts are not topology families: they are owned by the peer manager (`peer_manager_banned_peers`) and the dialer (`dial_tracker_banned_peers{purpose}`, `dial_tracker_backoff_peers{purpose}`). The known-peer total lives in the peer manager as `peer_manager_total_peers`.
 
 ### Dialing
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `topology_dial_failures_total` | Counter | `reason` | Failed dial attempts |
+| `topology_dial_failures_total` | Counter | `reason`, `error_type` | Failed dial attempts |
 | `topology_dial_duration_seconds` | Histogram | `outcome` | Dial attempt duration |
 | `topology_dial_addr_count` | Histogram | | Addresses attempted per dial |
 | `topology_dial_exhausted_total` | Counter | | All addresses exhausted |
+| `topology_dials_throttled_total` | Counter | | Dials skipped by the dial-rate throttle |
 | `topology_pings_total` | Counter | `outcome` | Ping attempts |
 | `topology_ping_rtt_seconds` | Histogram | | Ping round-trip time |
+
+The dialer crate (`vertex-net-dialer`) tracks its own per-purpose state, where `purpose` distinguishes discovery dials from other dial reasons:
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `dial_tracker_pending` | Gauge | `purpose` | Peers queued to dial |
+| `dial_tracker_in_flight` | Gauge | `purpose` | Dials currently in flight |
+| `dial_tracker_backoff_peers` | Gauge | `purpose` | Peers in dial backoff |
+| `dial_tracker_banned_peers` | Gauge | `purpose` | Peers dial-banned |
+| `dial_tracker_banned_total` | Counter | `purpose` | Dial bans applied |
+| `dial_tracker_backoff_recorded_total` | Counter | `purpose` | Backoff entries recorded |
+
+### Connection Phase
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `topology_phase` | Gauge | `phase` | One-hot node lifecycle phase (1 for the active phase, 0 otherwise) |
+| `topology_phase_changes_total` | Counter | `from`, `to` | Node lifecycle phase transitions (bootstrap/converging/stable) |
+| `topology_gossip_rejected_total` | Counter | `reason` | Gossiped peers rejected (e.g. `not_dialable`) |
 
 ### Per-Bin Routing
 
@@ -205,36 +227,65 @@ All metrics are prefixed with `vertex_` when exported (e.g. `topology_depth` bec
 | `handshake_total` | Counter | `direction`, `purpose` | Total handshakes initiated |
 | `handshake_success_total` | Counter | `direction`, `purpose`, `node_type` | Successful handshakes |
 | `handshake_failure_total` | Counter | `direction`, `purpose`, `reason`, `stage` | Failed handshakes |
-| `handshake_active` | Gauge | `direction` | Currently active handshakes |
 | `handshake_stage` | Gauge | `direction`, `purpose`, `stage` | Handshakes in each stage |
 | `handshake_duration_seconds` | Histogram | `direction`, `purpose`, `outcome`, `node_type` | Total handshake duration |
 | `handshake_stage_duration_seconds` | Histogram | `direction`, `purpose`, `stage` | Per-stage duration |
 
-### Hive (Peer Discovery)
+### Headered Protocols (Hive and Other Request-Response)
+
+Exchange counts, outcomes, durations, and active-stream gauges are shared across every protocol that rides the header frame, distinguished by the `protocol` label. Hive exchange metrics surface here rather than under hive-specific names:
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `hive_exchanges_total` | Counter | `direction` | Total hive exchanges |
-| `hive_exchange_outcomes_total` | Counter | `direction`, `outcome` | Exchange outcomes |
-| `hive_exchange_duration_seconds` | Histogram | `direction`, `outcome` | Exchange duration |
-| `hive_peers_per_exchange` | Histogram | `direction` | Peers per exchange |
-| `hive_exchanges_active` | Gauge | `direction` | Currently active exchanges |
+| `protocol_exchanges_total` | Counter | `protocol`, `direction` | Exchanges started |
+| `protocol_exchange_outcomes_total` | Counter | `protocol`, `direction`, `outcome`, `reason` | Exchange outcomes |
+| `protocol_exchange_duration_seconds` | Histogram | `protocol`, `direction` | Exchange duration |
+| `protocol_streams_total` | Counter | `protocol`, `direction` | Streams opened |
+| `protocol_streams_active` | Gauge | `protocol`, `direction` | Currently active streams |
+| `protocol_upgrade_errors_total` | Counter | `protocol`, `direction`, `reason` | Stream upgrade errors |
+
+### Hive (Peer Discovery)
+
+Hive emits only peer-count and validation families; its exchange metrics are the `protocol_*` families above with `protocol="hive"`:
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
 | `hive_peers_received_total` | Counter | `outcome` | Peers received (valid/invalid) |
 | `hive_peers_sent_total` | Counter | | Peers sent |
+| `hive_peers_per_exchange` | Histogram | `direction` | Peers per exchange |
+| `hive_peers_discarded_total` | Counter | `reason` | Peer batches discarded (`bootnode_mode`, `rate_limited`, `verifier_rejected`) |
+| `hive_rate_limited_total` | Counter | | Inbound exchanges rejected by the per-peer rate limiter |
+| `hive_validation_cache_total` | Counter | `outcome` | Validation cache lookups (`cache_hit`/`miss`) |
+| `hive_validation_duration_seconds` | Histogram | `direction` | Peer-record validation duration |
 | `hive_peer_validation_failures_total` | Counter | `reason` | Peer validation failures |
-| `hive_errors_total` | Counter | `direction`, `reason` | Exchange errors |
 
-### Peer Scoring
+### Identify
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `identify_received_total` | Counter | `purpose`, `agent_kind` | Identify responses received; `agent_kind` is a bounded classification (`bee`/`vertex`/`other`) of the remote agent string, never the raw attacker-controlled value |
+| `identify_sent_total` | Counter | `purpose` | Identify responses sent |
+| `identify_pushed_total` | Counter | `purpose` | Targeted identify pushes |
+| `identify_error_total` | Counter | `purpose`, `kind` | Identify errors (`timeout`/`apply`) |
+| `identify_duration_seconds` | Histogram | `purpose`, `direction`, `outcome` | Identify exchange duration |
+
+### Peer Manager
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `peer_manager_total_peers` | Gauge | | Total tracked peers |
+| `peer_manager_unverified_peers` | Gauge | | Known peers awaiting first-dial verification |
 | `peer_manager_banned_peers` | Gauge | | Banned peers |
+| `peer_manager_health` | Gauge | `state` | Peers in each health state |
 | `peer_manager_score_distribution` | Gauge | `le` | Current peer count per score range |
+| `peer_manager_tracked_ips` | Gauge | | Distinct remote IPs tracked for cycling detection |
+| `peer_manager_reports_total` | Counter | `source`, `event`, `outcome` | Score reports processed |
+| `peer_manager_ip_cycling_detections_total` | Counter | | Identity-cycling cap crossings detected |
+| `peer_manager_admission_rejected_total` | Counter | | Discovered peers rejected at admission |
+| `peer_manager_overlay_mismatch_removed_total` | Counter | | Peers removed for overlay mismatch |
+| `peer_manager_gossip_timestamp_rejected_total` | Counter | `reason` | Gossiped records rejected on timestamp check |
 
-Uses `le` (upper bound) labels for native Grafana heatmap compatibility: `-100`, `-50`, `-10`, `-1`, `0`, `1`, `5`, `10`, `25`, `50`, `75`, `100`, `+Inf` (13 non-cumulative buckets).
-
-Updated event-driven via `ScoreObserver` callbacks; O(1) per score change rather than periodic O(n) iteration.
+`peer_manager_score_distribution` uses `le` (upper bound) labels for native Grafana heatmap compatibility: `-100`, `-50`, `-10`, `-1`, `0`, `1`, `5`, `10`, `25`, `50`, `75`, `100`, `+Inf` (13 non-cumulative buckets). It is updated event-driven on each score change rather than by periodic O(n) iteration.
 
 ### Gossip Intake
 
@@ -242,26 +293,74 @@ Updated event-driven via `ScoreObserver` callbacks; O(1) per score change rather
 |--------|------|-------------|
 | `topology_gossip_tracked_gossipers` | Gauge | Unique gossipers tracked |
 | `topology_gossip_tracked_cooldowns` | Gauge | Overlays with an active record cooldown |
-| `peer_manager_unverified_peers` | Gauge | Known peers awaiting first-dial verification |
 
-### Proximity Cache
+### Peer Registry Connections
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `peer_registry_pending_connections` | Gauge | Connections established but not yet activated |
+| `peer_registry_active_connections` | Gauge | Activated connections |
+
+### Proximity Index
 
 | Metric | Type | Description |
 |--------|------|-------------|
 | `topology_proximity_cached_items` | Gauge | Cached proximity items |
-| `topology_proximity_cache_valid` | Gauge | Cache validity (1.0/0.0) |
 | `topology_proximity_generation` | Gauge | Cache generation counter |
+
+### Storage (redb backend)
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `db_operations_total` | Counter | `table`, `operation`, `outcome` | Database operations (get/put/delete/clear/entries/keys/count/commit) |
+| `db_operation_duration_seconds` | Histogram | `table`, `operation` | Per-operation duration |
+| `db_tx_duration_seconds` | Histogram | `mode` | Transaction lifetime (`read`/`write`) |
+| `db_tx_commit_duration_seconds` | Histogram | | Write-transaction commit duration |
+| `db_entries` | Gauge | `table` | Entry count per table |
+| `redb_file_size_bytes` | Gauge | | Database file size |
+| `redb_stored_bytes` / `redb_metadata_bytes` / `redb_fragmented_bytes` | Gauge | `table` | Per-table byte breakdown (also exported as `*_total` aggregates without the label) |
+| `redb_tree_height` / `redb_leaf_pages` / `redb_branch_pages` | Gauge | `table` | Per-table B-tree shape |
+| `redb_cache_evictions_total` | Gauge | | Cumulative cache evictions |
+
+### Task Executor
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `executor_spawn_critical_tasks_total` | Counter | `task` | Critical tasks spawned |
+| `executor_spawn_regular_tasks_total` | Counter | `task` | Regular tasks spawned |
+| `executor_spawn_regular_blocking_tasks_total` | Counter | `task` | Regular blocking tasks spawned |
+| `executor_spawn_finished_*_tasks_total` | Counter | `task` | Finished-task counters (one per spawn family) |
+| `executor_tasks_panicked_total` | Counter | `type` | Tasks that panicked |
+| `executor_tasks_running` | Gauge | `type`, `task`, `graceful` | Currently running tasks |
 
 ## Histogram Bucket Configuration
 
-Two histogram families have custom bucket ranges configured in `vertex-observability`:
+Histograms only render as Prometheus histograms (with `_bucket` series) when a bucket configuration is registered for their name suffix. `bin/vertex` builds a `HistogramRegistry` from six crates and installs it with the Prometheus recorder (`bin/vertex/src/cli.rs`): `vertex-swarm-net-headers`, `vertex-swarm-topology`, `vertex-swarm-net-handshake`, `vertex-swarm-net-hive`, `vertex-swarm-net-identify`, and `vertex-storage-redb`. Each crate declares its suffixes as a `HISTOGRAM_BUCKETS` const next to its metrics.
 
-| Metric Suffix | Buckets | Range |
-|--------------|---------|-------|
-| `handshake_duration_seconds` | 1ms, 5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s, 15s | 1ms - 15s |
-| `stage_duration_seconds` | 0.1ms, 0.5ms, 1ms, 5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s | 0.1ms - 2.5s |
+The six reusable bucket presets (`DURATION_FINE`, `DURATION_NETWORK`, `DURATION_SECONDS`, `LOCK_CONTENTION`, `POLL_DURATION`, `CONNECTION_LIFETIME`) live in `vertex_metrics::buckets` and are re-exported from `vertex-observability`. A crate may also inline a bespoke bucket list when no preset fits.
 
-All other histograms use the default Prometheus buckets (0.005s to 10s).
+Registered histogram suffixes (a registration matches any metric name ending in the suffix, so `handshake_stage_duration_seconds` matches the `stage_duration_seconds` registration):
+
+| Suffix | Source crate | Buckets |
+|--------|--------------|---------|
+| `protocol_exchange_duration_seconds` | headers | 10ms - 30s (bespoke) |
+| `handshake_duration_seconds` | handshake | `DURATION_SECONDS` |
+| `stage_duration_seconds` | handshake | `DURATION_FINE` |
+| `identify_duration_seconds` | identify | `DURATION_SECONDS` |
+| `hive_validation_duration_seconds` | hive | `DURATION_FINE` |
+| `hive_peers_per_exchange` | hive | 1 - 100 (bespoke counts) |
+| `topology_connection_duration_seconds` | topology | `CONNECTION_LIFETIME` |
+| `topology_dial_duration_seconds` | topology | `DURATION_NETWORK` |
+| `topology_dial_addr_count` | topology | 1 - 50 (bespoke counts) |
+| `topology_ping_rtt_seconds` | topology | 1ms - 5s (bespoke) |
+| `topology_poll_duration_seconds` | topology | `POLL_DURATION` |
+| `topology_routing_candidates_lock_seconds` | topology | `LOCK_CONTENTION` |
+| `topology_routing_phases_lock_seconds` | topology | `LOCK_CONTENTION` |
+| `db_operation_duration_seconds` | storage-redb | 10us - 1s (bespoke) |
+| `db_tx_duration_seconds` | storage-redb | 10us - 1s (bespoke) |
+| `db_tx_commit_duration_seconds` | storage-redb | 10us - 1s (bespoke) |
+
+A histogram whose name matches no registered suffix is not given buckets, so the Prometheus exporter renders it as a summary (quantile series), not a default-bucket histogram. There is no implicit "0.005s to 10s default histogram" fallback for unregistered families. When adding a histogram that should produce `_bucket` series, register its suffix in the owning crate's `HISTOGRAM_BUCKETS` and wire the crate into the registry in `bin/vertex/src/cli.rs`.
 
 ## Troubleshooting
 

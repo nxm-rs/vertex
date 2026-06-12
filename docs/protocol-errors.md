@@ -25,7 +25,7 @@ Each variant has an `#[error("...")]` attribute for display formatting and, wher
 
 ## LabelValue Trait (Automatic)
 
-The `LabelValue` trait in `vertex-observability` provides a `label_value()` method returning a `&'static str`. It has a blanket implementation for any type where a shared reference can be converted `Into<&'static str>`. Since `IntoStaticStr` from strum provides exactly this conversion, any error enum deriving `IntoStaticStr` automatically satisfies `LabelValue`.
+The `LabelValue` trait in `vertex-metrics` (re-exported from `vertex-observability`) provides a `label_value()` method returning a `&'static str`. It has a blanket implementation for any type where a shared reference can be converted `Into<&'static str>`. Since `IntoStaticStr` from strum provides exactly this conversion, any error enum deriving `IntoStaticStr` automatically satisfies `LabelValue`.
 
 No manual `label()` methods are needed. Just derive `IntoStaticStr`.
 

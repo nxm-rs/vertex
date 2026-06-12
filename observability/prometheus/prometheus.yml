@@ -21,12 +21,12 @@ scrape_configs:
     scrape_interval: 10s
     static_configs:
       - targets:
-          - "localhost:9191"
+          - "localhost:1637"
         labels:
           instance: "vertex-local"
     # Add more nodes as needed:
     # - targets:
-    #     - "localhost:9192"
+    #     - "localhost:1638"
     #   labels:
     #     instance: "vertex-local-2"
 
