@@ -247,10 +247,23 @@ where
 /// Assemble the libp2p [`Swarm`] for the browser over a websocket transport.
 ///
 /// The browser cannot open listeners, so this path only dials. It builds the
-/// websocket transport from `libp2p-websocket-websys`, which dials the bee
+/// websocket transport from `libp2p-websocket-websys`, which dials the live
 /// AutoTLS `/tls/sni/<host>/ws` multiaddrs (the browser performs TLS and SNI
 /// natively), then upgrades it with Noise and Yamux to match the native
 /// authentication and multiplexing.
+///
+/// The upgrade negotiates with [`Version::V1Lazy`] rather than [`Version::V1`].
+/// The browser `WebSocket` is message-framed and its `AsyncWrite` reports a
+/// flush as complete only once the socket's buffered amount drains, which it
+/// observes through a periodic timer rather than synchronously. Under the
+/// browser executor the strict-`V1` flush-then-await round trip leaves the
+/// security negotiation parked mid-handshake, and the connection is torn down
+/// before the peer's protocol confirmation is read. The dialer offers a single
+/// security (`/noise`) and a single muxer (`/yamux/1.0.0`), so the lazy variant
+/// settles on each optimistically and folds the confirmation into the first
+/// read of the following handshake bytes. The responder still replies with a
+/// regular `V1` response, so this stays wire-compatible; it only removes the
+/// synchronous flush barrier the browser transport cannot satisfy.
 #[cfg(target_arch = "wasm32")]
 fn build_swarm<B, F>(idle_timeout: Duration, behaviour_builder: F) -> Result<Swarm<B>>
 where
@@ -265,7 +278,7 @@ where
         .with_wasm_bindgen()
         .with_other_transport(|keypair| {
             let transport = libp2p_websocket_websys::Transport::default()
-                .upgrade(Version::V1)
+                .upgrade(Version::V1Lazy)
                 .authenticate(noise::Config::new(keypair)?)
                 .multiplex(yamux::Config::default());
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(transport)
