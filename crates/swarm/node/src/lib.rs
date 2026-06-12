@@ -20,9 +20,6 @@ mod protocol;
 mod selection;
 mod swarm_client;
 
-#[cfg(target_arch = "wasm32")]
-#[allow(deprecated)]
-pub use node::launch_client;
 pub use node::{
     BaseNode, BuiltInfrastructure, ClientLauncher, ClientNode, ClientNodeBuilder, LaunchedClient,
     NodeBuildError,

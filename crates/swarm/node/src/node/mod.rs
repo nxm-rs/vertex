@@ -27,8 +27,6 @@ pub(crate) mod stats;
 #[cfg(not(target_arch = "wasm32"))]
 mod storer;
 pub(crate) mod task;
-#[cfg(target_arch = "wasm32")]
-mod wasm_client;
 
 pub use base::BaseNode;
 #[cfg(not(target_arch = "wasm32"))]
@@ -39,6 +37,3 @@ pub use error::NodeBuildError;
 pub use launch::{ClientLauncher, LaunchedClient};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storer::{StorerNode, StorerNodeBuilder};
-#[cfg(target_arch = "wasm32")]
-#[allow(deprecated)]
-pub use wasm_client::launch_client;
