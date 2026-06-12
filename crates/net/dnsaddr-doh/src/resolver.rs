@@ -14,9 +14,7 @@ use libp2p::multiaddr::Protocol;
 use tracing::{debug, warn};
 
 use crate::error::DohError;
-use crate::parse::{
-    extract_dnsaddr_values, is_browser_dialable_wss, parse_dns_json, to_browser_dialable_wss,
-};
+use crate::parse::{extract_dnsaddr_values, is_browser_dialable_wss, parse_dns_json};
 
 /// Default maximum dnsaddr recursion depth.
 ///
@@ -130,12 +128,12 @@ fn resolve_into<'a, F: TxtFetcher>(
                 )
                 .await;
             } else if is_browser_dialable_wss(&addr) {
-                // Rewrite the network's `/ip4/.../tls/sni/<host>/ws` AutoTLS form
-                // into the `/dns4/<host>/tcp/<port>/tls/ws` shape the browser
-                // websocket transport can dial, deduplicating on the dialable form.
-                let dialable = to_browser_dialable_wss(&addr);
-                if seen_leaves.insert(dialable.to_string()) {
-                    leaves.push(dialable);
+                // The network advertises its AutoTLS leaves as
+                // `/ip4/.../tls/sni/<host>/ws`; the browser websocket transport
+                // dials that form directly (it opens the secure socket against
+                // the `/sni` host), so the leaf is kept as-is.
+                if seen_leaves.insert(addr.to_string()) {
+                    leaves.push(addr);
                 }
             }
         }
@@ -219,11 +217,11 @@ mod tests {
         ));
 
         assert_eq!(leaves.len(), 1);
-        // The resolver rewrites the network's `/ip4/.../tls/sni/<host>/ws` form
-        // into the `/dns4/<host>/tcp/<port>/tls/ws` shape the browser dials.
+        // The network's `/ip4/.../tls/sni/<host>/ws` AutoTLS leaf is kept as-is;
+        // the browser websocket transport dials that form directly.
         assert_eq!(
             leaves[0].to_string(),
-            "/dns4/example.libp2p.direct/tcp/1635/tls/ws/p2p/QmfEugihe2Pm78YomGupdxSt46Uxgg4DLpjkzgzzeouiKg"
+            "/ip4/5.78.94.214/tcp/1635/tls/sni/example.libp2p.direct/ws/p2p/QmfEugihe2Pm78YomGupdxSt46Uxgg4DLpjkzgzzeouiKg"
         );
     }
 

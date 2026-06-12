@@ -70,14 +70,9 @@ pub async fn resolve_or_fallback<F: TxtFetcher>(
             %name,
             "DoH dnsaddr resolution yielded no leaves, using embedded snapshot"
         );
-        // Rewrite the snapshot's `/ip4/.../tls/sni/<host>/ws` AutoTLS leaves into
-        // the `/dns4/<host>/tcp/<port>/tls/ws` form the browser websocket
-        // transport dials, matching what the live DoH path returns.
-        snapshot
-            .iter()
-            .filter_map(|s| s.parse().ok())
-            .map(|addr| parse::to_browser_dialable_wss(&addr))
-            .collect()
+        // The snapshot carries the network's `/ip4/.../tls/sni/<host>/ws`
+        // AutoTLS leaves, which the browser websocket transport dials directly.
+        snapshot.iter().filter_map(|s| s.parse().ok()).collect()
     } else {
         tracing::info!(
             %name,
@@ -126,10 +121,6 @@ mod tests {
 
     const LEAF: &str = "/ip4/5.78.94.214/tcp/1635/tls/sni/example.libp2p.direct/ws/p2p/QmfEugihe2Pm78YomGupdxSt46Uxgg4DLpjkzgzzeouiKg";
 
-    /// `LEAF` after the browser-dialable rewrite (the form both the live and
-    /// snapshot paths return).
-    const DIALABLE_LEAF: &str = "/dns4/example.libp2p.direct/tcp/1635/tls/ws/p2p/QmfEugihe2Pm78YomGupdxSt46Uxgg4DLpjkzgzzeouiKg";
-
     impl TxtFetcher for OneLeafFetcher {
         fn fetch_txt(
             &self,
@@ -149,7 +140,7 @@ mod tests {
             &snap,
         ));
         assert_eq!(leaves.len(), 1);
-        assert_eq!(leaves[0].to_string(), DIALABLE_LEAF);
+        assert_eq!(leaves[0].to_string(), LEAF);
     }
 
     #[test]
@@ -165,7 +156,7 @@ mod tests {
         assert_eq!(leaves.len(), 1);
         assert_eq!(
             leaves[0].to_string(),
-            DIALABLE_LEAF,
+            LEAF,
             "live leaf must take precedence"
         );
     }
