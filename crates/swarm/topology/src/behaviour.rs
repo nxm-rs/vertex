@@ -805,6 +805,18 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
                 if capability_became_known {
                     debug!("Network capability now known, triggering immediate dial");
                     self.evaluator_handle.trigger_evaluation();
+                    // Bootnodes and trusted peers are `DialTarget::Unknown` (no
+                    // overlay), so the startup `connect_bootnodes()` dial is
+                    // silently dropped while the dial capability is still
+                    // `ip: None`: such a target never enters the scored
+                    // candidate set, and `trigger_evaluation` above cannot
+                    // recover it. Re-issue the connection attempt now that
+                    // addresses pass the dial-eligibility filter.
+                    // `connect_bootnodes()` is idempotent here: `dial()` skips
+                    // already-tracked peers, and this runs exactly once per
+                    // unknown->known transition because `on_new_listen_addr`
+                    // returns `true` only on that edge.
+                    self.connect_bootnodes();
                 }
             }
             FromSwarm::ExpiredListenAddr(info) => {
@@ -1094,6 +1106,7 @@ mod tests {
     struct EventTestConfig {
         peers: DefaultPeerConfig,
         routing: KademliaConfig,
+        listen_addrs: Vec<Multiaddr>,
         empty_addrs: Vec<Multiaddr>,
     }
 
@@ -1102,14 +1115,26 @@ mod tests {
             Self {
                 peers: DefaultPeerConfig::default(),
                 routing: KademliaConfig::default(),
+                listen_addrs: Vec::new(),
                 empty_addrs: Vec::new(),
+            }
+        }
+
+        /// Report a configured listen address so the built behaviour is a
+        /// listening node, not a dial-only one. A dial-only node pins its IP
+        /// capability to dual-stack, which hides the unknown-capability window
+        /// the bootnode-redial path exists to recover.
+        fn listening() -> Self {
+            Self {
+                listen_addrs: vec!["/ip4/0.0.0.0/tcp/1634".parse().expect("valid")],
+                ..Self::new()
             }
         }
     }
 
     impl SwarmNetworkConfig for EventTestConfig {
         fn listen_addrs(&self) -> &[Multiaddr] {
-            &self.empty_addrs
+            &self.listen_addrs
         }
         fn bootnodes(&self) -> &[Multiaddr] {
             &self.empty_addrs
@@ -1150,6 +1175,17 @@ mod tests {
 
     fn test_behaviour() -> TopologyBehaviour<Identity> {
         test_behaviour_with(TopologyConfig::default())
+    }
+
+    /// A listening (non-dial-only) behaviour whose IP capability starts
+    /// unknown until the first `NewListenAddr` arrives.
+    fn test_behaviour_listening() -> TopologyBehaviour<Identity> {
+        let identity = Identity::random(vertex_swarm_spec::init_testnet(), SwarmNodeType::Client);
+        let (behaviour, _handle) =
+            TopologyBehaviourBuilder::new(identity, &EventTestConfig::listening())
+                .try_build()
+                .expect("build without runtime");
+        behaviour
     }
 
     async fn next_action(
@@ -1349,6 +1385,114 @@ mod tests {
                 ToSwarm::Dial { .. } => {}
                 other => panic!("expected deferred Dial after replenish, got {other:?}"),
             }
+        }
+    }
+
+    mod bootnode_redial {
+        use super::*;
+
+        use libp2p::core::transport::ListenerId;
+        use libp2p::swarm::behaviour::NewListenAddr;
+
+        /// Drain every dial action the behaviour currently has queued and
+        /// return the peer ids dialed.
+        fn drain_dials(behaviour: &mut TopologyBehaviour<Identity>) -> Vec<PeerId> {
+            let waker = futures::task::noop_waker();
+            let mut cx = Context::from_waker(&waker);
+            let mut dialed = Vec::new();
+            loop {
+                match behaviour.poll(&mut cx) {
+                    Poll::Ready(ToSwarm::Dial { opts }) => {
+                        if let Some(peer_id) = opts.get_peer_id() {
+                            dialed.push(peer_id);
+                        }
+                    }
+                    Poll::Ready(_) => {}
+                    Poll::Pending => break,
+                }
+            }
+            dialed
+        }
+
+        /// A bootnode dial dropped while the dial capability is `ip: None`
+        /// (no listen address yet) is re-issued once the first listen address
+        /// makes the capability known, which is the only path that rescues a
+        /// node whose only contacts are bootnodes on a real network.
+        #[tokio::test]
+        async fn bootnode_redialed_when_capability_becomes_known() {
+            let mut behaviour = test_behaviour_listening();
+
+            // A literal bootnode with a `/p2p/` component so `dial()` can
+            // extract its peer id.
+            let bootnode_peer = PeerId::random();
+            let bootnode: Multiaddr = format!("/ip4/203.0.113.7/tcp/1634/p2p/{bootnode_peer}")
+                .parse()
+                .expect("valid bootnode multiaddr");
+            behaviour.bootnodes = vec![bootnode];
+
+            // Startup path: ConnectBootnodes is processed before any listen
+            // address arrives, so the dial capability ip is still None and the
+            // dial is filtered out as unreachable.
+            behaviour.on_command(TopologyCommand::ConnectBootnodes);
+            assert!(
+                drain_dials(&mut behaviour).is_empty(),
+                "bootnode dial must be dropped while capability ip is None"
+            );
+
+            // First listen address arrives: capability becomes known and the
+            // dropped bootnode dial is re-issued.
+            let listen_addr: Multiaddr = "/ip4/192.0.2.1/tcp/1634"
+                .parse()
+                .expect("valid listen multiaddr");
+            behaviour.on_swarm_event(FromSwarm::NewListenAddr(NewListenAddr {
+                listener_id: ListenerId::next(),
+                addr: &listen_addr,
+            }));
+
+            let dialed = drain_dials(&mut behaviour);
+            assert!(
+                dialed.contains(&bootnode_peer),
+                "bootnode must be dialed once the capability becomes known, dialed: {dialed:?}"
+            );
+        }
+
+        /// The redial fires exactly once per capability transition: a second
+        /// listen address on the same (already-known) capability does not
+        /// re-dial a bootnode that is already being tracked, so no dial storm.
+        #[tokio::test]
+        async fn bootnode_not_redialed_on_subsequent_listen_addr() {
+            let mut behaviour = test_behaviour_listening();
+
+            let bootnode_peer = PeerId::random();
+            let bootnode: Multiaddr = format!("/ip4/203.0.113.8/tcp/1634/p2p/{bootnode_peer}")
+                .parse()
+                .expect("valid bootnode multiaddr");
+            behaviour.bootnodes = vec![bootnode];
+
+            behaviour.on_command(TopologyCommand::ConnectBootnodes);
+            assert!(drain_dials(&mut behaviour).is_empty());
+
+            // First listen address: capability becomes known, bootnode dialed.
+            let addr1: Multiaddr = "/ip4/192.0.2.1/tcp/1634".parse().expect("valid");
+            behaviour.on_swarm_event(FromSwarm::NewListenAddr(NewListenAddr {
+                listener_id: ListenerId::next(),
+                addr: &addr1,
+            }));
+            assert!(drain_dials(&mut behaviour).contains(&bootnode_peer));
+
+            // Second listen address: capability is already known, so the
+            // redial path does not fire. The bootnode is now in the dial
+            // tracker, so even if connect_bootnodes ran it would be skipped;
+            // assert no new dial is emitted.
+            let addr2: Multiaddr = "/ip4/192.0.2.2/tcp/1634".parse().expect("valid");
+            behaviour.on_swarm_event(FromSwarm::NewListenAddr(NewListenAddr {
+                listener_id: ListenerId::next(),
+                addr: &addr2,
+            }));
+            assert!(
+                drain_dials(&mut behaviour).is_empty(),
+                "no redial storm: bootnode already tracked after first transition"
+            );
         }
     }
 }
