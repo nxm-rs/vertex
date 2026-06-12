@@ -17,6 +17,11 @@ mod builder;
 #[allow(unreachable_pub)]
 mod client;
 mod error;
+// NAT traversal and LAN discovery only exist natively. The browser client
+// dials over websockets and never listens, so the wasm sibling exposes the
+// same item names and signatures over a no-op behaviour.
+#[cfg_attr(target_arch = "wasm32", path = "nat_wasm.rs")]
+mod nat;
 pub(crate) mod stats;
 #[cfg(not(target_arch = "wasm32"))]
 mod storer;
