@@ -283,7 +283,7 @@ mod tests {
                 }
             }
         };
-        let cause = tokio::time::timeout(Duration::from_secs(10), denial)
+        let cause = vertex_tasks::time::timeout(Duration::from_secs(10), denial)
             .await
             .expect("listener denies the second connection");
 

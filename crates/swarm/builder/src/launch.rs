@@ -95,7 +95,7 @@ fn spawn_db_metrics_task(ctx: &dyn InfrastructureContext, db: Arc<RedbDatabase>)
     ctx.executor()
         .spawn_with_graceful_shutdown_signal("db.metrics", move |shutdown| async move {
             let mut shutdown = std::pin::pin!(shutdown);
-            let mut interval = tokio::time::interval(DB_METRICS_INTERVAL);
+            let mut interval = vertex_tasks::time::interval(DB_METRICS_INTERVAL);
 
             loop {
                 tokio::select! {
