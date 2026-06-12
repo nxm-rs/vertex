@@ -14,7 +14,8 @@ workspace = true
 ## async
 futures.workspace = true
 futures-bounded = "0.2"
-futures-timer = "3.0"
+# Workspace dep: its wasm-bindgen feature is load-bearing for the wasm cone.
+futures-timer = { workspace = true }
 
 ## p2p
 libp2p.workspace = true
