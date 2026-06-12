@@ -86,7 +86,7 @@ vertex-swarm-redistribution = { workspace = true, optional = true }
 libp2p.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-libp2p = { git = "https://github.com/libp2p/rust-libp2p", rev = "3e72d4c071d5ec8815d2f6f7ee3602600ff51798", default-features = false, features = [
+libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "6454fdf3450f91fdbb6e3306daa7a9a4e633c133", default-features = false, features = [
     "noise",
     "yamux",
     "macros",
