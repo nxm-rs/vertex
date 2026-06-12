@@ -23,6 +23,8 @@ mod swarm_client;
 pub use node::{BaseNode, BuiltInfrastructure, ClientNode, ClientNodeBuilder, NodeBuildError};
 #[cfg(not(target_arch = "wasm32"))]
 pub use node::{BootNode, BootNodeBuilder, StorerNode, StorerNodeBuilder};
+#[cfg(target_arch = "wasm32")]
+pub use node::{WasmClientConfig, launch_client};
 
 pub use vertex_swarm_api::SwarmNodeType;
 

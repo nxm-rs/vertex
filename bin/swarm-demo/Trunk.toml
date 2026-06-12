@@ -1,0 +1,25 @@
+# Trunk build/serve config for the browser Swarm client demo.
+#
+# Build (see README.md for the full toolchain setup):
+#
+#   RUSTUP_TOOLCHAIN=nightly trunk build --release
+#
+# The wasm cone is compiled with the `+atomics,+bulk-memory,+mutable-globals`
+# target features and the `getrandom_backend="wasm_js"` cfg from the workspace
+# `.cargo/config.toml` `[target.wasm32-unknown-unknown]` table, which Trunk
+# passes through to `cargo`. The atomics feature is unstable, so a nightly
+# toolchain is required.
+
+[build]
+target = "index.html"
+# Emit the wasm-bindgen glue as ES modules so the `#[wasm_bindgen(start)]`
+# entrypoint auto-runs on load.
+dist = "dist"
+
+[serve]
+address = "127.0.0.1"
+port = 8080
+# Cross-origin isolation for SharedArrayBuffer (the `+atomics` build needs it).
+# On GitHub Pages these headers cannot be set, so `coi-serviceworker.js` injects
+# the same isolation client-side; locally Trunk sets them directly.
+headers = { "Cross-Origin-Opener-Policy" = "same-origin", "Cross-Origin-Embedder-Policy" = "require-corp" }

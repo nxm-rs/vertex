@@ -721,6 +721,29 @@ impl TaskExecutor {
         self.spawn_task_as(fut, TaskKind::Default, name, true)
     }
 
+    /// Spawns a `!Send` task that participates in graceful shutdown, on the
+    /// browser event loop.
+    ///
+    /// The browser swarm and its websocket transport futures are `!Send`, so
+    /// the node run loop cannot go through the Send-bounded spawners. This wasm
+    /// sibling drops the `Send` bound and spawns through
+    /// [`wasm_bindgen_futures::spawn_local`], the same choke point every wasm
+    /// spawn uses, while still wiring the [`GracefulShutdown`] signal and the
+    /// shutdown count so the task is tracked like any other.
+    #[cfg(target_arch = "wasm32")]
+    pub fn spawn_local_with_graceful_shutdown_signal<F>(
+        &self,
+        name: &'static str,
+        f: impl FnOnce(GracefulShutdown) -> F,
+    ) -> TaskHandle
+    where
+        F: Future<Output = ()> + 'static,
+    {
+        debug!(task = name, "spawning local task with graceful shutdown");
+        let fut = f(self.new_graceful_shutdown());
+        spawn_local_abortable(fut)
+    }
+
     /// Spawns a [`SpawnableTask`] as a critical task with graceful shutdown.
     ///
     /// This is the preferred way to spawn long-running services that implement
