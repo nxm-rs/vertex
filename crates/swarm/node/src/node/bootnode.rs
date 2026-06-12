@@ -11,11 +11,7 @@ use std::convert::Infallible;
 
 use eyre::Result;
 use futures::StreamExt;
-use libp2p::autonat::v2 as autonat;
 use libp2p::connection_limits;
-use libp2p::mdns;
-use libp2p::swarm::behaviour::toggle::Toggle;
-use libp2p::upnp;
 use libp2p::{PeerId, identity::PublicKey, swarm::NetworkBehaviour, swarm::SwarmEvent};
 use nectar_primitives::SwarmAddress;
 use tracing::info;
@@ -30,8 +26,9 @@ use vertex_swarm_topology::{
 };
 use vertex_tasks::GracefulShutdown;
 
-use super::base::{BaseNode, NatBehaviours};
+use super::base::BaseNode;
 use super::builder::BuiltInfrastructure;
+use super::nat::{NatBehaviour, NatEvent};
 use crate::protocol::{BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientEvent};
 
 /// Network behaviour for a bootnode (topology + listen-only client behaviour).
@@ -49,10 +46,9 @@ pub(crate) struct BootnodeBehaviour<I: SwarmIdentity + Clone> {
     /// allocate per-connection state.
     pub(crate) connection_limits: connection_limits::Behaviour,
     pub(crate) identify: identify::Behaviour,
-    pub(crate) autonat_client: Toggle<autonat::client::Behaviour>,
-    pub(crate) autonat_server: Toggle<autonat::server::Behaviour>,
-    pub(crate) upnp: Toggle<upnp::tokio::Behaviour>,
-    pub(crate) mdns: Toggle<mdns::tokio::Behaviour>,
+    /// NAT traversal (AutoNAT v2, UPnP) and LAN discovery (mDNS), composed as
+    /// one sub-behaviour.
+    pub(crate) nat: NatBehaviour,
     pub(crate) topology: TopologyBehaviour<I>,
     pub(crate) client: ClientBehaviour,
 }
@@ -62,11 +58,10 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
     pub fn from_parts(
         local_public_key: PublicKey,
         topology: TopologyBehaviour<I>,
-        nat: NatBehaviours,
+        nat: NatBehaviour,
         connection_limits: connection_limits::Behaviour,
     ) -> Self {
         let agent_versions = topology.agent_versions();
-        let peer_id = local_public_key.to_peer_id();
         Self {
             connection_limits,
             // Identify advertises addresses scoped to each peer (see
@@ -76,10 +71,7 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
                 identify::Config::new(local_public_key),
                 agent_versions,
             ),
-            autonat_client: nat.autonat_client,
-            autonat_server: nat.autonat_server,
-            upnp: nat.upnp,
-            mdns: super::base::build_mdns_toggle(nat.mdns_enabled, peer_id),
+            nat,
             topology,
             client: ClientBehaviour::new(ClientBehaviourConfig::for_role(SwarmNodeType::Bootnode)),
         }
@@ -100,10 +92,7 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
 #[allow(clippy::large_enum_variant)]
 pub enum BootnodeEvent {
     Identify(Box<identify::Event>),
-    AutonatClient(autonat::client::Event),
-    AutonatServer(autonat::server::Event),
-    Upnp(upnp::Event),
-    Mdns(mdns::Event),
+    Nat(NatEvent),
     Topology(()),
     Client(ClientEvent),
 }
@@ -121,27 +110,9 @@ impl From<identify::Event> for BootnodeEvent {
     }
 }
 
-impl From<autonat::client::Event> for BootnodeEvent {
-    fn from(event: autonat::client::Event) -> Self {
-        BootnodeEvent::AutonatClient(event)
-    }
-}
-
-impl From<autonat::server::Event> for BootnodeEvent {
-    fn from(event: autonat::server::Event) -> Self {
-        BootnodeEvent::AutonatServer(event)
-    }
-}
-
-impl From<upnp::Event> for BootnodeEvent {
-    fn from(event: upnp::Event) -> Self {
-        BootnodeEvent::Upnp(event)
-    }
-}
-
-impl From<mdns::Event> for BootnodeEvent {
-    fn from(event: mdns::Event) -> Self {
-        BootnodeEvent::Mdns(event)
+impl From<NatEvent> for BootnodeEvent {
+    fn from(event: NatEvent) -> Self {
+        BootnodeEvent::Nat(event)
     }
 }
 
@@ -249,21 +220,9 @@ impl<I: SwarmIdentity + Clone> BootNode<I> {
             BootnodeEvent::Identify(boxed_event) => {
                 self.handle_identify_event(*boxed_event);
             }
-            BootnodeEvent::AutonatServer(event) => {
-                super::base::handle_autonat_server_event(
-                    &self.base.swarm.behaviour().topology,
-                    event,
-                );
-            }
-            BootnodeEvent::AutonatClient(event) => {
-                super::base::handle_autonat_client_event(event);
-            }
-            BootnodeEvent::Upnp(event) => {
-                super::base::handle_upnp_event(event);
-            }
-            BootnodeEvent::Mdns(event) => {
+            BootnodeEvent::Nat(event) => {
                 let local_peer_id = *self.base.swarm.local_peer_id();
-                super::base::handle_mdns_event(
+                super::nat::handle_nat_event(
                     local_peer_id,
                     &mut self.base.swarm.behaviour_mut().topology,
                     event,
@@ -345,13 +304,15 @@ impl<I: SwarmIdentity + Clone> BootNodeBuilder<I> {
             }
         };
 
-        let nat = NatBehaviours::from_config(network_config);
         let connection_limits = super::base::build_connection_limits(network_config);
         let base = super::builder::build_base_node(
             infra,
             network_config,
             "Bootnode",
-            move |pk, topology| BootnodeBehaviour::from_parts(pk, topology, nat, connection_limits),
+            move |pk, topology| {
+                let nat = NatBehaviour::from_config(network_config, pk.to_peer_id());
+                BootnodeBehaviour::from_parts(pk, topology, nat, connection_limits)
+            },
         )
         .await?;
 
