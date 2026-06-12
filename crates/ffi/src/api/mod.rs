@@ -6,4 +6,5 @@
 //! from these signatures, never hand-maintained alongside them.
 
 pub mod client;
+pub mod logging;
 pub mod types;

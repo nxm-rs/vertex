@@ -13,6 +13,8 @@
 //! then drives uploads and downloads through it. Inputs and outputs cross the
 //! boundary as flat byte vectors, strings, and primitives; the strong domain
 //! types are reconstructed immediately inside Rust and never leak outward.
+//! [`api::logging::init_logging`] installs a tracing subscriber that streams the
+//! node's diagnostics to the host as typed [`api::logging::LogLine`] events.
 //!
 //! # Bindings
 //!
