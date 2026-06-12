@@ -102,6 +102,11 @@ jobs:
       # channel and would otherwise override the installed nightly.
       - name: Build peer stack for wasm32
         run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-util-runtime -p vertex-swarm-peer-score -p vertex-swarm-peer-manager -p vertex-tasks -p vertex-net-dnsaddr-doh
+      # The full client cone: `vertex-swarm-node` pulls topology and every
+      # `/swarm/...` wire protocol, so this is the milestone wasm build for a
+      # browser client node.
+      - name: Build client cone for wasm32
+        run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-node
 
   ci-success:
     name: ci success

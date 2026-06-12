@@ -60,6 +60,10 @@ mod gossip;
 mod profile;
 mod reachability;
 mod readiness;
+// The interface watcher monitors netdev for subnet discovery, which only exists
+// natively. The browser has no interfaces to enumerate, so the wasm sibling is
+// a no-op driver with the same signature.
+#[cfg_attr(target_arch = "wasm32", path = "tasks_wasm.rs")]
 mod tasks;
 
 #[cfg(test)]

@@ -4,6 +4,10 @@ Two crates split by weight. `vertex-metrics` is the leaf with guards, macros, la
 
 Root-level rules in `/AGENTS.md` apply here too. The notes below are the area-specific overlay.
 
+## Feature split: `server` vs the wasm-safe core
+
+`vertex-observability` carries the native infrastructure behind a default-on `server` feature: the tracing subscriber, OTLP exporters, the Prometheus recorder, the `axum` metrics HTTP server, the process hooks, and profiling. That stack pulls `axum` -> `tokio[net]` -> `mio`, which does not build for `wasm32`, so the workspace dependency sets `default-features = false`. With the server off, the crate still exposes the platform-neutral surface: the `vertex-metrics` re-exports (recording macros, RAII guards, label utilities, `LabelValue`) and the histogram bucket presets plus `HistogramBucketConfig`. The wasm cone (topology and the `/swarm/...` wire crates) takes this default. Native consumers that serve metrics or set up tracing (`vertex-node-builder`, `vertex-node-core`, `vertex-node-commands`, `bin/vertex`) re-enable it with `features = ["server"]`. `profiling`, `jemalloc`, and `tokio-console` all imply `server`. Keep `HistogramBucketConfig` and the bucket presets in `metrics::buckets` (server-free) so a wasm wire crate can still declare its `HISTOGRAM_BUCKETS`.
+
 ## Dos
 
 - New metric primitives (RAII guards, macros, label helpers) go in `vertex-metrics`. Heavy infra (subscriber layers, exporters, HTTP servers) goes in `vertex-observability`.

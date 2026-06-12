@@ -37,6 +37,23 @@ use vertex_net_dialer::DialTracker;
 use vertex_net_peer_registry::PeerRegistry;
 
 pub(crate) type ConnectionRegistry = PeerRegistry<OverlayAddress, Option<DialReason>>;
+
+/// Boxed future that resolves `/dnsaddr/` bootnodes and trusted peers into
+/// dialable multiaddrs (resolved bootnodes, resolved trusted).
+///
+/// Native resolution runs on the multi-threaded executor, so the future is
+/// `Send`. In the browser, DNS-over-HTTPS resolution is backed by `fetch`,
+/// whose future is `!Send`; the wasm swarm is single-threaded, so the `Send`
+/// bound is dropped there.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type BootnodeResolutionFuture =
+    Pin<Box<dyn Future<Output = (Vec<Multiaddr>, Vec<Multiaddr>)> + Send>>;
+
+/// Boxed bootnode-resolution future for the browser build (see the native
+/// definition for the `Send` rationale).
+#[cfg(target_arch = "wasm32")]
+pub(crate) type BootnodeResolutionFuture =
+    Pin<Box<dyn Future<Output = (Vec<Multiaddr>, Vec<Multiaddr>)>>>;
 use crate::TopologyCommand;
 use crate::builder::PendingTopologyTasks;
 use crate::composed::ProtocolBehaviours;
@@ -265,9 +282,7 @@ pub struct TopologyBehaviour<I: SwarmIdentity + Clone> {
     pub(crate) dial_rate_timer: Option<Pin<Box<tokio::time::Sleep>>>,
 
     // Pending dnsaddr resolution for bootnodes (resolved_bootnodes, resolved_trusted)
-    #[allow(clippy::type_complexity)]
-    pub(crate) pending_bootnode_resolution:
-        Option<Pin<Box<dyn Future<Output = (Vec<Multiaddr>, Vec<Multiaddr>)> + Send>>>,
+    pub(crate) pending_bootnode_resolution: Option<BootnodeResolutionFuture>,
 
     /// Static NAT addresses to emit as external addresses on first poll.
     /// Cleared after emitting to avoid re-emission.
