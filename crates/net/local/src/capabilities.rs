@@ -52,13 +52,29 @@ pub fn advertise_filter<'a>(
 pub struct LocalCapabilities {
     listen_addrs: RwLock<Vec<Multiaddr>>,
     capability: RwLock<IpCapability>,
+    /// Pin the reported capability to [`IpCapability::Dual`] regardless of
+    /// listen addresses. Set for dial-only nodes, which never listen and so
+    /// can never derive a capability from listeners, yet can dial whatever
+    /// address family their host stack routes.
+    dial_only: bool,
 }
 
 impl LocalCapabilities {
     pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Capabilities for a dial-only node: no listeners will ever register,
+    /// so the IP capability is pinned to [`IpCapability::Dual`].
+    ///
+    /// This is the same reasoning the browser target applies globally (see
+    /// [`Self::capability`]): an outbound-only node is not limited by what
+    /// it listens on, and a dial into an unroutable family fails fast at
+    /// the socket rather than poisoning the routing table.
+    pub fn dial_only() -> Self {
         Self {
-            listen_addrs: RwLock::new(Vec::new()),
-            capability: RwLock::new(IpCapability::default()),
+            dial_only: true,
+            ..Self::default()
         }
     }
 
@@ -110,21 +126,27 @@ impl LocalCapabilities {
     /// The locally observed IP dial capability.
     ///
     /// On native targets this is derived from the node's own listen addresses
-    /// (a node with no IPv6 listener does not dial IPv6 peers, and so on). A
-    /// browser client has no listeners, so the listen-address heuristic would
-    /// leave it at [`IpCapability::None`] and reject every dial. The browser can
-    /// in fact open outbound connections to either address family through its
-    /// own network stack, so on wasm32 the capability is fixed at
-    /// [`IpCapability::Dual`].
-    #[cfg(not(target_arch = "wasm32"))]
+    /// (a node with no IPv6 listener does not dial IPv6 peers, and so on),
+    /// except for dial-only nodes ([`Self::dial_only`]), which have no
+    /// listeners by construction and report [`IpCapability::Dual`]. A
+    /// browser client has no listeners either, so on wasm32 the capability is
+    /// always [`IpCapability::Dual`]: the browser opens outbound connections
+    /// to either address family through its own network stack.
     pub fn capability(&self) -> IpCapability {
+        if cfg!(target_arch = "wasm32") || self.dial_only {
+            return IpCapability::Dual;
+        }
         *self.capability.read()
     }
 
-    /// Browser dial capability: see the native definition for the rationale.
-    #[cfg(target_arch = "wasm32")]
-    pub fn capability(&self) -> IpCapability {
-        IpCapability::Dual
+    /// The combined dial filter for this node: the current IP capability
+    /// plus the transport suites this build target's swarm assembly can
+    /// dial ([`crate::TransportCapability::platform`]).
+    pub fn dial_capability(&self) -> crate::DialCapability {
+        crate::DialCapability {
+            ip: self.capability(),
+            transport: crate::TransportCapability::platform(),
+        }
     }
 
     /// Get a clone of listen addresses.
@@ -179,6 +201,18 @@ mod tests {
         assert_eq!(addrs.len(), 1);
         assert!(!addrs.contains(&addr1));
         assert!(addrs.contains(&addr2));
+    }
+
+    #[test]
+    fn dial_only_pins_capability_to_dual() {
+        let cap = LocalCapabilities::dial_only();
+        assert_eq!(cap.capability(), IpCapability::Dual);
+        assert!(cap.capability().is_known());
+
+        // Listen events never arrive for a dial-only node, but even if one
+        // did the pin holds: capability stays Dual.
+        cap.on_new_listen_addr(parse_addr("/ip4/127.0.0.1/tcp/1634"));
+        assert_eq!(cap.capability(), IpCapability::Dual);
     }
 
     #[test]

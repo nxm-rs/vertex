@@ -61,6 +61,9 @@ pub struct TopologyBehaviourBuilder<I: SwarmIdentity + Clone> {
     bootnodes: Vec<Multiaddr>,
     trusted_peers: Vec<Multiaddr>,
     nat_addrs: Vec<Multiaddr>,
+    /// No listen addresses configured: the node is dial-only, so its IP
+    /// capability is pinned instead of listener-derived.
+    dial_only: bool,
     trust_local_peers: bool,
     scoring_config: SwarmScoringConfig,
     max_per_bin: usize,
@@ -84,6 +87,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
             bootnodes: network_config.bootnodes().to_vec(),
             trusted_peers: network_config.trusted_peers().to_vec(),
             nat_addrs: network_config.nat_addrs().to_vec(),
+            dial_only: network_config.listen_addrs().is_empty(),
             trust_local_peers: network_config.trust_local_peers(),
             scoring_config: SwarmScoringConfig::builder()
                 .ban_threshold(peer_config.ban_threshold())
@@ -170,7 +174,16 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
             .unwrap_or(pacing.evaluation_interval);
         let dial_quota = self.config.dial_quota.unwrap_or(pacing.dial_quota);
 
-        let local_capabilities = Arc::new(LocalCapabilities::new());
+        // A dial-only node never registers a listen address, so the
+        // listener-derived IP capability would stay unknown and the dial
+        // filter would reject every ip4/dns4 address. Pin it to dual-stack
+        // instead: an outbound-only node dials whatever its host stack
+        // routes (the browser target applies the same pin globally).
+        let local_capabilities = Arc::new(if self.dial_only {
+            LocalCapabilities::dial_only()
+        } else {
+            LocalCapabilities::new()
+        });
 
         // LocalAddressManager handles NAT address advertisement
         // Note: We no longer track peer-observed addresses - they contain
@@ -328,7 +341,7 @@ mod tests {
         peers: DefaultPeerConfig,
         routing: KademliaConfig,
         bootnodes: Vec<Multiaddr>,
-        empty_addrs: Vec<Multiaddr>,
+        listen_addrs: Vec<Multiaddr>,
         connection_profile: Option<ConnectionProfile>,
     }
 
@@ -338,7 +351,7 @@ mod tests {
                 peers: DefaultPeerConfig::default(),
                 routing: KademliaConfig::default(),
                 bootnodes: vec!["/ip4/127.0.0.1/tcp/1634".parse().expect("valid multiaddr")],
-                empty_addrs: Vec::new(),
+                listen_addrs: Vec::new(),
                 connection_profile: None,
             }
         }
@@ -346,7 +359,7 @@ mod tests {
 
     impl SwarmNetworkConfig for TestConfig {
         fn listen_addrs(&self) -> &[Multiaddr] {
-            &self.empty_addrs
+            &self.listen_addrs
         }
         fn bootnodes(&self) -> &[Multiaddr] {
             &self.bootnodes
@@ -438,6 +451,33 @@ mod tests {
 
     fn identity_of(node_type: SwarmNodeType) -> Identity {
         Identity::random(vertex_swarm_spec::init_testnet(), node_type)
+    }
+
+    /// A configuration without listen addresses builds a dial-only node:
+    /// the IP capability is pinned to dual-stack so bootnode and discovery
+    /// dials are never filtered for lack of a listener-derived capability.
+    #[test]
+    fn no_listen_addrs_pins_dial_capability_to_dual() {
+        use vertex_net_local::IpCapability;
+
+        let (behaviour, _handle) =
+            TopologyBehaviourBuilder::new(test_identity(), &TestConfig::new())
+                .try_build()
+                .expect("build without runtime");
+        assert_eq!(behaviour.nat_discovery.capability(), IpCapability::Dual);
+
+        let listening = TestConfig {
+            listen_addrs: vec!["/ip4/0.0.0.0/tcp/1634".parse().expect("valid multiaddr")],
+            ..TestConfig::new()
+        };
+        let (behaviour, _handle) = TopologyBehaviourBuilder::new(test_identity(), &listening)
+            .try_build()
+            .expect("build without runtime");
+        assert_eq!(
+            behaviour.nat_discovery.capability(),
+            IpCapability::None,
+            "a listening node derives capability from its listeners, not the pin"
+        );
     }
 
     /// Assert that a built behaviour carries the pacing numbers of `profile`.

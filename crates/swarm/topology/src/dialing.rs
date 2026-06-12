@@ -77,14 +77,18 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             return;
         }
 
-        // One call: filter addresses, build DialOpts, register in-flight
-        let capability = self.nat_discovery.capability();
+        // One call: filter addresses, build DialOpts, register in-flight.
+        // The filter covers both halves of dialability: IP-family
+        // reachability and whether the assembled transport stack supports
+        // the address shape at all (TCP natively, secure websockets in the
+        // browser).
+        let capability = self.nat_discovery.dial_capability();
         let opts = match self.dial_tracker.prepare_and_start(
             target.overlay(),
             peer_id,
             target.addrs(),
             reason,
-            |addr| vertex_net_local::is_dialable(addr, capability),
+            |addr| capability.can_dial(addr),
         ) {
             Ok(opts) => opts,
             Err(PrepareError::NoReachableAddresses) => {

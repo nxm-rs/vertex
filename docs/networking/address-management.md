@@ -20,6 +20,18 @@ Classifies IP addresses into scopes for smart address selection:
 
 `IpCapability` tracks dual-stack support (IPv4, IPv6, or both) and filters peer addresses we can actually dial.
 
+## Dial Eligibility (`DialCapability`)
+
+Whether an address is dialable has two independent halves, combined in `DialCapability`:
+
+- **IP half** (`IpCapability`): derived from the node's own listen addresses. A dial-only node (no listen addresses configured, including every `ClientLauncher` node and the browser client) never registers a listener, so its capability is pinned to dual-stack instead: an outbound-only node dials whatever address family its host stack routes.
+- **Transport half** (`TransportCapability`): what the assembled libp2p stack can open, mirroring the swarm assembly in `vertex-swarm-node`. Native builds dial TCP (with DNS resolution) and no websockets; the browser build dials secure websockets only (`/dns4/<host>/../tls/ws` and the AutoTLS `/ip4/../tls/sni/<host>/ws` shapes).
+
+`DialCapability` is applied in two places, which therefore can never disagree:
+
+- **Dial preparation** (`vertex-swarm-topology::dialing`): per-address filter before `DialOpts` are built; a target with no surviving address is released without a dial attempt.
+- **Hive gossip receipt** (`on_hive_peers_received`): records carrying no locally-dialable multiaddr are dropped before they enter the known table (`topology_gossip_rejected_total{reason="not_dialable"}`), so the candidate supply never queues dials that can only fail inside the transport. While the IP half is still unknown (a listening node before its first listener registers) only the transport half applies.
+
 ## Local Network Detection
 
 `LocalCapabilities` queries system network interfaces to determine subnet membership. This enables accurate "same subnet" checks without hardcoding subnet sizes.
