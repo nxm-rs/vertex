@@ -12,11 +12,22 @@ message Delivery {
   bytes stamp = 3;
 }
 
-// Receipt acknowledging chunk storage.
+// Receipt acknowledging chunk storage. This frame models a successful custody
+// acknowledgement only; the reference does not sign its failure responses
+// (a failure is a receipt with an error string and no signature), so there is
+// no signed failure receipt to model.
+//
+// A failure is signalled by resetting the stream, not by a frame: a responder
+// that cannot store resets, which the reference pusher reads as a failed push
+// at every hop (it never reads a receipt to misjudge). So we send no failure
+// receipt and need no error field. Field 4 was a remote error string in the
+// reference; we never read it (it is adversarial input the reference does not
+// introspect), so it is omitted here. An inbound field-4 value is skipped
+// without allocation. On receive, a failure is detected structurally by an
+// empty `signature` (field 5 keeps its number).
 message Receipt {
   bytes address = 1;
   bytes signature = 2;
   bytes nonce = 3;
-  string err = 4;
   uint32 storage_radius = 5;
 }

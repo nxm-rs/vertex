@@ -53,19 +53,18 @@ impl ProtoMessage for Request {
     }
 }
 
-/// Delivery of a chunk, or a not-found error.
+/// Delivery of a chunk, or an opaque failure.
 ///
-/// A successful delivery carries the [`StampedChunk`]; a failed one carries the
-/// remote's error string.
+/// A successful delivery carries the [`StampedChunk`]. A failure carries no
+/// payload: the remote's error string is adversarial input the reference does
+/// not introspect, so we never read it. Failure is signalled on the wire by
+/// empty `data`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Delivery {
     /// The chunk and its stamp.
-    ///
-    /// Boxed: a [`StampedChunk`] is far larger than the error string, so boxing
-    /// keeps the enum small for the common error path.
     Chunk(Box<StampedChunk>),
-    /// Retrieval failed (e.g. chunk not found), with the remote's message.
-    Error(String),
+    /// Retrieval failed. The reason is intentionally not carried.
+    Error,
 }
 
 impl Delivery {
@@ -74,17 +73,18 @@ impl Delivery {
         Self::Chunk(Box::new(chunk))
     }
 
-    /// Create an error delivery.
-    pub fn error(msg: impl Into<String>) -> Self {
-        Self::Error(msg.into())
+    /// Create a failure delivery.
+    pub fn error() -> Self {
+        Self::Error
     }
 
-    /// Check if this delivery is an error.
+    /// Check if this delivery is a failure.
     pub fn is_error(&self) -> bool {
-        matches!(self, Self::Error(_))
+        matches!(self, Self::Error)
     }
 
-    /// Encode this delivery to its protobuf wire form.
+    /// Encode this delivery to its protobuf wire form. A failure is encoded as
+    /// empty `data`/`stamp`; we emit nothing on the (omitted) error field.
     fn into_proto(self) -> vertex_swarm_net_proto::retrieval::Delivery {
         match self {
             Self::Chunk(chunk) => {
@@ -92,13 +92,11 @@ impl Delivery {
                 vertex_swarm_net_proto::retrieval::Delivery {
                     data: chunk.into_bytes().to_vec(),
                     stamp: stamp.to_bytes().to_vec(),
-                    err: String::new(),
                 }
             }
-            Self::Error(err) => vertex_swarm_net_proto::retrieval::Delivery {
+            Self::Error => vertex_swarm_net_proto::retrieval::Delivery {
                 data: Vec::new(),
                 stamp: Vec::new(),
-                err,
             },
         }
     }
@@ -106,14 +104,23 @@ impl Delivery {
     /// Decode a delivery from its protobuf wire form, reconstructing and
     /// validating the chunk against the requested address.
     ///
-    /// An error delivery carries the `err` string and no stamp; it is decodable
-    /// from `err` alone, so the chunk is not reconstructed in that case.
+    /// An honest failure is detected structurally by an empty `data` AND an
+    /// empty `stamp`: the reference reports a retrieval failure with an empty
+    /// delivery (it does not reset the stream for retrieval), and that is the
+    /// only signal we read. Any error string the remote set on the (unmodelled)
+    /// wire field is skipped without allocation.
+    ///
+    /// Once `data` is non-empty the frame claims to carry a chunk, so it must
+    /// reconstruct and validate against the requested address; otherwise it is
+    /// malformed data, which surfaces as a decode error rather than collapsing
+    /// into an honest-failure signal. The two are scored differently upstream,
+    /// so the distinction is kept strict here.
     fn from_proto(
         proto: vertex_swarm_net_proto::retrieval::Delivery,
         expected: ChunkAddress,
     ) -> Result<Self, RetrievalError> {
-        if !proto.err.is_empty() {
-            return Ok(Self::error(proto.err));
+        if proto.data.is_empty() && proto.stamp.is_empty() {
+            return Ok(Self::Error);
         }
         let stamp = Stamp::try_from_slice(&proto.stamp)?;
         let chunk = StampedChunk::reconstruct(expected, Bytes::from(proto.data), stamp)?;
@@ -215,7 +222,7 @@ mod tests {
                 assert_eq!(*chunk.address(), address);
                 assert_eq!(chunk.chunk().clone().into_bytes(), wire_data);
             }
-            Delivery::Error(e) => panic!("expected chunk, got error {e}"),
+            Delivery::Error => panic!("expected chunk, got error"),
         }
     }
 
@@ -234,13 +241,35 @@ mod tests {
         let address = ChunkAddress::new([0x42; 32]);
         let mut enc = DeliveryCodec::new(1024, address);
         let mut buf = BytesMut::new();
-        enc.encode(Delivery::error("chunk not found"), &mut buf)
-            .unwrap();
+        enc.encode(Delivery::error(), &mut buf).unwrap();
 
         let mut dec = DeliveryCodec::new(1024, address);
         let decoded = dec.decode(&mut buf).unwrap().expect("frame decoded");
         assert!(decoded.is_error());
-        assert_eq!(decoded, Delivery::error("chunk not found"));
+        assert_eq!(decoded, Delivery::error());
+    }
+
+    /// Wire-compat: the reference signals a retrieval failure with empty data
+    /// plus a (now unmodelled) `err` string on field 3. We must decode that as a
+    /// failure and skip the err bytes entirely. This hand-builds such a frame:
+    /// a length-delimited message carrying only field 3 (`tag 0x1A`, wire type 2)
+    /// with an arbitrary error string, and asserts the decoder ignores it.
+    #[test]
+    fn decodes_reference_failure_frame_ignoring_err_field() {
+        let address = ChunkAddress::new([0x42; 32]);
+        // Inner message: field 3 (err), length-delimited, value "boom". No data,
+        // no stamp (both empty, hence omitted on the wire).
+        let inner = [&[0x1Au8, 0x04][..], b"boom"].concat();
+        // quick-protobuf framing prepends the message length as a varint; for a
+        // 6-byte message that is a single byte.
+        let mut buf = BytesMut::new();
+        buf.extend_from_slice(&[inner.len() as u8]);
+        buf.extend_from_slice(&inner);
+
+        let mut dec = DeliveryCodec::new(1024, address);
+        let decoded = dec.decode(&mut buf).unwrap().expect("frame decoded");
+        assert!(decoded.is_error(), "empty data must decode as a failure");
+        assert_eq!(decoded, Delivery::error());
     }
 
     #[test]

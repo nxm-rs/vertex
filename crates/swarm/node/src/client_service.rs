@@ -64,19 +64,20 @@ pub enum ChunkTransferError {
     /// Request cancelled.
     #[error("Request cancelled")]
     Cancelled,
-    /// Protocol error.
+    /// Local protocol failure (dial, stream, or an inactive handler). Failures
+    /// reported by the remote peer are carried by [`Self::Remote`] instead.
     #[error("Protocol error: {0}")]
     Protocol(String),
+    /// The remote peer reported a failure (a retrieval error delivery or a
+    /// non-success pushsync receipt). The reason is intentionally not carried:
+    /// the remote's error string is adversarial input we never read.
+    #[error("Remote peer reported a failure")]
+    Remote,
 
     // Retrieval-specific: only a get produces this.
     /// Chunk not found.
     #[error("Chunk not found: {0}")]
     NotFound(ChunkAddress),
-
-    // Push-specific: only a put produces this.
-    /// The storer rejected the chunk. Carries the storer's wire error string.
-    #[error("Push rejected by storer: {0}")]
-    PushRejected(String),
 }
 
 impl ClientHandle {

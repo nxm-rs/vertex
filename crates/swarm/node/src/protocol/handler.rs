@@ -566,21 +566,22 @@ impl ClientHandler {
     ) {
         let overlay = self.overlay();
         match delivery {
-            vertex_swarm_net_retrieval::Delivery::Error(err) => {
-                // A storer-supplied error string (for example "not found") is a
-                // plain protocol failure, not malformed data. Malformed chunks
-                // never reach this arm: they fail reconstruction at decode and
-                // surface as a dial upgrade error.
-                debug!(?overlay, %address, error = %err, "Retrieval failed");
+            vertex_swarm_net_retrieval::Delivery::Error => {
+                // The remote reported a failure (signalled by empty data). The
+                // reason is adversarial input we never read; it is a plain
+                // protocol failure, not malformed data. Malformed chunks never
+                // reach this arm: they fail reconstruction at decode and surface
+                // as a dial upgrade error.
+                debug!(?overlay, %address, "Retrieval failed");
                 if let Some(overlay) = overlay {
                     self.push_event(HandlerEvent::RetrievalFailed {
                         overlay,
                         address,
-                        error: err.clone(),
+                        error: "remote reported a failure".to_string(),
                         kind: FailureKind::Protocol,
                     });
                 }
-                let _ = response.send(Err(ChunkTransferError::Protocol(err)));
+                let _ = response.send(Err(ChunkTransferError::Remote));
             }
             vertex_swarm_net_retrieval::Delivery::Chunk(chunk) => {
                 let Some(overlay) = overlay else {
@@ -607,44 +608,51 @@ impl ClientHandler {
     /// Handle pushsync receipt, resolving the caller's response channel.
     fn on_pushsync_receipt(
         &mut self,
-        receipt: vertex_swarm_net_pushsync::Receipt,
+        response_msg: vertex_swarm_net_pushsync::ReceiptResponse,
+        address: ChunkAddress,
         response: PushResponseTx,
         latency: Duration,
     ) {
         let overlay = self.overlay();
-        if let Some(err) = receipt.error {
-            debug!(?overlay, address = %receipt.address, error = %err, "Pushsync failed");
-            if let Some(overlay) = overlay {
-                self.push_event(HandlerEvent::PushFailed {
+        match response_msg {
+            vertex_swarm_net_pushsync::ReceiptResponse::Failed => {
+                // The remote reported a rejection (signalled by an empty
+                // signature; the reference does not sign its failures). The
+                // reason is adversarial input we never read.
+                debug!(?overlay, %address, "Pushsync failed");
+                if let Some(overlay) = overlay {
+                    self.push_event(HandlerEvent::PushFailed {
+                        overlay,
+                        address,
+                        error: "remote reported a failure".to_string(),
+                        kind: FailureKind::Protocol,
+                    });
+                }
+                let _ = response.send(Err(ChunkTransferError::Remote));
+            }
+            vertex_swarm_net_pushsync::ReceiptResponse::Stored(receipt) => {
+                let Some(overlay) = overlay else {
+                    let _ = response.send(Err(ChunkTransferError::Protocol(
+                        "handler not active".to_string(),
+                    )));
+                    return;
+                };
+                debug!(%overlay, address = %receipt.address, "Received receipt");
+                self.push_event(HandlerEvent::ReceiptReceived {
                     overlay,
                     address: receipt.address,
-                    error: err.clone(),
-                    kind: FailureKind::Protocol,
+                    signature: receipt.signature,
+                    nonce: receipt.nonce,
+                    storage_radius: receipt.storage_radius,
+                    latency,
                 });
+                let _ = response.send(Ok(PushReceipt {
+                    storer: overlay,
+                    signature: receipt.signature,
+                    nonce: receipt.nonce,
+                    storage_radius: receipt.storage_radius,
+                }));
             }
-            let _ = response.send(Err(ChunkTransferError::PushRejected(err)));
-        } else {
-            let Some(overlay) = overlay else {
-                let _ = response.send(Err(ChunkTransferError::Protocol(
-                    "handler not active".to_string(),
-                )));
-                return;
-            };
-            debug!(%overlay, address = %receipt.address, "Received receipt");
-            self.push_event(HandlerEvent::ReceiptReceived {
-                overlay,
-                address: receipt.address,
-                signature: receipt.signature,
-                nonce: receipt.nonce,
-                storage_radius: receipt.storage_radius,
-                latency,
-            });
-            let _ = response.send(Ok(PushReceipt {
-                storer: overlay,
-                signature: receipt.signature,
-                nonce: receipt.nonce,
-                storage_radius: receipt.storage_radius,
-            }));
         }
     }
 }
@@ -1098,7 +1106,7 @@ impl ClientHandler {
             ) => {
                 let latency = requested_at.elapsed();
                 debug!(%address, "Received pushsync receipt");
-                self.on_pushsync_receipt(receipt, response, latency);
+                self.on_pushsync_receipt(receipt, address, response, latency);
             }
             (
                 ClientOutboundOutput::Pseudosettle(ack),

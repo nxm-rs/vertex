@@ -29,7 +29,7 @@ use vertex_swarm_net_pseudosettle::{
 };
 use vertex_swarm_net_pushsync::{
     Delivery as PushsyncDelivery, PROTOCOL_NAME as PUSHSYNC_PROTOCOL, PushsyncInboundProtocol,
-    PushsyncOutboundProtocol, PushsyncResponder, Receipt as PushsyncReceipt,
+    PushsyncOutboundProtocol, PushsyncResponder, ReceiptResponse as PushsyncReceiptResponse,
 };
 use vertex_swarm_net_retrieval::{
     Delivery as RetrievalDelivery, PROTOCOL_NAME as RETRIEVAL_PROTOCOL,
@@ -330,8 +330,8 @@ pub(crate) enum ClientOutboundOutput {
     Pricing,
     /// Received chunk delivery.
     Retrieval(RetrievalDelivery),
-    /// Received receipt.
-    Pushsync(PushsyncReceipt),
+    /// Received receipt response (signed receipt on success, or failure).
+    Pushsync(PushsyncReceiptResponse),
     /// Received pseudosettle ack.
     Pseudosettle(PaymentAck),
     /// Cheque sent; carries the peer's negotiated headers.

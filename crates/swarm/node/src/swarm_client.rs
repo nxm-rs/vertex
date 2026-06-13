@@ -473,9 +473,7 @@ mod tests {
         match rx.recv().await.expect("command emitted") {
             ClientCommand::PushChunk { response, .. } => {
                 response
-                    .send(Err(ChunkTransferError::PushRejected(
-                        "rejected".to_string(),
-                    )))
+                    .send(Err(ChunkTransferError::Remote))
                     .expect("receiver alive");
             }
             other => panic!("unexpected command: {other:?}"),
@@ -483,8 +481,8 @@ mod tests {
 
         let result = push.await.unwrap();
         match result {
-            Err(ChunkTransferError::PushRejected(reason)) => assert_eq!(reason, "rejected"),
-            other => panic!("expected PushRejected, got {other:?}"),
+            Err(ChunkTransferError::Remote) => {}
+            other => panic!("expected Remote, got {other:?}"),
         }
     }
 
