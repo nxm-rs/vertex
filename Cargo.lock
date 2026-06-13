@@ -8484,8 +8484,11 @@ dependencies = [
 name = "vertex-net-ratelimiter"
 version = "0.1.0"
 dependencies = [
+ "futures",
+ "futures-timer",
  "parking_lot",
  "thiserror 2.0.18",
+ "tokio",
  "vertex-util-runtime",
 ]
 

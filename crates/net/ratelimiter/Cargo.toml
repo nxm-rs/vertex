@@ -13,6 +13,14 @@ thiserror.workspace = true
 # Monotonic clock via web-time so the GCRA limiter runs in the wasm cone instead
 # of reaching the std clock, which panics on wasm32-unknown-unknown.
 vertex-util-runtime.workspace = true
+# Delay timer for the outbound self-limiter's parking queue. The wasm-bindgen
+# feature routes the timer through the browser clock on wasm32 instead of the
+# std clock, which panics on wasm32-unknown-unknown.
+futures-timer = { workspace = true }
+
+[dev-dependencies]
+futures.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "time", "test-util"] }
 
 [lints]
 workspace = true
