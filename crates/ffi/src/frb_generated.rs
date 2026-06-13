@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -2329224;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1948237842;
 
 // Section: executor
 
@@ -135,6 +135,66 @@ fn wire__crate__api__client__VertexClient_download_chunk_impl(
         },
     )
 }
+fn wire__crate__api__client__VertexClient_download_stream_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "VertexClient_download_stream",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<VertexClient>,
+            >>::sse_decode(&mut deserializer);
+            let api_addresses = <Vec<Vec<u8>>>::sse_decode(&mut deserializer);
+            let api_config = <crate::api::types::VertexStreamConfig>::sse_decode(&mut deserializer);
+            let api_sink = <StreamSink<
+                crate::api::types::VertexChunkData,
+                flutter_rust_bridge::for_generated::SseCodec,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::error::FfiError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::api::client::VertexClient::download_stream(
+                        &*api_that_guard,
+                        api_addresses,
+                        api_config,
+                        api_sink,
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__api__client__VertexClient_upload_chunk_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -181,6 +241,67 @@ fn wire__crate__api__client__VertexClient_upload_chunk_impl(
                     let output_ok = crate::api::client::VertexClient::upload_chunk(
                         &*api_that_guard,
                         api_chunk,
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__client__VertexClient_upload_stream_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "VertexClient_upload_stream",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<VertexClient>,
+            >>::sse_decode(&mut deserializer);
+            let api_chunks =
+                <Vec<crate::api::types::VertexChunkUpload>>::sse_decode(&mut deserializer);
+            let api_config = <crate::api::types::VertexStreamConfig>::sse_decode(&mut deserializer);
+            let api_sink = <StreamSink<
+                crate::api::types::VertexUploadAck,
+                flutter_rust_bridge::for_generated::SseCodec,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::error::FfiError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::api::client::VertexClient::upload_stream(
+                        &*api_that_guard,
+                        api_chunks,
+                        api_config,
+                        api_sink,
                     )?;
                     Ok(output_ok)
                 })())
@@ -402,6 +523,26 @@ impl SseDecode
     }
 }
 
+impl SseDecode
+    for StreamSink<crate::api::types::VertexChunkData, flutter_rust_bridge::for_generated::SseCodec>
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <String>::sse_decode(deserializer);
+        return StreamSink::deserialize(inner);
+    }
+}
+
+impl SseDecode
+    for StreamSink<crate::api::types::VertexUploadAck, flutter_rust_bridge::for_generated::SseCodec>
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <String>::sse_decode(deserializer);
+        return StreamSink::deserialize(inner);
+    }
+}
+
 impl SseDecode for String {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -591,6 +732,18 @@ impl SseDecode for Vec<crate::api::metrics::HistogramValue> {
     }
 }
 
+impl SseDecode for Vec<Vec<u8>> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<Vec<u8>>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
 impl SseDecode for Vec<u8> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -610,6 +763,20 @@ impl SseDecode for Vec<(String, String)> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<(String, String)>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::types::VertexChunkUpload> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::types::VertexChunkUpload>::sse_decode(
+                deserializer,
+            ));
         }
         return ans_;
     }
@@ -665,6 +832,30 @@ impl SseDecode for crate::api::metrics::MetricsSnapshot {
     }
 }
 
+impl SseDecode for Option<String> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<String>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::types::VertexPushReceipt> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::api::types::VertexPushReceipt>::sse_decode(
+                deserializer,
+            ));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<Vec<u8>> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -715,6 +906,24 @@ impl SseDecode for usize {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         deserializer.cursor.read_u64::<NativeEndian>().unwrap() as _
+    }
+}
+
+impl SseDecode for crate::api::types::VertexChunkData {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_index = <u64>::sse_decode(deserializer);
+        let mut var_address = <Vec<u8>>::sse_decode(deserializer);
+        let mut var_data = <Vec<u8>>::sse_decode(deserializer);
+        let mut var_stamp = <Vec<u8>>::sse_decode(deserializer);
+        let mut var_error = <Option<String>>::sse_decode(deserializer);
+        return crate::api::types::VertexChunkData {
+            index: var_index,
+            address: var_address,
+            data: var_data,
+            stamp: var_stamp,
+            error: var_error,
+        };
     }
 }
 
@@ -791,6 +1000,35 @@ impl SseDecode for crate::api::types::VertexPushReceipt {
     }
 }
 
+impl SseDecode for crate::api::types::VertexStreamConfig {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_windowBytes = <u64>::sse_decode(deserializer);
+        let mut var_maxConcurrency = <u32>::sse_decode(deserializer);
+        return crate::api::types::VertexStreamConfig {
+            window_bytes: var_windowBytes,
+            max_concurrency: var_maxConcurrency,
+        };
+    }
+}
+
+impl SseDecode for crate::api::types::VertexUploadAck {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_index = <u64>::sse_decode(deserializer);
+        let mut var_address = <Vec<u8>>::sse_decode(deserializer);
+        let mut var_receipt =
+            <Option<crate::api::types::VertexPushReceipt>>::sse_decode(deserializer);
+        let mut var_error = <Option<String>>::sse_decode(deserializer);
+        return crate::api::types::VertexUploadAck {
+            index: var_index,
+            address: var_address,
+            receipt: var_receipt,
+            error: var_error,
+        };
+    }
+}
+
 fn pde_ffi_dispatcher_primary_impl(
     func_id: i32,
     port: flutter_rust_bridge::for_generated::MessagePort,
@@ -807,22 +1045,34 @@ fn pde_ffi_dispatcher_primary_impl(
             rust_vec_len,
             data_len,
         ),
-        3 => wire__crate__api__client__VertexClient_upload_chunk_impl(
+        3 => wire__crate__api__client__VertexClient_download_stream_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        4 => wire__crate__api__logging__init_logging_impl(port, ptr, rust_vec_len, data_len),
-        5 => wire__crate__api__metrics__init_metrics_impl(port, ptr, rust_vec_len, data_len),
-        6 => wire__crate__api__metrics__metrics_snapshot_impl(port, ptr, rust_vec_len, data_len),
-        7 => wire__crate__api__types__vertex_client_config_default_impl(
+        4 => wire__crate__api__client__VertexClient_upload_chunk_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        8 => {
+        5 => wire__crate__api__client__VertexClient_upload_stream_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        6 => wire__crate__api__logging__init_logging_impl(port, ptr, rust_vec_len, data_len),
+        7 => wire__crate__api__metrics__init_metrics_impl(port, ptr, rust_vec_len, data_len),
+        8 => wire__crate__api__metrics__metrics_snapshot_impl(port, ptr, rust_vec_len, data_len),
+        9 => wire__crate__api__types__vertex_client_config_default_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        10 => {
             wire__crate__api__types__vertex_network_default_impl(port, ptr, rust_vec_len, data_len)
         }
         _ => unreachable!(),
@@ -1039,6 +1289,30 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::metrics::MetricsSnapshot>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::types::VertexChunkData {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.index.into_into_dart().into_dart(),
+            self.address.into_into_dart().into_dart(),
+            self.data.into_into_dart().into_dart(),
+            self.stamp.into_into_dart().into_dart(),
+            self.error.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::types::VertexChunkData
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::types::VertexChunkData>
+    for crate::api::types::VertexChunkData
+{
+    fn into_into_dart(self) -> crate::api::types::VertexChunkData {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::types::VertexChunkDownload {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -1150,6 +1424,50 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::types::VertexPushReceipt>
         self
     }
 }
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::types::VertexStreamConfig {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.window_bytes.into_into_dart().into_dart(),
+            self.max_concurrency.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::types::VertexStreamConfig
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::types::VertexStreamConfig>
+    for crate::api::types::VertexStreamConfig
+{
+    fn into_into_dart(self) -> crate::api::types::VertexStreamConfig {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::types::VertexUploadAck {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.index.into_into_dart().into_dart(),
+            self.address.into_into_dart().into_dart(),
+            self.receipt.into_into_dart().into_dart(),
+            self.error.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::types::VertexUploadAck
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::types::VertexUploadAck>
+    for crate::api::types::VertexUploadAck
+{
+    fn into_into_dart(self) -> crate::api::types::VertexUploadAck {
+        self
+    }
+}
 
 impl SseEncode for flutter_rust_bridge::for_generated::anyhow::Error {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -1178,6 +1496,24 @@ impl SseEncode
 
 impl SseEncode
     for StreamSink<crate::api::logging::LogLine, flutter_rust_bridge::for_generated::SseCodec>
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        unimplemented!("")
+    }
+}
+
+impl SseEncode
+    for StreamSink<crate::api::types::VertexChunkData, flutter_rust_bridge::for_generated::SseCodec>
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        unimplemented!("")
+    }
+}
+
+impl SseEncode
+    for StreamSink<crate::api::types::VertexUploadAck, flutter_rust_bridge::for_generated::SseCodec>
 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -1344,6 +1680,16 @@ impl SseEncode for Vec<crate::api::metrics::HistogramValue> {
     }
 }
 
+impl SseEncode for Vec<Vec<u8>> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <Vec<u8>>::sse_encode(item, serializer);
+        }
+    }
+}
+
 impl SseEncode for Vec<u8> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -1360,6 +1706,16 @@ impl SseEncode for Vec<(String, String)> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <(String, String)>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::types::VertexChunkUpload> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::types::VertexChunkUpload>::sse_encode(item, serializer);
         }
     }
 }
@@ -1401,6 +1757,26 @@ impl SseEncode for crate::api::metrics::MetricsSnapshot {
         <Vec<crate::api::metrics::CounterValue>>::sse_encode(self.counters, serializer);
         <Vec<crate::api::metrics::GaugeValue>>::sse_encode(self.gauges, serializer);
         <Vec<crate::api::metrics::HistogramValue>>::sse_encode(self.histograms, serializer);
+    }
+}
+
+impl SseEncode for Option<String> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <String>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::types::VertexPushReceipt> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::types::VertexPushReceipt>::sse_encode(value, serializer);
+        }
     }
 }
 
@@ -1458,6 +1834,17 @@ impl SseEncode for usize {
     }
 }
 
+impl SseEncode for crate::api::types::VertexChunkData {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u64>::sse_encode(self.index, serializer);
+        <Vec<u8>>::sse_encode(self.address, serializer);
+        <Vec<u8>>::sse_encode(self.data, serializer);
+        <Vec<u8>>::sse_encode(self.stamp, serializer);
+        <Option<String>>::sse_encode(self.error, serializer);
+    }
+}
+
 impl SseEncode for crate::api::types::VertexChunkDownload {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -1510,6 +1897,24 @@ impl SseEncode for crate::api::types::VertexPushReceipt {
         <Vec<u8>>::sse_encode(self.signature, serializer);
         <Vec<u8>>::sse_encode(self.nonce, serializer);
         <u32>::sse_encode(self.storage_radius, serializer);
+    }
+}
+
+impl SseEncode for crate::api::types::VertexStreamConfig {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u64>::sse_encode(self.window_bytes, serializer);
+        <u32>::sse_encode(self.max_concurrency, serializer);
+    }
+}
+
+impl SseEncode for crate::api::types::VertexUploadAck {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u64>::sse_encode(self.index, serializer);
+        <Vec<u8>>::sse_encode(self.address, serializer);
+        <Option<crate::api::types::VertexPushReceipt>>::sse_encode(self.receipt, serializer);
+        <Option<String>>::sse_encode(self.error, serializer);
     }
 }
 

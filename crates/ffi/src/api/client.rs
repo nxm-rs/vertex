@@ -12,6 +12,7 @@ use std::time::Duration;
 use alloy_primitives::B256;
 use alloy_signer_local::PrivateKeySigner;
 use flutter_rust_bridge::frb;
+use futures::StreamExt;
 use nectar_postage::Stamp;
 use tokio::runtime::Runtime;
 use vertex_node_api::InfrastructureContext;
@@ -24,14 +25,17 @@ use vertex_swarm_builder::{
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
+use vertex_swarm_node::{StreamConfig, get_stream, put_stream};
 use vertex_swarm_primitives::{Nonce, SwarmNodeType};
 use vertex_swarm_spec::{Spec, init_dev, init_mainnet, init_testnet};
 use vertex_tasks::{TaskExecutor, TaskManager};
 
 use crate::api::types::{
-    VertexChunkDownload, VertexChunkUpload, VertexClientConfig, VertexNetwork, VertexPushReceipt,
+    VertexChunkData, VertexChunkDownload, VertexChunkUpload, VertexClientConfig, VertexNetwork,
+    VertexPushReceipt, VertexStreamConfig, VertexUploadAck,
 };
 use crate::error::{FfiError, FfiResult};
+use crate::frb_generated::StreamSink;
 
 /// How long [`VertexClient`] waits for in-flight tasks during shutdown.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -168,6 +172,137 @@ impl VertexClient {
             served_by,
         })
     }
+
+    /// Stream-download a list of chunk addresses into `sink`.
+    ///
+    /// Drives the memory-bounded download pipeline: at most `config.window_bytes`
+    /// of chunk payload is ever in flight, and the host receives each result as a
+    /// [`VertexChunkData`] in request order. A per-address failure (a miss, wrong
+    /// bytes, or no candidate peer) arrives as an item carrying `error`, never as
+    /// a torn-down stream, so the host decides per address whether to continue.
+    ///
+    /// The bounded buffer lives in Rust: the pump pulls one stream item, copies
+    /// its payload once into the boundary shape, and forwards it before pulling
+    /// the next, so a host whose listener pauses transitively pauses the network
+    /// reads. The returned [`FfiError`] only covers up-front input rejection
+    /// (a malformed address); retrieval failures surface as stream items.
+    ///
+    /// Spawns the pump on the client's runtime and returns immediately; the
+    /// stream completes when every address has produced an item.
+    pub fn download_stream(
+        &self,
+        addresses: Vec<Vec<u8>>,
+        config: VertexStreamConfig,
+        sink: StreamSink<VertexChunkData>,
+    ) -> Result<(), FfiError> {
+        // Reject malformed input up front so the host learns immediately rather
+        // than mid-stream.
+        let parsed: Vec<ChunkAddress> = addresses
+            .iter()
+            .map(|bytes| parse_address(bytes))
+            .collect::<FfiResult<_>>()?;
+
+        let chunks = self.chunks.clone();
+        let cfg = stream_config(config);
+
+        self.runtime.spawn(async move {
+            // The pipeline preserves request order one-to-one, so zipping the
+            // address list (as a stream) against the result stream pairs each
+            // result with its address without indexing.
+            let items = futures::stream::iter(parsed.clone().into_iter().enumerate());
+            let mut stream = items.zip(get_stream(chunks, parsed, cfg));
+            while let Some(((index, requested), result)) = stream.next().await {
+                let address = requested.as_bytes().to_vec();
+                let item = match result {
+                    Ok(verified) => {
+                        let (chunk, stamp) = verified.into_inner().into_parts();
+                        VertexChunkData {
+                            index: index as u64,
+                            address,
+                            data: chunk.into_bytes().to_vec(),
+                            stamp: stamp.to_bytes().to_vec(),
+                            error: None,
+                        }
+                    }
+                    Err(error) => VertexChunkData {
+                        index: index as u64,
+                        address,
+                        data: Vec::new(),
+                        stamp: Vec::new(),
+                        error: Some(error.to_string()),
+                    },
+                };
+                // The host owns the stream lifetime; a closed sink means the
+                // host dropped its listener, so stop pumping and let the stream
+                // (and its in-flight retrievals) drop.
+                if sink.add(item).is_err() {
+                    break;
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Stream-upload a list of pre-stamped chunks, acking each into `sink`.
+    ///
+    /// The feed is the `chunks` list; the ack is the [`VertexUploadAck`] stream.
+    /// The memory-bounded upload pipeline keeps at most `config.window_bytes` of
+    /// payload in flight, admitting each chunk by its real encoded size, so a
+    /// slow host that stops draining acks transitively pauses the network pushes
+    /// and the heap stays flat regardless of how many chunks were fed.
+    ///
+    /// Each chunk is reconstructed into a strong [`StampedChunk`] before any
+    /// network call; a chunk whose bytes do not match its address is rejected
+    /// up front as an [`FfiError`] and no upload starts. Per-chunk push failures
+    /// (no storer, rejection) surface as ack items carrying `error`.
+    pub fn upload_stream(
+        &self,
+        chunks: Vec<VertexChunkUpload>,
+        config: VertexStreamConfig,
+        sink: StreamSink<VertexUploadAck>,
+    ) -> Result<(), FfiError> {
+        // Reconstruct every chunk up front so a malformed input is rejected
+        // before any push starts, and capture each address for the ack items.
+        let mut stamped = Vec::with_capacity(chunks.len());
+        let mut addresses = Vec::with_capacity(chunks.len());
+        for chunk in &chunks {
+            let s = reconstruct_upload(chunk)?;
+            addresses.push(s.address().as_bytes().to_vec());
+            stamped.push(s);
+        }
+
+        let sender = self.chunks.clone();
+        let cfg = stream_config(config);
+
+        self.runtime.spawn(async move {
+            // Zip the per-chunk addresses against the ack stream so each ack
+            // carries its address without indexing; order is preserved one-to-one.
+            let items = futures::stream::iter(addresses.into_iter().enumerate());
+            let mut stream = items.zip(put_stream(sender, stamped, cfg));
+            while let Some(((index, address), result)) = stream.next().await {
+                let ack = match result {
+                    Ok(receipt) => VertexUploadAck {
+                        index: index as u64,
+                        address,
+                        receipt: Some(receipt_into_ffi(receipt)),
+                        error: None,
+                    },
+                    Err(error) => VertexUploadAck {
+                        index: index as u64,
+                        address,
+                        receipt: None,
+                        error: Some(error.to_string()),
+                    },
+                };
+                if sink.add(ack).is_err() {
+                    break;
+                }
+            }
+        });
+
+        Ok(())
+    }
 }
 
 impl Drop for VertexClient {
@@ -206,6 +341,18 @@ impl InfrastructureContext for LaunchContext {
     fn data_dir(&self) -> &std::path::Path {
         &self.data_dir
     }
+}
+
+/// Map the boundary stream config to the core [`StreamConfig`].
+///
+/// The core clamps both knobs to at least one, so a zero from the host degrades
+/// to one-at-a-time streaming rather than a deadlock. The byte window is
+/// saturated to `usize::MAX` on a 32-bit host where the `u64` would not fit.
+fn stream_config(config: VertexStreamConfig) -> StreamConfig {
+    StreamConfig::new(
+        usize::try_from(config.window_bytes).unwrap_or(usize::MAX),
+        usize::try_from(config.max_concurrency).unwrap_or(usize::MAX),
+    )
 }
 
 /// Resolve the spec for the requested network.

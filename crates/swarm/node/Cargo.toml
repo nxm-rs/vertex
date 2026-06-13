@@ -100,6 +100,12 @@ libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "6454fdf3450f91f
     "ping",
 ] }
 libp2p-websocket-websys.workspace = true
+# Browser binding for the streaming get/put pipelines. The wasm adapter
+# (`stream_wasm`) exposes the same core streams to JS as async iterators; these
+# are the wasm-bindgen glue it needs and are pulled only on wasm32.
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+js-sys = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }

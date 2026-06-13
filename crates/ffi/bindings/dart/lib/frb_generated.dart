@@ -72,7 +72,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => -2329224;
+  int get rustContentHash => 1948237842;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -92,8 +92,18 @@ abstract class RustLibApi extends BaseApi {
       required List<int> address,
       required bool verifyStamp});
 
+  Stream<VertexChunkData> crateApiClientVertexClientDownloadStream(
+      {required VertexClient that,
+      required List<Uint8List> addresses,
+      required VertexStreamConfig config});
+
   Future<VertexPushReceipt> crateApiClientVertexClientUploadChunk(
       {required VertexClient that, required VertexChunkUpload chunk});
+
+  Stream<VertexUploadAck> crateApiClientVertexClientUploadStream(
+      {required VertexClient that,
+      required List<VertexChunkUpload> chunks,
+      required VertexStreamConfig config});
 
   Stream<LogLine> crateApiLoggingInitLogging({required String level});
 
@@ -181,6 +191,40 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Stream<VertexChunkData> crateApiClientVertexClientDownloadStream(
+      {required VertexClient that,
+      required List<Uint8List> addresses,
+      required VertexStreamConfig config}) {
+    final sink = RustStreamSink<VertexChunkData>();
+    unawaited(handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexClient(
+            that, serializer);
+        sse_encode_list_list_prim_u_8_strict(addresses, serializer);
+        sse_encode_box_autoadd_vertex_stream_config(config, serializer);
+        sse_encode_StreamSink_vertex_chunk_data_Sse(sink, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 3, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_unit,
+        decodeErrorData: sse_decode_ffi_error,
+      ),
+      constMeta: kCrateApiClientVertexClientDownloadStreamConstMeta,
+      argValues: [that, addresses, config, sink],
+      apiImpl: this,
+    )));
+    return sink.stream;
+  }
+
+  TaskConstMeta get kCrateApiClientVertexClientDownloadStreamConstMeta =>
+      const TaskConstMeta(
+        debugName: "VertexClient_download_stream",
+        argNames: ["that", "addresses", "config", "sink"],
+      );
+
+  @override
   Future<VertexPushReceipt> crateApiClientVertexClientUploadChunk(
       {required VertexClient that, required VertexChunkUpload chunk}) {
     return handler.executeNormal(NormalTask(
@@ -190,7 +234,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that, serializer);
         sse_encode_box_autoadd_vertex_chunk_upload(chunk, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 3, port: port_);
+            funcId: 4, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_vertex_push_receipt,
@@ -209,6 +253,40 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Stream<VertexUploadAck> crateApiClientVertexClientUploadStream(
+      {required VertexClient that,
+      required List<VertexChunkUpload> chunks,
+      required VertexStreamConfig config}) {
+    final sink = RustStreamSink<VertexUploadAck>();
+    unawaited(handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexClient(
+            that, serializer);
+        sse_encode_list_vertex_chunk_upload(chunks, serializer);
+        sse_encode_box_autoadd_vertex_stream_config(config, serializer);
+        sse_encode_StreamSink_vertex_upload_ack_Sse(sink, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 5, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_unit,
+        decodeErrorData: sse_decode_ffi_error,
+      ),
+      constMeta: kCrateApiClientVertexClientUploadStreamConstMeta,
+      argValues: [that, chunks, config, sink],
+      apiImpl: this,
+    )));
+    return sink.stream;
+  }
+
+  TaskConstMeta get kCrateApiClientVertexClientUploadStreamConstMeta =>
+      const TaskConstMeta(
+        debugName: "VertexClient_upload_stream",
+        argNames: ["that", "chunks", "config", "sink"],
+      );
+
+  @override
   Stream<LogLine> crateApiLoggingInitLogging({required String level}) {
     final sink = RustStreamSink<LogLine>();
     unawaited(handler.executeNormal(NormalTask(
@@ -217,7 +295,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_String(level, serializer);
         sse_encode_StreamSink_log_line_Sse(sink, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 4, port: port_);
+            funcId: 6, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_unit,
@@ -241,7 +319,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       callFfi: (port_) {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 5, port: port_);
+            funcId: 7, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_unit,
@@ -264,7 +342,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       callFfi: (port_) {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 6, port: port_);
+            funcId: 8, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_metrics_snapshot,
@@ -288,7 +366,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       callFfi: (port_) {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 7, port: port_);
+            funcId: 9, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_vertex_client_config,
@@ -312,7 +390,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       callFfi: (port_) {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 8, port: port_);
+            funcId: 10, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_vertex_network,
@@ -375,6 +453,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  RustStreamSink<VertexChunkData> dco_decode_StreamSink_vertex_chunk_data_Sse(
+      dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    throw UnimplementedError();
+  }
+
+  @protected
+  RustStreamSink<VertexUploadAck> dco_decode_StreamSink_vertex_upload_ack_Sse(
+      dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    throw UnimplementedError();
+  }
+
+  @protected
   String dco_decode_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as String;
@@ -396,6 +488,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   VertexClientConfig dco_decode_box_autoadd_vertex_client_config(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_vertex_client_config(raw);
+  }
+
+  @protected
+  VertexPushReceipt dco_decode_box_autoadd_vertex_push_receipt(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_vertex_push_receipt(raw);
+  }
+
+  @protected
+  VertexStreamConfig dco_decode_box_autoadd_vertex_stream_config(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_vertex_stream_config(raw);
   }
 
   @protected
@@ -532,6 +636,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<Uint8List> dco_decode_list_list_prim_u_8_strict(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_list_prim_u_8_strict).toList();
+  }
+
+  @protected
   List<int> dco_decode_list_prim_u_8_loose(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as List<int>;
@@ -547,6 +657,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   List<(String, String)> dco_decode_list_record_string_string(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_record_string_string).toList();
+  }
+
+  @protected
+  List<VertexChunkUpload> dco_decode_list_vertex_chunk_upload(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_vertex_chunk_upload).toList();
   }
 
   @protected
@@ -582,6 +698,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       gauges: dco_decode_list_gauge_value(arr[2]),
       histograms: dco_decode_list_histogram_value(arr[3]),
     );
+  }
+
+  @protected
+  String? dco_decode_opt_String(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_String(raw);
+  }
+
+  @protected
+  VertexPushReceipt? dco_decode_opt_box_autoadd_vertex_push_receipt(
+      dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_vertex_push_receipt(raw);
   }
 
   @protected
@@ -631,6 +760,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BigInt dco_decode_usize(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dcoDecodeU64(raw);
+  }
+
+  @protected
+  VertexChunkData dco_decode_vertex_chunk_data(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    return VertexChunkData(
+      index: dco_decode_u_64(arr[0]),
+      address: dco_decode_list_prim_u_8_strict(arr[1]),
+      data: dco_decode_list_prim_u_8_strict(arr[2]),
+      stamp: dco_decode_list_prim_u_8_strict(arr[3]),
+      error: dco_decode_opt_String(arr[4]),
+    );
   }
 
   @protected
@@ -694,6 +838,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  VertexStreamConfig dco_decode_vertex_stream_config(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return VertexStreamConfig(
+      windowBytes: dco_decode_u_64(arr[0]),
+      maxConcurrency: dco_decode_u_32(arr[1]),
+    );
+  }
+
+  @protected
+  VertexUploadAck dco_decode_vertex_upload_ack(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return VertexUploadAck(
+      index: dco_decode_u_64(arr[0]),
+      address: dco_decode_list_prim_u_8_strict(arr[1]),
+      receipt: dco_decode_opt_box_autoadd_vertex_push_receipt(arr[2]),
+      error: dco_decode_opt_String(arr[3]),
+    );
+  }
+
+  @protected
   AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_String(deserializer);
@@ -735,6 +905,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  RustStreamSink<VertexChunkData> sse_decode_StreamSink_vertex_chunk_data_Sse(
+      SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    throw UnimplementedError('Unreachable ()');
+  }
+
+  @protected
+  RustStreamSink<VertexUploadAck> sse_decode_StreamSink_vertex_upload_ack_Sse(
+      SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    throw UnimplementedError('Unreachable ()');
+  }
+
+  @protected
   String sse_decode_String(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_list_prim_u_8_strict(deserializer);
@@ -759,6 +943,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_vertex_client_config(deserializer));
+  }
+
+  @protected
+  VertexPushReceipt sse_decode_box_autoadd_vertex_push_receipt(
+      SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_vertex_push_receipt(deserializer));
+  }
+
+  @protected
+  VertexStreamConfig sse_decode_box_autoadd_vertex_stream_config(
+      SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_vertex_stream_config(deserializer));
   }
 
   @protected
@@ -903,6 +1101,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<Uint8List> sse_decode_list_list_prim_u_8_strict(
+      SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <Uint8List>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_list_prim_u_8_strict(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   List<int> sse_decode_list_prim_u_8_loose(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var len_ = sse_decode_i_32(deserializer);
@@ -925,6 +1136,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <(String, String)>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_record_string_string(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<VertexChunkUpload> sse_decode_list_vertex_chunk_upload(
+      SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <VertexChunkUpload>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_vertex_chunk_upload(deserializer));
     }
     return ans_;
   }
@@ -964,6 +1188,29 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         counters: var_counters,
         gauges: var_gauges,
         histograms: var_histograms);
+  }
+
+  @protected
+  String? sse_decode_opt_String(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_String(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  VertexPushReceipt? sse_decode_opt_box_autoadd_vertex_push_receipt(
+      SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_vertex_push_receipt(deserializer));
+    } else {
+      return null;
+    }
   }
 
   @protected
@@ -1013,6 +1260,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BigInt sse_decode_usize(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getBigUint64();
+  }
+
+  @protected
+  VertexChunkData sse_decode_vertex_chunk_data(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_index = sse_decode_u_64(deserializer);
+    var var_address = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_data = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_stamp = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_error = sse_decode_opt_String(deserializer);
+    return VertexChunkData(
+        index: var_index,
+        address: var_address,
+        data: var_data,
+        stamp: var_stamp,
+        error: var_error);
   }
 
   @protected
@@ -1077,6 +1340,31 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  VertexStreamConfig sse_decode_vertex_stream_config(
+      SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_windowBytes = sse_decode_u_64(deserializer);
+    var var_maxConcurrency = sse_decode_u_32(deserializer);
+    return VertexStreamConfig(
+        windowBytes: var_windowBytes, maxConcurrency: var_maxConcurrency);
+  }
+
+  @protected
+  VertexUploadAck sse_decode_vertex_upload_ack(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_index = sse_decode_u_64(deserializer);
+    var var_address = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_receipt =
+        sse_decode_opt_box_autoadd_vertex_push_receipt(deserializer);
+    var var_error = sse_decode_opt_String(deserializer);
+    return VertexUploadAck(
+        index: var_index,
+        address: var_address,
+        receipt: var_receipt,
+        error: var_error);
+  }
+
+  @protected
   void sse_encode_AnyhowException(
       AnyhowException self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -1127,6 +1415,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_StreamSink_vertex_chunk_data_Sse(
+      RustStreamSink<VertexChunkData> self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(
+        self.setupAndSerialize(
+            codec: SseCodec(
+          decodeSuccessData: sse_decode_vertex_chunk_data,
+          decodeErrorData: sse_decode_AnyhowException,
+        )),
+        serializer);
+  }
+
+  @protected
+  void sse_encode_StreamSink_vertex_upload_ack_Sse(
+      RustStreamSink<VertexUploadAck> self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(
+        self.setupAndSerialize(
+            codec: SseCodec(
+          decodeSuccessData: sse_decode_vertex_upload_ack,
+          decodeErrorData: sse_decode_AnyhowException,
+        )),
+        serializer);
+  }
+
+  @protected
   void sse_encode_String(String self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_list_prim_u_8_strict(utf8.encoder.convert(self), serializer);
@@ -1150,6 +1464,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       VertexClientConfig self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_vertex_client_config(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_vertex_push_receipt(
+      VertexPushReceipt self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_vertex_push_receipt(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_vertex_stream_config(
+      VertexStreamConfig self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_vertex_stream_config(self, serializer);
   }
 
   @protected
@@ -1276,6 +1604,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_list_prim_u_8_strict(
+      List<Uint8List> self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_list_prim_u_8_strict(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_list_prim_u_8_loose(
       List<int> self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -1303,6 +1641,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_vertex_chunk_upload(
+      List<VertexChunkUpload> self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_vertex_chunk_upload(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_log_level(LogLevel self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.index, serializer);
@@ -1326,6 +1674,27 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_list_counter_value(self.counters, serializer);
     sse_encode_list_gauge_value(self.gauges, serializer);
     sse_encode_list_histogram_value(self.histograms, serializer);
+  }
+
+  @protected
+  void sse_encode_opt_String(String? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_String(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_vertex_push_receipt(
+      VertexPushReceipt? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_vertex_push_receipt(self, serializer);
+    }
   }
 
   @protected
@@ -1377,6 +1746,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_vertex_chunk_data(
+      VertexChunkData self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self.index, serializer);
+    sse_encode_list_prim_u_8_strict(self.address, serializer);
+    sse_encode_list_prim_u_8_strict(self.data, serializer);
+    sse_encode_list_prim_u_8_strict(self.stamp, serializer);
+    sse_encode_opt_String(self.error, serializer);
+  }
+
+  @protected
   void sse_encode_vertex_chunk_download(
       VertexChunkDownload self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -1419,6 +1799,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_list_prim_u_8_strict(self.nonce, serializer);
     sse_encode_u_32(self.storageRadius, serializer);
   }
+
+  @protected
+  void sse_encode_vertex_stream_config(
+      VertexStreamConfig self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self.windowBytes, serializer);
+    sse_encode_u_32(self.maxConcurrency, serializer);
+  }
+
+  @protected
+  void sse_encode_vertex_upload_ack(
+      VertexUploadAck self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self.index, serializer);
+    sse_encode_list_prim_u_8_strict(self.address, serializer);
+    sse_encode_opt_box_autoadd_vertex_push_receipt(self.receipt, serializer);
+    sse_encode_opt_String(self.error, serializer);
+  }
 }
 
 @sealed
@@ -1450,6 +1848,28 @@ class VertexClientImpl extends RustOpaque implements VertexClient {
       RustLib.instance.api.crateApiClientVertexClientDownloadChunk(
           that: this, address: address, verifyStamp: verifyStamp);
 
+  /// Stream-download a list of chunk addresses into `sink`.
+  ///
+  /// Drives the memory-bounded download pipeline: at most `config.window_bytes`
+  /// of chunk payload is ever in flight, and the host receives each result as a
+  /// [`VertexChunkData`] in request order. A per-address failure (a miss, wrong
+  /// bytes, or no candidate peer) arrives as an item carrying `error`, never as
+  /// a torn-down stream, so the host decides per address whether to continue.
+  ///
+  /// The bounded buffer lives in Rust: the pump pulls one stream item, copies
+  /// its payload once into the boundary shape, and forwards it before pulling
+  /// the next, so a host whose listener pauses transitively pauses the network
+  /// reads. The returned [`FfiError`] only covers up-front input rejection
+  /// (a malformed address); retrieval failures surface as stream items.
+  ///
+  /// Spawns the pump on the client's runtime and returns immediately; the
+  /// stream completes when every address has produced an item.
+  Stream<VertexChunkData> downloadStream(
+          {required List<Uint8List> addresses,
+          required VertexStreamConfig config}) =>
+      RustLib.instance.api.crateApiClientVertexClientDownloadStream(
+          that: this, addresses: addresses, config: config);
+
   /// Upload a pre-stamped chunk to the storers closest to its address.
   ///
   /// The chunk, its address, and its postage stamp are reconstructed into a
@@ -1458,4 +1878,22 @@ class VertexClientImpl extends RustOpaque implements VertexClient {
   Future<VertexPushReceipt> uploadChunk({required VertexChunkUpload chunk}) =>
       RustLib.instance.api
           .crateApiClientVertexClientUploadChunk(that: this, chunk: chunk);
+
+  /// Stream-upload a list of pre-stamped chunks, acking each into `sink`.
+  ///
+  /// The feed is the `chunks` list; the ack is the [`VertexUploadAck`] stream.
+  /// The memory-bounded upload pipeline keeps at most `config.window_bytes` of
+  /// payload in flight, admitting each chunk by its real encoded size, so a
+  /// slow host that stops draining acks transitively pauses the network pushes
+  /// and the heap stays flat regardless of how many chunks were fed.
+  ///
+  /// Each chunk is reconstructed into a strong [`StampedChunk`] before any
+  /// network call; a chunk whose bytes do not match its address is rejected
+  /// up front as an [`FfiError`] and no upload starts. Per-chunk push failures
+  /// (no storer, rejection) surface as ack items carrying `error`.
+  Stream<VertexUploadAck> uploadStream(
+          {required List<VertexChunkUpload> chunks,
+          required VertexStreamConfig config}) =>
+      RustLib.instance.api.crateApiClientVertexClientUploadStream(
+          that: this, chunks: chunks, config: config);
 }

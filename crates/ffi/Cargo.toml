@@ -50,6 +50,10 @@ flutter_rust_bridge = "=2.12.0"
 thiserror.workspace = true
 strum.workspace = true
 
+# Stream combinators (`StreamExt`) for pumping the bounded download/upload
+# pipelines into the host's StreamSink at the boundary.
+futures.workspace = true
+
 # Logging surface for embedding hosts. The host installs a subscriber that
 # forwards events to a Dart stream. A custom Layer (not VertexTracer) lives in
 # `api::logging` so the event extraction targets the flat `LogLine` shape; that

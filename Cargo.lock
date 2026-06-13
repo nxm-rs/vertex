@@ -8370,6 +8370,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer-local",
  "flutter_rust_bridge",
+ "futures",
  "metrics",
  "metrics-util",
  "nectar-postage",
@@ -9186,6 +9187,7 @@ dependencies = [
  "futures",
  "futures-bounded 0.2.4",
  "futures-timer",
+ "js-sys",
  "libp2p",
  "libp2p-swarm-test",
  "libp2p-websocket-websys",
@@ -9225,6 +9227,8 @@ dependencies = [
  "vertex-swarm-topology",
  "vertex-tasks",
  "vertex-util-runtime",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

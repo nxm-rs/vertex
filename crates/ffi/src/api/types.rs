@@ -83,3 +83,64 @@ pub struct VertexChunkDownload {
     /// Overlay address of the peer that served the chunk, hex-encoded.
     pub served_by: String,
 }
+
+/// One item in a streaming download: either a verified chunk or a per-address
+/// failure.
+///
+/// The download stream yields exactly one of these per requested address, in
+/// request order. A failed retrieval (peer miss, wrong bytes, no candidates)
+/// arrives as an item with `error` set and `data` empty, so a host can decide
+/// per address whether to abort or skip without tearing down the whole stream.
+/// The payload is copied once here, at the boundary: inside Rust the chunk stays
+/// `Bytes`.
+#[frb(non_opaque)]
+#[derive(Debug, Clone)]
+pub struct VertexChunkData {
+    /// Zero-based position of this item in the requested address list.
+    pub index: u64,
+    /// The chunk's 32-byte address.
+    pub address: Vec<u8>,
+    /// The chunk's wire-encoded bytes (span plus payload). Empty when `error`
+    /// is set.
+    pub data: Vec<u8>,
+    /// The chunk's 113-byte postage stamp. Empty when `error` is set.
+    pub stamp: Vec<u8>,
+    /// A failure message when this address could not be served, otherwise
+    /// `None`.
+    pub error: Option<String>,
+}
+
+/// One acknowledgement in a streaming upload.
+///
+/// The upload stream yields exactly one of these per fed chunk, in feed order.
+/// A successful push carries the storer's receipt; a failure carries `error` and
+/// a default receipt. Rust owns the bounded in-flight window, so feeding a long
+/// list never grows the heap past the configured byte budget: a slow host that
+/// stops draining acks transitively pauses the network pushes.
+#[frb(non_opaque)]
+#[derive(Debug, Clone)]
+pub struct VertexUploadAck {
+    /// Zero-based position of this ack in the fed chunk list.
+    pub index: u64,
+    /// The chunk's 32-byte address.
+    pub address: Vec<u8>,
+    /// The storer's receipt for a successful push. `None` when `error` is set.
+    pub receipt: Option<VertexPushReceipt>,
+    /// A failure message when the chunk could not be stored, otherwise `None`.
+    pub error: Option<String>,
+}
+
+/// Tuning for a streaming download or upload.
+///
+/// `window_bytes` is the memory ceiling on outstanding payload, expressed in
+/// bytes so the host sizes it against a real budget. `max_concurrency` caps
+/// simultaneous in-flight requests on top of the byte window. Both are clamped
+/// to at least one inside Rust, so a zero never deadlocks the stream.
+#[frb(non_opaque)]
+#[derive(Debug, Clone, Copy)]
+pub struct VertexStreamConfig {
+    /// Soft byte ceiling on outstanding in-flight payload.
+    pub window_bytes: u64,
+    /// Hard cap on simultaneous in-flight requests.
+    pub max_concurrency: u32,
+}
