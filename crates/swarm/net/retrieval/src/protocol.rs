@@ -10,7 +10,11 @@
 
 use asynchronous_codec::Framed;
 use futures::{SinkExt, TryStreamExt, future::BoxFuture};
-use nectar_primitives::ChunkAddress;
+use nectar_postage::STAMP_SIZE;
+use nectar_primitives::{
+    ChunkAddress,
+    bmt::{DEFAULT_BODY_SIZE, HASH_SIZE, SPAN_SIZE},
+};
 use tracing::debug;
 use vertex_swarm_net_headers::{
     HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound,
@@ -22,8 +26,27 @@ use crate::{
     error::RetrievalError,
 };
 
-/// Maximum size of a retrieval message (chunk + stamp + overhead).
-const MAX_MESSAGE_SIZE: usize = 5 * 1024 * 1024; // 5 MB
+/// Maximum size of a retrieval message, derived from the chunk-size constants.
+///
+/// The largest legitimate `data` payload is a single-owner chunk: an
+/// [`SPAN_SIZE`] span, a 32-byte ([`HASH_SIZE`]) owner id, a 65-byte recoverable
+/// signature, and a [`DEFAULT_BODY_SIZE`] body. The retrieval `Delivery` frames
+/// that as `data` + `stamp` ([`STAMP_SIZE`]) with no address of its own. A small
+/// fixed allowance covers protobuf field tags, length varints, and the outer
+/// length-delimited frame prefix.
+///
+/// The arithmetic with the current constants:
+/// `8 + 32 + 65 + 4096` data `+ 113` stamp `+ 64` framing `= 4378` bytes, well
+/// under 16 KiB. The bound is exact rather than a round number so a conformant
+/// peer never trips it and an adversarial frame (and any transient field
+/// allocation it forces) is capped tightly. Rejecting larger frames is not
+/// wire-visible.
+const SOC_SIGNATURE_SIZE: usize = 65;
+const MAX_CHUNK_DATA_SIZE: usize = SPAN_SIZE + HASH_SIZE + SOC_SIGNATURE_SIZE + DEFAULT_BODY_SIZE;
+/// Protobuf framing allowance: field tags, length varints, and the outer
+/// length-delimited frame prefix across all fields, rounded up generously.
+const PROTOBUF_FRAMING: usize = 64;
+const MAX_MESSAGE_SIZE: usize = MAX_CHUNK_DATA_SIZE + STAMP_SIZE + PROTOBUF_FRAMING;
 
 /// Retrieval inbound: receives a chunk request from remote.
 #[derive(Debug, Clone)]
@@ -82,10 +105,12 @@ impl RetrievalResponder {
         self.framed.send(Delivery::success(chunk)).await
     }
 
-    /// Send an error response.
-    pub async fn send_error(mut self, error: impl Into<String>) -> Result<(), RetrievalError> {
-        debug!("Retrieval: Sending error delivery");
-        self.framed.send(Delivery::error(error)).await
+    /// Signal a failure by resetting the stream (no frame is sent).
+    pub fn send_error(self) {
+        // We never put a placeholder or remote-controlled error on the wire. The
+        // requester reads the reset (or EOF) as a failed request. Dropping the
+        // framed stream resets the substream at the muxer.
+        debug!("Retrieval: resetting stream to signal failure");
     }
 }
 
