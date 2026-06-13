@@ -8344,6 +8344,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "vertex-chain-index"
+version = "0.1.0"
+dependencies = [
+ "alloy-json-rpc",
+ "alloy-network",
+ "alloy-primitives",
+ "alloy-provider",
+ "alloy-rpc-types-eth",
+ "alloy-sol-types",
+ "serde",
+ "strum 0.28.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "vertex-metrics",
+ "vertex-storage",
+ "vertex-storage-redb",
+]
+
+[[package]]
 name = "vertex-ffi"
 version = "0.1.0"
 dependencies = [
