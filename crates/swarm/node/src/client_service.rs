@@ -38,10 +38,16 @@ pub struct RetrievalResult {
     pub peer: OverlayAddress,
 }
 
-/// Error from retrieval operations.
+/// Outcome error shared by both chunk transfer operations.
+///
+/// Both [`ClientHandle::retrieve_chunk`] (get) and
+/// [`ClientHandle::push_chunk`] (put) resolve through this single type. Most
+/// variants are operation-agnostic and can surface from either path; the two
+/// operation-specific variants are called out below.
 #[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
-pub enum RetrievalError {
+pub enum ChunkTransferError {
+    // Shared variants: either a get or a put can produce these.
     /// Channel closed.
     #[error("Network channel closed")]
     ChannelClosed,
@@ -54,9 +60,13 @@ pub enum RetrievalError {
     /// Protocol error.
     #[error("Protocol error: {0}")]
     Protocol(String),
+
+    // Retrieval-specific: only a get produces this.
     /// Chunk not found.
     #[error("Chunk not found: {0}")]
     NotFound(ChunkAddress),
+
+    // Push-specific: only a put produces this.
     /// The storer rejected the chunk. Carries the storer's wire error string.
     #[error("Push rejected by storer: {0}")]
     PushRejected(String),
@@ -71,14 +81,14 @@ impl ClientHandle {
     /// Send a command to the network layer (non-blocking).
     ///
     /// Uses `try_send` because callers (e.g. the libp2p event loop) must not block.
-    pub fn send_command(&self, command: ClientCommand) -> Result<(), RetrievalError> {
+    pub fn send_command(&self, command: ClientCommand) -> Result<(), ChunkTransferError> {
         self.command_tx.try_send(command).map_err(|e| match e {
             mpsc::error::TrySendError::Full(_) => {
                 warn!("Client command channel full");
                 metrics::counter!("swarm.client.commands_dropped").increment(1);
-                RetrievalError::ChannelClosed
+                ChunkTransferError::ChannelClosed
             }
-            mpsc::error::TrySendError::Closed(_) => RetrievalError::ChannelClosed,
+            mpsc::error::TrySendError::Closed(_) => ChunkTransferError::ChannelClosed,
         })
     }
 
@@ -92,7 +102,7 @@ impl ClientHandle {
         &self,
         peer: OverlayAddress,
         address: ChunkAddress,
-    ) -> Result<RetrievalResult, RetrievalError> {
+    ) -> Result<RetrievalResult, ChunkTransferError> {
         let (tx, rx) = oneshot::channel();
 
         self.send_command(ClientCommand::RetrieveChunk {
@@ -101,7 +111,7 @@ impl ClientHandle {
             response: tx,
         })?;
 
-        rx.await.map_err(|_| RetrievalError::Cancelled)?
+        rx.await.map_err(|_| ChunkTransferError::Cancelled)?
     }
 
     /// Push a stamped chunk to a specific peer.
@@ -113,7 +123,7 @@ impl ClientHandle {
         &self,
         peer: OverlayAddress,
         chunk: StampedChunk,
-    ) -> Result<PushReceipt, RetrievalError> {
+    ) -> Result<PushReceipt, ChunkTransferError> {
         let address = *chunk.address();
         let (tx, rx) = oneshot::channel();
 
@@ -124,7 +134,7 @@ impl ClientHandle {
             response: tx,
         })?;
 
-        rx.await.map_err(|_| RetrievalError::Cancelled)?
+        rx.await.map_err(|_| ChunkTransferError::Cancelled)?
     }
 }
 

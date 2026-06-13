@@ -175,7 +175,7 @@ impl ClientBehaviour {
                     });
                 } else {
                     debug!(%peer, "Unknown peer for retrieval");
-                    let _ = response.send(Err(crate::RetrievalError::NotConnected));
+                    let _ = response.send(Err(crate::ChunkTransferError::NotConnected));
                 }
             }
             ClientCommand::PushChunk {
@@ -193,7 +193,7 @@ impl ClientBehaviour {
                     });
                 } else {
                     debug!(%peer, "Unknown peer for push");
-                    let _ = response.send(Err(crate::RetrievalError::NotConnected));
+                    let _ = response.send(Err(crate::ChunkTransferError::NotConnected));
                 }
             }
             ClientCommand::ServeChunk {

@@ -25,21 +25,21 @@ use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_net_swap::SignedCheque;
 use vertex_swarm_primitives::{OverlayAddress, StampedChunk, StorageRadius, SwarmNodeType};
 
-use crate::client_service::{RetrievalError, RetrievalResult};
+use crate::client_service::{ChunkTransferError, RetrievalResult};
 
 /// Channel on which an outbound retrieval request resolves.
 ///
 /// The sender travels with the request from the caller through the behaviour
 /// and handler into the outbound substream state, so the response (or any
 /// failure along the way) resolves the caller directly. Dropping the sender
-/// anywhere on that path surfaces as [`RetrievalError::Cancelled`].
-pub type RetrievalResponseTx = oneshot::Sender<Result<RetrievalResult, RetrievalError>>;
+/// anywhere on that path surfaces as [`ChunkTransferError::Cancelled`].
+pub type RetrievalResponseTx = oneshot::Sender<Result<RetrievalResult, ChunkTransferError>>;
 
 /// Channel on which an outbound chunk push resolves.
 ///
 /// Same lifecycle as [`RetrievalResponseTx`]: the storer's receipt or the
 /// failure that prevented it resolves the caller directly.
-pub type PushResponseTx = oneshot::Sender<Result<PushReceipt, RetrievalError>>;
+pub type PushResponseTx = oneshot::Sender<Result<PushReceipt, ChunkTransferError>>;
 
 /// Events emitted by the client behaviour.
 #[derive(Debug, Clone)]

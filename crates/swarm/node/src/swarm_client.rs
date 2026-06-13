@@ -258,7 +258,7 @@ mod tests {
         assert!(peers.is_empty());
     }
 
-    use crate::RetrievalError;
+    use crate::ChunkTransferError;
     use alloy_primitives::{B256, Signature};
     use nectar_primitives::{ContentChunk, Nonce};
     use vertex_swarm_api::{PushReceipt, Stamp};
@@ -473,7 +473,9 @@ mod tests {
         match rx.recv().await.expect("command emitted") {
             ClientCommand::PushChunk { response, .. } => {
                 response
-                    .send(Err(RetrievalError::PushRejected("rejected".to_string())))
+                    .send(Err(ChunkTransferError::PushRejected(
+                        "rejected".to_string(),
+                    )))
                     .expect("receiver alive");
             }
             other => panic!("unexpected command: {other:?}"),
@@ -481,7 +483,7 @@ mod tests {
 
         let result = push.await.unwrap();
         match result {
-            Err(RetrievalError::PushRejected(reason)) => assert_eq!(reason, "rejected"),
+            Err(ChunkTransferError::PushRejected(reason)) => assert_eq!(reason, "rejected"),
             other => panic!("expected PushRejected, got {other:?}"),
         }
     }
@@ -528,7 +530,7 @@ mod tests {
         responses
             .remove(&peer_a)
             .unwrap()
-            .send(Err(RetrievalError::Protocol("missing".to_string())))
+            .send(Err(ChunkTransferError::Protocol("missing".to_string())))
             .expect("receiver alive");
         responses
             .remove(&peer_b)
@@ -540,7 +542,7 @@ mod tests {
             .expect("receiver alive");
 
         let err = retrieval_a.await.unwrap().unwrap_err();
-        assert!(matches!(err, RetrievalError::Protocol(_)));
+        assert!(matches!(err, ChunkTransferError::Protocol(_)));
         let result = retrieval_b.await.unwrap().expect("b resolves");
         assert_eq!(result.peer, peer_b);
     }
@@ -572,7 +574,7 @@ mod tests {
             ClientCommand::RetrieveChunk { peer, response, .. } => {
                 assert_eq!(peer, peer_a);
                 response
-                    .send(Err(RetrievalError::Protocol("missing".to_string())))
+                    .send(Err(ChunkTransferError::Protocol("missing".to_string())))
                     .expect("receiver alive");
             }
             other => panic!("unexpected command: {other:?}"),

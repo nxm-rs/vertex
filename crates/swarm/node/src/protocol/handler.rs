@@ -48,7 +48,7 @@ use super::upgrade::{
     ClientInboundOutput, ClientInboundUpgrade, ClientOutboundInfo, ClientOutboundOutput,
     ClientOutboundUpgrade,
 };
-use crate::client_service::{RetrievalError, RetrievalResult};
+use crate::client_service::{ChunkTransferError, RetrievalResult};
 
 const DEFAULT_MAX_PENDING_COMMANDS: usize = 256;
 const DEFAULT_MAX_PENDING_EVENTS: usize = 256;
@@ -527,11 +527,11 @@ impl ClientHandler {
                         error: err.clone(),
                     });
                 }
-                let _ = response.send(Err(RetrievalError::Protocol(err)));
+                let _ = response.send(Err(ChunkTransferError::Protocol(err)));
             }
             vertex_swarm_net_retrieval::Delivery::Chunk(chunk) => {
                 let Some(overlay) = overlay else {
-                    let _ = response.send(Err(RetrievalError::Protocol(
+                    let _ = response.send(Err(ChunkTransferError::Protocol(
                         "handler not active".to_string(),
                     )));
                     return;
@@ -566,10 +566,10 @@ impl ClientHandler {
                     error: err.clone(),
                 });
             }
-            let _ = response.send(Err(RetrievalError::PushRejected(err)));
+            let _ = response.send(Err(ChunkTransferError::PushRejected(err)));
         } else {
             let Some(overlay) = overlay else {
-                let _ = response.send(Err(RetrievalError::Protocol(
+                let _ = response.send(Err(ChunkTransferError::Protocol(
                     "handler not active".to_string(),
                 )));
                 return;
@@ -853,7 +853,7 @@ impl ConnectionHandler for ClientHandler {
                                 error: error.clone(),
                             });
                         }
-                        let _ = response.send(Err(RetrievalError::Protocol(error)));
+                        let _ = response.send(Err(ChunkTransferError::Protocol(error)));
                     }
                     ClientOutboundInfo::Pushsync { address, response } => {
                         warn!(protocol = "pushsync", %address, %error, "Client dial upgrade error");
@@ -864,7 +864,7 @@ impl ConnectionHandler for ClientHandler {
                                 error: error.clone(),
                             });
                         }
-                        let _ = response.send(Err(RetrievalError::Protocol(error)));
+                        let _ = response.send(Err(ChunkTransferError::Protocol(error)));
                     }
                     ClientOutboundInfo::Pseudosettle { .. } => {
                         warn!(protocol = "pseudosettle", %error, "Client dial upgrade error");
