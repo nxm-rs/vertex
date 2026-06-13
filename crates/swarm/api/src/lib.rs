@@ -43,6 +43,7 @@
 
 extern crate alloc;
 
+mod accounting;
 mod components;
 mod config;
 mod error;
@@ -55,6 +56,7 @@ mod spec;
 mod swarm;
 mod types;
 
+pub use self::accounting::{Au, AuConversionError};
 pub use self::components::{
     BandwidthMode, BootnodeComponents, ClientComponents, Direction, HasAccounting, HasIdentity,
     HasStore, HasTopology, StorerComponents, SwarmAccountingConfig, SwarmBandwidthAccounting,

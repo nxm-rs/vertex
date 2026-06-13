@@ -217,6 +217,8 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
+    use vertex_swarm_api::Au;
+
     use super::*;
 
     fn peer(n: u8) -> OverlayAddress {
@@ -236,24 +238,24 @@ mod tests {
     }
 
     impl PeerAffordability for FixedAffordability {
-        fn can_afford(&self, overlay: &OverlayAddress, _price: u64) -> bool {
+        fn can_afford(&self, overlay: &OverlayAddress, _price: Au) -> bool {
             !self.unaffordable.contains(overlay)
         }
 
-        fn allowance_remaining(&self, _overlay: &OverlayAddress) -> u64 {
-            0
+        fn allowance_remaining(&self, _overlay: &OverlayAddress) -> Au {
+            Au::ZERO
         }
     }
 
     struct UnitPricer;
 
     impl SwarmPricing for UnitPricer {
-        fn price(&self, _chunk: &ChunkAddress) -> u64 {
-            1
+        fn price(&self, _chunk: &ChunkAddress) -> Au {
+            Au::from_amount(1)
         }
 
-        fn peer_price(&self, _peer: &OverlayAddress, _chunk: &ChunkAddress) -> u64 {
-            1
+        fn peer_price(&self, _peer: &OverlayAddress, _chunk: &ChunkAddress) -> Au {
+            Au::from_amount(1)
         }
     }
 

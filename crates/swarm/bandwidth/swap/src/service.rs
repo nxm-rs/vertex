@@ -16,7 +16,7 @@ use alloy_signer::SignerSync;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_api::{
-    Direction, PeerReporter, ReportSource, SwarmBandwidthAccounting, SwarmPeerBandwidth,
+    Au, Direction, PeerReporter, ReportSource, SwarmBandwidthAccounting, SwarmPeerBandwidth,
     SwarmScoringEvent,
 };
 use vertex_swarm_bandwidth_chequebook::{Cheque, ChequeExt, SignedCheque};
@@ -47,9 +47,9 @@ pub enum SwapCommand {
         /// The peer to settle with.
         peer: OverlayAddress,
         /// The amount to settle, in accounting units.
-        amount: u64,
+        amount: Au,
         /// Channel to send the result.
-        response_tx: oneshot::Sender<Result<u64, SwapSettlementError>>,
+        response_tx: oneshot::Sender<Result<Au, SwapSettlementError>>,
     },
     /// Register the SWAP identity learned for a peer during the handshake.
     RegisterPeerInfo {
@@ -101,8 +101,8 @@ pub struct SwapService<A: SwarmBandwidthAccounting, S> {
 }
 
 struct PendingSettlement {
-    amount: u64,
-    response_tx: oneshot::Sender<Result<u64, SwapSettlementError>>,
+    amount: Au,
+    response_tx: oneshot::Sender<Result<Au, SwapSettlementError>>,
 }
 
 impl<A, S> SwapService<A, S>
@@ -213,7 +213,17 @@ where
                     return;
                 }
 
-                match self.issue_cheque(peer, amount) {
+                // Convert the AU payment to its cheque payout once, up front. A
+                // negative amount has no payout representation and is rejected.
+                let wire_amount = match U256::try_from(amount) {
+                    Ok(wire) => wire,
+                    Err(e) => {
+                        let _ = response_tx.send(Err(e.into()));
+                        return;
+                    }
+                };
+
+                match self.issue_cheque(peer, wire_amount) {
                     Ok(cheque) => {
                         debug!(
                             %peer,
@@ -229,7 +239,7 @@ where
                             // Roll back the optimistic cumulative-payout bump so a
                             // retry re-issues at the same level.
                             if let Some(state) = self.peers.get_mut(&peer) {
-                                state.last_sent_payout -= U256::from(amount);
+                                state.last_sent_payout -= wire_amount;
                             }
                             let _ = response_tx
                                 .send(Err(SwapSettlementError::NetworkError(e.to_string())));
@@ -252,12 +262,12 @@ where
         }
     }
 
-    /// Build and sign a cheque for `amount`, advancing the per-peer cumulative
-    /// payout monotonically.
+    /// Build and sign a cheque for the `wire_amount` payout increment,
+    /// advancing the per-peer cumulative payout monotonically.
     fn issue_cheque(
         &mut self,
         peer: OverlayAddress,
-        amount: u64,
+        wire_amount: U256,
     ) -> Result<SignedCheque, SwapSettlementError> {
         let state = self.peers.entry(peer).or_default();
         let beneficiary = state
@@ -265,7 +275,7 @@ where
             .ok_or(SwapSettlementError::UnknownBeneficiary)?
             .beneficiary;
 
-        let next_payout = state.last_sent_payout + U256::from(amount);
+        let next_payout = state.last_sent_payout + wire_amount;
         let cheque = Cheque::new(self.chequebook, beneficiary, next_payout);
 
         let hash = cheque.signing_hash(self.chain);
@@ -344,7 +354,7 @@ where
         &mut self,
         peer: OverlayAddress,
         cheque: &SignedCheque,
-    ) -> Result<u64, SwapSettlementError> {
+    ) -> Result<Au, SwapSettlementError> {
         // An unauthenticated cheque must never reduce the peer's debt: without a
         // learned identity we cannot bind the signature to a real chequebook, so
         // anyone could mint free credit with a self-signed cheque.
@@ -380,9 +390,10 @@ where
         }
 
         let increment = received - last;
-        let amount: u64 = increment
-            .try_into()
-            .map_err(|_| SwapSettlementError::AmountOverflow(increment))?;
+        // The only `U256` to AU crossing in the swap path. An increment above
+        // what an accounting unit can hold is rejected rather than wrapped,
+        // surfacing as `AmountOverflow` so the books stay in sync.
+        let amount: Au = increment.try_into()?;
 
         state.last_received_payout = received;
         Ok(amount)
@@ -464,10 +475,10 @@ mod tests {
             issuer: Address::repeat_byte(0x33),
         });
 
-        let first = svc.issue_cheque(peer, 1_000).unwrap();
+        let first = svc.issue_cheque(peer, U256::from(1_000u64)).unwrap();
         assert_eq!(first.cheque.cumulativePayout, U256::from(1_000u64));
 
-        let second = svc.issue_cheque(peer, 500).unwrap();
+        let second = svc.issue_cheque(peer, U256::from(500u64)).unwrap();
         assert_eq!(second.cheque.cumulativePayout, U256::from(1_500u64));
     }
 
@@ -475,7 +486,7 @@ mod tests {
     fn issue_cheque_without_beneficiary_fails() {
         let mut svc = build_service(PrivateKeySigner::random());
         assert!(matches!(
-            svc.issue_cheque(test_peer(), 1_000),
+            svc.issue_cheque(test_peer(), U256::from(1_000u64)),
             Err(SwapSettlementError::UnknownBeneficiary)
         ));
     }
@@ -491,11 +502,17 @@ mod tests {
         });
 
         let cheque = peer_cheque(&issuer, Address::repeat_byte(0xaa), OUR_BENEFICIARY, 1_000);
-        assert_eq!(svc.accept_cheque(peer, &cheque).unwrap(), 1_000);
+        assert_eq!(
+            svc.accept_cheque(peer, &cheque).unwrap(),
+            Au::from_amount(1_000)
+        );
 
         // A second cheque at a higher cumulative payout credits only the delta.
         let cheque = peer_cheque(&issuer, Address::repeat_byte(0xaa), OUR_BENEFICIARY, 1_700);
-        assert_eq!(svc.accept_cheque(peer, &cheque).unwrap(), 700);
+        assert_eq!(
+            svc.accept_cheque(peer, &cheque).unwrap(),
+            Au::from_amount(700)
+        );
     }
 
     #[test]
@@ -509,7 +526,10 @@ mod tests {
         });
 
         let cheque = peer_cheque(&issuer, Address::repeat_byte(0xaa), OUR_BENEFICIARY, 1_000);
-        assert_eq!(svc.accept_cheque(peer, &cheque).unwrap(), 1_000);
+        assert_eq!(
+            svc.accept_cheque(peer, &cheque).unwrap(),
+            Au::from_amount(1_000)
+        );
 
         // Same cumulative payout: no new funds, must be rejected.
         let replay = peer_cheque(&issuer, Address::repeat_byte(0xaa), OUR_BENEFICIARY, 1_000);
@@ -574,6 +594,28 @@ mod tests {
     }
 
     #[test]
+    fn au_wire_conversion_round_trips() {
+        // The standard `Au`/`U256` conversions are inverse for any in-range AU
+        // amount, and the wire form is a plain integer (no scaling), so books
+        // stay in sync across the U256 boundary.
+        for amount in [0u64, 1, 1_000, 13_500_000, u64::from(u32::MAX)] {
+            let au = Au::from_amount(amount);
+            let wire = U256::try_from(au).unwrap();
+            assert_eq!(wire, U256::from(amount));
+            assert_eq!(Au::try_from(wire).unwrap(), au);
+        }
+
+        // An increment above what an accounting unit can hold maps onto the swap
+        // overflow error rather than wrapping.
+        let too_big = U256::from(u64::MAX) + U256::from(1u64);
+        let mapped: Result<Au, SwapSettlementError> = too_big.try_into().map_err(Into::into);
+        assert!(matches!(
+            mapped,
+            Err(SwapSettlementError::AmountOverflow(_))
+        ));
+    }
+
+    #[test]
     fn accept_cheque_roundtrips_our_own_issuance() {
         // A cheque we sign with our own signer recovers to our own address, so
         // pointing a peer's expected issuer at us lets the validation path accept
@@ -588,8 +630,11 @@ mod tests {
             issuer: signer.address(),
         });
 
-        let issued = svc.issue_cheque(peer, 4_200).unwrap();
-        assert_eq!(svc.accept_cheque(peer, &issued).unwrap(), 4_200);
+        let issued = svc.issue_cheque(peer, U256::from(4_200u64)).unwrap();
+        assert_eq!(
+            svc.accept_cheque(peer, &issued).unwrap(),
+            Au::from_amount(4_200)
+        );
     }
 
     #[test]
@@ -700,7 +745,7 @@ mod tests {
 
         assert!(reporter.reports.lock().unwrap().is_empty());
         let handle = svc.accounting.for_peer(peer);
-        assert_eq!(handle.balance(), -1_000);
+        assert_eq!(handle.balance(), Au::new(-1_000));
     }
 
     #[test]

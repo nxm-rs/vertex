@@ -1,6 +1,7 @@
 //! Cloneable handle for interacting with the pseudosettle service.
 
 use tokio::sync::{mpsc, oneshot};
+use vertex_swarm_api::Au;
 use vertex_swarm_primitives::OverlayAddress;
 
 use crate::error::PseudosettleSettlementError;
@@ -22,8 +23,8 @@ impl PseudosettleHandle {
     pub async fn settle(
         &self,
         peer: OverlayAddress,
-        amount: u64,
-    ) -> Result<u64, PseudosettleSettlementError> {
+        amount: Au,
+    ) -> Result<Au, PseudosettleSettlementError> {
         let (tx, rx) = oneshot::channel();
 
         self.command_tx

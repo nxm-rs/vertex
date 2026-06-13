@@ -1,6 +1,7 @@
 //! Cloneable handle for interacting with the swap service.
 
 use tokio::sync::{mpsc, oneshot};
+use vertex_swarm_api::Au;
 use vertex_swarm_primitives::OverlayAddress;
 
 use crate::error::SwapSettlementError;
@@ -18,12 +19,12 @@ impl SwapHandle {
         Self { command_tx }
     }
 
-    /// Request cheque settlement. Returns the amount settled.
+    /// Request cheque settlement. Returns the amount settled in AU.
     pub async fn settle(
         &self,
         peer: OverlayAddress,
-        amount: u64,
-    ) -> Result<u64, SwapSettlementError> {
+        amount: Au,
+    ) -> Result<Au, SwapSettlementError> {
         let (tx, rx) = oneshot::channel();
 
         self.command_tx

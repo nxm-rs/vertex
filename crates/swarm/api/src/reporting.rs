@@ -18,6 +18,8 @@ use core::time::Duration;
 
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
+use crate::Au;
+
 /// Peer scoring events reported by subsystems.
 ///
 /// Each event carries an implicit weight (see [`default_weight`]) that is
@@ -193,10 +195,10 @@ pub trait PeerReporter: Send + Sync {
 #[auto_impl::auto_impl(&, Arc)]
 pub trait PeerAffordability: Send + Sync {
     /// True if the peer can afford a request of the given price in AU.
-    fn can_afford(&self, overlay: &OverlayAddress, price: u64) -> bool;
+    fn can_afford(&self, overlay: &OverlayAddress, price: Au) -> bool;
 
     /// Remaining allowance for the peer in AU.
-    fn allowance_remaining(&self, overlay: &OverlayAddress) -> u64;
+    fn allowance_remaining(&self, overlay: &OverlayAddress) -> Au;
 }
 
 /// Why a peer's connection should be closed.
@@ -308,14 +310,14 @@ mod tests {
         }
     }
 
-    struct FixedAffordability(u64);
+    struct FixedAffordability(Au);
 
     impl PeerAffordability for FixedAffordability {
-        fn can_afford(&self, _overlay: &OverlayAddress, price: u64) -> bool {
+        fn can_afford(&self, _overlay: &OverlayAddress, price: Au) -> bool {
             price <= self.0
         }
 
-        fn allowance_remaining(&self, _overlay: &OverlayAddress) -> u64 {
+        fn allowance_remaining(&self, _overlay: &OverlayAddress) -> Au {
             self.0
         }
     }
@@ -348,11 +350,15 @@ mod tests {
 
     #[test]
     fn affordability_via_arc_auto_impl() {
-        let accounting: Arc<dyn PeerAffordability> = Arc::new(FixedAffordability(100));
+        let accounting: Arc<dyn PeerAffordability> =
+            Arc::new(FixedAffordability(Au::from_amount(100)));
         let overlay = OverlayAddress::zero();
-        assert!(accounting.can_afford(&overlay, 100));
-        assert!(!accounting.can_afford(&overlay, 101));
-        assert_eq!(accounting.allowance_remaining(&overlay), 100);
+        assert!(accounting.can_afford(&overlay, Au::from_amount(100)));
+        assert!(!accounting.can_afford(&overlay, Au::from_amount(101)));
+        assert_eq!(
+            accounting.allowance_remaining(&overlay),
+            Au::from_amount(100)
+        );
     }
 
     #[test]

@@ -489,7 +489,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use nectar_primitives::Nonce;
-    use vertex_swarm_api::{SwarmAccountingConfig, SwarmIdentity};
+    use vertex_swarm_api::{Au, SwarmAccountingConfig, SwarmIdentity};
     use vertex_swarm_node::args::NetworkArgs;
     use vertex_swarm_peer_manager::{PeerManager, PeerManagerConfig};
     use vertex_swarm_spec::init_dev;
@@ -647,7 +647,7 @@ mod tests {
 
         let reporter: Arc<dyn PeerReporter> = peer_manager.clone();
         let config = DefaultBandwidthConfig::default();
-        let over_limit = config.disconnect_threshold() + 1;
+        let over_limit = config.disconnect_threshold() + Au::new(1);
         let accounting = AccountingBuilder::new(config)
             .with_pricer_from_config(identity.spec().clone())
             .with_reporter(reporter)

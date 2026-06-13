@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use vertex_swarm_api::{
-    BandwidthMode, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmError, SwarmIdentity,
+    Au, BandwidthMode, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmError, SwarmIdentity,
     SwarmPeerState, SwarmResult, SwarmSettlementProvider,
 };
 use vertex_swarm_bandwidth::Accounting;
@@ -68,8 +68,8 @@ impl<C: SwarmAccountingConfig> PseudosettleProvider<C> {
         }
     }
 
-    /// Get the refresh rate from the configuration.
-    pub fn refresh_rate(&self) -> u64 {
+    /// Get the refresh rate in AU per second from the configuration.
+    pub fn refresh_rate(&self) -> Au {
         self.config.refresh_rate()
     }
 
@@ -85,28 +85,28 @@ impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for Pseudosettl
         BandwidthMode::Pseudosettle
     }
 
-    fn pre_allow(&self, _peer: OverlayAddress, state: &dyn SwarmPeerState) -> i64 {
+    fn pre_allow(&self, _peer: OverlayAddress, state: &dyn SwarmPeerState) -> Au {
         refresh_allowance(state, self.config.refresh_rate())
     }
 
-    async fn settle(&self, peer: OverlayAddress, state: &dyn SwarmPeerState) -> SwarmResult<i64> {
+    async fn settle(&self, peer: OverlayAddress, state: &dyn SwarmPeerState) -> SwarmResult<Au> {
         // If we have a handle, delegate to the service
         if let Some(handle) = &self.handle {
             let balance = state.balance();
-            if balance >= 0 {
-                return Ok(0); // Nothing to settle
+            if !balance.is_negative() {
+                return Ok(Au::ZERO); // Nothing to settle
             }
 
-            let amount = (-balance) as u64;
+            let amount = balance.unsigned_abs();
             let accepted = handle
                 .settle(peer, amount)
                 .await
                 .map_err(SwarmError::payment_required)?;
 
-            Ok(accepted as i64)
+            Ok(accepted)
         } else {
             // No handle - refresh happens automatically in pre_allow()
-            Ok(0)
+            Ok(Au::ZERO)
         }
     }
 
@@ -123,7 +123,7 @@ pub fn create_pseudosettle_actor<A: SwarmBandwidthAccounting + 'static>(
     event_rx: mpsc::UnboundedReceiver<PseudosettleEvent>,
     client_command_tx: mpsc::UnboundedSender<ClientCommand>,
     accounting: Arc<A>,
-    refresh_rate: u64,
+    refresh_rate: Au,
 ) -> (PseudosettleService<A>, PseudosettleHandle) {
     let (command_tx, command_rx) = mpsc::unbounded_channel();
 
@@ -141,31 +141,36 @@ pub fn create_pseudosettle_actor<A: SwarmBandwidthAccounting + 'static>(
 }
 
 /// Apply time-based credit to peer's negative balance. Returns credit applied.
-fn refresh_allowance(state: &dyn SwarmPeerState, refresh_rate: u64) -> i64 {
+fn refresh_allowance(state: &dyn SwarmPeerState, refresh_rate: Au) -> Au {
     let now = current_timestamp();
     let last = state.last_refresh();
 
     if last == 0 {
         state.set_last_refresh(now);
-        return 0;
+        return Au::ZERO;
     }
 
     let elapsed = now.saturating_sub(last);
     if elapsed == 0 {
-        return 0;
+        return Au::ZERO;
     }
 
-    // Calculate allowance: elapsed_seconds * refresh_rate
-    let allowance = elapsed * refresh_rate;
+    // Allowance is refresh_rate AU per elapsed second. The scaling is checked
+    // so a large rate times a long gap cannot wrap into a tiny allowance; on
+    // overflow the allowance saturates at the maximum, which is then capped by
+    // the actual debt below.
+    let allowance = refresh_rate
+        .checked_scale(elapsed)
+        .unwrap_or(Au::from_amount(u64::MAX));
 
     // Only add credit if balance is negative (we owe them)
     let balance = state.balance();
-    let credit = if balance < 0 {
-        let credit = (allowance as i64).min(-balance);
+    let credit = if balance.is_negative() {
+        let credit = allowance.min(-balance);
         state.add_balance(credit);
         credit
     } else {
-        0
+        Au::ZERO
     };
 
     state.set_last_refresh(now);
@@ -209,7 +214,7 @@ mod tests {
     #[test]
     fn test_pseudosettle_refresh_rate() {
         let provider = PseudosettleProvider::new(BandwidthConfig::default());
-        assert_eq!(provider.refresh_rate(), 4_500_000);
+        assert_eq!(provider.refresh_rate(), Au::from_amount(4_500_000));
     }
 
     #[test]
@@ -217,141 +222,164 @@ mod tests {
         let accounting = new_pseudosettle_accounting(BandwidthConfig::default(), test_identity());
 
         let handle = accounting.for_peer(test_peer());
-        assert_eq!(handle.balance(), 0);
+        assert_eq!(handle.balance(), Au::from_amount(0));
 
-        handle.record(1000, Direction::Upload);
-        assert_eq!(handle.balance(), 1000);
+        handle.record(Au::from_amount(1000), Direction::Upload);
+        assert_eq!(handle.balance(), Au::from_amount(1000));
 
-        handle.record(500, Direction::Download);
-        assert_eq!(handle.balance(), 500);
+        handle.record(Au::from_amount(500), Direction::Download);
+        assert_eq!(handle.balance(), Au::from_amount(500));
     }
 
     #[test]
     fn test_refresh_allowance_positive_balance() {
-        let state = PeerState::new(13_500_000, 16_875_000);
-        state.add_balance(1000);
+        let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
+        state.add_balance(Au::new(1000));
 
-        let credit = refresh_allowance(&state, 4_500_000);
+        let credit = refresh_allowance(&state, Au::from_amount(4_500_000));
 
-        assert_eq!(credit, 0);
-        assert_eq!(state.balance(), 1000);
+        assert_eq!(credit, Au::new(0));
+        assert_eq!(state.balance(), Au::new(1000));
     }
 
     #[test]
     fn test_refresh_allowance_negative_balance() {
-        let state = PeerState::new(13_500_000, 16_875_000);
-        state.add_balance(-1000);
+        let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
+        state.add_balance(Au::new(-1000));
         state.set_last_refresh(current_timestamp() - 1);
 
-        let credit = refresh_allowance(&state, 100);
+        let credit = refresh_allowance(&state, Au::from_amount(100));
 
-        assert_eq!(credit, 100);
-        assert_eq!(state.balance(), -900);
+        assert_eq!(credit, Au::new(100));
+        assert_eq!(state.balance(), Au::new(-900));
     }
 
     #[test]
     fn test_refresh_allowance_caps_at_zero() {
-        let state = PeerState::new(13_500_000, 16_875_000);
-        state.add_balance(-100);
+        let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
+        state.add_balance(Au::new(-100));
         state.set_last_refresh(current_timestamp() - 10);
 
-        let credit = refresh_allowance(&state, 1000);
+        let credit = refresh_allowance(&state, Au::from_amount(1000));
 
-        assert_eq!(credit, 100);
-        assert_eq!(state.balance(), 0);
+        assert_eq!(credit, Au::new(100));
+        assert_eq!(state.balance(), Au::new(0));
     }
 
     #[test]
     fn test_settlement_too_soon_same_second() {
-        let state = PeerState::new(13_500_000, 16_875_000);
+        let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
         let now = current_timestamp();
 
         state.set_last_refresh(now);
-        state.add_balance(-10_000);
+        state.add_balance(Au::new(-10_000));
 
-        let credit = refresh_allowance(&state, 4_500_000);
+        let credit = refresh_allowance(&state, Au::from_amount(4_500_000));
 
-        assert_eq!(credit, 0);
-        assert_eq!(state.balance(), -10_000);
+        assert_eq!(credit, Au::new(0));
+        assert_eq!(state.balance(), Au::new(-10_000));
     }
 
     #[test]
     fn test_time_limited_partial_acceptance() {
-        let state = PeerState::new(13_500_000, 16_875_000);
-        state.add_balance(-50_000);
+        let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
+        state.add_balance(Au::new(-50_000));
         state.set_last_refresh(current_timestamp() - 3);
 
-        let credit = refresh_allowance(&state, 10_000);
+        let credit = refresh_allowance(&state, Au::from_amount(10_000));
 
-        assert_eq!(credit, 30_000);
-        assert_eq!(state.balance(), -20_000);
+        assert_eq!(credit, Au::new(30_000));
+        assert_eq!(state.balance(), Au::new(-20_000));
     }
 
     #[test]
     fn test_full_debt_acceptance() {
-        let state = PeerState::new(13_500_000, 16_875_000);
-        state.add_balance(-10_000);
+        let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
+        state.add_balance(Au::new(-10_000));
         state.set_last_refresh(current_timestamp() - 10);
 
-        let credit = refresh_allowance(&state, 10_000);
+        let credit = refresh_allowance(&state, Au::from_amount(10_000));
 
-        assert_eq!(credit, 10_000);
-        assert_eq!(state.balance(), 0);
+        assert_eq!(credit, Au::new(10_000));
+        assert_eq!(state.balance(), Au::new(0));
     }
 
     #[test]
     fn test_sequential_refreshes() {
-        let state = PeerState::new(13_500_000, 16_875_000);
+        let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
         let base_time = current_timestamp();
 
-        state.add_balance(-100_000);
+        state.add_balance(Au::new(-100_000));
         state.set_last_refresh(base_time - 5);
 
-        let credit1 = refresh_allowance(&state, 10_000);
-        assert_eq!(credit1, 50_000);
-        assert_eq!(state.balance(), -50_000);
+        let credit1 = refresh_allowance(&state, Au::from_amount(10_000));
+        assert_eq!(credit1, Au::new(50_000));
+        assert_eq!(state.balance(), Au::new(-50_000));
 
-        let credit2 = refresh_allowance(&state, 10_000);
-        assert_eq!(credit2, 0);
-        assert_eq!(state.balance(), -50_000);
+        let credit2 = refresh_allowance(&state, Au::from_amount(10_000));
+        assert_eq!(credit2, Au::new(0));
+        assert_eq!(state.balance(), Au::new(-50_000));
 
         state.set_last_refresh(current_timestamp() - 3);
 
-        let credit3 = refresh_allowance(&state, 10_000);
-        assert_eq!(credit3, 30_000);
-        assert_eq!(state.balance(), -20_000);
+        let credit3 = refresh_allowance(&state, Au::from_amount(10_000));
+        assert_eq!(credit3, Au::new(30_000));
+        assert_eq!(state.balance(), Au::new(-20_000));
+    }
+
+    #[test]
+    fn test_refresh_allowance_does_not_overflow_into_a_tiny_allowance() {
+        // A very large refresh rate over a long gap previously multiplied with a
+        // raw saturating multiply: the checked scaling now bounds it instead of
+        // wrapping into a small allowance. The credit is still capped at the
+        // actual debt, so a large debt is fully forgiven and never under-credited
+        // by a wrapped allowance.
+        let state = PeerState::new(Au::from_amount(u64::MAX), Au::from_amount(u64::MAX));
+        let debt = i64::MAX / 2;
+        state.add_balance(Au::new(-debt));
+        state.set_last_refresh(current_timestamp() - 1_000_000);
+
+        let credit = refresh_allowance(&state, Au::from_amount(u64::MAX));
+
+        // The whole debt is forgiven; the allowance never wrapped below it.
+        assert_eq!(credit, Au::new(debt));
+        assert_eq!(state.balance(), Au::ZERO);
     }
 
     #[test]
     fn test_first_refresh_initialization() {
-        let state = PeerState::new(13_500_000, 16_875_000);
+        let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
 
         assert_eq!(state.last_refresh(), 0);
-        state.add_balance(-10_000);
+        state.add_balance(Au::new(-10_000));
 
-        let credit = refresh_allowance(&state, 10_000);
+        let credit = refresh_allowance(&state, Au::from_amount(10_000));
 
-        assert_eq!(credit, 0);
-        assert_eq!(state.balance(), -10_000);
+        assert_eq!(credit, Au::new(0));
+        assert_eq!(state.balance(), Au::new(-10_000));
         assert!(state.last_refresh() > 0);
     }
 
     #[test]
     fn test_client_vs_storer_refresh_rate() {
-        let storer_state = PeerState::new(13_500_000, 16_875_000);
-        let client_state = PeerState::new_client_only(13_500_000, 16_875_000, 10);
+        let storer_state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
+        let client_state = PeerState::new_client_only(
+            Au::from_amount(13_500_000),
+            Au::from_amount(16_875_000),
+            10,
+        );
 
-        storer_state.add_balance(-50_000);
-        client_state.add_balance(-50_000);
+        storer_state.add_balance(Au::new(-50_000));
+        client_state.add_balance(Au::new(-50_000));
         storer_state.set_last_refresh(current_timestamp() - 10);
         client_state.set_last_refresh(current_timestamp() - 10);
 
-        let storer_credit = refresh_allowance(&storer_state, 10_000);
-        assert_eq!(storer_credit, 50_000);
-        assert_eq!(storer_state.balance(), 0);
+        let storer_credit = refresh_allowance(&storer_state, Au::from_amount(10_000));
+        assert_eq!(storer_credit, Au::new(50_000));
+        assert_eq!(storer_state.balance(), Au::new(0));
 
-        let client_credit = refresh_allowance(&client_state, 1_000);
-        assert_eq!(client_credit, 10_000);
-        assert_eq!(client_state.balance(), -40_000);
+        let client_credit = refresh_allowance(&client_state, Au::from_amount(1_000));
+        assert_eq!(client_credit, Au::new(10_000));
+        assert_eq!(client_state.balance(), Au::new(-40_000));
     }
 }

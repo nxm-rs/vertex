@@ -1,6 +1,7 @@
 //! SWAP settlement errors.
 
 use alloy_primitives::{Address, U256};
+use vertex_swarm_api::{Au, AuConversionError};
 
 /// Errors that can occur during swap operations.
 #[derive(Debug, Clone, thiserror::Error, strum::IntoStaticStr)]
@@ -62,6 +63,10 @@ pub enum SwapSettlementError {
     #[error("cheque amount overflows accounting unit: {0}")]
     AmountOverflow(U256),
 
+    /// A settlement amount was negative and has no cheque payout representation.
+    #[error("settlement amount is negative: {0}")]
+    NegativeAmount(Au),
+
     /// Cheque validation failed.
     #[error("cheque validation failed: {0}")]
     ValidationFailed(String),
@@ -69,4 +74,13 @@ pub enum SwapSettlementError {
     /// Chain backend not available for the requested cashout.
     #[error("chain backend not available")]
     NoChainBackend,
+}
+
+impl From<AuConversionError> for SwapSettlementError {
+    fn from(err: AuConversionError) -> Self {
+        match err {
+            AuConversionError::U256TooLarge(value) => Self::AmountOverflow(value),
+            AuConversionError::Negative(value) => Self::NegativeAmount(value),
+        }
+    }
 }

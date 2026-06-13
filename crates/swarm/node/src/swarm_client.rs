@@ -375,7 +375,7 @@ mod tests {
     #[tokio::test]
     async fn put_prefers_affordable_candidate_over_closer_unaffordable_one() {
         use crate::{PeerScores, PeerSelector, SettlementTrigger};
-        use vertex_swarm_api::{PeerAffordability, SwarmPricing};
+        use vertex_swarm_api::{Au, PeerAffordability, SwarmPricing};
 
         struct NoScores;
         impl PeerScores for NoScores {
@@ -386,23 +386,23 @@ mod tests {
 
         struct AllUnaffordableExcept(OverlayAddress);
         impl PeerAffordability for AllUnaffordableExcept {
-            fn can_afford(&self, overlay: &OverlayAddress, _price: u64) -> bool {
+            fn can_afford(&self, overlay: &OverlayAddress, _price: Au) -> bool {
                 *overlay == self.0
             }
 
-            fn allowance_remaining(&self, _overlay: &OverlayAddress) -> u64 {
-                0
+            fn allowance_remaining(&self, _overlay: &OverlayAddress) -> Au {
+                Au::ZERO
             }
         }
 
         struct UnitPricer;
         impl SwarmPricing for UnitPricer {
-            fn price(&self, _chunk: &ChunkAddress) -> u64 {
-                1
+            fn price(&self, _chunk: &ChunkAddress) -> Au {
+                Au::from_amount(1)
             }
 
-            fn peer_price(&self, _peer: &OverlayAddress, _chunk: &ChunkAddress) -> u64 {
-                1
+            fn peer_price(&self, _peer: &OverlayAddress, _chunk: &ChunkAddress) -> Au {
+                Au::from_amount(1)
             }
         }
 

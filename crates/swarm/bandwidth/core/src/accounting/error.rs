@@ -1,5 +1,6 @@
 //! Accounting errors (threshold violations, settlement failures).
 
+use vertex_swarm_api::Au;
 use vertex_swarm_primitives::OverlayAddress;
 
 /// Errors that can occur during accounting operations.
@@ -10,16 +11,16 @@ pub enum AccountingError {
     #[error("peer {peer} balance {balance} exceeds disconnect threshold {threshold}")]
     DisconnectThreshold {
         peer: OverlayAddress,
-        balance: i64,
-        threshold: u64,
+        balance: Au,
+        threshold: Au,
     },
 
     /// Operation would exceed payment threshold.
     #[error("peer {peer} balance {balance} exceeds payment threshold {threshold}")]
     PaymentThreshold {
         peer: OverlayAddress,
-        balance: i64,
-        threshold: u64,
+        balance: Au,
+        threshold: Au,
     },
 
     /// Peer not found.
