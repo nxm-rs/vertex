@@ -8693,6 +8693,7 @@ dependencies = [
  "alloy-chains",
  "alloy-primitives",
  "alloy-signer",
+ "alloy-signer-local",
  "async-trait",
  "auto_impl",
  "bytes",
@@ -9173,6 +9174,7 @@ name = "vertex-swarm-node"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-signer",
  "alloy-signer-local",
  "async-trait",
  "auto_impl",

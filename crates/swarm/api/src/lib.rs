@@ -80,7 +80,8 @@ pub use self::error::{
 pub use self::identity::SwarmIdentity;
 pub use self::protocol::SwarmProtocol;
 pub use self::providers::{
-    ChunkRetrievalResult, PushReceipt, SwarmChunkProvider, SwarmChunkSender,
+    ChunkRetrievalResult, PushReceipt, ReceiptDepthError, SwarmChunkProvider, SwarmChunkSender,
+    recover_receipt_signer, required_receipt_depth, verify_receipt_depth,
 };
 pub use self::reporting::{
     BanCause, DisconnectCause, PeerAffordability, PeerLifecycleEvent, PeerReporter, ReportSource,
@@ -103,8 +104,8 @@ pub use nectar_primitives::{
     SingleOwnerChunk, StandardChunkSet,
 };
 pub use vertex_swarm_primitives::{
-    ConnectionProfile, OverlayAddress, Stamp, StampedChunk, StorageRadius, ValidatedChunk,
-    ValidationError,
+    ConnectionProfile, NeighborhoodDepth, OverlayAddress, Stamp, StampedChunk, StorageRadius,
+    ValidatedChunk, ValidationError,
 };
 
 // Re-export libp2p types used in config traits

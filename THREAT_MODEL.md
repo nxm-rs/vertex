@@ -1,0 +1,26 @@
+# Threat model: shallow custody receipt rejection (#293)
+
+## Design
+
+A pushsync custody receipt asserts that a node inside the chunk's neighbourhood took custody. A receipt is "shallow" when its signer's proximity to the chunk is below the responsible depth, `PO(signer, chunk) < d`: the chunk never reached the neighbourhood, so it is unretrievable, unreplicated, and the receipt is a free-riding forgery (Book of Swarm 3.5). This unit verifies receipt depth at both seams that accept a receipt: the origin uploader (`NetworkChunkProvider::push_to_closest`) and, critically, the relay forwarder (`NetworkForwarder::push`), which must validate BEFORE relaying upstream so it never launders a shallow receipt and takes the reputational hit itself.
+
+The verifier lives in `vertex-swarm-api` (`recover_receipt_signer`, `required_receipt_depth`, `verify_receipt_depth`) so both seams share one implementation. It recovers the signer overlay from `receipt.signature` over `(address || nonce)` via EIP-191 recovery, then derives the overlay with the canonical `compute_overlay(eth, network_id, nonce)`. The signer is recovered from the SIGNATURE, never the off-wire `receipt.storer` field: on a multi-hop relay the handler sets `storer` to the immediate downstream peer, several hops from the real signer, so a check against `storer` would measure the wrong peer (matches the reference). The required depth is `min(local_observed_depth, receipt.storage_radius)`: the locally observed neighbourhood depth (`TopologyHandle::depth`) is the trusted authority, never exceeded; the storer's claimed radius can only lower the bar, so a legitimately sparse or shallow neighbourhood is not false-rejected. A shallow or malformed receipt is rejected, the responding peer scored `InvalidData` through `PeerManager::report_peer` (the #287 reporter), and the uploader continues its walk to the next candidate (retry-via-different-route).
+
+## Trust boundary
+
+The receipt arrives over the wire from an untrusted peer. Everything in it (`storer`, `signature`, `nonce`, `storage_radius`) is attacker-controlled. The only locally trusted inputs are the chunk address (we know what we pushed) and the locally observed neighbourhood depth (our own topology view). The signature is the only field cryptographically bound to an identity, so it is the sole basis for the signer overlay; the off-wire `storer` is advisory and never read for the depth decision.
+
+## Attacks considered and defences
+
+- Forwarder laundering a shallow receipt for free-ride profit: the forwarder runs `verify_receipt_depth` before relaying and returns `ShallowReceipt`/`UnverifiedRelay` instead of relaying, scoring the downstream signer. Tested: `push_rejects_shallow_receipt_reports_signer_and_leaks_no_reservation`.
+- Spoofing depth via the off-wire `storer` field set to a deep address: the depth check recovers from the signature and ignores `storer`. Tested: `recovers_signer_from_signature_not_storer_field` (storer is a far `[0xff; 32]` while the recovered overlay is deep).
+- All-zero "failure" signature replayed as a real receipt: rejected as `MalformedSignature` before any recovery. Tested: `all_zero_signature_is_malformed`, `push_rejects_malformed_receipt_signature`.
+- Signature lifted from a different message (different chunk): recovers to a different overlay that is shallow for this chunk, so it is rejected. Tested: `wrong_message_recovers_to_a_different_overlay_and_is_shallow`.
+- Storer understating its radius to weaken the bar: `min(local, wire)` means a low claimed radius lowers the required depth, but a storer claiming a shallow radius is self-declaring non-responsibility, and the zero-cost case (a forwarder signing with its existing wrong-neighbourhood overlay, radius irrelevant) is still rejected because the recovered overlay is shallow against the local depth. Boundary tested: `wire_radius_lowers_the_bar_for_sparse_neighbourhoods` and `required_depth_is_min_of_local_and_wire`.
+- False rejection of a legitimately sparse/young/shallow neighbourhood: the required depth is bounded by both the locally observed depth and the storer's own radius, so a correct receipt for a sparse neighbourhood passes. Tested: `wire_radius_lowers_the_bar_for_sparse_neighbourhoods`.
+- Accounting leak on rejection: the downstream `receive` reservation is dropped on a rejected relay and neither leg commits. Tested: balance assertions in the forwarder rejection tests.
+
+## Deferred gaps
+
+- Nonce-grinding a passing overlay costs ~`2^d = N/R` keccak trials (linear in network size, well inside the pushsync timeout at any realistic size), and pre-mining defeats the timeout entirely. The depth check is therefore a cheap first filter that kills accidental shallow receipts and zero-cost free-riding, NOT a cryptographic guarantee. The boundary that makes forgery unprofitable is stake-bound identity plus retrievability auditing (storage incentives / redistribution game), tracked under #75. Documented in `required_receipt_depth` rustdoc and in #293's security analysis.
+- Retry policy tuning (how many alternate routes before surfacing a push failure, and the exact score weight for a shallow vs malformed receipt) reuses the existing candidate walk and the shared `InvalidData` weight; a dedicated shallow-receipt scoring event is left for a follow-up if telemetry shows it is needed.

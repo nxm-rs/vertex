@@ -181,21 +181,30 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
     /// Must be called during node assembly, before the event loop accepts
     /// connections: a handler created earlier would capture the stub.
     ///
-    /// `topology` selects strictly-closer relay candidates and `accounting`
-    /// drives the two-leg prepare/apply; both are typically the same handles the
-    /// origin path uses.
+    /// `topology` selects strictly-closer relay candidates and provides the
+    /// locally observed neighbourhood depth that bounds the receipt depth check;
+    /// `accounting` drives the two-leg prepare/apply; `reporter` is the single
+    /// scoring path a shallow or malformed relayed receipt is reported through;
+    /// `network_id` recovers a receipt signer's overlay. The topology and
+    /// accounting handles are typically the same ones the origin path uses.
     pub fn enable_forwarding<T, A>(
         &mut self,
         topology: Arc<T>,
         accounting: Arc<A>,
         handle: ClientHandle,
+        network_id: nectar_primitives::NetworkId,
+        reporter: Arc<dyn vertex_swarm_api::PeerReporter>,
     ) where
-        T: vertex_swarm_api::SwarmTopologyRouting + Send + Sync + 'static,
+        T: vertex_swarm_api::SwarmTopologyRouting
+            + vertex_swarm_api::SwarmTopologyState
+            + Send
+            + Sync
+            + 'static,
         A: vertex_swarm_api::SwarmClientAccounting + Send + Sync + 'static,
     {
         let local = self.overlay_address();
         let forwarder = Arc::new(crate::protocol::NetworkForwarder::new(
-            local, topology, accounting, handle,
+            local, topology, accounting, handle, network_id, reporter,
         ));
         self.base
             .swarm

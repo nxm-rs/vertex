@@ -853,8 +853,10 @@ mod tests {
     // genuine A->B->C path. The relay verifies, accounts both legs, caches the
     // forwarded chunk, and relays the storer's receipt verbatim.
 
+    use nectar_primitives::NetworkId;
     use vertex_swarm_api::{
-        Au, SwarmBandwidthAccounting, SwarmClientAccounting, SwarmPeerBandwidth, SwarmPricing,
+        Au, PeerReporter, ReportSource, SwarmBandwidthAccounting, SwarmClientAccounting,
+        SwarmPeerBandwidth, SwarmPricing, SwarmScoringEvent,
     };
     use vertex_swarm_bandwidth::{
         Accounting, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
@@ -865,6 +867,20 @@ mod tests {
 
     use crate::ClientHandle;
     use crate::protocol::NetworkForwarder;
+
+    /// A reporter that drops every report; the relay harness only cares about
+    /// the forward outcome, not the scoring side effect, for the happy path.
+    struct NoopReporter;
+
+    impl PeerReporter for NoopReporter {
+        fn report_peer(
+            &self,
+            _overlay: &OverlayAddress,
+            _event: SwarmScoringEvent,
+            _source: ReportSource,
+        ) {
+        }
+    }
 
     type RelayAccounting =
         ClientAccounting<Arc<Accounting<DefaultBandwidthConfig, Arc<Identity>>>, FixedPricer<Spec>>;
@@ -918,6 +934,8 @@ mod tests {
                 Arc::clone(&topology),
                 Arc::clone(&accounting),
                 handle,
+                NetworkId::MAINNET,
+                Arc::new(NoopReporter) as Arc<dyn PeerReporter>,
             ));
             behaviour.set_forwarder(forwarder);
             behaviour
