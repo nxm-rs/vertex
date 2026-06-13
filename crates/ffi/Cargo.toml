@@ -69,4 +69,4 @@ metrics.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing-subscriber = { workspace = true }
-metrics-util = { version = "0.19", default-features = false, features = ["registry"] }
+metrics-util = { version = "0.20", default-features = false, features = ["registry"] }

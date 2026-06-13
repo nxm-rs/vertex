@@ -85,7 +85,7 @@ metrics = { workspace = true }
 # ARM cross-toolchains. Push-based export, if ever needed, belongs on OTLP.
 metrics-exporter-prometheus = { version = "0.17", default-features = false, features = ["http-listener"], optional = true }
 metrics-process = { version = "2.3", optional = true }
-metrics-util = { version = "0.19", optional = true }
+metrics-util = { version = "0.20", optional = true }
 
 # Tracing
 tracing = { workspace = true }

@@ -4716,7 +4716,7 @@ dependencies = [
  "indexmap 2.14.0",
  "ipnet",
  "metrics",
- "metrics-util 0.20.4",
+ "metrics-util",
  "quanta",
  "thiserror 2.0.18",
  "tokio",
@@ -4741,35 +4741,19 @@ dependencies = [
 
 [[package]]
 name = "metrics-util"
-version = "0.19.1"
+version = "0.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8496cc523d1f94c1385dd8f0f0c2c480b2b8aeccb5b7e4485ad6365523ae376"
+checksum = "96f8722f8562635f92f8ed992f26df0532266eb03d5202607c20c0d7e9745e13"
 dependencies = [
  "aho-corasick",
  "crossbeam-epoch",
  "crossbeam-utils",
- "hashbrown 0.15.5",
+ "hashbrown 0.16.1",
  "indexmap 2.14.0",
  "metrics",
  "ordered-float",
  "quanta",
  "radix_trie",
- "rand 0.9.4",
- "rand_xoshiro",
- "sketches-ddsketch",
-]
-
-[[package]]
-name = "metrics-util"
-version = "0.20.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96f8722f8562635f92f8ed992f26df0532266eb03d5202607c20c0d7e9745e13"
-dependencies = [
- "crossbeam-epoch",
- "crossbeam-utils",
- "hashbrown 0.16.1",
- "metrics",
- "quanta",
  "rand 0.9.4",
  "rand_xoshiro",
  "rapidhash",
@@ -5373,9 +5357,9 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "ordered-float"
-version = "4.6.0"
+version = "5.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
+checksum = "b7d950ca161dc355eaf28f82b11345ed76c6e1f6eb1f4f4479e0323b9e2fbd0e"
 dependencies = [
  "num-traits",
 ]
@@ -8367,7 +8351,7 @@ dependencies = [
  "alloy-signer-local",
  "flutter_rust_bridge",
  "metrics",
- "metrics-util 0.19.1",
+ "metrics-util",
  "nectar-postage",
  "strum 0.28.0",
  "thiserror 2.0.18",
@@ -8592,7 +8576,7 @@ dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
  "metrics-process",
- "metrics-util 0.19.1",
+ "metrics-util",
  "opentelemetry",
  "opentelemetry-appender-tracing",
  "opentelemetry-otlp",
