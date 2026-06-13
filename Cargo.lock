@@ -8364,6 +8364,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "vertex-chain-index-chequebook-factory"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-provider",
+ "alloy-rpc-types-eth",
+ "alloy-sol-types",
+ "nectar-contracts",
+ "serde",
+ "tokio",
+ "vertex-chain-index",
+ "vertex-storage",
+ "vertex-storage-redb",
+]
+
+[[package]]
 name = "vertex-ffi"
 version = "0.1.0"
 dependencies = [

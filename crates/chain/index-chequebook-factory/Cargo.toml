@@ -1,0 +1,42 @@
+[package]
+name = "vertex-chain-index-chequebook-factory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Chequebook factory indexer: folds SimpleSwapDeployed into a vertex-storage set of factory-deployed chequebook addresses"
+
+[lints]
+workspace = true
+
+[dependencies]
+# The generic engine drives this indexer; the `Indexer` trait and `IndexError`
+# come from here.
+vertex-chain-index = { workspace = true }
+# The projection table lives behind the `Database`/`DbTx` traits.
+vertex-storage = { workspace = true }
+
+# nectar: the canonical `IChequebookFactory::SimpleSwapDeployed` event binding
+# and the `CHEQUEBOOK_FACTORY` deployment constants (address + deployment block)
+# for Gnosis Chain mainnet and Sepolia testnet.
+nectar-contracts = { workspace = true }
+
+# alloy: `Address` for the projected keys, the `Filter`/`Log` types the
+# `Indexer` trait speaks, and `SolEvent` for decoding. The crate carries no
+# transport of its own so it stays wasm-clean.
+alloy-primitives = { workspace = true, features = ["serde"] }
+alloy-rpc-types-eth = { workspace = true }
+alloy-sol-types = { workspace = true }
+
+# serialization: the projected row derives serde.
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+# In-memory backend for the synthetic-log unit tests.
+vertex-storage-redb = { workspace = true }
+# A full provider with an HTTP transport for the ignored e2e fork test, plus
+# the call types for the direct `deployedContracts()` cross-check.
+alloy-provider = { workspace = true, features = ["reqwest"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
