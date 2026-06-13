@@ -279,6 +279,9 @@ mod tests {
         storage_radius: StorageRadius,
     ) -> PushReceipt {
         let eth = signer.address();
+        // The signature is over the 32-byte address only (the wire format) and
+        // is independent of the nonce, so sign once and grind for overlay depth.
+        let signature = signer.sign_message_sync(address.as_bytes()).expect("sign");
         let mut counter = 0u64;
         loop {
             let mut nonce_bytes = [0u8; 32];
@@ -286,10 +289,6 @@ mod tests {
             let nonce = Nonce::from(nonce_bytes);
             let overlay = compute_overlay(&eth, NET, &nonce);
             if address.proximity(&overlay).get() >= min_depth {
-                let mut message = [0u8; 64];
-                message[..32].copy_from_slice(address.as_bytes());
-                message[32..].copy_from_slice(nonce.as_slice());
-                let signature = signer.sign_message_sync(&message).expect("sign");
                 return PushReceipt {
                     storer: SwarmAddress::from([0xff; 32]),
                     signature,
@@ -326,9 +325,9 @@ mod tests {
     fn origin_rejects_a_shallow_receipt_and_reports_the_peer() {
         let signer = PrivateKeySigner::random();
         let addr = address(0xff);
-        // Shallow signer, deep claimed radius so the required depth stays at the
-        // local depth (12).
-        let receipt = signed_receipt(&signer, &addr, 0, radius(31));
+        // Shallow signer; the local floor (depth 12) rejects it regardless of the
+        // claimed radius.
+        let receipt = signed_receipt(&signer, &addr, 0, radius(8));
         let reporter = RecordingReporter::default();
         let peer = SwarmAddress::from([0x22; 32]);
 
@@ -340,6 +339,22 @@ mod tests {
         assert_eq!(reported_peer, peer, "the responding peer is scored");
         assert_eq!(event, SwarmScoringEvent::InvalidData);
         assert_eq!(source, ReportSource::Protocol("pushsync"));
+    }
+
+    #[test]
+    fn origin_rejects_a_shallow_receipt_claiming_radius_zero() {
+        // Regression: an attacker setting storage_radius == 0 must not bypass the
+        // local floor at the origin uploader.
+        let signer = PrivateKeySigner::random();
+        let addr = address(0xff);
+        let receipt = signed_receipt(&signer, &addr, 0, radius(0));
+        let reporter = RecordingReporter::default();
+        let peer = SwarmAddress::from([0x55; 32]);
+
+        let err = accept_origin_receipt(&receipt, &addr, NET, depth(12), peer, &reporter)
+            .expect_err("radius 0 does not bypass the local floor");
+        assert!(matches!(err, ReceiptDepthError::Shallow { .. }));
+        assert_eq!(reporter.count(), 1);
     }
 
     #[test]

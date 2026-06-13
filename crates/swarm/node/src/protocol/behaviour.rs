@@ -1096,8 +1096,9 @@ mod tests {
 
     #[tokio::test]
     async fn three_node_pushsync_relays_receipt_verbatim_and_accounts() {
-        use alloy_primitives::Signature;
-        use nectar_primitives::Nonce;
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use nectar_primitives::{Nonce, compute_overlay};
         use vertex_swarm_api::PushReceipt;
         use vertex_swarm_primitives::{Bin, StorageRadius};
 
@@ -1108,20 +1109,36 @@ mod tests {
         // of record. C's forwarder ClientHandle is answered by the test with a
         // signed receipt, modelling C taking custody and signing. B and C must
         // relay that receipt VERBATIM (the cache-only client never signs), so A
-        // sees C's exact signature, nonce, and radius.
+        // sees C's exact signature, nonce, and radius. The relay seams verify the
+        // receipt depth before relaying, so the receipt must be genuinely deep:
+        // signed over the 32-byte chunk address by a key whose overlay (via the
+        // nonce) reaches at least the storer's declared radius for the chunk.
         let a_overlay = overlay_at_proximity(&address, 2);
         let b_overlay = overlay_at_proximity(&address, 3);
         let c_overlay = overlay_at_proximity(&address, 18);
 
         // The storer's signed receipt, produced once at C and never re-signed.
-        let mut raw = [0u8; 65];
-        raw[..64].fill(1);
-        raw[64] = 27;
+        // The relay forwarders derive overlays with NetworkId::MAINNET, so grind
+        // the nonce against that network id.
+        let storer_radius = StorageRadius::new(Bin::new(7).unwrap());
+        let signer = PrivateKeySigner::random();
+        let signature = signer.sign_message_sync(address.as_bytes()).expect("sign");
+        let mut counter = 0u64;
+        let nonce = loop {
+            let mut nonce_bytes = [0u8; 32];
+            nonce_bytes[..8].copy_from_slice(&counter.to_le_bytes());
+            let nonce = Nonce::from(nonce_bytes);
+            let overlay = compute_overlay(&signer.address(), NetworkId::MAINNET, &nonce);
+            if address.proximity(&overlay).get() >= storer_radius.get() {
+                break nonce;
+            }
+            counter += 1;
+        };
         let storer_receipt = PushReceipt {
             storer: c_overlay,
-            signature: Signature::try_from(&raw[..]).expect("valid signature"),
-            nonce: Nonce::from([0x5a; 32]),
-            storage_radius: StorageRadius::new(Bin::new(7).unwrap()),
+            signature,
+            nonce,
+            storage_radius: storer_radius,
         };
 
         let b_accounting = relay_accounting();

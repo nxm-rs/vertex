@@ -73,9 +73,10 @@ pub enum ReceiptDepthError {
 
 /// Recover the overlay of the node that signed a custody receipt.
 ///
-/// The storer signs over `(chunk_address || nonce)` with an EIP-191 personal
-/// sign, exactly as the reference does; the overlay is then derived from the
-/// recovered Ethereum address with the canonical
+/// The storer signs over the 32-byte chunk address with an EIP-191 personal
+/// sign, exactly as the reference does; the nonce is NOT part of the signed
+/// message, it is only an input to overlay derivation. The overlay is derived
+/// from the recovered Ethereum address with the canonical
 /// [`compute_overlay`](nectar_primitives::compute_overlay) formula
 /// (`keccak256(eth || network_id_le || nonce)`).
 ///
@@ -95,43 +96,51 @@ pub fn recover_receipt_signer(
         return Err(ReceiptDepthError::MalformedSignature);
     }
 
-    let mut message = [0u8; 64];
-    message[..32].copy_from_slice(address.as_bytes());
-    message[32..].copy_from_slice(receipt.nonce.as_slice());
-
+    // The signed message is the 32-byte chunk address only, matching the
+    // reference producer; the nonce binds the overlay, not the signature.
     let eth = receipt
         .signature
-        .recover_address_from_msg(message.as_slice())
+        .recover_address_from_msg(address.as_bytes())
         .map_err(|_| ReceiptDepthError::MalformedSignature)?;
 
     Ok(compute_overlay(&eth, network_id, &receipt.nonce))
 }
+
+/// Slack subtracted from the locally observed depth before it becomes the floor.
+///
+/// Topology views drift: a peer at the genuine edge of the responsible
+/// neighbourhood can sit one bin shallower than our own observed depth without
+/// being a free-rider. Subtracting a small fixed tolerance from the local floor
+/// (as the reference does with its own radius) avoids false-rejecting such an
+/// honest, marginally-shallow receipt while still rejecting receipts that are
+/// meaningfully outside the neighbourhood. The wire radius can only *raise* the
+/// bar above this floor, never lower it.
+pub const SHALLOW_RECEIPT_TOLERANCE: u8 = 1;
 
 /// Derive the minimum depth a receipt signer must reach for a chunk.
 ///
 /// The required depth is dynamic: hard-coding it would reject legitimately
 /// shallow receipts in a small, young, or sparse neighbourhood, failing valid
 /// uploads. The locally observed neighbourhood depth is the trusted authority
-/// for how deep the responsible neighbourhood is; we never require *more* than
-/// what we can observe (a stale-high local estimate must not false-reject a
-/// correct receipt). The storer's claimed `storage_radius` is trusted only to
-/// *lower* the bar, never to raise it: a storer at the edge of a genuinely
-/// sparse neighbourhood may legitimately carry a shallower radius than our
-/// global depth estimate, and requiring more than its self-declared
-/// responsibility would false-reject it.
+/// for how deep the responsible neighbourhood is, and it is the only input an
+/// attacker cannot influence, so it sets the *floor* (minus a small
+/// [`SHALLOW_RECEIPT_TOLERANCE`] for honest topology drift). The storer's
+/// claimed `storage_radius` is attacker-controlled wire data: it is trusted only
+/// to *raise* the bar, never to lower it. A storer that declares a deeper radius
+/// than our observed depth is binding itself to a stricter custody claim, which
+/// we honour; a storer that declares a shallower radius cannot thereby weaken the
+/// locally trusted floor, so it cannot launder a shallow free-riding receipt past
+/// the check by under-declaring (or zeroing) its radius.
 ///
-/// Hence `required = min(local_depth, wire_radius)`. A malicious storer that
-/// lowers `storage_radius` to weaken the check thereby self-declares
-/// non-responsibility for the chunk, which is exactly the property a custody
-/// receipt is supposed to assert; the soft filter still rejects the
-/// zero-cost case (a forwarder signing with its existing wrong-neighbourhood
-/// overlay) and the grind cost rises to the neighbourhood size. The depth check
-/// is a cheap first filter, not a cryptographic guarantee; stake-binding and
-/// retrievability auditing (storage incentives, tracked in #75) are the layer
-/// that makes forgery unprofitable.
+/// Hence `required = max(local_depth - tolerance, wire_radius)`, mirroring the
+/// reference, whose bar is `max(self_radius - tolerance, receipt.StorageRadius)`.
+/// The depth check is a cheap first filter, not a cryptographic guarantee;
+/// stake-binding and retrievability auditing (storage incentives, tracked in
+/// #75) are the layer that makes forgery unprofitable.
 #[must_use]
 pub fn required_receipt_depth(local_depth: NeighborhoodDepth, wire_radius: StorageRadius) -> u8 {
-    local_depth.get().min(wire_radius.get())
+    let floor = local_depth.get().saturating_sub(SHALLOW_RECEIPT_TOLERANCE);
+    floor.max(wire_radius.get())
 }
 
 /// Verify a custody receipt is deep enough, returning the recovered signer.
@@ -208,9 +217,9 @@ mod receipt_depth_tests {
         ChunkAddress::new(bytes)
     }
 
-    /// Sign a receipt over `(address || nonce)`, grinding the nonce until the
-    /// signer's overlay shares at least `min_depth` leading bits with `address`.
-    /// Returns the receipt and the signer overlay.
+    /// Sign a receipt over the 32-byte chunk address (the wire format), grinding
+    /// the nonce until the signer's overlay shares at least `min_depth` leading
+    /// bits with `address`. Returns the receipt and the signer overlay.
     fn signed_receipt(
         signer: &PrivateKeySigner,
         address: &ChunkAddress,
@@ -218,6 +227,9 @@ mod receipt_depth_tests {
         storage_radius: StorageRadius,
     ) -> (PushReceipt, OverlayAddress) {
         let eth = signer.address();
+        // The signature is over the address only and is independent of the
+        // nonce, so sign once and grind the nonce purely for overlay depth.
+        let signature = signer.sign_message_sync(address.as_bytes()).expect("sign");
         let mut counter = 0u64;
         loop {
             let mut nonce_bytes = [0u8; 32];
@@ -225,10 +237,6 @@ mod receipt_depth_tests {
             let nonce = Nonce::from(nonce_bytes);
             let overlay = compute_overlay(&eth, NET, &nonce);
             if address.proximity(&overlay).get() >= min_depth {
-                let mut message = [0u8; 64];
-                message[..32].copy_from_slice(address.as_bytes());
-                message[32..].copy_from_slice(nonce.as_slice());
-                let signature = signer.sign_message_sync(&message).expect("sign");
                 return (
                     PushReceipt {
                         // The off-wire storer is deliberately a far address to
@@ -246,13 +254,44 @@ mod receipt_depth_tests {
     }
 
     #[test]
-    fn required_depth_is_min_of_local_and_wire() {
-        // The required depth never exceeds the locally observed depth and never
-        // exceeds the storer's self-declared radius.
-        assert_eq!(required_receipt_depth(depth(8), radius(4)), 4);
-        assert_eq!(required_receipt_depth(depth(4), radius(8)), 4);
-        assert_eq!(required_receipt_depth(depth(0), radius(31)), 0);
-        assert_eq!(required_receipt_depth(depth(12), radius(12)), 12);
+    fn required_depth_floors_on_local_and_wire_radius_can_only_raise() {
+        // The locally observed depth (minus the tolerance) is the floor; the
+        // attacker-controlled wire radius can only RAISE the bar above it.
+        // Floor dominates when the claimed radius is shallower.
+        assert_eq!(
+            required_receipt_depth(depth(8), radius(4)),
+            8 - SHALLOW_RECEIPT_TOLERANCE
+        );
+        // A shallow (or zero) wire radius cannot drop the bar below the floor.
+        assert_eq!(
+            required_receipt_depth(depth(8), radius(0)),
+            8 - SHALLOW_RECEIPT_TOLERANCE
+        );
+        // A deeper claimed radius raises the bar above the floor.
+        assert_eq!(required_receipt_depth(depth(4), radius(8)), 8);
+        // With local depth 0 the floor saturates to 0; only a positive claimed
+        // radius can raise it (it never collapses below the radius claim).
+        assert_eq!(required_receipt_depth(depth(0), radius(0)), 0);
+        assert_eq!(required_receipt_depth(depth(0), radius(31)), 31);
+    }
+
+    #[test]
+    fn wire_radius_zero_cannot_lower_the_bar_below_the_local_floor() {
+        // Regression: an attacker setting storage_radius == 0 must NOT collapse
+        // the required depth to 0. A signer far from the chunk (shallow) is
+        // rejected even though it declares radius 0, because the locally observed
+        // depth floors the requirement.
+        let signer = PrivateKeySigner::random();
+        let address = chunk_address(0xff);
+        // Grind only to depth 0 so the signer is realistically shallow, then
+        // claim radius 0 to attempt to bypass the check.
+        let (receipt, signer_overlay) = signed_receipt(&signer, &address, 0, radius(0));
+        let observed = address.proximity(&signer_overlay).get();
+        // Choose a local depth strictly deeper than the signer can reach.
+        let local = observed + SHALLOW_RECEIPT_TOLERANCE + 1;
+        let err = verify_receipt_depth(&receipt, &address, NET, depth(local))
+            .expect_err("radius 0 does not bypass the local floor");
+        assert!(matches!(err, ReceiptDepthError::Shallow { .. }));
     }
 
     #[test]
@@ -284,28 +323,97 @@ mod receipt_depth_tests {
     fn shallow_receipt_is_rejected() {
         let signer = PrivateKeySigner::random();
         let address = chunk_address(0xff);
-        // Signer at most ~2 bits deep (grind only to depth 0, so realistically
-        // shallow); require 8. We pin the observed depth from the receipt.
-        let (receipt, signer_overlay) = signed_receipt(&signer, &address, 0, radius(31));
+        // Signer realistically shallow (grind only to depth 0); claim a shallow
+        // radius so the wire radius does not raise the bar. The local floor is
+        // what rejects it.
+        let (receipt, signer_overlay) = signed_receipt(&signer, &address, 0, radius(0));
         let observed = address.proximity(&signer_overlay).get();
-        // Pick a required depth strictly greater than the signer's reach.
-        let required = observed + 1;
-        let err = verify_receipt_depth(&receipt, &address, NET, depth(required))
+        // Local depth strictly deeper than the signer's reach (account for the
+        // tolerance so the floor lands strictly above `observed`).
+        let local = observed + SHALLOW_RECEIPT_TOLERANCE + 1;
+        let required = required_receipt_depth(depth(local), radius(0));
+        let err = verify_receipt_depth(&receipt, &address, NET, depth(local))
             .expect_err("shallow rejected");
         assert_eq!(err, ReceiptDepthError::Shallow { required, observed });
     }
 
     #[test]
-    fn wire_radius_lowers_the_bar_for_sparse_neighbourhoods() {
-        // A legitimately sparse neighbourhood: the storer's own radius is
-        // shallow (2) even though our global depth estimate is deeper (10). The
-        // required depth is bounded by the storer's claim, so a correct receipt
-        // for a sparse neighbourhood is NOT false-rejected.
+    fn deeper_wire_radius_raises_the_bar_and_rejects_a_below_radius_signer() {
+        // A storer that declares a deep radius binds itself to a stricter custody
+        // claim. A signer below its own declared radius is rejected even when the
+        // local floor alone would have accepted it.
         let signer = PrivateKeySigner::random();
         let address = chunk_address(0xff);
-        let (receipt, _) = signed_receipt(&signer, &address, 2, radius(2));
-        verify_receipt_depth(&receipt, &address, NET, depth(10))
-            .expect("sparse-but-correct receipt accepted");
+        // Signer ~4 bits deep, but claims radius 12.
+        let (receipt, signer_overlay) = signed_receipt(&signer, &address, 4, radius(12));
+        let observed = address.proximity(&signer_overlay).get();
+        // Only proceed if the grind produced a signer below the claimed radius
+        // (overwhelmingly the case: grinding to 12 is exponentially unlikely).
+        if observed < 12 {
+            let err = verify_receipt_depth(&receipt, &address, NET, depth(2))
+                .expect_err("below-declared-radius signer rejected");
+            assert_eq!(
+                err,
+                ReceiptDepthError::Shallow {
+                    required: 12,
+                    observed
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn signature_is_over_the_32_byte_address_only_and_nonce_is_not_signed() {
+        // Lock the wire format: the signature is produced over the 32-byte chunk
+        // address with no nonce appended, matching the reference producer. A
+        // receipt built that way (and only that way) must recover to the signer.
+        let signer = PrivateKeySigner::random();
+        let address = chunk_address(0xff);
+        let eth = signer.address();
+        let signature = signer.sign_message_sync(address.as_bytes()).expect("sign");
+
+        // Find a nonce that lands the overlay deep enough to be accepted.
+        let mut counter = 0u64;
+        let (nonce, overlay) = loop {
+            let mut nonce_bytes = [0u8; 32];
+            nonce_bytes[..8].copy_from_slice(&counter.to_le_bytes());
+            let nonce = Nonce::from(nonce_bytes);
+            let overlay = compute_overlay(&eth, NET, &nonce);
+            if address.proximity(&overlay).get() >= 8 {
+                break (nonce, overlay);
+            }
+            counter += 1;
+        };
+
+        let receipt = PushReceipt {
+            storer: OverlayAddress::from([0xff; 32]),
+            signature,
+            nonce,
+            storage_radius: radius(8),
+        };
+        let recovered = recover_receipt_signer(&receipt, &address, NET).expect("recovers");
+        assert_eq!(recovered, overlay, "32-byte-address signature recovers");
+        let got = verify_receipt_depth(&receipt, &address, NET, depth(8))
+            .expect("reference-format receipt accepted");
+        assert_eq!(got, overlay);
+
+        // A signature produced over (address || nonce) must NOT recover to this
+        // signer for the 32-byte address scheme: a different message digest
+        // yields an unrelated overlay that is shallow.
+        let mut wrong_msg = [0u8; 64];
+        wrong_msg[..32].copy_from_slice(address.as_bytes());
+        wrong_msg[32..].copy_from_slice(nonce.as_slice());
+        let wrong_sig = signer.sign_message_sync(&wrong_msg).expect("sign");
+        let wrong_receipt = PushReceipt {
+            signature: wrong_sig,
+            ..receipt
+        };
+        let recovered_wrong =
+            recover_receipt_signer(&wrong_receipt, &address, NET).expect("recovers to something");
+        assert_ne!(
+            recovered_wrong, overlay,
+            "64-byte (address||nonce) signature recovers to a different overlay"
+        );
     }
 
     #[test]

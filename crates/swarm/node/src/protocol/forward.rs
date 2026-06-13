@@ -582,11 +582,12 @@ mod tests {
         }
     }
 
-    /// Sign a custody receipt over `(address || nonce)` with `signer`, grinding
-    /// the nonce so the signer's derived overlay shares at least `min_depth`
-    /// leading bits with `address` (i.e. `PO(signer, address) >= min_depth`).
-    /// Returns the receipt and the signer's overlay, so a test controls exactly
-    /// how deep the signer sits relative to the chunk.
+    /// Sign a custody receipt over the 32-byte chunk address (the wire format)
+    /// with `signer`, grinding the nonce so the signer's derived overlay shares
+    /// at least `min_depth` leading bits with `address` (i.e.
+    /// `PO(signer, address) >= min_depth`). Returns the receipt and the signer's
+    /// overlay, so a test controls exactly how deep the signer sits relative to
+    /// the chunk.
     fn signed_receipt_at_depth(
         signer: &PrivateKeySigner,
         address: &ChunkAddress,
@@ -595,8 +596,10 @@ mod tests {
         storer: OverlayAddress,
     ) -> (PushReceipt, OverlayAddress) {
         let eth = signer.address();
-        // Grind the nonce until the derived overlay is deep enough. Depths used
-        // in tests are small, so this terminates quickly.
+        // The signature is over the address only and is independent of the
+        // nonce, so sign once and grind the nonce purely for overlay depth.
+        // Depths used in tests are small, so this terminates quickly.
+        let signature = signer.sign_message_sync(address.as_bytes()).expect("sign");
         let mut counter = 0u64;
         loop {
             let mut nonce_bytes = [0u8; 32];
@@ -604,10 +607,6 @@ mod tests {
             let nonce = Nonce::from(nonce_bytes);
             let overlay = compute_overlay(&eth, TEST_NET, &nonce);
             if address.proximity(&overlay).get() >= min_depth {
-                let mut message = [0u8; 64];
-                message[..32].copy_from_slice(address.as_bytes());
-                message[32..].copy_from_slice(nonce.as_slice());
-                let signature = signer.sign_message_sync(&message).expect("sign");
                 return (
                     PushReceipt {
                         storer,
@@ -1010,15 +1009,16 @@ mod tests {
             Arc::clone(&reporter) as Arc<dyn PeerReporter>,
         );
 
-        // The signer's overlay is only 0..a few bits deep, but the receipt
-        // claims a deep radius (31) so the required depth stays at the local
-        // depth (12). The signer is far too shallow.
+        // The signer's overlay is only 0..a few bits deep. The receipt claims a
+        // shallow radius (8) that does not raise the bar, so the local floor
+        // (depth 12 minus tolerance) is what rejects it. The signer is far too
+        // shallow.
         let signer = PrivateKeySigner::random();
         let (shallow, _signer_overlay) = signed_receipt_at_depth(
             &signer,
             &address,
             0,
-            StorageRadius::new(Bin::new(31).unwrap()),
+            StorageRadius::new(Bin::new(8).unwrap()),
             closer,
         );
 
@@ -1044,6 +1044,67 @@ mod tests {
         assert_eq!(source, ReportSource::Protocol("pushsync"));
 
         // Both reservations released on drop: nothing was charged.
+        assert_eq!(acct.bandwidth().for_peer(pusher).balance(), Au::ZERO);
+        assert_eq!(acct.bandwidth().for_peer(closer).balance(), Au::ZERO);
+    }
+
+    #[tokio::test]
+    async fn push_rejects_shallow_receipt_claiming_radius_zero() {
+        // Regression: a forwarder must not relay a shallow receipt just because
+        // the attacker set storage_radius == 0. The local floor (depth 12) is
+        // authoritative and a zero wire radius cannot lower it.
+        let chunk = stamped();
+        let address = *chunk.address();
+        let pusher = overlay_at_proximity(&address, 2);
+        let closer = overlay_at_proximity(&address, 16);
+        let local = OverlayAddress::from([0xee; 32]);
+
+        let acct = accounting();
+        let topo = Arc::new(
+            MockTopology::default()
+                .with_closest(vec![closer])
+                .with_depth(12),
+        );
+        let (tx, rx) = mpsc::channel::<ClientCommand>(4);
+        let handle = ClientHandle::new(tx);
+
+        let reporter = Arc::new(RecordingReporter::default());
+        let forwarder = NetworkForwarder::new(
+            local,
+            topo,
+            Arc::clone(&acct),
+            handle,
+            TEST_NET,
+            Arc::clone(&reporter) as Arc<dyn PeerReporter>,
+        );
+
+        let signer = PrivateKeySigner::random();
+        let (shallow, _signer_overlay) = signed_receipt_at_depth(
+            &signer,
+            &address,
+            0,
+            StorageRadius::new(Bin::new(0).unwrap()),
+            closer,
+        );
+
+        let err = drive_one_command(
+            rx,
+            forwarder.push(chunk.clone(), pusher),
+            move |cmd| match cmd {
+                ClientCommand::PushChunk { response, .. } => {
+                    response.send(Ok(shallow)).expect("receiver alive");
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        )
+        .await
+        .expect_err("radius 0 does not bypass the local floor");
+        assert!(matches!(err, ForwardError::ShallowReceipt));
+
+        let (reported_peer, event, _) = reporter.single();
+        assert_eq!(reported_peer, closer);
+        assert_eq!(event, SwarmScoringEvent::InvalidData);
+
         assert_eq!(acct.bandwidth().for_peer(pusher).balance(), Au::ZERO);
         assert_eq!(acct.bandwidth().for_peer(closer).balance(), Au::ZERO);
     }
