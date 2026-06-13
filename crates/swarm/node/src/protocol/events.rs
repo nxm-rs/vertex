@@ -342,6 +342,30 @@ pub enum ClientCommand {
         storage_radius: StorageRadius,
     },
 
+    /// Fail an inbound retrieval request (response to ChunkRequested).
+    ///
+    /// Resets the request substream without sending a delivery, which the
+    /// requester reads as a failed retrieval. Used on a local-store miss (or
+    /// when we have no local store) until forwarding to a closer peer lands.
+    FailRetrieval {
+        /// The peer whose request failed.
+        peer: OverlayAddress,
+        /// Request ID from the ChunkRequested event.
+        request_id: u64,
+    },
+
+    /// Fail an inbound push (response to ChunkPushReceived).
+    ///
+    /// Resets the request substream without sending a receipt, which the
+    /// pusher reads as a failed push. Used when we are not responsible for the
+    /// address (or have no local store) until relaying the push lands.
+    FailPush {
+        /// The peer whose push failed.
+        peer: OverlayAddress,
+        /// Request ID from the ChunkPushReceived event.
+        request_id: u64,
+    },
+
     /// Send a pseudosettle payment to a peer.
     SendPseudosettle {
         /// The peer to send the payment to.

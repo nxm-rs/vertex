@@ -15,8 +15,14 @@ use vertex_swarm_api::{SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, Swarm
 use vertex_swarm_topology::{KademliaConfig, TopologyCommand, TopologyHandle};
 use vertex_tasks::GracefulShutdown;
 
+use std::sync::Arc;
+
+use vertex_swarm_api::SwarmLocalStore;
+use vertex_swarm_primitives::StorageRadius;
+
 use super::client::{ClientNode, ClientNodeBuilder};
 use crate::protocol::PseudosettleEvent;
+use crate::serving::LocalServing;
 use crate::{ClientHandle, ClientService};
 
 /// A full Swarm storer node with storage and chunk sync.
@@ -111,6 +117,7 @@ pub struct StorerNodeBuilder<I: SwarmIdentity + Clone> {
     identity: I,
     kademlia_config: Option<KademliaConfig>,
     pseudosettle_event_tx: Option<mpsc::UnboundedSender<PseudosettleEvent>>,
+    local_store: Option<Arc<dyn SwarmLocalStore>>,
     #[cfg(feature = "swap")]
     swap_event_tx: Option<mpsc::UnboundedSender<crate::protocol::SwapEvent>>,
 }
@@ -122,6 +129,7 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
             identity,
             kademlia_config: None,
             pseudosettle_event_tx: None,
+            local_store: None,
             #[cfg(feature = "swap")]
             swap_event_tx: None,
         }
@@ -139,6 +147,15 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
         tx: mpsc::UnboundedSender<PseudosettleEvent>,
     ) -> Self {
         self.pseudosettle_event_tx = Some(tx);
+        self
+    }
+
+    /// Set the local store that backs serving and chunk custody.
+    ///
+    /// Wired into the client service as the serving seam so the storer answers
+    /// inbound retrievals from this store and takes custody of pushed chunks.
+    pub fn with_local_store(mut self, local_store: Arc<dyn SwarmLocalStore>) -> Self {
+        self.local_store = Some(local_store);
         self
     }
 
@@ -166,6 +183,10 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
     {
         info!("Initializing storer P2P network...");
 
+        // Keep an identity handle for the serving seam before the builder
+        // consumes its own copy.
+        let identity = self.identity.clone();
+
         // Build the underlying client node using the builder pattern
         let mut client_builder = ClientNodeBuilder::new(self.identity);
 
@@ -180,12 +201,23 @@ impl<I: SwarmIdentity + Clone> StorerNodeBuilder<I> {
             client_builder = client_builder.with_swap_events(tx);
         }
 
-        let (client, service, handle) = client_builder.build(network_config, peer_store).await?;
+        let (client, mut service, handle) =
+            client_builder.build(network_config, peer_store).await?;
 
-        // TODO: Initialize storage-specific components:
-        // - local_store
-        // - chunk_sync
-        // - redistribution
+        // Wire the serving seam so the storer answers retrievals from its local
+        // store and takes custody of pushed chunks. Chunk sync and
+        // redistribution (#77/#75) are deferred.
+        if let Some(local_store) = self.local_store {
+            // TODO(#76): drive the storage radius from the storer reserve once
+            // that radius source is wired; a zero radius treats the node as
+            // responsible for every address it is pushed.
+            let serving = Arc::new(LocalServing::new(
+                identity,
+                local_store,
+                StorageRadius::ZERO,
+            ));
+            service = service.with_local_store(serving);
+        }
 
         let node = StorerNode { client };
 

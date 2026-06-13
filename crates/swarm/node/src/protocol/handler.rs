@@ -164,6 +164,16 @@ pub(crate) enum HandlerCommand {
         /// Our storage radius.
         storage_radius: StorageRadius,
     },
+    /// Fail an inbound retrieval request by resetting its substream.
+    FailRetrieval {
+        /// Request ID from the ChunkRequested event.
+        request_id: u64,
+    },
+    /// Fail an inbound push by resetting its substream.
+    FailPush {
+        /// Request ID from the ChunkPushReceived event.
+        request_id: u64,
+    },
 }
 
 /// Events emitted by the handler to the behaviour.
@@ -886,6 +896,31 @@ impl ConnectionHandler for ClientHandler {
                         {
                             warn!("Response send queue full, dropping receipt send");
                         }
+                    } else {
+                        warn!(%request_id, "No pushsync responder found for request_id");
+                    }
+                }
+                HandlerCommand::FailRetrieval { request_id } => {
+                    // Reset the request substream to signal failure. The
+                    // requester reads the reset as a failed retrieval. Dropping
+                    // the responder (via `send_error`) resets the stream.
+                    if let Some(PendingResponse::Retrieval { responder, .. }) =
+                        self.take_response(request_id)
+                    {
+                        debug!(%request_id, "Failing retrieval request");
+                        responder.send_error();
+                    } else {
+                        warn!(%request_id, "No retrieval responder found for request_id");
+                    }
+                }
+                HandlerCommand::FailPush { request_id } => {
+                    // Reset the request substream to signal failure. The pusher
+                    // reads the reset as a failed push.
+                    if let Some(PendingResponse::Pushsync(responder)) =
+                        self.take_response(request_id)
+                    {
+                        debug!(%request_id, "Failing push request");
+                        responder.send_error();
                     } else {
                         warn!(%request_id, "No pushsync responder found for request_id");
                     }

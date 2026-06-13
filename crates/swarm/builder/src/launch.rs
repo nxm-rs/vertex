@@ -15,7 +15,7 @@ use vertex_swarm_bandwidth::{
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::NetworkConfig;
-use vertex_swarm_node::{AccountingSettlement, BootNode, ClientNode, PeerSelector};
+use vertex_swarm_node::{AccountingSettlement, BootNode, ClientNode, LocalServing, PeerSelector};
 use vertex_swarm_peer_manager::{
     DEFAULT_TICK_INTERVAL, DbPeerSnapshotStore, PeerSnapshot, spawn_peer_manager_task,
 };
@@ -89,6 +89,40 @@ fn open_shared_database(ctx: &dyn InfrastructureContext) -> Option<Arc<RedbDatab
             None
         }
     }
+}
+
+/// Build the local chunk store that backs a storer node's serving and custody.
+///
+/// Backed by a fresh in-memory database so a storer always has somewhere to keep
+/// the chunks it serves and takes custody of. The reserve capacity comes from
+/// the network spec.
+///
+/// This is the minimal storer storage component. Sharing the node database for
+/// on-disk chunk persistence (so the reserve survives a restart), the reserve
+/// eviction policy, chunk sync, and redistribution (#77/#75) are deferred. The
+/// store is deliberately not opened over the shared on-disk database here: that
+/// file is already opened on the client launch path for the peer snapshot store,
+/// and redb is single-writer, so a second open would fail.
+///
+/// TODO(#76): share the node database with the chunk store so storer chunks
+/// persist across restarts instead of living in a dedicated in-memory backend.
+fn build_storer_local_store(
+    _ctx: &dyn InfrastructureContext,
+    spec: &Arc<Spec>,
+) -> Result<Arc<dyn vertex_swarm_api::SwarmLocalStore>, SwarmNodeError> {
+    use vertex_swarm_api::SwarmSpec;
+    use vertex_swarm_storer::{DbChunkStore, LocalStoreImpl, Reserve};
+
+    let db = RedbDatabase::in_memory()
+        .map(RedbDatabase::into_arc)
+        .map_err(|e| SwarmNodeError::Build(e.into()))?;
+    let chunk_store = DbChunkStore::new(db).map_err(|e| SwarmNodeError::Build(e.into()))?;
+    let reserve = Reserve::new(spec.reserve_capacity());
+    let local_store = LocalStoreImpl::new(chunk_store, reserve);
+    local_store
+        .initialize()
+        .map_err(|e| SwarmNodeError::Build(e.into()))?;
+    Ok(Arc::new(local_store))
 }
 
 fn spawn_db_metrics_task(ctx: &dyn InfrastructureContext, db: Arc<RedbDatabase>) {
@@ -229,6 +263,9 @@ struct ClientNodeParams<'a> {
     network: &'a NetworkConfig<KademliaConfig>,
     bandwidth: &'a DefaultBandwidthConfig,
     verify: ChunkVerifyConfig,
+    /// Local store for a storer node, wired into the client service as the
+    /// serving seam. `None` for a client node, which has no storage.
+    local_store: Option<Arc<dyn vertex_swarm_api::SwarmLocalStore>>,
     #[cfg(feature = "chain")]
     chain: &'a ChainConfig,
     #[cfg(feature = "swap")]
@@ -327,7 +364,23 @@ async fn build_client_backed_node(
     // client service reports retrieval and pushsync outcomes (success,
     // failure, and malformed-chunk invalid data) through the same peer manager
     // authority that accounting uses.
-    let client_service = client_service.with_reporter(Arc::clone(&reporter));
+    let mut client_service = client_service.with_reporter(Arc::clone(&reporter));
+
+    // A storer node serves retrievals from its local store and takes custody of
+    // pushed chunks; the serving seam carries the store plus the node identity
+    // for receipt signing. A client node leaves the seam unset and fails every
+    // inbound serve and push.
+    if let Some(local_store) = params.local_store {
+        // TODO(#76): drive the storage radius from the storer reserve once that
+        // radius source is wired; for now a zero radius treats the node as
+        // responsible for every address it is pushed.
+        let serving = Arc::new(LocalServing::new(
+            Arc::clone(params.identity),
+            local_store,
+            vertex_swarm_primitives::StorageRadius::ZERO,
+        ));
+        client_service = client_service.with_local_store(serving);
+    }
     ctx.executor()
         .spawn_service("swarm.client_service", client_service);
 
@@ -436,6 +489,8 @@ impl SwarmLaunchConfig for ClientConfig {
                 network: self.network(),
                 bandwidth: self.bandwidth(),
                 verify: self.verify(),
+                // A client node has no storage and never serves.
+                local_store: None,
                 #[cfg(feature = "chain")]
                 chain: self.chain(),
                 #[cfg(feature = "swap")]
@@ -458,12 +513,11 @@ impl SwarmLaunchConfig for StorerConfig {
         self,
         ctx: &dyn InfrastructureContext,
     ) -> Result<(NodeTaskFn, Self::Providers), Self::Error> {
-        // TODO: build storer-specific components
-        let _ = self.local_store();
-        let _ = self.storage();
+        // Build the local chunk store that backs serving and custody. It is the
+        // first storer-specific component; chunk sync and redistribution
+        // (#77/#75) are still deferred.
+        let local_store = build_storer_local_store(ctx, self.spec())?;
 
-        // Built over the client launch path for now (storer components not yet
-        // implemented).
         let parts = build_client_backed_node(
             ctx,
             ClientNodeParams {
@@ -473,6 +527,7 @@ impl SwarmLaunchConfig for StorerConfig {
                 network: self.network(),
                 bandwidth: self.bandwidth(),
                 verify: self.verify(),
+                local_store: Some(local_store),
                 #[cfg(feature = "chain")]
                 chain: self.chain(),
                 #[cfg(feature = "swap")]

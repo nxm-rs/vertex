@@ -52,6 +52,7 @@ vertex-util-runtime.workspace = true
 
 ## crypto
 alloy-primitives.workspace = true
+alloy-signer.workspace = true
 
 ## async
 async-trait.workspace = true

@@ -15,6 +15,7 @@ use vertex_swarm_primitives::{OverlayAddress, StampedChunk};
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
 
 use crate::protocol::{ClientCommand, ClientEvent, FailureKind};
+use crate::serving::SwarmServing;
 
 /// Report source label for retrieval-protocol peer scoring.
 const RETRIEVAL_SOURCE: ReportSource = ReportSource::Protocol("retrieval");
@@ -158,6 +159,11 @@ pub struct ClientService {
     /// it so honest peers climb and misbehaving peers are scored down.
     /// Best-effort: without a reporter, outcomes only surface as logs.
     reporter: Option<Arc<dyn PeerReporter>>,
+    /// Optional storer-side serving seam. A client node has no storage and
+    /// leaves this `None`: it fails every inbound retrieval and push. A storer
+    /// node wires a serving seam so it can answer retrievals from its local
+    /// store and take custody of pushed chunks for which it is responsible.
+    serving: Option<Arc<dyn SwarmServing>>,
 }
 
 impl ClientService {
@@ -174,6 +180,7 @@ impl ClientService {
             handle: handle.clone(),
             event_rx,
             reporter: None,
+            serving: None,
         };
 
         (service, event_tx, handle)
@@ -192,6 +199,7 @@ impl ClientService {
             handle: handle.clone(),
             event_rx,
             reporter: None,
+            serving: None,
         };
 
         (service, handle)
@@ -207,6 +215,18 @@ impl ClientService {
         self
     }
 
+    /// Attach a storer-side serving seam so the node answers inbound retrievals
+    /// from its local store and takes custody of pushed chunks.
+    ///
+    /// Client nodes never call this: with no serving seam, every inbound
+    /// retrieval and push fails (the substream is reset). Storer nodes wire a
+    /// [`LocalServing`](crate::serving::LocalServing).
+    #[must_use]
+    pub fn with_local_store(mut self, serving: Arc<dyn SwarmServing>) -> Self {
+        self.serving = Some(serving);
+        self
+    }
+
     /// Get a handle for sending commands.
     pub fn handle(&self) -> ClientHandle {
         self.handle.clone()
@@ -216,6 +236,148 @@ impl ClientService {
     fn report(&self, peer: &OverlayAddress, event: SwarmScoringEvent, source: ReportSource) {
         if let Some(reporter) = &self.reporter {
             reporter.report_peer(peer, event, source);
+        }
+    }
+
+    /// Serve an inbound retrieval request from the local store.
+    ///
+    /// On a hit the stamped chunk is issued through the [`ClientCommand::ServeChunk`]
+    /// command, which still passes the handler's verify-before-serve gate (the
+    /// served chunk's address must answer the request). A miss, or no serving
+    /// seam (a client node), fails the request: the handler resets the request
+    /// substream, which the requester reads as a retrieval failure.
+    fn serve_retrieval(
+        &self,
+        peer: OverlayAddress,
+        peer_id: libp2p::PeerId,
+        address: ChunkAddress,
+        request_id: u64,
+    ) {
+        if let Some(serving) = &self.serving
+            && let Some(chunk) = serving.serve(&address)
+        {
+            debug!(%peer, %address, %request_id, "Serving chunk from local store");
+            metrics::counter!("swarm.client.serve_hit").increment(1);
+            if let Err(e) = self.handle.send_command(ClientCommand::ServeChunk {
+                peer,
+                request_id,
+                address,
+                chunk,
+            }) {
+                warn!(%peer, %peer_id, error = ?e, "Failed to serve chunk");
+            }
+            return;
+        }
+
+        // Miss, or no local store: fail the request by resetting the substream.
+        //
+        // TODO(#291): forward a local-store miss to a closer peer instead of
+        // failing it outright, then relay the delivery back to the requester.
+        debug!(%peer, %address, %request_id, "Retrieval miss, failing request");
+        metrics::counter!("swarm.client.serve_miss").increment(1);
+        if let Err(e) = self
+            .handle
+            .send_command(ClientCommand::FailRetrieval { peer, request_id })
+        {
+            warn!(%peer, %peer_id, error = ?e, "Failed to signal retrieval failure");
+        }
+    }
+
+    /// Accept an inbound chunk push: validate the stamp, store if responsible,
+    /// and return a signed statement-of-custody receipt.
+    ///
+    /// If we are not responsible (or have no serving seam), the request is
+    /// failed: the handler resets the request substream, which the pusher reads
+    /// as a push failure.
+    fn accept_push(
+        &self,
+        peer: OverlayAddress,
+        peer_id: libp2p::PeerId,
+        address: ChunkAddress,
+        chunk: StampedChunk,
+        request_id: u64,
+    ) {
+        let Some(serving) = &self.serving else {
+            // No local store (a client node): we never take custody.
+            //
+            // TODO(#291): relay the push onward to a responsible peer instead of
+            // failing it outright.
+            debug!(%peer, %address, %request_id, "No local store, failing push");
+            self.fail_push(peer, peer_id, request_id);
+            return;
+        };
+
+        if !serving.is_responsible_for(&address) {
+            // Not in our area of responsibility.
+            //
+            // TODO(#291): relay the push onward to a responsible peer instead of
+            // failing it outright.
+            debug!(%peer, %address, %request_id, "Not responsible for chunk, failing push");
+            metrics::counter!("swarm.client.push_not_responsible").increment(1);
+            self.fail_push(peer, peer_id, request_id);
+            return;
+        }
+
+        // Validate the postage stamp. The stamp is the proof of payment that
+        // authorizes storage. Here we do the signature/structural check: the
+        // stamp must recover a signer over its (chunk address, batch, index,
+        // timestamp) digest. A stamp that does not recover is rejected as
+        // invalid data.
+        //
+        // TODO(#76): the full check also requires the recovered signer to be
+        // the on-chain owner of an existing, funded batch with sufficient depth
+        // and a non-exhausted bucket. That batch state is not available until
+        // the postage/storer batch store is wired, so it is deferred here. We
+        // do not invent batch state.
+        if let Err(e) = chunk.stamp().recover_signer(&address) {
+            warn!(%peer, %address, %request_id, error = ?e, "Rejecting push: invalid stamp");
+            metrics::counter!(
+                "swarm.client.invalid_chunk",
+                "protocol" => "pushsync",
+            )
+            .increment(1);
+            self.report(&peer, SwarmScoringEvent::InvalidData, PUSHSYNC_SOURCE);
+            self.fail_push(peer, peer_id, request_id);
+            return;
+        }
+
+        // Take custody by storing the chunk locally.
+        if !serving.store(&chunk) {
+            warn!(%peer, %address, %request_id, "Failed to store pushed chunk, failing push");
+            self.fail_push(peer, peer_id, request_id);
+            return;
+        }
+
+        // Sign a statement-of-custody receipt and return it. The receipt signs
+        // the chunk address so the pusher can recover our signer and confirm a
+        // responsible storer took custody.
+        let Some(parts) = serving.sign_receipt(&address) else {
+            warn!(%peer, %address, %request_id, "Failed to sign receipt, failing push");
+            self.fail_push(peer, peer_id, request_id);
+            return;
+        };
+
+        debug!(%peer, %address, %request_id, "Stored chunk, returning receipt");
+        metrics::counter!("swarm.client.push_stored").increment(1);
+        if let Err(e) = self.handle.send_command(ClientCommand::SendReceipt {
+            peer,
+            request_id,
+            address,
+            signature: parts.signature,
+            nonce: parts.nonce,
+            storage_radius: parts.storage_radius,
+        }) {
+            warn!(%peer, %peer_id, error = ?e, "Failed to send receipt");
+        }
+    }
+
+    /// Fail an inbound push by resetting its substream.
+    fn fail_push(&self, peer: OverlayAddress, peer_id: libp2p::PeerId, request_id: u64) {
+        if let Err(e) = self
+            .handle
+            .send_command(ClientCommand::FailPush { peer, request_id })
+        {
+            warn!(%peer, %peer_id, error = ?e, "Failed to signal push failure");
         }
     }
 
@@ -291,7 +453,7 @@ impl ClientService {
                 request_id,
             } => {
                 debug!(%peer_id, %peer, %address, %request_id, "Chunk requested by peer");
-                // TODO: Look up chunk in local storage and serve it
+                self.serve_retrieval(peer, peer_id, address, request_id);
             }
 
             ClientEvent::ChunkPushReceived {
@@ -306,7 +468,7 @@ impl ClientService {
                     stamp_batch = %chunk.stamp().batch(),
                     "Chunk push received"
                 );
-                // TODO: Validate chunk, store if responsible, send receipt
+                self.accept_push(peer, peer_id, address, chunk, request_id);
             }
 
             ClientEvent::ReceiptReceived {
@@ -636,5 +798,240 @@ mod tests {
             error: "x".into(),
             kind: FailureKind::InvalidChunk,
         });
+    }
+
+    // --- Serving seam: serve, store-and-receipt, and clean failure ---
+
+    use std::collections::HashMap;
+
+    use alloy_primitives::B256;
+    use alloy_signer::SignerSync;
+    use nectar_postage::{Stamp, StampDigest, StampIndex};
+    use nectar_primitives::{AnyChunk, ContentChunk};
+    use vertex_swarm_api::{SwarmIdentity, SwarmLocalStore, SwarmResult};
+    use vertex_swarm_test_utils::{MockIdentity, test_peer_id};
+
+    use crate::protocol::ClientCommand;
+    use crate::serving::LocalServing;
+
+    /// In-memory [`SwarmLocalStore`] that preserves stamps, so it can answer
+    /// stamped retrievals the way the storer's `LocalStoreImpl` does.
+    #[derive(Default)]
+    struct MapStore {
+        chunks: Mutex<HashMap<ChunkAddress, StampedChunk>>,
+    }
+
+    impl SwarmLocalStore for MapStore {
+        fn store(&self, chunk: &AnyChunk) -> SwarmResult<()> {
+            let stamp = Stamp::new(B256::repeat_byte(0xaa), 0, 0, 0, dummy_signature());
+            let stamped = StampedChunk::new(chunk.clone(), stamp);
+            self.chunks
+                .lock()
+                .unwrap()
+                .insert(*chunk.address(), stamped);
+            Ok(())
+        }
+
+        fn store_stamped(&self, chunk: &StampedChunk) -> SwarmResult<()> {
+            self.chunks
+                .lock()
+                .unwrap()
+                .insert(*chunk.address(), chunk.clone());
+            Ok(())
+        }
+
+        fn retrieve(&self, address: &ChunkAddress) -> SwarmResult<Option<AnyChunk>> {
+            Ok(self
+                .chunks
+                .lock()
+                .unwrap()
+                .get(address)
+                .map(|c| c.chunk().clone()))
+        }
+
+        fn retrieve_stamped(&self, address: &ChunkAddress) -> SwarmResult<Option<StampedChunk>> {
+            Ok(self.chunks.lock().unwrap().get(address).cloned())
+        }
+
+        fn has(&self, address: &ChunkAddress) -> bool {
+            self.chunks.lock().unwrap().contains_key(address)
+        }
+
+        fn remove(&self, address: &ChunkAddress) -> SwarmResult<()> {
+            self.chunks.lock().unwrap().remove(address);
+            Ok(())
+        }
+    }
+
+    /// A content chunk with a stamp validly signed by `identity`, so the stamp
+    /// recovers a real signer (the structural stamp check passes).
+    fn signed_stamped_chunk(identity: &MockIdentity, payload: &[u8]) -> StampedChunk {
+        let chunk: AnyChunk = ContentChunk::new(payload.to_vec())
+            .expect("valid content chunk")
+            .into();
+        let address = *chunk.address();
+        let batch = B256::repeat_byte(0x11);
+        let index = StampIndex::new(0, 0);
+        let timestamp = 0u64;
+        let digest = StampDigest::new(address, batch, index, timestamp);
+        let sig = identity
+            .signer()
+            .sign_message_sync(digest.to_prehash().as_slice())
+            .expect("sign stamp");
+        let stamp = Stamp::with_index(batch, index, timestamp, sig);
+        StampedChunk::new(chunk, stamp)
+    }
+
+    /// Build a serving service over `store` and `identity` with an owned command
+    /// receiver so a test can observe the commands the handlers emit.
+    fn serving_service(
+        store: Arc<MapStore>,
+        identity: MockIdentity,
+    ) -> (ClientService, mpsc::Receiver<ClientCommand>) {
+        let (command_tx, command_rx) = mpsc::channel(DEFAULT_CHANNEL_CAPACITY);
+        let (_event_tx, event_rx) = mpsc::channel(DEFAULT_CHANNEL_CAPACITY);
+        let (service, _handle) = ClientService::with_channels(command_tx, event_rx);
+        let serving = Arc::new(LocalServing::new(
+            identity,
+            store as Arc<dyn SwarmLocalStore>,
+            StorageRadius::ZERO,
+        ));
+        (service.with_local_store(serving), command_rx)
+    }
+
+    /// Build a storeless service with an owned command receiver.
+    fn storeless_service() -> (ClientService, mpsc::Receiver<ClientCommand>) {
+        let (command_tx, command_rx) = mpsc::channel(DEFAULT_CHANNEL_CAPACITY);
+        let (_event_tx, event_rx) = mpsc::channel(DEFAULT_CHANNEL_CAPACITY);
+        let (service, _handle) = ClientService::with_channels(command_tx, event_rx);
+        (service, command_rx)
+    }
+
+    #[test]
+    fn storer_serves_a_chunk_it_has_stored() {
+        let identity = MockIdentity::with_first_byte(0x00);
+        let store = Arc::new(MapStore::default());
+        let chunk = signed_stamped_chunk(&identity, b"served payload");
+        let address = *chunk.address();
+        store.store_stamped(&chunk).unwrap();
+
+        let (service, mut command_rx) = serving_service(Arc::clone(&store), identity);
+        service.process_event(ClientEvent::ChunkRequested {
+            peer: peer(1),
+            peer_id: test_peer_id(1),
+            address,
+            request_id: 7,
+        });
+
+        match command_rx.try_recv().expect("a command was emitted") {
+            ClientCommand::ServeChunk {
+                peer: p,
+                request_id,
+                address: a,
+                chunk: served,
+            } => {
+                assert_eq!(p, peer(1));
+                assert_eq!(request_id, 7);
+                assert_eq!(a, address);
+                assert_eq!(*served.address(), address);
+            }
+            other => panic!("expected ServeChunk, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn storer_accepts_a_push_stores_it_and_returns_a_verifiable_receipt() {
+        let identity = MockIdentity::with_first_byte(0x00);
+        let expected_signer = identity.ethereum_address();
+        let nonce = identity.nonce();
+        let store = Arc::new(MapStore::default());
+        let chunk = signed_stamped_chunk(&identity, b"pushed payload");
+        let address = *chunk.address();
+
+        let (service, mut command_rx) = serving_service(Arc::clone(&store), identity);
+        service.process_event(ClientEvent::ChunkPushReceived {
+            peer: peer(2),
+            peer_id: test_peer_id(1),
+            address,
+            chunk,
+            request_id: 9,
+        });
+
+        // The chunk must have been taken into custody.
+        assert!(store.has(&address), "chunk must be stored");
+
+        match command_rx.try_recv().expect("a command was emitted") {
+            ClientCommand::SendReceipt {
+                peer: p,
+                request_id,
+                address: a,
+                signature,
+                nonce: receipt_nonce,
+                storage_radius,
+            } => {
+                assert_eq!(p, peer(2));
+                assert_eq!(request_id, 9);
+                assert_eq!(a, address);
+                assert_eq!(receipt_nonce, nonce);
+                assert_eq!(storage_radius, StorageRadius::ZERO);
+                // Wire-compat: the receipt signs the raw chunk address under the
+                // EIP-191 prefix, so a reference peer recovers our signer from
+                // the address bytes. Recover and check it matches our identity.
+                let recovered = signature
+                    .recover_address_from_msg(address.as_slice())
+                    .expect("receipt signature recovers");
+                assert_eq!(recovered, expected_signer);
+            }
+            other => panic!("expected SendReceipt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn client_node_fails_a_serve_cleanly() {
+        let (service, mut command_rx) = storeless_service();
+        service.process_event(ClientEvent::ChunkRequested {
+            peer: peer(3),
+            peer_id: test_peer_id(1),
+            address: ChunkAddress::zero(),
+            request_id: 1,
+        });
+
+        match command_rx.try_recv().expect("a command was emitted") {
+            ClientCommand::FailRetrieval {
+                peer: p,
+                request_id,
+            } => {
+                assert_eq!(p, peer(3));
+                assert_eq!(request_id, 1);
+            }
+            other => panic!("expected FailRetrieval, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn client_node_fails_a_push_cleanly() {
+        let identity = MockIdentity::with_first_byte(0x00);
+        let chunk = signed_stamped_chunk(&identity, b"unwanted payload");
+        let address = *chunk.address();
+
+        let (service, mut command_rx) = storeless_service();
+        service.process_event(ClientEvent::ChunkPushReceived {
+            peer: peer(4),
+            peer_id: test_peer_id(1),
+            address,
+            chunk,
+            request_id: 2,
+        });
+
+        match command_rx.try_recv().expect("a command was emitted") {
+            ClientCommand::FailPush {
+                peer: p,
+                request_id,
+            } => {
+                assert_eq!(p, peer(4));
+                assert_eq!(request_id, 2);
+            }
+            other => panic!("expected FailPush, got {other:?}"),
+        }
     }
 }

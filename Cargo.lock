@@ -8829,9 +8829,11 @@ dependencies = [
  "vertex-swarm-node",
  "vertex-swarm-peer-manager",
  "vertex-swarm-peer-score",
+ "vertex-swarm-primitives",
  "vertex-swarm-redistribution",
  "vertex-swarm-rpc",
  "vertex-swarm-spec",
+ "vertex-swarm-storer",
  "vertex-swarm-test-utils",
  "vertex-swarm-topology",
  "vertex-tasks",
@@ -9137,6 +9139,7 @@ name = "vertex-swarm-node"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-signer",
  "async-trait",
  "auto_impl",
  "bytes",
@@ -9323,6 +9326,7 @@ dependencies = [
 name = "vertex-swarm-storer"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "async-trait",
  "hashlink 0.10.0",
  "metrics",

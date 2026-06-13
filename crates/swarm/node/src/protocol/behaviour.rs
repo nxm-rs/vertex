@@ -238,6 +238,30 @@ impl ClientBehaviour {
                     debug!(%peer, "Unknown peer for send receipt");
                 }
             }
+            ClientCommand::FailRetrieval { peer, request_id } => {
+                if let Some(&peer_id) = self.overlay_peers.get(&peer) {
+                    debug!(%peer_id, %peer, %request_id, "Failing retrieval request");
+                    self.push_event(ToSwarm::NotifyHandler {
+                        peer_id,
+                        handler: libp2p::swarm::NotifyHandler::Any,
+                        event: HandlerCommand::FailRetrieval { request_id },
+                    });
+                } else {
+                    debug!(%peer, "Unknown peer for retrieval failure");
+                }
+            }
+            ClientCommand::FailPush { peer, request_id } => {
+                if let Some(&peer_id) = self.overlay_peers.get(&peer) {
+                    debug!(%peer_id, %peer, %request_id, "Failing push request");
+                    self.push_event(ToSwarm::NotifyHandler {
+                        peer_id,
+                        handler: libp2p::swarm::NotifyHandler::Any,
+                        event: HandlerCommand::FailPush { request_id },
+                    });
+                } else {
+                    debug!(%peer, "Unknown peer for push failure");
+                }
+            }
             ClientCommand::SendPseudosettle { peer, amount } => {
                 if let Some(&peer_id) = self.overlay_peers.get(&peer) {
                     debug!(%peer_id, %peer, %amount, "Sending pseudosettle");

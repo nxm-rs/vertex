@@ -18,6 +18,7 @@ mod client_service;
 mod node;
 mod protocol;
 mod selection;
+mod serving;
 mod swarm_client;
 
 pub use node::{
@@ -37,6 +38,7 @@ pub use protocol::{
 };
 
 pub use selection::{AccountingSettlement, PeerScores, PeerSelector, SettlementTrigger};
+pub use serving::{LocalServing, ReceiptParts, SwarmServing};
 pub use swarm_client::{BootnodeClient, Client, FullClient};
 
 pub use bootnodes::BootnodeProvider;

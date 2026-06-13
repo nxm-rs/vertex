@@ -5,9 +5,12 @@
 
 use nectar_primitives::{AnyChunk, Chunk, ChunkAddress};
 use tracing::{debug, trace};
-use vertex_swarm_api::{SwarmError, SwarmLocalStore, SwarmResult};
+use vertex_swarm_api::{Stamp, StampedChunk, SwarmError, SwarmLocalStore, SwarmResult};
 
 use crate::{ChunkCache, ChunkStore, Reserve, StorerError};
+
+/// Length in bytes of a serialized postage stamp.
+const STAMP_LEN: usize = 113;
 
 /// LocalStore implementation backed by ChunkStore.
 ///
@@ -61,11 +64,16 @@ impl<S: ChunkStore> LocalStoreImpl<S> {
         self.cache.stats()
     }
 
-    /// Serialize a chunk to bytes.
-    fn serialize_chunk(chunk: &AnyChunk) -> Vec<u8> {
-        // Simple format: [type_byte][data]
-        // Note: Stamps are handled separately in the postage system
+    /// Serialize a chunk and an optional stamp to bytes.
+    ///
+    /// Layout: `[stamp_flag][type_byte][data][stamp?]`. The leading `stamp_flag`
+    /// is `1` when a 113-byte stamp trailer follows the chunk data and `0` when
+    /// no stamp was persisted. Persisting the stamp lets the store answer
+    /// retrievals over the wire, which require the stamp that authorized the
+    /// chunk.
+    fn serialize_chunk(chunk: &AnyChunk, stamp: Option<&Stamp>) -> Vec<u8> {
         let mut bytes = Vec::new();
+        bytes.push(u8::from(stamp.is_some()));
         match chunk {
             AnyChunk::Content(c) => {
                 bytes.push(0);
@@ -80,20 +88,76 @@ impl<S: ChunkStore> LocalStoreImpl<S> {
                 bytes.extend_from_slice(data);
             }
         }
+        if let Some(stamp) = stamp {
+            bytes.extend_from_slice(&stamp.to_bytes());
+        }
         bytes
     }
 
-    /// Deserialize bytes to a chunk.
+    /// Split serialized bytes into the chunk payload and the optional stamp.
+    ///
+    /// Returns the `(type_byte, data, stamp)` triple. A malformed stamp trailer
+    /// surfaces as an invalid-chunk error rather than being silently dropped.
+    fn split_serialized(
+        address: ChunkAddress,
+        bytes: &[u8],
+    ) -> SwarmResult<(u8, &[u8], Option<Stamp>)> {
+        let (&stamp_flag, rest) = bytes.split_first().ok_or(SwarmError::InvalidChunk {
+            address: Some(address),
+            reason: "empty data".to_string(),
+        })?;
+        let (&type_byte, payload) = rest.split_first().ok_or(SwarmError::InvalidChunk {
+            address: Some(address),
+            reason: "missing chunk type".to_string(),
+        })?;
+
+        if stamp_flag == 0 {
+            return Ok((type_byte, payload, None));
+        }
+
+        if payload.len() < STAMP_LEN {
+            return Err(SwarmError::InvalidChunk {
+                address: Some(address),
+                reason: "stamp trailer truncated".to_string(),
+            });
+        }
+        let (data, stamp_bytes) = payload.split_at(payload.len() - STAMP_LEN);
+        let stamp = Stamp::try_from_slice(stamp_bytes).map_err(|e| SwarmError::InvalidChunk {
+            address: Some(address),
+            reason: e.to_string(),
+        })?;
+        Ok((type_byte, data, Some(stamp)))
+    }
+
+    /// Deserialize bytes to a chunk, ignoring any stamp trailer.
     ///
     /// Note: This creates a simplified chunk. Full reconstruction would
     /// require more complex deserialization matching nectar-primitives format.
     fn deserialize_chunk(address: ChunkAddress, bytes: &[u8]) -> SwarmResult<AnyChunk> {
-        use nectar_primitives::ContentChunk;
+        let (type_byte, data, _stamp) = Self::split_serialized(address, bytes)?;
+        Self::chunk_from_payload(address, type_byte, data)
+    }
 
-        let (&type_byte, data) = bytes.split_first().ok_or(SwarmError::InvalidChunk {
-            address: Some(address),
-            reason: "empty data".to_string(),
-        })?;
+    /// Deserialize bytes to a chunk and its stamp, when a stamp was persisted.
+    fn deserialize_stamped(
+        address: ChunkAddress,
+        bytes: &[u8],
+    ) -> SwarmResult<Option<StampedChunk>> {
+        let (type_byte, data, stamp) = Self::split_serialized(address, bytes)?;
+        let Some(stamp) = stamp else {
+            return Ok(None);
+        };
+        let chunk = Self::chunk_from_payload(address, type_byte, data)?;
+        Ok(Some(StampedChunk::new(chunk, stamp)))
+    }
+
+    /// Reconstruct a chunk from its payload bytes.
+    fn chunk_from_payload(
+        address: ChunkAddress,
+        type_byte: u8,
+        data: &[u8],
+    ) -> SwarmResult<AnyChunk> {
+        use nectar_primitives::ContentChunk;
 
         match type_byte {
             0..=2 => {
@@ -115,10 +179,9 @@ impl<S: ChunkStore> LocalStoreImpl<S> {
     }
 }
 
-impl<S: ChunkStore> SwarmLocalStore for LocalStoreImpl<S> {
-    fn store(&self, chunk: &AnyChunk) -> SwarmResult<()> {
-        let address = chunk.address();
-
+impl<S: ChunkStore> LocalStoreImpl<S> {
+    /// Store serialized chunk bytes for `address`, updating the reserve and cache.
+    fn put_serialized(&self, address: &ChunkAddress, bytes: Vec<u8>) -> SwarmResult<()> {
         // Check if already stored
         if self.has(address) {
             trace!(%address, "Chunk already stored");
@@ -130,8 +193,6 @@ impl<S: ChunkStore> SwarmLocalStore for LocalStoreImpl<S> {
             .try_reserve(&self.store)
             .map_err(SwarmError::storage)?;
 
-        // Serialize and store
-        let bytes = Self::serialize_chunk(chunk);
         self.store
             .put(address, &bytes)
             .map_err(SwarmError::storage)?;
@@ -142,6 +203,36 @@ impl<S: ChunkStore> SwarmLocalStore for LocalStoreImpl<S> {
 
         debug!(%address, "Stored chunk");
         Ok(())
+    }
+}
+
+impl<S: ChunkStore> SwarmLocalStore for LocalStoreImpl<S> {
+    fn store(&self, chunk: &AnyChunk) -> SwarmResult<()> {
+        let address = chunk.address();
+        let bytes = Self::serialize_chunk(chunk, None);
+        self.put_serialized(address, bytes)
+    }
+
+    fn store_stamped(&self, chunk: &StampedChunk) -> SwarmResult<()> {
+        let address = chunk.address();
+        let bytes = Self::serialize_chunk(chunk.chunk(), Some(chunk.stamp()));
+        self.put_serialized(address, bytes)
+    }
+
+    fn retrieve_stamped(&self, address: &ChunkAddress) -> SwarmResult<Option<StampedChunk>> {
+        if let Some(bytes) = self.cache.get(address) {
+            trace!(%address, "Cache hit (stamped)");
+            return Self::deserialize_stamped(*address, &bytes);
+        }
+
+        match self.store.get(address).map_err(SwarmError::storage)? {
+            Some(data) => {
+                let stamped = Self::deserialize_stamped(*address, &data)?;
+                self.cache.put(*address, data);
+                Ok(stamped)
+            }
+            None => Ok(None),
+        }
     }
 
     fn retrieve(&self, address: &ChunkAddress) -> SwarmResult<Option<AnyChunk>> {
@@ -269,5 +360,56 @@ mod tests {
         // Third should fail
         let result = local_store.store(&test_chunk(3));
         assert!(result.is_err());
+    }
+
+    fn test_stamp() -> Stamp {
+        use alloy_primitives::{B256, Signature};
+        let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
+        Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig)
+    }
+
+    #[test]
+    fn stamped_store_round_trips_the_stamp() {
+        let store = MemoryChunkStore::new();
+        let reserve = Reserve::new(100);
+        let local_store = LocalStoreImpl::new(store, reserve);
+
+        let chunk = test_chunk(5);
+        let address = *chunk.address();
+        let stamp = test_stamp();
+        let stamped = StampedChunk::new(chunk, stamp.clone());
+
+        local_store.store_stamped(&stamped).unwrap();
+
+        // The stamp-aware retrieve returns the chunk paired with the stored stamp.
+        let got = local_store
+            .retrieve_stamped(&address)
+            .unwrap()
+            .expect("chunk present");
+        assert_eq!(*got.address(), address);
+        assert_eq!(got.stamp().to_bytes(), stamp.to_bytes());
+
+        // The plain retrieve still returns the chunk, ignoring the stamp trailer.
+        let plain = local_store
+            .retrieve(&address)
+            .unwrap()
+            .expect("chunk present");
+        assert_eq!(*plain.address(), address);
+    }
+
+    #[test]
+    fn unstamped_store_has_no_stamp_to_serve() {
+        let store = MemoryChunkStore::new();
+        let reserve = Reserve::new(100);
+        let local_store = LocalStoreImpl::new(store, reserve);
+
+        let chunk = test_chunk(6);
+        let address = *chunk.address();
+        local_store.store(&chunk).unwrap();
+
+        // A chunk stored without a stamp cannot be served as a stamped chunk.
+        assert!(local_store.retrieve_stamped(&address).unwrap().is_none());
+        // But it is still retrievable as a plain chunk.
+        assert!(local_store.retrieve(&address).unwrap().is_some());
     }
 }
