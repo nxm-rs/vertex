@@ -9,7 +9,9 @@ use std::sync::Arc;
 use nectar_primitives::ChunkAddress;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
-use vertex_swarm_api::{PeerReporter, PushReceipt, ReportSource, SwarmScoringEvent};
+use vertex_swarm_api::{
+    PeerReporter, PushReceipt, ReportSource, SwarmLocalStore, SwarmScoringEvent,
+};
 use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_primitives::{OverlayAddress, StampedChunk};
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
@@ -158,6 +160,10 @@ pub struct ClientService {
     /// it so honest peers climb and misbehaving peers are scored down.
     /// Best-effort: without a reporter, outcomes only surface as logs.
     reporter: Option<Arc<dyn PeerReporter>>,
+    /// Optional client cache. The service caches the client's own successful
+    /// retrieval deliveries here (CAC indefinitely, SOC last-write-wins by
+    /// stamp timestamp), so a later request can serve them from the cache.
+    store: Option<Arc<dyn SwarmLocalStore>>,
 }
 
 impl ClientService {
@@ -174,6 +180,7 @@ impl ClientService {
             handle: handle.clone(),
             event_rx,
             reporter: None,
+            store: None,
         };
 
         (service, event_tx, handle)
@@ -192,6 +199,7 @@ impl ClientService {
             handle: handle.clone(),
             event_rx,
             reporter: None,
+            store: None,
         };
 
         (service, handle)
@@ -204,6 +212,19 @@ impl ClientService {
     #[must_use]
     pub fn with_reporter(mut self, reporter: Arc<dyn PeerReporter>) -> Self {
         self.reporter = Some(reporter);
+        self
+    }
+
+    /// Attach the client cache so the service caches its own retrieval
+    /// deliveries.
+    ///
+    /// A delivery resolved from one of our own outbound retrievals is cached
+    /// here: content chunks indefinitely, single-owner chunks under the cache's
+    /// last-write-wins timestamp policy. Without a store, deliveries are not
+    /// cached and a repeat request always hits the network.
+    #[must_use]
+    pub fn with_store(mut self, store: Arc<dyn SwarmLocalStore>) -> Self {
+        self.store = Some(store);
         self
     }
 
@@ -269,14 +290,19 @@ impl ClientService {
             ClientEvent::ChunkReceived {
                 peer,
                 address,
-                chunk: _,
+                chunk,
                 latency,
             } => {
                 // The requester is resolved directly by the handler; this
-                // event exists for accounting and peer scoring. The chunk was
-                // already verified against the requested address at decode, so
-                // an honest delivery raises the peer's score.
+                // event exists for accounting, peer scoring, and caching. The
+                // chunk was already verified against the requested address at
+                // decode, so an honest delivery raises the peer's score, and we
+                // cache it (CAC indefinitely, SOC last-write-wins) so a later
+                // request can serve it locally.
                 debug!(%peer, %address, ?latency, "Chunk received");
+                if let Some(store) = &self.store {
+                    let _ = store.put(chunk);
+                }
                 self.report(
                     &peer,
                     SwarmScoringEvent::RetrievalSuccess { latency },
@@ -284,45 +310,39 @@ impl ClientService {
                 );
             }
 
-            ClientEvent::ChunkRequested {
-                peer,
-                peer_id,
-                address,
-                request_id,
-            } => {
-                debug!(%peer_id, %peer, %address, %request_id, "Chunk requested by peer");
-                // TODO: Look up chunk in local storage and serve it
+            ClientEvent::InboundServed { peer } => {
+                debug!(%peer, "Served inbound retrieval from cache");
+                metrics::counter!("swarm.client.inbound_served").increment(1);
             }
 
-            ClientEvent::ChunkPushReceived {
-                peer,
-                peer_id,
-                address,
-                chunk,
-                request_id,
-            } => {
-                debug!(
-                    %peer_id, %peer, %address, %request_id,
-                    stamp_batch = %chunk.stamp().batch(),
-                    "Chunk push received"
-                );
-                // TODO: Validate chunk, store if responsible, send receipt
+            ClientEvent::InboundForwarded { peer } => {
+                debug!(%peer, "Forwarded inbound retrieval to a closer peer");
+                metrics::counter!("swarm.client.inbound_forwarded").increment(1);
+            }
+
+            ClientEvent::InboundMissed { peer, address } => {
+                debug!(%peer, %address, "Inbound retrieval missed (substream reset)");
+                metrics::counter!("swarm.client.inbound_missed").increment(1);
+            }
+
+            ClientEvent::InboundRelayed { peer } => {
+                debug!(%peer, "Relayed pushsync receipt to pusher");
+                metrics::counter!("swarm.client.inbound_relayed").increment(1);
+            }
+
+            ClientEvent::InboundPushFailed { peer, address } => {
+                debug!(%peer, %address, "Inbound pushsync failed (substream reset)");
+                metrics::counter!("swarm.client.inbound_push_failed").increment(1);
             }
 
             ClientEvent::ReceiptReceived {
                 peer,
                 address,
-                signature,
-                nonce,
-                storage_radius,
                 latency,
             } => {
                 // The pusher is resolved directly by the handler; this event
                 // exists for accounting and peer scoring.
-                debug!(
-                    %peer, %address, %storage_radius, %nonce, ?latency,
-                    sig = %signature, "Receipt received"
-                );
+                debug!(%peer, %address, ?latency, "Receipt received");
                 self.report(
                     &peer,
                     SwarmScoringEvent::PushSuccess { latency },
@@ -490,10 +510,6 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
 
-    use alloy_primitives::Signature;
-    use nectar_primitives::Nonce;
-    use vertex_swarm_primitives::StorageRadius;
-
     use super::*;
 
     #[derive(Default)]
@@ -530,10 +546,6 @@ mod tests {
         let (service, _event_tx, _handle) = ClientService::new();
         let service = service.with_reporter(Arc::clone(&reporter) as Arc<dyn PeerReporter>);
         (service, reporter)
-    }
-
-    fn dummy_signature() -> Signature {
-        Signature::new(Default::default(), Default::default(), false)
     }
 
     #[test]
@@ -611,9 +623,6 @@ mod tests {
         service.process_event(ClientEvent::ReceiptReceived {
             peer: peer(6),
             address: ChunkAddress::zero(),
-            signature: dummy_signature(),
-            nonce: Nonce::from([0u8; 32]),
-            storage_radius: StorageRadius::ZERO,
             latency: Duration::from_millis(42),
         });
         let (_, event, source) = reporter.single();

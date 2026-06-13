@@ -274,7 +274,15 @@ async fn build_client_backed_node(
     )
     .unzip();
 
-    let node_builder = ClientNode::builder(params.identity.clone());
+    // The cache-only client builds its chunk cache over a byte-bounded LRU and
+    // injects it; the same cache serves inbound retrievals and holds the
+    // client's own deliveries. No reserve, signer, radius, or redb is wired.
+    let store: Arc<dyn vertex_swarm_api::SwarmLocalStore> =
+        Arc::new(vertex_swarm_localstore::ChunkStore::with_budget(
+            vertex_swarm_localstore::DEFAULT_CACHE_BUDGET_BYTES as usize,
+            vertex_swarm_localstore::DEFAULT_SOC_CACHE_TTL_NS,
+        ));
+    let node_builder = ClientNode::builder(params.identity.clone()).with_store(store);
     #[cfg(feature = "swap")]
     let node_builder = match swap_wiring.as_ref() {
         Some(wiring) => node_builder.with_swap_events(wiring.swap_event_sender()),

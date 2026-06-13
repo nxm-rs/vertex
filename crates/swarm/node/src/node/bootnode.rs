@@ -8,6 +8,7 @@
 //! client protocols (retrieval, pushsync, pseudosettle).
 
 use std::convert::Infallible;
+use std::sync::Arc;
 
 use eyre::Result;
 use futures::StreamExt;
@@ -29,7 +30,9 @@ use vertex_tasks::GracefulShutdown;
 use super::base::BaseNode;
 use super::builder::BuiltInfrastructure;
 use super::nat::{NatBehaviour, NatEvent};
-use crate::protocol::{BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientEvent};
+use crate::protocol::{
+    BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientEvent, StubForwarder,
+};
 
 /// Network behaviour for a bootnode (topology + listen-only client behaviour).
 ///
@@ -73,7 +76,14 @@ impl<I: SwarmIdentity + Clone> BootnodeBehaviour<I> {
             ),
             nat,
             topology,
-            client: ClientBehaviour::new(ClientBehaviourConfig::for_role(SwarmNodeType::Bootnode)),
+            // A bootnode advertises pricing only and never serves retrieval or
+            // pushsync, so its cache is never consulted; a zero-budget cache and
+            // the stub forwarder keep the behaviour inert.
+            client: ClientBehaviour::new(
+                ClientBehaviourConfig::for_role(SwarmNodeType::Bootnode),
+                Arc::new(vertex_swarm_localstore::ChunkStore::with_budget(0, 0)),
+                Arc::new(StubForwarder),
+            ),
         }
     }
 

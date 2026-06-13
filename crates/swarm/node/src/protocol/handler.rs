@@ -12,21 +12,33 @@
 //! 2. After handshake, `Activate` command transitions to `Active` state
 //! 3. In `Active` state, handler processes protocol messages
 //!
-//! # Responder Storage
+//! # Inbound serving
 //!
-//! Inbound requests (retrieval, pushsync, pseudosettle) arrive with responders
-//! that must be stored until the application layer provides a response. The handler
-//! maps request IDs to [`PendingResponse`] entries, bounded per connection.
+//! Retrieval and pushsync inbound requests are served by **self-contained
+//! futures**: each request becomes one future pushed into [`ClientHandler`]'s
+//! `inbound` set, with the substream's responder as the correlation. A retrieval
+//! serves from the cache (content chunks indefinitely, single-owner chunks while
+//! fresh) or forwards to a closer peer; a pushsync forwards and relays the
+//! storer's receipt verbatim, never signing. The future resolves to an
+//! [`InboundOutcome`] that the handler turns into a scoring or metrics event;
+//! the response itself never travels back as a command.
+//!
+//! Pseudosettle inbound still uses the request-id responder map below, because
+//! the pseudosettle service gates the accepted amount against a time-based
+//! allowance before acking, so its ack cannot be folded inline.
 
 use std::{
     collections::{HashMap, VecDeque},
+    sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
 
 use vertex_util_runtime::time::Instant;
 
-use alloy_primitives::{Signature, U256};
+use alloy_primitives::U256;
+use futures::future::BoxFuture;
+use futures::stream::{FuturesUnordered, StreamExt};
 use futures_bounded::Timeout;
 use libp2p::swarm::{
     SubstreamProtocol,
@@ -35,15 +47,16 @@ use libp2p::swarm::{
         FullyNegotiatedOutbound,
     },
 };
-use nectar_primitives::{ChunkAddress, Nonce};
+use nectar_primitives::ChunkAddress;
 use tracing::{debug, warn};
-use vertex_swarm_api::PushReceipt;
+use vertex_swarm_api::{PushReceipt, SwarmLocalStore};
 use vertex_swarm_net_pseudosettle::PaymentAck;
 #[cfg(feature = "swap")]
 use vertex_swarm_net_swap::SignedCheque;
-use vertex_swarm_primitives::{OverlayAddress, StampedChunk, StorageRadius, SwarmNodeType};
+use vertex_swarm_primitives::{OverlayAddress, StampedChunk, SwarmNodeType};
 
 use super::events::{PushResponseTx, RetrievalResponseTx};
+use super::forward::Forwarder;
 use super::upgrade::{
     ClientInboundOutput, ClientInboundUpgrade, ClientOutboundInfo, ClientOutboundOutput,
     ClientOutboundUpgrade, ClientUpgradeError, FailureKind,
@@ -54,7 +67,7 @@ use vertex_swarm_net_retrieval::PROTOCOL_NAME as RETRIEVAL_PROTOCOL;
 
 const DEFAULT_MAX_PENDING_COMMANDS: usize = 256;
 const DEFAULT_MAX_PENDING_EVENTS: usize = 256;
-/// Maximum number of stored responders per connection.
+/// Maximum number of stored pseudosettle responders per connection.
 const MAX_PENDING_RESPONSES: usize = 64;
 /// Timeout for async response sending (prevent stuck streams).
 const RESPONSE_SEND_TIMEOUT: Duration = Duration::from_secs(15);
@@ -62,6 +75,37 @@ const RESPONSE_SEND_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_CONCURRENT_RESPONSE_SENDS: usize = 8;
 /// Responders older than this are dropped as stale.
 const RESPONDER_STALE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Maximum concurrent inbound serving futures per connection.
+///
+/// Caps how many retrieval and pushsync requests a single peer can have in
+/// flight against us at once; once full, `listen_protocol` stops advertising
+/// inbound serving so the muxer back-pressures the peer.
+const MAX_INBOUND_SERVING: usize = 32;
+
+/// The outcome of serving one inbound retrieval or pushsync request.
+///
+/// Returned by the self-contained inbound future and turned into a scoring or
+/// metrics event by the handler. It never carries a response: the response was
+/// already sent (or the substream reset) inside the future.
+#[derive(Debug)]
+pub(crate) enum InboundOutcome {
+    /// A retrieval was answered from our cache.
+    Served { overlay: OverlayAddress },
+    /// A retrieval was answered by forwarding to a closer peer.
+    Forwarded { overlay: OverlayAddress },
+    /// A retrieval could not be served or forwarded; the substream was reset.
+    Missed {
+        overlay: OverlayAddress,
+        address: ChunkAddress,
+    },
+    /// A pushsync was forwarded and the storer's receipt relayed verbatim.
+    Relayed { overlay: OverlayAddress },
+    /// A pushsync could not be forwarded; the substream was reset.
+    PushFailed {
+        overlay: OverlayAddress,
+        address: ChunkAddress,
+    },
+}
 
 /// Configuration for the client handler.
 #[derive(Debug, Clone)]
@@ -98,6 +142,10 @@ impl Default for Config {
 }
 
 /// Commands sent from the behaviour to the handler.
+///
+/// `PushChunk` carries a whole [`StampedChunk`] and dwarfs the other variants;
+/// the size difference is accepted rather than boxing a one-shot upload value.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub(crate) enum HandlerCommand {
     /// Activate the handler after handshake completion.
@@ -144,29 +192,14 @@ pub(crate) enum HandlerCommand {
         /// The signed cheque to send.
         cheque: SignedCheque,
     },
-    /// Serve a chunk to a peer (respond to retrieval request).
-    ServeChunk {
-        /// Request ID from the ChunkRequested event.
-        request_id: u64,
-        /// The chunk and its postage stamp to serve.
-        chunk: StampedChunk,
-    },
-    /// Send a receipt to a peer (respond to pushsync delivery).
-    SendReceipt {
-        /// Request ID from the ChunkPushReceived event.
-        request_id: u64,
-        /// The chunk address.
-        address: ChunkAddress,
-        /// The receipt signature.
-        signature: Signature,
-        /// The receipt nonce.
-        nonce: Nonce,
-        /// Our storage radius.
-        storage_radius: StorageRadius,
-    },
 }
 
 /// Events emitted by the handler to the behaviour.
+///
+/// `ChunkReceived` carries a whole [`StampedChunk`] and dwarfs the other
+/// variants; the size difference is accepted rather than boxing a delivery that
+/// flows straight to the cache and the requester.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub(crate) enum HandlerEvent {
     /// Handler has been activated.
@@ -186,14 +219,36 @@ pub(crate) enum HandlerEvent {
         /// The peer's overlay address.
         overlay: OverlayAddress,
     },
-    /// Received a chunk request from peer.
-    ChunkRequested {
-        /// The peer's overlay address.
+    /// We served an inbound retrieval request from our cache.
+    ///
+    /// Scoring and metrics only: the chunk has already gone down the wire.
+    InboundServed {
+        /// The peer we served.
+        overlay: OverlayAddress,
+    },
+    /// We answered an inbound retrieval by forwarding to a closer peer.
+    InboundForwarded {
+        /// The peer we served.
+        overlay: OverlayAddress,
+    },
+    /// We could not serve or forward an inbound retrieval; the substream reset.
+    InboundMissed {
+        /// The peer that asked.
         overlay: OverlayAddress,
         /// The requested chunk address.
         address: ChunkAddress,
-        /// Request ID for correlating response.
-        request_id: u64,
+    },
+    /// We relayed a storer's receipt for an inbound pushsync.
+    InboundRelayed {
+        /// The peer that pushed.
+        overlay: OverlayAddress,
+    },
+    /// We could not forward an inbound pushsync; the substream reset.
+    InboundPushFailed {
+        /// The peer that pushed.
+        overlay: OverlayAddress,
+        /// The chunk address.
+        address: ChunkAddress,
     },
     /// Received a chunk from peer.
     ChunkReceived {
@@ -206,29 +261,12 @@ pub(crate) enum HandlerEvent {
         /// Time from outbound request to delivery, for latency scoring.
         latency: Duration,
     },
-    /// Received a chunk push from peer.
-    ChunkPushReceived {
-        /// The peer's overlay address.
-        overlay: OverlayAddress,
-        /// The chunk address.
-        address: ChunkAddress,
-        /// The pushed chunk and its postage stamp.
-        chunk: StampedChunk,
-        /// Request ID for correlating receipt.
-        request_id: u64,
-    },
     /// Received a receipt from peer.
     ReceiptReceived {
         /// The peer's overlay address.
         overlay: OverlayAddress,
         /// The chunk address.
         address: ChunkAddress,
-        /// The storer's signature.
-        signature: Signature,
-        /// The nonce used.
-        nonce: Nonce,
-        /// The storer's storage radius.
-        storage_radius: StorageRadius,
         /// Time from outbound request to receipt, for latency scoring.
         latency: Duration,
     },
@@ -325,40 +363,11 @@ enum State {
     Active { overlay: OverlayAddress },
 }
 
-/// A pending inbound response waiting for the application layer to provide data.
-enum PendingResponse {
-    /// Awaiting chunk data to serve (retrieval response). Carries the address
-    /// the inbound request asked for, so the served chunk can be verified to
-    /// answer that exact request before it goes down the wire.
-    Retrieval {
-        /// The chunk address the peer requested.
-        requested: ChunkAddress,
-        /// The substream responder that sends the delivery.
-        responder: vertex_swarm_net_retrieval::RetrievalResponder,
-    },
-    /// Awaiting receipt to send (pushsync response).
-    Pushsync(vertex_swarm_net_pushsync::PushsyncResponder),
-    /// Awaiting ack to send (pseudosettle response).
-    Pseudosettle(vertex_swarm_net_pseudosettle::PseudosettleInboundResult),
-}
-
-/// Metadata for tracking when a responder was stored.
+/// A pending inbound pseudosettle response waiting for the application layer to
+/// gate the amount and provide an ack.
 struct StoredResponse {
-    response: PendingResponse,
+    response: vertex_swarm_net_pseudosettle::PseudosettleInboundResult,
     stored_at: Instant,
-}
-
-/// Outbound serve gate: a chunk may only be served if its content address
-/// matches the address of the inbound request it answers.
-///
-/// This is the verify-before-send-down-the-wire check. The chunk's address is
-/// derived from its bytes (BMT for content-addressed chunks, owner+id for
-/// single-owner chunks), so an equal address means the served bytes are the
-/// ones the peer asked for. A future type-state (`VerifiedStampedChunk`) could
-/// make this a compile-time guarantee; for now it is an explicit gate so the
-/// relay path in follow-up work can reuse it.
-fn served_chunk_answers_request(requested: &ChunkAddress, chunk: &StampedChunk) -> bool {
-    chunk.address() == requested
 }
 
 /// Swarm client connection handler.
@@ -367,7 +376,13 @@ fn served_chunk_answers_request(requested: &ChunkAddress, chunk: &StampedChunk) 
 pub(crate) struct ClientHandler {
     config: Config,
     state: State,
-    /// Counter for request IDs.
+    /// The client cache, shared from the behaviour. Inbound retrievals serve
+    /// from it; forwarded retrieval deliveries are cached into it.
+    store: Arc<dyn SwarmLocalStore>,
+    /// The forwarder seam, shared from the behaviour. A cache miss forwards a
+    /// retrieval; every pushsync forwards. Stubbed in the cache-only client.
+    forward: Arc<dyn Forwarder>,
+    /// Counter for pseudosettle request IDs.
     next_request_id: u64,
     /// Pending commands to process.
     pending_commands: VecDeque<HandlerCommand>,
@@ -377,9 +392,13 @@ pub(crate) struct ClientHandler {
     pricing_sent: bool,
     /// Whether pricing outbound is pending.
     pricing_outbound_pending: bool,
-    /// Stored responders waiting for application-layer responses, keyed by request_id.
+    /// Self-contained inbound serving futures (retrieval and pushsync).
+    inbound: FuturesUnordered<BoxFuture<'static, InboundOutcome>>,
+    /// Stored pseudosettle responders waiting for the service's ack, keyed by
+    /// request_id. Retrieval and pushsync no longer use this map; only
+    /// pseudosettle does, because its ack is gated on a time-based allowance.
     pending_responses: HashMap<u64, StoredResponse>,
-    /// Bounded set for async response sends (prevents blocking poll).
+    /// Bounded set for async pseudosettle ack sends (prevents blocking poll).
     response_sends: futures_bounded::FuturesSet<Result<(), String>>,
 }
 
@@ -395,15 +414,22 @@ impl ClientHandler {
     }
 
     /// Create a new handler in dormant state.
-    pub(crate) fn new(config: Config) -> Self {
+    pub(crate) fn new(
+        config: Config,
+        store: Arc<dyn SwarmLocalStore>,
+        forward: Arc<dyn Forwarder>,
+    ) -> Self {
         Self {
             config,
             state: State::Dormant,
+            store,
+            forward,
             next_request_id: 0,
             pending_commands: VecDeque::new(),
             pending_events: VecDeque::new(),
             pricing_sent: false,
             pricing_outbound_pending: false,
+            inbound: FuturesUnordered::new(),
             pending_responses: HashMap::new(),
             response_sends: futures_bounded::FuturesSet::new(
                 RESPONSE_SEND_TIMEOUT,
@@ -420,15 +446,20 @@ impl ClientHandler {
         }
     }
 
-    /// Generate the next request ID.
+    /// Generate the next request ID (pseudosettle only).
     fn next_request_id(&mut self) -> u64 {
         let id = self.next_request_id;
         self.next_request_id = self.next_request_id.wrapping_add(1);
         id
     }
 
-    /// Store a pending response, evicting stale entries if at capacity.
-    fn store_response(&mut self, request_id: u64, response: PendingResponse) {
+    /// Store a pending pseudosettle response, evicting stale entries if at
+    /// capacity.
+    fn store_response(
+        &mut self,
+        request_id: u64,
+        response: vertex_swarm_net_pseudosettle::PseudosettleInboundResult,
+    ) {
         if self.pending_responses.len() >= MAX_PENDING_RESPONSES {
             self.evict_stale_responses();
         }
@@ -459,8 +490,11 @@ impl ClientHandler {
         self.pending_responses.retain(|_, v| v.stored_at > cutoff);
     }
 
-    /// Take a pending response by request ID.
-    fn take_response(&mut self, request_id: u64) -> Option<PendingResponse> {
+    /// Take a pending pseudosettle response by request ID.
+    fn take_response(
+        &mut self,
+        request_id: u64,
+    ) -> Option<vertex_swarm_net_pseudosettle::PseudosettleInboundResult> {
         self.pending_responses
             .remove(&request_id)
             .map(|s| s.response)
@@ -501,59 +535,130 @@ impl ClientHandler {
         }
     }
 
-    /// Handle incoming retrieval request.
+    /// Handle an inbound retrieval request by pushing a self-contained serving
+    /// future: serve from cache (content indefinitely, single-owner while
+    /// fresh), else forward to a closer peer, caching a forwarded delivery.
     fn on_retrieval_request(
         &mut self,
         request: vertex_swarm_net_retrieval::Request,
         responder: vertex_swarm_net_retrieval::RetrievalResponder,
     ) {
-        if let Some(overlay) = self.overlay() {
-            let request_id = self.next_request_id();
-            debug!(%overlay, address = %request.address, %request_id, "Received retrieval request");
-            self.push_event(HandlerEvent::ChunkRequested {
-                overlay,
-                address: request.address,
-                request_id,
-            });
-            self.store_response(
-                request_id,
-                PendingResponse::Retrieval {
-                    requested: request.address,
-                    responder,
-                },
-            );
-        } else {
+        let Some(overlay) = self.overlay() else {
             warn!(
                 address = %request.address,
                 "Received retrieval request in dormant state (peer may have cached old protocol list)"
             );
-        }
+            return;
+        };
+        let address = request.address;
+        debug!(%overlay, %address, "Received retrieval request");
+
+        let store = Arc::clone(&self.store);
+        let forward = Arc::clone(&self.forward);
+        self.inbound.push(Box::pin(async move {
+            // Cache hit: content chunks serve indefinitely, single-owner chunks
+            // only while fresh (the store applies the TTL on `get`).
+            if let Ok(Some(stamped)) = store.get(&address)
+                && let Ok(verified) = stamped.verify_answers(address)
+            {
+                match responder.send_chunk(verified.into_inner()).await {
+                    Ok(()) => return InboundOutcome::Served { overlay },
+                    Err(e) => {
+                        debug!(%overlay, %address, error = %e, "Cache serve send failed");
+                        return InboundOutcome::Missed { overlay, address };
+                    }
+                }
+            }
+
+            // Miss: forward to a closer peer, excluding the requester. Cache a
+            // successful forwarded delivery (CAC immutable, SOC last-write-wins).
+            match forward.retrieve(address, overlay).await {
+                Ok(stamped) => match stamped.clone().verify_answers(address) {
+                    Ok(verified) => {
+                        let _ = store.put(stamped);
+                        match responder.send_chunk(verified.into_inner()).await {
+                            Ok(()) => InboundOutcome::Forwarded { overlay },
+                            Err(e) => {
+                                debug!(%overlay, %address, error = %e, "Forward serve send failed");
+                                InboundOutcome::Missed { overlay, address }
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        // A forwarder that returns a chunk for the wrong address
+                        // is a bug in the relay, not the requester's fault; reset.
+                        responder.send_error();
+                        InboundOutcome::Missed { overlay, address }
+                    }
+                },
+                Err(_) => {
+                    responder.send_error();
+                    InboundOutcome::Missed { overlay, address }
+                }
+            }
+        }));
     }
 
-    /// Handle incoming pushsync delivery.
+    /// Handle an inbound pushsync delivery by forwarding to a closer peer and
+    /// relaying the storer's receipt verbatim. The client never signs a receipt
+    /// (it takes no custody); a forward failure resets the substream.
     fn on_pushsync_delivery(
         &mut self,
         delivery: vertex_swarm_net_pushsync::Delivery,
         responder: vertex_swarm_net_pushsync::PushsyncResponder,
     ) {
-        if let Some(overlay) = self.overlay() {
-            let request_id = self.next_request_id();
-            let address = *delivery.chunk.address();
-            debug!(%overlay, %address, %request_id, "Received pushsync delivery");
-            self.pending_events
-                .push_back(HandlerEvent::ChunkPushReceived {
-                    overlay,
-                    address,
-                    chunk: *delivery.chunk,
-                    request_id,
-                });
-            self.store_response(request_id, PendingResponse::Pushsync(responder));
-        } else {
+        let Some(overlay) = self.overlay() else {
             warn!(
                 address = %delivery.chunk.address(),
                 "Received pushsync delivery in dormant state (peer may have cached old protocol list)"
             );
-        }
+            return;
+        };
+        let chunk = *delivery.chunk;
+        let address = *chunk.address();
+        debug!(%overlay, %address, "Received pushsync delivery");
+
+        let forward = Arc::clone(&self.forward);
+        self.inbound.push(Box::pin(async move {
+            match forward.push(chunk, overlay).await {
+                Ok(receipt) => {
+                    // Relay the storer's receipt verbatim: we never sign.
+                    let relay = vertex_swarm_net_pushsync::Receipt::success(
+                        address,
+                        receipt.signature,
+                        receipt.nonce,
+                        receipt.storage_radius,
+                    );
+                    match responder.send_receipt(relay).await {
+                        Ok(()) => InboundOutcome::Relayed { overlay },
+                        Err(e) => {
+                            debug!(%overlay, %address, error = %e, "Receipt relay send failed");
+                            InboundOutcome::PushFailed { overlay, address }
+                        }
+                    }
+                }
+                Err(_) => {
+                    responder.send_error();
+                    InboundOutcome::PushFailed { overlay, address }
+                }
+            }
+        }));
+    }
+
+    /// Turn a resolved inbound outcome into a scoring or metrics event.
+    fn on_inbound_outcome(&mut self, outcome: InboundOutcome) {
+        let event = match outcome {
+            InboundOutcome::Served { overlay } => HandlerEvent::InboundServed { overlay },
+            InboundOutcome::Forwarded { overlay } => HandlerEvent::InboundForwarded { overlay },
+            InboundOutcome::Missed { overlay, address } => {
+                HandlerEvent::InboundMissed { overlay, address }
+            }
+            InboundOutcome::Relayed { overlay } => HandlerEvent::InboundRelayed { overlay },
+            InboundOutcome::PushFailed { overlay, address } => {
+                HandlerEvent::InboundPushFailed { overlay, address }
+            }
+        };
+        self.push_event(event);
     }
 
     /// Handle retrieval response, resolving the caller's response channel.
@@ -641,9 +746,6 @@ impl ClientHandler {
                 self.push_event(HandlerEvent::ReceiptReceived {
                     overlay,
                     address: receipt.address,
-                    signature: receipt.signature,
-                    nonce: receipt.nonce,
-                    storage_radius: receipt.storage_radius,
                     latency,
                 });
                 let _ = response.send(Ok(PushReceipt {
@@ -668,14 +770,17 @@ impl ConnectionHandler for ClientHandler {
     type OutboundOpenInfo = ClientOutboundInfo;
 
     fn listen_protocol(&self) -> SubstreamProtocol<Self::InboundProtocol, Self::InboundOpenInfo> {
+        // Back-pressure: once the inbound serving set is full, advertise the
+        // dormant (empty) protocol set so the muxer stops accepting new inbound
+        // retrieval and pushsync substreams from this peer until we drain.
         let upgrade = match &self.state {
-            State::Active { .. } => {
+            State::Active { .. } if self.inbound.len() < MAX_INBOUND_SERVING => {
                 let upgrade = ClientInboundUpgrade::active_for(self.config.local_role);
                 #[cfg(feature = "swap")]
                 let upgrade = upgrade.with_swap_rate(self.config.swap_exchange_rate);
                 upgrade
             }
-            State::Dormant => ClientInboundUpgrade::new(),
+            State::Active { .. } | State::Dormant => ClientInboundUpgrade::new(),
         };
         SubstreamProtocol::new(upgrade, ()).with_timeout(self.config.timeout)
     }
@@ -691,7 +796,15 @@ impl ConnectionHandler for ClientHandler {
             return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
         }
 
-        // Drain completed response sends
+        // Drain resolved inbound serving futures into scoring/metrics events.
+        while let Poll::Ready(Some(outcome)) = self.inbound.poll_next_unpin(cx) {
+            self.on_inbound_outcome(outcome);
+            if let Some(event) = self.pending_events.pop_front() {
+                return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
+            }
+        }
+
+        // Drain completed pseudosettle ack sends
         while let Poll::Ready(result) = self.response_sends.poll_unpin(cx) {
             match result {
                 Ok(Ok(())) => {
@@ -791,9 +904,7 @@ impl ConnectionHandler for ClientHandler {
                     });
                 }
                 HandlerCommand::AckPseudosettle { request_id, ack } => {
-                    if let Some(PendingResponse::Pseudosettle(result)) =
-                        self.take_response(request_id)
-                    {
+                    if let Some(result) = self.take_response(request_id) {
                         debug!(%request_id, amount = %ack.amount, "Sending pseudosettle ack");
                         if self
                             .response_sends
@@ -809,85 +920,6 @@ impl ConnectionHandler for ClientHandler {
                         }
                     } else {
                         warn!(%request_id, "No pseudosettle responder found for request_id");
-                    }
-                }
-                HandlerCommand::ServeChunk { request_id, chunk } => {
-                    if let Some(PendingResponse::Retrieval {
-                        requested,
-                        responder,
-                    }) = self.take_response(request_id)
-                    {
-                        // Verify before sending down the wire: the served chunk
-                        // must answer the exact address the peer asked for. A
-                        // mismatch means the serve path was handed the wrong (or
-                        // a malformed) chunk; refuse to emit it so we never
-                        // launder bad data into our own reputation.
-                        let served = *chunk.address();
-                        if !served_chunk_answers_request(&requested, &chunk) {
-                            warn!(
-                                %request_id, %requested, %served,
-                                "Refusing to serve chunk: address does not match request"
-                            );
-                            metrics::counter!(
-                                "swarm.client.serve_address_mismatch",
-                                "protocol" => "retrieval",
-                            )
-                            .increment(1);
-                            self.push_event(HandlerEvent::Error {
-                                overlay: self.overlay(),
-                                protocol: "retrieval",
-                                error: "served chunk address mismatch".into(),
-                            });
-                        } else {
-                            debug!(%request_id, "Serving chunk");
-                            if self
-                                .response_sends
-                                .try_push(async move {
-                                    responder
-                                        .send_chunk(chunk)
-                                        .await
-                                        .map_err(|e| format!("serve chunk: {e}"))
-                                })
-                                .is_err()
-                            {
-                                warn!("Response send queue full, dropping chunk serve");
-                            }
-                        }
-                    } else {
-                        warn!(%request_id, "No retrieval responder found for request_id");
-                    }
-                }
-                HandlerCommand::SendReceipt {
-                    request_id,
-                    address,
-                    signature,
-                    nonce,
-                    storage_radius,
-                } => {
-                    if let Some(PendingResponse::Pushsync(responder)) =
-                        self.take_response(request_id)
-                    {
-                        debug!(%request_id, %address, "Sending receipt");
-                        let receipt = vertex_swarm_net_pushsync::Receipt::success(
-                            address,
-                            signature,
-                            nonce,
-                            storage_radius,
-                        );
-                        if self
-                            .response_sends
-                            .try_push(async move {
-                                responder
-                                    .send_receipt(receipt)
-                                    .await
-                                    .map_err(|e| format!("send receipt: {e}"))
-                            })
-                            .is_err()
-                        {
-                            warn!("Response send queue full, dropping receipt send");
-                        }
-                    } else {
-                        warn!(%request_id, "No pushsync responder found for request_id");
                     }
                 }
             }
@@ -1057,7 +1089,7 @@ impl ClientHandler {
                             amount: result.payment.amount,
                             request_id,
                         });
-                    self.store_response(request_id, PendingResponse::Pseudosettle(result));
+                    self.store_response(request_id, result);
                 }
             }
             #[cfg(feature = "swap")]
@@ -1150,8 +1182,6 @@ mod tests {
     use nectar_primitives::{AnyChunk, ContentChunk};
     use vertex_swarm_primitives::StampedChunk;
 
-    use super::*;
-
     fn stamped(payload: &'static [u8]) -> StampedChunk {
         let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
         let stamp = Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig);
@@ -1162,18 +1192,18 @@ mod tests {
     }
 
     #[test]
-    fn serve_gate_accepts_matching_chunk() {
+    fn verify_answers_gate_accepts_matching_chunk() {
         let chunk = stamped(b"serve gate payload");
         let requested = *chunk.address();
-        assert!(served_chunk_answers_request(&requested, &chunk));
+        assert!(chunk.verify_answers(requested).is_ok());
     }
 
     #[test]
-    fn serve_gate_rejects_mismatched_chunk() {
+    fn verify_answers_gate_rejects_mismatched_chunk() {
         let chunk = stamped(b"actual payload");
         let other = stamped(b"a different payload entirely");
         let requested = *other.address();
         assert_ne!(*chunk.address(), requested);
-        assert!(!served_chunk_answers_request(&requested, &chunk));
+        assert!(chunk.verify_answers(requested).is_err());
     }
 }

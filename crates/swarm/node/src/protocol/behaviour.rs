@@ -6,6 +6,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
+    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -19,12 +20,14 @@ use libp2p::{
 };
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
+use vertex_swarm_api::SwarmLocalStore;
 use vertex_swarm_primitives::OverlayAddress;
 
 #[cfg(feature = "swap")]
 use super::SwapEvent;
 use super::{
     ClientCommand, ClientEvent, PseudosettleEvent,
+    forward::Forwarder,
     handler::{ClientHandler, Config as HandlerConfig, HandlerCommand, HandlerEvent},
 };
 
@@ -72,6 +75,12 @@ impl Config {
 /// to configure routing. Events are still emitted as [`ClientEvent`] for other consumers.
 pub(crate) struct ClientBehaviour {
     config: Config,
+    /// The client cache, cloned into each handler at connection establishment so
+    /// inbound retrievals can serve from it.
+    store: Arc<dyn SwarmLocalStore>,
+    /// The forwarder seam, cloned into each handler so a cache miss or a
+    /// pushsync can relay to a closer peer.
+    forward: Arc<dyn Forwarder>,
     /// Map of peer_id -> overlay for activated peers.
     peer_overlays: HashMap<PeerId, OverlayAddress>,
     /// Map of overlay -> peer_id for reverse lookup.
@@ -86,10 +95,17 @@ pub(crate) struct ClientBehaviour {
 }
 
 impl ClientBehaviour {
-    /// Create a new client behaviour with the given configuration.
-    pub(crate) fn new(config: Config) -> Self {
+    /// Create a new client behaviour with the given configuration, cache, and
+    /// forwarder.
+    pub(crate) fn new(
+        config: Config,
+        store: Arc<dyn SwarmLocalStore>,
+        forward: Arc<dyn Forwarder>,
+    ) -> Self {
         Self {
             config,
+            store,
+            forward,
             peer_overlays: HashMap::new(),
             overlay_peers: HashMap::new(),
             pending_events: VecDeque::new(),
@@ -97,6 +113,16 @@ impl ClientBehaviour {
             #[cfg(feature = "swap")]
             swap_event_tx: None,
         }
+    }
+
+    /// Build a dormant handler for a new connection, sharing the cache and
+    /// forwarder into it.
+    fn new_handler(&self) -> ClientHandler {
+        ClientHandler::new(
+            self.config.handler.clone(),
+            Arc::clone(&self.store),
+            Arc::clone(&self.forward),
+        )
     }
 
     /// Route pseudosettle events to the given sink.
@@ -196,48 +222,6 @@ impl ClientBehaviour {
                     let _ = response.send(Err(crate::ChunkTransferError::NotConnected));
                 }
             }
-            ClientCommand::ServeChunk {
-                peer,
-                request_id,
-                address: _,
-                chunk,
-            } => {
-                if let Some(&peer_id) = self.overlay_peers.get(&peer) {
-                    debug!(%peer_id, %peer, %request_id, "Serving chunk");
-                    self.push_event(ToSwarm::NotifyHandler {
-                        peer_id,
-                        handler: libp2p::swarm::NotifyHandler::Any,
-                        event: HandlerCommand::ServeChunk { request_id, chunk },
-                    });
-                } else {
-                    debug!(%peer, "Unknown peer for serve chunk");
-                }
-            }
-            ClientCommand::SendReceipt {
-                peer,
-                request_id,
-                address,
-                signature,
-                nonce,
-                storage_radius,
-            } => {
-                if let Some(&peer_id) = self.overlay_peers.get(&peer) {
-                    debug!(%peer_id, %peer, %request_id, "Sending receipt");
-                    self.push_event(ToSwarm::NotifyHandler {
-                        peer_id,
-                        handler: libp2p::swarm::NotifyHandler::Any,
-                        event: HandlerCommand::SendReceipt {
-                            request_id,
-                            address,
-                            signature,
-                            nonce,
-                            storage_radius,
-                        },
-                    });
-                } else {
-                    debug!(%peer, "Unknown peer for send receipt");
-                }
-            }
             ClientCommand::SendPseudosettle { peer, amount } => {
                 if let Some(&peer_id) = self.overlay_peers.get(&peer) {
                     debug!(%peer_id, %peer, %amount, "Sending pseudosettle");
@@ -316,16 +300,31 @@ impl ClientBehaviour {
                         peer: overlay,
                     }));
             }
-            HandlerEvent::ChunkRequested {
-                overlay,
-                address,
-                request_id,
-            } => {
-                self.push_event(ToSwarm::GenerateEvent(ClientEvent::ChunkRequested {
+            HandlerEvent::InboundServed { overlay } => {
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::InboundServed {
                     peer: overlay,
-                    peer_id,
+                }));
+            }
+            HandlerEvent::InboundForwarded { overlay } => {
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::InboundForwarded {
+                    peer: overlay,
+                }));
+            }
+            HandlerEvent::InboundMissed { overlay, address } => {
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::InboundMissed {
+                    peer: overlay,
                     address,
-                    request_id,
+                }));
+            }
+            HandlerEvent::InboundRelayed { overlay } => {
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::InboundRelayed {
+                    peer: overlay,
+                }));
+            }
+            HandlerEvent::InboundPushFailed { overlay, address } => {
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::InboundPushFailed {
+                    peer: overlay,
+                    address,
                 }));
             }
             HandlerEvent::ChunkReceived {
@@ -342,34 +341,14 @@ impl ClientBehaviour {
                         latency,
                     }));
             }
-            HandlerEvent::ChunkPushReceived {
-                overlay,
-                address,
-                chunk,
-                request_id,
-            } => {
-                self.push_event(ToSwarm::GenerateEvent(ClientEvent::ChunkPushReceived {
-                    peer: overlay,
-                    peer_id,
-                    address,
-                    chunk,
-                    request_id,
-                }));
-            }
             HandlerEvent::ReceiptReceived {
                 overlay,
                 address,
-                signature,
-                nonce,
-                storage_radius,
                 latency,
             } => {
                 self.push_event(ToSwarm::GenerateEvent(ClientEvent::ReceiptReceived {
                     peer: overlay,
                     address,
-                    signature,
-                    nonce,
-                    storage_radius,
                     latency,
                 }));
             }
@@ -520,7 +499,7 @@ impl NetworkBehaviour for ClientBehaviour {
         _remote_addr: &Multiaddr,
     ) -> Result<THandler<Self>, ConnectionDenied> {
         // Create a dormant handler - will be activated after handshake
-        Ok(ClientHandler::new(self.config.handler.clone()))
+        Ok(self.new_handler())
     }
 
     fn handle_established_outbound_connection(
@@ -532,7 +511,7 @@ impl NetworkBehaviour for ClientBehaviour {
         _port_use: libp2p::core::transport::PortUse,
     ) -> Result<THandler<Self>, ConnectionDenied> {
         // Create a dormant handler - will be activated after handshake
-        Ok(ClientHandler::new(self.config.handler.clone()))
+        Ok(self.new_handler())
     }
 
     fn on_swarm_event(&mut self, event: FromSwarm<'_>) {
@@ -568,5 +547,291 @@ impl NetworkBehaviour for ClientBehaviour {
             return Poll::Ready(event);
         }
         Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use alloy_primitives::{B256, Signature};
+    use alloy_signer_local::PrivateKeySigner;
+    use futures::StreamExt;
+    use libp2p::Swarm;
+    use libp2p_swarm_test::SwarmExt;
+    use nectar_postage::Stamp;
+    use nectar_primitives::{AnyChunk, ContentChunk, SingleOwnerChunk};
+    use tokio::sync::oneshot;
+    use vertex_swarm_api::SwarmLocalStore;
+    use vertex_swarm_localstore::{ChunkStore, Clock};
+    use vertex_swarm_primitives::{OverlayAddress, StampedChunk, SwarmNodeType};
+
+    use super::{ClientBehaviour, ClientCommand, Config};
+    use crate::client_service::RetrievalResult;
+    use crate::protocol::StubForwarder;
+
+    /// A clock fixed at a single instant, for SOC freshness tests.
+    struct FixedClock(i64);
+
+    impl Clock for FixedClock {
+        fn now_ns(&self) -> i64 {
+            self.0
+        }
+    }
+
+    fn content_chunk(payload: &'static [u8]) -> StampedChunk {
+        let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
+        let stamp = Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig);
+        let chunk: AnyChunk = ContentChunk::new(payload)
+            .expect("valid content chunk")
+            .into();
+        StampedChunk::new(chunk, stamp)
+    }
+
+    fn soc_chunk(payload: &'static [u8], stamp_ns: u64) -> StampedChunk {
+        let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
+        let stamp = Stamp::new(B256::repeat_byte(0xaa), 3, 7, stamp_ns, sig);
+        let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).expect("signer");
+        let chunk: AnyChunk = SingleOwnerChunk::new(B256::repeat_byte(0x22), payload, &signer)
+            .expect("valid soc")
+            .into();
+        StampedChunk::new(chunk, stamp)
+    }
+
+    fn overlay(n: u8) -> OverlayAddress {
+        OverlayAddress::from([n; 32])
+    }
+
+    /// Build a swarm whose `ClientBehaviour` serves from `store`.
+    fn swarm_with_store(store: Arc<dyn SwarmLocalStore>) -> Swarm<ClientBehaviour> {
+        Swarm::new_ephemeral_tokio(move |_| {
+            ClientBehaviour::new(
+                Config::for_role(SwarmNodeType::Client),
+                store,
+                Arc::new(StubForwarder),
+            )
+        })
+    }
+
+    /// Connect two client swarms and activate both handlers with the given
+    /// overlays so the request/serve path is live.
+    async fn connect_and_activate(
+        client: &mut Swarm<ClientBehaviour>,
+        server: &mut Swarm<ClientBehaviour>,
+        client_overlay: OverlayAddress,
+        server_overlay: OverlayAddress,
+    ) {
+        let client_peer = *client.local_peer_id();
+        let server_peer = *server.local_peer_id();
+        client.listen().with_memory_addr_external().await;
+        server.listen().with_memory_addr_external().await;
+        client.connect(server).await;
+
+        // Activate each side's handler for the other peer.
+        client
+            .behaviour_mut()
+            .on_command(ClientCommand::ActivatePeer {
+                peer_id: server_peer,
+                overlay: server_overlay,
+                node_type: SwarmNodeType::Client,
+            });
+        server
+            .behaviour_mut()
+            .on_command(ClientCommand::ActivatePeer {
+                peer_id: client_peer,
+                overlay: client_overlay,
+                node_type: SwarmNodeType::Client,
+            });
+    }
+
+    /// Drive both swarms until the retrieval response channel resolves.
+    async fn drive_until_retrieved(
+        client: &mut Swarm<ClientBehaviour>,
+        server: &mut Swarm<ClientBehaviour>,
+        mut rx: oneshot::Receiver<Result<RetrievalResult, crate::ChunkTransferError>>,
+    ) -> Result<RetrievalResult, crate::ChunkTransferError> {
+        let drive = async {
+            loop {
+                tokio::select! {
+                    _ = client.select_next_some() => {}
+                    _ = server.select_next_some() => {}
+                    res = &mut rx => return res.expect("sender not dropped"),
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), drive)
+            .await
+            .expect("retrieval resolved within timeout")
+    }
+
+    #[tokio::test]
+    async fn serves_a_content_chunk_from_the_cache() {
+        let chunk = content_chunk(b"served from cache");
+        let address = *chunk.address();
+
+        let server_store: Arc<dyn SwarmLocalStore> =
+            Arc::new(ChunkStore::with_budget(1 << 20, 1_000_000_000));
+        server_store.put(chunk.clone()).unwrap();
+
+        let mut client = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
+        let mut server = swarm_with_store(server_store);
+
+        let server_overlay = overlay(2);
+        connect_and_activate(&mut client, &mut server, overlay(1), server_overlay).await;
+
+        let (tx, rx) = oneshot::channel();
+        client
+            .behaviour_mut()
+            .on_command(ClientCommand::RetrieveChunk {
+                peer: server_overlay,
+                address,
+                response: tx,
+            });
+
+        let result = drive_until_retrieved(&mut client, &mut server, rx).await;
+        let delivered = result.expect("served from cache");
+        assert_eq!(*delivered.chunk.address(), address);
+        assert_eq!(delivered.chunk, chunk);
+    }
+
+    #[tokio::test]
+    async fn serves_a_fresh_soc_from_the_cache() {
+        // A single-owner chunk stamped at 900ns, served at 1000ns under a 500ns
+        // TTL: still fresh, so it serves from cache.
+        let chunk = soc_chunk(b"feed v1", 900);
+        let address = *chunk.address();
+
+        let server_store: Arc<dyn SwarmLocalStore> = Arc::new(ChunkStore::with_budget_and_clock(
+            1 << 20,
+            500,
+            FixedClock(1_000),
+        ));
+        server_store.put(chunk.clone()).unwrap();
+
+        let mut client = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
+        let mut server = swarm_with_store(server_store);
+
+        let server_overlay = overlay(2);
+        connect_and_activate(&mut client, &mut server, overlay(1), server_overlay).await;
+
+        let (tx, rx) = oneshot::channel();
+        client
+            .behaviour_mut()
+            .on_command(ClientCommand::RetrieveChunk {
+                peer: server_overlay,
+                address,
+                response: tx,
+            });
+
+        let delivered = drive_until_retrieved(&mut client, &mut server, rx)
+            .await
+            .expect("fresh SOC served from cache");
+        assert_eq!(delivered.chunk, chunk);
+    }
+
+    #[tokio::test]
+    async fn expired_soc_is_not_served_and_resets() {
+        // The same SOC stamped at 900ns but served at 2000ns under a 500ns TTL is
+        // expired: the cache reads it as a miss and, with the stub forwarder, the
+        // inbound retrieval resets instead of serving a stale revision.
+        let chunk = soc_chunk(b"feed v1", 900);
+        let address = *chunk.address();
+
+        let server_store: Arc<dyn SwarmLocalStore> = Arc::new(ChunkStore::with_budget_and_clock(
+            1 << 20,
+            500,
+            FixedClock(2_000),
+        ));
+        server_store.put(chunk).unwrap();
+
+        let mut client = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
+        let mut server = swarm_with_store(server_store);
+
+        let server_overlay = overlay(2);
+        connect_and_activate(&mut client, &mut server, overlay(1), server_overlay).await;
+
+        let (tx, rx) = oneshot::channel();
+        client
+            .behaviour_mut()
+            .on_command(ClientCommand::RetrieveChunk {
+                peer: server_overlay,
+                address,
+                response: tx,
+            });
+
+        let result = drive_until_retrieved(&mut client, &mut server, rx).await;
+        assert!(
+            result.is_err(),
+            "an expired SOC must not be served; the stream resets so the requester forwards"
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_miss_resets_with_stub_forwarder() {
+        // The server's cache is empty and its forwarder is the stub, so the
+        // inbound retrieval cannot be served or forwarded: the substream resets
+        // and the requester sees a remote failure.
+        let address = *content_chunk(b"never cached").address();
+
+        let mut client = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
+        let mut server = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
+
+        let server_overlay = overlay(2);
+        connect_and_activate(&mut client, &mut server, overlay(1), server_overlay).await;
+
+        let (tx, rx) = oneshot::channel();
+        client
+            .behaviour_mut()
+            .on_command(ClientCommand::RetrieveChunk {
+                peer: server_overlay,
+                address,
+                response: tx,
+            });
+
+        let result = drive_until_retrieved(&mut client, &mut server, rx).await;
+        assert!(
+            result.is_err(),
+            "a cache miss with the stub forwarder must reset the stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn inbound_pushsync_resets_with_stub_forwarder() {
+        // The cache-only client never takes custody: an inbound pushsync forwards,
+        // and with the stub forwarder the forward fails, so the substream resets
+        // and the pusher sees a failure. No receipt is ever signed.
+        let chunk = content_chunk(b"pushed chunk");
+
+        let mut client = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
+        let mut server = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
+
+        let server_overlay = overlay(2);
+        connect_and_activate(&mut client, &mut server, overlay(1), server_overlay).await;
+
+        let (tx, mut rx) = oneshot::channel();
+        client.behaviour_mut().on_command(ClientCommand::PushChunk {
+            peer: server_overlay,
+            address: *chunk.address(),
+            chunk,
+            response: tx,
+        });
+
+        let drive = async {
+            loop {
+                tokio::select! {
+                    _ = client.select_next_some() => {}
+                    _ = server.select_next_some() => {}
+                    res = &mut rx => return res.expect("sender not dropped"),
+                }
+            }
+        };
+        let result = tokio::time::timeout(Duration::from_secs(10), drive)
+            .await
+            .expect("push resolved within timeout");
+        assert!(
+            result.is_err(),
+            "an inbound pushsync with the stub forwarder must reset the stream"
+        );
     }
 }
