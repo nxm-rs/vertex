@@ -149,6 +149,56 @@ macro_rules! impl_db_tx_reads {
             Ok(result)
         }
 
+        fn range<T: Table>(
+            &self,
+            from: T::Key,
+            to: T::Key,
+        ) -> Result<Vec<(T::Key, T::Value)>, DatabaseError> {
+            let start = Instant::now();
+            let _span = tracing::trace_span!("db_range", table = T::NAME).entered();
+
+            let def = table_def(T::NAME);
+            let table = self.inner.open_table(def).map_err(|e| {
+                DatabaseError::Read(DatabaseErrorInfo::with_source(
+                    format!("open table {}", T::NAME),
+                    e,
+                ))
+            })?;
+            let lo = from.encode();
+            let hi = to.encode();
+            // redb scans only the bounded key range over the btree, so this is
+            // the per-prefix walk the design relies on rather than a full-table
+            // materialization.
+            let mut result = Vec::new();
+            for entry in table
+                .range::<&[u8]>(lo.as_ref()..=hi.as_ref())
+                .map_err(|e| {
+                    DatabaseError::Read(DatabaseErrorInfo::with_source(
+                        format!("range {}", T::NAME),
+                        e,
+                    ))
+                })?
+            {
+                let (k, v) = entry.map_err(|e| {
+                    DatabaseError::Read(DatabaseErrorInfo::with_source(
+                        format!("read entry from {}", T::NAME),
+                        e,
+                    ))
+                })?;
+                let key = T::Key::decode(k.value())?;
+                let value = decode_value::<T>(v.value())?;
+                result.push((key, value));
+            }
+
+            record_op(
+                T::NAME,
+                operation::ENTRIES,
+                "success",
+                start.elapsed().as_secs_f64(),
+            );
+            Ok(result)
+        }
+
         fn keys<T: Table>(&self) -> Result<Vec<T::Key>, DatabaseError> {
             let start = Instant::now();
             let _span = tracing::trace_span!("db_keys", table = T::NAME).entered();

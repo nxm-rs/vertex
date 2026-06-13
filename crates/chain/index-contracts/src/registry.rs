@@ -7,7 +7,12 @@
 //!
 //! The addresses and deployment blocks come from `nectar_contracts::mainnet` /
 //! `nectar_contracts::testnet`, so they live upstream exactly once and Vertex
-//! reads them. The event ABIs nectar already ships
+//! reads them. The one exception is PostageStamp, StakeRegistry, and
+//! Redistribution: nectar rev `6a0e0e3` ships the wrong addresses for these three
+//! (while reusing the canonical deployment blocks), so they are pinned to the
+//! `go-storage-incentives-abi@v0.9.4` ground truth in [`canonical`] and verified
+//! at test time. See [`canonical`] for the reconciliation and the upstream
+//! follow-up. The event ABIs nectar already ships
 //! (`IStoragePriceOracle::PriceUpdate`, `IStakeRegistry::Stake*`,
 //! `IChequebookFactory::SimpleSwapDeployed`, `ISwapPriceOracle::*`) are
 //! referenced directly; the few ABIs nectar does not yet carry (the PostageStamp
@@ -17,11 +22,87 @@
 //! Follow-up: upstream the [`abi`] events to `nectar-contracts` so every event
 //! ABI lives in one place (primitives belong in nectar per the repo split).
 
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, address};
 use alloy_sol_types::SolEvent;
 use nectar_contracts::{IChequebookFactory, IStakeRegistry, IStoragePriceOracle, ISwapPriceOracle};
 use serde::{Deserialize, Serialize};
 use strum::IntoStaticStr;
+
+/// The canonical Swarm deployment for PostageStamp, StakeRegistry, and
+/// Redistribution on Gnosis Chain and Sepolia.
+///
+/// These three addresses come from `go-storage-incentives-abi` (the ground truth
+/// the live network and `bee` run against), NOT from `nectar_contracts`: nectar
+/// rev `6a0e0e3` ships different addresses for these three while reusing the
+/// canonical deployment blocks, an internally inconsistent (address, block)
+/// pairing that would point the indexer at the wrong contracts and silently index
+/// nothing for postage/staking/redistribution. The remaining contracts
+/// (chequebook factory, swap price oracle, storage price oracle) agree with
+/// nectar and are sourced from it.
+///
+/// Reconciled against `github.com/ethersphere/go-storage-incentives-abi@v0.9.4`
+/// (`abi_mainnet.go` / `abi_testnet.go`). Verified by [`canonical_addresses`] at
+/// test time so a future address change cannot land silently.
+///
+/// Follow-up: fix the three addresses upstream in `nectar-contracts` and re-pin,
+/// then source all six from nectar and delete this override.
+pub(crate) mod canonical {
+    use super::{Address, address};
+
+    /// `(address, start_block)` for a canonical deployment.
+    pub(crate) struct Deployment {
+        /// The contract address.
+        pub(crate) address: Address,
+        /// The deployment block; backfill starts here.
+        pub(crate) block: u64,
+    }
+
+    /// Gnosis Chain mainnet deployments that diverge from nectar.
+    pub(crate) mod mainnet {
+        use super::{Deployment, address};
+
+        /// PostageStamp (`MainnetPostageStampAddress`).
+        pub(crate) const POSTAGE_STAMP: Deployment = Deployment {
+            address: address!("45a1502382541Cd610CC9068e88727426b696293"),
+            block: 31_305_656,
+        };
+
+        /// StakeRegistry (`MainnetStakingAddress`).
+        pub(crate) const STAKING: Deployment = Deployment {
+            address: address!("da2a16EE889E7F04980A8d597b48c8D51B9518F4"),
+            block: 40_430_237,
+        };
+
+        /// Redistribution (`MainnetRedistributionAddress`).
+        pub(crate) const REDISTRIBUTION: Deployment = Deployment {
+            address: address!("5069cdfB3D9E56d23B1cAeE83CE6109A7E4fd62d"),
+            block: 41_105_199,
+        };
+    }
+
+    /// Sepolia testnet deployments that diverge from nectar.
+    pub(crate) mod testnet {
+        use super::{Deployment, address};
+
+        /// PostageStamp (`TestnetPostageStampAddress`).
+        pub(crate) const POSTAGE_STAMP: Deployment = Deployment {
+            address: address!("cdfdC3752caaA826fE62531E0000C40546eC56A6"),
+            block: 6_596_277,
+        };
+
+        /// StakeRegistry (`TestnetStakingAddress`).
+        pub(crate) const STAKING: Deployment = Deployment {
+            address: address!("EEF13Ef9eD9cDD169701eeF3cd832df298dD1bB4"),
+            block: 8_262_529,
+        };
+
+        /// Redistribution (`TestnetRedistributionAddress`).
+        pub(crate) const REDISTRIBUTION: Deployment = Deployment {
+            address: address!("5b718E36F5Ce2F2F7e25A397040436Ce6af3e89e"),
+            block: 8_646_721,
+        };
+    }
+}
 
 /// The event ABIs nectar does not yet ship, declared here verbatim from the
 /// deployment manifests.
@@ -349,6 +430,7 @@ const STORAGE_PRICE_EVENTS: &[EventDescriptor] = &[EventDescriptor {
 pub fn registry(network: Network) -> Vec<WatchedContract> {
     use nectar_contracts::{mainnet, testnet};
 
+    // Contracts that agree with nectar are sourced from it.
     macro_rules! pick {
         ($c:ident) => {
             match network {
@@ -358,9 +440,21 @@ pub fn registry(network: Network) -> Vec<WatchedContract> {
         };
     }
 
-    let postage = pick!(POSTAGE_STAMP);
-    let staking = pick!(STAKING);
-    let redistribution = pick!(REDISTRIBUTION);
+    // PostageStamp/StakeRegistry/Redistribution are pinned to the canonical
+    // go-storage-incentives-abi ground truth, NOT nectar (which ships the wrong
+    // addresses for these three). See [`canonical`].
+    macro_rules! pick_canonical {
+        ($c:ident) => {
+            match network {
+                Network::Mainnet => canonical::mainnet::$c,
+                Network::Testnet => canonical::testnet::$c,
+            }
+        };
+    }
+
+    let postage = pick_canonical!(POSTAGE_STAMP);
+    let staking = pick_canonical!(STAKING);
+    let redistribution = pick_canonical!(REDISTRIBUTION);
     let chequebook = pick!(CHEQUEBOOK_FACTORY);
     let swap = pick!(SWAP_PRICE_ORACLE);
     let storage_price = pick!(STORAGE_PRICE_ORACLE);
@@ -403,4 +497,163 @@ pub fn registry(network: Network) -> Vec<WatchedContract> {
             events: STORAGE_PRICE_EVENTS,
         },
     ]
+}
+
+#[cfg(test)]
+mod canonical_tests {
+    use super::*;
+
+    /// Look up a contract in the built registry by id.
+    fn watched(network: Network, id: ContractId) -> WatchedContract {
+        registry(network)
+            .into_iter()
+            .find(|c| c.id == id)
+            .expect("contract in registry")
+    }
+
+    /// The registry must watch the canonical Swarm deployment addresses, NOT the
+    /// (wrong) nectar addresses for postage/staking/redistribution.
+    ///
+    /// These constants are the `go-storage-incentives-abi@v0.9.4` ground truth
+    /// the live network and `bee` run against. If a future nectar re-pin or a
+    /// registry edit changes any of these, this test fails rather than silently
+    /// pointing the indexer at the wrong contract.
+    #[test]
+    fn canonical_addresses() {
+        // Mainnet ground truth (abi_mainnet.go).
+        assert_eq!(
+            watched(Network::Mainnet, ContractId::Postage).address,
+            address!("45a1502382541Cd610CC9068e88727426b696293")
+        );
+        assert_eq!(
+            watched(Network::Mainnet, ContractId::Postage).start_block,
+            31_305_656
+        );
+        assert_eq!(
+            watched(Network::Mainnet, ContractId::Staking).address,
+            address!("da2a16EE889E7F04980A8d597b48c8D51B9518F4")
+        );
+        assert_eq!(
+            watched(Network::Mainnet, ContractId::Staking).start_block,
+            40_430_237
+        );
+        assert_eq!(
+            watched(Network::Mainnet, ContractId::Redistribution).address,
+            address!("5069cdfB3D9E56d23B1cAeE83CE6109A7E4fd62d")
+        );
+        assert_eq!(
+            watched(Network::Mainnet, ContractId::Redistribution).start_block,
+            41_105_199
+        );
+
+        // Testnet ground truth (abi_testnet.go).
+        assert_eq!(
+            watched(Network::Testnet, ContractId::Postage).address,
+            address!("cdfdC3752caaA826fE62531E0000C40546eC56A6")
+        );
+        assert_eq!(
+            watched(Network::Testnet, ContractId::Staking).address,
+            address!("EEF13Ef9eD9cDD169701eeF3cd832df298dD1bB4")
+        );
+        assert_eq!(
+            watched(Network::Testnet, ContractId::Redistribution).address,
+            address!("5b718E36F5Ce2F2F7e25A397040436Ce6af3e89e")
+        );
+    }
+
+    /// The contracts that DO agree with nectar must still be sourced from nectar,
+    /// so a nectar re-pin keeps them in sync.
+    #[test]
+    fn nectar_sourced_contracts_match_nectar() {
+        use nectar_contracts::{mainnet, testnet};
+
+        assert_eq!(
+            watched(Network::Mainnet, ContractId::ChequebookFactory).address,
+            mainnet::CHEQUEBOOK_FACTORY.address
+        );
+        assert_eq!(
+            watched(Network::Mainnet, ContractId::SwapPriceOracle).address,
+            mainnet::SWAP_PRICE_ORACLE.address
+        );
+        assert_eq!(
+            watched(Network::Mainnet, ContractId::StoragePriceOracle).address,
+            mainnet::STORAGE_PRICE_ORACLE.address
+        );
+        assert_eq!(
+            watched(Network::Testnet, ContractId::ChequebookFactory).address,
+            testnet::CHEQUEBOOK_FACTORY.address
+        );
+    }
+
+    /// The locally-declared event ABIs must match the canonical on-chain
+    /// signatures byte-for-byte.
+    ///
+    /// Each event's `SIGNATURE_HASH` is `keccak256(signature_string)`. Asserting
+    /// it against the canonical signature catches ANY drift in the local `sol!`
+    /// field types or order (a drift changes the hash), so a future edit that
+    /// silently breaks decode-on-read (degenerating a view to empty /
+    /// always-valid) fails CI instead. The strings are the canonical event
+    /// signatures from `go-storage-incentives-abi` / the deployed contracts.
+    #[test]
+    fn abi_signatures_match_canonical() {
+        use alloy_primitives::keccak256;
+
+        fn sig(s: &str) -> B256 {
+            keccak256(s.as_bytes())
+        }
+
+        // PostageStamp.
+        assert_eq!(
+            abi::BatchCreated::SIGNATURE_HASH,
+            sig("BatchCreated(bytes32,uint256,uint256,address,uint8,uint8,bool)")
+        );
+        assert_eq!(
+            abi::BatchTopUp::SIGNATURE_HASH,
+            sig("BatchTopUp(bytes32,uint256,uint256)")
+        );
+        assert_eq!(
+            abi::BatchDepthIncrease::SIGNATURE_HASH,
+            sig("BatchDepthIncrease(bytes32,uint8,uint256)")
+        );
+        assert_eq!(
+            abi::PriceUpdate::SIGNATURE_HASH,
+            sig("PriceUpdate(uint256)")
+        );
+
+        // StakeRegistry: the one event nectar lacks.
+        assert_eq!(
+            abi::OverlayChanged::SIGNATURE_HASH,
+            sig("OverlayChanged(address,bytes32)")
+        );
+
+        // Redistribution.
+        assert_eq!(
+            abi::Committed::SIGNATURE_HASH,
+            sig("Committed(uint256,bytes32,uint8)")
+        );
+        assert_eq!(
+            abi::Revealed::SIGNATURE_HASH,
+            sig("Revealed(uint256,bytes32,uint256,uint256,bytes32,uint8)")
+        );
+        assert_eq!(
+            abi::CurrentRevealAnchor::SIGNATURE_HASH,
+            sig("CurrentRevealAnchor(uint256,bytes32)")
+        );
+    }
+
+    /// Every watched address is distinct, so no two contracts cross-file.
+    #[test]
+    fn all_addresses_distinct() {
+        for network in [Network::Mainnet, Network::Testnet] {
+            let mut addrs: Vec<Address> = registry(network).iter().map(|c| c.address).collect();
+            let total = addrs.len();
+            addrs.sort();
+            addrs.dedup();
+            assert_eq!(
+                addrs.len(),
+                total,
+                "duplicate watched address on {network:?}"
+            );
+        }
+    }
 }

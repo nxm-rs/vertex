@@ -57,7 +57,10 @@ vertex_storage::index!(
     "postage_batch_by_balance",
     BalanceKey,
     BatchTable,
-    |b| BalanceKey(b.normalised_balance)
+    |b| BalanceKey {
+        balance: b.normalised_balance,
+        batch_id: b.batch_id,
+    }
 );
 
 /// The set of tables this crate persists, for one-shot initialization.
@@ -193,26 +196,49 @@ impl From<[u8; 32]> for BatchKey {
     }
 }
 
-/// The [`BatchByBalance`] index key: a batch's `normalisedBalance`, big-endian
-/// so the index iterates ascending (soonest-to-expire head first).
+/// The [`BatchByBalance`] index key: a batch's `(normalisedBalance, batchId)`,
+/// each big-endian so the index iterates ascending by balance (soonest-to-expire
+/// head first), with `batchId` as a deterministic tie-break.
+///
+/// The `batchId` makes the key UNIQUE per batch. Keying on `normalisedBalance`
+/// alone collides two batches with equal balance (the same depth bought at the
+/// same price is entirely realistic): the secondary index is a one-to-one
+/// `IndexKey -> PrimaryKey` map, so a second equal-balance batch would overwrite
+/// the first's index slot and silently drop it from the eviction hint, so an
+/// expired batch sharing a balance with another could never be offered for
+/// eviction. Encoding `batchId` after `balance` keeps the ascending-balance order
+/// (the high-order 32 bytes dominate) while giving every batch a distinct slot.
 ///
 /// A pure ordering hint: the reserve recomputes truth at dequeue. It is not a
 /// decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct BalanceKey(pub U256);
+pub struct BalanceKey {
+    /// The batch's `normalisedBalance`, the primary ascending sort key.
+    pub balance: U256,
+    /// The batch id, the tie-break that makes the key unique per batch.
+    pub batch_id: B256,
+}
 
 impl Encode for BalanceKey {
-    type Encoded = [u8; 32];
+    type Encoded = [u8; 64];
 
     fn encode(self) -> Self::Encoded {
-        self.0.to_be_bytes()
+        let mut out = [0u8; 64];
+        out[..32].copy_from_slice(&self.balance.to_be_bytes::<32>());
+        out[32..].copy_from_slice(self.batch_id.as_slice());
+        out
     }
 }
 
 impl Decode for BalanceKey {
     fn decode(value: &[u8]) -> Result<Self, DatabaseError> {
-        let bytes: [u8; 32] = value.try_into().map_err(|_| DatabaseError::Decode)?;
-        Ok(Self(U256::from_be_bytes(bytes)))
+        let bytes: [u8; 64] = value.try_into().map_err(|_| DatabaseError::Decode)?;
+        let mut bal = [0u8; 32];
+        bal.copy_from_slice(&bytes[..32]);
+        Ok(Self {
+            balance: U256::from_be_bytes(bal),
+            batch_id: B256::from_slice(&bytes[32..]),
+        })
     }
 }
 
@@ -225,6 +251,10 @@ impl Decode for BalanceKey {
 /// exists only so [`BatchByBalance`] has a typed value to extract from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatchState {
+    /// The on-chain batch id, carried so the value-sorted index key
+    /// ([`BalanceKey`]) is unique per batch even when two batches share a
+    /// `normalisedBalance`.
+    pub batch_id: B256,
     /// The batch owner.
     pub owner: Address,
     /// The batch depth.
@@ -324,6 +354,7 @@ pub(crate) fn apply_batch_update<TX: DbTxMut>(
             tx.put_indexed::<BatchByBalance>(
                 BatchKey(batch_id),
                 BatchState {
+                    batch_id,
                     owner,
                     depth,
                     bucket_depth,
@@ -360,25 +391,25 @@ pub(crate) fn apply_batch_update<TX: DbTxMut>(
 
 /// Read a contract's stored events in canonical `(block, log_index)` order.
 ///
-/// The fold backbone of every view: it scans `[contract range]` once. redb
-/// returns the rows already ordered by the encoded key, so no re-sort is needed.
+/// The fold backbone of every view. It scans ONLY this contract's key range
+/// `[range_start(contract) ..= (contract, MAX, MAX)]` via the storage trait's
+/// bounded [`range`](vertex_storage::DbTx::range), so a view fold over months of
+/// multi-contract history touches just the one contract's rows instead of
+/// materializing the whole table. Because [`EventKey`] is namespaced by the
+/// contract tag in its high-order byte, the range is exactly that contract's
+/// stream, in canonical `(block, log_index)` order (the backend returns the
+/// range already ordered by the encoded key).
 pub(crate) fn events_of<DB: Database>(
     db: &DB,
     contract: ContractId,
 ) -> Result<Vec<(EventKey, StoredEvent)>, DatabaseError> {
-    db.view(|tx| {
-        let mut rows: Vec<(EventKey, StoredEvent)> = tx
-            .entries::<EventTable>()?
-            .into_iter()
-            .filter(|(k, _)| k.contract == contract)
-            .collect();
-        // entries() iterates the whole table; the filter keeps only this
-        // contract's range. The encoded key order already matches
-        // (contract, block, log_index), but sort defensively so a view never
-        // depends on backend iteration order.
-        rows.sort_by(|(a, _), (b, _)| a.cmp(b));
-        Ok(rows)
-    })
+    let lo = EventKey::range_start(contract);
+    let hi = EventKey {
+        contract,
+        block: u64::MAX,
+        log_index: u64::MAX,
+    };
+    db.view(|tx| tx.range::<EventTable>(lo, hi))
 }
 
 /// Range-delete a contract's events (and, for postage, the batch projection +
@@ -395,37 +426,92 @@ pub(crate) fn revert_contract<DB: Database>(
     from_block: u64,
 ) -> Result<(), IndexError> {
     db.update(|tx| {
-        // The keys to drop: this contract's events at or after from_block.
+        // The keys to drop: this contract's events at or after from_block, found
+        // by a bounded range scan over just this contract's tail range.
+        let doomed_lo = EventKey::range_from(contract, from_block);
+        let doomed_hi = EventKey {
+            contract,
+            block: u64::MAX,
+            log_index: u64::MAX,
+        };
         let doomed: Vec<EventKey> = tx
-            .entries::<EventTable>()?
+            .range::<EventTable>(doomed_lo, doomed_hi)?
             .into_iter()
-            .filter(|(k, _)| k.contract == contract && k.block >= from_block)
             .map(|(k, _)| k)
             .collect();
         for key in doomed {
             tx.delete::<EventTable>(key)?;
         }
 
-        // The postage batch projection mirrors EventTable; range-delete it too.
-        // A batch created at or after from_block is dropped (and its index
-        // entry with it); a batch created earlier but mutated in the reverted
-        // range is rebuilt on the next forward apply, since EventTable still
-        // holds its pre-revert events.
+        // The postage batch projection mirrors EventTable, but a batch created
+        // BEFORE from_block and mutated (topped up / depth-increased) within the
+        // reverted range carries a now-stale balance and a stale index slot.
+        // Keying the drop on `start_block >= from_block` would miss those. So
+        // rebuild the whole projection from the surviving verbatim rows: drop
+        // every batch row + index entry, then re-fold the remaining
+        // `EventTable` Postage rows (which are already truncated to
+        // `< from_block`). This is unambiguously consistent with the source of
+        // truth and the MVP never calls revert, so the full rebuild is cheap.
         if contract == ContractId::Postage {
-            let doomed_batches: Vec<BatchKey> = tx
-                .entries::<BatchTable>()?
-                .into_iter()
-                .filter(|(_, b)| b.start_block >= from_block)
-                .map(|(k, _)| k)
-                .collect();
-            for key in doomed_batches {
-                tx.delete_indexed::<BatchByBalance>(key)?;
+            tx.clear_indexed::<BatchByBalance>()?;
+            let lo = EventKey::range_start(ContractId::Postage);
+            let hi = EventKey {
+                contract: ContractId::Postage,
+                block: u64::MAX,
+                log_index: u64::MAX,
+            };
+            for (key, ev) in tx.range::<EventTable>(lo, hi)? {
+                if let Some(update) = batch_update_from_event(&ev, key.block) {
+                    apply_batch_update(tx, update)?;
+                }
             }
         }
 
         Ok(())
     })?;
     Ok(())
+}
+
+/// Decode a stored postage event into the typed [`BatchUpdate`] that maintains
+/// the value-sorted index, or `None` for a non-batch event or a decode miss.
+///
+/// `block` is the row's creation block, used for a `Created` update's
+/// `start_block`. This is the shared decode the live `apply` path and the revert
+/// rebuild both use, so the projection is derived identically whether built
+/// forward or rebuilt from surviving rows.
+pub(crate) fn batch_update_from_event(ev: &StoredEvent, block: u64) -> Option<BatchUpdate> {
+    use alloy_sol_types::SolEvent;
+
+    use crate::registry::abi;
+
+    let data = ev.log_data();
+    if ev.topic0 == abi::BatchCreated::SIGNATURE_HASH {
+        let e = abi::BatchCreated::decode_log_data(&data).ok()?;
+        Some(BatchUpdate::Created {
+            batch_id: e.batchId,
+            owner: e.owner,
+            depth: e.depth,
+            bucket_depth: e.bucketDepth,
+            normalised_balance: e.normalisedBalance,
+            immutable: e.immutableFlag,
+            start_block: block,
+        })
+    } else if ev.topic0 == abi::BatchTopUp::SIGNATURE_HASH {
+        let e = abi::BatchTopUp::decode_log_data(&data).ok()?;
+        Some(BatchUpdate::Balance {
+            batch_id: e.batchId,
+            normalised_balance: e.normalisedBalance,
+        })
+    } else if ev.topic0 == abi::BatchDepthIncrease::SIGNATURE_HASH {
+        let e = abi::BatchDepthIncrease::decode_log_data(&data).ok()?;
+        Some(BatchUpdate::Depth {
+            batch_id: e.batchId,
+            new_depth: e.newDepth,
+            normalised_balance: e.normalisedBalance,
+        })
+    } else {
+        None
+    }
 }
 
 /// Build a [`StoredEvent`] from a provider [`Log`], enforcing the EVM topic

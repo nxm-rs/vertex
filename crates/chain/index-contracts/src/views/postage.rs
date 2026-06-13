@@ -60,14 +60,23 @@ impl ChainState {
 ///
 /// This is the read-time replacement for the branch's `ChainStateTable`: the
 /// position-ordered raw rows are folded on demand, decoding each `PriceUpdate`.
-pub fn chain_state<DB: Database>(db: &DB) -> Result<ChainState, DatabaseError> {
-    let mut state = ChainState::default();
+///
+/// Returns `None` when NO `PriceUpdate` has been indexed yet. This is the
+/// fail-safe the branch had: a zero-default `ChainState` makes
+/// `current_total_out_payment` return 0, which would make every positive-balance
+/// batch validate forever. Distinguishing "no price seen" from "price 0" lets
+/// [`is_batch_valid_now`] answer `None` (not-yet-known) rather than a misleading
+/// `Some(true)` before the price cadence is known.
+pub fn chain_state<DB: Database>(db: &DB) -> Result<Option<ChainState>, DatabaseError> {
+    let mut state: Option<ChainState> = None;
     for (key, ev) in events_of(db, ContractId::Postage)? {
         if ev.topic0 != abi::PriceUpdate::SIGNATURE_HASH {
             continue;
         }
         if let Ok(decoded) = abi::PriceUpdate::decode_log_data(&ev.log_data()) {
-            state.fold_price_update(decoded.price, key.block);
+            state
+                .get_or_insert_with(ChainState::default)
+                .fold_price_update(decoded.price, key.block);
         }
     }
     Ok(state)
@@ -133,10 +142,14 @@ pub fn batch<DB: Database>(db: &DB, batch_id: B256) -> Result<Option<Batch>, Dat
 
 /// Whether `batch_id` is valid at `block`, against the verbatim store.
 ///
-/// `Some(valid)` once the batch has been indexed; `None` while it is not yet
-/// known (a consumer treats a not-yet-indexed batch as not-yet-known, not
-/// expired). The lazy compute-at-time query: it reads the store plus the live
-/// block clock and fires nothing.
+/// `Some(valid)` once both the batch AND at least one `PriceUpdate` have been
+/// indexed; `None` while either is not yet known. Returning `None` (rather than
+/// `Some(true)`) before any price is folded is the fail-safe behaviour the branch
+/// had: without it, an absent price cadence makes `currentTotalOutPayment` zero
+/// and every positive-balance batch would validate forever, which would mask a
+/// wrong-address / wrong-ABI failure as "always valid". A consumer treats `None`
+/// as not-yet-known, not expired. The lazy compute-at-time query: it reads the
+/// store plus the live block clock and fires nothing.
 pub fn is_batch_valid_now<DB: Database>(
     db: &DB,
     batch_id: B256,
@@ -145,7 +158,10 @@ pub fn is_batch_valid_now<DB: Database>(
     let Some(b) = batch(db, batch_id)? else {
         return Ok(None);
     };
-    let cs = chain_state(db)?;
+    let Some(cs) = chain_state(db)? else {
+        // No price cadence indexed yet: fail safe to not-yet-known.
+        return Ok(None);
+    };
     Ok(Some(
         b.normalised_balance > cs.current_total_out_payment(block),
     ))
@@ -171,11 +187,13 @@ pub fn batch_state<DB: Database>(
 /// block clock with [`is_batch_valid_now`], and skip-and-reinserts if stale.
 /// This function makes no decision and evicts nothing.
 ///
-/// The index is keyed by balance, so iterating it ascending yields the
-/// soonest-to-expire batches first. The storage trait exposes ordered
-/// `entries()` (redb iterates the btree in encoded-key order) rather than a
-/// cursor factory, so we read the index entries and take the head; when a cursor
-/// factory lands on the backend this becomes a bounded `seek`+`next` walk.
+/// The index is keyed by `(balance, batch_id)`, so iterating it ascending yields
+/// the soonest-to-expire batches first with a deterministic tie-break. This reads
+/// the whole index then `take(limit)`s the head; unlike `EventTable`, the
+/// `BatchByBalance` index holds at most one entry per LIVE batch (bounded by the
+/// active batch count, not by chain history), so the read is small. The `batchId`
+/// in the key makes it unique per batch, so no equal-balance batch is ever
+/// dropped from the hint (see `store.rs::BalanceKey`).
 pub fn eviction_candidates<DB: Database>(
     db: &DB,
     limit: usize,

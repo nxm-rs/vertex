@@ -284,6 +284,198 @@ fn postage_validity_fold() {
 }
 
 #[test]
+fn two_batches_same_balance_both_survive_eviction_hint() {
+    // Regression: the value-sorted eviction index keyed on `normalisedBalance`
+    // alone collided two batches with equal balance, silently dropping one from
+    // the hint so an expired batch sharing a balance could never be evicted. The
+    // key now includes `batchId`, so both survive in balance order.
+    let (db, indexer) = harness();
+    let batch_a = B256::repeat_byte(0xAA);
+    let batch_b = B256::repeat_byte(0xBB);
+
+    // A price must be indexed for is_batch_valid_now to answer; the eviction hint
+    // itself only needs the two creates.
+    apply(
+        &indexer,
+        100,
+        0,
+        POSTAGE_ADDR,
+        &abi::PriceUpdate {
+            price: U256::from(1u64),
+        },
+    );
+
+    for (i, id) in [(1u64, batch_a), (2u64, batch_b)].into_iter() {
+        apply(
+            &indexer,
+            100,
+            i,
+            POSTAGE_ADDR,
+            &abi::BatchCreated {
+                batchId: id,
+                totalAmount: U256::from(1000u64),
+                normalisedBalance: U256::from(1000u64), // IDENTICAL balance
+                owner: address!("00000000000000000000000000000000000000aa"),
+                depth: 20,
+                bucketDepth: 16,
+                immutableFlag: false,
+            },
+        );
+    }
+
+    let mut candidates = postage::eviction_candidates(&*db, 10).unwrap();
+    candidates.sort();
+    let mut expected = vec![batch_a, batch_b];
+    expected.sort();
+    assert_eq!(
+        candidates, expected,
+        "both equal-balance batches must remain in the eviction hint"
+    );
+
+    // And the typed projection still holds both rows.
+    assert!(postage::batch_state(&*db, batch_a).unwrap().is_some());
+    assert!(postage::batch_state(&*db, batch_b).unwrap().is_some());
+}
+
+#[test]
+fn eviction_hint_orders_by_balance_ascending() {
+    // The soonest-to-expire (lowest balance) batch heads the hint; the batchId
+    // tie-break never reorders across distinct balances.
+    let (db, indexer) = harness();
+    let low = B256::repeat_byte(0x01);
+    let high = B256::repeat_byte(0x02);
+    // Insert high-balance first to prove the index sorts, not insertion order.
+    apply(
+        &indexer,
+        1,
+        0,
+        POSTAGE_ADDR,
+        &abi::BatchCreated {
+            batchId: high,
+            totalAmount: U256::from(9000u64),
+            normalisedBalance: U256::from(9000u64),
+            owner: Address::ZERO,
+            depth: 20,
+            bucketDepth: 16,
+            immutableFlag: false,
+        },
+    );
+    apply(
+        &indexer,
+        1,
+        1,
+        POSTAGE_ADDR,
+        &abi::BatchCreated {
+            batchId: low,
+            totalAmount: U256::from(10u64),
+            normalisedBalance: U256::from(10u64),
+            owner: Address::ZERO,
+            depth: 20,
+            bucketDepth: 16,
+            immutableFlag: false,
+        },
+    );
+    let candidates = postage::eviction_candidates(&*db, 10).unwrap();
+    assert_eq!(
+        candidates,
+        vec![low, high],
+        "the lowest-balance batch must head the eviction hint"
+    );
+}
+
+#[test]
+fn no_price_update_means_validity_unknown() {
+    // Fail-safe: with a batch indexed but NO PriceUpdate folded, validity is
+    // not-yet-known (None), never a misleading Some(true). This is what turns a
+    // wrong-address / wrong-ABI failure into a safe "unknown" rather than
+    // "always valid".
+    let (db, indexer) = harness();
+    let batch_id = B256::repeat_byte(0xCD);
+    apply(
+        &indexer,
+        50,
+        0,
+        POSTAGE_ADDR,
+        &abi::BatchCreated {
+            batchId: batch_id,
+            totalAmount: U256::from(1000u64),
+            normalisedBalance: U256::from(1000u64),
+            owner: Address::ZERO,
+            depth: 20,
+            bucketDepth: 16,
+            immutableFlag: false,
+        },
+    );
+    assert_eq!(
+        postage::is_batch_valid_now(&*db, batch_id, 60).unwrap(),
+        None,
+        "validity must be unknown until a PriceUpdate is indexed"
+    );
+    assert!(
+        postage::chain_state(&*db).unwrap().is_none(),
+        "chain_state must be None before any PriceUpdate"
+    );
+}
+
+#[test]
+fn revert_rebuilds_batch_projection_for_in_range_mutation() {
+    // Regression: a batch created BEFORE from_block but topped up WITHIN the
+    // reverted range must have its projection (and index) rebuilt to the
+    // pre-revert balance, not left stale. revert rebuilds the whole postage
+    // projection from surviving rows.
+    let (db, indexer) = harness();
+    let batch_id = B256::repeat_byte(0xEF);
+    apply(
+        &indexer,
+        50,
+        0,
+        POSTAGE_ADDR,
+        &abi::BatchCreated {
+            batchId: batch_id,
+            totalAmount: U256::from(1000u64),
+            normalisedBalance: U256::from(1000u64),
+            owner: Address::ZERO,
+            depth: 20,
+            bucketDepth: 16,
+            immutableFlag: false,
+        },
+    );
+    // Topup at block 150 raises the balance to 6000.
+    apply(
+        &indexer,
+        150,
+        0,
+        POSTAGE_ADDR,
+        &abi::BatchTopUp {
+            batchId: batch_id,
+            topupAmount: U256::from(5000u64),
+            normalisedBalance: U256::from(6000u64),
+        },
+    );
+    assert_eq!(
+        postage::batch_state(&*db, batch_id)
+            .unwrap()
+            .unwrap()
+            .normalised_balance,
+        U256::from(6000u64)
+    );
+
+    // Revert from block 100: the topup (block 150) is dropped; the batch survives
+    // (created block 50) with its ORIGINAL balance, and the index follows.
+    indexer.revert(100).expect("revert");
+    assert_eq!(
+        postage::batch_state(&*db, batch_id)
+            .unwrap()
+            .unwrap()
+            .normalised_balance,
+        U256::from(1000u64),
+        "the in-range topup must be reverted, not left stale in the projection"
+    );
+    let candidates = postage::eviction_candidates(&*db, 10).unwrap();
+    assert_eq!(candidates, vec![batch_id]);
+}
+
+#[test]
 fn staking_last_write_wins_and_overlay_inversion() {
     let (db, indexer) = harness();
     let owner = address!("00000000000000000000000000000000000000b1");

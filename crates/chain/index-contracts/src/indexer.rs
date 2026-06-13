@@ -20,15 +20,14 @@ use std::sync::Arc;
 
 use alloy_primitives::Address;
 use alloy_rpc_types_eth::{Filter, Log};
-use alloy_sol_types::SolEvent;
 use tracing::warn;
 use vertex_chain_index::{IndexError, Indexer};
 use vertex_storage::Database;
 
-use crate::registry::{ContractId, Network, WatchedContract, abi, registry};
+use crate::registry::{ContractId, Network, WatchedContract, registry};
 use crate::store::{
-    BatchUpdate, ContractIndexTables, EventKey, apply_batch_update, put_event, revert_contract,
-    stored_event_from_log,
+    ContractIndexTables, EventKey, apply_batch_update, batch_update_from_event, put_event,
+    revert_contract, stored_event_from_log,
 };
 
 /// The indexer name: the engine's single cursor key and metric label.
@@ -140,27 +139,26 @@ impl<DB: Database> Indexer for ContractIndexer<DB> {
         };
 
         let event = stored_event_from_log(log);
+        let data_len = event.data.len();
 
         // For Postage create/topup/depth-increase, decode the batch fields to
         // feed the typed projection that backs the value-sorted index. This is
         // the ONE place apply decodes, and only to maintain the eviction HINT;
         // the verbatim row is still the source of truth, and a decode failure
-        // here is non-fatal (logged, the verbatim row still lands).
+        // here is non-fatal (the verbatim row still lands). The decode runs on
+        // the already-built `StoredEvent`, the same path the revert rebuild uses.
         let batch_update = if contract.id == ContractId::Postage {
-            decode_batch_update(log, block, topic0)
+            batch_update_from_event(&event, block)
         } else {
             None
         };
 
         self.db.update(|tx| {
-            let stored = put_event(tx, key, event.clone())?;
+            let stored = put_event(tx, key, event)?;
             if !stored {
                 warn!(
                     contract = <&'static str>::from(contract.id),
-                    block,
-                    log_index,
-                    data_len = event.data.len(),
-                    "event data exceeds MAX_EVENT_DATA cap, skipping"
+                    block, log_index, data_len, "event data exceeds MAX_EVENT_DATA cap, skipping"
                 );
                 return Ok(());
             }
@@ -178,50 +176,5 @@ impl<DB: Database> Indexer for ContractIndexer<DB> {
             revert_contract(self.db.as_ref(), contract.id, from_block)?;
         }
         Ok(())
-    }
-}
-
-/// Decode a postage batch lifecycle event into the typed projection update that
-/// maintains the value-sorted index. Returns `None` for non-batch events and on
-/// a decode miss (the verbatim row still lands; the index is a self-healing
-/// hint, not the source of truth).
-///
-/// `BatchCreated` opens the row; `BatchTopUp` / `BatchDepthIncrease` raise the
-/// `normalisedBalance` on the existing row so the value-sorted index moves with
-/// the batch (the "eager re-position on topup/depth-increase as a local
-/// optimization, never a generic callback" the reactions design blesses). The
-/// reserve recomputes truth at dequeue regardless, so a stale hint only costs a
-/// skip-and-reinsert.
-fn decode_batch_update(
-    log: &Log,
-    block: u64,
-    topic0: alloy_primitives::B256,
-) -> Option<BatchUpdate> {
-    if topic0 == abi::BatchCreated::SIGNATURE_HASH {
-        let e = log.log_decode::<abi::BatchCreated>().ok()?.inner.data;
-        Some(BatchUpdate::Created {
-            batch_id: e.batchId,
-            owner: e.owner,
-            depth: e.depth,
-            bucket_depth: e.bucketDepth,
-            normalised_balance: e.normalisedBalance,
-            immutable: e.immutableFlag,
-            start_block: block,
-        })
-    } else if topic0 == abi::BatchTopUp::SIGNATURE_HASH {
-        let e = log.log_decode::<abi::BatchTopUp>().ok()?.inner.data;
-        Some(BatchUpdate::Balance {
-            batch_id: e.batchId,
-            normalised_balance: e.normalisedBalance,
-        })
-    } else if topic0 == abi::BatchDepthIncrease::SIGNATURE_HASH {
-        let e = log.log_decode::<abi::BatchDepthIncrease>().ok()?.inner.data;
-        Some(BatchUpdate::Depth {
-            batch_id: e.batchId,
-            new_depth: e.newDepth,
-            normalised_balance: e.normalisedBalance,
-        })
-    } else {
-        None
     }
 }
