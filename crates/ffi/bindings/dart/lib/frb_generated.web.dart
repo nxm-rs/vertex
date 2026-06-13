@@ -28,6 +28,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       get rust_arc_decrement_strong_count_VertexClientPtr => wire
           .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexClient;
 
+  CrossPlatformFinalizerArg
+      get rust_arc_decrement_strong_count_VertexDownloadStreamPtr => wire
+          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexDownloadStream;
+
+  CrossPlatformFinalizerArg
+      get rust_arc_decrement_strong_count_VertexUploadStreamPtr => wire
+          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexUploadStream;
+
   @protected
   AnyhowException dco_decode_AnyhowException(dynamic raw);
 
@@ -37,8 +45,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           dynamic raw);
 
   @protected
+  VertexDownloadStream
+      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexDownloadStream(
+          dynamic raw);
+
+  @protected
+  VertexUploadStream
+      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexUploadStream(
+          dynamic raw);
+
+  @protected
   VertexClient
       dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexClient(
+          dynamic raw);
+
+  @protected
+  VertexDownloadStream
+      dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexDownloadStream(
+          dynamic raw);
+
+  @protected
+  VertexUploadStream
+      dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexUploadStream(
           dynamic raw);
 
   @protected
@@ -47,21 +75,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           dynamic raw);
 
   @protected
+  VertexDownloadStream
+      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexDownloadStream(
+          dynamic raw);
+
+  @protected
+  VertexUploadStream
+      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexUploadStream(
+          dynamic raw);
+
+  @protected
   RustStreamSink<LogLine> dco_decode_StreamSink_log_line_Sse(dynamic raw);
-
-  @protected
-  RustStreamSink<VertexChunkData> dco_decode_StreamSink_vertex_chunk_data_Sse(
-      dynamic raw);
-
-  @protected
-  RustStreamSink<VertexUploadAck> dco_decode_StreamSink_vertex_upload_ack_Sse(
-      dynamic raw);
 
   @protected
   String dco_decode_String(dynamic raw);
 
   @protected
   bool dco_decode_bool(dynamic raw);
+
+  @protected
+  VertexChunkData dco_decode_box_autoadd_vertex_chunk_data(dynamic raw);
 
   @protected
   VertexChunkUpload dco_decode_box_autoadd_vertex_chunk_upload(dynamic raw);
@@ -74,6 +107,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   VertexStreamConfig dco_decode_box_autoadd_vertex_stream_config(dynamic raw);
+
+  @protected
+  VertexUploadAck dco_decode_box_autoadd_vertex_upload_ack(dynamic raw);
 
   @protected
   CounterValue dco_decode_counter_value(dynamic raw);
@@ -136,8 +172,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String? dco_decode_opt_String(dynamic raw);
 
   @protected
+  VertexChunkData? dco_decode_opt_box_autoadd_vertex_chunk_data(dynamic raw);
+
+  @protected
   VertexPushReceipt? dco_decode_opt_box_autoadd_vertex_push_receipt(
       dynamic raw);
+
+  @protected
+  VertexUploadAck? dco_decode_opt_box_autoadd_vertex_upload_ack(dynamic raw);
 
   @protected
   Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw);
@@ -193,8 +235,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           SseDeserializer deserializer);
 
   @protected
+  VertexDownloadStream
+      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexDownloadStream(
+          SseDeserializer deserializer);
+
+  @protected
+  VertexUploadStream
+      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexUploadStream(
+          SseDeserializer deserializer);
+
+  @protected
   VertexClient
       sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexClient(
+          SseDeserializer deserializer);
+
+  @protected
+  VertexDownloadStream
+      sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexDownloadStream(
+          SseDeserializer deserializer);
+
+  @protected
+  VertexUploadStream
+      sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexUploadStream(
           SseDeserializer deserializer);
 
   @protected
@@ -203,15 +265,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           SseDeserializer deserializer);
 
   @protected
+  VertexDownloadStream
+      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexDownloadStream(
+          SseDeserializer deserializer);
+
+  @protected
+  VertexUploadStream
+      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexUploadStream(
+          SseDeserializer deserializer);
+
+  @protected
   RustStreamSink<LogLine> sse_decode_StreamSink_log_line_Sse(
-      SseDeserializer deserializer);
-
-  @protected
-  RustStreamSink<VertexChunkData> sse_decode_StreamSink_vertex_chunk_data_Sse(
-      SseDeserializer deserializer);
-
-  @protected
-  RustStreamSink<VertexUploadAck> sse_decode_StreamSink_vertex_upload_ack_Sse(
       SseDeserializer deserializer);
 
   @protected
@@ -219,6 +283,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool sse_decode_bool(SseDeserializer deserializer);
+
+  @protected
+  VertexChunkData sse_decode_box_autoadd_vertex_chunk_data(
+      SseDeserializer deserializer);
 
   @protected
   VertexChunkUpload sse_decode_box_autoadd_vertex_chunk_upload(
@@ -234,6 +302,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   VertexStreamConfig sse_decode_box_autoadd_vertex_stream_config(
+      SseDeserializer deserializer);
+
+  @protected
+  VertexUploadAck sse_decode_box_autoadd_vertex_upload_ack(
       SseDeserializer deserializer);
 
   @protected
@@ -302,7 +374,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String? sse_decode_opt_String(SseDeserializer deserializer);
 
   @protected
+  VertexChunkData? sse_decode_opt_box_autoadd_vertex_chunk_data(
+      SseDeserializer deserializer);
+
+  @protected
   VertexPushReceipt? sse_decode_opt_box_autoadd_vertex_push_receipt(
+      SseDeserializer deserializer);
+
+  @protected
+  VertexUploadAck? sse_decode_opt_box_autoadd_vertex_upload_ack(
       SseDeserializer deserializer);
 
   @protected
@@ -367,8 +447,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexDownloadStream(
+          VertexDownloadStream self, SseSerializer serializer);
+
+  @protected
+  void
+      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexUploadStream(
+          VertexUploadStream self, SseSerializer serializer);
+
+  @protected
+  void
       sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexClient(
           VertexClient self, SseSerializer serializer);
+
+  @protected
+  void
+      sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexDownloadStream(
+          VertexDownloadStream self, SseSerializer serializer);
+
+  @protected
+  void
+      sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexUploadStream(
+          VertexUploadStream self, SseSerializer serializer);
 
   @protected
   void
@@ -376,22 +476,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           VertexClient self, SseSerializer serializer);
 
   @protected
+  void
+      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexDownloadStream(
+          VertexDownloadStream self, SseSerializer serializer);
+
+  @protected
+  void
+      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexUploadStream(
+          VertexUploadStream self, SseSerializer serializer);
+
+  @protected
   void sse_encode_StreamSink_log_line_Sse(
       RustStreamSink<LogLine> self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_StreamSink_vertex_chunk_data_Sse(
-      RustStreamSink<VertexChunkData> self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_StreamSink_vertex_upload_ack_Sse(
-      RustStreamSink<VertexUploadAck> self, SseSerializer serializer);
 
   @protected
   void sse_encode_String(String self, SseSerializer serializer);
 
   @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_vertex_chunk_data(
+      VertexChunkData self, SseSerializer serializer);
 
   @protected
   void sse_encode_box_autoadd_vertex_chunk_upload(
@@ -408,6 +514,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_vertex_stream_config(
       VertexStreamConfig self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_vertex_upload_ack(
+      VertexUploadAck self, SseSerializer serializer);
 
   @protected
   void sse_encode_counter_value(CounterValue self, SseSerializer serializer);
@@ -479,8 +589,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_opt_String(String? self, SseSerializer serializer);
 
   @protected
+  void sse_encode_opt_box_autoadd_vertex_chunk_data(
+      VertexChunkData? self, SseSerializer serializer);
+
+  @protected
   void sse_encode_opt_box_autoadd_vertex_push_receipt(
       VertexPushReceipt? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_vertex_upload_ack(
+      VertexUploadAck? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_list_prim_u_8_strict(
@@ -553,6 +671,30 @@ class RustLibWire implements BaseWire {
       wasmModule
           .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexClient(
               ptr);
+
+  void rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexDownloadStream(
+          int ptr) =>
+      wasmModule
+          .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexDownloadStream(
+              ptr);
+
+  void rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexDownloadStream(
+          int ptr) =>
+      wasmModule
+          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexDownloadStream(
+              ptr);
+
+  void rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexUploadStream(
+          int ptr) =>
+      wasmModule
+          .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexUploadStream(
+              ptr);
+
+  void rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexUploadStream(
+          int ptr) =>
+      wasmModule
+          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexUploadStream(
+              ptr);
 }
 
 @JS('wasm_bindgen')
@@ -567,5 +709,21 @@ extension type RustLibWasmModule._(JSObject _) implements JSObject {
 
   external void
       rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexClient(
+          int ptr);
+
+  external void
+      rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexDownloadStream(
+          int ptr);
+
+  external void
+      rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexDownloadStream(
+          int ptr);
+
+  external void
+      rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexUploadStream(
+          int ptr);
+
+  external void
+      rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVertexUploadStream(
           int ptr);
 }

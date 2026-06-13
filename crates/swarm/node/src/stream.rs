@@ -236,17 +236,39 @@ where
 /// `window_bytes`, and a new push is admitted only when the next chunk fits the
 /// remaining budget (or when nothing is in flight, so an oversized chunk still
 /// makes progress one at a time). The same `max_concurrency` cap applies.
-pub fn put_stream<S>(
-    sender: S,
-    chunks: impl IntoIterator<Item = StampedChunk>,
-    config: StreamConfig,
-) -> PutStream<S>
+///
+/// `chunks` is consumed lazily: the pipeline pulls the next [`StampedChunk`] from
+/// the iterator only when it admits a push, so a caller that builds each chunk on
+/// demand (reconstructing from raw bytes inside the iterator) holds at most a
+/// window's worth of materialized chunks at once, not the whole list. A caller
+/// that passes an already-materialized `Vec` still owns that `Vec`, but the
+/// pipeline adds no second copy on top of it.
+pub fn put_stream<S, I>(sender: S, chunks: I, config: StreamConfig) -> PutStream<S>
 where
     S: SwarmChunkSender + Clone + 'static,
+    I: IntoIterator<Item = StampedChunk>,
+    I::IntoIter: MaybeSendIter + 'static,
+{
+    try_put_stream(sender, chunks.into_iter().map(Ok), config)
+}
+
+/// Stream of push receipts for an ordered feed of fallibly-produced chunks.
+///
+/// The same byte-bounded pipeline as [`put_stream`], but the feed yields
+/// `SwarmResult<StampedChunk>` so a caller that builds chunks on demand can
+/// surface a per-chunk build failure (a byte/address mismatch, a bad stamp) as an
+/// error in that chunk's output slot instead of aborting the whole upload. A feed
+/// `Err` consumes no window budget and issues no push; it is yielded in order,
+/// preserving the one-output-per-input contract.
+pub fn try_put_stream<S, I>(sender: S, chunks: I, config: StreamConfig) -> PutStream<S>
+where
+    S: SwarmChunkSender + Clone + 'static,
+    I: IntoIterator<Item = SwarmResult<StampedChunk>>,
+    I::IntoIter: MaybeSendIter + 'static,
 {
     PutStream {
         sender,
-        pending: chunks.into_iter().collect(),
+        pending: BoxedChunks::box_chunks(chunks.into_iter()).peekable(),
         in_flight: FuturesOrdered::new(),
         reserved_bytes: 0,
         window_bytes: config.window_bytes,
@@ -254,15 +276,58 @@ where
     }
 }
 
+/// Marker for the pending-chunk iterator's thread-safety requirement: `Send` on
+/// native so [`PutStream`] stays `Send` (the FFI handle is driven across the
+/// runtime and the tests spawn it), unconstrained on wasm. Mirrors the native vs
+/// wasm split of [`MaybeSendBoxFuture`]. Blanket-implemented, so callers never
+/// name it.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSendIter: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send> MaybeSendIter for T {}
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSendIter {}
+#[cfg(target_arch = "wasm32")]
+impl<T> MaybeSendIter for T {}
+
+/// Boxed pending-chunk feed. `Send` on native so [`PutStream`] stays `Send`;
+/// not required `Send` on wasm.
+#[cfg(not(target_arch = "wasm32"))]
+type BoxedChunks = Box<dyn Iterator<Item = SwarmResult<StampedChunk>> + Send>;
+#[cfg(target_arch = "wasm32")]
+type BoxedChunks = Box<dyn Iterator<Item = SwarmResult<StampedChunk>>>;
+
+/// Box a feed iterator into [`BoxedChunks`] with the right `Send`-ness per target.
+trait BoxedChunksExt {
+    fn box_chunks<I: Iterator<Item = SwarmResult<StampedChunk>> + MaybeSendIter + 'static>(
+        iter: I,
+    ) -> Self;
+}
+
+impl BoxedChunksExt for BoxedChunks {
+    fn box_chunks<I: Iterator<Item = SwarmResult<StampedChunk>> + MaybeSendIter + 'static>(
+        iter: I,
+    ) -> Self {
+        Box::new(iter)
+    }
+}
+
+/// Iterator the upload pipeline pulls chunks from. Boxed so the stream type is
+/// independent of how the caller produces chunks (an eager `Vec` or a lazy
+/// reconstruct-on-demand feed), and peekable so admission can size the next chunk
+/// against the window before consuming it.
+type PendingChunks = std::iter::Peekable<BoxedChunks>;
+
 /// Stream returned by [`put_stream`].
 ///
 /// Tracks the bytes reserved by in-flight pushes so admission is by real payload
 /// size, not an estimate: a chunk is admitted only when its encoded size fits the
-/// remaining window (or the in-flight set is empty).
+/// remaining window (or the in-flight set is empty). Pending chunks are pulled
+/// lazily from the source iterator, so only admitted chunks are materialized.
 #[must_use = "a stream does nothing unless polled"]
 pub struct PutStream<S> {
     sender: S,
-    pending: VecDeque<StampedChunk>,
+    pending: PendingChunks,
     in_flight: FuturesOrdered<MaybeSendBoxFuture<(usize, SwarmResult<PushReceipt>)>>,
     reserved_bytes: usize,
     window_bytes: usize,
@@ -293,20 +358,34 @@ where
     /// than deadlocking.
     fn refill(&mut self) {
         while self.in_flight.len() < self.limit {
-            let Some(chunk) = self.pending.front() else {
-                break;
+            let bytes = match self.pending.peek() {
+                None => break,
+                // A feed error reserves no budget and issues no push: it is
+                // yielded in order from a ready future so the slot is preserved.
+                // Admit it whenever there is a free concurrency slot.
+                Some(Err(_)) => {
+                    let Some(Err(error)) = self.pending.next() else {
+                        break;
+                    };
+                    self.in_flight
+                        .push_back(Box::pin(async move { (0, Err(error)) }));
+                    continue;
+                }
+                Some(Ok(chunk)) => {
+                    let bytes = chunk.chunk().size();
+                    let fits = self.reserved_bytes + bytes <= self.window_bytes;
+                    let nothing_in_flight = self.in_flight.is_empty();
+                    if !fits && !nothing_in_flight {
+                        break;
+                    }
+                    bytes
+                }
             };
-            let bytes = chunk.chunk().size();
-            let fits = self.reserved_bytes + bytes <= self.window_bytes;
-            let nothing_in_flight = self.in_flight.is_empty();
-            if !fits && !nothing_in_flight {
-                break;
-            }
 
-            // Admission decided against the front chunk above; pop the same one
-            // (the `while` body never yields, so the front cannot change) and
-            // fall through to break if the queue raced empty under us.
-            let Some(chunk) = self.pending.pop_front() else {
+            // Admission decided against the peeked chunk above; take that same
+            // one now. The peek borrow ended before this `next`, and the body
+            // never yields, so the peeked chunk is exactly the one consumed.
+            let Some(Ok(chunk)) = self.pending.next() else {
                 break;
             };
             self.reserved_bytes += bytes;
@@ -338,7 +417,7 @@ where
                 this.refill();
                 Poll::Ready(Some(result))
             }
-            Poll::Ready(None) if this.pending.is_empty() => Poll::Ready(None),
+            Poll::Ready(None) if this.pending.peek().is_none() => Poll::Ready(None),
             Poll::Ready(None) => {
                 cx.waker().wake_by_ref();
                 Poll::Pending
@@ -348,8 +427,13 @@ where
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.pending.len() + self.in_flight.len();
-        (remaining, Some(remaining))
+        // The pending source is a lazy iterator, so only its declared bound is
+        // known; the in-flight set is exact. The lower bound counts in-flight
+        // plus whatever the iterator guarantees remain.
+        let (pending_lo, pending_hi) = self.pending.size_hint();
+        let lower = pending_lo + self.in_flight.len();
+        let upper = pending_hi.map(|hi| hi + self.in_flight.len());
+        (lower, upper)
     }
 }
 
@@ -701,6 +785,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn put_stream_materializes_chunks_lazily_within_the_window() {
+        // The upload pipeline must pull from its source iterator only as it
+        // admits pushes, so a caller that reconstructs each chunk on demand keeps
+        // at most a window's worth of chunks resident, not the whole list. A
+        // counting iterator over a long list, with a gated sender and a 3-chunk
+        // window, must never have produced more than the in-flight cap by the
+        // time the window saturates.
+        let materialized = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&materialized);
+        let chunk_bytes = chunk_for(0).chunk().size();
+        let source = (0..1024).map(move |i| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            chunk_for((i % 251) as u8)
+        });
+
+        let sender = RecordingSender::gated();
+        let gate = Arc::clone(&sender.gate);
+        let in_flight = Arc::clone(&sender.in_flight);
+
+        let window = 3 * chunk_bytes;
+        let mut stream = put_stream(sender, source, StreamConfig::new(window, 64));
+        let driver = tokio::spawn(async move {
+            let _ = stream.next().await;
+            stream
+        });
+
+        loop {
+            if in_flight.load(Ordering::SeqCst) >= 3 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        // Only the admitted (in-flight) chunks plus at most one peeked-but-not-
+        // admitted chunk are ever pulled from the source. Far below the 1024 in
+        // the list: the heap holds the window, not the input.
+        assert!(
+            materialized.load(Ordering::SeqCst) <= 4,
+            "lazy: at most window+1 chunks materialized, got {}",
+            materialized.load(Ordering::SeqCst)
+        );
+
+        gate.add_permits(1 << 20);
+        let _ = driver.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn put_stream_oversized_chunk_makes_progress_one_at_a_time() {
         // A window smaller than a single chunk must not deadlock: the empty
         // in-flight set admits one chunk regardless of the window.
@@ -732,6 +863,40 @@ mod tests {
         assert!(results[2].is_ok());
         // The failed chunk was never recorded as accepted.
         assert_eq!(accepted.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn try_put_stream_surfaces_feed_error_in_order_and_continues() {
+        // A fallible feed: the middle item fails to build. It must surface as an
+        // error in its own slot, in order, without consuming a push, and the
+        // surrounding chunks must still upload.
+        let good0 = chunk_for(0);
+        let good2 = chunk_for(2);
+        let addr0 = *good0.address();
+        let addr2 = *good2.address();
+        let sender = RecordingSender::new();
+        let accepted = Arc::clone(&sender.accepted);
+
+        let feed = vec![
+            Ok(good0),
+            Err(SwarmError::InvalidChunk {
+                address: None,
+                reason: "bad bytes".to_string(),
+            }),
+            Ok(good2),
+        ];
+        let stream = try_put_stream(sender, feed, StreamConfig::new(1 << 20, 4));
+        let results: Vec<_> = stream.collect().await;
+
+        assert_eq!(results.len(), 3);
+        assert!(results[0].is_ok());
+        assert!(matches!(results[1], Err(SwarmError::InvalidChunk { .. })));
+        assert!(results[2].is_ok());
+        // Only the two well-formed chunks were ever pushed.
+        let accepted = accepted.lock().unwrap();
+        assert_eq!(accepted.len(), 2);
+        assert!(accepted.contains(&addr0));
+        assert!(accepted.contains(&addr2));
     }
 
     #[tokio::test]

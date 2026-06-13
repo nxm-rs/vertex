@@ -40,7 +40,9 @@ pub use protocol::{
 };
 
 pub use selection::{AccountingSettlement, PeerScores, PeerSelector, SettlementTrigger};
-pub use stream::{GetStream, MAX_CHUNK_BYTES, PutStream, StreamConfig, get_stream, put_stream};
+pub use stream::{
+    GetStream, MAX_CHUNK_BYTES, PutStream, StreamConfig, get_stream, put_stream, try_put_stream,
+};
 pub use swarm_client::{BootnodeClient, Client, FullClient};
 
 pub use bootnodes::BootnodeProvider;

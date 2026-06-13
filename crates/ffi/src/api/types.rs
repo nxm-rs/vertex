@@ -113,10 +113,13 @@ pub struct VertexChunkData {
 /// One acknowledgement in a streaming upload.
 ///
 /// The upload stream yields exactly one of these per fed chunk, in feed order.
-/// A successful push carries the storer's receipt; a failure carries `error` and
-/// a default receipt. Rust owns the bounded in-flight window, so feeding a long
-/// list never grows the heap past the configured byte budget: a slow host that
-/// stops draining acks transitively pauses the network pushes.
+/// A successful push carries the storer's receipt; a failure (a bad chunk or a
+/// rejected push) carries `error` and no receipt. The host pulls acks one at a
+/// time; the pipeline admits a new push only as the host pulls, so a host that
+/// stops pulling pauses the network pushes. Reconstruction of each chunk into its
+/// strong type is also lazy under the pull, so the only chunks materialized at
+/// once are the ones inside the byte window (the host still owns the input list
+/// it passed, but Rust adds no second resident copy of it).
 #[frb(non_opaque)]
 #[derive(Debug, Clone)]
 pub struct VertexUploadAck {
