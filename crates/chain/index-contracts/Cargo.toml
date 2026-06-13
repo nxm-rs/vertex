@@ -1,0 +1,43 @@
+[package]
+name = "vertex-chain-index-contracts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Unified, configuration-driven Swarm contract indexer over the generic vertex-chain-index engine"
+
+[lints]
+workspace = true
+
+[dependencies]
+# engine: the generic Indexer trait and error taxonomy this crate plugs into.
+vertex-chain-index = { workspace = true }
+# storage: the generic event store and the one self-healing secondary index.
+vertex-storage = { workspace = true }
+
+# alloy: log types, the combined filter, and sol! event ABIs. `default-features
+# = false` keeps reqwest and native TLS out so the crate imposes no
+# wasm-hostile transport; it is native-only behind the `chain` feature anyway.
+alloy-primitives = { workspace = true, features = ["serde"] }
+alloy-rpc-types-eth = { workspace = true }
+alloy-sol-types = { workspace = true }
+
+# the canonical address book and event ABIs. `std` enables the generated
+# bindings; the deployment consts and `sol!` events live upstream here.
+nectar-contracts = { workspace = true, features = ["std"] }
+
+# serialization: stored rows and keys derive serde.
+serde = { workspace = true, features = ["derive"] }
+
+# derive macros: IntoStaticStr for the ContractId metric/discriminant label.
+strum = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+vertex-storage-redb = { workspace = true }
+# A full provider with an HTTP transport for the ignored e2e fork cross-checks.
+alloy-provider = { workspace = true, features = ["reqwest"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
