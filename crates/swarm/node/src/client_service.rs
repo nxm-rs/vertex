@@ -706,7 +706,8 @@ mod tests {
     }
 
     /// Build a handle whose throttle gives each peer a bucket of `tokens`
-    /// one-AU requests (settle unit and chunk cost are both 1 AU).
+    /// one-AU requests (refresh rate and per-request chunk cost are both 1 AU,
+    /// so the bucket holds exactly `tokens` requests and refills one per second).
     fn throttled_handle(tokens: u64) -> (ClientHandle, mpsc::Receiver<ClientCommand>) {
         let (tx, rx) = mpsc::channel::<ClientCommand>(16);
         let throttle = Arc::new(SelfThrottle::new(
