@@ -52,6 +52,18 @@ pub struct NoReceiveAction;
 /// No-op provide action (does nothing on apply).
 pub struct NoProvideAction;
 
+impl vertex_swarm_api::AccountingAction for NoReceiveAction {
+    fn apply(self) {}
+
+    fn apply_boxed(self: Box<Self>) {}
+}
+
+impl vertex_swarm_api::AccountingAction for NoProvideAction {
+    fn apply(self) {}
+
+    fn apply_boxed(self: Box<Self>) {}
+}
+
 impl<I: SwarmIdentity> SwarmBandwidthAccounting for NoAccounting<I> {
     type Identity = I;
     type Peer = NoPeerBandwidth;

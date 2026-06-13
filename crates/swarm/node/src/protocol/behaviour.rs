@@ -115,6 +115,16 @@ impl ClientBehaviour {
         }
     }
 
+    /// Install the multi-hop relay forwarder, replacing the default stub.
+    ///
+    /// Must be called before any peer connects: handlers clone the forwarder at
+    /// connection establishment, so a handler created before this call captures
+    /// the stub. The node builder installs the real forwarder during assembly,
+    /// well before the event loop accepts connections.
+    pub(crate) fn set_forwarder(&mut self, forward: Arc<dyn Forwarder>) {
+        self.forward = forward;
+    }
+
     /// Build a dormant handler for a new connection, sharing the cache and
     /// forwarder into it.
     fn new_handler(&self) -> ClientHandler {
@@ -832,6 +842,351 @@ mod tests {
         assert!(
             result.is_err(),
             "an inbound pushsync with the stub forwarder must reset the stream"
+        );
+    }
+
+    // --- Three-node relay (forwarding) integration tests ---
+    //
+    // These drive the real `NetworkForwarder` through the libp2p harness: node B
+    // sits between requester A and storer C, its forwarder's outbound
+    // `ClientHandle` feeding back into B's own behaviour so the upstream leg is a
+    // genuine A->B->C path. The relay verifies, accounts both legs, caches the
+    // forwarded chunk, and relays the storer's receipt verbatim.
+
+    use vertex_swarm_api::{
+        Au, SwarmBandwidthAccounting, SwarmClientAccounting, SwarmPeerBandwidth, SwarmPricing,
+    };
+    use vertex_swarm_bandwidth::{
+        Accounting, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
+    };
+    use vertex_swarm_identity::Identity;
+    use vertex_swarm_spec::Spec;
+    use vertex_swarm_test_utils::{MockTopology, test_identity_arc};
+
+    use crate::ClientHandle;
+    use crate::protocol::NetworkForwarder;
+
+    type RelayAccounting =
+        ClientAccounting<Arc<Accounting<DefaultBandwidthConfig, Arc<Identity>>>, FixedPricer<Spec>>;
+
+    fn relay_accounting() -> Arc<RelayAccounting> {
+        let bandwidth = Arc::new(Accounting::new(
+            DefaultBandwidthConfig::default(),
+            test_identity_arc(),
+        ));
+        let pricer = FixedPricer::new(10_000, vertex_swarm_spec::init_mainnet());
+        Arc::new(ClientAccounting::new(bandwidth, pricer))
+    }
+
+    /// An overlay sharing `leading_bits` leading bits with `address`.
+    fn overlay_at_proximity(
+        address: &nectar_primitives::ChunkAddress,
+        leading_bits: usize,
+    ) -> OverlayAddress {
+        let mut bytes = address.0.0;
+        let byte = leading_bits / 8;
+        let bit = 7 - (leading_bits % 8);
+        if let Some(b) = bytes.get_mut(byte) {
+            *b ^= 1 << bit;
+        }
+        OverlayAddress::from(bytes)
+    }
+
+    /// Build node B: an empty-cache client whose forwarder relays to `storer`
+    /// (returned by the mock topology) over a `ClientHandle` wired back into B.
+    /// Returns B and the receiver carrying B's own outbound relay commands.
+    fn relay_node(
+        store: Arc<dyn SwarmLocalStore>,
+        local: OverlayAddress,
+        storer: OverlayAddress,
+        accounting: Arc<RelayAccounting>,
+    ) -> (
+        Swarm<ClientBehaviour>,
+        tokio::sync::mpsc::Receiver<ClientCommand>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::channel::<ClientCommand>(16);
+        let handle = ClientHandle::new(tx);
+        let topology = Arc::new(MockTopology::default().with_closest(vec![storer]));
+        let swarm = Swarm::new_ephemeral_tokio(move |_| {
+            let mut behaviour = ClientBehaviour::new(
+                Config::for_role(SwarmNodeType::Client),
+                store,
+                Arc::new(StubForwarder),
+            );
+            let forwarder = Arc::new(NetworkForwarder::new(
+                local,
+                Arc::clone(&topology),
+                Arc::clone(&accounting),
+                handle,
+            ));
+            behaviour.set_forwarder(forwarder);
+            behaviour
+        });
+        (swarm, rx)
+    }
+
+    #[tokio::test]
+    async fn three_node_retrieval_relays_verifies_and_accounts() {
+        let chunk = content_chunk(b"relayed through B from C");
+        let address = *chunk.address();
+
+        // A (requester) is far from the chunk; C (storer) is strictly closer; B's
+        // own overlay is far too, so C is the only strictly-closer candidate.
+        let a_overlay = overlay_at_proximity(&address, 2);
+        let b_overlay = overlay_at_proximity(&address, 3);
+        let c_overlay = overlay_at_proximity(&address, 18);
+
+        let accounting = relay_accounting();
+        let provide_price = accounting.pricing().peer_price(&a_overlay, &address);
+        let receive_price = accounting.pricing().peer_price(&c_overlay, &address);
+
+        // C serves the chunk from its cache; B caches the forwarded delivery; A
+        // holds no store of its own.
+        let c_store: Arc<dyn SwarmLocalStore> =
+            Arc::new(ChunkStore::with_budget(1 << 20, 1_000_000_000));
+        c_store.put(chunk.clone()).unwrap();
+        let b_store: Arc<dyn SwarmLocalStore> = Arc::new(ChunkStore::with_budget(1 << 20, 1_000));
+
+        let mut a = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
+        let (mut b, mut b_commands) = relay_node(
+            Arc::clone(&b_store),
+            b_overlay,
+            c_overlay,
+            Arc::clone(&accounting),
+        );
+        let mut c = swarm_with_store(c_store);
+
+        // A <-> B and B <-> C, activated with the chosen overlays.
+        connect_and_activate(&mut a, &mut b, a_overlay, b_overlay).await;
+        connect_and_activate(&mut b, &mut c, b_overlay, c_overlay).await;
+
+        let (tx, mut rx) = oneshot::channel();
+        a.behaviour_mut().on_command(ClientCommand::RetrieveChunk {
+            peer: b_overlay,
+            address,
+            response: tx,
+        });
+
+        // Drive all three swarms; B's forwarder commands are pumped back into B.
+        let result = {
+            let drive = async {
+                loop {
+                    tokio::select! {
+                        _ = a.select_next_some() => {}
+                        _ = b.select_next_some() => {}
+                        _ = c.select_next_some() => {}
+                        Some(cmd) = b_commands.recv() => b.behaviour_mut().on_command(cmd),
+                        res = &mut rx => return res.expect("sender not dropped"),
+                    }
+                }
+            };
+            tokio::time::timeout(Duration::from_secs(10), drive)
+                .await
+                .expect("retrieval resolved within timeout")
+        };
+
+        let delivered = result.expect("A retrieves the chunk through B");
+        assert_eq!(delivered.chunk, chunk, "the chunk arrives intact at A");
+
+        // B accounted both legs: A owes B the provide price, B owes C the receive
+        // price, and the forwarder earned the (positive) spread.
+        assert!(
+            provide_price > receive_price,
+            "the forwarder earns a spread"
+        );
+        assert_eq!(
+            accounting.bandwidth().for_peer(a_overlay).balance(),
+            provide_price,
+            "A is debited for the chunk B served on"
+        );
+        assert_eq!(
+            accounting.bandwidth().for_peer(c_overlay).balance(),
+            Au::ZERO - receive_price,
+            "B is debited for the chunk C served it"
+        );
+
+        // B cached the forwarded delivery: a later get from its store hits.
+        assert!(
+            b_store.get(&address).unwrap().is_some(),
+            "the forwarded chunk is cached at B"
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_without_strictly_closer_peer_resets_rather_than_looping() {
+        // B's only routing candidate is no closer to the chunk than the
+        // requester A, so the loop bound rejects it: B cannot forward sideways or
+        // backwards, the inbound retrieval resets, and A sees a remote failure.
+        // No accounting reservation is taken.
+        let chunk = content_chunk(b"nowhere closer to relay to");
+        let address = *chunk.address();
+
+        let a_overlay = overlay_at_proximity(&address, 12);
+        let b_overlay = overlay_at_proximity(&address, 3);
+        // The candidate B would forward to is farther from the chunk than A.
+        let sideways = overlay_at_proximity(&address, 4);
+
+        let accounting = relay_accounting();
+        let b_store: Arc<dyn SwarmLocalStore> = Arc::new(ChunkStore::with_budget(1 << 20, 1_000));
+
+        let mut a = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
+        let (mut b, mut b_commands) = relay_node(
+            Arc::clone(&b_store),
+            b_overlay,
+            sideways,
+            Arc::clone(&accounting),
+        );
+
+        connect_and_activate(&mut a, &mut b, a_overlay, b_overlay).await;
+
+        let (tx, mut rx) = oneshot::channel();
+        a.behaviour_mut().on_command(ClientCommand::RetrieveChunk {
+            peer: b_overlay,
+            address,
+            response: tx,
+        });
+
+        let result = {
+            let drive = async {
+                loop {
+                    tokio::select! {
+                        _ = a.select_next_some() => {}
+                        _ = b.select_next_some() => {}
+                        Some(cmd) = b_commands.recv() => b.behaviour_mut().on_command(cmd),
+                        res = &mut rx => return res.expect("sender not dropped"),
+                    }
+                }
+            };
+            tokio::time::timeout(Duration::from_secs(10), drive)
+                .await
+                .expect("retrieval resolved within timeout")
+        };
+
+        assert!(
+            result.is_err(),
+            "a forward with no strictly-closer peer must reset, not loop"
+        );
+        assert_eq!(
+            accounting.bandwidth().for_peer(a_overlay).balance(),
+            Au::ZERO
+        );
+        assert_eq!(
+            accounting.bandwidth().for_peer(sideways).balance(),
+            Au::ZERO
+        );
+    }
+
+    #[tokio::test]
+    async fn three_node_pushsync_relays_receipt_verbatim_and_accounts() {
+        use alloy_primitives::Signature;
+        use nectar_primitives::Nonce;
+        use vertex_swarm_api::PushReceipt;
+        use vertex_swarm_primitives::{Bin, StorageRadius};
+
+        let chunk = content_chunk(b"pushed through B to C");
+        let address = *chunk.address();
+
+        // A (pusher) is far; B relays to the strictly-closer C; C is the storer
+        // of record. C's forwarder ClientHandle is answered by the test with a
+        // signed receipt, modelling C taking custody and signing. B and C must
+        // relay that receipt VERBATIM (the cache-only client never signs), so A
+        // sees C's exact signature, nonce, and radius.
+        let a_overlay = overlay_at_proximity(&address, 2);
+        let b_overlay = overlay_at_proximity(&address, 3);
+        let c_overlay = overlay_at_proximity(&address, 18);
+
+        // The storer's signed receipt, produced once at C and never re-signed.
+        let mut raw = [0u8; 65];
+        raw[..64].fill(1);
+        raw[64] = 27;
+        let storer_receipt = PushReceipt {
+            storer: c_overlay,
+            signature: Signature::try_from(&raw[..]).expect("valid signature"),
+            nonce: Nonce::from([0x5a; 32]),
+            storage_radius: StorageRadius::new(Bin::new(7).unwrap()),
+        };
+
+        let b_accounting = relay_accounting();
+        let provide_price = b_accounting.pricing().peer_price(&a_overlay, &address);
+        let receive_price = b_accounting.pricing().peer_price(&c_overlay, &address);
+
+        let b_store: Arc<dyn SwarmLocalStore> = Arc::new(ChunkStore::with_budget(1 << 20, 1_000));
+        let c_store: Arc<dyn SwarmLocalStore> = Arc::new(ChunkStore::with_budget(1 << 20, 1_000));
+
+        let mut a = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
+        let (mut b, mut b_commands) = relay_node(
+            Arc::clone(&b_store),
+            b_overlay,
+            c_overlay,
+            Arc::clone(&b_accounting),
+        );
+        // C relays to a notional deeper node; the test answers C's outbound push
+        // command directly with the signed receipt, so C is the effective storer.
+        let deeper = overlay_at_proximity(&address, 24);
+        let c_accounting = relay_accounting();
+        let (mut c, mut c_commands) = relay_node(
+            Arc::clone(&c_store),
+            c_overlay,
+            deeper,
+            Arc::clone(&c_accounting),
+        );
+
+        connect_and_activate(&mut a, &mut b, a_overlay, b_overlay).await;
+        connect_and_activate(&mut b, &mut c, b_overlay, c_overlay).await;
+
+        let (tx, mut rx) = oneshot::channel();
+        a.behaviour_mut().on_command(ClientCommand::PushChunk {
+            peer: b_overlay,
+            address,
+            chunk,
+            response: tx,
+        });
+
+        let receipt_for_c = storer_receipt.clone();
+        let result = {
+            let drive = async {
+                loop {
+                    tokio::select! {
+                        _ = a.select_next_some() => {}
+                        _ = b.select_next_some() => {}
+                        _ = c.select_next_some() => {}
+                        // B's relay leg flows through B's own behaviour.
+                        Some(cmd) = b_commands.recv() => b.behaviour_mut().on_command(cmd),
+                        // C is the storer: answer its outbound push with the
+                        // signed receipt instead of forwarding it on.
+                        Some(cmd) = c_commands.recv() => {
+                            if let ClientCommand::PushChunk { response, .. } = cmd {
+                                let _ = response.send(Ok(receipt_for_c.clone()));
+                            }
+                        }
+                        res = &mut rx => return res.expect("sender not dropped"),
+                    }
+                }
+            };
+            tokio::time::timeout(Duration::from_secs(10), drive)
+                .await
+                .expect("push resolved within timeout")
+        };
+
+        let relayed = result.expect("A receives the storer's receipt through B");
+        // The receipt is relayed verbatim across both hops: A sees C's exact
+        // signature, nonce, and radius, never a re-signed value.
+        assert_eq!(relayed.signature, storer_receipt.signature);
+        assert_eq!(relayed.nonce, storer_receipt.nonce);
+        assert_eq!(relayed.storage_radius, storer_receipt.storage_radius);
+
+        // B accounted both legs of the relay.
+        assert!(
+            provide_price > receive_price,
+            "the forwarder earns a spread"
+        );
+        assert_eq!(
+            b_accounting.bandwidth().for_peer(a_overlay).balance(),
+            provide_price
+        );
+        assert_eq!(
+            b_accounting.bandwidth().for_peer(c_overlay).balance(),
+            Au::ZERO - receive_price
         );
     }
 }

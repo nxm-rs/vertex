@@ -7,7 +7,7 @@ mod pricing;
 mod topology;
 
 pub use self::bandwidth::{
-    BandwidthMode, Direction, SwarmAccountingConfig, SwarmBandwidthAccounting,
+    AccountingAction, BandwidthMode, Direction, SwarmAccountingConfig, SwarmBandwidthAccounting,
     SwarmClientAccounting, SwarmPeerBandwidth, SwarmPeerState, SwarmSettlementProvider,
 };
 pub use self::localstore::{SwarmLocalStore, SwarmLocalStoreConfig};

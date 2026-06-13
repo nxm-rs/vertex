@@ -573,13 +573,23 @@ impl ClientHandler {
             // Miss: forward to a closer peer, excluding the requester. Cache a
             // successful forwarded delivery (CAC immutable, SOC last-write-wins).
             match forward.retrieve(address, overlay).await {
-                Ok(stamped) => match stamped.clone().verify_answers(address) {
+                Ok(forwarded) => match forwarded.chunk.clone().verify_answers(address) {
                     Ok(verified) => {
-                        let _ = store.put(stamped);
+                        let _ = store.put(forwarded.chunk);
                         match responder.send_chunk(verified.into_inner()).await {
-                            Ok(()) => InboundOutcome::Forwarded { overlay },
+                            Ok(()) => {
+                                // The chunk is on the wire: commit the upstream
+                                // credit now (the requester actually received the
+                                // delivery we are billing for).
+                                forwarded.provide.apply_boxed();
+                                InboundOutcome::Forwarded { overlay }
+                            }
                             Err(e) => {
+                                // The requester never received the chunk: drop the
+                                // un-applied credit, releasing the reservation, so
+                                // we never bill for a delivery that did not land.
                                 debug!(%overlay, %address, error = %e, "Forward serve send failed");
+                                drop(forwarded.provide);
                                 InboundOutcome::Missed { overlay, address }
                             }
                         }
@@ -587,6 +597,8 @@ impl ClientHandler {
                     Err(_) => {
                         // A forwarder that returns a chunk for the wrong address
                         // is a bug in the relay, not the requester's fault; reset.
+                        // Drop the credit unapplied (nothing was delivered).
+                        drop(forwarded.provide);
                         responder.send_error();
                         InboundOutcome::Missed { overlay, address }
                     }
@@ -621,18 +633,26 @@ impl ClientHandler {
         let forward = Arc::clone(&self.forward);
         self.inbound.push(Box::pin(async move {
             match forward.push(chunk, overlay).await {
-                Ok(receipt) => {
+                Ok(forwarded) => {
                     // Relay the storer's receipt verbatim: we never sign.
                     let relay = vertex_swarm_net_pushsync::Receipt::success(
                         address,
-                        receipt.signature,
-                        receipt.nonce,
-                        receipt.storage_radius,
+                        forwarded.receipt.signature,
+                        forwarded.receipt.nonce,
+                        forwarded.receipt.storage_radius,
                     );
                     match responder.send_receipt(relay).await {
-                        Ok(()) => InboundOutcome::Relayed { overlay },
+                        Ok(()) => {
+                            // The receipt reached the pusher: commit the upstream
+                            // credit now.
+                            forwarded.provide.apply_boxed();
+                            InboundOutcome::Relayed { overlay }
+                        }
                         Err(e) => {
+                            // The pusher never received the receipt: drop the
+                            // un-applied credit, releasing the reservation.
                             debug!(%overlay, %address, error = %e, "Receipt relay send failed");
+                            drop(forwarded.provide);
                             InboundOutcome::PushFailed { overlay, address }
                         }
                     }
