@@ -50,6 +50,7 @@ Production monitoring: metrics, tracing, and logging.
 - [**Design**](observability/design.md) - Span boundaries, metrics patterns, naming conventions
 - [**Helpers**](observability/helpers.md) - LabelValue trait, guards, macros, common labels
 - [**Profiling**](observability/profiling.md) - CPU/memory profiling, async inspection, metrics reference
+- [**FFI Metrics**](observability/ffi-metrics.md) - Pull-based metrics snapshot for embedding hosts
 - [**Local Stack**](../observability/README.md) - Docker Compose setup for Prometheus, Tempo, Loki, Grafana
 
 ### Design Proposals

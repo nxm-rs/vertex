@@ -67,7 +67,7 @@ impl VertexClient {
     /// second concurrent client would spawn its node tasks onto the first
     /// client's runtime. Build a single client, hold it for the process
     /// lifetime, and drop it to shut the node down.
-    pub fn build(config: VertexClientConfig) -> FfiResult<VertexClient> {
+    pub fn build(config: VertexClientConfig) -> Result<VertexClient, FfiError> {
         let runtime = Runtime::new().map_err(|e| FfiError::Build {
             reason: format!("runtime: {e}"),
         })?;
@@ -115,7 +115,7 @@ impl VertexClient {
     /// The chunk, its address, and its postage stamp are reconstructed into a
     /// strong [`StampedChunk`] before any network call. Returns the first
     /// storer's receipt.
-    pub fn upload_chunk(&self, chunk: VertexChunkUpload) -> FfiResult<VertexPushReceipt> {
+    pub fn upload_chunk(&self, chunk: VertexChunkUpload) -> Result<VertexPushReceipt, FfiError> {
         let stamped = reconstruct_upload(&chunk)?;
         let validate = chunk.validate;
 
@@ -141,7 +141,7 @@ impl VertexClient {
         &self,
         address: Vec<u8>,
         verify_stamp: bool,
-    ) -> FfiResult<VertexChunkDownload> {
+    ) -> Result<VertexChunkDownload, FfiError> {
         let address = parse_address(&address)?;
 
         let result = self

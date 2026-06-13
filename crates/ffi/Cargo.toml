@@ -41,8 +41,11 @@ nectar-postage.workspace = true
 alloy-primitives.workspace = true
 alloy-signer-local.workspace = true
 
-# bridge codegen runtime
-flutter_rust_bridge.workspace = true
+# bridge codegen runtime. The codegen's polisher pins this to its own version
+# (and rewrites it on mismatch), so it is a crate-local exact pin rather than a
+# workspace dependency. The pubspec pin in bindings/dart follows the same
+# version.
+flutter_rust_bridge = "=2.12.0"
 
 thiserror.workspace = true
 strum.workspace = true
@@ -54,9 +57,16 @@ strum.workspace = true
 # OTLP appender) which the `just check-cone` guard asserts.
 tracing.workspace = true
 
+# Metrics surface for embedding hosts. A custom snapshot recorder (not the
+# Prometheus recorder) lives in `api::metrics`, built on metrics-util's
+# registry with bounded per-series storage; only the registry slice is pulled
+# so the FFI cone stays free of the exporter stack.
+metrics.workspace = true
+
 # Native runtime owned by the client handle plus the tracing subscriber. The FFI
 # cdylib is native-only, so both are unconditional here; the wasm cone never
 # pulls them in.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing-subscriber = { workspace = true }
+metrics-util = { version = "0.19", default-features = false, features = ["registry"] }

@@ -8366,6 +8366,8 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer-local",
  "flutter_rust_bridge",
+ "metrics",
+ "metrics-util 0.19.1",
  "nectar-postage",
  "strum 0.28.0",
  "thiserror 2.0.18",

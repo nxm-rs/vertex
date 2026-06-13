@@ -76,7 +76,32 @@ pub enum FfiError {
     /// the installed subscriber.
     #[error("logging is already initialized for this process")]
     LoggingAlreadyInitialized,
+
+    /// Installing the metrics recorder failed.
+    #[error("metrics setup failed: {reason}")]
+    Metrics {
+        /// Why metrics setup failed (typically a recorder installed by other
+        /// means already occupying the process-global slot).
+        reason: String,
+    },
+
+    /// Metrics were already initialized for this process.
+    ///
+    /// A process has exactly one global metrics recorder, so the first
+    /// `init_metrics` call wins and a later call is rejected without
+    /// disturbing the installed recorder.
+    #[error("metrics are already initialized for this process")]
+    MetricsAlreadyInitialized,
+
+    /// A metrics snapshot was requested before `init_metrics` ran.
+    #[error("metrics are not initialized for this process")]
+    MetricsNotInitialized,
 }
 
-/// Convenience alias for results crossing the FFI boundary.
+/// Convenience alias for results on the Rust side of the boundary.
+///
+/// Internal helpers and Rust hosts use it freely, but the `pub fn` signatures
+/// under `api` spell `Result<T, FfiError>` in full: the binding codegen does
+/// not expand generic type aliases, and an unexpanded alias degrades the error
+/// to an opaque handle instead of a typed host exception.
 pub type FfiResult<T> = Result<T, FfiError>;
