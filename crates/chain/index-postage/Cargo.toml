@@ -1,0 +1,36 @@
+[package]
+name = "vertex-chain-index-postage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Postage stamp contract event indexer: a pure, idempotent projection of the batch set, the swap price, and the contract chain-state"
+
+[lints]
+workspace = true
+
+[dependencies]
+# The generic engine and its `Indexer` trait this crate plugs into.
+vertex-chain-index = { workspace = true }
+# The projection tables and the persisted-fold transaction surface.
+vertex-storage = { workspace = true }
+
+# alloy: `sol!` event bindings and the log filter. `default-features = false`
+# on the provider keeps reqwest and TLS out so the crate stays out of the wasm
+# cone without dragging a native transport in; the engine selects the transport.
+alloy-primitives = { workspace = true, features = ["serde"] }
+alloy-rpc-types-eth = { workspace = true }
+alloy-sol-types = { workspace = true }
+
+# serialization: the projection rows derive serde for storage.
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+vertex-storage-redb = { workspace = true }
+# Cross-checking the indexed chain-state against direct contract reads in the
+# e2e fork test needs the contract call bindings and a full HTTP provider.
+alloy-contract = { workspace = true }
+alloy-provider = { workspace = true, features = ["reqwest"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
