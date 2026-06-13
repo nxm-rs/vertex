@@ -11,7 +11,7 @@ Root-level rules in `/AGENTS.md` apply here too. The notes below are the area-sp
 - `peer/backoff`, `peer/score`, `peer/store`, `peer/registry`: peer state primitives that hold no protocol logic. Together with `local` they sit in the wasm compilation cone of the Swarm peer stack: keep them building for `wasm32-unknown-unknown` (the `wasm` CI job enforces this through `vertex-swarm-peer-manager`) and take wall clocks and monotonic time from `web-time`, not `std::time`. See `docs/agents/wasm.md`.
 - `dialer`: generic dial-request tracker with bounded queue and in-flight management.
 - `codec`: protobuf framing (`FramedProto`) plus the `protocol_error!` macro for protocol-shaped error enums.
-- `ratelimiter`: single-bucket and keyed GCRA limiters used by handlers.
+- `ratelimiter`: single-bucket and keyed GCRA limiters used by handlers, plus the outbound `SelfRateLimiter` (the inbound `KeyedRateLimiter`'s dual: parks rather than refuses). Keyed buckets carry per-key quotas (`set_key_quota` / `SelfRateLimiter::set_quota`) so an outbound throttle can resize one peer's bucket from a per-peer signal without disturbing the others; a resize is idempotent on an unchanged quota and re-clamps outstanding credit on a shrink.
 
 ## libp2p dependency
 

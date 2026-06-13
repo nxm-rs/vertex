@@ -6,16 +6,20 @@ use std::time::Duration;
 
 use tracing::{info, warn};
 
+use nectar_primitives::ChunkAddress;
 use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
-use vertex_swarm_api::{PeerReporter, SwarmClientAccounting, SwarmLaunchConfig, SwarmNodeType};
+use vertex_swarm_api::{
+    PeerReporter, SwarmAccountingConfig, SwarmClientAccounting, SwarmLaunchConfig, SwarmNodeType,
+    SwarmPricing,
+};
 use vertex_swarm_bandwidth::{
     Accounting, AccountingBuilder, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::NetworkConfig;
-use vertex_swarm_node::{AccountingSettlement, BootNode, ClientNode, PeerSelector};
+use vertex_swarm_node::{AccountingSettlement, BootNode, ClientNode, PeerSelector, SelfThrottle};
 use vertex_swarm_peer_manager::{
     DEFAULT_TICK_INTERVAL, DbPeerSnapshotStore, PeerSnapshot, spawn_peer_manager_task,
 };
@@ -33,7 +37,7 @@ use crate::verify::{ChunkVerifyConfig, VerifyingChunkProvider};
 type VerifiedChunkProvider = VerifyingChunkProvider<NetworkChunkProvider<Arc<Identity>>>;
 
 #[cfg(feature = "chain")]
-use vertex_swarm_api::{SwarmAccountingConfig, SwarmSpec};
+use vertex_swarm_api::SwarmSpec;
 #[cfg(feature = "chain")]
 use vertex_swarm_node::args::ChainConfig;
 #[cfg(feature = "swap")]
@@ -340,15 +344,34 @@ async fn build_client_backed_node(
         Arc::new(AccountingSettlement::new(accounting.bandwidth().clone())),
     ));
 
+    // Outbound self-throttle: pace our retrieval and pushsync requests under
+    // each peer's pseudosettle allowance so a burst never trips the remote's
+    // refuse-or-disconnect threshold. The allowance signal is the same
+    // `PeerAffordability` the selector consults, built once in accounting; the
+    // settle-unit size is the pseudosettle per-second forgiveness rate, and the
+    // representative chunk cost is the price of one chunk under the live pricer.
+    let settle_unit_size = SwarmAccountingConfig::refresh_rate(params.bandwidth);
+    let max_chunk_cost = SwarmPricing::price(accounting.pricing(), &ChunkAddress::zero());
+    let throttle = Arc::new(SelfThrottle::new(
+        accounting.bandwidth().clone(),
+        settle_unit_size,
+        max_chunk_cost,
+    ));
+    let throttled_handle = client_handle.clone().with_throttle(Arc::clone(&throttle));
+
     let chunk_provider =
-        NetworkChunkProvider::new(client_handle.clone(), topology.clone()).with_selector(selector);
+        NetworkChunkProvider::new(throttled_handle, topology.clone()).with_selector(selector);
     let chunks = VerifyingChunkProvider::new(chunk_provider, params.verify);
 
     // Spawn client service as independent task with graceful shutdown. The
     // client service reports retrieval and pushsync outcomes (success,
     // failure, and malformed-chunk invalid data) through the same peer manager
     // authority that accounting uses.
-    let client_service = client_service.with_reporter(Arc::clone(&reporter));
+    // The service shares the same throttle instance the handle paces against, so
+    // a peer disconnect clears that peer's bucket.
+    let client_service = client_service
+        .with_reporter(Arc::clone(&reporter))
+        .with_throttle(throttle);
     ctx.executor()
         .spawn_service("swarm.client_service", client_service);
 

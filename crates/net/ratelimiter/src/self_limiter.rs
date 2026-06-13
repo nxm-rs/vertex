@@ -98,10 +98,12 @@ impl<K: Eq + Hash + Clone, T> SelfRateLimiter<K, T> {
     /// This does not enqueue the request; use [`Self::enqueue`] to have the
     /// limiter park and later surface it.
     pub fn try_send(&self, key: K, cost: u32) -> Result<(), DelayUntil> {
-        match self.limiter.try_consume_n(key, cost) {
+        match self.limiter.try_consume_n(key.clone(), cost) {
             Ok(()) => Ok(()),
             Err(RateLimitedErr::TooSoon(d)) => Err(DelayUntil(d)),
-            Err(RateLimitedErr::TooLarge) => Err(DelayUntil(self.limiter.replenish_all_every())),
+            Err(RateLimitedErr::TooLarge) => {
+                Err(DelayUntil(self.limiter.replenish_all_every_for(&key)))
+            }
         }
     }
 
@@ -150,6 +152,22 @@ impl<K: Eq + Hash + Clone, T> SelfRateLimiter<K, T> {
             self.limiter.try_peek(key, cost),
             Err(RateLimitedErr::TooLarge)
         )
+    }
+
+    /// Resize `key`'s bucket to follow `quota`, replacing the limiter-wide
+    /// default for that key only.
+    ///
+    /// This is how an outbound throttle tracks a per-peer signal (a negotiated
+    /// allowance): when the signal changes, call this with the new quota and the
+    /// peer's bucket re-shapes promptly. Re-applying the same quota is a no-op,
+    /// so a steady allowance does not hand the peer a fresh burst, and a shrink
+    /// re-clamps any outstanding credit into the smaller bucket immediately.
+    ///
+    /// Already-parked items keep their recorded cost; the next drain re-checks
+    /// them against the resized bucket, so a shrink simply makes them wait
+    /// longer rather than admitting them early.
+    pub fn set_quota(&self, key: K, quota: Quota) {
+        self.limiter.set_key_quota(key, quota);
     }
 
     /// Drop the bucket and any parked items for `key`.
@@ -349,6 +367,39 @@ mod tests {
         let mut rl = SelfRateLimiter::<&'static str, u32>::new(quota_n_per(2, 60_000));
         assert_eq!(rl.enqueue("alice", 3, 99), Err(99));
         assert_eq!(rl.parked_keys(), 0);
+    }
+
+    #[test]
+    fn set_quota_widens_one_peers_bucket() {
+        let rl = SelfRateLimiter::<&'static str>::new(quota_n_per(1, 60_000));
+        rl.set_quota("alice", quota_n_per(3, 60_000));
+        assert_eq!(rl.try_send("alice", 3), Ok(()));
+        assert!(rl.try_send("alice", 1).is_err());
+        // Bob keeps the default single-token bucket.
+        assert_eq!(rl.try_send("bob", 1), Ok(()));
+        assert!(rl.try_send("bob", 1).is_err());
+    }
+
+    #[test]
+    fn set_quota_shrink_throttles_immediately() {
+        // A wide bucket is drained, then the allowance shrinks: the next send
+        // must be refused, not admitted from stale oversized credit.
+        let rl = SelfRateLimiter::<&'static str>::new(quota_n_per(10, 60_000));
+        assert_eq!(rl.try_send("alice", 10), Ok(()));
+        rl.set_quota("alice", quota_n_per(1, 60_000));
+        assert!(rl.try_send("alice", 1).is_err());
+    }
+
+    #[test]
+    fn try_send_too_large_reports_per_key_window() {
+        // A peer with a tiny per-key bucket reports its own replenish window for
+        // an over-capacity cost, not the limiter-wide default.
+        let rl = SelfRateLimiter::<&'static str>::new(quota_n_per(2, 1_000));
+        rl.set_quota("alice", quota_n_per(1, 5_000));
+        assert_eq!(
+            rl.try_send("alice", 2),
+            Err(DelayUntil(Duration::from_millis(5_000)))
+        );
     }
 
     #[test]
