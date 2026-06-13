@@ -1,0 +1,46 @@
+[package]
+name = "vertex-chain-index-swap-price"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Swap (settlement) price oracle indexer: folds PriceUpdate and ChequeValueDeductionUpdate into a vertex-storage projection"
+
+[lints]
+workspace = true
+
+[dependencies]
+# The generic engine drives this indexer; the `Indexer` trait and `IndexError`
+# come from here.
+vertex-chain-index = { workspace = true }
+# The projection table lives behind the `Database`/`DbTx` traits.
+vertex-storage = { workspace = true }
+
+# nectar: the canonical `ISwapPriceOracle` event bindings and the
+# `SWAP_PRICE_ORACLE` deployment constants (address + deployment block).
+nectar-contracts = { workspace = true }
+
+# alloy: `U256` for the projected values, the `Filter`/`Log` types the
+# `Indexer` trait speaks, and `SolEvent` for decoding. `default-features =
+# false` keeps reqwest and native TLS out so the crate stays wasm-clean; it
+# carries no transport of its own.
+alloy-primitives = { workspace = true, features = ["serde"] }
+alloy-rpc-types-eth = { workspace = true }
+alloy-sol-types = { workspace = true }
+
+# serialization: the projected row derives serde.
+serde = { workspace = true, features = ["derive"] }
+
+# derive macros
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# In-memory backend for the synthetic-log unit tests.
+vertex-storage-redb = { workspace = true }
+# A full provider with an HTTP transport for the ignored e2e fork test, plus
+# the engine and its reader trait to drive a real sync, and the request/call
+# types for the direct `getPrice()` cross-check.
+alloy-provider = { workspace = true, features = ["reqwest"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
