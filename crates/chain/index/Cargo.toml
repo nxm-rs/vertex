@@ -1,0 +1,48 @@
+[package]
+name = "vertex-chain-index"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Generic, reorg-safe, contract-agnostic chain event-indexing engine for Vertex"
+
+[lints]
+workspace = true
+
+[dependencies]
+# storage: the persisted cursor lives behind the `Database`/`DbTx` traits.
+vertex-storage = { workspace = true }
+# metrics: lazy counters for pages/logs/errors.
+vertex-metrics = { workspace = true }
+
+# alloy: the engine drives an `alloy_provider::Provider` over the Ethereum
+# network. `default-features = false` keeps reqwest and native TLS out so the
+# crate stays buildable for wasm when a wasm-friendly transport is selected; the
+# concrete transport is the consumer's choice.
+alloy-network = { workspace = true }
+alloy-primitives = { workspace = true, features = ["serde"] }
+alloy-provider = { workspace = true }
+alloy-rpc-types-eth = { workspace = true }
+
+# serialization: the persisted cursor derives serde.
+serde = { workspace = true, features = ["derive"] }
+
+# async: the engine selects between its driver loop and shutdown with
+# `tokio::select!` and ticks the follow loop with `tokio::time::interval`.
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tracing = { workspace = true }
+
+# derive macros
+strum = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+vertex-storage-redb = { workspace = true }
+alloy-sol-types = { workspace = true }
+# Constructing a synthetic provider range error for the adaptive-paging test.
+alloy-json-rpc = { workspace = true }
+# A full provider with an HTTP transport for the ignored e2e fork test.
+alloy-provider = { workspace = true, features = ["reqwest"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }

@@ -96,6 +96,7 @@ members = [
 
     # Chain (Ethereum RPC access)
     "crates/chain",
+    "crates/chain/index",
 
     # FFI (native embedding surface)
     "crates/ffi",
@@ -234,6 +235,7 @@ vertex-rpc-server = { path = "crates/rpc/server" }
 
 # chain (Ethereum RPC access)
 vertex-chain = { path = "crates/chain" }
+vertex-chain-index = { path = "crates/chain/index" }
 
 # ffi (native embedding surface)
 vertex-ffi = { path = "crates/ffi" }
@@ -245,6 +247,7 @@ alloy-network = { version = "2.0", default-features = false }
 alloy-provider = { version = "2.0", default-features = false }
 alloy-contract = { version = "2.0", default-features = false }
 alloy-rpc-types-eth = { version = "2.0", default-features = false }
+alloy-json-rpc = { version = "2.0", default-features = false }
 alloy-signer = { version = "2.0" }
 # The `keystore` feature pulls `eth-keystore`, which does not build for
 # wasm32. It is enabled per-target (native-only) by the sole keystore consumer,
