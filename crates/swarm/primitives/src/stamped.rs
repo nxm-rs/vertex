@@ -91,6 +91,63 @@ impl StampedChunk {
     pub fn into_parts(self) -> (AnyChunk, Stamp) {
         (self.chunk, self.stamp)
     }
+
+    /// Prove this chunk answers a request for `requested`, consuming it into a
+    /// [`VerifiedStampedChunk`].
+    ///
+    /// The chunk's address is derived from its own bytes (the BMT hash for a
+    /// content chunk, owner plus id for a single-owner chunk), so an equal
+    /// address means the bytes are exactly the ones the requester asked for.
+    /// This is the verify-before-the-wire check expressed as a type-state: only
+    /// a [`VerifiedStampedChunk`] can be handed to a responder, so a chunk that
+    /// does not answer the request cannot be served by construction.
+    ///
+    /// Returns the chunk unchanged in [`Err`] on a mismatch so the caller can
+    /// treat it as a miss without losing the value. The error is boxed because a
+    /// [`StampedChunk`] is large (a full chunk payload plus a stamp).
+    pub fn verify_answers(
+        self,
+        requested: ChunkAddress,
+    ) -> Result<VerifiedStampedChunk, Box<StampedChunk>> {
+        if *self.address() == requested {
+            Ok(VerifiedStampedChunk(self))
+        } else {
+            Err(Box::new(self))
+        }
+    }
+}
+
+/// A [`StampedChunk`] proven to answer a specific request.
+///
+/// Constructed only by [`StampedChunk::verify_answers`], which checks the
+/// chunk's content-derived address against the requested address. A responder
+/// accepts only this type, so a chunk that does not match the request can never
+/// be sent down the wire: the gate is a compile-time guarantee rather than a
+/// runtime check at the send site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedStampedChunk(StampedChunk);
+
+impl VerifiedStampedChunk {
+    /// The chunk's address.
+    #[inline]
+    #[must_use]
+    pub fn address(&self) -> &ChunkAddress {
+        self.0.address()
+    }
+
+    /// Borrow the underlying stamped chunk.
+    #[inline]
+    #[must_use]
+    pub fn stamped(&self) -> &StampedChunk {
+        &self.0
+    }
+
+    /// Consume into the underlying stamped chunk for sending down the wire.
+    #[inline]
+    #[must_use]
+    pub fn into_inner(self) -> StampedChunk {
+        self.0
+    }
 }
 
 /// Rebuild an [`AnyChunk`] from wire bytes given the expected address.
@@ -172,6 +229,30 @@ mod tests {
         assert!(rebuilt.chunk().is_single_owner());
         assert_eq!(*rebuilt.address(), address);
         assert_eq!(rebuilt.into_parts().0.into_bytes(), data);
+    }
+
+    #[test]
+    fn verify_answers_accepts_matching_address() {
+        let chunk: AnyChunk = content_chunk().into();
+        let address = *chunk.address();
+        let stamped = StampedChunk::new(chunk, test_stamp());
+        let verified = stamped
+            .verify_answers(address)
+            .expect("matching address verifies");
+        assert_eq!(*verified.address(), address);
+    }
+
+    #[test]
+    fn verify_answers_rejects_mismatched_address() {
+        let chunk: AnyChunk = content_chunk().into();
+        let stamped = StampedChunk::new(chunk, test_stamp());
+        let wrong = ChunkAddress::new([0xff; 32]);
+        let returned = stamped
+            .clone()
+            .verify_answers(wrong)
+            .expect_err("wrong address must fail");
+        // The value is returned unchanged so the caller can treat it as a miss.
+        assert_eq!(*returned, stamped);
     }
 
     #[test]

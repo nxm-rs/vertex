@@ -8660,6 +8660,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vertex-store"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+]
+
+[[package]]
 name = "vertex-swarm-api"
 version = "0.1.0"
 dependencies = [
@@ -8881,10 +8888,16 @@ dependencies = [
 name = "vertex-swarm-localstore"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
+ "alloy-signer-local",
  "clap 4.6.1",
+ "nectar-postage",
+ "nectar-primitives",
  "serde",
+ "vertex-store",
  "vertex-swarm-api",
- "vertex-swarm-spec",
+ "vertex-swarm-primitives",
+ "vertex-util-runtime",
 ]
 
 [[package]]
@@ -9140,6 +9153,7 @@ name = "vertex-swarm-node"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-signer-local",
  "async-trait",
  "auto_impl",
  "bytes",

@@ -39,7 +39,7 @@
 mod stamped;
 mod validated;
 
-pub use stamped::{ReconstructError, StampedChunk, reconstruct_chunk};
+pub use stamped::{ReconstructError, StampedChunk, VerifiedStampedChunk, reconstruct_chunk};
 pub use validated::{ValidatedChunk, ValidationError};
 
 // Re-export canonical Swarm primitives from nectar. See the crate-level docs

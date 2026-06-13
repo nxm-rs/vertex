@@ -43,6 +43,7 @@ vertex-net-local.workspace = true
 ## vertex - swarm (libp2p-free abstractions)
 vertex-swarm-api.workspace = true
 vertex-swarm-identity.workspace = true
+vertex-swarm-localstore.workspace = true
 vertex-swarm-spec.workspace = true
 
 ## vertex - infrastructure
@@ -82,7 +83,6 @@ clap = { workspace = true, features = ["derive", "env"], optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 vertex-node-api = { workspace = true, optional = true }
 vertex-swarm-bandwidth-pricing = { workspace = true, optional = true, features = ["cli"] }
-vertex-swarm-localstore = { workspace = true, optional = true }
 vertex-swarm-redistribution = { workspace = true, optional = true }
 
 # p2p: the native transport pulls tcp/dns/mdns/upnp/autonat; the browser build
@@ -110,6 +110,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 libp2p-swarm-test.workspace = true
 rand_08.workspace = true
 nectar-postage.workspace = true
+alloy-signer-local.workspace = true
 
 [features]
 default = ["std"]
@@ -123,8 +124,8 @@ cli = [
     "dep:serde",
     "dep:vertex-node-api",
     "dep:vertex-swarm-bandwidth-pricing",
-    "dep:vertex-swarm-localstore",
     "dep:vertex-swarm-redistribution",
+    "vertex-swarm-localstore/cli",
     "vertex-swarm-primitives/serde",
     "alloy-primitives/serde",
 ]

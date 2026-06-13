@@ -24,12 +24,14 @@ use vertex_swarm_topology::{
 use vertex_tasks::GracefulShutdown;
 use vertex_tasks::TaskExecutor;
 
+use vertex_swarm_api::SwarmLocalStore;
+
 use super::base::BaseNode;
 use super::builder::BuiltInfrastructure;
 use super::nat::{NatBehaviour, NatEvent};
 use crate::protocol::{
     BehaviourConfig as ClientBehaviourConfig, ClientBehaviour, ClientCommand, ClientEvent,
-    PseudosettleEvent,
+    PseudosettleEvent, StubForwarder,
 };
 use crate::{ClientHandle, ClientService};
 
@@ -56,6 +58,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
         topology: TopologyBehaviour<I>,
         nat: NatBehaviour,
         connection_limits: connection_limits::Behaviour,
+        store: Arc<dyn SwarmLocalStore>,
     ) -> Self {
         let agent_versions = topology.agent_versions();
         Self {
@@ -71,7 +74,14 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
             ),
             nat,
             topology,
-            client: ClientBehaviour::new(ClientBehaviourConfig::default()),
+            // The cache-only client never relays: the forwarder is stubbed so a
+            // cache miss and every inbound pushsync reset the substream. The real
+            // multi-hop relay is filled in separately.
+            client: ClientBehaviour::new(
+                ClientBehaviourConfig::default(),
+                store,
+                Arc::new(StubForwarder),
+            ),
         }
     }
 }
@@ -82,6 +92,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
 async fn build_client_base<I, C>(
     infra: BuiltInfrastructure<I>,
     network_config: &C,
+    store: Arc<dyn SwarmLocalStore>,
 ) -> Result<BaseNode<I, ClientNodeBehaviour<I>>>
 where
     I: SwarmIdentity + Clone,
@@ -90,7 +101,7 @@ where
     let connection_limits = super::base::build_connection_limits(network_config);
     super::builder::build_base_node(infra, network_config, "Client node", move |pk, topology| {
         let nat = NatBehaviour::from_config(network_config, pk.to_peer_id());
-        ClientNodeBehaviour::from_parts(pk, topology, nat, connection_limits)
+        ClientNodeBehaviour::from_parts(pk, topology, nat, connection_limits, store)
     })
     .await
 }
@@ -320,6 +331,7 @@ pub struct ClientNodeBuilder<I: SwarmIdentity + Clone> {
     identity: I,
     infra: Option<BuiltInfrastructure<I>>,
     kademlia_config: Option<KademliaConfig>,
+    store: Option<Arc<dyn SwarmLocalStore>>,
     pseudosettle_event_tx: Option<mpsc::UnboundedSender<PseudosettleEvent>>,
     #[cfg(feature = "swap")]
     swap_event_tx: Option<mpsc::UnboundedSender<crate::protocol::SwapEvent>>,
@@ -331,6 +343,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
             identity,
             infra: None,
             kademlia_config: None,
+            store: None,
             pseudosettle_event_tx: None,
             #[cfg(feature = "swap")]
             swap_event_tx: None,
@@ -339,6 +352,16 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
 
     pub fn with_infrastructure(mut self, infra: BuiltInfrastructure<I>) -> Self {
         self.infra = Some(infra);
+        self
+    }
+
+    /// Inject the client chunk cache.
+    ///
+    /// The behaviour serves inbound retrievals from it and the client service
+    /// caches its own deliveries into it. When unset, the build creates a
+    /// default in-memory cache with the standard budget and SOC TTL.
+    pub fn with_store(mut self, store: Arc<dyn SwarmLocalStore>) -> Self {
+        self.store = Some(store);
         self
     }
 
@@ -396,7 +419,17 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
             }
         };
 
-        let mut base = build_client_base(infra, network_config).await?;
+        // Default to an in-memory cache sized by the standard budget and SOC
+        // TTL; an embedder or the native builder injects its own via
+        // `with_store`.
+        let store: Arc<dyn SwarmLocalStore> = self.store.unwrap_or_else(|| {
+            Arc::new(vertex_swarm_localstore::ChunkStore::with_budget(
+                vertex_swarm_localstore::DEFAULT_CACHE_BUDGET_BYTES as usize,
+                vertex_swarm_localstore::DEFAULT_SOC_CACHE_TTL_NS,
+            ))
+        });
+
+        let mut base = build_client_base(infra, network_config, Arc::clone(&store)).await?;
 
         // Register the local PeerId for address advertisement in handshakes
         base.swarm
@@ -429,6 +462,9 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
         let (event_tx, event_rx) = mpsc::channel(crate::client_service::DEFAULT_CHANNEL_CAPACITY);
 
         let (client_service, client_handle) = ClientService::with_channels(command_tx, event_rx);
+        // The service caches the client's own retrieval deliveries into the same
+        // cache the behaviour serves inbound requests from.
+        let client_service = client_service.with_store(store);
 
         let node = ClientNode {
             base,

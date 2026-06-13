@@ -15,15 +15,15 @@
 //! for routing to the respective settlement services. The behaviour routes these
 //! events based on optional senders configured at construction time.
 
-use alloy_primitives::{Signature, U256};
+use alloy_primitives::U256;
 use libp2p::PeerId;
-use nectar_primitives::{ChunkAddress, Nonce};
+use nectar_primitives::ChunkAddress;
 use tokio::sync::oneshot;
 use vertex_swarm_api::PushReceipt;
 use vertex_swarm_net_pseudosettle::PaymentAck;
 #[cfg(feature = "swap")]
 use vertex_swarm_net_swap::SignedCheque;
-use vertex_swarm_primitives::{OverlayAddress, StampedChunk, StorageRadius, SwarmNodeType};
+use vertex_swarm_primitives::{OverlayAddress, StampedChunk, SwarmNodeType};
 
 use crate::client_service::{ChunkTransferError, RetrievalResult};
 
@@ -76,19 +76,41 @@ pub enum ClientEvent {
         peer: OverlayAddress,
     },
 
-    /// A peer is requesting a chunk from us.
+    /// We served an inbound retrieval request from our cache.
     ///
-    /// Check if we have the chunk, verify accounting, then respond with
-    /// `ServeChunk` command.
-    ChunkRequested {
-        /// The peer requesting the chunk.
+    /// The chunk has already gone down the wire; this event is for scoring and
+    /// metrics only.
+    InboundServed {
+        /// The peer we served.
         peer: OverlayAddress,
-        /// The libp2p peer ID.
-        peer_id: PeerId,
+    },
+
+    /// We answered an inbound retrieval by forwarding to a closer peer.
+    InboundForwarded {
+        /// The peer we served.
+        peer: OverlayAddress,
+    },
+
+    /// We could not serve or forward an inbound retrieval; the substream reset.
+    InboundMissed {
+        /// The peer that asked.
+        peer: OverlayAddress,
         /// The requested chunk address.
         address: ChunkAddress,
-        /// Request ID for matching response.
-        request_id: u64,
+    },
+
+    /// We relayed a storer's receipt for an inbound pushsync (never signed it).
+    InboundRelayed {
+        /// The peer that pushed.
+        peer: OverlayAddress,
+    },
+
+    /// We could not forward an inbound pushsync; the substream reset.
+    InboundPushFailed {
+        /// The peer that pushed.
+        peer: OverlayAddress,
+        /// The chunk address.
+        address: ChunkAddress,
     },
 
     /// Received a chunk from a peer (response to our request).
@@ -117,35 +139,12 @@ pub enum ClientEvent {
         kind: FailureKind,
     },
 
-    /// A peer is pushing a chunk to us.
-    ///
-    /// Validate the stamp, decide whether to store or forward, then respond
-    /// with `SendReceipt` command.
-    ChunkPushReceived {
-        /// The peer pushing the chunk.
-        peer: OverlayAddress,
-        /// The libp2p peer ID.
-        peer_id: PeerId,
-        /// The chunk address.
-        address: ChunkAddress,
-        /// The pushed chunk and its postage stamp.
-        chunk: StampedChunk,
-        /// Request ID for matching response.
-        request_id: u64,
-    },
-
     /// Received a receipt for a chunk we pushed.
     ReceiptReceived {
         /// The peer that sent the receipt.
         peer: OverlayAddress,
         /// The chunk address.
         address: ChunkAddress,
-        /// The receipt signature.
-        signature: Signature,
-        /// The receipt nonce.
-        nonce: Nonce,
-        /// The peer's storage radius.
-        storage_radius: StorageRadius,
         /// Time from push to receipt, for latency scoring.
         latency: core::time::Duration,
     },
@@ -266,6 +265,11 @@ pub enum ClientEvent {
 /// Request commands ([`Self::RetrieveChunk`], [`Self::PushChunk`]) carry the
 /// response channel for their outcome, so the enum is intentionally not
 /// `Clone`.
+///
+/// `PushChunk` carries a whole [`StampedChunk`], so it dwarfs the other
+/// variants; the size difference is accepted rather than boxing a value that is
+/// constructed once per upload and moved straight onto the wire.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum ClientCommand {
     /// Activate the handler for a peer after handshake completes.
@@ -302,18 +306,6 @@ pub enum ClientCommand {
         response: RetrievalResponseTx,
     },
 
-    /// Serve a chunk to a peer (response to ChunkRequested).
-    ServeChunk {
-        /// The peer to serve.
-        peer: OverlayAddress,
-        /// Request ID from ChunkRequested event.
-        request_id: u64,
-        /// The chunk address.
-        address: ChunkAddress,
-        /// The chunk and its postage stamp to serve.
-        chunk: StampedChunk,
-    },
-
     /// Push a chunk to a peer.
     PushChunk {
         /// The peer to push to.
@@ -324,22 +316,6 @@ pub enum ClientCommand {
         chunk: StampedChunk,
         /// Resolves with the storer's receipt or the failure.
         response: PushResponseTx,
-    },
-
-    /// Send a receipt to a peer (response to ChunkPushReceived).
-    SendReceipt {
-        /// The peer to send the receipt to.
-        peer: OverlayAddress,
-        /// Request ID from ChunkPushReceived event.
-        request_id: u64,
-        /// The chunk address.
-        address: ChunkAddress,
-        /// The receipt signature.
-        signature: Signature,
-        /// The receipt nonce.
-        nonce: Nonce,
-        /// Our storage radius.
-        storage_radius: StorageRadius,
     },
 
     /// Send a pseudosettle payment to a peer.

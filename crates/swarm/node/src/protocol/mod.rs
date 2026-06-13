@@ -64,6 +64,7 @@
 
 mod behaviour;
 mod events;
+mod forward;
 mod handler;
 pub(crate) mod upgrade;
 
@@ -73,3 +74,4 @@ pub use events::SwapEvent;
 pub use events::{
     ClientCommand, ClientEvent, FailureKind, PseudosettleEvent, PushResponseTx, RetrievalResponseTx,
 };
+pub(crate) use forward::StubForwarder;

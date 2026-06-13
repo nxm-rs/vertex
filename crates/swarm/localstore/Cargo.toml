@@ -6,16 +6,33 @@ rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Swarm local store configuration"
+description = "Swarm client chunk cache and local store configuration"
 
 [lints]
 workspace = true
 
 [dependencies]
 # vertex
-vertex-swarm-spec.workspace = true
 vertex-swarm-api.workspace = true
+vertex-swarm-primitives.workspace = true
+vertex-store.workspace = true
+vertex-util-runtime.workspace = true
 
-# cli
-clap = { workspace = true, features = ["derive"] }
-serde = { workspace = true, features = ["derive"] }
+# nectar
+nectar-primitives.workspace = true
+nectar-postage.workspace = true
+
+# cli (optional: the byte-bounded cache itself needs neither clap nor serde)
+clap = { workspace = true, features = ["derive"], optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+
+[dev-dependencies]
+alloy-primitives.workspace = true
+alloy-signer-local.workspace = true
+
+[features]
+default = []
+# CLI argument parsing for the local store config (`LocalStoreArgs`). Pulls
+# clap and serde; the cache wrapper is available without it, which keeps the
+# wasm client cone free of the CLI dependencies.
+cli = ["dep:clap", "dep:serde"]

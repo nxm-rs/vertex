@@ -78,6 +78,7 @@ members = [
     "crates/swarm/bandwidth/swap",
 
     # Storage
+    "crates/store",
     "crates/storage",
     "crates/storage/redb",
 
@@ -196,6 +197,7 @@ vertex-util-runtime = { path = "crates/util/runtime" }
 
 # swarm
 vertex-swarm-identity = { path = "crates/swarm/identity" }
+vertex-store = { path = "crates/store" }
 vertex-storage = { path = "crates/storage" }
 vertex-storage-redb = { path = "crates/storage/redb" }
 vertex-swarm-api = { path = "crates/swarm/api" }
