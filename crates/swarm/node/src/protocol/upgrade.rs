@@ -417,14 +417,25 @@ impl OutboundUpgrade<Stream> for ClientOutboundUpgrade {
 }
 
 /// Information about an outbound request, used for correlating responses.
-#[derive(Debug, Clone)]
+///
+/// Travels with the outbound substream and comes back with its completion
+/// (or failure), so it is the natural per-request correlation: retrieval and
+/// pushsync carry their caller's response channel here, and the handler
+/// resolves it from whichever path terminates the request.
+#[derive(Debug)]
 pub(crate) enum ClientOutboundInfo {
     /// Pricing announcement.
     Pricing,
-    /// Retrieval request with chunk address.
-    Retrieval { address: ChunkAddress },
-    /// Pushsync request with chunk address.
-    Pushsync { address: ChunkAddress },
+    /// Retrieval request with chunk address and the caller's response channel.
+    Retrieval {
+        address: ChunkAddress,
+        response: super::events::RetrievalResponseTx,
+    },
+    /// Pushsync request with chunk address and the caller's response channel.
+    Pushsync {
+        address: ChunkAddress,
+        response: super::events::PushResponseTx,
+    },
     /// Pseudosettle payment with amount.
     Pseudosettle { amount: U256 },
     /// Swap cheque emission.

@@ -37,15 +37,18 @@ use libp2p::swarm::{
 };
 use nectar_primitives::{ChunkAddress, Nonce};
 use tracing::{debug, warn};
+use vertex_swarm_api::PushReceipt;
 use vertex_swarm_net_pseudosettle::PaymentAck;
 #[cfg(feature = "swap")]
 use vertex_swarm_net_swap::SignedCheque;
 use vertex_swarm_primitives::{OverlayAddress, StampedChunk, StorageRadius, SwarmNodeType};
 
+use super::events::{PushResponseTx, RetrievalResponseTx};
 use super::upgrade::{
     ClientInboundOutput, ClientInboundUpgrade, ClientOutboundInfo, ClientOutboundOutput,
     ClientOutboundUpgrade,
 };
+use crate::client_service::{RetrievalError, RetrievalResult};
 
 const DEFAULT_MAX_PENDING_COMMANDS: usize = 256;
 const DEFAULT_MAX_PENDING_EVENTS: usize = 256;
@@ -111,11 +114,15 @@ pub(crate) enum HandlerCommand {
     RetrieveChunk {
         /// The address of the chunk to retrieve.
         address: ChunkAddress,
+        /// Resolves with the retrieved chunk or the failure.
+        response: RetrievalResponseTx,
     },
     /// Push a chunk to the peer for storage.
     PushChunk {
         /// The chunk and its postage stamp.
         chunk: StampedChunk,
+        /// Resolves with the storer's receipt or the failure.
+        response: PushResponseTx,
     },
     /// Send a pseudosettle payment to the peer.
     SendPseudosettle {
@@ -218,6 +225,30 @@ pub(crate) enum HandlerEvent {
         nonce: Nonce,
         /// The storer's storage radius.
         storage_radius: StorageRadius,
+    },
+    /// An outbound retrieval request failed.
+    ///
+    /// The requester has already been resolved through its response channel;
+    /// this event feeds peer scoring and metrics.
+    RetrievalFailed {
+        /// The peer's overlay address.
+        overlay: OverlayAddress,
+        /// The requested chunk address.
+        address: ChunkAddress,
+        /// Error description.
+        error: String,
+    },
+    /// An outbound chunk push failed.
+    ///
+    /// The pusher has already been resolved through its response channel;
+    /// this event feeds peer scoring and metrics.
+    PushFailed {
+        /// The peer's overlay address.
+        overlay: OverlayAddress,
+        /// The chunk address.
+        address: ChunkAddress,
+        /// Error description.
+        error: String,
     },
     /// Protocol error occurred.
     Error {
@@ -478,55 +509,85 @@ impl ClientHandler {
         }
     }
 
-    /// Handle retrieval response.
+    /// Handle retrieval response, resolving the caller's response channel.
     fn on_retrieval_response(
         &mut self,
         delivery: vertex_swarm_net_retrieval::Delivery,
         address: ChunkAddress,
+        response: RetrievalResponseTx,
     ) {
-        if let Some(overlay) = self.overlay() {
-            match delivery {
-                vertex_swarm_net_retrieval::Delivery::Error(err) => {
-                    debug!(%overlay, error = %err, "Retrieval failed");
-                    self.push_event(HandlerEvent::Error {
-                        overlay: Some(overlay),
-                        protocol: "retrieval",
-                        error: err,
-                    });
-                }
-                vertex_swarm_net_retrieval::Delivery::Chunk(chunk) => {
-                    debug!(%overlay, %address, "Received chunk");
-                    self.push_event(HandlerEvent::ChunkReceived {
+        let overlay = self.overlay();
+        match delivery {
+            vertex_swarm_net_retrieval::Delivery::Error(err) => {
+                debug!(?overlay, %address, error = %err, "Retrieval failed");
+                if let Some(overlay) = overlay {
+                    self.push_event(HandlerEvent::RetrievalFailed {
                         overlay,
                         address,
-                        chunk: *chunk,
+                        error: err.clone(),
                     });
                 }
+                let _ = response.send(Err(RetrievalError::Protocol(err)));
+            }
+            vertex_swarm_net_retrieval::Delivery::Chunk(chunk) => {
+                let Some(overlay) = overlay else {
+                    let _ = response.send(Err(RetrievalError::Protocol(
+                        "handler not active".to_string(),
+                    )));
+                    return;
+                };
+                debug!(%overlay, %address, "Received chunk");
+                self.push_event(HandlerEvent::ChunkReceived {
+                    overlay,
+                    address,
+                    chunk: (*chunk).clone(),
+                });
+                let _ = response.send(Ok(RetrievalResult {
+                    chunk: *chunk,
+                    peer: overlay,
+                }));
             }
         }
     }
 
-    /// Handle pushsync receipt.
-    fn on_pushsync_receipt(&mut self, receipt: vertex_swarm_net_pushsync::Receipt) {
-        if let Some(overlay) = self.overlay() {
-            if let Some(ref err) = receipt.error {
-                debug!(%overlay, error = %err, "Pushsync failed");
-                self.push_event(HandlerEvent::Error {
-                    overlay: Some(overlay),
-                    protocol: "pushsync",
+    /// Handle pushsync receipt, resolving the caller's response channel.
+    fn on_pushsync_receipt(
+        &mut self,
+        receipt: vertex_swarm_net_pushsync::Receipt,
+        response: PushResponseTx,
+    ) {
+        let overlay = self.overlay();
+        if let Some(err) = receipt.error {
+            debug!(?overlay, address = %receipt.address, error = %err, "Pushsync failed");
+            if let Some(overlay) = overlay {
+                self.push_event(HandlerEvent::PushFailed {
+                    overlay,
+                    address: receipt.address,
                     error: err.clone(),
                 });
-            } else {
-                debug!(%overlay, address = %receipt.address, "Received receipt");
-                self.pending_events
-                    .push_back(HandlerEvent::ReceiptReceived {
-                        overlay,
-                        address: receipt.address,
-                        signature: receipt.signature,
-                        nonce: receipt.nonce,
-                        storage_radius: receipt.storage_radius,
-                    });
             }
+            let _ = response.send(Err(RetrievalError::PushRejected(err)));
+        } else {
+            let Some(overlay) = overlay else {
+                let _ = response.send(Err(RetrievalError::Protocol(
+                    "handler not active".to_string(),
+                )));
+                return;
+            };
+            debug!(%overlay, address = %receipt.address, "Received receipt");
+            self.push_event(HandlerEvent::ReceiptReceived {
+                overlay,
+                address: receipt.address,
+                signature: receipt.signature,
+                nonce: receipt.nonce,
+                storage_radius: receipt.storage_radius,
+            });
+            let _ = response.send(Ok(PushReceipt {
+                storer: overlay,
+                signature: receipt.signature,
+                nonce: receipt.nonce,
+                storage_radius: receipt.storage_radius,
+            }));
         }
     }
 }
@@ -614,24 +675,24 @@ impl ConnectionHandler for ClientHandler {
                         });
                     }
                 }
-                HandlerCommand::RetrieveChunk { address } => {
+                HandlerCommand::RetrieveChunk { address, response } => {
                     let upgrade = ClientOutboundUpgrade::retrieval(address);
                     return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
                         protocol: SubstreamProtocol::new(
                             upgrade,
-                            ClientOutboundInfo::Retrieval { address },
+                            ClientOutboundInfo::Retrieval { address, response },
                         )
                         .with_timeout(self.config.timeout),
                     });
                 }
-                HandlerCommand::PushChunk { chunk } => {
+                HandlerCommand::PushChunk { chunk, response } => {
                     let address = *chunk.address();
                     let delivery = vertex_swarm_net_pushsync::Delivery::new(chunk);
                     let upgrade = ClientOutboundUpgrade::pushsync(delivery);
                     return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
                         protocol: SubstreamProtocol::new(
                             upgrade,
-                            ClientOutboundInfo::Pushsync { address },
+                            ClientOutboundInfo::Pushsync { address, response },
                         )
                         .with_timeout(self.config.timeout),
                     });
@@ -772,23 +833,57 @@ impl ConnectionHandler for ClientHandler {
             }
 
             ConnectionEvent::DialUpgradeError(e) => {
-                let protocol = match &e.info {
+                let error = e.error.to_string();
+                match e.info {
                     ClientOutboundInfo::Pricing => {
                         self.pricing_outbound_pending = false;
-                        "pricing"
+                        warn!(protocol = "pricing", %error, "Client dial upgrade error");
+                        self.push_event(HandlerEvent::Error {
+                            overlay: self.overlay(),
+                            protocol: "pricing",
+                            error,
+                        });
                     }
-                    ClientOutboundInfo::Retrieval { .. } => "retrieval",
-                    ClientOutboundInfo::Pushsync { .. } => "pushsync",
-                    ClientOutboundInfo::Pseudosettle { .. } => "pseudosettle",
+                    ClientOutboundInfo::Retrieval { address, response } => {
+                        warn!(protocol = "retrieval", %address, %error, "Client dial upgrade error");
+                        if let Some(overlay) = self.overlay() {
+                            self.push_event(HandlerEvent::RetrievalFailed {
+                                overlay,
+                                address,
+                                error: error.clone(),
+                            });
+                        }
+                        let _ = response.send(Err(RetrievalError::Protocol(error)));
+                    }
+                    ClientOutboundInfo::Pushsync { address, response } => {
+                        warn!(protocol = "pushsync", %address, %error, "Client dial upgrade error");
+                        if let Some(overlay) = self.overlay() {
+                            self.push_event(HandlerEvent::PushFailed {
+                                overlay,
+                                address,
+                                error: error.clone(),
+                            });
+                        }
+                        let _ = response.send(Err(RetrievalError::Protocol(error)));
+                    }
+                    ClientOutboundInfo::Pseudosettle { .. } => {
+                        warn!(protocol = "pseudosettle", %error, "Client dial upgrade error");
+                        self.push_event(HandlerEvent::Error {
+                            overlay: self.overlay(),
+                            protocol: "pseudosettle",
+                            error,
+                        });
+                    }
                     #[cfg(feature = "swap")]
-                    ClientOutboundInfo::Swap => "swap",
-                };
-                warn!(protocol, error = %e.error, "Client dial upgrade error");
-                self.push_event(HandlerEvent::Error {
-                    overlay: self.overlay(),
-                    protocol,
-                    error: e.error.to_string(),
-                });
+                    ClientOutboundInfo::Swap => {
+                        warn!(protocol = "swap", %error, "Client dial upgrade error");
+                        self.push_event(HandlerEvent::Error {
+                            overlay: self.overlay(),
+                            protocol: "swap",
+                            error,
+                        });
+                    }
+                }
             }
 
             ConnectionEvent::ListenUpgradeError(e) => {
@@ -858,15 +953,16 @@ impl ClientHandler {
             }
             (
                 ClientOutboundOutput::Retrieval(delivery),
-                ClientOutboundInfo::Retrieval { address },
+                ClientOutboundInfo::Retrieval { address, response },
             ) => {
-                self.on_retrieval_response(delivery, address);
+                self.on_retrieval_response(delivery, address, response);
             }
-            (ClientOutboundOutput::Pushsync(receipt), ClientOutboundInfo::Pushsync { address }) => {
-                if let Some(overlay) = self.overlay() {
-                    debug!(%overlay, %address, "Received pushsync receipt");
-                    self.on_pushsync_receipt(receipt);
-                }
+            (
+                ClientOutboundOutput::Pushsync(receipt),
+                ClientOutboundInfo::Pushsync { address, response },
+            ) => {
+                debug!(%address, "Received pushsync receipt");
+                self.on_pushsync_receipt(receipt, response);
             }
             (
                 ClientOutboundOutput::Pseudosettle(ack),
