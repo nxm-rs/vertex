@@ -173,6 +173,37 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
         self.base.topology_handle()
     }
 
+    /// Enable multi-hop forwarding (relay) for this node.
+    ///
+    /// Installs the real network forwarder in place of the default stub, so a
+    /// retrieval cache miss forwards to a strictly-closer peer and an inbound
+    /// pushsync relays toward the chunk's neighbourhood, accounting both legs.
+    /// Must be called during node assembly, before the event loop accepts
+    /// connections: a handler created earlier would capture the stub.
+    ///
+    /// `topology` selects strictly-closer relay candidates and `accounting`
+    /// drives the two-leg prepare/apply; both are typically the same handles the
+    /// origin path uses.
+    pub fn enable_forwarding<T, A>(
+        &mut self,
+        topology: Arc<T>,
+        accounting: Arc<A>,
+        handle: ClientHandle,
+    ) where
+        T: vertex_swarm_api::SwarmTopologyRouting + Send + Sync + 'static,
+        A: vertex_swarm_api::SwarmClientAccounting + Send + Sync + 'static,
+    {
+        let local = self.overlay_address();
+        let forwarder = Arc::new(crate::protocol::NetworkForwarder::new(
+            local, topology, accounting, handle,
+        ));
+        self.base
+            .swarm
+            .behaviour_mut()
+            .client
+            .set_forwarder(forwarder);
+    }
+
     pub fn topology_command(&mut self, command: TopologyCommand) {
         self.base.swarm.behaviour_mut().topology.on_command(command);
     }

@@ -58,12 +58,13 @@ mod types;
 
 pub use self::accounting::{Au, AuConversionError};
 pub use self::components::{
-    BandwidthMode, BootnodeComponents, ClientComponents, Direction, HasAccounting, HasIdentity,
-    HasStore, HasTopology, StorerComponents, SwarmAccountingConfig, SwarmBandwidthAccounting,
-    SwarmClientAccounting, SwarmLocalStore, SwarmLocalStoreConfig, SwarmPeerBandwidth,
-    SwarmPeerResolver, SwarmPeerState, SwarmPricing, SwarmPricingBuilder, SwarmPricingConfig,
-    SwarmSettlementProvider, SwarmTopology, SwarmTopologyBins, SwarmTopologyCommands,
-    SwarmTopologyPeers, SwarmTopologyRouting, SwarmTopologyState, SwarmTopologyStats,
+    AccountingAction, BandwidthMode, BootnodeComponents, ClientComponents, Direction,
+    HasAccounting, HasIdentity, HasStore, HasTopology, StorerComponents, SwarmAccountingConfig,
+    SwarmBandwidthAccounting, SwarmClientAccounting, SwarmLocalStore, SwarmLocalStoreConfig,
+    SwarmPeerBandwidth, SwarmPeerResolver, SwarmPeerState, SwarmPricing, SwarmPricingBuilder,
+    SwarmPricingConfig, SwarmSettlementProvider, SwarmTopology, SwarmTopologyBins,
+    SwarmTopologyCommands, SwarmTopologyPeers, SwarmTopologyRouting, SwarmTopologyState,
+    SwarmTopologyStats,
 };
 pub use self::config::{
     DEFAULT_PEER_BAN_THRESHOLD, DEFAULT_PEER_DISCONNECT_THRESHOLD, DEFAULT_PEER_MAX_PER_BIN,

@@ -74,4 +74,4 @@ pub use events::SwapEvent;
 pub use events::{
     ClientCommand, ClientEvent, FailureKind, PseudosettleEvent, PushResponseTx, RetrievalResponseTx,
 };
-pub(crate) use forward::StubForwarder;
+pub(crate) use forward::{NetworkForwarder, StubForwarder};

@@ -60,6 +60,12 @@ impl AccountingAction for ReceiveAction {
     fn cleanup(&self) {}
 }
 
+impl vertex_swarm_api::AccountingAction for ReceiveAction {
+    fn apply(self) {
+        ReceiveAction::apply(self);
+    }
+}
+
 /// Action for providing service to a peer (balance increases).
 ///
 /// Reserves shadow balance on creation; commits on apply(), releases on drop.
@@ -101,6 +107,12 @@ impl AccountingAction for ProvideAction {
     }
 
     fn cleanup(&self) {}
+}
+
+impl vertex_swarm_api::AccountingAction for ProvideAction {
+    fn apply(self) {
+        ProvideAction::apply(self);
+    }
 }
 
 #[cfg(test)]

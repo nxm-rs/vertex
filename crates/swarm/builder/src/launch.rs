@@ -288,7 +288,7 @@ async fn build_client_backed_node(
         Some(wiring) => node_builder.with_swap_events(wiring.swap_event_sender()),
         None => node_builder,
     };
-    let (node, client_service, client_handle) = node_builder
+    let (mut node, client_service, client_handle) = node_builder
         .build(params.network, peer_store)
         .await
         .map_err(|e| SwarmNodeError::Build(e.into()))?;
@@ -317,6 +317,19 @@ async fn build_client_backed_node(
     };
     #[cfg(not(feature = "swap"))]
     let accounting = accounting_builder.build(params.identity);
+    // Share one accounting instance across the selector, the two-leg forwarder,
+    // and the node task that keeps it alive.
+    let accounting = Arc::new(accounting);
+
+    // Enable multi-hop forwarding: a retrieval cache miss relays to a
+    // strictly-closer peer and an inbound pushsync relays toward the chunk's
+    // neighbourhood, accounting both legs over the same accounting instance the
+    // origin path uses. Installed before the event loop accepts connections.
+    node.enable_forwarding(
+        Arc::new(topology.clone()),
+        Arc::clone(&accounting),
+        client_handle.clone(),
+    );
 
     // Retrieval and pushsync candidate selection consults peer scores and
     // affordability on top of proximity order.

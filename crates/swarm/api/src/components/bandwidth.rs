@@ -132,6 +132,19 @@ pub trait SwarmAccountingConfig: Send + Sync {
     }
 }
 
+/// A reserved accounting action awaiting commit or release.
+///
+/// `prepare_receive`/`prepare_provide` return an action that has already
+/// reserved balance. Calling [`apply`](Self::apply) commits the reservation
+/// (the balance change takes effect); dropping the action without applying
+/// releases the reservation. This is the two-leg-relay seam: a forwarder holds
+/// both legs' actions and applies them only when the relay succeeds, so a failed
+/// relay releases every reservation on drop and never leaks.
+pub trait AccountingAction: Send {
+    /// Commit the reserved balance change.
+    fn apply(self);
+}
+
 /// Per-peer bandwidth accounting handle.
 ///
 /// Reached through the [`SwarmBandwidthAccounting::Peer`] associated type
@@ -165,10 +178,10 @@ pub trait SwarmBandwidthAccounting: Send + Sync {
     type Peer: SwarmPeerBandwidth;
 
     /// Action for receiving service (balance decreases).
-    type ReceiveAction: Send;
+    type ReceiveAction: AccountingAction;
 
     /// Action for providing service (balance increases).
-    type ProvideAction: Send;
+    type ProvideAction: AccountingAction;
 
     /// Get the node's identity.
     fn identity(&self) -> &Self::Identity;
