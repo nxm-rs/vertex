@@ -323,7 +323,11 @@ async fn build_client_backed_node(
         NetworkChunkProvider::new(client_handle.clone(), topology.clone()).with_selector(selector);
     let chunks = VerifyingChunkProvider::new(chunk_provider, params.verify);
 
-    // Spawn client service as independent task with graceful shutdown
+    // Spawn client service as independent task with graceful shutdown. The
+    // client service reports retrieval and pushsync outcomes (success,
+    // failure, and malformed-chunk invalid data) through the same peer manager
+    // authority that accounting uses.
+    let client_service = client_service.with_reporter(Arc::clone(&reporter));
     ctx.executor()
         .spawn_service("swarm.client_service", client_service);
 

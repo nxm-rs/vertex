@@ -46,9 +46,11 @@ use vertex_swarm_primitives::{OverlayAddress, StampedChunk, StorageRadius, Swarm
 use super::events::{PushResponseTx, RetrievalResponseTx};
 use super::upgrade::{
     ClientInboundOutput, ClientInboundUpgrade, ClientOutboundInfo, ClientOutboundOutput,
-    ClientOutboundUpgrade,
+    ClientOutboundUpgrade, ClientUpgradeError, FailureKind,
 };
 use crate::client_service::{ChunkTransferError, RetrievalResult};
+use vertex_swarm_net_pushsync::PROTOCOL_NAME as PUSHSYNC_PROTOCOL;
+use vertex_swarm_net_retrieval::PROTOCOL_NAME as RETRIEVAL_PROTOCOL;
 
 const DEFAULT_MAX_PENDING_COMMANDS: usize = 256;
 const DEFAULT_MAX_PENDING_EVENTS: usize = 256;
@@ -201,6 +203,8 @@ pub(crate) enum HandlerEvent {
         address: ChunkAddress,
         /// The received chunk and its postage stamp.
         chunk: StampedChunk,
+        /// Time from outbound request to delivery, for latency scoring.
+        latency: Duration,
     },
     /// Received a chunk push from peer.
     ChunkPushReceived {
@@ -225,6 +229,8 @@ pub(crate) enum HandlerEvent {
         nonce: Nonce,
         /// The storer's storage radius.
         storage_radius: StorageRadius,
+        /// Time from outbound request to receipt, for latency scoring.
+        latency: Duration,
     },
     /// An outbound retrieval request failed.
     ///
@@ -237,6 +243,8 @@ pub(crate) enum HandlerEvent {
         address: ChunkAddress,
         /// Error description.
         error: String,
+        /// Whether the failure was a malformed chunk (vs a plain failure).
+        kind: FailureKind,
     },
     /// An outbound chunk push failed.
     ///
@@ -249,6 +257,19 @@ pub(crate) enum HandlerEvent {
         address: ChunkAddress,
         /// Error description.
         error: String,
+        /// Whether the failure was a malformed chunk (vs a plain failure).
+        kind: FailureKind,
+    },
+    /// A peer sent us malformed data on an inbound substream.
+    ///
+    /// Raised when an inbound pushsync delivery or retrieval request fails
+    /// chunk or stamp reconstruction at decode. Attributed to the sender so
+    /// the offending peer is scored adversely and the chunk is never relayed.
+    InboundInvalidData {
+        /// The peer's overlay address.
+        overlay: OverlayAddress,
+        /// The protocol that rejected the data.
+        protocol: &'static str,
     },
     /// Protocol error occurred.
     Error {
@@ -306,8 +327,15 @@ enum State {
 
 /// A pending inbound response waiting for the application layer to provide data.
 enum PendingResponse {
-    /// Awaiting chunk data to serve (retrieval response).
-    Retrieval(vertex_swarm_net_retrieval::RetrievalResponder),
+    /// Awaiting chunk data to serve (retrieval response). Carries the address
+    /// the inbound request asked for, so the served chunk can be verified to
+    /// answer that exact request before it goes down the wire.
+    Retrieval {
+        /// The chunk address the peer requested.
+        requested: ChunkAddress,
+        /// The substream responder that sends the delivery.
+        responder: vertex_swarm_net_retrieval::RetrievalResponder,
+    },
     /// Awaiting receipt to send (pushsync response).
     Pushsync(vertex_swarm_net_pushsync::PushsyncResponder),
     /// Awaiting ack to send (pseudosettle response).
@@ -318,6 +346,19 @@ enum PendingResponse {
 struct StoredResponse {
     response: PendingResponse,
     stored_at: Instant,
+}
+
+/// Outbound serve gate: a chunk may only be served if its content address
+/// matches the address of the inbound request it answers.
+///
+/// This is the verify-before-send-down-the-wire check. The chunk's address is
+/// derived from its bytes (BMT for content-addressed chunks, owner+id for
+/// single-owner chunks), so an equal address means the served bytes are the
+/// ones the peer asked for. A future type-state (`VerifiedStampedChunk`) could
+/// make this a compile-time guarantee; for now it is an explicit gate so the
+/// relay path in follow-up work can reuse it.
+fn served_chunk_answers_request(requested: &ChunkAddress, chunk: &StampedChunk) -> bool {
+    chunk.address() == requested
 }
 
 /// Swarm client connection handler.
@@ -474,7 +515,13 @@ impl ClientHandler {
                 address: request.address,
                 request_id,
             });
-            self.store_response(request_id, PendingResponse::Retrieval(responder));
+            self.store_response(
+                request_id,
+                PendingResponse::Retrieval {
+                    requested: request.address,
+                    responder,
+                },
+            );
         } else {
             warn!(
                 address = %request.address,
@@ -515,16 +562,22 @@ impl ClientHandler {
         delivery: vertex_swarm_net_retrieval::Delivery,
         address: ChunkAddress,
         response: RetrievalResponseTx,
+        latency: Duration,
     ) {
         let overlay = self.overlay();
         match delivery {
             vertex_swarm_net_retrieval::Delivery::Error(err) => {
+                // A storer-supplied error string (for example "not found") is a
+                // plain protocol failure, not malformed data. Malformed chunks
+                // never reach this arm: they fail reconstruction at decode and
+                // surface as a dial upgrade error.
                 debug!(?overlay, %address, error = %err, "Retrieval failed");
                 if let Some(overlay) = overlay {
                     self.push_event(HandlerEvent::RetrievalFailed {
                         overlay,
                         address,
                         error: err.clone(),
+                        kind: FailureKind::Protocol,
                     });
                 }
                 let _ = response.send(Err(ChunkTransferError::Protocol(err)));
@@ -541,6 +594,7 @@ impl ClientHandler {
                     overlay,
                     address,
                     chunk: (*chunk).clone(),
+                    latency,
                 });
                 let _ = response.send(Ok(RetrievalResult {
                     chunk: *chunk,
@@ -555,6 +609,7 @@ impl ClientHandler {
         &mut self,
         receipt: vertex_swarm_net_pushsync::Receipt,
         response: PushResponseTx,
+        latency: Duration,
     ) {
         let overlay = self.overlay();
         if let Some(err) = receipt.error {
@@ -564,6 +619,7 @@ impl ClientHandler {
                     overlay,
                     address: receipt.address,
                     error: err.clone(),
+                    kind: FailureKind::Protocol,
                 });
             }
             let _ = response.send(Err(ChunkTransferError::PushRejected(err)));
@@ -581,6 +637,7 @@ impl ClientHandler {
                 signature: receipt.signature,
                 nonce: receipt.nonce,
                 storage_radius: receipt.storage_radius,
+                latency,
             });
             let _ = response.send(Ok(PushReceipt {
                 storer: overlay,
@@ -680,7 +737,11 @@ impl ConnectionHandler for ClientHandler {
                     return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
                         protocol: SubstreamProtocol::new(
                             upgrade,
-                            ClientOutboundInfo::Retrieval { address, response },
+                            ClientOutboundInfo::Retrieval {
+                                address,
+                                response,
+                                requested_at: Instant::now(),
+                            },
                         )
                         .with_timeout(self.config.timeout),
                     });
@@ -692,7 +753,11 @@ impl ConnectionHandler for ClientHandler {
                     return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
                         protocol: SubstreamProtocol::new(
                             upgrade,
-                            ClientOutboundInfo::Pushsync { address, response },
+                            ClientOutboundInfo::Pushsync {
+                                address,
+                                response,
+                                requested_at: Instant::now(),
+                            },
                         )
                         .with_timeout(self.config.timeout),
                     });
@@ -739,21 +804,46 @@ impl ConnectionHandler for ClientHandler {
                     }
                 }
                 HandlerCommand::ServeChunk { request_id, chunk } => {
-                    if let Some(PendingResponse::Retrieval(responder)) =
-                        self.take_response(request_id)
+                    if let Some(PendingResponse::Retrieval {
+                        requested,
+                        responder,
+                    }) = self.take_response(request_id)
                     {
-                        debug!(%request_id, "Serving chunk");
-                        if self
-                            .response_sends
-                            .try_push(async move {
-                                responder
-                                    .send_chunk(chunk)
-                                    .await
-                                    .map_err(|e| format!("serve chunk: {e}"))
-                            })
-                            .is_err()
-                        {
-                            warn!("Response send queue full, dropping chunk serve");
+                        // Verify before sending down the wire: the served chunk
+                        // must answer the exact address the peer asked for. A
+                        // mismatch means the serve path was handed the wrong (or
+                        // a malformed) chunk; refuse to emit it so we never
+                        // launder bad data into our own reputation.
+                        let served = *chunk.address();
+                        if !served_chunk_answers_request(&requested, &chunk) {
+                            warn!(
+                                %request_id, %requested, %served,
+                                "Refusing to serve chunk: address does not match request"
+                            );
+                            metrics::counter!(
+                                "swarm.client.serve_address_mismatch",
+                                "protocol" => "retrieval",
+                            )
+                            .increment(1);
+                            self.push_event(HandlerEvent::Error {
+                                overlay: self.overlay(),
+                                protocol: "retrieval",
+                                error: "served chunk address mismatch".into(),
+                            });
+                        } else {
+                            debug!(%request_id, "Serving chunk");
+                            if self
+                                .response_sends
+                                .try_push(async move {
+                                    responder
+                                        .send_chunk(chunk)
+                                        .await
+                                        .map_err(|e| format!("serve chunk: {e}"))
+                                })
+                                .is_err()
+                            {
+                                warn!("Response send queue full, dropping chunk serve");
+                            }
                         }
                     } else {
                         warn!(%request_id, "No retrieval responder found for request_id");
@@ -833,6 +923,14 @@ impl ConnectionHandler for ClientHandler {
             }
 
             ConnectionEvent::DialUpgradeError(e) => {
+                // Classify from the typed upgrade error while it is still
+                // concrete: a malformed chunk delivered on the outbound
+                // substream fails reconstruction at decode and arrives here as
+                // an `Apply` error we can downcast, not a string we parse.
+                let apply_error = match &e.error {
+                    libp2p::swarm::StreamUpgradeError::Apply(err) => Some(err),
+                    _ => None,
+                };
                 let error = e.error.to_string();
                 match e.info {
                     ClientOutboundInfo::Pricing => {
@@ -844,24 +942,34 @@ impl ConnectionHandler for ClientHandler {
                             error,
                         });
                     }
-                    ClientOutboundInfo::Retrieval { address, response } => {
-                        warn!(protocol = "retrieval", %address, %error, "Client dial upgrade error");
+                    ClientOutboundInfo::Retrieval {
+                        address, response, ..
+                    } => {
+                        let kind = apply_error
+                            .map_or(FailureKind::Protocol, |e| e.retrieval_failure_kind());
+                        warn!(protocol = "retrieval", %address, %error, ?kind, "Client dial upgrade error");
                         if let Some(overlay) = self.overlay() {
                             self.push_event(HandlerEvent::RetrievalFailed {
                                 overlay,
                                 address,
                                 error: error.clone(),
+                                kind,
                             });
                         }
                         let _ = response.send(Err(ChunkTransferError::Protocol(error)));
                     }
-                    ClientOutboundInfo::Pushsync { address, response } => {
-                        warn!(protocol = "pushsync", %address, %error, "Client dial upgrade error");
+                    ClientOutboundInfo::Pushsync {
+                        address, response, ..
+                    } => {
+                        let kind = apply_error
+                            .map_or(FailureKind::Protocol, |e| e.pushsync_failure_kind());
+                        warn!(protocol = "pushsync", %address, %error, ?kind, "Client dial upgrade error");
                         if let Some(overlay) = self.overlay() {
                             self.push_event(HandlerEvent::PushFailed {
                                 overlay,
                                 address,
                                 error: error.clone(),
+                                kind,
                             });
                         }
                         let _ = response.send(Err(ChunkTransferError::Protocol(error)));
@@ -887,12 +995,30 @@ impl ConnectionHandler for ClientHandler {
             }
 
             ConnectionEvent::ListenUpgradeError(e) => {
-                warn!(error = %e.error, "Client listen upgrade error");
-                self.push_event(HandlerEvent::Error {
-                    overlay: self.overlay(),
-                    protocol: "unknown",
-                    error: e.error.to_string(),
-                });
+                // A peer pushing us a malformed chunk, or sending a malformed
+                // retrieval request, fails reconstruction at inbound decode and
+                // surfaces here. Classify from the typed error so the offending
+                // peer is scored adversely; the chunk is already rejected and
+                // never relayed.
+                let kind = e.error.inbound_failure_kind();
+                warn!(error = %e.error, ?kind, "Client listen upgrade error");
+                match (kind, self.overlay()) {
+                    (FailureKind::InvalidChunk, Some(overlay)) => {
+                        let protocol = match &e.error {
+                            ClientUpgradeError::Pushsync(_) => PUSHSYNC_PROTOCOL,
+                            ClientUpgradeError::Retrieval(_) => RETRIEVAL_PROTOCOL,
+                            _ => "unknown",
+                        };
+                        self.push_event(HandlerEvent::InboundInvalidData { overlay, protocol });
+                    }
+                    _ => {
+                        self.push_event(HandlerEvent::Error {
+                            overlay: self.overlay(),
+                            protocol: "unknown",
+                            error: e.error.to_string(),
+                        });
+                    }
+                }
             }
 
             _ => {}
@@ -953,16 +1079,26 @@ impl ClientHandler {
             }
             (
                 ClientOutboundOutput::Retrieval(delivery),
-                ClientOutboundInfo::Retrieval { address, response },
+                ClientOutboundInfo::Retrieval {
+                    address,
+                    response,
+                    requested_at,
+                },
             ) => {
-                self.on_retrieval_response(delivery, address, response);
+                let latency = requested_at.elapsed();
+                self.on_retrieval_response(delivery, address, response, latency);
             }
             (
                 ClientOutboundOutput::Pushsync(receipt),
-                ClientOutboundInfo::Pushsync { address, response },
+                ClientOutboundInfo::Pushsync {
+                    address,
+                    response,
+                    requested_at,
+                },
             ) => {
+                let latency = requested_at.elapsed();
                 debug!(%address, "Received pushsync receipt");
-                self.on_pushsync_receipt(receipt, response);
+                self.on_pushsync_receipt(receipt, response, latency);
             }
             (
                 ClientOutboundOutput::Pseudosettle(ack),
@@ -996,5 +1132,40 @@ impl ClientHandler {
                 warn!(?output, ?info, "Mismatched outbound output and info");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_primitives::{B256, Signature};
+    use nectar_postage::Stamp;
+    use nectar_primitives::{AnyChunk, ContentChunk};
+    use vertex_swarm_primitives::StampedChunk;
+
+    use super::*;
+
+    fn stamped(payload: &'static [u8]) -> StampedChunk {
+        let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
+        let stamp = Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig);
+        let chunk: AnyChunk = ContentChunk::new(payload)
+            .expect("valid content chunk")
+            .into();
+        StampedChunk::new(chunk, stamp)
+    }
+
+    #[test]
+    fn serve_gate_accepts_matching_chunk() {
+        let chunk = stamped(b"serve gate payload");
+        let requested = *chunk.address();
+        assert!(served_chunk_answers_request(&requested, &chunk));
+    }
+
+    #[test]
+    fn serve_gate_rejects_mismatched_chunk() {
+        let chunk = stamped(b"actual payload");
+        let other = stamped(b"a different payload entirely");
+        let requested = *other.address();
+        assert_ne!(*chunk.address(), requested);
+        assert!(!served_chunk_answers_request(&requested, &chunk));
     }
 }

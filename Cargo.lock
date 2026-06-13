@@ -9148,6 +9148,7 @@ dependencies = [
  "libp2p-swarm-test",
  "libp2p-websocket-websys",
  "metrics",
+ "nectar-postage",
  "nectar-primitives",
  "parking_lot",
  "rand 0.8.6",

@@ -109,6 +109,7 @@ eyre.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 libp2p-swarm-test.workspace = true
 rand_08.workspace = true
+nectar-postage.workspace = true
 
 [features]
 default = ["std"]

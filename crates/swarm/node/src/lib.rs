@@ -33,7 +33,7 @@ pub use client_service::{ChunkTransferError, ClientHandle, ClientService, Retrie
 #[cfg(feature = "swap")]
 pub use protocol::SwapEvent;
 pub use protocol::{
-    ClientCommand, ClientEvent, PseudosettleEvent, PushResponseTx, RetrievalResponseTx,
+    ClientCommand, ClientEvent, FailureKind, PseudosettleEvent, PushResponseTx, RetrievalResponseTx,
 };
 
 pub use selection::{AccountingSettlement, PeerScores, PeerSelector, SettlementTrigger};

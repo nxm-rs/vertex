@@ -70,6 +70,54 @@ pub(crate) enum ClientUpgradeError {
     UnknownProtocol(String),
 }
 
+pub(crate) use super::events::FailureKind;
+
+impl ClientUpgradeError {
+    /// Classify a retrieval upgrade failure.
+    ///
+    /// Reaches through the boxed inner error to recover the typed retrieval
+    /// codec error and ask it whether the failure was a malformed chunk.
+    pub(crate) fn retrieval_failure_kind(&self) -> FailureKind {
+        match self {
+            Self::Retrieval(ProtocolError::Protocol(inner)) => inner
+                .downcast_ref::<vertex_swarm_net_retrieval::RetrievalError>()
+                .filter(|e| e.is_invalid_chunk())
+                .map_or(FailureKind::Protocol, |_| FailureKind::InvalidChunk),
+            _ => FailureKind::Protocol,
+        }
+    }
+
+    /// Classify a pushsync upgrade failure.
+    pub(crate) fn pushsync_failure_kind(&self) -> FailureKind {
+        match self {
+            Self::Pushsync(ProtocolError::Protocol(inner)) => inner
+                .downcast_ref::<vertex_swarm_net_pushsync::PushsyncError>()
+                .filter(|e| e.is_invalid_chunk())
+                .map_or(FailureKind::Protocol, |_| FailureKind::InvalidChunk),
+            _ => FailureKind::Protocol,
+        }
+    }
+
+    /// Classify a failure on the inbound listen path.
+    ///
+    /// Used when a peer pushed us a malformed chunk or sent a malformed
+    /// retrieval request: the decode rejects it and we attribute the invalid
+    /// data to the sender.
+    pub(crate) fn inbound_failure_kind(&self) -> FailureKind {
+        match self {
+            Self::Pushsync(ProtocolError::Protocol(inner)) => inner
+                .downcast_ref::<vertex_swarm_net_pushsync::PushsyncError>()
+                .filter(|e| e.is_invalid_chunk())
+                .map_or(FailureKind::Protocol, |_| FailureKind::InvalidChunk),
+            Self::Retrieval(ProtocolError::Protocol(inner)) => inner
+                .downcast_ref::<vertex_swarm_net_retrieval::RetrievalError>()
+                .filter(|e| e.is_invalid_chunk())
+                .map_or(FailureKind::Protocol, |_| FailureKind::InvalidChunk),
+            _ => FailureKind::Protocol,
+        }
+    }
+}
+
 /// Output from a client inbound upgrade.
 pub(crate) enum ClientInboundOutput {
     /// Received pricing threshold.
@@ -430,11 +478,15 @@ pub(crate) enum ClientOutboundInfo {
     Retrieval {
         address: ChunkAddress,
         response: super::events::RetrievalResponseTx,
+        /// When the outbound substream was requested, for latency scoring.
+        requested_at: vertex_util_runtime::time::Instant,
     },
     /// Pushsync request with chunk address and the caller's response channel.
     Pushsync {
         address: ChunkAddress,
         response: super::events::PushResponseTx,
+        /// When the outbound substream was requested, for latency scoring.
+        requested_at: vertex_util_runtime::time::Instant,
     },
     /// Pseudosettle payment with amount.
     Pseudosettle { amount: U256 },
@@ -447,6 +499,48 @@ pub(crate) enum ClientOutboundInfo {
 mod tests {
     use super::*;
     use vertex_swarm_primitives::SwarmNodeType;
+
+    fn retrieval_protocol_err(inner: vertex_swarm_net_retrieval::RetrievalError) -> ProtocolError {
+        ProtocolError::Protocol(Box::new(inner))
+    }
+
+    fn pushsync_protocol_err(inner: vertex_swarm_net_pushsync::PushsyncError) -> ProtocolError {
+        ProtocolError::Protocol(Box::new(inner))
+    }
+
+    #[test]
+    fn malformed_retrieval_classifies_as_invalid_chunk() {
+        let err = ClientUpgradeError::Retrieval(retrieval_protocol_err(
+            vertex_swarm_net_retrieval::RetrievalError::InvalidAddressLength(0),
+        ));
+        assert_eq!(err.retrieval_failure_kind(), FailureKind::InvalidChunk);
+    }
+
+    #[test]
+    fn plain_retrieval_error_classifies_as_protocol() {
+        let err = ClientUpgradeError::Retrieval(retrieval_protocol_err(
+            vertex_swarm_net_retrieval::RetrievalError::ConnectionClosed,
+        ));
+        assert_eq!(err.retrieval_failure_kind(), FailureKind::Protocol);
+    }
+
+    #[test]
+    fn malformed_pushsync_classifies_as_invalid_chunk_inbound() {
+        let err = ClientUpgradeError::Pushsync(pushsync_protocol_err(
+            vertex_swarm_net_pushsync::PushsyncError::InvalidAddressLength(0),
+        ));
+        assert_eq!(err.pushsync_failure_kind(), FailureKind::InvalidChunk);
+        assert_eq!(err.inbound_failure_kind(), FailureKind::InvalidChunk);
+    }
+
+    #[test]
+    fn pricing_error_is_never_invalid_chunk() {
+        let err = ClientUpgradeError::Pricing(ProtocolError::Protocol(Box::new(
+            vertex_swarm_net_retrieval::RetrievalError::ConnectionClosed,
+        )));
+        assert_eq!(err.retrieval_failure_kind(), FailureKind::Protocol);
+        assert_eq!(err.inbound_failure_kind(), FailureKind::Protocol);
+    }
 
     #[test]
     fn dormant_advertises_nothing() {

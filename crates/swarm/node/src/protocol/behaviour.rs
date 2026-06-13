@@ -332,12 +332,14 @@ impl ClientBehaviour {
                 overlay,
                 address,
                 chunk,
+                latency,
             } => {
                 self.pending_events
                     .push_back(ToSwarm::GenerateEvent(ClientEvent::ChunkReceived {
                         peer: overlay,
                         address,
                         chunk,
+                        latency,
                     }));
             }
             HandlerEvent::ChunkPushReceived {
@@ -360,6 +362,7 @@ impl ClientBehaviour {
                 signature,
                 nonce,
                 storage_radius,
+                latency,
             } => {
                 self.push_event(ToSwarm::GenerateEvent(ClientEvent::ReceiptReceived {
                     peer: overlay,
@@ -367,28 +370,39 @@ impl ClientBehaviour {
                     signature,
                     nonce,
                     storage_radius,
+                    latency,
                 }));
             }
             HandlerEvent::RetrievalFailed {
                 overlay,
                 address,
                 error,
+                kind,
             } => {
                 self.push_event(ToSwarm::GenerateEvent(ClientEvent::RetrievalFailed {
                     peer: overlay,
                     address,
                     error,
+                    kind,
                 }));
             }
             HandlerEvent::PushFailed {
                 overlay,
                 address,
                 error,
+                kind,
             } => {
                 self.push_event(ToSwarm::GenerateEvent(ClientEvent::PushFailed {
                     peer: overlay,
                     address,
                     error,
+                    kind,
+                }));
+            }
+            HandlerEvent::InboundInvalidData { overlay, protocol } => {
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::InboundInvalidData {
+                    peer: overlay,
+                    protocol,
                 }));
             }
             HandlerEvent::Error {
