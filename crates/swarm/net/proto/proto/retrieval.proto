@@ -10,9 +10,18 @@ message Request {
   bytes addr = 1;
 }
 
-// Delivery of a chunk with optional error.
+// Delivery of a chunk.
+//
+// An honest failure is signalled structurally by an empty `data` AND an empty
+// `stamp`: the reference reports a retrieval failure with an empty delivery
+// (it does not reset the stream for retrieval), and that is the only signal we
+// read. A non-empty `data` claims a chunk and must reconstruct and validate, or
+// it is malformed (the two are scored differently). Field 3 was a remote error
+// string in the reference; we never read it (it is adversarial input the
+// reference itself does not introspect), so it is omitted here. An inbound
+// field-3 value is skipped without allocation, and we emit nothing on it. A
+// requester detects our failures from the empty `data` (chunk validation fails).
 message Delivery {
   bytes data = 1;
   bytes stamp = 2;
-  string err = 3;
 }

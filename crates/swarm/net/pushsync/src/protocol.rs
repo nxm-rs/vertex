@@ -10,7 +10,8 @@
 
 use asynchronous_codec::Framed;
 use futures::{SinkExt, TryStreamExt, future::BoxFuture};
-use nectar_primitives::ChunkAddress;
+use nectar_postage::STAMP_SIZE;
+use nectar_primitives::bmt::{DEFAULT_BODY_SIZE, HASH_SIZE, SPAN_SIZE};
 use tracing::debug;
 use vertex_swarm_net_headers::{
     HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound,
@@ -18,12 +19,31 @@ use vertex_swarm_net_headers::{
 
 use crate::{
     PROTOCOL_NAME,
-    codec::{Delivery, DeliveryCodec, Receipt, ReceiptCodec},
+    codec::{Delivery, DeliveryCodec, Receipt, ReceiptCodec, ReceiptResponse},
     error::PushsyncError,
 };
 
-/// Maximum size of a pushsync message (chunk + stamp + overhead).
-const MAX_MESSAGE_SIZE: usize = 5 * 1024 * 1024; // 5 MB
+/// Maximum size of a pushsync message, derived from the chunk-size constants.
+///
+/// The largest legitimate `data` payload is a single-owner chunk: an
+/// [`SPAN_SIZE`] span, a 32-byte ([`HASH_SIZE`]) owner id, a 65-byte recoverable
+/// signature, and a [`DEFAULT_BODY_SIZE`] body. The pushsync `Delivery` frames
+/// that as `address` (32 bytes) + `data` + `stamp` ([`STAMP_SIZE`]). A small
+/// fixed allowance covers protobuf field tags, length varints, and the outer
+/// length-delimited frame prefix.
+///
+/// The arithmetic with the current constants:
+/// `8 + 32 + 65 + 4096` data `+ 32` address `+ 113` stamp `+ 64` framing
+/// `= 4410` bytes, well under 16 KiB. The bound is exact rather than a round
+/// number so a conformant peer never trips it and an adversarial frame (and any
+/// transient field allocation it forces) is capped tightly. Rejecting larger
+/// frames is not wire-visible.
+const SOC_SIGNATURE_SIZE: usize = 65;
+const MAX_CHUNK_DATA_SIZE: usize = SPAN_SIZE + HASH_SIZE + SOC_SIGNATURE_SIZE + DEFAULT_BODY_SIZE;
+/// Protobuf framing allowance: field tags, length varints, and the outer
+/// length-delimited frame prefix across all fields, rounded up generously.
+const PROTOBUF_FRAMING: usize = 64;
+const MAX_MESSAGE_SIZE: usize = HASH_SIZE + MAX_CHUNK_DATA_SIZE + STAMP_SIZE + PROTOBUF_FRAMING;
 
 /// Pushsync inbound: receives a chunk delivery from remote.
 #[derive(Debug, Clone)]
@@ -71,17 +91,16 @@ impl PushsyncResponder {
     /// Send a successful receipt.
     pub async fn send_receipt(mut self, receipt: Receipt) -> Result<(), PushsyncError> {
         debug!(address = %receipt.address, "Pushsync: Sending receipt");
-        self.framed.send(receipt).await
+        self.framed.send(ReceiptResponse::Stored(receipt)).await
     }
 
-    /// Send an error receipt.
-    pub async fn send_error(
-        mut self,
-        address: ChunkAddress,
-        error: impl Into<String>,
-    ) -> Result<(), PushsyncError> {
-        debug!(%address, "Pushsync: Sending error receipt");
-        self.framed.send(Receipt::error(address, error)).await
+    /// Signal a failure by resetting the stream (no frame is sent).
+    pub fn send_error(self) {
+        // The reference pusher reads the reset (or EOF) as a failed push at
+        // every hop, which sidesteps the forwarder signature-skip entirely: with
+        // no receipt to read, there is nothing for a forwarder to misjudge as a
+        // success. Dropping the framed stream resets the substream at the muxer.
+        debug!("Pushsync: resetting stream to signal failure");
     }
 }
 
@@ -99,7 +118,7 @@ impl PushsyncOutboundInner {
 }
 
 impl HeaderedOutbound for PushsyncOutboundInner {
-    type Output = Receipt;
+    type Output = ReceiptResponse;
     type Error = PushsyncError;
 
     fn protocol_name(&self) -> &'static str {

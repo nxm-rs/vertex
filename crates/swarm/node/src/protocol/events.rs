@@ -41,6 +41,20 @@ pub type RetrievalResponseTx = oneshot::Sender<Result<RetrievalResult, ChunkTran
 /// failure that prevented it resolves the caller directly.
 pub type PushResponseTx = oneshot::Sender<Result<PushReceipt, ChunkTransferError>>;
 
+/// Why a retrieval or pushsync request failed, classified for peer scoring.
+///
+/// Derived from the typed codec error at the point the failure is observed, so
+/// the client service never parses error strings to decide how to score a peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureKind {
+    /// The peer delivered or pushed a chunk that failed address or stamp
+    /// reconstruction. Scored as invalid data.
+    InvalidChunk,
+    /// A transport, negotiation, timeout, or storer-reported failure that is
+    /// not evidence of malformed data. Scored as a plain failure.
+    Protocol,
+}
+
 /// Events emitted by the client behaviour.
 #[derive(Debug, Clone)]
 pub enum ClientEvent {
@@ -87,6 +101,8 @@ pub enum ClientEvent {
         address: ChunkAddress,
         /// The received chunk and its postage stamp.
         chunk: StampedChunk,
+        /// Time from request to delivery, for latency scoring.
+        latency: core::time::Duration,
     },
 
     /// A chunk retrieval request failed.
@@ -97,6 +113,8 @@ pub enum ClientEvent {
         address: ChunkAddress,
         /// Error description.
         error: String,
+        /// Whether the failure was a malformed chunk (vs a plain failure).
+        kind: FailureKind,
     },
 
     /// A peer is pushing a chunk to us.
@@ -128,6 +146,8 @@ pub enum ClientEvent {
         nonce: Nonce,
         /// The peer's storage radius.
         storage_radius: StorageRadius,
+        /// Time from push to receipt, for latency scoring.
+        latency: core::time::Duration,
     },
 
     /// A chunk push failed.
@@ -138,6 +158,19 @@ pub enum ClientEvent {
         address: ChunkAddress,
         /// Error description.
         error: String,
+        /// Whether the failure was a malformed chunk (vs a plain failure).
+        kind: FailureKind,
+    },
+
+    /// A peer sent us malformed data on an inbound substream.
+    ///
+    /// The chunk or request failed reconstruction at decode and was rejected;
+    /// the sender is scored adversely for invalid data.
+    InboundInvalidData {
+        /// The peer that sent the malformed data.
+        peer: OverlayAddress,
+        /// The protocol that rejected the data.
+        protocol: &'static str,
     },
 
     /// A settlement is needed with a peer.

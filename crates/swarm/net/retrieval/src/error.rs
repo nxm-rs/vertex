@@ -20,3 +20,35 @@ vertex_net_codec::protocol_error! {
         InvalidChunk(#[from] vertex_swarm_primitives::ReconstructError),
     }
 }
+
+impl RetrievalError {
+    /// True when the error is a malformed-chunk signal: the delivered bytes
+    /// failed address or stamp reconstruction, or the address itself was
+    /// unparseable. These are attributable to the sending peer and warrant an
+    /// adverse score, distinct from a transport or negotiation failure.
+    #[must_use]
+    pub fn is_invalid_chunk(&self) -> bool {
+        matches!(
+            self,
+            Self::InvalidChunk(_)
+                | Self::InvalidStamp(_)
+                | Self::InvalidAddress(_)
+                | Self::InvalidAddressLength(_)
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_chunk_signals_are_invalid_chunk() {
+        assert!(RetrievalError::InvalidAddressLength(7).is_invalid_chunk());
+    }
+
+    #[test]
+    fn transport_errors_are_not_invalid_chunk() {
+        assert!(!RetrievalError::ConnectionClosed.is_invalid_chunk());
+    }
+}

@@ -11,8 +11,8 @@ use crate::error::PushsyncError;
 /// Codec for pushsync delivery messages.
 pub(crate) type DeliveryCodec = Codec<Delivery, PushsyncError>;
 
-/// Codec for pushsync receipt messages.
-pub(crate) type ReceiptCodec = Codec<Receipt, PushsyncError>;
+/// Codec for pushsync receipt responses.
+pub(crate) type ReceiptCodec = Codec<ReceiptResponse, PushsyncError>;
 
 /// Delivery of a chunk to be stored.
 ///
@@ -63,17 +63,25 @@ impl ProtoMessage for Delivery {
     }
 }
 
-/// Receipt acknowledging chunk storage.
+/// Length in bytes of a well-formed recoverable signature. A failure response
+/// carries an empty signature instead, which is the structural failure signal.
+const SIGNATURE_LEN: usize = 65;
+
+/// A successful storage receipt.
+///
+/// This type models a custody acknowledgement only. The reference does not sign
+/// its failure responses (a failure is `&pb.Receipt{Err: ...}` with no
+/// signature), so there is no signed failure receipt to model and no need for
+/// placeholder fields. A failure is represented by the [`ReceiptResponse::Failed`]
+/// variant, not by a `Receipt` with zeroed fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Receipt {
     /// The address of the chunk.
     pub address: ChunkAddress,
-    /// Signature from the storer.
+    /// Signature from the storer over the chunk address and nonce.
     pub signature: Signature,
     /// Nonce used in signing.
     pub nonce: Nonce,
-    /// Error message if storage failed.
-    pub error: Option<String>,
     /// The storage radius of the storer node.
     pub storage_radius: StorageRadius,
 }
@@ -90,63 +98,68 @@ impl Receipt {
             address,
             signature,
             nonce,
-            error: None,
             storage_radius,
         }
     }
+}
 
-    /// Create an error receipt.
-    ///
-    /// The signature, nonce, and radius are zero-valued placeholders; the
-    /// `error` field is what consumers inspect.
-    pub fn error(address: ChunkAddress, msg: impl Into<String>) -> Self {
-        Self {
-            address,
-            signature: Signature::new(
-                alloy_primitives::U256::ZERO,
-                alloy_primitives::U256::ZERO,
-                false,
-            ),
-            nonce: Nonce::ZERO,
-            error: Some(msg.into()),
-            storage_radius: StorageRadius::ZERO,
-        }
-    }
+/// The decoded response to a pushsync delivery: a signed receipt on success, or
+/// a structural failure.
+///
+/// Modelling success-or-failure here keeps [`Receipt`] free of placeholder
+/// fields. A failure is never put on the wire by this implementation: the
+/// responder signals failure by resetting the stream (see
+/// `PushsyncResponder::send_error`). The [`Failed`](Self::Failed) encode arm
+/// emits an empty frame purely so the codec round-trips; nothing reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReceiptResponse {
+    /// The storer took custody and returned a signed receipt.
+    Stored(Receipt),
+    /// The storer could not take custody. The reference's failure response is
+    /// unsigned; its reason string is adversarial input we never read.
+    Failed,
+}
 
-    /// Check if this receipt is an error.
+impl ReceiptResponse {
+    /// Check if this response reports a failure.
     pub fn is_error(&self) -> bool {
-        self.error.is_some()
+        matches!(self, Self::Failed)
     }
 }
 
-impl ProtoMessage for Receipt {
+impl ProtoMessage for ReceiptResponse {
     type Proto = vertex_swarm_net_proto::pushsync::Receipt;
     type EncodeError = std::convert::Infallible;
     type DecodeError = PushsyncError;
 
     fn into_proto(self) -> Result<Self::Proto, Self::EncodeError> {
-        Ok(vertex_swarm_net_proto::pushsync::Receipt {
-            address: self.address.to_vec(),
-            signature: self.signature.as_bytes().to_vec(),
-            nonce: self.nonce.as_slice().to_vec(),
-            err: self.error.unwrap_or_default(),
-            storage_radius: u32::from(self.storage_radius.get()),
-        })
+        match self {
+            // An empty signature is the structural failure signal. In practice a
+            // responder signals failure by resetting the stream (see
+            // `PushsyncResponder::send_error`), so this frame is never actually
+            // encoded onto the wire; this arm exists only for codec round-trip
+            // symmetry with the decode path and carries no meaningful payload.
+            Self::Failed => Ok(vertex_swarm_net_proto::pushsync::Receipt::default()),
+            Self::Stored(receipt) => Ok(vertex_swarm_net_proto::pushsync::Receipt {
+                address: receipt.address.to_vec(),
+                signature: receipt.signature.as_bytes().to_vec(),
+                nonce: receipt.nonce.as_slice().to_vec(),
+                storage_radius: u32::from(receipt.storage_radius.get()),
+            }),
+        }
     }
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
+        // Failure is detected structurally: a failure response carries no full
+        // signature. Any error marker on the opaque `err` field is ignored and
+        // never read. Only a success receipt's typed fields are parsed strictly.
+        if proto.signature.len() != SIGNATURE_LEN {
+            return Ok(Self::Failed);
+        }
         if proto.address.len() != 32 {
             return Err(PushsyncError::InvalidAddressLength(proto.address.len()));
         }
         let address = ChunkAddress::from_slice(&proto.address)?;
-        // An error receipt carries the `err` string and may leave the
-        // signature, nonce, and radius fields empty or zeroed. Do not parse
-        // those fields in that case: a remote error receipt is decodable from
-        // its `err` alone, mirroring the placeholders that [`Receipt::error`]
-        // emits. Only a success receipt's typed fields are parsed strictly.
-        if !proto.err.is_empty() {
-            return Ok(Self::error(address, proto.err));
-        }
         let signature = Signature::from_raw(&proto.signature)?;
         let nonce_bytes: [u8; 32] = proto
             .nonce
@@ -160,7 +173,12 @@ impl ProtoMessage for Receipt {
             Bin::new(radius_byte)
                 .map_err(|_| PushsyncError::InvalidStorageRadius(proto.storage_radius))?,
         );
-        Ok(Self::success(address, signature, nonce, storage_radius))
+        Ok(Self::Stored(Receipt::success(
+            address,
+            signature,
+            nonce,
+            storage_radius,
+        )))
     }
 }
 
@@ -215,23 +233,25 @@ mod tests {
 
     #[test]
     fn test_receipt_success_roundtrip() {
-        let original = Receipt::success(
+        let original = ReceiptResponse::Stored(Receipt::success(
             ChunkAddress::new([0x42; 32]),
             test_signature(),
             Nonce::new([9u8; 32]),
             radius(10),
-        );
+        ));
         let proto = original.clone().into_proto().unwrap();
-        let decoded = Receipt::from_proto(proto).unwrap();
+        let decoded = ReceiptResponse::from_proto(proto).unwrap();
         assert_eq!(original, decoded);
         assert!(!decoded.is_error());
     }
 
     #[test]
     fn test_receipt_error_roundtrip() {
-        let original = Receipt::error(ChunkAddress::new([0x42; 32]), "storage failed");
+        let original = ReceiptResponse::Failed;
         let proto = original.clone().into_proto().unwrap();
-        let decoded = Receipt::from_proto(proto).unwrap();
+        // A failure is detected structurally by an empty signature.
+        assert!(proto.signature.is_empty());
+        let decoded = ReceiptResponse::from_proto(proto).unwrap();
         assert_eq!(original, decoded);
         assert!(decoded.is_error());
     }
