@@ -70,4 +70,6 @@ pub(crate) mod upgrade;
 pub(crate) use behaviour::{ClientBehaviour, Config as BehaviourConfig};
 #[cfg(feature = "swap")]
 pub use events::SwapEvent;
-pub use events::{ClientCommand, ClientEvent, PseudosettleEvent};
+pub use events::{
+    ClientCommand, ClientEvent, PseudosettleEvent, PushResponseTx, RetrievalResponseTx,
+};

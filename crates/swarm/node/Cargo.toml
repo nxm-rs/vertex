@@ -57,6 +57,11 @@ alloy-primitives.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 futures-bounded = "0.2"
+# Used for the retrieval fan-out stagger. The workspace pin enables the
+# `wasm-bindgen` feature so the browser build uses the browser clock instead
+# of the std clock, which panics on wasm32; the same feature unification keeps
+# libp2p's connection-handler delays working on wasm.
+futures-timer.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 
 ## observability
@@ -95,11 +100,6 @@ libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "6454fdf3450f91f
     "ping",
 ] }
 libp2p-websocket-websys.workspace = true
-# Turn on futures-timer's browser backend so libp2p's connection-handler delays
-# use the browser clock instead of the std clock, which panics on wasm32. This
-# crate does not call futures-timer directly; the dependency exists to enable the
-# `wasm-bindgen` feature across the wasm build via feature unification.
-futures-timer = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }

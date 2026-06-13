@@ -1,5 +1,9 @@
 target/
+target-wasm/
 **/*.rs.bk
+
+# Playwright MCP session artifacts
+.playwright-mcp/
 *.tar.gz
 .env
 cspell.json

@@ -18,10 +18,28 @@
 use alloy_primitives::{Signature, U256};
 use libp2p::PeerId;
 use nectar_primitives::{ChunkAddress, Nonce};
+use tokio::sync::oneshot;
+use vertex_swarm_api::PushReceipt;
 use vertex_swarm_net_pseudosettle::PaymentAck;
 #[cfg(feature = "swap")]
 use vertex_swarm_net_swap::SignedCheque;
 use vertex_swarm_primitives::{OverlayAddress, StampedChunk, StorageRadius, SwarmNodeType};
+
+use crate::client_service::{ChunkTransferError, RetrievalResult};
+
+/// Channel on which an outbound retrieval request resolves.
+///
+/// The sender travels with the request from the caller through the behaviour
+/// and handler into the outbound substream state, so the response (or any
+/// failure along the way) resolves the caller directly. Dropping the sender
+/// anywhere on that path surfaces as [`ChunkTransferError::Cancelled`].
+pub type RetrievalResponseTx = oneshot::Sender<Result<RetrievalResult, ChunkTransferError>>;
+
+/// Channel on which an outbound chunk push resolves.
+///
+/// Same lifecycle as [`RetrievalResponseTx`]: the storer's receipt or the
+/// failure that prevented it resolves the caller directly.
+pub type PushResponseTx = oneshot::Sender<Result<PushReceipt, ChunkTransferError>>;
 
 /// Events emitted by the client behaviour.
 #[derive(Debug, Clone)]
@@ -211,7 +229,11 @@ pub enum ClientEvent {
 }
 
 /// Commands accepted by the client behaviour.
-#[derive(Debug, Clone)]
+///
+/// Request commands ([`Self::RetrieveChunk`], [`Self::PushChunk`]) carry the
+/// response channel for their outcome, so the enum is intentionally not
+/// `Clone`.
+#[derive(Debug)]
 pub enum ClientCommand {
     /// Activate the handler for a peer after handshake completes.
     ///
@@ -243,6 +265,8 @@ pub enum ClientCommand {
         peer: OverlayAddress,
         /// The chunk address to retrieve.
         address: ChunkAddress,
+        /// Resolves with the retrieved chunk or the failure.
+        response: RetrievalResponseTx,
     },
 
     /// Serve a chunk to a peer (response to ChunkRequested).
@@ -265,6 +289,8 @@ pub enum ClientCommand {
         address: ChunkAddress,
         /// The chunk and its postage stamp to push.
         chunk: StampedChunk,
+        /// Resolves with the storer's receipt or the failure.
+        response: PushResponseTx,
     },
 
     /// Send a receipt to a peer (response to ChunkPushReceived).

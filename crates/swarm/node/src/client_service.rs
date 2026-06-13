@@ -4,11 +4,7 @@
 //! It owns channels to communicate with `ClientBehaviour` and processes
 //! incoming events.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use nectar_primitives::ChunkAddress;
-use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_api::PushReceipt;
@@ -21,14 +17,20 @@ use crate::protocol::{ClientCommand, ClientEvent};
 pub(crate) const DEFAULT_CHANNEL_CAPACITY: usize = 256;
 
 /// Handle for sending commands to the network layer.
+///
+/// Request methods ([`Self::retrieve_chunk`], [`Self::push_chunk`]) thread a
+/// response channel through the command into the per-connection handler, so
+/// each outbound request is a self-contained future: the substream that
+/// carries the request is the correlation, and no shared rendezvous state
+/// exists. Concurrent requests for the same chunk address never collide, so
+/// callers may freely race the same address across peers.
 #[derive(Clone)]
 pub struct ClientHandle {
     command_tx: mpsc::Sender<ClientCommand>,
-    pending_retrievals: Arc<Mutex<HashMap<ChunkAddress, oneshot::Sender<RetrievalResult>>>>,
-    pending_pushes: Arc<Mutex<HashMap<ChunkAddress, oneshot::Sender<PushOutcome>>>>,
 }
 
 /// Result of a chunk retrieval.
+#[derive(Debug)]
 pub struct RetrievalResult {
     /// The retrieved chunk and its postage stamp.
     pub chunk: StampedChunk,
@@ -36,26 +38,35 @@ pub struct RetrievalResult {
     pub peer: OverlayAddress,
 }
 
-/// Outcome delivered to a pending push: a [`PushReceipt`] on success or an error
-/// describing why the storer rejected the chunk.
-type PushOutcome = Result<PushReceipt, RetrievalError>;
-
-/// Error from retrieval operations.
+/// Outcome error shared by both chunk transfer operations.
+///
+/// Both [`ClientHandle::retrieve_chunk`] (get) and
+/// [`ClientHandle::push_chunk`] (put) resolve through this single type. Most
+/// variants are operation-agnostic and can surface from either path; the two
+/// operation-specific variants are called out below.
 #[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
-pub enum RetrievalError {
+pub enum ChunkTransferError {
+    // Shared variants: either a get or a put can produce these.
     /// Channel closed.
     #[error("Network channel closed")]
     ChannelClosed,
+    /// The target peer has no active connection.
+    #[error("Peer not connected")]
+    NotConnected,
     /// Request cancelled.
     #[error("Request cancelled")]
     Cancelled,
     /// Protocol error.
     #[error("Protocol error: {0}")]
     Protocol(String),
+
+    // Retrieval-specific: only a get produces this.
     /// Chunk not found.
     #[error("Chunk not found: {0}")]
     NotFound(ChunkAddress),
+
+    // Push-specific: only a put produces this.
     /// The storer rejected the chunk. Carries the storer's wire error string.
     #[error("Push rejected by storer: {0}")]
     PushRejected(String),
@@ -64,111 +75,66 @@ pub enum RetrievalError {
 impl ClientHandle {
     /// Create a new client handle.
     pub fn new(command_tx: mpsc::Sender<ClientCommand>) -> Self {
-        Self {
-            command_tx,
-            pending_retrievals: Arc::new(Mutex::new(HashMap::new())),
-            pending_pushes: Arc::new(Mutex::new(HashMap::new())),
-        }
+        Self { command_tx }
     }
 
     /// Send a command to the network layer (non-blocking).
     ///
     /// Uses `try_send` because callers (e.g. the libp2p event loop) must not block.
-    pub fn send_command(&self, command: ClientCommand) -> Result<(), RetrievalError> {
+    pub fn send_command(&self, command: ClientCommand) -> Result<(), ChunkTransferError> {
         self.command_tx.try_send(command).map_err(|e| match e {
             mpsc::error::TrySendError::Full(_) => {
                 warn!("Client command channel full");
                 metrics::counter!("swarm.client.commands_dropped").increment(1);
-                RetrievalError::ChannelClosed
+                ChunkTransferError::ChannelClosed
             }
-            mpsc::error::TrySendError::Closed(_) => RetrievalError::ChannelClosed,
+            mpsc::error::TrySendError::Closed(_) => ChunkTransferError::ChannelClosed,
         })
     }
 
     /// Retrieve a chunk from a specific peer.
     ///
-    /// This sends a retrieval command and waits for the response.
+    /// Sends a retrieval command carrying the response channel and waits for
+    /// the outcome. The request is self-contained: any failure on the path
+    /// (peer not connected, queue overflow, substream error, disconnect)
+    /// resolves or drops the channel, so this future never hangs.
     pub async fn retrieve_chunk(
         &self,
         peer: OverlayAddress,
         address: ChunkAddress,
-    ) -> Result<RetrievalResult, RetrievalError> {
+    ) -> Result<RetrievalResult, ChunkTransferError> {
         let (tx, rx) = oneshot::channel();
 
-        // Register the pending retrieval
-        {
-            let mut pending = self.pending_retrievals.lock();
-            pending.insert(address, tx);
-        }
+        self.send_command(ClientCommand::RetrieveChunk {
+            peer,
+            address,
+            response: tx,
+        })?;
 
-        // Send the retrieval command
-        self.send_command(ClientCommand::RetrieveChunk { peer, address })?;
-
-        // Wait for the response
-        rx.await.map_err(|_| RetrievalError::Cancelled)
-    }
-
-    /// Complete a pending retrieval with a result.
-    ///
-    /// Called by the event processor when a chunk is received.
-    pub(crate) fn complete_retrieval(&self, address: ChunkAddress, result: RetrievalResult) {
-        let mut pending = self.pending_retrievals.lock();
-        if let Some(tx) = pending.remove(&address) {
-            let _ = tx.send(result);
-        }
-    }
-
-    /// Fail a pending retrieval with an error.
-    pub(crate) fn fail_retrieval(&self, address: ChunkAddress, _error: String) {
-        let mut pending = self.pending_retrievals.lock();
-        pending.remove(&address);
-        // The oneshot will be dropped, causing the receiver to get Cancelled
+        rx.await.map_err(|_| ChunkTransferError::Cancelled)?
     }
 
     /// Push a stamped chunk to a specific peer.
     ///
-    /// This sends a push command and waits for the storer's [`PushReceipt`].
+    /// Sends a push command carrying the response channel and waits for the
+    /// storer's [`PushReceipt`]. Same failure semantics as
+    /// [`Self::retrieve_chunk`]: the future never hangs.
     pub async fn push_chunk(
         &self,
         peer: OverlayAddress,
         chunk: StampedChunk,
-    ) -> Result<PushReceipt, RetrievalError> {
+    ) -> Result<PushReceipt, ChunkTransferError> {
         let address = *chunk.address();
         let (tx, rx) = oneshot::channel();
 
-        // Register the pending push
-        {
-            let mut pending = self.pending_pushes.lock();
-            pending.insert(address, tx);
-        }
-
-        // Send the push command
         self.send_command(ClientCommand::PushChunk {
             peer,
             address,
             chunk,
+            response: tx,
         })?;
 
-        // Wait for the receipt or a failure report.
-        rx.await.map_err(|_| RetrievalError::Cancelled)?
-    }
-
-    /// Complete a pending push with a receipt.
-    ///
-    /// Called by the event processor when a receipt is received.
-    pub(crate) fn complete_push(&self, address: ChunkAddress, receipt: PushReceipt) {
-        let mut pending = self.pending_pushes.lock();
-        if let Some(tx) = pending.remove(&address) {
-            let _ = tx.send(Ok(receipt));
-        }
-    }
-
-    /// Fail a pending push, surfacing the storer's rejection reason to the caller.
-    pub(crate) fn fail_push(&self, address: ChunkAddress, error: String) {
-        let mut pending = self.pending_pushes.lock();
-        if let Some(tx) = pending.remove(&address) {
-            let _ = tx.send(Err(RetrievalError::PushRejected(error)));
-        }
+        rx.await.map_err(|_| ChunkTransferError::Cancelled)?
     }
 }
 
@@ -272,11 +238,12 @@ impl ClientService {
             ClientEvent::ChunkReceived {
                 peer,
                 address,
-                chunk,
+                chunk: _,
             } => {
+                // The requester is resolved directly by the handler; this
+                // event exists for accounting and peer scoring.
                 debug!(%peer, %address, "Chunk received");
-                self.handle
-                    .complete_retrieval(address, RetrievalResult { chunk, peer });
+                // TODO: Record bandwidth usage and report RetrievalSuccess
             }
 
             ClientEvent::ChunkRequested {
@@ -311,19 +278,13 @@ impl ClientService {
                 nonce,
                 storage_radius,
             } => {
+                // The pusher is resolved directly by the handler; this event
+                // exists for accounting and peer scoring.
                 debug!(
                     %peer, %address, %storage_radius, %nonce,
                     sig = %signature, "Receipt received"
                 );
-                self.handle.complete_push(
-                    address,
-                    PushReceipt {
-                        storer: peer,
-                        signature,
-                        nonce,
-                        storage_radius,
-                    },
-                );
+                // TODO: Record bandwidth usage and report PushSuccess
             }
 
             ClientEvent::PeerDisconnected { peer_id, overlay } => {
@@ -352,8 +313,10 @@ impl ClientService {
                 address,
                 error,
             } => {
+                // The requester is resolved directly by the handler; this
+                // event exists for peer scoring.
                 warn!(%peer, %address, %error, "Retrieval failed");
-                self.handle.fail_retrieval(address, error);
+                // TODO: Report RetrievalFailure to peer scoring
             }
 
             ClientEvent::PushFailed {
@@ -361,8 +324,10 @@ impl ClientService {
                 address,
                 error,
             } => {
+                // The pusher is resolved directly by the handler; this event
+                // exists for peer scoring.
                 warn!(%peer, %address, %error, "Push failed");
-                self.handle.fail_push(address, error);
+                // TODO: Report PushFailure to peer scoring
             }
 
             ClientEvent::SettlementNeeded { peer, balance } => {

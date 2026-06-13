@@ -1,8 +1,10 @@
 //! Unified client for Swarm nodes.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
+use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
+use futures_timer::Delay;
 use nectar_primitives::{AnyChunk, ChunkAddress};
 use vertex_swarm_api::{
     BootnodeComponents, ClientComponents, HasAccounting, HasTopology, StampedChunk, SwarmClient,
@@ -12,8 +14,16 @@ use vertex_swarm_primitives::OverlayAddress;
 
 use crate::{ClientHandle, PeerSelector};
 
-/// Number of closest peers to try, in order, for a retrieval.
+/// Number of closest peers raced for a retrieval (and walked for a push).
 const CLOSEST_PEER_COUNT: usize = 3;
+
+/// Delay before each additional retrieval candidate joins the race.
+///
+/// Staggering bounds the cost of the fan-out: every raced attempt the remote
+/// answers is paid for in accounting units, so further candidates only start
+/// while no response has arrived. A failed attempt starts the next candidate
+/// immediately instead of waiting out the stagger.
+const RETRIEVAL_STAGGER: Duration = Duration::from_millis(500);
 
 /// Unified client for all Swarm node types.
 ///
@@ -109,35 +119,56 @@ where
             .closest_to(address, CLOSEST_PEER_COUNT);
         let closest = self.select(closest, address);
         let attempts = closest.len();
+        let mut candidates = closest.into_iter();
 
-        // Walk the closest peers in order and return the first response. The
-        // codec reconstructs the chunk against the requested address, so the
+        // Race the candidates with a staggered start: the best candidate is
+        // queried immediately and each stagger tick (or failed attempt) adds
+        // the next one, resolving on the first response. The codec
+        // reconstructs the chunk against the requested address, so the
         // retrieved chunk is already address-validated; no re-verification is
-        // needed here. Retrieval cannot yet be raced across peers for the same
-        // chunk: the client handle correlates a response to a pending request by
-        // chunk address alone, so two in-flight requests for one address would
-        // alias. Fanning out needs a per-request correlation id in the handle
-        // and handler, tracked as a follow-up; until then this is sequential.
-        //
-        // The seed error covers the no-candidates case; each failed attempt
-        // replaces it, so the value after the loop is always the last failure.
-        let mut outcome = Err(SwarmError::NoStorer {
-            chunk_address: *address,
-        });
-        for peer in closest {
-            match self.client_handle.retrieve_chunk(peer, *address).await {
-                Ok(result) => return Ok(result.chunk.into_parts().0),
-                Err(e) => {
-                    outcome = Err(SwarmError::AllPeersFailed {
-                        address: *address,
-                        attempts,
-                        source: Box::new(e),
-                    });
-                }
+        // needed here. Each request carries its own response channel, so
+        // concurrent requests for one address never collide, and losing
+        // attempts are simply dropped when this future returns.
+        let mut in_flight = FuturesUnordered::new();
+        match candidates.next() {
+            Some(peer) => in_flight.push(self.client_handle.retrieve_chunk(peer, *address)),
+            None => {
+                return Err(SwarmError::NoStorer {
+                    chunk_address: *address,
+                });
             }
         }
 
-        outcome
+        let mut stagger = Delay::new(RETRIEVAL_STAGGER).fuse();
+
+        loop {
+            futures::select! {
+                result = in_flight.select_next_some() => match result {
+                    Ok(result) => return Ok(result.chunk.into_parts().0),
+                    Err(error) => {
+                        // A failed attempt frees its slot: start the next
+                        // candidate immediately. Once no candidates and no
+                        // attempts remain, the race ends with the error of
+                        // the last attempt to fail.
+                        if let Some(peer) = candidates.next() {
+                            in_flight.push(self.client_handle.retrieve_chunk(peer, *address));
+                        } else if in_flight.is_empty() {
+                            return Err(SwarmError::AllPeersFailed {
+                                address: *address,
+                                attempts,
+                                source: Box::new(error),
+                            });
+                        }
+                    }
+                },
+                _ = stagger => {
+                    if let Some(peer) = candidates.next() {
+                        in_flight.push(self.client_handle.retrieve_chunk(peer, *address));
+                        stagger = Delay::new(RETRIEVAL_STAGGER).fuse();
+                    }
+                }
+            }
+        }
     }
 
     async fn put(&self, chunk: StampedChunk) -> SwarmResult<()> {
@@ -147,16 +178,32 @@ where
             .topology()
             .closest_to(&address, CLOSEST_PEER_COUNT);
         let closest = self.select(closest, &address);
+        let attempts = closest.len();
 
-        let peer = closest.into_iter().next().ok_or(SwarmError::NoStorer {
+        // Walk the candidates in order. Pushes are not raced: a race would
+        // deliver and charge for the chunk on every branch. Failures resolve
+        // promptly through the per-request response channel, so a dead
+        // candidate cannot stall the walk.
+        //
+        // The seed error covers the no-candidates case; each failed attempt
+        // replaces it, so the value after the loop is always the last failure.
+        let mut outcome = Err(SwarmError::NoStorer {
             chunk_address: address,
-        })?;
+        });
+        for peer in closest {
+            match self.client_handle.push_chunk(peer, chunk.clone()).await {
+                Ok(_receipt) => return Ok(()),
+                Err(error) => {
+                    outcome = Err(SwarmError::AllPeersFailed {
+                        address,
+                        attempts,
+                        source: Box::new(error),
+                    });
+                }
+            }
+        }
 
-        self.client_handle
-            .push_chunk(peer, chunk)
-            .await
-            .map(|_receipt| ())
-            .map_err(|e| SwarmError::network_msg(e.to_string()))
+        outcome
     }
 }
 
@@ -211,7 +258,7 @@ mod tests {
         assert!(peers.is_empty());
     }
 
-    use crate::RetrievalError;
+    use crate::ChunkTransferError;
     use alloy_primitives::{B256, Signature};
     use nectar_primitives::{ContentChunk, Nonce};
     use vertex_swarm_api::{PushReceipt, Stamp};
@@ -292,29 +339,31 @@ mod tests {
 
         // The handle must have emitted a PushChunk command for the target peer.
         let cmd = rx.recv().await.expect("command emitted");
-        match cmd {
+        let response = match cmd {
             ClientCommand::PushChunk {
                 peer: p,
                 address: a,
                 chunk,
+                response,
             } => {
                 assert_eq!(p, peer);
                 assert_eq!(a, address);
                 assert_eq!(*chunk.address(), address);
+                response
             }
             other => panic!("unexpected command: {other:?}"),
-        }
+        };
 
-        // Simulate the event processor delivering a typed receipt.
-        handle.complete_push(
-            address,
-            PushReceipt {
+        // Resolve the request through its own response channel, as the
+        // handler does when the receipt arrives on the request's substream.
+        response
+            .send(Ok(PushReceipt {
                 storer: peer,
                 signature: test_signature(),
                 nonce: Nonce::from([9u8; 32]),
                 storage_radius: StorageRadius::new(Bin::new(5).unwrap()),
-            },
-        );
+            }))
+            .expect("receiver alive");
 
         let receipt = push.await.unwrap().expect("push resolves");
         assert_eq!(receipt.storer, peer);
@@ -389,17 +438,16 @@ mod tests {
         // candidate is closer in proximity order.
         let cmd = rx.recv().await.expect("command emitted");
         match cmd {
-            ClientCommand::PushChunk { peer, address, .. } => {
+            ClientCommand::PushChunk { peer, response, .. } => {
                 assert_eq!(peer, affordable);
-                handle.complete_push(
-                    address,
-                    PushReceipt {
+                response
+                    .send(Ok(PushReceipt {
                         storer: affordable,
                         signature: test_signature(),
                         nonce: Nonce::from([9u8; 32]),
                         storage_radius: StorageRadius::new(Bin::new(5).unwrap()),
-                    },
-                );
+                    }))
+                    .expect("receiver alive");
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -414,22 +462,181 @@ mod tests {
 
         let peer = test_peer();
         let stamped = test_stamped_chunk();
-        let address = test_address();
 
         let push = {
             let handle = handle.clone();
             tokio::spawn(async move { handle.push_chunk(peer, stamped).await })
         };
 
-        let _ = rx.recv().await.expect("command emitted");
-
-        // The event processor reports a storer rejection.
-        handle.fail_push(address, "rejected".to_string());
+        // The handler reports a storer rejection through the request's
+        // response channel.
+        match rx.recv().await.expect("command emitted") {
+            ClientCommand::PushChunk { response, .. } => {
+                response
+                    .send(Err(ChunkTransferError::PushRejected(
+                        "rejected".to_string(),
+                    )))
+                    .expect("receiver alive");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
 
         let result = push.await.unwrap();
         match result {
-            Err(RetrievalError::PushRejected(reason)) => assert_eq!(reason, "rejected"),
+            Err(ChunkTransferError::PushRejected(reason)) => assert_eq!(reason, "rejected"),
             other => panic!("expected PushRejected, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn concurrent_retrievals_for_same_address_resolve_independently() {
+        use crate::RetrievalResult;
+
+        let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
+        let handle = ClientHandle::new(tx);
+
+        let address = test_address();
+        let peer_a = OverlayAddress::from([1u8; 32]);
+        let peer_b = OverlayAddress::from([2u8; 32]);
+
+        let retrieval_a = {
+            let handle = handle.clone();
+            tokio::spawn(async move { handle.retrieve_chunk(peer_a, address).await })
+        };
+        let retrieval_b = {
+            let handle = handle.clone();
+            tokio::spawn(async move { handle.retrieve_chunk(peer_b, address).await })
+        };
+
+        // Both requests for the same address are in flight; collect their
+        // response channels keyed by peer.
+        let mut responses = std::collections::HashMap::new();
+        for _ in 0..2 {
+            match rx.recv().await.expect("command emitted") {
+                ClientCommand::RetrieveChunk {
+                    peer,
+                    address: requested,
+                    response,
+                } => {
+                    assert_eq!(requested, address);
+                    responses.insert(peer, response);
+                }
+                other => panic!("unexpected command: {other:?}"),
+            }
+        }
+        assert_eq!(responses.len(), 2, "requests must not alias");
+
+        // Fail A and succeed B: each request resolves through its own channel.
+        responses
+            .remove(&peer_a)
+            .unwrap()
+            .send(Err(ChunkTransferError::Protocol("missing".to_string())))
+            .expect("receiver alive");
+        responses
+            .remove(&peer_b)
+            .unwrap()
+            .send(Ok(RetrievalResult {
+                chunk: test_stamped_chunk(),
+                peer: peer_b,
+            }))
+            .expect("receiver alive");
+
+        let err = retrieval_a.await.unwrap().unwrap_err();
+        assert!(matches!(err, ChunkTransferError::Protocol(_)));
+        let result = retrieval_b.await.unwrap().expect("b resolves");
+        assert_eq!(result.peer, peer_b);
+    }
+
+    #[tokio::test]
+    async fn get_starts_next_candidate_on_failure_and_returns_first_success() {
+        use crate::RetrievalResult;
+
+        let peer_a = OverlayAddress::from([1u8; 32]);
+        let peer_b = OverlayAddress::from([2u8; 32]);
+
+        let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
+        let handle = ClientHandle::new(tx);
+        let topology = MockTopology::default().with_closest(vec![peer_a, peer_b]);
+        let bandwidth = Arc::new(Accounting::new(
+            DefaultBandwidthConfig::default(),
+            test_identity(),
+        ));
+        let pricer = FixedPricer::new(10_000, vertex_swarm_spec::init_mainnet());
+        let accounting = ClientAccounting::new(bandwidth, pricer);
+        let client = Client::client(topology, accounting, handle);
+
+        let address = test_address();
+        let get = tokio::spawn(async move { client.get(&address).await });
+
+        // First candidate fails; the next must start immediately (well before
+        // the stagger interval).
+        match rx.recv().await.expect("first command") {
+            ClientCommand::RetrieveChunk { peer, response, .. } => {
+                assert_eq!(peer, peer_a);
+                response
+                    .send(Err(ChunkTransferError::Protocol("missing".to_string())))
+                    .expect("receiver alive");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+        match rx.recv().await.expect("second command") {
+            ClientCommand::RetrieveChunk { peer, response, .. } => {
+                assert_eq!(peer, peer_b);
+                response
+                    .send(Ok(RetrievalResult {
+                        chunk: test_stamped_chunk(),
+                        peer: peer_b,
+                    }))
+                    .expect("receiver alive");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let chunk = get.await.unwrap().expect("get resolves");
+        assert_eq!(*chunk.address(), test_address());
+    }
+
+    #[tokio::test]
+    async fn get_staggers_in_a_second_candidate_while_the_first_is_silent() {
+        use crate::RetrievalResult;
+
+        let peer_a = OverlayAddress::from([1u8; 32]);
+        let peer_b = OverlayAddress::from([2u8; 32]);
+
+        let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
+        let handle = ClientHandle::new(tx);
+        let topology = MockTopology::default().with_closest(vec![peer_a, peer_b]);
+        let bandwidth = Arc::new(Accounting::new(
+            DefaultBandwidthConfig::default(),
+            test_identity(),
+        ));
+        let pricer = FixedPricer::new(10_000, vertex_swarm_spec::init_mainnet());
+        let accounting = ClientAccounting::new(bandwidth, pricer);
+        let client = Client::client(topology, accounting, handle);
+
+        let address = test_address();
+        let get = tokio::spawn(async move { client.get(&address).await });
+
+        // Leave the first candidate unanswered; the stagger must bring in the
+        // second, and its response must resolve the race.
+        match rx.recv().await.expect("first command") {
+            ClientCommand::RetrieveChunk { peer, .. } => assert_eq!(peer, peer_a),
+            other => panic!("unexpected command: {other:?}"),
+        }
+        match rx.recv().await.expect("second command after stagger") {
+            ClientCommand::RetrieveChunk { peer, response, .. } => {
+                assert_eq!(peer, peer_b);
+                response
+                    .send(Ok(RetrievalResult {
+                        chunk: test_stamped_chunk(),
+                        peer: peer_b,
+                    }))
+                    .expect("receiver alive");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let chunk = get.await.unwrap().expect("get resolves");
+        assert_eq!(*chunk.address(), test_address());
     }
 }

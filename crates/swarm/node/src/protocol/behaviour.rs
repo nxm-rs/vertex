@@ -161,32 +161,39 @@ impl ClientBehaviour {
                     debug!(%peer, "Unknown peer for pricing announcement");
                 }
             }
-            ClientCommand::RetrieveChunk { peer, address } => {
+            ClientCommand::RetrieveChunk {
+                peer,
+                address,
+                response,
+            } => {
                 if let Some(&peer_id) = self.overlay_peers.get(&peer) {
                     debug!(%peer_id, %peer, %address, "Retrieving chunk");
                     self.push_event(ToSwarm::NotifyHandler {
                         peer_id,
                         handler: libp2p::swarm::NotifyHandler::Any,
-                        event: HandlerCommand::RetrieveChunk { address },
+                        event: HandlerCommand::RetrieveChunk { address, response },
                     });
                 } else {
                     debug!(%peer, "Unknown peer for retrieval");
+                    let _ = response.send(Err(crate::ChunkTransferError::NotConnected));
                 }
             }
             ClientCommand::PushChunk {
                 peer,
                 address,
                 chunk,
+                response,
             } => {
                 if let Some(&peer_id) = self.overlay_peers.get(&peer) {
                     debug!(%peer_id, %peer, %address, "Pushing chunk");
                     self.push_event(ToSwarm::NotifyHandler {
                         peer_id,
                         handler: libp2p::swarm::NotifyHandler::Any,
-                        event: HandlerCommand::PushChunk { chunk },
+                        event: HandlerCommand::PushChunk { chunk, response },
                     });
                 } else {
                     debug!(%peer, "Unknown peer for push");
+                    let _ = response.send(Err(crate::ChunkTransferError::NotConnected));
                 }
             }
             ClientCommand::ServeChunk {
@@ -360,6 +367,28 @@ impl ClientBehaviour {
                     signature,
                     nonce,
                     storage_radius,
+                }));
+            }
+            HandlerEvent::RetrievalFailed {
+                overlay,
+                address,
+                error,
+            } => {
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::RetrievalFailed {
+                    peer: overlay,
+                    address,
+                    error,
+                }));
+            }
+            HandlerEvent::PushFailed {
+                overlay,
+                address,
+                error,
+            } => {
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::PushFailed {
+                    peer: overlay,
+                    address,
+                    error,
                 }));
             }
             HandlerEvent::Error {
