@@ -23,7 +23,30 @@
 //!   should call [`KeyedRateLimiter::clear`] to release the bucket; otherwise
 //!   memory grows with the count of distinct peers seen.
 //!
+//! # Inbound vs outbound symmetry
+//!
+//! The two keyed forms cover the two directions of per-peer flow control:
+//!
+//! - **Inbound** is the [`KeyedRateLimiter`]: a remote peer drives requests at
+//!   us and we admit or refuse each one against the quota we grant that peer.
+//!   The decision is synchronous; a refused request is simply rejected.
+//! - **Outbound** is the [`SelfRateLimiter`]: we drive requests at a remote
+//!   peer over an accounting-gated protocol (a request consumes the credit the
+//!   remote extends us via accounting), so issuing faster than the remote
+//!   replenishes our allowance wastes round trips on refusals. Instead of
+//!   dropping a request that the bucket cannot admit yet, the self-limiter
+//!   parks it on a delay queue and surfaces it again once the bucket has
+//!   refilled, throttling our own send rate to stay under the allowance.
+//!
+//! Both wrap the same GCRA bucket; the self-limiter adds the parking queue and
+//! the timer that wakes parked requests. See [`SelfRateLimiter`] for the
+//! outbound API.
+//!
 //! [`ConnectionHandler`]: https://docs.rs/libp2p/0.56/libp2p/swarm/trait.ConnectionHandler.html
+
+mod self_limiter;
+
+pub use self_limiter::{DelayUntil, SelfRateLimiter};
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -176,6 +199,25 @@ impl<K: Eq + Hash> KeyedRateLimiter<K> {
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// Check whether charging `n` tokens against `key` would be admitted, without
+    /// mutating the bucket.
+    ///
+    /// Returns the same [`RateLimitedErr`] a charge would, so callers can read
+    /// the wait hint for a key (used by [`SelfRateLimiter`] to arm its delay
+    /// timer) without consuming tokens.
+    pub fn try_peek(&self, key: K, n: u32) -> Result<(), RateLimitedErr> {
+        let now = self.init.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+        let guard = self.tat_per_key.lock();
+        let tat = guard.get(&key).copied().unwrap_or(0);
+        check(&self.cell, tat, now, n).map(|_| ())
+    }
+
+    /// The quota's full-replenish interval, i.e. the window over which the
+    /// bucket refills from empty to full.
+    pub fn replenish_all_every(&self) -> Duration {
+        Duration::from_nanos(self.cell.tau_nanos)
     }
 
     /// Drop the bucket for `key` to release memory; call this on the final
