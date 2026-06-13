@@ -309,9 +309,6 @@ walkdir = "2.5.0"
 tokio = { version = "1", default-features = false }
 tokio-stream = "0.1"
 
-## ffi (native embedding bindings)
-flutter_rust_bridge = "2.12"
-
 ## grpc
 tonic = "0.12"
 tonic-build = "0.12"

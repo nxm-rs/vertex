@@ -15,17 +15,19 @@
 //! types are reconstructed immediately inside Rust and never leak outward.
 //! [`api::logging::init_logging`] installs a tracing subscriber that streams the
 //! node's diagnostics to the host as typed [`api::logging::LogLine`] events.
+//! [`api::metrics::init_metrics`] installs a metrics recorder whose state the
+//! host reads back on demand through [`api::metrics::metrics_snapshot`].
 //!
 //! # Bindings
 //!
 //! The C ABI and the per-language bindings (Dart, Swift, Kotlin) are generated
 //! from the [`api`] module by flutter_rust_bridge; the [`frb_generated`] module
-//! holds the generated glue. The signatures in [`api`] are the single source of
-//! truth: there is no hand-maintained parallel C header. Regenerate with the
-//! flutter_rust_bridge codegen against `flutter_rust_bridge.yaml`. The crate
-//! compiles without running the codegen step, so a checkout builds and tests on
-//! its own; only a host that actually invokes the bindings needs the regenerated
-//! glue.
+//! and the `bindings/` tree hold the committed codegen output. The signatures
+//! in [`api`] are the single source of truth: there is no hand-maintained
+//! parallel C header. After changing [`api`], regenerate with the
+//! flutter_rust_bridge codegen against `flutter_rust_bridge.yaml` and commit
+//! the output; the generated glue is plain Rust, so a checkout builds and
+//! tests without the codegen binary installed.
 //!
 //! # Native only
 //!
@@ -34,8 +36,15 @@
 //! non-wasm targets and the wasm cone never pulls them in.
 
 pub mod api;
-pub mod error;
 
+// The generated glue declares `pub` items behind this private module and
+// unwraps where the bridge invariants hold; allow both here rather than
+// touching generated code (the codegen owns the file).
+#[allow(unreachable_pub, clippy::unwrap_used)]
 mod frb_generated;
 
-pub use error::{FfiError, FfiResult};
+// The error module lives under `api` so the binding codegen resolves
+// `FfiResult` to a plain `Result` and surfaces `FfiError` as a typed host
+// exception; `crate::error` stays valid as a path for Rust consumers.
+pub use api::error;
+pub use api::error::{FfiError, FfiResult};

@@ -9,8 +9,12 @@ rust_input: crate::api
 rust_root: .
 rust_output: src/frb_generated.rs
 # Host binding output. The Dart path is the canonical target; Swift and Kotlin
-# bindings follow the same generated surface for their respective hosts.
-dart_output: bindings/dart/vertex_ffi.dart
-# Emit the C header alongside the generated Rust so native (non-Dart) hosts have
-# a generated, never hand-maintained, ABI declaration.
+# bindings follow the same generated surface for their respective hosts. The
+# output is a directory inside the bindings/dart Dart package (the codegen
+# requires a pubspec.yaml above it).
+dart_output: bindings/dart/lib
+# C header output slot. Without full_dep mode (which needs the ffigen + libclang
+# toolchain) the codegen emits only a stub here; the C ABI itself lives in the
+# cdylib's generated `frb_*` dispatch symbols. Enable full_dep if a C host ever
+# needs the declarations; never hand-maintain a header.
 c_output: bindings/c/vertex_ffi.h

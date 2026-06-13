@@ -6,10 +6,11 @@ Root-level rules in `/AGENTS.md` apply here too, plus `docs/agents/api-surface.m
 
 ## Shape
 
-- `src/api/`: the public surface. Every reachable item is a binding-generation candidate. `client.rs` holds `VertexClient` (the opaque handle) and its build, upload, and download methods; `types.rs` holds the flat input and output shapes; `logging.rs` holds the host logging surface (`init_logging`, `LogLine`, `LogLevel`).
-- `src/error.rs`: `FfiError`, a flat `thiserror` enum with `strum::IntoStaticStr`. It carries pre-formatted strings so a host never needs a vertex-internal error type.
-- `src/frb_generated.rs`: the flutter_rust_bridge generated glue. Committed as a minimal placeholder so a plain `cargo build -p vertex-ffi` succeeds without the codegen binary. The codegen overwrites it. The placeholder also defines a stand-in `StreamSink<T>` (a no-op `add`) so the streaming API signatures in `logging.rs` compile before the codegen has run; the codegen replaces it with the real Dart-backed sink.
-- `flutter_rust_bridge.yaml`: codegen config. `src/api` is the input; the generated Rust and the per-language bindings (Dart, C header) are the output.
+- `src/api/`: the public surface. Every reachable item is a binding-generation candidate. `client.rs` holds `VertexClient` (the opaque handle) and its build, upload, and download methods; `types.rs` holds the flat input and output shapes; `logging.rs` holds the host logging surface (`init_logging`, `LogLine`, `LogLevel`); `metrics.rs` holds the host metrics surface (`init_metrics`, `metrics_snapshot`, the snapshot shapes).
+- `src/api/error.rs`: `FfiError`, a flat `thiserror` enum with `strum::IntoStaticStr`. It carries pre-formatted strings so a host never needs a vertex-internal error type. It lives inside `api` (with a `crate::error` re-export for Rust consumers) so the codegen sees it and surfaces it as a typed host exception (a sealed class on the Dart side).
+- `src/frb_generated.rs`: the flutter_rust_bridge generated glue, committed as the codegen output so a plain `cargo build -p vertex-ffi` succeeds without the codegen binary (the generated code is plain Rust against the `flutter_rust_bridge` runtime). It defines the Dart-backed `StreamSink<T>` the streaming API signatures reference.
+- `bindings/`: the committed per-language codegen output. `bindings/dart` is a minimal Dart package (the codegen requires its Dart output inside one); a Dart host runs `dart run build_runner build` there to materialize the `.freezed.dart` parts. `bindings/c/vertex_ffi.h` is a stub unless full_dep mode is enabled (see `flutter_rust_bridge.yaml`).
+- `flutter_rust_bridge.yaml`: codegen config. `src/api` is the input; the generated Rust and the per-language bindings are the output.
 - `build.rs`: registers the `frb_expand` cfg the `#[frb]` macro emits, keeping the workspace `unexpected_cfgs` lint clean.
 
 ## Dos
@@ -17,7 +18,8 @@ Root-level rules in `/AGENTS.md` apply here too, plus `docs/agents/api-surface.m
 - Keep the API thin. The crate is a boundary, not a place for logic. Build the client through the highest-level builder entry point (`vertex_swarm_builder::DefaultClientBuilder`); drive chunks through `SwarmChunkSender` and `SwarmChunkProvider`.
 - Reconstruct strong types (`StampedChunk`, `ChunkAddress`, `Stamp`) immediately on entry. Raw bytes and strings live only in the `api::types` shapes; never let them flow into internal logic.
 - Generate the C ABI from the Rust `api` module via flutter_rust_bridge. There is no hand-maintained parallel C header.
-- Annotate exported items with `#[frb(...)]` so codegen sees the right shape. `#[frb(opaque)]` for handles, `#[frb(non_opaque)]` for plain data.
+- Annotate exported items with `#[frb(...)]` so codegen sees the right shape. `#[frb(opaque)]` for handles, `#[frb(non_opaque)]` for plain data, `#[frb(ignore)]` on private helper structs in `src/api` so the codegen does not generate glue for them.
+- Spell `Result<T, FfiError>` in full in `pub fn` signatures under `src/api`. The codegen does not expand the generic `FfiResult` alias; an unexpanded alias degrades the error to an opaque handle instead of a typed host exception. The alias is fine in private helpers.
 - Gate runtime-bearing dependencies (the native tokio runtime) to non-wasm targets. The browser path is wasm-bindgen, a separate surface.
 
 ## Donts
@@ -37,14 +39,25 @@ A node embedded through this crate logs through the `tracing` facade. Until a ho
 - `init_logging` is single-shot. `tracing` permits one global subscriber per process, so a second call returns `FfiError::LoggingAlreadyInitialized` without disturbing the installed subscriber (a `OnceLock` guard, never a panic).
 - To strip logging at compile time, a host sets a `tracing` `release_max_level_*` feature in its own `Cargo.toml`. Cargo feature unification applies it to this crate's `tracing` dependency, so events below the chosen level are compiled out and `init_logging` forwards nothing below it.
 
-## Metrics (not yet exposed)
+## Metrics
 
-Embedded metrics are not exposed yet. The `metrics` facade the node records against is a no-op without an installed recorder, and this crate installs none (the Prometheus recorder and its HTTP server live behind `vertex-observability`'s `prometheus`/`http-server` slices, which the cone guard keeps out of the FFI build). A typed, pull-based metrics snapshot (a plain struct the host reads on demand, not JSON, per `docs/agents/api-surface.md`) is a planned follow-up. Do not reach for the Prometheus recorder or an HTTP `/metrics` endpoint here.
+A node embedded through this crate records against the `metrics` facade, which is a no-op until a recorder is installed. `api::metrics::init_metrics()` installs a process-global snapshot recorder; `api::metrics::metrics_snapshot()` reads the current state back as a typed `MetricsSnapshot`. The design note is `docs/observability/ffi-metrics.md`.
+
+- The surface is pull-based and generic over metric names: three sorted vectors (`CounterValue`, `GaugeValue`, `HistogramValue`) of flat name, labels, value entries plus a timestamp. Not JSON, per `docs/agents/api-surface.md`. New instrumentation anywhere in the workspace flows through with no FFI change.
+- The recorder is local to `api::metrics`, built on `metrics-util`'s `Registry` (the `registry` slice only, `default-features = false`) with bounded per-series storage: counters and gauges are atomics, histograms are a count plus sum summary, never a value-retaining bucket. Memory stays fixed even if the host never polls.
+- `init_metrics` is single-shot (a `OnceLock` guard, same pattern as `init_logging`): a second call returns `FfiError::MetricsAlreadyInitialized`. Hosts call it before `VertexClient::build` so early activity is captured.
+- Do not reach for the Prometheus recorder, an HTTP `/metrics` endpoint, or any push exporter here; the cone guard (`just check-cone`) asserts the exporter stack stays out. A native Rust host that wants Prometheus embeds via `vertex-swarm-builder` and installs `vertex-observability`'s recorder itself.
 
 ## Regenerating bindings
 
-Run the flutter_rust_bridge codegen against `flutter_rust_bridge.yaml` (the binary is `flutter_rust_bridge_codegen`; on this host reach it with `nix-shell -p flutter_rust_bridge_codegen --run "..."`). The crate compiles without this step, so CI does not run it. The codegen regenerates `src/frb_generated.rs` including the real `StreamSink<LogLine>` glue the `init_logging` stream needs on the Dart side.
+After changing anything under `src/api`, regenerate and commit the codegen output. From this directory:
+
+```
+nix-shell -p flutter_rust_bridge_codegen -p dart --run "flutter_rust_bridge_codegen generate --no-deps-check --no-build-runner"
+```
+
+`dart` is needed for formatting the Dart output; `--no-deps-check` skips the pubspec.lock check (the bindings package is committed without a lockfile); `--no-build-runner` skips the freezed build, which a consuming host runs itself. Keep the codegen and the `flutter_rust_bridge` runtime crate on the same version: the codegen's polisher pins the crate dependency (`=2.12.0`) to its own version, so a nixpkgs codegen bump shows up as a Cargo.toml diff and the pubspec pin in `bindings/dart` must follow. CI does not run the codegen; the committed output is the build input.
 
 ## Tests
 
-- `cargo test -p vertex-ffi`. The unit tests cover the boundary reconstruction and identity-building helpers without standing up a network.
+- `cargo test -p vertex-ffi`. The unit tests cover the boundary reconstruction and identity-building helpers, the log event extraction, and the metrics snapshot extraction, all without standing up a network.

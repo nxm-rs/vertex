@@ -24,7 +24,7 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
 
-use crate::error::{FfiError, FfiResult};
+use crate::error::FfiError;
 use crate::frb_generated::StreamSink;
 
 /// Guards against installing the global subscriber more than once.
@@ -91,6 +91,7 @@ pub struct LogLine {
 /// `tracing` records the formatted message under the reserved `message` field;
 /// it is hoisted into `message` and every other field is rendered with its
 /// `Debug` (or string) representation into `fields`.
+#[frb(ignore)]
 #[derive(Default)]
 struct LogVisitor {
     message: String,
@@ -124,7 +125,7 @@ impl Visit for LogVisitor {
 ///
 /// A clock before the epoch is not expected on a host; it clamps to zero rather
 /// than failing the event.
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -151,6 +152,7 @@ fn line_from_event(event: &Event<'_>) -> LogLine {
 /// Holds the host's [`StreamSink`]. On every event it extracts a [`LogLine`]
 /// and pushes it; a send failure (the host closed the stream) is swallowed so a
 /// dropped host listener never disturbs the node.
+#[frb(ignore)]
 struct StreamLayer {
     sink: StreamSink<LogLine>,
 }
@@ -184,7 +186,7 @@ where
 /// filtered events at compile time and `init_logging` forwards nothing below the
 /// chosen level.
 #[frb]
-pub fn init_logging(level: String, sink: StreamSink<LogLine>) -> FfiResult<()> {
+pub fn init_logging(level: String, sink: StreamSink<LogLine>) -> Result<(), FfiError> {
     let filter = EnvFilter::try_new(&level).map_err(|e| FfiError::Logging {
         reason: format!("invalid log filter {level:?}: {e}"),
     })?;

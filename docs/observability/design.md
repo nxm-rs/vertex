@@ -20,6 +20,8 @@ This document defines the observability methodology for Vertex, covering tracing
 
 All three share the same `tracing` subscriber infrastructure, enabling trace-to-log correlation via `trace_id`.
 
+The table above describes the native host stack. An embedding host that reaches the node through the FFI bindings reads the same `metrics` instrumentation through a typed snapshot instead of Prometheus; see [FFI Metrics](ffi-metrics.md).
+
 ## Instrumentation Boundaries
 
 ### Layer Boundaries

@@ -1,0 +1,25 @@
+# Minimal Dart package wrapping the generated vertex_ffi bindings.
+#
+# flutter_rust_bridge_codegen requires its Dart output to live inside a Dart
+# package; this pubspec is that package. The generated code under lib/ is
+# produced by the codegen (see ../../flutter_rust_bridge.yaml), never edited by
+# hand. The flutter_rust_bridge version is an exact pin matching the codegen
+# and the Rust runtime crate. The freezed floors mirror the
+# flutter_rust_bridge 2.12 template (the generated sealed classes are freezed
+# 3.x style); a consuming host runs `dart run build_runner build` to
+# materialize the .freezed.dart parts.
+name: vertex_ffi
+description: Dart bindings for embedding a Vertex Swarm client.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.3.0
+
+dependencies:
+  flutter_rust_bridge: 2.12.0
+  freezed_annotation: ^3.0.0
+
+dev_dependencies:
+  build_runner: ^2.4.4
+  freezed: ^3.0.6

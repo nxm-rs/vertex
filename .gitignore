@@ -14,3 +14,8 @@ reth
 
 # Reference PDFs (text extracts are checked in)
 docs/swarm/reference/*.pdf
+
+# Dart bindings package artifacts (a consuming host runs pub get / build_runner)
+crates/ffi/bindings/dart/.dart_tool/
+crates/ffi/bindings/dart/pubspec.lock
+crates/ffi/bindings/dart/lib/**/*.freezed.dart
