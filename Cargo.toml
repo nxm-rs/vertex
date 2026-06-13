@@ -98,6 +98,7 @@ members = [
     # Chain (Ethereum RPC access)
     "crates/chain",
     "crates/chain/index",
+    "crates/chain/index-staking",
 
     # FFI (native embedding surface)
     "crates/ffi",
@@ -238,6 +239,7 @@ vertex-rpc-server = { path = "crates/rpc/server" }
 # chain (Ethereum RPC access)
 vertex-chain = { path = "crates/chain" }
 vertex-chain-index = { path = "crates/chain/index" }
+vertex-chain-index-staking = { path = "crates/chain/index-staking" }
 
 # ffi (native embedding surface)
 vertex-ffi = { path = "crates/ffi" }
