@@ -35,7 +35,7 @@ use alloy_primitives::Address;
 use alloy_signer::SignerSync;
 use tokio::sync::mpsc;
 use vertex_swarm_api::{
-    BandwidthMode, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmError, SwarmPeerState,
+    Au, BandwidthMode, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmError, SwarmPeerState,
     SwarmResult, SwarmSettlementProvider,
 };
 use vertex_swarm_node::ClientCommand;
@@ -85,10 +85,13 @@ impl<C: SwarmAccountingConfig> SwapProvider<C> {
 
     /// The early-payment trigger: pay once debt reaches this fraction of the
     /// payment threshold, mirroring pseudosettle's early-payment behaviour.
-    fn early_payment_trigger(&self) -> u64 {
+    fn early_payment_trigger(&self) -> Au {
         let threshold = self.config.payment_threshold();
         let early = self.config.early_payment_percent().min(100);
-        threshold.saturating_mul(100 - early) / 100
+        let scaled = threshold
+            .checked_scale(100 - early)
+            .unwrap_or(Au::from_amount(u64::MAX));
+        Au::from_amount(scaled.as_amount() / 100)
     }
 }
 
@@ -98,28 +101,28 @@ impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for SwapProvide
         BandwidthMode::Swap
     }
 
-    fn pre_allow(&self, _peer: OverlayAddress, _state: &dyn SwarmPeerState) -> i64 {
+    fn pre_allow(&self, _peer: OverlayAddress, _state: &dyn SwarmPeerState) -> Au {
         // SWAP does not modify the balance during the allow check; payment is
         // driven by `settle()` once debt crosses the threshold.
-        0
+        Au::ZERO
     }
 
-    async fn settle(&self, peer: OverlayAddress, state: &dyn SwarmPeerState) -> SwarmResult<i64> {
+    async fn settle(&self, peer: OverlayAddress, state: &dyn SwarmPeerState) -> SwarmResult<Au> {
         let balance = state.balance();
         // Positive balance means the peer owes us; nothing for us to pay.
-        if balance >= 0 {
-            return Ok(0);
+        if !balance.is_negative() {
+            return Ok(Au::ZERO);
         }
 
         let debt = balance.unsigned_abs();
         // Only pay once debt reaches the early-payment trigger.
         if debt < self.early_payment_trigger() {
-            return Ok(0);
+            return Ok(Au::ZERO);
         }
 
         let Some(handle) = &self.handle else {
             // Without a service handle the provider cannot issue cheques.
-            return Ok(0);
+            return Ok(Au::ZERO);
         };
 
         let accepted = handle
@@ -127,7 +130,7 @@ impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for SwapProvide
             .await
             .map_err(SwarmError::payment_required)?;
 
-        Ok(i64::try_from(accepted).unwrap_or(i64::MAX))
+        Ok(accepted)
     }
 
     fn name(&self) -> &'static str {
@@ -191,16 +194,16 @@ mod tests {
             BandwidthMode::Swap
         }
 
-        fn payment_threshold(&self) -> u64 {
-            13_500_000
+        fn payment_threshold(&self) -> Au {
+            Au::from_amount(13_500_000)
         }
 
         fn payment_tolerance_percent(&self) -> u64 {
             25
         }
 
-        fn refresh_rate(&self) -> u64 {
-            4_500_000
+        fn refresh_rate(&self) -> Au {
+            Au::from_amount(4_500_000)
         }
 
         fn early_payment_percent(&self) -> u64 {
@@ -222,7 +225,7 @@ mod tests {
     fn early_payment_trigger_is_fraction_of_threshold() {
         let provider = SwapProvider::new(SwapTestConfig);
         // 50% early payment => trigger at 50% of the 13_500_000 threshold.
-        assert_eq!(provider.early_payment_trigger(), 6_750_000);
+        assert_eq!(provider.early_payment_trigger(), Au::from_amount(6_750_000));
     }
 
     /// A signed cheque must recover to the signer that produced it.

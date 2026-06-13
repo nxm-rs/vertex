@@ -8666,6 +8666,7 @@ dependencies = [
  "async-trait",
  "auto_impl",
  "bytes",
+ "derive_more",
  "eyre",
  "futures",
  "hex",

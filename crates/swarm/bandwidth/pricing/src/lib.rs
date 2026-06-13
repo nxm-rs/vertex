@@ -18,16 +18,17 @@ pub use config::FixedPricingConfig;
 pub use fixed::FixedPricer;
 
 use nectar_primitives::ChunkAddress;
+use vertex_swarm_api::Au;
 use vertex_swarm_primitives::OverlayAddress;
 
 /// Trait for pricing chunks.
 #[auto_impl::auto_impl(&, Arc)]
 pub trait Pricer: Send + Sync {
-    /// Get the base price for a chunk (not considering peer).
-    fn price(&self, chunk: &ChunkAddress) -> u64;
+    /// Get the base price for a chunk in AU (not considering peer).
+    fn price(&self, chunk: &ChunkAddress) -> Au;
 
-    /// Get the price for a chunk when served by a specific peer.
-    fn peer_price(&self, peer: &OverlayAddress, chunk: &ChunkAddress) -> u64;
+    /// Get the price for a chunk in AU when served by a specific peer.
+    fn peer_price(&self, peer: &OverlayAddress, chunk: &ChunkAddress) -> Au;
 }
 
 /// No-op pricer for nodes that don't participate in pricing (e.g., bootnodes).
@@ -35,21 +36,21 @@ pub trait Pricer: Send + Sync {
 pub struct NoPricer;
 
 impl Pricer for NoPricer {
-    fn price(&self, _chunk: &ChunkAddress) -> u64 {
-        0
+    fn price(&self, _chunk: &ChunkAddress) -> Au {
+        Au::ZERO
     }
 
-    fn peer_price(&self, _peer: &OverlayAddress, _chunk: &ChunkAddress) -> u64 {
-        0
+    fn peer_price(&self, _peer: &OverlayAddress, _chunk: &ChunkAddress) -> Au {
+        Au::ZERO
     }
 }
 
 impl vertex_swarm_api::SwarmPricing for NoPricer {
-    fn price(&self, chunk: &ChunkAddress) -> u64 {
+    fn price(&self, chunk: &ChunkAddress) -> Au {
         Pricer::price(self, chunk)
     }
 
-    fn peer_price(&self, peer: &OverlayAddress, chunk: &ChunkAddress) -> u64 {
+    fn peer_price(&self, peer: &OverlayAddress, chunk: &ChunkAddress) -> Au {
         Pricer::peer_price(self, peer, chunk)
     }
 }

@@ -3,7 +3,7 @@
 use std::vec::Vec;
 
 use vertex_swarm_api::{
-    Direction, SwarmBandwidthAccounting, SwarmIdentity, SwarmPeerBandwidth, SwarmResult,
+    Au, Direction, SwarmBandwidthAccounting, SwarmIdentity, SwarmPeerBandwidth, SwarmResult,
 };
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -27,14 +27,14 @@ pub struct NoPeerBandwidth {
 }
 
 impl SwarmPeerBandwidth for NoPeerBandwidth {
-    fn record(&self, _bytes: u64, _direction: Direction) {}
+    fn record(&self, _amount: Au, _direction: Direction) {}
 
-    fn allow(&self, _bytes: u64) -> bool {
+    fn allow(&self, _amount: Au) -> bool {
         true
     }
 
-    fn balance(&self) -> i64 {
-        0
+    fn balance(&self) -> Au {
+        Au::ZERO
     }
 
     async fn settle(&self) -> SwarmResult<()> {
@@ -75,13 +75,13 @@ impl<I: SwarmIdentity> SwarmBandwidthAccounting for NoAccounting<I> {
     fn prepare_receive(
         &self,
         _peer: OverlayAddress,
-        _price: u64,
+        _price: Au,
         _originated: bool,
     ) -> SwarmResult<NoReceiveAction> {
         Ok(NoReceiveAction)
     }
 
-    fn prepare_provide(&self, _peer: OverlayAddress, _price: u64) -> SwarmResult<NoProvideAction> {
+    fn prepare_provide(&self, _peer: OverlayAddress, _price: Au) -> SwarmResult<NoProvideAction> {
         Ok(NoProvideAction)
     }
 }

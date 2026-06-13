@@ -1,6 +1,6 @@
 //! Validated bandwidth accounting configuration.
 
-use vertex_swarm_api::{BandwidthMode, SwarmAccountingConfig, SwarmPricingConfig};
+use vertex_swarm_api::{Au, BandwidthMode, SwarmAccountingConfig, SwarmPricingConfig};
 use vertex_swarm_bandwidth_pricing::FixedPricingConfig;
 
 use crate::args::{BandwidthArgs, BandwidthModeArg};
@@ -128,16 +128,16 @@ where
         self.mode
     }
 
-    fn payment_threshold(&self) -> u64 {
-        self.payment_threshold
+    fn payment_threshold(&self) -> Au {
+        Au::from_amount(self.payment_threshold)
     }
 
     fn payment_tolerance_percent(&self) -> u64 {
         self.payment_tolerance_percent
     }
 
-    fn refresh_rate(&self) -> u64 {
-        self.refresh_rate
+    fn refresh_rate(&self) -> Au {
+        Au::from_amount(self.refresh_rate)
     }
 
     fn early_payment_percent(&self) -> u64 {

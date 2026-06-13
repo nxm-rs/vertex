@@ -4,6 +4,8 @@
 
 use std::sync::Arc;
 
+use vertex_swarm_api::Au;
+
 use super::PeerState;
 
 /// Trait for accounting actions.
@@ -20,13 +22,13 @@ pub trait AccountingAction: Send {
 /// Reserves balance on creation; commits on apply(), releases on drop.
 pub struct ReceiveAction {
     state: Arc<PeerState>,
-    price: u64,
+    price: Au,
     applied: bool,
 }
 
 impl ReceiveAction {
     /// Create a new receive action.
-    pub fn new(state: Arc<PeerState>, price: u64) -> Self {
+    pub fn new(state: Arc<PeerState>, price: Au) -> Self {
         Self {
             state,
             price,
@@ -36,7 +38,7 @@ impl ReceiveAction {
 
     /// Apply the action, committing the balance decrease.
     pub fn apply(mut self) {
-        self.state.add_balance(-(self.price as i64));
+        self.state.add_balance(-self.price);
         self.state.sub_reserved(self.price);
         self.applied = true;
     }
@@ -63,13 +65,13 @@ impl AccountingAction for ReceiveAction {
 /// Reserves shadow balance on creation; commits on apply(), releases on drop.
 pub struct ProvideAction {
     state: Arc<PeerState>,
-    price: u64,
+    price: Au,
     applied: bool,
 }
 
 impl ProvideAction {
     /// Create a new provide action.
-    pub fn new(state: Arc<PeerState>, price: u64) -> Self {
+    pub fn new(state: Arc<PeerState>, price: Au) -> Self {
         Self {
             state,
             price,
@@ -79,7 +81,7 @@ impl ProvideAction {
 
     /// Apply the action, committing the balance increase.
     pub fn apply(mut self) {
-        self.state.add_balance(self.price as i64);
+        self.state.add_balance(self.price);
         self.state.sub_shadow_reserved(self.price);
         self.applied = true;
     }
@@ -105,53 +107,57 @@ impl AccountingAction for ProvideAction {
 mod tests {
     use super::*;
 
+    fn au(value: i64) -> Au {
+        Au::new(value)
+    }
+
     #[test]
     fn test_receive_action_apply() {
-        let state = Arc::new(PeerState::new(1000, 10000));
-        state.add_reserved(100);
+        let state = Arc::new(PeerState::new(au(1000), au(10000)));
+        state.add_reserved(au(100));
 
-        let action = ReceiveAction::new(Arc::clone(&state), 100);
+        let action = ReceiveAction::new(Arc::clone(&state), au(100));
         action.apply();
 
-        assert_eq!(state.balance(), -100);
-        assert_eq!(state.reserved_balance(), 0);
+        assert_eq!(state.balance(), au(-100));
+        assert_eq!(state.reserved_balance(), Au::ZERO);
     }
 
     #[test]
     fn test_receive_action_drop() {
-        let state = Arc::new(PeerState::new(1000, 10000));
-        state.add_reserved(100);
+        let state = Arc::new(PeerState::new(au(1000), au(10000)));
+        state.add_reserved(au(100));
 
         {
-            let _action = ReceiveAction::new(Arc::clone(&state), 100);
+            let _action = ReceiveAction::new(Arc::clone(&state), au(100));
         }
 
-        assert_eq!(state.balance(), 0);
-        assert_eq!(state.reserved_balance(), 0);
+        assert_eq!(state.balance(), Au::ZERO);
+        assert_eq!(state.reserved_balance(), Au::ZERO);
     }
 
     #[test]
     fn test_provide_action_apply() {
-        let state = Arc::new(PeerState::new(1000, 10000));
-        state.add_shadow_reserved(100);
+        let state = Arc::new(PeerState::new(au(1000), au(10000)));
+        state.add_shadow_reserved(au(100));
 
-        let action = ProvideAction::new(Arc::clone(&state), 100);
+        let action = ProvideAction::new(Arc::clone(&state), au(100));
         action.apply();
 
-        assert_eq!(state.balance(), 100);
-        assert_eq!(state.shadow_reserved_balance(), 0);
+        assert_eq!(state.balance(), au(100));
+        assert_eq!(state.shadow_reserved_balance(), Au::ZERO);
     }
 
     #[test]
     fn test_provide_action_drop() {
-        let state = Arc::new(PeerState::new(1000, 10000));
-        state.add_shadow_reserved(100);
+        let state = Arc::new(PeerState::new(au(1000), au(10000)));
+        state.add_shadow_reserved(au(100));
 
         {
-            let _action = ProvideAction::new(Arc::clone(&state), 100);
+            let _action = ProvideAction::new(Arc::clone(&state), au(100));
         }
 
-        assert_eq!(state.balance(), 0);
-        assert_eq!(state.shadow_reserved_balance(), 0);
+        assert_eq!(state.balance(), Au::ZERO);
+        assert_eq!(state.shadow_reserved_balance(), Au::ZERO);
     }
 }

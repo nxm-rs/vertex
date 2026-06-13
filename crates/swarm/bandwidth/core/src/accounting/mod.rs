@@ -31,7 +31,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use vertex_swarm_api::{
-    Direction, PeerAffordability, PeerReporter, ReportSource, SwarmAccountingConfig,
+    Au, Direction, PeerAffordability, PeerReporter, ReportSource, SwarmAccountingConfig,
     SwarmBandwidthAccounting, SwarmIdentity, SwarmPeerBandwidth, SwarmResult, SwarmScoringEvent,
 };
 use vertex_swarm_primitives::OverlayAddress;
@@ -108,17 +108,17 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
     pub fn prepare_receive(
         &self,
         peer: OverlayAddress,
-        price: u64,
+        price: Au,
         _originated: bool,
     ) -> Result<ReceiveAction, AccountingError> {
         let state = self.get_or_create_peer(peer);
 
         let current_balance = state.balance();
         let reserved = state.reserved_balance();
-        let projected = current_balance - (price as i64) - (reserved as i64);
+        let projected = current_balance - price - reserved;
 
         let disconnect_threshold = self.config.disconnect_threshold();
-        let threshold = -(disconnect_threshold as i64);
+        let threshold = -disconnect_threshold;
         if projected < threshold {
             // Law broken: the peer stopped accepting settlement (refresh or
             // payment), letting our debt reach the disconnect threshold.
@@ -151,7 +151,7 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
     pub fn prepare_provide(
         &self,
         peer: OverlayAddress,
-        price: u64,
+        price: Au,
     ) -> Result<ProvideAction, AccountingError> {
         let state = self.get_or_create_peer(peer);
         state.add_shadow_reserved(price);
@@ -231,14 +231,14 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmBandwidthAccounting for Ac
     fn prepare_receive(
         &self,
         peer: OverlayAddress,
-        price: u64,
+        price: Au,
         originated: bool,
     ) -> SwarmResult<ReceiveAction> {
         Accounting::prepare_receive(self, peer, price, originated)
             .map_err(vertex_swarm_api::SwarmError::accounting)
     }
 
-    fn prepare_provide(&self, peer: OverlayAddress, price: u64) -> SwarmResult<ProvideAction> {
+    fn prepare_provide(&self, peer: OverlayAddress, price: Au) -> SwarmResult<ProvideAction> {
         Accounting::prepare_provide(self, peer, price)
             .map_err(vertex_swarm_api::SwarmError::accounting)
     }
@@ -262,22 +262,25 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmBandwidthAccounting for Ac
 /// queries are read-only and never insert peer state, so client-only
 /// threshold scaling applies only once the peer record exists.
 impl<C: SwarmAccountingConfig, I: SwarmIdentity> PeerAffordability for Accounting<C, I> {
-    fn can_afford(&self, overlay: &OverlayAddress, price: u64) -> bool {
+    fn can_afford(&self, overlay: &OverlayAddress, price: Au) -> bool {
         price <= self.allowance_remaining(overlay)
     }
 
-    fn allowance_remaining(&self, overlay: &OverlayAddress) -> u64 {
+    fn allowance_remaining(&self, overlay: &OverlayAddress) -> Au {
         let (balance, reserved, threshold) = match self.peers.read().get(overlay) {
             Some(state) => (
                 state.balance(),
                 state.reserved_balance(),
                 state.disconnect_threshold(),
             ),
-            None => (0, 0, self.config.disconnect_threshold()),
+            None => (Au::ZERO, Au::ZERO, self.config.disconnect_threshold()),
         };
 
-        let headroom = balance as i128 + threshold as i128 - reserved as i128;
-        headroom.clamp(0, u64::MAX as i128) as u64
+        // Headroom is the signed balance plus the (non-negative) threshold less
+        // the outstanding reservation, floored at zero. Saturating arithmetic
+        // keeps the AU domain closed without an i128 detour.
+        let headroom = balance.saturating_add(threshold).saturating_sub(reserved);
+        headroom.max(Au::ZERO)
     }
 }
 
@@ -286,8 +289,8 @@ pub struct AccountingPeerHandle {
     peer: OverlayAddress,
     state: Arc<PeerState>,
     providers: Arc<[Box<dyn SwarmSettlementProvider>]>,
-    disconnect_threshold: u64,
-    payment_threshold: u64,
+    disconnect_threshold: Au,
+    payment_threshold: Au,
 }
 
 impl Clone for AccountingPeerHandle {
@@ -308,18 +311,18 @@ impl AccountingPeerHandle {
         &self.state
     }
 
-    /// Get the payment threshold.
-    pub fn payment_threshold(&self) -> u64 {
+    /// Get the payment threshold in AU.
+    pub fn payment_threshold(&self) -> Au {
         self.payment_threshold
     }
 
-    /// Get the disconnect threshold.
-    pub fn disconnect_threshold(&self) -> u64 {
+    /// Get the disconnect threshold in AU.
+    pub fn disconnect_threshold(&self) -> Au {
         self.disconnect_threshold
     }
 
     /// Call `pre_allow()` on all providers, returning total adjustment.
-    fn pre_allow_all(&self) -> i64 {
+    fn pre_allow_all(&self) -> Au {
         self.providers
             .iter()
             .map(|p| p.pre_allow(self.peer, self.state.as_ref()))
@@ -327,15 +330,15 @@ impl AccountingPeerHandle {
     }
 
     /// Call `settle()` on providers in order until debt is below threshold.
-    async fn settle_all(&self) -> SwarmResult<i64> {
-        let mut total = 0i64;
+    async fn settle_all(&self) -> SwarmResult<Au> {
+        let mut total = Au::ZERO;
 
         for provider in self.providers.iter() {
             total = total.saturating_add(provider.settle(self.peer, self.state.as_ref()).await?);
 
             // Check if still over threshold
             let balance = self.state.balance();
-            if balance <= self.payment_threshold as i64 {
+            if balance <= self.payment_threshold {
                 break;
             }
         }
@@ -345,26 +348,26 @@ impl AccountingPeerHandle {
 }
 
 impl SwarmPeerBandwidth for AccountingPeerHandle {
-    fn record(&self, bytes: u64, direction: Direction) {
+    fn record(&self, amount: Au, direction: Direction) {
         match direction {
-            Direction::Upload => self.state.add_balance(bytes as i64),
-            Direction::Download => self.state.add_balance(-(bytes as i64)),
+            Direction::Upload => self.state.add_balance(amount),
+            Direction::Download => self.state.add_balance(-amount),
         }
     }
 
-    fn allow(&self, bytes: u64) -> bool {
+    fn allow(&self, amount: Au) -> bool {
         // Let providers adjust balance first (e.g., pseudosettle refresh)
         self.pre_allow_all();
 
         // Check threshold
         let balance = self.state.balance();
         let reserved = self.state.reserved_balance();
-        let projected = balance - (bytes as i64) - (reserved as i64);
+        let projected = balance - amount - reserved;
 
-        projected >= -(self.disconnect_threshold as i64)
+        projected >= -self.disconnect_threshold
     }
 
-    fn balance(&self) -> i64 {
+    fn balance(&self) -> Au {
         self.state.balance()
     }
 
@@ -387,18 +390,22 @@ mod tests {
         Accounting::new(BandwidthConfig::default(), test_identity())
     }
 
+    fn au(value: i64) -> Au {
+        Au::new(value)
+    }
+
     #[test]
     fn test_accounting_basic() {
         let accounting = test_accounting();
 
         let handle = accounting.for_peer(test_peer());
-        assert_eq!(handle.balance(), 0);
+        assert_eq!(handle.balance(), au(0));
 
-        handle.record(1000, Direction::Upload);
-        assert_eq!(handle.balance(), 1000);
+        handle.record(au(1000), Direction::Upload);
+        assert_eq!(handle.balance(), au(1000));
 
-        handle.record(500, Direction::Download);
-        assert_eq!(handle.balance(), 500);
+        handle.record(au(500), Direction::Download);
+        assert_eq!(handle.balance(), au(500));
     }
 
     #[test]
@@ -406,16 +413,16 @@ mod tests {
         let accounting = test_accounting();
 
         let action = accounting
-            .prepare_receive(test_peer(), 1000, true)
+            .prepare_receive(test_peer(), au(1000), true)
             .expect("should prepare receive");
 
         let handle = accounting.for_peer(test_peer());
-        assert_eq!(handle.state.reserved_balance(), 1000);
+        assert_eq!(handle.state.reserved_balance(), au(1000));
 
         action.apply();
 
-        assert_eq!(handle.balance(), -1000);
-        assert_eq!(handle.state.reserved_balance(), 0);
+        assert_eq!(handle.balance(), au(-1000));
+        assert_eq!(handle.state.reserved_balance(), au(0));
     }
 
     #[test]
@@ -424,13 +431,13 @@ mod tests {
 
         {
             let _action = accounting
-                .prepare_receive(test_peer(), 1000, true)
+                .prepare_receive(test_peer(), au(1000), true)
                 .expect("should prepare receive");
         }
 
         let handle = accounting.for_peer(test_peer());
-        assert_eq!(handle.balance(), 0);
-        assert_eq!(handle.state.reserved_balance(), 0);
+        assert_eq!(handle.balance(), au(0));
+        assert_eq!(handle.state.reserved_balance(), au(0));
     }
 
     #[test]
@@ -442,10 +449,10 @@ mod tests {
         );
 
         let handle = accounting.for_peer(test_peer());
-        assert_eq!(handle.balance(), 0);
+        assert_eq!(handle.balance(), au(0));
 
-        handle.record(1000, Direction::Download);
-        assert_eq!(handle.balance(), -1000);
+        handle.record(au(1000), Direction::Download);
+        assert_eq!(handle.balance(), au(-1000));
     }
 
     #[test]
@@ -457,10 +464,10 @@ mod tests {
         );
 
         let handle = accounting.for_peer(test_peer());
-        assert_eq!(handle.balance(), 0);
+        assert_eq!(handle.balance(), au(0));
 
-        handle.record(1000, Direction::Upload);
-        assert_eq!(handle.balance(), 1000);
+        handle.record(au(1000), Direction::Upload);
+        assert_eq!(handle.balance(), au(1000));
     }
 
     #[test]
@@ -470,14 +477,14 @@ mod tests {
         let handle = accounting.for_peer(test_peer());
 
         // Should allow small transfers
-        assert!(handle.allow(1000));
+        assert!(handle.allow(au(1000)));
 
         // Record some debt
-        handle.record(1000, Direction::Download);
-        assert_eq!(handle.balance(), -1000);
+        handle.record(au(1000), Direction::Download);
+        assert_eq!(handle.balance(), au(-1000));
 
         // Should still allow more (under disconnect threshold)
-        assert!(handle.allow(1000));
+        assert!(handle.allow(au(1000)));
     }
 
     #[test]
@@ -517,14 +524,14 @@ mod tests {
         let handle1 = accounting.for_peer(test_peer());
         let handle2 = handle1.clone();
 
-        handle1.record(1000, Direction::Upload);
+        handle1.record(au(1000), Direction::Upload);
 
         // Both handles should see the same balance (shared state)
-        assert_eq!(handle1.balance(), 1000);
-        assert_eq!(handle2.balance(), 1000);
+        assert_eq!(handle1.balance(), au(1000));
+        assert_eq!(handle2.balance(), au(1000));
     }
 
-    struct FixedAdjustProvider(i64);
+    struct FixedAdjustProvider(Au);
 
     #[async_trait::async_trait]
     impl SwarmSettlementProvider for FixedAdjustProvider {
@@ -536,7 +543,7 @@ mod tests {
             &self,
             _peer: OverlayAddress,
             state: &dyn vertex_swarm_api::SwarmPeerState,
-        ) -> i64 {
+        ) -> Au {
             state.add_balance(self.0);
             self.0
         }
@@ -545,8 +552,8 @@ mod tests {
             &self,
             _peer: OverlayAddress,
             _state: &dyn vertex_swarm_api::SwarmPeerState,
-        ) -> SwarmResult<i64> {
-            Ok(0)
+        ) -> SwarmResult<Au> {
+            Ok(Au::ZERO)
         }
 
         fn name(&self) -> &'static str {
@@ -560,18 +567,18 @@ mod tests {
             BandwidthConfig::default(),
             test_identity(),
             vec![
-                Box::new(FixedAdjustProvider(100)),
-                Box::new(FixedAdjustProvider(200)),
+                Box::new(FixedAdjustProvider(au(100))),
+                Box::new(FixedAdjustProvider(au(200))),
             ],
         );
 
         let handle = accounting.for_peer(test_peer());
 
         // Trigger pre_allow via allow()
-        handle.allow(0);
+        handle.allow(au(0));
 
         // Both providers should have adjusted the balance
-        assert_eq!(handle.balance(), 300);
+        assert_eq!(handle.balance(), au(300));
     }
 
     #[derive(Default)]
@@ -604,7 +611,7 @@ mod tests {
         )
     }
 
-    const SMALL_DISCONNECT_THRESHOLD: u64 = 1250;
+    const SMALL_DISCONNECT_THRESHOLD: Au = Au::new(1250);
 
     #[test]
     fn test_violation_reported_once_per_breach_episode() {
@@ -615,7 +622,7 @@ mod tests {
 
         // First breach reports exactly once.
         assert!(matches!(
-            accounting.prepare_receive(peer, 2000, true),
+            accounting.prepare_receive(peer, au(2000), true),
             Err(AccountingError::DisconnectThreshold { .. })
         ));
         assert_eq!(reporter.reports.lock().len(), 1);
@@ -625,19 +632,19 @@ mod tests {
         assert_eq!(source, ReportSource::Accounting);
 
         // Retrying against the same broken state does not stack reports.
-        assert!(accounting.prepare_receive(peer, 2000, true).is_err());
-        assert!(accounting.prepare_receive(peer, 3000, true).is_err());
+        assert!(accounting.prepare_receive(peer, au(2000), true).is_err());
+        assert!(accounting.prepare_receive(peer, au(3000), true).is_err());
         assert_eq!(reporter.reports.lock().len(), 1);
 
         // A successful grant ends the episode...
         let action = accounting
-            .prepare_receive(peer, 100, true)
+            .prepare_receive(peer, au(100), true)
             .expect("within threshold");
         drop(action);
         assert_eq!(reporter.reports.lock().len(), 1);
 
         // ...so the next breach is a new episode and reports again.
-        assert!(accounting.prepare_receive(peer, 2000, true).is_err());
+        assert!(accounting.prepare_receive(peer, au(2000), true).is_err());
         assert_eq!(reporter.reports.lock().len(), 2);
     }
 
@@ -647,7 +654,7 @@ mod tests {
         let peer = test_peer();
 
         assert!(matches!(
-            accounting.prepare_receive(peer, 2000, true),
+            accounting.prepare_receive(peer, au(2000), true),
             Err(AccountingError::DisconnectThreshold { .. })
         ));
 
@@ -657,7 +664,7 @@ mod tests {
         action.apply();
 
         let handle = accounting.for_peer(peer);
-        assert_eq!(handle.balance(), -(SMALL_DISCONNECT_THRESHOLD as i64));
+        assert_eq!(handle.balance(), -SMALL_DISCONNECT_THRESHOLD);
     }
 
     #[test]
@@ -671,7 +678,7 @@ mod tests {
             SMALL_DISCONNECT_THRESHOLD
         );
         assert!(accounting.can_afford(&peer, SMALL_DISCONNECT_THRESHOLD));
-        assert!(!accounting.can_afford(&peer, SMALL_DISCONNECT_THRESHOLD + 1));
+        assert!(!accounting.can_afford(&peer, SMALL_DISCONNECT_THRESHOLD + Au::new(1)));
 
         // Affordability queries never insert peer state.
         assert!(accounting.peers().is_empty());
@@ -684,17 +691,17 @@ mod tests {
 
         // Build up debt: we owe the peer 500 AU.
         let handle = accounting.for_peer(peer);
-        handle.record(500, Direction::Download);
-        assert_eq!(handle.balance(), -500);
-        assert_eq!(accounting.allowance_remaining(&peer), 750);
+        handle.record(au(500), Direction::Download);
+        assert_eq!(handle.balance(), au(-500));
+        assert_eq!(accounting.allowance_remaining(&peer), au(750));
 
         // Exactly at the threshold: affordable and grantable.
-        assert!(accounting.can_afford(&peer, 750));
-        assert!(accounting.prepare_receive(peer, 750, true).is_ok());
+        assert!(accounting.can_afford(&peer, au(750)));
+        assert!(accounting.prepare_receive(peer, au(750), true).is_ok());
 
         // Just over: refused by both.
-        assert!(!accounting.can_afford(&peer, 751));
-        assert!(accounting.prepare_receive(peer, 751, true).is_err());
+        assert!(!accounting.can_afford(&peer, au(751)));
+        assert!(accounting.prepare_receive(peer, au(751), true).is_err());
     }
 
     #[test]
@@ -703,13 +710,13 @@ mod tests {
         let peer = test_peer();
 
         let action = accounting
-            .prepare_receive(peer, 1000, true)
+            .prepare_receive(peer, au(1000), true)
             .expect("within threshold");
 
         // The outstanding reservation consumes headroom.
-        assert_eq!(accounting.allowance_remaining(&peer), 250);
-        assert!(accounting.can_afford(&peer, 250));
-        assert!(!accounting.can_afford(&peer, 251));
+        assert_eq!(accounting.allowance_remaining(&peer), au(250));
+        assert!(accounting.can_afford(&peer, au(250)));
+        assert!(!accounting.can_afford(&peer, au(251)));
 
         // Releasing the reservation restores the headroom.
         drop(action);
