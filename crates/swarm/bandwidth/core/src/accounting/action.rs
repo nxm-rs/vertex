@@ -64,6 +64,10 @@ impl vertex_swarm_api::AccountingAction for ReceiveAction {
     fn apply(self) {
         ReceiveAction::apply(self);
     }
+
+    fn apply_boxed(self: Box<Self>) {
+        ReceiveAction::apply(*self);
+    }
 }
 
 /// Action for providing service to a peer (balance increases).
@@ -112,6 +116,10 @@ impl AccountingAction for ProvideAction {
 impl vertex_swarm_api::AccountingAction for ProvideAction {
     fn apply(self) {
         ProvideAction::apply(self);
+    }
+
+    fn apply_boxed(self: Box<Self>) {
+        ProvideAction::apply(*self);
     }
 }
 

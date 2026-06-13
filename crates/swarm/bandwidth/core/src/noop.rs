@@ -54,10 +54,14 @@ pub struct NoProvideAction;
 
 impl vertex_swarm_api::AccountingAction for NoReceiveAction {
     fn apply(self) {}
+
+    fn apply_boxed(self: Box<Self>) {}
 }
 
 impl vertex_swarm_api::AccountingAction for NoProvideAction {
     fn apply(self) {}
+
+    fn apply_boxed(self: Box<Self>) {}
 }
 
 impl<I: SwarmIdentity> SwarmBandwidthAccounting for NoAccounting<I> {

@@ -14,22 +14,40 @@
 //!   wants to relay (and is the model the behaviour-level tests drive).
 //! - [`NetworkForwarder`] is the real multi-hop relay: it selects the closest
 //!   peer to the target excluding the requester (and ourselves), enforces the
-//!   forwarding-Kademlia loop bound (never relay to a peer that is not strictly
-//!   closer to the target than the requester) and a hop/TTL bound, reuses the
-//!   existing self-contained outbound futures
+//!   forwarding-Kademlia loop rule (never relay to a peer that is not strictly
+//!   closer to the target, by XOR distance, than both the requester and this
+//!   node), reuses the existing self-contained outbound futures
 //!   ([`ClientHandle::retrieve_chunk`](crate::ClientHandle::retrieve_chunk) /
 //!   [`push_chunk`](crate::ClientHandle::push_chunk)) for the upstream leg, and
 //!   accounts both legs through the prepare/apply reservation actions so a
 //!   forwarder earns the spread. A failed forward drops both reservation actions
-//!   (release-on-drop), so no accounting leaks.
+//!   (release-on-drop), so no accounting leaks. Termination comes from the
+//!   strictly-closer rule (XOR distance decreases monotonically, bounded by the
+//!   address width), not from a hop/TTL counter, which the protocol does not
+//!   carry; [`MAX_FORWARD_CANDIDATES`] only caps per-node retry fan-out.
 //!
-//! Verification lives at both edges. The downstream chunk returned by an
+//! Address verification lives at both edges. The downstream chunk returned by an
 //! upstream retrieval is verified against the requested address here
 //! ([`StampedChunk::verify_answers`] -> [`VerifiedStampedChunk`]) before it is
 //! cached or relayed; the handler additionally verifies before it writes the
-//! chunk to the responder, so an unverified chunk can never travel back to the
-//! requester. A relayed pushsync receipt is checked for structural validity (a
-//! non-empty signature) before it is relayed.
+//! chunk to the responder, so a chunk that does not hash to the requested
+//! address can never travel back to the requester. `verify_answers` is an
+//! address-equality check (BMT integrity for content chunks, signature-recovered
+//! owner for single-owner chunks); it does **not** validate the postage stamp's
+//! funding or expiry, which is a separate postage concern. A relayed pushsync
+//! receipt is checked for structural validity (a non-empty signature) before it
+//! is relayed.
+//!
+//! # Upstream credit is deferred to the wire write
+//!
+//! The two legs are not both committed inside the forwarder. The downstream
+//! `receive` leg is genuinely complete the moment a verified chunk/receipt is in
+//! hand, so it is applied here. The upstream `provide` leg (the requester or
+//! pusher paying us) is *not* applied here: it is returned to the handler as a
+//! boxed [`AccountingAction`] and committed only after the chunk or receipt is
+//! successfully written back to the requester's substream. If that wire write
+//! fails, the handler drops the action, releasing the reservation, so the
+//! requester is never charged for a delivery it did not receive.
 
 use std::sync::Arc;
 
@@ -43,15 +61,18 @@ use vertex_swarm_primitives::{OverlayAddress, StampedChunk};
 
 use crate::ClientHandle;
 
-/// Maximum number of relay hops a single inbound request may traverse from this
-/// node onward.
+/// Maximum number of closer peers this node tries, in order, for a single
+/// inbound request before giving up.
 ///
-/// This is the local TTL bound: each forward selects only strictly-closer peers
-/// (so proximity is monotonically increasing toward the target), which already
-/// makes an infinite loop impossible, and the hop cap is the belt-and-braces
-/// upper bound on the candidate walk this node performs for one request. The
-/// reference walks a small fixed number of closer peers per hop; we mirror that
-/// with a bounded candidate set.
+/// This is a per-node fan-out cap, **not** a per-request hop/TTL counter: it
+/// bounds how many downstream candidates this one node retries for one inbound
+/// request, not the length of the overall A->B->C->... relay chain. Termination
+/// of the chain comes from the strictly-closer rule (every hop must hand the
+/// request to a peer strictly closer to the target by XOR distance than both the
+/// requester and this node), which makes proximity monotonically increase toward
+/// the target and is bounded by the address width, so no per-request hop counter
+/// or visited set is needed. The reference also walks a small fixed number of
+/// closer peers per hop; we mirror that with a bounded candidate set.
 const MAX_FORWARD_CANDIDATES: usize = 3;
 
 /// Why a forward could not complete.
@@ -63,9 +84,10 @@ const MAX_FORWARD_CANDIDATES: usize = 3;
 #[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum ForwardError {
-    /// No peer strictly closer to the target than the requester is available to
-    /// relay to. Covers both the no-candidate case and the loop-prevention
-    /// case (every candidate would forward sideways or backwards in proximity).
+    /// No peer strictly closer to the target than both the requester and this
+    /// node is available to relay to. Covers both the no-candidate case and the
+    /// loop-prevention case (every candidate would forward sideways or backwards
+    /// in distance).
     #[error("no closer peer to forward to")]
     NoCloserPeer,
 
@@ -96,19 +118,64 @@ pub(crate) enum ForwardError {
 /// the inbound serving futures are `Send` too.
 pub(crate) trait Forwarder: Send + Sync {
     /// Retrieve `address` from a closer peer, excluding `exclude`.
+    ///
+    /// On success the downstream `receive` leg is already committed (we did
+    /// receive the chunk), and the un-applied upstream `provide` action is
+    /// returned alongside the chunk: the handler commits it only after the chunk
+    /// is written back to the requester, and drops it (releasing the
+    /// reservation) if that wire write fails.
     fn retrieve(
         &self,
         address: ChunkAddress,
         exclude: OverlayAddress,
-    ) -> BoxFuture<'static, Result<StampedChunk, ForwardError>>;
+    ) -> BoxFuture<'static, Result<ForwardedChunk, ForwardError>>;
 
     /// Push `chunk` to a closer peer, excluding `exclude`, returning the
     /// storer's receipt to relay verbatim.
+    ///
+    /// The upstream `provide` action is returned un-applied for the same
+    /// deferred-commit reason as [`retrieve`](Self::retrieve).
     fn push(
         &self,
         chunk: StampedChunk,
         exclude: OverlayAddress,
-    ) -> BoxFuture<'static, Result<PushReceipt, ForwardError>>;
+    ) -> BoxFuture<'static, Result<ForwardedReceipt, ForwardError>>;
+}
+
+/// A relayed chunk together with the un-applied upstream credit.
+///
+/// The forwarder hands this to the handler, which writes `chunk` back to the
+/// requester and only then commits `provide` (or drops it on a wire-write
+/// failure, releasing the reservation).
+pub(crate) struct ForwardedChunk {
+    /// The verified chunk to write back to the requester.
+    pub(crate) chunk: StampedChunk,
+    /// The un-applied upstream credit; commit after a successful wire write.
+    pub(crate) provide: Box<dyn AccountingAction>,
+}
+
+impl std::fmt::Debug for ForwardedChunk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ForwardedChunk")
+            .field("chunk", &self.chunk)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A relayed receipt together with the un-applied upstream credit.
+pub(crate) struct ForwardedReceipt {
+    /// The storer's receipt to relay verbatim to the pusher.
+    pub(crate) receipt: PushReceipt,
+    /// The un-applied upstream credit; commit after a successful wire write.
+    pub(crate) provide: Box<dyn AccountingAction>,
+}
+
+impl std::fmt::Debug for ForwardedReceipt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ForwardedReceipt")
+            .field("receipt", &self.receipt)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A forwarder that never relays: every relay fails with
@@ -124,7 +191,7 @@ impl Forwarder for StubForwarder {
         &self,
         _address: ChunkAddress,
         _exclude: OverlayAddress,
-    ) -> BoxFuture<'static, Result<StampedChunk, ForwardError>> {
+    ) -> BoxFuture<'static, Result<ForwardedChunk, ForwardError>> {
         Box::pin(async { Err(ForwardError::NoCloserPeer) })
     }
 
@@ -132,7 +199,7 @@ impl Forwarder for StubForwarder {
         &self,
         _chunk: StampedChunk,
         _exclude: OverlayAddress,
-    ) -> BoxFuture<'static, Result<PushReceipt, ForwardError>> {
+    ) -> BoxFuture<'static, Result<ForwardedReceipt, ForwardError>> {
         Box::pin(async { Err(ForwardError::NoCloserPeer) })
     }
 }
@@ -144,17 +211,19 @@ impl Forwarder for StubForwarder {
 /// [`ClientHandle`] so the upstream leg reuses the same self-contained outbound
 /// futures the origin path uses; no separate dial machinery exists.
 ///
-/// # Loop prevention and the hop bound
+/// # Loop prevention and termination
 ///
 /// Forwarding Kademlia routes a request strictly toward the target's
 /// neighbourhood: each hop must hand the request to a peer that is *strictly
-/// closer* to the target than the peer that asked. [`closer_candidates`] filters
-/// the topology's proximity-ordered candidates down to exactly those, excluding
-/// the requester and ourselves. Because proximity to the target is monotonically
-/// increasing along the chain, a request can never cycle back to a peer it has
-/// already visited, so no per-request visited set is needed. The candidate set
-/// is additionally capped at [`MAX_FORWARD_CANDIDATES`] as the local TTL bound on
-/// the walk this node performs for one inbound request.
+/// closer* to the target than the peer that asked **and** strictly closer than
+/// this node itself, measured by full XOR distance (the same `closer` rule the
+/// reference uses, not capped proximity order). [`closer_candidates`] filters the
+/// topology's proximity-ordered candidates down to exactly those, also excluding
+/// the requester and ourselves. Because XOR distance to the target strictly
+/// decreases along the chain, a request can never cycle back to a peer it has
+/// already visited, so no per-request visited set or hop counter is needed; the
+/// chain is bounded by the address width. [`MAX_FORWARD_CANDIDATES`] only caps
+/// the per-node retry fan-out, not the chain length.
 ///
 /// # Two-leg accounting
 ///
@@ -198,29 +267,34 @@ impl<T, A> NetworkForwarder<T, A> {
     }
 }
 
-/// Select the peers strictly closer to `target` than `requester`, excluding the
-/// requester and `local`, in proximity order, capped at [`MAX_FORWARD_CANDIDATES`].
+/// Select the peers strictly closer to `target` than both `requester` and
+/// `local`, excluding the requester and `local`, in proximity order, capped at
+/// [`MAX_FORWARD_CANDIDATES`].
 ///
-/// This is the loop-prevention core: a candidate is kept only when its proximity
-/// to the target is strictly greater than the requester's proximity to the
-/// target. A peer that is at the same or lower proximity than the requester
-/// would route the request sideways or backwards and is dropped, so the request
-/// always advances toward the neighbourhood and can never cycle.
+/// This is the loop-prevention core, and it mirrors the reference's `closer`
+/// rule using **full XOR distance**, not capped proximity order. A candidate is
+/// kept only when it is strictly closer to the target than the requester (so the
+/// request never routes sideways or backwards and can never cycle) **and**
+/// strictly closer than this node (so a node already in the chunk's
+/// neighbourhood does not relay sideways to an equally deep peer, matching the
+/// reference's "closer than me" gate and avoiding the capped-PO plateau where all
+/// deep peers compare equal). Using XOR distance rather than capped proximity
+/// also lets the strict comparison distinguish peers inside the deepest band.
 fn closer_candidates(
     topology: &impl SwarmTopologyRouting,
     target: &ChunkAddress,
     requester: OverlayAddress,
     local: OverlayAddress,
 ) -> Vec<OverlayAddress> {
-    // The requester's proximity to the target is the floor: we only forward to a
-    // peer strictly closer than that. `target.proximity(&peer)` is the number of
-    // leading bits shared with the target; higher means closer.
-    let floor = target.proximity(&requester);
     topology
         .closest_to(target, MAX_FORWARD_CANDIDATES * 2)
         .into_iter()
         .filter(|peer| *peer != requester && *peer != local)
-        .filter(|peer| target.proximity(peer) > floor)
+        // `target.closer(peer, other)` is true iff `peer` is strictly closer to
+        // `target` than `other` by full XOR distance. The candidate must beat
+        // both the requester (loop prevention) and this node (the reference's
+        // self-relative "closer than me" gate).
+        .filter(|peer| target.closer(peer, &requester) && target.closer(peer, &local))
         .take(MAX_FORWARD_CANDIDATES)
         .collect()
 }
@@ -234,7 +308,7 @@ where
         &self,
         address: ChunkAddress,
         exclude: OverlayAddress,
-    ) -> BoxFuture<'static, Result<StampedChunk, ForwardError>> {
+    ) -> BoxFuture<'static, Result<ForwardedChunk, ForwardError>> {
         let candidates = closer_candidates(&*self.topology, &address, exclude, self.local);
         let accounting = Arc::clone(&self.accounting);
         let handle = self.handle.clone();
@@ -246,7 +320,10 @@ where
 
             // Credit the upstream leg: the requester pays us for serving the
             // chunk on. Held across the whole relay; released on drop if the
-            // relay fails, applied only once a verified chunk is in hand.
+            // relay fails. It is NOT committed here: a verified chunk in hand
+            // does not yet mean the requester received it, so the action is
+            // handed back un-applied and the handler commits it only after the
+            // chunk is on the wire.
             let provide = accounting
                 .prepare_provide_chunk(exclude, &address)
                 .map_err(|_| ForwardError::AccountingRefused)?;
@@ -274,11 +351,16 @@ where
                         // again before the wire.
                         match result.chunk.verify_answers(address) {
                             Ok(verified) => {
-                                // Both legs succeeded: commit the spread.
+                                // The downstream leg is genuinely complete (we
+                                // received the chunk), so commit it now. The
+                                // upstream `provide` is returned un-applied for
+                                // the handler to commit after the wire write.
                                 receive.apply();
-                                provide.apply();
                                 debug!(%closer, %address, "relayed retrieval");
-                                return Ok(verified.into_inner());
+                                return Ok(ForwardedChunk {
+                                    chunk: verified.into_inner(),
+                                    provide: Box::new(provide),
+                                });
                             }
                             Err(_) => {
                                 // The downstream peer served the wrong chunk:
@@ -308,7 +390,7 @@ where
         &self,
         chunk: StampedChunk,
         exclude: OverlayAddress,
-    ) -> BoxFuture<'static, Result<PushReceipt, ForwardError>> {
+    ) -> BoxFuture<'static, Result<ForwardedReceipt, ForwardError>> {
         let address = *chunk.address();
         let candidates = closer_candidates(&*self.topology, &address, exclude, self.local);
         let accounting = Arc::clone(&self.accounting);
@@ -320,7 +402,8 @@ where
             }
 
             // Credit the upstream leg: the pusher pays us for relaying the chunk
-            // toward its neighbourhood.
+            // toward its neighbourhood. Returned un-applied; the handler commits
+            // it only after the receipt is written back to the pusher.
             let provide = accounting
                 .prepare_provide_chunk(exclude, &address)
                 .map_err(|_| ForwardError::AccountingRefused)?;
@@ -349,15 +432,22 @@ where
                         // receipt belongs here, on the relay path, so a forwarder
                         // never launders a receipt whose signer is not deep
                         // enough for the chunk. The receipt already carries
-                        // `storage_radius`; verifying `PO(receipt.storer, chunk)`
-                        // against a required depth and scoring/rejecting a shallow
-                        // receipt is filled in by #293 and is intentionally NOT
-                        // implemented here.
+                        // `storage_radius`; the depth check must recover the
+                        // signer overlay from `receipt.signature` (as the
+                        // reference does), NOT trust the off-wire `receipt.storer`
+                        // field, which the handler sets to the immediate
+                        // downstream peer and is several hops from the real signer
+                        // on a multi-hop relay. Filled in by #293; intentionally
+                        // NOT implemented here.
                         if receipt_is_well_formed(&receipt) {
+                            // Downstream leg complete; commit it. Upstream
+                            // `provide` returned un-applied for the handler.
                             receive.apply();
-                            provide.apply();
                             debug!(%closer, %address, "relayed pushsync");
-                            return Ok(receipt);
+                            return Ok(ForwardedReceipt {
+                                receipt,
+                                provide: Box::new(provide),
+                            });
                         }
                         drop(receive);
                         last = ForwardError::UnverifiedRelay;
@@ -476,14 +566,43 @@ mod tests {
     fn closer_candidates_excludes_requester_and_local() {
         let address = *stamped().address();
         let requester = overlay_at_proximity(&address, 4);
-        let local = overlay_at_proximity(&address, 12);
+        // Local is farther from the target than the candidate, so the
+        // self-relative gate does not reject the candidate; this isolates the
+        // exclusion behaviour (local must be dropped because it is us, not
+        // because of the closer-than-me gate).
+        let local = overlay_at_proximity(&address, 2);
         let closer = overlay_at_proximity(&address, 10);
 
         // The topology returns local and requester among the closest; both must
-        // be filtered out even though local is strictly closer.
+        // be filtered out as self/requester.
         let topo = MockTopology::default().with_closest(vec![local, closer, requester]);
         let got = closer_candidates(&topo, &address, requester, local);
         assert_eq!(got, vec![closer]);
+    }
+
+    #[test]
+    fn closer_candidates_drops_peers_farther_than_local() {
+        // The reference's self-relative gate: a node already deeper in the
+        // target's neighbourhood than a candidate must not relay sideways/back to
+        // that candidate, even when the candidate is still closer than the
+        // requester. This is the divergence-from-reference fix.
+        let address = *stamped().address();
+        let requester = overlay_at_proximity(&address, 2);
+        // We (local) share 12 bits with the target.
+        let local = overlay_at_proximity(&address, 12);
+        // The candidate is closer than the requester (8 > 2) but farther than us
+        // (8 < 12), so it must be rejected.
+        let farther_than_local = overlay_at_proximity(&address, 8);
+        // A candidate deeper than us survives.
+        let deeper = overlay_at_proximity(&address, 20);
+
+        let topo = MockTopology::default().with_closest(vec![deeper, farther_than_local]);
+        let got = closer_candidates(&topo, &address, requester, local);
+        assert_eq!(
+            got,
+            vec![deeper],
+            "only a peer strictly closer than this node survives"
+        );
     }
 
     #[test]
@@ -562,15 +681,92 @@ mod tests {
         )
         .await;
 
-        let relayed = got.expect("relay succeeds");
-        assert_eq!(*relayed.address(), address, "the relayed chunk is verified");
+        let forwarded = got.expect("relay succeeds");
+        assert_eq!(
+            *forwarded.chunk.address(),
+            address,
+            "the relayed chunk is verified"
+        );
 
-        // Both legs committed: the requester owes us provide_price (credit), and
-        // we owe the closer peer receive_price (debit).
-        let owed_by_requester = acct.bandwidth().for_peer(requester).balance();
-        let owed_to_closer = acct.bandwidth().for_peer(closer).balance();
-        assert_eq!(owed_by_requester, provide_price);
-        assert_eq!(owed_to_closer, Au::ZERO - receive_price);
+        // The downstream leg is committed inside the forwarder, so the closer
+        // peer is already owed receive_price. The upstream `provide` is returned
+        // un-applied: until it is committed (which the handler does after a
+        // successful wire write) the requester owes nothing.
+        assert_eq!(
+            acct.bandwidth().for_peer(requester).balance(),
+            Au::ZERO,
+            "the upstream credit is deferred until the wire write"
+        );
+        assert_eq!(
+            acct.bandwidth().for_peer(closer).balance(),
+            Au::ZERO - receive_price
+        );
+
+        // Commit the upstream leg as the handler would after writing the chunk
+        // back: now the requester owes us provide_price.
+        forwarded.provide.apply_boxed();
+        assert_eq!(
+            acct.bandwidth().for_peer(requester).balance(),
+            provide_price
+        );
+        assert_eq!(
+            acct.bandwidth().for_peer(closer).balance(),
+            Au::ZERO - receive_price
+        );
+    }
+
+    #[tokio::test]
+    async fn retrieve_dropping_provide_releases_upstream_and_keeps_downstream() {
+        // A wire-write failure: the handler drops the un-applied provide action
+        // instead of committing it. The requester must not be charged, and the
+        // downstream leg (already committed) must remain.
+        let chunk = stamped();
+        let address = *chunk.address();
+        let requester = overlay_at_proximity(&address, 2);
+        let closer = overlay_at_proximity(&address, 16);
+        let local = OverlayAddress::from([0xee; 32]);
+
+        let acct = accounting();
+        let topo = Arc::new(MockTopology::default().with_closest(vec![closer]));
+        let (tx, rx) = mpsc::channel::<ClientCommand>(4);
+        let handle = ClientHandle::new(tx);
+
+        let receive_price = acct.pricing().peer_price(&closer, &address);
+        let forwarder = NetworkForwarder::new(local, topo, Arc::clone(&acct), handle);
+
+        let chunk_for_answer = chunk.clone();
+        let forwarded =
+            drive_one_command(
+                rx,
+                forwarder.retrieve(address, requester),
+                move |cmd| match cmd {
+                    ClientCommand::RetrieveChunk { response, .. } => {
+                        response
+                            .send(Ok(RetrievalResult {
+                                chunk: chunk_for_answer,
+                                peer: closer,
+                            }))
+                            .expect("receiver alive");
+                    }
+                    other => panic!("unexpected command: {other:?}"),
+                },
+            )
+            .await
+            .expect("relay succeeds");
+
+        // Simulate the handler's wire-write failure: drop the provide action.
+        drop(forwarded.provide);
+
+        // The requester was never charged; the downstream leg stands.
+        assert_eq!(
+            acct.bandwidth().for_peer(requester).balance(),
+            Au::ZERO,
+            "dropping the un-applied provide leg charges the requester nothing"
+        );
+        assert_eq!(
+            acct.bandwidth().for_peer(closer).balance(),
+            Au::ZERO - receive_price
+        );
     }
 
     #[tokio::test]
@@ -613,13 +809,21 @@ mod tests {
         )
         .await;
 
-        let relayed = got.expect("relay succeeds");
+        let forwarded = got.expect("relay succeeds");
         // The receipt is relayed verbatim: every field is the storer's own.
-        assert_eq!(relayed.storer, expected.storer);
-        assert_eq!(relayed.signature, expected.signature);
-        assert_eq!(relayed.nonce, expected.nonce);
-        assert_eq!(relayed.storage_radius, expected.storage_radius);
+        assert_eq!(forwarded.receipt.storer, expected.storer);
+        assert_eq!(forwarded.receipt.signature, expected.signature);
+        assert_eq!(forwarded.receipt.nonce, expected.nonce);
+        assert_eq!(forwarded.receipt.storage_radius, expected.storage_radius);
 
+        // Downstream committed; upstream deferred until the wire write.
+        assert_eq!(acct.bandwidth().for_peer(pusher).balance(), Au::ZERO);
+        assert_eq!(
+            acct.bandwidth().for_peer(closer).balance(),
+            Au::ZERO - receive_price
+        );
+
+        forwarded.provide.apply_boxed();
         assert_eq!(acct.bandwidth().for_peer(pusher).balance(), provide_price);
         assert_eq!(
             acct.bandwidth().for_peer(closer).balance(),

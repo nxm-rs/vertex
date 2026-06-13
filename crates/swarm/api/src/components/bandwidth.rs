@@ -142,7 +142,17 @@ pub trait SwarmAccountingConfig: Send + Sync {
 /// relay releases every reservation on drop and never leaks.
 pub trait AccountingAction: Send {
     /// Commit the reserved balance change.
-    fn apply(self);
+    fn apply(self)
+    where
+        Self: Sized;
+
+    /// Commit the reserved balance change through a boxed action.
+    ///
+    /// The object-safe counterpart of [`apply`](Self::apply): a forwarder hands
+    /// an un-applied provide action to the wire-write site as a
+    /// `Box<dyn AccountingAction>` and commits it only once the bytes are on the
+    /// wire. Dropping the box instead releases the reservation.
+    fn apply_boxed(self: Box<Self>);
 }
 
 /// Per-peer bandwidth accounting handle.
