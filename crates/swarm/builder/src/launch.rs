@@ -9,6 +9,8 @@ use tracing::{info, warn};
 use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
+#[cfg(feature = "chain")]
+use vertex_swarm_api::SwarmSpec;
 use vertex_swarm_api::{
     PeerReporter, SwarmAccountingConfig, SwarmClientAccounting, SwarmLaunchConfig, SwarmNodeType,
 };
