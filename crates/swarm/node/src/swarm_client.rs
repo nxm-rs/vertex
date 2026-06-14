@@ -144,7 +144,7 @@ where
         loop {
             futures::select! {
                 result = in_flight.select_next_some() => match result {
-                    Ok(result) => return Ok(result.chunk.into_parts().0),
+                    Ok(result) => return Ok(result.chunk),
                     Err(error) => {
                         // A failed attempt frees its slot: start the next
                         // candidate immediately. Once no candidates and no
@@ -301,9 +301,14 @@ mod tests {
         Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, test_signature())
     }
 
+    fn test_chunk() -> nectar_primitives::AnyChunk {
+        ContentChunk::new(&b"chunk-bytes"[..])
+            .expect("valid content chunk")
+            .into()
+    }
+
     fn test_stamped_chunk() -> StampedChunk {
-        let chunk = ContentChunk::new(&b"chunk-bytes"[..]).expect("valid content chunk");
-        StampedChunk::new(chunk.into(), test_stamp())
+        StampedChunk::new(test_chunk(), test_stamp())
     }
 
     fn test_address() -> ChunkAddress {
@@ -550,7 +555,8 @@ mod tests {
             .remove(&peer_b)
             .unwrap()
             .send(Ok(RetrievalResult {
-                chunk: test_stamped_chunk(),
+                chunk: test_chunk(),
+                stamp: Some(test_stamp()),
                 peer: peer_b,
             }))
             .expect("receiver alive");
@@ -598,7 +604,8 @@ mod tests {
                 assert_eq!(peer, peer_b);
                 response
                     .send(Ok(RetrievalResult {
-                        chunk: test_stamped_chunk(),
+                        chunk: test_chunk(),
+                        stamp: Some(test_stamp()),
                         peer: peer_b,
                     }))
                     .expect("receiver alive");
@@ -642,7 +649,8 @@ mod tests {
                 assert_eq!(peer, peer_b);
                 response
                     .send(Ok(RetrievalResult {
-                        chunk: test_stamped_chunk(),
+                        chunk: test_chunk(),
+                        stamp: Some(test_stamp()),
                         peer: peer_b,
                     }))
                     .expect("receiver alive");

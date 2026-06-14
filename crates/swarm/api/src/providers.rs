@@ -3,16 +3,25 @@
 //! Data interfaces for RPC services, abstracting over concrete implementations.
 
 use alloy_primitives::Signature;
-use nectar_primitives::{ChunkAddress, Nonce};
-use vertex_swarm_primitives::{OverlayAddress, StampedChunk, StorageRadius};
+use nectar_primitives::{AnyChunk, ChunkAddress, Nonce};
+use vertex_swarm_primitives::{OverlayAddress, Stamp, StampedChunk, StorageRadius};
 
 use crate::SwarmResult;
 
 /// Result of a successful chunk retrieval.
+///
+/// The chunk is address-validated (BMT hash for content, owner plus signature
+/// for single-owner), so it answers the request regardless of the stamp. The
+/// stamp is optional: a storer answers a retrieval with the chunk bytes and may
+/// omit the stamp from the delivery, which is never re-read on the retrieval
+/// path. Operator and embedder surfaces (gRPC, FFI) emit an empty stamp field
+/// for a stampless delivery and skip stamp verification.
 #[derive(Debug, Clone)]
 pub struct ChunkRetrievalResult {
-    /// The retrieved chunk and its postage stamp.
-    pub chunk: StampedChunk,
+    /// The retrieved chunk.
+    pub chunk: AnyChunk,
+    /// The postage stamp the responder attached, if any.
+    pub stamp: Option<Stamp>,
     /// Overlay address of the peer that served this chunk.
     pub served_by: OverlayAddress,
 }

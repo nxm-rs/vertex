@@ -26,10 +26,11 @@
 //! [`SwarmChunkProvider`] and [`SwarmChunkSender`] traits, never on a node
 //! internal type, so the same combinator serves all three.
 //!
-//! Downloads deliver [`VerifiedStampedChunk`] only: every chunk is proven to
-//! answer the address that requested it before it leaves the stream, so a peer
-//! that returns the wrong bytes for an address surfaces as an error item, never
-//! as a chunk a consumer might trust.
+//! Downloads deliver [`VerifiedChunk`] only: every chunk is proven to answer the
+//! address that requested it before it leaves the stream, so a peer that returns
+//! the wrong bytes for an address surfaces as an error item, never as a chunk a
+//! consumer might trust. The stamp on a delivery is optional (a storer may omit
+//! it), so the verified item carries an `Option<Stamp>`.
 //!
 //! The in-window concurrency is built on the per-request outbound futures: each
 //! retrieval or push is a self-contained future correlated by its own substream,
@@ -46,12 +47,55 @@ use std::task::{Context, Poll};
 
 use futures::StreamExt;
 use futures::stream::{FuturesOrdered, Stream};
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{AnyChunk, ChunkAddress};
 use vertex_swarm_api::{
-    PushReceipt, StampedChunk, SwarmChunkProvider, SwarmChunkSender, SwarmError, SwarmResult,
-    VerifiedStampedChunk,
+    PushReceipt, Stamp, StampedChunk, SwarmChunkProvider, SwarmChunkSender, SwarmError, SwarmResult,
 };
 use vertex_tasks::MaybeSendBoxFuture;
+
+/// A downloaded chunk proven to answer the address that requested it.
+///
+/// The chunk's address is derived from its own bytes (the BMT hash for a content
+/// chunk, owner plus signature for a single-owner chunk), and the download stream
+/// proves that address equals the requested one before yielding the item, so a
+/// peer that returns the wrong bytes surfaces as an error rather than a trusted
+/// chunk.
+///
+/// The stamp is optional: a storer answers a retrieval with the chunk bytes and
+/// may omit the stamp from the delivery, which is never re-read on the download
+/// path. Address integrity does not depend on the stamp, so a stampless delivery
+/// is still a fully verified chunk.
+#[derive(Debug, Clone)]
+pub struct VerifiedChunk {
+    chunk: AnyChunk,
+    stamp: Option<Stamp>,
+}
+
+impl VerifiedChunk {
+    /// The verified chunk.
+    #[must_use]
+    pub fn chunk(&self) -> &AnyChunk {
+        &self.chunk
+    }
+
+    /// The chunk's address (delegates to the chunk).
+    #[must_use]
+    pub fn address(&self) -> &ChunkAddress {
+        self.chunk.address()
+    }
+
+    /// The postage stamp the responder attached, if any.
+    #[must_use]
+    pub fn stamp(&self) -> Option<&Stamp> {
+        self.stamp.as_ref()
+    }
+
+    /// Split into the chunk and its optional stamp.
+    #[must_use]
+    pub fn into_parts(self) -> (AnyChunk, Option<Stamp>) {
+        (self.chunk, self.stamp)
+    }
+}
 
 /// Maximum wire size of a single Swarm chunk: an 8-byte span plus a 4096-byte
 /// body. The download pipeline reserves this per in-flight retrieval because a
@@ -153,31 +197,32 @@ where
 pub struct GetStream<P> {
     provider: P,
     pending: VecDeque<ChunkAddress>,
-    in_flight: FuturesOrdered<MaybeSendBoxFuture<SwarmResult<VerifiedStampedChunk>>>,
+    in_flight: FuturesOrdered<MaybeSendBoxFuture<SwarmResult<VerifiedChunk>>>,
     limit: usize,
 }
 
 /// Retrieve one chunk and prove it answers `address`.
 ///
 /// The provider establishes content integrity (the chunk hashes to its own
-/// address); [`StampedChunk::verify_answers`] then proves that address equals the
-/// requested one, turning a delivery into a [`VerifiedStampedChunk`]. A mismatch
-/// is treated as invalid data from the peer, not a value to hand back.
-async fn retrieve_verified<P>(
-    provider: P,
-    address: ChunkAddress,
-) -> SwarmResult<VerifiedStampedChunk>
+/// address); this proves that address equals the requested one, turning a
+/// delivery into a [`VerifiedChunk`]. A mismatch is treated as invalid data from
+/// the peer, not a value to hand back. The stamp is carried through unchanged: it
+/// is optional, and address integrity does not depend on it.
+async fn retrieve_verified<P>(provider: P, address: ChunkAddress) -> SwarmResult<VerifiedChunk>
 where
     P: SwarmChunkProvider,
 {
     let result = provider.retrieve_chunk(&address).await?;
-    result
-        .chunk
-        .verify_answers(address)
-        .map_err(|_| SwarmError::InvalidChunk {
+    if *result.chunk.address() != address {
+        return Err(SwarmError::InvalidChunk {
             address: Some(address),
             reason: "retrieved chunk does not answer the requested address".to_string(),
-        })
+        });
+    }
+    Ok(VerifiedChunk {
+        chunk: result.chunk,
+        stamp: result.stamp,
+    })
 }
 
 impl<P> GetStream<P>
@@ -203,7 +248,7 @@ impl<P> Stream for GetStream<P>
 where
     P: SwarmChunkProvider + Clone + Unpin + 'static,
 {
-    type Item = SwarmResult<VerifiedStampedChunk>;
+    type Item = SwarmResult<VerifiedChunk>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
@@ -532,10 +577,14 @@ mod tests {
             self.in_flight.fetch_sub(1, Ordering::SeqCst);
 
             match self.chunks.get(address) {
-                Some(chunk) => Ok(ChunkRetrievalResult {
-                    chunk: chunk.clone(),
-                    served_by: OverlayAddress::from([1u8; 32]),
-                }),
+                Some(chunk) => {
+                    let (chunk, stamp) = chunk.clone().into_parts();
+                    Ok(ChunkRetrievalResult {
+                        chunk,
+                        stamp: Some(stamp),
+                        served_by: OverlayAddress::from([1u8; 32]),
+                    })
+                }
                 None => Err(SwarmError::ChunkNotFound { address: *address }),
             }
         }
@@ -558,8 +607,10 @@ mod tests {
             &self,
             _address: &ChunkAddress,
         ) -> SwarmResult<ChunkRetrievalResult> {
+            let (chunk, stamp) = self.chunk.clone().into_parts();
             Ok(ChunkRetrievalResult {
-                chunk: self.chunk.clone(),
+                chunk,
+                stamp: Some(stamp),
                 served_by: OverlayAddress::from([2u8; 32]),
             })
         }
@@ -739,6 +790,45 @@ mod tests {
         let stream = get_stream(provider, Vec::new(), StreamConfig::DEFAULT);
         let results: Vec<_> = stream.collect().await;
         assert!(results.is_empty());
+    }
+
+    /// A provider answering with the chunk but no stamp (a storer omits it).
+    #[derive(Clone)]
+    struct StamplessProvider {
+        chunk: AnyChunk,
+    }
+
+    #[async_trait]
+    impl SwarmChunkProvider for StamplessProvider {
+        async fn retrieve_chunk(
+            &self,
+            _address: &ChunkAddress,
+        ) -> SwarmResult<ChunkRetrievalResult> {
+            Ok(ChunkRetrievalResult {
+                chunk: self.chunk.clone(),
+                stamp: None,
+                served_by: OverlayAddress::from([3u8; 32]),
+            })
+        }
+
+        fn has_chunk(&self, _address: &ChunkAddress) -> bool {
+            false
+        }
+    }
+
+    /// A stampless delivery still verifies against its address and is yielded as
+    /// a `VerifiedChunk` carrying no stamp. This is the bee-interop download path.
+    #[tokio::test]
+    async fn get_stream_accepts_stampless_delivery() {
+        let chunk = chunk_for(5).into_parts().0;
+        let address = *chunk.address();
+        let provider = StamplessProvider { chunk };
+
+        let stream = get_stream(provider, vec![address], StreamConfig::new(1 << 20, 4));
+        let mut results: Vec<_> = stream.collect().await;
+        let verified = results.remove(0).expect("a stampless delivery verifies");
+        assert_eq!(*verified.address(), address);
+        assert!(verified.stamp().is_none(), "no stamp is carried through");
     }
 
     #[tokio::test]

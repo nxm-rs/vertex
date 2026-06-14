@@ -17,8 +17,8 @@
 
 use async_trait::async_trait;
 use vertex_swarm_api::{
-    ChunkAddress, ChunkRetrievalResult, PushReceipt, StampedChunk, SwarmChunkProvider,
-    SwarmChunkSender, SwarmError, SwarmResult,
+    AnyChunk, ChunkAddress, ChunkRetrievalResult, PushReceipt, Stamp, StampedChunk,
+    SwarmChunkProvider, SwarmChunkSender, SwarmError, SwarmResult,
 };
 
 /// Which checks the [`VerifyingChunkProvider`] applies to retrieved chunks.
@@ -67,7 +67,7 @@ impl<P> VerifyingChunkProvider<P> {
 ///
 /// Retrieval already reconstructs and address-validates the chunk during decode,
 /// so this is a defensive equality check that costs a single comparison.
-fn verify_content(chunk: &StampedChunk, address: &ChunkAddress) -> SwarmResult<()> {
+fn verify_content(chunk: &AnyChunk, address: &ChunkAddress) -> SwarmResult<()> {
     if chunk.address() == address {
         return Ok(());
     }
@@ -82,9 +82,8 @@ fn verify_content(chunk: &StampedChunk, address: &ChunkAddress) -> SwarmResult<(
 ///
 /// Confirms the stamp signature is well-formed and recovers cleanly for this
 /// chunk. It does not check that the recovered signer owns a valid batch on-chain.
-fn verify_stamp(chunk: &StampedChunk, address: &ChunkAddress) -> SwarmResult<()> {
-    chunk
-        .stamp()
+fn verify_stamp(stamp: &Stamp, address: &ChunkAddress) -> SwarmResult<()> {
+    stamp
         .recover_signer(address)
         .map(|_| ())
         .map_err(|err| SwarmError::InvalidSignature {
@@ -105,8 +104,12 @@ where
             verify_content(&result.chunk, address)?;
         }
 
-        if self.config.verify_stamp {
-            verify_stamp(&result.chunk, address)?;
+        // A stampless delivery skips stamp verification: a storer may omit the
+        // stamp from the delivery, and address integrity does not depend on it.
+        if self.config.verify_stamp
+            && let Some(stamp) = &result.stamp
+        {
+            verify_stamp(stamp, address)?;
         }
 
         Ok(result)
@@ -145,9 +148,11 @@ mod tests {
     use nectar_primitives::Nonce;
     use vertex_swarm_api::{AnyChunk, Chunk, ContentChunk, StorageRadius};
 
-    /// In-test provider returning a canned stamped chunk for any request.
+    /// In-test provider returning a canned chunk for any request. The stamp is
+    /// optional so the stampless retrieval path can be exercised.
     struct MockProvider {
-        chunk: StampedChunk,
+        chunk: AnyChunk,
+        stamp: Option<Stamp>,
         served_by: vertex_swarm_api::OverlayAddress,
     }
 
@@ -159,6 +164,7 @@ mod tests {
         ) -> SwarmResult<ChunkRetrievalResult> {
             Ok(ChunkRetrievalResult {
                 chunk: self.chunk.clone(),
+                stamp: self.stamp.clone(),
                 served_by: self.served_by,
             })
         }
@@ -209,19 +215,24 @@ mod tests {
         StampedChunk::new(AnyChunk::Content(chunk), stamp)
     }
 
+    /// A retrieval-side mock from a stamped chunk: the chunk carries a stamp.
+    fn mock_from(stamped: StampedChunk) -> MockProvider {
+        let (chunk, stamp) = stamped.into_parts();
+        MockProvider {
+            chunk,
+            stamp: Some(stamp),
+            served_by: Default::default(),
+        }
+    }
+
     #[tokio::test]
     async fn matching_address_passes_content_check() {
         let chunk = content_chunk();
         let address = *chunk.address();
         let stamped = stamped(chunk, valid_stamp(&address));
 
-        let provider = VerifyingChunkProvider::new(
-            MockProvider {
-                chunk: stamped,
-                served_by: Default::default(),
-            },
-            ChunkVerifyConfig::default(),
-        );
+        let provider =
+            VerifyingChunkProvider::new(mock_from(stamped), ChunkVerifyConfig::default());
 
         let result = provider.retrieve_chunk(&address).await;
         assert!(result.is_ok(), "matching address should pass: {result:?}");
@@ -234,13 +245,8 @@ mod tests {
         let stamped = stamped(chunk, valid_stamp(&address));
         let wrong = ChunkAddress::new([0xff; 32]);
 
-        let provider = VerifyingChunkProvider::new(
-            MockProvider {
-                chunk: stamped,
-                served_by: Default::default(),
-            },
-            ChunkVerifyConfig::default(),
-        );
+        let provider =
+            VerifyingChunkProvider::new(mock_from(stamped), ChunkVerifyConfig::default());
 
         let result = provider.retrieve_chunk(&wrong).await;
         assert!(
@@ -257,10 +263,7 @@ mod tests {
         let wrong = ChunkAddress::new([0xff; 32]);
 
         let provider = VerifyingChunkProvider::new(
-            MockProvider {
-                chunk: stamped,
-                served_by: Default::default(),
-            },
+            mock_from(stamped),
             ChunkVerifyConfig {
                 verify_content: false,
                 verify_stamp: false,
@@ -281,10 +284,7 @@ mod tests {
         let stamped = stamped(chunk, valid_stamp(&address));
 
         let provider = VerifyingChunkProvider::new(
-            MockProvider {
-                chunk: stamped,
-                served_by: Default::default(),
-            },
+            mock_from(stamped),
             ChunkVerifyConfig {
                 verify_content: true,
                 verify_stamp: true,
@@ -302,10 +302,7 @@ mod tests {
         let stamped = stamped(chunk, malformed_stamp());
 
         let provider = VerifyingChunkProvider::new(
-            MockProvider {
-                chunk: stamped,
-                served_by: Default::default(),
-            },
+            mock_from(stamped),
             ChunkVerifyConfig {
                 verify_content: true,
                 verify_stamp: true,
@@ -327,10 +324,7 @@ mod tests {
 
         // Download verification settings must not affect the upload path.
         let provider = VerifyingChunkProvider::new(
-            MockProvider {
-                chunk: stamped.clone(),
-                served_by: Default::default(),
-            },
+            mock_from(stamped.clone()),
             ChunkVerifyConfig {
                 verify_content: true,
                 verify_stamp: true,
@@ -342,5 +336,32 @@ mod tests {
             receipt.is_ok(),
             "upload should forward to inner: {receipt:?}"
         );
+    }
+
+    /// A storer omits the stamp on a delivery: with stamp verification on, a
+    /// stampless result is accepted (verification is skipped) and returned with
+    /// no stamp. This is the interop acceptance on the operator/embedder surface.
+    #[tokio::test]
+    async fn stampless_delivery_skips_stamp_verification() {
+        let chunk = content_chunk();
+        let address = *chunk.address();
+
+        let provider = VerifyingChunkProvider::new(
+            MockProvider {
+                chunk: AnyChunk::Content(chunk),
+                stamp: None,
+                served_by: Default::default(),
+            },
+            ChunkVerifyConfig {
+                verify_content: true,
+                verify_stamp: true,
+            },
+        );
+
+        let result = provider
+            .retrieve_chunk(&address)
+            .await
+            .expect("a stampless delivery is accepted");
+        assert!(result.stamp.is_none(), "the result carries no stamp");
     }
 }

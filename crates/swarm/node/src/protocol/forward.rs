@@ -27,13 +27,13 @@
 //!   carry; [`MAX_FORWARD_CANDIDATES`] only caps per-node retry fan-out.
 //!
 //! Address verification lives at both edges. The downstream chunk returned by an
-//! upstream retrieval is verified against the requested address here
-//! ([`StampedChunk::verify_answers`] -> [`VerifiedStampedChunk`]) before it is
-//! cached or relayed; the handler additionally verifies before it writes the
-//! chunk to the responder, so a chunk that does not hash to the requested
-//! address can never travel back to the requester. `verify_answers` is an
-//! address-equality check (BMT integrity for content chunks, signature-recovered
-//! owner for single-owner chunks); it does **not** validate the postage stamp's
+//! upstream retrieval is verified against the requested address here (an
+//! address-equality check) before it is cached or relayed; the handler
+//! additionally verifies before it writes the chunk to the responder, so a chunk
+//! that does not hash to the requested address can never travel back to the
+//! requester. The check is BMT integrity for content chunks and a
+//! signature-recovered owner for single-owner chunks; it does **not** validate
+//! the postage stamp's
 //! funding or expiry, which is a separate postage concern. A relayed pushsync
 //! receipt arrives as a [`Receipt`] whose storer was already recovered and
 //! verified at the decode boundary; the forwarder checks its custody depth
@@ -55,14 +55,14 @@
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{AnyChunk, ChunkAddress};
 use tracing::{debug, warn};
 use vertex_swarm_api::{
     AccountingAction, PeerReporter, ReportSource, SwarmClientAccounting, SwarmScoringEvent,
     SwarmTopologyRouting, SwarmTopologyState,
 };
 use vertex_swarm_net_pushsync::{DepthVerdict, Receipt};
-use vertex_swarm_primitives::{OverlayAddress, StampedChunk};
+use vertex_swarm_primitives::{OverlayAddress, Stamp, StampedChunk};
 
 use crate::ClientHandle;
 
@@ -175,9 +175,16 @@ pub(crate) trait Forwarder: Send + Sync {
 /// The forwarder hands this to the handler, which writes `chunk` back to the
 /// requester and only then commits `provide` (or drops it on a wire-write
 /// failure, releasing the reservation).
+///
+/// The stamp is optional: a storer answers a retrieval with the chunk bytes and
+/// may omit the stamp from the delivery. A stampless relayed chunk is served
+/// onward stampless (the requester validates it against its address, which is
+/// stamp-independent) and is not cached, since the cache value requires a stamp.
 pub(crate) struct ForwardedChunk {
     /// The verified chunk to write back to the requester.
-    pub(crate) chunk: StampedChunk,
+    pub(crate) chunk: AnyChunk,
+    /// The stamp the downstream peer attached, if any.
+    pub(crate) stamp: Option<Stamp>,
     /// The un-applied upstream credit; commit after a successful wire write.
     pub(crate) provide: Box<dyn AccountingAction>,
 }
@@ -186,6 +193,7 @@ impl std::fmt::Debug for ForwardedChunk {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ForwardedChunk")
             .field("chunk", &self.chunk)
+            .field("stamp", &self.stamp)
             .finish_non_exhaustive()
     }
 }
@@ -382,29 +390,27 @@ where
                     Ok(result) => {
                         // Edge verification (#287): the relayed chunk must
                         // answer the requested address before we account, cache,
-                        // or relay it. The type-state proves it; we keep the
-                        // inner chunk to hand back to the handler, which verifies
-                        // again before the wire.
-                        match result.chunk.verify_answers(address) {
-                            Ok(verified) => {
-                                // The downstream leg is genuinely complete (we
-                                // received the chunk), so commit it now. The
-                                // upstream `provide` is returned un-applied for
-                                // the handler to commit after the wire write.
-                                receive.apply();
-                                debug!(%closer, %address, "relayed retrieval");
-                                return Ok(ForwardedChunk {
-                                    chunk: verified.into_inner(),
-                                    provide: Box::new(provide),
-                                });
-                            }
-                            Err(_) => {
-                                // The downstream peer served the wrong chunk:
-                                // drop `receive` (release) and try the next.
-                                drop(receive);
-                                last = ForwardError::UnverifiedRelay;
-                            }
+                        // or relay it. The chunk is address-derived (BMT hash or
+                        // owner plus signature), so equality proves it answers
+                        // the request, independent of the stamp. The handler
+                        // re-checks the same equality before the wire.
+                        if *result.chunk.address() == address {
+                            // The downstream leg is genuinely complete (we
+                            // received the chunk), so commit it now. The
+                            // upstream `provide` is returned un-applied for
+                            // the handler to commit after the wire write.
+                            receive.apply();
+                            debug!(%closer, %address, "relayed retrieval");
+                            return Ok(ForwardedChunk {
+                                chunk: result.chunk,
+                                stamp: result.stamp,
+                                provide: Box::new(provide),
+                            });
                         }
+                        // The downstream peer served the wrong chunk:
+                        // drop `receive` (release) and try the next.
+                        drop(receive);
+                        last = ForwardError::UnverifiedRelay;
                     }
                     Err(_) => {
                         // Downstream attempt failed: `receive` drops here,
@@ -795,7 +801,7 @@ mod tests {
             Arc::new(RecordingReporter::default()) as Arc<dyn PeerReporter>,
         );
 
-        let chunk_for_answer = chunk.clone();
+        let (chunk_for_answer, stamp_for_answer) = chunk.clone().into_parts();
         let got = drive_one_command(
             rx,
             forwarder.retrieve(address, requester),
@@ -810,6 +816,7 @@ mod tests {
                     response
                         .send(Ok(RetrievalResult {
                             chunk: chunk_for_answer,
+                            stamp: Some(stamp_for_answer),
                             peer: closer,
                         }))
                         .expect("receiver alive");
@@ -878,7 +885,7 @@ mod tests {
             Arc::new(RecordingReporter::default()) as Arc<dyn PeerReporter>,
         );
 
-        let chunk_for_answer = chunk.clone();
+        let (chunk_for_answer, stamp_for_answer) = chunk.clone().into_parts();
         let forwarded =
             drive_one_command(
                 rx,
@@ -888,6 +895,7 @@ mod tests {
                         response
                             .send(Ok(RetrievalResult {
                                 chunk: chunk_for_answer,
+                                stamp: Some(stamp_for_answer),
                                 peer: closer,
                             }))
                             .expect("receiver alive");

@@ -30,14 +30,13 @@ use js_sys::{Object, Reflect, Uint8Array};
 use nectar_primitives::ChunkAddress;
 use vertex_swarm_api::{
     PushReceipt, StampedChunk, SwarmChunkProvider, SwarmChunkSender, SwarmResult,
-    VerifiedStampedChunk,
 };
 use wasm_bindgen::prelude::*;
 
-use crate::{StreamConfig, get_stream, put_stream};
+use crate::{StreamConfig, VerifiedChunk, get_stream, put_stream};
 
 /// Boxed core download stream over a trait-object provider.
-type CoreGetStream = Pin<Box<dyn Stream<Item = SwarmResult<VerifiedStampedChunk>>>>;
+type CoreGetStream = Pin<Box<dyn Stream<Item = SwarmResult<VerifiedChunk>>>>;
 /// Boxed core upload stream over a trait-object sender.
 type CorePutStream = Pin<Box<dyn Stream<Item = SwarmResult<PushReceipt>>>>;
 
@@ -57,7 +56,7 @@ fn config_from(window_bytes: u32, max_concurrency: u32) -> StreamConfig {
 /// keeps the JS async-iterator contract uniform across success and failure.
 fn download_item(
     address: &ChunkAddress,
-    result: SwarmResult<VerifiedStampedChunk>,
+    result: SwarmResult<VerifiedChunk>,
 ) -> Result<JsValue, JsValue> {
     let obj = Object::new();
     set(&obj, "done", &JsValue::FALSE)?;
@@ -68,18 +67,20 @@ fn download_item(
     )?;
     match result {
         Ok(verified) => {
-            let (chunk, stamp) = verified.into_inner().into_parts();
+            let (chunk, stamp) = verified.into_parts();
             // One copy at the boundary; the chunk stayed `Bytes` until here.
             set(
                 &obj,
                 "data",
                 &Uint8Array::from(chunk.into_bytes().as_ref()).into(),
             )?;
-            set(
-                &obj,
-                "stamp",
-                &Uint8Array::from(stamp.to_bytes().as_ref()).into(),
-            )?;
+            // A storer may omit the stamp from a delivery; emit a null stamp
+            // when absent.
+            let stamp_value = match stamp {
+                Some(stamp) => Uint8Array::from(stamp.to_bytes().as_ref()).into(),
+                None => JsValue::NULL,
+            };
+            set(&obj, "stamp", &stamp_value)?;
             set(&obj, "error", &JsValue::NULL)?;
         }
         Err(error) => {

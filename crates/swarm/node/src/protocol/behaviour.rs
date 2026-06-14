@@ -352,6 +352,7 @@ impl ClientBehaviour {
                 overlay,
                 address,
                 chunk,
+                stamp,
                 latency,
             } => {
                 self.pending_events
@@ -359,6 +360,7 @@ impl ClientBehaviour {
                         peer: overlay,
                         address,
                         chunk,
+                        stamp,
                         latency,
                     }));
             }
@@ -713,7 +715,7 @@ mod tests {
         let result = drive_until_retrieved(&mut client, &mut server, rx).await;
         let delivered = result.expect("served from cache");
         assert_eq!(*delivered.chunk.address(), address);
-        assert_eq!(delivered.chunk, chunk);
+        assert_eq!(delivered.chunk, *chunk.chunk());
     }
 
     #[tokio::test]
@@ -748,7 +750,7 @@ mod tests {
         let delivered = drive_until_retrieved(&mut client, &mut server, rx)
             .await
             .expect("fresh SOC served from cache");
-        assert_eq!(delivered.chunk, chunk);
+        assert_eq!(delivered.chunk, *chunk.chunk());
     }
 
     #[tokio::test]
@@ -1017,7 +1019,11 @@ mod tests {
         };
 
         let delivered = result.expect("A retrieves the chunk through B");
-        assert_eq!(delivered.chunk, chunk, "the chunk arrives intact at A");
+        assert_eq!(
+            delivered.chunk,
+            *chunk.chunk(),
+            "the chunk arrives intact at A"
+        );
 
         // B accounted both legs: A owes B the provide price, B owes C the receive
         // price, and the forwarder earned the (positive) spread.

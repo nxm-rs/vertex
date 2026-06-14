@@ -6,13 +6,13 @@
 
 use std::sync::Arc;
 
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{AnyChunk, ChunkAddress};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_api::{PeerReporter, ReportSource, SwarmLocalStore, SwarmScoringEvent};
 use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_net_pushsync::Receipt;
-use vertex_swarm_primitives::{OverlayAddress, StampedChunk};
+use vertex_swarm_primitives::{OverlayAddress, Stamp, StampedChunk};
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
 
 use crate::protocol::{ClientCommand, ClientEvent, FailureKind};
@@ -46,10 +46,19 @@ pub struct ClientHandle {
 }
 
 /// Result of a chunk retrieval.
+///
+/// The chunk is address-validated at decode (BMT hash for content, owner plus
+/// signature for single-owner), so it answers the request regardless of the
+/// stamp. The stamp is optional: a storer answers a retrieval with the chunk
+/// bytes and may omit the stamp from the delivery, which is never re-read on
+/// this path. A stampless chunk is served to the caller; it is simply not
+/// cached (the cache value requires a stamp).
 #[derive(Debug)]
 pub struct RetrievalResult {
-    /// The retrieved chunk and its postage stamp.
-    pub chunk: StampedChunk,
+    /// The retrieved chunk.
+    pub chunk: AnyChunk,
+    /// The postage stamp the responder attached, if any.
+    pub stamp: Option<Stamp>,
     /// The peer that served the chunk.
     pub peer: OverlayAddress,
 }
@@ -346,17 +355,21 @@ impl ClientService {
                 peer,
                 address,
                 chunk,
+                stamp,
                 latency,
             } => {
                 // The requester is resolved directly by the handler; this
                 // event exists for accounting, peer scoring, and caching. The
                 // chunk was already verified against the requested address at
-                // decode, so an honest delivery raises the peer's score, and we
-                // cache it (CAC indefinitely, SOC last-write-wins) so a later
-                // request can serve it locally.
+                // decode, so an honest delivery raises the peer's score. We
+                // cache a stamped delivery (CAC indefinitely, SOC
+                // last-write-wins) so a later request can serve it locally. A
+                // stampless delivery is not cached: the cache value requires a
+                // stamp (SOC freshness and last-write-wins read its timestamp),
+                // so a stampless chunk is delivered to the caller but not stored.
                 debug!(%peer, %address, ?latency, "Chunk received");
-                if let Some(store) = &self.store {
-                    let _ = store.put(chunk);
+                if let (Some(store), Some(stamp)) = (&self.store, stamp) {
+                    let _ = store.put(StampedChunk::new(chunk, stamp));
                 }
                 self.report(
                     &peer,
