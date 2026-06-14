@@ -31,6 +31,7 @@ vertex-swarm-identity.workspace = true
 vertex-swarm-primitives.workspace = true
 vertex-swarm-spec.workspace = true
 vertex-swarm-node.workspace = true
+vertex-swarm-stream.workspace = true
 vertex-node-api.workspace = true
 vertex-tasks.workspace = true
 
@@ -49,6 +50,10 @@ flutter_rust_bridge = "=2.12.0"
 
 thiserror.workspace = true
 strum.workspace = true
+
+# Stream combinators (`StreamExt`) for pumping the bounded download/upload
+# pipelines into the host's StreamSink at the boundary.
+futures.workspace = true
 
 # Logging surface for embedding hosts. The host installs a subscriber that
 # forwards events to a Dart stream. A custom Layer (not VertexTracer) lives in

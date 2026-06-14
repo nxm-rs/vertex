@@ -8370,6 +8370,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer-local",
  "flutter_rust_bridge",
+ "futures",
  "metrics",
  "metrics-util",
  "nectar-postage",
@@ -8385,6 +8386,7 @@ dependencies = [
  "vertex-swarm-node",
  "vertex-swarm-primitives",
  "vertex-swarm-spec",
+ "vertex-swarm-stream",
  "vertex-tasks",
 ]
 
@@ -9380,6 +9382,22 @@ dependencies = [
  "vertex-storage-redb",
  "vertex-swarm-api",
  "vertex-swarm-primitives",
+]
+
+[[package]]
+name = "vertex-swarm-stream"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "async-trait",
+ "futures",
+ "js-sys",
+ "nectar-primitives",
+ "tokio",
+ "vertex-swarm-api",
+ "vertex-tasks",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

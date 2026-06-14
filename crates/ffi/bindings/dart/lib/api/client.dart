@@ -8,8 +8,8 @@ import 'error.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'types.dart';
 
-// These functions are ignored because they are not marked as `pub`: `build_identity`, `build_network`, `chunks_from`, `network_spec`, `new`, `parse_address`, `parse_stamp`, `receipt_into_ffi`, `reconstruct_upload`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `LaunchContext`
+// These functions are ignored because they are not marked as `pub`: `build_identity`, `build_network`, `chunks_from`, `network_spec`, `new`, `parse_address`, `parse_stamp`, `receipt_into_ffi`, `reconstruct_upload`, `stream_config`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `DownloadState`, `LaunchContext`, `UploadState`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `data_dir`, `drop`, `executor`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<VertexClient>>
@@ -37,10 +37,64 @@ abstract class VertexClient implements RustOpaqueInterface {
   Future<VertexChunkDownload> downloadChunk(
       {required List<int> address, required bool verifyStamp});
 
+  /// Open a memory-bounded streaming download over a list of chunk addresses.
+  ///
+  /// Returns a pull-based [`VertexDownloadStream`] handle, not a pushed sink.
+  /// The host drives it by awaiting [`VertexDownloadStream::next`] once per
+  /// item; the core retrieval pipeline advances only when the host pulls, so a
+  /// host that stops awaiting transitively pauses the network reads and nothing
+  /// is buffered past the window on the host's behalf. At most
+  /// `config.window_bytes` of chunk payload is ever in flight, and items arrive
+  /// in request order. A per-address failure (a miss, wrong bytes, or no
+  /// candidate peer) arrives as an item carrying `error`, never as a torn-down
+  /// stream. The returned [`FfiError`] only covers up-front input rejection
+  /// (a malformed address); retrieval failures surface as items.
+  Future<VertexDownloadStream> downloadStream(
+      {required List<Uint8List> addresses, required VertexStreamConfig config});
+
   /// Upload a pre-stamped chunk to the storers closest to its address.
   ///
   /// The chunk, its address, and its postage stamp are reconstructed into a
   /// strong [`StampedChunk`] before any network call. Returns the first
   /// storer's receipt.
   Future<VertexPushReceipt> uploadChunk({required VertexChunkUpload chunk});
+
+  /// Open a memory-bounded streaming upload over a list of pre-stamped chunks.
+  ///
+  /// Returns a pull-based [`VertexUploadStream`] handle. The host drives it by
+  /// awaiting [`VertexUploadStream::next`] once per chunk; the core push
+  /// pipeline admits a new push only when the host pulls and only while the
+  /// admitted chunk fits `config.window_bytes`, so a host that stops awaiting
+  /// acks transitively pauses the network pushes. Each chunk is reconstructed
+  /// into a strong [`StampedChunk`] lazily, as the pipeline admits it, so the
+  /// only chunks materialized at once are the ones inside the window. The host
+  /// still owns the `chunks` list it passed (an unavoidable cost of a by-value
+  /// API), but Rust adds no second resident copy on top of it and never copies
+  /// a chunk's payload a second time.
+  ///
+  /// A chunk whose bytes do not match its address fails at admission and
+  /// surfaces as the ack item for that chunk carrying `error`; the stream then
+  /// continues with the rest. Per-chunk push failures (no storer, rejection)
+  /// surface the same way.
+  Future<VertexUploadStream> uploadStream(
+      {required List<VertexChunkUpload> chunks,
+      required VertexStreamConfig config});
+}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<VertexDownloadStream>>
+abstract class VertexDownloadStream implements RustOpaqueInterface {
+  /// Pull the next downloaded chunk, or `None` once every address has produced
+  /// an item.
+  ///
+  /// Polls the core stream once. Output order matches request order one-to-one,
+  /// so the address paired with this item is the next one in the original list.
+  /// Awaiting this is the backpressure: until the host calls it, the core issues
+  /// no further retrievals.
+  Future<VertexChunkData?> next();
+}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<VertexUploadStream>>
+abstract class VertexUploadStream implements RustOpaqueInterface {
+  /// Pull the next upload ack, or `None` once every chunk has produced an ack.
+  Future<VertexUploadAck?> next();
 }

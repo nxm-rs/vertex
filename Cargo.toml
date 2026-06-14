@@ -64,6 +64,7 @@ members = [
     "crates/swarm/forks",
     "crates/swarm/builder",
     "crates/swarm/rpc",
+    "crates/swarm/stream",
     "crates/swarm/test-utils",
 
     # Node (libp2p boundary)
@@ -205,6 +206,7 @@ vertex-swarm-api = { path = "crates/swarm/api" }
 vertex-swarm-spec = { path = "crates/swarm/spec" }
 vertex-swarm-builder = { path = "crates/swarm/builder" }
 vertex-swarm-rpc = { path = "crates/swarm/rpc" }
+vertex-swarm-stream = { path = "crates/swarm/stream" }
 vertex-swarm-test-utils = { path = "crates/swarm/test-utils" }
 
 # node (libp2p boundary)

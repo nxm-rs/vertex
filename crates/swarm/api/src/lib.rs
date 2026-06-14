@@ -104,7 +104,7 @@ pub use nectar_primitives::{
 };
 pub use vertex_swarm_primitives::{
     ConnectionProfile, NeighborhoodDepth, OverlayAddress, Stamp, StampedChunk, StorageRadius,
-    ValidatedChunk, ValidationError,
+    ValidatedChunk, ValidationError, VerifiedStampedChunk,
 };
 
 // Re-export libp2p types used in config traits

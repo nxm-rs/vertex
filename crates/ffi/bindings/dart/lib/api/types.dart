@@ -6,7 +6,62 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+
+/// One item in a streaming download: either a verified chunk or a per-address
+/// failure.
+///
+/// The download stream yields exactly one of these per requested address, in
+/// request order. A failed retrieval (peer miss, wrong bytes, no candidates)
+/// arrives as an item with `error` set and `data` empty, so a host can decide
+/// per address whether to abort or skip without tearing down the whole stream.
+/// The payload is copied once here, at the boundary: inside Rust the chunk stays
+/// `Bytes`.
+class VertexChunkData {
+  /// Zero-based position of this item in the requested address list.
+  final BigInt index;
+
+  /// The chunk's 32-byte address.
+  final Uint8List address;
+
+  /// The chunk's wire-encoded bytes (span plus payload). Empty when `error`
+  /// is set.
+  final Uint8List data;
+
+  /// The chunk's 113-byte postage stamp. Empty when `error` is set.
+  final Uint8List stamp;
+
+  /// A failure message when this address could not be served, otherwise
+  /// `None`.
+  final String? error;
+
+  const VertexChunkData({
+    required this.index,
+    required this.address,
+    required this.data,
+    required this.stamp,
+    this.error,
+  });
+
+  @override
+  int get hashCode =>
+      index.hashCode ^
+      address.hashCode ^
+      data.hashCode ^
+      stamp.hashCode ^
+      error.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is VertexChunkData &&
+          runtimeType == other.runtimeType &&
+          index == other.index &&
+          address == other.address &&
+          data == other.data &&
+          stamp == other.stamp &&
+          error == other.error;
+}
 
 /// A downloaded chunk and its postage stamp.
 class VertexChunkDownload {
@@ -173,4 +228,76 @@ class VertexPushReceipt {
           signature == other.signature &&
           nonce == other.nonce &&
           storageRadius == other.storageRadius;
+}
+
+/// Tuning for a streaming download or upload.
+///
+/// `window_bytes` is the memory ceiling on outstanding payload, expressed in
+/// bytes so the host sizes it against a real budget. `max_concurrency` caps
+/// simultaneous in-flight requests on top of the byte window. Both are clamped
+/// to at least one inside Rust, so a zero never deadlocks the stream.
+class VertexStreamConfig {
+  /// Soft byte ceiling on outstanding in-flight payload.
+  final BigInt windowBytes;
+
+  /// Hard cap on simultaneous in-flight requests.
+  final int maxConcurrency;
+
+  const VertexStreamConfig({
+    required this.windowBytes,
+    required this.maxConcurrency,
+  });
+
+  @override
+  int get hashCode => windowBytes.hashCode ^ maxConcurrency.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is VertexStreamConfig &&
+          runtimeType == other.runtimeType &&
+          windowBytes == other.windowBytes &&
+          maxConcurrency == other.maxConcurrency;
+}
+
+/// One acknowledgement in a streaming upload.
+///
+/// The upload stream yields exactly one of these per fed chunk, in feed order.
+/// A successful push carries the storer's receipt; a failure carries `error` and
+/// a default receipt. Rust owns the bounded in-flight window, so feeding a long
+/// list never grows the heap past the configured byte budget: a slow host that
+/// stops draining acks transitively pauses the network pushes.
+class VertexUploadAck {
+  /// Zero-based position of this ack in the fed chunk list.
+  final BigInt index;
+
+  /// The chunk's 32-byte address.
+  final Uint8List address;
+
+  /// The storer's receipt for a successful push. `None` when `error` is set.
+  final VertexPushReceipt? receipt;
+
+  /// A failure message when the chunk could not be stored, otherwise `None`.
+  final String? error;
+
+  const VertexUploadAck({
+    required this.index,
+    required this.address,
+    this.receipt,
+    this.error,
+  });
+
+  @override
+  int get hashCode =>
+      index.hashCode ^ address.hashCode ^ receipt.hashCode ^ error.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is VertexUploadAck &&
+          runtimeType == other.runtimeType &&
+          index == other.index &&
+          address == other.address &&
+          receipt == other.receipt &&
+          error == other.error;
 }
