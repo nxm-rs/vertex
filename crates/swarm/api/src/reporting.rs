@@ -197,8 +197,23 @@ pub trait PeerAffordability: Send + Sync {
     /// True if the peer can afford a request of the given price in AU.
     fn can_afford(&self, overlay: &OverlayAddress, price: Au) -> bool;
 
-    /// Remaining allowance for the peer in AU.
+    /// Remaining allowance for the peer in AU, measured against the disconnect
+    /// threshold (the point past which the peer drops us). This is the widest
+    /// headroom: it extends above the payment/settlement trigger.
     fn allowance_remaining(&self, overlay: &OverlayAddress) -> Au;
+
+    /// Remaining allowance for the peer in AU, measured against the payment
+    /// threshold (the point at which settlement is triggered) rather than the
+    /// disconnect threshold.
+    ///
+    /// This is the headroom available before our debt to the peer reaches the
+    /// settlement trigger, so a consumer that wants to stay strictly below the
+    /// swap trigger paces against this rather than [`Self::allowance_remaining`].
+    /// The default falls back to [`Self::allowance_remaining`]; accounting
+    /// overrides it with the payment-threshold figure.
+    fn allowance_to_payment_threshold(&self, overlay: &OverlayAddress) -> Au {
+        self.allowance_remaining(overlay)
+    }
 }
 
 /// Why a peer's connection should be closed.

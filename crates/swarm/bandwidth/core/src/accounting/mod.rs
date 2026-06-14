@@ -282,6 +282,25 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> PeerAffordability for Accountin
         let headroom = balance.saturating_add(threshold).saturating_sub(reserved);
         headroom.max(Au::ZERO)
     }
+
+    fn allowance_to_payment_threshold(&self, overlay: &OverlayAddress) -> Au {
+        // Same headroom computation as `allowance_remaining`, but measured
+        // against the payment threshold (the settlement trigger) instead of the
+        // disconnect threshold. The payment threshold sits below the disconnect
+        // threshold, so this is the headroom that stays strictly under the swap
+        // trigger.
+        let (balance, reserved, threshold) = match self.peers.read().get(overlay) {
+            Some(state) => (
+                state.balance(),
+                state.reserved_balance(),
+                state.payment_threshold(),
+            ),
+            None => (Au::ZERO, Au::ZERO, self.config.payment_threshold()),
+        };
+
+        let headroom = balance.saturating_add(threshold).saturating_sub(reserved);
+        headroom.max(Au::ZERO)
+    }
 }
 
 /// Handle to a peer's accounting state. Cheap to clone.
@@ -607,6 +626,7 @@ mod tests {
             0,
             0,
             5,
+            crate::constants::DEFAULT_THROTTLE_ALLOWANCE_PERCENT,
             crate::FixedPricingConfig::default(),
         )
     }
@@ -724,5 +744,25 @@ mod tests {
             accounting.allowance_remaining(&peer),
             SMALL_DISCONNECT_THRESHOLD
         );
+    }
+
+    #[test]
+    fn test_payment_threshold_headroom_is_below_disconnect_headroom() {
+        let accounting = Accounting::new(small_config(), test_identity());
+        let peer = test_peer();
+
+        // Payment threshold is 1000 (settlement trigger); disconnect threshold is
+        // 1250. The payment-threshold headroom is narrower and sits strictly below
+        // the disconnect-threshold headroom for both unknown and known peers.
+        assert_eq!(accounting.allowance_to_payment_threshold(&peer), au(1000));
+        assert_eq!(accounting.allowance_remaining(&peer), au(1250));
+
+        // Debt narrows both headrooms by the same amount, keeping the payment
+        // figure below the disconnect figure.
+        let handle = accounting.for_peer(peer);
+        handle.record(au(400), Direction::Download);
+        assert_eq!(handle.balance(), au(-400));
+        assert_eq!(accounting.allowance_to_payment_threshold(&peer), au(600));
+        assert_eq!(accounting.allowance_remaining(&peer), au(850));
     }
 }

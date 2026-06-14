@@ -14,3 +14,8 @@ pub(crate) const DEFAULT_EARLY_PAYMENT_PERCENT: u64 = 50;
 
 /// Default scaling factor for client-only nodes.
 pub(crate) const DEFAULT_CLIENT_ONLY_FACTOR: u64 = 10;
+
+/// Default percent of the payment-threshold headroom the outbound self-throttle
+/// will consume. Leaves a margin below the settlement trigger so a post-flap
+/// burst cannot cross the payment threshold.
+pub(crate) const DEFAULT_THROTTLE_ALLOWANCE_PERCENT: u8 = 85;

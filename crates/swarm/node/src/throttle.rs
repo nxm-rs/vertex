@@ -16,16 +16,37 @@
 //!
 //! # Token model
 //!
-//! One token is one accounting unit (AU). A peer's bucket capacity is its
-//! remaining allowance expressed directly in AU, and the bucket refills at
-//! `refresh_rate` AU per second, matching the rate at which the remote forgives
-//! our pseudosettle debt. A request costs the AU price the remote actually
-//! meters for it, so the throttle paces our outbound rate to exactly the
+//! One token is one accounting unit (AU). A request costs the AU price the
+//! remote actually meters for it, and the bucket refills at `refresh_rate` AU
+//! per second, matching the rate at which the remote forgives our pseudosettle
+//! debt. The throttle therefore paces our outbound rate to exactly the
 //! forgiveness rate (hundreds of closest-chunk requests per second, fewer for
 //! distant chunks) rather than to a coarse settle-unit granularity. The AU
-//! magnitudes in play (a disconnect threshold of a few million AU, a per-request
+//! magnitudes in play (a payment threshold of a few million AU, a per-request
 //! price in the hundreds of thousands at most) sit comfortably inside the GCRA's
 //! `u32` token range.
+//!
+//! # Bucket capacity and the payment-threshold ceiling
+//!
+//! A peer's bucket capacity is its live headroom toward the *payment* threshold
+//! ([`PeerAffordability::allowance_to_payment_threshold`]), scaled by a
+//! configurable safety margin (`throttle_allowance_percent`, default 85%). Two
+//! consequences:
+//!
+//! - The ceiling is the settlement trigger, not the disconnect threshold. The
+//!   disconnect threshold sits above the payment threshold, so pacing against
+//!   the payment threshold keeps an unpaced post-reconnect burst from crossing
+//!   the swap trigger and self-throttling us into paying territory.
+//! - The margin leaves headroom below that trigger rather than consuming all of
+//!   it, so transient races between the throttle's view and the remote's meter
+//!   stay on the safe side.
+//!
+//! The headroom is live and per-peer. It already includes the credit we earn by
+//! serving the same peer: our balance with a peer rises when we provide to them,
+//! and that balance feeds the headroom, so a peer we serve heavily gets a wider
+//! bucket. Pacing is bilateral and per-peer; there is no cross-peer pooling of
+//! credit (that would contradict the bilateral pseudosettle model, where each
+//! peer forgives only its own debt).
 //!
 //! # Cost per request
 //!
@@ -121,21 +142,28 @@ pub struct SelfThrottle {
     /// many tokens (AU) per second. Always at least one so the quota-window
     /// derivation cannot divide by zero.
     refresh_rate: u64,
+    /// Percent (1..=100) of the payment-threshold headroom the bucket is sized
+    /// to, leaving a margin below the settlement trigger. Clamped into 1..=100.
+    allowance_percent: u64,
 }
 
 impl SelfThrottle {
     /// Build a throttle from the per-peer allowance signal, the chunk pricer
-    /// (the same one the accounting layer debits through), and the pseudosettle
-    /// forgiveness rate (`refresh_rate` AU per second).
+    /// (the same one the accounting layer debits through), the pseudosettle
+    /// forgiveness rate (`refresh_rate` AU per second), and the safety-margin
+    /// percent of the payment-threshold headroom the bucket is sized to.
     ///
     /// `refresh_rate` is clamped to at least one AU so a misconfigured zero rate
-    /// can never panic on a divide.
+    /// can never panic on a divide, and `allowance_percent` is clamped into
+    /// 1..=100 so the bucket is never sized to zero or above the live headroom.
     pub fn new(
         allowance: Arc<dyn PeerAffordability>,
         pricing: Arc<dyn SwarmPricing>,
         refresh_rate: Au,
+        allowance_percent: u8,
     ) -> Self {
         let refresh_rate = refresh_rate.as_amount().max(1);
+        let allowance_percent = u64::from(allowance_percent.clamp(1, 100));
 
         // The default quota only seeds a bucket before the first allowance sync;
         // `set_quota` immediately re-sizes it from the live allowance. One AU
@@ -147,19 +175,30 @@ impl SelfThrottle {
             allowance,
             pricing,
             refresh_rate,
+            allowance_percent,
         }
     }
 
     /// Re-size `peer`'s bucket to its current allowance.
     ///
-    /// The bucket capacity (burst) is the remaining allowance in AU and the
-    /// bucket refills at `refresh_rate` AU per second, the pseudosettle
-    /// forgiveness rate. A zero allowance still yields a one-AU bucket so the
+    /// The bucket capacity (burst) is the live headroom toward the payment
+    /// threshold scaled by the safety-margin percent, and the bucket refills at
+    /// `refresh_rate` AU per second, the pseudosettle forgiveness rate. Sizing to
+    /// the payment-threshold headroom (rather than the wider disconnect-threshold
+    /// headroom) keeps a burst from crossing the settlement trigger; the margin
+    /// leaves slack below it. A zero allowance still yields a one-AU bucket so the
     /// GCRA quota stays valid; such a peer is throttled hard (a one-AU bucket is
     /// smaller than any real per-request cost) but never divides by zero.
     fn sync_quota(&self, peer: &OverlayAddress) {
-        let allowance = self.allowance.allowance_remaining(peer).as_amount();
-        let capacity = saturating_u32(allowance).max(1);
+        let allowance = self
+            .allowance
+            .allowance_to_payment_threshold(peer)
+            .as_amount();
+        // Consume only `allowance_percent` of the headroom, leaving a margin
+        // below the settlement trigger. The percent is in 1..=100, so the scaled
+        // value never exceeds the headroom and the u128 product never overflows.
+        let scaled = u128::from(allowance) * u128::from(self.allowance_percent) / 100;
+        let capacity = saturating_u32(u64::try_from(scaled).unwrap_or(u64::MAX)).max(1);
         // Burst = `capacity` AU; refill = `refresh_rate` AU/sec. The GCRA derives
         // its per-token replenish time as window / capacity, so a window of
         // `capacity / refresh_rate` seconds replenishes one AU every
@@ -326,11 +365,15 @@ mod tests {
 
     fn throttle(allowance: Arc<dyn PeerAffordability>) -> SelfThrottle {
         // refresh_rate 10 AU/sec; the pricer meters every request at COST AU, so
-        // a bucket of N AU admits floor(N / COST) requests.
+        // a bucket of N AU admits floor(N / COST) requests. The margin percent is
+        // 100 here so the bucket equals the full payment-threshold headroom and
+        // the per-request arithmetic stays exact; the margin itself is exercised
+        // by `margin_percent_shrinks_the_bucket`.
         SelfThrottle::new(
             allowance,
             Arc::new(FixedPrice(COST)),
             Au::from_amount(REFRESH_RATE),
+            100,
         )
     }
 
@@ -368,6 +411,7 @@ mod tests {
             alloc,
             Arc::new(FixedPrice(0)),
             Au::from_amount(REFRESH_RATE),
+            100,
         );
         assert_eq!(t.request_cost(&peer(1), &address(0)), 1);
     }
@@ -480,6 +524,88 @@ mod tests {
         let alloc = DynamicAllowance::new(0);
         let t = throttle(alloc.clone());
         let cost = t.request_cost(&peer(1), &address(1));
+        t.sync_quota(&peer(1));
+        assert!(t.limiter.lock().try_send(peer(1), cost).is_err());
+    }
+
+    #[test]
+    fn margin_percent_shrinks_the_bucket() {
+        // With an 80% margin a 100-AU headroom yields an 80-AU bucket, which at a
+        // 10-AU price admits eight requests, not ten.
+        let alloc = DynamicAllowance::new(100);
+        let t = SelfThrottle::new(
+            alloc,
+            Arc::new(FixedPrice(COST)),
+            Au::from_amount(REFRESH_RATE),
+            80,
+        );
+        let cost = t.request_cost(&peer(1), &address(1));
+        t.sync_quota(&peer(1));
+        for _ in 0..8 {
+            assert_eq!(t.limiter.lock().try_send(peer(1), cost), Ok(()));
+        }
+        assert!(t.limiter.lock().try_send(peer(1), cost).is_err());
+    }
+
+    #[test]
+    fn margin_percent_clamps_into_range() {
+        // A zero percent clamps up to 1 (never sizes the bucket to nothing), and a
+        // percent above 100 clamps down to 100 (never above the live headroom).
+        let alloc = DynamicAllowance::new(1000);
+        let lo = SelfThrottle::new(
+            alloc.clone(),
+            Arc::new(FixedPrice(COST)),
+            Au::from_amount(REFRESH_RATE),
+            0,
+        );
+        assert_eq!(lo.allowance_percent, 1);
+        let hi = SelfThrottle::new(
+            alloc,
+            Arc::new(FixedPrice(COST)),
+            Au::from_amount(REFRESH_RATE),
+            200,
+        );
+        assert_eq!(hi.allowance_percent, 100);
+    }
+
+    #[test]
+    fn paces_against_the_payment_threshold_headroom() {
+        // A signal that reports a wide disconnect-threshold headroom but a narrow
+        // payment-threshold headroom must be paced by the narrower figure: the
+        // throttle stays below the settlement trigger, not the disconnect one.
+        struct SplitHeadroom {
+            disconnect: u64,
+            payment: u64,
+        }
+        impl PeerAffordability for SplitHeadroom {
+            fn can_afford(&self, _overlay: &OverlayAddress, price: Au) -> bool {
+                price.as_amount() <= self.disconnect
+            }
+            fn allowance_remaining(&self, _overlay: &OverlayAddress) -> Au {
+                Au::from_amount(self.disconnect)
+            }
+            fn allowance_to_payment_threshold(&self, _overlay: &OverlayAddress) -> Au {
+                Au::from_amount(self.payment)
+            }
+        }
+
+        // Disconnect headroom is 1000 AU (100 requests) but payment headroom is
+        // only 30 AU (three requests at the 10-AU price); margin 100% for an exact
+        // count. The fourth request must be refused.
+        let t = SelfThrottle::new(
+            Arc::new(SplitHeadroom {
+                disconnect: 1000,
+                payment: 30,
+            }),
+            Arc::new(FixedPrice(COST)),
+            Au::from_amount(REFRESH_RATE),
+            100,
+        );
+        let cost = t.request_cost(&peer(1), &address(1));
+        for _ in 0..3 {
+            t.sync_quota(&peer(1));
+            assert_eq!(t.limiter.lock().try_send(peer(1), cost), Ok(()));
+        }
         t.sync_quota(&peer(1));
         assert!(t.limiter.lock().try_send(peer(1), cost).is_err());
     }

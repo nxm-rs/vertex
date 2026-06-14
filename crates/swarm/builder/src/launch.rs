@@ -341,19 +341,22 @@ async fn build_client_backed_node(
     ));
 
     // Outbound self-throttle: pace our retrieval and pushsync requests under
-    // each peer's pseudosettle allowance so a burst never trips the remote's
-    // refuse-or-disconnect threshold. The allowance signal is the same
-    // `PeerAffordability` the selector consults, built once in accounting. One
-    // bucket token is one AU: the bucket refills at the pseudosettle per-second
-    // forgiveness rate (`refresh_rate` AU/sec) and each request costs the exact
-    // per-chunk proximity price the remote meters, taken from the same pricer the
+    // each peer's pseudosettle allowance so a burst never crosses the remote's
+    // settlement trigger. The allowance signal is the same `PeerAffordability`
+    // the selector consults, built once in accounting. One bucket token is one
+    // AU: the bucket refills at the pseudosettle per-second forgiveness rate
+    // (`refresh_rate` AU/sec) and each request costs the exact per-chunk
+    // proximity price the remote meters, taken from the same pricer the
     // accounting layer debits through, so a neighborhood chunk paces at the full
-    // forgiveness rate while a distant one costs proportionally more.
+    // forgiveness rate while a distant one costs proportionally more. The bucket
+    // is sized to a configurable percent of the headroom toward the payment
+    // threshold, keeping a burst below the swap trigger with a margin to spare.
     let refresh_rate = SwarmAccountingConfig::refresh_rate(params.bandwidth);
     let throttle = Arc::new(SelfThrottle::new(
         accounting.bandwidth().clone(),
         Arc::new(accounting.pricing().clone()),
         refresh_rate,
+        params.bandwidth.throttle_allowance_percent(),
     ));
     let throttled_handle = client_handle.clone().with_throttle(Arc::clone(&throttle));
 

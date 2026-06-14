@@ -730,6 +730,7 @@ mod tests {
             Arc::new(FixedAllowance(tokens)),
             Arc::new(OneAuPricer),
             Au::from_amount(1),
+            100,
         ));
         (ClientHandle::new(tx).with_throttle(throttle), rx)
     }
