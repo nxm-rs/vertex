@@ -16,6 +16,7 @@ use vertex_swarm_primitives::{OverlayAddress, StampedChunk};
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
 
 use crate::protocol::{ClientCommand, ClientEvent, FailureKind};
+use crate::throttle::{ProtocolKind, SelfThrottle};
 
 /// Report source label for retrieval-protocol peer scoring.
 const RETRIEVAL_SOURCE: ReportSource = ReportSource::Protocol("retrieval");
@@ -32,9 +33,16 @@ pub(crate) const DEFAULT_CHANNEL_CAPACITY: usize = 256;
 /// carries the request is the correlation, and no shared rendezvous state
 /// exists. Concurrent requests for the same chunk address never collide, so
 /// callers may freely race the same address across peers.
+/// Outbound self-throttle shared by both chunk-transfer protocols.
+///
+/// When set, [`ClientHandle::retrieve_chunk`] and [`ClientHandle::push_chunk`]
+/// pace themselves under the remote peer's pseudosettle allowance before the
+/// request is dispatched. Without it, requests dispatch immediately, exactly as
+/// before the throttle existed (and as the unit tests rely on).
 #[derive(Clone)]
 pub struct ClientHandle {
     command_tx: mpsc::Sender<ClientCommand>,
+    throttle: Option<Arc<SelfThrottle>>,
 }
 
 /// Result of a chunk retrieval.
@@ -82,9 +90,20 @@ pub enum ChunkTransferError {
 }
 
 impl ClientHandle {
-    /// Create a new client handle.
+    /// Create a new client handle without outbound self-throttling.
     pub fn new(command_tx: mpsc::Sender<ClientCommand>) -> Self {
-        Self { command_tx }
+        Self {
+            command_tx,
+            throttle: None,
+        }
+    }
+
+    /// Attach the outbound self-throttle so retrieval and pushsync pace
+    /// themselves under each peer's pseudosettle allowance.
+    #[must_use]
+    pub fn with_throttle(mut self, throttle: Arc<SelfThrottle>) -> Self {
+        self.throttle = Some(throttle);
+        self
     }
 
     /// Send a command to the network layer (non-blocking).
@@ -112,6 +131,14 @@ impl ClientHandle {
         peer: OverlayAddress,
         address: ChunkAddress,
     ) -> Result<RetrievalResult, ChunkTransferError> {
+        // Pace ourselves under the peer's pseudosettle allowance before issuing
+        // the request, so a burst does not trip the remote's refuse threshold.
+        if let Some(throttle) = &self.throttle {
+            throttle
+                .acquire(peer, address, ProtocolKind::Retrieval)
+                .await;
+        }
+
         let (tx, rx) = oneshot::channel();
 
         self.send_command(ClientCommand::RetrieveChunk {
@@ -136,6 +163,15 @@ impl ClientHandle {
         chunk: StampedChunk,
     ) -> Result<Receipt, ChunkTransferError> {
         let address = *chunk.address();
+
+        // Pace ourselves under the peer's pseudosettle allowance before issuing
+        // the push, so a burst does not trip the remote's refuse threshold.
+        if let Some(throttle) = &self.throttle {
+            throttle
+                .acquire(peer, address, ProtocolKind::Pushsync)
+                .await;
+        }
+
         let (tx, rx) = oneshot::channel();
 
         self.send_command(ClientCommand::PushChunk {
@@ -165,6 +201,10 @@ pub struct ClientService {
     /// retrieval deliveries here (CAC indefinitely, SOC last-write-wins by
     /// stamp timestamp), so a later request can serve them from the cache.
     store: Option<Arc<dyn SwarmLocalStore>>,
+    /// Optional outbound self-throttle, shared with the client handle. On
+    /// disconnect the service clears the peer's bucket so memory does not grow
+    /// with the count of distinct peers seen and a reconnect starts fresh.
+    throttle: Option<Arc<SelfThrottle>>,
 }
 
 impl ClientService {
@@ -182,6 +222,7 @@ impl ClientService {
             event_rx,
             reporter: None,
             store: None,
+            throttle: None,
         };
 
         (service, event_tx, handle)
@@ -201,6 +242,7 @@ impl ClientService {
             event_rx,
             reporter: None,
             store: None,
+            throttle: None,
         };
 
         (service, handle)
@@ -226,6 +268,18 @@ impl ClientService {
     #[must_use]
     pub fn with_store(mut self, store: Arc<dyn SwarmLocalStore>) -> Self {
         self.store = Some(store);
+        self
+    }
+
+    /// Attach the outbound self-throttle so the service clears a peer's bucket
+    /// on disconnect.
+    ///
+    /// This must be the same [`SelfThrottle`] instance attached to the
+    /// [`ClientHandle`] via [`ClientHandle::with_throttle`], so the bucket the
+    /// outbound API paces against is the one cleared here.
+    #[must_use]
+    pub fn with_throttle(mut self, throttle: Arc<SelfThrottle>) -> Self {
+        self.throttle = Some(throttle);
         self
     }
 
@@ -353,7 +407,12 @@ impl ClientService {
 
             ClientEvent::PeerDisconnected { peer_id, overlay } => {
                 debug!(%peer_id, %overlay, "Peer disconnected");
-                // TODO: Clean up any pending operations for this peer
+                // Drop the peer's throttle bucket so memory does not grow with
+                // the count of distinct peers seen and a reconnect starts from a
+                // fresh allowance rather than stale credit.
+                if let Some(throttle) = &self.throttle {
+                    throttle.clear(&overlay);
+                }
             }
 
             ClientEvent::ProtocolError {
@@ -634,6 +693,225 @@ mod tests {
             }
         );
         assert_eq!(source, ReportSource::Protocol("pushsync"));
+    }
+
+    // Throttle wiring at the outbound-API boundary.
+    use crate::throttle::SelfThrottle;
+    use vertex_swarm_api::{
+        Au, BandwidthMode, PeerAffordability, SwarmBandwidthAccounting, SwarmClientAccounting,
+        SwarmPricing, SwarmResult,
+    };
+    use vertex_swarm_bandwidth::{
+        DefaultBandwidthConfig, NoAccounting, NoPeerBandwidth, NoProvideAction, NoReceiveAction,
+    };
+    use vertex_swarm_test_utils::MockIdentity;
+
+    /// A fixed per-peer allowance, in AU, for the throttle's allowance signal.
+    ///
+    /// Also stands in as the [`SwarmBandwidthAccounting`] half of the client
+    /// accounting mock: the throttle reads only affordability and pricing off the
+    /// accounting object, so the accounting surface is a no-op.
+    #[derive(Clone)]
+    struct FixedAllowance(u64);
+    impl PeerAffordability for FixedAllowance {
+        fn can_afford(&self, _overlay: &OverlayAddress, price: Au) -> bool {
+            price.as_amount() <= self.0
+        }
+        fn allowance_remaining(&self, _overlay: &OverlayAddress) -> Au {
+            Au::from_amount(self.0)
+        }
+    }
+
+    impl SwarmBandwidthAccounting for FixedAllowance {
+        type Identity = MockIdentity;
+        type Peer = NoPeerBandwidth;
+        type ReceiveAction = NoReceiveAction;
+        type ProvideAction = NoProvideAction;
+
+        fn identity(&self) -> &Self::Identity {
+            unreachable!("throttle never reads the identity")
+        }
+        fn for_peer(&self, peer: OverlayAddress) -> Self::Peer {
+            NoAccounting::new(MockIdentity::with_first_byte(0)).for_peer(peer)
+        }
+        fn peers(&self) -> Vec<OverlayAddress> {
+            Vec::new()
+        }
+        fn remove_peer(&self, _peer: &OverlayAddress) {}
+        fn prepare_receive(
+            &self,
+            _peer: OverlayAddress,
+            _price: Au,
+            _originated: bool,
+        ) -> SwarmResult<Self::ReceiveAction> {
+            Ok(NoReceiveAction)
+        }
+        fn prepare_provide(
+            &self,
+            _peer: OverlayAddress,
+            _price: Au,
+        ) -> SwarmResult<Self::ProvideAction> {
+            Ok(NoProvideAction)
+        }
+    }
+
+    /// A pricer that meters every chunk at one AU, so the throttle's bucket holds
+    /// exactly `tokens` requests.
+    #[derive(Clone)]
+    struct OneAuPricer;
+    impl SwarmPricing for OneAuPricer {
+        fn price(&self, _chunk: &ChunkAddress) -> Au {
+            Au::from_amount(1)
+        }
+        fn peer_price(&self, _peer: &OverlayAddress, _chunk: &ChunkAddress) -> Au {
+            Au::from_amount(1)
+        }
+    }
+
+    /// Minimal [`SwarmClientAccounting`] bundling a fixed allowance and the
+    /// one-AU pricer so [`SelfThrottle::new`] can extract both.
+    #[derive(Clone)]
+    struct MockClientAccounting {
+        bandwidth: FixedAllowance,
+        pricing: OneAuPricer,
+    }
+    impl SwarmClientAccounting for MockClientAccounting {
+        type Bandwidth = FixedAllowance;
+        type Pricing = OneAuPricer;
+
+        fn bandwidth(&self) -> &Self::Bandwidth {
+            &self.bandwidth
+        }
+        fn pricing(&self) -> &Self::Pricing {
+            &self.pricing
+        }
+    }
+
+    /// Build a handle whose throttle gives each peer a bucket of `tokens`
+    /// one-AU requests (refresh rate and per-request chunk price are both 1 AU,
+    /// so the bucket holds exactly `tokens` requests and refills one per second).
+    fn throttled_handle(tokens: u64) -> (ClientHandle, mpsc::Receiver<ClientCommand>) {
+        let (tx, rx) = mpsc::channel::<ClientCommand>(16);
+        let accounting = MockClientAccounting {
+            bandwidth: FixedAllowance(tokens),
+            pricing: OneAuPricer,
+        };
+        // Only refresh_rate (1 AU/sec) and throttle_allowance_percent (100) are
+        // read off the config; the rest are placeholders the throttle ignores.
+        let config = DefaultBandwidthConfig::new(
+            BandwidthMode::Pseudosettle,
+            0,
+            0,
+            1,
+            0,
+            1,
+            100,
+            Default::default(),
+        );
+        let throttle = Arc::new(SelfThrottle::new(&accounting, &config));
+        (ClientHandle::new(tx).with_throttle(throttle), rx)
+    }
+
+    #[tokio::test]
+    async fn throttled_push_dispatches_under_budget() {
+        // A generous allowance must not delay the first push: the command is
+        // dispatched promptly.
+        let (handle, mut rx) = throttled_handle(100);
+        let peer = peer(1);
+        let stamped = test_stamped_chunk();
+        let push = tokio::spawn(async move { handle.push_chunk(peer, stamped).await });
+
+        let cmd = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("push dispatched under budget")
+            .expect("command emitted");
+        match cmd {
+            ClientCommand::PushChunk { response, .. } => {
+                response.send(Err(ChunkTransferError::Remote)).ok();
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+        let _ = push.await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn throttled_retrieval_delays_when_bucket_drained() {
+        // A one-token bucket admits the first retrieval, then must throttle the
+        // second until the bucket refills (a one-second window). This runs on
+        // the real clock because the parking timer (`futures-timer`, chosen for
+        // wasm) does not honor tokio's paused test clock; a multi-thread runtime
+        // lets the parked retrieval and the receiver progress in parallel.
+        let (handle, mut rx) = throttled_handle(1);
+        let address = test_address();
+
+        // Drive each retrieval concurrently with one receiver step, answering the
+        // command as it arrives and returning how long the call took.
+        async fn one_retrieval(
+            handle: &ClientHandle,
+            rx: &mut mpsc::Receiver<ClientCommand>,
+            address: ChunkAddress,
+        ) -> Duration {
+            let start = std::time::Instant::now();
+            let serve = async {
+                if let Some(ClientCommand::RetrieveChunk { response, .. }) = rx.recv().await {
+                    response
+                        .send(Err(ChunkTransferError::Protocol("done".into())))
+                        .ok();
+                }
+            };
+            let (_outcome, ()) = tokio::join!(handle.retrieve_chunk(peer(1), address), serve);
+            start.elapsed()
+        }
+
+        // First call drains the single token immediately.
+        let first = one_retrieval(&handle, &mut rx, address).await;
+        assert!(
+            first < Duration::from_millis(500),
+            "first retrieval should not be throttled, took {first:?}"
+        );
+
+        // Second call must wait out the refill window before its command is
+        // dispatched and answered.
+        let second = one_retrieval(&handle, &mut rx, address).await;
+        assert!(
+            second >= Duration::from_millis(500),
+            "second retrieval should be throttled by the drained bucket, took {second:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unthrottled_handle_dispatches_immediately() {
+        // Without a throttle the handle behaves exactly as before: no pacing.
+        let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
+        let handle = ClientHandle::new(tx);
+        let address = test_address();
+        let task = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.retrieve_chunk(peer(1), address).await }
+        });
+        let cmd = rx.recv().await.expect("command emitted");
+        assert!(matches!(cmd, ClientCommand::RetrieveChunk { .. }));
+        task.abort();
+    }
+
+    fn test_stamped_chunk() -> StampedChunk {
+        use nectar_primitives::ContentChunk;
+        let chunk = ContentChunk::new(&b"throttle-test"[..]).expect("valid content chunk");
+        StampedChunk::new(chunk.into(), test_stamp())
+    }
+
+    fn test_stamp() -> vertex_swarm_api::Stamp {
+        use alloy_primitives::{B256, Signature};
+        use vertex_swarm_api::Stamp;
+        let mut raw = [0u8; 65];
+        raw[..64].fill(1);
+        raw[64] = 27;
+        let sig = Signature::try_from(&raw[..]).expect("valid signature bytes");
+        Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig)
+    }
+
+    fn test_address() -> ChunkAddress {
+        *test_stamped_chunk().address()
     }
 
     #[test]

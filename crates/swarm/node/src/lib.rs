@@ -19,6 +19,7 @@ mod node;
 mod protocol;
 mod selection;
 mod swarm_client;
+mod throttle;
 
 pub use node::{
     BaseNode, BuiltInfrastructure, ClientLauncher, ClientNode, ClientNodeBuilder, LaunchedClient,
@@ -38,6 +39,7 @@ pub use protocol::{
 
 pub use selection::{AccountingSettlement, PeerScores, PeerSelector, SettlementTrigger};
 pub use swarm_client::{BootnodeClient, Client, FullClient};
+pub use throttle::SelfThrottle;
 
 pub use bootnodes::BootnodeProvider;
 pub use node::stats::StatsConfig;

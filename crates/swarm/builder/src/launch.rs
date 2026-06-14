@@ -9,13 +9,17 @@ use tracing::{info, warn};
 use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
-use vertex_swarm_api::{PeerReporter, SwarmClientAccounting, SwarmLaunchConfig, SwarmNodeType};
+#[cfg(feature = "chain")]
+use vertex_swarm_api::SwarmSpec;
+use vertex_swarm_api::{
+    PeerReporter, SwarmAccountingConfig, SwarmClientAccounting, SwarmLaunchConfig, SwarmNodeType,
+};
 use vertex_swarm_bandwidth::{
     Accounting, AccountingBuilder, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::NetworkConfig;
-use vertex_swarm_node::{AccountingSettlement, BootNode, ClientNode, PeerSelector};
+use vertex_swarm_node::{AccountingSettlement, BootNode, ClientNode, PeerSelector, SelfThrottle};
 use vertex_swarm_peer_manager::{
     DEFAULT_TICK_INTERVAL, DbPeerSnapshotStore, PeerSnapshot, spawn_peer_manager_task,
 };
@@ -32,8 +36,6 @@ use crate::verify::{ChunkVerifyConfig, VerifyingChunkProvider};
 /// Network chunk provider wrapped with config-gated download verification.
 type VerifiedChunkProvider = VerifyingChunkProvider<NetworkChunkProvider<Arc<Identity>>>;
 
-#[cfg(feature = "chain")]
-use vertex_swarm_api::{SwarmAccountingConfig, SwarmSpec};
 #[cfg(feature = "chain")]
 use vertex_swarm_node::args::ChainConfig;
 #[cfg(feature = "swap")]
@@ -340,15 +342,33 @@ async fn build_client_backed_node(
         Arc::new(AccountingSettlement::new(accounting.bandwidth().clone())),
     ));
 
+    // Outbound self-throttle: pace our retrieval and pushsync requests under
+    // each peer's pseudosettle allowance so a burst never crosses the remote's
+    // settlement trigger. The allowance signal is the same `PeerAffordability`
+    // the selector consults, built once in accounting. One bucket token is one
+    // AU: the bucket refills at the pseudosettle per-second forgiveness rate
+    // (`refresh_rate` AU/sec) and each request costs the exact per-chunk
+    // proximity price the remote meters, taken from the same pricer the
+    // accounting layer debits through, so a neighborhood chunk paces at the full
+    // forgiveness rate while a distant one costs proportionally more. The bucket
+    // is sized to a configurable percent of the headroom toward the payment
+    // threshold, keeping a burst below the swap trigger with a margin to spare.
+    let throttle = Arc::new(SelfThrottle::new(&accounting, params.bandwidth));
+    let throttled_handle = client_handle.clone().with_throttle(Arc::clone(&throttle));
+
     let chunk_provider =
-        NetworkChunkProvider::new(client_handle.clone(), topology.clone()).with_selector(selector);
+        NetworkChunkProvider::new(throttled_handle, topology.clone()).with_selector(selector);
     let chunks = VerifyingChunkProvider::new(chunk_provider, params.verify);
 
     // Spawn client service as independent task with graceful shutdown. The
     // client service reports retrieval and pushsync outcomes (success,
     // failure, and malformed-chunk invalid data) through the same peer manager
     // authority that accounting uses.
-    let client_service = client_service.with_reporter(Arc::clone(&reporter));
+    // The service shares the same throttle instance the handle paces against, so
+    // a peer disconnect clears that peer's bucket.
+    let client_service = client_service
+        .with_reporter(Arc::clone(&reporter))
+        .with_throttle(throttle);
     ctx.executor()
         .spawn_service("swarm.client_service", client_service);
 

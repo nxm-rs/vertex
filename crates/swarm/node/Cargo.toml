@@ -39,6 +39,7 @@ vertex-swarm-peer-score.workspace = true
 
 ## vertex - net utilities
 vertex-net-local.workspace = true
+vertex-net-ratelimiter.workspace = true
 
 ## vertex - swarm (libp2p-free abstractions)
 vertex-swarm-api.workspace = true
