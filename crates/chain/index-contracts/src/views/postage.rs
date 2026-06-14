@@ -1,5 +1,6 @@
-//! Postage view: batch validity by lazy fold, and the value-sorted eviction
-//! hint over the one materialized index.
+//! Postage view: batch validity by lazy fold, and the eager batch-set queries
+//! over the [`BatchTable`] projection + its value-sorted [`BatchByBalance`]
+//! index, composed from the query combinators.
 //!
 //! The validity query reconstructs the contract's rising
 //! `currentTotalOutPayment(block)` line from the verbatim `PriceUpdate` cadence
@@ -8,16 +9,19 @@
 //! does. This is the lazy compute-at-time the design mandates: it reads the
 //! verbatim store plus the live block clock and fires nothing.
 //!
-//! The eviction surface reads the [`BatchByBalance`] index head (the
-//! soonest-to-expire batch by balance) as an ordering HINT; the reserve
-//! recomputes truth at dequeue and skip-and-reinserts if stale.
+//! The eager batch queries (`batch_state`, `all_batches`, `batches_by_owner`,
+//! `batches_by_balance`) read the [`PostageReducer`](crate::reducer::PostageReducer)
+//! projection through the combinators. `batches_by_balance` is the value-sorted
+//! eviction HINT; the reserve recomputes truth at dequeue and skip-reinserts if
+//! stale.
 
 use alloy_primitives::{Address, B256, U256};
 use alloy_sol_types::SolEvent;
-use vertex_storage::{Database, DatabaseError, DbTx};
+use vertex_storage::{Database, DatabaseError};
 
+use crate::projection::{fold_events, list_all, list_by, point_get, range_head};
 use crate::registry::{ContractId, abi};
-use crate::store::{BatchByBalance, BatchKey, BatchState, BatchTable, events_of};
+use crate::store::{BalanceKey, BatchKey, BatchState, BatchTable};
 
 /// The contract's pricing chain-state, reconstructed from the `PriceUpdate`
 /// cadence: the per-chunk total-out-payment accumulated up to
@@ -58,28 +62,44 @@ impl ChainState {
 /// Reconstruct the contract's pricing chain-state by folding the verbatim
 /// `PriceUpdate` cadence in canonical order.
 ///
-/// This is the read-time replacement for the branch's `ChainStateTable`: the
-/// position-ordered raw rows are folded on demand, decoding each `PriceUpdate`.
-///
-/// Returns `None` when NO `PriceUpdate` has been indexed yet. This is the
-/// fail-safe the branch had: a zero-default `ChainState` makes
+/// The read-time re-fold over the [`fold_events`] backbone. Returns `None` when
+/// NO `PriceUpdate` has been indexed yet: a zero-default `ChainState` makes
 /// `current_total_out_payment` return 0, which would make every positive-balance
 /// batch validate forever. Distinguishing "no price seen" from "price 0" lets
 /// [`is_batch_valid_now`] answer `None` (not-yet-known) rather than a misleading
 /// `Some(true)` before the price cadence is known.
+//
+// TODO(#326): replace this read-time re-fold with an O(1) read of the incremental
+// `PostageSummary` projection the `PostageReducer` will maintain on each
+// `PriceUpdate`. The signature stays; only the body becomes a `scalar` read.
 pub fn chain_state<DB: Database>(db: &DB) -> Result<Option<ChainState>, DatabaseError> {
-    let mut state: Option<ChainState> = None;
-    for (key, ev) in events_of(db, ContractId::Postage)? {
-        if ev.topic0 != abi::PriceUpdate::SIGNATURE_HASH {
-            continue;
-        }
-        if let Ok(decoded) = abi::PriceUpdate::decode_log_data(&ev.log_data()) {
-            state
-                .get_or_insert_with(ChainState::default)
-                .fold_price_update(decoded.price, key.block);
-        }
-    }
-    Ok(state)
+    fold_events(
+        db,
+        ContractId::Postage,
+        None,
+        |state: &mut Option<ChainState>, key, ev| {
+            if ev.topic0 != abi::PriceUpdate::SIGNATURE_HASH {
+                return;
+            }
+            if let Ok(decoded) = abi::PriceUpdate::decode_log_data(&ev.log_data()) {
+                state
+                    .get_or_insert_with(ChainState::default)
+                    .fold_price_update(decoded.price, key.block);
+            }
+        },
+    )
+}
+
+/// The contract's `currentTotalOutPayment(block)`, the rising line a batch's
+/// `normalisedBalance` must stay above to remain valid, or `None` before any
+/// price cadence is indexed (the fail-safe).
+//
+// TODO(#326): becomes an O(1) extrapolation from the `PostageSummary` row.
+pub fn current_total_out_payment<DB: Database>(
+    db: &DB,
+    block: u64,
+) -> Result<Option<U256>, DatabaseError> {
+    Ok(chain_state(db)?.map(|cs| cs.current_total_out_payment(block)))
 }
 
 /// The folded current state of one batch, from its verbatim lifecycle events.
@@ -100,53 +120,57 @@ pub struct Batch {
 }
 
 /// Fold one batch's lifecycle (`BatchCreated` / `BatchTopUp` /
-/// `BatchDepthIncrease`) from the verbatim rows, in canonical order.
+/// `BatchDepthIncrease`) from the verbatim rows, in canonical order, over the
+/// [`fold_events`] backbone.
 ///
 /// Last-write-wins per field is implicit in the position order: later events
 /// overwrite earlier ones. Returns `None` if the batch was never created in the
 /// indexed window.
 pub fn batch<DB: Database>(db: &DB, batch_id: B256) -> Result<Option<Batch>, DatabaseError> {
-    let mut current: Option<Batch> = None;
-    for (key, ev) in events_of(db, ContractId::Postage)? {
-        let data = ev.log_data();
-        if ev.topic0 == abi::BatchCreated::SIGNATURE_HASH
-            && let Ok(d) = abi::BatchCreated::decode_log_data(&data)
-            && d.batchId == batch_id
-        {
-            let start_block = current.map_or(key.block, |b| b.start_block);
-            current = Some(Batch {
-                owner: d.owner,
-                depth: d.depth,
-                bucket_depth: d.bucketDepth,
-                normalised_balance: d.normalisedBalance,
-                immutable: d.immutableFlag,
-                start_block,
-            });
-        } else if ev.topic0 == abi::BatchTopUp::SIGNATURE_HASH
-            && let Ok(d) = abi::BatchTopUp::decode_log_data(&data)
-            && d.batchId == batch_id
-            && let Some(b) = current.as_mut()
-        {
-            b.normalised_balance = d.normalisedBalance;
-        } else if ev.topic0 == abi::BatchDepthIncrease::SIGNATURE_HASH
-            && let Ok(d) = abi::BatchDepthIncrease::decode_log_data(&data)
-            && d.batchId == batch_id
-            && let Some(b) = current.as_mut()
-        {
-            b.depth = d.newDepth;
-            b.normalised_balance = d.normalisedBalance;
-        }
-    }
-    Ok(current)
+    fold_events(
+        db,
+        ContractId::Postage,
+        None,
+        |current: &mut Option<Batch>, key, ev| {
+            let data = ev.log_data();
+            if ev.topic0 == abi::BatchCreated::SIGNATURE_HASH
+                && let Ok(d) = abi::BatchCreated::decode_log_data(&data)
+                && d.batchId == batch_id
+            {
+                let start_block = current.map_or(key.block, |b| b.start_block);
+                *current = Some(Batch {
+                    owner: d.owner,
+                    depth: d.depth,
+                    bucket_depth: d.bucketDepth,
+                    normalised_balance: d.normalisedBalance,
+                    immutable: d.immutableFlag,
+                    start_block,
+                });
+            } else if ev.topic0 == abi::BatchTopUp::SIGNATURE_HASH
+                && let Ok(d) = abi::BatchTopUp::decode_log_data(&data)
+                && d.batchId == batch_id
+                && let Some(b) = current.as_mut()
+            {
+                b.normalised_balance = d.normalisedBalance;
+            } else if ev.topic0 == abi::BatchDepthIncrease::SIGNATURE_HASH
+                && let Ok(d) = abi::BatchDepthIncrease::decode_log_data(&data)
+                && d.batchId == batch_id
+                && let Some(b) = current.as_mut()
+            {
+                b.depth = d.newDepth;
+                b.normalised_balance = d.normalisedBalance;
+            }
+        },
+    )
 }
 
 /// Whether `batch_id` is valid at `block`, against the verbatim store.
 ///
 /// `Some(valid)` once both the batch AND at least one `PriceUpdate` have been
 /// indexed; `None` while either is not yet known. Returning `None` (rather than
-/// `Some(true)`) before any price is folded is the fail-safe behaviour the branch
-/// had: without it, an absent price cadence makes `currentTotalOutPayment` zero
-/// and every positive-balance batch would validate forever, which would mask a
+/// `Some(true)`) before any price is folded is the fail-safe behaviour: without
+/// it, an absent price cadence makes `currentTotalOutPayment` zero and every
+/// positive-balance batch would validate forever, which would mask a
 /// wrong-address / wrong-ABI failure as "always valid". A consumer treats `None`
 /// as not-yet-known, not expired. The lazy compute-at-time query: it reads the
 /// store plus the live block clock and fires nothing.
@@ -167,16 +191,58 @@ pub fn is_batch_valid_now<DB: Database>(
     ))
 }
 
-/// The materialized batch projection row for `batch_id`, if any.
+/// The materialized batch projection row for `batch_id`, if any (`point_get`).
 ///
-/// Reads the typed [`BatchTable`] (the index's backing row), not the verbatim
-/// fold. This is the cheap point-read the eviction queue uses; for the
+/// Reads the typed [`BatchTable`] projection (the index's backing row), not the
+/// verbatim fold. This is the cheap point-read the eviction queue uses; for the
 /// authoritative balance history use [`batch`].
 pub fn batch_state<DB: Database>(
     db: &DB,
     batch_id: B256,
 ) -> Result<Option<BatchState>, DatabaseError> {
-    db.view(|tx| tx.get::<BatchTable>(BatchKey(batch_id)))
+    point_get::<BatchTable, _>(db, BatchKey(batch_id))
+}
+
+/// Every batch currently in the projection (`list_all`).
+pub fn all_batches<DB: Database>(db: &DB) -> Result<Vec<BatchState>, DatabaseError> {
+    Ok(list_all::<BatchTable, _>(db)?
+        .into_iter()
+        .map(|(_, v)| v)
+        .collect())
+}
+
+/// Every batch owned by `owner` (`list_by` on the projection's `owner` field).
+///
+/// `BatchState` already carries `owner`, so this is a filtered scan of the live
+/// projection with no second table.
+pub fn batches_by_owner<DB: Database>(
+    db: &DB,
+    owner: Address,
+) -> Result<Vec<BatchState>, DatabaseError> {
+    Ok(list_by::<BatchTable, _, _>(db, |b| b.owner == owner)?
+        .into_iter()
+        .map(|(_, v)| v)
+        .collect())
+}
+
+/// Batch ids ordered by ascending `normalisedBalance` within `[lo ..= hi]`,
+/// bounded to `limit` (`range_head` over [`BatchByBalance`]).
+///
+/// The #317 bounded read: it scans only the index's `[lo ..= hi]` window via
+/// `DbTx::range` and `take(limit)`s, instead of materializing the whole index and
+/// sorting in memory. A pure ordering HINT; the reserve recomputes truth at
+/// dequeue. Pass [`BalanceKey::min`]/[`BalanceKey::max`] for an unbounded
+/// balance range.
+pub fn batches_by_balance<DB: Database>(
+    db: &DB,
+    lo: BalanceKey,
+    hi: BalanceKey,
+    limit: usize,
+) -> Result<Vec<B256>, DatabaseError> {
+    Ok(range_head::<BatchTable, _>(db, lo, hi, limit)?
+        .into_iter()
+        .map(|pk| pk.0)
+        .collect())
 }
 
 /// The value-sorted eviction hint: batch ids ordered by ascending
@@ -187,24 +253,19 @@ pub fn batch_state<DB: Database>(
 /// block clock with [`is_batch_valid_now`], and skip-and-reinserts if stale.
 /// This function makes no decision and evicts nothing.
 ///
-/// The index is keyed by `(balance, batch_id)`, so iterating it ascending yields
-/// the soonest-to-expire batches first with a deterministic tie-break. This reads
-/// the whole index then `take(limit)`s the head; unlike `EventTable`, the
-/// `BatchByBalance` index holds at most one entry per LIVE batch (bounded by the
-/// active batch count, not by chain history), so the read is small. The `batchId`
-/// in the key makes it unique per batch, so no equal-balance batch is ever
-/// dropped from the hint (see `store.rs::BalanceKey`).
+/// This is the bounded #317 read: it scans only the head `limit` entries of the
+/// index via [`batches_by_balance`] (which uses `DbTx::range`), instead of a full
+/// `entries()` + in-memory sort.
+///
+/// Note: the `BatchByBalance` index holds one entry per *historically created*
+/// batch, NOT per *live* batch — it grows with chain history because no event
+/// signals expiry, so nothing prunes it here. The bounded read above makes this
+/// query cheap regardless; the unbounded-growth fix (a conservative `on_block`
+/// prune) is tracked separately as the second half of #317 and is NOT in this
+/// change.
 pub fn eviction_candidates<DB: Database>(
     db: &DB,
     limit: usize,
 ) -> Result<Vec<B256>, DatabaseError> {
-    db.view(|tx| {
-        let mut entries = tx.entries::<BatchByBalance>()?;
-        entries.sort_by(|(a, _), (b, _)| a.cmp(b));
-        Ok(entries
-            .into_iter()
-            .take(limit)
-            .map(|(_, pk)| pk.0)
-            .collect())
-    })
+    batches_by_balance(db, BalanceKey::min(), BalanceKey::max(), limit)
 }

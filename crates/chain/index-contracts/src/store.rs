@@ -25,16 +25,13 @@
 //! needs. It is a pure ordering HINT carrying no decision: the index orders
 //! batches by `normalisedBalance`, and the reserve recomputes true value at
 //! dequeue against the live block clock (see `CHAIN_REACTIONS_DESIGN.md`). It is
-//! self-healing via [`vertex_storage::IndexedWrite`] and range-reverted
-//! alongside [`EventTable`].
+//! maintained by the [`PostageReducer`](crate::reducer::PostageReducer) via
+//! [`vertex_storage::IndexedWrite`] and rebuilt from surviving rows on revert.
 
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rpc_types_eth::Log;
 use serde::{Deserialize, Serialize};
-use vertex_chain_index::IndexError;
-use vertex_storage::{
-    Database, DatabaseError, DbTx, DbTxMut, Decode, Encode, IndexedWrite, Table, Tables,
-};
+use vertex_storage::{Database, DatabaseError, DbTx, DbTxMut, Decode, Encode, Table, Tables};
 
 use crate::registry::ContractId;
 
@@ -48,11 +45,12 @@ pub const MAX_EVENT_DATA: usize = 8 * 1024;
 
 vertex_storage::table!(pub EventTable, "chain_events", EventKey, StoredEvent);
 
-// The typed postage batch projection and its value-sorted index. Uncompressed
-// (the index macro forces this for the index) and small.
-vertex_storage::table!(pub BatchTable, "postage_batches", BatchKey, BatchState);
+// The typed postage batch projection and its value-sorted index, declared via
+// the projection framework (see `crate::projection`). Both are uncompressed and
+// small.
+crate::projection!(pub BatchTable, "postage_batches", BatchKey, BatchState);
 
-vertex_storage::index!(
+crate::secondary_index!(
     pub BatchByBalance,
     "postage_batch_by_balance",
     BalanceKey,
@@ -110,6 +108,15 @@ impl EventKey {
             contract,
             block: from_block,
             log_index: 0,
+        }
+    }
+
+    /// The last key of `contract`'s range (block/log saturated to `MAX`).
+    pub const fn range_end(contract: ContractId) -> Self {
+        Self {
+            contract,
+            block: u64::MAX,
+            log_index: u64::MAX,
         }
     }
 }
@@ -219,6 +226,26 @@ pub struct BalanceKey {
     pub batch_id: B256,
 }
 
+impl BalanceKey {
+    /// The smallest possible index key (balance 0, zero batch id): the inclusive
+    /// lower bound of an ascending [`range_head`](crate::projection::range_head).
+    pub const fn min() -> Self {
+        Self {
+            balance: U256::ZERO,
+            batch_id: B256::ZERO,
+        }
+    }
+
+    /// The largest possible index key (max balance, all-ones batch id): the
+    /// inclusive upper bound of an ascending range scan.
+    pub const fn max() -> Self {
+        Self {
+            balance: U256::MAX,
+            batch_id: B256::repeat_byte(0xff),
+        }
+    }
+}
+
 impl Encode for BalanceKey {
     type Encoded = [u8; 64];
 
@@ -242,13 +269,14 @@ impl Decode for BalanceKey {
     }
 }
 
-/// The typed postage batch projection row, fed alongside the verbatim
+/// The typed postage batch projection row, maintained by the
+/// [`PostageReducer`](crate::reducer::PostageReducer) alongside the verbatim
 /// [`EventTable`] write for `Postage` rows only.
 ///
-/// This carries the small set of fields the value-sorted eviction index needs;
-/// the authoritative event history stays in [`EventTable`], and the lazy
-/// [`views::postage`](crate::views::postage) validity fold reads that. This row
-/// exists only so [`BatchByBalance`] has a typed value to extract from.
+/// This carries the small set of fields the value-sorted eviction index needs
+/// plus the `owner` (so `batches_by_owner` needs no second table); the
+/// authoritative event history stays in [`EventTable`], and the lazy
+/// [`views::postage`](crate::views::postage) validity fold reads that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatchState {
     /// The on-chain batch id, carried so the value-sorted index key
@@ -286,113 +314,10 @@ pub(crate) fn put_event<TX: DbTxMut>(
     Ok(true)
 }
 
-/// A typed update to the postage batch projection, derived from a decoded batch
-/// lifecycle event. Applied by [`apply_batch_update`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BatchUpdate {
-    /// `BatchCreated`: open (or refresh) the full row.
-    Created {
-        /// The on-chain batch id.
-        batch_id: B256,
-        /// The batch owner.
-        owner: Address,
-        /// The batch depth.
-        depth: u8,
-        /// The batch bucket depth.
-        bucket_depth: u8,
-        /// The created `normalisedBalance`.
-        normalised_balance: U256,
-        /// Whether the batch is immutable.
-        immutable: bool,
-        /// The creation block.
-        start_block: u64,
-    },
-    /// `BatchTopUp`: raise the balance on the existing row.
-    Balance {
-        /// The on-chain batch id.
-        batch_id: B256,
-        /// The new `normalisedBalance`.
-        normalised_balance: U256,
-    },
-    /// `BatchDepthIncrease`: raise depth and re-normalise the balance.
-    Depth {
-        /// The on-chain batch id.
-        batch_id: B256,
-        /// The new depth.
-        new_depth: u8,
-        /// The re-normalised `normalisedBalance`.
-        normalised_balance: U256,
-    },
-}
-
-/// Apply a [`BatchUpdate`] to the typed projection, maintaining the value-sorted
-/// index self-healingly (a topup that raises the balance moves the index key).
-///
-/// `Created` writes the full row; `Balance` / `Depth` read-modify-write the
-/// existing row so the index follows the live balance. A topup or depth-increase
-/// for a batch whose create is outside the indexed window is dropped rather than
-/// fabricating a partial row, matching the per-branch behaviour.
-pub(crate) fn apply_batch_update<TX: DbTxMut>(
-    tx: &TX,
-    update: BatchUpdate,
-) -> Result<(), DatabaseError> {
-    match update {
-        BatchUpdate::Created {
-            batch_id,
-            owner,
-            depth,
-            bucket_depth,
-            normalised_balance,
-            immutable,
-            start_block,
-        } => {
-            // Preserve the original creation block if the batch is already known
-            // (a duplicate create only refreshes the mutable fields).
-            let start_block = tx
-                .get::<BatchTable>(BatchKey(batch_id))?
-                .map_or(start_block, |b| b.start_block);
-            tx.put_indexed::<BatchByBalance>(
-                BatchKey(batch_id),
-                BatchState {
-                    batch_id,
-                    owner,
-                    depth,
-                    bucket_depth,
-                    normalised_balance,
-                    immutable,
-                    start_block,
-                },
-            )
-        }
-        BatchUpdate::Balance {
-            batch_id,
-            normalised_balance,
-        } => {
-            let Some(mut state) = tx.get::<BatchTable>(BatchKey(batch_id))? else {
-                return Ok(());
-            };
-            state.normalised_balance = normalised_balance;
-            tx.put_indexed::<BatchByBalance>(BatchKey(batch_id), state)
-        }
-        BatchUpdate::Depth {
-            batch_id,
-            new_depth,
-            normalised_balance,
-        } => {
-            let Some(mut state) = tx.get::<BatchTable>(BatchKey(batch_id))? else {
-                return Ok(());
-            };
-            state.depth = new_depth;
-            state.normalised_balance = normalised_balance;
-            tx.put_indexed::<BatchByBalance>(BatchKey(batch_id), state)
-        }
-    }
-}
-
 /// Read a contract's stored events in canonical `(block, log_index)` order.
 ///
-/// The fold backbone of every view. It scans ONLY this contract's key range
-/// `[range_start(contract) ..= (contract, MAX, MAX)]` via the storage trait's
+/// The fold backbone of every lazy view. It scans ONLY this contract's key range
+/// `[range_start(contract) ..= range_end(contract)]` via the storage trait's
 /// bounded [`range`](vertex_storage::DbTx::range), so a view fold over months of
 /// multi-contract history touches just the one contract's rows instead of
 /// materializing the whole table. Because [`EventKey`] is namespaced by the
@@ -403,115 +328,25 @@ pub(crate) fn events_of<DB: Database>(
     db: &DB,
     contract: ContractId,
 ) -> Result<Vec<(EventKey, StoredEvent)>, DatabaseError> {
-    let lo = EventKey::range_start(contract);
-    let hi = EventKey {
-        contract,
-        block: u64::MAX,
-        log_index: u64::MAX,
-    };
-    db.view(|tx| tx.range::<EventTable>(lo, hi))
+    db.view(|tx| {
+        tx.range::<EventTable>(
+            EventKey::range_start(contract),
+            EventKey::range_end(contract),
+        )
+    })
 }
 
-/// Range-delete a contract's events (and, for postage, the batch projection +
-/// index) from `from_block` onward.
-///
-/// The generic `revert(from_block)` body. Because every view derives purely from
-/// the raw rows, deleting the reorged-out range is necessary and sufficient: no
-/// view holds independent state revert could miss. The MVP engine indexes
-/// finalized-only and never calls this; it is correct-by-construction today and
-/// correct-by-design when head-tracking arrives.
-pub(crate) fn revert_contract<DB: Database>(
-    db: &DB,
+/// Read a contract's stored events within an open transaction (the in-tx twin of
+/// [`events_of`]), used by the generic revert to gather the surviving rows it
+/// hands to [`Reducer::rebuild`](crate::reducer::Reducer::rebuild).
+pub(crate) fn events_of_tx<TX: DbTx>(
+    tx: &TX,
     contract: ContractId,
-    from_block: u64,
-) -> Result<(), IndexError> {
-    db.update(|tx| {
-        // The keys to drop: this contract's events at or after from_block, found
-        // by a bounded range scan over just this contract's tail range.
-        let doomed_lo = EventKey::range_from(contract, from_block);
-        let doomed_hi = EventKey {
-            contract,
-            block: u64::MAX,
-            log_index: u64::MAX,
-        };
-        let doomed: Vec<EventKey> = tx
-            .range::<EventTable>(doomed_lo, doomed_hi)?
-            .into_iter()
-            .map(|(k, _)| k)
-            .collect();
-        for key in doomed {
-            tx.delete::<EventTable>(key)?;
-        }
-
-        // The postage batch projection mirrors EventTable, but a batch created
-        // BEFORE from_block and mutated (topped up / depth-increased) within the
-        // reverted range carries a now-stale balance and a stale index slot.
-        // Keying the drop on `start_block >= from_block` would miss those. So
-        // rebuild the whole projection from the surviving verbatim rows: drop
-        // every batch row + index entry, then re-fold the remaining
-        // `EventTable` Postage rows (which are already truncated to
-        // `< from_block`). This is unambiguously consistent with the source of
-        // truth and the MVP never calls revert, so the full rebuild is cheap.
-        if contract == ContractId::Postage {
-            tx.clear_indexed::<BatchByBalance>()?;
-            let lo = EventKey::range_start(ContractId::Postage);
-            let hi = EventKey {
-                contract: ContractId::Postage,
-                block: u64::MAX,
-                log_index: u64::MAX,
-            };
-            for (key, ev) in tx.range::<EventTable>(lo, hi)? {
-                if let Some(update) = batch_update_from_event(&ev, key.block) {
-                    apply_batch_update(tx, update)?;
-                }
-            }
-        }
-
-        Ok(())
-    })?;
-    Ok(())
-}
-
-/// Decode a stored postage event into the typed [`BatchUpdate`] that maintains
-/// the value-sorted index, or `None` for a non-batch event or a decode miss.
-///
-/// `block` is the row's creation block, used for a `Created` update's
-/// `start_block`. This is the shared decode the live `apply` path and the revert
-/// rebuild both use, so the projection is derived identically whether built
-/// forward or rebuilt from surviving rows.
-pub(crate) fn batch_update_from_event(ev: &StoredEvent, block: u64) -> Option<BatchUpdate> {
-    use alloy_sol_types::SolEvent;
-
-    use crate::registry::abi;
-
-    let data = ev.log_data();
-    if ev.topic0 == abi::BatchCreated::SIGNATURE_HASH {
-        let e = abi::BatchCreated::decode_log_data(&data).ok()?;
-        Some(BatchUpdate::Created {
-            batch_id: e.batchId,
-            owner: e.owner,
-            depth: e.depth,
-            bucket_depth: e.bucketDepth,
-            normalised_balance: e.normalisedBalance,
-            immutable: e.immutableFlag,
-            start_block: block,
-        })
-    } else if ev.topic0 == abi::BatchTopUp::SIGNATURE_HASH {
-        let e = abi::BatchTopUp::decode_log_data(&data).ok()?;
-        Some(BatchUpdate::Balance {
-            batch_id: e.batchId,
-            normalised_balance: e.normalisedBalance,
-        })
-    } else if ev.topic0 == abi::BatchDepthIncrease::SIGNATURE_HASH {
-        let e = abi::BatchDepthIncrease::decode_log_data(&data).ok()?;
-        Some(BatchUpdate::Depth {
-            batch_id: e.batchId,
-            new_depth: e.newDepth,
-            normalised_balance: e.normalisedBalance,
-        })
-    } else {
-        None
-    }
+) -> Result<Vec<(EventKey, StoredEvent)>, DatabaseError> {
+    tx.range::<EventTable>(
+        EventKey::range_start(contract),
+        EventKey::range_end(contract),
+    )
 }
 
 /// Build a [`StoredEvent`] from a provider [`Log`], enforcing the EVM topic

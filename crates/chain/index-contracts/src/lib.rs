@@ -71,13 +71,27 @@ mod indexer;
 mod registry;
 mod store;
 
+pub mod projection;
+pub mod reducer;
 pub mod views;
 
+/// Re-export of the storage crate under a stable name the
+/// [`projection!`](crate::projection) / [`secondary_index!`](crate::secondary_index)
+/// macros expand through, so they resolve `table!` / `index!` regardless of how a
+/// caller imports `vertex_storage`.
+#[doc(hidden)]
+pub use vertex_storage as __vertex_storage;
+
 pub use indexer::{ContractIndexer, INDEXER_NAME};
+pub use projection::{
+    IndexedProjection, Projection, contains, fold_events, get_via_index, last_event, list_all,
+    list_by, point_get, range_head, scalar,
+};
+pub use reducer::{BatchUpdate, PostageReducer, Reducer};
 pub use registry::{ContractId, EventDescriptor, Network, WatchedContract, abi, registry};
 pub use store::{
-    BatchByBalance, BatchKey, BatchState, BatchTable, BatchUpdate, ContractIndexTables, EventKey,
-    EventTable, MAX_EVENT_DATA, StoredEvent,
+    BatchByBalance, BatchKey, BatchState, BatchTable, ContractIndexTables, EventKey, EventTable,
+    MAX_EVENT_DATA, StoredEvent,
 };
 
 #[cfg(test)]

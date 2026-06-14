@@ -203,6 +203,146 @@ fn replayed_log_is_idempotent() {
 }
 
 #[test]
+fn malformed_reducer_body_skips_not_wedges() {
+    // A declared postage topic0 (BatchCreated) with a garbage ABI body must:
+    //  (1) NOT error apply (the cursor advances), and
+    //  (2) still land the verbatim row,
+    //  (3) but produce NO projection row (the reducer decode miss is a skip).
+    // This is the non-negotiable invariant: a malformed body can never wedge the
+    // shared cursor through the reducer path.
+    let (db, indexer) = harness();
+    let topic0 = abi::BatchCreated::SIGNATURE_HASH;
+    let garbage = Bytes::from(vec![0xFFu8; 3]); // far too short for the ABI tail
+    let data = LogData::new_unchecked(vec![topic0], garbage);
+    let log = log_from(12, 0, POSTAGE_ADDR, data);
+    indexer
+        .apply(12, &log)
+        .expect("a malformed reducer body must not error apply");
+
+    // The verbatim row landed (source of truth keeps the bytes).
+    let stored = db
+        .view(|tx| {
+            tx.get::<EventTable>(EventKey {
+                contract: ContractId::Postage,
+                block: 12,
+                log_index: 0,
+            })
+        })
+        .unwrap();
+    assert!(stored.is_some(), "the verbatim row must still be stored");
+
+    // No projection row was fabricated from the undecodable body.
+    let candidates = postage::eviction_candidates(&*db, 10).unwrap();
+    assert!(
+        candidates.is_empty(),
+        "a decode miss must produce no projection row"
+    );
+}
+
+#[test]
+fn postage_all_batches_and_by_owner() {
+    let (db, indexer) = harness();
+    let owner_a = address!("00000000000000000000000000000000000000a1");
+    let owner_b = address!("00000000000000000000000000000000000000b2");
+    let batch_a = B256::repeat_byte(0x1A);
+    let batch_b = B256::repeat_byte(0x2B);
+    let batch_c = B256::repeat_byte(0x3C);
+
+    for (i, id, owner, bal) in [
+        (0u64, batch_a, owner_a, 100u64),
+        (1u64, batch_b, owner_a, 200u64),
+        (2u64, batch_c, owner_b, 300u64),
+    ] {
+        apply(
+            &indexer,
+            1,
+            i,
+            POSTAGE_ADDR,
+            &abi::BatchCreated {
+                batchId: id,
+                totalAmount: U256::from(bal),
+                normalisedBalance: U256::from(bal),
+                owner,
+                depth: 20,
+                bucketDepth: 16,
+                immutableFlag: false,
+            },
+        );
+    }
+
+    // all_batches returns every projection row.
+    let mut all: Vec<B256> = postage::all_batches(&*db)
+        .unwrap()
+        .into_iter()
+        .map(|b| b.batch_id)
+        .collect();
+    all.sort();
+    let mut expected = vec![batch_a, batch_b, batch_c];
+    expected.sort();
+    assert_eq!(all, expected);
+
+    // batches_by_owner filters on the projection's owner field (no second table).
+    let mut a_batches: Vec<B256> = postage::batches_by_owner(&*db, owner_a)
+        .unwrap()
+        .into_iter()
+        .map(|b| b.batch_id)
+        .collect();
+    a_batches.sort();
+    let mut a_expected = vec![batch_a, batch_b];
+    a_expected.sort();
+    assert_eq!(a_batches, a_expected);
+
+    let b_batches: Vec<B256> = postage::batches_by_owner(&*db, owner_b)
+        .unwrap()
+        .into_iter()
+        .map(|b| b.batch_id)
+        .collect();
+    assert_eq!(b_batches, vec![batch_c]);
+}
+
+#[test]
+fn postage_batches_by_balance_bounded_range() {
+    use crate::store::BalanceKey;
+    let (db, indexer) = harness();
+    let low = B256::repeat_byte(0x01);
+    let mid = B256::repeat_byte(0x02);
+    let high = B256::repeat_byte(0x03);
+    for (i, id, bal) in [(0u64, low, 10u64), (1, mid, 50u64), (2, high, 90u64)] {
+        apply(
+            &indexer,
+            1,
+            i,
+            POSTAGE_ADDR,
+            &abi::BatchCreated {
+                batchId: id,
+                totalAmount: U256::from(bal),
+                normalisedBalance: U256::from(bal),
+                owner: Address::ZERO,
+                depth: 20,
+                bucketDepth: 16,
+                immutableFlag: false,
+            },
+        );
+    }
+
+    // A bounded [20 ..= 100] range excludes the balance-10 batch and is limited.
+    let lo = BalanceKey {
+        balance: U256::from(20u64),
+        batch_id: B256::ZERO,
+    };
+    let hi = BalanceKey {
+        balance: U256::from(100u64),
+        batch_id: B256::repeat_byte(0xff),
+    };
+    let got = postage::batches_by_balance(&*db, lo, hi, 10).unwrap();
+    assert_eq!(got, vec![mid, high], "range must exclude balance-10 batch");
+
+    // The limit truncates the ascending head.
+    let head = postage::batches_by_balance(&*db, BalanceKey::min(), BalanceKey::max(), 1).unwrap();
+    assert_eq!(head, vec![low], "limit takes the lowest-balance head only");
+}
+
+#[test]
 fn postage_validity_fold() {
     let (db, indexer) = harness();
     let batch_id = B256::repeat_byte(0xAB);
