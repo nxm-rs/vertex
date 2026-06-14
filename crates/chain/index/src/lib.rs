@@ -50,13 +50,15 @@ mod engine;
 mod error;
 mod indexer;
 mod metrics;
+mod notify;
 mod reader;
 
 #[cfg(test)]
 mod tests;
 
 pub use cursor::{Cursor, CursorTable, CursorTables};
-pub use engine::{DEFAULT_PAGE_SIZE, DEFAULT_POLL_INTERVAL, EventEngine};
+pub use engine::{DEFAULT_PAGE_SIZE, DEFAULT_POLL_INTERVAL, EventEngine, EventEngineBuilder};
 pub use error::IndexError;
 pub use indexer::Indexer;
+pub use notify::{BlockTip, BlockTipRx, IndexAdvance, IndexAdvanceRx};
 pub use reader::{ChainReader, FinalizedHead};
