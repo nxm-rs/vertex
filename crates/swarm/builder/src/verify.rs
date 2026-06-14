@@ -172,7 +172,7 @@ mod tests {
     impl SwarmChunkSender for MockProvider {
         async fn send_chunk_unchecked(&self, _chunk: StampedChunk) -> SwarmResult<PushReceipt> {
             Ok(PushReceipt {
-                signer: self.served_by,
+                storer: self.served_by,
                 signature: alloy_primitives::Signature::from_raw(&[1u8; 65]).unwrap(),
                 nonce: Nonce::new([0u8; 32]),
                 storage_radius: StorageRadius::ZERO,

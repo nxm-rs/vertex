@@ -264,7 +264,7 @@ mod tests {
     use alloy_signer_local::PrivateKeySigner;
     use nectar_primitives::{ContentChunk, NetworkId, Nonce, compute_overlay};
     use vertex_swarm_api::Stamp;
-    use vertex_swarm_net_pushsync::{Receipt, SignedReceipt};
+    use vertex_swarm_net_pushsync::{Receipt, WireReceipt};
     use vertex_swarm_primitives::{Bin, OverlayAddress, StorageRadius};
 
     fn test_peer() -> OverlayAddress {
@@ -278,21 +278,21 @@ mod tests {
         Signature::try_from(&raw[..]).expect("valid signature bytes")
     }
 
-    /// A signer-verified receipt over `address`, as the decode boundary produces
-    /// it, so a test can resolve a push command with a real `SignedReceipt`.
-    fn signed_receipt(address: &ChunkAddress) -> (SignedReceipt, OverlayAddress) {
+    /// A storer-verified receipt over `address`, as the decode boundary produces
+    /// it, so a test can resolve a push command with a real `Receipt`.
+    fn signed_receipt(address: &ChunkAddress) -> (Receipt, OverlayAddress) {
         let signer = PrivateKeySigner::random();
         let signature = signer.sign_message_sync(address.as_bytes()).expect("sign");
         let nonce = Nonce::from([9u8; 32]);
         let overlay = compute_overlay(&signer.address(), NetworkId::MAINNET, &nonce);
-        let receipt = Receipt::success(
+        let wire = WireReceipt::new(
             *address,
             signature,
             nonce,
             StorageRadius::new(Bin::new(5).unwrap()),
         );
         (
-            SignedReceipt::recover(receipt, NetworkId::MAINNET).expect("recovers"),
+            Receipt::reconstruct(wire, NetworkId::MAINNET).expect("reconstructs"),
             overlay,
         )
     }
@@ -379,14 +379,14 @@ mod tests {
         // Resolve the request through its own response channel, as the
         // handler does when the verified receipt arrives on the request's
         // substream.
-        let (signed, signer) = signed_receipt(&address);
-        response.send(Ok(signed)).expect("receiver alive");
+        let (verified, storer) = signed_receipt(&address);
+        response.send(Ok(verified)).expect("receiver alive");
 
         let receipt = push.await.unwrap().expect("push resolves");
-        assert_eq!(receipt.signer(), signer);
-        assert_eq!(*receipt.address(), address);
-        assert_eq!(receipt.nonce(), &Nonce::from([9u8; 32]));
-        assert_eq!(receipt.storage_radius().get(), 5);
+        assert_eq!(receipt.storer, storer);
+        assert_eq!(receipt.address, address);
+        assert_eq!(receipt.nonce, Nonce::from([9u8; 32]));
+        assert_eq!(receipt.storage_radius.get(), 5);
     }
 
     #[tokio::test]

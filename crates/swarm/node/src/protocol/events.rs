@@ -20,7 +20,7 @@ use libp2p::PeerId;
 use nectar_primitives::ChunkAddress;
 use tokio::sync::oneshot;
 use vertex_swarm_net_pseudosettle::PaymentAck;
-use vertex_swarm_net_pushsync::SignedReceipt;
+use vertex_swarm_net_pushsync::Receipt;
 #[cfg(feature = "swap")]
 use vertex_swarm_net_swap::SignedCheque;
 use vertex_swarm_primitives::{OverlayAddress, StampedChunk, SwarmNodeType};
@@ -39,9 +39,9 @@ pub type RetrievalResponseTx = oneshot::Sender<Result<RetrievalResult, ChunkTran
 ///
 /// Same lifecycle as [`RetrievalResponseTx`]: the storer's verified receipt or
 /// the failure that prevented it resolves the caller directly. The receipt is a
-/// [`SignedReceipt`]: a receipt whose signer could not be recovered is rejected
-/// at the decode boundary and surfaces here as an error, never as a value.
-pub type PushResponseTx = oneshot::Sender<Result<SignedReceipt, ChunkTransferError>>;
+/// [`Receipt`]: a receipt whose storer could not be recovered is rejected at the
+/// decode boundary and surfaces here as an error, never as a value.
+pub type PushResponseTx = oneshot::Sender<Result<Receipt, ChunkTransferError>>;
 
 /// Why a retrieval or pushsync request failed, classified for peer scoring.
 ///

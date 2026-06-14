@@ -67,28 +67,30 @@ impl ProtoMessage for Delivery {
 /// carries an empty signature instead, which is the structural failure signal.
 const SIGNATURE_LEN: usize = 65;
 
-/// A successful storage receipt.
+/// The on-wire fields of a successful storage receipt.
 ///
-/// This type models a custody acknowledgement only. The reference does not sign
-/// its failure responses (a failure is `&pb.Receipt{Err: ...}` with no
-/// signature), so there is no signed failure receipt to model and no need for
-/// placeholder fields. A failure is represented by the [`ReceiptResponse::Failed`]
-/// variant, not by a `Receipt` with zeroed fields.
+/// This is the raw wire shape: it carries no recovered signer, only the bytes a
+/// storer puts on the substream. The decode boundary reconstructs the signer
+/// overlay into the domain [`Receipt`](crate::Receipt); a forwarder relaying a
+/// receipt verbatim turns a [`Receipt`] back into a `WireReceipt` via
+/// [`Receipt::to_wire`](crate::Receipt::to_wire). A failure carries no full
+/// signature and is modelled by [`ReceiptResponse::Failed`], not by zeroed
+/// fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Receipt {
+pub struct WireReceipt {
     /// The address of the chunk.
     pub address: ChunkAddress,
-    /// Signature from the storer over the chunk address and nonce.
+    /// Signature from the storer over the chunk address.
     pub signature: Signature,
-    /// Nonce used in signing.
+    /// Nonce the storer used to derive its overlay.
     pub nonce: Nonce,
     /// The storage radius of the storer node.
     pub storage_radius: StorageRadius,
 }
 
-impl Receipt {
-    /// Create a successful receipt.
-    pub fn success(
+impl WireReceipt {
+    /// Create a wire receipt from its fields.
+    pub fn new(
         address: ChunkAddress,
         signature: Signature,
         nonce: Nonce,
@@ -106,7 +108,7 @@ impl Receipt {
 /// The decoded response to a pushsync delivery: a signed receipt on success, or
 /// a structural failure.
 ///
-/// Modelling success-or-failure here keeps [`Receipt`] free of placeholder
+/// Modelling success-or-failure here keeps [`WireReceipt`] free of placeholder
 /// fields. A failure is never put on the wire by this implementation: the
 /// responder signals failure by resetting the stream (see
 /// `PushsyncResponder::send_error`). The [`Failed`](Self::Failed) encode arm
@@ -114,7 +116,7 @@ impl Receipt {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReceiptResponse {
     /// The storer took custody and returned a signed receipt.
-    Stored(Receipt),
+    Stored(WireReceipt),
     /// The storer could not take custody. The reference's failure response is
     /// unsigned; its reason string is adversarial input we never read.
     Failed,
@@ -173,7 +175,7 @@ impl ProtoMessage for ReceiptResponse {
             Bin::new(radius_byte)
                 .map_err(|_| PushsyncError::InvalidStorageRadius(proto.storage_radius))?,
         );
-        Ok(Self::Stored(Receipt::success(
+        Ok(Self::Stored(WireReceipt::new(
             address,
             signature,
             nonce,
@@ -233,7 +235,7 @@ mod tests {
 
     #[test]
     fn test_receipt_success_roundtrip() {
-        let original = ReceiptResponse::Stored(Receipt::success(
+        let original = ReceiptResponse::Stored(WireReceipt::new(
             ChunkAddress::new([0x42; 32]),
             test_signature(),
             Nonce::new([9u8; 32]),

@@ -287,15 +287,13 @@ fn parse_stamp(bytes: &[u8]) -> FfiResult<Stamp> {
 /// Map a [`PushReceipt`] to the flat boundary shape.
 fn receipt_into_ffi(receipt: PushReceipt) -> VertexPushReceipt {
     let PushReceipt {
-        signer,
+        storer,
         signature,
         nonce,
         storage_radius,
     } = receipt;
     VertexPushReceipt {
-        // The host-facing `storer` field carries the recovered receipt signer:
-        // the node that took custody, not whichever peer relayed the receipt.
-        storer: signer.to_string(),
+        storer: storer.to_string(),
         signature: signature.as_bytes().to_vec(),
         nonce: nonce.as_slice().to_vec(),
         storage_radius: u32::from(storage_radius.get()),

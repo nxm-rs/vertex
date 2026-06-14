@@ -51,7 +51,7 @@ use nectar_primitives::{ChunkAddress, NetworkId};
 use tracing::{debug, warn};
 use vertex_swarm_api::SwarmLocalStore;
 use vertex_swarm_net_pseudosettle::PaymentAck;
-use vertex_swarm_net_pushsync::SignedReceipt;
+use vertex_swarm_net_pushsync::Receipt;
 #[cfg(feature = "swap")]
 use vertex_swarm_net_swap::SignedCheque;
 use vertex_swarm_primitives::{OverlayAddress, StampedChunk, SwarmNodeType};
@@ -766,20 +766,20 @@ impl ClientHandler {
                     return;
                 };
                 let receipt_address = receipt.address;
-                // The decode boundary: recover and verify the receipt signer
-                // before any domain consumer sees it. A receipt whose signer
+                // The decode boundary: reconstruct and verify the receipt storer
+                // before any domain consumer sees it. A receipt whose storer
                 // cannot be recovered (an all-zero or unrecoverable signature) is
                 // rejected here as invalid data and never becomes a domain
                 // receipt; the peer that handed it back is scored.
-                match SignedReceipt::recover(receipt, self.config.network_id) {
-                    Ok(signed) => {
+                match Receipt::reconstruct(receipt, self.config.network_id) {
+                    Ok(receipt) => {
                         debug!(%overlay, address = %receipt_address, "Received receipt");
                         self.push_event(HandlerEvent::ReceiptReceived {
                             overlay,
                             address: receipt_address,
                             latency,
                         });
-                        let _ = response.send(Ok(signed));
+                        let _ = response.send(Ok(receipt));
                     }
                     Err(err) => {
                         debug!(

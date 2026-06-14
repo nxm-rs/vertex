@@ -35,21 +35,21 @@ pub trait SwarmChunkProvider: Send + Sync + 'static {
 /// This is the boundary shape returned to operators and embedders (gRPC, FFI):
 /// a flat, already-verified proof of custody. By the time a `PushReceipt`
 /// exists, the receipt has crossed the pushsync decode boundary, where its
-/// signer was recovered from the signature and verified; a receipt whose signer
-/// could not be recovered is rejected there and never becomes a `PushReceipt`.
-/// The internal verified domain type is `SignedReceipt` in the pushsync crate;
-/// `PushReceipt` is the public projection of it.
+/// storer was recovered from the signature; a receipt whose storer could not be
+/// recovered is rejected there and never becomes a `PushReceipt`. The internal
+/// domain type is `Receipt` in the pushsync crate; `PushReceipt` is the public
+/// projection of it.
 #[derive(Debug, Clone)]
 pub struct PushReceipt {
-    /// Overlay address of the node that signed this receipt, recovered from the
-    /// signature. This is the real signer, not the immediate peer that handed
+    /// Overlay address of the node that took custody, recovered from the
+    /// signature. This is the real storer, not the immediate peer that handed
     /// the receipt back on a multi-hop relay.
-    pub signer: OverlayAddress,
-    /// The signer's signature over the chunk address.
+    pub storer: OverlayAddress,
+    /// The storer's signature over the chunk address.
     pub signature: Signature,
-    /// The nonce the signer used in overlay derivation.
+    /// The nonce the storer used in overlay derivation.
     pub nonce: Nonce,
-    /// The signer's storage radius at the time of acceptance.
+    /// The storer's storage radius at the time of acceptance.
     pub storage_radius: StorageRadius,
 }
 

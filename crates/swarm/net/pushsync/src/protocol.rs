@@ -19,7 +19,7 @@ use vertex_swarm_net_headers::{
 
 use crate::{
     PROTOCOL_NAME,
-    codec::{Delivery, DeliveryCodec, Receipt, ReceiptCodec, ReceiptResponse},
+    codec::{Delivery, DeliveryCodec, ReceiptCodec, ReceiptResponse, WireReceipt},
     error::PushsyncError,
 };
 
@@ -89,7 +89,7 @@ pub struct PushsyncResponder {
 
 impl PushsyncResponder {
     /// Send a successful receipt.
-    pub async fn send_receipt(mut self, receipt: Receipt) -> Result<(), PushsyncError> {
+    pub async fn send_receipt(mut self, receipt: WireReceipt) -> Result<(), PushsyncError> {
         debug!(address = %receipt.address, "Pushsync: Sending receipt");
         self.framed.send(ReceiptResponse::Stored(receipt)).await
     }

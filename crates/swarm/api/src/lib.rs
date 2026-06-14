@@ -50,7 +50,6 @@ mod error;
 mod identity;
 mod protocol;
 mod providers;
-mod receipt;
 mod reporting;
 mod rpc;
 mod spec;
@@ -82,9 +81,6 @@ pub use self::identity::SwarmIdentity;
 pub use self::protocol::SwarmProtocol;
 pub use self::providers::{
     ChunkRetrievalResult, PushReceipt, SwarmChunkProvider, SwarmChunkSender,
-};
-pub use self::receipt::{
-    SHALLOW_RECEIPT_TOLERANCE, ShallowReceipt, required_receipt_depth, verify_receipt_depth,
 };
 pub use self::reporting::{
     BanCause, DisconnectCause, PeerAffordability, PeerLifecycleEvent, PeerReporter, ReportSource,

@@ -1112,7 +1112,7 @@ mod tests {
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
         use nectar_primitives::{Nonce, compute_overlay};
-        use vertex_swarm_net_pushsync::{Receipt, SignedReceipt};
+        use vertex_swarm_net_pushsync::{Receipt, WireReceipt};
         use vertex_swarm_primitives::{Bin, StorageRadius};
 
         let chunk = content_chunk(b"pushed through B to C");
@@ -1148,11 +1148,11 @@ mod tests {
             counter += 1;
         };
         // C's wire receipt, produced once and never re-signed. The decode
-        // boundary at each hop recovers its signer; the test answers C's outbound
-        // push command with the recovered `SignedReceipt`.
-        let storer_receipt = Receipt::success(address, signature, nonce, storer_radius);
+        // boundary at each hop recovers its storer; the test answers C's outbound
+        // push command with the recovered `Receipt`.
+        let storer_receipt = WireReceipt::new(address, signature, nonce, storer_radius);
         let receipt_for_c =
-            SignedReceipt::recover(storer_receipt.clone(), NetworkId::MAINNET).expect("recovers");
+            Receipt::reconstruct(storer_receipt.clone(), NetworkId::MAINNET).expect("reconstructs");
 
         let b_accounting = relay_accounting();
         let provide_price = b_accounting.pricing().peer_price(&a_overlay, &address);
@@ -1218,9 +1218,9 @@ mod tests {
         let relayed = result.expect("A receives the storer's receipt through B");
         // The receipt is relayed verbatim across both hops: A sees C's exact
         // signature, nonce, and radius, never a re-signed value, and the recovered
-        // signer matches C's signer at every hop.
+        // storer matches C's storer at every hop.
         assert_eq!(relayed.to_wire(), storer_receipt);
-        assert_eq!(relayed.signer(), receipt_for_c.signer());
+        assert_eq!(relayed.storer, receipt_for_c.storer);
 
         // B accounted both legs of the relay.
         assert!(

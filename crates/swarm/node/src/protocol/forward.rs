@@ -35,9 +35,9 @@
 //! address-equality check (BMT integrity for content chunks, signature-recovered
 //! owner for single-owner chunks); it does **not** validate the postage stamp's
 //! funding or expiry, which is a separate postage concern. A relayed pushsync
-//! receipt arrives as a [`SignedReceipt`] whose signer was already recovered and
+//! receipt arrives as a [`Receipt`] whose storer was already recovered and
 //! verified at the decode boundary; the forwarder checks its custody depth
-//! before relaying, so `PO(signer, chunk)` must reach a depth derived from the
+//! before relaying, so `PO(storer, chunk)` must reach a depth derived from the
 //! locally observed neighbourhood depth. A forwarder never launders a shallow
 //! receipt upstream and scores the downstream peer adversely when it tries.
 //!
@@ -59,9 +59,9 @@ use nectar_primitives::ChunkAddress;
 use tracing::{debug, warn};
 use vertex_swarm_api::{
     AccountingAction, PeerReporter, ReportSource, SwarmClientAccounting, SwarmScoringEvent,
-    SwarmTopologyRouting, SwarmTopologyState, verify_receipt_depth,
+    SwarmTopologyRouting, SwarmTopologyState,
 };
-use vertex_swarm_net_pushsync::SignedReceipt;
+use vertex_swarm_net_pushsync::Receipt;
 use vertex_swarm_primitives::{OverlayAddress, StampedChunk};
 
 use crate::ClientHandle;
@@ -108,8 +108,8 @@ pub(crate) enum ForwardError {
     #[error("upstream relay returned unverified data")]
     UnverifiedRelay,
 
-    /// The upstream leg returned a custody receipt whose recovered signer is not
-    /// deep enough for the chunk (`PO(signer, chunk) < required`). A forwarder
+    /// The upstream leg returned a custody receipt whose recovered storer is not
+    /// deep enough for the chunk (`PO(storer, chunk) < required`). A forwarder
     /// must never launder a shallow receipt upstream: it is dropped here and the
     /// downstream peer is scored adversely. A malformed receipt does not reach
     /// here; it is rejected at the downstream decode boundary and surfaces as a
@@ -181,10 +181,10 @@ impl std::fmt::Debug for ForwardedChunk {
 
 /// A relayed receipt together with the un-applied upstream credit.
 pub(crate) struct ForwardedReceipt {
-    /// The storer's verified receipt to relay verbatim to the pusher. Its
-    /// signer was recovered at the downstream decode boundary, so a forwarder
-    /// only checks the depth policy before relaying.
-    pub(crate) receipt: SignedReceipt,
+    /// The storer's verified receipt to relay verbatim to the pusher. Its storer
+    /// was recovered at the downstream decode boundary, so a forwarder only
+    /// checks the depth policy before relaying.
+    pub(crate) receipt: Receipt,
     /// The un-applied upstream credit; commit after a successful wire write.
     pub(crate) provide: Box<dyn AccountingAction>,
 }
@@ -452,23 +452,16 @@ where
 
                 match handle.push_chunk(closer, chunk.clone()).await {
                     Ok(receipt) => {
-                        // The receipt is already a `SignedReceipt`: its signer
-                        // was recovered and verified at the decode boundary, so a
-                        // malformed receipt never reaches here (it surfaces as a
-                        // push error on the arm below). The forwarder's remaining
-                        // duty is the depth policy: a forwarder must never launder
-                        // a SHALLOW custody receipt. The required depth is derived
-                        // dynamically from our locally observed neighbourhood
-                        // depth, trust-but-verified against the receipt's own
-                        // `storage_radius`, and checked against the recovered
-                        // signer (NOT the immediate downstream peer). The receipt
-                        // is relayed VERBATIM by the handler; we never re-sign it.
-                        match verify_receipt_depth(
-                            &receipt.signer(),
-                            &address,
-                            receipt.storage_radius(),
-                            local_depth,
-                        ) {
+                        // The receipt's storer was recovered and verified at the
+                        // decode boundary, so a malformed receipt never reaches
+                        // here (it surfaces as a push error on the arm below). The
+                        // forwarder's remaining duty is the depth policy: it must
+                        // never launder a SHALLOW custody receipt. The check runs
+                        // against the recovered storer (NOT the immediate
+                        // downstream peer) and our locally observed depth. The
+                        // receipt is relayed VERBATIM by the handler; we never
+                        // re-sign it.
+                        match receipt.verify_depth(local_depth) {
                             Ok(()) => {
                                 // Downstream leg complete; commit it. Upstream
                                 // `provide` returned un-applied for the handler.
@@ -539,7 +532,7 @@ mod tests {
         Accounting, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
     };
     use vertex_swarm_identity::Identity;
-    use vertex_swarm_net_pushsync::Receipt;
+    use vertex_swarm_net_pushsync::WireReceipt;
     use vertex_swarm_primitives::{Bin, StorageRadius};
     use vertex_swarm_spec::Spec;
     use vertex_swarm_test_utils::{MockTopology, test_identity_arc};
@@ -582,18 +575,18 @@ mod tests {
     }
 
     /// Sign a custody receipt over the 32-byte chunk address (the wire format)
-    /// with `signer`, grinding the nonce so the signer's derived overlay shares
+    /// with `signer`, grinding the nonce so the storer's derived overlay shares
     /// at least `min_depth` leading bits with `address` (i.e.
-    /// `PO(signer, address) >= min_depth`). Returns the wire receipt and the
-    /// signer's overlay, so a test controls exactly how deep the signer sits
+    /// `PO(storer, address) >= min_depth`). Returns the wire receipt and the
+    /// storer's overlay, so a test controls exactly how deep the storer sits
     /// relative to the chunk. The downstream handler's decode boundary recovers
-    /// the signer; tests resolve the push command with this wire `Receipt`.
+    /// the storer; tests resolve the push command with this wire receipt.
     fn signed_receipt_at_depth(
         signer: &PrivateKeySigner,
         address: &ChunkAddress,
         min_depth: u8,
         storage_radius: StorageRadius,
-    ) -> (Receipt, OverlayAddress) {
+    ) -> (WireReceipt, OverlayAddress) {
         let eth = signer.address();
         // The signature is over the address only and is independent of the
         // nonce, so sign once and grind the nonce purely for overlay depth.
@@ -607,7 +600,7 @@ mod tests {
             let overlay = compute_overlay(&eth, TEST_NET, &nonce);
             if address.proximity(&overlay).get() >= min_depth {
                 return (
-                    Receipt::success(*address, signature, nonce, storage_radius),
+                    WireReceipt::new(*address, signature, nonce, storage_radius),
                     overlay,
                 );
             }
@@ -615,10 +608,10 @@ mod tests {
         }
     }
 
-    /// Recover a [`SignedReceipt`] from a wire receipt, as the decode boundary
+    /// Reconstruct a [`Receipt`] from a wire receipt, as the decode boundary
     /// does, so a test can build the value a forwarder relays.
-    fn signed(receipt: Receipt) -> SignedReceipt {
-        SignedReceipt::recover(receipt, TEST_NET).expect("test receipt recovers")
+    fn reconstructed(wire: WireReceipt) -> Receipt {
+        Receipt::reconstruct(wire, TEST_NET).expect("test receipt reconstructs")
     }
 
     /// A stamped content chunk and its content-derived address.
@@ -917,20 +910,20 @@ mod tests {
             Arc::clone(&reporter) as Arc<dyn PeerReporter>,
         );
 
-        // A real storer receipt signed by a signer whose overlay sits 8 bits
-        // deep relative to the chunk; the mock depth is 0 so any deep-enough
-        // receipt passes. The receipt must be relayed VERBATIM. The downstream
-        // decode boundary turns the wire receipt into a `SignedReceipt`; we
-        // model that here by recovering it before answering the push command.
+        // A real storer receipt signed by a key whose overlay sits 8 bits deep
+        // relative to the chunk; the mock depth is 0 so any deep-enough receipt
+        // passes. The receipt must be relayed VERBATIM. The downstream decode
+        // boundary turns the wire receipt into a `Receipt`; we model that here by
+        // reconstructing it before answering the push command.
         let signer = PrivateKeySigner::random();
-        let (storer_receipt, signer_overlay) = signed_receipt_at_depth(
+        let (storer_receipt, storer_overlay) = signed_receipt_at_depth(
             &signer,
             &address,
             8,
             StorageRadius::new(Bin::new(8).unwrap()),
         );
         let expected = storer_receipt.clone();
-        let answer = signed(storer_receipt);
+        let answer = reconstructed(storer_receipt);
         let got = drive_one_command(
             rx,
             forwarder.push(chunk.clone(), pusher),
@@ -952,9 +945,9 @@ mod tests {
         .await;
 
         let forwarded = got.expect("relay succeeds");
-        // The receipt is relayed verbatim: the recovered signer matches and the
+        // The receipt is relayed verbatim: the recovered storer matches and the
         // wire bytes reproduce the storer's own signature, nonce, and radius.
-        assert_eq!(forwarded.receipt.signer(), signer_overlay);
+        assert_eq!(forwarded.receipt.storer, storer_overlay);
         assert_eq!(forwarded.receipt.to_wire(), expected);
 
         // Downstream committed; upstream deferred until the wire write.
@@ -1017,7 +1010,7 @@ mod tests {
             0,
             StorageRadius::new(Bin::new(8).unwrap()),
         );
-        let answer = signed(shallow);
+        let answer = reconstructed(shallow);
 
         let err = drive_one_command(
             rx,
@@ -1081,7 +1074,7 @@ mod tests {
             0,
             StorageRadius::new(Bin::new(0).unwrap()),
         );
-        let answer = signed(shallow);
+        let answer = reconstructed(shallow);
 
         let err = drive_one_command(
             rx,

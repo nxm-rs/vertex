@@ -11,7 +11,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_api::{PeerReporter, ReportSource, SwarmLocalStore, SwarmScoringEvent};
 use vertex_swarm_net_pseudosettle::PaymentAck;
-use vertex_swarm_net_pushsync::SignedReceipt;
+use vertex_swarm_net_pushsync::Receipt;
 use vertex_swarm_primitives::{OverlayAddress, StampedChunk};
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
 
@@ -126,15 +126,15 @@ impl ClientHandle {
     /// Push a stamped chunk to a specific peer.
     ///
     /// Sends a push command carrying the response channel and waits for the
-    /// storer's [`SignedReceipt`]. Same failure semantics as
-    /// [`Self::retrieve_chunk`]: the future never hangs. The receipt is already
-    /// signer-verified (the decode boundary rejects an unrecoverable receipt), so
-    /// an `Ok` here always carries a recovered signer.
+    /// storer's [`Receipt`]. Same failure semantics as [`Self::retrieve_chunk`]:
+    /// the future never hangs. The receipt is already storer-verified (the decode
+    /// boundary rejects an unrecoverable receipt), so an `Ok` here always carries
+    /// a recovered storer.
     pub async fn push_chunk(
         &self,
         peer: OverlayAddress,
         chunk: StampedChunk,
-    ) -> Result<SignedReceipt, ChunkTransferError> {
+    ) -> Result<Receipt, ChunkTransferError> {
         let address = *chunk.address();
         let (tx, rx) = oneshot::channel();
 
