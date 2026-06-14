@@ -8856,6 +8856,7 @@ dependencies = [
  "vertex-swarm-bandwidth-swap",
  "vertex-swarm-identity",
  "vertex-swarm-localstore",
+ "vertex-swarm-net-pushsync",
  "vertex-swarm-node",
  "vertex-swarm-peer-manager",
  "vertex-swarm-peer-score",
@@ -9105,6 +9106,8 @@ name = "vertex-swarm-net-pushsync"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
  "asynchronous-codec",
  "bytes",
  "futures",
@@ -9173,6 +9176,7 @@ name = "vertex-swarm-node"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-signer",
  "alloy-signer-local",
  "async-trait",
  "auto_impl",

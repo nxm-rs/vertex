@@ -31,13 +31,23 @@ pub trait SwarmChunkProvider: Send + Sync + 'static {
 }
 
 /// Receipt for a chunk accepted by a storer via PushSync.
+///
+/// This is the boundary shape returned to operators and embedders (gRPC, FFI):
+/// a flat, already-verified proof of custody. By the time a `PushReceipt`
+/// exists, the receipt has crossed the pushsync decode boundary, where its
+/// storer was recovered from the signature; a receipt whose storer could not be
+/// recovered is rejected there and never becomes a `PushReceipt`. The internal
+/// domain type is `Receipt` in the pushsync crate; `PushReceipt` is the public
+/// projection of it.
 #[derive(Debug, Clone)]
 pub struct PushReceipt {
-    /// Overlay address of the storer that accepted this chunk.
+    /// Overlay address of the node that took custody, recovered from the
+    /// signature. This is the real storer, not the immediate peer that handed
+    /// the receipt back on a multi-hop relay.
     pub storer: OverlayAddress,
-    /// The storer's signature over the receipt.
+    /// The storer's signature over the chunk address.
     pub signature: Signature,
-    /// The nonce used by the storer in signing.
+    /// The nonce the storer used in overlay derivation.
     pub nonce: Nonce,
     /// The storer's storage radius at the time of acceptance.
     pub storage_radius: StorageRadius,

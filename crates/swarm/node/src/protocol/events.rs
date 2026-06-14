@@ -19,8 +19,8 @@ use alloy_primitives::U256;
 use libp2p::PeerId;
 use nectar_primitives::ChunkAddress;
 use tokio::sync::oneshot;
-use vertex_swarm_api::PushReceipt;
 use vertex_swarm_net_pseudosettle::PaymentAck;
+use vertex_swarm_net_pushsync::Receipt;
 #[cfg(feature = "swap")]
 use vertex_swarm_net_swap::SignedCheque;
 use vertex_swarm_primitives::{OverlayAddress, StampedChunk, SwarmNodeType};
@@ -37,9 +37,11 @@ pub type RetrievalResponseTx = oneshot::Sender<Result<RetrievalResult, ChunkTran
 
 /// Channel on which an outbound chunk push resolves.
 ///
-/// Same lifecycle as [`RetrievalResponseTx`]: the storer's receipt or the
-/// failure that prevented it resolves the caller directly.
-pub type PushResponseTx = oneshot::Sender<Result<PushReceipt, ChunkTransferError>>;
+/// Same lifecycle as [`RetrievalResponseTx`]: the storer's verified receipt or
+/// the failure that prevented it resolves the caller directly. The receipt is a
+/// [`Receipt`]: a receipt whose storer could not be recovered is rejected at the
+/// decode boundary and surfaces here as an error, never as a value.
+pub type PushResponseTx = oneshot::Sender<Result<Receipt, ChunkTransferError>>;
 
 /// Why a retrieval or pushsync request failed, classified for peer scoring.
 ///
@@ -56,6 +58,11 @@ pub enum FailureKind {
 }
 
 /// Events emitted by the client behaviour.
+///
+/// `ChunkReceived` carries a whole [`StampedChunk`], so it dwarfs the other
+/// variants; the size difference is accepted rather than boxing a value that is
+/// emitted once per delivery and consumed immediately.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum ClientEvent {
     /// Received a payment threshold from a peer.

@@ -30,6 +30,13 @@ vertex_net_codec::protocol_error! {
         /// Storage radius is outside the valid bin range.
         #[error("invalid storage radius: {0}")]
         InvalidStorageRadius(u32),
+
+        /// A custody receipt's signature did not recover to a signer overlay.
+        /// An all-zero (structural failure) signature, or any signature that
+        /// fails public-key recovery, lands here. Such a receipt is rejected at
+        /// the decode boundary and never reaches a domain consumer.
+        #[error("custody receipt signature did not recover to a signer overlay")]
+        MalformedReceiptSignature,
     }
 }
 

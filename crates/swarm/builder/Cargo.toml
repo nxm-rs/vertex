@@ -65,6 +65,9 @@ vertex-swarm-topology.workspace = true
 vertex-rpc-server.workspace = true
 vertex-swarm-api.workspace = true
 vertex-swarm-node = { workspace = true, features = ["cli"] }
+# The verified custody `Receipt` the origin upload path consumes from the client
+# handle (depth check) and projects onto the public `PushReceipt`.
+vertex-swarm-net-pushsync.workspace = true
 vertex-swarm-identity.workspace = true
 vertex-swarm-rpc.workspace = true
 vertex-swarm-spec.workspace = true

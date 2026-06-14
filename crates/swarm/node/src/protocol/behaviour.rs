@@ -125,6 +125,17 @@ impl ClientBehaviour {
         self.forward = forward;
     }
 
+    /// Set the network id used to recover an inbound custody receipt's signer at
+    /// the decode boundary.
+    ///
+    /// Must be called before any peer connects, for the same reason as
+    /// [`set_forwarder`](Self::set_forwarder): handlers clone the config at
+    /// connection establishment, so a handler created earlier captures the
+    /// default. The node builder sets it during assembly.
+    pub(crate) fn set_network_id(&mut self, network_id: nectar_primitives::NetworkId) {
+        self.config.handler.network_id = network_id;
+    }
+
     /// Build a dormant handler for a new connection, sharing the cache and
     /// forwarder into it.
     fn new_handler(&self) -> ClientHandler {
@@ -853,8 +864,10 @@ mod tests {
     // genuine A->B->C path. The relay verifies, accounts both legs, caches the
     // forwarded chunk, and relays the storer's receipt verbatim.
 
+    use nectar_primitives::NetworkId;
     use vertex_swarm_api::{
-        Au, SwarmBandwidthAccounting, SwarmClientAccounting, SwarmPeerBandwidth, SwarmPricing,
+        Au, PeerReporter, ReportSource, SwarmBandwidthAccounting, SwarmClientAccounting,
+        SwarmPeerBandwidth, SwarmPricing, SwarmScoringEvent,
     };
     use vertex_swarm_bandwidth::{
         Accounting, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
@@ -865,6 +878,20 @@ mod tests {
 
     use crate::ClientHandle;
     use crate::protocol::NetworkForwarder;
+
+    /// A reporter that drops every report; the relay harness only cares about
+    /// the forward outcome, not the scoring side effect, for the happy path.
+    struct NoopReporter;
+
+    impl PeerReporter for NoopReporter {
+        fn report_peer(
+            &self,
+            _overlay: &OverlayAddress,
+            _event: SwarmScoringEvent,
+            _source: ReportSource,
+        ) {
+        }
+    }
 
     type RelayAccounting =
         ClientAccounting<Arc<Accounting<DefaultBandwidthConfig, Arc<Identity>>>, FixedPricer<Spec>>;
@@ -913,11 +940,15 @@ mod tests {
                 store,
                 Arc::new(StubForwarder),
             );
+            // The decode boundary recovers an inbound receipt's signer with this
+            // network id; the storer test receipts are ground against it too.
+            behaviour.set_network_id(NetworkId::MAINNET);
             let forwarder = Arc::new(NetworkForwarder::new(
                 local,
                 Arc::clone(&topology),
                 Arc::clone(&accounting),
                 handle,
+                Arc::new(NoopReporter) as Arc<dyn PeerReporter>,
             ));
             behaviour.set_forwarder(forwarder);
             behaviour
@@ -1078,9 +1109,10 @@ mod tests {
 
     #[tokio::test]
     async fn three_node_pushsync_relays_receipt_verbatim_and_accounts() {
-        use alloy_primitives::Signature;
-        use nectar_primitives::Nonce;
-        use vertex_swarm_api::PushReceipt;
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use nectar_primitives::{Nonce, compute_overlay};
+        use vertex_swarm_net_pushsync::{Receipt, WireReceipt};
         use vertex_swarm_primitives::{Bin, StorageRadius};
 
         let chunk = content_chunk(b"pushed through B to C");
@@ -1090,21 +1122,37 @@ mod tests {
         // of record. C's forwarder ClientHandle is answered by the test with a
         // signed receipt, modelling C taking custody and signing. B and C must
         // relay that receipt VERBATIM (the cache-only client never signs), so A
-        // sees C's exact signature, nonce, and radius.
+        // sees C's exact signature, nonce, and radius. The relay seams verify the
+        // receipt depth before relaying, so the receipt must be genuinely deep:
+        // signed over the 32-byte chunk address by a key whose overlay (via the
+        // nonce) reaches at least the storer's declared radius for the chunk.
         let a_overlay = overlay_at_proximity(&address, 2);
         let b_overlay = overlay_at_proximity(&address, 3);
         let c_overlay = overlay_at_proximity(&address, 18);
 
         // The storer's signed receipt, produced once at C and never re-signed.
-        let mut raw = [0u8; 65];
-        raw[..64].fill(1);
-        raw[64] = 27;
-        let storer_receipt = PushReceipt {
-            storer: c_overlay,
-            signature: Signature::try_from(&raw[..]).expect("valid signature"),
-            nonce: Nonce::from([0x5a; 32]),
-            storage_radius: StorageRadius::new(Bin::new(7).unwrap()),
+        // The relay forwarders derive overlays with NetworkId::MAINNET, so grind
+        // the nonce against that network id.
+        let storer_radius = StorageRadius::new(Bin::new(7).unwrap());
+        let signer = PrivateKeySigner::random();
+        let signature = signer.sign_message_sync(address.as_bytes()).expect("sign");
+        let mut counter = 0u64;
+        let nonce = loop {
+            let mut nonce_bytes = [0u8; 32];
+            nonce_bytes[..8].copy_from_slice(&counter.to_le_bytes());
+            let nonce = Nonce::from(nonce_bytes);
+            let overlay = compute_overlay(&signer.address(), NetworkId::MAINNET, &nonce);
+            if address.proximity(&overlay).get() >= storer_radius.get() {
+                break nonce;
+            }
+            counter += 1;
         };
+        // C's wire receipt, produced once and never re-signed. The decode
+        // boundary at each hop recovers its storer; the test answers C's outbound
+        // push command with the recovered `Receipt`.
+        let storer_receipt = WireReceipt::new(address, signature, nonce, storer_radius);
+        let receipt_for_c =
+            Receipt::reconstruct(storer_receipt.clone(), NetworkId::MAINNET).expect("reconstructs");
 
         let b_accounting = relay_accounting();
         let provide_price = b_accounting.pricing().peer_price(&a_overlay, &address);
@@ -1142,7 +1190,6 @@ mod tests {
             response: tx,
         });
 
-        let receipt_for_c = storer_receipt.clone();
         let result = {
             let drive = async {
                 loop {
@@ -1170,10 +1217,10 @@ mod tests {
 
         let relayed = result.expect("A receives the storer's receipt through B");
         // The receipt is relayed verbatim across both hops: A sees C's exact
-        // signature, nonce, and radius, never a re-signed value.
-        assert_eq!(relayed.signature, storer_receipt.signature);
-        assert_eq!(relayed.nonce, storer_receipt.nonce);
-        assert_eq!(relayed.storage_radius, storer_receipt.storage_radius);
+        // signature, nonce, and radius, never a re-signed value, and the recovered
+        // storer matches C's storer at every hop.
+        assert_eq!(relayed.to_wire(), storer_receipt);
+        assert_eq!(relayed.storer, receipt_for_c.storer);
 
         // B accounted both legs of the relay.
         assert!(

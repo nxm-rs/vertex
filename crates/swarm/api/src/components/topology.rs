@@ -1,11 +1,12 @@
 //! Topology and neighborhood awareness using overlay addresses.
 
 use core::future::Future;
+use std::sync::Arc;
 use std::vec::Vec;
 
 use nectar_primitives::ChunkAddress;
 
-use crate::SwarmIdentity;
+use crate::{PeerReporter, SwarmIdentity};
 use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress};
 
 /// Bin sizes for topology routing (one per proximity order).
@@ -33,6 +34,20 @@ pub trait SwarmTopologyState: Send + Sync {
     fn overlay_address(&self) -> OverlayAddress {
         self.identity().overlay_address()
     }
+}
+
+/// Access to the peer-scoring authority behind the topology.
+///
+/// The peer manager is the single sanctioned scoring path
+/// ([`PeerReporter`](crate::PeerReporter)); subsystems wired from the topology
+/// handle (the forwarder, the origin upload path) report misbehaving peers
+/// through it. This accessor lets those subsystems source the reporter from the
+/// same handle they already hold instead of threading it as a separate
+/// parameter.
+#[auto_impl::auto_impl(&, Arc)]
+pub trait SwarmTopologyReporting: Send + Sync {
+    /// The peer-scoring authority for this topology.
+    fn reporter(&self) -> Arc<dyn PeerReporter>;
 }
 
 /// Routing queries against the topology.

@@ -47,10 +47,11 @@ use libp2p::swarm::{
         FullyNegotiatedOutbound,
     },
 };
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{ChunkAddress, NetworkId};
 use tracing::{debug, warn};
-use vertex_swarm_api::{PushReceipt, SwarmLocalStore};
+use vertex_swarm_api::SwarmLocalStore;
 use vertex_swarm_net_pseudosettle::PaymentAck;
+use vertex_swarm_net_pushsync::Receipt;
 #[cfg(feature = "swap")]
 use vertex_swarm_net_swap::SignedCheque;
 use vertex_swarm_primitives::{OverlayAddress, StampedChunk, SwarmNodeType};
@@ -121,6 +122,9 @@ pub(crate) struct Config {
     /// Bootnodes only speak pricing (listen-only) so the rest of the
     /// client surface is inert.
     pub(crate) local_role: SwarmNodeType,
+    /// Network id, used to recover the signer overlay of an inbound custody
+    /// receipt at the decode boundary (`compute_overlay(eth, network_id, nonce)`).
+    pub(crate) network_id: NetworkId,
     /// Our advertised swap exchange rate, sent in the swap headers exchange.
     /// Rate negotiation is owned by the settlement service; the handler only
     /// carries the value onto the wire.
@@ -135,6 +139,7 @@ impl Default for Config {
             max_pending_commands: DEFAULT_MAX_PENDING_COMMANDS,
             max_pending_events: DEFAULT_MAX_PENDING_EVENTS,
             local_role: SwarmNodeType::Client,
+            network_id: NetworkId::MAINNET,
             #[cfg(feature = "swap")]
             swap_exchange_rate: U256::ZERO,
         }
@@ -634,13 +639,11 @@ impl ClientHandler {
         self.inbound.push(Box::pin(async move {
             match forward.push(chunk, overlay).await {
                 Ok(forwarded) => {
-                    // Relay the storer's receipt verbatim: we never sign.
-                    let relay = vertex_swarm_net_pushsync::Receipt::success(
-                        address,
-                        forwarded.receipt.signature,
-                        forwarded.receipt.nonce,
-                        forwarded.receipt.storage_radius,
-                    );
+                    // Relay the storer's receipt verbatim: we never sign. The
+                    // signer was recovered and verified at decode, so the wire
+                    // bytes reproduce the storer's own signature, nonce, and
+                    // radius unchanged.
+                    let relay = forwarded.receipt.to_wire();
                     match responder.send_receipt(relay).await {
                         Ok(()) => {
                             // The receipt reached the pusher: commit the upstream
@@ -762,18 +765,38 @@ impl ClientHandler {
                     )));
                     return;
                 };
-                debug!(%overlay, address = %receipt.address, "Received receipt");
-                self.push_event(HandlerEvent::ReceiptReceived {
-                    overlay,
-                    address: receipt.address,
-                    latency,
-                });
-                let _ = response.send(Ok(PushReceipt {
-                    storer: overlay,
-                    signature: receipt.signature,
-                    nonce: receipt.nonce,
-                    storage_radius: receipt.storage_radius,
-                }));
+                let receipt_address = receipt.address;
+                // The decode boundary: reconstruct and verify the receipt storer
+                // before any domain consumer sees it. A receipt whose storer
+                // cannot be recovered (an all-zero or unrecoverable signature) is
+                // rejected here as invalid data and never becomes a domain
+                // receipt; the peer that handed it back is scored.
+                match Receipt::reconstruct(receipt, self.config.network_id) {
+                    Ok(receipt) => {
+                        debug!(%overlay, address = %receipt_address, "Received receipt");
+                        self.push_event(HandlerEvent::ReceiptReceived {
+                            overlay,
+                            address: receipt_address,
+                            latency,
+                        });
+                        let _ = response.send(Ok(receipt));
+                    }
+                    Err(err) => {
+                        debug!(
+                            %overlay,
+                            address = %receipt_address,
+                            error = <&'static str>::from(&err),
+                            "Rejected unrecoverable custody receipt at decode"
+                        );
+                        self.push_event(HandlerEvent::PushFailed {
+                            overlay,
+                            address: receipt_address,
+                            error: err.to_string(),
+                            kind: FailureKind::InvalidChunk,
+                        });
+                        let _ = response.send(Err(ChunkTransferError::Remote));
+                    }
+                }
             }
         }
     }

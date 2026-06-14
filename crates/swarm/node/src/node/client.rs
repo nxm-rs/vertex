@@ -181,21 +181,42 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
     /// Must be called during node assembly, before the event loop accepts
     /// connections: a handler created earlier would capture the stub.
     ///
-    /// `topology` selects strictly-closer relay candidates and `accounting`
-    /// drives the two-leg prepare/apply; both are typically the same handles the
-    /// origin path uses.
+    /// `topology` selects strictly-closer relay candidates, provides the locally
+    /// observed neighbourhood depth that bounds the receipt depth check, yields
+    /// the network id (via its identity spec) the decode boundary uses to recover
+    /// a receipt signer, and yields the peer reporter that is the single scoring
+    /// path a shallow relayed receipt is reported through; `accounting` drives the
+    /// two-leg prepare/apply. The topology and accounting handles are typically
+    /// the same ones the origin path uses.
     pub fn enable_forwarding<T, A>(
         &mut self,
         topology: Arc<T>,
         accounting: Arc<A>,
         handle: ClientHandle,
     ) where
-        T: vertex_swarm_api::SwarmTopologyRouting + Send + Sync + 'static,
+        T: vertex_swarm_api::SwarmTopologyRouting
+            + vertex_swarm_api::SwarmTopologyState
+            + vertex_swarm_api::SwarmTopologyReporting
+            + Send
+            + Sync
+            + 'static,
         A: vertex_swarm_api::SwarmClientAccounting + Send + Sync + 'static,
     {
+        use vertex_swarm_api::SwarmSpec;
+
         let local = self.overlay_address();
+        let network_id = topology.identity().spec().network_id();
+        let reporter = topology.reporter();
+        // The decode boundary needs the network id to recover an inbound custody
+        // receipt's signer; set it on the behaviour config before any handler is
+        // created (handlers clone the config at connection establishment).
+        self.base
+            .swarm
+            .behaviour_mut()
+            .client
+            .set_network_id(network_id);
         let forwarder = Arc::new(crate::protocol::NetworkForwarder::new(
-            local, topology, accounting, handle,
+            local, topology, accounting, handle, reporter,
         ));
         self.base
             .swarm
