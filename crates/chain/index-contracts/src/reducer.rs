@@ -27,7 +27,10 @@ use alloy_sol_types::SolEvent;
 use vertex_storage::{DatabaseError, DbTxMut, IndexedWrite};
 
 use crate::registry::{ContractId, abi};
-use crate::store::{BatchByBalance, BatchKey, BatchState, BatchTable, EventKey, StoredEvent};
+use crate::store::{
+    BatchByBalance, BatchKey, BatchState, BatchTable, EventKey, PostageSummary, StoredEvent,
+    SummaryKey,
+};
 
 /// A delegated per-contract reducer, dispatched by [`ContractId`].
 ///
@@ -92,11 +95,15 @@ impl Reducer {
 /// The `BatchTable` + index are a pure ordering HINT (the reserve recomputes truth
 /// at dequeue); they are not the source of truth, which stays the verbatim
 /// `EventTable`.
-//
-// TODO(#326): the incremental `PostageSummary` running-summary projection
-// (O(1) `current_total_out_payment`) slots in here as a second projection this
-// reducer maintains on each `PriceUpdate`. Until then `current_total_out_payment`
-// / `chain_state` stay a read-time re-fold (see `views::postage`).
+///
+/// It additionally maintains the single-row
+/// [`PostageSummary`](crate::store::PostageSummary) running cumulative-payment
+/// summary: each `PriceUpdate` settles the elapsed cost and adopts the new price
+/// incrementally, so `current_total_out_payment(block)` is an O(1) extrapolation
+/// from the stored triple instead of a re-fold of the entire price history. The
+/// fold cadence lives on [`ChainState`] so apply-time and rebuild share one code
+/// path; the summary stays block-clock-derived at READ, so `reduce` never depends
+/// on wall-clock and stays replay-safe.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PostageReducer;
 
@@ -107,9 +114,13 @@ impl PostageReducer {
         key: EventKey,
         ev: &StoredEvent,
     ) -> Result<(), DatabaseError> {
-        // Decode into a typed update; a non-batch event or a decode miss yields
-        // None and is a skip (never an error), so a malformed body cannot wedge
-        // the cursor.
+        // A PriceUpdate folds into the running summary incrementally; both paths
+        // are skips on a decode miss, so a malformed body never wedges the cursor.
+        if ev.topic0 == abi::PriceUpdate::SIGNATURE_HASH {
+            return fold_price_update(tx, ev, key.block);
+        }
+        // Decode into a typed batch update; a non-batch event or a decode miss
+        // yields None and is a skip (never an error).
         let Some(update) = batch_update_from_event(ev, key.block) else {
             return Ok(());
         };
@@ -121,19 +132,40 @@ impl PostageReducer {
         tx: &TX,
         surviving: &[(EventKey, StoredEvent)],
     ) -> Result<(), DatabaseError> {
-        // Drop the whole projection + index, then re-fold the surviving postage
-        // rows. A batch created BEFORE the revert boundary but mutated within the
-        // reverted range carries a now-stale balance/index slot; keying the drop
-        // on the create block would miss those, so the full rebuild from
-        // surviving rows is the unambiguously-consistent choice.
+        // Drop the whole projection + index AND the running summary, then re-fold
+        // the surviving postage rows through the same `reduce` paths. A batch
+        // created BEFORE the revert boundary but mutated within the reverted range
+        // carries a now-stale balance/index slot; keying the drop on the create
+        // block would miss those, so the full rebuild from surviving rows is the
+        // unambiguously-consistent choice. The summary is re-derived identically
+        // because `fold_price_update` is the same cadence used at apply-time.
         tx.clear_indexed::<BatchByBalance>()?;
+        tx.clear::<PostageSummary>()?;
         for (key, ev) in surviving {
-            if let Some(update) = batch_update_from_event(ev, key.block) {
-                apply_batch_update(tx, update)?;
-            }
+            self.reduce(tx, *key, ev)?;
         }
         Ok(())
     }
+}
+
+/// Fold a decoded `PriceUpdate` at `block` into the single-row
+/// [`PostageSummary`] incrementally: load the current [`ChainState`] (default if
+/// absent), settle the elapsed cost and adopt the new price via
+/// [`ChainState::fold_price_update`], then store it back.
+///
+/// A decode miss is a skip (`Ok(())`), never an error, so a malformed body cannot
+/// wedge the cursor. Runs in the same tx as the verbatim `put_event`.
+fn fold_price_update<TX: DbTxMut>(
+    tx: &TX,
+    ev: &StoredEvent,
+    block: u64,
+) -> Result<(), DatabaseError> {
+    let Ok(decoded) = abi::PriceUpdate::decode_log_data(&ev.log_data()) else {
+        return Ok(());
+    };
+    let mut state = tx.get::<PostageSummary>(SummaryKey)?.unwrap_or_default();
+    state.fold_price_update(decoded.price, block);
+    tx.put::<PostageSummary>(SummaryKey, state)
 }
 
 /// A typed update to the postage batch projection, derived from a decoded batch

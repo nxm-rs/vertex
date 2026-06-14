@@ -616,6 +616,142 @@ fn revert_rebuilds_batch_projection_for_in_range_mutation() {
 }
 
 #[test]
+fn summary_total_out_payment_matches_old_fold() {
+    // The incremental summary must equal what a re-fold of the whole PriceUpdate
+    // cadence would yield, at several read blocks across a price sequence. The
+    // reference fold here is the same cadence the contract / old view used.
+    use crate::store::ChainState;
+    let (db, indexer) = harness();
+
+    // A sequence of price updates: (block, price).
+    let updates = [(100u64, 2u64), (200u64, 5u64), (450u64, 1u64)];
+    for (i, (block, price)) in updates.into_iter().enumerate() {
+        apply(
+            &indexer,
+            block,
+            i as u64,
+            POSTAGE_ADDR,
+            &abi::PriceUpdate {
+                price: U256::from(price),
+            },
+        );
+    }
+
+    // Reference: fold the same updates into a ChainState the long way.
+    let reference = |read_block: u64| -> U256 {
+        let mut cs = ChainState::default();
+        for (block, price) in updates {
+            cs.fold_price_update(U256::from(price), block);
+        }
+        cs.current_total_out_payment(read_block)
+    };
+
+    for read_block in [100u64, 150, 200, 300, 450, 1000] {
+        let got = postage::current_total_out_payment(&*db, read_block)
+            .unwrap()
+            .expect("summary present after price updates");
+        assert_eq!(
+            got,
+            reference(read_block),
+            "incremental summary must match the re-fold at block {read_block}"
+        );
+    }
+}
+
+#[test]
+fn summary_absent_fails_safe_for_positive_balance_batch() {
+    // Fail-safe via the summary: a positive-balance batch with NO PriceUpdate
+    // indexed yields an absent summary row, so validity is None (not Some(true)).
+    let (db, indexer) = harness();
+    let batch_id = B256::repeat_byte(0x7E);
+    apply(
+        &indexer,
+        50,
+        0,
+        POSTAGE_ADDR,
+        &abi::BatchCreated {
+            batchId: batch_id,
+            totalAmount: U256::from(1_000_000u64),
+            normalisedBalance: U256::from(1_000_000u64),
+            owner: Address::ZERO,
+            depth: 20,
+            bucketDepth: 16,
+            immutableFlag: false,
+        },
+    );
+
+    // No summary row, so current_total_out_payment and validity are unknown.
+    assert!(
+        postage::current_total_out_payment(&*db, 1000)
+            .unwrap()
+            .is_none(),
+        "current_total_out_payment must be None with no PriceUpdate (the fail-safe)"
+    );
+    assert_eq!(
+        postage::is_batch_valid_now(&*db, batch_id, 1000).unwrap(),
+        None,
+        "a positive-balance batch must not validate forever without a price cadence"
+    );
+}
+
+#[test]
+fn revert_rederives_summary() {
+    // A revert must re-derive the summary from surviving PriceUpdate rows: the
+    // reverted-out update is dropped and the summary reflects only survivors.
+    use crate::store::ChainState;
+    let (db, indexer) = harness();
+
+    apply(
+        &indexer,
+        100,
+        0,
+        POSTAGE_ADDR,
+        &abi::PriceUpdate {
+            price: U256::from(2u64),
+        },
+    );
+    apply(
+        &indexer,
+        300,
+        0,
+        POSTAGE_ADDR,
+        &abi::PriceUpdate {
+            price: U256::from(9u64),
+        },
+    );
+
+    // Both updates present: total at block 400 = settle(2*(300-100)) then 9*(400-300).
+    let mut full = ChainState::default();
+    full.fold_price_update(U256::from(2u64), 100);
+    full.fold_price_update(U256::from(9u64), 300);
+    assert_eq!(
+        postage::current_total_out_payment(&*db, 400).unwrap(),
+        Some(full.current_total_out_payment(400))
+    );
+
+    // Revert from block 200: the block-300 update is dropped; only the block-100
+    // update survives, and the summary is re-derived to match.
+    indexer.revert(200).expect("revert");
+    let mut survivor = ChainState::default();
+    survivor.fold_price_update(U256::from(2u64), 100);
+    for read_block in [100u64, 250, 400, 1000] {
+        assert_eq!(
+            postage::current_total_out_payment(&*db, read_block).unwrap(),
+            Some(survivor.current_total_out_payment(read_block)),
+            "summary must re-derive from surviving rows at block {read_block}"
+        );
+    }
+
+    // And reverting away the last price update clears the summary back to the
+    // fail-safe absent state.
+    indexer.revert(50).expect("revert all");
+    assert!(
+        postage::chain_state(&*db).unwrap().is_none(),
+        "reverting away every PriceUpdate must restore the absent-summary fail-safe"
+    );
+}
+
+#[test]
 fn staking_last_write_wins_and_overlay_inversion() {
     let (db, indexer) = harness();
     let owner = address!("00000000000000000000000000000000000000b1");

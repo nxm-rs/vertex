@@ -90,8 +90,8 @@ pub use projection::{
 pub use reducer::{BatchUpdate, PostageReducer, Reducer};
 pub use registry::{ContractId, EventDescriptor, Network, WatchedContract, abi, registry};
 pub use store::{
-    BatchByBalance, BatchKey, BatchState, BatchTable, ContractIndexTables, EventKey, EventTable,
-    MAX_EVENT_DATA, StoredEvent,
+    BatchByBalance, BatchKey, BatchState, BatchTable, ChainState, ContractIndexTables, EventKey,
+    EventTable, MAX_EVENT_DATA, PostageSummary, StoredEvent, SummaryKey,
 };
 
 #[cfg(test)]

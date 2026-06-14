@@ -61,12 +61,21 @@ crate::secondary_index!(
     }
 );
 
+// The single-row postage pricing summary, declared via the projection framework.
+// One [`ChainState`] row at the constant [`SummaryKey`], maintained incrementally
+// by the [`PostageReducer`](crate::reducer::PostageReducer) on each `PriceUpdate`.
+crate::projection!(pub PostageSummary, "postage_summary", SummaryKey, ChainState);
+
 /// The set of tables this crate persists, for one-shot initialization.
 pub struct ContractIndexTables;
 
 impl Tables for ContractIndexTables {
-    const NAMES: &'static [&'static str] =
-        &[EventTable::NAME, BatchTable::NAME, BatchByBalance::NAME];
+    const NAMES: &'static [&'static str] = &[
+        EventTable::NAME,
+        BatchTable::NAME,
+        BatchByBalance::NAME,
+        PostageSummary::NAME,
+    ];
 }
 
 impl ContractIndexTables {
@@ -295,6 +304,84 @@ pub struct BatchState {
     pub immutable: bool,
     /// The block the batch was created in.
     pub start_block: u64,
+}
+
+/// The [`PostageSummary`] key: a zero-sized constant, since the summary is a
+/// single row.
+///
+/// The projection holds exactly one [`ChainState`] for the postage contract, so
+/// it lives at one well-known key. Encoded as a constant zero-length byte string,
+/// it gives the single-row table a stable, unique slot that
+/// [`scalar`](crate::projection::scalar) reads without naming a sentinel value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
+pub struct SummaryKey;
+
+impl Encode for SummaryKey {
+    type Encoded = [u8; 0];
+
+    fn encode(self) -> Self::Encoded {
+        []
+    }
+}
+
+impl Decode for SummaryKey {
+    fn decode(value: &[u8]) -> Result<Self, DatabaseError> {
+        if value.is_empty() {
+            Ok(Self)
+        } else {
+            Err(DatabaseError::Decode)
+        }
+    }
+}
+
+/// The postage contract's pricing chain-state: the per-chunk total-out-payment
+/// accumulated up to `last_updated_block`, the price in force since, and that
+/// block.
+///
+/// Maintained incrementally by the [`PostageReducer`](crate::reducer::PostageReducer)
+/// as the single-row [`PostageSummary`] projection: each `PriceUpdate` settles the
+/// elapsed cost at the new price's block and adopts the new price (see
+/// [`fold_price_update`](ChainState::fold_price_update)). A read extrapolates the
+/// stored triple to any block ([`current_total_out_payment`](ChainState::current_total_out_payment)),
+/// so the summary is block-clock-derived AT READ and `reduce` never depends on
+/// wall-clock, keeping it replay-safe and idempotent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ChainState {
+    /// Per-chunk total-out-payment accumulated up to `last_updated_block`.
+    pub total_out_payment: U256,
+    /// Per-chunk-per-block price in force since `last_updated_block`.
+    pub last_price: U256,
+    /// The block the price last changed.
+    pub last_updated_block: u64,
+}
+
+impl ChainState {
+    /// The contract's `currentTotalOutPayment(block)`:
+    /// `total_out_payment + last_price * (block - last_updated_block)`.
+    ///
+    /// Blocks at or before `last_updated_block` contribute no elapsed cost,
+    /// matching the contract's saturating behaviour rather than underflowing.
+    /// This is the O(1) extrapolation a read performs on the stored triple.
+    pub fn current_total_out_payment(&self, block: u64) -> U256 {
+        let blocks = block.saturating_sub(self.last_updated_block);
+        self.total_out_payment + self.last_price * U256::from(blocks)
+    }
+
+    /// Fold a `PriceUpdate` at `block`, mirroring the contract's `setPrice`:
+    /// when the previous price is non-zero, settle the elapsed cost into
+    /// `total_out_payment` first, then adopt the new price at `block`.
+    ///
+    /// This is the single fold cadence the reducer's apply-time path and the
+    /// revert rebuild both use, so the summary is derived identically whether
+    /// built forward or replayed from surviving rows. It folds only the discrete
+    /// `PriceUpdate` event, never the wall clock.
+    pub fn fold_price_update(&mut self, price: U256, block: u64) {
+        if !self.last_price.is_zero() {
+            self.total_out_payment = self.current_total_out_payment(block);
+        }
+        self.last_price = price;
+        self.last_updated_block = block;
+    }
 }
 
 /// Write one event verbatim, enforcing the [`MAX_EVENT_DATA`] cap.
