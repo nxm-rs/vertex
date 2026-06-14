@@ -15,8 +15,8 @@ use alloy_sol_types::SolEvent;
 use nectar_contracts::IStakeRegistry;
 use vertex_storage::{Database, DatabaseError};
 
+use crate::projection::fold_events;
 use crate::registry::{ContractId, abi};
-use crate::store::events_of;
 
 /// One owner's folded stake state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -49,44 +49,48 @@ impl OwnerStake {
 
 /// Fold the whole staking event stream into a per-owner map.
 ///
-/// The single backbone fold every staking read narrows. Canonical position
-/// order makes last-write-wins implicit.
+/// The single backbone fold every staking read narrows, expressed over the
+/// framework's [`fold_events`] combinator. Canonical position order makes
+/// last-write-wins implicit.
 fn fold_owners<DB: Database>(db: &DB) -> Result<HashMap<Address, OwnerStake>, DatabaseError> {
-    let mut owners: HashMap<Address, OwnerStake> = HashMap::new();
-    for (_key, ev) in events_of(db, ContractId::Staking)? {
-        let data = ev.log_data();
-        if ev.topic0 == IStakeRegistry::StakeUpdated::SIGNATURE_HASH
-            && let Ok(e) = IStakeRegistry::StakeUpdated::decode_log_data(&data)
-        {
-            let s = owners.entry(e.owner).or_default();
-            s.committed = e.committedStake;
-            s.potential = e.potentialStake;
-            s.overlay = e.overlay;
-            s.height = e.height;
-            s.last_updated_block = e.lastUpdatedBlock;
-        } else if ev.topic0 == IStakeRegistry::StakeFrozen::SIGNATURE_HASH
-            && let Ok(e) = IStakeRegistry::StakeFrozen::decode_log_data(&data)
-        {
-            owners.entry(e.frozen).or_default().frozen_until = e.time;
-        } else if ev.topic0 == IStakeRegistry::StakeSlashed::SIGNATURE_HASH
-            && let Ok(e) = IStakeRegistry::StakeSlashed::decode_log_data(&data)
-        {
-            let s = owners.entry(e.slashed).or_default();
-            s.committed = U256::ZERO;
-            s.potential = U256::ZERO;
-        } else if ev.topic0 == IStakeRegistry::StakeWithdrawn::SIGNATURE_HASH
-            && let Ok(e) = IStakeRegistry::StakeWithdrawn::decode_log_data(&data)
-        {
-            let s = owners.entry(e.node).or_default();
-            s.committed = U256::ZERO;
-            s.potential = U256::ZERO;
-        } else if ev.topic0 == abi::OverlayChanged::SIGNATURE_HASH
-            && let Ok(e) = abi::OverlayChanged::decode_log_data(&data)
-        {
-            owners.entry(e.owner).or_default().overlay = e.overlay;
-        }
-    }
-    Ok(owners)
+    fold_events(
+        db,
+        ContractId::Staking,
+        HashMap::<Address, OwnerStake>::new(),
+        |owners, _key, ev| {
+            let data = ev.log_data();
+            if ev.topic0 == IStakeRegistry::StakeUpdated::SIGNATURE_HASH
+                && let Ok(e) = IStakeRegistry::StakeUpdated::decode_log_data(&data)
+            {
+                let s = owners.entry(e.owner).or_default();
+                s.committed = e.committedStake;
+                s.potential = e.potentialStake;
+                s.overlay = e.overlay;
+                s.height = e.height;
+                s.last_updated_block = e.lastUpdatedBlock;
+            } else if ev.topic0 == IStakeRegistry::StakeFrozen::SIGNATURE_HASH
+                && let Ok(e) = IStakeRegistry::StakeFrozen::decode_log_data(&data)
+            {
+                owners.entry(e.frozen).or_default().frozen_until = e.time;
+            } else if ev.topic0 == IStakeRegistry::StakeSlashed::SIGNATURE_HASH
+                && let Ok(e) = IStakeRegistry::StakeSlashed::decode_log_data(&data)
+            {
+                let s = owners.entry(e.slashed).or_default();
+                s.committed = U256::ZERO;
+                s.potential = U256::ZERO;
+            } else if ev.topic0 == IStakeRegistry::StakeWithdrawn::SIGNATURE_HASH
+                && let Ok(e) = IStakeRegistry::StakeWithdrawn::decode_log_data(&data)
+            {
+                let s = owners.entry(e.node).or_default();
+                s.committed = U256::ZERO;
+                s.potential = U256::ZERO;
+            } else if ev.topic0 == abi::OverlayChanged::SIGNATURE_HASH
+                && let Ok(e) = abi::OverlayChanged::decode_log_data(&data)
+            {
+                owners.entry(e.owner).or_default().overlay = e.overlay;
+            }
+        },
+    )
 }
 
 /// The folded stake row for `owner`, if the owner has ever been seen.

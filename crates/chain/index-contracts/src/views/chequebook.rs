@@ -13,21 +13,24 @@ use alloy_sol_types::SolEvent;
 use nectar_contracts::IChequebookFactory;
 use vertex_storage::{Database, DatabaseError};
 
+use crate::projection::fold_events;
 use crate::registry::ContractId;
-use crate::store::events_of;
 
 /// Fold the factory-deployed chequebook set from the verbatim rows.
 fn deployed_set<DB: Database>(db: &DB) -> Result<HashSet<Address>, DatabaseError> {
-    let mut set = HashSet::new();
-    for (_key, ev) in events_of(db, ContractId::ChequebookFactory)? {
-        if ev.topic0 != IChequebookFactory::SimpleSwapDeployed::SIGNATURE_HASH {
-            continue;
-        }
-        if let Ok(e) = IChequebookFactory::SimpleSwapDeployed::decode_log_data(&ev.log_data()) {
-            set.insert(e.contractAddress);
-        }
-    }
-    Ok(set)
+    fold_events(
+        db,
+        ContractId::ChequebookFactory,
+        HashSet::new(),
+        |set, _key, ev| {
+            if ev.topic0 != IChequebookFactory::SimpleSwapDeployed::SIGNATURE_HASH {
+                return;
+            }
+            if let Ok(e) = IChequebookFactory::SimpleSwapDeployed::decode_log_data(&ev.log_data()) {
+                set.insert(e.contractAddress);
+            }
+        },
+    )
 }
 
 /// Whether `chequebook` is in the factory-deployed set.

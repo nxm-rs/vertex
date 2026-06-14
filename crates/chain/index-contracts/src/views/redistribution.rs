@@ -67,13 +67,16 @@ pub struct RoundState {
 /// Fold the redistribution rows that carry a `roundNumber` into per-round state,
 /// grouped on the raw `U256` round number.
 ///
-/// Rows arrive in canonical position order, so appending commits/reveals
-/// preserves order; a replayed log at an already-seen position overwrites in
-/// place rather than duplicating.
+/// Built on the [`fold_events`](crate::projection::fold_events) backbone, which
+/// walks this contract's rows in canonical position order; appending
+/// commits/reveals therefore preserves order, and a replayed log at an
+/// already-seen position overwrites in place rather than duplicating. A decode
+/// miss on a row is skipped, keeping the running fold.
 fn fold_rounds<DB: Database>(db: &DB) -> Result<Vec<RoundState>, DatabaseError> {
     // Grouped on the raw U256 round number; a Vec keyed by linear search keeps
-    // the full-width key without a u64-narrowing map key.
-    let mut rounds: Vec<RoundState> = Vec::new();
+    // the full-width key without a u64-narrowing map key. This is the
+    // `fold_events` accumulator (`init`), grown by the step closure below.
+    let rounds: Vec<RoundState> = Vec::new();
 
     // Find or create the round bucket for `round`, returning a mutable handle.
     // A `Vec` keyed by linear search keeps the full-width `U256` key (rather
@@ -95,12 +98,12 @@ fn fold_rounds<DB: Database>(db: &DB) -> Result<Vec<RoundState>, DatabaseError> 
         rounds.get_mut(pos)
     }
 
-    for (key, ev) in events_of(db, ContractId::Redistribution)? {
+    crate::projection::fold_events(db, ContractId::Redistribution, rounds, |rounds, key, ev| {
         let data = ev.log_data();
         let pos = (key.block, key.log_index);
         if ev.topic0 == abi::Committed::SIGNATURE_HASH
             && let Ok(e) = abi::Committed::decode_log_data(&data)
-            && let Some(round) = round_mut(&mut rounds, e.roundNumber)
+            && let Some(round) = round_mut(rounds, e.roundNumber)
         {
             upsert_commit(
                 &mut round.commits,
@@ -112,7 +115,7 @@ fn fold_rounds<DB: Database>(db: &DB) -> Result<Vec<RoundState>, DatabaseError> 
             );
         } else if ev.topic0 == abi::Revealed::SIGNATURE_HASH
             && let Ok(e) = abi::Revealed::decode_log_data(&data)
-            && let Some(round) = round_mut(&mut rounds, e.roundNumber)
+            && let Some(round) = round_mut(rounds, e.roundNumber)
         {
             upsert_reveal(
                 &mut round.reveals,
@@ -127,12 +130,11 @@ fn fold_rounds<DB: Database>(db: &DB) -> Result<Vec<RoundState>, DatabaseError> 
             );
         } else if ev.topic0 == abi::CurrentRevealAnchor::SIGNATURE_HASH
             && let Ok(e) = abi::CurrentRevealAnchor::decode_log_data(&data)
-            && let Some(round) = round_mut(&mut rounds, e.roundNumber)
+            && let Some(round) = round_mut(rounds, e.roundNumber)
         {
             round.anchor = Some(e.anchor);
         }
-    }
-    Ok(rounds)
+    })
 }
 
 /// The folded state of round `round_number`, if any of its events were indexed.
