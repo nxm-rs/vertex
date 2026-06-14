@@ -135,7 +135,9 @@ impl ClientHandle {
         // Pace ourselves under the peer's pseudosettle allowance before issuing
         // the request, so a burst does not trip the remote's refuse threshold.
         if let Some(throttle) = &self.throttle {
-            throttle.acquire(peer, ProtocolKind::Retrieval).await;
+            throttle
+                .acquire(peer, address, ProtocolKind::Retrieval)
+                .await;
         }
 
         let (tx, rx) = oneshot::channel();
@@ -164,7 +166,9 @@ impl ClientHandle {
         // Pace ourselves under the peer's pseudosettle allowance before issuing
         // the push, so a burst does not trip the remote's refuse threshold.
         if let Some(throttle) = &self.throttle {
-            throttle.acquire(peer, ProtocolKind::Pushsync).await;
+            throttle
+                .acquire(peer, address, ProtocolKind::Pushsync)
+                .await;
         }
 
         let (tx, rx) = oneshot::channel();
@@ -692,7 +696,7 @@ mod tests {
 
     // Throttle wiring at the outbound-API boundary.
     use crate::throttle::SelfThrottle;
-    use vertex_swarm_api::{Au, PeerAffordability};
+    use vertex_swarm_api::{Au, PeerAffordability, SwarmPricing};
 
     /// A fixed per-peer allowance, in AU, for the throttle's allowance signal.
     struct FixedAllowance(u64);
@@ -705,14 +709,26 @@ mod tests {
         }
     }
 
+    /// A pricer that meters every chunk at one AU, so the throttle's bucket holds
+    /// exactly `tokens` requests.
+    struct OneAuPricer;
+    impl SwarmPricing for OneAuPricer {
+        fn price(&self, _chunk: &ChunkAddress) -> Au {
+            Au::from_amount(1)
+        }
+        fn peer_price(&self, _peer: &OverlayAddress, _chunk: &ChunkAddress) -> Au {
+            Au::from_amount(1)
+        }
+    }
+
     /// Build a handle whose throttle gives each peer a bucket of `tokens`
-    /// one-AU requests (refresh rate and per-request chunk cost are both 1 AU,
+    /// one-AU requests (refresh rate and per-request chunk price are both 1 AU,
     /// so the bucket holds exactly `tokens` requests and refills one per second).
     fn throttled_handle(tokens: u64) -> (ClientHandle, mpsc::Receiver<ClientCommand>) {
         let (tx, rx) = mpsc::channel::<ClientCommand>(16);
         let throttle = Arc::new(SelfThrottle::new(
             Arc::new(FixedAllowance(tokens)),
-            Au::from_amount(1),
+            Arc::new(OneAuPricer),
             Au::from_amount(1),
         ));
         (ClientHandle::new(tx).with_throttle(throttle), rx)

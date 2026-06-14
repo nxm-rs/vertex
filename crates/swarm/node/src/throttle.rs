@@ -23,39 +23,38 @@
 //! meters for it, so the throttle paces our outbound rate to exactly the
 //! forgiveness rate (hundreds of closest-chunk requests per second, fewer for
 //! distant chunks) rather than to a coarse settle-unit granularity. The AU
-//! magnitudes in play (a disconnect threshold of a few million AU, a worst-case
-//! per-request price in the hundreds of thousands) sit comfortably inside the
-//! GCRA's `u32` token range.
+//! magnitudes in play (a disconnect threshold of a few million AU, a per-request
+//! price in the hundreds of thousands at most) sit comfortably inside the GCRA's
+//! `u32` token range.
 //!
 //! # Cost per request
 //!
-//! - **Pushsync**: the representative AU price of a maximal chunk delivery. A
-//!   pushed chunk has a fixed maximal footprint, so the cost is a per-protocol
-//!   constant.
-//! - **Retrieval**: the same flat maximal-chunk price. We do not know the
-//!   response size before it arrives, so we charge the maximal-chunk estimate up
-//!   front. TODO(#132): refine once response-size measurements make a tighter
-//!   estimate safe.
-//!
-//! The maximal-chunk price is the worst-case (proximity 0) peer price, i.e. the
-//! most the remote can debit us for a single chunk. Charging that worst case
-//! means the throttle never under-counts a distant chunk against the allowance
-//! the remote actually extends.
+//! Both pushsync and retrieval charge the exact per-chunk proximity price, the
+//! same figure the accounting layer debits when it records the transfer:
+//! [`SwarmPricing::peer_price`] of this peer for this chunk address. The price
+//! is `base_price * (max_po - proximity + 1)`, highest for a distant chunk and
+//! lowest for one in the peer's neighborhood. Retrieval has no separate size
+//! term: the network meters a chunk transfer purely by that proximity price, so
+//! charging the same price the remote debits keeps the throttle's view of the
+//! allowance exactly aligned with the remote's. Charging the real per-chunk
+//! price (rather than a flat worst case) is what lets a stream of neighborhood
+//! requests pace at the full forgiveness rate instead of being throttled as if
+//! every chunk were the most distant possible.
 
 use std::sync::Arc;
 
 use futures_timer::Delay;
+use nectar_primitives::ChunkAddress;
 use parking_lot::Mutex;
 use vertex_net_ratelimiter::{Quota, SelfRateLimiter};
-use vertex_swarm_api::{Au, PeerAffordability};
+use vertex_swarm_api::{Au, PeerAffordability, SwarmPricing};
 use vertex_swarm_primitives::OverlayAddress;
 
 use std::num::NonZeroU32;
 use std::time::Duration;
 
-/// Which protocol is asking, so the throttle charges the right cost and emits
-/// the right metric. The string is the metric prefix and round-trips through
-/// the `peer_overlay` label.
+/// Which protocol is asking, so the throttle emits the right metric. The string
+/// is the metric prefix and round-trips through the `peer_overlay` label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProtocolKind {
     /// Outbound pushsync delivery.
@@ -114,31 +113,29 @@ pub struct SelfThrottle {
     /// The per-peer allowance signal, built once in the accounting layer. Both
     /// protocols resize their shared bucket from this same source.
     allowance: Arc<dyn PeerAffordability>,
+    /// The chunk pricer, the same instance the accounting layer debits through.
+    /// The per-request cost is `peer_price(peer, address)`, so the throttle
+    /// charges exactly what the remote meters for the transfer.
+    pricing: Arc<dyn SwarmPricing>,
     /// Pseudosettle forgiveness rate in AU per second; the bucket refills at this
     /// many tokens (AU) per second. Always at least one so the quota-window
     /// derivation cannot divide by zero.
     refresh_rate: u64,
-    /// Fixed pushsync cost in tokens (AU): the worst-case maximal-chunk price.
-    pushsync_cost: u32,
-    /// Fixed retrieval cost in tokens (AU): the worst-case maximal-chunk price.
-    retrieval_cost: u32,
 }
 
 impl SelfThrottle {
-    /// Build a throttle from the per-peer allowance signal, the pseudosettle
-    /// forgiveness rate (`refresh_rate` AU per second), and the worst-case AU
-    /// price of a maximal chunk delivery.
+    /// Build a throttle from the per-peer allowance signal, the chunk pricer
+    /// (the same one the accounting layer debits through), and the pseudosettle
+    /// forgiveness rate (`refresh_rate` AU per second).
     ///
-    /// `refresh_rate` and `max_chunk_cost` are clamped to at least one AU so a
-    /// misconfigured zero rate can never panic on a divide and never yields a
-    /// zero-cost (free, unthrottled) request.
+    /// `refresh_rate` is clamped to at least one AU so a misconfigured zero rate
+    /// can never panic on a divide.
     pub fn new(
         allowance: Arc<dyn PeerAffordability>,
+        pricing: Arc<dyn SwarmPricing>,
         refresh_rate: Au,
-        max_chunk_cost: Au,
     ) -> Self {
         let refresh_rate = refresh_rate.as_amount().max(1);
-        let cost = saturating_u32(max_chunk_cost.as_amount().max(1));
 
         // The default quota only seeds a bucket before the first allowance sync;
         // `set_quota` immediately re-sizes it from the live allowance. One AU
@@ -148,24 +145,19 @@ impl SelfThrottle {
         Self {
             limiter: Mutex::new(SelfRateLimiter::new(default_quota)),
             allowance,
+            pricing,
             refresh_rate,
-            // Pushsync and retrieval both charge a maximal-chunk estimate today;
-            // they are separate fields so pushsync can later vary by actual chunk
-            // size without disturbing retrieval's flat estimate.
-            pushsync_cost: cost,
-            retrieval_cost: cost,
         }
     }
 
-    /// Re-size `peer`'s bucket to its current allowance, returning the cost the
-    /// caller's protocol should charge.
+    /// Re-size `peer`'s bucket to its current allowance.
     ///
     /// The bucket capacity (burst) is the remaining allowance in AU and the
     /// bucket refills at `refresh_rate` AU per second, the pseudosettle
     /// forgiveness rate. A zero allowance still yields a one-AU bucket so the
     /// GCRA quota stays valid; such a peer is throttled hard (a one-AU bucket is
     /// smaller than any real per-request cost) but never divides by zero.
-    fn sync_quota(&self, peer: &OverlayAddress, kind: ProtocolKind) -> u32 {
+    fn sync_quota(&self, peer: &OverlayAddress) {
         let allowance = self.allowance.allowance_remaining(peer).as_amount();
         let capacity = saturating_u32(allowance).max(1);
         // Burst = `capacity` AU; refill = `refresh_rate` AU/sec. The GCRA derives
@@ -182,18 +174,26 @@ impl SelfThrottle {
             Duration::from_nanos(window_nanos),
         );
         self.limiter.lock().set_quota(*peer, quota);
-        match kind {
-            ProtocolKind::Pushsync => self.pushsync_cost,
-            ProtocolKind::Retrieval => self.retrieval_cost,
-        }
     }
 
-    /// Wait until the peer's bucket admits one request of `kind`, then return.
+    /// The exact per-chunk cost the remote meters for serving `address` to us,
+    /// in tokens (AU): [`SwarmPricing::peer_price`] of `peer` for `address`,
+    /// floored at one AU so a free chunk still draws a token.
+    fn request_cost(&self, peer: &OverlayAddress, address: &ChunkAddress) -> u32 {
+        saturating_u32(self.pricing.peer_price(peer, address).as_amount().max(1))
+    }
+
+    /// Wait until the peer's bucket admits a request for `address`, then return.
     ///
     /// Returns immediately when the bucket has room. Otherwise it sleeps the
     /// bucket's own wait hint and retries, re-syncing the live allowance each
     /// iteration so a growing allowance shortens the wait and a shrinking one
-    /// lengthens it. The first delay increments the per-peer throttle metric.
+    /// lengthens it. The first delay increments the per-peer throttle metric for
+    /// `kind`.
+    ///
+    /// The cost charged is the exact per-chunk proximity price the remote will
+    /// debit ([`SwarmPricing::peer_price`]), so a neighborhood chunk paces at the
+    /// full forgiveness rate while a distant one costs proportionally more.
     ///
     /// The allowance is read (polled) at each iteration rather than subscribed
     /// to: the bucket is resized on every acquire from the live
@@ -206,11 +206,17 @@ impl SelfThrottle {
     /// peer sets should aggregate it away in a recording rule or rely on metric
     /// TTL; [`Self::clear`] drops a peer's bucket on disconnect but does not (and
     /// cannot) retract an already-emitted counter series.
-    pub(crate) async fn acquire(&self, peer: OverlayAddress, kind: ProtocolKind) {
+    pub(crate) async fn acquire(
+        &self,
+        peer: OverlayAddress,
+        address: ChunkAddress,
+        kind: ProtocolKind,
+    ) {
+        let cost = self.request_cost(&peer, &address);
         let mut throttled = false;
         let mut waited = Duration::ZERO;
         for _ in 0..MAX_THROTTLE_ITERATIONS {
-            let cost = self.sync_quota(&peer, kind);
+            self.sync_quota(&peer);
             let decision = self.limiter.lock().try_send(peer, cost);
             match decision {
                 Ok(()) => return,
@@ -273,6 +279,10 @@ mod tests {
         OverlayAddress::from([n; 32])
     }
 
+    fn address(n: u8) -> ChunkAddress {
+        ChunkAddress::from([n; 32])
+    }
+
     /// Allowance source whose value is swappable at runtime, so tests can model
     /// the accounting layer raising or collapsing a peer's allowance.
     struct DynamicAllowance(AtomicU64);
@@ -295,19 +305,32 @@ mod tests {
         }
     }
 
+    /// A pricer that returns a fixed per-(peer, chunk) price, modelling the exact
+    /// figure the accounting layer would debit. The throttle must charge this.
+    struct FixedPrice(u64);
+
+    impl SwarmPricing for FixedPrice {
+        fn price(&self, _chunk: &ChunkAddress) -> Au {
+            Au::from_amount(self.0)
+        }
+        fn peer_price(&self, _peer: &OverlayAddress, _chunk: &ChunkAddress) -> Au {
+            Au::from_amount(self.0)
+        }
+    }
+
     /// Refresh rate used in tests (AU/sec). One token is one AU, so a request
     /// costing `COST` AU drains `COST` of the allowance-sized bucket.
     const REFRESH_RATE: u64 = 10;
-    /// Per-request cost in AU for the test throttle.
+    /// Per-request price in AU returned by the test pricer.
     const COST: u64 = 10;
 
     fn throttle(allowance: Arc<dyn PeerAffordability>) -> SelfThrottle {
-        // refresh_rate 10 AU/sec; max chunk cost 10 AU => 10-AU (10-token) cost
-        // per request, so a bucket of N AU admits floor(N / 10) requests.
+        // refresh_rate 10 AU/sec; the pricer meters every request at COST AU, so
+        // a bucket of N AU admits floor(N / COST) requests.
         SelfThrottle::new(
             allowance,
+            Arc::new(FixedPrice(COST)),
             Au::from_amount(REFRESH_RATE),
-            Au::from_amount(COST),
         )
     }
 
@@ -320,19 +343,33 @@ mod tests {
     }
 
     #[test]
-    fn cost_is_the_au_price_not_a_settle_unit() {
-        // The per-request cost is the AU price itself, so a fresh peer's bucket
-        // admits allowance / price requests, not allowance / refresh_rate. This
-        // is the regression guard for the over-throttle finding: a 100-AU
-        // allowance at a 10-AU cost admits ten requests, not one.
+    fn cost_is_the_exact_peer_price() {
+        // The per-request cost is the pricer's peer_price, the same figure the
+        // accounting layer debits. A 100-AU allowance metered at 10 AU per chunk
+        // admits ten requests, not one: this is the regression guard for the
+        // over-throttle finding (a flat worst-case cost would admit far fewer).
         let alloc = DynamicAllowance::new(100);
         let t = throttle(alloc.clone());
-        let cost = t.sync_quota(&peer(1), ProtocolKind::Pushsync);
+        let cost = t.request_cost(&peer(1), &address(9));
         assert_eq!(u64::from(cost), COST);
+        t.sync_quota(&peer(1));
         for _ in 0..10 {
             assert_eq!(t.limiter.lock().try_send(peer(1), cost), Ok(()));
         }
         assert!(t.limiter.lock().try_send(peer(1), cost).is_err());
+    }
+
+    #[test]
+    fn cost_floors_at_one_au() {
+        // A pricer returning zero must still draw a token so a free chunk is not
+        // unthrottled.
+        let alloc = DynamicAllowance::new(100);
+        let t = SelfThrottle::new(
+            alloc,
+            Arc::new(FixedPrice(0)),
+            Au::from_amount(REFRESH_RATE),
+        );
+        assert_eq!(t.request_cost(&peer(1), &address(0)), 1);
     }
 
     #[test]
@@ -344,7 +381,8 @@ mod tests {
         // that would ignore how generous the allowance is.
         let alloc = DynamicAllowance::new(COST); // exactly one request of burst
         let t = throttle(alloc.clone());
-        let cost = t.sync_quota(&peer(1), ProtocolKind::Pushsync);
+        let cost = t.request_cost(&peer(1), &address(1));
+        t.sync_quota(&peer(1));
         assert_eq!(t.limiter.lock().try_send(peer(1), cost), Ok(()));
         match t.limiter.lock().try_send(peer(1), cost) {
             Err(delay) => {
@@ -362,15 +400,16 @@ mod tests {
 
     #[test]
     fn exhausting_allowance_throttles() {
-        // 30 AU allowance at a 10-AU cost => three requests; the fourth is
+        // 30 AU allowance at a 10-AU price => three requests; the fourth is
         // refused.
         let alloc = DynamicAllowance::new(30);
         let t = throttle(alloc.clone());
+        let cost = t.request_cost(&peer(1), &address(1));
         for _ in 0..3 {
-            let cost = t.sync_quota(&peer(1), ProtocolKind::Retrieval);
+            t.sync_quota(&peer(1));
             assert_eq!(t.limiter.lock().try_send(peer(1), cost), Ok(()));
         }
-        let cost = t.sync_quota(&peer(1), ProtocolKind::Retrieval);
+        t.sync_quota(&peer(1));
         assert!(t.limiter.lock().try_send(peer(1), cost).is_err());
     }
 
@@ -378,14 +417,15 @@ mod tests {
     fn allowance_growth_widens_the_bucket() {
         let alloc = DynamicAllowance::new(COST); // one-request bucket
         let t = throttle(alloc.clone());
-        let cost = t.sync_quota(&peer(1), ProtocolKind::Pushsync);
+        let cost = t.request_cost(&peer(1), &address(1));
+        t.sync_quota(&peer(1));
         assert_eq!(t.limiter.lock().try_send(peer(1), cost), Ok(()));
         assert!(t.limiter.lock().try_send(peer(1), cost).is_err());
 
         // The accounting layer raises the allowance; the next sync resizes the
         // bucket and another send is admitted.
         alloc.set(1000);
-        let cost = t.sync_quota(&peer(1), ProtocolKind::Pushsync);
+        t.sync_quota(&peer(1));
         assert_eq!(t.limiter.lock().try_send(peer(1), cost), Ok(()));
     }
 
@@ -393,14 +433,15 @@ mod tests {
     fn allowance_shrink_throttles_immediately() {
         let alloc = DynamicAllowance::new(1000); // wide bucket
         let t = throttle(alloc.clone());
+        let cost = t.request_cost(&peer(1), &address(1));
         // Drain a lot of the wide bucket (1000 AU / 10 AU = 100 requests).
         for _ in 0..100 {
-            let cost = t.sync_quota(&peer(1), ProtocolKind::Pushsync);
+            t.sync_quota(&peer(1));
             assert_eq!(t.limiter.lock().try_send(peer(1), cost), Ok(()));
         }
         // Allowance collapses; the bucket re-clamps and the next send is refused.
         alloc.set(COST);
-        let cost = t.sync_quota(&peer(1), ProtocolKind::Pushsync);
+        t.sync_quota(&peer(1));
         assert!(t.limiter.lock().try_send(peer(1), cost).is_err());
     }
 
@@ -408,12 +449,13 @@ mod tests {
     fn clear_drops_peer_bucket() {
         let alloc = DynamicAllowance::new(COST);
         let t = throttle(alloc.clone());
-        let cost = t.sync_quota(&peer(1), ProtocolKind::Pushsync);
+        let cost = t.request_cost(&peer(1), &address(1));
+        t.sync_quota(&peer(1));
         assert_eq!(t.limiter.lock().try_send(peer(1), cost), Ok(()));
         assert!(t.limiter.lock().try_send(peer(1), cost).is_err());
         // Clearing resets the bucket; a fresh send is admitted.
         t.clear(&peer(1));
-        let cost = t.sync_quota(&peer(1), ProtocolKind::Pushsync);
+        t.sync_quota(&peer(1));
         assert_eq!(t.limiter.lock().try_send(peer(1), cost), Ok(()));
     }
 
@@ -421,11 +463,12 @@ mod tests {
     fn per_peer_buckets_are_independent() {
         let alloc = DynamicAllowance::new(COST); // one-request bucket each
         let t = throttle(alloc.clone());
-        let cost = t.sync_quota(&peer(1), ProtocolKind::Pushsync);
+        let cost = t.request_cost(&peer(1), &address(1));
+        t.sync_quota(&peer(1));
         assert_eq!(t.limiter.lock().try_send(peer(1), cost), Ok(()));
         assert!(t.limiter.lock().try_send(peer(1), cost).is_err());
         // A different peer has its own bucket.
-        let cost = t.sync_quota(&peer(2), ProtocolKind::Pushsync);
+        t.sync_quota(&peer(2));
         assert_eq!(t.limiter.lock().try_send(peer(2), cost), Ok(()));
     }
 
@@ -433,10 +476,11 @@ mod tests {
     fn zero_allowance_yields_a_valid_throttled_bucket() {
         // A peer that extends us no allowance must not panic the quota math; it
         // gets the smallest valid bucket and is throttled hard (capacity 1 AU is
-        // smaller than the 10-AU cost, so even the first send is refused).
+        // smaller than the 10-AU price, so even the first send is refused).
         let alloc = DynamicAllowance::new(0);
         let t = throttle(alloc.clone());
-        let cost = t.sync_quota(&peer(1), ProtocolKind::Retrieval);
+        let cost = t.request_cost(&peer(1), &address(1));
+        t.sync_quota(&peer(1));
         assert!(t.limiter.lock().try_send(peer(1), cost).is_err());
     }
 
@@ -449,7 +493,7 @@ mod tests {
         // real but tight bound.
         tokio::time::timeout(
             Duration::from_secs(1),
-            t.acquire(peer(1), ProtocolKind::Pushsync),
+            t.acquire(peer(1), address(1), ProtocolKind::Pushsync),
         )
         .await
         .expect("under-budget acquire resolves at once");
@@ -462,10 +506,10 @@ mod tests {
         // and then resolve.
         let alloc = DynamicAllowance::new(COST);
         let t = throttle(alloc.clone());
-        t.acquire(peer(1), ProtocolKind::Pushsync).await;
+        t.acquire(peer(1), address(1), ProtocolKind::Pushsync).await;
         tokio::time::timeout(
             Duration::from_secs(5),
-            t.acquire(peer(1), ProtocolKind::Pushsync),
+            t.acquire(peer(1), address(1), ProtocolKind::Pushsync),
         )
         .await
         .expect("second acquire resolves after refill");
@@ -481,7 +525,7 @@ mod tests {
         let start = std::time::Instant::now();
         tokio::time::timeout(
             MAX_THROTTLE_WAIT + Duration::from_secs(2),
-            t.acquire(peer(1), ProtocolKind::Pushsync),
+            t.acquire(peer(1), address(1), ProtocolKind::Pushsync),
         )
         .await
         .expect("acquire releases at the wall-clock cap, not the iteration budget");
