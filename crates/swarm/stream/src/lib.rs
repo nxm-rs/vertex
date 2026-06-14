@@ -18,6 +18,14 @@
 //! backpressure) transitively pauses the network reads, so memory stays flat at
 //! roughly `window_bytes` no matter how long the address list is.
 //!
+//! The crate is the transport-agnostic core that every chunk-bulk consumer
+//! shares: the native FFI adapter in `vertex-ffi` wraps these streams as Dart
+//! sinks, the browser adapter in the [`wasm`] module surfaces them to
+//! JavaScript as async iterators, and the future gRPC chunk service streams
+//! the same items over the wire. The pipelines depend only on the
+//! [`SwarmChunkProvider`] and [`SwarmChunkSender`] traits, never on a node
+//! internal type, so the same combinator serves all three.
+//!
 //! Downloads deliver [`VerifiedStampedChunk`] only: every chunk is proven to
 //! answer the address that requested it before it leaves the stream, so a peer
 //! that returns the wrong bytes for an address surfaces as an error item, never
@@ -28,6 +36,9 @@
 //! so racing many addresses at once never aliases response state. Output order
 //! always matches input order via [`FuturesOrdered`], independent of which
 //! request completes first.
+
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
 
 use std::collections::VecDeque;
 use std::pin::Pin;

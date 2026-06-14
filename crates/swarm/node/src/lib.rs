@@ -18,9 +18,6 @@ mod client_service;
 mod node;
 mod protocol;
 mod selection;
-pub mod stream;
-#[cfg(target_arch = "wasm32")]
-pub mod stream_wasm;
 mod swarm_client;
 
 pub use node::{
@@ -40,9 +37,6 @@ pub use protocol::{
 };
 
 pub use selection::{AccountingSettlement, PeerScores, PeerSelector, SettlementTrigger};
-pub use stream::{
-    GetStream, MAX_CHUNK_BYTES, PutStream, StreamConfig, get_stream, put_stream, try_put_stream,
-};
 pub use swarm_client::{BootnodeClient, Client, FullClient};
 
 pub use bootnodes::BootnodeProvider;

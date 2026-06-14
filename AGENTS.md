@@ -100,6 +100,7 @@ Per-area `AGENTS.md` files apply when you edit code in that directory.
 | `crates/net/AGENTS.md` | Protocol-agnostic netutils. |
 | `crates/swarm/AGENTS.md` | Swarm domain crates and the libp2p boundary. |
 | `crates/swarm/net/AGENTS.md` | `/swarm/...` wire protocols. |
+| `crates/swarm/stream/AGENTS.md` | Transport-agnostic bulk get/put streaming combinator. |
 | `crates/storage/AGENTS.md` | Storage abstraction and redb backend. |
 | `crates/node/AGENTS.md` | Protocol-agnostic node infrastructure. |
 | `crates/observability/AGENTS.md` | Logging, tracing, metrics infra. |

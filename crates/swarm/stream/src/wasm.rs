@@ -1,7 +1,7 @@
 //! Browser binding for the streaming get/put pipelines.
 //!
-//! This is the wasm-bindgen adapter over the FFI-agnostic core in
-//! [`crate::stream`]: the same byte-bounded [`get_stream`](crate::get_stream)
+//! This is the wasm-bindgen adapter over the transport-agnostic core in this
+//! crate: the same byte-bounded [`get_stream`](crate::get_stream)
 //! and [`put_stream`](crate::put_stream) pipelines, surfaced to JavaScript as
 //! async iterators. A browser host drives them with `for await (const item of
 //! stream)`; each `next()` resolves to a plain object carrying the chunk (or the
@@ -34,7 +34,7 @@ use vertex_swarm_api::{
 };
 use wasm_bindgen::prelude::*;
 
-use crate::stream::{StreamConfig, get_stream, put_stream};
+use crate::{StreamConfig, get_stream, put_stream};
 
 /// Boxed core download stream over a trait-object provider.
 type CoreGetStream = Pin<Box<dyn Stream<Item = SwarmResult<VerifiedStampedChunk>>>>;

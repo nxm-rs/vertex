@@ -31,6 +31,7 @@ vertex-swarm-identity.workspace = true
 vertex-swarm-primitives.workspace = true
 vertex-swarm-spec.workspace = true
 vertex-swarm-node.workspace = true
+vertex-swarm-stream.workspace = true
 vertex-node-api.workspace = true
 vertex-tasks.workspace = true
 

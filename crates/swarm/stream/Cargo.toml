@@ -1,0 +1,39 @@
+[package]
+name = "vertex-swarm-stream"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Memory-bounded streaming chunk get/put pipelines over the Swarm chunk traits"
+
+[lints]
+workspace = true
+
+[dependencies]
+## nectar
+nectar-primitives.workspace = true
+
+## vertex
+vertex-swarm-api.workspace = true
+vertex-tasks.workspace = true
+
+## async
+futures.workspace = true
+
+# Browser adapter for the streaming get/put pipelines. The wasm module exposes
+# the same core streams to JS as async iterators; these are the wasm-bindgen
+# glue it needs and are pulled only on wasm32. `wasm-bindgen-futures` is the
+# runtime the `#[wasm_bindgen] pub async fn next` methods lower onto: it turns
+# each polled item into a JS `Promise`, which is how the pull-based backpressure
+# reaches the browser host.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+js-sys = { workspace = true }
+
+[dev-dependencies]
+alloy-primitives.workspace = true
+async-trait.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
