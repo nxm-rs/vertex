@@ -61,8 +61,6 @@
 //!   signature / owner recovery stays in nectar primitives, never here. The
 //!   chain crate announces "advanced"; it never calls a domain trait.
 //!
-//! See `SECURITY_ANALYSIS.md` at the repo root for the per-surface walkthrough.
-//!
 //! # Placement
 //!
 //! Native, RPC-and-persistence code, intended to run behind a `chain` feature in
