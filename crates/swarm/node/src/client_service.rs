@@ -12,7 +12,7 @@ use tracing::{debug, warn};
 use vertex_swarm_api::{PeerReporter, ReportSource, SwarmLocalStore, SwarmScoringEvent};
 use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_net_pushsync::Receipt;
-use vertex_swarm_primitives::{OverlayAddress, Stamp, StampedChunk};
+use vertex_swarm_primitives::{CachedChunk, OverlayAddress, Stamp, StampedChunk};
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
 
 use crate::protocol::{ClientCommand, ClientEvent, FailureKind};
@@ -51,8 +51,9 @@ pub struct ClientHandle {
 /// signature for single-owner), so it answers the request regardless of the
 /// stamp. The stamp is optional: a storer answers a retrieval with the chunk
 /// bytes and may omit the stamp from the delivery, which is never re-read on
-/// this path. A stampless chunk is served to the caller; it is simply not
-/// cached (the cache value requires a stamp).
+/// this path. A stampless chunk is served to the caller; a stampless content
+/// chunk is also cached by address (content is immutable), while a retrieved
+/// single-owner chunk is never cached (it has no version signal).
 #[derive(Debug)]
 pub struct RetrievalResult {
     /// The retrieved chunk.
@@ -207,8 +208,10 @@ pub struct ClientService {
     /// Best-effort: without a reporter, outcomes only surface as logs.
     reporter: Option<Arc<dyn PeerReporter>>,
     /// Optional client cache. The service caches the client's own successful
-    /// retrieval deliveries here (CAC indefinitely, SOC last-write-wins by
-    /// stamp timestamp), so a later request can serve them from the cache.
+    /// retrieval of a content chunk here (immutable, served indefinitely, with or
+    /// without a stamp), so a later request can serve it from the cache. A
+    /// retrieved single-owner chunk is never cached: it has no version signal and
+    /// could serve a stale revision.
     store: Option<Arc<dyn SwarmLocalStore>>,
     /// Optional outbound self-throttle, shared with the client handle. On
     /// disconnect the service clears the peer's bucket so memory does not grow
@@ -270,10 +273,11 @@ impl ClientService {
     /// Attach the client cache so the service caches its own retrieval
     /// deliveries.
     ///
-    /// A delivery resolved from one of our own outbound retrievals is cached
-    /// here: content chunks indefinitely, single-owner chunks under the cache's
-    /// last-write-wins timestamp policy. Without a store, deliveries are not
-    /// cached and a repeat request always hits the network.
+    /// A content chunk resolved from one of our own outbound retrievals is cached
+    /// here (immutable, served indefinitely, with or without a stamp). A
+    /// single-owner chunk is never cached from retrieval, since a stampless SOC
+    /// has no version signal and could serve a stale revision. Without a store,
+    /// deliveries are not cached and a repeat request always hits the network.
     #[must_use]
     pub fn with_store(mut self, store: Arc<dyn SwarmLocalStore>) -> Self {
         self.store = Some(store);
@@ -361,15 +365,17 @@ impl ClientService {
                 // The requester is resolved directly by the handler; this
                 // event exists for accounting, peer scoring, and caching. The
                 // chunk was already verified against the requested address at
-                // decode, so an honest delivery raises the peer's score. We
-                // cache a stamped delivery (CAC indefinitely, SOC
-                // last-write-wins) so a later request can serve it locally. A
-                // stampless delivery is not cached: the cache value requires a
-                // stamp (SOC freshness and last-write-wins read its timestamp),
-                // so a stampless chunk is delivered to the caller but not stored.
+                // decode, so an honest delivery raises the peer's score. A
+                // retrieved content chunk (CAC) is immutable, so it is cached by
+                // address (with or without a stamp, exactly as delivered) and a
+                // later request serves it locally. A retrieved SOC is never
+                // cached: it arrives without a version signal and could serve a
+                // stale revision, so it is delivered to the caller only.
                 debug!(%peer, %address, ?latency, "Chunk received");
-                if let (Some(store), Some(stamp)) = (&self.store, stamp) {
-                    let _ = store.put(StampedChunk::new(chunk, stamp));
+                if let Some(store) = &self.store
+                    && chunk.is_content()
+                {
+                    let _ = store.put(CachedChunk::new(chunk, stamp));
                 }
                 self.report(
                     &peer,

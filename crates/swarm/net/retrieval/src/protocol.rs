@@ -107,11 +107,13 @@ pub struct RetrievalResponder {
 }
 
 impl RetrievalResponder {
-    /// Send a successful delivery with the chunk and its optional stamp.
+    /// Send a successful delivery carrying the chunk.
     ///
-    /// The stamp is omitted from the delivery when `None`. A relayed chunk that
-    /// arrived stampless is served onward stampless: the requester validates the
-    /// chunk against its address, which is independent of the stamp.
+    /// The delivery ships the chunk `data` only: the stamp is never put on the
+    /// wire, so the `stamp` argument is accepted for call-site symmetry but
+    /// dropped at encode. The requester validates the chunk against its address
+    /// (BMT hash for content, owner plus signature for single-owner), which is
+    /// independent of the stamp.
     pub async fn send_chunk(
         mut self,
         chunk: nectar_primitives::AnyChunk,

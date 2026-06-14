@@ -54,7 +54,7 @@ use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_net_pushsync::Receipt;
 #[cfg(feature = "swap")]
 use vertex_swarm_net_swap::SignedCheque;
-use vertex_swarm_primitives::{OverlayAddress, Stamp, StampedChunk, SwarmNodeType};
+use vertex_swarm_primitives::{CachedChunk, OverlayAddress, Stamp, StampedChunk, SwarmNodeType};
 
 use super::events::{PushResponseTx, RetrievalResponseTx};
 use super::forward::Forwarder;
@@ -565,12 +565,13 @@ impl ClientHandler {
         self.inbound.push(Box::pin(async move {
             // Cache hit: content chunks serve indefinitely, single-owner chunks
             // only while fresh (the store applies the TTL on `get`). A cached
-            // chunk always carries a stamp; serve it with the stamp attached.
-            if let Ok(Some(stamped)) = store.get(&address)
-                && let Ok(verified) = stamped.verify_answers(address)
+            // content chunk is stampless, a cached SOC carries its stamp; serve
+            // whichever stamp the cache held (matching how it was delivered).
+            if let Ok(Some(cached)) = store.get(&address)
+                && *cached.address() == address
             {
-                let (chunk, stamp) = verified.into_inner().into_parts();
-                match responder.send_chunk(chunk, Some(stamp)).await {
+                let (chunk, stamp) = cached.into_parts();
+                match responder.send_chunk(chunk, stamp).await {
                     Ok(()) => return InboundOutcome::Served { overlay },
                     Err(e) => {
                         debug!(%overlay, %address, error = %e, "Cache serve send failed");
@@ -581,10 +582,11 @@ impl ClientHandler {
 
             // Miss: forward to a closer peer, excluding the requester. The
             // forwarder already validated the chunk against the address; the
-            // address equality re-check here is the serve-time guard. A stampless
-            // delivery (a storer omits the stamp) is relayed onward stampless and
-            // is not cached, since the cache value requires a stamp; a stamped
-            // delivery is cached (CAC immutable, SOC last-write-wins).
+            // address equality re-check here is the serve-time guard. A retrieved
+            // content chunk (CAC) is immutable, so it is cached by address even
+            // when stampless (exactly as a storer answers). A retrieved SOC is
+            // never cached: it arrives without a version signal and could serve a
+            // stale revision, so it is only relayed onward, never stored.
             match forward.retrieve(address, overlay).await {
                 Ok(forwarded) => {
                     if *forwarded.chunk.address() != address {
@@ -595,8 +597,11 @@ impl ClientHandler {
                         responder.send_error();
                         return InboundOutcome::Missed { overlay, address };
                     }
-                    if let Some(stamp) = forwarded.stamp.clone() {
-                        let _ = store.put(StampedChunk::new(forwarded.chunk.clone(), stamp));
+                    if forwarded.chunk.is_content() {
+                        let _ = store.put(CachedChunk::new(
+                            forwarded.chunk.clone(),
+                            forwarded.stamp.clone(),
+                        ));
                     }
                     match responder.send_chunk(forwarded.chunk, forwarded.stamp).await {
                         Ok(()) => {

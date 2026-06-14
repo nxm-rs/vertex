@@ -108,14 +108,18 @@ impl Delivery {
         matches!(self, Self::Error)
     }
 
-    /// Encode this delivery to its protobuf wire form. The stamp field is emitted
-    /// when present and left empty when absent. A failure is encoded as empty
+    /// Encode this delivery to its protobuf wire form. The stamp field is always
+    /// left empty: a retrieval delivery ships the chunk `data` only, and any stamp
+    /// the chunk arrived with is dropped at the first forwarder hop. The requester
+    /// validates the chunk against its address (BMT hash for content, owner plus
+    /// signature for single-owner), which is independent of the stamp, so a
+    /// data-only delivery is fully verifiable. A failure is encoded as empty
     /// `data`/`stamp`; we emit nothing on the (omitted) error field.
     fn into_proto(self) -> vertex_swarm_net_proto::retrieval::Delivery {
         match self {
-            Self::Chunk { chunk, stamp } => vertex_swarm_net_proto::retrieval::Delivery {
+            Self::Chunk { chunk, stamp: _ } => vertex_swarm_net_proto::retrieval::Delivery {
                 data: (*chunk).into_bytes().to_vec(),
-                stamp: stamp.map(|s| s.to_bytes().to_vec()).unwrap_or_default(),
+                stamp: Vec::new(),
             },
             Self::Error => vertex_swarm_net_proto::retrieval::Delivery {
                 data: Vec::new(),
@@ -242,6 +246,10 @@ mod tests {
     }
 
     /// Encode a delivery and decode it back through the address-aware codec.
+    ///
+    /// The serve path ships the chunk `data` only and drops the stamp, so even a
+    /// delivery built from a stamped chunk decodes back stampless. The requester
+    /// still validates the chunk against its address.
     fn roundtrip(stamped: StampedChunk) {
         let address = *stamped.address();
         let wire_data = stamped.chunk().clone().into_bytes();
@@ -255,7 +263,7 @@ mod tests {
             Delivery::Chunk { chunk, stamp } => {
                 assert_eq!(*chunk.address(), address);
                 assert_eq!((*chunk).into_bytes(), wire_data);
-                assert!(stamp.is_some(), "our own delivery carries a stamp");
+                assert!(stamp.is_none(), "the serve path ships data only, no stamp");
             }
             Delivery::Error => panic!("expected chunk, got error"),
         }
