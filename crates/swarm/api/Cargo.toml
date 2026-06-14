@@ -16,10 +16,9 @@ vertex-swarm-forks = { workspace = true }
 vertex-swarm-primitives = { workspace = true }
 vertex-tasks = { workspace = true }
 
-# Alloy. `k256` enables secp256k1 public-key recovery, used to recover the
-# signer overlay of a pushsync custody receipt (`recover_receipt_signer`).
+# Alloy
 alloy-chains = { workspace = true }
-alloy-primitives = { workspace = true, features = ["k256"] }
+alloy-primitives = { workspace = true }
 alloy-signer = { workspace = true }
 
 # External dependencies
@@ -40,11 +39,6 @@ strum = { workspace = true }
 
 # Optional serde support
 serde = { workspace = true, features = ["derive"], optional = true }
-
-[dev-dependencies]
-# Receipt-depth verification tests sign real custody receipts.
-alloy-signer = { workspace = true }
-alloy-signer-local = { workspace = true }
 
 [features]
 default = ["std"]

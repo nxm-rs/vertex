@@ -260,8 +260,11 @@ mod tests {
 
     use crate::ChunkTransferError;
     use alloy_primitives::{B256, Signature};
-    use nectar_primitives::{ContentChunk, Nonce};
-    use vertex_swarm_api::{PushReceipt, Stamp};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use nectar_primitives::{ContentChunk, NetworkId, Nonce, compute_overlay};
+    use vertex_swarm_api::Stamp;
+    use vertex_swarm_net_pushsync::{Receipt, SignedReceipt};
     use vertex_swarm_primitives::{Bin, OverlayAddress, StorageRadius};
 
     fn test_peer() -> OverlayAddress {
@@ -273,6 +276,25 @@ mod tests {
         raw[..64].fill(1);
         raw[64] = 27;
         Signature::try_from(&raw[..]).expect("valid signature bytes")
+    }
+
+    /// A signer-verified receipt over `address`, as the decode boundary produces
+    /// it, so a test can resolve a push command with a real `SignedReceipt`.
+    fn signed_receipt(address: &ChunkAddress) -> (SignedReceipt, OverlayAddress) {
+        let signer = PrivateKeySigner::random();
+        let signature = signer.sign_message_sync(address.as_bytes()).expect("sign");
+        let nonce = Nonce::from([9u8; 32]);
+        let overlay = compute_overlay(&signer.address(), NetworkId::MAINNET, &nonce);
+        let receipt = Receipt::success(
+            *address,
+            signature,
+            nonce,
+            StorageRadius::new(Bin::new(5).unwrap()),
+        );
+        (
+            SignedReceipt::recover(receipt, NetworkId::MAINNET).expect("recovers"),
+            overlay,
+        )
     }
 
     fn test_stamp() -> Stamp {
@@ -355,21 +377,16 @@ mod tests {
         };
 
         // Resolve the request through its own response channel, as the
-        // handler does when the receipt arrives on the request's substream.
-        response
-            .send(Ok(PushReceipt {
-                storer: peer,
-                signature: test_signature(),
-                nonce: Nonce::from([9u8; 32]),
-                storage_radius: StorageRadius::new(Bin::new(5).unwrap()),
-            }))
-            .expect("receiver alive");
+        // handler does when the verified receipt arrives on the request's
+        // substream.
+        let (signed, signer) = signed_receipt(&address);
+        response.send(Ok(signed)).expect("receiver alive");
 
         let receipt = push.await.unwrap().expect("push resolves");
-        assert_eq!(receipt.storer, peer);
-        assert_eq!(receipt.signature, test_signature());
-        assert_eq!(receipt.nonce, Nonce::from([9u8; 32]));
-        assert_eq!(receipt.storage_radius.get(), 5);
+        assert_eq!(receipt.signer(), signer);
+        assert_eq!(*receipt.address(), address);
+        assert_eq!(receipt.nonce(), &Nonce::from([9u8; 32]));
+        assert_eq!(receipt.storage_radius().get(), 5);
     }
 
     #[tokio::test]
@@ -438,16 +455,15 @@ mod tests {
         // candidate is closer in proximity order.
         let cmd = rx.recv().await.expect("command emitted");
         match cmd {
-            ClientCommand::PushChunk { peer, response, .. } => {
+            ClientCommand::PushChunk {
+                peer,
+                address,
+                response,
+                ..
+            } => {
                 assert_eq!(peer, affordable);
-                response
-                    .send(Ok(PushReceipt {
-                        storer: affordable,
-                        signature: test_signature(),
-                        nonce: Nonce::from([9u8; 32]),
-                        storage_radius: StorageRadius::new(Bin::new(5).unwrap()),
-                    }))
-                    .expect("receiver alive");
+                let (signed, _) = signed_receipt(&address);
+                response.send(Ok(signed)).expect("receiver alive");
             }
             other => panic!("unexpected command: {other:?}"),
         }

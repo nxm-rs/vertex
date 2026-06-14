@@ -15,7 +15,7 @@ pub use self::peers::SwarmPeerResolver;
 pub use self::pricing::{SwarmPricing, SwarmPricingBuilder, SwarmPricingConfig};
 pub use self::topology::{
     SwarmTopology, SwarmTopologyBins, SwarmTopologyCommands, SwarmTopologyPeers,
-    SwarmTopologyRouting, SwarmTopologyState, SwarmTopologyStats,
+    SwarmTopologyReporting, SwarmTopologyRouting, SwarmTopologyState, SwarmTopologyStats,
 };
 
 use crate::SwarmIdentity;

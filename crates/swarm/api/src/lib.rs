@@ -50,6 +50,7 @@ mod error;
 mod identity;
 mod protocol;
 mod providers;
+mod receipt;
 mod reporting;
 mod rpc;
 mod spec;
@@ -63,8 +64,8 @@ pub use self::components::{
     SwarmBandwidthAccounting, SwarmClientAccounting, SwarmLocalStore, SwarmLocalStoreConfig,
     SwarmPeerBandwidth, SwarmPeerResolver, SwarmPeerState, SwarmPricing, SwarmPricingBuilder,
     SwarmPricingConfig, SwarmSettlementProvider, SwarmTopology, SwarmTopologyBins,
-    SwarmTopologyCommands, SwarmTopologyPeers, SwarmTopologyRouting, SwarmTopologyState,
-    SwarmTopologyStats,
+    SwarmTopologyCommands, SwarmTopologyPeers, SwarmTopologyReporting, SwarmTopologyRouting,
+    SwarmTopologyState, SwarmTopologyStats,
 };
 pub use self::config::{
     DEFAULT_PEER_BAN_THRESHOLD, DEFAULT_PEER_DISCONNECT_THRESHOLD, DEFAULT_PEER_MAX_PER_BIN,
@@ -80,8 +81,10 @@ pub use self::error::{
 pub use self::identity::SwarmIdentity;
 pub use self::protocol::SwarmProtocol;
 pub use self::providers::{
-    ChunkRetrievalResult, PushReceipt, ReceiptDepthError, SwarmChunkProvider, SwarmChunkSender,
-    recover_receipt_signer, required_receipt_depth, verify_receipt_depth,
+    ChunkRetrievalResult, PushReceipt, SwarmChunkProvider, SwarmChunkSender,
+};
+pub use self::receipt::{
+    SHALLOW_RECEIPT_TOLERANCE, ShallowReceipt, required_receipt_depth, verify_receipt_depth,
 };
 pub use self::reporting::{
     BanCause, DisconnectCause, PeerAffordability, PeerLifecycleEvent, PeerReporter, ReportSource,

@@ -100,7 +100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Uploading chunk {address}");
     let receipt = providers.chunks().send_chunk(stamped).await?;
-    println!("Accepted by storer {}", receipt.storer);
+    println!("Accepted by signer {}", receipt.signer);
     println!("Signature {}", receipt.signature);
     println!("Storage radius {}", receipt.storage_radius);
 

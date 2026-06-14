@@ -9,9 +9,7 @@ use tracing::{info, warn};
 use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
-use vertex_swarm_api::{
-    PeerReporter, SwarmClientAccounting, SwarmLaunchConfig, SwarmNodeType, SwarmSpec,
-};
+use vertex_swarm_api::{PeerReporter, SwarmClientAccounting, SwarmLaunchConfig, SwarmNodeType};
 use vertex_swarm_bandwidth::{
     Accounting, AccountingBuilder, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
 };
@@ -35,7 +33,7 @@ use crate::verify::{ChunkVerifyConfig, VerifyingChunkProvider};
 type VerifiedChunkProvider = VerifyingChunkProvider<NetworkChunkProvider<Arc<Identity>>>;
 
 #[cfg(feature = "chain")]
-use vertex_swarm_api::SwarmAccountingConfig;
+use vertex_swarm_api::{SwarmAccountingConfig, SwarmSpec};
 #[cfg(feature = "chain")]
 use vertex_swarm_node::args::ChainConfig;
 #[cfg(feature = "swap")]
@@ -331,8 +329,6 @@ async fn build_client_backed_node(
         Arc::new(topology.clone()),
         Arc::clone(&accounting),
         client_handle.clone(),
-        SwarmSpec::network_id(params.spec.as_ref()),
-        Arc::clone(&reporter),
     );
 
     // Retrieval and pushsync candidate selection consults peer scores and

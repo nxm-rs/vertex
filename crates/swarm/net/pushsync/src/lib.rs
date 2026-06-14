@@ -6,6 +6,9 @@ pub use codec::{Delivery, Receipt, ReceiptResponse};
 mod error;
 pub use error::PushsyncError;
 
+mod receipt;
+pub use receipt::SignedReceipt;
+
 mod protocol;
 pub use protocol::{
     PushsyncInboundProtocol, PushsyncOutboundProtocol, PushsyncResponder, inbound, outbound,

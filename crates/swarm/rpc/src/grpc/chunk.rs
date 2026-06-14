@@ -114,14 +114,16 @@ impl<P: SwarmChunkProvider + SwarmChunkSender> Chunk for ChunkService<P> {
         .map_err(|e| Status::internal(format!("Chunk upload failed: {}", e)))?;
 
         let PushReceipt {
-            storer,
+            signer,
             signature,
             nonce,
             storage_radius,
         } = receipt;
 
         Ok(Response::new(UploadChunkResponse {
-            storer: storer.to_string(),
+            // The `storer` wire field carries the recovered receipt signer: the
+            // node that actually took custody, not whichever peer relayed it.
+            storer: signer.to_string(),
             signature: signature.as_bytes().to_vec(),
             nonce: nonce.as_slice().to_vec(),
             storage_radius: u32::from(storage_radius.get()),

@@ -6,8 +6,9 @@ use libp2p::{Multiaddr, PeerId};
 use nectar_primitives::ChunkAddress;
 use tokio::sync::{broadcast, mpsc};
 use vertex_swarm_api::{
-    SwarmIdentity, SwarmSpec, SwarmTopologyBins, SwarmTopologyCommands, SwarmTopologyPeers,
-    SwarmTopologyRouting, SwarmTopologyState, SwarmTopologyStats,
+    PeerReporter, SwarmIdentity, SwarmSpec, SwarmTopologyBins, SwarmTopologyCommands,
+    SwarmTopologyPeers, SwarmTopologyReporting, SwarmTopologyRouting, SwarmTopologyState,
+    SwarmTopologyStats,
 };
 use vertex_swarm_net_identify as identify;
 use vertex_swarm_peer_manager::PeerManager;
@@ -318,6 +319,12 @@ impl<I: SwarmIdentity> SwarmTopologyState for TopologyHandle<I> {
 
     fn depth(&self) -> NeighborhoodDepth {
         self.routing.depth()
+    }
+}
+
+impl<I: SwarmIdentity> SwarmTopologyReporting for TopologyHandle<I> {
+    fn reporter(&self) -> Arc<dyn PeerReporter> {
+        Arc::clone(self.peer_manager()) as Arc<dyn PeerReporter>
     }
 }
 

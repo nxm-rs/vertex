@@ -35,12 +35,11 @@
 //! address-equality check (BMT integrity for content chunks, signature-recovered
 //! owner for single-owner chunks); it does **not** validate the postage stamp's
 //! funding or expiry, which is a separate postage concern. A relayed pushsync
-//! receipt is verified for custody depth before it is relayed: the signer
-//! overlay is recovered from the receipt signature (never the off-wire
-//! `storer` field) and `PO(signer, chunk)` must reach a depth derived from the
-//! locally observed neighbourhood depth, so a forwarder never launders a
-//! malformed or shallow receipt upstream and scores the downstream signer
-//! adversely when it does.
+//! receipt arrives as a [`SignedReceipt`] whose signer was already recovered and
+//! verified at the decode boundary; the forwarder checks its custody depth
+//! before relaying, so `PO(signer, chunk)` must reach a depth derived from the
+//! locally observed neighbourhood depth. A forwarder never launders a shallow
+//! receipt upstream and scores the downstream peer adversely when it tries.
 //!
 //! # Upstream credit is deferred to the wire write
 //!
@@ -56,13 +55,13 @@
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
-use nectar_primitives::{ChunkAddress, NetworkId};
+use nectar_primitives::ChunkAddress;
 use tracing::{debug, warn};
 use vertex_swarm_api::{
-    AccountingAction, PeerReporter, PushReceipt, ReceiptDepthError, ReportSource,
-    SwarmClientAccounting, SwarmScoringEvent, SwarmTopologyRouting, SwarmTopologyState,
-    verify_receipt_depth,
+    AccountingAction, PeerReporter, ReportSource, SwarmClientAccounting, SwarmScoringEvent,
+    SwarmTopologyRouting, SwarmTopologyState, verify_receipt_depth,
 };
+use vertex_swarm_net_pushsync::SignedReceipt;
 use vertex_swarm_primitives::{OverlayAddress, StampedChunk};
 
 use crate::ClientHandle;
@@ -104,15 +103,17 @@ pub(crate) enum ForwardError {
     #[error("all closer peers failed to relay")]
     AllPeersFailed,
 
-    /// The upstream leg returned a chunk that does not answer the request, or a
-    /// receipt that is structurally malformed. Never relayed.
+    /// The upstream leg returned a chunk that does not answer the requested
+    /// address. Never relayed.
     #[error("upstream relay returned unverified data")]
     UnverifiedRelay,
 
-    /// The upstream leg returned a custody receipt whose signer is not deep
-    /// enough for the chunk (`PO(signer, chunk) < required`). A forwarder must
-    /// never launder a shallow receipt upstream: it is dropped here and the
-    /// downstream signer is scored adversely.
+    /// The upstream leg returned a custody receipt whose recovered signer is not
+    /// deep enough for the chunk (`PO(signer, chunk) < required`). A forwarder
+    /// must never launder a shallow receipt upstream: it is dropped here and the
+    /// downstream peer is scored adversely. A malformed receipt does not reach
+    /// here; it is rejected at the downstream decode boundary and surfaces as a
+    /// push failure ([`AllPeersFailed`](Self::AllPeersFailed)).
     #[error("upstream relay returned a shallow custody receipt")]
     ShallowReceipt,
 
@@ -180,8 +181,10 @@ impl std::fmt::Debug for ForwardedChunk {
 
 /// A relayed receipt together with the un-applied upstream credit.
 pub(crate) struct ForwardedReceipt {
-    /// The storer's receipt to relay verbatim to the pusher.
-    pub(crate) receipt: PushReceipt,
+    /// The storer's verified receipt to relay verbatim to the pusher. Its
+    /// signer was recovered at the downstream decode boundary, so a forwarder
+    /// only checks the depth policy before relaying.
+    pub(crate) receipt: SignedReceipt,
     /// The un-applied upstream credit; commit after a successful wire write.
     pub(crate) provide: Box<dyn AccountingAction>,
 }
@@ -263,24 +266,20 @@ pub(crate) struct NetworkForwarder<T, A> {
     accounting: Arc<A>,
     /// Reuses the origin outbound futures for the upstream relay leg.
     handle: ClientHandle,
-    /// Network id for recovering the signer overlay of a custody receipt
-    /// (`compute_overlay(eth, network_id, nonce)`).
-    network_id: NetworkId,
-    /// The single sanctioned scoring path: a shallow or malformed relayed
-    /// receipt scores the downstream signer adversely through it.
+    /// The single sanctioned scoring path: a shallow relayed receipt scores the
+    /// downstream signer adversely through it.
     reporter: Arc<dyn PeerReporter>,
 }
 
 impl<T, A> NetworkForwarder<T, A> {
     /// Build a network forwarder from the local overlay, topology, accounting,
-    /// the outbound client handle, the network id (for signer recovery), and
-    /// the peer reporter (for scoring shallow receipts).
+    /// the outbound client handle, and the peer reporter (for scoring shallow
+    /// receipts).
     pub(crate) fn new(
         local: OverlayAddress,
         topology: Arc<T>,
         accounting: Arc<A>,
         handle: ClientHandle,
-        network_id: NetworkId,
         reporter: Arc<dyn PeerReporter>,
     ) -> Self {
         Self {
@@ -288,7 +287,6 @@ impl<T, A> NetworkForwarder<T, A> {
             topology,
             accounting,
             handle,
-            network_id,
             reporter,
         }
     }
@@ -422,7 +420,6 @@ where
         let candidates = closer_candidates(&*self.topology, &address, exclude, self.local);
         let accounting = Arc::clone(&self.accounting);
         let handle = self.handle.clone();
-        let network_id = self.network_id;
         // Snapshot the locally observed neighbourhood depth now: it is the
         // trusted authority for the required receipt depth. Reading it here
         // keeps the future `'static`.
@@ -455,20 +452,24 @@ where
 
                 match handle.push_chunk(closer, chunk.clone()).await {
                     Ok(receipt) => {
-                        // Verify the receipt BEFORE relaying upstream (#287 +
-                        // #293): a forwarder must never launder a malformed or
-                        // shallow custody receipt. The signer overlay is
-                        // recovered from `receipt.signature` over (address,
-                        // nonce) - NOT from the off-wire `receipt.storer`, which
-                        // the handler set to `closer` (the immediate downstream
-                        // peer, several hops from the real signer on a multi-hop
-                        // relay). The required depth is derived dynamically from
-                        // our locally observed neighbourhood depth, trust-but-
-                        // verified against the receipt's own `storage_radius`.
-                        // The receipt is relayed VERBATIM by the handler; we
-                        // never mint or re-sign it.
-                        match verify_receipt_depth(&receipt, &address, network_id, local_depth) {
-                            Ok(_signer) => {
+                        // The receipt is already a `SignedReceipt`: its signer
+                        // was recovered and verified at the decode boundary, so a
+                        // malformed receipt never reaches here (it surfaces as a
+                        // push error on the arm below). The forwarder's remaining
+                        // duty is the depth policy: a forwarder must never launder
+                        // a SHALLOW custody receipt. The required depth is derived
+                        // dynamically from our locally observed neighbourhood
+                        // depth, trust-but-verified against the receipt's own
+                        // `storage_radius`, and checked against the recovered
+                        // signer (NOT the immediate downstream peer). The receipt
+                        // is relayed VERBATIM by the handler; we never re-sign it.
+                        match verify_receipt_depth(
+                            &receipt.signer(),
+                            &address,
+                            receipt.storage_radius(),
+                            local_depth,
+                        ) {
+                            Ok(()) => {
                                 // Downstream leg complete; commit it. Upstream
                                 // `provide` returned un-applied for the handler.
                                 receive.apply();
@@ -481,35 +482,32 @@ where
                             Err(err) => {
                                 // Drop the downstream leg (release the
                                 // reservation) and never relay this receipt. The
-                                // downstream peer that handed us a shallow or
-                                // malformed receipt is scored adversely as
-                                // invalid data, so it loses reputation and we do
-                                // not take the reputational hit for laundering
-                                // it. Try the next candidate.
+                                // downstream peer that handed us a shallow receipt
+                                // is scored adversely as invalid data, so it loses
+                                // reputation and we do not take the reputational
+                                // hit for laundering it. Try the next candidate.
                                 drop(receive);
                                 warn!(
                                     %closer,
                                     %address,
                                     error = <&'static str>::from(&err),
-                                    "rejected unverifiable relayed receipt"
+                                    "rejected shallow relayed receipt"
                                 );
                                 reporter.report_peer(
                                     &closer,
                                     SwarmScoringEvent::InvalidData,
                                     PUSHSYNC_SOURCE,
                                 );
-                                last = match err {
-                                    ReceiptDepthError::Shallow { .. } => {
-                                        ForwardError::ShallowReceipt
-                                    }
-                                    ReceiptDepthError::MalformedSignature => {
-                                        ForwardError::UnverifiedRelay
-                                    }
-                                };
+                                last = ForwardError::ShallowReceipt;
                             }
                         }
                     }
                     Err(_) => {
+                        // A push failure also covers the malformed-receipt case:
+                        // the downstream handler rejects an unrecoverable receipt
+                        // at decode (scoring that peer) and resolves the push as
+                        // a remote failure, so a malformed receipt never reaches
+                        // the relay seam.
                         drop(receive);
                         last = ForwardError::AllPeersFailed;
                     }
@@ -541,6 +539,7 @@ mod tests {
         Accounting, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
     };
     use vertex_swarm_identity::Identity;
+    use vertex_swarm_net_pushsync::Receipt;
     use vertex_swarm_primitives::{Bin, StorageRadius};
     use vertex_swarm_spec::Spec;
     use vertex_swarm_test_utils::{MockTopology, test_identity_arc};
@@ -585,16 +584,16 @@ mod tests {
     /// Sign a custody receipt over the 32-byte chunk address (the wire format)
     /// with `signer`, grinding the nonce so the signer's derived overlay shares
     /// at least `min_depth` leading bits with `address` (i.e.
-    /// `PO(signer, address) >= min_depth`). Returns the receipt and the signer's
-    /// overlay, so a test controls exactly how deep the signer sits relative to
-    /// the chunk.
+    /// `PO(signer, address) >= min_depth`). Returns the wire receipt and the
+    /// signer's overlay, so a test controls exactly how deep the signer sits
+    /// relative to the chunk. The downstream handler's decode boundary recovers
+    /// the signer; tests resolve the push command with this wire `Receipt`.
     fn signed_receipt_at_depth(
         signer: &PrivateKeySigner,
         address: &ChunkAddress,
         min_depth: u8,
         storage_radius: StorageRadius,
-        storer: OverlayAddress,
-    ) -> (PushReceipt, OverlayAddress) {
+    ) -> (Receipt, OverlayAddress) {
         let eth = signer.address();
         // The signature is over the address only and is independent of the
         // nonce, so sign once and grind the nonce purely for overlay depth.
@@ -608,17 +607,18 @@ mod tests {
             let overlay = compute_overlay(&eth, TEST_NET, &nonce);
             if address.proximity(&overlay).get() >= min_depth {
                 return (
-                    PushReceipt {
-                        storer,
-                        signature,
-                        nonce,
-                        storage_radius,
-                    },
+                    Receipt::success(*address, signature, nonce, storage_radius),
                     overlay,
                 );
             }
             counter += 1;
         }
+    }
+
+    /// Recover a [`SignedReceipt`] from a wire receipt, as the decode boundary
+    /// does, so a test can build the value a forwarder relays.
+    fn signed(receipt: Receipt) -> SignedReceipt {
+        SignedReceipt::recover(receipt, TEST_NET).expect("test receipt recovers")
     }
 
     /// A stamped content chunk and its content-derived address.
@@ -771,7 +771,6 @@ mod tests {
             topo,
             Arc::clone(&acct),
             handle,
-            TEST_NET,
             Arc::new(RecordingReporter::default()) as Arc<dyn PeerReporter>,
         );
 
@@ -855,7 +854,6 @@ mod tests {
             topo,
             Arc::clone(&acct),
             handle,
-            TEST_NET,
             Arc::new(RecordingReporter::default()) as Arc<dyn PeerReporter>,
         );
 
@@ -916,22 +914,23 @@ mod tests {
             topo,
             Arc::clone(&acct),
             handle,
-            TEST_NET,
             Arc::clone(&reporter) as Arc<dyn PeerReporter>,
         );
 
         // A real storer receipt signed by a signer whose overlay sits 8 bits
         // deep relative to the chunk; the mock depth is 0 so any deep-enough
-        // receipt passes. The receipt must be relayed VERBATIM.
+        // receipt passes. The receipt must be relayed VERBATIM. The downstream
+        // decode boundary turns the wire receipt into a `SignedReceipt`; we
+        // model that here by recovering it before answering the push command.
         let signer = PrivateKeySigner::random();
-        let (storer_receipt, _signer_overlay) = signed_receipt_at_depth(
+        let (storer_receipt, signer_overlay) = signed_receipt_at_depth(
             &signer,
             &address,
             8,
             StorageRadius::new(Bin::new(8).unwrap()),
-            closer,
         );
         let expected = storer_receipt.clone();
+        let answer = signed(storer_receipt);
         let got = drive_one_command(
             rx,
             forwarder.push(chunk.clone(), pusher),
@@ -945,7 +944,7 @@ mod tests {
                     assert_eq!(peer, closer);
                     assert_eq!(requested, address);
                     assert_eq!(*pushed.address(), address);
-                    response.send(Ok(storer_receipt)).expect("receiver alive");
+                    response.send(Ok(answer)).expect("receiver alive");
                 }
                 other => panic!("unexpected command: {other:?}"),
             },
@@ -953,11 +952,10 @@ mod tests {
         .await;
 
         let forwarded = got.expect("relay succeeds");
-        // The receipt is relayed verbatim: every field is the storer's own.
-        assert_eq!(forwarded.receipt.storer, expected.storer);
-        assert_eq!(forwarded.receipt.signature, expected.signature);
-        assert_eq!(forwarded.receipt.nonce, expected.nonce);
-        assert_eq!(forwarded.receipt.storage_radius, expected.storage_radius);
+        // The receipt is relayed verbatim: the recovered signer matches and the
+        // wire bytes reproduce the storer's own signature, nonce, and radius.
+        assert_eq!(forwarded.receipt.signer(), signer_overlay);
+        assert_eq!(forwarded.receipt.to_wire(), expected);
 
         // Downstream committed; upstream deferred until the wire write.
         assert_eq!(acct.bandwidth().for_peer(pusher).balance(), Au::ZERO);
@@ -1005,7 +1003,6 @@ mod tests {
             topo,
             Arc::clone(&acct),
             handle,
-            TEST_NET,
             Arc::clone(&reporter) as Arc<dyn PeerReporter>,
         );
 
@@ -1019,15 +1016,15 @@ mod tests {
             &address,
             0,
             StorageRadius::new(Bin::new(8).unwrap()),
-            closer,
         );
+        let answer = signed(shallow);
 
         let err = drive_one_command(
             rx,
             forwarder.push(chunk.clone(), pusher),
             move |cmd| match cmd {
                 ClientCommand::PushChunk { response, .. } => {
-                    response.send(Ok(shallow)).expect("receiver alive");
+                    response.send(Ok(answer)).expect("receiver alive");
                 }
                 other => panic!("unexpected command: {other:?}"),
             },
@@ -1074,7 +1071,6 @@ mod tests {
             topo,
             Arc::clone(&acct),
             handle,
-            TEST_NET,
             Arc::clone(&reporter) as Arc<dyn PeerReporter>,
         );
 
@@ -1084,15 +1080,15 @@ mod tests {
             &address,
             0,
             StorageRadius::new(Bin::new(0).unwrap()),
-            closer,
         );
+        let answer = signed(shallow);
 
         let err = drive_one_command(
             rx,
             forwarder.push(chunk.clone(), pusher),
             move |cmd| match cmd {
                 ClientCommand::PushChunk { response, .. } => {
-                    response.send(Ok(shallow)).expect("receiver alive");
+                    response.send(Ok(answer)).expect("receiver alive");
                 }
                 other => panic!("unexpected command: {other:?}"),
             },
@@ -1110,9 +1106,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn push_rejects_malformed_receipt_signature() {
-        // An all-zero signature is the structural failure signal; it must never
-        // be relayed and the sender is scored for invalid data.
+    async fn push_failure_from_decode_rejected_receipt_relays_nothing() {
+        // A malformed (unrecoverable) downstream receipt is rejected at the
+        // downstream decode boundary, scoring that peer there, and the push
+        // resolves as a remote failure. At the forwarder the failure surfaces as
+        // a push error, so nothing is relayed and no reservation leaks. (The
+        // malformed-receipt rejection itself is covered at the decode boundary in
+        // `vertex-swarm-net-pushsync` and the handler.)
         let chunk = stamped();
         let address = *chunk.address();
         let pusher = overlay_at_proximity(&address, 2);
@@ -1130,34 +1130,28 @@ mod tests {
             topo,
             Arc::clone(&acct),
             handle,
-            TEST_NET,
             Arc::clone(&reporter) as Arc<dyn PeerReporter>,
         );
-
-        let malformed = PushReceipt {
-            storer: closer,
-            signature: Signature::from_raw(&[0u8; 65]).expect("zero signature"),
-            nonce: Nonce::from([3u8; 32]),
-            storage_radius: StorageRadius::new(Bin::new(5).unwrap()),
-        };
 
         let err = drive_one_command(
             rx,
             forwarder.push(chunk.clone(), pusher),
             move |cmd| match cmd {
                 ClientCommand::PushChunk { response, .. } => {
-                    response.send(Ok(malformed)).expect("receiver alive");
+                    response
+                        .send(Err(crate::ChunkTransferError::Remote))
+                        .expect("receiver alive");
                 }
                 other => panic!("unexpected command: {other:?}"),
             },
         )
         .await
-        .expect_err("a malformed receipt is never relayed");
-        assert!(matches!(err, ForwardError::UnverifiedRelay));
+        .expect_err("a push failure is never relayed as a receipt");
+        assert!(matches!(err, ForwardError::AllPeersFailed));
 
-        let (_, event, _) = reporter.single();
-        assert_eq!(event, SwarmScoringEvent::InvalidData);
-
+        // The forwarder did not relay and did not double-score: the decode
+        // boundary already scored the malformed downstream peer.
+        assert!(reporter.is_empty());
         assert_eq!(acct.bandwidth().for_peer(pusher).balance(), Au::ZERO);
         assert_eq!(acct.bandwidth().for_peer(closer).balance(), Au::ZERO);
     }
@@ -1181,7 +1175,6 @@ mod tests {
             topo,
             Arc::clone(&acct),
             handle,
-            TEST_NET,
             Arc::new(RecordingReporter::default()) as Arc<dyn PeerReporter>,
         );
         let err = forwarder
@@ -1213,7 +1206,6 @@ mod tests {
             topo,
             Arc::clone(&acct),
             handle,
-            TEST_NET,
             Arc::new(RecordingReporter::default()) as Arc<dyn PeerReporter>,
         );
 

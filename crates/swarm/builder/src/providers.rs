@@ -8,8 +8,9 @@ use tracing::warn;
 use vertex_swarm_api::{
     ChunkAddress, ChunkRetrievalResult, PeerReporter, PushReceipt, ReportSource, StampedChunk,
     SwarmChunkProvider, SwarmChunkSender, SwarmError, SwarmIdentity, SwarmResult,
-    SwarmScoringEvent, SwarmSpec, SwarmTopologyRouting, SwarmTopologyState, verify_receipt_depth,
+    SwarmScoringEvent, SwarmTopologyRouting, SwarmTopologyState, verify_receipt_depth,
 };
+use vertex_swarm_net_pushsync::SignedReceipt;
 use vertex_swarm_node::{ClientHandle, PeerSelector};
 use vertex_swarm_topology::TopologyHandle;
 
@@ -119,35 +120,28 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
 
         // The required custody depth is derived from our locally observed
         // neighbourhood depth (the trusted authority) and trust-but-verified
-        // against the receipt's own claimed `storage_radius`. The signer is
-        // recovered from the receipt signature over (address, nonce).
-        let network_id = self.topology.identity().spec().network_id();
+        // against the receipt's own claimed `storage_radius`. The receipt's
+        // signer was already recovered at the decode boundary; a malformed
+        // receipt never reaches here (it surfaces as a push error below).
         let local_depth = self.topology.depth();
         let reporter = self.topology.peer_manager();
 
         // Try each closest peer in order and return the first receipt that
-        // verifies. A shallow or malformed receipt is rejected, the responding
-        // peer scored adversely, and the walk continues to the next candidate:
-        // this is the retry-via-different-route dynamic the depth check exists
-        // to engage (a fabricated shallow receipt no longer convinces the
-        // uploader the push succeeded). The seed error covers the no-candidates
-        // case; each failed attempt replaces it, so the value after the loop is
-        // always the last failure.
+        // verifies. A shallow receipt is rejected, the responding peer scored
+        // adversely, and the walk continues to the next candidate: this is the
+        // retry-via-different-route dynamic the depth check exists to engage (a
+        // fabricated shallow receipt no longer convinces the uploader the push
+        // succeeded). The seed error covers the no-candidates case; each failed
+        // attempt replaces it, so the value after the loop is always the last
+        // failure.
         let mut outcome = Err(SwarmError::NoStorer {
             chunk_address: address,
         });
         for peer in closest {
             match self.client_handle.push_chunk(peer, chunk.clone()).await {
                 Ok(receipt) => {
-                    match accept_origin_receipt(
-                        &receipt,
-                        &address,
-                        network_id,
-                        local_depth,
-                        peer,
-                        reporter,
-                    ) {
-                        Ok(()) => return Ok(receipt),
+                    match accept_origin_receipt(&receipt, &address, local_depth, peer, reporter) {
+                        Ok(()) => return Ok(push_receipt_of(&receipt)),
                         Err(err) => {
                             outcome = Err(SwarmError::InvalidSignature {
                                 chunk_address: address,
@@ -167,6 +161,17 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
         }
 
         outcome
+    }
+}
+
+/// Project the internal verified [`SignedReceipt`] onto the public boundary
+/// [`PushReceipt`] returned to operators and embedders.
+fn push_receipt_of(receipt: &SignedReceipt) -> PushReceipt {
+    PushReceipt {
+        signer: receipt.signer(),
+        signature: *receipt.signature(),
+        nonce: *receipt.nonce(),
+        storage_radius: receipt.storage_radius(),
     }
 }
 
@@ -192,29 +197,34 @@ impl<I: SwarmIdentity> SwarmChunkSender for NetworkChunkProvider<I> {
 
 /// Decide whether an origin uploader accepts a custody receipt from `peer`.
 ///
-/// Recovers the signer overlay from the receipt signature (NOT the off-wire
-/// `storer` field) and checks `PO(signer, chunk)` against a depth derived from
-/// the locally observed neighbourhood depth, trust-but-verified against the
-/// receipt's own `storage_radius`. On rejection the responding peer is scored
-/// adversely for invalid data through the supplied reporter (the same path
-/// #287 uses), so the uploader's caller retries via a different route instead
-/// of believing a fabricated shallow receipt that the push succeeded.
+/// The receipt is a [`SignedReceipt`]: its signer was recovered and verified at
+/// the decode boundary (a malformed receipt never reaches here). This checks
+/// `PO(signer, chunk)` against a depth derived from the locally observed
+/// neighbourhood depth, trust-but-verified against the receipt's own
+/// `storage_radius`. On rejection the responding peer is scored adversely for
+/// invalid data through the supplied reporter (the same path #287 uses), so the
+/// uploader's caller retries via a different route instead of believing a
+/// fabricated shallow receipt that the push succeeded.
 fn accept_origin_receipt(
-    receipt: &PushReceipt,
+    receipt: &SignedReceipt,
     address: &ChunkAddress,
-    network_id: nectar_primitives::NetworkId,
     local_depth: vertex_swarm_api::NeighborhoodDepth,
     peer: SwarmAddress,
     reporter: &dyn PeerReporter,
-) -> Result<(), vertex_swarm_api::ReceiptDepthError> {
-    match verify_receipt_depth(receipt, address, network_id, local_depth) {
-        Ok(_signer) => Ok(()),
+) -> Result<(), vertex_swarm_api::ShallowReceipt> {
+    match verify_receipt_depth(
+        &receipt.signer(),
+        address,
+        receipt.storage_radius(),
+        local_depth,
+    ) {
+        Ok(()) => Ok(()),
         Err(err) => {
             warn!(
                 %peer,
                 %address,
                 error = <&'static str>::from(&err),
-                "rejected unverifiable custody receipt; retrying another route"
+                "rejected shallow custody receipt; retrying another route"
             );
             reporter.report_peer(&peer, SwarmScoringEvent::InvalidData, PUSHSYNC_SOURCE);
             Err(err)
@@ -230,8 +240,9 @@ mod tests {
     use alloy_signer_local::PrivateKeySigner;
     use nectar_primitives::{Bin, NetworkId, Nonce, compute_overlay};
     use vertex_swarm_api::{
-        NeighborhoodDepth, ReceiptDepthError, ReportSource, StorageRadius, SwarmScoringEvent,
+        NeighborhoodDepth, ReportSource, ShallowReceipt, StorageRadius, SwarmScoringEvent,
     };
+    use vertex_swarm_net_pushsync::Receipt;
 
     use super::*;
 
@@ -272,12 +283,14 @@ mod tests {
         ChunkAddress::new(bytes)
     }
 
+    /// A signer-verified receipt as the decode boundary produces it, with the
+    /// signer ground to sit at least `min_depth` bits deep relative to `address`.
     fn signed_receipt(
         signer: &PrivateKeySigner,
         address: &ChunkAddress,
         min_depth: u8,
         storage_radius: StorageRadius,
-    ) -> PushReceipt {
+    ) -> SignedReceipt {
         let eth = signer.address();
         // The signature is over the 32-byte address only (the wire format) and
         // is independent of the nonce, so sign once and grind for overlay depth.
@@ -289,12 +302,8 @@ mod tests {
             let nonce = Nonce::from(nonce_bytes);
             let overlay = compute_overlay(&eth, NET, &nonce);
             if address.proximity(&overlay).get() >= min_depth {
-                return PushReceipt {
-                    storer: SwarmAddress::from([0xff; 32]),
-                    signature,
-                    nonce,
-                    storage_radius,
-                };
+                let receipt = Receipt::success(*address, signature, nonce, storage_radius);
+                return SignedReceipt::recover(receipt, NET).expect("recovers");
             }
             counter += 1;
         }
@@ -316,7 +325,7 @@ mod tests {
         let reporter = RecordingReporter::default();
         let peer = SwarmAddress::from([0x11; 32]);
 
-        accept_origin_receipt(&receipt, &addr, NET, depth(8), peer, &reporter)
+        accept_origin_receipt(&receipt, &addr, depth(8), peer, &reporter)
             .expect("deep receipt accepted");
         assert!(reporter.reports.lock().unwrap().is_empty());
     }
@@ -331,9 +340,9 @@ mod tests {
         let reporter = RecordingReporter::default();
         let peer = SwarmAddress::from([0x22; 32]);
 
-        let err = accept_origin_receipt(&receipt, &addr, NET, depth(12), peer, &reporter)
+        let err = accept_origin_receipt(&receipt, &addr, depth(12), peer, &reporter)
             .expect_err("shallow receipt rejected");
-        assert!(matches!(err, ReceiptDepthError::Shallow { .. }));
+        assert!(matches!(err, ShallowReceipt { .. }));
 
         let (reported_peer, event, source) = reporter.single();
         assert_eq!(reported_peer, peer, "the responding peer is scored");
@@ -351,27 +360,9 @@ mod tests {
         let reporter = RecordingReporter::default();
         let peer = SwarmAddress::from([0x55; 32]);
 
-        let err = accept_origin_receipt(&receipt, &addr, NET, depth(12), peer, &reporter)
+        let err = accept_origin_receipt(&receipt, &addr, depth(12), peer, &reporter)
             .expect_err("radius 0 does not bypass the local floor");
-        assert!(matches!(err, ReceiptDepthError::Shallow { .. }));
-        assert_eq!(reporter.count(), 1);
-    }
-
-    #[test]
-    fn origin_rejects_a_malformed_receipt() {
-        let addr = address(0xff);
-        let receipt = PushReceipt {
-            storer: SwarmAddress::from([0x33; 32]),
-            signature: alloy_primitives::Signature::from_raw(&[0u8; 65]).expect("zero signature"),
-            nonce: Nonce::from([1u8; 32]),
-            storage_radius: radius(8),
-        };
-        let reporter = RecordingReporter::default();
-        let peer = SwarmAddress::from([0x44; 32]);
-
-        let err = accept_origin_receipt(&receipt, &addr, NET, depth(8), peer, &reporter)
-            .expect_err("malformed receipt rejected");
-        assert_eq!(err, ReceiptDepthError::MalformedSignature);
+        assert!(matches!(err, ShallowReceipt { .. }));
         assert_eq!(reporter.count(), 1);
     }
 }

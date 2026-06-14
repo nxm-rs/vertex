@@ -18,7 +18,10 @@ nectar-primitives.workspace = true
 nectar-postage.workspace = true
 
 ## alloy
+# `alloy-signer` pulls the `k256` feature on `alloy-primitives` so a custody
+# receipt's signer can be recovered from its signature at the decode boundary.
 alloy-primitives.workspace = true
+alloy-signer.workspace = true
 
 ## p2p
 libp2p.workspace = true
@@ -39,6 +42,8 @@ tracing.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
+# Receipt recovery tests sign real custody receipts.
+alloy-signer-local.workspace = true
 
 [lints]
 workspace = true
