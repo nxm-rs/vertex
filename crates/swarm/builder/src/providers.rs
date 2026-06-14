@@ -10,7 +10,7 @@ use vertex_swarm_api::{
     SwarmChunkProvider, SwarmChunkSender, SwarmError, SwarmIdentity, SwarmResult,
     SwarmScoringEvent, SwarmTopologyRouting, SwarmTopologyState,
 };
-use vertex_swarm_net_pushsync::Receipt;
+use vertex_swarm_net_pushsync::{DepthVerdict, Receipt};
 use vertex_swarm_node::{ClientHandle, PeerSelector};
 use vertex_swarm_topology::TopologyHandle;
 
@@ -120,10 +120,14 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
 
         // The required custody depth is derived from our locally observed
         // neighbourhood depth (the trusted authority) and trust-but-verified
-        // against the receipt's own claimed `storage_radius`. The receipt's
-        // signer was already recovered at the decode boundary; a malformed
-        // receipt never reaches here (it surfaces as a push error below).
+        // against the receipt's own claimed `storage_radius`. The check is gated
+        // on that depth being credible (the neighbourhood has saturated); a
+        // non-credible view cannot anchor the floor and yields an unverifiable
+        // verdict. The receipt's signer was already recovered at the decode
+        // boundary; a malformed receipt never reaches here (it surfaces as a push
+        // error below).
         let local_depth = self.topology.depth();
+        let neighbourhood_credible = self.topology.neighbourhood_credible();
         let reporter = self.topology.peer_manager();
 
         // Try each closest peer in order and return the first receipt that
@@ -131,29 +135,62 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
         // adversely, and the walk continues to the next candidate: this is the
         // retry-via-different-route dynamic the depth check exists to engage (a
         // fabricated shallow receipt no longer convinces the uploader the push
-        // succeeded). The seed error covers the no-candidates case; each failed
-        // attempt replaces it, so the value after the loop is always the last
+        // succeeded). An unverifiable receipt (non-credible local view) is also
+        // not trusted, but the responder is NOT penalised: it may be honest, we
+        // just cannot judge custody depth. If no candidate verifies and at least
+        // one was unverifiable, the push is reported as unconfirmed custody
+        // rather than a hard failure. The seed error covers the no-candidates
+        // case; each attempt replaces it, so the value after the loop is the last
         // failure.
         let mut outcome = Err(SwarmError::NoStorer {
             chunk_address: address,
         });
         for peer in closest {
             match self.client_handle.push_chunk(peer, chunk.clone()).await {
-                Ok(receipt) => match accept_origin_receipt(&receipt, peer, local_depth, reporter) {
-                    Ok(()) => return Ok(push_receipt_of(receipt)),
-                    Err(err) => {
-                        outcome = Err(SwarmError::InvalidSignature {
-                            chunk_address: address,
-                            reason: err.to_string(),
+                Ok(receipt) => {
+                    match accept_origin_receipt(
+                        &receipt,
+                        peer,
+                        local_depth,
+                        neighbourhood_credible,
+                        reporter,
+                    ) {
+                        DepthVerdict::Verified => return Ok(push_receipt_of(receipt)),
+                        DepthVerdict::Shallow(err) => {
+                            outcome = Err(SwarmError::InvalidSignature {
+                                chunk_address: address,
+                                reason: err.to_string(),
+                            });
+                        }
+                        DepthVerdict::Unverifiable => {
+                            // Surface unconfirmed custody distinctly from a hard
+                            // invalid-signature failure. A later shallow verdict
+                            // (a proven finding) takes precedence over this; an
+                            // earlier one is not downgraded.
+                            if !matches!(outcome, Err(SwarmError::InvalidSignature { .. })) {
+                                outcome = Err(SwarmError::UnconfirmedCustody {
+                                    chunk_address: address,
+                                });
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    // A transport-level failure is the weakest signal: it does
+                    // not overwrite a depth verdict (shallow misbehaviour or
+                    // unconfirmed custody) already recorded for an earlier
+                    // candidate.
+                    if !matches!(
+                        outcome,
+                        Err(SwarmError::InvalidSignature { .. })
+                            | Err(SwarmError::UnconfirmedCustody { .. })
+                    ) {
+                        outcome = Err(SwarmError::AllPeersFailed {
+                            address,
+                            attempts,
+                            source: Box::new(e),
                         });
                     }
-                },
-                Err(e) => {
-                    outcome = Err(SwarmError::AllPeersFailed {
-                        address,
-                        attempts,
-                        source: Box::new(e),
-                    });
                 }
             }
         }
@@ -198,18 +235,27 @@ impl<I: SwarmIdentity> SwarmChunkSender for NetworkChunkProvider<I> {
 /// The receipt is a [`Receipt`]: its storer was recovered and verified at the
 /// decode boundary (a malformed receipt never reaches here). This checks the
 /// custody depth against the locally observed neighbourhood depth,
-/// trust-but-verified against the receipt's own declared radius. On rejection the
-/// responding peer is scored adversely for invalid data through the supplied
-/// reporter (the same path #287 uses), so the uploader's caller retries via a
-/// different route instead of believing a fabricated shallow receipt that the
-/// push succeeded.
+/// trust-but-verified against the receipt's own declared radius, gated on that
+/// depth being credible (`neighbourhood_credible`).
+///
+/// The verdict drives the caller:
+/// - [`DepthVerdict::Verified`]: the receipt is trusted; the push succeeded.
+/// - [`DepthVerdict::Shallow`]: the storer is provably too shallow. The
+///   responding peer is scored adversely for invalid data through the supplied
+///   reporter (the same path #287 uses), and the caller retries via a different
+///   route instead of believing a fabricated shallow receipt.
+/// - [`DepthVerdict::Unverifiable`]: the local view is not credible enough to
+///   judge custody depth. The peer is NOT penalised (it may be honest); the
+///   caller treats the push as unconfirmed.
 fn accept_origin_receipt(
     receipt: &Receipt,
     peer: SwarmAddress,
     local_depth: vertex_swarm_api::NeighborhoodDepth,
+    neighbourhood_credible: bool,
     reporter: &dyn PeerReporter,
-) -> Result<(), vertex_swarm_net_pushsync::ShallowReceipt> {
-    receipt.verify_depth(local_depth).inspect_err(|err| {
+) -> DepthVerdict {
+    let verdict = receipt.verify_depth(local_depth, neighbourhood_credible);
+    if let DepthVerdict::Shallow(err) = &verdict {
         warn!(
             %peer,
             address = %receipt.address,
@@ -217,7 +263,8 @@ fn accept_origin_receipt(
             "rejected shallow custody receipt; retrying another route"
         );
         reporter.report_peer(&peer, SwarmScoringEvent::InvalidData, PUSHSYNC_SOURCE);
-    })
+    }
+    verdict
 }
 
 #[cfg(test)]
@@ -228,7 +275,7 @@ mod tests {
     use alloy_signer_local::PrivateKeySigner;
     use nectar_primitives::{Bin, NetworkId, Nonce, compute_overlay};
     use vertex_swarm_api::{NeighborhoodDepth, ReportSource, StorageRadius, SwarmScoringEvent};
-    use vertex_swarm_net_pushsync::{ShallowReceipt, WireReceipt};
+    use vertex_swarm_net_pushsync::WireReceipt;
 
     use super::*;
 
@@ -311,7 +358,11 @@ mod tests {
         let reporter = RecordingReporter::default();
         let peer = SwarmAddress::from([0x11; 32]);
 
-        accept_origin_receipt(&receipt, peer, depth(8), &reporter).expect("deep receipt accepted");
+        assert_eq!(
+            accept_origin_receipt(&receipt, peer, depth(8), true, &reporter),
+            DepthVerdict::Verified,
+            "deep receipt accepted"
+        );
         assert!(reporter.reports.lock().unwrap().is_empty());
     }
 
@@ -319,15 +370,17 @@ mod tests {
     fn origin_rejects_a_shallow_receipt_and_reports_the_peer() {
         let signer = PrivateKeySigner::random();
         let addr = address(0xff);
-        // Shallow signer; the local floor (depth 12) rejects it regardless of the
-        // claimed radius.
+        // Shallow signer; against a credible local view the floor (depth 12)
+        // rejects it regardless of the claimed radius.
         let receipt = signed_receipt(&signer, &addr, 0, radius(8));
         let reporter = RecordingReporter::default();
         let peer = SwarmAddress::from([0x22; 32]);
 
-        let err = accept_origin_receipt(&receipt, peer, depth(12), &reporter)
-            .expect_err("shallow receipt rejected");
-        assert!(matches!(err, ShallowReceipt { .. }));
+        let DepthVerdict::Shallow(_) =
+            accept_origin_receipt(&receipt, peer, depth(12), true, &reporter)
+        else {
+            panic!("shallow receipt rejected");
+        };
 
         let (reported_peer, event, source) = reporter.single();
         assert_eq!(reported_peer, peer, "the responding peer is scored");
@@ -337,17 +390,46 @@ mod tests {
 
     #[test]
     fn origin_rejects_a_shallow_receipt_claiming_radius_zero() {
-        // Regression: an attacker setting storage_radius == 0 must not bypass the
-        // local floor at the origin uploader.
+        // Regression: against a credible local view an attacker setting
+        // storage_radius == 0 must not bypass the local floor at the origin
+        // uploader.
         let signer = PrivateKeySigner::random();
         let addr = address(0xff);
         let receipt = signed_receipt(&signer, &addr, 0, radius(0));
         let reporter = RecordingReporter::default();
         let peer = SwarmAddress::from([0x55; 32]);
 
-        let err = accept_origin_receipt(&receipt, peer, depth(12), &reporter)
-            .expect_err("radius 0 does not bypass the local floor");
-        assert!(matches!(err, ShallowReceipt { .. }));
+        assert!(
+            matches!(
+                accept_origin_receipt(&receipt, peer, depth(12), true, &reporter),
+                DepthVerdict::Shallow(_)
+            ),
+            "radius 0 does not bypass the local floor"
+        );
         assert_eq!(reporter.count(), 1);
+    }
+
+    #[test]
+    fn origin_treats_an_unverifiable_receipt_as_unconfirmed_without_reporting() {
+        // Regression for #316: with a non-credible local view (a fresh or sparse
+        // node, local_depth == 0) a shallow receipt declaring radius 0 must NOT
+        // be accepted, and the responder must NOT be penalised: the verdict is
+        // unverifiable, not a finding of misbehaviour.
+        let signer = PrivateKeySigner::random();
+        let addr = address(0xff);
+        let receipt = signed_receipt(&signer, &addr, 0, radius(0));
+        let reporter = RecordingReporter::default();
+        let peer = SwarmAddress::from([0x66; 32]);
+
+        assert_eq!(
+            accept_origin_receipt(&receipt, peer, depth(0), false, &reporter),
+            DepthVerdict::Unverifiable,
+            "non-credible view yields an unverifiable verdict"
+        );
+        assert_eq!(
+            reporter.count(),
+            0,
+            "an unverifiable receipt does not penalise the peer"
+        );
     }
 }

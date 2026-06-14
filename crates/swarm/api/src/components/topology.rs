@@ -30,6 +30,17 @@ pub trait SwarmTopologyState: Send + Sync {
     /// Get the current neighborhood depth.
     fn depth(&self) -> NeighborhoodDepth;
 
+    /// Whether the locally observed neighbourhood depth is credible.
+    ///
+    /// The depth is an atomic that begins at zero on a fresh, sparse, or
+    /// just-restarted node and only reflects a real responsibility boundary once
+    /// the neighbourhood has saturated. Custody-receipt depth checks must not
+    /// anchor their floor to a non-credible depth: the receipt's declared radius
+    /// is unsigned wire data and would otherwise become the sole,
+    /// attacker-controlled bar (see the pushsync receipt depth policy). Returns
+    /// true once the neighbourhood is saturated.
+    fn neighbourhood_credible(&self) -> bool;
+
     /// Get the node's overlay address.
     fn overlay_address(&self) -> OverlayAddress {
         self.identity().overlay_address()
