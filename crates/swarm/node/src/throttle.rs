@@ -68,7 +68,10 @@ use futures_timer::Delay;
 use nectar_primitives::ChunkAddress;
 use parking_lot::Mutex;
 use vertex_net_ratelimiter::{Quota, SelfRateLimiter};
-use vertex_swarm_api::{Au, PeerAffordability, SwarmPricing};
+use vertex_swarm_api::{
+    PeerAffordability, SwarmAccountingConfig, SwarmClientAccounting, SwarmPricing,
+};
+use vertex_swarm_bandwidth::DefaultBandwidthConfig;
 use vertex_swarm_primitives::OverlayAddress;
 
 use std::num::NonZeroU32;
@@ -148,22 +151,32 @@ pub struct SelfThrottle {
 }
 
 impl SelfThrottle {
-    /// Build a throttle from the per-peer allowance signal, the chunk pricer
-    /// (the same one the accounting layer debits through), the pseudosettle
-    /// forgiveness rate (`refresh_rate` AU per second), and the safety-margin
-    /// percent of the payment-threshold headroom the bucket is sized to.
+    /// Build a throttle from the client accounting object and the bandwidth
+    /// config.
+    ///
+    /// Everything the throttle paces against comes from these two: the per-peer
+    /// allowance signal is `accounting.bandwidth()` (which implements
+    /// [`PeerAffordability`]), the chunk pricer (the same one the accounting
+    /// layer debits through) is `accounting.pricing()`, the pseudosettle
+    /// forgiveness rate (`refresh_rate` AU per second) and the safety-margin
+    /// percent of the payment-threshold headroom the bucket is sized to are both
+    /// read off `config`.
     ///
     /// `refresh_rate` is clamped to at least one AU so a misconfigured zero rate
     /// can never panic on a divide, and `allowance_percent` is clamped into
     /// 1..=100 so the bucket is never sized to zero or above the live headroom.
-    pub fn new(
-        allowance: Arc<dyn PeerAffordability>,
-        pricing: Arc<dyn SwarmPricing>,
-        refresh_rate: Au,
-        allowance_percent: u8,
-    ) -> Self {
-        let refresh_rate = refresh_rate.as_amount().max(1);
-        let allowance_percent = u64::from(allowance_percent.clamp(1, 100));
+    pub fn new<A>(accounting: &A, config: &DefaultBandwidthConfig) -> Self
+    where
+        A: SwarmClientAccounting,
+        A::Bandwidth: PeerAffordability + Clone + 'static,
+        A::Pricing: Clone + 'static,
+    {
+        let allowance: Arc<dyn PeerAffordability> = Arc::new(accounting.bandwidth().clone());
+        let pricing: Arc<dyn SwarmPricing> = Arc::new(accounting.pricing().clone());
+        let refresh_rate = SwarmAccountingConfig::refresh_rate(config)
+            .as_amount()
+            .max(1);
+        let allowance_percent = u64::from(config.throttle_allowance_percent().clamp(1, 100));
 
         // The default quota only seeds a bucket before the first allowance sync;
         // `set_quota` immediately re-sizes it from the live allowance. One AU
@@ -313,6 +326,7 @@ fn saturating_u32(amount: u64) -> u32 {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use vertex_swarm_api::Au;
 
     fn peer(n: u8) -> OverlayAddress {
         OverlayAddress::from([n; 32])
@@ -363,18 +377,119 @@ mod tests {
     /// Per-request price in AU returned by the test pricer.
     const COST: u64 = 10;
 
+    /// Bandwidth side of the test [`SwarmClientAccounting`] mock.
+    ///
+    /// Wraps the chosen affordability signal and delegates [`PeerAffordability`]
+    /// to it; the [`SwarmBandwidthAccounting`] surface the trait requires is a
+    /// no-op since the throttle reads only `bandwidth()` (for affordability) and
+    /// `pricing()`.
+    #[derive(Clone)]
+    struct MockBandwidth(Arc<dyn PeerAffordability>);
+
+    impl PeerAffordability for MockBandwidth {
+        fn can_afford(&self, overlay: &OverlayAddress, price: Au) -> bool {
+            self.0.can_afford(overlay, price)
+        }
+        fn allowance_remaining(&self, overlay: &OverlayAddress) -> Au {
+            self.0.allowance_remaining(overlay)
+        }
+        fn allowance_to_payment_threshold(&self, overlay: &OverlayAddress) -> Au {
+            self.0.allowance_to_payment_threshold(overlay)
+        }
+    }
+
+    impl vertex_swarm_api::SwarmBandwidthAccounting for MockBandwidth {
+        type Identity = vertex_swarm_test_utils::MockIdentity;
+        type Peer = vertex_swarm_bandwidth::NoPeerBandwidth;
+        type ReceiveAction = vertex_swarm_bandwidth::NoReceiveAction;
+        type ProvideAction = vertex_swarm_bandwidth::NoProvideAction;
+
+        fn identity(&self) -> &Self::Identity {
+            unreachable!("throttle never reads the identity")
+        }
+        fn for_peer(&self, peer: OverlayAddress) -> Self::Peer {
+            vertex_swarm_bandwidth::NoAccounting::new(
+                vertex_swarm_test_utils::MockIdentity::with_first_byte(0),
+            )
+            .for_peer(peer)
+        }
+        fn peers(&self) -> Vec<OverlayAddress> {
+            Vec::new()
+        }
+        fn remove_peer(&self, _peer: &OverlayAddress) {}
+        fn prepare_receive(
+            &self,
+            _peer: OverlayAddress,
+            _price: Au,
+            _originated: bool,
+        ) -> vertex_swarm_api::SwarmResult<Self::ReceiveAction> {
+            Ok(vertex_swarm_bandwidth::NoReceiveAction)
+        }
+        fn prepare_provide(
+            &self,
+            _peer: OverlayAddress,
+            _price: Au,
+        ) -> vertex_swarm_api::SwarmResult<Self::ProvideAction> {
+            Ok(vertex_swarm_bandwidth::NoProvideAction)
+        }
+    }
+
+    /// Minimal [`SwarmClientAccounting`] bundling a chosen affordability signal
+    /// and pricer so the [`SelfThrottle::new`] ctor can extract both.
+    #[derive(Clone)]
+    struct MockClientAccounting {
+        bandwidth: MockBandwidth,
+        pricing: Arc<dyn SwarmPricing>,
+    }
+
+    impl SwarmClientAccounting for MockClientAccounting {
+        type Bandwidth = MockBandwidth;
+        type Pricing = Arc<dyn SwarmPricing>;
+
+        fn bandwidth(&self) -> &Self::Bandwidth {
+            &self.bandwidth
+        }
+        fn pricing(&self) -> &Self::Pricing {
+            &self.pricing
+        }
+    }
+
+    /// Build a throttle from a chosen affordability signal, pricer, refresh rate,
+    /// and margin percent, bundling them through the same accounting-object and
+    /// config-reference path the production ctor takes.
+    fn build_throttle(
+        allowance: Arc<dyn PeerAffordability>,
+        pricing: Arc<dyn SwarmPricing>,
+        refresh_rate: u64,
+        allowance_percent: u8,
+    ) -> SelfThrottle {
+        let accounting = MockClientAccounting {
+            bandwidth: MockBandwidth(allowance),
+            pricing,
+        };
+        // Only refresh_rate and throttle_allowance_percent are read off the
+        // config; the remaining fields are placeholders that the throttle never
+        // touches.
+        let config = DefaultBandwidthConfig::new(
+            vertex_swarm_api::BandwidthMode::Pseudosettle,
+            0,
+            0,
+            refresh_rate,
+            0,
+            1,
+            allowance_percent,
+            Default::default(),
+        );
+        SelfThrottle::new(&accounting, &config)
+    }
+
     fn throttle(allowance: Arc<dyn PeerAffordability>) -> SelfThrottle {
         // refresh_rate 10 AU/sec; the pricer meters every request at COST AU, so
         // a bucket of N AU admits floor(N / COST) requests. The margin percent is
         // 100 here so the bucket equals the full payment-threshold headroom and
         // the per-request arithmetic stays exact; the margin itself is exercised
         // by `margin_percent_shrinks_the_bucket`.
-        SelfThrottle::new(
-            allowance,
-            Arc::new(FixedPrice(COST)),
-            Au::from_amount(REFRESH_RATE),
-            100,
-        )
+        build_throttle(allowance, Arc::new(FixedPrice(COST)), REFRESH_RATE, 100)
     }
 
     #[test]
@@ -407,12 +522,7 @@ mod tests {
         // A pricer returning zero must still draw a token so a free chunk is not
         // unthrottled.
         let alloc = DynamicAllowance::new(100);
-        let t = SelfThrottle::new(
-            alloc,
-            Arc::new(FixedPrice(0)),
-            Au::from_amount(REFRESH_RATE),
-            100,
-        );
+        let t = build_throttle(alloc, Arc::new(FixedPrice(0)), REFRESH_RATE, 100);
         assert_eq!(t.request_cost(&peer(1), &address(0)), 1);
     }
 
@@ -533,12 +643,7 @@ mod tests {
         // With an 80% margin a 100-AU headroom yields an 80-AU bucket, which at a
         // 10-AU price admits eight requests, not ten.
         let alloc = DynamicAllowance::new(100);
-        let t = SelfThrottle::new(
-            alloc,
-            Arc::new(FixedPrice(COST)),
-            Au::from_amount(REFRESH_RATE),
-            80,
-        );
+        let t = build_throttle(alloc, Arc::new(FixedPrice(COST)), REFRESH_RATE, 80);
         let cost = t.request_cost(&peer(1), &address(1));
         t.sync_quota(&peer(1));
         for _ in 0..8 {
@@ -552,19 +657,9 @@ mod tests {
         // A zero percent clamps up to 1 (never sizes the bucket to nothing), and a
         // percent above 100 clamps down to 100 (never above the live headroom).
         let alloc = DynamicAllowance::new(1000);
-        let lo = SelfThrottle::new(
-            alloc.clone(),
-            Arc::new(FixedPrice(COST)),
-            Au::from_amount(REFRESH_RATE),
-            0,
-        );
+        let lo = build_throttle(alloc.clone(), Arc::new(FixedPrice(COST)), REFRESH_RATE, 0);
         assert_eq!(lo.allowance_percent, 1);
-        let hi = SelfThrottle::new(
-            alloc,
-            Arc::new(FixedPrice(COST)),
-            Au::from_amount(REFRESH_RATE),
-            200,
-        );
+        let hi = build_throttle(alloc, Arc::new(FixedPrice(COST)), REFRESH_RATE, 200);
         assert_eq!(hi.allowance_percent, 100);
     }
 
@@ -592,13 +687,13 @@ mod tests {
         // Disconnect headroom is 1000 AU (100 requests) but payment headroom is
         // only 30 AU (three requests at the 10-AU price); margin 100% for an exact
         // count. The fourth request must be refused.
-        let t = SelfThrottle::new(
+        let t = build_throttle(
             Arc::new(SplitHeadroom {
                 disconnect: 1000,
                 payment: 30,
             }),
             Arc::new(FixedPrice(COST)),
-            Au::from_amount(REFRESH_RATE),
+            REFRESH_RATE,
             100,
         );
         let cost = t.request_cost(&peer(1), &address(1));

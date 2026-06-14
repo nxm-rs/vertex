@@ -696,9 +696,21 @@ mod tests {
 
     // Throttle wiring at the outbound-API boundary.
     use crate::throttle::SelfThrottle;
-    use vertex_swarm_api::{Au, PeerAffordability, SwarmPricing};
+    use vertex_swarm_api::{
+        Au, BandwidthMode, PeerAffordability, SwarmBandwidthAccounting, SwarmClientAccounting,
+        SwarmPricing, SwarmResult,
+    };
+    use vertex_swarm_bandwidth::{
+        DefaultBandwidthConfig, NoAccounting, NoPeerBandwidth, NoProvideAction, NoReceiveAction,
+    };
+    use vertex_swarm_test_utils::MockIdentity;
 
     /// A fixed per-peer allowance, in AU, for the throttle's allowance signal.
+    ///
+    /// Also stands in as the [`SwarmBandwidthAccounting`] half of the client
+    /// accounting mock: the throttle reads only affordability and pricing off the
+    /// accounting object, so the accounting surface is a no-op.
+    #[derive(Clone)]
     struct FixedAllowance(u64);
     impl PeerAffordability for FixedAllowance {
         fn can_afford(&self, _overlay: &OverlayAddress, price: Au) -> bool {
@@ -709,8 +721,42 @@ mod tests {
         }
     }
 
+    impl SwarmBandwidthAccounting for FixedAllowance {
+        type Identity = MockIdentity;
+        type Peer = NoPeerBandwidth;
+        type ReceiveAction = NoReceiveAction;
+        type ProvideAction = NoProvideAction;
+
+        fn identity(&self) -> &Self::Identity {
+            unreachable!("throttle never reads the identity")
+        }
+        fn for_peer(&self, peer: OverlayAddress) -> Self::Peer {
+            NoAccounting::new(MockIdentity::with_first_byte(0)).for_peer(peer)
+        }
+        fn peers(&self) -> Vec<OverlayAddress> {
+            Vec::new()
+        }
+        fn remove_peer(&self, _peer: &OverlayAddress) {}
+        fn prepare_receive(
+            &self,
+            _peer: OverlayAddress,
+            _price: Au,
+            _originated: bool,
+        ) -> SwarmResult<Self::ReceiveAction> {
+            Ok(NoReceiveAction)
+        }
+        fn prepare_provide(
+            &self,
+            _peer: OverlayAddress,
+            _price: Au,
+        ) -> SwarmResult<Self::ProvideAction> {
+            Ok(NoProvideAction)
+        }
+    }
+
     /// A pricer that meters every chunk at one AU, so the throttle's bucket holds
     /// exactly `tokens` requests.
+    #[derive(Clone)]
     struct OneAuPricer;
     impl SwarmPricing for OneAuPricer {
         fn price(&self, _chunk: &ChunkAddress) -> Au {
@@ -721,17 +767,47 @@ mod tests {
         }
     }
 
+    /// Minimal [`SwarmClientAccounting`] bundling a fixed allowance and the
+    /// one-AU pricer so [`SelfThrottle::new`] can extract both.
+    #[derive(Clone)]
+    struct MockClientAccounting {
+        bandwidth: FixedAllowance,
+        pricing: OneAuPricer,
+    }
+    impl SwarmClientAccounting for MockClientAccounting {
+        type Bandwidth = FixedAllowance;
+        type Pricing = OneAuPricer;
+
+        fn bandwidth(&self) -> &Self::Bandwidth {
+            &self.bandwidth
+        }
+        fn pricing(&self) -> &Self::Pricing {
+            &self.pricing
+        }
+    }
+
     /// Build a handle whose throttle gives each peer a bucket of `tokens`
     /// one-AU requests (refresh rate and per-request chunk price are both 1 AU,
     /// so the bucket holds exactly `tokens` requests and refills one per second).
     fn throttled_handle(tokens: u64) -> (ClientHandle, mpsc::Receiver<ClientCommand>) {
         let (tx, rx) = mpsc::channel::<ClientCommand>(16);
-        let throttle = Arc::new(SelfThrottle::new(
-            Arc::new(FixedAllowance(tokens)),
-            Arc::new(OneAuPricer),
-            Au::from_amount(1),
+        let accounting = MockClientAccounting {
+            bandwidth: FixedAllowance(tokens),
+            pricing: OneAuPricer,
+        };
+        // Only refresh_rate (1 AU/sec) and throttle_allowance_percent (100) are
+        // read off the config; the rest are placeholders the throttle ignores.
+        let config = DefaultBandwidthConfig::new(
+            BandwidthMode::Pseudosettle,
+            0,
+            0,
+            1,
+            0,
+            1,
             100,
-        ));
+            Default::default(),
+        );
+        let throttle = Arc::new(SelfThrottle::new(&accounting, &config));
         (ClientHandle::new(tx).with_throttle(throttle), rx)
     }
 
