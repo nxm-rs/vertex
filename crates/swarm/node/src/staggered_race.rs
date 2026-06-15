@@ -1,38 +1,52 @@
-//! Staggered candidate race for outbound chunk retrieval.
+//! Staggered candidate race: a reusable any-candidate race that resolves on the
+//! first success.
 //!
-//! Retrieval has several candidate storers in proximity order, any of which can
-//! answer. Walking them strictly in series lets one slow or withholding head
-//! candidate stall the whole request for a full per-attempt deadline, and on a
-//! streamed download that head-of-line stall blocks every later chunk behind
-//! it.
+//! Some requests have several interchangeable candidates, any of which can
+//! satisfy the request. Walking them strictly in series lets one slow or
+//! withholding head candidate stall the whole request for a full per-attempt
+//! deadline, and where the caller streams a sequence of such requests that
+//! head-of-line stall blocks every later item behind it.
 //!
 //! [`race_candidates`] instead queries the best candidate immediately and adds
-//! each further candidate after a [`RETRIEVAL_STAGGER`] tick (or as soon as an
-//! earlier attempt fails), resolving on the first success. Staggering bounds the
-//! fan-out cost: every raced attempt the remote answers is paid for in
-//! accounting units, so further candidates only start while no response has
-//! arrived. A withholding head candidate is therefore overtaken by the next
-//! candidate within the stagger instead of within the per-attempt deadline.
+//! each further candidate after a caller-supplied `stagger` tick (or as soon as
+//! an earlier attempt fails), resolving on the first success. Staggering bounds
+//! the fan-out cost: where each raced attempt is itself costly (a metered
+//! network request, say), further candidates only start while no response has
+//! arrived, so a withholding head candidate is overtaken by the next candidate
+//! within the stagger instead of within the per-attempt deadline.
 //!
 //! The losing attempts are dropped the moment the race resolves: returning from
 //! the race drops every future still in the [`FuturesUnordered`], so any
-//! accounting reservation or forwarder slot a losing attempt holds is released
-//! on drop. The per-candidate retrieval closure carries its own pacing (the
-//! outbound self-throttle and affordability check run inside each attempt before
-//! it dispatches), so staggered starts preserve the per-peer pacing that a
-//! single all-at-once fan-out would skip.
+//! resource a losing attempt holds (a reservation, a forwarder slot) is released
+//! on drop. The per-candidate closure carries its own pacing, so staggered
+//! starts preserve any per-candidate throttling that a single all-at-once
+//! fan-out would skip.
+//!
+//! # Read-style races only
+//!
+//! This helper is for read-style, any-peer races where every candidate answers
+//! the same immutable question and the first answer wins. Chunk retrieval is the
+//! canonical caller, with [`RETRIEVAL_STAGGER`] as its stagger. It must NOT be
+//! applied to directed-write paths such as pushsync: fanning out a write makes
+//! several peers take redundant custody of the same chunk and multiplies the
+//! outbound bandwidth cost, which is exactly what a write path is meant to
+//! avoid. Directed writes use a sequential fallback (try one peer, then the
+//! next), never a fanned-out race.
 
 use std::time::Duration;
 
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 use futures_timer::Delay;
 
-/// Delay before each additional retrieval candidate joins the race.
+/// Default stagger between retrieval candidates joining a [`race_candidates`]
+/// race.
 ///
-/// Staggering bounds the cost of the fan-out: every raced attempt the remote
-/// answers is paid for in accounting units, so further candidates only start
-/// while no response has arrived. A failed attempt starts the next candidate
-/// immediately instead of waiting out the stagger.
+/// This is the retrieval path's chosen value, passed in by the retrieval
+/// callers; the helper itself takes the stagger as a parameter and is not bound
+/// to it. Staggering bounds the cost of the fan-out: every raced retrieval the
+/// remote answers is paid for in accounting units, so further candidates only
+/// start while no response has arrived. A failed attempt starts the next
+/// candidate immediately instead of waiting out the stagger.
 pub const RETRIEVAL_STAGGER: Duration = Duration::from_millis(500);
 
 /// Outcome of a candidate race that produced no success.
@@ -44,17 +58,21 @@ pub enum RaceFailure<E> {
     AllFailed(E),
 }
 
-/// Race `candidates` for the first successful retrieval, dispatching each
-/// through `attempt` with a staggered start.
+/// Race `candidates` for the first success, dispatching each through `attempt`
+/// with a `stagger`-delayed start.
 ///
-/// The best candidate is queried immediately; each [`RETRIEVAL_STAGGER`] tick
-/// (or earlier failure) adds the next candidate, and the race resolves on the
-/// first `Ok`. When the candidates are exhausted with no success, the last
-/// failure is returned as [`RaceFailure::AllFailed`]; an empty candidate list
-/// yields [`RaceFailure::NoCandidates`]. Losing attempts are dropped as soon as
-/// the race resolves, releasing any resource they hold.
+/// The best candidate is queried immediately; each `stagger` tick (or earlier
+/// failure) adds the next candidate, and the race resolves on the first `Ok`.
+/// When the candidates are exhausted with no success, the last failure is
+/// returned as [`RaceFailure::AllFailed`]; an empty candidate list yields
+/// [`RaceFailure::NoCandidates`]. Losing attempts are dropped as soon as the
+/// race resolves, releasing any resource they hold.
+///
+/// This is a read-style any-candidate race. See the module docs for why it must
+/// not be applied to directed-write paths such as pushsync.
 pub async fn race_candidates<C, T, E, F, Fut>(
     candidates: impl IntoIterator<Item = C>,
+    stagger: Duration,
     mut attempt: F,
 ) -> Result<T, RaceFailure<E>>
 where
@@ -69,7 +87,7 @@ where
         None => return Err(RaceFailure::NoCandidates),
     }
 
-    let mut stagger = Delay::new(RETRIEVAL_STAGGER).fuse();
+    let mut stagger_tick = Delay::new(stagger).fuse();
 
     loop {
         futures::select! {
@@ -86,10 +104,10 @@ where
                     }
                 }
             },
-            _ = stagger => {
+            _ = stagger_tick => {
                 if let Some(candidate) = candidates.next() {
                     in_flight.push(attempt(candidate));
-                    stagger = Delay::new(RETRIEVAL_STAGGER).fuse();
+                    stagger_tick = Delay::new(stagger).fuse();
                 }
             }
         }
@@ -167,10 +185,11 @@ mod tests {
 
     #[tokio::test]
     async fn no_candidates_yields_no_candidates() {
-        let outcome = race_candidates::<u32, u32, &str, _, _>(Vec::new(), |_| async {
-            unreachable!("no candidate is attempted")
-        })
-        .await;
+        let outcome =
+            race_candidates::<u32, u32, &str, _, _>(Vec::new(), RETRIEVAL_STAGGER, |_| async {
+                unreachable!("no candidate is attempted")
+            })
+            .await;
 
         assert!(matches!(outcome, Err(RaceFailure::NoCandidates)));
     }
@@ -192,7 +211,7 @@ mod tests {
         let mut legs = legs.into_iter();
 
         let start = Instant::now();
-        let outcome = race_candidates(0..2, |_| {
+        let outcome = race_candidates(0..2, RETRIEVAL_STAGGER, |_| {
             let (after, result) = legs.next().expect("a leg per candidate");
             TrackedLeg::new(after, result, completed.clone(), dropped.clone())
         })
@@ -234,7 +253,7 @@ mod tests {
         let mut legs = legs.into_iter();
 
         let start = Instant::now();
-        let outcome = race_candidates(0..2, |_| {
+        let outcome = race_candidates(0..2, RETRIEVAL_STAGGER, |_| {
             let (after, result) = legs.next().expect("a leg per candidate");
             TrackedLeg::new(after, result, completed.clone(), dropped.clone())
         })
@@ -260,7 +279,7 @@ mod tests {
         ];
         let mut legs = legs.into_iter();
 
-        let outcome = race_candidates(0..3, |_| {
+        let outcome = race_candidates(0..3, RETRIEVAL_STAGGER, |_| {
             let (after, result) = legs.next().expect("a leg per candidate");
             TrackedLeg::new(after, result, completed.clone(), dropped.clone())
         })

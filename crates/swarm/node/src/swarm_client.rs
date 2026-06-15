@@ -10,7 +10,7 @@ use vertex_swarm_api::{
 };
 use vertex_swarm_primitives::OverlayAddress;
 
-use crate::retrieval_race::{RaceFailure, race_candidates};
+use crate::staggered_race::{RETRIEVAL_STAGGER, RaceFailure, race_candidates};
 use crate::{ClientHandle, PeerSelector};
 
 /// Number of closest peers raced for a retrieval (and walked for a push).
@@ -119,7 +119,7 @@ where
         // request carries its own response channel, so concurrent requests for
         // one address never collide, and losing attempts are dropped when the
         // race resolves.
-        match race_candidates(closest, |peer| {
+        match race_candidates(closest, RETRIEVAL_STAGGER, |peer| {
             self.client_handle.retrieve_chunk(peer, *address)
         })
         .await

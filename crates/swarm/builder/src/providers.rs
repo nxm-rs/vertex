@@ -11,7 +11,9 @@ use vertex_swarm_api::{
     SwarmScoringEvent, SwarmTopologyRouting, SwarmTopologyState,
 };
 use vertex_swarm_net_pushsync::{DepthVerdict, Receipt};
-use vertex_swarm_node::{ClientHandle, PeerSelector, RaceFailure, race_candidates};
+use vertex_swarm_node::{
+    ClientHandle, PeerSelector, RETRIEVAL_STAGGER, RaceFailure, race_candidates,
+};
 use vertex_swarm_topology::TopologyHandle;
 
 /// Report source for shallow/malformed receipts caught on the origin upload
@@ -75,7 +77,7 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
         // affordability check run inside `retrieve_chunk` before it dispatches),
         // so the staggered starts preserve the per-peer pacing. Losing attempts
         // are dropped when the race resolves.
-        match race_candidates(closest_peers, |peer_overlay| {
+        match race_candidates(closest_peers, RETRIEVAL_STAGGER, |peer_overlay| {
             self.client_handle
                 .retrieve_chunk(peer_overlay, chunk_address)
         })
@@ -432,14 +434,14 @@ mod tests {
         );
     }
 
-    mod retrieval_race {
+    mod staggered_race {
         use std::time::{Duration, Instant};
 
         use nectar_primitives::ContentChunk;
         use tokio::sync::mpsc;
         use vertex_swarm_node::{ChunkTransferError, ClientCommand, ClientHandle, RetrievalResult};
 
-        use super::super::{RaceFailure, race_candidates};
+        use super::super::{RETRIEVAL_STAGGER, RaceFailure, race_candidates};
         use super::*;
 
         fn test_chunk() -> nectar_primitives::AnyChunk {
@@ -459,7 +461,7 @@ mod tests {
             candidates: Vec<SwarmAddress>,
             address: ChunkAddress,
         ) -> Result<RetrievalResult, RaceFailure<ChunkTransferError>> {
-            race_candidates(candidates, move |peer| {
+            race_candidates(candidates, RETRIEVAL_STAGGER, move |peer| {
                 let handle = handle.clone();
                 async move { handle.retrieve_chunk(peer, address).await }
             })

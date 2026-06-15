@@ -17,8 +17,8 @@ mod bootnodes;
 mod client_service;
 mod node;
 mod protocol;
-mod retrieval_race;
 mod selection;
+mod staggered_race;
 mod swarm_client;
 mod throttle;
 
@@ -38,8 +38,8 @@ pub use protocol::{
     ClientCommand, ClientEvent, FailureKind, PseudosettleEvent, PushResponseTx, RetrievalResponseTx,
 };
 
-pub use retrieval_race::{RETRIEVAL_STAGGER, RaceFailure, race_candidates};
 pub use selection::{AccountingSettlement, PeerScores, PeerSelector, SettlementTrigger};
+pub use staggered_race::{RETRIEVAL_STAGGER, RaceFailure, race_candidates};
 pub use swarm_client::{BootnodeClient, Client, FullClient};
 pub use throttle::SelfThrottle;
 
