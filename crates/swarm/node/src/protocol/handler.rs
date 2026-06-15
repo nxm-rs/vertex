@@ -109,10 +109,50 @@ pub(crate) enum InboundOutcome {
 }
 
 /// Configuration for the client handler.
+///
+/// # Deadlines are split deliberately
+///
+/// Three deadlines coexist here, and the split is intentional. `timeout` is the
+/// shared deadline for pricing, pseudosettle, and swap, where no per-caller
+/// liveness guarantee is owed. `retrieval_timeout` and `pushsync_timeout` are
+/// the named, per-protocol deadlines for the two chunk-transfer operations, each
+/// threaded into its own outbound [`SubstreamProtocol`].
+///
+/// They default to the same 30s value but are separate fields on purpose: the
+/// retrieval and pushsync liveness invariant (below) is bounded by these two and
+/// nothing else, so tuning one must not silently move pricing, pseudosettle, or
+/// swap. Do not collapse the three back into one field assuming they are equal;
+/// a future change may shorten `retrieval_timeout` for a faster candidate-race
+/// without touching settlement.
+///
+/// # Retrieval and pushsync liveness invariant
+///
+/// A peer that negotiates the chunk-transfer substream and its headers but then
+/// withholds the response frame (a delivery for retrieval, a receipt for
+/// pushsync) cannot stall the caller indefinitely. The outbound
+/// [`SubstreamProtocol`] is dispatched `.with_timeout(retrieval_timeout)` (or
+/// `pushsync_timeout`), so the upgrade future, including the blocked read of the
+/// response frame, is bounded by that deadline. When it elapses the attempt
+/// resolves with [`ChunkTransferError::TimedOut`] and the caller is free to race
+/// the next candidate. This is the only liveness boundary against a withholding
+/// peer, so the deadline lives on a named field rather than an incidental shared
+/// value.
 #[derive(Debug, Clone)]
 pub(crate) struct Config {
-    /// Timeout for protocol operations.
+    /// Shared deadline for the protocols with no per-caller liveness guarantee:
+    /// pricing, pseudosettle, and swap. Retrieval and pushsync use their own
+    /// named deadlines below; see the type-level note on the deliberate split.
     pub(crate) timeout: Duration,
+    /// Deadline for an outbound retrieval. Bounds the substream upgrade,
+    /// including the blocked read of the delivery frame, so a withholding peer
+    /// resolves the attempt with [`ChunkTransferError::TimedOut`] rather than
+    /// hanging. Deliberately distinct from `timeout` (see the type-level note).
+    pub(crate) retrieval_timeout: Duration,
+    /// Deadline for an outbound pushsync. Bounds the substream upgrade,
+    /// including the blocked read of the receipt frame, so a withholding peer
+    /// resolves the attempt with [`ChunkTransferError::TimedOut`] rather than
+    /// hanging. Deliberately distinct from `timeout` (see the type-level note).
+    pub(crate) pushsync_timeout: Duration,
     /// Maximum pending commands before dropping new ones.
     pub(crate) max_pending_commands: usize,
     /// Maximum pending events before dropping new ones.
@@ -136,6 +176,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             timeout: Duration::from_secs(30),
+            retrieval_timeout: Duration::from_secs(30),
+            pushsync_timeout: Duration::from_secs(30),
             max_pending_commands: DEFAULT_MAX_PENDING_COMMANDS,
             max_pending_events: DEFAULT_MAX_PENDING_EVENTS,
             local_role: SwarmNodeType::Client,
@@ -923,7 +965,7 @@ impl ConnectionHandler for ClientHandler {
                                 requested_at: Instant::now(),
                             },
                         )
-                        .with_timeout(self.config.timeout),
+                        .with_timeout(self.config.retrieval_timeout),
                     });
                 }
                 HandlerCommand::PushChunk { chunk, response } => {
@@ -939,7 +981,7 @@ impl ConnectionHandler for ClientHandler {
                                 requested_at: Instant::now(),
                             },
                         )
-                        .with_timeout(self.config.timeout),
+                        .with_timeout(self.config.pushsync_timeout),
                     });
                 }
                 HandlerCommand::SendPseudosettle { amount } => {
@@ -1030,6 +1072,15 @@ impl ConnectionHandler for ClientHandler {
                     libp2p::swarm::StreamUpgradeError::Apply(err) => Some(err),
                     _ => None,
                 };
+                // The per-protocol upgrade deadline fired: the substream
+                // negotiated but the response frame never arrived within
+                // `retrieval_timeout`/`pushsync_timeout`. This is the liveness
+                // boundary against a withholding peer. The chunk-transfer arms
+                // resolve the caller with the typed `ChunkTransferError::TimedOut`
+                // rather than flattening it into a `Protocol(String)`, but still
+                // emit `FailureKind::Protocol` for scoring so the existing
+                // retrieval/push failure path (-2.0) is unchanged.
+                let timed_out = matches!(&e.error, libp2p::swarm::StreamUpgradeError::Timeout);
                 let error = e.error.to_string();
                 match e.info {
                     ClientOutboundInfo::Pricing => {
@@ -1042,10 +1093,29 @@ impl ConnectionHandler for ClientHandler {
                         });
                     }
                     ClientOutboundInfo::Retrieval {
-                        address, response, ..
+                        address,
+                        response,
+                        requested_at,
                     } => {
+                        // A timeout is never a malformed chunk, so it scores as a
+                        // plain protocol failure; an `Apply` error may be a
+                        // malformed delivery and is classified as before.
                         let kind = apply_error
                             .map_or(FailureKind::Protocol, |e| e.retrieval_failure_kind());
+                        if timed_out {
+                            // Sole emission site for the retrieval timeout
+                            // counter: the client handler resolves the response
+                            // here and never routes a chunk-transfer upgrade error
+                            // through the shared headers `UpgradeError::record`
+                            // path, so there is no double count.
+                            metrics::counter!("swarm.client.retrieval_timeouts_total").increment(1);
+                            debug!(
+                                peer_overlay = ?self.overlay(),
+                                %address,
+                                elapsed = ?requested_at.elapsed(),
+                                "Retrieval timed out waiting on a withholding peer"
+                            );
+                        }
                         warn!(protocol = "retrieval", %address, %error, ?kind, "Client dial upgrade error");
                         if let Some(overlay) = self.overlay() {
                             self.push_event(HandlerEvent::RetrievalFailed {
@@ -1055,13 +1125,31 @@ impl ConnectionHandler for ClientHandler {
                                 kind,
                             });
                         }
-                        let _ = response.send(Err(ChunkTransferError::Protocol(error)));
+                        let outcome = if timed_out {
+                            ChunkTransferError::TimedOut
+                        } else {
+                            ChunkTransferError::Protocol(error)
+                        };
+                        let _ = response.send(Err(outcome));
                     }
                     ClientOutboundInfo::Pushsync {
-                        address, response, ..
+                        address,
+                        response,
+                        requested_at,
                     } => {
                         let kind = apply_error
                             .map_or(FailureKind::Protocol, |e| e.pushsync_failure_kind());
+                        if timed_out {
+                            // Sole emission site for the pushsync timeout counter,
+                            // mirroring the retrieval arm above.
+                            metrics::counter!("swarm.client.pushsync_timeouts_total").increment(1);
+                            debug!(
+                                peer_overlay = ?self.overlay(),
+                                %address,
+                                elapsed = ?requested_at.elapsed(),
+                                "Pushsync timed out waiting on a withholding peer"
+                            );
+                        }
                         warn!(protocol = "pushsync", %address, %error, ?kind, "Client dial upgrade error");
                         if let Some(overlay) = self.overlay() {
                             self.push_event(HandlerEvent::PushFailed {
@@ -1071,7 +1159,12 @@ impl ConnectionHandler for ClientHandler {
                                 kind,
                             });
                         }
-                        let _ = response.send(Err(ChunkTransferError::Protocol(error)));
+                        let outcome = if timed_out {
+                            ChunkTransferError::TimedOut
+                        } else {
+                            ChunkTransferError::Protocol(error)
+                        };
+                        let _ = response.send(Err(outcome));
                     }
                     ClientOutboundInfo::Pseudosettle { .. } => {
                         warn!(protocol = "pseudosettle", %error, "Client dial upgrade error");
