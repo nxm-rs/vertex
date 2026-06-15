@@ -22,7 +22,18 @@
 //! only when its storer is deep enough for the chunk, with the bar derived from
 //! the locally observed neighbourhood depth and trust-but-verified against the
 //! receipt's own declared radius. The recovery and the check both live next to
-//! the type so consumers call `receipt.verify_depth(local_depth)` directly.
+//! the type so consumers call
+//! `receipt.verify_depth(local_depth, neighbourhood_credible)` directly.
+//!
+//! The check is gated on a credible neighbourhood view. The local depth is an
+//! atomic that begins at zero on a fresh, sparse, or just-restarted node, and
+//! the receipt's declared radius is unsigned wire data the responder controls.
+//! With a low local floor the radius would become the sole bar, which a
+//! responder can set to zero, so a shallow receipt would be wrongly accepted. A
+//! caller therefore passes whether its neighbourhood view is credible (its
+//! topology has saturated, so the observed depth reflects a real boundary); when
+//! it is not, the check returns [`DepthVerdict::Unverifiable`] rather than
+//! leaning on an attacker-controlled field it cannot anchor.
 //!
 //! # Future wire format
 //!
@@ -74,6 +85,29 @@ impl From<&ShallowReceipt> for &'static str {
     fn from(_: &ShallowReceipt) -> Self {
         "shallow_receipt"
     }
+}
+
+/// The outcome of [`Receipt::verify_depth`].
+///
+/// The check is three-valued because there are two distinct failure modes that
+/// must not be conflated. A [`Shallow`](Self::Shallow) verdict is a positive
+/// finding of misbehaviour: against a credible local view the storer is provably
+/// too shallow, so the responder is penalised. An
+/// [`Unverifiable`](Self::Unverifiable) verdict is the absence of a finding: the
+/// local view is not credible enough to judge custody depth (a fresh, sparse, or
+/// just-restarted node before its neighbourhood saturates), so the receipt is
+/// neither trusted nor blamed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DepthVerdict {
+    /// The storer is deep enough for the chunk against a credible local view.
+    Verified,
+    /// The storer is provably too shallow against a credible local view; the
+    /// responder must be penalised.
+    Shallow(ShallowReceipt),
+    /// The local neighbourhood view is not credible, so custody depth cannot be
+    /// judged. The receipt is treated as unconfirmed, not as misbehaviour: the
+    /// responder is not penalised.
+    Unverifiable,
 }
 
 /// A custody receipt whose storer has been recovered and verified.
@@ -147,17 +181,33 @@ impl Receipt {
     /// zero) radius cannot weaken the local floor. Hence
     /// `required = max(local_depth - tolerance, storage_radius)`.
     ///
+    /// The floor is only meaningful when `neighbourhood_credible` is true. The
+    /// local depth is an atomic that begins at zero before the neighbourhood
+    /// saturates, and the declared radius is unsigned wire data the responder
+    /// controls. With a non-credible view the floor would collapse to the
+    /// attacker-controlled radius (which the responder can set to zero), so there
+    /// is no bar to anchor: the check returns [`DepthVerdict::Unverifiable`]
+    /// WITHOUT reading the radius. The caller treats that as unconfirmed custody,
+    /// not as misbehaviour.
+    ///
     /// The depth check is a cheap first filter, not a cryptographic guarantee;
     /// stake-binding and retrievability auditing (storage incentives, tracked in
     /// #75) are the layer that makes forgery unprofitable.
-    pub fn verify_depth(&self, local_depth: NeighborhoodDepth) -> Result<(), ShallowReceipt> {
+    pub fn verify_depth(
+        &self,
+        local_depth: NeighborhoodDepth,
+        neighbourhood_credible: bool,
+    ) -> DepthVerdict {
+        if !neighbourhood_credible {
+            return DepthVerdict::Unverifiable;
+        }
         let floor = local_depth.get().saturating_sub(SHALLOW_RECEIPT_TOLERANCE);
         let required = floor.max(self.storage_radius.get());
         let observed = self.address.proximity(&self.storer).get();
         if observed < required {
-            return Err(ShallowReceipt { required, observed });
+            return DepthVerdict::Shallow(ShallowReceipt { required, observed });
         }
-        Ok(())
+        DepthVerdict::Verified
     }
 
     /// Reproduce the wire receipt for verbatim relay.
@@ -269,9 +319,7 @@ mod tests {
         let address = chunk_address(0xff);
         let (raw, _) = wire(&signer, &address, 8, radius(8));
         let receipt = Receipt::reconstruct(raw, NET).expect("reconstructs");
-        receipt
-            .verify_depth(depth(8))
-            .expect("deep enough accepted");
+        assert_eq!(receipt.verify_depth(depth(8), true), DepthVerdict::Verified);
     }
 
     #[test]
@@ -279,16 +327,34 @@ mod tests {
         let signer = PrivateKeySigner::random();
         let address = chunk_address(0xff);
         // The storer is shallow (grind only to depth 0) and declares radius 0 to
-        // try to bypass the check; the local floor (depth 12) rejects it anyway.
+        // try to bypass the check; against a credible local view the local floor
+        // (depth 12) rejects it anyway.
         let (raw, storer) = wire(&signer, &address, 0, radius(0));
         let observed = address.proximity(&storer).get();
         let local = observed + SHALLOW_RECEIPT_TOLERANCE + 1;
         let receipt = Receipt::reconstruct(raw, NET).expect("reconstructs");
-        let err = receipt
-            .verify_depth(depth(local))
-            .expect_err("radius 0 does not bypass the local floor");
+        let DepthVerdict::Shallow(err) = receipt.verify_depth(depth(local), true) else {
+            panic!("radius 0 does not bypass the local floor");
+        };
         assert_eq!(err.observed, observed);
         assert!(err.required > observed);
+    }
+
+    #[test]
+    fn non_credible_view_returns_unverifiable_even_when_the_floor_collapses() {
+        // Regression for #316: with a non-credible neighbourhood view the local
+        // floor is meaningless and the unsigned radius must not become the sole
+        // bar. Even at the worst case (local_depth == 0, storage_radius == 0, a
+        // storer ground to depth 0) the verdict is Unverifiable, never Verified.
+        let signer = PrivateKeySigner::random();
+        let address = chunk_address(0xff);
+        let (raw, _) = wire(&signer, &address, 0, radius(0));
+        let receipt = Receipt::reconstruct(raw, NET).expect("reconstructs");
+        assert_eq!(
+            receipt.verify_depth(depth(0), false),
+            DepthVerdict::Unverifiable,
+            "a shallow receipt is unverifiable, not accepted, under a non-credible view"
+        );
     }
 
     #[test]
@@ -304,15 +370,13 @@ mod tests {
             "constructed storer sits below the declared radius"
         );
         let receipt = Receipt::reconstruct(raw, NET).expect("reconstructs");
-        let err = receipt
-            .verify_depth(depth(2))
-            .expect_err("below-declared-radius storer rejected");
         assert_eq!(
-            err,
-            ShallowReceipt {
+            receipt.verify_depth(depth(2), true),
+            DepthVerdict::Shallow(ShallowReceipt {
                 required: 12,
                 observed
-            }
+            }),
+            "below-declared-radius storer rejected"
         );
     }
 }

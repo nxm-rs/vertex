@@ -61,7 +61,7 @@ use vertex_swarm_api::{
     AccountingAction, PeerReporter, ReportSource, SwarmClientAccounting, SwarmScoringEvent,
     SwarmTopologyRouting, SwarmTopologyState,
 };
-use vertex_swarm_net_pushsync::Receipt;
+use vertex_swarm_net_pushsync::{DepthVerdict, Receipt};
 use vertex_swarm_primitives::{OverlayAddress, StampedChunk};
 
 use crate::ClientHandle;
@@ -116,6 +116,17 @@ pub(crate) enum ForwardError {
     /// push failure ([`AllPeersFailed`](Self::AllPeersFailed)).
     #[error("upstream relay returned a shallow custody receipt")]
     ShallowReceipt,
+
+    /// The upstream leg returned a custody receipt that cannot be judged because
+    /// the local neighbourhood view is not credible (the neighbourhood has not
+    /// saturated yet). The receipt is dropped without relaying it, but the
+    /// downstream peer is NOT penalised: the receipt may be honest, the local
+    /// node just lacks a trustworthy depth to anchor the check against. The relay
+    /// continues to the next candidate. Distinct from
+    /// [`ShallowReceipt`](Self::ShallowReceipt), which is a proven, penalised
+    /// finding of misbehaviour.
+    #[error("upstream relay returned an unverifiable custody receipt")]
+    UnverifiableReceipt,
 
     /// Accounting refused one of the two legs (over the disconnect threshold),
     /// so the relay was not attempted. Any reservation already taken is released
@@ -421,9 +432,12 @@ where
         let accounting = Arc::clone(&self.accounting);
         let handle = self.handle.clone();
         // Snapshot the locally observed neighbourhood depth now: it is the
-        // trusted authority for the required receipt depth. Reading it here
-        // keeps the future `'static`.
+        // trusted authority for the required receipt depth. Snapshot whether that
+        // depth is credible alongside it (the neighbourhood has saturated); a
+        // non-credible depth cannot anchor the check. Reading both here keeps the
+        // future `'static`.
         let local_depth = self.topology.depth();
+        let neighbourhood_credible = self.topology.neighbourhood_credible();
         let reporter = Arc::clone(&self.reporter);
 
         Box::pin(async move {
@@ -458,11 +472,11 @@ where
                         // forwarder's remaining duty is the depth policy: it must
                         // never launder a SHALLOW custody receipt. The check runs
                         // against the recovered storer (NOT the immediate
-                        // downstream peer) and our locally observed depth. The
-                        // receipt is relayed VERBATIM by the handler; we never
-                        // re-sign it.
-                        match receipt.verify_depth(local_depth) {
-                            Ok(()) => {
+                        // downstream peer) and our locally observed depth, and is
+                        // gated on that depth being credible. The receipt is
+                        // relayed VERBATIM by the handler; we never re-sign it.
+                        match receipt.verify_depth(local_depth, neighbourhood_credible) {
+                            DepthVerdict::Verified => {
                                 // Downstream leg complete; commit it. Upstream
                                 // `provide` returned un-applied for the handler.
                                 receive.apply();
@@ -472,7 +486,7 @@ where
                                     provide: Box::new(provide),
                                 });
                             }
-                            Err(err) => {
+                            DepthVerdict::Shallow(err) => {
                                 // Drop the downstream leg (release the
                                 // reservation) and never relay this receipt. The
                                 // downstream peer that handed us a shallow receipt
@@ -492,6 +506,20 @@ where
                                     PUSHSYNC_SOURCE,
                                 );
                                 last = ForwardError::ShallowReceipt;
+                            }
+                            DepthVerdict::Unverifiable => {
+                                // The local view is not credible enough to judge
+                                // custody depth, so we cannot relay this receipt,
+                                // but the downstream peer may be honest: drop the
+                                // reservation, do NOT penalise it, and try the
+                                // next candidate.
+                                drop(receive);
+                                debug!(
+                                    %closer,
+                                    %address,
+                                    "relayed receipt unverifiable: neighbourhood view not credible"
+                                );
+                                last = ForwardError::UnverifiableReceipt;
                             }
                         }
                     }
@@ -1094,6 +1122,70 @@ mod tests {
         assert_eq!(reported_peer, closer);
         assert_eq!(event, SwarmScoringEvent::InvalidData);
 
+        assert_eq!(acct.bandwidth().for_peer(pusher).balance(), Au::ZERO);
+        assert_eq!(acct.bandwidth().for_peer(closer).balance(), Au::ZERO);
+    }
+
+    #[tokio::test]
+    async fn push_with_non_credible_view_is_unverifiable_and_does_not_penalise() {
+        // Regression for #316: with a non-credible local view (the neighbourhood
+        // has not saturated) the forwarder cannot judge custody depth, so even a
+        // shallow receipt declaring radius 0 must not be relayed AND the
+        // downstream peer must not be penalised. The forward fails with
+        // `UnverifiableReceipt`, nothing is scored, and no reservation leaks.
+        let chunk = stamped();
+        let address = *chunk.address();
+        let pusher = overlay_at_proximity(&address, 2);
+        let closer = overlay_at_proximity(&address, 16);
+        let local = OverlayAddress::from([0xee; 32]);
+
+        let acct = accounting();
+        // Non-credible view: a fresh node at depth 0, neighbourhood unsaturated.
+        let topo = Arc::new(
+            MockTopology::default()
+                .with_closest(vec![closer])
+                .with_depth(0)
+                .with_credible(false),
+        );
+        let (tx, rx) = mpsc::channel::<ClientCommand>(4);
+        let handle = ClientHandle::new(tx);
+
+        let reporter = Arc::new(RecordingReporter::default());
+        let forwarder = NetworkForwarder::new(
+            local,
+            topo,
+            Arc::clone(&acct),
+            handle,
+            Arc::clone(&reporter) as Arc<dyn PeerReporter>,
+        );
+
+        let signer = PrivateKeySigner::random();
+        let (shallow, _signer_overlay) = signed_receipt_at_depth(
+            &signer,
+            &address,
+            0,
+            StorageRadius::new(Bin::new(0).unwrap()),
+        );
+        let answer = reconstructed(shallow);
+
+        let err = drive_one_command(
+            rx,
+            forwarder.push(chunk.clone(), pusher),
+            move |cmd| match cmd {
+                ClientCommand::PushChunk { response, .. } => {
+                    response.send(Ok(answer)).expect("receiver alive");
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        )
+        .await
+        .expect_err("an unverifiable receipt is never relayed");
+        assert!(matches!(err, ForwardError::UnverifiableReceipt));
+
+        // The downstream peer is NOT penalised: the receipt may be honest.
+        assert!(reporter.is_empty());
+
+        // Both reservations released on drop: nothing was charged.
         assert_eq!(acct.bandwidth().for_peer(pusher).balance(), Au::ZERO);
         assert_eq!(acct.bandwidth().for_peer(closer).balance(), Au::ZERO);
     }

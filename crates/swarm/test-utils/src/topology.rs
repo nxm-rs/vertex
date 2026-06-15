@@ -23,6 +23,7 @@ pub struct MockTopology {
     stored: usize,
     pending: usize,
     depth: u8,
+    credible: bool,
     closest: Vec<OverlayAddress>,
 }
 
@@ -35,6 +36,7 @@ impl Default for MockTopology {
             stored: 0,
             pending: 0,
             depth: 0,
+            credible: true,
             closest: Vec::new(),
         }
     }
@@ -61,6 +63,7 @@ impl MockTopology {
             stored: 0,
             pending: 0,
             depth,
+            credible: true,
             closest: Vec::new(),
         }
     }
@@ -107,6 +110,14 @@ impl MockTopology {
         self
     }
 
+    /// Set whether the locally observed neighbourhood depth is credible (the
+    /// neighbourhood has saturated). Defaults to true.
+    #[must_use]
+    pub fn with_credible(mut self, credible: bool) -> Self {
+        self.credible = credible;
+        self
+    }
+
     /// Set the peers returned by [`SwarmTopologyRouting::closest_to`].
     #[must_use]
     pub fn with_closest(mut self, closest: Vec<OverlayAddress>) -> Self {
@@ -140,6 +151,10 @@ impl SwarmTopologyState for MockTopology {
 
     fn depth(&self) -> NeighborhoodDepth {
         NeighborhoodDepth::new(Bin::new(self.depth).unwrap_or(Bin::MAX))
+    }
+
+    fn neighbourhood_credible(&self) -> bool {
+        self.credible
     }
 }
 

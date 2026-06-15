@@ -23,6 +23,22 @@ pub enum SwarmError {
         chunk_address: ChunkAddress,
     },
 
+    /// A push completed but custody could not be confirmed.
+    ///
+    /// Every candidate returned a custody receipt that the local node could not
+    /// judge: its neighbourhood view is not credible (the neighbourhood has not
+    /// saturated yet), so the receipt's custody depth cannot be anchored against
+    /// a trustworthy floor. This is distinct from success (no receipt was
+    /// trusted) and from [`InvalidSignature`](Self::InvalidSignature) (no proven
+    /// misbehaviour: the receipts may be honest, the local node simply cannot
+    /// verify them). The push should be treated as unconfirmed and retried once
+    /// the local view is credible.
+    #[error("custody unconfirmed for chunk {chunk_address}: neighbourhood view not credible")]
+    UnconfirmedCustody {
+        /// The chunk whose custody could not be confirmed.
+        chunk_address: ChunkAddress,
+    },
+
     /// Every candidate peer failed for a chunk operation.
     #[error("all {attempts} candidate peers failed for chunk {address}")]
     AllPeersFailed {
@@ -173,6 +189,7 @@ impl SwarmError {
                 | Self::Accounting { .. }
                 | Self::NoStorer { .. }
                 | Self::AllPeersFailed { .. }
+                | Self::UnconfirmedCustody { .. }
         )
     }
 

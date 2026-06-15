@@ -320,6 +320,10 @@ impl<I: SwarmIdentity> SwarmTopologyState for TopologyHandle<I> {
     fn depth(&self) -> NeighborhoodDepth {
         self.routing.depth()
     }
+
+    fn neighbourhood_credible(&self) -> bool {
+        self.readiness().is_saturated()
+    }
 }
 
 impl<I: SwarmIdentity> SwarmTopologyReporting for TopologyHandle<I> {
