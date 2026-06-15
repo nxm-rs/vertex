@@ -1,10 +1,8 @@
 //! Unified client for Swarm nodes.
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
-use futures_timer::Delay;
 use nectar_primitives::{AnyChunk, ChunkAddress};
 use vertex_swarm_api::{
     BootnodeComponents, ClientComponents, HasAccounting, HasTopology, StampedChunk, SwarmClient,
@@ -12,18 +10,11 @@ use vertex_swarm_api::{
 };
 use vertex_swarm_primitives::OverlayAddress;
 
+use crate::retrieval_race::{RaceFailure, race_candidates};
 use crate::{ClientHandle, PeerSelector};
 
 /// Number of closest peers raced for a retrieval (and walked for a push).
 const CLOSEST_PEER_COUNT: usize = 3;
-
-/// Delay before each additional retrieval candidate joins the race.
-///
-/// Staggering bounds the cost of the fan-out: every raced attempt the remote
-/// answers is paid for in accounting units, so further candidates only start
-/// while no response has arrived. A failed attempt starts the next candidate
-/// immediately instead of waiting out the stagger.
-const RETRIEVAL_STAGGER: Duration = Duration::from_millis(500);
 
 /// Unified client for all Swarm node types.
 ///
@@ -119,55 +110,29 @@ where
             .closest_to(address, CLOSEST_PEER_COUNT);
         let closest = self.select(closest, address);
         let attempts = closest.len();
-        let mut candidates = closest.into_iter();
 
         // Race the candidates with a staggered start: the best candidate is
         // queried immediately and each stagger tick (or failed attempt) adds
-        // the next one, resolving on the first response. The codec
-        // reconstructs the chunk against the requested address, so the
-        // retrieved chunk is already address-validated; no re-verification is
-        // needed here. Each request carries its own response channel, so
-        // concurrent requests for one address never collide, and losing
-        // attempts are simply dropped when this future returns.
-        let mut in_flight = FuturesUnordered::new();
-        match candidates.next() {
-            Some(peer) => in_flight.push(self.client_handle.retrieve_chunk(peer, *address)),
-            None => {
-                return Err(SwarmError::NoStorer {
-                    chunk_address: *address,
-                });
-            }
-        }
-
-        let mut stagger = Delay::new(RETRIEVAL_STAGGER).fuse();
-
-        loop {
-            futures::select! {
-                result = in_flight.select_next_some() => match result {
-                    Ok(result) => return Ok(result.chunk),
-                    Err(error) => {
-                        // A failed attempt frees its slot: start the next
-                        // candidate immediately. Once no candidates and no
-                        // attempts remain, the race ends with the error of
-                        // the last attempt to fail.
-                        if let Some(peer) = candidates.next() {
-                            in_flight.push(self.client_handle.retrieve_chunk(peer, *address));
-                        } else if in_flight.is_empty() {
-                            return Err(SwarmError::AllPeersFailed {
-                                address: *address,
-                                attempts,
-                                source: Box::new(error),
-                            });
-                        }
-                    }
-                },
-                _ = stagger => {
-                    if let Some(peer) = candidates.next() {
-                        in_flight.push(self.client_handle.retrieve_chunk(peer, *address));
-                        stagger = Delay::new(RETRIEVAL_STAGGER).fuse();
-                    }
-                }
-            }
+        // the next one, resolving on the first response. The codec reconstructs
+        // the chunk against the requested address, so the retrieved chunk is
+        // already address-validated; no re-verification is needed here. Each
+        // request carries its own response channel, so concurrent requests for
+        // one address never collide, and losing attempts are dropped when the
+        // race resolves.
+        match race_candidates(closest, |peer| {
+            self.client_handle.retrieve_chunk(peer, *address)
+        })
+        .await
+        {
+            Ok(result) => Ok(result.chunk),
+            Err(RaceFailure::NoCandidates) => Err(SwarmError::NoStorer {
+                chunk_address: *address,
+            }),
+            Err(RaceFailure::AllFailed(error)) => Err(SwarmError::AllPeersFailed {
+                address: *address,
+                attempts,
+                source: Box::new(error),
+            }),
         }
     }
 

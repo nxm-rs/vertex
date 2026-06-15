@@ -11,7 +11,7 @@ use vertex_swarm_api::{
     SwarmScoringEvent, SwarmTopologyRouting, SwarmTopologyState,
 };
 use vertex_swarm_net_pushsync::{DepthVerdict, Receipt};
-use vertex_swarm_node::{ClientHandle, PeerSelector};
+use vertex_swarm_node::{ClientHandle, PeerSelector, RaceFailure, race_candidates};
 use vertex_swarm_topology::TopologyHandle;
 
 /// Report source for shallow/malformed receipts caught on the origin upload
@@ -67,36 +67,34 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
         let closest_peers = self.select(closest_peers, &chunk_address);
         let attempts = closest_peers.len();
 
-        // Try each closest peer in order and return the first success. The
-        // seed error covers the no-candidates case; each failed attempt
-        // replaces it, so the value after the loop is always the last failure.
-        let mut outcome = Err(SwarmError::network_msg(
-            "no connected peers available for retrieval",
-        ));
-        for peer_overlay in closest_peers {
-            match self
-                .client_handle
+        // Race the candidates with a staggered start, resolving on the first
+        // success, so a withholding head candidate is overtaken by the next one
+        // within the stagger instead of stalling this slot for a full
+        // per-attempt deadline and blocking every later chunk behind it. Each
+        // attempt carries its own pacing (the outbound self-throttle and
+        // affordability check run inside `retrieve_chunk` before it dispatches),
+        // so the staggered starts preserve the per-peer pacing. Losing attempts
+        // are dropped when the race resolves.
+        match race_candidates(closest_peers, |peer_overlay| {
+            self.client_handle
                 .retrieve_chunk(peer_overlay, chunk_address)
-                .await
-            {
-                Ok(result) => {
-                    return Ok(ChunkRetrievalResult {
-                        chunk: result.chunk,
-                        stamp: result.stamp,
-                        served_by: result.peer,
-                    });
-                }
-                Err(e) => {
-                    outcome = Err(SwarmError::AllPeersFailed {
-                        address: *address,
-                        attempts,
-                        source: Box::new(e),
-                    });
-                }
-            }
+        })
+        .await
+        {
+            Ok(result) => Ok(ChunkRetrievalResult {
+                chunk: result.chunk,
+                stamp: result.stamp,
+                served_by: result.peer,
+            }),
+            Err(RaceFailure::NoCandidates) => Err(SwarmError::network_msg(
+                "no connected peers available for retrieval",
+            )),
+            Err(RaceFailure::AllFailed(e)) => Err(SwarmError::AllPeersFailed {
+                address: *address,
+                attempts,
+                source: Box::new(e),
+            }),
         }
-
-        outcome
     }
 
     fn has_chunk(&self, _address: &ChunkAddress) -> bool {
@@ -432,5 +430,128 @@ mod tests {
             0,
             "an unverifiable receipt does not penalise the peer"
         );
+    }
+
+    mod retrieval_race {
+        use std::time::{Duration, Instant};
+
+        use nectar_primitives::ContentChunk;
+        use tokio::sync::mpsc;
+        use vertex_swarm_node::{ChunkTransferError, ClientCommand, ClientHandle, RetrievalResult};
+
+        use super::super::{RaceFailure, race_candidates};
+        use super::*;
+
+        fn test_chunk() -> nectar_primitives::AnyChunk {
+            ContentChunk::new(&b"provider-race-chunk"[..])
+                .expect("valid content chunk")
+                .into()
+        }
+
+        /// Drive the exact future the provider builds per candidate: each
+        /// attempt is `client_handle.retrieve_chunk(peer, address)`, raced with a
+        /// staggered start. The per-candidate pacing (the outbound self-throttle
+        /// and affordability check) lives inside that call, so this exercises the
+        /// provider's retrieval leg and race wiring without standing up a
+        /// topology mock.
+        async fn race_over_handle(
+            handle: ClientHandle,
+            candidates: Vec<SwarmAddress>,
+            address: ChunkAddress,
+        ) -> Result<RetrievalResult, RaceFailure<ChunkTransferError>> {
+            race_candidates(candidates, move |peer| {
+                let handle = handle.clone();
+                async move { handle.retrieve_chunk(peer, address).await }
+            })
+            .await
+        }
+
+        #[tokio::test]
+        async fn withholding_head_is_overtaken_by_the_second_candidate() {
+            let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
+            let handle = ClientHandle::new(tx);
+
+            let address = address(0xaa);
+            let peer_a = SwarmAddress::from([1u8; 32]);
+            let peer_b = SwarmAddress::from([2u8; 32]);
+
+            let start = Instant::now();
+            let race = tokio::spawn(race_over_handle(handle, vec![peer_a, peer_b], address));
+
+            // The head request arrives first; leave it unanswered so it
+            // withholds. The stagger must bring in the second candidate, whose
+            // response resolves the race well under the per-attempt deadline.
+            let head = match rx.recv().await.expect("head command") {
+                ClientCommand::RetrieveChunk { peer, response, .. } => {
+                    assert_eq!(peer, peer_a);
+                    response
+                }
+                other => panic!("unexpected command: {other:?}"),
+            };
+            match rx.recv().await.expect("second command after stagger") {
+                ClientCommand::RetrieveChunk { peer, response, .. } => {
+                    assert_eq!(peer, peer_b);
+                    response
+                        .send(Ok(RetrievalResult {
+                            chunk: test_chunk(),
+                            stamp: None,
+                            peer: peer_b,
+                        }))
+                        .expect("receiver alive");
+                }
+                other => panic!("unexpected command: {other:?}"),
+            }
+
+            let result = race.await.unwrap().expect("race resolves");
+            assert_eq!(result.peer, peer_b, "the staggered second wins");
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "overtaken within the stagger, well under the per-attempt deadline"
+            );
+
+            // The losing head request's response channel was dropped when the
+            // race resolved: the handler observes the closed receiver and
+            // releases any reservation the in-flight attempt held. Sending on it
+            // now fails, proving the loser was dropped (not run to completion).
+            assert!(
+                head.send(Ok(RetrievalResult {
+                    chunk: test_chunk(),
+                    stamp: None,
+                    peer: peer_a,
+                }))
+                .is_err(),
+                "the losing head response channel is dropped on resolve"
+            );
+        }
+
+        #[tokio::test]
+        async fn all_candidates_failing_yields_the_last_error() {
+            // The handle's command channel is closed, so every retrieval attempt
+            // fails immediately and the race exhausts every candidate.
+            let (tx, rx) = mpsc::channel::<ClientCommand>(16);
+            drop(rx);
+            let handle = ClientHandle::new(tx);
+
+            let address = address(0xbb);
+            let candidates = vec![SwarmAddress::from([1u8; 32]), SwarmAddress::from([2u8; 32])];
+
+            let outcome = race_over_handle(handle, candidates, address).await;
+            assert!(
+                matches!(
+                    outcome,
+                    Err(RaceFailure::AllFailed(ChunkTransferError::ChannelClosed))
+                ),
+                "all candidates failing surfaces the last attempt's error"
+            );
+        }
+
+        #[tokio::test]
+        async fn no_candidates_yields_no_candidates() {
+            let (tx, _rx) = mpsc::channel::<ClientCommand>(16);
+            let handle = ClientHandle::new(tx);
+
+            let outcome = race_over_handle(handle, Vec::new(), address(0xcc)).await;
+            assert!(matches!(outcome, Err(RaceFailure::NoCandidates)));
+        }
     }
 }
