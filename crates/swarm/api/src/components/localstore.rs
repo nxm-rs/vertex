@@ -2,7 +2,7 @@
 
 use crate::SwarmResult;
 use nectar_primitives::ChunkAddress;
-use vertex_swarm_primitives::StampedChunk;
+use vertex_swarm_primitives::CachedChunk;
 
 /// Configuration for a local chunk store.
 ///
@@ -24,18 +24,21 @@ pub trait SwarmLocalStoreConfig {
 ///
 /// One abstraction for both the client cache (lossy, in-memory) and the storer
 /// reserve (persisting); the difference is the implementation's backend and
-/// eviction policy, not the trait. The stamp is held with the chunk so the value
-/// type can never drop it: a [`StampedChunk`] is the currency everywhere.
+/// eviction policy, not the trait. The cache value is a [`CachedChunk`], a chunk
+/// paired with an *optional* stamp: an immutable content chunk retrieved from a
+/// storer arrives stampless and is cached by address with no stamp, while a
+/// single-owner chunk always carries the stamp whose signed timestamp orders its
+/// versions.
 #[auto_impl::auto_impl(&, Arc, Box)]
 pub trait SwarmLocalStore: Send + Sync {
-    /// Insert a stamped chunk. Implementations evict under pressure (LRU for a
-    /// cache, furthest-from-neighbourhood for a reserve); a client cache insert
-    /// is effectively infallible (it makes room), a reserve may surface a
-    /// capacity error.
-    fn put(&self, chunk: StampedChunk) -> SwarmResult<()>;
+    /// Insert a chunk with its optional stamp. Implementations evict under
+    /// pressure (LRU for a cache, furthest-from-neighbourhood for a reserve); a
+    /// client cache insert is effectively infallible (it makes room), a reserve
+    /// may surface a capacity error.
+    fn put(&self, chunk: CachedChunk) -> SwarmResult<()>;
 
-    /// Fetch a stored stamped chunk, or `None` on a miss.
-    fn get(&self, address: &ChunkAddress) -> SwarmResult<Option<StampedChunk>>;
+    /// Fetch a stored chunk and its optional stamp, or `None` on a miss.
+    fn get(&self, address: &ChunkAddress) -> SwarmResult<Option<CachedChunk>>;
 
     /// Check if a chunk exists locally.
     fn contains(&self, address: &ChunkAddress) -> bool;

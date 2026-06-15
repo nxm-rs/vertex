@@ -33,7 +33,8 @@ message RetrieveChunkResponse {
   // The chunk data.
   bytes data = 1;
 
-  // Postage stamp attached to this chunk.
+  // Postage stamp attached to this chunk. Empty when the serving peer omitted
+  // the stamp from the delivery; the chunk is still address-validated.
   bytes stamp = 2;
 
   // Overlay address of the peer that served this chunk (hex encoded).

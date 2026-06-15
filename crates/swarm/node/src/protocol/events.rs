@@ -17,13 +17,13 @@
 
 use alloy_primitives::U256;
 use libp2p::PeerId;
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{AnyChunk, ChunkAddress};
 use tokio::sync::oneshot;
 use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_net_pushsync::Receipt;
 #[cfg(feature = "swap")]
 use vertex_swarm_net_swap::SignedCheque;
-use vertex_swarm_primitives::{OverlayAddress, StampedChunk, SwarmNodeType};
+use vertex_swarm_primitives::{OverlayAddress, Stamp, StampedChunk, SwarmNodeType};
 
 use crate::client_service::{ChunkTransferError, RetrievalResult};
 
@@ -59,9 +59,9 @@ pub enum FailureKind {
 
 /// Events emitted by the client behaviour.
 ///
-/// `ChunkReceived` carries a whole [`StampedChunk`], so it dwarfs the other
-/// variants; the size difference is accepted rather than boxing a value that is
-/// emitted once per delivery and consumed immediately.
+/// `ChunkReceived` carries a whole chunk, so it dwarfs the other variants; the
+/// size difference is accepted rather than boxing a value that is emitted once
+/// per delivery and consumed immediately.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum ClientEvent {
@@ -128,8 +128,10 @@ pub enum ClientEvent {
         peer: OverlayAddress,
         /// The chunk address.
         address: ChunkAddress,
-        /// The received chunk and its postage stamp.
-        chunk: StampedChunk,
+        /// The received chunk.
+        chunk: AnyChunk,
+        /// The postage stamp the responder attached, if any.
+        stamp: Option<Stamp>,
         /// Time from request to delivery, for latency scoring.
         latency: core::time::Duration,
     },

@@ -70,10 +70,15 @@ impl<P: SwarmChunkProvider + SwarmChunkSender> Chunk for ChunkService<P> {
         match self.provider.retrieve_chunk(&address).await {
             Ok(result) => {
                 let served_by = result.served_by.to_string();
-                let (chunk, stamp) = result.chunk.into_parts();
+                // A storer may omit the stamp from a delivery; emit an empty
+                // stamp field when absent.
+                let stamp = result
+                    .stamp
+                    .map(|s| s.to_bytes().to_vec())
+                    .unwrap_or_default();
                 Ok(Response::new(RetrieveChunkResponse {
-                    data: chunk.into_bytes().to_vec(),
-                    stamp: stamp.to_bytes().to_vec(),
+                    data: result.chunk.into_bytes().to_vec(),
+                    stamp,
                     served_by,
                 }))
             }

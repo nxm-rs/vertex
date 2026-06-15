@@ -352,6 +352,7 @@ impl ClientBehaviour {
                 overlay,
                 address,
                 chunk,
+                stamp,
                 latency,
             } => {
                 self.pending_events
@@ -359,6 +360,7 @@ impl ClientBehaviour {
                         peer: overlay,
                         address,
                         chunk,
+                        stamp,
                         latency,
                     }));
             }
@@ -693,7 +695,7 @@ mod tests {
 
         let server_store: Arc<dyn SwarmLocalStore> =
             Arc::new(ChunkStore::with_budget(1 << 20, 1_000_000_000));
-        server_store.put(chunk.clone()).unwrap();
+        server_store.put(chunk.clone().into()).unwrap();
 
         let mut client = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
         let mut server = swarm_with_store(server_store);
@@ -713,7 +715,7 @@ mod tests {
         let result = drive_until_retrieved(&mut client, &mut server, rx).await;
         let delivered = result.expect("served from cache");
         assert_eq!(*delivered.chunk.address(), address);
-        assert_eq!(delivered.chunk, chunk);
+        assert_eq!(delivered.chunk, *chunk.chunk());
     }
 
     #[tokio::test]
@@ -728,7 +730,7 @@ mod tests {
             500,
             FixedClock(1_000),
         ));
-        server_store.put(chunk.clone()).unwrap();
+        server_store.put(chunk.clone().into()).unwrap();
 
         let mut client = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
         let mut server = swarm_with_store(server_store);
@@ -748,7 +750,7 @@ mod tests {
         let delivered = drive_until_retrieved(&mut client, &mut server, rx)
             .await
             .expect("fresh SOC served from cache");
-        assert_eq!(delivered.chunk, chunk);
+        assert_eq!(delivered.chunk, *chunk.chunk());
     }
 
     #[tokio::test]
@@ -764,7 +766,7 @@ mod tests {
             500,
             FixedClock(2_000),
         ));
-        server_store.put(chunk).unwrap();
+        server_store.put(chunk.into()).unwrap();
 
         let mut client = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
         let mut server = swarm_with_store(server_store);
@@ -975,7 +977,7 @@ mod tests {
         // holds no store of its own.
         let c_store: Arc<dyn SwarmLocalStore> =
             Arc::new(ChunkStore::with_budget(1 << 20, 1_000_000_000));
-        c_store.put(chunk.clone()).unwrap();
+        c_store.put(chunk.clone().into()).unwrap();
         let b_store: Arc<dyn SwarmLocalStore> = Arc::new(ChunkStore::with_budget(1 << 20, 1_000));
 
         let mut a = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
@@ -1017,7 +1019,11 @@ mod tests {
         };
 
         let delivered = result.expect("A retrieves the chunk through B");
-        assert_eq!(delivered.chunk, chunk, "the chunk arrives intact at A");
+        assert_eq!(
+            delivered.chunk,
+            *chunk.chunk(),
+            "the chunk arrives intact at A"
+        );
 
         // B accounted both legs: A owes B the provide price, B owes C the receive
         // price, and the forwarder earned the (positive) spread.
@@ -1036,10 +1042,88 @@ mod tests {
             "B is debited for the chunk C served it"
         );
 
-        // B cached the forwarded delivery: a later get from its store hits.
+        // B cached the forwarded content chunk by address even though the serve
+        // path stripped the stamp: a later get from its store hits, stampless.
+        let cached = b_store
+            .get(&address)
+            .unwrap()
+            .expect("the forwarded content chunk is cached at B");
         assert!(
-            b_store.get(&address).unwrap().is_some(),
-            "the forwarded chunk is cached at B"
+            cached.stamp().is_none(),
+            "the forwarded content chunk is cached stampless"
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_does_not_cache_a_forwarded_soc() {
+        // The same three-node relay, but the chunk is a single-owner chunk. A
+        // retrieved SOC arrives stampless (the serve path ships data only) and so
+        // carries no version signal, so the relay must forward it without caching:
+        // caching a stampless SOC could later serve a stale revision.
+        let chunk = soc_chunk(b"feed revision", 900);
+        let address = *chunk.address();
+
+        let a_overlay = overlay_at_proximity(&address, 2);
+        let b_overlay = overlay_at_proximity(&address, 3);
+        let c_overlay = overlay_at_proximity(&address, 18);
+
+        let accounting = relay_accounting();
+
+        // C serves the SOC from its cache (a generous TTL keeps it fresh); B is
+        // the relay whose store we assert stays empty; A holds no store.
+        let c_store: Arc<dyn SwarmLocalStore> =
+            Arc::new(ChunkStore::with_budget(1 << 20, u64::MAX));
+        c_store.put(chunk.clone().into()).unwrap();
+        let b_store: Arc<dyn SwarmLocalStore> =
+            Arc::new(ChunkStore::with_budget(1 << 20, u64::MAX));
+
+        let mut a = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
+        let (mut b, mut b_commands) = relay_node(
+            Arc::clone(&b_store),
+            b_overlay,
+            c_overlay,
+            Arc::clone(&accounting),
+        );
+        let mut c = swarm_with_store(c_store);
+
+        connect_and_activate(&mut a, &mut b, a_overlay, b_overlay).await;
+        connect_and_activate(&mut b, &mut c, b_overlay, c_overlay).await;
+
+        let (tx, mut rx) = oneshot::channel();
+        a.behaviour_mut().on_command(ClientCommand::RetrieveChunk {
+            peer: b_overlay,
+            address,
+            response: tx,
+        });
+
+        let result = {
+            let drive = async {
+                loop {
+                    tokio::select! {
+                        _ = a.select_next_some() => {}
+                        _ = b.select_next_some() => {}
+                        _ = c.select_next_some() => {}
+                        Some(cmd) = b_commands.recv() => b.behaviour_mut().on_command(cmd),
+                        res = &mut rx => return res.expect("sender not dropped"),
+                    }
+                }
+            };
+            tokio::time::timeout(Duration::from_secs(10), drive)
+                .await
+                .expect("retrieval resolved within timeout")
+        };
+
+        let delivered = result.expect("A retrieves the SOC through B");
+        assert_eq!(
+            delivered.chunk,
+            *chunk.chunk(),
+            "the SOC arrives intact at A"
+        );
+
+        // B forwarded the SOC but did not cache it: a get from its store misses.
+        assert!(
+            b_store.get(&address).unwrap().is_none(),
+            "a forwarded SOC must not be cached"
         );
     }
 

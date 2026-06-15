@@ -2,7 +2,7 @@
 //!
 //! [`ChunkStore`] is the client cache. It is a thin typed wrapper over the
 //! generic [`BoundedLruStore`] from `vertex-store`, keyed by [`ChunkAddress`]
-//! and holding [`StampedChunk`] values. The generic store stays domain-agnostic;
+//! and holding [`CachedChunk`] values. The generic store stays domain-agnostic;
 //! the Swarm-specific freshness policy (content chunks served indefinitely,
 //! single-owner chunks served only while their stamp timestamp is within the
 //! configured TTL) lives here, at the one spot that is type-aware.
@@ -11,19 +11,23 @@
 //!
 //! - **Content chunks (CAC)** are immutable: their address is the BMT hash of
 //!   their content, so a cached copy is forever valid. They are served on a hit
-//!   and never expire.
+//!   and never expire. A content chunk retrieved from a storer arrives stampless
+//!   (`CachedChunk` with no stamp), so the cache stores and serves it by address
+//!   independent of any stamp.
 //! - **Single-owner chunks (SOC)** are mutable: the owner re-signs new content
 //!   at the same address. Each stamping carries a fresh owner-signed timestamp,
 //!   so a cached SOC is served only while `now - stamp.timestamp() < ttl`. Past
 //!   the TTL the hit is treated as a miss so the retrieval forwards to fetch the
 //!   latest revision. On insert, a SOC with a newer stamp timestamp replaces an
 //!   older cached one (last-write-wins by timestamp), so an update refreshes the
-//!   cache rather than being dropped behind a stale entry.
+//!   cache rather than being dropped behind a stale entry. A SOC always carries a
+//!   stamp in the cache: the retrieval path never caches a stampless SOC, since
+//!   without a timestamp it has no version signal and could serve a stale copy.
 
 use nectar_primitives::ChunkAddress;
 use vertex_store::{BoundedLruStore, ByteSized};
 use vertex_swarm_api::{SwarmLocalStore, SwarmResult};
-use vertex_swarm_primitives::StampedChunk;
+use vertex_swarm_primitives::CachedChunk;
 
 /// A reader of the current wall-clock time in nanoseconds since the Unix epoch.
 ///
@@ -45,20 +49,26 @@ impl Clock for SystemClock {
     }
 }
 
-/// Newtype carrying a [`StampedChunk`] into the byte-bounded LRU.
+/// Newtype carrying a [`CachedChunk`] into the byte-bounded LRU.
 ///
 /// The orphan rule forbids implementing the foreign [`ByteSized`] trait for the
-/// foreign [`StampedChunk`] directly, so the cache value is this local wrapper.
-/// Its byte size is the chunk payload plus the fixed-size stamp, which is what
-/// the budget accounts; the payload is refcounted `Bytes`, so cloning a cache
-/// value is a refcount bump, not a copy.
+/// foreign [`CachedChunk`] directly, so the cache value is this local wrapper.
+/// Its byte size is the chunk payload plus the fixed-size stamp when one is
+/// present, which is what the budget accounts; the payload is refcounted
+/// `Bytes`, so cloning a cache value is a refcount bump, not a copy.
 #[derive(Debug, Clone)]
-struct CacheValue(StampedChunk);
+struct CacheValue(CachedChunk);
 
 impl ByteSized for CacheValue {
     fn byte_size(&self) -> usize {
-        // Chunk payload size plus the fixed 113-byte stamp.
-        self.0.chunk().size() + nectar_postage::STAMP_SIZE
+        // Chunk payload size plus the fixed 113-byte stamp, counted only when a
+        // stamp is present (a stampless content chunk carries no stamp bytes).
+        let stamp_bytes = if self.0.stamp().is_some() {
+            nectar_postage::STAMP_SIZE
+        } else {
+            0
+        };
+        self.0.chunk().size() + stamp_bytes
     }
 }
 
@@ -120,16 +130,20 @@ impl<C: Clock> ChunkStore<C> {
 }
 
 impl<C: Clock> SwarmLocalStore for ChunkStore<C> {
-    fn put(&self, chunk: StampedChunk) -> SwarmResult<()> {
+    fn put(&self, chunk: CachedChunk) -> SwarmResult<()> {
         let address = *chunk.address();
         // Last-write-wins by timestamp for single-owner chunks: a forwarded SOC
         // older than the cached one for this address must not overwrite the
-        // fresher copy. Content chunks are immutable, so any cached copy is
-        // identical and a re-insert is a harmless recency touch.
+        // fresher copy. A cached SOC always carries a stamp, so its timestamp is
+        // the version signal. Content chunks are immutable, so any cached copy is
+        // identical and a re-insert is a harmless recency touch (and a stampless
+        // content chunk has no timestamp to compare).
         if chunk.chunk().is_single_owner()
+            && let Some(incoming) = chunk.stamp().map(nectar_postage::Stamp::timestamp)
             && let Some(existing) = self.inner.get(&address)
             && existing.0.chunk().is_single_owner()
-            && existing.0.stamp().timestamp() >= chunk.stamp().timestamp()
+            && let Some(cached) = existing.0.stamp().map(nectar_postage::Stamp::timestamp)
+            && cached >= incoming
         {
             return Ok(());
         }
@@ -137,17 +151,22 @@ impl<C: Clock> SwarmLocalStore for ChunkStore<C> {
         Ok(())
     }
 
-    fn get(&self, address: &ChunkAddress) -> SwarmResult<Option<StampedChunk>> {
+    fn get(&self, address: &ChunkAddress) -> SwarmResult<Option<CachedChunk>> {
         let Some(value) = self.inner.get(address) else {
             return Ok(None);
         };
-        let stamped = value.0;
+        let cached = value.0;
         // Content chunks are served indefinitely; a single-owner chunk is served
         // only while fresh, otherwise it reads as a miss so the caller forwards.
-        if stamped.chunk().is_single_owner() && !self.soc_is_fresh(stamped.stamp().timestamp()) {
-            return Ok(None);
+        // A cached SOC always carries a stamp; if one were ever absent there is no
+        // freshness signal, so the entry is treated as a miss.
+        if cached.chunk().is_single_owner() {
+            match cached.stamp().map(nectar_postage::Stamp::timestamp) {
+                Some(ts) if self.soc_is_fresh(ts) => {}
+                _ => return Ok(None),
+            }
         }
-        Ok(Some(stamped))
+        Ok(Some(cached))
     }
 
     fn contains(&self, address: &ChunkAddress) -> bool {
@@ -200,19 +219,26 @@ mod tests {
         Stamp::new(B256::repeat_byte(0xaa), 3, 7, timestamp, sig)
     }
 
-    fn content(payload: &'static [u8]) -> StampedChunk {
+    fn content(payload: &'static [u8]) -> CachedChunk {
         let chunk: AnyChunk = ContentChunk::new(payload)
             .expect("valid content chunk")
             .into();
-        StampedChunk::new(chunk, stamp_at(0))
+        CachedChunk::new(chunk, Some(stamp_at(0)))
     }
 
-    fn soc(payload: &'static [u8], stamp_ns: u64) -> StampedChunk {
+    fn stampless_content(payload: &'static [u8]) -> CachedChunk {
+        let chunk: AnyChunk = ContentChunk::new(payload)
+            .expect("valid content chunk")
+            .into();
+        CachedChunk::new(chunk, None)
+    }
+
+    fn soc(payload: &'static [u8], stamp_ns: u64) -> CachedChunk {
         let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).expect("signer");
         let chunk: AnyChunk = SingleOwnerChunk::new(B256::repeat_byte(0x22), payload, &signer)
             .expect("valid soc")
             .into();
-        StampedChunk::new(chunk, stamp_at(stamp_ns))
+        CachedChunk::new(chunk, Some(stamp_at(stamp_ns)))
     }
 
     #[test]
@@ -275,7 +301,13 @@ mod tests {
         store.put(old).unwrap();
         store.put(new.clone()).unwrap();
         assert_eq!(
-            store.get(&address).unwrap().unwrap().stamp().timestamp(),
+            store
+                .get(&address)
+                .unwrap()
+                .unwrap()
+                .stamp()
+                .unwrap()
+                .timestamp(),
             200
         );
     }
@@ -290,9 +322,33 @@ mod tests {
         store.put(new).unwrap();
         store.put(old).unwrap();
         assert_eq!(
-            store.get(&address).unwrap().unwrap().stamp().timestamp(),
+            store
+                .get(&address)
+                .unwrap()
+                .unwrap()
+                .stamp()
+                .unwrap()
+                .timestamp(),
             200,
             "an older SOC must not overwrite a newer cached one"
         );
+    }
+
+    #[test]
+    fn stampless_content_chunk_round_trips_and_serves() {
+        // A content chunk retrieved from a storer arrives stampless. It is cached
+        // by address and served regardless of any stamp or TTL.
+        let clock = FixedClock::new(0);
+        let store = ChunkStore::with_budget_and_clock(1 << 20, 1, &clock);
+        let chunk = stampless_content(b"stampless immutable payload");
+        let address = *chunk.address();
+        store.put(chunk.clone()).unwrap();
+        assert!(store.contains(&address));
+        // Advance far past any TTL: a stampless content chunk still serves.
+        clock.set(1_000_000_000_000);
+        let served = store.get(&address).unwrap().expect("served from cache");
+        assert_eq!(served, chunk);
+        assert!(served.stamp().is_none(), "served without a stamp");
+        assert!(served.chunk().is_content());
     }
 }

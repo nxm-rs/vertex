@@ -150,6 +150,73 @@ impl VerifiedStampedChunk {
     }
 }
 
+/// A chunk paired with an *optional* postage stamp, as the local cache holds it.
+///
+/// The cache stores two kinds of entry that differ only in whether a stamp is
+/// present:
+///
+/// - A content chunk (CAC) is immutable: its address is the BMT hash of its
+///   content, so a cached copy is valid forever and carries no freshness signal.
+///   The retrieval path delivers it stampless (a storer answers a retrieval with
+///   the chunk bytes only), and the cache stores it with `stamp == None`.
+/// - A single-owner chunk (SOC) is mutable at a fixed address; the cache orders
+///   versions by the stamp's signed timestamp, so a cached SOC always carries a
+///   stamp (`stamp == Some`). The retrieval path never caches a SOC, since a
+///   stampless SOC has no version signal and could serve a stale revision.
+///
+/// [`StampedChunk`] remains the always-stamped currency on the network paths
+/// (pushsync, upload, the stamped reserve). This type is the cache value, where
+/// a stampless content chunk is a first-class entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedChunk {
+    chunk: AnyChunk,
+    stamp: Option<Stamp>,
+}
+
+impl CachedChunk {
+    /// Pair a chunk with an optional stamp.
+    #[inline]
+    #[must_use]
+    pub fn new(chunk: AnyChunk, stamp: Option<Stamp>) -> Self {
+        Self { chunk, stamp }
+    }
+
+    /// The chunk.
+    #[inline]
+    #[must_use]
+    pub fn chunk(&self) -> &AnyChunk {
+        &self.chunk
+    }
+
+    /// The postage stamp, if one was cached with the chunk.
+    #[inline]
+    #[must_use]
+    pub fn stamp(&self) -> Option<&Stamp> {
+        self.stamp.as_ref()
+    }
+
+    /// The chunk's address (delegates to the chunk).
+    #[inline]
+    #[must_use]
+    pub fn address(&self) -> &ChunkAddress {
+        self.chunk.address()
+    }
+
+    /// Split into the chunk and its optional stamp.
+    #[inline]
+    #[must_use]
+    pub fn into_parts(self) -> (AnyChunk, Option<Stamp>) {
+        (self.chunk, self.stamp)
+    }
+}
+
+impl From<StampedChunk> for CachedChunk {
+    fn from(stamped: StampedChunk) -> Self {
+        let (chunk, stamp) = stamped.into_parts();
+        Self::new(chunk, Some(stamp))
+    }
+}
+
 /// Rebuild an [`AnyChunk`] from wire bytes given the expected address.
 ///
 /// See [`StampedChunk::reconstruct`] for the disambiguation rationale.

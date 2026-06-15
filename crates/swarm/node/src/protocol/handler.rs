@@ -47,14 +47,14 @@ use libp2p::swarm::{
         FullyNegotiatedOutbound,
     },
 };
-use nectar_primitives::{ChunkAddress, NetworkId};
+use nectar_primitives::{AnyChunk, ChunkAddress, NetworkId};
 use tracing::{debug, warn};
 use vertex_swarm_api::SwarmLocalStore;
 use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_net_pushsync::Receipt;
 #[cfg(feature = "swap")]
 use vertex_swarm_net_swap::SignedCheque;
-use vertex_swarm_primitives::{OverlayAddress, StampedChunk, SwarmNodeType};
+use vertex_swarm_primitives::{CachedChunk, OverlayAddress, Stamp, StampedChunk, SwarmNodeType};
 
 use super::events::{PushResponseTx, RetrievalResponseTx};
 use super::forward::Forwarder;
@@ -201,9 +201,9 @@ pub(crate) enum HandlerCommand {
 
 /// Events emitted by the handler to the behaviour.
 ///
-/// `ChunkReceived` carries a whole [`StampedChunk`] and dwarfs the other
-/// variants; the size difference is accepted rather than boxing a delivery that
-/// flows straight to the cache and the requester.
+/// `ChunkReceived` carries a whole chunk and dwarfs the other variants; the size
+/// difference is accepted rather than boxing a delivery that flows straight to
+/// the cache and the requester.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub(crate) enum HandlerEvent {
@@ -261,8 +261,10 @@ pub(crate) enum HandlerEvent {
         overlay: OverlayAddress,
         /// The chunk address.
         address: ChunkAddress,
-        /// The received chunk and its postage stamp.
-        chunk: StampedChunk,
+        /// The received chunk.
+        chunk: AnyChunk,
+        /// The postage stamp the responder attached, if any.
+        stamp: Option<Stamp>,
         /// Time from outbound request to delivery, for latency scoring.
         latency: Duration,
     },
@@ -562,11 +564,14 @@ impl ClientHandler {
         let forward = Arc::clone(&self.forward);
         self.inbound.push(Box::pin(async move {
             // Cache hit: content chunks serve indefinitely, single-owner chunks
-            // only while fresh (the store applies the TTL on `get`).
-            if let Ok(Some(stamped)) = store.get(&address)
-                && let Ok(verified) = stamped.verify_answers(address)
+            // only while fresh (the store applies the TTL on `get`). A cached
+            // content chunk is stampless, a cached SOC carries its stamp; serve
+            // whichever stamp the cache held (matching how it was delivered).
+            if let Ok(Some(cached)) = store.get(&address)
+                && *cached.address() == address
             {
-                match responder.send_chunk(verified.into_inner()).await {
+                let (chunk, stamp) = cached.into_parts();
+                match responder.send_chunk(chunk, stamp).await {
                     Ok(()) => return InboundOutcome::Served { overlay },
                     Err(e) => {
                         debug!(%overlay, %address, error = %e, "Cache serve send failed");
@@ -575,39 +580,47 @@ impl ClientHandler {
                 }
             }
 
-            // Miss: forward to a closer peer, excluding the requester. Cache a
-            // successful forwarded delivery (CAC immutable, SOC last-write-wins).
+            // Miss: forward to a closer peer, excluding the requester. The
+            // forwarder already validated the chunk against the address; the
+            // address equality re-check here is the serve-time guard. A retrieved
+            // content chunk (CAC) is immutable, so it is cached by address even
+            // when stampless (exactly as a storer answers). A retrieved SOC is
+            // never cached: it arrives without a version signal and could serve a
+            // stale revision, so it is only relayed onward, never stored.
             match forward.retrieve(address, overlay).await {
-                Ok(forwarded) => match forwarded.chunk.clone().verify_answers(address) {
-                    Ok(verified) => {
-                        let _ = store.put(forwarded.chunk);
-                        match responder.send_chunk(verified.into_inner()).await {
-                            Ok(()) => {
-                                // The chunk is on the wire: commit the upstream
-                                // credit now (the requester actually received the
-                                // delivery we are billing for).
-                                forwarded.provide.apply_boxed();
-                                InboundOutcome::Forwarded { overlay }
-                            }
-                            Err(e) => {
-                                // The requester never received the chunk: drop the
-                                // un-applied credit, releasing the reservation, so
-                                // we never bill for a delivery that did not land.
-                                debug!(%overlay, %address, error = %e, "Forward serve send failed");
-                                drop(forwarded.provide);
-                                InboundOutcome::Missed { overlay, address }
-                            }
-                        }
-                    }
-                    Err(_) => {
+                Ok(forwarded) => {
+                    if *forwarded.chunk.address() != address {
                         // A forwarder that returns a chunk for the wrong address
                         // is a bug in the relay, not the requester's fault; reset.
                         // Drop the credit unapplied (nothing was delivered).
                         drop(forwarded.provide);
                         responder.send_error();
-                        InboundOutcome::Missed { overlay, address }
+                        return InboundOutcome::Missed { overlay, address };
                     }
-                },
+                    if forwarded.chunk.is_content() {
+                        let _ = store.put(CachedChunk::new(
+                            forwarded.chunk.clone(),
+                            forwarded.stamp.clone(),
+                        ));
+                    }
+                    match responder.send_chunk(forwarded.chunk, forwarded.stamp).await {
+                        Ok(()) => {
+                            // The chunk is on the wire: commit the upstream
+                            // credit now (the requester actually received the
+                            // delivery we are billing for).
+                            forwarded.provide.apply_boxed();
+                            InboundOutcome::Forwarded { overlay }
+                        }
+                        Err(e) => {
+                            // The requester never received the chunk: drop the
+                            // un-applied credit, releasing the reservation, so
+                            // we never bill for a delivery that did not land.
+                            debug!(%overlay, %address, error = %e, "Forward serve send failed");
+                            drop(forwarded.provide);
+                            InboundOutcome::Missed { overlay, address }
+                        }
+                    }
+                }
                 Err(_) => {
                     responder.send_error();
                     InboundOutcome::Missed { overlay, address }
@@ -711,7 +724,8 @@ impl ClientHandler {
                 }
                 let _ = response.send(Err(ChunkTransferError::Remote));
             }
-            vertex_swarm_net_retrieval::Delivery::Chunk(chunk) => {
+            vertex_swarm_net_retrieval::Delivery::Chunk { chunk, stamp } => {
+                let chunk = *chunk;
                 let Some(overlay) = overlay else {
                     let _ = response.send(Err(ChunkTransferError::Protocol(
                         "handler not active".to_string(),
@@ -722,11 +736,13 @@ impl ClientHandler {
                 self.push_event(HandlerEvent::ChunkReceived {
                     overlay,
                     address,
-                    chunk: (*chunk).clone(),
+                    chunk: chunk.clone(),
+                    stamp: stamp.clone(),
                     latency,
                 });
                 let _ = response.send(Ok(RetrievalResult {
-                    chunk: *chunk,
+                    chunk,
+                    stamp,
                     peer: overlay,
                 }));
             }

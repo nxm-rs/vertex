@@ -107,13 +107,20 @@ pub struct RetrievalResponder {
 }
 
 impl RetrievalResponder {
-    /// Send a successful delivery with the stamped chunk.
+    /// Send a successful delivery carrying the chunk.
+    ///
+    /// The delivery ships the chunk `data` only: the stamp is never put on the
+    /// wire, so the `stamp` argument is accepted for call-site symmetry but
+    /// dropped at encode. The requester validates the chunk against its address
+    /// (BMT hash for content, owner plus signature for single-owner), which is
+    /// independent of the stamp.
     pub async fn send_chunk(
         mut self,
-        chunk: vertex_swarm_primitives::StampedChunk,
+        chunk: nectar_primitives::AnyChunk,
+        stamp: Option<vertex_swarm_primitives::Stamp>,
     ) -> Result<(), RetrievalError> {
         debug!("Retrieval: Sending chunk delivery");
-        self.framed.send(Delivery::success(chunk)).await
+        self.framed.send(Delivery::chunk(chunk, stamp)).await
     }
 
     /// Signal a failure by resetting the stream (no frame is sent).
@@ -253,7 +260,7 @@ mod tests {
             .expect("decode must not error")
             .expect("frame must decode");
         match decoded {
-            Delivery::Chunk(chunk) => assert_eq!(*chunk.address(), address),
+            Delivery::Chunk { chunk, .. } => assert_eq!(*chunk.address(), address),
             Delivery::Error => panic!("expected a chunk, got a failure"),
         }
     }

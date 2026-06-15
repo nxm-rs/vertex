@@ -156,9 +156,11 @@ impl VertexClient {
             })?;
 
         let served_by = result.served_by.to_string();
-        let (chunk, stamp) = result.chunk.into_parts();
 
-        if verify_stamp {
+        // A storer may omit the stamp from a delivery; the chunk is still
+        // address-validated. Verify only a present stamp, and emit an empty
+        // stamp field when absent.
+        if verify_stamp && let Some(stamp) = &result.stamp {
             stamp
                 .recover_signer(&address)
                 .map_err(|e| FfiError::Download {
@@ -166,9 +168,14 @@ impl VertexClient {
                 })?;
         }
 
+        let stamp = result
+            .stamp
+            .map(|s| s.to_bytes().to_vec())
+            .unwrap_or_default();
+
         Ok(VertexChunkDownload {
-            data: chunk.into_bytes().to_vec(),
-            stamp: stamp.to_bytes().to_vec(),
+            data: result.chunk.into_bytes().to_vec(),
+            stamp,
             served_by,
         })
     }
@@ -308,13 +315,16 @@ impl VertexDownloadStream {
             .unwrap_or_default();
         Some(match result {
             Ok(verified) => {
-                let (chunk, stamp) = verified.into_inner().into_parts();
+                let (chunk, stamp) = verified.into_parts();
+                // A storer may omit the stamp from a delivery; emit an empty
+                // stamp field when absent.
+                let stamp = stamp.map(|s| s.to_bytes().to_vec()).unwrap_or_default();
                 VertexChunkData {
                     index,
                     address,
                     // One copy at the boundary; the chunk stayed `Bytes` until here.
                     data: chunk.into_bytes().to_vec(),
-                    stamp: stamp.to_bytes().to_vec(),
+                    stamp,
                     error: None,
                 }
             }
