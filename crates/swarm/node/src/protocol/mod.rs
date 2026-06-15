@@ -66,6 +66,8 @@ mod behaviour;
 mod events;
 mod forward;
 mod handler;
+#[cfg(test)]
+mod timeout_repro;
 pub(crate) mod upgrade;
 
 pub(crate) use behaviour::{ClientBehaviour, Config as BehaviourConfig};

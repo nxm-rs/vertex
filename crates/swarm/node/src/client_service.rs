@@ -83,6 +83,14 @@ pub enum ChunkTransferError {
     /// Request cancelled.
     #[error("Request cancelled")]
     Cancelled,
+    /// The request was dispatched but the peer did not complete it within the
+    /// per-protocol deadline (`retrieval_timeout` for a get, `pushsync_timeout`
+    /// for a put). This is the liveness boundary against a withholding peer: the
+    /// outbound substream's upgrade timeout fires and the attempt resolves here
+    /// rather than hanging. It is retryable (see [`Self::is_retryable`]): another
+    /// candidate may answer promptly.
+    #[error("Request timed out")]
+    TimedOut,
     /// Local protocol failure (dial, stream, or an inactive handler). Failures
     /// reported by the remote peer are carried by [`Self::Remote`] instead.
     #[error("Protocol error: {0}")]
@@ -97,6 +105,26 @@ pub enum ChunkTransferError {
     /// Chunk not found.
     #[error("Chunk not found: {0}")]
     NotFound(ChunkAddress),
+}
+
+impl ChunkTransferError {
+    /// Whether retrying the request against another candidate may succeed.
+    ///
+    /// A timeout, a remote-reported failure, or a transient local protocol
+    /// error are all worth retrying on a fresh peer: a different candidate may
+    /// hold the chunk and answer within the deadline. A cancelled or
+    /// channel-closed request reflects a local teardown that another attempt
+    /// cannot fix, and a not-found is the chunk's own absence at the queried
+    /// peer (still potentially elsewhere, so the get path races other
+    /// candidates regardless). The classification exists so callers route a
+    /// withholding peer's `TimedOut` to the next candidate rather than treating
+    /// it as terminal.
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            Self::TimedOut | Self::Remote | Self::Protocol(_) | Self::NotFound(_) => true,
+            Self::ChannelClosed | Self::NotConnected | Self::Cancelled => false,
+        }
+    }
 }
 
 impl ClientHandle {
