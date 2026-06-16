@@ -21,6 +21,7 @@ vertex-tasks.workspace = true
 
 ## async
 futures.workspace = true
+pin-project-lite.workspace = true
 
 # Browser adapter for the streaming get/put pipelines. The wasm module exposes
 # the same core streams to JS as async iterators; these are the wasm-bindgen

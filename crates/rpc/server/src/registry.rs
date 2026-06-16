@@ -132,7 +132,7 @@ impl GrpcServerHandle {
     /// Returns when the server shuts down.
     pub async fn serve(self) -> Result<(), tonic::transport::Error> {
         if let Some(routes) = self.routes {
-            tonic::transport::Server::builder()
+            configure_server(tonic::transport::Server::builder())
                 .add_routes(routes)
                 .serve(self.addr)
                 .await
@@ -148,7 +148,7 @@ impl GrpcServerHandle {
         F: std::future::Future<Output = ()>,
     {
         if let Some(routes) = self.routes {
-            tonic::transport::Server::builder()
+            configure_server(tonic::transport::Server::builder())
                 .add_routes(routes)
                 .serve_with_shutdown(self.addr, signal)
                 .await
@@ -158,6 +158,23 @@ impl GrpcServerHandle {
             Ok(())
         }
     }
+}
+
+/// Max simultaneous HTTP/2 streams a single connection may open. Each streaming
+/// RPC (chunk upload/download/has) is one stream, so this bounds how many an
+/// untrusted client can run at once.
+const MAX_CONCURRENT_STREAMS: u32 = 256;
+/// Max in-flight requests served concurrently per connection.
+const MAX_CONNECTION_CONCURRENCY: usize = 256;
+
+/// Apply connection-level limits that bound the gRPC amplification surface (the
+/// streaming chunk RPCs are reachable by untrusted clients). Per-stream memory
+/// is already bounded by each handler's concurrency; these cap how many streams
+/// and requests one connection can run.
+fn configure_server(builder: tonic::transport::Server) -> tonic::transport::Server {
+    builder
+        .concurrency_limit_per_connection(MAX_CONNECTION_CONCURRENCY)
+        .max_concurrent_streams(Some(MAX_CONCURRENT_STREAMS))
 }
 
 #[cfg(test)]

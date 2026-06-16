@@ -1,8 +1,8 @@
 //! RPC providers for Swarm nodes.
 
 use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
-use vertex_swarm_api::{HasTopology, SwarmChunkProvider, SwarmChunkSender, SwarmIdentity};
-use vertex_swarm_rpc::{ChunkService, NodeService, proto};
+use vertex_swarm_api::{HasTopology, SwarmIdentity};
+use vertex_swarm_rpc::{ChunkService, ChunkServiceProvider, NodeService, proto};
 use vertex_swarm_topology::TopologyHandle;
 
 /// Register the node status service and the reflection descriptor that every
@@ -22,7 +22,7 @@ fn register_node_service<I: SwarmIdentity>(
 /// nodes.
 fn register_chunk_service<C>(registry: &mut GrpcRegistry, chunks: &C)
 where
-    C: SwarmChunkProvider + SwarmChunkSender + Clone,
+    C: ChunkServiceProvider,
 {
     let chunk_service = ChunkService::new(chunks.clone());
     let chunk_server = proto::chunk::chunk_server::ChunkServer::new(chunk_service);
@@ -60,9 +60,7 @@ impl<I: SwarmIdentity, C: Send + Sync> HasTopology for ClientRpcProviders<I, C> 
     }
 }
 
-impl<I: SwarmIdentity, C: SwarmChunkProvider + SwarmChunkSender + Clone> RegistersGrpcServices
-    for ClientRpcProviders<I, C>
-{
+impl<I: SwarmIdentity, C: ChunkServiceProvider> RegistersGrpcServices for ClientRpcProviders<I, C> {
     fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
         register_node_service(registry, &self.topology);
         register_chunk_service(registry, &self.chunks);
@@ -117,9 +115,7 @@ impl<I: SwarmIdentity, C: Send + Sync> HasTopology for StorerRpcProviders<I, C> 
     }
 }
 
-impl<I: SwarmIdentity, C: SwarmChunkProvider + SwarmChunkSender + Clone> RegistersGrpcServices
-    for StorerRpcProviders<I, C>
-{
+impl<I: SwarmIdentity, C: ChunkServiceProvider> RegistersGrpcServices for StorerRpcProviders<I, C> {
     fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
         register_node_service(registry, &self.topology);
         register_chunk_service(registry, &self.chunks);

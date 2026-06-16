@@ -9329,13 +9329,17 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "futures",
  "hex",
+ "libp2p",
  "prost 0.13.5",
  "tokio",
+ "tokio-stream",
  "tonic 0.12.3",
  "tonic-build",
  "vertex-swarm-api",
  "vertex-swarm-primitives",
+ "vertex-swarm-stream",
 ]
 
 [[package]]
@@ -9393,6 +9397,7 @@ dependencies = [
  "futures",
  "js-sys",
  "nectar-primitives",
+ "pin-project-lite",
  "tokio",
  "vertex-swarm-api",
  "vertex-tasks",
