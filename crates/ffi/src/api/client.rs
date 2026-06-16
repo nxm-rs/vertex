@@ -17,8 +17,7 @@ use nectar_postage::Stamp;
 use tokio::runtime::Runtime;
 use vertex_node_api::InfrastructureContext;
 use vertex_swarm_api::{
-    ChunkAddress, Multiaddr, PushReceipt, StampedChunk, SwarmChunkProvider, SwarmChunkSender,
-    SwarmError,
+    ChunkAddress, Multiaddr, PushReceipt, StampedChunk, SwarmChunkProvider, SwarmError,
 };
 use vertex_swarm_builder::{
     ChunkVerifyConfig, ClientConfig, ClientRpcProviders, DefaultClientBuilder,
@@ -28,7 +27,10 @@ use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
 use vertex_swarm_primitives::{Nonce, SwarmNodeType};
 use vertex_swarm_spec::{Spec, init_dev, init_mainnet, init_testnet};
-use vertex_swarm_stream::{GetStream, PutStream, StreamConfig, get_stream, try_put_stream};
+use vertex_swarm_stream::{
+    ChunkClientExt, GetStream, ParseAddressError, PutStream, StreamConfig,
+    parse_address as core_parse_address, try_put_stream,
+};
 use vertex_tasks::{TaskExecutor, TaskManager};
 
 use crate::api::types::{
@@ -123,13 +125,9 @@ impl VertexClient {
         let validate = chunk.validate;
         let stamped = reconstruct_upload(chunk)?;
 
-        let receipt = self.runtime.block_on(async {
-            if validate {
-                self.chunks.send_chunk(stamped).await
-            } else {
-                self.chunks.send_chunk_unchecked(stamped).await
-            }
-        });
+        // `put` selects the stamp-signature check from the flag, collapsing the
+        // former validate? branch onto the chunk core.
+        let receipt = self.runtime.block_on(self.chunks.put(stamped, validate));
 
         receipt.map(receipt_into_ffi).map_err(|e| FfiError::Upload {
             reason: e.to_string(),
@@ -205,7 +203,7 @@ impl VertexClient {
             .collect::<FfiResult<_>>()?;
 
         let cfg = stream_config(config);
-        let inner = get_stream(self.chunks.clone(), parsed, cfg);
+        let inner = self.chunks.get_many(parsed, cfg);
         Ok(VertexDownloadStream {
             state: tokio::sync::Mutex::new(DownloadState { inner, index: 0 }),
         })
@@ -263,7 +261,7 @@ struct DownloadState {
 
 /// A pull-based streaming download handle.
 ///
-/// Opaque to the host: it holds the bounded core [`get_stream`] pipeline and is
+/// Opaque to the host: it holds the bounded core [`GetStream`] pipeline and is
 /// driven one item at a time through [`Self::next`]. Because the core advances
 /// only when polled, a host that awaits slowly paces the network reads and the
 /// in-flight byte window is never exceeded; nothing accumulates on the host's
@@ -327,7 +325,7 @@ struct UploadState {
 
 /// A pull-based streaming upload handle.
 ///
-/// Opaque to the host: it holds the bounded core [`put_stream`] pipeline and is
+/// Opaque to the host: it holds the bounded core [`PutStream`] pipeline and is
 /// driven one ack at a time through [`Self::next`]. The core admits a push only
 /// as the host pulls, so a host that stops awaiting acks pauses the pushes.
 /// Dropping the handle drops the core stream and cancels its in-flight pushes.
@@ -476,6 +474,8 @@ fn build_network(bootnodes: Vec<String>) -> NetworkConfig {
 fn reconstruct_upload(chunk: VertexChunkUpload) -> FfiResult<StampedChunk> {
     let address = parse_address(&chunk.address)?;
     let stamp = parse_stamp(&chunk.stamp)?;
+    // The bytes self-validate against the address (a mismatch is rejected), which
+    // also pins the chunk variant.
     StampedChunk::reconstruct(address, chunk.data.into(), stamp).map_err(|e| {
         FfiError::ChunkMismatch {
             reason: e.to_string(),
@@ -483,9 +483,11 @@ fn reconstruct_upload(chunk: VertexChunkUpload) -> FfiResult<StampedChunk> {
     })
 }
 
-/// Parse a 32-byte chunk address.
+/// Parse a 32-byte chunk address, mapping the core [`ParseAddressError`] onto the
+/// FFI boundary's [`FfiError::InvalidAddress`].
 fn parse_address(bytes: &[u8]) -> FfiResult<ChunkAddress> {
-    ChunkAddress::from_slice(bytes).map_err(|_| FfiError::InvalidAddress { len: bytes.len() })
+    core_parse_address(bytes)
+        .map_err(|ParseAddressError { got }| FfiError::InvalidAddress { len: got })
 }
 
 /// Parse a wire-encoded postage stamp.
