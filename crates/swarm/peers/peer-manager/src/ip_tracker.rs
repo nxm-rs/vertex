@@ -83,34 +83,13 @@ pub struct IpTrackerConfig {
     /// new overlays inside a single window; the oldest sighting is
     /// evicted when the bound is reached.
     pub max_sightings_per_ip: usize,
-    /// Hard cap on LIVE concurrent connections admitted from one IP group,
-    /// or `None` for unlimited.
-    ///
-    /// Disabled by default (`None`); see
-    /// [`Self::DEFAULT_MAX_CONNECTIONS_PER_IP`]. The admission machinery is
-    /// kept intact but inert until the cap is redesigned around
-    /// inbound-connection limits plus gossiped-peer analysis for eclipse
-    /// resistance.
-    ///
-    /// When set, this is an admission cap (unlike [`Self::max_overlays_per_ip`],
-    /// a cycling *detector* over a sliding window that only scores down) on
-    /// the number of connections held from one IP group at any instant:
-    /// connections beyond the cap are rejected at handshake completion.
-    /// `LocalSubnet`-trust and above are exempt, so a home LAN behind one
-    /// IP is never capped.
+    /// Hard cap on live concurrent connections per IP group (`None` =
+    /// unlimited, the default); trusted/local-subnet peers exempt.
     pub max_connections_per_ip: Option<usize>,
 }
 
 impl IpTrackerConfig {
-    /// Default distinct-overlay cap per IP group (128).
-    ///
-    /// Sized for legitimate high-density IPs: servers running many nodes
-    /// and NAT/CGNAT farms can front many peers behind one IPv4 address,
-    /// and each completes a handshake as it connects. A lower cap would
-    /// flag such an IP as cycling identities and score its peers down even
-    /// though every connection is legitimate. Local-subnet and explicitly
-    /// trusted peers are exempt before the tracker is consulted, so a home
-    /// LAN never counts against the cap either.
+    /// Default distinct-overlay cap per IP group (128); sized for high-density IPs.
     pub const DEFAULT_MAX_OVERLAYS_PER_IP: usize = 128;
 
     /// Default sighting window (15 minutes).
@@ -120,20 +99,10 @@ impl IpTrackerConfig {
     /// (a NAT cohort redialing at once) clears quickly.
     pub const DEFAULT_WINDOW: Duration = Duration::from_secs(15 * 60);
 
-    /// Default per-IP sighting bound (512).
-    ///
-    /// Four times the overlay cap: enough history to keep the
-    /// distinct-overlay count exact well past the detection threshold,
-    /// small enough that a flooding IP costs a fixed few KB.
+    /// Default per-IP sighting bound (512, 4x the overlay cap).
     pub const DEFAULT_MAX_SIGHTINGS_PER_IP: usize = 512;
 
     /// Default live per-IP connection cap: disabled (`None`).
-    ///
-    /// The cap is off by default. The admission machinery is retained but
-    /// inert; it is to be redesigned around inbound-connection limits plus
-    /// gossiped-peer analysis for eclipse resistance (capping inbound
-    /// connections and analysing gossip rather than capping our own outbound
-    /// dials). Enable via config/CLI when that redesign lands.
     pub const DEFAULT_MAX_CONNECTIONS_PER_IP: Option<usize> = None;
 }
 

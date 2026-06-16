@@ -110,7 +110,7 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         });
 
         let Some(overlay) = overlay else {
-            // Unknown overlay connection closed — no routing capacity to release and
+            // Unknown overlay connection closed: no routing capacity to release and
             // no routing table entry to update, so skip evaluation.
             self.metrics.record_unknown_overlay_disconnect();
             return;
@@ -162,21 +162,56 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             }
         };
 
-        // Penalize early disconnects (post-handshake connections that fail quickly).
-        // Skip BinTrimmed since we initiated the eviction.
-        if disconnect_reason != DisconnectReason::BinTrimmed
-            && let Some(duration) = connection_duration
+        // Handle early disconnects (post-handshake connections that fail
+        // quickly). Only an early disconnect we can attribute to the *peer or
+        // our own side* is evidence of a bad peer; a remote-induced transport
+        // reset/error is not.
+        //
+        // Under sustained retrieval load, remote peers commonly tear down a
+        // connection with an `ECONNRESET` (errno 104), surfaced by libp2p as
+        // `ConnectionError::IO(_)` and classified above as
+        // `DisconnectReason::ConnectionError`, faster than fresh handshakes
+        // complete. Treating that as an early-disconnect penalty arms the
+        // dial-backoff (`record_early_disconnect` -> `record_dial_failure`),
+        // which removes the peer from `is_dialable()` and starves candidate
+        // selection ("no new connection candidates"). The node then cannot
+        // refill and bleeds down. A remote reset is a transient, not a verdict
+        // on the peer: skip the lifecycle penalty so the peer stays DIALABLE
+        // and is re-included by candidate selection once load subsides.
+        //
+        // We still penalize a `LocalClose` early disconnect: an orderly close
+        // shortly after handshake reflects our-side abort or the peer cleanly
+        // refusing to keep the session, which is the genuinely suspicious case
+        // the early-disconnect heuristic exists to catch. `BinTrimmed` is our
+        // own eviction and is never penalized.
+        if let Some(duration) = connection_duration
             && duration < self.early_disconnect_threshold
         {
-            debug!(
-                %overlay,
-                ?duration,
-                ?disconnect_reason,
-                "early disconnect detected, applying penalty"
-            );
-            self.peer_manager
-                .record_early_disconnect(&overlay, duration);
+            // Always record the metric (even for the transient case) so the
+            // reset-vs-penalty split stays observable.
             self.metrics.record_early_disconnect(disconnect_reason);
+
+            if early_disconnect_penalizes(disconnect_reason) {
+                debug!(
+                    %overlay,
+                    ?duration,
+                    ?disconnect_reason,
+                    "early disconnect detected, applying penalty"
+                );
+                self.peer_manager
+                    .record_early_disconnect(&overlay, duration);
+            } else {
+                // Remote-induced transport reset/error (IO ECONNRESET,
+                // keep-alive timeout) or our own bin trim: not evidence of a
+                // bad peer. Do NOT arm dial-backoff; keep the peer dialable so
+                // the node can redial and refill after load subsides.
+                debug!(
+                    %overlay,
+                    ?duration,
+                    ?disconnect_reason,
+                    "early disconnect from a transient/remote cause; keeping peer dialable (no backoff)"
+                );
+            }
         }
 
         // Clear the connection state on the peer record and emit the
@@ -309,6 +344,15 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
     }
 }
 
+/// Whether an early disconnect should incur the early-disconnect penalty; only
+/// an orderly local close does, never a remote-induced reset.
+pub(crate) fn early_disconnect_penalizes(reason: DisconnectReason) -> bool {
+    match reason {
+        DisconnectReason::LocalClose => true,
+        DisconnectReason::ConnectionError | DisconnectReason::BinTrimmed => false,
+    }
+}
+
 /// Map a classified dial error to the scoring event reported against the
 /// peer, or `None` when the failure is not attributable to the peer.
 ///
@@ -395,6 +439,27 @@ mod tests {
             cause: libp2p::swarm::ConnectionDenied::new(Exceeded),
         };
         assert_eq!(classify_dial_error(&error), DialError::Denied);
+    }
+
+    /// A remote-induced reset must not incur the early-disconnect penalty.
+    #[test]
+    fn remote_reset_early_disconnect_is_not_penalized() {
+        assert!(
+            !early_disconnect_penalizes(DisconnectReason::ConnectionError),
+            "a remote/transport reset must not arm dial-backoff"
+        );
+    }
+
+    /// Our own bin trim is never an early-disconnect penalty (we initiated it).
+    #[test]
+    fn bin_trim_early_disconnect_is_not_penalized() {
+        assert!(!early_disconnect_penalizes(DisconnectReason::BinTrimmed));
+    }
+
+    /// An orderly local close still incurs the early-disconnect penalty.
+    #[test]
+    fn local_close_early_disconnect_is_penalized() {
+        assert!(early_disconnect_penalizes(DisconnectReason::LocalClose));
     }
 
     /// Locally-denied dials carry no score penalty; network failures do.

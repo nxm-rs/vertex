@@ -37,23 +37,15 @@ use crate::ip_tracker::{IpGroup, IpTracker, IpTrackerConfig, RecordOutcome};
 use crate::proximity_index::{AddError, ProximityIndex};
 use crate::score_distribution::ScoreDistribution;
 
-/// Outcome of a [`PeerManager::on_peer_connected`] admission decision.
-///
-/// The peer manager owns the per-IP and per-bin admission checks, but it is
-/// the topology caller that holds the libp2p connection and the routing
-/// table. Returning the outcome lets the caller tear down a rejected
-/// connection (push `CloseConnection`) and skip the
-/// routing/gossip/`PeerReady` wiring, so a rejection can never leave a
-/// half-open connection that routing believes is live. `Admitted` is the
-/// only outcome that records the peer.
+/// Outcome of a [`PeerManager::on_peer_connected`] admission decision; lets the
+/// caller tear down a rejected connection rather than leave it half-open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionAdmission {
     /// The peer was recorded and connected.
     Admitted,
     /// Rejected by the live per-IP concurrent-connection cap.
     RejectedIpCap,
-    /// Rejected because the Kademlia bin held only connected peers and none
-    /// could be displaced.
+    /// Rejected because the Kademlia bin was full and none could be displaced.
     RejectedBinFull,
 }
 
@@ -181,18 +173,8 @@ pub struct PeerManager<I: SwarmIdentity> {
     /// touched on per-message paths.
     pub(crate) ip_tracker: Mutex<IpTracker>,
     /// Live concurrent-connection count per IP group.
-    ///
-    /// Incremented at handshake completion ([`Self::on_peer_connected`])
-    /// and decremented on disconnect ([`Self::on_peer_disconnected`]) for
-    /// peers below [`TrustLevel::LocalSubnet`]. Read under the per-shard
-    /// `DashMap` lock to enforce [`Self::max_connections_per_ip`].
     pub(crate) live_ip_connections: DashMap<IpGroup, usize>,
-    /// IP group each currently-counted overlay was admitted from.
-    ///
-    /// `on_peer_disconnected` only receives the overlay, so the admitting
-    /// IP group is remembered here to decrement [`Self::live_ip_connections`]
-    /// on disconnect. Only overlays that counted toward the cap (below
-    /// `LocalSubnet` trust, with a known remote IP) are recorded.
+    /// IP group each currently-counted overlay was admitted from (for decrement on disconnect).
     pub(crate) connection_ip_group: DashMap<OverlayAddress, IpGroup>,
     /// Live per-IP concurrent-connection admission cap; `None` is unlimited.
     pub(crate) max_connections_per_ip: Option<usize>,
@@ -619,10 +601,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
     /// one home LAN share an IP legitimately and must never trip the
     /// cycling detector.
     ///
-    /// Returns the [`ConnectionAdmission`] outcome so the caller can tear
-    /// down a rejected connection instead of leaving it half-open: a
-    /// rejection records nothing here, so the caller must not wire the peer
-    /// into routing or gossip.
+    /// Returns the [`ConnectionAdmission`] outcome; a rejection records nothing.
     pub fn on_peer_connected(
         &self,
         swarm_peer: SwarmPeer,
@@ -731,14 +710,8 @@ impl<I: SwarmIdentity> PeerManager<I> {
         }
     }
 
-    /// Reserve a live per-IP connection slot for `overlay` arriving from
-    /// `ip`, returning `false` when the cap is already reached.
-    ///
-    /// The decision and the increment happen under one `DashMap` shard
-    /// lock so concurrent handshakes from the same IP can never both slip
-    /// past the cap. A reconnect of an already-counted overlay is a no-op
-    /// that succeeds without double-counting. `max_connections_per_ip` of
-    /// `None` admits unconditionally.
+    /// Reserve a live per-IP slot for `overlay` from `ip` under one shard lock;
+    /// `false` when the cap is reached.
     fn try_admit_ip_connection(&self, overlay: OverlayAddress, ip: IpAddr) -> bool {
         let Some(cap) = self.max_connections_per_ip else {
             // Unlimited: still record the group so a future cap could
@@ -770,9 +743,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
         true
     }
 
-    /// Decrement the live connection counter for `group`, dropping the
-    /// entry when it reaches zero. The caller has already removed (or never
-    /// inserted) the overlay's `connection_ip_group` mapping.
+    /// Decrement the live connection counter for `group`, dropping it at zero.
     fn release_ip_connection_for_group(&self, group: IpGroup) {
         if let dashmap::mapref::entry::Entry::Occupied(mut e) =
             self.live_ip_connections.entry(group)

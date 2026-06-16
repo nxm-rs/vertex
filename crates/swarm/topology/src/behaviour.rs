@@ -1176,8 +1176,7 @@ mod tests {
         test_behaviour_with(TopologyConfig::default())
     }
 
-    /// A behaviour whose live per-IP concurrent-connection cap is `cap`, used
-    /// to exercise the cap-rejection teardown path.
+    /// A behaviour with live per-IP connection cap `cap`.
     fn test_behaviour_with_ip_cap(cap: usize) -> TopologyBehaviour<Identity> {
         let identity = Identity::random(vertex_swarm_spec::init_testnet(), SwarmNodeType::Client);
         let (behaviour, _handle) = TopologyBehaviourBuilder::new(identity, &EventTestConfig::new())
@@ -1281,12 +1280,7 @@ mod tests {
             }
         }
 
-        /// A per-IP cap rejection during handshake completion must behave
-        /// like the banned and bin-saturated paths: close the connection and
-        /// emit `PeerRejected`, WITHOUT recording the peer in routing. This is
-        /// the regression guard for the wasm cascading-collapse bug, where the
-        /// cap path used to fall through and wire a rejected peer into routing
-        /// and gossip, leaving a half-open orphan.
+        /// A per-IP cap rejection must close the connection and skip routing.
         #[tokio::test]
         async fn per_ip_cap_rejection_closes_connection_and_skips_routing() {
             use std::net::{IpAddr, Ipv4Addr};
@@ -1382,15 +1376,7 @@ mod tests {
             }
         }
 
-        /// A duplicate handshake that the registry would resolve as a
-        /// `Replaced` takeover (same PeerId, different overlay) but that the
-        /// per-IP cap then rejects must leave the healthy INCUMBENT intact:
-        /// the incumbent stays connected and in routing, and only the
-        /// newcomer is closed. This is the regression guard for the
-        /// lifecycle-ordering bug where the `Replaced` takeover tore down the
-        /// incumbent BEFORE admission was decided, so a rejected duplicate
-        /// caused net peer loss (incumbent evicted + newcomer closed) and a
-        /// redial cascade.
+        /// A `Replaced` takeover rejected by the per-IP cap must keep the incumbent intact.
         #[tokio::test]
         async fn replaced_then_rejected_keeps_incumbent() {
             use std::net::{IpAddr, Ipv4Addr};

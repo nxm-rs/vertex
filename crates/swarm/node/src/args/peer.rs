@@ -105,15 +105,11 @@ pub struct PeerArgs {
     #[arg(long = "network.peer.max-per-bin", default_value_t = DEFAULT_PEER_MAX_PER_BIN)]
     pub max_per_bin: usize,
 
-    /// Maximum live concurrent connections admitted from one IP (0 =
-    /// unlimited). Sized for legitimate high-density IPs (servers running
-    /// many nodes, NAT/CGNAT farms). Local-subnet and trusted peers are
-    /// always exempt.
+    /// Max live concurrent connections from one IP (0 = unlimited); trusted/local exempt.
     #[arg(long = "network.peer.max-per-ip", default_value_t = DEFAULT_MAX_PER_IP)]
     pub max_per_ip: usize,
 
-    /// Distinct overlays tolerated per IP before the identity-cycling
-    /// detector scores newcomers down (0 = default 128).
+    /// Distinct overlays per IP before the cycling detector scores down (0 = default 128).
     #[arg(long = "network.peer.max-overlays-per-ip", default_value_t = DEFAULT_MAX_OVERLAYS_PER_IP)]
     pub max_overlays_per_ip: usize,
 }

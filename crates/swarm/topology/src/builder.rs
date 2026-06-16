@@ -108,15 +108,13 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
         }
     }
 
-    /// Override the live per-IP concurrent-connection cap (`None` =
-    /// unlimited). Defaults to [`IpTrackerConfig::DEFAULT_MAX_CONNECTIONS_PER_IP`].
+    /// Override the live per-IP connection cap (`None` = unlimited).
     pub fn with_max_connections_per_ip(mut self, cap: Option<usize>) -> Self {
         self.max_connections_per_ip = cap;
         self
     }
 
-    /// Override the distinct-overlay cap per IP used by the identity-cycling
-    /// detector. Defaults to [`IpTrackerConfig::DEFAULT_MAX_OVERLAYS_PER_IP`].
+    /// Override the distinct-overlay cap per IP (cycling detector).
     pub fn with_max_overlays_per_ip(mut self, cap: usize) -> Self {
         self.max_overlays_per_ip = cap;
         self
