@@ -1,40 +1,28 @@
-//! Browser Swarm client demo.
-//!
-//! This wasm-bindgen app mints an ephemeral Swarm client identity, resolves the
-//! live mainnet bootnodes over DNS-over-HTTPS (falling back to an embedded
-//! snapshot), starts a browser client node over secure websockets, and renders
-//! its Kademlia topology building up: connected peer count, neighborhood depth,
-//! per-bin fill, the topology phase, and a scrolling log of topology events.
-//!
-//! The exported surface is small and JS-facing:
-//!
-//! - [`start`] is the entrypoint: it installs the panic hook and console
-//!   tracing, builds the client, and returns a [`SwarmDemo`] handle.
-//! - [`SwarmDemo::readiness`] returns a plain JS object with the current
-//!   readiness snapshot fields, polled by the UI on an interval.
-//! - [`SwarmDemo::drain_events`] returns the topology events seen since the last
-//!   call as an array of JS objects, so the UI can append them to its log.
-//!
-//! The UI itself is driven from this module via `web-sys` so the app is a single
-//! wasm artifact with a minimal HTML shell.
+//! Browser Swarm client demo: a wasm-bindgen app that starts a client node and
+//! renders its Kademlia topology, exposing a small JS-facing surface.
 
+mod client;
+mod files_ui;
 mod ui;
+
+pub use client::SwarmClient;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
 
 use alloy_primitives::Address;
-use tracing::{info, warn};
+use tracing::{Level, info, warn};
 use vertex_net_dnsaddr_doh::{DohClient, resolve_mainnet_wss_bootnodes};
+use vertex_storage_indexeddb::IndexedDbDatabase;
 use vertex_swarm_api::{SwarmIdentity, SwarmLocalStore};
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::{
     ChunkStore, DEFAULT_CACHE_BUDGET_BYTES, DEFAULT_SOC_CACHE_TTL_NS, IndexedDbBackend, SystemClock,
 };
 use vertex_swarm_node::{ClientLauncher, LauncherSwapConfig, SwarmNodeType};
+use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_spec::{init_mainnet, mainnet_wss_bootnodes};
 use vertex_swarm_topology::{TopologyEvent, TopologyHandle};
-use vertex_storage_indexeddb::IndexedDbDatabase;
 use vertex_tasks::TaskManager;
 use wasm_bindgen::prelude::*;
 
@@ -42,22 +30,43 @@ use wasm_bindgen::prelude::*;
 const CACHE_DB_NAME: &str = "vertex-swarm-cache";
 
 /// Maximum topology events buffered between UI drains.
-///
-/// The UI drains on a one-second interval; a burst beyond this drops the oldest
-/// events, which only affects the scrolling log, never the live counters (those
-/// come from [`SwarmDemo::readiness`]).
 const EVENT_BUFFER_CAP: usize = 256;
 
+/// Maximum pending peer connect/disconnect triggers buffered between UI drains.
+const PEER_EVENT_BUFFER_CAP: usize = 256;
+
+/// Upper bound on `score` events appended per drain.
+const SCORE_EVENTS_PER_DRAIN: usize = 32;
+
+/// A peer-topology trigger awaiting enrichment at drain time.
+enum PeerTrigger {
+    /// Peer completed handshake.
+    Connect {
+        overlay: OverlayAddress,
+        peer_id: libp2p::PeerId,
+        node_type: SwarmNodeType,
+    },
+    /// Peer's connections all closed.
+    Disconnect { overlay: OverlayAddress },
+}
+
 /// A running browser Swarm client, exposed to JS.
-///
-/// Holds the [`TopologyHandle`] for the live node plus a rolling buffer of
-/// recent [`TopologyEvent`]s. The node tasks run on the browser event loop; this
-/// handle is the read surface the UI polls.
 #[wasm_bindgen]
 pub struct SwarmDemo {
     topology: TopologyHandle<Arc<Identity>>,
     events: std::rc::Rc<std::cell::RefCell<VecDeque<TopologyEvent>>>,
+    // Parallel buffer of peer connect/disconnect triggers fed from the same
+    // topology subscription as `events`, drained by `drain_peer_events` and
+    // enriched against the peer manager at drain time.
+    peer_events: std::rc::Rc<std::cell::RefCell<VecDeque<PeerTrigger>>>,
     overlay: String,
+    // The node's libp2p peer id as a base58 string, captured at launch. Handed
+    // to JS via `self()` and on each `connect` peer event.
+    peer_id: String,
+    // The browser file client (upload/download/manifest walk) over the launched
+    // node. Cheap to clone (Arc/Rc-backed); the accessor hands out a shared
+    // handle over the same session cache.
+    client: SwarmClient,
     // The task manager owns the global executor the node tasks were spawned
     // through. Held for the session so the spawned tasks keep running.
     _task_manager: TaskManager,
@@ -71,13 +80,13 @@ impl SwarmDemo {
         self.overlay.clone()
     }
 
+    /// The browser file client (shared handle over the same session cache).
+    #[wasm_bindgen(getter)]
+    pub fn client(&self) -> SwarmClient {
+        self.client.clone()
+    }
+
     /// Snapshot the current readiness state as a plain JS object.
-    ///
-    /// Fields: `connectedPeers`, `connectedStorers`, `depth`,
-    /// `neighborhoodConnected`, `saturationThreshold`, `binsAtTarget`, `phase`
-    /// (a string), `isRoutable`, `isSaturated`, and `bins` (an array of
-    /// `{ bin, connected, target, deficit }`, where `target` is `null` for
-    /// neighborhood bins).
     #[wasm_bindgen]
     pub fn readiness(&self) -> JsValue {
         let snap = self.topology.readiness();
@@ -117,11 +126,7 @@ impl SwarmDemo {
         obj.into()
     }
 
-    /// Drain the topology events seen since the last call.
-    ///
-    /// Returns a JS array of `{ kind, detail }` objects, oldest first, and
-    /// clears the buffer. `kind` is a short event label; `detail` is a
-    /// human-readable summary.
+    /// Drain the topology events seen since the last call as a JS array.
     #[wasm_bindgen(js_name = drainEvents)]
     pub fn drain_events(&self) -> js_sys::Array {
         let out = js_sys::Array::new();
@@ -135,20 +140,123 @@ impl SwarmDemo {
         }
         out
     }
+
+    /// This node's identity (`overlay`, `peerId`) as a JS object for the globe feed.
+    #[wasm_bindgen(js_name = self)]
+    pub fn self_info(&self) -> JsValue {
+        let obj = js_sys::Object::new();
+        set_str(&obj, "overlay", &self.overlay);
+        set_str(&obj, "peerId", &self.peer_id);
+        obj.into()
+    }
+
+    /// Drain peer connect/disconnect triggers and emit periodic score refreshes
+    /// as a JS array for the globe feed.
+    #[wasm_bindgen(js_name = drainPeerEvents)]
+    pub fn drain_peer_events(&self) -> js_sys::Array {
+        let out = js_sys::Array::new();
+        let pm = self.topology.peer_manager();
+
+        // Connect/disconnect triggers captured from the topology stream.
+        let triggers: Vec<PeerTrigger> = self.peer_events.borrow_mut().drain(..).collect();
+        for trigger in triggers {
+            match trigger {
+                PeerTrigger::Connect {
+                    overlay,
+                    peer_id,
+                    node_type,
+                } => {
+                    let obj = js_sys::Object::new();
+                    set_str(&obj, "type", "connect");
+                    set_str(&obj, "overlay", &overlay.to_string());
+                    set_str(&obj, "peerId", &peer_id.to_string());
+                    set_str(&obj, "nodeType", node_type.into());
+
+                    // multiaddrs: format each Multiaddr to its string form.
+                    let multiaddrs = js_sys::Array::new();
+                    if let Some(peer) = pm.get_swarm_peer(&overlay) {
+                        for ma in peer.multiaddrs() {
+                            multiaddrs.push(&JsValue::from_str(&ma.to_string()));
+                        }
+                    }
+                    set_value(&obj, "multiaddrs", &multiaddrs);
+
+                    // po: proximity-order bin of the peer relative to us.
+                    set_u32(&obj, "po", u32::from(pm.index().bin_for(&overlay).get()));
+
+                    // score: nested { total } object.
+                    let total = pm.get_peer_score(&overlay).unwrap_or(0.0);
+                    set_value(&obj, "score", &score_object(total));
+
+                    // connectedAt: unix seconds -> ms for the JS Date math.
+                    match pm.connected_since(&overlay) {
+                        Some(secs) => set_value(
+                            &obj,
+                            "connectedAt",
+                            &JsValue::from_f64((secs as f64) * 1000.0),
+                        ),
+                        None => set_value(&obj, "connectedAt", &JsValue::from_f64(0.0)),
+                    }
+
+                    // direction: 'inbound' | 'outbound' | null.
+                    match pm.connection_direction(&overlay) {
+                        Some(dir) => {
+                            let s: &'static str = dir.into();
+                            set_str(&obj, "direction", s);
+                        }
+                        None => set_null(&obj, "direction"),
+                    }
+
+                    out.push(&obj);
+                }
+                PeerTrigger::Disconnect { overlay } => {
+                    let obj = js_sys::Object::new();
+                    set_str(&obj, "type", "disconnect");
+                    set_str(&obj, "overlay", &overlay.to_string());
+                    out.push(&obj);
+                }
+            }
+        }
+
+        // Periodic score refresh for currently connected peers (bounded). A peer
+        // is "currently connected" iff it has a live connection timestamp.
+        let connected: Vec<OverlayAddress> = pm
+            .index()
+            .all_peers()
+            .into_iter()
+            .filter(|overlay| pm.connected_since(overlay).is_some())
+            .take(SCORE_EVENTS_PER_DRAIN)
+            .collect();
+        for overlay in connected {
+            let obj = js_sys::Object::new();
+            set_str(&obj, "type", "score");
+            set_str(&obj, "overlay", &overlay.to_string());
+            let total = pm.get_peer_score(&overlay).unwrap_or(0.0);
+            set_value(&obj, "score", &score_object(total));
+            out.push(&obj);
+        }
+
+        out
+    }
+}
+
+/// Build a `{ total: <f64> }` JS object for a peer score.
+fn score_object(total: f64) -> JsValue {
+    let obj = js_sys::Object::new();
+    set_value(&obj, "total", &JsValue::from_f64(total));
+    obj.into()
 }
 
 /// wasm entrypoint: start the client and keep the handle alive for the session.
-///
-/// Trunk's bootstrap calls this exported `main` automatically. It spawns
-/// [`start`] on the browser event loop and leaks the returned [`SwarmDemo`] so
-/// the node tasks keep running; the page session owns it for its lifetime.
 #[wasm_bindgen(start)]
 pub fn main() {
     wasm_bindgen_futures::spawn_local(async {
         match start().await {
             Ok(demo) => {
-                // Keep the client alive for the page session.
-                std::mem::forget(demo);
+                // Publish the handle on `window.__swarmDemo` for the globe
+                // frontend's `?live` peer feed, and keep the client alive for
+                // the page session through that JS-owned reference.
+                publish_handle(demo);
             }
             Err(e) => {
                 tracing::error!(?e, "failed to start Swarm client demo");
@@ -160,20 +268,12 @@ pub fn main() {
 
 /// Start the browser Swarm client and mount the topology UI.
 ///
-/// Installs the panic hook and console tracing, mints an ephemeral mainnet
-/// client identity, resolves the live mainnet bootnodes over DNS-over-HTTPS
-/// (with the embedded wss snapshot as fallback), starts the client node, mounts
-/// the UI into the document, and begins the one-second poll loop. Returns the
-/// [`SwarmDemo`] handle, which keeps the node alive for the page session.
-///
 /// # Errors
-///
-/// Returns a JS error if the client node fails to build or start. Bootnode
-/// resolution never fails: it always falls back to the embedded snapshot.
+/// Returns a JS error if the client node fails to build or start.
 #[wasm_bindgen]
 pub async fn start() -> Result<SwarmDemo, JsValue> {
     console_error_panic_hook::set_once();
-    tracing_wasm::set_as_global_default();
+    init_tracing();
 
     info!("starting browser Swarm client demo");
 
@@ -217,16 +317,28 @@ pub async fn start() -> Result<SwarmDemo, JsValue> {
         launcher = launcher.with_swap(swap);
     }
 
-    let client = launcher
+    let launched = launcher
         .launch()
         .await
         .map_err(|e| JsValue::from_str(&format!("failed to launch client: {e}")))?;
-    let topology = client.topology().clone();
+    let topology = launched.topology().clone();
+    let peer_id = launched.local_peer_id().to_string();
+
+    // Build the browser file client over the launched node; it captures the
+    // client handle and topology it needs, so the `LaunchedClient` can be
+    // dropped after this.
+    let client = SwarmClient::from_launched(&launched);
+
+    // Mount the upload/download/manifest UI below the topology view.
+    files_ui::mount(client.clone());
 
     let events = std::rc::Rc::new(std::cell::RefCell::new(VecDeque::with_capacity(
         EVENT_BUFFER_CAP,
     )));
-    spawn_event_pump(topology.clone(), events.clone());
+    let peer_events = std::rc::Rc::new(std::cell::RefCell::new(VecDeque::with_capacity(
+        PEER_EVENT_BUFFER_CAP,
+    )));
+    spawn_event_pump(topology.clone(), events.clone(), peer_events.clone());
     spawn_render_loop(topology.clone());
 
     ui::set_status("connecting...");
@@ -234,7 +346,10 @@ pub async fn start() -> Result<SwarmDemo, JsValue> {
     let demo = SwarmDemo {
         topology,
         events,
+        peer_events,
         overlay,
+        peer_id,
+        client,
         _task_manager: task_manager,
     };
     Ok(demo)
@@ -278,17 +393,86 @@ fn swap_config_from_page() -> Option<LauncherSwapConfig> {
     Some(config)
 }
 
+/// Publish a running demo handle on `window.__swarmDemo` for the JS frontend.
+fn publish_handle(demo: SwarmDemo) {
+    let handle: JsValue = demo.into();
+    match web_sys::window() {
+        Some(window) => {
+            if js_sys::Reflect::set(&window, &JsValue::from_str("__swarmDemo"), &handle).is_err() {
+                // The global was not set; leak the JS handle so its node tasks
+                // still run for the session even without the live peer feed.
+                std::mem::forget(handle);
+            }
+        }
+        None => std::mem::forget(handle),
+    }
+}
+
+/// Install the browser tracing subscriber, quiet by default; `?trace`/`?debug`
+/// in the page URL raise verbosity.
+fn init_tracing() {
+    use tracing_subscriber::filter::{LevelFilter, Targets};
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    // The console layer itself passes everything at/under TRACE; the `Targets`
+    // filter below is what actually decides what is shown.
+    let wasm_layer = tracing_wasm::WASMLayer::new(
+        tracing_wasm::WASMLayerConfigBuilder::new()
+            .set_max_level(Level::TRACE)
+            .build(),
+    );
+
+    let filter = match tracing_verbosity_override() {
+        // `?trace`: full firehose.
+        Some(LevelFilter::TRACE) => Targets::new().with_default(LevelFilter::TRACE),
+        // `?verbose` / `?debug`: everything at DEBUG.
+        Some(level) => Targets::new().with_default(level),
+        // Default: app-level INFO, networking/retrieval internals at WARN.
+        None => Targets::new()
+            .with_default(LevelFilter::INFO)
+            // vertex networking / retrieval / topology / handshake internals.
+            .with_target("vertex_swarm_node", LevelFilter::WARN)
+            .with_target("vertex_swarm_topology", LevelFilter::WARN)
+            .with_target("vertex_swarm_stream", LevelFilter::WARN)
+            .with_target("vertex_net_codec", LevelFilter::WARN)
+            .with_target("vertex_net_dialer", LevelFilter::WARN)
+            .with_target("vertex_net_ratelimiter", LevelFilter::WARN)
+            // libp2p stack + transport plumbing.
+            .with_target("libp2p", LevelFilter::WARN)
+            .with_target("libp2p_swarm", LevelFilter::WARN)
+            .with_target("libp2p_core", LevelFilter::WARN)
+            .with_target("libp2p_yamux", LevelFilter::WARN)
+            .with_target("libp2p_websocket_websys", LevelFilter::WARN)
+            .with_target("yamux", LevelFilter::WARN)
+            .with_target("multistream_select", LevelFilter::WARN),
+    };
+
+    use tracing_subscriber::Layer;
+    tracing_subscriber::registry()
+        .with(wasm_layer.with_filter(filter))
+        .init();
+}
+
+/// Read a one-shot verbosity override (`?trace`/`?verbose`/`?debug`) from the page URL.
+fn tracing_verbosity_override() -> Option<tracing_subscriber::filter::LevelFilter> {
+    use tracing_subscriber::filter::LevelFilter;
+
+    let search = web_sys::window()?.location().search().ok()?.to_lowercase();
+    if search.contains("trace") {
+        Some(LevelFilter::TRACE)
+    } else if search.contains("verbose") || search.contains("debug") {
+        Some(LevelFilter::DEBUG)
+    } else {
+        None
+    }
+}
+
 /// Forward topology events from the broadcast subscription to both consumers.
-///
-/// Each event is appended to the scrolling DOM log (the live UI) and pushed onto
-/// the `events` buffer that the JS [`SwarmDemo::drain_events`] accessor reads, so
-/// the two consumers never compete for the same event. Runs on the browser event
-/// loop for the session. The subscription can lag under a burst; a lagged
-/// receiver skips ahead and keeps going rather than stalling, since the live
-/// counters come from `readiness`, not this stream.
 fn spawn_event_pump(
     topology: TopologyHandle<Arc<Identity>>,
     events: std::rc::Rc<std::cell::RefCell<VecDeque<TopologyEvent>>>,
+    peer_events: std::rc::Rc<std::cell::RefCell<VecDeque<PeerTrigger>>>,
 ) {
     use tokio::sync::broadcast::error::RecvError;
 
@@ -299,6 +483,17 @@ fn spawn_event_pump(
                 Ok(event) => {
                     let (kind, detail) = describe_event(&event);
                     ui::append_event(kind, &escape_html(&detail));
+
+                    // Capture peer connect/disconnect as overlay-keyed triggers
+                    // for the globe feed, enriched against the peer manager when
+                    // `drain_peer_events` is called.
+                    if let Some(trigger) = peer_trigger(&event) {
+                        let mut pbuf = peer_events.borrow_mut();
+                        if pbuf.len() >= PEER_EVENT_BUFFER_CAP {
+                            pbuf.pop_front();
+                        }
+                        pbuf.push_back(trigger);
+                    }
 
                     let mut buf = events.borrow_mut();
                     if buf.len() >= EVENT_BUFFER_CAP {
@@ -313,11 +508,27 @@ fn spawn_event_pump(
     });
 }
 
+/// Map a topology event to a globe peer trigger, if it is one.
+fn peer_trigger(event: &TopologyEvent) -> Option<PeerTrigger> {
+    match event {
+        TopologyEvent::PeerReady {
+            overlay,
+            peer_id,
+            node_type,
+            ..
+        } => Some(PeerTrigger::Connect {
+            overlay: *overlay,
+            peer_id: *peer_id,
+            node_type: *node_type,
+        }),
+        TopologyEvent::PeerDisconnected { overlay, .. } => {
+            Some(PeerTrigger::Disconnect { overlay: *overlay })
+        }
+        _ => None,
+    }
+}
+
 /// Drive the topology UI on a one-second interval.
-///
-/// Each tick snapshots readiness into the stats grid and per-bin table. The
-/// scrolling event log is updated by the event pump as events arrive, not here.
-/// Runs on the browser event loop for the session.
 fn spawn_render_loop(topology: TopologyHandle<Arc<Identity>>) {
     use gloo_timers::future::TimeoutFuture;
 
@@ -369,9 +580,6 @@ fn render_once(topology: &TopologyHandle<Arc<Identity>>) {
 }
 
 /// Escape the HTML-special characters in event detail text.
-///
-/// Event details embed peer-supplied data (overlay addresses, error strings), so
-/// they are escaped before going into `innerHTML`.
 fn escape_html(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for ch in input.chars() {
