@@ -66,6 +66,11 @@ impl<I: SwarmIdentity + Clone> BuiltInfrastructure<I> {
 
         let mut builder = TopologyBehaviourBuilder::new(identity.clone(), &config_with_bootnodes)
             .with_config(topology_config);
+
+        // The live per-IP concurrent-connection cap is off by default
+        // (`DEFAULT_MAX_CONNECTIONS_PER_IP = None`); no per-target override
+        // is needed here.
+
         if let Some(store) = peer_store {
             builder = builder.with_peer_store(store);
         }

@@ -62,6 +62,9 @@ pub enum RejectionReason {
     DuplicateConnection,
     /// Handshake validation failed.
     HandshakeFailed,
+    /// The live per-IP concurrent-connection cap was reached for the IP this
+    /// connection arrived from.
+    IpCapReached,
 }
 
 /// Errors that can occur in topology operations.

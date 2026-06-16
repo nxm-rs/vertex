@@ -17,7 +17,7 @@ use vertex_swarm_api::{
 };
 use vertex_swarm_net_handshake::HANDSHAKE_TIMEOUT;
 use vertex_swarm_net_identify as identify;
-use vertex_swarm_peer_manager::{PeerManager, PeerManagerConfig};
+use vertex_swarm_peer_manager::{IpTrackerConfig, PeerManager, PeerManagerConfig};
 use vertex_swarm_peer_score::SwarmScoringConfig;
 
 use crate::behaviour::{
@@ -67,6 +67,10 @@ pub struct TopologyBehaviourBuilder<I: SwarmIdentity + Clone> {
     trust_local_peers: bool,
     scoring_config: SwarmScoringConfig,
     max_per_bin: usize,
+    /// Live per-IP concurrent-connection admission cap; `None` is unlimited.
+    max_connections_per_ip: Option<usize>,
+    /// Distinct-overlay cap per IP for the identity-cycling detector.
+    max_overlays_per_ip: usize,
     peer_store: Option<PeerStore>,
     /// Connection profile selected in the network configuration (CLI/config
     /// file). Overridden by an explicit [`TopologyConfig::with_connection_profile`];
@@ -94,9 +98,28 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
                 .warn_threshold(peer_config.warn_threshold())
                 .build(),
             max_per_bin: peer_config.max_per_bin(),
+            // Per-IP limits are not yet carried by the PeerConfigValues
+            // trait, so they take the raised peer-manager defaults; the
+            // `with_*` setters allow an explicit override.
+            max_connections_per_ip: IpTrackerConfig::DEFAULT_MAX_CONNECTIONS_PER_IP,
+            max_overlays_per_ip: IpTrackerConfig::DEFAULT_MAX_OVERLAYS_PER_IP,
             peer_store: None,
             network_profile: network_config.connection_profile(),
         }
+    }
+
+    /// Override the live per-IP concurrent-connection cap (`None` =
+    /// unlimited). Defaults to [`IpTrackerConfig::DEFAULT_MAX_CONNECTIONS_PER_IP`].
+    pub fn with_max_connections_per_ip(mut self, cap: Option<usize>) -> Self {
+        self.max_connections_per_ip = cap;
+        self
+    }
+
+    /// Override the distinct-overlay cap per IP used by the identity-cycling
+    /// detector. Defaults to [`IpTrackerConfig::DEFAULT_MAX_OVERLAYS_PER_IP`].
+    pub fn with_max_overlays_per_ip(mut self, cap: usize) -> Self {
+        self.max_overlays_per_ip = cap;
+        self
     }
 
     /// Set the topology configuration (kademlia, dial cadence, save interval).
@@ -131,6 +154,11 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviourBuilder<I> {
                 scoring: self.scoring_config,
                 max_per_bin: self.max_per_bin,
                 store: self.peer_store,
+                ip_tracker: IpTrackerConfig {
+                    max_overlays_per_ip: self.max_overlays_per_ip,
+                    max_connections_per_ip: self.max_connections_per_ip,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         );
