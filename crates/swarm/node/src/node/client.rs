@@ -5,12 +5,15 @@
 //!
 //! Use this for nodes that need to read from and write to the Swarm network.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
-use std::sync::Arc;
+use std::net::IpAddr;
+use std::sync::{Arc, Mutex};
 
 use eyre::Result;
 use futures::StreamExt;
 use libp2p::connection_limits;
+use libp2p::multiaddr::Protocol;
 use libp2p::{Multiaddr, PeerId, identity::PublicKey, swarm::NetworkBehaviour, swarm::SwarmEvent};
 use nectar_primitives::SwarmAddress;
 use tokio::sync::mpsc;
@@ -146,6 +149,60 @@ impl From<ClientEvent> for ClientNodeEvent {
     }
 }
 
+/// Shared cell holding our externally-observed address (public IP), aggregated
+/// by most-reported-IP majority vote across peers' identify reports.
+#[derive(Clone, Default)]
+pub(crate) struct ObservedAddr(Arc<Mutex<ObservedAddrState>>);
+
+#[derive(Default)]
+struct ObservedAddrState {
+    /// Vote count per observed IP across peers.
+    counts: HashMap<IpAddr, usize>,
+    /// The most recent full multiaddr seen for the currently-winning IP.
+    best: Option<Multiaddr>,
+    /// Vote count of the currently-winning IP.
+    best_count: usize,
+}
+
+impl ObservedAddr {
+    /// Record a peer's observed address, bumping its IP vote and best guess.
+    fn record(&self, addr: &Multiaddr) {
+        let Some(ip) = addr.iter().find_map(|p| match p {
+            Protocol::Ip4(ip) => Some(IpAddr::V4(ip)),
+            Protocol::Ip6(ip) => Some(IpAddr::V6(ip)),
+            _ => None,
+        }) else {
+            return;
+        };
+
+        let Ok(mut state) = self.0.lock() else {
+            return;
+        };
+        let count = state.counts.entry(ip).or_insert(0);
+        *count += 1;
+        let count = *count;
+        if count >= state.best_count {
+            state.best_count = count;
+            state.best = Some(addr.clone());
+        }
+    }
+
+    /// The most-reported externally-observed multiaddr, or `None` until the
+    /// first identify exchange.
+    pub(crate) fn addr(&self) -> Option<Multiaddr> {
+        self.0.lock().ok().and_then(|s| s.best.clone())
+    }
+
+    /// The IP component of the most-reported externally-observed address.
+    pub(crate) fn ip(&self) -> Option<IpAddr> {
+        self.addr()?.iter().find_map(|p| match p {
+            Protocol::Ip4(ip) => Some(IpAddr::V4(ip)),
+            Protocol::Ip6(ip) => Some(IpAddr::V6(ip)),
+            _ => None,
+        })
+    }
+}
+
 /// A Swarm client node with pricing, retrieval, and pushsync protocols.
 ///
 /// Unlike [`BootNode`](super::BootNode), this includes client protocols for
@@ -154,6 +211,8 @@ pub struct ClientNode<I: SwarmIdentity + Clone> {
     base: BaseNode<I, ClientNodeBehaviour<I>>,
     client_event_tx: mpsc::Sender<ClientEvent>,
     client_command_rx: mpsc::Receiver<ClientCommand>,
+    /// Our externally-observed address, learned from identify.
+    observed_addr: ObservedAddr,
 }
 
 impl<I: SwarmIdentity + Clone> ClientNode<I> {
@@ -171,6 +230,12 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
 
     pub fn topology_handle(&self) -> &TopologyHandle<I> {
         self.base.topology_handle()
+    }
+
+    /// Shared cell tracking our externally-observed address; clone to hand a
+    /// reader to the run loop.
+    pub(crate) fn observed_addr_cell(&self) -> ObservedAddr {
+        self.observed_addr.clone()
     }
 
     /// Enable multi-hop forwarding (relay) for this node.
@@ -328,6 +393,14 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
     }
 
     fn handle_identify_event(&mut self, event: identify::Event) {
+        // Tap the peer-observed address (our public IP, as the remote saw our
+        // outbound connection arrive) before handing the event to the shared
+        // handler. Additive only: the existing handler's behaviour is unchanged.
+        if let identify::Event::Received { info, .. } = &event {
+            if !info.observed_addr.is_empty() {
+                self.observed_addr.record(&info.observed_addr);
+            }
+        }
         super::base::handle_identify_event(&mut self.base.swarm.behaviour_mut().identify, event);
     }
 
@@ -522,6 +595,7 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
             base,
             client_event_tx: event_tx,
             client_command_rx: command_rx,
+            observed_addr: ObservedAddr::default(),
         };
 
         Ok((node, client_service, client_handle))

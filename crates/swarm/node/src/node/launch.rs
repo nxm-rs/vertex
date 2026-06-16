@@ -9,7 +9,7 @@
 //! and issue chunk reads and writes. The full native stack (storage, chain,
 //! settlement, RPC) goes through `vertex-swarm-builder` instead.
 
-use std::{sync::Arc, time::Duration};
+use std::{net::IpAddr, sync::Arc, time::Duration};
 
 use eyre::{Result, WrapErr};
 use libp2p::{Multiaddr, PeerId};
@@ -23,7 +23,7 @@ use vertex_swarm_spec::HasSpec;
 use vertex_swarm_topology::{KademliaConfig, TopologyHandle};
 use vertex_tasks::TaskExecutor;
 
-use super::client::ClientNode;
+use super::client::{ClientNode, ObservedAddr};
 use crate::{ClientHandle, SelfThrottle};
 
 /// Default connection idle timeout for a launched client.
@@ -228,6 +228,10 @@ impl<I: SwarmIdentity + Clone> ClientLauncher<I> {
         let topology = node.topology_handle().clone();
         let overlay = node.overlay_address();
         let peer_id = *node.local_peer_id();
+        // Reader for our externally-observed address (our public IP), populated
+        // by the run loop from identify. Grab it before the node is moved into
+        // the spawned loop.
+        let observed_addr = node.observed_addr_cell();
 
         // Outbound self-throttle (default on). The lightweight launcher carries
         // no accounting stack of its own, so build a minimal client-accounting
@@ -278,6 +282,7 @@ impl<I: SwarmIdentity + Clone> ClientLauncher<I> {
             client: client_handle,
             overlay,
             peer_id,
+            observed_addr,
         })
     }
 }
@@ -325,6 +330,8 @@ pub struct LaunchedClient<I: SwarmIdentity> {
     client: ClientHandle,
     overlay: SwarmAddress,
     peer_id: PeerId,
+    /// Reader for our externally-observed address, populated from identify.
+    observed_addr: ObservedAddr,
 }
 
 impl<I: SwarmIdentity> LaunchedClient<I> {
@@ -347,5 +354,15 @@ impl<I: SwarmIdentity> LaunchedClient<I> {
     /// The node's libp2p peer id.
     pub fn local_peer_id(&self) -> PeerId {
         self.peer_id
+    }
+
+    /// Our externally-observed address (public IP), learned from identify.
+    pub fn observed_external_addr(&self) -> Option<Multiaddr> {
+        self.observed_addr.addr()
+    }
+
+    /// The IP component of [`observed_external_addr`](Self::observed_external_addr).
+    pub fn observed_external_ip(&self) -> Option<IpAddr> {
+        self.observed_addr.ip()
     }
 }
