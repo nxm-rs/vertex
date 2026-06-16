@@ -485,22 +485,43 @@ impl ClientService {
                 kind,
             } => {
                 // The requester is resolved directly by the handler; this
-                // event exists for peer scoring. A malformed chunk is invalid
-                // data (weight -10); a plain failure or timeout is a retrieval
-                // failure (weight -2).
+                // event exists for peer scoring.
+                //
+                // A malformed chunk is invalid data (weight -10): the peer
+                // handed back bytes that failed address/stamp reconstruction,
+                // which is genuine misbehaviour and is scored adversely.
+                //
+                // A plain `Protocol` failure (the remote reported "I don't have
+                // it" / could not forward, a timeout, or a transport error) is
+                // NOT scored: a peer not holding or not forwarding a requested
+                // chunk is the expected, blameless outcome for the vast majority
+                // of peers on any given retrieval, and on a bulk download the
+                // flood of such misses would otherwise decay scores past the
+                // disconnect threshold and prune the peer set (erode Kademlia
+                // depth). The staggered race already steers around an unhelpful
+                // candidate within a request; bee likewise uses a temporary
+                // per-chunk skiplist here, never a connection-killing score
+                // penalty. Only misbehaviour touches the persistent score.
                 warn!(%peer, %address, %error, ?kind, "Retrieval failed");
-                let event = match kind {
+                match kind {
                     FailureKind::InvalidChunk => {
                         metrics::counter!(
                             "swarm.client.invalid_chunk",
                             "protocol" => "retrieval",
                         )
                         .increment(1);
-                        SwarmScoringEvent::InvalidData
+                        self.report(&peer, SwarmScoringEvent::InvalidData, RETRIEVAL_SOURCE);
                     }
-                    FailureKind::Protocol => SwarmScoringEvent::RetrievalFailure,
-                };
-                self.report(&peer, event, RETRIEVAL_SOURCE);
+                    FailureKind::Protocol => {
+                        // Blameless miss/timeout: count it for visibility but do
+                        // not penalise the peer's score.
+                        metrics::counter!(
+                            "swarm.client.retrieval_miss",
+                            "protocol" => "retrieval",
+                        )
+                        .increment(1);
+                    }
+                }
             }
 
             ClientEvent::PushFailed {
@@ -510,20 +531,29 @@ impl ClientService {
                 kind,
             } => {
                 // The pusher is resolved directly by the handler; this event
-                // exists for peer scoring. Same classification as retrieval.
+                // exists for peer scoring. Same classification as retrieval: a
+                // malformed receipt is invalid data (scored), while a plain
+                // `Protocol` failure (the peer could not store/forward, a
+                // timeout, or a transport error) is a blameless outcome that
+                // must not drive the peer toward disconnection.
                 warn!(%peer, %address, %error, ?kind, "Push failed");
-                let event = match kind {
+                match kind {
                     FailureKind::InvalidChunk => {
                         metrics::counter!(
                             "swarm.client.invalid_chunk",
                             "protocol" => "pushsync",
                         )
                         .increment(1);
-                        SwarmScoringEvent::InvalidData
+                        self.report(&peer, SwarmScoringEvent::InvalidData, PUSHSYNC_SOURCE);
                     }
-                    FailureKind::Protocol => SwarmScoringEvent::PushFailure,
-                };
-                self.report(&peer, event, PUSHSYNC_SOURCE);
+                    FailureKind::Protocol => {
+                        metrics::counter!(
+                            "swarm.client.retrieval_miss",
+                            "protocol" => "pushsync",
+                        )
+                        .increment(1);
+                    }
+                }
             }
 
             ClientEvent::InboundInvalidData { peer, protocol } => {
@@ -642,6 +672,12 @@ mod tests {
             assert_eq!(reports.len(), 1, "expected exactly one report");
             *reports.first().expect("one report")
         }
+
+        /// Assert that no scoring report was recorded.
+        fn assert_none(&self) {
+            let reports = self.reports.lock().unwrap();
+            assert!(reports.is_empty(), "expected no report, got {reports:?}");
+        }
     }
 
     fn peer(n: u8) -> OverlayAddress {
@@ -671,7 +707,11 @@ mod tests {
     }
 
     #[test]
-    fn plain_retrieval_failure_reports_retrieval_failure() {
+    fn plain_retrieval_failure_does_not_penalise_peer() {
+        // A blameless miss/timeout (`FailureKind::Protocol`) is the expected
+        // outcome for a peer that simply does not hold or cannot forward the
+        // chunk. It must not touch the peer's persistent score, so a bulk
+        // download cannot decay the peer set past the disconnect threshold.
         let (service, reporter) = service_with_reporter();
         service.process_event(ClientEvent::RetrievalFailed {
             peer: peer(2),
@@ -679,9 +719,7 @@ mod tests {
             error: "not found".into(),
             kind: FailureKind::Protocol,
         });
-        let (_, event, source) = reporter.single();
-        assert_eq!(event, SwarmScoringEvent::RetrievalFailure);
-        assert_eq!(source, ReportSource::Protocol("retrieval"));
+        reporter.assert_none();
     }
 
     #[test]
@@ -699,7 +737,10 @@ mod tests {
     }
 
     #[test]
-    fn plain_push_failure_reports_push_failure() {
+    fn plain_push_failure_does_not_penalise_peer() {
+        // Mirror of the retrieval case: a peer that could not store/forward a
+        // pushed chunk (timeout, transport error, remote-reported failure) is
+        // not misbehaving and must not be scored toward disconnection.
         let (service, reporter) = service_with_reporter();
         service.process_event(ClientEvent::PushFailed {
             peer: peer(4),
@@ -707,8 +748,7 @@ mod tests {
             error: "rejected".into(),
             kind: FailureKind::Protocol,
         });
-        let (_, event, _) = reporter.single();
-        assert_eq!(event, SwarmScoringEvent::PushFailure);
+        reporter.assert_none();
     }
 
     #[test]
