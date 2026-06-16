@@ -66,6 +66,19 @@ impl<P> BandwidthConfig<P> {
     pub fn throttle_allowance_percent(&self) -> u8 {
         self.throttle_allowance_percent
     }
+
+    /// Override the self-throttle's payment-threshold consumption percent,
+    /// clamped into 1..=100.
+    ///
+    /// Used by embedders that pace against a static (never-debited) headroom and
+    /// therefore want a more conservative fraction than the default adaptive
+    /// loop uses. The value is clamped rather than rejected so an out-of-range
+    /// argument cannot size the bucket to zero or above the live headroom.
+    #[must_use]
+    pub fn with_throttle_allowance_percent(mut self, percent: u8) -> Self {
+        self.throttle_allowance_percent = percent.clamp(1, 100);
+        self
+    }
 }
 
 impl TryFrom<&BandwidthArgs> for BandwidthConfig<FixedPricingConfig> {

@@ -9,11 +9,12 @@
 //! and issue chunk reads and writes. The full native stack (storage, chain,
 //! settlement, RPC) goes through `vertex-swarm-builder` instead.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use eyre::{Result, WrapErr};
 use libp2p::{Multiaddr, PeerId};
 use nectar_primitives::SwarmAddress;
+use vertex_swarm_accounting::{AccountingBuilder, DefaultBandwidthConfig};
 use vertex_swarm_api::{
     DefaultPeerConfig, SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig,
 };
@@ -23,10 +24,20 @@ use vertex_swarm_topology::{KademliaConfig, TopologyHandle};
 use vertex_tasks::TaskExecutor;
 
 use super::client::ClientNode;
-use crate::ClientHandle;
+use crate::{ClientHandle, ClientService, SelfThrottle};
 
 /// Default connection idle timeout for a launched client.
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Open-loop pacing fraction of the payment-threshold headroom for the
+/// lightweight launcher. This client neither debits its own per-peer balance
+/// nor initiates pseudosettle yet, so the headroom signal the throttle reads
+/// is a static constant that never narrows as debt accrues. The fraction is
+/// conservative and provisional: kept well below the adaptive default while the
+/// signal is open-loop, and meant to rise toward that default once client-side
+/// accounting and pseudosettle are wired and the throttle can read the live
+/// signal.
+const LIGHTWEIGHT_THROTTLE_ALLOWANCE_PERCENT: u8 = 25;
 
 /// Default transport-layer cap on established connections.
 ///
@@ -128,6 +139,10 @@ pub struct ClientLauncher<I: SwarmIdentity + Clone> {
     kademlia: KademliaConfig,
     max_peers: usize,
     idle_timeout: Duration,
+    /// Outbound self-throttle, on by default.
+    throttle: bool,
+    /// Bandwidth config the self-throttle and pricer read from.
+    bandwidth: DefaultBandwidthConfig,
 }
 
 impl<I: SwarmIdentity + Clone> ClientLauncher<I> {
@@ -140,6 +155,9 @@ impl<I: SwarmIdentity + Clone> ClientLauncher<I> {
             kademlia: KademliaConfig::default(),
             max_peers: DEFAULT_MAX_PEERS,
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            throttle: true,
+            bandwidth: DefaultBandwidthConfig::default()
+                .with_throttle_allowance_percent(LIGHTWEIGHT_THROTTLE_ALLOWANCE_PERCENT),
         }
     }
 
@@ -165,6 +183,13 @@ impl<I: SwarmIdentity + Clone> ClientLauncher<I> {
     #[must_use]
     pub fn with_max_peers(mut self, max: usize) -> Self {
         self.max_peers = max;
+        self
+    }
+
+    /// Disable the outbound self-throttle (on by default).
+    #[must_use]
+    pub fn without_throttle(mut self) -> Self {
+        self.throttle = false;
         self
     }
 
@@ -205,7 +230,7 @@ impl<I: SwarmIdentity + Clone> ClientLauncher<I> {
             idle_timeout: self.idle_timeout,
         };
 
-        let (node, client_service, client_handle) = ClientNode::builder(self.identity)
+        let (node, client_service, client_handle) = ClientNode::builder(self.identity.clone())
             .with_kademlia_config(self.kademlia)
             .build(&config, None)
             .await
@@ -214,6 +239,14 @@ impl<I: SwarmIdentity + Clone> ClientLauncher<I> {
         let topology = node.topology_handle().clone();
         let overlay = node.overlay_address();
         let peer_id = *node.local_peer_id();
+
+        let (client_handle, client_service) = Self::maybe_attach_throttle(
+            self.throttle,
+            &self.identity,
+            &self.bandwidth,
+            client_handle,
+            client_service,
+        );
 
         let executor = TaskExecutor::current();
 
@@ -242,6 +275,38 @@ impl<I: SwarmIdentity + Clone> ClientLauncher<I> {
             overlay,
             peer_id,
         })
+    }
+
+    /// Attach the outbound self-throttle to the handle and service when enabled,
+    /// returning both unchanged when not.
+    ///
+    /// Builds a minimal client-accounting instance (no settlement providers) so
+    /// the throttle has the same pricer the network meters by; handle and service
+    /// share the same throttle so a disconnect clears the bucket the outbound API
+    /// paces against. With no debit and no pseudosettle wired, the allowance
+    /// signal is open-loop and stays a static constant, which is why the bucket
+    /// is sized to a conservative, provisional fraction of the headroom.
+    fn maybe_attach_throttle(
+        throttle: bool,
+        identity: &I,
+        bandwidth: &DefaultBandwidthConfig,
+        client_handle: ClientHandle,
+        client_service: ClientService,
+    ) -> (ClientHandle, ClientService)
+    where
+        I: HasSpec,
+    {
+        if !throttle {
+            return (client_handle, client_service);
+        }
+        let accounting = AccountingBuilder::new(bandwidth.clone())
+            .with_pricer_from_config(HasSpec::spec(identity).clone())
+            .build(identity);
+        let throttle = Arc::new(SelfThrottle::new(&accounting, bandwidth));
+        (
+            client_handle.with_throttle(Arc::clone(&throttle)),
+            client_service.with_throttle(throttle),
+        )
     }
 }
 
@@ -310,5 +375,84 @@ impl<I: SwarmIdentity> LaunchedClient<I> {
     /// The node's libp2p peer id.
     pub fn local_peer_id(&self) -> PeerId {
         self.peer_id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use vertex_swarm_test_utils::test_identity;
+
+    use super::*;
+    use crate::ClientService;
+
+    /// The lightweight launcher defaults the outbound self-throttle on, attaching
+    /// the same instance to both the handle and the service so a disconnect
+    /// clears the bucket the outbound API paces against.
+    #[test]
+    fn launcher_attaches_throttle_by_default() {
+        let identity = test_identity();
+        let launcher = ClientLauncher::new(identity.clone());
+        assert!(launcher.throttle, "throttle is on by default");
+
+        let (service, _events, handle) = ClientService::new();
+        let (handle, service) = ClientLauncher::maybe_attach_throttle(
+            launcher.throttle,
+            &identity,
+            &launcher.bandwidth,
+            handle,
+            service,
+        );
+        assert!(
+            handle.has_throttle(),
+            "default-on launcher must attach the throttle to the handle"
+        );
+        assert!(
+            service.has_throttle(),
+            "default-on launcher must attach the same throttle to the service"
+        );
+    }
+
+    /// `without_throttle()` opts the lightweight launcher out: neither the handle
+    /// nor the service carries a throttle.
+    #[test]
+    fn without_throttle_opts_out() {
+        let identity = test_identity();
+        let launcher = ClientLauncher::new(identity.clone()).without_throttle();
+        assert!(!launcher.throttle, "without_throttle clears the flag");
+
+        let (service, _events, handle) = ClientService::new();
+        let (handle, service) = ClientLauncher::maybe_attach_throttle(
+            launcher.throttle,
+            &identity,
+            &launcher.bandwidth,
+            handle,
+            service,
+        );
+        assert!(
+            !handle.has_throttle(),
+            "without_throttle leaves the handle unthrottled"
+        );
+        assert!(
+            !service.has_throttle(),
+            "without_throttle leaves the service unthrottled"
+        );
+    }
+
+    /// The lightweight launcher sizes its open-loop pacing bucket to a
+    /// conservative, provisional fraction of the payment-threshold headroom, well
+    /// below the adaptive native default, because nothing debits its peer-map and
+    /// no pseudosettle is wired, so the headroom signal never narrows.
+    #[test]
+    fn lightweight_throttle_allowance_is_conservative() {
+        let launcher = ClientLauncher::new(test_identity());
+        assert_eq!(
+            launcher.bandwidth.throttle_allowance_percent(),
+            LIGHTWEIGHT_THROTTLE_ALLOWANCE_PERCENT
+        );
+        assert!(
+            LIGHTWEIGHT_THROTTLE_ALLOWANCE_PERCENT
+                < DefaultBandwidthConfig::default().throttle_allowance_percent(),
+            "open-loop pacer stays provisional and below the adaptive default"
+        );
     }
 }

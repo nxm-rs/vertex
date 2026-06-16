@@ -57,6 +57,12 @@ impl ClientHandle {
         self
     }
 
+    /// Whether an outbound self-throttle is attached to this handle.
+    #[must_use]
+    pub fn has_throttle(&self) -> bool {
+        self.throttle.is_some()
+    }
+
     /// Send a command to the network layer.
     ///
     /// Non-blocking `try_send`: callers such as the libp2p event loop must not
@@ -248,6 +254,12 @@ impl ClientService {
     ) -> Self {
         self.accounting = Some(OriginAccounting { pricing, bandwidth });
         self
+    }
+
+    /// Whether an outbound self-throttle is attached to this service.
+    #[must_use]
+    pub fn has_throttle(&self) -> bool {
+        self.throttle.is_some()
     }
 
     /// Get a handle for sending commands.
