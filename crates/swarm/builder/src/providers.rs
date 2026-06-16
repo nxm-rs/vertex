@@ -23,8 +23,22 @@ const PUSHSYNC_SOURCE: ReportSource = ReportSource::Protocol("pushsync");
 /// Number of closest peers to try when pushing a chunk before giving up.
 const PUSH_CANDIDATE_COUNT: usize = 5;
 
-/// Number of closest peers to try when retrieving a chunk before giving up.
-const RETRIEVE_CANDIDATE_COUNT: usize = 3;
+/// Number of closest peers raced when retrieving a chunk; kept small to avoid
+/// amplifying doomed requests onto saturated peers.
+const RETRIEVE_CANDIDATE_COUNT: usize = 6;
+
+/// Wide last-resort candidate set, raced once only when the normal race misses,
+/// to rescue chunks in sparse proximity bins.
+const RETRIEVE_WIDE_CANDIDATE_COUNT: usize = 30;
+
+/// The wide candidates the common race did not already try, in proximity order.
+/// `wide` is proximity-sorted top-k, so its head is the already-`tried` peers;
+/// excluding them stops the wide tier re-running their doomed legs.
+fn fresh_wide_candidates(tried: &[SwarmAddress], wide: Vec<SwarmAddress>) -> Vec<SwarmAddress> {
+    wide.into_iter()
+        .filter(|peer| !tried.contains(peer))
+        .collect()
+}
 
 /// Chunk provider using ClientHandle for network retrieval.
 #[derive(Clone)]
@@ -57,48 +71,80 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
             None => candidates,
         }
     }
+
+    /// The selector-ordered closest `count` candidates for `address`.
+    fn candidates(&self, address: &ChunkAddress, count: usize) -> Vec<SwarmAddress> {
+        let closest_peers = self.topology.closest_to(address, count);
+        self.select(closest_peers, address)
+    }
+}
+
+/// Race `candidates` over `client_handle` for `address` with a staggered start,
+/// resolving on the first success.
+async fn race_peers(
+    client_handle: &ClientHandle,
+    address: &ChunkAddress,
+    candidates: Vec<SwarmAddress>,
+) -> SwarmResult<ChunkRetrievalResult> {
+    let attempts = candidates.len();
+
+    match race_candidates(candidates, RETRIEVAL_STAGGER, |peer_overlay| {
+        // `originated = true`: our own retrieval, so the client service debits
+        // the serving peer on delivery.
+        client_handle.retrieve_chunk(peer_overlay, *address, true)
+    })
+    .await
+    {
+        Ok(result) => Ok(ChunkRetrievalResult {
+            chunk: result.chunk,
+            stamp: result.stamp,
+            served_by: result.peer,
+        }),
+        Err(RaceFailure::NoCandidates) => Err(SwarmError::network_msg(
+            "no connected peers available for retrieval",
+        )),
+        Err(RaceFailure::AllFailed(e)) => Err(SwarmError::AllPeersFailed {
+            address: *address,
+            attempts,
+            source: Box::new(e),
+        }),
+    }
+}
+
+/// Race the `tried` closest candidates and, only on `AllPeersFailed`, escalate
+/// once to a wide race over the genuinely-new peers `wide` reaches. `wide` is
+/// computed lazily so only a failed common race pays for the wider `closest_to`.
+async fn race_with_wide_escalation(
+    client_handle: &ClientHandle,
+    address: &ChunkAddress,
+    tried: Vec<SwarmAddress>,
+    wide: impl FnOnce() -> Vec<SwarmAddress>,
+) -> SwarmResult<ChunkRetrievalResult> {
+    match race_peers(client_handle, address, tried.clone()).await {
+        Ok(result) => Ok(result),
+        Err(common_failure @ SwarmError::AllPeersFailed { .. }) => {
+            let fresh = fresh_wide_candidates(&tried, wide());
+            if fresh.is_empty() {
+                return Err(common_failure);
+            }
+            race_peers(client_handle, address, fresh).await
+        }
+        Err(other) => Err(other),
+    }
 }
 
 #[async_trait]
 impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
     async fn retrieve_chunk(&self, address: &ChunkAddress) -> SwarmResult<ChunkRetrievalResult> {
-        let chunk_address = SwarmAddress::new(address.0.into());
-        let closest_peers = self
-            .topology
-            .closest_to(&chunk_address, RETRIEVE_CANDIDATE_COUNT);
-        let closest_peers = self.select(closest_peers, &chunk_address);
-        let attempts = closest_peers.len();
-
-        // Race the candidates with a staggered start, resolving on the first
-        // success, so a withholding head candidate is overtaken by the next one
-        // within the stagger instead of stalling this slot for a full
-        // per-attempt deadline and blocking every later chunk behind it. Each
-        // attempt carries its own pacing (the outbound self-throttle and
-        // affordability check run inside `retrieve_chunk` before it dispatches),
-        // so the staggered starts preserve the per-peer pacing. Losing attempts
-        // are dropped when the race resolves.
-        match race_candidates(closest_peers, RETRIEVAL_STAGGER, |peer_overlay| {
-            // `originated = true`: our own retrieval, so the client service
-            // debits the serving peer on delivery.
-            self.client_handle
-                .retrieve_chunk(peer_overlay, chunk_address, true)
+        // Race the closest few candidates; on `AllPeersFailed` escalate once to a
+        // wide last-resort set to rescue a chunk whose closest legs all missed.
+        // This handler does not loop-retry: whole-chunk reliability across a bulk
+        // download is the client's job.
+        let tried = self.candidates(address, RETRIEVE_CANDIDATE_COUNT);
+        race_with_wide_escalation(&self.client_handle, address, tried, || {
+            self.candidates(address, RETRIEVE_WIDE_CANDIDATE_COUNT)
         })
         .await
-        {
-            Ok(result) => Ok(ChunkRetrievalResult {
-                chunk: result.chunk,
-                stamp: result.stamp,
-                served_by: result.peer,
-            }),
-            Err(RaceFailure::NoCandidates) => Err(SwarmError::network_msg(
-                "no connected peers available for retrieval",
-            )),
-            Err(RaceFailure::AllFailed(e)) => Err(SwarmError::AllPeersFailed {
-                address: *address,
-                attempts,
-                source: Box::new(e),
-            }),
-        }
     }
 
     fn has_chunk(&self, _address: &ChunkAddress) -> bool {
@@ -442,7 +488,7 @@ mod tests {
         );
     }
 
-    mod staggered_race {
+    mod retrieval_race {
         use std::time::{Duration, Instant};
 
         use nectar_primitives::ContentChunk;
@@ -562,6 +608,167 @@ mod tests {
 
             let outcome = race_over_handle(handle, Vec::new(), address(0xcc)).await;
             assert!(matches!(outcome, Err(RaceFailure::NoCandidates)));
+        }
+    }
+
+    mod wide_escalation {
+        use std::collections::HashSet;
+        use std::sync::{Arc, Mutex};
+
+        use nectar_primitives::ContentChunk;
+        use tokio::sync::mpsc;
+        use vertex_swarm_node::{ChunkTransferError, ClientCommand, ClientHandle, RetrievalResult};
+
+        use super::super::{fresh_wide_candidates, race_with_wide_escalation};
+        use super::*;
+
+        fn peer(n: u8) -> SwarmAddress {
+            SwarmAddress::from([n; 32])
+        }
+
+        fn test_chunk() -> nectar_primitives::AnyChunk {
+            ContentChunk::new(&b"wide-escalation-chunk"[..])
+                .expect("valid content chunk")
+                .into()
+        }
+
+        #[test]
+        fn fresh_wide_candidates_exclude_the_already_tried_head() {
+            // The wide set is proximity-sorted top-k, so its leading entries are
+            // exactly the peers the common race already exhausted; only the tail
+            // is genuinely new, and the surviving order is preserved.
+            let tried = vec![peer(1), peer(2), peer(3)];
+            let wide = vec![peer(1), peer(2), peer(3), peer(4), peer(5)];
+
+            let fresh = fresh_wide_candidates(&tried, wide);
+
+            assert_eq!(
+                fresh,
+                vec![peer(4), peer(5)],
+                "the already-tried head is excluded; only new peers, in order, survive"
+            );
+        }
+
+        #[test]
+        fn fresh_wide_candidates_is_empty_when_the_wide_set_adds_no_peer() {
+            let tried = vec![peer(1), peer(2)];
+            // A sparse proximity bin: the wider `closest_to` returns no further
+            // peer beyond the ones already tried.
+            let wide = vec![peer(1), peer(2)];
+
+            assert!(
+                fresh_wide_candidates(&tried, wide).is_empty(),
+                "no genuinely-new peer means the wide tier has nothing to race"
+            );
+        }
+
+        /// Spawn a responder over the client command channel that records every
+        /// dispatched peer and answers `success_peer` with a stored chunk while
+        /// failing every other peer with a per-peer error (not channel-closed, so
+        /// the channel stays open across both race tiers). Returns the shared log
+        /// of dispatched peers, in dispatch order.
+        fn responder(
+            mut rx: mpsc::Receiver<ClientCommand>,
+            success_peer: SwarmAddress,
+        ) -> Arc<Mutex<Vec<SwarmAddress>>> {
+            let dispatched = Arc::new(Mutex::new(Vec::new()));
+            let log = dispatched.clone();
+            tokio::spawn(async move {
+                while let Some(command) = rx.recv().await {
+                    match command {
+                        ClientCommand::RetrieveChunk { peer, response, .. } => {
+                            log.lock().unwrap().push(peer);
+                            let reply = if peer == success_peer {
+                                Ok(RetrievalResult {
+                                    chunk: test_chunk(),
+                                    stamp: None,
+                                    peer,
+                                })
+                            } else {
+                                Err(ChunkTransferError::NotConnected)
+                            };
+                            let _ = response.send(reply);
+                        }
+                        other => panic!("unexpected command: {other:?}"),
+                    }
+                }
+            });
+            dispatched
+        }
+
+        #[tokio::test]
+        async fn all_peers_failed_triggers_a_wide_race_over_only_fresh_peers() {
+            let (tx, rx) = mpsc::channel::<ClientCommand>(64);
+            let handle = ClientHandle::new(tx);
+            let addr = address(0xd0);
+
+            // The common race exhausts the closest few; the wide set is the same
+            // head (proximity-sorted) plus a genuinely-new tail. The serving peer
+            // is in the tail, so it can only be reached if the escalation fires
+            // AND dispatches the fresh peer.
+            let tried = vec![peer(1), peer(2), peer(3)];
+            let serving = peer(7);
+            let wide = vec![peer(1), peer(2), peer(3), peer(4), serving];
+            let dispatched = responder(rx, serving);
+
+            let result = race_with_wide_escalation(&handle, &addr, tried.clone(), || wide.clone())
+                .await
+                .expect("the wide escalation reaches the serving peer");
+
+            assert_eq!(
+                result.served_by, serving,
+                "the chunk is served by a peer only the wide tier reached"
+            );
+
+            // (a) The escalation fired: peers beyond the common-race set were
+            // dispatched. (b) Each already-tried peer was dispatched exactly once
+            // (the common race only); the wide tier excluded them rather than
+            // re-running their doomed legs. The bug would dispatch every tried
+            // peer a second time in the wide race.
+            let dispatched = dispatched.lock().unwrap().clone();
+            let dispatched_set: HashSet<_> = dispatched.iter().copied().collect();
+            assert!(
+                dispatched_set.contains(&serving),
+                "the wide race dispatched the genuinely-new serving peer"
+            );
+            for tried_peer in &tried {
+                let hits = dispatched.iter().filter(|p| *p == tried_peer).count();
+                assert_eq!(
+                    hits, 1,
+                    "an already-tried peer must not be re-dispatched by the wide race"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn wide_escalation_is_skipped_when_no_peer_is_fresh() {
+            let (tx, rx) = mpsc::channel::<ClientCommand>(64);
+            let handle = ClientHandle::new(tx);
+            let addr = address(0xd1);
+
+            let tried = vec![peer(1), peer(2), peer(3)];
+            // Sparse bin: the wide set adds no peer the common race did not try,
+            // so there is nothing new to race and no peer ever serves the chunk.
+            let wide = tried.clone();
+            // No peer succeeds.
+            let dispatched = responder(rx, peer(0xff));
+
+            let outcome =
+                race_with_wide_escalation(&handle, &addr, tried.clone(), || wide.clone()).await;
+
+            assert!(
+                matches!(outcome, Err(SwarmError::AllPeersFailed { .. })),
+                "with no fresh peer the common-path failure stands"
+            );
+
+            // Each peer was dispatched exactly once: the common race ran, and the
+            // empty fresh set meant no second, wasteful re-dispatch.
+            let dispatched = dispatched.lock().unwrap().clone();
+            assert_eq!(
+                dispatched.len(),
+                tried.len(),
+                "no peer is re-dispatched when the wide tier finds nothing new"
+            );
         }
     }
 }
