@@ -49,8 +49,14 @@ use futures::StreamExt;
 use futures::stream::{FuturesUnordered, Stream};
 use nectar_primitives::{AnyChunk, ChunkAddress};
 use vertex_swarm_api::{
-    PushReceipt, Stamp, StampedChunk, SwarmChunkProvider, SwarmChunkSender, SwarmError, SwarmResult,
+    OverlayAddress, PushReceipt, Stamp, StampedChunk, SwarmChunkProvider, SwarmChunkSender,
+    SwarmError, SwarmResult,
 };
+// `MaybeSendBoxFuture` (native = `Send`, wasm = `!Send`) is the crate's MaybeSend
+// seam: every boxed core future is held in a `Send`-on-native / `!Send`-on-wasm
+// alias so the streams stay `Send` for tonic on native without forcing `Send` on
+// wasm. The later `ChunkClientExt` extension trait reuses this same convention
+// (via [`MaybeSendIter`] and this alias) for its RPITIT return types.
 use vertex_tasks::MaybeSendBoxFuture;
 
 /// A downloaded chunk proven to answer the address that requested it.
@@ -65,10 +71,15 @@ use vertex_tasks::MaybeSendBoxFuture;
 /// may omit the stamp from the delivery, which is never re-read on the download
 /// path. Address integrity does not depend on the stamp, so a stampless delivery
 /// is still a fully verified chunk.
+///
+/// The overlay of the peer that served the chunk is carried through as
+/// `served_by`, so the streaming retrieve path can report provenance the same way
+/// the unary path does (it previously emitted an empty `served_by`).
 #[derive(Debug, Clone)]
 pub struct VerifiedChunk {
     chunk: AnyChunk,
     stamp: Option<Stamp>,
+    served_by: OverlayAddress,
 }
 
 impl VerifiedChunk {
@@ -88,6 +99,12 @@ impl VerifiedChunk {
     #[must_use]
     pub fn stamp(&self) -> Option<&Stamp> {
         self.stamp.as_ref()
+    }
+
+    /// Overlay of the peer that served this chunk.
+    #[must_use]
+    pub fn served_by(&self) -> OverlayAddress {
+        self.served_by
     }
 
     /// Split into the chunk and its optional stamp.
@@ -226,6 +243,7 @@ where
     Ok(VerifiedChunk {
         chunk: result.chunk,
         stamp: result.stamp,
+        served_by: result.served_by,
     })
 }
 
@@ -487,8 +505,7 @@ mod tests {
     use async_trait::async_trait;
     use nectar_primitives::{AnyChunk, ContentChunk, Nonce};
     use vertex_swarm_api::{
-        ChunkRetrievalResult, OverlayAddress, Stamp, StorageRadius, SwarmChunkProvider,
-        SwarmChunkSender,
+        ChunkRetrievalResult, Stamp, StorageRadius, SwarmChunkProvider, SwarmChunkSender,
     };
 
     use super::*;
@@ -822,6 +839,22 @@ mod tests {
         assert_eq!(item_address, address);
         assert_eq!(*verified.address(), address);
         assert!(verified.stamp().is_none(), "no stamp is carried through");
+    }
+
+    /// The verified chunk carries the overlay the provider reported as
+    /// `served_by`, so the streaming retrieve path no longer loses provenance.
+    #[tokio::test]
+    async fn get_stream_carries_served_by() {
+        let chunk = chunk_for(7);
+        let address = *chunk.address();
+        let provider = MapProvider::new(vec![chunk]);
+
+        let stream = get_stream(provider, vec![address], StreamConfig::new(4));
+        let mut results: Vec<_> = stream.collect().await;
+        let (_, result) = results.remove(0);
+        let verified = result.expect("retrieval succeeds");
+        // `MapProvider` serves from this fixed overlay.
+        assert_eq!(verified.served_by(), OverlayAddress::from([1u8; 32]));
     }
 
     #[tokio::test]
