@@ -24,6 +24,12 @@ vertex-tasks.workspace = true
 futures.workspace = true
 pin-project-lite.workspace = true
 
+## traits
+auto_impl.workspace = true
+
+## sync
+parking_lot.workspace = true
+
 ## error
 thiserror.workspace = true
 

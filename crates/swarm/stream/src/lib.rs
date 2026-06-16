@@ -746,6 +746,409 @@ where
     }
 }
 
+/// The blessed store-trait adapter over the chunk core.
+///
+/// nectar's higher-level machinery (the file [`Joiner`]/splitter, the mantaray
+/// manifest walker, the postage-usage snapshot persister) all want one shape: a
+/// thing they can fetch a chunk payload from and push a sealed chunk to, plus
+/// synchronous accessors for the CPU-bound splitter/manifest paths. Each of
+/// those consumers would otherwise hand-roll the same glue over a
+/// [`ChunkClient`]. This module is that glue, written once: [`ChunkClientStore`]
+/// wraps any [`ChunkClient`] and exposes it as a [`ChunkSource`] + [`ChunkSink`],
+/// while [`MemChunkStore`] is an in-memory [`SyncChunkGet`]/[`SyncChunkPut`]/
+/// [`SyncChunkHas`] for the sync paths.
+///
+/// The adapter re-shapes the existing get/put/has primitive; it adds no new
+/// chunk verbs. The async traits mirror the nectar-postage-usage signatures
+/// exactly — RPITIT futures that intentionally carry **no** `Send` bound, so a
+/// native transport whose future is `Send` propagates that automatically while a
+/// browser transport with a `!Send` future still satisfies the trait.
+///
+/// [`Joiner`]: nectar_primitives::Joiner
+pub mod store {
+    use std::collections::HashMap;
+    use std::convert::Infallible;
+    use std::future::Future;
+    use std::sync::Arc;
+
+    use parking_lot::Mutex;
+
+    use nectar_primitives::bytes::Bytes;
+    use nectar_primitives::{AnyChunk, ChunkAddress};
+    use vertex_swarm_api::{PushReceipt, StampedChunk, SwarmError};
+
+    use crate::{ChunkClient, ChunkClientExt};
+
+    /// Reads a chunk's data payload from the network by its address.
+    ///
+    /// Mirrors nectar-postage-usage's `ChunkSource`. The returned [`Bytes`] are
+    /// the chunk's data payload (what the snapshot codec consumes), not the full
+    /// wire form.
+    ///
+    /// `Ok(None)` means the chunk is **definitively** absent: the network agrees
+    /// it does not exist. `Err` means the read could not be completed and the
+    /// caller must **not** treat the chunk as absent. The distinction is
+    /// load-bearing for the published-sequence floor: treating a transport
+    /// failure as absence would reopen the version downgrade nectar issue #70
+    /// closes.
+    #[auto_impl::auto_impl(&, Arc, Box)]
+    pub trait ChunkSource {
+        /// The error a failed read reports. A value of this type means the read
+        /// did not complete; it never means the chunk is absent.
+        type Error: core::error::Error + Send + Sync + 'static;
+
+        /// Fetch the data payload of the chunk at `address`, or `Ok(None)` if the
+        /// network confirms no such chunk exists.
+        ///
+        /// The future carries no `Send` bound so a `!Send` browser transport can
+        /// implement it; native `Send`-ness propagates on its own.
+        fn fetch(
+            &self,
+            address: &ChunkAddress,
+        ) -> impl Future<Output = Result<Option<Bytes>, Self::Error>>;
+    }
+
+    /// Publishes a chunk (the chunk and its stamp) to the network.
+    ///
+    /// Mirrors nectar-postage-usage's `ChunkSink`, re-targeted at vertex's
+    /// [`StampedChunk`] (the type the chunk core already consumes) rather than
+    /// the postage-usage `SealedChunk`.
+    #[auto_impl::auto_impl(&, Arc, Box)]
+    pub trait ChunkSink {
+        /// The error a failed publish reports.
+        type Error: core::error::Error + Send + Sync + 'static;
+
+        /// Upload a stamped chunk.
+        ///
+        /// As with [`ChunkSource::fetch`], the future carries no `Send` bound so
+        /// a `!Send` browser transport can implement it; native `Send`-ness
+        /// propagates on its own.
+        fn push(&self, chunk: StampedChunk) -> impl Future<Output = Result<(), Self::Error>>;
+    }
+
+    /// Retrieve a chunk by address synchronously.
+    ///
+    /// Mirrors nectar's `SyncChunkGet`, the accessor the CPU-bound splitter and
+    /// manifest paths reach for. Sync because those paths are not async; a
+    /// network-backed store implements the async [`ChunkSource`] instead.
+    #[auto_impl::auto_impl(&, Arc, Box)]
+    pub trait SyncChunkGet {
+        /// The error a failed get reports.
+        type Error: core::error::Error + Send + Sync + 'static;
+
+        /// Get the chunk at `address`.
+        fn get(&self, address: &ChunkAddress) -> Result<AnyChunk, Self::Error>;
+    }
+
+    /// Store a chunk synchronously (`&self`; implementors use interior
+    /// mutability). Mirrors nectar's `SyncChunkPut`.
+    #[auto_impl::auto_impl(&, Arc, Box)]
+    pub trait SyncChunkPut {
+        /// The error a failed put reports.
+        type Error: core::error::Error + Send + Sync + 'static;
+
+        /// Store `chunk`.
+        fn put(&self, chunk: AnyChunk) -> Result<(), Self::Error>;
+    }
+
+    /// Check chunk existence synchronously. Mirrors nectar's `SyncChunkHas`.
+    #[auto_impl::auto_impl(&, Arc, Box)]
+    pub trait SyncChunkHas {
+        /// Whether the chunk at `address` exists.
+        fn has(&self, address: &ChunkAddress) -> bool;
+    }
+
+    /// Adapts any [`ChunkClient`] into a [`ChunkSource`] + [`ChunkSink`].
+    ///
+    /// `fetch` drives [`ChunkClientExt::get`] (verified retrieval) and translates
+    /// the absence distinction: [`SwarmError::ChunkNotFound`] becomes `Ok(None)`,
+    /// every other error stays an `Err`. `push` drives [`ChunkClientExt::put`]
+    /// with stamp validation on, so a sink upload checks the stamp matches the
+    /// chunk. The adapter adds no chunk verbs; it only re-shapes get/put.
+    #[derive(Debug, Clone)]
+    pub struct ChunkClientStore<C> {
+        client: C,
+    }
+
+    impl<C> ChunkClientStore<C> {
+        /// Wrap a client as a store adapter.
+        pub fn new(client: C) -> Self {
+            Self { client }
+        }
+
+        /// Borrow the wrapped client.
+        pub fn client(&self) -> &C {
+            &self.client
+        }
+
+        /// Unwrap back to the client.
+        pub fn into_client(self) -> C {
+            self.client
+        }
+    }
+
+    impl<C: ChunkClient> ChunkSource for ChunkClientStore<C> {
+        type Error = SwarmError;
+
+        fn fetch(
+            &self,
+            address: &ChunkAddress,
+        ) -> impl Future<Output = Result<Option<Bytes>, Self::Error>> {
+            let address = *address;
+            let client = self.client.clone();
+            async move {
+                match client.get(address).await {
+                    Ok(verified) => Ok(Some(verified.chunk().data().clone())),
+                    // A definitive absence is `Ok(None)`; any other failure must
+                    // surface as `Err` so the caller never reads it as absence.
+                    Err(error) if error.is_not_found() => Ok(None),
+                    Err(error) => Err(error),
+                }
+            }
+        }
+    }
+
+    impl<C: ChunkClient> ChunkSink for ChunkClientStore<C> {
+        type Error = SwarmError;
+
+        fn push(&self, chunk: StampedChunk) -> impl Future<Output = Result<(), Self::Error>> {
+            let client = self.client.clone();
+            async move {
+                let _: PushReceipt = client.put(chunk, true).await?;
+                Ok(())
+            }
+        }
+    }
+
+    /// In-memory synchronous chunk store for the splitter/manifest paths.
+    ///
+    /// Implements [`SyncChunkGet`]/[`SyncChunkPut`]/[`SyncChunkHas`] over a shared
+    /// map, so a CPU-bound consumer that builds a chunk tree locally has a store
+    /// to read and write without standing up the async client. Cloneable: clones
+    /// share the same backing map.
+    #[derive(Debug, Clone, Default)]
+    pub struct MemChunkStore {
+        chunks: Arc<Mutex<HashMap<ChunkAddress, AnyChunk>>>,
+    }
+
+    impl MemChunkStore {
+        /// An empty store.
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        /// Number of chunks held.
+        pub fn len(&self) -> usize {
+            self.chunks.lock().len()
+        }
+
+        /// Whether the store holds no chunks.
+        pub fn is_empty(&self) -> bool {
+            self.len() == 0
+        }
+    }
+
+    impl SyncChunkGet for MemChunkStore {
+        type Error = SwarmError;
+
+        fn get(&self, address: &ChunkAddress) -> Result<AnyChunk, Self::Error> {
+            self.chunks
+                .lock()
+                .get(address)
+                .cloned()
+                .ok_or(SwarmError::ChunkNotFound { address: *address })
+        }
+    }
+
+    impl SyncChunkPut for MemChunkStore {
+        type Error = Infallible;
+
+        fn put(&self, chunk: AnyChunk) -> Result<(), Self::Error> {
+            self.chunks.lock().insert(*chunk.address(), chunk);
+            Ok(())
+        }
+    }
+
+    impl SyncChunkHas for MemChunkStore {
+        fn has(&self, address: &ChunkAddress) -> bool {
+            self.chunks.lock().contains_key(address)
+        }
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    mod tests {
+        use async_trait::async_trait;
+        use nectar_primitives::{AnyChunk, ContentChunk};
+        use vertex_swarm_api::{
+            ChunkRetrievalResult, OverlayAddress, PushReceipt, Stamp, StorageRadius,
+            SwarmChunkProvider, SwarmChunkSender, SwarmResult,
+        };
+
+        use super::*;
+        use crate::ChunkAddress;
+
+        fn test_stamp() -> Stamp {
+            use alloy_primitives::{B256, Signature};
+            let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
+            Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig)
+        }
+
+        fn chunk_for(seed: u8) -> StampedChunk {
+            let chunk = ContentChunk::new(vec![seed; 64]).expect("valid content chunk");
+            StampedChunk::new(AnyChunk::Content(chunk), test_stamp())
+        }
+
+        /// A client mock: serves a fixed chunk by its own address, records pushes,
+        /// and can be told to fail a retrieval with a non-not-found transport
+        /// error so the absence distinction can be exercised.
+        #[derive(Clone)]
+        struct ClientMock {
+            chunk: StampedChunk,
+            fail_transport: bool,
+            pushed: Arc<Mutex<Vec<ChunkAddress>>>,
+        }
+
+        impl ClientMock {
+            fn new(chunk: StampedChunk) -> Self {
+                Self {
+                    chunk,
+                    fail_transport: false,
+                    pushed: Arc::new(Mutex::new(Vec::new())),
+                }
+            }
+        }
+
+        #[async_trait]
+        impl SwarmChunkProvider for ClientMock {
+            async fn retrieve_chunk(
+                &self,
+                address: &ChunkAddress,
+            ) -> SwarmResult<ChunkRetrievalResult> {
+                if self.fail_transport {
+                    return Err(SwarmError::NoStorer {
+                        chunk_address: *address,
+                    });
+                }
+                if address == self.chunk.address() {
+                    let (chunk, stamp) = self.chunk.clone().into_parts();
+                    Ok(ChunkRetrievalResult {
+                        chunk,
+                        stamp: Some(stamp),
+                        served_by: OverlayAddress::from([1u8; 32]),
+                    })
+                } else {
+                    Err(SwarmError::ChunkNotFound { address: *address })
+                }
+            }
+
+            fn has_chunk(&self, _address: &ChunkAddress) -> bool {
+                false
+            }
+        }
+
+        #[async_trait]
+        impl SwarmChunkSender for ClientMock {
+            async fn send_chunk_unchecked(&self, chunk: StampedChunk) -> SwarmResult<PushReceipt> {
+                self.send_chunk(chunk).await
+            }
+
+            async fn send_chunk(&self, chunk: StampedChunk) -> SwarmResult<PushReceipt> {
+                self.pushed.lock().push(*chunk.address());
+                Ok(PushReceipt {
+                    storer: OverlayAddress::from([7u8; 32]),
+                    signature: *test_stamp().signature(),
+                    nonce: nectar_primitives::Nonce::from([9u8; 32]),
+                    storage_radius: StorageRadius::ZERO,
+                })
+            }
+        }
+
+        #[tokio::test]
+        async fn fetch_returns_the_payload_for_a_present_chunk() {
+            let chunk = chunk_for(1);
+            let address = *chunk.address();
+            let want = chunk.chunk().data().clone();
+            let store = ChunkClientStore::new(ClientMock::new(chunk));
+
+            let got = store.fetch(&address).await.expect("fetch succeeds");
+            assert_eq!(got, Some(want));
+        }
+
+        #[tokio::test]
+        async fn fetch_maps_definitive_absence_to_none() {
+            // A not-found is the network agreeing the chunk does not exist.
+            let store = ChunkClientStore::new(ClientMock::new(chunk_for(1)));
+            let missing = ChunkAddress::new([0xfe; 32]);
+            let got = store.fetch(&missing).await.expect("absence is Ok(None)");
+            assert!(got.is_none());
+        }
+
+        #[tokio::test]
+        async fn fetch_propagates_transport_failure_as_err() {
+            // A transport failure must NOT be read as absence: it stays an Err so
+            // the published-sequence floor is never mistaken for NONE.
+            let mut mock = ClientMock::new(chunk_for(1));
+            mock.fail_transport = true;
+            let store = ChunkClientStore::new(mock);
+            let err = store
+                .fetch(&ChunkAddress::new([0xfe; 32]))
+                .await
+                .expect_err("transport failure is an error, not absence");
+            assert!(!err.is_not_found());
+        }
+
+        #[tokio::test]
+        async fn push_uploads_the_chunk() {
+            let chunk = chunk_for(2);
+            let address = *chunk.address();
+            let mock = ClientMock::new(chunk_for(0));
+            let pushed = Arc::clone(&mock.pushed);
+            let store = ChunkClientStore::new(mock);
+
+            store.push(chunk).await.expect("push succeeds");
+            assert_eq!(pushed.lock().as_slice(), &[address]);
+        }
+
+        #[test]
+        fn mem_store_round_trips_get_put_has() {
+            let store = MemChunkStore::new();
+            let chunk = chunk_for(5).into_parts().0;
+            let address = *chunk.address();
+
+            assert!(!store.has(&address));
+            assert!(matches!(
+                store.get(&address),
+                Err(SwarmError::ChunkNotFound { .. })
+            ));
+
+            store.put(chunk.clone()).expect("put is infallible");
+            assert!(store.has(&address));
+            assert_eq!(
+                store.get(&address).expect("get after put").address(),
+                &address
+            );
+            assert_eq!(store.len(), 1);
+        }
+
+        /// The `ChunkClientStore` futures inherit the client's `Send`-ness on
+        /// native: a `Send` client gives `Send` futures, so a native consumer can
+        /// hold them across an await in a `Send` task.
+        #[tokio::test]
+        async fn store_futures_are_send_on_native() {
+            let chunk = chunk_for(3);
+            let address = *chunk.address();
+            let store = ChunkClientStore::new(ClientMock::new(chunk));
+
+            let fetched = tokio::spawn(async move { store.fetch(&address).await })
+                .await
+                .expect("task joins")
+                .expect("fetch succeeds");
+            assert!(fetched.is_some());
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 mod tests {
