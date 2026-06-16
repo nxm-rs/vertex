@@ -6,7 +6,8 @@ use futures::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 use vertex_swarm_api::{ChunkAddress, PushReceipt, Stamp, StampedChunk, SwarmError};
 use vertex_swarm_stream::{
-    ChunkClientExt, StreamConfig, VerifiedChunk, get_stream_from, parse_address,
+    ChunkClientExt, NATIVE_DOWNLOAD_CONCURRENCY, StreamConfig, VerifiedChunk, get_stream_from,
+    parse_address,
 };
 
 use crate::ChunkServiceProvider;
@@ -301,9 +302,18 @@ impl<P: ChunkServiceProvider> Chunk for ChunkService<P> {
         // core can retrieve, but must still surface as their own error items
         // rather than tear the stream down. They go onto this channel as a side
         // effect of parsing, and are interleaved with the core's deliveries
-        // below. The channel is unbounded only over the bad-request count, which
-        // is itself bounded by the inbound flow the core's prefetch gates.
-        let (err_tx, err_rx) = tokio::sync::mpsc::unbounded_channel::<RetrieveChunkResponse>();
+        // below.
+        //
+        // The channel is *bounded*: malformed requests never occupy a core
+        // prefetch slot, so an unbounded channel would let a client streaming
+        // nothing but bad requests faster than the consumer drains responses
+        // grow the heap without limit (the core's prefetch only gates valid
+        // addresses). A bounded channel makes `send` park the parser when the
+        // consumer is slow, which transitively pauses the inbound reads, capping
+        // buffered errors at the same chunk-count order as the valid-address
+        // prefetch.
+        let (err_tx, err_rx) =
+            tokio::sync::mpsc::channel::<RetrieveChunkResponse>(NATIVE_DOWNLOAD_CONCURRENCY);
 
         // Parse the inbound feed into the core's address source, diverting every
         // non-address (malformed bytes, inbound error) onto the error channel.
@@ -312,10 +322,12 @@ impl<P: ChunkServiceProvider> Chunk for ChunkService<P> {
             async move {
                 match item {
                     Err(status) => {
-                        let _ = err_tx.send(retrieve_error(
-                            Vec::new(),
-                            format!("inbound stream error: {status}"),
-                        ));
+                        let _ = err_tx
+                            .send(retrieve_error(
+                                Vec::new(),
+                                format!("inbound stream error: {status}"),
+                            ))
+                            .await;
                         None
                     }
                     Ok(req) => match parse_chunk_address(&req.address) {
@@ -323,7 +335,8 @@ impl<P: ChunkServiceProvider> Chunk for ChunkService<P> {
                         // Echo the raw requested bytes for client-side correlation.
                         Err(status) => {
                             let _ = err_tx
-                                .send(retrieve_error(req.address, status.message().to_string()));
+                                .send(retrieve_error(req.address, status.message().to_string()))
+                                .await;
                             None
                         }
                     },
@@ -343,7 +356,7 @@ impl<P: ChunkServiceProvider> Chunk for ChunkService<P> {
             Err(e) => retrieve_error(address.as_bytes().to_vec(), e.to_string()),
         });
 
-        let errors = tokio_stream::wrappers::UnboundedReceiverStream::new(err_rx);
+        let errors = tokio_stream::wrappers::ReceiverStream::new(err_rx);
         let out = futures::stream::select(verified, errors).map(Ok);
         Ok(Response::new(Box::pin(out)))
     }
