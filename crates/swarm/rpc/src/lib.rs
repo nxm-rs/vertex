@@ -4,20 +4,18 @@
 
 mod grpc;
 
-pub use grpc::chunk::ChunkService;
+pub use grpc::chunk::{ChunkService, StampValidation};
 pub use grpc::node::NodeService;
 
-/// A chunk provider usable by the chunk gRPC service: retrieves, sends,
-/// cloneable, `'static`. A trait alias so the bound is named once, not repeated.
-pub trait ChunkServiceProvider:
-    vertex_swarm_api::SwarmChunkProvider + vertex_swarm_api::SwarmChunkSender + Clone + 'static
-{
-}
-
-impl<T> ChunkServiceProvider for T where
-    T: vertex_swarm_api::SwarmChunkProvider + vertex_swarm_api::SwarmChunkSender + Clone + 'static
-{
-}
+/// A chunk provider usable by the chunk gRPC service.
+///
+/// Absorbed into [`vertex_swarm_stream::ChunkClient`]: kept as a re-export so
+/// existing bounds (`P: ChunkServiceProvider`) keep compiling against the one
+/// capability alias. The chunk service drives off [`ChunkClientExt`] and the
+/// free helpers, so this no longer carries its own definition.
+///
+/// [`ChunkClientExt`]: vertex_swarm_stream::ChunkClientExt
+pub use vertex_swarm_stream::ChunkClient as ChunkServiceProvider;
 
 pub mod proto {
     pub mod node {
