@@ -9,7 +9,7 @@
 //! and issue chunk reads and writes. The full native stack (storage, chain,
 //! settlement, RPC) goes through `vertex-swarm-builder` instead.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use eyre::{Result, WrapErr};
 use libp2p::{Multiaddr, PeerId};
@@ -17,13 +17,14 @@ use nectar_primitives::SwarmAddress;
 use vertex_swarm_api::{
     DefaultPeerConfig, SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig,
 };
+use vertex_swarm_bandwidth::{AccountingBuilder, DefaultBandwidthConfig};
 use vertex_swarm_peer_manager::{DEFAULT_TICK_INTERVAL, spawn_peer_manager_task};
 use vertex_swarm_spec::HasSpec;
 use vertex_swarm_topology::{KademliaConfig, TopologyHandle};
 use vertex_tasks::TaskExecutor;
 
 use super::client::ClientNode;
-use crate::ClientHandle;
+use crate::{ClientHandle, SelfThrottle};
 
 /// Default connection idle timeout for a launched client.
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -128,6 +129,10 @@ pub struct ClientLauncher<I: SwarmIdentity + Clone> {
     kademlia: KademliaConfig,
     max_peers: usize,
     idle_timeout: Duration,
+    /// Outbound self-throttle, on by default.
+    throttle: bool,
+    /// Bandwidth config the self-throttle and pricer read from.
+    bandwidth: DefaultBandwidthConfig,
 }
 
 impl<I: SwarmIdentity + Clone> ClientLauncher<I> {
@@ -140,6 +145,8 @@ impl<I: SwarmIdentity + Clone> ClientLauncher<I> {
             kademlia: KademliaConfig::default(),
             max_peers: DEFAULT_MAX_PEERS,
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            throttle: true,
+            bandwidth: DefaultBandwidthConfig::default(),
         }
     }
 
@@ -165,6 +172,13 @@ impl<I: SwarmIdentity + Clone> ClientLauncher<I> {
     #[must_use]
     pub fn with_max_peers(mut self, max: usize) -> Self {
         self.max_peers = max;
+        self
+    }
+
+    /// Disable the outbound self-throttle (on by default).
+    #[must_use]
+    pub fn without_throttle(mut self) -> Self {
+        self.throttle = false;
         self
     }
 
@@ -205,7 +219,7 @@ impl<I: SwarmIdentity + Clone> ClientLauncher<I> {
             idle_timeout: self.idle_timeout,
         };
 
-        let (node, client_service, client_handle) = ClientNode::builder(self.identity)
+        let (node, client_service, client_handle) = ClientNode::builder(self.identity.clone())
             .with_kademlia_config(self.kademlia)
             .build(&config, None)
             .await
@@ -214,6 +228,29 @@ impl<I: SwarmIdentity + Clone> ClientLauncher<I> {
         let topology = node.topology_handle().clone();
         let overlay = node.overlay_address();
         let peer_id = *node.local_peer_id();
+
+        // Outbound self-throttle (default on). The lightweight launcher carries
+        // no accounting stack of its own, so build a minimal client-accounting
+        // instance purely to pace against: a balance tracker with no settlement
+        // providers plus the pricer baked into the bandwidth config (the same
+        // proximity pricer the network meters chunk transfers by). The throttle
+        // reads each peer's pseudosettle allowance off that accounting and its
+        // forgiveness rate / safety margin off the bandwidth config, so a burst
+        // never crosses the remote's settlement trigger. Both the returned
+        // handle and the service must share the *same* throttle so a peer
+        // disconnect clears the bucket the outbound API paces against.
+        let (client_handle, client_service) = if self.throttle {
+            let accounting = AccountingBuilder::new(self.bandwidth.clone())
+                .with_pricer_from_config(HasSpec::spec(&self.identity).clone())
+                .build(&self.identity);
+            let throttle = Arc::new(SelfThrottle::new(&accounting, &self.bandwidth));
+            (
+                client_handle.with_throttle(Arc::clone(&throttle)),
+                client_service.with_throttle(throttle),
+            )
+        } else {
+            (client_handle, client_service)
+        };
 
         let executor = TaskExecutor::current();
 
