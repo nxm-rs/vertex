@@ -12,13 +12,17 @@ description = "Swarm protocol RPC services for Vertex"
 # Internal dependencies
 vertex-swarm-api = { workspace = true }
 vertex-swarm-primitives = { workspace = true }
+vertex-swarm-stream = { workspace = true }
 
 # Primitives
 hex = { workspace = true }
+libp2p = { workspace = true }
 
 # Async
 async-trait.workspace = true
 tokio = { workspace = true, features = ["sync", "rt"] }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
 
 # gRPC
 tonic.workspace = true

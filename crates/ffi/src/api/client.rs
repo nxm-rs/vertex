@@ -186,12 +186,12 @@ impl VertexClient {
     /// The host drives it by awaiting [`VertexDownloadStream::next`] once per
     /// item; the core retrieval pipeline advances only when the host pulls, so a
     /// host that stops awaiting transitively pauses the network reads and nothing
-    /// is buffered past the window on the host's behalf. At most
-    /// `config.window_bytes` of chunk payload is ever in flight, and items arrive
-    /// in request order. A per-address failure (a miss, wrong bytes, or no
-    /// candidate peer) arrives as an item carrying `error`, never as a torn-down
-    /// stream. The returned [`FfiError`] only covers up-front input rejection
-    /// (a malformed address); retrieval failures surface as items.
+    /// is buffered on the host's behalf. At most `config.max_concurrency` chunks
+    /// are in flight. Items arrive in completion order, each carrying its
+    /// address. A per-address failure (a miss, wrong bytes, or no candidate
+    /// peer) arrives as an item carrying `error`, never as a torn-down stream.
+    /// The returned [`FfiError`] only covers up-front input rejection (a
+    /// malformed address); retrieval failures surface as items.
     pub fn download_stream(
         &self,
         addresses: Vec<Vec<u8>>,
@@ -205,13 +205,9 @@ impl VertexClient {
             .collect::<FfiResult<_>>()?;
 
         let cfg = stream_config(config);
-        let inner = get_stream(self.chunks.clone(), parsed.clone(), cfg);
+        let inner = get_stream(self.chunks.clone(), parsed, cfg);
         Ok(VertexDownloadStream {
-            state: tokio::sync::Mutex::new(DownloadState {
-                inner,
-                addresses: parsed.into_iter().collect(),
-                index: 0,
-            }),
+            state: tokio::sync::Mutex::new(DownloadState { inner, index: 0 }),
         })
     }
 
@@ -219,14 +215,10 @@ impl VertexClient {
     ///
     /// Returns a pull-based [`VertexUploadStream`] handle. The host drives it by
     /// awaiting [`VertexUploadStream::next`] once per chunk; the core push
-    /// pipeline admits a new push only when the host pulls and only while the
-    /// admitted chunk fits `config.window_bytes`, so a host that stops awaiting
-    /// acks transitively pauses the network pushes. Each chunk is reconstructed
-    /// into a strong [`StampedChunk`] lazily, as the pipeline admits it, so the
-    /// only chunks materialized at once are the ones inside the window. The host
-    /// still owns the `chunks` list it passed (an unavoidable cost of a by-value
-    /// API), but Rust adds no second resident copy on top of it and never copies
-    /// a chunk's payload a second time.
+    /// pipeline admits a new push only when the host pulls, up to
+    /// `config.max_concurrency` at once, so a host that stops awaiting acks
+    /// transitively pauses the network pushes. Each chunk is reconstructed into a
+    /// strong [`StampedChunk`] lazily, as the pipeline admits it.
     ///
     /// A chunk whose bytes do not match its address fails at admission and
     /// surfaces as the ack item for that chunk carrying `error`; the stream then
@@ -238,42 +230,34 @@ impl VertexClient {
         config: VertexStreamConfig,
     ) -> Result<VertexUploadStream, FfiError> {
         let cfg = stream_config(config);
-        // Capture each chunk's address up front for the ack items and to fail a
-        // malformed address before any push starts. The chunk payloads are left
-        // in `chunks` and reconstructed lazily by the pull stream, so no second
-        // copy of the bytes is held.
+        // Parse each chunk's address up front so a malformed address fails before
+        // any push starts, and so the feed can pair each chunk with its address.
         let addresses: Vec<ChunkAddress> = chunks
             .iter()
             .map(|chunk| parse_address(&chunk.address))
             .collect::<FfiResult<_>>()?;
 
         let sender = self.chunks.clone();
-        // Reconstruct each chunk only as the pipeline pulls it, so the only
-        // materialized chunks are the ones inside the window. A reconstruction
-        // failure (address/byte mismatch, bad stamp) is fed through as an error
-        // so it surfaces as that chunk's ack rather than aborting the stream.
-        let feed = chunks.into_iter().map(|chunk| {
-            reconstruct_upload(chunk).map_err(|e| SwarmError::InvalidChunk {
-                address: None,
+        // Reconstruct each chunk only as the pipeline pulls it. A reconstruction
+        // failure surfaces as that address's error ack rather than aborting.
+        let feed = addresses.into_iter().zip(chunks).map(|(address, chunk)| {
+            let built = reconstruct_upload(chunk).map_err(|e| SwarmError::InvalidChunk {
+                address: Some(address),
                 reason: e.to_string(),
-            })
+            });
+            (address, built)
         });
         let inner = try_put_stream(sender, feed, cfg);
         Ok(VertexUploadStream {
-            state: tokio::sync::Mutex::new(UploadState {
-                inner,
-                addresses: addresses.into_iter().collect(),
-                index: 0,
-            }),
+            state: tokio::sync::Mutex::new(UploadState { inner, index: 0 }),
         })
     }
 }
 
-/// Mutable state of a [`VertexDownloadStream`]: the core stream, the addresses
-/// awaiting pairing with their items, and the next item index.
+/// Mutable state of a [`VertexDownloadStream`]: the core stream and the next
+/// item index. The address comes from each stream item, not by position.
 struct DownloadState {
     inner: GetStream<ClientChunks>,
-    addresses: std::collections::VecDeque<ChunkAddress>,
     index: u64,
 }
 
@@ -299,20 +283,15 @@ impl VertexDownloadStream {
     /// Pull the next downloaded chunk, or `None` once every address has produced
     /// an item.
     ///
-    /// Polls the core stream once. Output order matches request order one-to-one,
-    /// so the address paired with this item is the next one in the original list.
-    /// Awaiting this is the backpressure: until the host calls it, the core issues
-    /// no further retrievals.
+    /// Polls the core stream once. Items arrive in completion order, each
+    /// carrying its address. Awaiting this is the backpressure: until the host
+    /// calls it, the core issues no further retrievals.
     pub async fn next(&self) -> Option<VertexChunkData> {
         let mut state = self.state.lock().await;
-        let result = state.inner.next().await?;
+        let (address, result) = state.inner.next().await?;
         let index = state.index;
         state.index += 1;
-        let address = state
-            .addresses
-            .pop_front()
-            .map(|a| a.as_bytes().to_vec())
-            .unwrap_or_default();
+        let address = address.as_bytes().to_vec();
         Some(match result {
             Ok(verified) => {
                 let (chunk, stamp) = verified.into_parts();
@@ -339,11 +318,10 @@ impl VertexDownloadStream {
     }
 }
 
-/// Mutable state of a [`VertexUploadStream`]: the core stream, the addresses
-/// awaiting pairing with their acks, and the next ack index.
+/// Mutable state of a [`VertexUploadStream`]: the core stream and the next ack
+/// index. The address comes from each stream item, not by position.
 struct UploadState {
     inner: PutStream<ClientChunks>,
-    addresses: std::collections::VecDeque<ChunkAddress>,
     index: u64,
 }
 
@@ -366,14 +344,10 @@ impl VertexUploadStream {
     /// Pull the next upload ack, or `None` once every chunk has produced an ack.
     pub async fn next(&self) -> Option<VertexUploadAck> {
         let mut state = self.state.lock().await;
-        let result = state.inner.next().await?;
+        let (address, result) = state.inner.next().await?;
         let index = state.index;
         state.index += 1;
-        let address = state
-            .addresses
-            .pop_front()
-            .map(|a| a.as_bytes().to_vec())
-            .unwrap_or_default();
+        let address = address.as_bytes().to_vec();
         Some(match result {
             Ok(receipt) => VertexUploadAck {
                 index,
@@ -431,14 +405,12 @@ impl InfrastructureContext for LaunchContext {
 
 /// Map the boundary stream config to the core [`StreamConfig`].
 ///
-/// The core clamps both knobs to at least one, so a zero from the host degrades
-/// to one-at-a-time streaming rather than a deadlock. The byte window is
-/// saturated to `usize::MAX` on a 32-bit host where the `u64` would not fit.
+/// Limiting is by chunk count: only `max_concurrency` is used. The host's
+/// `window_bytes` is retained for ABI stability but ignored (byte/bandwidth
+/// limiting belongs at the connection layer). The core clamps to at least one,
+/// so a zero degrades to one-at-a-time streaming rather than a deadlock.
 fn stream_config(config: VertexStreamConfig) -> StreamConfig {
-    StreamConfig::new(
-        usize::try_from(config.window_bytes).unwrap_or(usize::MAX),
-        usize::try_from(config.max_concurrency).unwrap_or(usize::MAX),
-    )
+    StreamConfig::new(usize::try_from(config.max_concurrency).unwrap_or(usize::MAX))
 }
 
 /// Resolve the spec for the requested network.

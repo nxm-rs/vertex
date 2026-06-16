@@ -1,18 +1,29 @@
 syntax = "proto3";
 package vertex.swarm.chunk.v1;
 
-// Chunk service provides chunk retrieval from the Swarm network.
+// Chunk service: chunk retrieval, upload, and existence checks against Swarm.
 service Chunk {
-  // RetrieveChunk retrieves a chunk by its address from the Swarm network.
-  // The node will query connected peers to find and return the chunk.
+  // RetrieveChunk retrieves a single chunk by its address.
   rpc RetrieveChunk(RetrieveChunkRequest) returns (RetrieveChunkResponse);
 
   // HasChunk checks if a chunk exists locally.
   rpc HasChunk(HasChunkRequest) returns (HasChunkResponse);
 
-  // UploadChunk pushes a pre-stamped chunk to the Swarm network.
-  // The chunk is forwarded to the responsible storer via PushSync.
+  // UploadChunk pushes a single pre-stamped chunk via PushSync.
   rpc UploadChunk(UploadChunkRequest) returns (UploadChunkResponse);
+
+  // UploadChunks streams pre-stamped chunks, bounded by chunk count. Receipts
+  // may return in any order: each carries its chunk address, so the client owns
+  // ordering and one slow push never blocks the rest.
+  rpc UploadChunks(stream UploadChunkRequest) returns (stream UploadChunkResponse);
+
+  // RetrieveChunks streams chunks by address, bounded by chunk count. Responses
+  // may return in any order: each carries its address, so the client correlates
+  // and reorders.
+  rpc RetrieveChunks(stream RetrieveChunkRequest) returns (stream RetrieveChunkResponse);
+
+  // HasChunks streams existence checks; each response carries its address.
+  rpc HasChunks(stream HasChunkRequest) returns (stream HasChunkResponse);
 }
 
 // ChunkType identifies how the chunk data is reconstructed on upload.
@@ -24,66 +35,71 @@ enum ChunkType {
   CHUNK_TYPE_SINGLE_OWNER = 1;
 }
 
+// Failure pertaining to one address, carried in place of a result so a streamed
+// item never tears down the whole stream.
+message ChunkError {
+  bytes address = 1;
+  string message = 2;
+}
+
 message RetrieveChunkRequest {
-  // Chunk address (hex encoded, 64 chars).
-  string address = 1;
+  bytes address = 1;
+}
+
+// A retrieved, address-validated chunk.
+message RetrievedChunk {
+  bytes address = 1;
+  bytes data = 2;
+  // Postage stamp; empty when the serving peer omitted it (chunk still valid).
+  bytes stamp = 3;
+  // Overlay of the peer that served the chunk; empty when unknown.
+  bytes served_by = 4;
 }
 
 message RetrieveChunkResponse {
-  // The chunk data.
-  bytes data = 1;
-
-  // Postage stamp attached to this chunk. Empty when the serving peer omitted
-  // the stamp from the delivery; the chunk is still address-validated.
-  bytes stamp = 2;
-
-  // Overlay address of the peer that served this chunk (hex encoded).
-  string served_by = 3;
+  oneof result {
+    RetrievedChunk chunk = 1;
+    ChunkError error = 2;
+  }
 }
 
 message HasChunkRequest {
-  // Chunk address (hex encoded, 64 chars).
-  string address = 1;
+  bytes address = 1;
 }
 
 message HasChunkResponse {
-  // Whether the chunk exists locally.
-  bool exists = 1;
+  bytes address = 1;
+  bool exists = 2;
 }
 
 message UploadChunkRequest {
-  // The chunk payload.
-  //
-  // For a content chunk this is the BMT body (span + data). For a single-owner
-  // chunk this is the full wire encoding (id + signature + BMT body).
+  // The chunk payload: for a content chunk the BMT body (span + data); for a
+  // single-owner chunk the full wire encoding (id + signature + BMT body).
   bytes data = 1;
-
-  // Pre-computed postage stamp attached to this chunk.
+  // Pre-computed postage stamp.
   bytes stamp = 2;
-
-  // Chunk address (hex encoded, 64 chars).
-  string address = 3;
-
-  // How the data field is interpreted when reconstructing the chunk.
+  bytes address = 3;
   ChunkType chunk_type = 4;
-
-  // Validate the stamp signature against the chunk before sending.
-  //
-  // Pre-stamped uploads are trusted by default. Set this to request signature
-  // validation prior to forwarding the chunk.
+  // Validate the stamp signature before forwarding (pre-stamped uploads are
+  // trusted by default).
   bool validate = 5;
 }
 
+// The storer's signed acknowledgement of an accepted chunk.
+message UploadReceipt {
+  bytes address = 1;
+  // Overlay of the storer that accepted the chunk.
+  bytes storer = 2;
+  // Signature over the receipt (65 bytes).
+  bytes signature = 3;
+  // Nonce the storer used when signing (32 bytes).
+  bytes nonce = 4;
+  uint32 storage_radius = 5;
+}
+
 message UploadChunkResponse {
-  // Overlay address of the storer that accepted this chunk (hex encoded).
-  string storer = 1;
-
-  // The storer's signature over the receipt (65 bytes).
-  bytes signature = 2;
-
-  // The nonce the storer used when signing the receipt (32 bytes).
-  bytes nonce = 3;
-
-  // The storer's storage radius at the time of acceptance.
-  uint32 storage_radius = 4;
+  oneof result {
+    UploadReceipt receipt = 1;
+    ChunkError error = 2;
+  }
 }

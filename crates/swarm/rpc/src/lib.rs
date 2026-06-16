@@ -7,6 +7,18 @@ mod grpc;
 pub use grpc::chunk::ChunkService;
 pub use grpc::node::NodeService;
 
+/// A chunk provider usable by the chunk gRPC service: retrieves, sends,
+/// cloneable, `'static`. A trait alias so the bound is named once, not repeated.
+pub trait ChunkServiceProvider:
+    vertex_swarm_api::SwarmChunkProvider + vertex_swarm_api::SwarmChunkSender + Clone + 'static
+{
+}
+
+impl<T> ChunkServiceProvider for T where
+    T: vertex_swarm_api::SwarmChunkProvider + vertex_swarm_api::SwarmChunkSender + Clone + 'static
+{
+}
+
 pub mod proto {
     pub mod node {
         tonic::include_proto!("vertex.swarm.node.v1");
@@ -32,8 +44,7 @@ pub trait GrpcServiceProvider {
 impl<Topo, Chunk> GrpcServiceProvider for vertex_swarm_api::RpcProviders<Topo, Chunk>
 where
     Topo: vertex_swarm_api::SwarmTopology + Clone + Send + Sync + 'static,
-    Chunk:
-        vertex_swarm_api::SwarmChunkProvider + vertex_swarm_api::SwarmChunkSender + Clone + 'static,
+    Chunk: ChunkServiceProvider,
 {
     fn register_grpc_services(
         &self,
