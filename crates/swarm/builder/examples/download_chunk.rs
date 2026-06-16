@@ -82,7 +82,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let address = ChunkAddress::new([0u8; 32]);
     println!("Retrieving chunk {address}");
-    match providers.chunks().retrieve_chunk(&address).await {
+    match providers
+        .components()
+        .chunks()
+        .retrieve_chunk(&address)
+        .await
+    {
         Ok(result) => {
             println!("Served by {}", result.served_by);
             println!("Chunk address {}", result.chunk.address());

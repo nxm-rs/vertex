@@ -20,8 +20,8 @@ use vertex_swarm_api::{
     ChunkAddress, Multiaddr, PushReceipt, StampedChunk, SwarmChunkProvider, SwarmError,
 };
 use vertex_swarm_builder::{
-    ChunkVerifyConfig, ClientConfig, ClientRpcProviders, DefaultClientBuilder,
-    NetworkChunkProvider, VerifyingChunkProvider,
+    ChunkComponents, ChunkVerifyConfig, ClientConfig, DefaultClientBuilder, NetworkChunkProvider,
+    NodeProviders, VerifyingChunkProvider,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
@@ -514,8 +514,10 @@ fn receipt_into_ffi(receipt: PushReceipt) -> VertexPushReceipt {
 }
 
 /// Extract the chunk provider from the built client's providers.
-fn chunks_from(providers: ClientRpcProviders<Arc<Identity>, ClientChunks>) -> ClientChunks {
-    providers.chunks().clone()
+fn chunks_from(
+    providers: NodeProviders<ChunkComponents<Arc<Identity>, ClientChunks>>,
+) -> ClientChunks {
+    providers.components().chunks().clone()
 }
 
 #[cfg(test)]

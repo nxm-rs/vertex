@@ -59,12 +59,12 @@ mod types;
 pub use self::accounting::{Au, AuConversionError};
 pub use self::components::{
     AccountingAction, BandwidthMode, BootnodeComponents, ClientComponents, Direction,
-    HasAccounting, HasIdentity, HasStore, HasTopology, StorerComponents, SwarmAccountingConfig,
-    SwarmBandwidthAccounting, SwarmClientAccounting, SwarmLocalStore, SwarmLocalStoreConfig,
-    SwarmPeerBandwidth, SwarmPeerResolver, SwarmPeerState, SwarmPricing, SwarmPricingBuilder,
-    SwarmPricingConfig, SwarmSettlementProvider, SwarmTopology, SwarmTopologyBins,
-    SwarmTopologyCommands, SwarmTopologyPeers, SwarmTopologyReporting, SwarmTopologyRouting,
-    SwarmTopologyState, SwarmTopologyStats,
+    HasAccounting, HasChunkClient, HasIdentity, HasStore, HasTopology, StorerComponents,
+    SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmClientAccounting, SwarmLocalStore,
+    SwarmLocalStoreConfig, SwarmPeerBandwidth, SwarmPeerResolver, SwarmPeerState, SwarmPricing,
+    SwarmPricingBuilder, SwarmPricingConfig, SwarmSettlementProvider, SwarmTopology,
+    SwarmTopologyBins, SwarmTopologyCommands, SwarmTopologyPeers, SwarmTopologyReporting,
+    SwarmTopologyRouting, SwarmTopologyState, SwarmTopologyStats,
 };
 pub use self::config::{
     DEFAULT_PEER_BAN_THRESHOLD, DEFAULT_PEER_DISCONNECT_THRESHOLD, DEFAULT_PEER_MAX_PER_BIN,
@@ -86,7 +86,7 @@ pub use self::reporting::{
     BanCause, DisconnectCause, PeerAffordability, PeerLifecycleEvent, PeerReporter, ReportSource,
     SwarmScoringEvent,
 };
-pub use self::rpc::RpcProviders;
+pub use self::rpc::{Bootnode, Client, Storer};
 pub use self::spec::{
     DEFAULT_SATURATION_PEERS, StaticSwarmSpecProvider, SwarmSpec, SwarmSpecParser,
     SwarmSpecProvider, SwarmToken,

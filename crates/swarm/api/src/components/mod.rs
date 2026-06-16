@@ -30,6 +30,19 @@ pub trait HasTopology: Send + Sync {
     fn topology(&self) -> &Self::Topology;
 }
 
+/// Chunk client access (client/storer levels).
+///
+/// Exposes the components' chunk client so the gRPC chunk service and embedders
+/// (FFI) can drive uploads and downloads. Mirrors [`HasTopology`].
+#[auto_impl::auto_impl(&, Arc, Box)]
+pub trait HasChunkClient: Send + Sync {
+    /// The chunk client type.
+    type ChunkClient: Send + Sync;
+
+    /// Get the chunk client.
+    fn chunk_client(&self) -> &Self::ChunkClient;
+}
+
 /// Identity access.
 pub trait HasIdentity: Send + Sync {
     /// The identity type.
