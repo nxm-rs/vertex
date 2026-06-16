@@ -17,11 +17,15 @@ nectar-primitives.workspace = true
 
 ## vertex
 vertex-swarm-api.workspace = true
+vertex-swarm-primitives.workspace = true
 vertex-tasks.workspace = true
 
 ## async
 futures.workspace = true
 pin-project-lite.workspace = true
+
+## error
+thiserror.workspace = true
 
 # Browser adapter for the streaming get/put pipelines. The wasm module exposes
 # the same core streams to JS as async iterators; these are the wasm-bindgen

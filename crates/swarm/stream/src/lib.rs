@@ -179,6 +179,27 @@ impl Default for StreamConfig {
     }
 }
 
+/// A chunk address parse failed: the input was not exactly 32 bytes.
+///
+/// One neutral error every adapter (FFI, wasm, gRPC) maps onto its own error
+/// type, so the address-length check lives once in [`parse_address`] instead of
+/// three near-identical copies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("invalid chunk address: expected 32 bytes, got {got}")]
+pub struct ParseAddressError {
+    /// The length the caller actually supplied.
+    pub got: usize,
+}
+
+/// Parse a 32-byte chunk address from raw bytes.
+///
+/// The single source of the address-length check shared by the FFI, wasm, and
+/// gRPC boundaries. Each adapter maps [`ParseAddressError`] onto its own error
+/// type at the call site.
+pub fn parse_address(bytes: &[u8]) -> Result<ChunkAddress, ParseAddressError> {
+    ChunkAddress::from_slice(bytes).map_err(|_| ParseAddressError { got: bytes.len() })
+}
+
 /// Stream of verified chunks retrieved for a list of addresses.
 ///
 /// Yields `(address, result)` per input address in completion order: each item
@@ -309,6 +330,129 @@ where
     fn size_hint(&self) -> (usize, Option<usize>) {
         let remaining = self.pending.len() + self.in_flight.len();
         (remaining, Some(remaining))
+    }
+}
+
+/// Marker for the address-source stream's thread-safety requirement: `Send` on
+/// native so [`GetStreamFrom`] stays `Send` for tonic, unconstrained on wasm.
+/// Mirrors [`MaybeSendIter`] for a [`Stream`] source. Blanket-implemented, so
+/// callers never name it.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSendStream: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send> MaybeSendStream for T {}
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSendStream {}
+#[cfg(target_arch = "wasm32")]
+impl<T> MaybeSendStream for T {}
+
+/// Like [`get_stream`], but sourced from a [`Stream`] of addresses instead of an
+/// iterator.
+///
+/// The gRPC inbound retrieve path receives addresses as a wire stream, not an
+/// eager list; this routes that path through the same refill/verify core
+/// ([`retrieve_verified`]) instead of a hand-rolled `buffer_unordered`. Same
+/// bounded prefetch and completion-order semantics as [`get_stream`]: at most
+/// [`StreamConfig::max_concurrency`] retrievals are in flight, and a new address
+/// is pulled from the source only as a slot frees, so a slow source or consumer
+/// transitively pauses the network reads.
+pub fn get_stream_from<P, St>(
+    provider: P,
+    addresses: St,
+    config: StreamConfig,
+) -> GetStreamFrom<P, St>
+where
+    P: SwarmChunkProvider + Clone + 'static,
+    St: Stream<Item = ChunkAddress> + MaybeSendStream,
+{
+    GetStreamFrom {
+        provider,
+        source: Some(addresses),
+        in_flight: FuturesUnordered::new(),
+        limit: config.max_concurrency.max(1),
+    }
+}
+
+pin_project_lite::pin_project! {
+    /// Stream returned by [`get_stream_from`].
+    ///
+    /// Holds the provider, the (pinned) address source, and the set of in-flight
+    /// retrievals. Each poll tops the in-flight set up to the concurrency limit
+    /// by pulling ready addresses from the source, then yields the next completed
+    /// retrieval. The source is taken to `None` once exhausted so it is no longer
+    /// polled. Pin-projected so neither the provider nor the source need be
+    /// [`Unpin`].
+    #[must_use = "a stream does nothing unless polled"]
+    pub struct GetStreamFrom<P, St> {
+        provider: P,
+        #[pin]
+        source: Option<St>,
+        in_flight: FuturesUnordered<MaybeSendBoxFuture<(ChunkAddress, SwarmResult<VerifiedChunk>)>>,
+        limit: usize,
+    }
+}
+
+impl<P, St> Stream for GetStreamFrom<P, St>
+where
+    P: SwarmChunkProvider + Clone + 'static,
+    St: Stream<Item = ChunkAddress>,
+{
+    type Item = (ChunkAddress, SwarmResult<VerifiedChunk>);
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+
+        // Prefetch: admit ready addresses from the source until the in-flight set
+        // hits the limit or the source has no address ready. A pending source
+        // stops admitting without parking the whole pipeline, since in-flight work
+        // may still complete below.
+        let mut source_pending = false;
+        while this.in_flight.len() < *this.limit {
+            let Some(source) = this.source.as_mut().as_pin_mut() else {
+                break;
+            };
+            match source.poll_next(cx) {
+                Poll::Ready(Some(address)) => {
+                    let provider = this.provider.clone();
+                    this.in_flight.push(Box::pin(async move {
+                        (address, retrieve_verified(provider, address).await)
+                    }));
+                }
+                // Source drained: drop it so it is never polled again.
+                Poll::Ready(None) => {
+                    this.source.set(None);
+                    break;
+                }
+                Poll::Pending => {
+                    source_pending = true;
+                    break;
+                }
+            }
+        }
+
+        match this.in_flight.poll_next_unpin(cx) {
+            // A slot completed: hand it out. The next poll refills, exactly one
+            // replacement per drained slot, so a stalled consumer stops all reads.
+            Poll::Ready(Some(item)) => Poll::Ready(Some(item)),
+            // Nothing in flight and the source is exhausted: the stream is done.
+            Poll::Ready(None) if this.source.is_none() => Poll::Ready(None),
+            // Nothing in flight but the source could still yield. If the source
+            // parked it will wake us; otherwise it had an address ready that the
+            // limit admitted this tick, so re-poll.
+            Poll::Ready(None) => {
+                if !source_pending {
+                    cx.waker().wake_by_ref();
+                }
+                Poll::Pending
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        // The source is a lazy stream, so only the in-flight set is a known lower
+        // bound; the upper bound is unknown until the source ends.
+        (self.in_flight.len(), None)
     }
 }
 
@@ -1052,5 +1196,151 @@ mod tests {
             StreamConfig::NATIVE_DOWNLOAD.max_concurrency,
             NATIVE_DOWNLOAD_CONCURRENCY
         );
+    }
+
+    #[tokio::test]
+    async fn get_stream_from_yields_each_requested_address_once() {
+        let chunks: Vec<_> = (0..8).map(chunk_for).collect();
+        let addresses: Vec<_> = chunks.iter().map(|c| *c.address()).collect();
+        let provider = MapProvider::new(chunks);
+
+        let source = futures::stream::iter(addresses.clone());
+        let stream = get_stream_from(provider, source, StreamConfig::new(4));
+        let results: Vec<_> = stream.collect().await;
+
+        assert_eq!(results.len(), addresses.len());
+        let want: std::collections::HashSet<_> = addresses.iter().copied().collect();
+        let mut seen = std::collections::HashSet::new();
+        for (address, result) in results {
+            let verified = result.expect("retrieval succeeds");
+            // Order is the consumer's job; assert membership not position.
+            assert_eq!(*verified.address(), address);
+            seen.insert(address);
+        }
+        assert_eq!(seen, want);
+    }
+
+    #[tokio::test]
+    async fn get_stream_from_caps_concurrency() {
+        // A cap of 3 permits exactly 3 concurrent retrievals even with many
+        // addresses queued in the source.
+        let chunks: Vec<_> = (0..16).map(chunk_for).collect();
+        let addresses: Vec<_> = chunks.iter().map(|c| *c.address()).collect();
+        let provider = MapProvider::gated(chunks);
+        let peak = Arc::clone(&provider.peak);
+        let gate = Arc::clone(&provider.gate);
+        let in_flight = Arc::clone(&provider.in_flight);
+
+        let source = futures::stream::iter(addresses);
+        let mut stream = get_stream_from(provider, source, StreamConfig::new(3));
+
+        let driver = tokio::spawn(async move {
+            let _ = stream.next().await;
+            stream
+        });
+
+        loop {
+            if in_flight.load(Ordering::SeqCst) >= 3 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(peak.load(Ordering::SeqCst) <= 3, "cap must bound fan-out");
+
+        gate.add_permits(1 << 20);
+        let _ = driver.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_stream_from_concurrency_of_one_streams_serially() {
+        let chunks: Vec<_> = (0..4).map(chunk_for).collect();
+        let addresses: Vec<_> = chunks.iter().map(|c| *c.address()).collect();
+        let provider = MapProvider::new(chunks);
+
+        let source = futures::stream::iter(addresses.clone());
+        let stream = get_stream_from(provider, source, StreamConfig::new(0));
+        let results: Vec<_> = stream.collect().await;
+        assert_eq!(results.len(), addresses.len());
+        assert!(results.into_iter().all(|(_, r)| r.is_ok()));
+    }
+
+    #[tokio::test]
+    async fn get_stream_from_surfaces_missing_chunk_as_error_item_and_continues() {
+        let present: Vec<_> = (0..3).map(chunk_for).collect();
+        let mut addresses: Vec<_> = present.iter().map(|c| *c.address()).collect();
+        let missing = ChunkAddress::new([0xfe; 32]);
+        addresses.insert(1, missing);
+        let provider = MapProvider::new(present);
+
+        let source = futures::stream::iter(addresses.clone());
+        let stream = get_stream_from(provider, source, StreamConfig::new(4));
+        let results: Vec<_> = stream.collect().await;
+
+        assert_eq!(results.len(), addresses.len());
+        for (address, result) in results {
+            if address == missing {
+                assert!(matches!(result, Err(SwarmError::ChunkNotFound { .. })));
+            } else {
+                assert!(result.is_ok());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn get_stream_from_rejects_wrong_chunk_for_address() {
+        let served = chunk_for(0);
+        let served_address = *served.address();
+        let other = *chunk_for(99).address();
+        let provider = WrongChunkProvider { chunk: served };
+
+        let source = futures::stream::iter(vec![served_address, other]);
+        let stream = get_stream_from(provider, source, StreamConfig::new(4));
+        let results: Vec<_> = stream.collect().await;
+
+        for (address, result) in results {
+            if address == served_address {
+                assert!(result.is_ok(), "address that matches the bytes verifies");
+            } else {
+                assert!(
+                    matches!(result, Err(SwarmError::InvalidChunk { .. })),
+                    "wrong bytes for an address must be rejected: {:?}",
+                    result
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn get_stream_from_carries_served_by() {
+        let chunk = chunk_for(7);
+        let address = *chunk.address();
+        let provider = MapProvider::new(vec![chunk]);
+
+        let source = futures::stream::iter(vec![address]);
+        let stream = get_stream_from(provider, source, StreamConfig::new(4));
+        let mut results: Vec<_> = stream.collect().await;
+        let (_, result) = results.remove(0);
+        let verified = result.expect("retrieval succeeds");
+        assert_eq!(verified.served_by(), OverlayAddress::from([1u8; 32]));
+    }
+
+    #[tokio::test]
+    async fn get_stream_from_empty_source_terminates() {
+        let provider = MapProvider::new(vec![]);
+        let source = futures::stream::iter(Vec::new());
+        let stream = get_stream_from(provider, source, StreamConfig::DEFAULT);
+        let results: Vec<_> = stream.collect().await;
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn parse_address_accepts_32_bytes_and_rejects_others() {
+        let bytes = [0xab; 32];
+        let address = parse_address(&bytes).expect("32 bytes parse");
+        assert_eq!(address.as_bytes(), &bytes);
+
+        let err = parse_address(&[0u8; 10]).expect_err("short address fails");
+        assert_eq!(err.got, 10);
     }
 }
