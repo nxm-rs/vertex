@@ -1,5 +1,20 @@
-# swarm-demo is its own workspace root, so this replaces the parent config.
-# Single-threaded wasm on stable: only the getrandom browser backend cfg, same
-# as the parent. See docs/agents/wasm.md.
+# Build configuration for the browser Swarm client demo.
+#
+# swarm-demo is its own workspace root (empty `[workspace]` table in Cargo.toml),
+# so this file fully replaces the parent workspace `.cargo/config.toml` for the
+# demo build. The only thing it needs to add over the defaults is the wasm
+# getrandom backend selection.
+#
+# Single-threaded, stable-toolchain build: the demo does NOT enable wasm atomics.
+# It pulls plain `rayon` transitively (via `nectar-primitives`) but never spawns a
+# worker pool, and `rayon` compiles for `wasm32-unknown-unknown` against the
+# prebuilt std without `+atomics`. So there is no shared memory, no
+# `wasm-bindgen-rayon` threading transform, no `build-std`, and no nightly
+# toolchain requirement -- a stock stable toolchain with the
+# `wasm32-unknown-unknown` target is sufficient.
+
 [target.wasm32-unknown-unknown]
-rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]
+rustflags = [
+  # getrandom 0.3+/0.4 browser backend selection (matches the parent config).
+  "--cfg", "getrandom_backend=\"wasm_js\"",
+]

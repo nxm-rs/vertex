@@ -1,10 +1,23 @@
-# Trunk build/serve config for the browser Swarm client demo. Single-threaded
-# wasm on the pinned stable toolchain; the only wasm rustflag lives in the
-# demo-local .cargo/config.toml. See README.md for the toolchain setup.
+# Trunk build/serve config for the browser Swarm client demo.
+#
+# Build (see README.md for the full toolchain setup):
+#
+#   trunk build --release
+#
+# The wasm cone builds single-threaded against the prebuilt std on a stable
+# toolchain: no atomics, no shared memory, no `build-std`, no nightly. The only
+# extra rustflag is the getrandom wasm backend, set in the demo-local
+# `.cargo/config.toml`.
 
 [build]
 target = "index.html"
 dist = "dist"
+# Skip wasm-opt: the release profile already trims the module, and the Pages
+# workflow does not run a separate binaryen pass.
+wasm_opt = false
+# Do not hash the wasm/JS filenames: the app loads vendored assets and the wasm
+# bootstrap by stable relative paths, so the emitted filenames are kept fixed.
+filehash = false
 
 [serve]
 address = "127.0.0.1"
