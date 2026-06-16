@@ -346,6 +346,114 @@ pub trait MaybeSendStream {}
 #[cfg(target_arch = "wasm32")]
 impl<T> MaybeSendStream for T {}
 
+/// Marker bound for a value's thread-safety requirement: `Send` on native so an
+/// `impl Future + MaybeSend` returned from [`ChunkClientExt`] stays `Send` for
+/// the generic tonic handler, unconstrained on wasm. Mirrors [`MaybeSendIter`]
+/// and the [`MaybeSendBoxFuture`] split. Blanket-implemented, so callers never
+/// name it.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSend: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send> MaybeSend for T {}
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSend {}
+#[cfg(target_arch = "wasm32")]
+impl<T> MaybeSend for T {}
+
+/// Capability alias for a lean chunk client: retrieves, sends, cloneable, and
+/// shareable across threads for the lifetime of the program.
+///
+/// This is the cross-crate replacement for `rpc::ChunkServiceProvider`, which it
+/// absorbs in a later step. A blanket impl means any type satisfying the bound is
+/// a `ChunkClient` without naming it; the alias only exists so the capability is
+/// stated once instead of repeated at every consumer.
+///
+/// `Send + Sync + 'static` is required even on wasm here: a chunk client is held
+/// behind the wasm `Arc<dyn SwarmChunkProvider>` export and shared, so the alias
+/// is uniform across targets. The per-call `Send` divergence lives in
+/// [`MaybeSend`] on the [`ChunkClientExt`] return types, not in this bound.
+pub trait ChunkClient:
+    SwarmChunkProvider + SwarmChunkSender + Clone + Send + Sync + 'static
+{
+}
+
+impl<T> ChunkClient for T where
+    T: SwarmChunkProvider + SwarmChunkSender + Clone + Send + Sync + 'static
+{
+}
+
+/// Ergonomic chunk verbs over a [`ChunkClient`], as default methods.
+///
+/// Blanket-implemented for every [`ChunkClient`], so a consumer calls `get` /
+/// `put` / `get_many` / `put_many` directly on its client without importing the
+/// free functions or hand-rolling verification. The single-chunk methods are
+/// `async` returning `impl Future<Output = …> + MaybeSend` via RPITIT (not
+/// async-fn-in-trait), so the future stays `Send` on native for the generic
+/// tonic handler while wasm stays `!Send`. The bulk methods return the existing
+/// [`GetStream`] / [`PutStream`] types unchanged.
+///
+/// The chunk core is complete as a primitive; these verbs compose it, they do
+/// not add new ones.
+pub trait ChunkClientExt: ChunkClient {
+    /// Retrieve and verify one chunk, proving it answers `address`.
+    ///
+    /// Wraps [`retrieve_verified`]: the returned chunk is proven to hash to the
+    /// requested address, so a peer answering with the wrong bytes surfaces as an
+    /// error rather than a trusted chunk.
+    fn get(
+        &self,
+        address: ChunkAddress,
+    ) -> impl std::future::Future<Output = SwarmResult<VerifiedChunk>> + MaybeSend {
+        retrieve_verified(self.clone(), address)
+    }
+
+    /// Upload one stamped chunk.
+    ///
+    /// `validate` selects the stamp-signature check: `true` dispatches to
+    /// [`SwarmChunkSender::send_chunk`] (validates the stamp matches the chunk),
+    /// `false` to [`SwarmChunkSender::send_chunk_unchecked`] (trusts the caller).
+    fn put(
+        &self,
+        chunk: StampedChunk,
+        validate: bool,
+    ) -> impl std::future::Future<Output = SwarmResult<PushReceipt>> + MaybeSend {
+        let client = self.clone();
+        async move {
+            if validate {
+                client.send_chunk(chunk).await
+            } else {
+                client.send_chunk_unchecked(chunk).await
+            }
+        }
+    }
+
+    /// Retrieve and verify many chunks as a bounded, completion-ordered stream.
+    ///
+    /// Returns the same [`GetStream`] as [`get_stream`]; see it for the prefetch
+    /// and verification semantics.
+    fn get_many(
+        &self,
+        addresses: impl IntoIterator<Item = ChunkAddress>,
+        config: StreamConfig,
+    ) -> GetStream<Self> {
+        get_stream(self.clone(), addresses, config)
+    }
+
+    /// Upload many stamped chunks as a bounded, completion-ordered stream.
+    ///
+    /// Returns the same [`PutStream`] as [`put_stream`]; see it for the bounded
+    /// concurrency and lazy-materialization semantics.
+    fn put_many<I>(&self, chunks: I, config: StreamConfig) -> PutStream<Self>
+    where
+        I: IntoIterator<Item = StampedChunk>,
+        I::IntoIter: MaybeSendIter + 'static,
+    {
+        put_stream(self.clone(), chunks, config)
+    }
+}
+
+impl<T: ChunkClient> ChunkClientExt for T {}
+
 /// Like [`get_stream`], but sourced from a [`Stream`] of addresses instead of an
 /// iterator.
 ///
@@ -1342,5 +1450,144 @@ mod tests {
 
         let err = parse_address(&[0u8; 10]).expect_err("short address fails");
         assert_eq!(err.got, 10);
+    }
+    /// A client mock satisfying [`ChunkClient`]: it both serves a fixed chunk map
+    /// and records pushes, so the `ChunkClientExt` verbs can be driven end to end.
+    #[derive(Clone)]
+    struct ClientMock {
+        provider: MapProvider,
+        sender: RecordingSender,
+    }
+
+    impl ClientMock {
+        fn new(chunks: Vec<StampedChunk>) -> Self {
+            Self {
+                provider: MapProvider::new(chunks),
+                sender: RecordingSender::new(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl SwarmChunkProvider for ClientMock {
+        async fn retrieve_chunk(
+            &self,
+            address: &ChunkAddress,
+        ) -> SwarmResult<ChunkRetrievalResult> {
+            self.provider.retrieve_chunk(address).await
+        }
+
+        fn has_chunk(&self, address: &ChunkAddress) -> bool {
+            self.provider.has_chunk(address)
+        }
+    }
+
+    #[async_trait]
+    impl SwarmChunkSender for ClientMock {
+        async fn send_chunk_unchecked(&self, chunk: StampedChunk) -> SwarmResult<PushReceipt> {
+            self.sender.send_chunk_unchecked(chunk).await
+        }
+
+        async fn send_chunk(&self, chunk: StampedChunk) -> SwarmResult<PushReceipt> {
+            self.sender.send_chunk(chunk).await
+        }
+    }
+
+    #[tokio::test]
+    async fn ext_get_verifies_and_returns_the_chunk() {
+        let chunk = chunk_for(11);
+        let address = *chunk.address();
+        let client = ClientMock::new(vec![chunk]);
+
+        let verified = client.get(address).await.expect("retrieval succeeds");
+        assert_eq!(*verified.address(), address);
+    }
+
+    #[tokio::test]
+    async fn ext_get_rejects_wrong_chunk_for_address() {
+        // A request for a never-stored address surfaces as an error, not a chunk.
+        let client = ClientMock::new(vec![chunk_for(11)]);
+        let missing = ChunkAddress::new([0xfe; 32]);
+        let err = client.get(missing).await.expect_err("missing chunk errors");
+        assert!(matches!(err, SwarmError::ChunkNotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn ext_put_validated_and_unchecked_both_upload() {
+        let validated = chunk_for(20);
+        let unchecked = chunk_for(21);
+        let addr_validated = *validated.address();
+        let addr_unchecked = *unchecked.address();
+        let client = ClientMock::new(vec![]);
+        let accepted = Arc::clone(&client.sender.accepted);
+
+        client.put(validated, true).await.expect("validated push");
+        client.put(unchecked, false).await.expect("unchecked push");
+
+        let accepted = accepted.lock().unwrap();
+        assert!(accepted.contains(&addr_validated));
+        assert!(accepted.contains(&addr_unchecked));
+    }
+
+    #[tokio::test]
+    async fn ext_get_many_streams_all_addresses() {
+        let chunks: Vec<_> = (0..6).map(chunk_for).collect();
+        let addresses: Vec<_> = chunks.iter().map(|c| *c.address()).collect();
+        let client = ClientMock::new(chunks);
+
+        let stream = client.get_many(addresses.clone(), StreamConfig::new(4));
+        let results: Vec<_> = stream.collect().await;
+
+        assert_eq!(results.len(), addresses.len());
+        let want: std::collections::HashSet<_> = addresses.into_iter().collect();
+        let seen: std::collections::HashSet<_> = results
+            .into_iter()
+            .map(|(address, result)| {
+                result.expect("retrieval succeeds");
+                address
+            })
+            .collect();
+        assert_eq!(seen, want);
+    }
+
+    #[tokio::test]
+    async fn ext_put_many_uploads_all_chunks() {
+        let chunks: Vec<_> = (0..6).map(chunk_for).collect();
+        let addresses: Vec<_> = chunks.iter().map(|c| *c.address()).collect();
+        let client = ClientMock::new(vec![]);
+        let accepted = Arc::clone(&client.sender.accepted);
+
+        let stream = client.put_many(chunks, StreamConfig::new(4));
+        let results: Vec<_> = stream.collect().await;
+
+        assert_eq!(results.len(), addresses.len());
+        assert!(results.into_iter().all(|(_, r)| r.is_ok()));
+        let accepted = accepted.lock().unwrap();
+        for address in &addresses {
+            assert!(accepted.contains(address));
+        }
+    }
+
+    /// The native `get`/`put` futures must be `Send` so the generic tonic handler
+    /// can hold them: drive each through `tokio::spawn`, which requires `Send`.
+    /// This is the compile-and-run guard for the RPITIT `+ MaybeSend` bound.
+    #[tokio::test]
+    async fn ext_futures_are_send_and_spawnable() {
+        let chunk = chunk_for(30);
+        let address = *chunk.address();
+        let client = ClientMock::new(vec![chunk_for(30)]);
+
+        let get_client = client.clone();
+        let verified = tokio::spawn(async move { get_client.get(address).await })
+            .await
+            .expect("get task joins")
+            .expect("retrieval succeeds");
+        assert_eq!(*verified.address(), address);
+
+        let put_client = client.clone();
+        let receipt = tokio::spawn(async move { put_client.put(chunk, true).await })
+            .await
+            .expect("put task joins");
+        assert!(receipt.is_ok());
     }
 }
