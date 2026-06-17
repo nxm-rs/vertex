@@ -6,10 +6,12 @@ use std::sync::Arc;
 use redb::backends::InMemoryBackend;
 use vertex_storage::{Database, DatabaseError, DatabaseErrorInfo, DbTxMut};
 
+pub mod cursor;
 pub mod metrics;
 pub mod stats;
 mod tx;
 
+pub use cursor::RedbCursorRO;
 pub use tx::{RedbReadTx, RedbWriteTx};
 
 /// redb-backed database implementing the `Database` trait.
