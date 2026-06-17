@@ -55,7 +55,7 @@ pub use handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};
 
 // Providers
 pub use providers::NetworkChunkProvider;
-pub use rpc::{ChunkComponents, NodeProviders, RegisterSwarmServices, TopologyComponents};
+pub use rpc::{NodeProviders, RegisterSwarmServices};
 pub use verify::{ChunkVerifyConfig, VerifyingChunkProvider};
 
 // Configs

@@ -17,11 +17,12 @@ use nectar_postage::Stamp;
 use tokio::runtime::Runtime;
 use vertex_node_api::InfrastructureContext;
 use vertex_swarm_api::{
-    ChunkAddress, Multiaddr, PushReceipt, StampedChunk, SwarmChunkProvider, SwarmError,
+    ChunkAddress, HasChunkClient, Multiaddr, PushReceipt, StampedChunk, SwarmChunkProvider,
+    SwarmError,
 };
 use vertex_swarm_builder::{
-    ChunkComponents, ChunkVerifyConfig, ClientConfig, DefaultClientBuilder, NetworkChunkProvider,
-    NodeProviders, VerifyingChunkProvider,
+    ChunkVerifyConfig, ClientConfig, DefaultClientBuilder, NetworkChunkProvider,
+    VerifyingChunkProvider,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};
@@ -513,11 +514,9 @@ fn receipt_into_ffi(receipt: PushReceipt) -> VertexPushReceipt {
     }
 }
 
-/// Extract the chunk provider from the built client's providers.
-fn chunks_from(
-    providers: NodeProviders<ChunkComponents<Arc<Identity>, ClientChunks>>,
-) -> ClientChunks {
-    providers.components().chunks().clone()
+/// Extract the chunk provider from the built client's components.
+fn chunks_from(components: impl HasChunkClient<ChunkClient = ClientChunks>) -> ClientChunks {
+    components.chunk_client().clone()
 }
 
 #[cfg(test)]

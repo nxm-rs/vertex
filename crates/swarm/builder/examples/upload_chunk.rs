@@ -21,8 +21,8 @@ use alloy_signer_local::PrivateKeySigner;
 use nectar_postage::{Stamp, StampDigest, StampIndex};
 use vertex_node_api::InfrastructureContext;
 use vertex_swarm_api::{
-    AnyChunk, Chunk, ChunkAddress, ContentChunk, HasTopology, StampedChunk, SwarmChunkSender,
-    SwarmNodeType, SwarmTopologyCommands,
+    AnyChunk, Chunk, ChunkAddress, ContentChunk, HasChunkClient, HasTopology, StampedChunk,
+    SwarmChunkSender, SwarmNodeType, SwarmTopologyCommands,
 };
 use vertex_swarm_builder::{ChunkVerifyConfig, ClientConfig, DefaultClientBuilder};
 use vertex_swarm_identity::Identity;
@@ -99,7 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stamped = StampedChunk::new(AnyChunk::Content(chunk), sign_stamp(&address)?);
 
     println!("Uploading chunk {address}");
-    let receipt = providers.components().chunks().send_chunk(stamped).await?;
+    let receipt = providers.chunk_client().send_chunk(stamped).await?;
     println!("Accepted by storer {}", receipt.storer);
     println!("Signature {}", receipt.signature);
     println!("Storage radius {}", receipt.storage_radius);

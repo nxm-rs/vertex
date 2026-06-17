@@ -17,7 +17,8 @@ use std::sync::Arc;
 
 use vertex_node_api::InfrastructureContext;
 use vertex_swarm_api::{
-    ChunkAddress, HasTopology, SwarmChunkProvider, SwarmNodeType, SwarmTopologyCommands,
+    ChunkAddress, HasChunkClient, HasTopology, SwarmChunkProvider, SwarmNodeType,
+    SwarmTopologyCommands,
 };
 use vertex_swarm_builder::{ChunkVerifyConfig, ClientConfig, DefaultClientBuilder};
 use vertex_swarm_identity::Identity;
@@ -82,12 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let address = ChunkAddress::new([0u8; 32]);
     println!("Retrieving chunk {address}");
-    match providers
-        .components()
-        .chunks()
-        .retrieve_chunk(&address)
-        .await
-    {
+    match providers.chunk_client().retrieve_chunk(&address).await {
         Ok(result) => {
             println!("Served by {}", result.served_by);
             println!("Chunk address {}", result.chunk.address());
