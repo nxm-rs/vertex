@@ -1,25 +1,19 @@
-//! RPC providers container for Swarm protocol.
+//! Role trait aliases for a node's gRPC surface.
+//!
+//! The generic providers container (`NodeProviders<C>`) lives in
+//! `vertex-swarm-builder`, where the gRPC registration impl is orphan-legal.
+//! These aliases name the capability hierarchy its components type `C` walks.
 
-/// RPC providers container for the Swarm protocol.
-#[derive(Debug, Clone)]
-pub struct RpcProviders<Topo, Chunk> {
-    topology: Topo,
-    chunk: Chunk,
-}
+use crate::{HasChunkClient, HasStore, HasTopology};
 
-impl<Topo, Chunk> RpcProviders<Topo, Chunk> {
-    /// Create new RPC providers.
-    pub fn new(topology: Topo, chunk: Chunk) -> Self {
-        Self { topology, chunk }
-    }
+/// Role alias: a bootnode exposes topology only.
+pub trait Bootnode: HasTopology {}
+impl<C: HasTopology> Bootnode for C {}
 
-    /// Get reference to the topology provider.
-    pub fn topology(&self) -> &Topo {
-        &self.topology
-    }
+/// Role alias: a client adds a chunk client on top of the bootnode surface.
+pub trait Client: Bootnode + HasChunkClient {}
+impl<C: Bootnode + HasChunkClient> Client for C {}
 
-    /// Get reference to the chunk provider.
-    pub fn chunk(&self) -> &Chunk {
-        &self.chunk
-    }
-}
+/// Role alias: a storer adds a local store on top of the client surface.
+pub trait Storer: Client + HasStore {}
+impl<C: Client + HasStore> Storer for C {}
