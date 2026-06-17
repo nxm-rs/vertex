@@ -13,6 +13,11 @@
 //!   transformed address, full chunk data, type) and the three inclusion proofs
 //!   (`proof1`/`proof2`/`proofLast`), captured via an oracle extractor run
 //!   against the live bee tree.
+//!
+//! The anchor-keyed transformed address itself is a nectar primitive
+//! ([`AnyChunk::transformed_address`]); nectar owns its parity oracle. These
+//! tests exercise the *redistribution* layer on top of it: sampling, the
+//! reserve-commitment chunk, the witness indices and the inclusion proofs.
 
 #![allow(
     clippy::unwrap_used,
@@ -25,11 +30,14 @@ use alloy_primitives::{B256, hex};
 use serde::Deserialize;
 
 use vertex_swarm_redistribution::{
-    SAMPLE_SIZE, SampleItem, Stamp, make_inclusion_proofs, reserve_commitment_content,
-    reserve_sample, transformed_address, witness_indices,
+    SAMPLE_SIZE, SampleItem, make_inclusion_proofs, reserve_commitment_content, reserve_sample,
+    witness_indices,
 };
 
-use nectar_primitives::{DefaultHasher, SwarmAddress};
+use nectar_primitives::{
+    Chunk, DefaultAnyChunk, DefaultContentChunk, DefaultHasher, DefaultSingleOwnerChunk,
+    SwarmAddress,
+};
 
 // --- bee TestSampleVectorCAC -------------------------------------------------
 
@@ -46,23 +54,15 @@ fn cac_transformed_address_matches_bee_vector() {
         *b = (i % 256) as u8;
     }
 
-    // CAC data is span(8, little-endian) || payload; the plain BMT root is the
-    // chunk address.
-    let mut data = Vec::with_capacity(8 + content.len());
-    data.extend_from_slice(&(content.len() as u64).to_le_bytes());
-    data.extend_from_slice(&content);
-
-    let mut plain = DefaultHasher::new();
-    plain.set_span(content.len() as u64);
-    plain.update(&content);
-    let chunk_address = SwarmAddress::from(plain.sum());
+    let chunk = DefaultContentChunk::new(content).unwrap();
     assert_eq!(
-        hex::encode(chunk_address.as_slice()),
+        hex::encode(chunk.address().as_slice()),
         WANT_CHUNK_ADDR,
         "chunk address must match bee's published vector",
     );
 
-    let tr = transformed_address(ANCHOR_CAC, &chunk_address, &data, false);
+    let any: DefaultAnyChunk = chunk.into();
+    let tr = any.transformed_address(ANCHOR_CAC);
     assert_eq!(
         hex::encode(tr.as_slice()),
         WANT_TRANSFORMED,
@@ -127,32 +127,46 @@ fn h(s: &str) -> B256 {
     B256::from_slice(&hex::decode(s.trim_start_matches("0x")).expect("hex"))
 }
 
-/// Rebuild every sample item from the oracle (full chunk data + type), recompute
-/// its transformed address under anchor1, and confirm it matches bee.
+/// Parse one oracle item's raw chunk wire bytes into the typed [`AnyChunk`] the
+/// sampler operates on. A `CAC` is a `span || payload` content body; a `SOC` is
+/// `id || signature || span || payload`. The chunk's `TryFrom` enforces the
+/// minimum sizes, so malformed bytes become parse errors, not panics.
+fn parse_chunk(it: &OracleItem) -> DefaultAnyChunk {
+    let bytes = hex::decode(&it.chunk_data).expect("chunk data hex");
+    if it.chunk_type == "SOC" {
+        DefaultSingleOwnerChunk::try_from(bytes.as_slice())
+            .expect("SOC chunk parses")
+            .into()
+    } else {
+        DefaultContentChunk::try_from(bytes.as_slice())
+            .expect("CAC chunk parses")
+            .into()
+    }
+}
+
+/// Rebuild every sample item from the oracle (typed chunk + transformed address),
+/// asserting the parsed chunk address and the recomputed transformed address
+/// both match bee.
 fn rebuild_items(oracle: &Oracle, anchor1: &[u8]) -> Vec<SampleItem> {
     oracle
         .items
         .iter()
         .map(|it| {
-            let is_soc = it.chunk_type == "SOC";
-            let chunk_address = SwarmAddress::from(h(&it.chunk_address));
-            let chunk_data = hex::decode(&it.chunk_data).expect("chunk data hex");
-
-            let tr = transformed_address(anchor1, &chunk_address, &chunk_data, is_soc);
+            let chunk = parse_chunk(it);
             assert_eq!(
-                hex::encode(tr.as_slice()),
+                hex::encode(chunk.address().as_slice()),
+                it.chunk_address.trim_start_matches("0x"),
+                "parsed chunk address must match bee",
+            );
+
+            let item = SampleItem::new(anchor1, chunk);
+            assert_eq!(
+                hex::encode(item.transformed_address.as_slice()),
                 it.transformed_address.trim_start_matches("0x"),
                 "recomputed transformed address must match bee for {}",
                 it.chunk_address,
             );
-
-            SampleItem {
-                transformed_address: tr,
-                chunk_address,
-                chunk_data,
-                is_soc,
-                stamp: Stamp::default(),
-            }
+            item
         })
         .collect()
 }
@@ -226,9 +240,9 @@ fn inclusion_proofs_match_bee_byte_for_byte() {
 
     let proofs = make_inclusion_proofs(&items, &anchor1, &anchor2).expect("proofs build");
 
-    assert_proof(&proofs.a, &oracle.proof1, "proof1 (require1)");
-    assert_proof(&proofs.b, &oracle.proof2, "proof2 (require2)");
-    assert_proof(&proofs.c, &oracle.proof_last, "proofLast (require3)");
+    assert_proof(&proofs.0[0], &oracle.proof1, "proof1 (require1)");
+    assert_proof(&proofs.0[1], &oracle.proof2, "proof2 (require2)");
+    assert_proof(&proofs.0[2], &oracle.proof_last, "proofLast (require3)");
 }
 
 fn assert_proof(
@@ -308,19 +322,19 @@ fn witness_proofs_self_verify() {
     let idx = witness_indices(&anchor2);
 
     for (p, require) in [
-        (&proofs.a, idx.require1),
-        (&proofs.b, idx.require2),
-        (&proofs.c, idx.require3),
+        (&proofs.0[0], idx.require1),
+        (&proofs.0[1], idx.require2),
+        (&proofs.0[2], idx.require3),
     ] {
         assert!(
             p.rc_proof.verify(rc_root.as_slice()).expect("rc verify"),
             "RC proof must verify against the reserve-commitment root",
         );
 
-        // OG proof verifies against the chunk's own (plain) address.
+        // OG proof verifies against the witnessed body's plain BMT root.
         assert!(
             p.og_proof
-                .verify(items[require].chunk_address_for_verify().as_slice())
+                .verify(plain_root(&items[require].chunk).as_slice())
                 .expect("og verify"),
             "OG proof must verify against the chunk's plain BMT root",
         );
@@ -331,42 +345,29 @@ fn witness_proofs_self_verify() {
         // against the prefixed root directly.
         assert!(
             p.tr_proof
-                .verify(items[require].prefixed_root(&anchor1).as_slice())
+                .verify(prefixed_root(&items[require].chunk, &anchor1).as_slice())
                 .expect("tr verify"),
             "TR proof must verify against the anchor-prefixed BMT root",
         );
     }
 }
 
-trait ChunkAddressForVerify {
-    fn chunk_address_for_verify(&self) -> SwarmAddress;
-    fn prefixed_root(&self, anchor: &[u8]) -> SwarmAddress;
+/// The plain BMT root of the witnessed chunk body. For a CAC this is the chunk
+/// address; for a SOC it is the wrapped CAC's address. The typed `span`/`data`
+/// accessors already expose the inner body, so there is no header slicing.
+fn plain_root(chunk: &DefaultAnyChunk) -> SwarmAddress {
+    let mut hasher = DefaultHasher::new();
+    hasher.set_span(chunk.span());
+    hasher.update(chunk.data());
+    SwarmAddress::from(hasher.sum())
 }
 
-impl ChunkAddressForVerify for SampleItem {
-    /// The plain BMT root of the witnessed chunk body. For a CAC this is the
-    /// chunk address; for a SOC the chunk address is `keccak(id||owner)`, so we
-    /// recompute the inner CAC's plain BMT root here for proof verification.
-    fn chunk_address_for_verify(&self) -> SwarmAddress {
-        let offset = if self.is_soc { 32 + 65 } else { 0 };
-        let span = u64::from_le_bytes(self.chunk_data[offset..offset + 8].try_into().unwrap());
-        let payload = &self.chunk_data[offset + 8..];
-        let mut hasher = DefaultHasher::new();
-        hasher.set_span(span);
-        hasher.update(payload);
-        SwarmAddress::from(hasher.sum())
-    }
-
-    /// The anchor-prefixed BMT root of the witnessed chunk body (the TR proof's
-    /// root). For a CAC this equals the transformed address; for a SOC it is the
-    /// inner component of the transformed address.
-    fn prefixed_root(&self, anchor: &[u8]) -> SwarmAddress {
-        let offset = if self.is_soc { 32 + 65 } else { 0 };
-        let span = u64::from_le_bytes(self.chunk_data[offset..offset + 8].try_into().unwrap());
-        let payload = &self.chunk_data[offset + 8..];
-        let mut hasher = DefaultHasher::with_prefix(anchor);
-        hasher.set_span(span);
-        hasher.update(payload);
-        SwarmAddress::from(hasher.sum())
-    }
+/// The anchor-prefixed BMT root of the witnessed chunk body (the TR proof's
+/// root). For a CAC this equals the transformed address; for a SOC it is the
+/// inner component of the transformed address.
+fn prefixed_root(chunk: &DefaultAnyChunk, anchor: &[u8]) -> SwarmAddress {
+    let mut hasher = DefaultHasher::with_prefix(anchor);
+    hasher.set_span(chunk.span());
+    hasher.update(chunk.data());
+    SwarmAddress::from(hasher.sum())
 }

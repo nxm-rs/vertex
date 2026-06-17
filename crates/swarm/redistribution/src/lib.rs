@@ -11,7 +11,7 @@ mod redistribution;
 pub use args::RedistributionArgs;
 pub use config::StorageConfig;
 pub use redistribution::{
-    ChunkInclusionProof, ChunkInclusionProofs, ProofError, SAMPLE_SIZE, SampleItem, Stamp,
-    WitnessIndices, canonical_neighbourhood, make_inclusion_proofs, reserve_commitment_content,
-    reserve_sample, transformed_address, witness_indices,
+    ChunkInclusionProof, ChunkInclusionProofs, ProofError, SAMPLE_SIZE, SampleItem, WitnessIndices,
+    canonical_neighbourhood, make_inclusion_proofs, reserve_commitment_content, reserve_sample,
+    witness_indices,
 };

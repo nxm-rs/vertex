@@ -19,22 +19,22 @@
 //! mirrors them deliberately and is validated against bee's published vectors
 //! in `tests/`.
 //!
+//! The anchor-keyed transformed address itself (the value the sample is ordered
+//! by) is a nectar primitive: [`AnyChunk::transformed_address`]. nectar owns
+//! that parity oracle, so this crate consumes it rather than re-deriving it.
+//!
 //! The building blocks are:
 //!
 //! - [`canonical_neighbourhood`] filters chunk addresses to those a node is
 //!   responsible for at a given committed depth.
-//! - [`transformed_address`] computes a chunk's anchor-keyed transformed
-//!   address (the value the sample is ordered by).
 //! - [`SampleItem`] / [`reserve_sample`] select the [`SAMPLE_SIZE`] chunks with
 //!   the lexicographically smallest transformed addresses.
 //! - [`make_inclusion_proofs`] / [`ChunkInclusionProof`] build the proof of
 //!   entitlement (the witness data submitted to the contract).
 
-use alloy_primitives::{B256, Keccak256};
-
 use nectar_primitives::bmt::Prover;
 use nectar_primitives::error::PrimitivesError;
-use nectar_primitives::{ChunkAddress, DefaultHasher, Proof, SwarmAddress};
+use nectar_primitives::{AnyChunk, ChunkAddress, DefaultHasher, Proof, SwarmAddress};
 
 /// Errors arising while building a proof of entitlement.
 #[derive(Debug, thiserror::Error)]
@@ -55,16 +55,6 @@ pub enum ProofError {
 
 /// Number of chunks retained in a reserve sample (bee `SampleSize`).
 pub const SAMPLE_SIZE: usize = 16;
-
-/// BMT span header size in bytes (a little-endian `u64`).
-const SPAN_SIZE: usize = 8;
-
-/// SOC header size preceding the wrapped CAC: 32-byte id + 65-byte signature.
-///
-/// This is bee's `swarm.HashSize + swarm.SocSignatureSize` and is the byte
-/// offset at which a single-owner chunk's inner content-addressed chunk (its
-/// span and payload) begins inside the full chunk data.
-const SOC_SPAN_OFFSET: usize = 32 + 65;
 
 /// The deterministic neighbourhood for `anchor` at the given committed `depth`.
 ///
@@ -107,108 +97,45 @@ pub fn canonical_neighbourhood(
         .collect()
 }
 
-/// Compute a chunk's anchor-keyed transformed address.
-///
-/// This is bee's `transformedAddress` (`pkg/storer/sample.go`): the value the
-/// reserve sample is ordered by. `anchor` is the round's sampling salt
-/// (`anchor1`), applied as a per-node BMT prefix via nectar's
-/// [`DefaultHasher::with_prefix`].
-///
-/// - **CAC** (`is_soc == false`): the transformed address is the prefixed BMT
-///   of the chunk's own span and payload. `chunk_data` is `span(8) || payload`;
-///   the span is taken from the first 8 bytes and the payload (everything after
-///   it) is hashed under the anchor prefix.
-/// - **SOC** (`is_soc == true`): the wrapped content-addressed chunk begins at
-///   [`SOC_SPAN_OFFSET`] (after the 32-byte id and 65-byte signature). The
-///   transformed address is the **plain** `keccak256(soc_address ||
-///   prefixed_bmt(anchor, inner_cac))`. The outer keccak is *not* prefixed —
-///   only the inner BMT carries the anchor, matching bee's
-///   `transformedAddressSOC` which uses `swarm.NewHasher()` (a plain keccak) for
-///   the outer hash.
-///
-/// # Panics
-///
-/// Panics if `chunk_data` is shorter than the span header it must contain
-/// (8 bytes for a CAC, [`SOC_SPAN_OFFSET`] + 8 for a SOC). Reserve chunks are
-/// always well formed, so this only fires on programmer error.
-#[must_use]
-#[allow(
-    clippy::indexing_slicing,
-    reason = "reserve chunk data is fixed-layout consensus input; the panic contract is documented above"
-)]
-pub fn transformed_address(
-    anchor: &[u8],
-    soc_address: &ChunkAddress,
-    chunk_data: &[u8],
-    is_soc: bool,
-) -> ChunkAddress {
-    let span_offset = if is_soc { SOC_SPAN_OFFSET } else { 0 };
-    let inner = transformed_address_cac(anchor, &chunk_data[span_offset..]);
-
-    if !is_soc {
-        return SwarmAddress::from(inner);
-    }
-
-    // SOC: plain (unprefixed) keccak256(soc_address || inner_transformed).
-    let mut hasher = Keccak256::new();
-    hasher.update(soc_address.as_slice());
-    hasher.update(inner.as_slice());
-    SwarmAddress::from(B256::from_slice(hasher.finalize().as_slice()))
-}
-
-/// Prefixed BMT of a content-addressed chunk body (`span(8) || payload`).
-#[allow(
-    clippy::indexing_slicing,
-    clippy::expect_used,
-    reason = "CAC body always carries an 8-byte span header; the slice bounds are fixed by the chunk format"
-)]
-fn transformed_address_cac(anchor: &[u8], cac_data: &[u8]) -> B256 {
-    let span = u64::from_le_bytes(
-        cac_data[..SPAN_SIZE]
-            .try_into()
-            .expect("CAC data must contain an 8-byte span header"),
-    );
-    let mut hasher = DefaultHasher::with_prefix(anchor);
-    hasher.set_span(span);
-    hasher.update(&cac_data[SPAN_SIZE..]);
-    hasher.sum()
-}
-
 /// A single entry in a reserve sample.
 ///
-/// Mirrors bee's `storer.SampleItem`. It carries the full chunk data so that
-/// the proof of entitlement can re-derive both the original (OG) and
-/// transformed (TR) BMT proofs, plus the stamp witness submitted on chain.
+/// Mirrors bee's `storer.SampleItem`. It carries the typed chunk so that the
+/// proof of entitlement can re-derive both the original (OG) and transformed
+/// (TR) BMT proofs without re-parsing raw bytes or branching on a chunk-type
+/// boolean: an [`AnyChunk`] already knows whether it is a CAC or a SOC, and its
+/// [`span`](AnyChunk::span)/[`data`](AnyChunk::data) accessors delegate to the
+/// inner BMT body for both, so SOC witness reads need no `id`/`signature`
+/// header slicing.
+///
+/// The postage-stamp witness (bee's `PostageProof`) is intentionally absent: it
+/// is not built here. Reintroduce it via `nectar_postage::Stamp` only when that
+/// witness lands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SampleItem {
     /// The anchor-keyed transformed address the sample is ordered by.
     pub transformed_address: ChunkAddress,
-    /// The chunk's own (content or single-owner) address.
-    pub chunk_address: ChunkAddress,
-    /// The full chunk data: `span||payload` for a CAC, `id||sig||span||payload`
-    /// for a SOC.
-    pub chunk_data: Vec<u8>,
-    /// Whether this chunk is a single-owner chunk.
-    pub is_soc: bool,
-    /// The postage stamp witness for the chunk.
-    pub stamp: Stamp,
+    /// The typed chunk (content or single-owner) this item witnesses.
+    pub chunk: AnyChunk,
 }
 
-/// A postage stamp witness, as carried into the proof of entitlement.
-///
-/// The fields map onto bee's `PostageProof` (`batch_id`, `index`, `timestamp`,
-/// `sig`). Index and timestamp are stored big-endian exactly as they appear on
-/// the wire so the on-chain `uint64` decode matches.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub struct Stamp {
-    /// The postage batch identifier.
-    pub batch_id: B256,
-    /// The 8-byte big-endian stamp index.
-    pub index: [u8; 8],
-    /// The 8-byte big-endian stamp timestamp.
-    pub timestamp: [u8; 8],
-    /// The stamp signature (65 bytes in practice).
-    pub sig: Vec<u8>,
+impl SampleItem {
+    /// Build a sample item for `chunk` under the sampling anchor (`anchor1`).
+    ///
+    /// The transformed address is computed by nectar's
+    /// [`AnyChunk::transformed_address`], the byte-for-byte bee parity oracle.
+    #[must_use]
+    pub fn new(anchor1: &[u8], chunk: AnyChunk) -> Self {
+        Self {
+            transformed_address: chunk.transformed_address(anchor1),
+            chunk,
+        }
+    }
+
+    /// The chunk's own (content or single-owner) address.
+    #[must_use]
+    pub fn chunk_address(&self) -> &ChunkAddress {
+        self.chunk.address()
+    }
 }
 
 /// Select the reserve sample from `candidates`.
@@ -238,44 +165,41 @@ pub fn reserve_sample(candidates: impl IntoIterator<Item = SampleItem>) -> Vec<S
 }
 
 /// Insert `item` into the running sorted sample, bee `insert` semantics.
-#[allow(
-    clippy::indexing_slicing,
-    reason = "indices range over the sample's own length, established by the enclosing loop bound"
-)]
 fn insert_sample_item(sample: &mut Vec<SampleItem>, item: SampleItem) {
-    for i in 0..sample.len() {
-        match item
-            .transformed_address
-            .as_slice()
-            .cmp(sample[i].transformed_address.as_slice())
-        {
-            core::cmp::Ordering::Less => {
-                sample.insert(i, item);
-                // bee trims to SampleSize after a sorted insertion (its slice
-                // re-append can transiently overshoot by one).
-                if sample.len() > SAMPLE_SIZE {
-                    sample.truncate(SAMPLE_SIZE);
-                }
-                return;
-            }
-            core::cmp::Ordering::Equal => {
-                // Tie on the transformed address: bee replaces the incumbent
-                // only when the new chunk is a CAC (not a valid SOC), so a CAC
-                // always wins the slot. Either way no new slot is consumed.
-                if !item.is_soc {
-                    sample[i] = item;
-                }
-                return;
-            }
-            core::cmp::Ordering::Greater => {}
-        }
-    }
+    let key = item.transformed_address;
 
-    // Not smaller than any incumbent (and not a tie, which would have
-    // returned): append only while the sample is not yet full, mirroring bee's
-    // `len < SampleSize && !added` guard.
-    if sample.len() < SAMPLE_SIZE {
-        sample.push(item);
+    // First slot whose transformed address is not strictly smaller than `key`:
+    // either a tie or the insertion point.
+    let Some(pos) = sample
+        .iter()
+        .position(|s| s.transformed_address.as_slice() >= key.as_slice())
+    else {
+        // Larger than every incumbent: append only while the sample is not yet
+        // full, mirroring bee's `len < SampleSize && !added` guard.
+        if sample.len() < SAMPLE_SIZE {
+            sample.push(item);
+        }
+        return;
+    };
+
+    match sample.get_mut(pos) {
+        // Tie on the transformed address: bee replaces the incumbent only when
+        // the new chunk is a CAC (not a valid SOC), so a CAC always wins the
+        // slot. Either way no new slot is consumed.
+        Some(incumbent) if incumbent.transformed_address == key => {
+            if item.chunk.is_content() {
+                *incumbent = item;
+            }
+        }
+        // Strictly smaller than the incumbent at `pos`: insert before it.
+        _ => {
+            sample.insert(pos, item);
+            // bee trims to SampleSize after a sorted insertion (its slice
+            // re-append can transiently overshoot by one).
+            if sample.len() > SAMPLE_SIZE {
+                sample.truncate(SAMPLE_SIZE);
+            }
+        }
     }
 }
 
@@ -289,7 +213,7 @@ fn insert_sample_item(sample: &mut Vec<SampleItem>, item: SampleItem) {
 pub fn reserve_commitment_content(items: &[SampleItem]) -> Vec<u8> {
     let mut content = Vec::with_capacity(items.len() * 64);
     for it in items {
-        content.extend_from_slice(it.chunk_address.as_slice());
+        content.extend_from_slice(it.chunk_address().as_slice());
         content.extend_from_slice(it.transformed_address.as_slice());
     }
     content
@@ -308,7 +232,7 @@ pub fn reserve_commitment_content(items: &[SampleItem]) -> Vec<u8> {
 /// - [`Self::tr_proof`] (`proofSegments3`): an `anchor1`-prefixed
 ///   (transformed) BMT segment proof over the same body.
 ///
-/// Postage and SOC witness data are tracked separately on [`SampleItem`].
+/// Postage and SOC witness data are tracked separately.
 #[derive(Clone, Debug)]
 pub struct ChunkInclusionProof {
     /// Reserve-commitment chunk inclusion proof (OG of the RC chunk).
@@ -322,14 +246,26 @@ pub struct ChunkInclusionProof {
 }
 
 /// The three-witness proof of entitlement (bee `ChunkInclusionProofs`).
+///
+/// The three proofs are for sample items `require1`/`require2`/`require3` (the
+/// witnesses selected by `anchor2`; see [`WitnessIndices`]), in that order.
 #[derive(Clone, Debug)]
-pub struct ChunkInclusionProofs {
-    /// Witness A, for sample item `require1`.
-    pub a: ChunkInclusionProof,
-    /// Witness B, for sample item `require2`.
-    pub b: ChunkInclusionProof,
-    /// Witness C, for sample item `require3` (always the last, `SAMPLE_SIZE-1`).
-    pub c: ChunkInclusionProof,
+pub struct ChunkInclusionProofs(pub [ChunkInclusionProof; 3]);
+
+impl ChunkInclusionProofs {
+    /// Iterate the three witness proofs in `require1`/`require2`/`require3` order.
+    pub fn iter(&self) -> core::slice::Iter<'_, ChunkInclusionProof> {
+        self.0.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a ChunkInclusionProofs {
+    type Item = &'a ChunkInclusionProof;
+    type IntoIter = core::slice::Iter<'a, ChunkInclusionProof>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
 }
 
 /// The three witness indices selected by `anchor2` (bee require1/require2/require3).
@@ -378,12 +314,30 @@ pub fn witness_indices(anchor2: &[u8]) -> WitnessIndices {
 }
 
 /// `big-endian(bytes) mod m`, computed without a big-integer dependency.
+///
+/// The `u128` accumulator never overflows: after each `% m` it is `< m <= u64`,
+/// so shifting in one more byte stays within `u128`.
 fn mod_be(bytes: &[u8], m: u64) -> u64 {
     let mut acc: u128 = 0;
     for &b in bytes {
         acc = ((acc << 8) | u128::from(b)) % u128::from(m);
     }
     acc as u64
+}
+
+/// BMT-hash a `span`/`payload` body, applying the `anchor1` prefix when given.
+///
+/// Factors out the repeated `DefaultHasher` ritual: construct (plain or
+/// `with_prefix`), `set_span`, `update`. Used for the reserve-commitment chunk
+/// (no anchor) and the OG (no anchor) / TR (anchor) witness proofs.
+fn rc_hasher(anchor: Option<&[u8]>, span: u64, payload: &[u8]) -> DefaultHasher {
+    let mut hasher = match anchor {
+        Some(prefix) => DefaultHasher::with_prefix(prefix),
+        None => DefaultHasher::new(),
+    };
+    hasher.set_span(span);
+    hasher.update(payload);
+    hasher
 }
 
 /// Build the proof of entitlement for `items` from the two round anchors.
@@ -402,18 +356,15 @@ fn mod_be(bytes: &[u8], m: u64) -> u64 {
 /// 3. an `anchor1`-prefixed BMT segment proof at `segment_index` over the same
 ///    body.
 ///
-/// For a SOC the body is the wrapped CAC, taken from [`SOC_SPAN_OFFSET`].
+/// The witnessed body is read straight from the typed chunk: [`AnyChunk::span`]
+/// and [`AnyChunk::data`] already delegate to the inner BMT body for both CAC
+/// and SOC, so a SOC needs no `id`/`signature` header slicing.
 ///
 /// # Errors
 ///
 /// Returns an error if `items` does not contain exactly [`SAMPLE_SIZE`]
 /// elements, if either anchor is empty, or if any underlying BMT proof
 /// generation fails (e.g. an out-of-range segment index).
-#[allow(
-    clippy::indexing_slicing,
-    clippy::expect_used,
-    reason = "witness indices are bee's require1/2/3 (all < SAMPLE_SIZE, checked above) and the chunk body always carries its span header"
-)]
 pub fn make_inclusion_proofs(
     items: &[SampleItem],
     anchor1: &[u8],
@@ -434,36 +385,27 @@ pub fn make_inclusion_proofs(
     // Reserve-commitment chunk: a CAC over the 16 (chunk_addr || transformed)
     // pairs. Its span is the body length, 64 * SAMPLE_SIZE bytes.
     let rc_content = reserve_commitment_content(items);
-    let mut rc_hasher = DefaultHasher::new();
-    rc_hasher.set_span(rc_content.len() as u64);
-    rc_hasher.update(&rc_content);
+    let rc_hash = rc_hasher(None, rc_content.len() as u64, &rc_content);
 
     let witness = |require: usize| -> core::result::Result<ChunkInclusionProof, ProofError> {
-        let item = &items[require];
+        let item = items
+            .get(require)
+            .ok_or(ProofError::SampleSize(items.len()))?;
 
         // RC chunk inclusion proof at the even slot holding the chunk address.
-        let rc_proof = rc_hasher.generate_proof(&rc_content, require * 2)?;
+        let rc_proof = rc_hash.generate_proof(&rc_content, require * 2)?;
 
-        // The witnessed chunk's own body: span||payload, skipping the SOC header.
-        let offset = if item.is_soc { SOC_SPAN_OFFSET } else { 0 };
-        let span = u64::from_le_bytes(
-            item.chunk_data[offset..offset + SPAN_SIZE]
-                .try_into()
-                .expect("chunk data must contain an 8-byte span header"),
-        );
-        let payload = &item.chunk_data[offset + SPAN_SIZE..];
+        // The witnessed chunk's own body. For a SOC the typed accessors already
+        // expose the wrapped CAC's span/payload, so there is no header slicing.
+        let span = item.chunk.span();
+        let payload = item.chunk.data();
 
         // OG: plain BMT segment proof.
-        let mut og_hasher = DefaultHasher::new();
-        og_hasher.set_span(span);
-        og_hasher.update(payload);
-        let og_proof = og_hasher.generate_proof(payload, idx.segment_index)?;
+        let og_proof = rc_hasher(None, span, payload).generate_proof(payload, idx.segment_index)?;
 
         // TR: anchor1-prefixed BMT segment proof over the same body.
-        let mut tr_hasher = DefaultHasher::with_prefix(anchor1);
-        tr_hasher.set_span(span);
-        tr_hasher.update(payload);
-        let tr_proof = tr_hasher.generate_proof(payload, idx.segment_index)?;
+        let tr_proof =
+            rc_hasher(Some(anchor1), span, payload).generate_proof(payload, idx.segment_index)?;
 
         Ok(ChunkInclusionProof {
             rc_proof,
@@ -473,46 +415,31 @@ pub fn make_inclusion_proofs(
         })
     };
 
-    Ok(ChunkInclusionProofs {
-        a: witness(idx.require1)?,
-        b: witness(idx.require2)?,
-        c: witness(idx.require3)?,
-    })
+    Ok(ChunkInclusionProofs([
+        witness(idx.require1)?,
+        witness(idx.require2)?,
+        witness(idx.require3)?,
+    ]))
 }
 
 #[cfg(test)]
 #[allow(
-    clippy::expect_used,
+    clippy::unwrap_used,
     clippy::indexing_slicing,
     reason = "test assertions over known-bounds fixtures"
 )]
 mod tests {
     use super::*;
+    use nectar_primitives::DefaultContentChunk;
 
     fn addr(byte: u8) -> ChunkAddress {
-        SwarmAddress::from(B256::repeat_byte(byte))
+        SwarmAddress::from(alloy_primitives::B256::repeat_byte(byte))
     }
 
-    /// A CAC sample item from a span/payload body, transformed under `anchor`.
+    /// A CAC sample item from a payload, transformed under `anchor`.
     fn cac_item(anchor: &[u8], payload: &[u8]) -> SampleItem {
-        let mut data = Vec::with_capacity(SPAN_SIZE + payload.len());
-        data.extend_from_slice(&(payload.len() as u64).to_le_bytes());
-        data.extend_from_slice(payload);
-
-        // Plain address.
-        let mut h = DefaultHasher::new();
-        h.set_span(payload.len() as u64);
-        h.update(payload);
-        let chunk_address = SwarmAddress::from(h.sum());
-
-        let transformed_address = transformed_address(anchor, &chunk_address, &data, false);
-        SampleItem {
-            transformed_address,
-            chunk_address,
-            chunk_data: data,
-            is_soc: false,
-            stamp: Stamp::default(),
-        }
+        let chunk = DefaultContentChunk::new(payload.to_vec()).unwrap();
+        SampleItem::new(anchor, chunk.into())
     }
 
     #[test]
@@ -579,23 +506,42 @@ mod tests {
     #[test]
     fn reserve_sample_tie_break_prefers_cac() {
         let anchor = b"x";
-        // Two items with the same transformed address but different types.
+        // A CAC and a fabricated SOC sharing the same transformed address but
+        // differing in type; the CAC must always win the slot.
         let base = cac_item(anchor, &[7; 16]);
         let soc_dup = SampleItem {
-            is_soc: true,
-            chunk_address: addr(0xaa),
+            chunk: soc_chunk(),
             ..base.clone()
         };
 
         // SOC inserted first, then CAC: CAC must win the slot.
         let out = reserve_sample(vec![soc_dup.clone(), base.clone()]);
         assert_eq!(out.len(), 1);
-        assert!(!out[0].is_soc, "CAC must replace SOC on a transformed tie");
+        assert!(
+            out[0].chunk.is_content(),
+            "CAC must replace SOC on a transformed tie"
+        );
 
         // CAC inserted first, then SOC: CAC must be retained.
         let out = reserve_sample(vec![base.clone(), soc_dup]);
         assert_eq!(out.len(), 1);
-        assert!(!out[0].is_soc, "incumbent CAC must survive a SOC tie");
+        assert!(
+            out[0].chunk.is_content(),
+            "incumbent CAC must survive a SOC tie"
+        );
+    }
+
+    /// A deterministic single-owner chunk for the tie-break test.
+    fn soc_chunk() -> AnyChunk {
+        use nectar_primitives::DefaultSingleOwnerChunk;
+        let signer = alloy_signer_local::PrivateKeySigner::from_slice(&[0x42u8; 32]).unwrap();
+        let soc = DefaultSingleOwnerChunk::new(
+            alloy_primitives::B256::ZERO,
+            b"single owner payload".to_vec(),
+            &signer,
+        )
+        .unwrap();
+        soc.into()
     }
 
     #[test]
