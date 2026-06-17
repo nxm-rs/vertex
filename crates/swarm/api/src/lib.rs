@@ -59,13 +59,14 @@ mod types;
 
 pub use self::accounting::{Au, AuConversionError};
 pub use self::components::{
-    AccountingAction, BandwidthMode, BootnodeComponents, ClientComponents, Direction,
-    HasChunkClient, HasIdentity, HasStore, HasTopology, StorerComponents, SwarmAccountingConfig,
-    SwarmBandwidthAccounting, SwarmClientAccounting, SwarmLocalStore, SwarmLocalStoreConfig,
-    SwarmPeerBandwidth, SwarmPeerResolver, SwarmPeerState, SwarmPricing, SwarmPricingBuilder,
-    SwarmPricingConfig, SwarmSettlementProvider, SwarmTopology, SwarmTopologyBins,
-    SwarmTopologyCommands, SwarmTopologyPeers, SwarmTopologyReporting, SwarmTopologyRouting,
-    SwarmTopologyState, SwarmTopologyStats, construct,
+    AccountingAction, BandwidthMode, BinCursorStore, BinScanItem, BootnodeComponents,
+    ClientComponents, Direction, HasChunkClient, HasIdentity, HasReserve, HasStore, HasTopology,
+    ReserveStore, StorerComponents, SwarmAccountingConfig, SwarmBandwidthAccounting,
+    SwarmClientAccounting, SwarmLocalStore, SwarmLocalStoreConfig, SwarmPeerBandwidth,
+    SwarmPeerResolver, SwarmPeerState, SwarmPricing, SwarmPricingBuilder, SwarmPricingConfig,
+    SwarmSettlementProvider, SwarmTopology, SwarmTopologyBins, SwarmTopologyCommands,
+    SwarmTopologyPeers, SwarmTopologyReporting, SwarmTopologyRouting, SwarmTopologyState,
+    SwarmTopologyStats, construct,
 };
 pub use self::config::{
     DEFAULT_PEER_BAN_THRESHOLD, DEFAULT_PEER_DISCONNECT_THRESHOLD, DEFAULT_PEER_MAX_PER_BIN,
@@ -99,12 +100,12 @@ pub use self::types::{
 
 // Re-export primitives for convenience
 pub use nectar_primitives::{
-    AnyChunk, Chunk, ChunkAddress, ChunkType, ChunkTypeId, ChunkTypeSet, ContentChunk,
-    SingleOwnerChunk, StandardChunkSet,
+    AnyChunk, Bin, Chunk, ChunkAddress, ChunkType, ChunkTypeId, ChunkTypeSet, ContentChunk,
+    ProximityOrder, SingleOwnerChunk, StandardChunkSet,
 };
 pub use vertex_swarm_primitives::{
-    ConnectionProfile, NeighborhoodDepth, OverlayAddress, Stamp, StampedChunk, StorageRadius,
-    ValidatedChunk, ValidationError, VerifiedStampedChunk,
+    BatchId, ConnectionProfile, NeighborhoodDepth, OverlayAddress, Stamp, StampedChunk,
+    StorageRadius, ValidatedChunk, ValidationError, VerifiedStampedChunk,
 };
 
 // Re-export libp2p types used in config traits

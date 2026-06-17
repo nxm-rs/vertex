@@ -44,7 +44,7 @@ pub use validated::{ValidatedChunk, ValidationError};
 
 // Re-export canonical Swarm primitives from nectar. See the crate-level docs
 // for the ProximityOrder / Bin / NeighborhoodDepth distinction.
-pub use nectar_postage::{Stamp, StampError};
+pub use nectar_postage::{BatchId, Stamp, StampError};
 pub use nectar_primitives::{Bin, NetworkId, Nonce, ProximityOrder, Timestamp, compute_overlay};
 
 use core::fmt;
