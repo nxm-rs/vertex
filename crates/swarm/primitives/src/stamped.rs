@@ -1,97 +1,23 @@
 //! A chunk paired with the postage stamp that authorizes its storage.
 
 use nectar_postage::Stamp;
-use nectar_primitives::{AnyChunk, ChunkAddress, ContentChunk, SingleOwnerChunk, bytes::Bytes};
-
-/// Error rebuilding a chunk from its wire bytes and expected address.
-///
-/// Reconstructing an [`AnyChunk`] from raw bytes is ambiguous without the
-/// address: a [`ContentChunk`] parse almost always succeeds structurally (span
-/// plus arbitrary payload), so the expected address is the disambiguator. The
-/// chunk is whichever variant parses *and* hashes to the expected address; if
-/// neither does, the bytes do not match the address.
-#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
-#[strum(serialize_all = "snake_case")]
-pub enum ReconstructError {
-    /// The bytes did not parse as any known chunk type whose address matches the
-    /// expected address.
-    #[error("chunk bytes do not match expected address {expected}")]
-    AddressMismatch {
-        /// The address the chunk was expected to have.
-        expected: ChunkAddress,
-    },
-}
+use nectar_primitives::{AnyChunk, ChunkAddress};
 
 /// A chunk together with its postage stamp.
 ///
-/// A retrieval, a pushsync delivery, and an upload all move a *chunk plus its
-/// proof of payment* as one unit. [`AnyChunk`] holds the chunk bytes but carries
-/// no stamp, so this pairing is the cohesive value that flows across the node's
-/// command, event, and provider boundaries instead of two loose fields (or raw
-/// `Bytes`).
+/// Re-exported from `nectar-postage`: the canonical `StampedChunk` now lives
+/// upstream (chunk plus stamp, with the typed/wire codec), so vertex consumes
+/// it directly instead of carrying its own copy. The vertex-specific serve-time
+/// and cache type-states ([`VerifiedStampedChunk`], [`CachedChunk`]) wrap it,
+/// and [`StampedChunkExt`] adds the vertex-only `verify_answers` gate.
+pub use nectar_postage::StampedChunk;
+
+/// Vertex-only extensions to nectar's [`StampedChunk`].
 ///
-/// The address is the chunk's own address; [`address`](Self::address) delegates
-/// to it.
-// TODO(nectar): migrate StampedChunk upstream once the postage stamp and chunk
-// types live together there; it is vertex-only for now.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StampedChunk {
-    chunk: AnyChunk,
-    stamp: Stamp,
-}
-
-impl StampedChunk {
-    /// Pair a chunk with its stamp.
-    #[inline]
-    #[must_use]
-    pub fn new(chunk: AnyChunk, stamp: Stamp) -> Self {
-        Self { chunk, stamp }
-    }
-
-    /// The chunk.
-    #[inline]
-    #[must_use]
-    pub fn chunk(&self) -> &AnyChunk {
-        &self.chunk
-    }
-
-    /// The postage stamp.
-    #[inline]
-    #[must_use]
-    pub fn stamp(&self) -> &Stamp {
-        &self.stamp
-    }
-
-    /// The chunk's address (delegates to the chunk).
-    #[inline]
-    #[must_use]
-    pub fn address(&self) -> &ChunkAddress {
-        self.chunk.address()
-    }
-
-    /// Rebuild a stamped chunk from its wire bytes, expected address, and stamp.
-    ///
-    /// The expected address disambiguates the chunk variant: a [`ContentChunk`]
-    /// parse almost always succeeds structurally, so the chunk is accepted only
-    /// if it also hashes to `expected`. Tries content first, then single-owner,
-    /// matching each against `expected`. A lying address makes both attempts
-    /// fail, so the address is self-validating against the bytes.
-    pub fn reconstruct(
-        expected: ChunkAddress,
-        data: Bytes,
-        stamp: Stamp,
-    ) -> Result<Self, ReconstructError> {
-        let chunk = reconstruct_chunk(expected, data)?;
-        Ok(Self::new(chunk, stamp))
-    }
-
-    /// Split into the chunk and its stamp.
-    #[inline]
-    #[must_use]
-    pub fn into_parts(self) -> (AnyChunk, Stamp) {
-        (self.chunk, self.stamp)
-    }
-
+/// `verify_answers` is a vertex serve-time gate, not a property of the chunk
+/// type, so it cannot be an inherent method on the upstream type (the orphan
+/// rule). It is expressed as an extension trait instead.
+pub trait StampedChunkExt {
     /// Prove this chunk answers a request for `requested`, consuming it into a
     /// [`VerifiedStampedChunk`].
     ///
@@ -105,7 +31,14 @@ impl StampedChunk {
     /// Returns the chunk unchanged in [`Err`] on a mismatch so the caller can
     /// treat it as a miss without losing the value. The error is boxed because a
     /// [`StampedChunk`] is large (a full chunk payload plus a stamp).
-    pub fn verify_answers(
+    fn verify_answers(
+        self,
+        requested: ChunkAddress,
+    ) -> Result<VerifiedStampedChunk, Box<StampedChunk>>;
+}
+
+impl StampedChunkExt for StampedChunk {
+    fn verify_answers(
         self,
         requested: ChunkAddress,
     ) -> Result<VerifiedStampedChunk, Box<StampedChunk>> {
@@ -119,7 +52,7 @@ impl StampedChunk {
 
 /// A [`StampedChunk`] proven to answer a specific request.
 ///
-/// Constructed only by [`StampedChunk::verify_answers`], which checks the
+/// Constructed only by [`StampedChunkExt::verify_answers`], which checks the
 /// chunk's content-derived address against the requested address. A responder
 /// accepts only this type, so a chunk that does not match the request can never
 /// be sent down the wire: the gate is a compile-time guarantee rather than a
@@ -217,35 +150,19 @@ impl From<StampedChunk> for CachedChunk {
     }
 }
 
-/// Rebuild an [`AnyChunk`] from wire bytes given the expected address.
-///
-/// See [`StampedChunk::reconstruct`] for the disambiguation rationale.
-pub fn reconstruct_chunk(
-    expected: ChunkAddress,
-    data: Bytes,
-) -> Result<AnyChunk, ReconstructError> {
-    use nectar_primitives::Chunk;
-
-    if let Ok(content) = ContentChunk::try_from(data.clone())
-        && *content.address() == expected
-    {
-        return Ok(AnyChunk::Content(content));
-    }
-    if let Ok(soc) = SingleOwnerChunk::try_from(data)
-        && *soc.address() == expected
-    {
-        return Ok(AnyChunk::SingleOwner(soc));
-    }
-    Err(ReconstructError::AddressMismatch { expected })
-}
-
 #[cfg(test)]
 mod tests {
     use alloy_primitives::{B256, Signature};
     use alloy_signer_local::PrivateKeySigner;
-    use nectar_primitives::{Chunk, ContentChunk, SingleOwnerChunk};
+    use nectar_postage::{Stamp, StampError};
+    use nectar_primitives::{Chunk, ContentChunk, SingleOwnerChunk, bytes::Bytes};
 
     use super::*;
+
+    // `StampedChunk` is generic over the chunk body size with a default; the
+    // `reconstruct` constructor takes no argument that pins it, so spell the
+    // default-body-size instantiation out for those call sites.
+    type DefaultStampedChunk = StampedChunk;
 
     fn test_stamp() -> Stamp {
         let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
@@ -278,7 +195,7 @@ mod tests {
         let chunk = content_chunk();
         let address = *chunk.address();
         let data = Bytes::from(chunk);
-        let rebuilt = StampedChunk::reconstruct(address, data.clone(), test_stamp())
+        let rebuilt = DefaultStampedChunk::reconstruct(address, data.clone(), test_stamp())
             .expect("content reconstruct");
         assert!(rebuilt.chunk().is_content());
         assert_eq!(*rebuilt.address(), address);
@@ -291,7 +208,7 @@ mod tests {
         let chunk = single_owner_chunk();
         let address = *chunk.address();
         let data = Bytes::from(chunk);
-        let rebuilt = StampedChunk::reconstruct(address, data.clone(), test_stamp())
+        let rebuilt = DefaultStampedChunk::reconstruct(address, data.clone(), test_stamp())
             .expect("soc reconstruct");
         assert!(rebuilt.chunk().is_single_owner());
         assert_eq!(*rebuilt.address(), address);
@@ -327,8 +244,8 @@ mod tests {
         let chunk = content_chunk();
         let data = Bytes::from(chunk);
         let wrong = ChunkAddress::new([0xff; 32]);
-        let err = StampedChunk::reconstruct(wrong, data, test_stamp())
+        let err = DefaultStampedChunk::reconstruct(wrong, data, test_stamp())
             .expect_err("wrong address must fail");
-        assert!(matches!(err, ReconstructError::AddressMismatch { .. }));
+        assert!(matches!(err, StampError::Chunk(_)));
     }
 }

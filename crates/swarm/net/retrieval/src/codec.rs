@@ -12,7 +12,7 @@ use asynchronous_codec::{Decoder, Encoder};
 use bytes::{Bytes, BytesMut};
 use nectar_primitives::{AnyChunk, ChunkAddress};
 use vertex_net_codec::{Codec, ProtoMessage};
-use vertex_swarm_primitives::{Stamp, StampedChunk, reconstruct_chunk};
+use vertex_swarm_primitives::{Stamp, StampedChunk};
 
 use crate::error::RetrievalError;
 
@@ -161,7 +161,8 @@ impl Delivery {
         } else {
             Some(Stamp::try_from_slice(&proto.stamp)?)
         };
-        let chunk = reconstruct_chunk(expected, Bytes::from(proto.data))?;
+        let chunk = AnyChunk::from_wire_bytes(&expected, Bytes::from(proto.data))
+            .map_err(|e| RetrievalError::InvalidChunk(e.to_string()))?;
         Ok(Self::chunk(chunk, stamp))
     }
 }
