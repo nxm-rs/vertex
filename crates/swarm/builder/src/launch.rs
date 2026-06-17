@@ -31,7 +31,6 @@ use vertex_tasks::{GracefulShutdown, NodeTaskFn};
 use crate::config::{BootnodeConfig, ClientConfig, StorerConfig};
 use crate::error::SwarmNodeError;
 use crate::providers::NetworkChunkProvider;
-use crate::rpc::NodeProviders;
 use crate::verify::{ChunkVerifyConfig, VerifyingChunkProvider};
 
 /// Network chunk provider wrapped with config-gated download verification.
@@ -424,7 +423,7 @@ async fn build_client_backed_node(
 
 impl SwarmLaunchConfig for BootnodeConfig {
     type Types = BootnodeLaunchTypes;
-    type Providers = NodeProviders<BootnodeComponents<TopologyHandle<Arc<Identity>>>>;
+    type Providers = BootnodeComponents<TopologyHandle<Arc<Identity>>>;
     type Error = SwarmNodeError;
 
     async fn build(
@@ -447,7 +446,7 @@ impl SwarmLaunchConfig for BootnodeConfig {
             DEFAULT_TICK_INTERVAL,
             ctx.executor(),
         );
-        let providers = NodeProviders::new(construct::bootnode(topology));
+        let providers = construct::bootnode(topology);
 
         let task = single_task(move |shutdown| async move {
             if let Err(e) = node.start_and_run(shutdown).await {
@@ -462,8 +461,7 @@ impl SwarmLaunchConfig for BootnodeConfig {
 
 impl SwarmLaunchConfig for ClientConfig {
     type Types = ClientLaunchTypes;
-    type Providers =
-        NodeProviders<ClientComponents<TopologyHandle<Arc<Identity>>, VerifiedChunkProvider>>;
+    type Providers = ClientComponents<TopologyHandle<Arc<Identity>>, VerifiedChunkProvider>;
     type Error = SwarmNodeError;
 
     async fn build(
@@ -487,15 +485,14 @@ impl SwarmLaunchConfig for ClientConfig {
         )
         .await?;
 
-        let providers = NodeProviders::new(construct::client(parts.topology, parts.chunks));
+        let providers = construct::client(parts.topology, parts.chunks);
         Ok((parts.task, providers))
     }
 }
 
 impl SwarmLaunchConfig for StorerConfig {
     type Types = StorerLaunchTypes;
-    type Providers =
-        NodeProviders<ClientComponents<TopologyHandle<Arc<Identity>>, VerifiedChunkProvider>>;
+    type Providers = ClientComponents<TopologyHandle<Arc<Identity>>, VerifiedChunkProvider>;
     type Error = SwarmNodeError;
 
     async fn build(
@@ -525,7 +522,7 @@ impl SwarmLaunchConfig for StorerConfig {
         )
         .await?;
 
-        let providers = NodeProviders::new(construct::client(parts.topology, parts.chunks));
+        let providers = construct::client(parts.topology, parts.chunks);
         Ok((parts.task, providers))
     }
 }

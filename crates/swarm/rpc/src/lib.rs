@@ -2,8 +2,10 @@
 //!
 //! This crate provides RPC service implementations for the Swarm protocol.
 
+mod adapter;
 mod grpc;
 
+pub use adapter::GrpcAdapter;
 pub use grpc::chunk::{ChunkService, StampValidation};
 pub use grpc::node::NodeService;
 
