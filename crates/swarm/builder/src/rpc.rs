@@ -1,17 +1,20 @@
 //! The generic [`NodeProviders`] container and the single gRPC registration
 //! path.
 //!
-//! One [`NodeProviders<C>`] wraps a role components type `C`; one
+//! One [`NodeProviders<C>`] wraps an api component container `C`; one
 //! [`RegistersGrpcServices`] impl drives every role by delegating to `C`'s
 //! [`RegisterSwarmServices`] impl. The node status service is always registered;
 //! the chunk service is registered only by components that carry a chunk client
-//! (`C: HasChunkClient`). Role-specific components types ([`TopologyComponents`],
-//! [`ChunkComponents`]) decide which capabilities are registered.
+//! ([`ClientComponents`]). The api component containers
+//! ([`BootnodeComponents`](vertex_swarm_api::BootnodeComponents),
+//! [`ClientComponents`]) decide which capabilities are registered through their
+//! [`RegisterSwarmServices`] impls.
 
 use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
-use vertex_swarm_api::{HasChunkClient, HasTopology, SwarmIdentity, SwarmTopology};
+use vertex_swarm_api::{
+    BootnodeComponents, ClientComponents, HasChunkClient, HasTopology, SwarmTopology,
+};
 use vertex_swarm_rpc::{ChunkService, ChunkServiceProvider, NodeService, proto};
-use vertex_swarm_topology::TopologyHandle;
 
 /// Register the node status service and the shared reflection descriptor.
 fn register_node_service<T: SwarmTopology + Clone + 'static>(
@@ -33,11 +36,10 @@ fn register_chunk_service<C: ChunkServiceProvider>(registry: &mut GrpcRegistry, 
     registry.add_service(chunk_server);
 }
 
-/// One generic providers container over a role components type `C`.
+/// One generic providers container over an api component container `C`.
 ///
-/// Replaces the per-role `*RpcProviders` containers: the gRPC surface is driven
-/// by the capabilities `C` exposes. Capability access ([`HasTopology`],
-/// [`HasChunkClient`]) delegates to `C`.
+/// The gRPC surface is driven by the capabilities `C` exposes. Capability access
+/// ([`HasTopology`], [`HasChunkClient`]) delegates to `C`.
 #[derive(Debug, Clone)]
 pub struct NodeProviders<C> {
     components: C,
@@ -78,83 +80,30 @@ impl<C: HasChunkClient> HasChunkClient for NodeProviders<C> {
 
 /// Per-components registration of the Swarm gRPC surface.
 ///
-/// Each concrete components type registers exactly the services its role
-/// exposes, so [`NodeProviders`] needs only one delegating
-/// [`RegistersGrpcServices`] impl. This sidesteps the overlapping-impl problem
-/// of gating chunk registration on `HasChunkClient` at the `NodeProviders<C>`
-/// level.
+/// Each api component container registers exactly the services its role exposes,
+/// so [`NodeProviders`] needs only one delegating [`RegistersGrpcServices`]
+/// impl. This sidesteps the overlapping-impl problem of gating chunk
+/// registration on `HasChunkClient` at the `NodeProviders<C>` level.
 pub trait RegisterSwarmServices {
     /// Register this role's gRPC services with the registry.
     fn register_swarm_services(&self, registry: &mut GrpcRegistry);
 }
 
-/// Components for bootnodes: topology only.
-pub struct TopologyComponents<I: SwarmIdentity> {
-    topology: TopologyHandle<I>,
-}
-
-impl<I: SwarmIdentity> TopologyComponents<I> {
-    /// Create from the topology handle of a built bootnode.
-    pub fn new(topology: TopologyHandle<I>) -> Self {
-        Self { topology }
-    }
-}
-
-impl<I: SwarmIdentity> HasTopology for TopologyComponents<I> {
-    type Topology = TopologyHandle<I>;
-
-    fn topology(&self) -> &TopologyHandle<I> {
-        &self.topology
-    }
-}
-
-impl<I: SwarmIdentity> RegisterSwarmServices for TopologyComponents<I> {
+/// Bootnodes register the node status service only.
+impl<T: SwarmTopology + Clone + 'static> RegisterSwarmServices for BootnodeComponents<T> {
     fn register_swarm_services(&self, registry: &mut GrpcRegistry) {
-        register_node_service(registry, &self.topology);
+        register_node_service(registry, self.topology());
     }
 }
 
-/// Components for client and storer nodes: topology + chunk client.
-pub struct ChunkComponents<I: SwarmIdentity, C> {
-    topology: TopologyHandle<I>,
-    chunks: C,
-}
-
-impl<I: SwarmIdentity, C> ChunkComponents<I, C> {
-    /// Create from the topology handle and chunk provider of a built node.
-    pub fn new(topology: TopologyHandle<I>, chunks: C) -> Self {
-        Self { topology, chunks }
-    }
-
-    /// Access the chunk provider that backs uploads and downloads.
-    ///
-    /// Embedders that drive a node directly (FFI, gRPC, or an example) borrow
-    /// this to call the chunk client without going through the gRPC surface.
-    pub fn chunks(&self) -> &C {
-        &self.chunks
-    }
-}
-
-impl<I: SwarmIdentity, C: Send + Sync> HasTopology for ChunkComponents<I, C> {
-    type Topology = TopologyHandle<I>;
-
-    fn topology(&self) -> &TopologyHandle<I> {
-        &self.topology
-    }
-}
-
-impl<I: SwarmIdentity, C: Send + Sync> HasChunkClient for ChunkComponents<I, C> {
-    type ChunkClient = C;
-
-    fn chunk_client(&self) -> &C {
-        &self.chunks
-    }
-}
-
-impl<I: SwarmIdentity, C: ChunkServiceProvider> RegisterSwarmServices for ChunkComponents<I, C> {
+/// Client and storer nodes register the node status service and the chunk
+/// service.
+impl<T: SwarmTopology + Clone + 'static, C: ChunkServiceProvider> RegisterSwarmServices
+    for ClientComponents<T, C>
+{
     fn register_swarm_services(&self, registry: &mut GrpcRegistry) {
-        register_node_service(registry, &self.topology);
-        register_chunk_service(registry, &self.chunks);
+        register_node_service(registry, self.topology());
+        register_chunk_service(registry, self.chunk_client());
 
         // TODO: Add storer-specific RPC services (storage, redistribution, etc.)
     }
