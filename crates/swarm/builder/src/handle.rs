@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use vertex_swarm_api::{BootnodeComponents, ClientComponents, HasTopology};
+use vertex_swarm_api::{
+    BootnodeComponents, ClientComponents, HasTopology, StorerComponents, SwarmLocalStore,
+};
 use vertex_swarm_identity::Identity;
 use vertex_swarm_topology::TopologyHandle;
 use vertex_tasks::{GracefulShutdown, NodeTask, NodeTaskFn};
@@ -66,6 +68,14 @@ pub type BuiltBootnode = BuiltNode<BootnodeComponents<TopologyHandle<Arc<Identit
 pub type BuiltClient =
     BuiltNode<ClientComponents<TopologyHandle<Arc<Identity>>, VerifiedChunkProvider>>;
 
-/// Built storer node (topology + chunks + storage).
-pub type BuiltStorer =
-    BuiltNode<ClientComponents<TopologyHandle<Arc<Identity>>, VerifiedChunkProvider>>;
+/// Built storer node (topology + chunks + the persisting reserve as the local
+/// store). The store is erased to `Arc<dyn SwarmLocalStore>`: the launch path
+/// keeps the concrete reserve and shares one trait handle with the node so
+/// serving-on-retrieval reads the reserve.
+pub type BuiltStorer = BuiltNode<
+    StorerComponents<
+        TopologyHandle<Arc<Identity>>,
+        VerifiedChunkProvider,
+        Arc<dyn SwarmLocalStore>,
+    >,
+>;
