@@ -40,7 +40,7 @@ fn intern_table_name(name: &str) -> &'static str {
 }
 
 /// Deserialize a value from raw bytes, decompressing first if the table uses compression.
-fn decode_value<T: Table>(raw: &[u8]) -> Result<T::Value, DatabaseError> {
+pub(crate) fn decode_value<T: Table>(raw: &[u8]) -> Result<T::Value, DatabaseError> {
     if T::COMPRESS_VALUES {
         let bytes = zstd::decode_all(raw).map_err(|e| {
             DatabaseError::Read(DatabaseErrorInfo::with_source(
@@ -232,6 +232,26 @@ impl RedbReadTx {
             inner,
             start: Instant::now(),
         }
+    }
+
+    /// Open a lazy, streaming read-only cursor over table `T`.
+    ///
+    /// The returned [`RedbCursorRO`] owns its table handle (which Arc-pins this
+    /// transaction's read snapshot), so it may be held and iterated after this
+    /// `RedbReadTx` is dropped. This is the held-transaction cursor path that
+    /// `Database::view` cannot provide, since `view` drops its borrowed
+    /// transaction at the closure boundary.
+    ///
+    /// Errors with [`DatabaseError::InitCursor`] if the table does not exist.
+    pub fn cursor<T: Table>(&self) -> Result<crate::cursor::RedbCursorRO<T>, DatabaseError> {
+        let def = table_def(T::NAME);
+        let table = self.inner.open_table(def).map_err(|e| {
+            DatabaseError::InitCursor(DatabaseErrorInfo::with_source(
+                format!("open cursor on table {}", T::NAME),
+                e,
+            ))
+        })?;
+        Ok(crate::cursor::RedbCursorRO::new(table))
     }
 }
 

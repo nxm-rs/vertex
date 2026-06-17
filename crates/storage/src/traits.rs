@@ -154,6 +154,19 @@ pub trait DbCursorRO<T: Table>: Send + Sync {
 }
 
 /// Read-write cursor for modifying entries during iteration.
+///
+/// # Status
+///
+/// This trait is declared but intentionally has no backend implementation yet
+/// (see issue #214). The read-only [`DbCursorRO`] path is implemented over redb
+/// without any self-referential lifetime, because redb's `ReadOnlyTable` owns
+/// its transaction guard and is detached from the read transaction. A write
+/// cursor is materially harder: redb's write-side `Table` borrows the
+/// `WriteTransaction` with a real lifetime, so a held write cursor reintroduces
+/// a self-referential borrow. The current consumer (the storer's reserve and
+/// `BinSeqIndex` maintenance) writes via direct keyed `put`/`delete` inside a
+/// write transaction, which gives no positional advantage over a write cursor
+/// on a B-tree, so the read-write cursor is deferred until a consumer needs it.
 pub trait DbCursorRW<T: Table>: DbCursorRO<T> {
     /// Insert or update the entry at the current cursor position.
     fn upsert(&mut self, key: T::Key, value: T::Value) -> Result<(), DatabaseError>;
