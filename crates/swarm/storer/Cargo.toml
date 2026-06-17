@@ -13,6 +13,8 @@ workspace = true
 
 [dependencies]
 ## vertex
+alloy-primitives.workspace = true
+nectar-postage.workspace = true
 nectar-primitives = { workspace = true, features = ["serde"] }
 vertex-metrics.workspace = true
 vertex-storage = { workspace = true, features = ["nectar"] }
@@ -31,11 +33,14 @@ metrics.workspace = true
 
 ## misc
 parking_lot.workspace = true
+serde = { workspace = true, features = ["derive"] }
 strum.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+alloy-primitives.workspace = true
+nectar-postage.workspace = true
 tempfile = "3"
 tokio = { workspace = true, features = ["rt", "macros"] }
 vertex-storage-redb.workspace = true

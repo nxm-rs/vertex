@@ -43,36 +43,62 @@ pub trait ReserveStore: SwarmLocalStore {
     /// Chunks whose proximity to the local overlay is at or beyond this radius
     /// are within the node's area of responsibility. The radius widens or
     /// narrows as the reserve fills or drains relative to its capacity.
+    #[must_use]
     fn storage_radius(&self) -> StorageRadius;
 
     /// Whether the given address falls within the reserve's current
     /// responsibility radius (i.e. the node is responsible for storing it).
+    #[must_use]
     fn is_responsible_for(&self, address: &ChunkAddress) -> bool;
 
     /// The number of chunks currently held in the reserve.
-    ///
-    /// Counting may be O(N) over the backing store on the current
-    /// (#214-interim) cursor implementation.
     fn count(&self) -> SwarmResult<u64>;
 
-    /// The maximum number of chunks the reserve will hold before it must
-    /// [`evict_furthest`](Self::evict_furthest) to admit new ones.
+    /// The maximum number of chunks the reserve will hold.
+    ///
+    /// Capacity is enforced by the caller (the eviction-control loop) via the
+    /// scoped eviction primitives below, not by [`put`](SwarmLocalStore::put),
+    /// which always admits a stamped chunk.
+    #[must_use]
     fn capacity(&self) -> u64;
 
     /// The number of chunks held at the given [`ProximityOrder`] relative to the
     /// local overlay.
     ///
     /// Used to compute where the [`storage_radius`](Self::storage_radius) must
-    /// sit to keep the population within capacity. O(N) over the backing store
-    /// on the current (#214-interim) implementation.
+    /// sit to keep the population within capacity. Backed by an O(log n + matches)
+    /// cursor walk of the proximity index, not a full table scan.
     fn count_in(&self, po: ProximityOrder) -> SwarmResult<u64>;
 
-    /// Evict the chunk furthest (lowest proximity) from the local overlay,
-    /// returning its address, or `None` if the reserve is empty.
+    /// Evict the single chunk furthest (lowest proximity) from the local
+    /// overlay, returning its address, or `None` if the reserve is empty.
     ///
-    /// The shedding primitive used when the reserve is over capacity. O(N) over
-    /// the backing store on the current (#214-interim) implementation.
+    /// The point shedding primitive, backed by an O(log n) cursor read of the
+    /// proximity index. For bulk shedding under capacity pressure or batch
+    /// expiry, prefer [`evict_from_bin`](Self::evict_from_bin) /
+    /// [`evict_batch`](Self::evict_batch), which delete a whole group in one
+    /// atomic transaction.
     fn evict_furthest(&self) -> SwarmResult<Option<ChunkAddress>>;
+
+    /// Evict up to `max` chunks whose proximity bin equals `bin`, returning the
+    /// number evicted.
+    ///
+    /// The bin-atomic shedding primitive the capacity-control loop uses when the
+    /// storage radius grows: a shallow bin is shed as a unit. The targeted rows
+    /// are collected up front and deleted (chunk value plus every secondary index
+    /// entry) in a single atomic transaction, so the reserve never observes a
+    /// partially-evicted bin.
+    fn evict_from_bin(&self, bin: Bin, max: u64) -> SwarmResult<u64>;
+
+    /// Evict up to `max` chunks belonging to postage batch `batch`, returning the
+    /// number evicted.
+    ///
+    /// With `up_to_bin = Some(b)` only chunks in bins strictly shallower than `b`
+    /// are evicted (shed a batch's out-of-responsibility chunks as the radius
+    /// grows); with `up_to_bin = None` the whole batch is evicted (an expired or
+    /// invalidated batch). Deletes the chunk value and every secondary index entry
+    /// for each target in a single atomic transaction.
+    fn evict_batch(&self, batch: BatchId, up_to_bin: Option<Bin>, max: u64) -> SwarmResult<u64>;
 }
 
 /// One entry yielded by a per-bin insertion-order scan.
@@ -115,12 +141,10 @@ pub trait BinCursorStore: ReserveStore {
     /// The iterator yields a fallible [`BinScanItem`] per entry. It is `Send` so
     /// a redistribution/sync task can move it across an await point.
     ///
-    /// # #214 status
-    ///
-    /// Proximity-ordered cursor iteration is blocked on #214 (the redb key order
-    /// is byte-order, not XOR-proximity, and `DbCursorRO` is unimplemented).
-    /// Implementations may return an unsupported error or an empty iterator
-    /// until #214 lands.
+    /// Backed by a lazy read-only cursor that owns its snapshot, so the iterator
+    /// outlives the call that opened it. The scan compacts on eviction, so it
+    /// yields only entries whose chunk is still present; a consumer that needs the
+    /// body still resolves it through [`get`](SwarmLocalStore::get).
     fn scan_bin_from<'a>(
         &'a self,
         bin: Bin,

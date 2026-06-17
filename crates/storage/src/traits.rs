@@ -6,7 +6,7 @@ use std::fmt::Debug;
 
 use serde::{Deserialize, Serialize};
 
-use super::{DatabaseError, SecondaryIndex, Table};
+use super::{DatabaseError, DatabaseErrorInfo, SecondaryIndex, Table};
 
 /// Encode a key for storage (keys are encoded, values are serialized).
 pub trait Encode: Send + Sync + Sized + Debug {
@@ -109,6 +109,19 @@ pub trait DbTx: Send + Sync {
 
     /// Count the number of entries in a table.
     fn count<T: Table>(&self) -> Result<usize, DatabaseError>;
+
+    /// Open a lazy, streaming read-only [`DbCursorRO`] over table `T`.
+    ///
+    /// The cursor owns its own read snapshot, so the returned boxed iterator may
+    /// outlive this transaction handle. Backends that cannot provide a held
+    /// cursor (e.g. a read cursor over an uncommitted write transaction) return
+    /// [`DatabaseError::InitCursor`]; the default implementation does so, and a
+    /// backing read transaction overrides it with a real cursor.
+    fn cursor<T: Table>(&self) -> Result<Box<dyn DbCursorRO<T> + Send>, DatabaseError> {
+        Err(DatabaseError::InitCursor(DatabaseErrorInfo::msg(
+            "this transaction does not support read cursors",
+        )))
+    }
 }
 
 /// Read-write transaction operations (extends DbTx).
