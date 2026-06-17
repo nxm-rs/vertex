@@ -6,6 +6,8 @@
 
 mod args;
 mod config;
+mod redistribution;
 
 pub use args::RedistributionArgs;
 pub use config::StorageConfig;
+pub use redistribution::{Entitlement, canonical_neighbourhood, sample};

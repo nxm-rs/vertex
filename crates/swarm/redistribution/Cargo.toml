@@ -15,6 +15,12 @@ workspace = true
 # vertex
 vertex-swarm-api.workspace = true
 
+# swarm
+nectar-primitives.workspace = true
+
+# misc
+alloy-primitives.workspace = true
+
 # cli
 clap = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
