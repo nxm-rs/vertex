@@ -39,6 +39,7 @@ tracing.workspace = true
 tempfile = "3"
 tokio = { workspace = true, features = ["rt", "macros"] }
 vertex-storage-redb.workspace = true
+vertex-swarm-test-utils.workspace = true
 
 [features]
 default = ["std"]
