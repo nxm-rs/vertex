@@ -19,7 +19,6 @@ mod node;
 mod protocol;
 mod selection;
 mod staggered_race;
-mod swarm_client;
 mod throttle;
 
 pub use node::{
@@ -40,7 +39,6 @@ pub use protocol::{
 
 pub use selection::{AccountingSettlement, PeerScores, PeerSelector, SettlementTrigger};
 pub use staggered_race::{RETRIEVAL_STAGGER, RaceFailure, race_candidates};
-pub use swarm_client::{BootnodeClient, Client, FullClient};
 pub use throttle::SelfThrottle;
 
 pub use bootnodes::BootnodeProvider;
