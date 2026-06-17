@@ -9313,7 +9313,9 @@ dependencies = [
 name = "vertex-swarm-redistribution"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "clap 4.6.1",
+ "nectar-primitives",
  "serde",
  "vertex-swarm-api",
 ]
