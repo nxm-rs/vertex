@@ -6,7 +6,7 @@ use std::path::Path;
 use vertex_node_api::{InfrastructureContext, NodeBuildsProtocol, NodeProtocol, NodeRpcConfig};
 use vertex_node_core::args::DatabaseConfig;
 use vertex_node_core::dirs::DataDirs;
-use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
+use vertex_rpc_server::{GrpcTransport, ServeWith, Transport, TransportServer};
 use vertex_tasks::TaskExecutor;
 
 use crate::{InfrastructureError, LaunchError, NodeHandle};
@@ -156,43 +156,43 @@ where
         &self.ctx
     }
 
-    /// Launch the node with gRPC server for protocol services.
-    pub async fn launch(self) -> Result<NodeHandle<P::Components>, LaunchError<P::BuildError>>
+    /// Launch the node, serving its components with the chosen transport.
+    ///
+    /// The transport is selected by the caller; this path names no transport.
+    pub async fn launch_with<Tr: Transport>(
+        self,
+    ) -> Result<NodeHandle<P::Components>, LaunchError<P::BuildError>>
     where
-        P::Components: RegistersGrpcServices,
+        P::Components: ServeWith<Tr>,
     {
         use tracing::info;
 
         // Infrastructure configuration
         info!("Data directory: {}", self.ctx.dirs.root.display());
-        info!("gRPC address: {}", self.ctx.grpc_addr());
+        info!("RPC address: {}", self.ctx.grpc_addr());
 
-        let grpc_addr = self.ctx.grpc_addr();
+        let addr = self.ctx.grpc_addr();
 
         // Launch the protocol (builds components and spawns services)
         let components = P::launch(self.config, &self.ctx)
             .await
             .map_err(LaunchError::Protocol)?;
 
-        // Create gRPC registry and let components register their services
-        let mut registry = GrpcRegistry::new();
-        components.register_grpc_services(&mut registry);
+        // Populate the transport registry from the components.
+        let mut registry = Tr::Registry::default();
+        components.register(&mut registry);
 
-        // Convert registry to server and spawn as critical task
-        let grpc_handle = registry
-            .into_server(grpc_addr)
-            .map_err(InfrastructureError::GrpcReflection)?;
+        // Bind the server and spawn it as a critical task.
+        let server = Tr::into_server(registry, addr)
+            .map_err(|e| InfrastructureError::Transport(e.into()))?;
 
         self.ctx
             .executor
             .spawn_critical_with_graceful_shutdown_signal(
-                "grpc.server",
+                "rpc.server",
                 move |shutdown| async move {
-                    if let Err(e) = grpc_handle
-                        .serve_with_shutdown(shutdown.ignore_guard())
-                        .await
-                    {
-                        tracing::error!(error = %e, "gRPC server error");
+                    if let Err(e) = server.serve_with_shutdown(shutdown.ignore_guard()).await {
+                        tracing::error!(error = %e, "RPC server error");
                     }
                 },
             );
@@ -201,6 +201,14 @@ where
             components,
             self.ctx.executor.on_shutdown_signal().clone(),
         ))
+    }
+
+    /// Launch the node with the gRPC transport (back-compat alias).
+    pub async fn launch(self) -> Result<NodeHandle<P::Components>, LaunchError<P::BuildError>>
+    where
+        P::Components: ServeWith<GrpcTransport>,
+    {
+        self.launch_with::<GrpcTransport>().await
     }
 }
 

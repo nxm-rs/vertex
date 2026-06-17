@@ -18,7 +18,7 @@ pub enum LaunchError<E: std::error::Error + 'static> {
 #[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum InfrastructureError {
-    /// Failed to build gRPC reflection service.
-    #[error("gRPC reflection service: {0}")]
-    GrpcReflection(#[from] tonic_reflection::server::Error),
+    /// Failed to build the transport server (e.g. gRPC reflection).
+    #[error("transport server: {0}")]
+    Transport(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
 }
