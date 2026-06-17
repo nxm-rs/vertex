@@ -363,10 +363,9 @@ impl<T> MaybeSend for T {}
 /// Capability alias for a lean chunk client: retrieves, sends, cloneable, and
 /// shareable across threads for the lifetime of the program.
 ///
-/// This is the cross-crate replacement for `rpc::ChunkServiceProvider`, which it
-/// absorbs in a later step. A blanket impl means any type satisfying the bound is
-/// a `ChunkClient` without naming it; the alias only exists so the capability is
-/// stated once instead of repeated at every consumer.
+/// A blanket impl means any type satisfying the bound is a `ChunkClient` without
+/// naming it; the alias only exists so the capability is stated once instead of
+/// repeated at every consumer (the gRPC chunk service, the FFI client, etc.).
 ///
 /// `Send + Sync + 'static` is required even on wasm here: a chunk client is held
 /// behind the wasm `Arc<dyn SwarmChunkProvider>` export and shared, so the alias

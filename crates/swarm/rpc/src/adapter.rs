@@ -14,8 +14,9 @@ use vertex_swarm_api::{
     BootnodeComponents, ClientComponents, HasChunkClient, HasTopology, SwarmTopologyPeers,
     SwarmTopologyState, SwarmTopologyStats,
 };
+use vertex_swarm_stream::ChunkClient;
 
-use crate::{ChunkService, ChunkServiceProvider, NodeService, proto};
+use crate::{ChunkService, NodeService, proto};
 
 /// gRPC transport adapter over an api component container `C`.
 ///
@@ -88,7 +89,7 @@ impl<C> GrpcAdapter<C> {
     pub fn register_chunk(&self, registry: &mut GrpcRegistry)
     where
         C: HasChunkClient,
-        C::ChunkClient: ChunkServiceProvider,
+        C::ChunkClient: ChunkClient,
     {
         let chunk_service = ChunkService::new(self.components.chunk_client().clone());
         let chunk_server = proto::chunk::chunk_server::ChunkServer::new(chunk_service);
@@ -111,7 +112,7 @@ where
 impl<T, C> RegistersGrpcServices for GrpcAdapter<ClientComponents<T, C>>
 where
     T: SwarmTopologyState + SwarmTopologyStats + SwarmTopologyPeers + Clone + Send + Sync + 'static,
-    C: ChunkServiceProvider + Send + Sync,
+    C: ChunkClient + Send + Sync,
 {
     fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
         self.register_node(registry);
