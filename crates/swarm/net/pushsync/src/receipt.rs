@@ -44,6 +44,7 @@
 //! `compute_overlay`); a separate issue tracks lifting it into nectar as a
 //! reusable primitive.
 
+use alloy_signer::SignerSync;
 use nectar_primitives::ChunkAddress;
 use vertex_swarm_primitives::{
     NeighborhoodDepth, NetworkId, Nonce, OverlayAddress, StorageRadius, compute_overlay,
@@ -51,6 +52,41 @@ use vertex_swarm_primitives::{
 
 use crate::codec::WireReceipt;
 use crate::error::PushsyncError;
+
+/// A node identity that can mint its own custody receipt.
+///
+/// [`Receipt::sign`] needs three things from the minting node, and they are not
+/// three independent parameters: they are all facets of the node's single
+/// identity. The signing key proves custody, and the `network_id` and `nonce`
+/// are the two inputs that, together with the recovered signing address, derive
+/// the storer overlay via [`compute_overlay`] (the same derivation a forwarder
+/// replays in [`Receipt::reconstruct`]). Threading them as loose arguments
+/// duplicated state the identity already owns, so they are bundled behind this
+/// one handle: the caller passes its identity and the receipt path reads the
+/// signer and the overlay-derivation inputs from it.
+///
+/// This trait is deliberately minimal and lives in the pushsync layer rather
+/// than referencing the node's full identity type: pushsync sits below the node
+/// and cannot depend on it. A node-layer identity implements this trait (or a
+/// node-owned capability bundle does), so the richer identity remains the single
+/// source of truth without leaking node concerns into this crate.
+pub trait ReceiptSigner {
+    /// The synchronous signing key. Erased trait objects
+    /// (`dyn SignerSync + Send + Sync`) satisfy this via `alloy-signer`'s blanket
+    /// impls, so a node can plug in its key without this crate being generic over
+    /// the concrete signer.
+    type Signer: alloy_signer::SignerSync + ?Sized;
+
+    /// The receipt signing key, signing over the 32-byte chunk address.
+    fn signer(&self) -> &Self::Signer;
+
+    /// The network id, one of the two overlay-derivation inputs.
+    fn network_id(&self) -> NetworkId;
+
+    /// The node's identity nonce, the other overlay-derivation input. It binds
+    /// the storer overlay but is not part of the signed message.
+    fn nonce(&self) -> Nonce;
+}
 
 /// Length in bytes of a well-formed recoverable signature.
 const SIGNATURE_LEN: usize = 65;
@@ -210,6 +246,58 @@ impl Receipt {
         DepthVerdict::Verified
     }
 
+    /// Mint a custody receipt for a chunk this node has taken into its reserve.
+    ///
+    /// This is the storer-side counterpart to [`reconstruct`](Self::reconstruct):
+    /// where reconstruct recovers a relayed receipt's storer from the signature,
+    /// `sign` produces a fresh receipt that a forwarder will later reconstruct.
+    /// Everything the minting node contributes comes from its [`ReceiptSigner`]
+    /// identity: it signs over the 32-byte chunk address only (matching what
+    /// `reconstruct` recovers from), and its `network_id` and `nonce` are the two
+    /// overlay-derivation inputs. The `nonce` binds the storer overlay but is not
+    /// part of the signed message. `storage_radius` is the only per-receipt input
+    /// the identity does not own (it tracks the reserve), so it stays an explicit
+    /// argument.
+    ///
+    /// Taking the identity as one handle, rather than the signer plus loose
+    /// `network_id`/`nonce` parameters, keeps the overlay-derivation inputs with
+    /// the key that owns them: the storer overlay is a property of the identity,
+    /// so the three are never passed inconsistently.
+    ///
+    /// The receipt round-trips through [`reconstruct`](Self::reconstruct): the
+    /// `storer` is derived by recovering the signer's Ethereum address from the
+    /// freshly minted signature and applying [`compute_overlay`] with the
+    /// identity's nonce, exactly as the read side does. Deriving it from the
+    /// recovered address (rather than asking the signer for its address)
+    /// guarantees the minted receipt is self-consistent under recovery, so the
+    /// returned [`Receipt`] is fully verified by construction.
+    pub fn sign(
+        identity: &impl ReceiptSigner,
+        address: ChunkAddress,
+        storage_radius: StorageRadius,
+    ) -> Result<Self, PushsyncError> {
+        let nonce = identity.nonce();
+        let signature = identity
+            .signer()
+            .sign_message_sync(address.as_bytes())
+            .map_err(|_| PushsyncError::MalformedReceiptSignature)?;
+        // Derive the storer overlay the same way `reconstruct` does on the read
+        // side: recover the Ethereum address from the signature over the chunk
+        // address, then combine it with the identity's network id and nonce. A
+        // forwarder reconstructing this receipt recovers exactly this overlay.
+        let eth = signature
+            .recover_address_from_msg(address.as_bytes())
+            .map_err(|_| PushsyncError::MalformedReceiptSignature)?;
+        let storer = compute_overlay(&eth, identity.network_id(), &nonce);
+        Ok(Self {
+            address,
+            storer,
+            signature,
+            nonce,
+            storage_radius,
+        })
+    }
+
     /// Reproduce the wire receipt for verbatim relay.
     ///
     /// A forwarder relays the storer's receipt unchanged; it never re-signs. The
@@ -228,13 +316,42 @@ impl Receipt {
 
 #[cfg(test)]
 mod tests {
-    use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use nectar_primitives::Bin;
 
     use super::*;
 
     const NET: NetworkId = NetworkId::MAINNET;
+
+    /// A test-only [`ReceiptSigner`]: a real signing key plus the identity nonce
+    /// and network id, bundled exactly as a node identity bundles them. Lets the
+    /// receipt tests mint through the production [`Receipt::sign`] path.
+    struct TestIdentity {
+        signer: PrivateKeySigner,
+        nonce: Nonce,
+    }
+
+    impl TestIdentity {
+        fn new(signer: PrivateKeySigner, nonce: Nonce) -> Self {
+            Self { signer, nonce }
+        }
+    }
+
+    impl ReceiptSigner for TestIdentity {
+        type Signer = PrivateKeySigner;
+
+        fn signer(&self) -> &Self::Signer {
+            &self.signer
+        }
+
+        fn network_id(&self) -> NetworkId {
+            NET
+        }
+
+        fn nonce(&self) -> Nonce {
+            self.nonce
+        }
+    }
 
     fn chunk_address(first_byte: u8) -> ChunkAddress {
         let mut bytes = [0u8; 32];
@@ -250,8 +367,13 @@ mod tests {
         StorageRadius::new(Bin::new(n).unwrap())
     }
 
-    /// Sign over the 32-byte chunk address and grind the nonce until the storer
-    /// overlay sits at least `min_depth` bits deep relative to `address`.
+    /// Grind the node's identity nonce until the storer overlay sits at least
+    /// `min_depth` bits deep relative to `address`, then mint the receipt with the
+    /// production [`Receipt::sign`] path and reduce it to its wire form.
+    ///
+    /// A real node has a fixed identity nonce; the grind here only constructs a
+    /// *test* storer at a chosen depth so the depth-policy tests have a known
+    /// proximity. The receipt itself is minted exactly as production does.
     fn wire(
         signer: &PrivateKeySigner,
         address: &ChunkAddress,
@@ -259,7 +381,6 @@ mod tests {
         storage_radius: StorageRadius,
     ) -> (WireReceipt, OverlayAddress) {
         let eth = signer.address();
-        let signature = signer.sign_message_sync(address.as_bytes()).expect("sign");
         let mut counter = 0u64;
         loop {
             let mut nonce_bytes = [0u8; 32];
@@ -267,13 +388,37 @@ mod tests {
             let nonce = Nonce::from(nonce_bytes);
             let overlay = compute_overlay(&eth, NET, &nonce);
             if address.proximity(&overlay).get() >= min_depth {
-                return (
-                    WireReceipt::new(*address, signature, nonce, storage_radius),
-                    overlay,
-                );
+                let identity = TestIdentity::new(signer.clone(), nonce);
+                let receipt =
+                    Receipt::sign(&identity, *address, storage_radius).expect("sign receipt");
+                return (receipt.to_wire(), overlay);
             }
             counter += 1;
         }
+    }
+
+    #[test]
+    fn sign_mints_a_receipt_that_reconstructs_to_the_same_storer() {
+        // The storer-side mint and the forwarder-side recovery are inverses: a
+        // receipt signed with the node's identity nonce reconstructs to the
+        // overlay that nonce plus the signing key derive.
+        let signer = PrivateKeySigner::random();
+        let address = chunk_address(0x42);
+        let nonce = Nonce::from([3u8; 32]);
+        let eth = signer.address();
+        let identity = TestIdentity::new(signer, nonce);
+        let minted = Receipt::sign(&identity, address, radius(7)).expect("mints a receipt");
+        let expected = compute_overlay(&eth, NET, &nonce);
+        assert_eq!(minted.storer, expected, "storer derived from the signature");
+        assert_eq!(minted.address, address);
+        assert_eq!(minted.nonce, nonce);
+        assert_eq!(minted.storage_radius, radius(7));
+
+        // Round-trip through the wire and the forwarder-side decode boundary: the
+        // reconstructed receipt is byte- and field-identical to the minted one.
+        let reconstructed =
+            Receipt::reconstruct(minted.to_wire(), NET).expect("reconstructs the minted receipt");
+        assert_eq!(reconstructed, minted);
     }
 
     #[test]

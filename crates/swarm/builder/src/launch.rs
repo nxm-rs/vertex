@@ -232,13 +232,22 @@ define_launch_types!(
 /// storer builds the persisting reserve over the same database the peer store
 /// backs onto. The factory receives the opened database so the storer reserve
 /// and the peer store share one handle rather than opening the file twice.
-type StoreFactory<'a> = Box<
-    dyn FnOnce(
-            Option<Arc<RedbDatabase>>,
-        ) -> Result<Arc<dyn vertex_swarm_api::SwarmLocalStore>, SwarmNodeError>
-        + Send
-        + 'a,
->;
+type StoreFactory<'a> =
+    Box<dyn FnOnce(Option<Arc<RedbDatabase>>) -> Result<NodeStore, SwarmNodeError> + Send + 'a>;
+
+/// The node's local store, plus the storer reserve view when the node is a
+/// storer.
+///
+/// A storer's local store *is* its reserve, but the two trait objects are
+/// distinct (`Arc<dyn ReserveStore>` does not upcast to `Arc<dyn SwarmLocalStore>`),
+/// so both views of the one `DbReserve` are carried here: `local` is what the
+/// retrieval handler and the components share, and `reserve` is the proximity-axis
+/// view the pushsync ingest path needs (`is_responsible_for`, `put`,
+/// `storage_radius`). A client leaves `reserve` `None`.
+struct NodeStore {
+    local: Arc<dyn vertex_swarm_api::SwarmLocalStore>,
+    reserve: Option<Arc<dyn vertex_swarm_api::ReserveStore>>,
+}
 
 /// Borrowed inputs for [`build_client_backed_node`], gathered from a validated
 /// client or storer config.
@@ -295,7 +304,10 @@ async fn build_client_backed_node(
     // handle. The same store serves inbound retrievals and holds local
     // deliveries: the retrieval handler consults `SwarmLocalStore::get` before
     // the network, so a storer serves from its reserve.
-    let store = (params.make_store)(db.clone())?;
+    let NodeStore {
+        local: store,
+        reserve,
+    } = (params.make_store)(db.clone())?;
     // The node consumes its own clone; the returned handle is the same instance
     // the storer surfaces as its components' store.
     let node_store = Arc::clone(&store);
@@ -359,6 +371,15 @@ async fn build_client_backed_node(
         Arc::clone(&accounting),
         client_handle.clone(),
     );
+
+    // Storer ingest: when the node is a storer, give the inbound pushsync path
+    // its reserve so a delivery the node is responsible for is stored and
+    // acknowledged with a signed receipt instead of being relayed. Installed
+    // before the event loop accepts connections, alongside forwarding. A client
+    // has no reserve and keeps the verbatim-relay path.
+    if let Some(reserve) = reserve {
+        node.enable_storage(reserve);
+    }
 
     // Retrieval and pushsync candidate selection consults peer scores and
     // affordability on top of proximity order.
@@ -509,10 +530,14 @@ impl SwarmLaunchConfig for ClientConfig {
                 // byte-bounded LRU; no reserve, signer, radius, or redb is
                 // wired, so the opened database handle is ignored.
                 make_store: Box::new(|_db| {
-                    Ok(Arc::new(vertex_swarm_localstore::ChunkStore::with_budget(
-                        vertex_swarm_localstore::DEFAULT_CACHE_BUDGET_BYTES as usize,
-                        vertex_swarm_localstore::DEFAULT_SOC_CACHE_TTL_NS,
-                    )))
+                    Ok(NodeStore {
+                        local: Arc::new(vertex_swarm_localstore::ChunkStore::with_budget(
+                            vertex_swarm_localstore::DEFAULT_CACHE_BUDGET_BYTES as usize,
+                            vertex_swarm_localstore::DEFAULT_SOC_CACHE_TTL_NS,
+                        )),
+                        // A client has no reserve: every inbound pushsync relays.
+                        reserve: None,
+                    })
                 }),
                 #[cfg(feature = "chain")]
                 chain: self.chain(),
@@ -630,7 +655,7 @@ fn build_storer_reserve(
     db: Option<Arc<RedbDatabase>>,
     identity: &Arc<Identity>,
     capacity: u64,
-) -> Result<Arc<dyn vertex_swarm_api::SwarmLocalStore>, SwarmNodeError> {
+) -> Result<NodeStore, SwarmNodeError> {
     use vertex_swarm_api::StorageRadius;
     use vertex_swarm_postage::{AdmissionValidator, DbBatchStore};
     use vertex_swarm_storer::EvictionStrategy;
@@ -649,17 +674,24 @@ fn build_storer_reserve(
     let batches =
         DbBatchStore::new(Arc::clone(&db)).map_err(|e| SwarmNodeError::Build(e.into()))?;
     let admission = AdmissionValidator::new(RESERVE_CONFIRMATION_THRESHOLD);
-    let reserve = DbReserve::new(
-        db,
-        identity.as_ref(),
-        batches,
-        admission,
-        capacity,
-        EvictionStrategy::EvictFurthest,
-        StorageRadius::ZERO,
-    )
-    .map_err(|e| SwarmNodeError::Build(e.into()))?;
-    Ok(Arc::new(reserve))
+    let reserve = Arc::new(
+        DbReserve::new(
+            db,
+            identity.as_ref(),
+            batches,
+            admission,
+            capacity,
+            EvictionStrategy::EvictFurthest,
+            StorageRadius::ZERO,
+        )
+        .map_err(|e| SwarmNodeError::Build(e.into()))?,
+    );
+    // One `DbReserve`, two trait-object views: the local-store view the node and
+    // components share, and the reserve view the pushsync ingest path uses.
+    Ok(NodeStore {
+        local: Arc::clone(&reserve) as Arc<dyn vertex_swarm_api::SwarmLocalStore>,
+        reserve: Some(reserve as Arc<dyn vertex_swarm_api::ReserveStore>),
+    })
 }
 
 #[cfg(test)]
@@ -874,7 +906,13 @@ mod tests {
         let capacity: u64 = 1 << 12;
 
         // db = None exercises the in-memory fallback.
-        let store = build_storer_reserve(None, &identity, capacity).expect("reserve builds");
+        let node_store = build_storer_reserve(None, &identity, capacity).expect("reserve builds");
+        // A storer always exposes the reserve view the pushsync ingest path needs.
+        assert!(
+            node_store.reserve.is_some(),
+            "the storer factory yields the reserve view"
+        );
+        let store = node_store.local;
 
         // A fresh storer reserve knows no batches, so serving a chunk it never
         // held returns nothing rather than erroring.

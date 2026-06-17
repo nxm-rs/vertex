@@ -7,7 +7,9 @@ mod error;
 pub use error::PushsyncError;
 
 mod receipt;
-pub use receipt::{DepthVerdict, Receipt, SHALLOW_RECEIPT_TOLERANCE, ShallowReceipt};
+pub use receipt::{
+    DepthVerdict, Receipt, ReceiptSigner, SHALLOW_RECEIPT_TOLERANCE, ShallowReceipt,
+};
 
 mod protocol;
 pub use protocol::{

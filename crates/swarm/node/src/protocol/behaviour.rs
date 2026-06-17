@@ -29,6 +29,7 @@ use super::{
     ClientCommand, ClientEvent, PseudosettleEvent,
     forward::Forwarder,
     handler::{ClientHandler, Config as HandlerConfig, HandlerCommand, HandlerEvent},
+    storer::StorerCapability,
 };
 
 const DEFAULT_MAX_PENDING_EVENTS: usize = 4096;
@@ -81,6 +82,11 @@ pub(crate) struct ClientBehaviour {
     /// The forwarder seam, cloned into each handler so a cache miss or a
     /// pushsync can relay to a closer peer.
     forward: Arc<dyn Forwarder>,
+    /// The storer ingest capability, present only on a storer node and cloned
+    /// into each handler. When absent (a client) every inbound pushsync takes the
+    /// verbatim-relay path; when set, deliveries the node is responsible for are
+    /// stored and acknowledged with a signed receipt.
+    storer: Option<StorerCapability>,
     /// Map of peer_id -> overlay for activated peers.
     peer_overlays: HashMap<PeerId, OverlayAddress>,
     /// Map of overlay -> peer_id for reverse lookup.
@@ -106,6 +112,7 @@ impl ClientBehaviour {
             config,
             store,
             forward,
+            storer: None,
             peer_overlays: HashMap::new(),
             overlay_peers: HashMap::new(),
             pending_events: VecDeque::new(),
@@ -113,6 +120,18 @@ impl ClientBehaviour {
             #[cfg(feature = "swap")]
             swap_event_tx: None,
         }
+    }
+
+    /// Install the storer ingest capability, turning inbound pushsync into a
+    /// store-and-sign path for chunks this node is responsible for.
+    ///
+    /// Must be called before any peer connects, for the same reason as
+    /// [`set_forwarder`](Self::set_forwarder): handlers clone the capability at
+    /// connection establishment, so a handler created earlier would not see it.
+    /// Only a storer node installs this; a client never does and keeps the
+    /// verbatim-relay path.
+    pub(crate) fn set_storer(&mut self, storer: StorerCapability) {
+        self.storer = Some(storer);
     }
 
     /// Install the multi-hop relay forwarder, replacing the default stub.
@@ -143,6 +162,7 @@ impl ClientBehaviour {
             self.config.handler.clone(),
             Arc::clone(&self.store),
             Arc::clone(&self.forward),
+            self.storer.clone(),
         )
     }
 
@@ -339,6 +359,11 @@ impl ClientBehaviour {
             }
             HandlerEvent::InboundRelayed { overlay } => {
                 self.push_event(ToSwarm::GenerateEvent(ClientEvent::InboundRelayed {
+                    peer: overlay,
+                }));
+            }
+            HandlerEvent::InboundStored { overlay } => {
+                self.push_event(ToSwarm::GenerateEvent(ClientEvent::InboundStored {
                     peer: overlay,
                 }));
             }
@@ -855,6 +880,259 @@ mod tests {
         assert!(
             result.is_err(),
             "an inbound pushsync with the stub forwarder must reset the stream"
+        );
+    }
+
+    // --- Storer ingest (store + sign) integration tests ---
+    //
+    // A storer holds a `StorerCapability`: an inbound pushsync delivery the node
+    // is responsible for is stored in the reserve and acknowledged with the
+    // node's own signed receipt, instead of being relayed. A delivery the node is
+    // NOT responsible for still forwards (the verbatim-relay path), which with the
+    // stub forwarder resets — exactly as a client does. Both branches are driven
+    // here through the real libp2p handler.
+
+    /// A minimal in-memory `ReserveStore` for the ingest tests.
+    ///
+    /// Backs the point-access surface with a map and answers `is_responsible_for`
+    /// from a fixed flag, so a test can put the handler on either branch
+    /// deterministically. The proximity-axis accounting methods are trivial: the
+    /// ingest path only exercises `is_responsible_for`, `put`, and
+    /// `storage_radius`.
+    struct MockReserve {
+        chunks: std::sync::Mutex<
+            std::collections::HashMap<
+                nectar_primitives::ChunkAddress,
+                vertex_swarm_primitives::CachedChunk,
+            >,
+        >,
+        responsible: bool,
+        radius: vertex_swarm_api::StorageRadius,
+    }
+
+    impl MockReserve {
+        fn new(responsible: bool, radius: vertex_swarm_api::StorageRadius) -> Self {
+            Self {
+                chunks: std::sync::Mutex::new(std::collections::HashMap::new()),
+                responsible,
+                radius,
+            }
+        }
+    }
+
+    impl SwarmLocalStore for MockReserve {
+        fn put(
+            &self,
+            chunk: vertex_swarm_primitives::CachedChunk,
+        ) -> vertex_swarm_api::SwarmResult<()> {
+            self.chunks.lock().unwrap().insert(*chunk.address(), chunk);
+            Ok(())
+        }
+        fn get(
+            &self,
+            address: &nectar_primitives::ChunkAddress,
+        ) -> vertex_swarm_api::SwarmResult<Option<vertex_swarm_primitives::CachedChunk>> {
+            Ok(self.chunks.lock().unwrap().get(address).cloned())
+        }
+        fn contains(&self, address: &nectar_primitives::ChunkAddress) -> bool {
+            self.chunks.lock().unwrap().contains_key(address)
+        }
+        fn remove(
+            &self,
+            address: &nectar_primitives::ChunkAddress,
+        ) -> vertex_swarm_api::SwarmResult<()> {
+            self.chunks.lock().unwrap().remove(address);
+            Ok(())
+        }
+    }
+
+    impl vertex_swarm_api::ReserveStore for MockReserve {
+        fn storage_radius(&self) -> vertex_swarm_api::StorageRadius {
+            self.radius
+        }
+        fn is_responsible_for(&self, _address: &nectar_primitives::ChunkAddress) -> bool {
+            self.responsible
+        }
+        fn count(&self) -> vertex_swarm_api::SwarmResult<u64> {
+            Ok(self.chunks.lock().unwrap().len() as u64)
+        }
+        fn capacity(&self) -> u64 {
+            u64::MAX
+        }
+        fn count_in(
+            &self,
+            _po: nectar_primitives::ProximityOrder,
+        ) -> vertex_swarm_api::SwarmResult<u64> {
+            Ok(0)
+        }
+        fn evict_furthest(
+            &self,
+        ) -> vertex_swarm_api::SwarmResult<Option<nectar_primitives::ChunkAddress>> {
+            Ok(None)
+        }
+        fn evict_from_bin(
+            &self,
+            _bin: nectar_primitives::Bin,
+            _max: u64,
+        ) -> vertex_swarm_api::SwarmResult<u64> {
+            Ok(0)
+        }
+        fn evict_batch(
+            &self,
+            _batch: vertex_swarm_primitives::BatchId,
+            _up_to_bin: Option<nectar_primitives::Bin>,
+            _max: u64,
+        ) -> vertex_swarm_api::SwarmResult<u64> {
+            Ok(0)
+        }
+    }
+
+    /// Build a server swarm that holds the storer ingest capability: the inbound
+    /// pushsync path stores responsible deliveries and signs receipts. Returns the
+    /// swarm, the shared reserve (to assert what was stored), and the signer (to
+    /// assert the receipt recovers to the storer's overlay).
+    fn storer_swarm(
+        responsible: bool,
+        radius: vertex_swarm_api::StorageRadius,
+    ) -> (
+        Swarm<ClientBehaviour>,
+        Arc<MockReserve>,
+        alloy_signer_local::PrivateKeySigner,
+        vertex_swarm_primitives::Nonce,
+    ) {
+        use alloy_signer_local::PrivateKeySigner;
+        use nectar_primitives::NetworkId;
+        use vertex_swarm_primitives::Nonce;
+
+        let reserve = Arc::new(MockReserve::new(responsible, radius));
+        let signer = PrivateKeySigner::random();
+        let nonce = Nonce::from([0x5a; 32]);
+
+        let reserve_for_swarm = Arc::clone(&reserve);
+        let signer_for_swarm = signer.clone();
+        let swarm = Swarm::new_ephemeral_tokio(move |_| {
+            // The reserve serves on retrieval too, so it is the behaviour's store.
+            let store: Arc<dyn SwarmLocalStore> = Arc::clone(&reserve_for_swarm) as _;
+            let mut behaviour = ClientBehaviour::new(
+                Config::for_role(SwarmNodeType::Storer),
+                store,
+                Arc::new(StubForwarder),
+            );
+            // The receipt is signed/recovered against this network id.
+            behaviour.set_network_id(NetworkId::MAINNET);
+            let capability = crate::protocol::StorerCapability::new(
+                Arc::clone(&reserve_for_swarm) as Arc<dyn vertex_swarm_api::ReserveStore>,
+                Arc::new(signer_for_swarm.clone())
+                    as Arc<dyn alloy_signer::SignerSync + Send + Sync>,
+                NetworkId::MAINNET,
+                nonce,
+            );
+            behaviour.set_storer(capability);
+            behaviour
+        });
+        (swarm, reserve, signer, nonce)
+    }
+
+    #[tokio::test]
+    async fn responsible_storer_stores_and_signs_a_receipt() {
+        use nectar_primitives::{NetworkId, compute_overlay};
+        use vertex_swarm_api::StorageRadius;
+        use vertex_swarm_primitives::Bin;
+
+        let chunk = content_chunk(b"stored by the responsible storer");
+        let address = *chunk.address();
+        let radius = StorageRadius::new(Bin::new(4).unwrap());
+
+        let (mut storer, reserve, signer, nonce) = storer_swarm(true, radius);
+        let mut pusher = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
+
+        let storer_overlay = overlay(2);
+        connect_and_activate(&mut pusher, &mut storer, overlay(1), storer_overlay).await;
+
+        let (tx, mut rx) = oneshot::channel();
+        pusher.behaviour_mut().on_command(ClientCommand::PushChunk {
+            peer: storer_overlay,
+            address,
+            chunk,
+            response: tx,
+        });
+
+        let drive = async {
+            loop {
+                tokio::select! {
+                    _ = pusher.select_next_some() => {}
+                    _ = storer.select_next_some() => {}
+                    res = &mut rx => return res.expect("sender not dropped"),
+                }
+            }
+        };
+        let result = tokio::time::timeout(Duration::from_secs(10), drive)
+            .await
+            .expect("push resolved within timeout");
+
+        let receipt = result.expect("the responsible storer signs and returns a receipt");
+        // The receipt acknowledges this chunk, declares the storer's radius, and
+        // recovers to the storer's own overlay (its identity key + nonce).
+        assert_eq!(receipt.address, address);
+        assert_eq!(receipt.storage_radius, radius);
+        let expected_storer = compute_overlay(&signer.address(), NetworkId::MAINNET, &nonce);
+        assert_eq!(
+            receipt.storer, expected_storer,
+            "the receipt recovers to the storer that signed it"
+        );
+        // The chunk is durably in the reserve before the receipt was sent.
+        assert!(
+            reserve.contains(&address),
+            "the responsible storer took custody of the chunk"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_responsible_storer_forwards_instead_of_storing() {
+        use vertex_swarm_api::StorageRadius;
+        use vertex_swarm_primitives::Bin;
+
+        // The storer holds the ingest capability but is NOT responsible for this
+        // chunk, so it takes the forward path. With the stub forwarder the forward
+        // fails and the substream resets; nothing is stored and no receipt signed.
+        let chunk = content_chunk(b"not my responsibility");
+        let address = *chunk.address();
+        let radius = StorageRadius::new(Bin::new(4).unwrap());
+
+        let (mut storer, reserve, _signer, _nonce) = storer_swarm(false, radius);
+        let mut pusher = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
+
+        let storer_overlay = overlay(2);
+        connect_and_activate(&mut pusher, &mut storer, overlay(1), storer_overlay).await;
+
+        let (tx, mut rx) = oneshot::channel();
+        pusher.behaviour_mut().on_command(ClientCommand::PushChunk {
+            peer: storer_overlay,
+            address,
+            chunk,
+            response: tx,
+        });
+
+        let drive = async {
+            loop {
+                tokio::select! {
+                    _ = pusher.select_next_some() => {}
+                    _ = storer.select_next_some() => {}
+                    res = &mut rx => return res.expect("sender not dropped"),
+                }
+            }
+        };
+        let result = tokio::time::timeout(Duration::from_secs(10), drive)
+            .await
+            .expect("push resolved within timeout");
+
+        assert!(
+            result.is_err(),
+            "a not-responsible storer forwards; the stub forward fails and resets"
+        );
+        assert!(
+            !reserve.contains(&address),
+            "a not-responsible storer must not store the chunk"
         );
     }
 

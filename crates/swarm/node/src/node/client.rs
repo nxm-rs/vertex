@@ -225,6 +225,38 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
             .set_forwarder(forwarder);
     }
 
+    /// Install the storer ingest capability on the client behaviour.
+    ///
+    /// Turns the inbound pushsync path from forward-only into store-and-sign for
+    /// chunks this node is responsible for: a responsible delivery is put into
+    /// `reserve` and acknowledged with a receipt signed by the node's identity
+    /// key, bound to the node's identity nonce. Deliveries the node is not
+    /// responsible for still forward (see [`enable_forwarding`](Self::enable_forwarding)).
+    ///
+    /// Must be called during node assembly, before the event loop accepts
+    /// connections: a handler created earlier would not capture the capability.
+    /// Only the storer launch path calls this; a client never does.
+    pub fn enable_storage(&mut self, reserve: Arc<dyn vertex_swarm_api::ReserveStore>) {
+        use vertex_swarm_api::SwarmSpec;
+
+        let identity = self.base.identity();
+        let nonce = identity.nonce();
+        // The storer overlay a minted receipt binds is derived from the same
+        // identity that signs it, so the capability carries the identity's
+        // network id and nonce alongside the signer rather than re-deriving them
+        // elsewhere.
+        let network_id = identity.spec().network_id();
+        // The identity's concrete signer is erased to the synchronous signer
+        // trait; `I::Signer: Signer + SignerSync`, so the coercion is sound.
+        let signer: Arc<dyn alloy_signer::SignerSync + Send + Sync> = identity.signer();
+        let capability = crate::protocol::StorerCapability::new(reserve, signer, network_id, nonce);
+        self.base
+            .swarm
+            .behaviour_mut()
+            .client
+            .set_storer(capability);
+    }
+
     pub fn topology_command(&mut self, command: TopologyCommand) {
         self.base.swarm.behaviour_mut().topology.on_command(command);
     }
