@@ -9382,6 +9382,7 @@ dependencies = [
  "vertex-storage-redb",
  "vertex-swarm-api",
  "vertex-swarm-primitives",
+ "vertex-swarm-test-utils",
 ]
 
 [[package]]

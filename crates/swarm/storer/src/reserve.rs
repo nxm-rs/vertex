@@ -5,6 +5,8 @@
 
 use parking_lot::RwLock;
 use tracing::{debug, warn};
+use vertex_swarm_api::SwarmIdentity;
+use vertex_swarm_primitives::OverlayAddress;
 
 use crate::{ChunkStore, StorerError, StorerResult};
 
@@ -30,6 +32,10 @@ pub struct Reserve {
     count: RwLock<u64>,
     /// Eviction strategy.
     strategy: EvictionStrategy,
+    /// Local overlay address, threaded from the node identity at construction.
+    /// Required by [`EvictionStrategy::EvictFurthest`] to rank chunks by
+    /// proximity; `None` for the proximity-agnostic strategies.
+    overlay: Option<OverlayAddress>,
 }
 
 impl Reserve {
@@ -39,6 +45,7 @@ impl Reserve {
             capacity,
             count: RwLock::new(0),
             strategy: EvictionStrategy::default(),
+            overlay: None,
         }
     }
 
@@ -48,7 +55,24 @@ impl Reserve {
             capacity,
             count: RwLock::new(0),
             strategy,
+            overlay: None,
         }
+    }
+
+    /// Thread the node identity, enabling proximity-ranked eviction
+    /// ([`EvictionStrategy::EvictFurthest`]). Stores the derived overlay address
+    /// (the reserve only needs its own location in address space, not the
+    /// identity's signing capability), matching how the rest of the node is
+    /// wired off the identity.
+    #[must_use]
+    pub fn with_identity(mut self, identity: &impl SwarmIdentity) -> Self {
+        self.overlay = Some(identity.overlay_address());
+        self
+    }
+
+    /// The local overlay address, if set. Required for `EvictFurthest`.
+    pub fn overlay(&self) -> Option<OverlayAddress> {
+        self.overlay
     }
 
     /// Initialize count from an existing store.
@@ -196,6 +220,18 @@ mod tests {
         assert_eq!(reserve.count(), 0);
         assert_eq!(reserve.available(), 100);
         assert!(reserve.has_room());
+    }
+
+    #[test]
+    fn identity_sets_the_overlay() {
+        use vertex_swarm_test_utils::MockIdentity;
+
+        let identity = MockIdentity::with_first_byte(0x42);
+        let reserve =
+            Reserve::with_strategy(2, EvictionStrategy::EvictFurthest).with_identity(&identity);
+        assert_eq!(reserve.overlay(), Some(identity.overlay_address()));
+        // The proximity-agnostic constructors leave it unset.
+        assert_eq!(Reserve::new(2).overlay(), None);
     }
 
     #[test]
