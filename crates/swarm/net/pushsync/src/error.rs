@@ -16,8 +16,13 @@ vertex_net_codec::protocol_error! {
         InvalidStamp(#[from] nectar_postage::StampError),
 
         /// Chunk bytes did not match the delivery's address.
+        ///
+        /// Carries the message string rather than the source error: chunk
+        /// reconstruction now returns nectar's `StampError`, which `InvalidStamp`
+        /// already claims via `#[from]`, so this variant cannot also derive a
+        /// `From<StampError>`. The call site maps the error to its string.
         #[error("invalid chunk: {0}")]
-        InvalidChunk(#[from] vertex_swarm_primitives::ReconstructError),
+        InvalidChunk(String),
 
         /// Malformed receipt signature.
         #[error("invalid signature: {0}")]

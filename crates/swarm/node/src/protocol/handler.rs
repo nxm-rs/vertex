@@ -1332,7 +1332,7 @@ mod tests {
     use alloy_primitives::{B256, Signature};
     use nectar_postage::Stamp;
     use nectar_primitives::{AnyChunk, ContentChunk};
-    use vertex_swarm_primitives::StampedChunk;
+    use vertex_swarm_primitives::{StampedChunk, StampedChunkExt};
 
     fn stamped(payload: &'static [u8]) -> StampedChunk {
         let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
