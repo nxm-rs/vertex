@@ -10,4 +10,8 @@ mod redistribution;
 
 pub use args::RedistributionArgs;
 pub use config::StorageConfig;
-pub use redistribution::{Entitlement, canonical_neighbourhood, sample};
+pub use redistribution::{
+    ChunkInclusionProof, ChunkInclusionProofs, ProofError, SAMPLE_SIZE, SampleItem, Stamp,
+    WitnessIndices, canonical_neighbourhood, make_inclusion_proofs, reserve_commitment_content,
+    reserve_sample, transformed_address, witness_indices,
+};
