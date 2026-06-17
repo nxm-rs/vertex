@@ -8,7 +8,6 @@ use vertex_swarm_topology::TopologyHandle;
 use vertex_tasks::{GracefulShutdown, NodeTask, NodeTaskFn};
 
 use crate::providers::NetworkChunkProvider;
-use crate::rpc::NodeProviders;
 use crate::verify::VerifyingChunkProvider;
 
 /// Network chunk provider wrapped with config-gated download verification.
@@ -16,9 +15,10 @@ type VerifiedChunkProvider = VerifyingChunkProvider<NetworkChunkProvider<Arc<Ide
 
 /// Build output from launching a Swarm node.
 ///
-/// Contains the node's main event loop task function and RPC providers.
-/// The providers type `P` determines RPC capabilities. All providers
-/// implement `HasTopology` for topology access.
+/// Contains the node's main event loop task function and the api component
+/// container. The component type `P` determines the node's capabilities; all
+/// containers implement `HasTopology` for topology access. The transport (gRPC
+/// today) is wired at `bin/vertex`, not here.
 pub struct BuiltNode<P> {
     task_fn: NodeTaskFn,
     providers: P,
@@ -60,15 +60,12 @@ impl<P: HasTopology> BuiltNode<P> {
 }
 
 /// Built bootnode (topology only).
-pub type BuiltBootnode =
-    BuiltNode<NodeProviders<BootnodeComponents<TopologyHandle<Arc<Identity>>>>>;
+pub type BuiltBootnode = BuiltNode<BootnodeComponents<TopologyHandle<Arc<Identity>>>>;
 
 /// Built client node (topology + chunk retrieval).
-pub type BuiltClient = BuiltNode<
-    NodeProviders<ClientComponents<TopologyHandle<Arc<Identity>>, VerifiedChunkProvider>>,
->;
+pub type BuiltClient =
+    BuiltNode<ClientComponents<TopologyHandle<Arc<Identity>>, VerifiedChunkProvider>>;
 
 /// Built storer node (topology + chunks + storage).
-pub type BuiltStorer = BuiltNode<
-    NodeProviders<ClientComponents<TopologyHandle<Arc<Identity>>, VerifiedChunkProvider>>,
->;
+pub type BuiltStorer =
+    BuiltNode<ClientComponents<TopologyHandle<Arc<Identity>>, VerifiedChunkProvider>>;

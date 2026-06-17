@@ -16,6 +16,7 @@ use vertex_swarm_builder::{
 use vertex_swarm_node::ProtocolConfig;
 use vertex_swarm_node::args::ProtocolArgs;
 use vertex_swarm_primitives::SwarmNodeType;
+use vertex_swarm_rpc::GrpcAdapter;
 use vertex_swarm_spec::SwarmSpec;
 use vertex_tasks::TaskExecutor;
 
@@ -149,7 +150,7 @@ pub async fn run() -> Result<()> {
                     .build(&launch_ctx)
                     .await?
                     .into_parts();
-                run_with_grpc(task_fn, rpc_providers, grpc_addr).await
+                run_with_grpc(task_fn, GrpcAdapter::new(rpc_providers), grpc_addr).await
             }
             SwarmNodeType::Bootnode => {
                 let node_config = BootnodeConfig::new(spec, identity, network);
@@ -158,7 +159,7 @@ pub async fn run() -> Result<()> {
                     .build(&launch_ctx)
                     .await?
                     .into_parts();
-                run_with_grpc(task_fn, rpc_providers, grpc_addr).await
+                run_with_grpc(task_fn, GrpcAdapter::new(rpc_providers), grpc_addr).await
             }
             SwarmNodeType::Storer => {
                 let bandwidth = config
@@ -186,7 +187,7 @@ pub async fn run() -> Result<()> {
                     .build(&launch_ctx)
                     .await?
                     .into_parts();
-                run_with_grpc(task_fn, rpc_providers, grpc_addr).await
+                run_with_grpc(task_fn, GrpcAdapter::new(rpc_providers), grpc_addr).await
             }
         }
     })

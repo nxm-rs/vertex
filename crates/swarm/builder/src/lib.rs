@@ -36,7 +36,6 @@ mod handle;
 mod launch;
 mod node;
 mod providers;
-mod rpc;
 #[cfg(feature = "swap")]
 mod swap;
 pub mod verify;
@@ -55,7 +54,6 @@ pub use handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};
 
 // Providers
 pub use providers::NetworkChunkProvider;
-pub use rpc::{NodeProviders, RegisterSwarmServices};
 pub use verify::{ChunkVerifyConfig, VerifyingChunkProvider};
 
 // Configs

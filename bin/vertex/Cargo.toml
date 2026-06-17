@@ -59,6 +59,7 @@ vertex-swarm-net-hive.workspace = true
 vertex-swarm-net-identify.workspace = true
 vertex-swarm-peer-manager.workspace = true
 vertex-swarm-primitives.workspace = true
+vertex-swarm-rpc.workspace = true
 vertex-swarm-spec.workspace = true
 vertex-swarm-topology.workspace = true
 
