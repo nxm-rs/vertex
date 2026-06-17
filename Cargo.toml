@@ -131,12 +131,12 @@ indexing_slicing = "warn"
 
 [workspace.dependencies]
 ## nectar
-# Pin all nectar deps to the same rev so the workspace cannot resolve two
-# distinct copies of shared nectar types via independent updates.
-nectar-contracts = { git = "https://github.com/nxm-rs/nectar", rev = "6a0e0e3d420acb736a8e0c7a9079b7e176552f5e" }
-nectar-postage = { git = "https://github.com/nxm-rs/nectar", rev = "6a0e0e3d420acb736a8e0c7a9079b7e176552f5e" }
-nectar-primitives = { git = "https://github.com/nxm-rs/nectar", rev = "6a0e0e3d420acb736a8e0c7a9079b7e176552f5e" }
-nectar-swarms = { git = "https://github.com/nxm-rs/nectar", rev = "6a0e0e3d420acb736a8e0c7a9079b7e176552f5e" }
+# Track nectar's main branch via a single shared git source so the workspace
+# resolves one copy of shared nectar types; Cargo.lock pins the exact commit.
+nectar-contracts = { git = "https://github.com/nxm-rs/nectar", branch = "main" }
+nectar-postage = { git = "https://github.com/nxm-rs/nectar", branch = "main" }
+nectar-primitives = { git = "https://github.com/nxm-rs/nectar", branch = "main" }
+nectar-swarms = { git = "https://github.com/nxm-rs/nectar", branch = "main" }
 
 digest = "0.10"
 
