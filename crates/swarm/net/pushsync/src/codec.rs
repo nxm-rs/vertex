@@ -58,7 +58,8 @@ impl ProtoMessage for Delivery {
         }
         let address = ChunkAddress::from_slice(&proto.address)?;
         let stamp = nectar_postage::Stamp::try_from_slice(&proto.stamp)?;
-        let chunk = StampedChunk::reconstruct(address, Bytes::from(proto.data), stamp)?;
+        let chunk = StampedChunk::reconstruct(address, Bytes::from(proto.data), stamp)
+            .map_err(|e| PushsyncError::InvalidChunk(e.to_string()))?;
         Ok(Self::new(chunk))
     }
 }

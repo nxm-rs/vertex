@@ -16,8 +16,14 @@ vertex_net_codec::protocol_error! {
         InvalidStamp(#[from] nectar_postage::StampError),
 
         /// Chunk bytes did not match the requested address.
+        ///
+        /// Carries the message string rather than the source error: chunk
+        /// reconstruction now goes through nectar's `AnyChunk::from_wire_bytes`,
+        /// which returns `PrimitivesError` — already claimed by `InvalidAddress`
+        /// via `#[from]` — so this variant cannot also derive a
+        /// `From<PrimitivesError>`. The call site maps the error to its string.
         #[error("invalid chunk: {0}")]
-        InvalidChunk(#[from] vertex_swarm_primitives::ReconstructError),
+        InvalidChunk(String),
     }
 }
 
