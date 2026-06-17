@@ -4,6 +4,7 @@ mod bandwidth;
 mod localstore;
 mod peers;
 mod pricing;
+mod reserve;
 mod topology;
 
 pub use self::bandwidth::{
@@ -13,6 +14,7 @@ pub use self::bandwidth::{
 pub use self::localstore::{SwarmLocalStore, SwarmLocalStoreConfig};
 pub use self::peers::SwarmPeerResolver;
 pub use self::pricing::{SwarmPricing, SwarmPricingBuilder, SwarmPricingConfig};
+pub use self::reserve::{BinCursorStore, BinScanItem, ReserveStore};
 pub use self::topology::{
     SwarmTopology, SwarmTopologyBins, SwarmTopologyCommands, SwarmTopologyPeers,
     SwarmTopologyReporting, SwarmTopologyRouting, SwarmTopologyState, SwarmTopologyStats,
@@ -60,6 +62,21 @@ pub trait HasStore: Send + Sync {
 
     /// Get the local store.
     fn store(&self) -> &Self::Store;
+}
+
+/// Reserve access (storer level).
+///
+/// Narrows [`HasStore`] to the storer reserve: the proximity-ordered,
+/// always-stamped [`ReserveStore`]. A storer that runs a reserve exposes it here
+/// so the redistribution and sync subsystems can query radius, capacity, and
+/// per-bin insertion order without depending on the concrete store type.
+#[auto_impl::auto_impl(&, Arc, Box)]
+pub trait HasReserve: HasStore {
+    /// The reserve type.
+    type Reserve: ReserveStore;
+
+    /// Get the reserve.
+    fn reserve(&self) -> &Self::Reserve;
 }
 
 /// Bootnode components (topology only). Identity via `topology().identity()`.
