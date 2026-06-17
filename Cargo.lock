@@ -8538,7 +8538,6 @@ dependencies = [
  "strum 0.28.0",
  "thiserror 2.0.18",
  "tokio",
- "tonic-reflection",
  "tracing",
  "vertex-node-api",
  "vertex-node-core",
