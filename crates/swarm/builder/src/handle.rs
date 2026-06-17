@@ -7,7 +7,7 @@ use vertex_swarm_identity::Identity;
 use vertex_tasks::{GracefulShutdown, NodeTask, NodeTaskFn};
 
 use crate::providers::NetworkChunkProvider;
-use crate::rpc::{BootnodeRpcProviders, ClientRpcProviders, StorerRpcProviders};
+use crate::rpc::{ChunkComponents, NodeProviders, TopologyComponents};
 use crate::verify::VerifyingChunkProvider;
 
 /// Network chunk provider wrapped with config-gated download verification.
@@ -59,10 +59,12 @@ impl<P: HasTopology> BuiltNode<P> {
 }
 
 /// Built bootnode (topology only).
-pub type BuiltBootnode = BuiltNode<BootnodeRpcProviders<Arc<Identity>>>;
+pub type BuiltBootnode = BuiltNode<NodeProviders<TopologyComponents<Arc<Identity>>>>;
 
 /// Built client node (topology + chunk retrieval).
-pub type BuiltClient = BuiltNode<ClientRpcProviders<Arc<Identity>, VerifiedChunkProvider>>;
+pub type BuiltClient =
+    BuiltNode<NodeProviders<ChunkComponents<Arc<Identity>, VerifiedChunkProvider>>>;
 
 /// Built storer node (topology + chunks + storage).
-pub type BuiltStorer = BuiltNode<StorerRpcProviders<Arc<Identity>, VerifiedChunkProvider>>;
+pub type BuiltStorer =
+    BuiltNode<NodeProviders<ChunkComponents<Arc<Identity>, VerifiedChunkProvider>>>;

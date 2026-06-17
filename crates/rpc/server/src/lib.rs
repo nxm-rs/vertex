@@ -124,7 +124,7 @@ impl GrpcServerConfig {
 /// gRPC server framework for Vertex nodes.
 ///
 /// Provides the base infrastructure for running a gRPC server. Protocol-specific
-/// services can be added using the builder pattern or via `GrpcServiceProvider`.
+/// services can be added using the builder pattern or via [`RegistersGrpcServices`].
 ///
 /// Implements the [`RpcServer`] trait for lifecycle management.
 pub struct GrpcServer {
