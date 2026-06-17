@@ -18,11 +18,13 @@
 //! Each capability level has a runtime container:
 //!
 //! - [`BootnodeComponents`] - topology only
-//! - [`ClientComponents`] - topology + accounting
-//! - [`StorerComponents`] - topology + accounting + store
+//! - [`ClientComponents`] - topology + chunk client (transport read surface)
+//! - [`StorerComponents`] - topology + chunk client + store
 //!
-//! Access is abstracted via [`HasTopology`], [`HasAccounting`], [`HasStore`],
-//! and [`HasIdentity`] traits.
+//! Access is abstracted via [`HasTopology`], [`HasChunkClient`], [`HasStore`],
+//! and [`HasIdentity`] traits. Accounting is not a component: it is a
+//! builder-wired internal of the network chunk client (settled through a shared
+//! `Arc` at launch), and bootnodes run only a listen-only pricing handler.
 //!
 //! # Protocol Integration
 //!
@@ -51,7 +53,6 @@ mod identity;
 mod protocol;
 mod providers;
 mod reporting;
-mod rpc;
 mod spec;
 mod swarm;
 mod types;
@@ -59,12 +60,12 @@ mod types;
 pub use self::accounting::{Au, AuConversionError};
 pub use self::components::{
     AccountingAction, BandwidthMode, BootnodeComponents, ClientComponents, Direction,
-    HasAccounting, HasChunkClient, HasIdentity, HasStore, HasTopology, StorerComponents,
-    SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmClientAccounting, SwarmLocalStore,
-    SwarmLocalStoreConfig, SwarmPeerBandwidth, SwarmPeerResolver, SwarmPeerState, SwarmPricing,
-    SwarmPricingBuilder, SwarmPricingConfig, SwarmSettlementProvider, SwarmTopology,
-    SwarmTopologyBins, SwarmTopologyCommands, SwarmTopologyPeers, SwarmTopologyReporting,
-    SwarmTopologyRouting, SwarmTopologyState, SwarmTopologyStats,
+    HasChunkClient, HasIdentity, HasStore, HasTopology, StorerComponents, SwarmAccountingConfig,
+    SwarmBandwidthAccounting, SwarmClientAccounting, SwarmLocalStore, SwarmLocalStoreConfig,
+    SwarmPeerBandwidth, SwarmPeerResolver, SwarmPeerState, SwarmPricing, SwarmPricingBuilder,
+    SwarmPricingConfig, SwarmSettlementProvider, SwarmTopology, SwarmTopologyBins,
+    SwarmTopologyCommands, SwarmTopologyPeers, SwarmTopologyReporting, SwarmTopologyRouting,
+    SwarmTopologyState, SwarmTopologyStats, construct,
 };
 pub use self::config::{
     DEFAULT_PEER_BAN_THRESHOLD, DEFAULT_PEER_DISCONNECT_THRESHOLD, DEFAULT_PEER_MAX_PER_BIN,
@@ -86,7 +87,6 @@ pub use self::reporting::{
     BanCause, DisconnectCause, PeerAffordability, PeerLifecycleEvent, PeerReporter, ReportSource,
     SwarmScoringEvent,
 };
-pub use self::rpc::{Bootnode, Client, Storer};
 pub use self::spec::{
     DEFAULT_SATURATION_PEERS, StaticSwarmSpecProvider, SwarmSpec, SwarmSpecParser,
     SwarmSpecProvider, SwarmToken,

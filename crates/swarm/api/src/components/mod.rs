@@ -52,16 +52,6 @@ pub trait HasIdentity: Send + Sync {
     fn identity(&self) -> &Self::Identity;
 }
 
-/// Accounting access (client/storer levels).
-#[auto_impl::auto_impl(&, Arc, Box)]
-pub trait HasAccounting: Send + Sync {
-    /// The accounting type.
-    type Accounting: Send + Sync;
-
-    /// Get the accounting.
-    fn accounting(&self) -> &Self::Accounting;
-}
-
 /// Local store access (storer level).
 #[auto_impl::auto_impl(&, Arc, Box)]
 pub trait HasStore: Send + Sync {
@@ -73,14 +63,17 @@ pub trait HasStore: Send + Sync {
 }
 
 /// Bootnode components (topology only). Identity via `topology().identity()`.
+///
+/// Construction is builder-exclusive; see [`construct`].
 #[derive(Debug)]
 pub struct BootnodeComponents<T> {
     topology: T,
 }
 
 impl<T> BootnodeComponents<T> {
-    /// Create bootnode components.
-    pub fn new(topology: T) -> Self {
+    /// Wire bootnode components. Crate-visible: only the builder constructs
+    /// components, via the [`construct`] seam.
+    pub(crate) fn new(topology: T) -> Self {
         Self { topology }
     }
 }
@@ -93,67 +86,73 @@ impl<T: Send + Sync> HasTopology for BootnodeComponents<T> {
     }
 }
 
-/// Client components (topology + accounting).
-#[derive(Debug)]
-pub struct ClientComponents<T, A> {
-    base: BootnodeComponents<T>,
-    accounting: A,
+/// Client components (topology + chunk client).
+///
+/// The transport-facing read surface a built client/storer exposes: topology
+/// for the node service, chunk client for the chunk service.
+///
+/// Accounting is deliberately not a component. It is a builder-wired internal of
+/// the network chunk client — the network chunk provider settles through a
+/// shared accounting `Arc` plumbed in at launch — so it never surfaces as a
+/// served capability. Local (non-network) providers do not account at all, and
+/// bootnodes run only a listen-only pricing handler (no accounting state).
+///
+/// Construction is builder-exclusive; see [`construct`].
+#[derive(Debug, Clone)]
+pub struct ClientComponents<T, C> {
+    topology: T,
+    chunk_client: C,
 }
 
-impl<T, A> ClientComponents<T, A> {
-    /// Create client components.
-    pub fn new(topology: T, accounting: A) -> Self {
+impl<T, C> ClientComponents<T, C> {
+    /// Wire client components. Crate-visible: only the builder constructs
+    /// components, via the [`construct`] seam.
+    pub(crate) fn new(topology: T, chunk_client: C) -> Self {
         Self {
-            base: BootnodeComponents::new(topology),
-            accounting,
+            topology,
+            chunk_client,
         }
     }
-
-    /// Create from existing bootnode components.
-    pub fn from_base(base: BootnodeComponents<T>, accounting: A) -> Self {
-        Self { base, accounting }
-    }
 }
 
-impl<T: Send + Sync, A: Send + Sync> HasTopology for ClientComponents<T, A> {
+impl<T: Send + Sync, C: Send + Sync> HasTopology for ClientComponents<T, C> {
     type Topology = T;
 
     fn topology(&self) -> &T {
-        self.base.topology()
+        &self.topology
     }
 }
 
-impl<T: Send + Sync, A: Send + Sync> HasAccounting for ClientComponents<T, A> {
-    type Accounting = A;
+impl<T: Send + Sync, C: Send + Sync> HasChunkClient for ClientComponents<T, C> {
+    type ChunkClient = C;
 
-    fn accounting(&self) -> &A {
-        &self.accounting
+    fn chunk_client(&self) -> &C {
+        &self.chunk_client
     }
 }
 
 /// Storer components (client + local store).
+///
+/// Construction is builder-exclusive; see [`construct`].
 #[derive(Debug)]
-pub struct StorerComponents<T, A, S> {
-    client: ClientComponents<T, A>,
+pub struct StorerComponents<T, C, S> {
+    client: ClientComponents<T, C>,
     store: S,
 }
 
-impl<T, A, S> StorerComponents<T, A, S> {
-    /// Create storer components.
-    pub fn new(topology: T, accounting: A, store: S) -> Self {
+impl<T, C, S> StorerComponents<T, C, S> {
+    /// Wire storer components. Crate-visible: only the builder constructs
+    /// components, via the [`construct`] seam.
+    #[expect(dead_code, reason = "storer wiring lands with the storer extension")]
+    pub(crate) fn new(topology: T, chunk_client: C, store: S) -> Self {
         Self {
-            client: ClientComponents::new(topology, accounting),
+            client: ClientComponents::new(topology, chunk_client),
             store,
         }
     }
-
-    /// Create from existing client components.
-    pub fn from_client(client: ClientComponents<T, A>, store: S) -> Self {
-        Self { client, store }
-    }
 }
 
-impl<T: Send + Sync, A: Send + Sync, S: Send + Sync> HasTopology for StorerComponents<T, A, S> {
+impl<T: Send + Sync, C: Send + Sync, S: Send + Sync> HasTopology for StorerComponents<T, C, S> {
     type Topology = T;
 
     fn topology(&self) -> &T {
@@ -161,18 +160,40 @@ impl<T: Send + Sync, A: Send + Sync, S: Send + Sync> HasTopology for StorerCompo
     }
 }
 
-impl<T: Send + Sync, A: Send + Sync, S: Send + Sync> HasAccounting for StorerComponents<T, A, S> {
-    type Accounting = A;
+impl<T: Send + Sync, C: Send + Sync, S: Send + Sync> HasChunkClient for StorerComponents<T, C, S> {
+    type ChunkClient = C;
 
-    fn accounting(&self) -> &A {
-        self.client.accounting()
+    fn chunk_client(&self) -> &C {
+        self.client.chunk_client()
     }
 }
 
-impl<T: Send + Sync, A: Send + Sync, S: Send + Sync> HasStore for StorerComponents<T, A, S> {
+impl<T: Send + Sync, C: Send + Sync, S: Send + Sync> HasStore for StorerComponents<T, C, S> {
     type Store = S;
 
     fn store(&self) -> &S {
         &self.store
+    }
+}
+
+/// Builder-only construction seam for the component containers.
+///
+/// Components are a builder-wired provider DAG over shared `Arc`s (the chunk
+/// provider already embeds the topology handle); only the builder wires those
+/// `Arc`s correctly, so the public containers expose no constructors. The
+/// builder and the in-process node reach construction through these
+/// `#[doc(hidden)]` free functions instead. Not part of the stable API.
+#[doc(hidden)]
+pub mod construct {
+    use super::{BootnodeComponents, ClientComponents};
+
+    /// Wire [`BootnodeComponents`].
+    pub fn bootnode<T>(topology: T) -> BootnodeComponents<T> {
+        BootnodeComponents::new(topology)
+    }
+
+    /// Wire [`ClientComponents`].
+    pub fn client<T, C>(topology: T, chunk_client: C) -> ClientComponents<T, C> {
+        ClientComponents::new(topology, chunk_client)
     }
 }
