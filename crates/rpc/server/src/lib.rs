@@ -39,6 +39,7 @@
 mod grpc_protocol;
 mod health;
 mod registry;
+mod transport;
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -56,6 +57,7 @@ pub use vertex_node_api::NodeRpcConfig;
 pub use grpc_protocol::GrpcProtocol;
 pub use health::HealthService;
 pub use registry::{GrpcRegistry, GrpcServerHandle};
+pub use transport::{GrpcTransport, ServeWith, Transport, TransportServer};
 
 /// Trait for types that can register their gRPC services with a registry.
 ///
