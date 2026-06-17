@@ -13,6 +13,7 @@ description = "Swarm protocol RPC services for Vertex"
 vertex-swarm-api = { workspace = true }
 vertex-swarm-primitives = { workspace = true }
 vertex-swarm-stream = { workspace = true }
+vertex-rpc-server = { workspace = true }
 
 # Primitives
 hex = { workspace = true }
