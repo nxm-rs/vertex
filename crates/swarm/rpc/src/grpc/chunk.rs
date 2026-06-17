@@ -2,19 +2,17 @@
 
 use std::pin::Pin;
 
-use futures::StreamExt;
-use tonic::{Request, Response, Status, Streaming};
-use vertex_swarm_api::{ChunkAddress, PushReceipt, Stamp, StampedChunk, SwarmError};
-use vertex_swarm_stream::{
-    ChunkClientExt, NATIVE_DOWNLOAD_CONCURRENCY, StreamConfig, VerifiedChunk, get_stream_from,
-    parse_address,
-};
-
-use crate::ChunkServiceProvider;
 use crate::proto::chunk::{
     ChunkError, HasChunkRequest, HasChunkResponse, RetrieveChunkRequest, RetrieveChunkResponse,
     RetrievedChunk, UploadChunkRequest, UploadChunkResponse, UploadReceipt, chunk_server::Chunk,
     retrieve_chunk_response, upload_chunk_response,
+};
+use futures::StreamExt;
+use tonic::{Request, Response, Status, Streaming};
+use vertex_swarm_api::{ChunkAddress, PushReceipt, Stamp, StampedChunk, SwarmError};
+use vertex_swarm_stream::{
+    ChunkClient, ChunkClientExt, NATIVE_DOWNLOAD_CONCURRENCY, StreamConfig, VerifiedChunk,
+    get_stream_from, parse_address,
 };
 
 /// Whether the chunk service trusts a caller's per-request `validate` flag or
@@ -186,7 +184,7 @@ fn upload_error(address: Vec<u8>, message: String) -> UploadChunkResponse {
 type ResponseStream<T> = Pin<Box<dyn tokio_stream::Stream<Item = Result<T, Status>> + Send>>;
 
 #[tonic::async_trait]
-impl<P: ChunkServiceProvider> Chunk for ChunkService<P> {
+impl<P: ChunkClient> Chunk for ChunkService<P> {
     async fn retrieve_chunk(
         &self,
         request: Request<RetrieveChunkRequest>,
