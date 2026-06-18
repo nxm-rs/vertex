@@ -30,8 +30,8 @@ use alloy_primitives::{B256, hex};
 use serde::Deserialize;
 
 use vertex_swarm_redistribution::{
-    SAMPLE_SIZE, SampleItem, make_inclusion_proofs, reserve_commitment_content, reserve_sample,
-    witness_indices,
+    ClaimAnchor, SAMPLE_SIZE, SampleAnchor, SampleItem, make_inclusion_proofs,
+    reserve_commitment_content, reserve_sample, witness_indices,
 };
 
 use nectar_primitives::{
@@ -127,6 +127,16 @@ fn h(s: &str) -> B256 {
     B256::from_slice(&hex::decode(s.trim_start_matches("0x")).expect("hex"))
 }
 
+/// Decode the sample-time anchor (`anchor1`, a bytes32) from the oracle's hex.
+fn sample_anchor(oracle: &Oracle) -> SampleAnchor {
+    SampleAnchor::new(h(&oracle.anchor1))
+}
+
+/// Decode the claim-time anchor (`anchor2`, a bytes32) from the oracle's hex.
+fn claim_anchor(oracle: &Oracle) -> ClaimAnchor {
+    ClaimAnchor::new(h(&oracle.anchor2))
+}
+
 /// Parse one oracle item's raw chunk wire bytes into the typed [`AnyChunk`] the
 /// sampler operates on. A `CAC` is a `span || payload` content body; a `SOC` is
 /// `id || signature || span || payload`. The chunk's `TryFrom` enforces the
@@ -147,7 +157,7 @@ fn parse_chunk(it: &OracleItem) -> DefaultAnyChunk {
 /// Rebuild every sample item from the oracle (typed chunk + transformed address),
 /// asserting the parsed chunk address and the recomputed transformed address
 /// both match bee.
-fn rebuild_items(oracle: &Oracle, anchor1: &[u8]) -> Vec<SampleItem> {
+fn rebuild_items(oracle: &Oracle, anchor1: SampleAnchor) -> Vec<SampleItem> {
     oracle
         .items
         .iter()
@@ -174,8 +184,8 @@ fn rebuild_items(oracle: &Oracle, anchor1: &[u8]) -> Vec<SampleItem> {
 #[test]
 fn transformed_addresses_match_bee_for_all_sample_items() {
     let oracle = load_oracle();
-    let anchor1 = hex::decode(&oracle.anchor1).expect("anchor1 hex");
-    let items = rebuild_items(&oracle, &anchor1);
+    let anchor1 = sample_anchor(&oracle);
+    let items = rebuild_items(&oracle, anchor1);
     assert_eq!(items.len(), SAMPLE_SIZE);
     // rebuild_items asserts every transformed address internally.
 }
@@ -183,8 +193,8 @@ fn transformed_addresses_match_bee_for_all_sample_items() {
 #[test]
 fn reserve_sample_reproduces_bee_sorted_order() {
     let oracle = load_oracle();
-    let anchor1 = hex::decode(&oracle.anchor1).expect("anchor1 hex");
-    let items = rebuild_items(&oracle, &anchor1);
+    let anchor1 = sample_anchor(&oracle);
+    let items = rebuild_items(&oracle, anchor1);
 
     // bee's sample is already the sorted 16; feeding it (in any order) to
     // reserve_sample must reproduce the exact same ordering.
@@ -200,8 +210,8 @@ fn reserve_sample_reproduces_bee_sorted_order() {
 #[test]
 fn reserve_commitment_chunk_address_matches_bee() {
     let oracle = load_oracle();
-    let anchor1 = hex::decode(&oracle.anchor1).expect("anchor1 hex");
-    let items = rebuild_items(&oracle, &anchor1);
+    let anchor1 = sample_anchor(&oracle);
+    let items = rebuild_items(&oracle, anchor1);
 
     let content = reserve_commitment_content(&items);
     assert_eq!(content.len(), SAMPLE_SIZE * 64);
@@ -221,8 +231,8 @@ fn reserve_commitment_chunk_address_matches_bee() {
 #[test]
 fn witness_indices_match_bee() {
     let oracle = load_oracle();
-    let anchor2 = hex::decode(&oracle.anchor2).expect("anchor2 hex");
-    let idx = witness_indices(&anchor2);
+    let anchor2 = claim_anchor(&oracle);
+    let idx = witness_indices(anchor2);
     assert_eq!(idx.require1, oracle.require1);
     assert_eq!(idx.require2, oracle.require2);
     assert_eq!(idx.require3, oracle.require3);
@@ -234,11 +244,11 @@ fn witness_indices_match_bee() {
 #[test]
 fn inclusion_proofs_match_bee_byte_for_byte() {
     let oracle = load_oracle();
-    let anchor1 = hex::decode(&oracle.anchor1).expect("anchor1 hex");
-    let anchor2 = hex::decode(&oracle.anchor2).expect("anchor2 hex");
-    let items = rebuild_items(&oracle, &anchor1);
+    let anchor1 = sample_anchor(&oracle);
+    let anchor2 = claim_anchor(&oracle);
+    let items = rebuild_items(&oracle, anchor1);
 
-    let proofs = make_inclusion_proofs(&items, &anchor1, &anchor2).expect("proofs build");
+    let proofs = make_inclusion_proofs(&items, anchor1, anchor2).expect("proofs build");
 
     assert_proof(&proofs.0[0], &oracle.proof1, "proof1 (require1)");
     assert_proof(&proofs.0[1], &oracle.proof2, "proof2 (require2)");
@@ -308,9 +318,9 @@ fn assert_segments(got: &[B256], want: &[String], label: &str, which: &str) {
 #[test]
 fn witness_proofs_self_verify() {
     let oracle = load_oracle();
-    let anchor1 = hex::decode(&oracle.anchor1).expect("anchor1 hex");
-    let anchor2 = hex::decode(&oracle.anchor2).expect("anchor2 hex");
-    let items = rebuild_items(&oracle, &anchor1);
+    let anchor1 = sample_anchor(&oracle);
+    let anchor2 = claim_anchor(&oracle);
+    let items = rebuild_items(&oracle, anchor1);
 
     let content = reserve_commitment_content(&items);
     let mut rc = DefaultHasher::new();
@@ -318,8 +328,8 @@ fn witness_proofs_self_verify() {
     rc.update(&content);
     let rc_root = rc.sum();
 
-    let proofs = make_inclusion_proofs(&items, &anchor1, &anchor2).expect("proofs build");
-    let idx = witness_indices(&anchor2);
+    let proofs = make_inclusion_proofs(&items, anchor1, anchor2).expect("proofs build");
+    let idx = witness_indices(anchor2);
 
     for (p, require) in [
         (&proofs.0[0], idx.require1),
@@ -345,7 +355,7 @@ fn witness_proofs_self_verify() {
         // against the prefixed root directly.
         assert!(
             p.tr_proof
-                .verify(prefixed_root(&items[require].chunk, &anchor1).as_slice())
+                .verify(prefixed_root(&items[require].chunk, anchor1.as_bytes()).as_slice())
                 .expect("tr verify"),
             "TR proof must verify against the anchor-prefixed BMT root",
         );

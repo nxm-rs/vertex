@@ -21,6 +21,7 @@ nectar-primitives.workspace = true
 # misc
 alloy-primitives.workspace = true
 thiserror.workspace = true
+strum.workspace = true
 
 # cli
 clap = { workspace = true, features = ["derive"] }
