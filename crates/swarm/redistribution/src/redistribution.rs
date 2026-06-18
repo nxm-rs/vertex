@@ -48,7 +48,7 @@ pub const SAMPLE_SIZE: usize = 16;
 // Round anchors
 // =============================================================================
 
-/// `anchor1`: the sample-time reserve salt.
+/// The sample-time reserve salt (the reference's `anchor1`).
 ///
 /// The `bytes32 currentRoundAnchor` read from `Redistribution.sol`, used as the
 /// BMT prefix that keys transformed addresses (via
@@ -83,7 +83,7 @@ impl From<B256> for SampleAnchor {
     }
 }
 
-/// `anchor2`: the claim-time reserve salt.
+/// The claim-time reserve salt (the reference's `anchor2`).
 ///
 /// The `bytes32 currentRoundAnchor`, interpreted big-endian to select the three
 /// witness indices and the proven segment (see [`witness_indices`]). See
@@ -244,14 +244,14 @@ pub struct SampleItem {
 }
 
 impl SampleItem {
-    /// Build a sample item for `chunk` under the sample-time anchor (`anchor1`).
+    /// Build a sample item for `chunk` under the sample-time anchor.
     ///
     /// The transformed address is computed by nectar's
     /// [`AnyChunk::transformed_address`], the byte-for-byte parity oracle.
     #[must_use]
-    pub fn new(anchor1: SampleAnchor, chunk: AnyChunk) -> Self {
+    pub fn new(sample: SampleAnchor, chunk: AnyChunk) -> Self {
         Self {
-            transformed_address: chunk.transformed_address(anchor1.as_bytes()),
+            transformed_address: chunk.transformed_address(sample.as_bytes()),
             chunk,
         }
     }
@@ -356,7 +356,7 @@ pub fn reserve_commitment_content(items: &[SampleItem]) -> Vec<u8> {
 ///   reserve-commitment chunk.
 /// - [`Self::og_proof`] (`proofSegments2`/`proveSegment2`/`chunk_span`): a plain
 ///   (original) BMT segment proof over the chunk's own body.
-/// - [`Self::tr_proof`] (`proofSegments3`): an `anchor1`-prefixed (transformed)
+/// - [`Self::tr_proof`] (`proofSegments3`): a sample-anchor-prefixed (transformed)
 ///   BMT segment proof over the same body.
 ///
 /// Postage and SOC witness data are tracked separately.
@@ -375,7 +375,7 @@ pub struct ChunkInclusionProof {
 /// The three-witness proof of entitlement.
 ///
 /// The three proofs are for sample items `require1`/`require2`/`require3` (the
-/// witnesses selected by `anchor2`; see [`WitnessIndices`]), in that order.
+/// witnesses selected by the claim anchor; see [`WitnessIndices`]), in that order.
 #[derive(Clone, Debug)]
 pub struct ChunkInclusionProofs(pub [ChunkInclusionProof; 3]);
 
@@ -395,34 +395,34 @@ impl<'a> IntoIterator for &'a ChunkInclusionProofs {
     }
 }
 
-/// The three witness indices selected by `anchor2` (require1/require2/require3).
+/// The three witness indices selected by the claim anchor (require1/require2/require3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WitnessIndices {
-    /// First witness: `anchor2 mod (SAMPLE_SIZE - 1)`.
+    /// First witness: `claim mod (SAMPLE_SIZE - 1)`.
     pub require1: usize,
-    /// Second witness: `anchor2 mod (SAMPLE_SIZE - 2)`, bumped past `require1`.
+    /// Second witness: `claim mod (SAMPLE_SIZE - 2)`, bumped past `require1`.
     pub require2: usize,
     /// Third witness: always the last sample slot, `SAMPLE_SIZE - 1`.
     pub require3: usize,
-    /// BMT segment index to prove: `anchor2 mod 128`.
+    /// BMT segment index to prove: `claim mod 128`.
     pub segment_index: usize,
 }
 
-/// Derive the witness indices from the claim-time anchor (`anchor2`).
+/// Derive the witness indices from the claim-time anchor.
 ///
-/// `anchor2` is interpreted as a **big-endian** unsigned integer:
+/// The claim anchor is interpreted as a **big-endian** unsigned integer:
 ///
-/// - `require1 = anchor2 mod 15`
-/// - `require2 = anchor2 mod 14`, incremented by one if `>= require1` so the two
+/// - `require1 = claim mod 15`
+/// - `require2 = claim mod 14`, incremented by one if `>= require1` so the two
 ///   witnesses are distinct.
 /// - `require3 = 15` (the last sample slot).
-/// - `segment_index = anchor2 mod 128`.
+/// - `segment_index = claim mod 128`.
 ///
 /// These big-endian moduli are unrelated to the little-endian `u64` BMT spans;
 /// the two must not be conflated.
 #[must_use]
-pub fn witness_indices(anchor2: ClaimAnchor) -> WitnessIndices {
-    let bytes = anchor2.as_bytes();
+pub fn witness_indices(claim: ClaimAnchor) -> WitnessIndices {
+    let bytes = claim.as_bytes();
     let require3 = SAMPLE_SIZE - 1; // 15
     let require1 = mod_be(bytes, require3 as u64) as usize;
     let mut require2 = mod_be(bytes, (require3 - 1) as u64) as usize;
@@ -503,9 +503,9 @@ pub enum ProofError {
 
 /// Build the proof of entitlement for `items` from the two round anchors.
 ///
-/// Reproduces the reference `makeInclusionProofs`. `anchor1` (the sample-time
+/// Reproduces the reference `makeInclusionProofs`. `sample` (the sample-time
 /// [`SampleAnchor`]) is the BMT prefix used for the transformed addresses and
-/// the TR proofs; `anchor2` (the claim-time [`ClaimAnchor`]) selects the witness
+/// the TR proofs; `claim` (the claim-time [`ClaimAnchor`]) selects the witness
 /// indices and segment via [`witness_indices`]. Their distinct types make a
 /// transposition a compile error rather than a silent, round-losing bug.
 ///
@@ -514,8 +514,8 @@ pub enum ProofError {
 ///    item's *chunk* address inside the reserve-commitment chunk);
 /// 2. a plain BMT segment proof at `segment_index` over the witnessed chunk's
 ///    body (its `chunk_span` is the body's little-endian `u64` span);
-/// 3. an `anchor1`-prefixed BMT segment proof at `segment_index` over the same
-///    body.
+/// 3. a sample-anchor-prefixed BMT segment proof at `segment_index` over the
+///    same body.
 ///
 /// The witnessed body is read straight from the typed chunk: [`AnyChunk::span`]
 /// and [`AnyChunk::data`] already delegate to the inner BMT body for both CAC
@@ -525,18 +525,18 @@ pub enum ProofError {
 ///
 /// Returns an error if `items` does not contain exactly [`SAMPLE_SIZE`]
 /// elements, or if any underlying BMT proof generation fails (e.g. an
-/// out-of-range segment index). The anchors are non-empty by construction, so
+/// out-of-range segment index). The anchors are `bytes32` by construction, so
 /// the function never has to check for an unset salt.
 pub fn make_inclusion_proofs(
     items: &[SampleItem],
-    anchor1: SampleAnchor,
-    anchor2: ClaimAnchor,
+    sample: SampleAnchor,
+    claim: ClaimAnchor,
 ) -> Result<ChunkInclusionProofs, ProofError> {
     if items.len() != SAMPLE_SIZE {
         return Err(ProofError::SampleSize(items.len()));
     }
 
-    let idx = witness_indices(anchor2);
+    let idx = witness_indices(claim);
 
     // Reserve-commitment chunk: a CAC over the 16 (chunk_addr || transformed)
     // pairs. Its span is the body length, 64 * SAMPLE_SIZE bytes.
@@ -564,9 +564,9 @@ pub fn make_inclusion_proofs(
             .hasher(None)
             .generate_proof(body.payload, idx.segment_index)?;
 
-        // TR: anchor1-prefixed BMT segment proof over the same body.
+        // TR: sample-anchor-prefixed BMT segment proof over the same body.
         let tr_proof = body
-            .hasher(Some(anchor1.as_bytes()))
+            .hasher(Some(sample.as_bytes()))
             .generate_proof(body.payload, idx.segment_index)?;
 
         Ok(ChunkInclusionProof {
@@ -716,10 +716,10 @@ mod tests {
     }
 
     #[test]
-    fn witness_indices_match_for_anchor2_30() {
-        // anchor2 = 30 as a bytes32 (big-endian) -> 0, 3, 15 with segment 30.
-        let anchor2 = ClaimAnchor::new(B256::left_padding_from(&[30]));
-        let idx = witness_indices(anchor2);
+    fn witness_indices_match_for_claim_value_30() {
+        // claim anchor = 30 as a bytes32 (big-endian) -> 0, 3, 15 with segment 30.
+        let claim = ClaimAnchor::new(B256::left_padding_from(&[30]));
+        let idx = witness_indices(claim);
         assert_eq!(idx.require1, 0);
         assert_eq!(idx.require2, 3);
         assert_eq!(idx.require3, 15);

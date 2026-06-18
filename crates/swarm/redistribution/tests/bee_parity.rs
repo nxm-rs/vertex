@@ -157,7 +157,7 @@ fn parse_chunk(it: &OracleItem) -> DefaultAnyChunk {
 /// Rebuild every sample item from the oracle (typed chunk + transformed address),
 /// asserting the parsed chunk address and the recomputed transformed address
 /// both match bee.
-fn rebuild_items(oracle: &Oracle, anchor1: SampleAnchor) -> Vec<SampleItem> {
+fn rebuild_items(oracle: &Oracle, sample: SampleAnchor) -> Vec<SampleItem> {
     oracle
         .items
         .iter()
@@ -169,7 +169,7 @@ fn rebuild_items(oracle: &Oracle, anchor1: SampleAnchor) -> Vec<SampleItem> {
                 "parsed chunk address must match bee",
             );
 
-            let item = SampleItem::new(anchor1, chunk);
+            let item = SampleItem::new(sample, chunk);
             assert_eq!(
                 hex::encode(item.transformed_address.as_slice()),
                 it.transformed_address.trim_start_matches("0x"),
@@ -184,8 +184,8 @@ fn rebuild_items(oracle: &Oracle, anchor1: SampleAnchor) -> Vec<SampleItem> {
 #[test]
 fn transformed_addresses_match_bee_for_all_sample_items() {
     let oracle = load_oracle();
-    let anchor1 = sample_anchor(&oracle);
-    let items = rebuild_items(&oracle, anchor1);
+    let sample = sample_anchor(&oracle);
+    let items = rebuild_items(&oracle, sample);
     assert_eq!(items.len(), SAMPLE_SIZE);
     // rebuild_items asserts every transformed address internally.
 }
@@ -193,8 +193,8 @@ fn transformed_addresses_match_bee_for_all_sample_items() {
 #[test]
 fn reserve_sample_reproduces_bee_sorted_order() {
     let oracle = load_oracle();
-    let anchor1 = sample_anchor(&oracle);
-    let items = rebuild_items(&oracle, anchor1);
+    let sample = sample_anchor(&oracle);
+    let items = rebuild_items(&oracle, sample);
 
     // bee's sample is already the sorted 16; feeding it (in any order) to
     // reserve_sample must reproduce the exact same ordering.
@@ -210,8 +210,8 @@ fn reserve_sample_reproduces_bee_sorted_order() {
 #[test]
 fn reserve_commitment_chunk_address_matches_bee() {
     let oracle = load_oracle();
-    let anchor1 = sample_anchor(&oracle);
-    let items = rebuild_items(&oracle, anchor1);
+    let sample = sample_anchor(&oracle);
+    let items = rebuild_items(&oracle, sample);
 
     let content = reserve_commitment_content(&items);
     assert_eq!(content.len(), SAMPLE_SIZE * 64);
@@ -231,8 +231,8 @@ fn reserve_commitment_chunk_address_matches_bee() {
 #[test]
 fn witness_indices_match_bee() {
     let oracle = load_oracle();
-    let anchor2 = claim_anchor(&oracle);
-    let idx = witness_indices(anchor2);
+    let claim = claim_anchor(&oracle);
+    let idx = witness_indices(claim);
     assert_eq!(idx.require1, oracle.require1);
     assert_eq!(idx.require2, oracle.require2);
     assert_eq!(idx.require3, oracle.require3);
@@ -244,11 +244,11 @@ fn witness_indices_match_bee() {
 #[test]
 fn inclusion_proofs_match_bee_byte_for_byte() {
     let oracle = load_oracle();
-    let anchor1 = sample_anchor(&oracle);
-    let anchor2 = claim_anchor(&oracle);
-    let items = rebuild_items(&oracle, anchor1);
+    let sample = sample_anchor(&oracle);
+    let claim = claim_anchor(&oracle);
+    let items = rebuild_items(&oracle, sample);
 
-    let proofs = make_inclusion_proofs(&items, anchor1, anchor2).expect("proofs build");
+    let proofs = make_inclusion_proofs(&items, sample, claim).expect("proofs build");
 
     assert_proof(&proofs.0[0], &oracle.proof1, "proof1 (require1)");
     assert_proof(&proofs.0[1], &oracle.proof2, "proof2 (require2)");
@@ -318,9 +318,9 @@ fn assert_segments(got: &[B256], want: &[String], label: &str, which: &str) {
 #[test]
 fn witness_proofs_self_verify() {
     let oracle = load_oracle();
-    let anchor1 = sample_anchor(&oracle);
-    let anchor2 = claim_anchor(&oracle);
-    let items = rebuild_items(&oracle, anchor1);
+    let sample = sample_anchor(&oracle);
+    let claim = claim_anchor(&oracle);
+    let items = rebuild_items(&oracle, sample);
 
     let content = reserve_commitment_content(&items);
     let mut rc = DefaultHasher::new();
@@ -328,8 +328,8 @@ fn witness_proofs_self_verify() {
     rc.update(&content);
     let rc_root = rc.sum();
 
-    let proofs = make_inclusion_proofs(&items, anchor1, anchor2).expect("proofs build");
-    let idx = witness_indices(anchor2);
+    let proofs = make_inclusion_proofs(&items, sample, claim).expect("proofs build");
+    let idx = witness_indices(claim);
 
     for (p, require) in [
         (&proofs.0[0], idx.require1),
@@ -355,7 +355,7 @@ fn witness_proofs_self_verify() {
         // against the prefixed root directly.
         assert!(
             p.tr_proof
-                .verify(prefixed_root(&items[require].chunk, anchor1.as_bytes()).as_slice())
+                .verify(prefixed_root(&items[require].chunk, sample.as_bytes()).as_slice())
                 .expect("tr verify"),
             "TR proof must verify against the anchor-prefixed BMT root",
         );
