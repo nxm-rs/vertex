@@ -37,6 +37,24 @@ use nectar_primitives::{
     SwarmAddress,
 };
 
+use vertex_swarm_postage::{BatchId, Stamp, StampIndex};
+
+/// A deterministic synthetic stamp for fixture item `slot`.
+///
+/// The reference inclusion-proof vectors are stamp independent (they pin the
+/// RC/OG/TR BMT geometry, which the stamp never feeds), but a proof of
+/// entitlement now requires each witnessed slot to carry the exact stamp it was
+/// won with. We therefore pin a distinct, deterministic stamp per slot so the
+/// byte-for-byte proof assertions remain unchanged while the proof can also be
+/// shown to witness *that precise* stamp (see the exact-stamp test). The batch
+/// id is the slot index so different slots carry distinguishable stamps.
+fn fixture_stamp(slot: usize) -> Stamp {
+    let batch: BatchId = B256::repeat_byte(0xc0 + slot as u8);
+    let index = StampIndex::new(slot as u32, slot as u32);
+    let sig = alloy_primitives::Signature::test_signature();
+    Stamp::with_index(batch, index, 1, sig)
+}
+
 // --- single-CAC transformed-address vector -----------------------------------
 
 const ANCHOR_CAC: &[u8] = b"swarm-test-anchor-deterministic!";
@@ -155,11 +173,18 @@ fn parse_chunk(it: &OracleItem) -> DefaultAnyChunk {
 /// Rebuild every sample item from the oracle (typed chunk + transformed address),
 /// asserting the parsed chunk address and the recomputed transformed address
 /// both match the reference.
+///
+/// Each item is pinned with a deterministic [`fixture_stamp`] so a proof of
+/// entitlement can be built (it requires the winning stamp on every witnessed
+/// slot). The stamp does not feed the RC/OG/TR BMT proofs, so attaching it
+/// leaves every byte-for-byte proof assertion unchanged; it does let the
+/// exact-stamp test confirm the proof witnesses *that* stamp.
 fn rebuild_items(oracle: &Oracle, sample: SampleAnchor) -> Vec<SampleItem> {
     oracle
         .items
         .iter()
-        .map(|it| {
+        .enumerate()
+        .map(|(slot, it)| {
             let chunk = parse_chunk(it);
             assert_eq!(
                 hex::encode(chunk.address().as_slice()),
@@ -167,7 +192,7 @@ fn rebuild_items(oracle: &Oracle, sample: SampleAnchor) -> Vec<SampleItem> {
                 "parsed chunk address must match the reference",
             );
 
-            let item = SampleItem::new(sample, chunk);
+            let item = SampleItem::with_stamp(sample, chunk, fixture_stamp(slot));
             assert_eq!(
                 hex::encode(item.transformed_address.as_slice()),
                 it.transformed_address.trim_start_matches("0x"),
@@ -259,6 +284,146 @@ fn inclusion_proofs_match_reference_byte_for_byte() {
         "proof2 (second challenged slot)",
     );
     assert_proof(&proofs.0[2], &oracle.proof_last, "proofLast (last slot)");
+}
+
+/// Each witness must carry the *exact* stamp the sample slot was won with: the
+/// `postage_proof` of witness *k* must be byte-identical to the stamp pinned to
+/// the slot that witness opens, never a stamp re-loaded by batch id alone.
+#[test]
+fn inclusion_proof_witnesses_the_exact_winning_stamp() {
+    let oracle = load_oracle();
+    let sample = sample_anchor(&oracle);
+    let claim = claim_anchor(&oracle);
+    let items = rebuild_items(&oracle, sample);
+
+    let idx = witness_indices(claim);
+    let proofs = make_inclusion_proofs(&items, sample, claim).expect("proofs build");
+
+    // Submission order is [challenged0, challenged1, last]; each carried stamp
+    // must equal the stamp pinned to the very slot it opened.
+    for (proof, slot) in [
+        (&proofs.0[0], idx.challenged[0]),
+        (&proofs.0[1], idx.challenged[1]),
+        (&proofs.0[2], idx.last),
+    ] {
+        let won_with = items[slot].stamp.clone().expect("slot stamp present");
+        assert_eq!(
+            proof.postage_proof, won_with,
+            "witness for slot {slot} must carry that slot's exact winning stamp",
+        );
+        // The precise identity the consensus rule pins: batch id and the full
+        // 8-byte stamp index, not merely the batch.
+        assert_eq!(proof.postage_proof.batch(), won_with.batch());
+        assert_eq!(
+            proof.postage_proof.stamp_index().to_be_bytes(),
+            won_with.stamp_index().to_be_bytes(),
+            "the full 8-byte stamp index must match",
+        );
+    }
+
+    // A distinct slot carries a distinct stamp, so a batch-keyed reload (which
+    // could not tell two stamps of one batch apart) would not satisfy this.
+    assert_ne!(
+        proofs.0[0].postage_proof, proofs.0[2].postage_proof,
+        "different witnessed slots must carry their own distinct stamps",
+    );
+}
+
+/// A sample slot that reaches proof time with no pinned stamp is refused, rather
+/// than papered over by re-loading a stamp by batch id.
+#[test]
+fn inclusion_proof_rejects_a_slot_without_a_stamp() {
+    use vertex_swarm_redistribution::ProofError;
+
+    let oracle = load_oracle();
+    let sample = sample_anchor(&oracle);
+    let claim = claim_anchor(&oracle);
+    let mut items = rebuild_items(&oracle, sample);
+
+    // Drop the stamp on the last slot (always witnessed).
+    let last = items.len() - 1;
+    items[last].stamp = None;
+
+    let err = make_inclusion_proofs(&items, sample, claim).expect_err("must reject");
+    assert!(
+        matches!(err, ProofError::MissingStamp(slot) if slot == last),
+        "expected MissingStamp({last}), got {err:?}",
+    );
+}
+
+/// The same content presented under two different batches is sampled **at most
+/// once**, and the committed reserve-commitment bytes are identical regardless
+/// of insertion order. Only *which batch's stamp* travels with the surviving
+/// slot is order dependent, which is consensus-safe: the chain commits the
+/// (order-invariant) `chunk_address || transformed_address` pair and binds the
+/// witnessed stamp to the chunk, not to a canonical batch. See the
+/// `reserve_sample` function note.
+#[test]
+fn same_content_multi_batch_ties_to_one_slot_with_stable_commitment() {
+    let anchor = SampleAnchor::new(B256::repeat_byte(0x5a));
+
+    // One content chunk, two distinct batches: same chunk address and (under one
+    // anchor) the same transformed address, so they tie.
+    let chunk: DefaultAnyChunk =
+        DefaultContentChunk::new(b"shared payload under two batches".to_vec())
+            .expect("cac builds")
+            .into();
+
+    let stamp_a = {
+        let batch: BatchId = B256::repeat_byte(0xa1);
+        Stamp::with_index(
+            batch,
+            StampIndex::new(1, 1),
+            1,
+            alloy_primitives::Signature::test_signature(),
+        )
+    };
+    let stamp_b = {
+        let batch: BatchId = B256::repeat_byte(0xb2);
+        Stamp::with_index(
+            batch,
+            StampIndex::new(2, 2),
+            2,
+            alloy_primitives::Signature::test_signature(),
+        )
+    };
+
+    let item_a = SampleItem::with_stamp(anchor, chunk.clone(), stamp_a.clone());
+    let item_b = SampleItem::with_stamp(anchor, chunk, stamp_b.clone());
+    assert_eq!(
+        item_a.transformed_address, item_b.transformed_address,
+        "same content under one anchor must share a transformed address",
+    );
+
+    let forward = reserve_sample(vec![item_a.clone(), item_b.clone()]);
+    let reverse = reserve_sample(vec![item_b.clone(), item_a.clone()]);
+
+    // At most once: a single slot in either order.
+    assert_eq!(forward.len(), 1, "tied content must collapse to one slot");
+    assert_eq!(reverse.len(), 1, "tied content must collapse to one slot");
+
+    // The committed bytes (chunk_address || transformed_address) are byte-
+    // identical across orders: nothing order dependent reaches the chain.
+    assert_eq!(
+        reserve_commitment_content(&forward),
+        reserve_commitment_content(&reverse),
+        "the reserve commitment must be insertion-order invariant",
+    );
+
+    // The only order-dependent quantity is which batch's stamp survives; both
+    // orders keep the last CAC seen (consensus-safe, documented as order-agnostic
+    // against bee). This pins the observed behaviour without asserting it is
+    // consensus-binding.
+    assert_eq!(
+        forward[0].stamp.as_ref().map(Stamp::batch),
+        Some(stamp_b.batch()),
+        "forward order keeps the last CAC's stamp",
+    );
+    assert_eq!(
+        reverse[0].stamp.as_ref().map(Stamp::batch),
+        Some(stamp_a.batch()),
+        "reverse order keeps the last CAC's stamp",
+    );
 }
 
 fn assert_proof(
