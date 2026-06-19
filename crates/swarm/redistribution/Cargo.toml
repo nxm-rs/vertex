@@ -14,6 +14,11 @@ workspace = true
 [dependencies]
 # vertex
 vertex-swarm-api.workspace = true
+# Canonical postage surface: the sampler filters and the inclusion-proof stamp
+# witness consume `Stamp`, `BatchId` and `PostageContext` from here, which
+# re-exports the nectar definitions verbatim, so there is one canonical copy of
+# each postage type across the workspace (never redefined).
+vertex-swarm-postage.workspace = true
 
 # swarm
 nectar-primitives.workspace = true
