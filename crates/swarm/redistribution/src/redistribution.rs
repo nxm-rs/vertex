@@ -7,21 +7,20 @@
 //! produces identical results on every participating node given identical
 //! inputs.
 //!
-//! # Consensus parity
+//! # Consensus conformance
 //!
 //! This is consensus code. The transformed addresses, the selected sample and
-//! the inclusion proofs must match Swarm's reference implementation byte for
-//! byte, because the same values are checked on chain by the
-//! `Redistribution.sol` storage-incentives contract. Any divergence makes
-//! vertex lose (or be slashed in) the redistribution round. The Go reference
-//! lives in bee's `pkg/storer/sample.go` (sampling) and
-//! `pkg/storageincentives/proof.go` (proof of entitlement); the Rust here
-//! mirrors them deliberately and is validated against bee's published vectors
-//! in `tests/`.
+//! the inclusion proofs must be byte-exact, because the same values are checked
+//! on chain by the `Redistribution.sol` storage-incentives contract. Any
+//! divergence makes vertex lose (or be slashed in) the redistribution round.
+//! The algorithm is the one fixed by the Swarm storage-incentives protocol and
+//! the contract's verification logic; the implementation here is validated
+//! against the canonical Swarm reference vectors in `tests/`.
 //!
 //! The anchor-keyed transformed address itself (the value the sample is ordered
 //! by) is a nectar primitive: [`AnyChunk::transformed_address`]. nectar owns
-//! that parity oracle, so this crate consumes it rather than re-deriving it.
+//! its conformance vectors, so this crate consumes it rather than re-deriving
+//! it.
 //!
 //! The building blocks are:
 //!
@@ -41,21 +40,21 @@ use nectar_primitives::bmt::Prover;
 use nectar_primitives::error::PrimitivesError;
 use nectar_primitives::{AnyChunk, Bin, ChunkAddress, DefaultHasher, Proof, SwarmAddress};
 
-/// Number of chunks retained in a reserve sample (the reference `SampleSize`).
+/// Number of chunks retained in a reserve sample (the protocol's `SampleSize`).
 pub const SAMPLE_SIZE: usize = 16;
 
 // =============================================================================
 // Round anchors
 // =============================================================================
 
-/// The sample-time reserve salt (the reference's `anchor1`).
+/// The sample-time reserve salt (the first round anchor).
 ///
 /// The `bytes32 currentRoundAnchor` read from `Redistribution.sol`, used as the
 /// BMT prefix that keys transformed addresses (via
 /// [`AnyChunk::transformed_address`]) and the transformed (TR) inclusion proof.
-/// Fixed-width `B256` because the on-chain anchor is always a `bytes32` (bee's
-/// `ReserveSalt` unpacks a `[32]byte`); the earlier vertex-internal `&[u8]`
-/// over-fit to the minimal-length anchors the in-tree reference *test* uses.
+/// Fixed-width `B256` because the on-chain anchor is always a `bytes32`; an
+/// earlier `&[u8]` shape over-fit to the minimal-length anchors that some test
+/// vectors use.
 ///
 /// A distinct type from [`ClaimAnchor`] so the two round salts — which play
 /// structurally different roles and must never be transposed (a swap yields
@@ -92,7 +91,7 @@ impl From<B256> for SampleAnchor {
     }
 }
 
-/// The claim-time reserve salt (the reference's `anchor2`).
+/// The claim-time reserve salt (the second round anchor).
 ///
 /// The `bytes32 currentRoundAnchor`, interpreted big-endian to select the three
 /// witness indices and the proven segment (see [`witness_indices`]). See
@@ -209,7 +208,7 @@ impl TryFrom<u8> for CommittedDepth {
 /// depth admits every address.
 ///
 /// Unlike an earlier vertex-internal implementation this does **not** impose an
-/// XOR-distance ordering: the reference never orders the neighbourhood by
+/// XOR-distance ordering: the protocol never orders the neighbourhood by
 /// distance, it streams the depth-filtered chunks and orders the *sample* by
 /// transformed address (see [`reserve_sample`]). Imposing an extra distance sort
 /// here would be dead work at best and a parity hazard at worst, so the
@@ -294,7 +293,7 @@ impl SampleItem {
 /// transformed addresses, returned in ascending transformed-address order. This
 /// is a sorted insertion that drops the largest element once the sample is full.
 ///
-/// On a transformed-address tie the reference keeps the **content-addressed**
+/// On a transformed-address tie the protocol keeps the **content-addressed**
 /// chunk (the equal-address branch replaces the incumbent only when the new item
 /// is *not* a valid SOC), so that the on-chain ordering check cannot be gamed by
 /// a single-owner chunk colliding with a CAC. We reproduce that exact tie-break.
@@ -312,8 +311,8 @@ pub fn reserve_sample(candidates: impl IntoIterator<Item = SampleItem>) -> Vec<S
     sample
 }
 
-/// Insert `item` into the running sorted sample, mirroring the reference
-/// `insert` semantics.
+/// Insert `item` into the running sorted sample, mirroring the canonical
+/// sorted-insert semantics.
 fn insert_sample_item(sample: &mut Vec<SampleItem>, item: SampleItem) {
     let key = item.transformed_address;
 
@@ -324,7 +323,7 @@ fn insert_sample_item(sample: &mut Vec<SampleItem>, item: SampleItem) {
         .position(|s| s.transformed_address.as_slice() >= key.as_slice())
     else {
         // Larger than every incumbent: append only while the sample is not yet
-        // full, mirroring the reference `len < SampleSize && !added` guard.
+        // full, mirroring the canonical append-only-while-not-full guard.
         if sample.len() < SAMPLE_SIZE {
             sample.push(item);
         }
@@ -405,21 +404,21 @@ pub struct ChunkInclusionProof {
 pub struct ChunkInclusionProofs(pub [ChunkInclusionProof; 3]);
 
 impl ChunkInclusionProofs {
-    /// The first witness proof (`require1`, the reference's `proofs.A`).
+    /// The first witness proof (`require1`).
     #[inline]
     #[must_use]
     pub fn require1(&self) -> &ChunkInclusionProof {
         &self.0[0]
     }
 
-    /// The second witness proof (`require2`, the reference's `proofs.B`).
+    /// The second witness proof (`require2`).
     #[inline]
     #[must_use]
     pub fn require2(&self) -> &ChunkInclusionProof {
         &self.0[1]
     }
 
-    /// The third witness proof (`require3`, the reference's `proofs.C`/last slot).
+    /// The third witness proof (`require3`, the last sample slot).
     #[inline]
     #[must_use]
     pub fn require3(&self) -> &ChunkInclusionProof {
@@ -549,7 +548,7 @@ pub enum ProofError {
 
 /// Build the proof of entitlement for `items` from the two round anchors.
 ///
-/// Reproduces the reference `makeInclusionProofs`. `sample` (the sample-time
+/// Builds the entitlement witness the contract verifies. `sample` (the sample-time
 /// [`SampleAnchor`]) is the BMT prefix used for the transformed addresses and
 /// the TR proofs; `claim` (the claim-time [`ClaimAnchor`]) selects the witness
 /// indices and segment via [`witness_indices`]. Their distinct types make a

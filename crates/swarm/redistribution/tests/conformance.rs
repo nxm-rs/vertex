@@ -1,29 +1,27 @@
-//! Cross-implementation parity tests against bee's published vectors.
+//! Conformance tests against the canonical Swarm reference vectors.
 //!
 //! These are consensus checks. The vertex sampler and proof of entitlement must
-//! reproduce Swarm's reference implementation (bee) byte for byte, because the
-//! same values are verified on chain by `Redistribution.sol`. The fixtures here
-//! are authoritative oracles extracted directly from bee's Go test suite:
+//! be byte-exact, because the same values are verified on chain by
+//! `Redistribution.sol`. The fixtures here are authoritative oracles for the
+//! Swarm storage-incentives protocol:
 //!
-//! - The single-CAC transformed-address vector is bee's `TestSampleVectorCAC`
-//!   (`pkg/storer/sample_test.go`), anchor `swarm-test-anchor-deterministic!`.
-//! - `fixtures/bee_inclusion_proofs.json` is generated from bee's deterministic
-//!   `TestMakeInclusionProofsRegression` scenario (`pkg/storageincentives`,
-//!   anchor1 = 100, anchor2 = 30): the 16 sorted sample items (chunk address,
-//!   transformed address, full chunk data, type) and the three inclusion proofs
-//!   (`proof1`/`proof2`/`proofLast`), captured via an oracle extractor run
-//!   against the live bee tree.
+//! - The single-CAC transformed-address vector uses the deterministic anchor
+//!   `swarm-test-anchor-deterministic!` over a 4 KiB pattern chunk.
+//! - `fixtures/inclusion_proofs.json` captures a deterministic regression
+//!   scenario (`anchor1 = 100`, `anchor2 = 30`): the 16 sorted sample items
+//!   (chunk address, transformed address, full chunk data, type) and the three
+//!   inclusion proofs (`proof1`/`proof2`/`proofLast`).
 //!
 //! The anchor-keyed transformed address itself is a nectar primitive
-//! ([`AnyChunk::transformed_address`]); nectar owns its parity oracle. These
-//! tests exercise the *redistribution* layer on top of it: sampling, the
+//! ([`AnyChunk::transformed_address`]); nectar owns its conformance vectors.
+//! These tests exercise the *redistribution* layer on top of it: sampling, the
 //! reserve-commitment chunk, the witness indices and the inclusion proofs.
 
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    reason = "parity test over fixed-shape bee oracle fixtures"
+    reason = "conformance test over fixed-shape reference oracle fixtures"
 )]
 
 use alloy_primitives::{B256, hex};
@@ -39,16 +37,16 @@ use nectar_primitives::{
     SwarmAddress,
 };
 
-// --- bee TestSampleVectorCAC -------------------------------------------------
+// --- single-CAC transformed-address vector -----------------------------------
 
 const ANCHOR_CAC: &[u8] = b"swarm-test-anchor-deterministic!";
 const WANT_CHUNK_ADDR: &str = "902406053a7a2f3a17f16097e1d0b4b6a4abeae6b84968f5503ae621f9522e16";
 const WANT_TRANSFORMED: &str = "9dee91d1ed794460474ffc942996bd713176731db4581a3c6470fe9862905a60";
 
-/// Reproduce bee's published single-CAC chunk-address and transformed-address
+/// Reproduce the canonical single-CAC chunk-address and transformed-address
 /// vector. The chunk content is 4096 bytes of the repeating pattern `i % 256`.
 #[test]
-fn cac_transformed_address_matches_bee_vector() {
+fn cac_transformed_address_matches_reference_vector() {
     let mut content = vec![0u8; 4096];
     for (i, b) in content.iter_mut().enumerate() {
         *b = (i % 256) as u8;
@@ -58,7 +56,7 @@ fn cac_transformed_address_matches_bee_vector() {
     assert_eq!(
         hex::encode(chunk.address().as_slice()),
         WANT_CHUNK_ADDR,
-        "chunk address must match bee's published vector",
+        "chunk address must match the reference vector",
     );
 
     let any: DefaultAnyChunk = chunk.into();
@@ -66,11 +64,11 @@ fn cac_transformed_address_matches_bee_vector() {
     assert_eq!(
         hex::encode(tr.as_slice()),
         WANT_TRANSFORMED,
-        "transformed address must match bee's published vector",
+        "transformed address must match the reference vector",
     );
 }
 
-// --- bee TestMakeInclusionProofsRegression -----------------------------------
+// --- inclusion-proof regression vector ---------------------------------------
 
 #[derive(Deserialize)]
 struct OracleItem {
@@ -119,7 +117,7 @@ struct Oracle {
 }
 
 fn load_oracle() -> Oracle {
-    let raw = include_str!("fixtures/bee_inclusion_proofs.json");
+    let raw = include_str!("fixtures/inclusion_proofs.json");
     serde_json::from_str(raw).expect("oracle JSON must parse")
 }
 
@@ -156,7 +154,7 @@ fn parse_chunk(it: &OracleItem) -> DefaultAnyChunk {
 
 /// Rebuild every sample item from the oracle (typed chunk + transformed address),
 /// asserting the parsed chunk address and the recomputed transformed address
-/// both match bee.
+/// both match the reference.
 fn rebuild_items(oracle: &Oracle, sample: SampleAnchor) -> Vec<SampleItem> {
     oracle
         .items
@@ -166,14 +164,14 @@ fn rebuild_items(oracle: &Oracle, sample: SampleAnchor) -> Vec<SampleItem> {
             assert_eq!(
                 hex::encode(chunk.address().as_slice()),
                 it.chunk_address.trim_start_matches("0x"),
-                "parsed chunk address must match bee",
+                "parsed chunk address must match the reference",
             );
 
             let item = SampleItem::new(sample, chunk);
             assert_eq!(
                 hex::encode(item.transformed_address.as_slice()),
                 it.transformed_address.trim_start_matches("0x"),
-                "recomputed transformed address must match bee for {}",
+                "recomputed transformed address must match the reference for {}",
                 it.chunk_address,
             );
             item
@@ -182,7 +180,7 @@ fn rebuild_items(oracle: &Oracle, sample: SampleAnchor) -> Vec<SampleItem> {
 }
 
 #[test]
-fn transformed_addresses_match_bee_for_all_sample_items() {
+fn transformed_addresses_match_reference_for_all_sample_items() {
     let oracle = load_oracle();
     let sample = sample_anchor(&oracle);
     let items = rebuild_items(&oracle, sample);
@@ -191,24 +189,24 @@ fn transformed_addresses_match_bee_for_all_sample_items() {
 }
 
 #[test]
-fn reserve_sample_reproduces_bee_sorted_order() {
+fn reserve_sample_reproduces_reference_sorted_order() {
     let oracle = load_oracle();
     let sample = sample_anchor(&oracle);
     let items = rebuild_items(&oracle, sample);
 
-    // bee's sample is already the sorted 16; feeding it (in any order) to
-    // reserve_sample must reproduce the exact same ordering.
+    // The reference sample is already the sorted 16; feeding it (in any order)
+    // to reserve_sample must reproduce the exact same ordering.
     let mut shuffled = items.clone();
     shuffled.reverse();
     let got = reserve_sample(shuffled);
 
     let want: Vec<_> = items.iter().map(|i| i.transformed_address).collect();
     let got_addrs: Vec<_> = got.iter().map(|i| i.transformed_address).collect();
-    assert_eq!(got_addrs, want, "sample order must match bee");
+    assert_eq!(got_addrs, want, "sample order must match the reference");
 }
 
 #[test]
-fn reserve_commitment_chunk_address_matches_bee() {
+fn reserve_commitment_chunk_address_matches_reference() {
     let oracle = load_oracle();
     let sample = sample_anchor(&oracle);
     let items = rebuild_items(&oracle, sample);
@@ -224,12 +222,12 @@ fn reserve_commitment_chunk_address_matches_bee() {
     assert_eq!(
         hex::encode(addr.as_slice()),
         oracle.sample_chunk_address.trim_start_matches("0x"),
-        "reserve-commitment (sample) chunk address must match bee",
+        "reserve-commitment (sample) chunk address must match the reference",
     );
 }
 
 #[test]
-fn witness_indices_match_bee() {
+fn witness_indices_match_reference() {
     let oracle = load_oracle();
     let claim = claim_anchor(&oracle);
     let idx = witness_indices(claim);
@@ -239,10 +237,10 @@ fn witness_indices_match_bee() {
     assert_eq!(idx.segment_index, oracle.segment_index);
 }
 
-/// The headline parity check: every proof segment, prove segment and chunk span
-/// of the proof of entitlement must equal bee's, byte for byte.
+/// The headline conformance check: every proof segment, prove segment and chunk
+/// span of the proof of entitlement must equal the reference, byte for byte.
 #[test]
-fn inclusion_proofs_match_bee_byte_for_byte() {
+fn inclusion_proofs_match_reference_byte_for_byte() {
     let oracle = load_oracle();
     let sample = sample_anchor(&oracle);
     let claim = claim_anchor(&oracle);
@@ -287,8 +285,8 @@ fn assert_proof(
     );
     assert_eq!(got.chunk_span, want.chunk_span, "{label}: chunk span");
 
-    // TR (anchor-prefixed) BMT segment proof: proofSegments3. bee proves the
-    // same segment content as OG, so the proven segment must agree too.
+    // TR (anchor-prefixed) BMT segment proof: proofSegments3. The protocol proves
+    // the same segment content as OG, so the proven segment must agree too.
     assert_eq!(
         got.tr_proof.segment,
         h(&want.prove_segment2),
