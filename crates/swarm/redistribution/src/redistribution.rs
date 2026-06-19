@@ -65,12 +65,21 @@ pub struct SampleAnchor(B256);
 
 impl SampleAnchor {
     /// Wrap the on-chain sample-time anchor (`bytes32`).
+    #[inline]
     #[must_use]
     pub const fn new(anchor: B256) -> Self {
         Self(anchor)
     }
 
+    /// The salt as a fixed-width `bytes32`.
+    #[inline]
+    #[must_use]
+    pub const fn get(self) -> B256 {
+        self.0
+    }
+
     /// The raw salt bytes, threaded untouched into the hashing primitives.
+    #[inline]
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         self.0.as_slice()
@@ -93,12 +102,21 @@ pub struct ClaimAnchor(B256);
 
 impl ClaimAnchor {
     /// Wrap the on-chain claim-time anchor (`bytes32`).
+    #[inline]
     #[must_use]
     pub const fn new(anchor: B256) -> Self {
         Self(anchor)
     }
 
+    /// The salt as a fixed-width `bytes32`.
+    #[inline]
+    #[must_use]
+    pub const fn get(self) -> B256 {
+        self.0
+    }
+
     /// The raw salt bytes.
+    #[inline]
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         self.0.as_slice()
@@ -127,7 +145,7 @@ impl From<B256> for ClaimAnchor {
 /// `u8 >= u8` compare either way; the separate type keeps the roles from being
 /// conflated.
 ///
-/// [nd]: vertex_swarm_primitives::NeighborhoodDepth
+/// [nd]: vertex_swarm_api::NeighborhoodDepth
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CommittedDepth(Bin);
 
@@ -136,18 +154,21 @@ impl CommittedDepth {
     pub const ZERO: Self = Self(Bin::ZERO);
 
     /// Wrap a [`Bin`] as a committed depth.
+    #[inline]
     #[must_use]
     pub const fn new(bin: Bin) -> Self {
         Self(bin)
     }
 
     /// The boundary as a [`Bin`].
+    #[inline]
     #[must_use]
     pub const fn bin(self) -> Bin {
         self.0
     }
 
     /// The raw boundary index. For edges only (logs, metrics, the wire).
+    #[inline]
     #[must_use]
     pub const fn get(self) -> u8 {
         self.0.get()
@@ -157,6 +178,7 @@ impl CommittedDepth {
     ///
     /// O(1): a single `u8` comparison, no iteration or allocation despite the
     /// set-like name.
+    #[inline]
     #[must_use]
     pub fn contains(self, bin: Bin) -> bool {
         bin >= self.0
@@ -169,6 +191,9 @@ impl fmt::Display for CommittedDepth {
     }
 }
 
+/// The sole `u8` ingress for a committed depth: the on-chain boundary as read
+/// from the redistribution contract. Fallible because a raw `u8` may exceed the
+/// [`Bin`] range (`> MAX_PO`); the in-range cases are exactly the valid depths.
 impl TryFrom<u8> for CommittedDepth {
     type Error = nectar_primitives::BinError;
 
@@ -380,6 +405,27 @@ pub struct ChunkInclusionProof {
 pub struct ChunkInclusionProofs(pub [ChunkInclusionProof; 3]);
 
 impl ChunkInclusionProofs {
+    /// The first witness proof (`require1`, the reference's `proofs.A`).
+    #[inline]
+    #[must_use]
+    pub fn require1(&self) -> &ChunkInclusionProof {
+        &self.0[0]
+    }
+
+    /// The second witness proof (`require2`, the reference's `proofs.B`).
+    #[inline]
+    #[must_use]
+    pub fn require2(&self) -> &ChunkInclusionProof {
+        &self.0[1]
+    }
+
+    /// The third witness proof (`require3`, the reference's `proofs.C`/last slot).
+    #[inline]
+    #[must_use]
+    pub fn require3(&self) -> &ChunkInclusionProof {
+        &self.0[2]
+    }
+
     /// Iterate the three witness proofs in `require1`/`require2`/`require3` order.
     pub fn iter(&self) -> core::slice::Iter<'_, ChunkInclusionProof> {
         self.0.iter()
@@ -548,6 +594,12 @@ pub fn make_inclusion_proofs(
     let rc_hash = rc_body.hasher(None);
 
     let witness = |require: usize| -> Result<ChunkInclusionProof, ProofError> {
+        // `require` is one of `witness_indices`' outputs, all `< SAMPLE_SIZE`, and
+        // `items.len() == SAMPLE_SIZE` is enforced above, so this lookup never
+        // misses. The fallible form keeps the hot path index-safe (no panic, no
+        // `#[allow(indexing_slicing)]`); the `ok_or` arm is unreachable by
+        // construction rather than a real `SampleSize` failure.
+        debug_assert!(require < items.len(), "witness index out of sample bounds");
         let item = items
             .get(require)
             .ok_or(ProofError::SampleSize(items.len()))?;
