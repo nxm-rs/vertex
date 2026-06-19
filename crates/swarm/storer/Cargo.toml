@@ -20,6 +20,9 @@ vertex-metrics.workspace = true
 vertex-storage = { workspace = true, features = ["nectar"] }
 vertex-swarm-primitives.workspace = true
 vertex-swarm-api.workspace = true
+# The per-entry reserve routes put through the postage admission validator and
+# stamp-index arbiter (newest-wins), and loads batches via the BatchStore.
+vertex-swarm-postage.workspace = true
 
 ## async
 async-trait.workspace = true
@@ -40,10 +43,14 @@ tracing.workspace = true
 
 [dev-dependencies]
 alloy-primitives.workspace = true
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
 nectar-postage.workspace = true
+nectar-primitives = { workspace = true, features = ["serde"] }
 tempfile = "3"
 tokio = { workspace = true, features = ["rt", "macros"] }
 vertex-storage-redb.workspace = true
+vertex-swarm-postage.workspace = true
 vertex-swarm-test-utils.workspace = true
 
 [features]
