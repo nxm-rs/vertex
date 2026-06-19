@@ -9300,6 +9300,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "nectar-postage",
+ "nectar-primitives",
  "serde",
  "tempfile",
  "thiserror 2.0.18",
