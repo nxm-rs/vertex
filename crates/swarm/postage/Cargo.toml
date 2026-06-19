@@ -1,0 +1,36 @@
+[package]
+name = "vertex-swarm-postage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Postage batch store and event ingest seam for the vertex Swarm node"
+
+[lints]
+workspace = true
+
+[dependencies]
+## nectar (re-exported public surface; do not redefine these types)
+# The `serde` feature is required so `Batch` satisfies the vertex-storage
+# `Value` bound (Serialize + DeserializeOwned) for the `Batches` table.
+nectar-postage = { workspace = true, features = ["serde"] }
+
+## vertex
+# The `alloy` feature provides the fixed-size codec for `Address`; `BatchId`
+# (a `B256`) is encoded by a local newtype codec in this crate.
+vertex-storage = { workspace = true, features = ["alloy"] }
+
+## misc
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+alloy-primitives.workspace = true
+tempfile = "3"
+vertex-storage-redb.workspace = true
+
+[features]
+default = ["std"]
+std = []
