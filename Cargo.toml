@@ -92,6 +92,9 @@ members = [
     # Storer (chunk storage and staking)
     "crates/swarm/storer",
 
+    # Postage (batch store + on-chain event ingest seam)
+    "crates/swarm/postage",
+
     # RPC
     "crates/rpc/core",
     "crates/rpc/server",
@@ -133,6 +136,9 @@ indexing_slicing = "warn"
 ## nectar
 # Track nectar via a single shared git source so the workspace resolves one
 # copy of shared nectar types; Cargo.lock pins the exact commit.
+#
+# Tracks nectar `main`, which now carries the synchronous
+# BatchStore/StoreValidator/SnapshotStore conversion (nectar #103).
 nectar-contracts = { git = "https://github.com/nxm-rs/nectar", branch = "main" }
 nectar-postage = { git = "https://github.com/nxm-rs/nectar", branch = "main" }
 nectar-primitives = { git = "https://github.com/nxm-rs/nectar", branch = "main" }
@@ -232,6 +238,9 @@ vertex-swarm-redistribution = { path = "crates/swarm/redistribution" }
 
 # storer (chunk storage and staking)
 vertex-swarm-storer = { path = "crates/swarm/storer" }
+
+# postage (batch store + on-chain event ingest seam)
+vertex-swarm-postage = { path = "crates/swarm/postage" }
 
 # rpc
 vertex-rpc-core = { path = "crates/rpc/core" }
