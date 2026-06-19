@@ -9316,6 +9316,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer-local",
  "clap 4.6.1",
+ "codspeed-criterion-compat",
  "nectar-primitives",
  "serde",
  "serde_json",

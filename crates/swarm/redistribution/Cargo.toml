@@ -30,3 +30,8 @@ serde = { workspace = true, features = ["derive"] }
 [dev-dependencies]
 serde_json.workspace = true
 alloy-signer-local.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "redistribution"
+harness = false
