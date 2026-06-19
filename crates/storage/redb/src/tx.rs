@@ -257,6 +257,17 @@ impl RedbReadTx {
 
 impl DbTx for RedbReadTx {
     impl_db_tx_reads!();
+
+    /// Open a held read cursor over table `T`.
+    ///
+    /// Delegates to the inherent [`RedbReadTx::cursor`] and erases the concrete
+    /// [`RedbCursorRO`] behind the trait's boxed [`DbCursorRO`]. The cursor owns
+    /// its read snapshot, so the box is `Send` and outlives this transaction.
+    fn cursor<T: Table>(
+        &self,
+    ) -> Result<Box<dyn vertex_storage::DbCursorRO<T> + Send>, DatabaseError> {
+        Ok(Box::new(RedbReadTx::cursor::<T>(self)?))
+    }
 }
 
 impl Drop for RedbReadTx {

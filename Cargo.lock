@@ -9374,11 +9374,14 @@ dependencies = [
 name = "vertex-swarm-storer"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "async-trait",
  "hashlink 0.10.0",
  "metrics",
+ "nectar-postage",
  "nectar-primitives",
  "parking_lot",
+ "serde",
  "strum 0.28.0",
  "tempfile",
  "thiserror 2.0.18",
