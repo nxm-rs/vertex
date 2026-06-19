@@ -14,7 +14,7 @@ pub use self::bandwidth::{
 pub use self::localstore::{SwarmLocalStore, SwarmLocalStoreConfig};
 pub use self::peers::SwarmPeerResolver;
 pub use self::pricing::{SwarmPricing, SwarmPricingBuilder, SwarmPricingConfig};
-pub use self::reserve::{BinCursorStore, BinScanItem, ReserveStore};
+pub use self::reserve::{BinCursorStore, BinScanItem, ReserveStore, SettableRadius};
 pub use self::topology::{
     SwarmTopology, SwarmTopologyBins, SwarmTopologyCommands, SwarmTopologyPeers,
     SwarmTopologyReporting, SwarmTopologyRouting, SwarmTopologyState, SwarmTopologyStats,
