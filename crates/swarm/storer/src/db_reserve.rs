@@ -1,49 +1,83 @@
-//! Persisting, proximity-ordered reserve over the vertex-storage `Database`.
+//! Per-stamped-entry, proximity-ordered reserve over the vertex-storage
+//! `Database`.
 //!
-//! [`DbReserve`] is the storer's authoritative reserve: an always-stamped chunk
-//! store that adds the proximity axis ([`ReserveStore`]) and the per-bin
-//! insertion-order axis ([`BinCursorStore`]) on top of point access
-//! ([`SwarmLocalStore`]). It owns a [`DbChunkStore`] for the chunk values, a
-//! [`Reserve`] for the capacity counter and the local overlay, and five
-//! hand-maintained secondary tables:
+//! [`DbReserve`] is the storer's authoritative reserve: a bee-faithful,
+//! per-stamped-entry chunk store. It is the reworked successor of the original
+//! address-keyed / first-stamp-wins reserve, rebuilt around the consensus
+//! invariant that the reserve's *size* counts distinct *stamped entries*
+//! (distinct `(batchID, stampIndex, address)`), not distinct content addresses.
 //!
-//! - [`BinCounter`]: `Bin -> u64`, a per-bin monotonically increasing insertion
-//!   sequence (the bin cursor). Never rewound on eviction, so sequences are
-//!   never reused (sync resumability).
-//! - [`BinSeqIndex`]: `(Bin, u64) -> BinSeqEntry`, the insertion-order index
-//!   that maps each assigned sequence to a flat projection of the chunk that
-//!   landed there (address, batch id, stamp hash) so an insertion-order replay
-//!   ([`scan_bin_from`](BinCursorStore::scan_bin_from)) needs no per-row chunk
+//! # Why per-entry, not per-address
+//!
+//! On Swarm a single content chunk can be stored under several postage batches
+//! at once, and a slot within a batch can be *re-stamped* (a newer stamp for the
+//! same `(batchID, stampIndex)` supersedes the older one). The redistribution
+//! game samples *stamped entries*, the reserve size that drives the storage
+//! radius counts *stamped entries*, and an inclusion proof must carry the
+//! *precise* stamp a sample slot was won with. An address-keyed, first-stamp-wins
+//! store cannot represent any of that. This reserve therefore keys its primary
+//! rows by the full stamped-entry identity and shares the (large) chunk payload
+//! by reference count so partial eviction of one batch's entry never drops a
+//! payload another batch's entry still needs.
+//!
+//! # The six tables
+//!
+//! All compound keys are big-endian so the byte order of the encoded key is the
+//! `(field, field, ...)` lexicographic order; the orderings are pinned by tests.
+//! Every mutation writes (or compacts) all the affected rows inside one
+//! `db.update` transaction, so a stamped entry and its index rows commit
+//! atomically and a removal never leaves a dangling row (no tombstones).
+//!
+//! - [`Payload`]: `addr -> (refcnt, typed_bytes)`. The refcounted,
+//!   content-addressed chunk body (the type-tagged [`AnyChunk`] bytes, *without*
+//!   a stamp, since stamps differ per entry). Present iff at least one stamped
+//!   entry references the address; the refcount is the number of such entries.
+//!   A second batch storing the same content bumps the refcount and rewrites no
+//!   payload; evicting one of several entries decrements it and keeps the body.
+//! - [`Entry`]: `(po, batch, stampHash, addr) -> EntryValue { binid, stamp }`.
+//!   One row per stamped entry; the reserve size is this table's count. The
+//!   value carries the bin sequence the entry landed at (for [`Replay`]
+//!   compaction) and the precise stamp the entry was admitted with (so
+//!   [`get`](SwarmLocalStore::get) can hand back the chunk with a real stamp and
+//!   an inclusion proof can carry exactly that stamp).
+//! - [`BatchGroup`]: `(batch, po, addr, stampHash) -> ()`. Groups every entry by
+//!   batch (then bin, then address), so a whole batch or a batch's shallow bins
+//!   can be evicted with one prefix cursor scan.
+//! - [`Replay`]: `(bin, binid) -> ReplayValue { addr, batch, stampHash,
+//!   chunk_type }`. The append-only per-bin insertion-order index a
+//!   redistribution/sync consumer replays without rehydrating the chunk body.
+//!   `chunk_type` lets the sampler resolve the CAC-beats-SOC tie without a body
 //!   read.
-//! - [`ProximityIndex`]: `(po: u8, addr: ChunkAddress) -> ()`, the
-//!   proximity-ordered index that makes per-bin counting
-//!   ([`count_in`](ReserveStore::count_in)), furthest-chunk eviction
-//!   ([`evict_furthest`](ReserveStore::evict_furthest)) and bin-atomic eviction
-//!   ([`evict_from_bin`](ReserveStore::evict_from_bin)) O(log n) cursor moves.
-//! - [`AddrIndex`]: `ChunkAddress -> BinSeqKey`, the reverse lookup from an
-//!   address to its `(bin, seq)` so a removal can compact the insertion-order
-//!   row (no tombstones, bounded growth).
-//! - [`BatchIndex`]: `(batch_id, bin, addr) -> ()`, grouping every chunk by its
-//!   postage batch (then bin, then address) so a whole batch, or a batch's
-//!   shallow bins, can be evicted ([`evict_batch`](ReserveStore::evict_batch))
-//!   with a single prefix cursor scan.
+//! - [`BinCounter`]: `bin -> u64`. The per-bin monotonically increasing
+//!   insertion sequence (the bin cursor). Never rewound on eviction, so
+//!   sequences are never reused (sync resumability).
+//! - [`StampIndexTable`]: `(batch, stampIndex_be8) -> (timestamp, stampHash,
+//!   addr)`. The newest-timestamp-wins arbiter slot, keyed by the *full*
+//!   `(batchID, 8-byte stampIndex)`. Reused verbatim from the postage crate
+//!   (PR-C); the reserve performs the arbitration *inside* its own put
+//!   transaction with [`postage::decide`] so admission and the six-table write
+//!   commit together.
 //!
-//! All secondaries are maintained *by hand* inside the same `db.update`
-//! transaction that writes (or removes/evicts) the chunk value, so a chunk and
-//! all its index entries commit atomically and a removal never leaves a dangling
-//! index row. This is deliberately not the generic
-//! [`SecondaryIndex`](vertex_storage::SecondaryIndex)/`put_indexed` machinery:
-//! the per-bin sequence is derived from prior state (the current cursor), not
-//! extracted from the value, so it cannot be expressed as a stateless
-//! extraction.
+//! # Put, restamp, and second-batch coexistence
 //!
-//! # Cursor-backed reads (#396)
+//! [`put`](SwarmLocalStore::put) first validates the stamp on ingest through the
+//! stateless [`AdmissionValidator`] (the nectar batch checks plus a per-stamp
+//! ecrecover against the batch owner), then, in one transaction:
 //!
-//! The reserve's range reads ride the lazy read-only cursor that #396 landed
-//! ([`DbTx::cursor`](vertex_storage::DbTx::cursor)): the cursor owns its read
-//! snapshot, so a `scan_bin_from` iterator built from it outlives the call that
-//! opened it. `count_in` and `evict_furthest` walk only the relevant prefix of
-//! the proximity index, never the whole chunk table.
+//! - arbitrates the stamp against its `(batch, stampIndex)` slot
+//!   ([`postage::decide`], newest-wins, equal-or-older rejects);
+//! - on a *restamp* (the slot held an older stamp) deletes the four rows of the
+//!   displaced entry (`Entry`, `BatchGroup`, `Replay`, and the slot occupant is
+//!   overwritten) and decrements/compacts its payload, then writes the four new
+//!   rows for the incoming entry;
+//! - on a *new slot* writes the four rows and, if the same content already had a
+//!   payload (a second batch storing it), bumps the refcount instead of
+//!   rewriting the body.
+//!
+//! Eviction (`evict_furthest` / `evict_from_bin` / `evict_batch`) operates on
+//! *entries*: it removes an entry's four index rows, the stamp-index slot it
+//! owns, and decrements the shared payload, dropping the body only when the last
+//! entry referencing it goes.
 
 use std::sync::Arc;
 
@@ -58,57 +92,76 @@ use vertex_storage::{
 use vertex_swarm_api::{
     BinCursorStore, BinScanItem, ReserveStore, SwarmError, SwarmLocalStore, SwarmResult,
 };
+use vertex_swarm_postage::{
+    AdmissionValidator, Arbitration, BatchStore, IncomingStamp, PostageContext, StampIndexTable,
+    StampSlotKey, decide,
+};
 use vertex_swarm_primitives::{BatchId, CachedChunk, OverlayAddress, StampedChunk, StorageRadius};
 
-use crate::db_store::ChunkTable;
-use crate::{ChunkStore, DbChunkStore, EvictionStrategy, Reserve, StorerError};
+use crate::{EvictionStrategy, Reserve, StorerError};
 
-// Per-bin insertion cursor table: `Bin -> u64`.
+// -------------------------------------------------------------------------
+// Tables (the six-table per-stamped-entry schema).
+// -------------------------------------------------------------------------
+
+// Refcounted content payload: `addr -> (refcnt, typed_bytes)`.
 //
-// Holds the highest sequence number assigned in each bin so far. A point read
-// gives the bin cursor; the next insertion writes `cursor + 1`.
+// One row per distinct *address* (not per entry). The body is the type-tagged
+// `AnyChunk` encoding, shared by every stamped entry of that content; the
+// refcount is the number of live entries referencing it. Present iff refcnt >=
+// 1. Uncompressed: chunk bodies are arbitrary/encrypted, so compression costs
+// CPU without saving space.
+table!(pub(crate) Payload, "reserve_payload", ChunkAddress, PayloadValue, compressed = false);
+
+// Per-stamped-entry primary index: `(po, batch, stampHash, addr) -> EntryValue`.
+//
+// One row per stamped entry; the reserve size is the count of this table. Keyed
+// proximity-major so the furthest entry (smallest po) is the table's first key
+// and a proximity-bin's entries are contiguous. The value carries the bin
+// sequence (to address the matching `Replay` row on removal) and the precise
+// stamp (so `get` and inclusion proofs use the exact admitting stamp).
+table!(pub(crate) Entry, "reserve_entry", EntryKey, EntryValue, compressed = false);
+
+// Batch grouping: `(batch, po, addr, stampHash) -> ()`.
+//
+// One row per stamped entry, batch-major then bin then address, so a prefix
+// cursor over a batch yields its entries bin-ascending for batch eviction.
+table!(pub(crate) BatchGroup, "reserve_batch_group", BatchGroupKey, (), compressed = false);
+
+// Insertion-order replay: `(bin, binid) -> ReplayValue`.
+//
+// The append-only per-bin index a redistribution/sync consumer replays. Keyed
+// `(bin, binid)` big-endian so a bin's rows are contiguous and ascending by
+// sequence. The value projects what a consumer needs without a body read.
+table!(pub(crate) Replay, "reserve_replay", ReplayKey, ReplayValue, compressed = false);
+
+// Per-bin insertion cursor: `bin -> u64`.
+//
+// The highest sequence assigned in each bin so far; the next insertion writes
+// `cursor + 1`. Never rewound on eviction (monotonic, sequences never reused).
 table!(pub(crate) BinCounter, "reserve_bin_counter", BinKey, u64, compressed = false);
 
-// Per-bin insertion-order index: `(Bin, u64) -> BinSeqEntry`.
+// Stamp-index arbiter slot: `(batch, stampIndex_be8) -> (timestamp, stampHash,
+// addr)`.
 //
-// Maps each assigned `(bin, seq)` to a flat projection of the chunk that landed
-// at that sequence (address + batch id + stamp hash), so a consumer can replay
-// a bin in insertion order without rehydrating the chunk body. Uncompressed:
-// the value is a small fixed record.
-table!(pub(crate) BinSeqIndex, "reserve_bin_seq_index", BinSeqKey, BinSeqEntry, compressed = false);
+// This is *the* postage stamp-index table. The reserve does not re-invoke
+// `table!` to declare a second type-level handle to the same physical table
+// (which would be free to drift in name or value codec and silently
+// desynchronise the on-disk slot): it imports the single `StampIndexTable`
+// handle the postage crate (PR-C) owns and re-exports. The name and the
+// `(key, value)` codec binding therefore live in exactly one place. The reserve
+// only changes *when* it is written: rather than calling `DbStampIndexArbiter`,
+// it runs the same `decide` arbitration *inside* its own atomic put transaction
+// so admission and the six-table write commit together.
 
-// Proximity-ordered index: `(po: u8, addr: ChunkAddress) -> ()`.
-//
-// One row per stored chunk, keyed by proximity order to the local overlay
-// (most-significant byte) then address. Byte order therefore groups all chunks
-// of a proximity bin contiguously and ascending, so a cursor can count a bin's
-// population (`count_in`) or find the globally furthest chunk (`first()`, the
-// smallest po) in O(log n). Uncompressed: the value is the unit `()`.
-table!(pub(crate) ProximityIndex, "reserve_proximity_index", ProxKey, (), compressed = false);
+// -------------------------------------------------------------------------
+// Key newtypes and value records.
+// -------------------------------------------------------------------------
 
-// Reverse lookup: `ChunkAddress -> (Bin, u64)`.
-//
-// Maps a stored chunk's address back to the `(bin, seq)` it was assigned, so a
-// removal/eviction can delete the matching `BinSeqIndex` row without scanning
-// the bin. Without it `remove` could not compact the insertion-order index and
-// `scan_bin_from` would surface evicted chunks. `BinSeqKey` is the value here
-// (its `serde` derive serves the postcard value codec). Uncompressed.
-table!(pub(crate) AddrIndex, "reserve_addr_index", ChunkAddress, BinSeqKey, compressed = false);
-
-// Batch-grouped index: `(batch_id, bin, addr) -> ()`.
-//
-// One row per stored chunk, keyed by postage batch then proximity bin then
-// address. Byte order groups every chunk of a batch contiguously (and within a
-// batch, by bin), so a prefix cursor scan finds a whole batch (for an expired
-// batch) or a batch's shallow bins (as the radius grows) for eviction. The unit
-// value keeps the row minimal. Uncompressed.
-table!(pub(crate) BatchIndex, "reserve_batch_index", BatchProxKey, (), compressed = false);
-
-/// Newtype key wrapping a [`Bin`] for the [`BinCounter`] table.
+/// Newtype key wrapping a [`Bin`] for [`BinCounter`].
 ///
-/// [`Bin`] is a foreign (nectar) type, so the vertex-storage [`Encode`]/
-/// [`Decode`] codecs cannot be implemented for it directly (orphan rule). This
-/// local newtype carries the single-byte big-endian encoding.
+/// [`Bin`] is a foreign (nectar) type, so the vertex-storage codecs cannot be
+/// implemented for it directly (orphan rule). Carries the single-byte encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) struct BinKey(pub u8);
 
@@ -133,240 +186,278 @@ impl Decode for BinKey {
     }
 }
 
-/// Compound key `(Bin, u64)` for the [`BinSeqIndex`] table.
+/// The refcounted content payload value: `(refcnt, typed_bytes)`.
 ///
-/// Hand-rolled big-endian encoding (`[bin: 1][seq: 8]`) so the byte order of
-/// the encoded key matches the `(bin, seq)` lexicographic order: all entries
-/// for a bin are contiguous and ascending by sequence, which is exactly the
-/// order the cursor scan ([`scan_bin_from`](BinCursorStore::scan_bin_from))
-/// walks. The newtype is required because both halves (and the tuple) are types
-/// the local [`Encode`]/[`Decode`] codecs are not otherwise implemented for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub(crate) struct BinSeqKey {
-    bin: u8,
-    seq: u64,
-}
-
-impl BinSeqKey {
-    fn new(bin: Bin, seq: u64) -> Self {
-        Self {
-            bin: bin.get(),
-            seq,
-        }
-    }
-}
-
-impl Encode for BinSeqKey {
-    type Encoded = [u8; 9];
-
-    fn encode(self) -> Self::Encoded {
-        let mut out = [0u8; 9];
-        out[0] = self.bin;
-        out[1..].copy_from_slice(&self.seq.to_be_bytes());
-        out
-    }
-}
-
-impl Decode for BinSeqKey {
-    fn decode(value: &[u8]) -> Result<Self, DatabaseError> {
-        let bytes: [u8; 9] = value.try_into().map_err(|_| DatabaseError::Decode)?;
-        let mut seq = [0u8; 8];
-        seq.copy_from_slice(&bytes[1..]);
-        Ok(Self {
-            bin: bytes[0],
-            seq: u64::from_be_bytes(seq),
-        })
-    }
-}
-
-/// Flat per-bin index value: the projection of a stored chunk that a
-/// redistribution/sync consumer needs without rehydrating the chunk body.
-///
-/// Stored as the [`BinSeqIndex`] value (choice (a) of the rework: widen the
-/// index value so the insertion-order scan is a single cursor walk with no
-/// per-row chunk reads). Serialized via the value codec (postcard), not the key
-/// [`Encode`]/[`Decode`] path, so a plain `serde` derive suffices.
+/// `typed_bytes` is the type-tagged [`AnyChunk`] encoding (no stamp), shared by
+/// every stamped entry of the content. `refcnt` is the number of live entries
+/// referencing it; the row is deleted when it reaches zero.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct BinSeqEntry {
-    /// The chunk's address.
-    address: ChunkAddress,
-    /// The postage batch the chunk was stamped under.
-    batch_id: BatchId,
-    /// A hash identifying the exact stamp version that admitted the chunk.
-    stamp_hash: B256,
+pub(crate) struct PayloadValue {
+    /// Number of live stamped entries referencing this content.
+    refcnt: u64,
+    /// The type-tagged chunk body, shared across all referencing entries.
+    typed_bytes: Vec<u8>,
 }
 
-/// Compound key `(po: u8, addr: ChunkAddress)` for the [`ProximityIndex`] table.
+/// Compound key `(po, batch, stampHash, addr)` for [`Entry`].
 ///
-/// Hand-rolled big-endian encoding (`[po: 1][addr: 32]`) so byte order matches
-/// `(po, addr)` lexicographic order: every chunk at a given proximity order is
-/// contiguous, and the global minimum proximity order (the furthest chunk from
-/// the overlay) is the table's first key. The newtype is required because the
-/// tuple of `u8` and the foreign [`ChunkAddress`] has no local codec.
+/// Big-endian `[po: 1][batch: 32][stampHash: 32][addr: 32]` (97 bytes): the byte
+/// order is proximity-major, so the globally furthest entry (smallest po) is the
+/// table's first key and a proximity bin's entries are contiguous.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub(crate) struct ProxKey {
+pub(crate) struct EntryKey {
     po: u8,
+    batch: BatchId,
+    stamp_hash: B256,
     addr: ChunkAddress,
 }
 
-impl ProxKey {
-    fn new(po: u8, addr: ChunkAddress) -> Self {
-        Self { po, addr }
-    }
-}
-
-impl Encode for ProxKey {
-    type Encoded = [u8; 33];
-
-    fn encode(self) -> Self::Encoded {
-        let mut out = [0u8; 33];
-        out[0] = self.po;
-        out[1..].copy_from_slice(self.addr.as_slice());
-        out
-    }
-}
-
-impl Decode for ProxKey {
-    fn decode(value: &[u8]) -> Result<Self, DatabaseError> {
-        let bytes: [u8; 33] = value.try_into().map_err(|_| DatabaseError::Decode)?;
-        let addr: [u8; 32] = bytes[1..].try_into().map_err(|_| DatabaseError::Decode)?;
-        Ok(Self {
-            po: bytes[0],
-            addr: ChunkAddress::from(addr),
-        })
-    }
-}
-
-/// Compound key `(batch_id, bin, addr)` for the [`BatchIndex`] table.
-///
-/// Hand-rolled big-endian encoding (`[batch_id: 32][bin: 1][addr: 32]`, 65
-/// bytes) so the byte order matches `(batch_id, bin, addr)` lexicographic order:
-/// every chunk of a batch is contiguous, grouped by bin then address. A prefix
-/// cursor scan over a batch id yields that batch's chunks bin-ascending, which is
-/// exactly what batch eviction walks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub(crate) struct BatchProxKey {
-    batch_id: BatchId,
-    bin: u8,
-    addr: ChunkAddress,
-}
-
-impl BatchProxKey {
-    fn new(batch_id: BatchId, bin: u8, addr: ChunkAddress) -> Self {
+impl EntryKey {
+    fn new(po: u8, batch: BatchId, stamp_hash: B256, addr: ChunkAddress) -> Self {
         Self {
-            batch_id,
-            bin,
+            po,
+            batch,
+            stamp_hash,
             addr,
         }
     }
 }
 
-impl Encode for BatchProxKey {
-    type Encoded = [u8; 65];
+impl Encode for EntryKey {
+    type Encoded = [u8; 97];
 
     fn encode(self) -> Self::Encoded {
-        let mut out = [0u8; 65];
-        out[..32].copy_from_slice(self.batch_id.as_slice());
-        out[32] = self.bin;
-        out[33..].copy_from_slice(self.addr.as_slice());
+        let mut out = [0u8; 97];
+        out[0] = self.po;
+        out[1..33].copy_from_slice(self.batch.as_slice());
+        out[33..65].copy_from_slice(self.stamp_hash.as_slice());
+        out[65..].copy_from_slice(self.addr.as_slice());
         out
     }
 }
 
-impl Decode for BatchProxKey {
+impl Decode for EntryKey {
     fn decode(value: &[u8]) -> Result<Self, DatabaseError> {
-        let bytes: [u8; 65] = value.try_into().map_err(|_| DatabaseError::Decode)?;
-        let batch: [u8; 32] = bytes[..32].try_into().map_err(|_| DatabaseError::Decode)?;
-        let addr: [u8; 32] = bytes[33..].try_into().map_err(|_| DatabaseError::Decode)?;
+        let bytes: [u8; 97] = value.try_into().map_err(|_| DatabaseError::Decode)?;
+        let batch: [u8; 32] = bytes[1..33].try_into().map_err(|_| DatabaseError::Decode)?;
+        let hash: [u8; 32] = bytes[33..65]
+            .try_into()
+            .map_err(|_| DatabaseError::Decode)?;
+        let addr: [u8; 32] = bytes[65..].try_into().map_err(|_| DatabaseError::Decode)?;
         Ok(Self {
-            batch_id: BatchId::from(batch),
-            bin: bytes[32],
+            po: bytes[0],
+            batch: BatchId::from(batch),
+            stamp_hash: B256::from(hash),
             addr: ChunkAddress::from(addr),
         })
     }
 }
 
-/// A stable hash of the exact stamp version that admitted a chunk.
+/// The per-entry value: the bin sequence the entry landed at, plus the precise
+/// stamp the entry was admitted with (canonical 113-byte encoding).
+///
+/// The stamp is stored *per entry*, not in the shared payload, because distinct
+/// entries of the same content carry distinct stamps. Holding the exact stamp
+/// lets [`get`](SwarmLocalStore::get) reconstruct a stamped chunk and lets a
+/// later inclusion proof carry the precise stamp the slot was won with, rather
+/// than re-loading one by batch id alone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct EntryValue {
+    /// The bin and sequence this entry occupies in [`Replay`].
+    bin: u8,
+    binid: u64,
+    /// The exact admitting stamp, canonical 113-byte encoding.
+    stamp_bytes: Vec<u8>,
+}
+
+/// Compound key `(batch, po, addr, stampHash)` for [`BatchGroup`].
+///
+/// Big-endian `[batch: 32][po: 1][addr: 32][stampHash: 32]` (97 bytes): grouped
+/// by batch then bin then address, so a batch's entries are a contiguous prefix
+/// ascending by bin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(crate) struct BatchGroupKey {
+    batch: BatchId,
+    po: u8,
+    addr: ChunkAddress,
+    stamp_hash: B256,
+}
+
+impl BatchGroupKey {
+    fn new(batch: BatchId, po: u8, addr: ChunkAddress, stamp_hash: B256) -> Self {
+        Self {
+            batch,
+            po,
+            addr,
+            stamp_hash,
+        }
+    }
+}
+
+impl Encode for BatchGroupKey {
+    type Encoded = [u8; 97];
+
+    fn encode(self) -> Self::Encoded {
+        let mut out = [0u8; 97];
+        out[..32].copy_from_slice(self.batch.as_slice());
+        out[32] = self.po;
+        out[33..65].copy_from_slice(self.addr.as_slice());
+        out[65..].copy_from_slice(self.stamp_hash.as_slice());
+        out
+    }
+}
+
+impl Decode for BatchGroupKey {
+    fn decode(value: &[u8]) -> Result<Self, DatabaseError> {
+        let bytes: [u8; 97] = value.try_into().map_err(|_| DatabaseError::Decode)?;
+        let batch: [u8; 32] = bytes[..32].try_into().map_err(|_| DatabaseError::Decode)?;
+        let addr: [u8; 32] = bytes[33..65]
+            .try_into()
+            .map_err(|_| DatabaseError::Decode)?;
+        let hash: [u8; 32] = bytes[65..].try_into().map_err(|_| DatabaseError::Decode)?;
+        Ok(Self {
+            batch: BatchId::from(batch),
+            po: bytes[32],
+            addr: ChunkAddress::from(addr),
+            stamp_hash: B256::from(hash),
+        })
+    }
+}
+
+/// Compound key `(bin, binid)` for [`Replay`].
+///
+/// Big-endian `[bin: 1][binid: 8]` so a bin's rows are contiguous and ascending
+/// by sequence, exactly the order [`scan_bin_from`](BinCursorStore::scan_bin_from)
+/// walks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(crate) struct ReplayKey {
+    bin: u8,
+    binid: u64,
+}
+
+impl ReplayKey {
+    fn new(bin: u8, binid: u64) -> Self {
+        Self { bin, binid }
+    }
+}
+
+impl Encode for ReplayKey {
+    type Encoded = [u8; 9];
+
+    fn encode(self) -> Self::Encoded {
+        let mut out = [0u8; 9];
+        out[0] = self.bin;
+        out[1..].copy_from_slice(&self.binid.to_be_bytes());
+        out
+    }
+}
+
+impl Decode for ReplayKey {
+    fn decode(value: &[u8]) -> Result<Self, DatabaseError> {
+        let bytes: [u8; 9] = value.try_into().map_err(|_| DatabaseError::Decode)?;
+        let mut id = [0u8; 8];
+        id.copy_from_slice(&bytes[1..]);
+        Ok(Self {
+            bin: bytes[0],
+            binid: u64::from_be_bytes(id),
+        })
+    }
+}
+
+/// The insertion-order replay value: a flat projection of the stamped entry that
+/// landed at a `(bin, binid)`, including the chunk type so a sampler resolves the
+/// CAC-beats-SOC tie without a body read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ReplayValue {
+    address: ChunkAddress,
+    batch_id: BatchId,
+    stamp_hash: B256,
+    /// The chunk type id ([`ChunkTypeId::as_u8`]): 0 = content, 1 = single-owner.
+    chunk_type: u8,
+}
+
+/// A stable hash of the exact stamp version that admitted an entry.
 ///
 /// Keccak over the stamp's canonical 113-byte serialization, so a re-stamp of
-/// the same chunk under a different batch/index/timestamp yields a different
-/// hash. A consumer compares this to detect a re-stamp without fetching the
-/// chunk value.
+/// the same content under a different batch/index/timestamp yields a different
+/// hash. The stamp-entry identity is `(batchID, stampIndex, address)`, but the
+/// stamp hash is a compact, collision-resistant stand-in carried in the index
+/// rows and is what a consumer compares to detect a re-stamp.
 fn stamp_hash(stamp: &Stamp) -> B256 {
     keccak256(stamp.to_bytes())
 }
 
-/// Persisting, proximity-ordered, always-stamped reserve.
+/// Persisting, proximity-ordered, per-stamped-entry reserve.
 ///
-/// Owns the chunk store, the capacity/eviction [`Reserve`], and the secondary
-/// tables. Constructed from a shared database handle, the local identity (for
-/// the overlay), a capacity, an eviction strategy, and a starting storage
-/// radius. Implements the PR-3 storage lattice:
-/// [`SwarmLocalStore`] (point access) -> [`ReserveStore`] (proximity axis) ->
-/// [`BinCursorStore`] (insertion-order axis).
-pub struct DbReserve<DB: Database> {
-    /// Shared database handle. Held directly so the chunk value and the
-    /// secondary tables can be written in a single transaction; the owned
-    /// [`DbChunkStore`] serves point reads, deletes, and counts.
+/// Owns a shared database handle (so the payload and all index rows commit in
+/// one transaction), an [`AdmissionValidator`] (validate-on-ingest), a
+/// [`BatchStore`] (to load the batch a stamp references for validation), the
+/// capacity/eviction [`Reserve`] counter, the local overlay and the storage
+/// radius. Implements the storage lattice [`SwarmLocalStore`] ->
+/// [`ReserveStore`] -> [`BinCursorStore`].
+pub struct DbReserve<DB: Database, BS: BatchStore> {
+    /// Shared database handle: the payload and every secondary row are written
+    /// in one transaction per operation.
     db: Arc<DB>,
-    /// Chunk value store (`ChunkAddress -> typed stamped bytes`).
-    store: DbChunkStore<DB>,
-    /// Capacity counter and (legacy) eviction policy; see [`Reserve`].
+    /// Validate-on-ingest admission for stamped chunks (PR-A).
+    admission: AdmissionValidator,
+    /// The batch store the admission path reads to load a stamp's batch.
+    batches: BS,
+    /// Confirmation context cache is the validator's; the batch store provides
+    /// the live [`PostageContext`] on each put.
+    /// Capacity counter; see [`Reserve`]. The authoritative size is the [`Entry`]
+    /// table count, but the in-memory counter is kept in step for cheap reads.
     reserve: Reserve,
-    /// Local overlay address, resolved once from the identity at construction.
-    /// Held directly (it is `Copy`) so the proximity/bin computations on the hot
-    /// path never round-trip through an `Option`.
+    /// Local overlay address, resolved once at construction.
     overlay: OverlayAddress,
     /// Current storage-responsibility radius.
     radius: StorageRadius,
 }
 
-impl<DB: Database> DbReserve<DB> {
-    /// Construct a reserve over a shared database.
+impl<DB: Database, BS: BatchStore> DbReserve<DB, BS> {
+    /// Construct a per-entry reserve over a shared database.
     ///
-    /// Threads the identity through [`Reserve::with_identity`] so proximity-
-    /// ranked eviction has the local overlay, ensures all secondary tables
-    /// exist, and initialises the in-memory count from the persisted chunk
-    /// table.
+    /// Ensures all six tables exist, threads the identity through [`Reserve`] for
+    /// the overlay, and initialises the in-memory size from the persisted
+    /// [`Entry`] table (per-entry count, not per-address).
     pub fn new(
         db: Arc<DB>,
         identity: &impl vertex_swarm_api::SwarmIdentity,
+        batches: BS,
+        admission: AdmissionValidator,
         capacity: u64,
         strategy: EvictionStrategy,
         radius: StorageRadius,
     ) -> Result<Self, StorerError> {
-        // DbChunkStore::new ensures the chunk table; add the secondaries.
-        let store = DbChunkStore::new(Arc::clone(&db))?;
         db.update(|tx| {
+            tx.ensure_table(Payload::NAME)?;
+            tx.ensure_table(Entry::NAME)?;
+            tx.ensure_table(BatchGroup::NAME)?;
+            tx.ensure_table(Replay::NAME)?;
             tx.ensure_table(BinCounter::NAME)?;
-            tx.ensure_table(BinSeqIndex::NAME)?;
-            tx.ensure_table(ProximityIndex::NAME)?;
-            tx.ensure_table(AddrIndex::NAME)?;
-            tx.ensure_table(BatchIndex::NAME)?;
+            tx.ensure_table(StampIndexTable::NAME)?;
             Ok(())
         })?;
 
         let overlay = identity.overlay_address();
         let reserve = Reserve::with_strategy(capacity, strategy).with_identity(identity);
-        reserve.initialize_from(&store)?;
+        // Per-entry size: initialise from the Entry table count.
+        let size = db.view(|tx| tx.count::<Entry>())? as u64;
+        reserve.set_count(size);
 
         Ok(Self {
             db,
-            store,
+            admission,
+            batches,
             reserve,
             overlay,
             radius,
         })
     }
 
-    /// The local overlay address (resolved from the identity at construction).
+    /// The local overlay address.
     fn overlay(&self) -> OverlayAddress {
         self.overlay
-    }
-
-    /// The bin a chunk address falls into relative to the local overlay.
-    fn bin_of(&self, address: &ChunkAddress) -> Bin {
-        address.bin(&self.overlay)
     }
 
     /// The proximity order of a chunk address relative to the local overlay.
@@ -374,13 +465,14 @@ impl<DB: Database> DbReserve<DB> {
         address.proximity(&self.overlay).get()
     }
 
-    /// Delete every target address (chunk value plus all secondary index rows)
-    /// in a single atomic transaction, returning the number actually removed.
-    ///
-    /// Shared by [`evict_from_bin`](ReserveStore::evict_from_bin) and
-    /// [`evict_batch`](ReserveStore::evict_batch): the targets are pre-collected
-    /// by a read cursor, so this compacts them as a unit (bin-/batch-atomic).
-    fn evict_targets(&self, targets: &[ChunkAddress]) -> SwarmResult<u64> {
+    /// The bin a chunk address falls into relative to the local overlay.
+    fn bin_of(&self, address: &ChunkAddress) -> Bin {
+        address.bin(&self.overlay)
+    }
+
+    /// Evict a pre-collected set of stamped entries in one atomic transaction,
+    /// returning the number removed. Shared by the eviction verbs.
+    fn evict_entries(&self, targets: &[EvictTarget]) -> SwarmResult<u64> {
         if targets.is_empty() {
             return Ok(0);
         }
@@ -389,8 +481,8 @@ impl<DB: Database> DbReserve<DB> {
             .db
             .update(|tx| {
                 let mut n = 0u64;
-                for addr in targets {
-                    if delete_in_tx(tx, &overlay, *addr)? {
+                for t in targets {
+                    if delete_entry_in_tx(tx, &overlay, t)? {
                         n += 1;
                     }
                 }
@@ -402,7 +494,48 @@ impl<DB: Database> DbReserve<DB> {
     }
 }
 
-impl<DB: Database> SwarmLocalStore for DbReserve<DB> {
+/// The batch-store reads on the synchronous `put` path. These map the typed
+/// [`BatchStore::Error`] straight into [`SwarmError::storage`], which preserves
+/// it as the diagnostic source; that conversion needs the error to be
+/// `Send + Sync + 'static`, so it is the only bound this seam adds (on the
+/// associated error, never on the store itself).
+impl<DB: Database, BS: BatchStore> DbReserve<DB, BS>
+where
+    BS::Error: Send + Sync + 'static,
+{
+    /// Load the batch a stamp references, returning `None` if unknown.
+    ///
+    /// [`BatchStore`] is synchronous, so the read is a direct call on the
+    /// `put` path with no executor or bridge.
+    fn load_batch(&self, batch_id: &BatchId) -> SwarmResult<Option<nectar_postage::Batch>> {
+        self.batches.get(batch_id).map_err(SwarmError::storage)
+    }
+
+    /// The current postage context from the batch store.
+    fn context(&self) -> SwarmResult<PostageContext> {
+        self.batches.context().map_err(SwarmError::storage)
+    }
+}
+
+/// The identity of one stamped entry to evict: its batch, stamp hash and address.
+#[derive(Debug, Clone, Copy)]
+struct EvictTarget {
+    batch: BatchId,
+    stamp_hash: B256,
+    addr: ChunkAddress,
+}
+
+// The storage lattice (`SwarmLocalStore: Send + Sync`) requires the store to be
+// shareable across the node's async tasks, so the lattice impls keep the
+// `BS: Send + Sync` bound. This is the lattice's own threading contract, not the
+// async-trait colouring the sync-core change removed: `BatchStore` is now
+// synchronous, but `DbReserve` is still held behind a shared handle and read
+// from several tasks. The `BS::Error` bound is what lets the typed batch-store
+// error map into `SwarmError::storage` on the `put` path.
+impl<DB: Database, BS: BatchStore + Send + Sync> SwarmLocalStore for DbReserve<DB, BS>
+where
+    BS::Error: Send + Sync + 'static,
+{
     fn put(&self, chunk: CachedChunk) -> SwarmResult<()> {
         // The reserve is always stamped: a stampless put is invalid.
         let address = *chunk.address();
@@ -412,108 +545,253 @@ impl<DB: Database> SwarmLocalStore for DbReserve<DB> {
             reason: "reserve put requires a stamp; a stampless put is invalid".into(),
         })?;
 
-        // Project the per-bin index value before the stamp is moved into the
-        // stored value: address + batch + a stable hash of this exact stamp.
-        let entry = BinSeqEntry {
-            address,
-            batch_id: stamp.batch(),
-            stamp_hash: stamp_hash(&stamp),
-        };
+        // --- validate-on-ingest (PR-A) --------------------------------------
+        // Load the batch and validate the stamp before any write. A stamp for an
+        // unknown batch, or one that fails structural/signature checks, is
+        // rejected and nothing is written.
+        let batch = self
+            .load_batch(&stamp.batch())?
+            .ok_or_else(|| SwarmError::InvalidChunk {
+                address: Some(address),
+                reason: format!("stamp references unknown batch {}", stamp.batch()),
+            })?;
+        let context = self.context()?;
+        self.admission
+            .validate(&stamp, &address, &batch, &context)
+            .map_err(|e| SwarmError::InvalidChunk {
+                address: Some(address),
+                reason: format!("stamp failed admission: {e}"),
+            })?;
 
-        // Encode the value with nectar's reserve codec (stamp + typed chunk).
-        let value = StampedChunk::new(any, stamp).to_typed_bytes();
-        let bin = self.bin_of(&address);
+        // Project the per-entry data.
+        let hash = stamp_hash(&stamp);
         let po = self.po_of(&address);
+        let bin = self.bin_of(&address);
+        let chunk_type = any.type_id().as_u8();
+        let stamp_bytes = stamp.to_bytes().to_vec();
+        let typed_bytes = any.to_typed_bytes();
+        let slot = StampSlotKey::new(stamp.batch(), stamp.stamp_index());
+        let incoming = IncomingStamp::new(
+            stamp.batch(),
+            stamp.stamp_index(),
+            stamp.timestamp().to_be_bytes(),
+            hash,
+            address,
+        );
 
-        // Write the chunk value, bump the per-bin cursor, and insert the
-        // insertion-order and proximity index entries in one transaction so all
-        // commit atomically. Content-addressed: a chunk already present is left
-        // untouched and does not consume a new sequence.
-        let inserted = self
+        // --- arbitrate + write, atomically ----------------------------------
+        let outcome = self
             .db
             .update(|tx| {
-                // Content-addressed: a chunk already present is left untouched and
-                // does not consume a new sequence.
-                if !chunk_absent(tx, address)? {
-                    return Ok(false);
-                }
-                tx.put::<ChunkTable>(address, value.clone())?;
+                // Newest-wins arbitration against the full (batch, stampIndex)
+                // slot, evaluated inside this transaction so the slot cannot
+                // change between the read and the conditional write.
+                let stored = tx.get::<StampIndexTable>(slot)?;
+                match decide(stored.as_ref(), &incoming) {
+                    Arbitration::Reject { .. } => Ok(PutOutcome::Rejected),
+                    Arbitration::Admit { displaced } => {
+                        // Restamp: the slot held an older stamp for this slot.
+                        // Delete the four rows of the displaced entry and
+                        // decrement its payload before writing the new entry.
+                        if let Some(d) = displaced {
+                            let target = EvictTarget {
+                                batch: incoming.batch_id,
+                                stamp_hash: d.stamp_hash,
+                                addr: d.address,
+                            };
+                            // A restamp may re-point the slot at a DIFFERENT
+                            // content address, whose proximity order (and hence
+                            // po-major Entry/BatchGroup key) differs from the
+                            // incoming chunk's `po`. Delete the displaced rows
+                            // using the displaced address's own proximity, never
+                            // the incoming chunk's, or the lookup misses and the
+                            // displaced rows are orphaned with a leaked refcount.
+                            let displaced_po = self.po_of(&d.address);
+                            let removed = delete_entry_rows_in_tx(tx, displaced_po, &target)?;
+                            // The slot occupant is overwritten below; do not
+                            // touch BinCounter (monotonic).
+                            let _ = removed;
+                        }
 
-                let next = tx.get::<BinCounter>(BinKey::from_bin(bin))?.unwrap_or(0) + 1;
-                let seq_key = BinSeqKey::new(bin, next);
-                tx.put::<BinCounter>(BinKey::from_bin(bin), next)?;
-                tx.put::<BinSeqIndex>(seq_key, entry.clone())?;
-                tx.put::<ProximityIndex>(ProxKey::new(po, address), ())?;
-                // Reverse lookup (for compaction on remove) and batch grouping
-                // (for batch eviction), committed in the same tx.
-                tx.put::<AddrIndex>(address, seq_key)?;
-                tx.put::<BatchIndex>(BatchProxKey::new(entry.batch_id, bin.get(), address), ())?;
-                Ok(true)
+                        // Assign the next bin sequence and write Replay.
+                        let next = tx.get::<BinCounter>(BinKey::from_bin(bin))?.unwrap_or(0) + 1;
+                        tx.put::<BinCounter>(BinKey::from_bin(bin), next)?;
+                        tx.put::<Replay>(
+                            ReplayKey::new(bin.get(), next),
+                            ReplayValue {
+                                address,
+                                batch_id: incoming.batch_id,
+                                stamp_hash: hash,
+                                chunk_type,
+                            },
+                        )?;
+
+                        // Entry + BatchGroup.
+                        tx.put::<Entry>(
+                            EntryKey::new(po, incoming.batch_id, hash, address),
+                            EntryValue {
+                                bin: bin.get(),
+                                binid: next,
+                                stamp_bytes: stamp_bytes.clone(),
+                            },
+                        )?;
+                        tx.put::<BatchGroup>(
+                            BatchGroupKey::new(incoming.batch_id, po, address, hash),
+                            (),
+                        )?;
+
+                        // Refcounted payload: bump if present, else write body.
+                        bump_or_insert_payload(tx, address, &typed_bytes)?;
+
+                        // Update the arbiter slot to the incoming stamp.
+                        tx.put::<StampIndexTable>(slot, incoming.entry())?;
+
+                        Ok(if displaced.is_some() {
+                            PutOutcome::Restamped
+                        } else {
+                            PutOutcome::Admitted
+                        })
+                    }
+                }
             })
             .map_err(storage_err)?;
 
-        if inserted {
-            self.reserve.on_added();
+        match outcome {
+            // A new entry: size grows by one. A restamp displaced one entry and
+            // added one, so the size is unchanged. A reject writes nothing.
+            PutOutcome::Admitted => self.reserve.on_added(),
+            PutOutcome::Restamped | PutOutcome::Rejected => {}
         }
         Ok(())
     }
 
     fn get(&self, address: &ChunkAddress) -> SwarmResult<Option<CachedChunk>> {
-        let bytes = self.store.get(address).map_err(storage_err)?;
-        match bytes {
-            None => Ok(None),
-            Some(bytes) => {
-                let stamped = StampedChunk::from_typed_bytes(address, &bytes).map_err(|e| {
-                    SwarmError::InvalidChunk {
-                        address: Some(*address),
-                        reason: format!("stored reserve value failed to decode: {e}"),
+        // Return the chunk with its NEWEST valid stamp. The content body lives in
+        // the refcounted payload; the stamps live per entry. The newest stamp is
+        // the one with the greatest timestamp among this address's entries. (A
+        // chunk under N batches has up to N entries here; document: get resolves
+        // the single newest. Per-entry/per-stamp access is via the bin scan.)
+        let result = self.db.view(|tx| {
+            let Some(payload) = tx.get::<Payload>(*address)? else {
+                return Ok(None);
+            };
+            // Find the newest stamp across this address's entries by scanning the
+            // proximity-keyed Entry table is O(n); instead read entries grouped
+            // by address is not directly keyed, so walk this address's entries by
+            // probing every (po) is unnecessary: the address pins the po, so the
+            // entries for an address share one po prefix and differ by (batch,
+            // stampHash). Walk that contiguous sub-range.
+            let po = address.proximity(&self.overlay).get();
+            let mut cursor = tx.cursor::<Entry>()?;
+            let mut best: Option<(u64, Vec<u8>)> = None;
+            let mut row = cursor.seek(EntryKey::new(
+                po,
+                BatchId::ZERO,
+                B256::ZERO,
+                ChunkAddress::from([0u8; 32]),
+            ))?;
+            while let Some((key, value)) = row {
+                if key.po != po {
+                    break;
+                }
+                if key.addr == *address {
+                    let ts = stamp_timestamp(&value.stamp_bytes);
+                    if best.as_ref().is_none_or(|(b, _)| ts > *b) {
+                        best = Some((ts, value.stamp_bytes.clone()));
                     }
-                })?;
-                // The reserve is always stamped, so the cached value carries the
-                // stamp (`CachedChunk::from` sets `Some(stamp)`).
-                Ok(Some(CachedChunk::from(stamped)))
+                }
+                row = cursor.next()?;
             }
-        }
+            Ok(Some((payload.typed_bytes, best)))
+        });
+
+        let (typed_bytes, best) = match result.map_err(storage_err)? {
+            None => return Ok(None),
+            Some(v) => v,
+        };
+        let Some((_, stamp_bytes)) = best else {
+            // Payload present but no entry: should not happen (refcount
+            // invariant), treat as absent.
+            return Ok(None);
+        };
+        let stamp = decode_stamp(&stamp_bytes).map_err(|e| SwarmError::InvalidChunk {
+            address: Some(*address),
+            reason: format!("stored entry stamp failed to decode: {e}"),
+        })?;
+        // Recombine the shared body with the newest stamp and decode.
+        let stamped = StampedChunk::new(decode_body(address, &typed_bytes)?, stamp);
+        Ok(Some(CachedChunk::from(stamped)))
     }
 
     fn contains(&self, address: &ChunkAddress) -> bool {
-        // Mirror the cache's infallible signature: a backend error is treated
-        // as "not present" (the caller re-fetches), matching the SwarmLocalStore
-        // contract that `contains` cannot fail.
-        self.store.contains(address).unwrap_or(false)
+        // Present iff a payload row exists (refcount >= 1). A backend error is
+        // treated as "not present" per the infallible contract.
+        self.db
+            .view(|tx| Ok(tx.get::<Payload>(*address)?.is_some()))
+            .unwrap_or(false)
     }
 
     fn remove(&self, address: &ChunkAddress) -> SwarmResult<()> {
-        // Delete the chunk value and EVERY secondary index row (proximity,
-        // insertion-order via the reverse lookup, batch grouping) in one
-        // transaction, so a removed chunk leaves no dangling index entry and the
-        // insertion-order scan stays tombstone-free. The BinCounter is not
-        // rewound: sequences are monotonic and never reused (sync resumability).
-        let overlay = self.overlay;
-        let removed = self
-            .db
-            .update(|tx| delete_in_tx(tx, &overlay, *address))
-            .map_err(storage_err)?;
-        if removed {
-            self.reserve.on_removed();
-        }
+        // Remove EVERY stamped entry for the address (and the shared payload).
+        // Collect the entries first (read cursor), then delete in one tx.
+        let targets = self.entries_for_address(address)?;
+        let _ = self.evict_entries(&targets)?;
         Ok(())
     }
 }
 
-impl<DB: Database> ReserveStore for DbReserve<DB> {
+impl<DB: Database, BS: BatchStore> DbReserve<DB, BS> {
+    /// Collect every stamped entry for an address (its `(batch, stampHash)`
+    /// pairs), for a full removal. The address pins the proximity order, so the
+    /// entries are a contiguous sub-range of the `po` prefix.
+    fn entries_for_address(&self, address: &ChunkAddress) -> SwarmResult<Vec<EvictTarget>> {
+        let po = self.po_of(address);
+        let mut targets = Vec::new();
+        let tx = self.db.tx().map_err(storage_err)?;
+        let mut cursor = tx.cursor::<Entry>().map_err(storage_err)?;
+        let mut row = cursor
+            .seek(EntryKey::new(
+                po,
+                BatchId::ZERO,
+                B256::ZERO,
+                ChunkAddress::from([0u8; 32]),
+            ))
+            .map_err(storage_err)?;
+        while let Some((key, _)) = row {
+            if key.po != po {
+                break;
+            }
+            if key.addr == *address {
+                targets.push(EvictTarget {
+                    batch: key.batch,
+                    stamp_hash: key.stamp_hash,
+                    addr: key.addr,
+                });
+            }
+            row = cursor.next().map_err(storage_err)?;
+        }
+        Ok(targets)
+    }
+}
+
+impl<DB: Database, BS: BatchStore + Send + Sync> ReserveStore for DbReserve<DB, BS>
+where
+    BS::Error: Send + Sync + 'static,
+{
     fn storage_radius(&self) -> StorageRadius {
         self.radius
     }
 
     fn is_responsible_for(&self, address: &ChunkAddress) -> bool {
-        // Responsible when the chunk's proximity to the local overlay is at or
-        // beyond the radius (nectar proximity is the leading matching-bit count).
         address.proximity(&self.overlay()).get() >= self.radius.get()
     }
 
     fn count(&self) -> SwarmResult<u64> {
-        self.store.count().map_err(storage_err)
+        // Per-entry size: the Entry table count.
+        Ok(self
+            .db
+            .view(|tx| tx.count::<Entry>())
+            .map_err(storage_err)? as u64)
     }
 
     fn capacity(&self) -> u64 {
@@ -521,129 +799,146 @@ impl<DB: Database> ReserveStore for DbReserve<DB> {
     }
 
     fn count_in(&self, po: ProximityOrder) -> SwarmResult<u64> {
-        // Cursor range over the proximity index `(po, *)` prefix: seek to the
-        // first key at or after `(po, 0..0)` and walk forward while the key's
-        // proximity order stays equal, counting lazily. O(log n + matches), not
-        // a full table walk.
+        // Cursor range over the Entry `(po, ...)` prefix: every entry at this
+        // proximity order is contiguous (po is the leading key byte), so seek to
+        // the first key at this po and count forward while po stays equal.
         let target = po.get();
         let tx = self.db.tx().map_err(storage_err)?;
-        let mut cursor = tx.cursor::<ProximityIndex>().map_err(storage_err)?;
-
+        let mut cursor = tx.cursor::<Entry>().map_err(storage_err)?;
         let mut count = 0u64;
-        let mut entry = cursor
-            .seek(ProxKey::new(target, ChunkAddress::from([0u8; 32])))
+        let mut row = cursor
+            .seek(EntryKey::new(
+                target,
+                BatchId::ZERO,
+                B256::ZERO,
+                ChunkAddress::from([0u8; 32]),
+            ))
             .map_err(storage_err)?;
-        while let Some((ProxKey { po: row_po, .. }, ())) = entry {
-            if row_po != target {
+        while let Some((key, _)) = row {
+            if key.po != target {
                 break;
             }
             count += 1;
-            entry = cursor.next().map_err(storage_err)?;
+            row = cursor.next().map_err(storage_err)?;
         }
         Ok(count)
     }
 
     fn evict_furthest(&self) -> SwarmResult<Option<ChunkAddress>> {
-        // The furthest chunk from the overlay is the one with the SMALLEST
-        // proximity order (higher po = closer). The proximity index is keyed
-        // `[po][addr]` big-endian, so `first()` is exactly that chunk in
-        // O(log n) — no table walk. Bulk shedding goes through evict_from_bin /
-        // evict_batch (whole-group, single atomic tx); this is the point form.
-        let furthest = {
+        // The furthest entry is the one with the smallest proximity order; the
+        // Entry table is keyed `[po][...]`, so `first()` is that entry in
+        // O(log n). Eviction is per-entry: a single furthest stamped entry goes.
+        let target = {
             let tx = self.db.tx().map_err(storage_err)?;
-            let mut cursor = tx.cursor::<ProximityIndex>().map_err(storage_err)?;
+            let mut cursor = tx.cursor::<Entry>().map_err(storage_err)?;
             cursor
                 .first()
                 .map_err(storage_err)?
-                .map(|(ProxKey { addr, .. }, ())| addr)
+                .map(|(key, _)| EvictTarget {
+                    batch: key.batch,
+                    stamp_hash: key.stamp_hash,
+                    addr: key.addr,
+                })
         };
 
-        if let Some(addr) = furthest {
-            debug!(%addr, "evicting furthest chunk from reserve");
-            // remove() compacts the chunk value and every secondary index row in
-            // one tx and adjusts the count.
-            self.remove(&addr)?;
+        if let Some(t) = target {
+            debug!(addr = %t.addr, "evicting furthest stamped entry from reserve");
+            self.evict_entries(&[t])?;
+            Ok(Some(t.addr))
+        } else {
+            Ok(None)
         }
-        Ok(furthest)
     }
 
     fn evict_from_bin(&self, bin: Bin, max: u64) -> SwarmResult<u64> {
         if max == 0 {
             return Ok(0);
         }
-        // Collect up to `max` addresses in this proximity bin via a read cursor
-        // over the `[po][addr]` index (the bin's rows are contiguous), then
-        // delete them all in one atomic write tx.
-        let target = bin.get();
-        let mut targets: Vec<ChunkAddress> = Vec::new();
+        // Collect up to `max` entries in this proximity bin via the Entry `[po]`
+        // prefix, then delete them in one atomic tx. The Entry table is keyed by
+        // proximity-order-to-overlay; for the reserve a `Bin` *is* that proximity
+        // order (see `ReserveStore`), so cross the boundary explicitly here rather
+        // than punning the byte.
+        let target = po_of_reserve_bin(bin);
+        let mut targets: Vec<EvictTarget> = Vec::new();
         {
             let tx = self.db.tx().map_err(storage_err)?;
-            let mut cursor = tx.cursor::<ProximityIndex>().map_err(storage_err)?;
-            let mut entry = cursor
-                .seek(ProxKey::new(target, ChunkAddress::from([0u8; 32])))
+            let mut cursor = tx.cursor::<Entry>().map_err(storage_err)?;
+            let mut row = cursor
+                .seek(EntryKey::new(
+                    target,
+                    BatchId::ZERO,
+                    B256::ZERO,
+                    ChunkAddress::from([0u8; 32]),
+                ))
                 .map_err(storage_err)?;
-            while let Some((ProxKey { po, addr }, ())) = entry {
-                if po != target {
+            while let Some((key, _)) = row {
+                if key.po != target {
                     break;
                 }
-                targets.push(addr);
+                targets.push(EvictTarget {
+                    batch: key.batch,
+                    stamp_hash: key.stamp_hash,
+                    addr: key.addr,
+                });
                 if targets.len() as u64 >= max {
                     break;
                 }
-                entry = cursor.next().map_err(storage_err)?;
+                row = cursor.next().map_err(storage_err)?;
             }
         }
-        self.evict_targets(&targets)
+        self.evict_entries(&targets)
     }
 
     fn evict_batch(&self, batch: BatchId, up_to_bin: Option<Bin>, max: u64) -> SwarmResult<u64> {
         if max == 0 {
             return Ok(0);
         }
-        // Collect up to `max` of the batch's addresses via a prefix cursor over
-        // the `[batch][bin][addr]` index. Rows are grouped by batch then bin, so
-        // a `Some(b)` bound (bins strictly shallower than `b`) is a contiguous
-        // front slice: stop as soon as `bin >= b`. Then delete in one atomic tx.
-        let bound = up_to_bin.map(Bin::get);
-        let mut targets: Vec<ChunkAddress> = Vec::new();
+        // Collect up to `max` of the batch's entries via the BatchGroup
+        // `[batch][po][addr][stampHash]` prefix. A `Some(b)` bound (bins strictly
+        // shallower than `b`) is a contiguous front slice: stop as soon as po >=
+        // b. Then delete in one atomic tx. The bound is a reserve `Bin`, i.e. a
+        // proximity-order-to-overlay; cross to the keyed proximity order explicitly.
+        let bound = up_to_bin.map(po_of_reserve_bin);
+        let mut targets: Vec<EvictTarget> = Vec::new();
         {
             let tx = self.db.tx().map_err(storage_err)?;
-            let mut cursor = tx.cursor::<BatchIndex>().map_err(storage_err)?;
-            let mut entry = cursor
-                .seek(BatchProxKey::new(batch, 0, ChunkAddress::from([0u8; 32])))
+            let mut cursor = tx.cursor::<BatchGroup>().map_err(storage_err)?;
+            let mut row = cursor
+                .seek(BatchGroupKey::new(
+                    batch,
+                    0,
+                    ChunkAddress::from([0u8; 32]),
+                    B256::ZERO,
+                ))
                 .map_err(storage_err)?;
-            while let Some((
-                BatchProxKey {
-                    batch_id,
-                    bin,
-                    addr,
-                },
-                (),
-            )) = entry
-            {
-                if batch_id != batch {
+            while let Some((key, _)) = row {
+                if key.batch != batch {
                     break;
                 }
-                // Bins < b are a contiguous front slice within the batch, so stop
-                // at the first row that reaches the bound.
-                if bound.is_some_and(|b| bin >= b) {
+                if bound.is_some_and(|b| key.po >= b) {
                     break;
                 }
-                targets.push(addr);
+                targets.push(EvictTarget {
+                    batch: key.batch,
+                    stamp_hash: key.stamp_hash,
+                    addr: key.addr,
+                });
                 if targets.len() as u64 >= max {
                     break;
                 }
-                entry = cursor.next().map_err(storage_err)?;
+                row = cursor.next().map_err(storage_err)?;
             }
         }
-        self.evict_targets(&targets)
+        self.evict_entries(&targets)
     }
 }
 
-impl<DB: Database> BinCursorStore for DbReserve<DB> {
+impl<DB: Database, BS: BatchStore + Send + Sync> BinCursorStore for DbReserve<DB, BS>
+where
+    BS::Error: Send + Sync + 'static,
+{
     fn bin_cursor(&self, bin: Bin) -> SwarmResult<u64> {
-        // Point read of the per-bin counter; an empty bin reads as 0. The point
-        // read is correct and cheap, so it is kept rather than a cursor.
         let cursor = self
             .db
             .view(|tx| tx.get::<BinCounter>(BinKey::from_bin(bin)))
@@ -657,45 +952,33 @@ impl<DB: Database> BinCursorStore for DbReserve<DB> {
         bin: Bin,
         start_seq: u64,
     ) -> SwarmResult<Box<dyn Iterator<Item = SwarmResult<BinScanItem>> + Send + 'a>> {
-        // A real lazy cursor scan over BinSeqIndex: seek to `(bin, start_seq)`
-        // and stream forward, yielding one BinScanItem per row while the key's
-        // bin stays equal. The cursor owns its read snapshot (#396), so the
-        // returned iterator outlives this call even though the read transaction
-        // is dropped here.
+        // Lazy cursor over Replay: seek to `(bin, start_seq)` and stream forward
+        // while the key's bin stays equal. The cursor owns its read snapshot, so
+        // the iterator outlives this call.
         let tx = self.db.tx().map_err(storage_err)?;
-        let mut cursor = tx.cursor::<BinSeqIndex>().map_err(storage_err)?;
+        let mut cursor = tx.cursor::<Replay>().map_err(storage_err)?;
         let seek = cursor
-            .seek(BinSeqKey::new(bin, start_seq))
+            .seek(ReplayKey::new(bin.get(), start_seq))
             .map_err(storage_err)?;
-
         Ok(Box::new(BinScanIter {
             cursor,
             target_bin: bin.get(),
-            // Prime with the seek result; the iterator emits it first, then
-            // advances with next().
             pending: Some(seek),
         }))
     }
 }
 
-/// Lazy insertion-order scan over [`BinSeqIndex`] for one bin.
-///
-/// Owns the [`DbCursorRO`] (which owns its read snapshot), so it is self-
-/// contained and `Send`. Stops as soon as a row crosses out of `target_bin`.
+/// Lazy insertion-order scan over [`Replay`] for one bin.
 struct BinScanIter {
-    cursor: Box<dyn DbCursorRO<BinSeqIndex> + Send>,
+    cursor: Box<dyn DbCursorRO<Replay> + Send>,
     target_bin: u8,
-    /// The next row to consider: `Some(seek_result)` immediately after
-    /// construction (so the first `next()` emits the seeked row), then `None`
-    /// to drive a `cursor.next()` on each subsequent step.
-    pending: Option<Option<(BinSeqKey, BinSeqEntry)>>,
+    pending: Option<Option<(ReplayKey, ReplayValue)>>,
 }
 
 impl Iterator for BinScanIter {
     type Item = SwarmResult<BinScanItem>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Take the primed seek result on the first call, otherwise advance.
         let row = match self.pending.take() {
             Some(seeded) => seeded,
             None => match self.cursor.next() {
@@ -703,62 +986,183 @@ impl Iterator for BinScanIter {
                 Err(e) => return Some(Err(storage_err(e))),
             },
         };
-
-        let (key, entry) = row?;
-        // Stop at the bin boundary: BinSeqIndex is ordered `(bin, seq)`, so the
-        // first row whose bin differs ends this bin's range.
+        let (key, value) = row?;
         if key.bin != self.target_bin {
             return None;
         }
         Some(Ok(BinScanItem {
-            seq: key.seq,
-            address: entry.address,
-            batch_id: entry.batch_id,
-            stamp_hash: entry.stamp_hash,
+            seq: key.binid,
+            address: value.address,
+            batch_id: value.batch_id,
+            stamp_hash: value.stamp_hash,
         }))
     }
 }
 
-/// Whether `address` is absent from the chunk table within transaction `tx`.
+// -------------------------------------------------------------------------
+// Transaction helpers (the per-entry write/compaction primitives).
+// -------------------------------------------------------------------------
+
+/// Bump the refcount of an existing payload, or insert it with refcount 1.
 ///
-/// The single content-addressed presence probe shared by the put path, so the
-/// "a present chunk is left untouched" invariant lives in one place.
-fn chunk_absent<T: DbTx>(tx: &T, address: ChunkAddress) -> Result<bool, DatabaseError> {
-    Ok(tx.get::<ChunkTable>(address)?.is_none())
+/// Content-addressed: a second stamped entry of the same content shares the body
+/// and increments the refcount; the body is never rewritten while present.
+fn bump_or_insert_payload<T: DbTxMut>(
+    tx: &T,
+    address: ChunkAddress,
+    typed_bytes: &[u8],
+) -> Result<(), DatabaseError> {
+    match tx.get::<Payload>(address)? {
+        Some(mut p) => {
+            p.refcnt += 1;
+            tx.put::<Payload>(address, p)?;
+        }
+        None => {
+            tx.put::<Payload>(
+                address,
+                PayloadValue {
+                    refcnt: 1,
+                    typed_bytes: typed_bytes.to_vec(),
+                },
+            )?;
+        }
+    }
+    Ok(())
 }
 
-/// Delete a chunk and EVERY secondary index row for it within transaction `tx`.
+/// Decrement the refcount of a payload, deleting the body when it reaches zero.
 ///
-/// The single deletion path shared by `remove` and the eviction verbs, so the
-/// full-compaction invariant (chunk value + proximity + insertion-order +
-/// reverse lookup + batch grouping all go together) is defined once. Reads the
-/// reverse lookup to find the `(bin, seq)` and the batch id needed to address the
-/// insertion-order and batch rows. The `BinCounter` is deliberately not rewound
-/// (sequences are monotonic). Returns whether a chunk was actually deleted.
-fn delete_in_tx<T: DbTxMut>(
-    tx: &T,
-    overlay: &OverlayAddress,
-    address: ChunkAddress,
-) -> Result<bool, DatabaseError> {
-    if tx.get::<ChunkTable>(address)?.is_none() {
-        return Ok(false);
-    }
-    // Compact the insertion-order and batch rows via the reverse lookup.
-    if let Some(seq_key) = tx.get::<AddrIndex>(address)? {
-        if let Some(entry) = tx.get::<BinSeqIndex>(seq_key)? {
-            tx.delete::<BatchIndex>(BatchProxKey::new(entry.batch_id, seq_key.bin, address))?;
+/// The shared body survives partial eviction: it is dropped only when the last
+/// stamped entry referencing it is removed.
+fn dec_payload<T: DbTxMut>(tx: &T, address: ChunkAddress) -> Result<(), DatabaseError> {
+    if let Some(mut p) = tx.get::<Payload>(address)? {
+        if p.refcnt <= 1 {
+            tx.delete::<Payload>(address)?;
+        } else {
+            p.refcnt -= 1;
+            tx.put::<Payload>(address, p)?;
         }
-        tx.delete::<BinSeqIndex>(seq_key)?;
-        tx.delete::<AddrIndex>(address)?;
     }
-    let po = address.proximity(overlay).get();
-    tx.delete::<ProximityIndex>(ProxKey::new(po, address))?;
-    tx.delete::<ChunkTable>(address)?;
+    Ok(())
+}
+
+/// Delete the four index rows of one stamped entry (`Entry`, `BatchGroup`,
+/// `Replay`) and decrement the shared payload, without touching the arbiter slot
+/// or the BinCounter. Returns whether the entry existed.
+///
+/// Used both by the restamp path (displacing the older entry, slot rewritten by
+/// the caller) and by `delete_entry_in_tx` (full removal, which also clears the
+/// slot).
+fn delete_entry_rows_in_tx<T: DbTxMut>(
+    tx: &T,
+    po: u8,
+    target: &EvictTarget,
+) -> Result<bool, DatabaseError> {
+    let entry_key = EntryKey::new(po, target.batch, target.stamp_hash, target.addr);
+    let Some(value) = tx.get::<Entry>(entry_key)? else {
+        return Ok(false);
+    };
+    // Replay row, addressed by the entry's stored (bin, binid).
+    tx.delete::<Replay>(ReplayKey::new(value.bin, value.binid))?;
+    tx.delete::<BatchGroup>(BatchGroupKey::new(
+        target.batch,
+        po,
+        target.addr,
+        target.stamp_hash,
+    ))?;
+    tx.delete::<Entry>(entry_key)?;
+    dec_payload(tx, target.addr)?;
     Ok(true)
 }
 
+/// Fully delete a stamped entry: its four index rows, the shared payload
+/// decrement, AND its arbiter slot (so the slot does not pin a stale newest
+/// stamp after the entry is gone). Returns whether the entry existed.
+fn delete_entry_in_tx<T: DbTxMut>(
+    tx: &T,
+    overlay: &OverlayAddress,
+    target: &EvictTarget,
+) -> Result<bool, DatabaseError> {
+    let po = target.addr.proximity(overlay).get();
+    let entry_key = EntryKey::new(po, target.batch, target.stamp_hash, target.addr);
+    // Read the entry's stamp to recover its slot key (batch, stampIndex) so the
+    // arbiter slot can be cleared. The stamp index is not in the key, so it is
+    // decoded from the stored stamp bytes.
+    let slot = tx
+        .get::<Entry>(entry_key)?
+        .and_then(|v| decode_stamp(&v.stamp_bytes).ok())
+        .map(|s| StampSlotKey::new(s.batch(), s.stamp_index()));
+
+    let removed = delete_entry_rows_in_tx(tx, po, target)?;
+    if removed && let Some(slot) = slot {
+        // Clear the slot only if it still points at this entry's stamp hash,
+        // so a concurrent restamp's slot is not clobbered.
+        if let Some(occupant) = tx.get::<StampIndexTable>(slot)?
+            && occupant.stamp_hash == target.stamp_hash
+        {
+            tx.delete::<StampIndexTable>(slot)?;
+        }
+    }
+    Ok(removed)
+}
+
+/// The verdict of a put, used to adjust the in-memory size counter.
+enum PutOutcome {
+    /// A new stamped entry was added (size += 1).
+    Admitted,
+    /// An older entry was displaced and a new one added (size unchanged).
+    Restamped,
+    /// The incoming stamp was stale; nothing written (size unchanged).
+    Rejected,
+}
+
+/// Decode a stamp from its canonical 113-byte encoding.
+fn decode_stamp(bytes: &[u8]) -> Result<Stamp, nectar_postage::StampError> {
+    Stamp::try_from_slice(bytes)
+}
+
+/// The big-endian timestamp embedded in a canonical stamp encoding (bytes
+/// 40..48), used to pick the newest stamp for an address without a full decode.
+fn stamp_timestamp(bytes: &[u8]) -> u64 {
+    bytes
+        .get(40..48)
+        .and_then(|s| s.try_into().ok())
+        .map_or(0, u64::from_be_bytes)
+}
+
+/// Decode the shared content body (type-tagged [`AnyChunk`] bytes) for an
+/// address.
+fn decode_body(
+    address: &ChunkAddress,
+    typed_bytes: &[u8],
+) -> SwarmResult<nectar_primitives::AnyChunk> {
+    nectar_primitives::AnyChunk::from_typed_bytes(address, typed_bytes).map_err(|e| {
+        SwarmError::InvalidChunk {
+            address: Some(*address),
+            reason: format!("stored reserve payload failed to decode: {e}"),
+        }
+    })
+}
+
+/// The proximity order (relative to the local overlay) a reserve [`Bin`] denotes.
+///
+/// For the reserve a routing [`Bin`] and the [`ProximityOrder`] the Entry/
+/// BatchGroup tables key on are the *same* quantity measured against the local
+/// overlay (see [`ReserveStore`]); they merely have distinct nectar types because
+/// one is a slot and the other a metric, and they share the `0..=MAX_PO` range.
+/// This is the single, explicit crossing of that boundary: a `Bin` in, the
+/// proximity order it keys on out. The byte value is identical, but routing the
+/// conversion through one named helper keeps the `Bin`-vs-`ProximityOrder`
+/// conflation intentional and greppable rather than an inline `bin.get()` pun.
+#[inline]
+fn po_of_reserve_bin(bin: Bin) -> u8 {
+    // A `Bin` is range-validated to `0..=MAX_PO`, which is exactly the
+    // `ProximityOrder` range, so the proximity order it denotes is its raw byte.
+    bin.get()
+}
+
 /// Map a storer/database error onto the API's storage error, preserving the
-/// source so the chain is not lost.
+/// source.
 fn storage_err<E>(err: E) -> SwarmError
 where
     E: std::error::Error + Send + Sync + 'static,
@@ -766,6 +1170,9 @@ where
     SwarmError::storage(err)
 }
 
+// ---------------------------------------------------------------------------
+// Key-codec ordering tests (pure, no database).
+// ---------------------------------------------------------------------------
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -773,709 +1180,603 @@ where
     clippy::indexing_slicing,
     reason = "test assertions over known-bounds fixtures"
 )]
-mod tests {
+mod key_codec_tests {
     use super::*;
-    use alloy_primitives::{B256, Signature};
-    use nectar_postage::Stamp;
-    use nectar_primitives::{AnyChunk, ContentChunk};
-    use tempfile::tempdir;
-    use vertex_storage_redb::RedbDatabase;
-    use vertex_swarm_api::SwarmIdentity;
-    use vertex_swarm_test_utils::MockIdentity;
 
-    fn test_stamp() -> Stamp {
-        let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
-        Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig)
-    }
+    #[test]
+    fn entry_key_round_trips_and_orders_proximity_major() {
+        // Round-trip.
+        let k = EntryKey::new(
+            7,
+            BatchId::repeat_byte(0x11),
+            B256::repeat_byte(0x22),
+            ChunkAddress::from([0x33u8; 32]),
+        );
+        assert_eq!(EntryKey::decode(k.encode().as_ref()).unwrap(), k);
 
-    /// Build a stamped cached chunk from owned payload bytes.
-    fn cached_chunk(payload: Vec<u8>) -> CachedChunk {
-        let chunk: AnyChunk = ContentChunk::new(payload)
-            .expect("valid content chunk")
-            .into();
-        CachedChunk::new(chunk, Some(test_stamp()))
-    }
+        // Proximity-major: a smaller po sorts first regardless of the trailing
+        // fields, so `first()` over the table is always the furthest entry.
+        let far = EntryKey::new(
+            1,
+            BatchId::repeat_byte(0xff),
+            B256::repeat_byte(0xff),
+            ChunkAddress::from([0xffu8; 32]),
+        )
+        .encode();
+        let near =
+            EntryKey::new(2, BatchId::ZERO, B256::ZERO, ChunkAddress::from([0u8; 32])).encode();
+        assert!(far < near, "smaller proximity order sorts first");
 
-    /// Build a stampless cached chunk (an invalid reserve put).
-    fn stampless_chunk(payload: Vec<u8>) -> CachedChunk {
-        let chunk: AnyChunk = ContentChunk::new(payload)
-            .expect("valid content chunk")
-            .into();
-        CachedChunk::new(chunk, None)
-    }
-
-    /// A stamp under the postage batch `repeat_byte(batch)`.
-    fn stamp_with_batch(batch: u8) -> Stamp {
-        let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
-        Stamp::new(B256::repeat_byte(batch), 3, 7, 42, sig)
-    }
-
-    /// A stamped cached chunk under a chosen batch (for batch-eviction tests).
-    fn cached_chunk_batch(payload: Vec<u8>, batch: u8) -> CachedChunk {
-        let chunk: AnyChunk = ContentChunk::new(payload)
-            .expect("valid content chunk")
-            .into();
-        CachedChunk::new(chunk, Some(stamp_with_batch(batch)))
-    }
-
-    fn new_reserve(
-        identity: &MockIdentity,
-        capacity: u64,
-        strategy: EvictionStrategy,
-        radius: StorageRadius,
-    ) -> DbReserve<RedbDatabase> {
-        let db = RedbDatabase::in_memory().unwrap().into_arc();
-        DbReserve::new(db, identity, capacity, strategy, radius).unwrap()
+        // Within one po, ordering is by (batch, stampHash, addr).
+        let po = 5u8;
+        let a =
+            EntryKey::new(po, BatchId::ZERO, B256::ZERO, ChunkAddress::from([0u8; 32])).encode();
+        let b = EntryKey::new(
+            po,
+            BatchId::repeat_byte(0x01),
+            B256::ZERO,
+            ChunkAddress::from([0u8; 32]),
+        )
+        .encode();
+        assert!(a < b, "same po orders by batch next");
     }
 
     #[test]
-    fn compound_key_round_trips_and_orders() {
-        // Big-endian (bin, seq) keys order lexicographically by (bin, seq).
-        let bin = Bin::new(5).unwrap();
-        let k = BinSeqKey::new(bin, 0x0102030405060708);
-        let decoded = BinSeqKey::decode(k.encode().as_ref()).unwrap();
-        assert_eq!(decoded, k);
+    fn batch_group_key_orders_batch_major_then_bin() {
+        let k = BatchGroupKey::new(
+            BatchId::repeat_byte(0xab),
+            9,
+            ChunkAddress::from([0xcdu8; 32]),
+            B256::repeat_byte(0xef),
+        );
+        assert_eq!(BatchGroupKey::decode(k.encode().as_ref()).unwrap(), k);
 
-        let a = BinSeqKey::new(Bin::new(1).unwrap(), 9).encode();
-        let b = BinSeqKey::new(Bin::new(1).unwrap(), 10).encode();
-        let c = BinSeqKey::new(Bin::new(2).unwrap(), 0).encode();
+        // A batch's entries are a contiguous prefix, ascending by bin.
+        let batch = BatchId::repeat_byte(0x07);
+        let lo = BatchGroupKey::new(batch, 1, ChunkAddress::from([0u8; 32]), B256::ZERO).encode();
+        let hi = BatchGroupKey::new(batch, 2, ChunkAddress::from([0u8; 32]), B256::ZERO).encode();
+        let other = BatchGroupKey::new(
+            BatchId::repeat_byte(0x08),
+            0,
+            ChunkAddress::from([0u8; 32]),
+            B256::ZERO,
+        )
+        .encode();
+        assert!(lo < hi, "same batch orders by bin");
+        assert!(hi < other, "lower batch sorts before higher batch");
+    }
+
+    #[test]
+    fn replay_key_orders_bin_major_then_sequence() {
+        let k = ReplayKey::new(3, 0x0102_0304_0506_0708);
+        assert_eq!(ReplayKey::decode(k.encode().as_ref()).unwrap(), k);
+
+        let a = ReplayKey::new(1, 9).encode();
+        let b = ReplayKey::new(1, 10).encode();
+        let c = ReplayKey::new(2, 0).encode();
         assert!(a < b, "same bin orders by sequence");
         assert!(b < c, "lower bin sorts before higher bin");
+    }
 
-        // BinKey round-trips too.
-        let bk = BinKey::from_bin(bin);
+    #[test]
+    fn bin_key_round_trips() {
+        let bk = BinKey::from_bin(Bin::new(5).unwrap());
         assert_eq!(BinKey::decode(bk.encode().as_ref()).unwrap(), bk);
     }
+}
 
-    #[test]
-    fn proximity_key_round_trips_and_orders() {
-        // Big-endian (po, addr) keys order by (po, addr); the smallest po sorts
-        // first, which is what evict_furthest relies on.
-        let addr = ChunkAddress::new([0x11; 32]);
-        let k = ProxKey::new(7, addr);
-        assert_eq!(ProxKey::decode(k.encode().as_ref()).unwrap(), k);
+// ---------------------------------------------------------------------------
+// Consensus spec tests for the per-entry reserve.
+//
+// Each test builds a `DbReserve` over an in-memory redb-backed `vertex-storage`
+// `Database`, a `DbBatchStore` populated with a real `Batch`, and signs real
+// stamps with an `alloy-signer-local` wallet so the validate-on-ingest admission
+// path runs exactly as in production. The invariants asserted here are the
+// consensus-load-bearing ones: per-entry size counting, newest-wins / equal- and
+// older-reject arbitration on the full `(batchID, stampIndex)` slot, refcounted
+// payload survival under partial eviction, exact-stamp-in-proof, and full
+// compaction (no tombstones) on removal.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    reason = "test assertions over known-bounds fixtures"
+)]
+mod consensus_spec {
+    use super::*;
+    use alloy_primitives::Address;
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use nectar_postage::{Batch, PostageContext, StampDigest, StampIndex};
+    use nectar_primitives::{Chunk, DefaultContentChunk as ContentChunk};
+    use std::sync::Arc;
+    use vertex_storage_redb::RedbDatabase;
+    use vertex_swarm_api::SwarmIdentity as _;
+    use vertex_swarm_postage::DbBatchStore;
+    use vertex_swarm_test_utils::MockIdentity;
 
-        let lo = ProxKey::new(0, ChunkAddress::new([0xff; 32])).encode();
-        let hi = ProxKey::new(1, ChunkAddress::new([0x00; 32])).encode();
-        assert!(
-            lo < hi,
-            "lower proximity order sorts first regardless of addr"
-        );
+    const THRESHOLD: u64 = 8;
+    // bucket_depth 1 splits the address space by the top bit, so two distinct
+    // content addresses can be coerced into the *same* bucket (top bit 0) and
+    // therefore compete for the same `(batch, stampIndex)` arbiter slot. depth 18
+    // gives ample per-bucket capacity for index 0.
+    const BUCKET_DEPTH: u8 = 1;
+    const DEPTH: u8 = 18;
+
+    fn signer() -> PrivateKeySigner {
+        PrivateKeySigner::from_bytes(&B256::repeat_byte(0x42)).expect("valid signer")
     }
 
-    #[test]
-    fn put_get_round_trip_through_reserve() {
-        let identity = MockIdentity::with_first_byte(0x00);
-        let reserve = new_reserve(
-            &identity,
-            100,
-            EvictionStrategy::NoEviction,
-            StorageRadius::ZERO,
-        );
-
-        let chunk = cached_chunk(b"hello reserve".to_vec());
-        let address = *chunk.address();
-        reserve.put(chunk.clone()).unwrap();
-
-        let got = reserve.get(&address).unwrap().expect("chunk present");
-        assert_eq!(got.address(), &address);
-        // Stored value round-trips through nectar's stamped codec with a stamp.
-        assert!(got.stamp().is_some(), "reserve values are always stamped");
-        assert_eq!(got.chunk(), chunk.chunk());
-        assert!(reserve.contains(&address));
+    /// A batch owned by `owner`, created at block 0, with ample value so it is
+    /// not expired against a zero cumulative payout.
+    fn batch_for(owner: Address, id: B256) -> Batch {
+        Batch::new(id, 1_000_000, 0, owner, DEPTH, BUCKET_DEPTH, false)
     }
 
-    #[test]
-    fn stampless_put_is_rejected() {
-        let identity = MockIdentity::with_first_byte(0x00);
-        let reserve = new_reserve(
-            &identity,
-            100,
-            EvictionStrategy::NoEviction,
-            StorageRadius::ZERO,
-        );
-
-        let chunk = stampless_chunk(b"no stamp here".to_vec());
-        let address = *chunk.address();
-        let err = reserve.put(chunk).expect_err("stampless put must fail");
-        assert!(matches!(err, SwarmError::InvalidChunk { .. }));
-        // Nothing was written.
-        assert!(!reserve.contains(&address));
-        assert_eq!(reserve.count().unwrap(), 0);
+    /// A live context past the confirmation threshold with zero payout (so a
+    /// fresh batch is usable and not expired).
+    fn live_context() -> PostageContext {
+        PostageContext::new(THRESHOLD + 1, 0)
     }
 
-    #[test]
-    fn count_and_count_in_track_population() {
-        let identity = MockIdentity::with_first_byte(0x00);
-        let reserve = new_reserve(
-            &identity,
-            100,
-            EvictionStrategy::NoEviction,
-            StorageRadius::ZERO,
-        );
-
-        let mut addrs = Vec::new();
-        for i in 0..6u8 {
-            let chunk = cached_chunk(vec![i; 64]);
-            addrs.push(*chunk.address());
-            reserve.put(chunk).unwrap();
-        }
-        assert_eq!(reserve.count().unwrap(), 6);
-
-        // The sum of count_in over every proximity order equals the total.
-        let overlay = identity.overlay_address();
-        let mut total = 0u64;
-        for po in 0..=nectar_primitives::MAX_PO {
-            total += reserve.count_in(ProximityOrder::new(po).unwrap()).unwrap();
-        }
-        assert_eq!(total, 6);
-
-        // count_in for a specific address's PO includes that address, and matches
-        // an independent count over the chunk table.
-        let target_po = addrs[0].proximity(&overlay);
-        let independent = addrs
-            .iter()
-            .filter(|a| a.proximity(&overlay) == target_po)
-            .count() as u64;
-        assert_eq!(reserve.count_in(target_po).unwrap(), independent);
-        assert!(independent >= 1);
-    }
-
-    #[test]
-    fn scan_bin_from_streams_bin_in_seq_order() {
-        let identity = MockIdentity::with_first_byte(0x00);
-        let reserve = new_reserve(
-            &identity,
-            100,
-            EvictionStrategy::NoEviction,
-            StorageRadius::ZERO,
-        );
-        let overlay = identity.overlay_address();
-
-        // Insert chunks and record, per bin, the (seq, address) it landed at by
-        // mirroring the reserve's own counter.
-        let mut expected: std::collections::HashMap<u8, Vec<(u64, ChunkAddress)>> =
-            std::collections::HashMap::new();
-        let mut per_bin_seq: std::collections::HashMap<u8, u64> = std::collections::HashMap::new();
-        for i in 0..20u8 {
-            let chunk = cached_chunk(vec![i; 80]);
+    /// A content chunk whose address falls in bucket 0 of a `BUCKET_DEPTH` batch
+    /// (top bit clear), searched by varying the payload. Returns the chunk and
+    /// its address.
+    fn content_chunk_in_bucket0(seed: u64) -> (nectar_primitives::AnyChunk, ChunkAddress) {
+        for n in 0..100_000u64 {
+            let payload = format!("vertex reserve consensus fixture {seed}/{n}").into_bytes();
+            let chunk = ContentChunk::new(payload).expect("valid content chunk");
             let addr = *chunk.address();
-            let bin = addr.bin(&overlay).get();
-            reserve.put(chunk).unwrap();
-            let seq = per_bin_seq.entry(bin).or_insert(0);
-            *seq += 1;
-            expected.entry(bin).or_default().push((*seq, addr));
-        }
-
-        // For every populated bin, a full scan from seq 0 yields exactly that
-        // bin's rows in ascending sequence order.
-        for (raw_bin, rows) in &expected {
-            let bin = Bin::new(*raw_bin).unwrap();
-            let scanned: Vec<_> = reserve
-                .scan_bin_from(bin, 0)
-                .unwrap()
-                .map(|r| r.unwrap())
-                .collect();
-            assert_eq!(scanned.len(), rows.len(), "bin {raw_bin} row count");
-            for (item, (seq, addr)) in scanned.iter().zip(rows.iter()) {
-                assert_eq!(item.seq, *seq, "bin {raw_bin} seq order");
-                assert_eq!(&item.address, addr, "bin {raw_bin} address");
-                assert_eq!(item.batch_id, test_stamp().batch(), "bin {raw_bin} batch");
-                assert_eq!(item.stamp_hash, stamp_hash(&test_stamp()), "stamp hash");
-            }
-
-            // A mid-bin start_seq skips earlier sequences (inclusive lower bound).
-            if let Some((mid_seq, _)) = rows.get(rows.len() / 2) {
-                let from_mid: Vec<_> = reserve
-                    .scan_bin_from(bin, *mid_seq)
-                    .unwrap()
-                    .map(|r| r.unwrap().seq)
-                    .collect();
-                assert!(from_mid.iter().all(|s| s >= mid_seq));
-                assert_eq!(from_mid.first(), Some(mid_seq));
+            // bucket_for_address with bucket_depth 1 == top bit of byte 0.
+            if addr.as_slice()[0] & 0x80 == 0 {
+                return (chunk.into(), addr);
             }
         }
+        panic!("no bucket-0 content chunk found within the search bound");
     }
 
-    #[test]
-    fn scan_bin_from_stops_at_bin_boundary() {
-        // A scan must never bleed into the next bin's rows even though they are
-        // contiguous in the underlying table.
-        let identity = MockIdentity::with_first_byte(0x00);
-        let reserve = new_reserve(
-            &identity,
-            200,
-            EvictionStrategy::NoEviction,
-            StorageRadius::ZERO,
-        );
-        let overlay = identity.overlay_address();
-        for i in 0..40u8 {
-            reserve.put(cached_chunk(vec![i, i, 1])).unwrap();
+    /// Sign a real stamp for `address` under `batch` at `timestamp`, at the given
+    /// within-bucket `index`, with the bucket derived from the address so
+    /// `validate_bucket` passes.
+    fn signed_stamp(
+        signer: &PrivateKeySigner,
+        batch: &Batch,
+        address: &ChunkAddress,
+        index: u32,
+        timestamp: u64,
+    ) -> Stamp {
+        let bucket = batch.bucket_for_address(address);
+        let stamp_index = StampIndex::new(bucket, index);
+        let digest = StampDigest::new(*address, batch.id(), stamp_index, timestamp);
+        let sig = signer
+            .sign_hash_sync(&alloy_primitives::eip191_hash_message(
+                digest.to_prehash().as_slice(),
+            ))
+            .expect("sign");
+        Stamp::with_index(batch.id(), stamp_index, timestamp, sig)
+    }
+
+    /// A test reserve and its shared database, plus the batch store the
+    /// validate-on-ingest path reads.
+    ///
+    /// The reserve owns its own `DbBatchStore` (the `BatchStore` trait is
+    /// implemented on the store, not on `Arc<store>`), and the fixture holds a
+    /// second store over the *same* database for populating and reading batches:
+    /// both see identical persisted state.
+    struct Fixture {
+        reserve: DbReserve<RedbDatabase, DbBatchStore<RedbDatabase>>,
+        db: Arc<RedbDatabase>,
+        batches: DbBatchStore<RedbDatabase>,
+        overlay: OverlayAddress,
+        signer: PrivateKeySigner,
+    }
+
+    impl Fixture {
+        /// Build a reserve over a fresh in-memory database with a single batch
+        /// already registered and the live context persisted.
+        fn new() -> Self {
+            Self::with_batches(&[B256::repeat_byte(0x11)])
         }
-        // Pick a populated bin that is not the highest, so a "next bin" exists.
-        let mut bins: Vec<u8> = (0..40u8)
-            .map(|i| {
-                let c = cached_chunk(vec![i, i, 1]);
-                c.address().bin(&overlay).get()
-            })
-            .collect();
-        bins.sort_unstable();
-        bins.dedup();
-        if bins.len() >= 2 {
-            let bin = Bin::new(bins[0]).unwrap();
-            let scanned: Vec<_> = reserve
-                .scan_bin_from(bin, 0)
-                .unwrap()
-                .map(|r| r.unwrap())
-                .collect();
-            // Every scanned address must actually be in the target bin.
-            for item in &scanned {
-                assert_eq!(item.address.bin(&overlay).get(), bins[0]);
+
+        /// Build a reserve whose batch store already holds the given batch ids
+        /// (all owned by the shared signer), with the live context persisted.
+        fn with_batches(batch_ids: &[B256]) -> Self {
+            let db = RedbDatabase::in_memory().unwrap().into_arc();
+            let batches = DbBatchStore::new(Arc::clone(&db)).unwrap();
+            let signer = signer();
+            let owner = signer.address();
+            for id in batch_ids {
+                batches.put(batch_for(owner, *id)).unwrap();
             }
-        }
-    }
+            batches.set_context(live_context()).unwrap();
 
-    #[test]
-    fn is_responsible_for_respects_radius() {
-        let identity = MockIdentity::with_first_byte(0x00);
-        // Radius 0: responsible for everything (proximity >= 0 always holds).
-        let r0 = new_reserve(
-            &identity,
-            10,
-            EvictionStrategy::NoEviction,
-            StorageRadius::ZERO,
-        );
-        let chunk = cached_chunk(b"anything".to_vec());
-        assert!(r0.is_responsible_for(chunk.address()));
-
-        // A high radius excludes a far address. The overlay's first byte is
-        // 0x00; an address whose first byte is 0xff shares zero leading bits.
-        let far = ChunkAddress::new([0xff; 32]);
-        let r_high = new_reserve(
-            &identity,
-            10,
-            EvictionStrategy::NoEviction,
-            StorageRadius::new(Bin::new(4).unwrap()),
-        );
-        assert!(!r_high.is_responsible_for(&far));
-    }
-
-    #[test]
-    fn evict_furthest_drops_the_smallest_po_chunk() {
-        // Overlay first byte 0x00. evict_furthest must drop the chunk with the
-        // smallest proximity order (furthest by XOR), cross-checked against an
-        // independent min-po reduce.
-        let identity = MockIdentity::with_first_byte(0x00);
-        let reserve = new_reserve(
-            &identity,
-            100,
-            EvictionStrategy::NoEviction,
-            StorageRadius::ZERO,
-        );
-        let overlay = identity.overlay_address();
-
-        let mut chunks = Vec::new();
-        for i in 0..8u8 {
-            chunks.push(cached_chunk(vec![i; 96]));
-        }
-        for c in &chunks {
-            reserve.put(c.clone()).unwrap();
-        }
-        // Independent expectation: the address with the minimum proximity order
-        // (ties broken by the proximity index's address order, but the test set
-        // has a unique minimum in practice; assert membership of the min-po set).
-        let min_po = chunks
-            .iter()
-            .map(|c| c.address().proximity(&overlay).get())
-            .min()
-            .unwrap();
-        let min_po_addrs: std::collections::HashSet<_> = chunks
-            .iter()
-            .map(|c| *c.address())
-            .filter(|a| a.proximity(&overlay).get() == min_po)
-            .collect();
-
-        let evicted = reserve.evict_furthest().unwrap().expect("a chunk evicted");
-        assert!(
-            min_po_addrs.contains(&evicted),
-            "evicted chunk must have the minimum proximity order"
-        );
-        // Cross-check against an independent min-proximity-order reduce: the
-        // evicted chunk's proximity order is <= every other chunk's (proximity
-        // order is the eviction key, NOT full XOR distance — ties at the minimum
-        // po are resolved by the index's address order).
-        let evicted_po = evicted.proximity(&overlay).get();
-        for c in &chunks {
-            let a = *c.address();
-            if a != evicted {
-                assert!(
-                    evicted_po <= a.proximity(&overlay).get(),
-                    "no remaining chunk may have a smaller proximity order than the evicted one"
-                );
-            }
-        }
-        assert!(!reserve.contains(&evicted));
-        assert_eq!(reserve.count().unwrap(), 7);
-        // count_in for the evicted chunk's po dropped by one relative to the
-        // proximity index (the index row was removed with the chunk).
-        let po = ProximityOrder::new(min_po).unwrap();
-        let remaining_at_min = min_po_addrs.len() as u64 - 1;
-        assert_eq!(reserve.count_in(po).unwrap(), remaining_at_min);
-
-        // Eviction on an empty reserve returns None.
-        let empty = new_reserve(
-            &identity,
-            10,
-            EvictionStrategy::NoEviction,
-            StorageRadius::ZERO,
-        );
-        assert_eq!(empty.evict_furthest().unwrap(), None);
-    }
-
-    #[test]
-    fn bin_cursor_advances_per_bin() {
-        let identity = MockIdentity::with_first_byte(0x00);
-        let reserve = new_reserve(
-            &identity,
-            100,
-            EvictionStrategy::NoEviction,
-            StorageRadius::ZERO,
-        );
-
-        // An empty bin reads 0.
-        let bin0 = Bin::ZERO;
-        assert_eq!(reserve.bin_cursor(bin0).unwrap(), 0);
-
-        // Insert chunks, grouping observed cursors by bin. Each bin's cursor
-        // equals the number of chunks that landed in it.
-        let overlay = identity.overlay_address();
-        let mut per_bin = std::collections::HashMap::<u8, u64>::new();
-        for i in 0..10u8 {
-            let chunk = cached_chunk(vec![i; 48]);
-            let bin = chunk.address().bin(&overlay);
-            reserve.put(chunk).unwrap();
-            *per_bin.entry(bin.get()).or_insert(0) += 1;
-        }
-        for (raw_bin, expected) in per_bin {
-            let cursor = reserve.bin_cursor(Bin::new(raw_bin).unwrap()).unwrap();
-            assert_eq!(cursor, expected, "bin {raw_bin} cursor mismatch");
-        }
-    }
-
-    #[test]
-    fn idempotent_put_does_not_double_count() {
-        let identity = MockIdentity::with_first_byte(0x00);
-        let reserve = new_reserve(
-            &identity,
-            100,
-            EvictionStrategy::NoEviction,
-            StorageRadius::ZERO,
-        );
-
-        let chunk = cached_chunk(b"once".to_vec());
-        let address = *chunk.address();
-        let bin = chunk.address().bin(&identity.overlay_address());
-        reserve.put(chunk.clone()).unwrap();
-        reserve.put(chunk).unwrap();
-
-        assert_eq!(reserve.count().unwrap(), 1);
-        // The cursor advanced exactly once for the single distinct chunk.
-        assert_eq!(reserve.bin_cursor(bin).unwrap(), 1);
-        // The bin scan yields exactly one row.
-        let rows: Vec<_> = reserve.scan_bin_from(bin, 0).unwrap().collect();
-        assert_eq!(rows.len(), 1);
-
-        // Round-trips on reopen-equivalent fresh read.
-        assert!(reserve.contains(&address));
-    }
-
-    #[test]
-    fn remove_clears_proximity_index() {
-        let identity = MockIdentity::with_first_byte(0x00);
-        let reserve = new_reserve(
-            &identity,
-            100,
-            EvictionStrategy::NoEviction,
-            StorageRadius::ZERO,
-        );
-        let overlay = identity.overlay_address();
-        let chunk = cached_chunk(b"to be removed".to_vec());
-        let address = *chunk.address();
-        let po = address.proximity(&overlay);
-        reserve.put(chunk).unwrap();
-        assert_eq!(reserve.count_in(po).unwrap(), 1);
-
-        reserve.remove(&address).unwrap();
-        // The proximity index row is gone, so count_in no longer sees it.
-        assert_eq!(reserve.count_in(po).unwrap(), 0);
-        assert!(!reserve.contains(&address));
-        assert_eq!(reserve.count().unwrap(), 0);
-    }
-
-    #[test]
-    fn persistence_across_reopen() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("reserve.redb");
-        let identity = MockIdentity::with_first_byte(0x00);
-        let chunk = cached_chunk(b"persisted reserve chunk".to_vec());
-        let address = *chunk.address();
-        let bin = chunk.address().bin(&identity.overlay_address());
-
-        {
-            let db = RedbDatabase::create(&path).unwrap().into_arc();
+            let identity = MockIdentity::with_first_byte(0x00);
+            let overlay = identity.overlay_address();
+            // The reserve's own store handle over the same shared database.
+            let reserve_batches = DbBatchStore::new(Arc::clone(&db)).unwrap();
             let reserve = DbReserve::new(
-                db,
+                Arc::clone(&db),
                 &identity,
-                100,
+                reserve_batches,
+                AdmissionValidator::new(THRESHOLD),
+                10_000,
                 EvictionStrategy::NoEviction,
                 StorageRadius::ZERO,
             )
             .unwrap();
-            reserve.put(chunk).unwrap();
-        }
-
-        let db = RedbDatabase::open(&path).unwrap().into_arc();
-        let reserve = DbReserve::new(
-            db,
-            &identity,
-            100,
-            EvictionStrategy::NoEviction,
-            StorageRadius::ZERO,
-        )
-        .unwrap();
-        // Count is rehydrated from the persisted chunk table at construction.
-        assert_eq!(reserve.count().unwrap(), 1);
-        assert!(reserve.get(&address).unwrap().is_some());
-        // The persisted bin scan still replays the chunk.
-        let rows: Vec<_> = reserve
-            .scan_bin_from(bin, 0)
-            .unwrap()
-            .map(|r| r.unwrap())
-            .collect();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].address, address);
-    }
-
-    #[test]
-    fn batch_prox_key_round_trips_and_orders() {
-        let batch = BatchId::repeat_byte(0x33);
-        let addr = ChunkAddress::new([0x11; 32]);
-        let k = BatchProxKey::new(batch, 9, addr);
-        assert_eq!(BatchProxKey::decode(k.encode().as_ref()).unwrap(), k);
-
-        // Big-endian (batch, bin, addr) keys order lexicographically by that tuple.
-        let a = BatchProxKey::new(BatchId::repeat_byte(0x01), 5, ChunkAddress::new([0xff; 32]))
-            .encode();
-        let b = BatchProxKey::new(BatchId::repeat_byte(0x01), 6, ChunkAddress::new([0x00; 32]))
-            .encode();
-        let c = BatchProxKey::new(BatchId::repeat_byte(0x02), 0, ChunkAddress::new([0x00; 32]))
-            .encode();
-        assert!(a < b, "same batch orders by bin");
-        assert!(
-            b < c,
-            "lower batch sorts before higher batch regardless of bin/addr"
-        );
-    }
-
-    #[test]
-    fn remove_compacts_indexes_no_tombstone() {
-        // After remove(), the insertion-order scan must not surface the chunk
-        // (BinSeqIndex compacted via the reverse lookup), and the chunk can be
-        // re-admitted (AddrIndex/BatchIndex cleared).
-        let identity = MockIdentity::with_first_byte(0x00);
-        let reserve = new_reserve(
-            &identity,
-            100,
-            EvictionStrategy::NoEviction,
-            StorageRadius::ZERO,
-        );
-        let overlay = identity.overlay_address();
-
-        for i in 0..12u8 {
-            reserve.put(cached_chunk(vec![i; 64])).unwrap();
-        }
-        // The i == 0 chunk, then remove it.
-        let gone = *cached_chunk(vec![0u8; 64]).address();
-        let gone_bin = gone.bin(&overlay);
-        reserve.remove(&gone).unwrap();
-
-        let scanned: Vec<_> = reserve
-            .scan_bin_from(gone_bin, 0)
-            .unwrap()
-            .map(|r| r.unwrap().address)
-            .collect();
-        assert!(
-            !scanned.contains(&gone),
-            "removed chunk must not appear in the bin scan (no tombstone)"
-        );
-        assert!(!reserve.contains(&gone));
-
-        // Re-admitting the same content succeeds (the index rows were cleared).
-        reserve.put(cached_chunk(vec![0u8; 64])).unwrap();
-        assert!(reserve.contains(&gone));
-        let again: Vec<_> = reserve
-            .scan_bin_from(gone_bin, 0)
-            .unwrap()
-            .map(|r| r.unwrap().address)
-            .collect();
-        assert!(
-            again.contains(&gone),
-            "re-admitted chunk reappears in the scan"
-        );
-    }
-
-    #[test]
-    fn evict_from_bin_sheds_the_whole_bin() {
-        let identity = MockIdentity::with_first_byte(0x00);
-        let reserve = new_reserve(
-            &identity,
-            200,
-            EvictionStrategy::NoEviction,
-            StorageRadius::ZERO,
-        );
-        let overlay = identity.overlay_address();
-
-        let mut by_bin: std::collections::HashMap<u8, Vec<ChunkAddress>> =
-            std::collections::HashMap::new();
-        for i in 0..60u8 {
-            let c = cached_chunk(vec![i; 50]);
-            let addr = *c.address();
-            reserve.put(c).unwrap();
-            by_bin
-                .entry(addr.bin(&overlay).get())
-                .or_default()
-                .push(addr);
-        }
-        let (raw_bin, addrs) = by_bin
-            .iter()
-            .max_by_key(|(_, v)| v.len())
-            .map(|(b, v)| (*b, v.clone()))
-            .expect("at least one populated bin");
-        let bin = Bin::new(raw_bin).unwrap();
-        let before = reserve.count().unwrap();
-
-        let evicted = reserve.evict_from_bin(bin, u64::MAX).unwrap();
-        assert_eq!(evicted, addrs.len() as u64, "evicts every chunk in the bin");
-        assert_eq!(
-            reserve
-                .count_in(ProximityOrder::new(raw_bin).unwrap())
-                .unwrap(),
-            0,
-            "proximity index compacted"
-        );
-        assert_eq!(reserve.count().unwrap(), before - addrs.len() as u64);
-        assert_eq!(
-            reserve.scan_bin_from(bin, 0).unwrap().count(),
-            0,
-            "insertion-order index compacted"
-        );
-        for a in &addrs {
-            assert!(!reserve.contains(a));
-        }
-
-        // The `max` bound caps the number evicted.
-        let other = by_bin
-            .iter()
-            .find(|(b, v)| **b != raw_bin && v.len() >= 2)
-            .map(|(b, v)| (*b, v.len()));
-        if let Some((raw_other, pop)) = other {
-            let n = reserve
-                .evict_from_bin(Bin::new(raw_other).unwrap(), 1)
-                .unwrap();
-            assert_eq!(n, 1, "max caps the eviction count");
-            assert_eq!(
-                reserve
-                    .count_in(ProximityOrder::new(raw_other).unwrap())
-                    .unwrap(),
-                pop as u64 - 1
-            );
-        }
-    }
-
-    #[test]
-    fn evict_batch_whole_batch_only() {
-        let identity = MockIdentity::with_first_byte(0x00);
-        let reserve = new_reserve(
-            &identity,
-            200,
-            EvictionStrategy::NoEviction,
-            StorageRadius::ZERO,
-        );
-
-        let mut a_addrs = Vec::new();
-        let mut b_addrs = Vec::new();
-        for i in 0..15u8 {
-            let ca = cached_chunk_batch(vec![i; 40], 0xA1);
-            a_addrs.push(*ca.address());
-            reserve.put(ca).unwrap();
-            let cb = cached_chunk_batch(vec![i; 41], 0xB2);
-            b_addrs.push(*cb.address());
-            reserve.put(cb).unwrap();
-        }
-        assert_eq!(reserve.count().unwrap(), 30);
-
-        // max caps it: evict 5 of batch A first.
-        let first = reserve
-            .evict_batch(BatchId::repeat_byte(0xA1), None, 5)
-            .unwrap();
-        assert_eq!(first, 5);
-        // Then the remaining 10 of batch A.
-        let rest = reserve
-            .evict_batch(BatchId::repeat_byte(0xA1), None, u64::MAX)
-            .unwrap();
-        assert_eq!(rest, 10);
-
-        assert_eq!(reserve.count().unwrap(), 15, "only batch B remains");
-        for a in &a_addrs {
-            assert!(!reserve.contains(a), "batch A fully evicted");
-        }
-        for b in &b_addrs {
-            assert!(reserve.contains(b), "batch B untouched");
-        }
-    }
-
-    #[test]
-    fn evict_batch_respects_up_to_bin() {
-        let identity = MockIdentity::with_first_byte(0x00);
-        let reserve = new_reserve(
-            &identity,
-            400,
-            EvictionStrategy::NoEviction,
-            StorageRadius::ZERO,
-        );
-        let overlay = identity.overlay_address();
-
-        let mut addrs = Vec::new();
-        for i in 0..80u8 {
-            let c = cached_chunk_batch(vec![i; 33], 0xC3);
-            addrs.push(*c.address());
-            reserve.put(c).unwrap();
-        }
-
-        // Bins strictly shallower than 1 == bin 0 only.
-        let bound = Bin::new(1).unwrap();
-        let shallow: Vec<_> = addrs
-            .iter()
-            .copied()
-            .filter(|a| a.bin(&overlay).get() < 1)
-            .collect();
-        let deep_exists = addrs.iter().any(|a| a.bin(&overlay).get() >= 1);
-        // The deterministic CAC addresses populate both sides of bin 1 in practice.
-        assert!(
-            !shallow.is_empty() && deep_exists,
-            "test needs chunks on both sides of the bound"
-        );
-
-        let n = reserve
-            .evict_batch(BatchId::repeat_byte(0xC3), Some(bound), u64::MAX)
-            .unwrap();
-        assert_eq!(n, shallow.len() as u64, "evicts exactly the shallow chunks");
-        for a in &addrs {
-            if a.bin(&overlay).get() < 1 {
-                assert!(!reserve.contains(a), "shallow chunk evicted");
-            } else {
-                assert!(reserve.contains(a), "deep chunk retained");
+            Self {
+                reserve,
+                db,
+                batches,
+                overlay,
+                signer,
             }
         }
+
+        /// The single batch id this fixture was built with.
+        fn batch_id(&self) -> BatchId {
+            BatchId::repeat_byte(0x11)
+        }
+
+        /// Stamp `chunk` under `batch_id` at `(index, timestamp)` and put it.
+        fn put(
+            &self,
+            chunk: &nectar_primitives::AnyChunk,
+            addr: &ChunkAddress,
+            batch_id: BatchId,
+            index: u32,
+            timestamp: u64,
+        ) -> SwarmResult<()> {
+            let batch = self.batches.get(&batch_id).unwrap().expect("batch present");
+            let stamp = signed_stamp(&self.signer, &batch, addr, index, timestamp);
+            self.reserve
+                .put(CachedChunk::new(chunk.clone(), Some(stamp)))
+        }
+
+        /// Count rows in a table via a full cursor walk.
+        fn row_count<T: Table>(&self) -> u64 {
+            self.db.view(|tx| tx.count::<T>()).unwrap() as u64
+        }
+
+        /// The refcount stored for an address's payload, or `None` if absent.
+        fn payload_refcnt(&self, addr: &ChunkAddress) -> Option<u64> {
+            self.db
+                .view(|tx| Ok(tx.get::<Payload>(*addr)?.map(|p| p.refcnt)))
+                .unwrap()
+        }
+    }
+
+    #[test]
+    fn reserve_size_counts_stamped_entries_not_addresses() {
+        // Same content address stamped under N distinct batches must leave the
+        // reserve size == N (one Entry row per (batchID, stampIndex, address)),
+        // NOT 1. The reserve size feeds storage_radius / committedDepth, which is
+        // consensus-committed.
+        let ids = [
+            B256::repeat_byte(0x11),
+            B256::repeat_byte(0x22),
+            B256::repeat_byte(0x33),
+        ];
+        let fx = Fixture::with_batches(&ids);
+        let (chunk, addr) = content_chunk_in_bucket0(1);
+
+        for (i, id) in ids.iter().enumerate() {
+            fx.put(&chunk, &addr, *id, 0, 100 + i as u64).unwrap();
+        }
+
+        assert_eq!(
+            fx.reserve.count().unwrap(),
+            ids.len() as u64,
+            "size counts distinct stamped entries, not the single content address"
+        );
+        assert_eq!(
+            fx.row_count::<Entry>(),
+            ids.len() as u64,
+            "one Entry row per stamped entry"
+        );
+        // One shared, refcounted payload: N entries, one body, refcnt == N.
+        assert_eq!(fx.row_count::<Payload>(), 1, "one shared content payload");
+        assert_eq!(fx.payload_refcnt(&addr), Some(ids.len() as u64));
+    }
+
+    #[test]
+    fn newest_timestamp_wins_full_index_keying() {
+        // Two stamps for the SAME (batchID, full 8-byte stampIndex): a newer
+        // timestamp displaces the older entry (size stays 1, slot updated); an
+        // EQUAL timestamp REJECTS (prev >= curr); an OLDER timestamp REJECTS.
+        // Distinct indices in the same bucket are different slots and both admit
+        // (the gate-refuted bucket-only keying must NOT collapse them).
+        let fx = Fixture::new();
+        let id = fx.batch_id();
+        let (chunk, addr) = content_chunk_in_bucket0(2);
+
+        // First stamp at index 0, timestamp 100.
+        fx.put(&chunk, &addr, id, 0, 100).unwrap();
+        assert_eq!(fx.reserve.count().unwrap(), 1);
+
+        // Newer timestamp on the SAME slot: restamp, size unchanged.
+        fx.put(&chunk, &addr, id, 0, 200).unwrap();
+        assert_eq!(
+            fx.reserve.count().unwrap(),
+            1,
+            "restamp displaces the old entry; size unchanged"
+        );
+        // The surviving entry carries the newer stamp (timestamp 200).
+        let got = fx.reserve.get(&addr).unwrap().expect("present");
+        assert_eq!(got.stamp().expect("stamped").timestamp(), 200);
+
+        // Equal timestamp on the same slot: REJECT, nothing changes.
+        fx.put(&chunk, &addr, id, 0, 200).unwrap();
+        assert_eq!(fx.reserve.count().unwrap(), 1);
+        assert_eq!(
+            fx.reserve
+                .get(&addr)
+                .unwrap()
+                .unwrap()
+                .stamp()
+                .unwrap()
+                .timestamp(),
+            200,
+            "equal-timestamp re-presentation does not overwrite"
+        );
+
+        // Older timestamp on the same slot: REJECT.
+        fx.put(&chunk, &addr, id, 0, 150).unwrap();
+        assert_eq!(
+            fx.reserve
+                .get(&addr)
+                .unwrap()
+                .unwrap()
+                .stamp()
+                .unwrap()
+                .timestamp(),
+            200,
+            "older stamp is stale and rejected"
+        );
+
+        // A DISTINCT index in the same bucket is a different slot: it admits and
+        // adds a second entry (bucket-only keying would wrongly collapse these).
+        fx.put(&chunk, &addr, id, 1, 50).unwrap();
+        assert_eq!(
+            fx.reserve.count().unwrap(),
+            2,
+            "distinct stampIndex in the same bucket is a separate slot"
+        );
+    }
+
+    #[test]
+    fn refcounted_payload_survives_partial_eviction() {
+        // Same content under two batches: one Payload row, refcnt 2. The
+        // second-batch put must NOT rewrite the body (refcnt bump only). Evicting
+        // one entry leaves the body present (refcnt 1) and the surviving entry
+        // still resolves.
+        let ids = [B256::repeat_byte(0x11), B256::repeat_byte(0x22)];
+        let fx = Fixture::with_batches(&ids);
+        let (chunk, addr) = content_chunk_in_bucket0(3);
+
+        fx.put(&chunk, &addr, ids[0], 0, 100).unwrap();
+        let body_after_first = fx
+            .db
+            .view(|tx| Ok(tx.get::<Payload>(addr)?.map(|p| p.typed_bytes)))
+            .unwrap()
+            .expect("payload present");
+
+        fx.put(&chunk, &addr, ids[1], 0, 100).unwrap();
+        assert_eq!(fx.row_count::<Payload>(), 1, "one shared payload");
+        assert_eq!(
+            fx.payload_refcnt(&addr),
+            Some(2),
+            "second batch bumps refcnt"
+        );
+        let body_after_second = fx
+            .db
+            .view(|tx| Ok(tx.get::<Payload>(addr)?.map(|p| p.typed_bytes)))
+            .unwrap()
+            .expect("payload present");
+        assert_eq!(
+            body_after_first, body_after_second,
+            "second batch must not rewrite the shared body"
+        );
+        assert_eq!(fx.reserve.count().unwrap(), 2, "two stamped entries");
+
+        // Evict the furthest entry: one entry goes, the body survives (refcnt 1).
+        let evicted = fx.reserve.evict_furthest().unwrap();
+        assert_eq!(evicted, Some(addr));
+        assert_eq!(fx.reserve.count().unwrap(), 1, "one entry removed");
+        assert_eq!(
+            fx.payload_refcnt(&addr),
+            Some(1),
+            "shared body survives partial eviction"
+        );
+        // The surviving entry still resolves to the chunk.
+        let got = fx.reserve.get(&addr).unwrap().expect("survivor present");
+        assert_eq!(got.address(), &addr);
+
+        // Evicting the last entry drops the body entirely (no tombstone).
+        fx.reserve.evict_furthest().unwrap();
+        assert_eq!(fx.reserve.count().unwrap(), 0);
+        assert_eq!(fx.payload_refcnt(&addr), None, "last entry drops the body");
+    }
+
+    #[test]
+    fn restamp_to_different_address_cleans_displaced_rows() {
+        // A restamp re-points the (batchID, stampIndex) slot at a DIFFERENT
+        // content address. The displaced entry's rows must be deleted using the
+        // DISPLACED address's proximity (regression guard for the orphaned-row /
+        // leaked-refcount bug), and its payload refcount decremented exactly once.
+        let fx = Fixture::new();
+        let id = fx.batch_id();
+        // Two distinct addresses, both in bucket 0, so they share index slot 0.
+        let (chunk_a, addr_a) = content_chunk_in_bucket0(10);
+        let (chunk_b, addr_b) = content_chunk_in_bucket0(20);
+        assert_ne!(addr_a, addr_b, "fixtures must be distinct addresses");
+
+        // Stamp A into slot (id, index 0) at timestamp 100.
+        fx.put(&chunk_a, &addr_a, id, 0, 100).unwrap();
+        assert_eq!(fx.reserve.count().unwrap(), 1);
+        assert!(fx.reserve.contains(&addr_a));
+
+        // Restamp the SAME slot onto address B at a newer timestamp: A is
+        // displaced, B admitted. Size unchanged (one displaced, one added).
+        fx.put(&chunk_b, &addr_b, id, 0, 200).unwrap();
+        assert_eq!(
+            fx.reserve.count().unwrap(),
+            1,
+            "restamp to a different address displaces A and admits B"
+        );
+
+        // A's body and all its index rows are gone (no orphaned rows, no leaked
+        // refcount); B is present and resolves.
+        assert!(!fx.reserve.contains(&addr_a), "displaced A body removed");
+        assert_eq!(fx.payload_refcnt(&addr_a), None, "A refcount not leaked");
+        assert!(fx.reserve.contains(&addr_b), "B present");
+        assert_eq!(fx.payload_refcnt(&addr_b), Some(1));
+
+        // Exactly one of each index row remains (B's), no A residue.
+        assert_eq!(fx.row_count::<Entry>(), 1, "one Entry row (B)");
+        assert_eq!(fx.row_count::<BatchGroup>(), 1, "one BatchGroup row (B)");
+        assert_eq!(fx.row_count::<Replay>(), 1, "one Replay row (B)");
+        assert_eq!(fx.row_count::<Payload>(), 1, "one Payload row (B)");
+    }
+
+    #[test]
+    fn get_returns_exact_admitting_stamp() {
+        // get() must surface the PRECISE stamp the entry was admitted with
+        // (stored per entry), byte-for-byte, not a stamp re-loaded by batchID
+        // alone. An inclusion proof carries exactly this stamp.
+        let fx = Fixture::new();
+        let id = fx.batch_id();
+        let (chunk, addr) = content_chunk_in_bucket0(4);
+
+        let batch = fx.batches.get(&id).unwrap().unwrap();
+        let stamp = signed_stamp(&fx.signer, &batch, &addr, 0, 12_345);
+        let expected_bytes = stamp.to_bytes();
+        fx.reserve
+            .put(CachedChunk::new(chunk.clone(), Some(stamp.clone())))
+            .unwrap();
+
+        let got = fx.reserve.get(&addr).unwrap().expect("present");
+        let got_stamp = got.stamp().expect("stamped");
+        assert_eq!(got_stamp.timestamp(), 12_345);
+        assert_eq!(
+            got_stamp.to_bytes(),
+            expected_bytes,
+            "the exact admitting stamp bytes are surfaced"
+        );
+        assert_eq!(got.chunk(), &chunk);
+    }
+
+    #[test]
+    fn removal_fully_compacts_all_tables_no_tombstones() {
+        // remove() must delete every row of every stamped entry for an address
+        // across all six tables, leaving no tombstone. Store the same content
+        // under two batches (two entries, one shared payload), then remove and
+        // assert all tables are empty.
+        let ids = [B256::repeat_byte(0x11), B256::repeat_byte(0x22)];
+        let fx = Fixture::with_batches(&ids);
+        let (chunk, addr) = content_chunk_in_bucket0(5);
+
+        fx.put(&chunk, &addr, ids[0], 0, 100).unwrap();
+        fx.put(&chunk, &addr, ids[1], 0, 100).unwrap();
+        assert_eq!(fx.reserve.count().unwrap(), 2);
+
+        fx.reserve.remove(&addr).unwrap();
+
+        assert_eq!(fx.reserve.count().unwrap(), 0);
+        assert!(!fx.reserve.contains(&addr));
+        assert_eq!(fx.row_count::<Entry>(), 0, "no Entry tombstones");
+        assert_eq!(fx.row_count::<BatchGroup>(), 0, "no BatchGroup tombstones");
+        assert_eq!(fx.row_count::<Replay>(), 0, "no Replay tombstones");
+        assert_eq!(fx.row_count::<Payload>(), 0, "no Payload tombstones");
+        // The arbiter slots for both batches are cleared, so a later older stamp
+        // is admitted afresh (slot did not pin a stale newest).
+        let slot0 = StampSlotKey::new(BatchId::from(ids[0]), StampIndex::new(0, 0));
+        assert!(
+            fx.db
+                .view(|tx| tx.get::<StampIndexTable>(slot0))
+                .unwrap()
+                .is_none(),
+            "arbiter slot cleared on full removal"
+        );
+    }
+
+    #[test]
+    fn unknown_batch_and_stampless_puts_are_rejected() {
+        // A stamp referencing a batch the node does not know is refused, and a
+        // stampless put is invalid; neither writes anything.
+        let fx = Fixture::new();
+        let (chunk, addr) = content_chunk_in_bucket0(6);
+
+        // Stampless.
+        let err = fx
+            .reserve
+            .put(CachedChunk::new(chunk.clone(), None))
+            .unwrap_err();
+        assert!(matches!(err, SwarmError::InvalidChunk { .. }));
+        assert!(!fx.reserve.contains(&addr));
+
+        // Unknown batch: sign under a batch id the store does not hold.
+        let unknown = Batch::new(
+            B256::repeat_byte(0x99),
+            1_000_000,
+            0,
+            fx.signer.address(),
+            DEPTH,
+            BUCKET_DEPTH,
+            false,
+        );
+        let stamp = signed_stamp(&fx.signer, &unknown, &addr, 0, 100);
+        let err = fx
+            .reserve
+            .put(CachedChunk::new(chunk, Some(stamp)))
+            .unwrap_err();
+        assert!(matches!(err, SwarmError::InvalidChunk { .. }));
+        assert_eq!(fx.reserve.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn bin_scan_replays_entries_in_insertion_order() {
+        // The Replay table feeds the redistribution/sync consumer in per-bin
+        // insertion order, surfacing the precise (address, batch, stampHash) of
+        // each stamped entry without a body read.
+        let ids = [B256::repeat_byte(0x11), B256::repeat_byte(0x22)];
+        let fx = Fixture::with_batches(&ids);
+        let (chunk, addr) = content_chunk_in_bucket0(7);
+        let bin = addr.bin(&fx.overlay);
+
+        fx.put(&chunk, &addr, ids[0], 0, 100).unwrap();
+        fx.put(&chunk, &addr, ids[1], 0, 100).unwrap();
+
+        let items: Vec<_> = fx
+            .reserve
+            .scan_bin_from(bin, 0)
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(items.len(), 2, "two entries replayed");
+        assert!(
+            items[0].seq < items[1].seq,
+            "replayed ascending by insertion sequence"
+        );
+        assert!(items.iter().all(|i| i.address == addr));
+    }
+
+    // sample-at-most-once (a chunk under N batches contributes at most one slot to
+    // a sample, equal transformed address collapses, CAC beats SOC) is a SAMPLER
+    // property, not a reserve one: the reserve exposes the per-entry Replay
+    // projection (address, batch, stampHash, chunk_type) the sampler consumes, but
+    // the collapse is performed by the sampler (PR-F), not here. The reserve-side
+    // guarantee that the projection is per-entry and carries the chunk type is
+    // covered by bin_scan_replays_entries_in_insertion_order plus the ReplayValue
+    // schema; the collapse itself is asserted in PR-F.
+    #[test]
+    #[ignore = "sample-at-most-once collapse is a PR-F sampler property; reserve only supplies the per-entry Replay projection"]
+    fn sample_collapses_duplicate_transformed_address() {
+        // Intentionally deferred to PR-F (sampler). See the comment above: the
+        // reserve's responsibility (a per-entry, chunk-typed Replay projection) is
+        // covered by the bin-scan test; the at-most-once collapse over transformed
+        // addresses belongs to the sampler that consumes that projection.
     }
 }
