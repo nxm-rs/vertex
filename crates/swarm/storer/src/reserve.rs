@@ -11,6 +11,14 @@ use vertex_swarm_primitives::OverlayAddress;
 use crate::{ChunkStore, StorerError, StorerResult};
 
 /// Eviction strategy when reserve is full.
+///
+/// Note: [`DbReserve`](crate::DbReserve) does not consult this in-memory
+/// strategy. Its capacity is managed by the caller through the proximity- and
+/// batch-scoped eviction primitives on
+/// [`ReserveStore`](vertex_swarm_api::ReserveStore)
+/// (`evict_furthest`/`evict_from_bin`/`evict_batch`), which compact the on-disk
+/// indexes atomically. This enum and [`Reserve::try_reserve`] remain for the
+/// in-memory store paths and are superseded for the db reserve.
 #[derive(Debug, Clone, Copy, Default)]
 pub enum EvictionStrategy {
     /// Don't evict, return error when full.
@@ -150,6 +158,12 @@ impl Reserve {
     pub fn on_removed(&self) {
         let mut count = self.count.write();
         *count = count.saturating_sub(1);
+    }
+
+    /// Record that `n` chunks were removed at once (a batch/bin eviction).
+    pub fn on_removed_n(&self, n: u64) {
+        let mut count = self.count.write();
+        *count = count.saturating_sub(n);
     }
 
     /// Evict the oldest chunk (first one encountered in iteration).

@@ -73,7 +73,12 @@ pub trait HasStore: Send + Sync {
 #[auto_impl::auto_impl(&, Arc, Box)]
 pub trait HasReserve: HasStore {
     /// The reserve type.
-    type Reserve: ReserveStore;
+    ///
+    /// Bounded by [`BinCursorStore`] (which refines [`ReserveStore`]) so the
+    /// wired handle exposes both the proximity axis and the per-bin
+    /// insertion-order axis the redistribution sampler and sync need; without it
+    /// the cursor surface would be unreachable behind the erased handle.
+    type Reserve: BinCursorStore;
 
     /// Get the reserve.
     fn reserve(&self) -> &Self::Reserve;
