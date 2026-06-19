@@ -80,6 +80,7 @@
 //! entry referencing it goes.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use alloy_primitives::{B256, keccak256};
 use nectar_postage::Stamp;
@@ -90,7 +91,8 @@ use vertex_storage::{
     Database, DatabaseError, DbCursorRO, DbTx, DbTxMut, Decode, Encode, Table, table,
 };
 use vertex_swarm_api::{
-    BinCursorStore, BinScanItem, ReserveStore, SwarmError, SwarmLocalStore, SwarmResult,
+    BinCursorStore, BinScanItem, ReserveStore, SettableRadius, SwarmError, SwarmLocalStore,
+    SwarmResult,
 };
 use vertex_swarm_postage::{
     AdmissionValidator, Arbitration, BatchStore, IncomingStamp, PostageContext, StampIndexTable,
@@ -410,8 +412,19 @@ pub struct DbReserve<DB: Database, BS: BatchStore> {
     reserve: Reserve,
     /// Local overlay address, resolved once at construction.
     overlay: OverlayAddress,
-    /// Current storage-responsibility radius.
-    radius: StorageRadius,
+    /// Current storage-responsibility radius, behind a cheap lock-free cell.
+    ///
+    /// The radius is the consensus-load-bearing output of the size-driven
+    /// dynamics ([`crate::radius`]): the [`RadiusController`](crate::RadiusController)
+    /// applies a new value via [`set_storage_radius`](Self::set_storage_radius)
+    /// as the reserve fills or drains, and [`storage_radius`](ReserveStore::storage_radius)
+    /// reads it. A single byte (`0..=MAX_PO`) is all the radius ever is, so an
+    /// [`AtomicU8`] is both the cheapest write target and a lock-free read on the
+    /// hot `is_responsible_for` path; `Relaxed` ordering suffices because the
+    /// radius carries no happens-before relationship with other reserve state
+    /// (callers that need a consistent (radius, occupancy) pair re-derive the
+    /// radius from the occupancy themselves).
+    radius: AtomicU8,
 }
 
 impl<DB: Database, BS: BatchStore> DbReserve<DB, BS> {
@@ -451,7 +464,7 @@ impl<DB: Database, BS: BatchStore> DbReserve<DB, BS> {
             batches,
             reserve,
             overlay,
-            radius,
+            radius: AtomicU8::new(radius.get()),
         })
     }
 
@@ -463,6 +476,38 @@ impl<DB: Database, BS: BatchStore> DbReserve<DB, BS> {
     /// The proximity order of a chunk address relative to the local overlay.
     fn po_of(&self, address: &ChunkAddress) -> u8 {
         address.proximity(&self.overlay).get()
+    }
+
+    /// Read the current radius cell back into a [`StorageRadius`].
+    ///
+    /// The cell only ever holds a value written from a [`StorageRadius`] (a valid
+    /// `0..=MAX_PO` bin), so the `Bin::try_from` reconstruction never fails; the
+    /// `unwrap_or(StorageRadius::ZERO)` is a total fallback that keeps the read
+    /// infallible rather than panicking on a value the cell cannot hold.
+    fn load_radius(&self) -> StorageRadius {
+        let raw = self.radius.load(Ordering::Relaxed);
+        Bin::try_from(raw)
+            .map(StorageRadius::new)
+            .unwrap_or(StorageRadius::ZERO)
+    }
+
+    /// Apply a new storage-responsibility radius.
+    ///
+    /// This is the write seam the size-driven dynamics ([`crate::radius`]) feed:
+    /// the [`RadiusController`](crate::RadiusController) derives the radius from
+    /// the reserve's occupancy against its capacity and calls this to commit it,
+    /// after which [`storage_radius`](ReserveStore::storage_radius) and
+    /// [`is_responsible_for`](ReserveStore::is_responsible_for) observe the new
+    /// value. Committing the radius is a single relaxed atomic store; it does not
+    /// itself move any chunk (the controller sheds bins through the eviction
+    /// verbs before narrowing responsibility), so it never blocks or fails.
+    ///
+    /// Exposed both as this inherent method and through the
+    /// [`SettableRadius`](vertex_swarm_api::SettableRadius) extension trait so the
+    /// control loop can target it either concretely or generically over a
+    /// [`ReserveStore`].
+    pub fn set_storage_radius(&self, radius: StorageRadius) {
+        self.radius.store(radius.get(), Ordering::Relaxed);
     }
 
     /// The bin a chunk address falls into relative to the local overlay.
@@ -779,11 +824,11 @@ where
     BS::Error: Send + Sync + 'static,
 {
     fn storage_radius(&self) -> StorageRadius {
-        self.radius
+        self.load_radius()
     }
 
     fn is_responsible_for(&self, address: &ChunkAddress) -> bool {
-        address.proximity(&self.overlay()).get() >= self.radius.get()
+        address.proximity(&self.overlay()).get() >= self.radius.load(Ordering::Relaxed)
     }
 
     fn count(&self) -> SwarmResult<u64> {
@@ -931,6 +976,17 @@ where
             }
         }
         self.evict_entries(&targets)
+    }
+}
+
+impl<DB: Database, BS: BatchStore + Send + Sync> SettableRadius for DbReserve<DB, BS>
+where
+    BS::Error: Send + Sync + 'static,
+{
+    fn set_storage_radius(&self, radius: StorageRadius) {
+        // Delegates to the inherent method (the same write the controller's apply
+        // path takes); the trait exposes that write generically over a reserve.
+        DbReserve::set_storage_radius(self, radius);
     }
 }
 
@@ -1778,5 +1834,240 @@ mod consensus_spec {
         // reserve's responsibility (a per-entry, chunk-typed Replay projection) is
         // covered by the bin-scan test; the at-most-once collapse over transformed
         // addresses belongs to the sampler that consumes that projection.
+    }
+
+    // --- radius dynamics (PR-E): expiry -> evict_batch end to end -----------
+
+    #[test]
+    fn batch_expiry_sweep_evicts_only_the_expired_batch() {
+        use crate::expiry::ExpirySweep;
+
+        // Two batches, each holding one stamped entry of a distinct content
+        // address (distinct addresses so neither eviction touches the other's
+        // refcounted payload).
+        let live_id = B256::repeat_byte(0x11);
+        let expiring_id = B256::repeat_byte(0x22);
+        let fx = Fixture::with_batches(&[live_id, expiring_id]);
+        let (chunk_a, addr_a) = content_chunk_in_bucket0(101);
+        let (chunk_b, addr_b) = content_chunk_in_bucket0(202);
+
+        fx.put(&chunk_a, &addr_a, live_id, 0, 100).unwrap();
+        fx.put(&chunk_b, &addr_b, expiring_id, 0, 100).unwrap();
+        assert_eq!(fx.reserve.count().unwrap(), 2, "two stamped entries");
+
+        // batch_for sets value = 1_000_000. Advance the chain's cumulative
+        // payout so it catches one batch's value but not the other: lower the
+        // expiring batch's value below total_amount, leave the live one above.
+        let mut expiring = fx.batches.get(&expiring_id).unwrap().unwrap();
+        expiring.set_value(500);
+        fx.batches.put(expiring).unwrap();
+        // total_amount = 1000 >= the expiring batch's value (500), but < the
+        // live batch's value (1_000_000).
+        fx.batches
+            .set_context(PostageContext::new(THRESHOLD + 1, 1000))
+            .unwrap();
+
+        // Run the sweep through the reserve's own batch-store handle (same DB).
+        let reserve_batches = DbBatchStore::new(Arc::clone(&fx.db)).unwrap();
+        let report = ExpirySweep::new(&reserve_batches, &fx.reserve)
+            .run()
+            .unwrap();
+
+        assert_eq!(
+            report.evicted_batches,
+            vec![expiring_id],
+            "only the expired batch is swept"
+        );
+        assert_eq!(report.evicted_entries, 1, "its single entry is removed");
+        assert_eq!(
+            fx.reserve.count().unwrap(),
+            1,
+            "the live batch's entry survives expiry of the other"
+        );
+        // The expired batch's payload is gone; the live one's remains.
+        assert_eq!(fx.payload_refcnt(&addr_b), None, "expired payload removed");
+        assert_eq!(
+            fx.payload_refcnt(&addr_a),
+            Some(1),
+            "live payload still refcounted"
+        );
+
+        // Idempotent: a second sweep at the same context evicts nothing.
+        let again = ExpirySweep::new(&reserve_batches, &fx.reserve)
+            .run()
+            .unwrap();
+        assert!(again.evicted_batches.is_empty(), "sweep is idempotent");
+        assert_eq!(fx.reserve.count().unwrap(), 1);
+    }
+
+    #[test]
+    fn settable_radius_cell_round_trips_through_the_read_seam() {
+        // The settable radius cell (the SEAM the train was missing): a write via
+        // SettableRadius::set_storage_radius is observed by the ReserveStore read
+        // seam (storage_radius / is_responsible_for). Before this cell existed the
+        // derived radius had no write target and committedDepth could never change
+        // at runtime.
+        use vertex_swarm_api::SettableRadius;
+
+        let fx = Fixture::new();
+        assert_eq!(
+            fx.reserve.storage_radius(),
+            StorageRadius::ZERO,
+            "constructed at the configured radius"
+        );
+
+        let target = StorageRadius::new(Bin::try_from(5).unwrap());
+        // Drive the write through the trait object form to prove object safety.
+        let dyn_reserve: &dyn SettableRadius = &fx.reserve;
+        dyn_reserve.set_storage_radius(target);
+
+        assert_eq!(
+            fx.reserve.storage_radius(),
+            target,
+            "the read seam observes the committed radius"
+        );
+        // is_responsible_for now evaluates against the new radius: an address at
+        // proximity 5+ is in responsibility, a shallower one is not.
+        let (_chunk, addr) = content_chunk_in_bucket0(909);
+        let po = addr.proximity(&fx.overlay).get();
+        assert_eq!(
+            fx.reserve.is_responsible_for(&addr),
+            po >= 5,
+            "responsibility is evaluated against the committed radius"
+        );
+    }
+
+    #[test]
+    fn radius_controller_apply_commits_a_shrink_through_the_seam() {
+        // The apply path (the wiring seam #391 consumes): from a radius above the
+        // floor, an under-filled, idle reserve shrinks one step, and apply commits
+        // the shallower radius through SettableRadius so the read seam sees it.
+        use crate::RadiusController;
+
+        let fx = Fixture::new();
+        // Start above the floor with no entries (within-radius 0 < threshold).
+        fx.reserve
+            .set_storage_radius(StorageRadius::new(Bin::try_from(5).unwrap()));
+
+        let controller = RadiusController::new(StorageRadius::ZERO);
+        let committed = controller
+            .apply(&fx.reserve, /* syncing_idle */ true)
+            .unwrap();
+
+        assert_eq!(
+            committed,
+            StorageRadius::new(Bin::try_from(4).unwrap()),
+            "an under-filled idle reserve shrinks one step"
+        );
+        assert_eq!(
+            fx.reserve.storage_radius(),
+            committed,
+            "apply commits the derived radius through the settable cell"
+        );
+    }
+
+    #[test]
+    fn radius_controller_apply_holds_at_floor() {
+        // At the configured floor the shrink rule does not fire, so apply commits
+        // nothing and reports the unchanged radius.
+        use crate::RadiusController;
+
+        let fx = Fixture::new();
+        let controller = RadiusController::new(StorageRadius::ZERO);
+        let committed = controller.apply(&fx.reserve, true).unwrap();
+        assert_eq!(committed, StorageRadius::ZERO, "held at the floor");
+        assert_eq!(fx.reserve.storage_radius(), StorageRadius::ZERO);
+    }
+
+    #[test]
+    fn nothing_evicted_when_no_batch_is_expired() {
+        use crate::expiry::ExpirySweep;
+
+        // Both batches retain ample value against a zero cumulative payout.
+        let ids = [B256::repeat_byte(0x11), B256::repeat_byte(0x22)];
+        let fx = Fixture::with_batches(&ids);
+        let (chunk, addr) = content_chunk_in_bucket0(303);
+        fx.put(&chunk, &addr, ids[0], 0, 100).unwrap();
+        fx.put(&chunk, &addr, ids[1], 0, 100).unwrap();
+        assert_eq!(fx.reserve.count().unwrap(), 2);
+
+        let reserve_batches = DbBatchStore::new(Arc::clone(&fx.db)).unwrap();
+        let report = ExpirySweep::new(&reserve_batches, &fx.reserve)
+            .run()
+            .unwrap();
+        assert!(report.evicted_batches.is_empty(), "no batch expired");
+        assert_eq!(report.evicted_entries, 0);
+        assert_eq!(fx.reserve.count().unwrap(), 2, "nothing evicted");
+    }
+
+    #[test]
+    fn expired_event_evicts_reserve_before_store_removal() {
+        // The orphan-avoidance contract: on an `Expired` event the reserve
+        // entries must be shed BEFORE the batch leaves the store, otherwise the
+        // reconciliation sweep (which reads batch_ids) could never see them and
+        // they would be orphaned, inflating reserve size and the radius.
+        use crate::expiry::ExpirySweep;
+        use std::cell::Cell;
+
+        let expiring_id = B256::repeat_byte(0x33);
+        let fx = Fixture::with_batches(&[expiring_id]);
+        let (chunk, addr) = content_chunk_in_bucket0(404);
+        fx.put(&chunk, &addr, expiring_id, 0, 100).unwrap();
+        assert_eq!(fx.reserve.count().unwrap(), 1, "one stamped entry");
+
+        let reserve_batches = DbBatchStore::new(Arc::clone(&fx.db)).unwrap();
+        let sweep = ExpirySweep::new(&reserve_batches, &fx.reserve);
+
+        // The acknowledgement (store removal) asserts the reserve is already
+        // empty of the batch by the time it runs, proving the ordering.
+        let acked = Cell::new(false);
+        let removed = sweep
+            .on_expired_event::<_, std::io::Error>(expiring_id, || {
+                assert_eq!(
+                    fx.reserve.count().unwrap(),
+                    0,
+                    "entries must be evicted before the store removal runs"
+                );
+                acked.set(true);
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(removed, 1, "the batch's single entry is evicted");
+        assert!(acked.get(), "the acknowledgement ran after eviction");
+        assert_eq!(fx.reserve.count().unwrap(), 0, "reserve drained");
+        assert_eq!(fx.payload_refcnt(&addr), None, "payload removed");
+    }
+
+    #[test]
+    fn expired_event_does_not_acknowledge_when_eviction_fails_is_skipped() {
+        // Documents the short-circuit contract: a failing acknowledgement leaves
+        // the eviction done but surfaces the error so the caller can retry the
+        // removal. (Eviction failure itself is exercised by the reserve's own
+        // error tests; here we cover the acknowledge-error funnel.)
+        use crate::expiry::ExpirySweep;
+
+        let expiring_id = B256::repeat_byte(0x44);
+        let fx = Fixture::with_batches(&[expiring_id]);
+        let (chunk, addr) = content_chunk_in_bucket0(505);
+        fx.put(&chunk, &addr, expiring_id, 0, 100).unwrap();
+
+        let reserve_batches = DbBatchStore::new(Arc::clone(&fx.db)).unwrap();
+        let sweep = ExpirySweep::new(&reserve_batches, &fx.reserve);
+
+        let err = sweep
+            .on_expired_event::<_, std::io::Error>(expiring_id, || {
+                Err(std::io::Error::other("store removal failed"))
+            })
+            .unwrap_err();
+        assert!(
+            format!("{err}").contains("store removal failed"),
+            "acknowledge error is funnelled through SwarmError::storage"
+        );
+        // The eviction still happened (it precedes the acknowledge); the caller
+        // is responsible for retrying the store removal, which a later `run`
+        // backstop would also catch were the batch still present.
+        assert_eq!(fx.reserve.count().unwrap(), 0, "eviction already applied");
+        assert_eq!(fx.payload_refcnt(&addr), None);
     }
 }

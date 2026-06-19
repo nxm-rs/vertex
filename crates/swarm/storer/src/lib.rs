@@ -29,6 +29,8 @@ mod cache;
 mod db_reserve;
 mod db_store;
 mod error;
+mod expiry;
+mod radius;
 mod reserve;
 mod traits;
 
@@ -36,6 +38,11 @@ pub use cache::ChunkCache;
 pub use db_reserve::DbReserve;
 pub use db_store::DbChunkStore;
 pub use error::StorerError;
+pub use expiry::{EVICT_BATCH_MAX, ExpirySweep, SweepReport, expired_batches};
+pub use radius::{
+    BIN_EVICT_MAX, RadiusController, RadiusDecision, RadiusOutcome, ReserveOccupancy,
+    derive_radius, grow_to_capacity, occupancy_of, shrink_threshold,
+};
 pub use reserve::{EvictionStrategy, Reserve};
 pub use traits::ChunkStore;
 
