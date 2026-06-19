@@ -131,8 +131,8 @@ indexing_slicing = "warn"
 
 [workspace.dependencies]
 ## nectar
-# Track nectar's main branch via a single shared git source so the workspace
-# resolves one copy of shared nectar types; Cargo.lock pins the exact commit.
+# Track nectar via a single shared git source so the workspace resolves one
+# copy of shared nectar types; Cargo.lock pins the exact commit.
 nectar-contracts = { git = "https://github.com/nxm-rs/nectar", branch = "main" }
 nectar-postage = { git = "https://github.com/nxm-rs/nectar", branch = "main" }
 nectar-primitives = { git = "https://github.com/nxm-rs/nectar", branch = "main" }
