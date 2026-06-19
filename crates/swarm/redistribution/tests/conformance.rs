@@ -231,9 +231,9 @@ fn witness_indices_match_reference() {
     let oracle = load_oracle();
     let claim = claim_anchor(&oracle);
     let idx = witness_indices(claim);
-    assert_eq!(idx.require1, oracle.require1);
-    assert_eq!(idx.require2, oracle.require2);
-    assert_eq!(idx.require3, oracle.require3);
+    assert_eq!(idx.challenged[0], oracle.require1);
+    assert_eq!(idx.challenged[1], oracle.require2);
+    assert_eq!(idx.last, oracle.require3);
     assert_eq!(idx.segment_index, oracle.segment_index);
 }
 
@@ -248,9 +248,17 @@ fn inclusion_proofs_match_reference_byte_for_byte() {
 
     let proofs = make_inclusion_proofs(&items, sample, claim).expect("proofs build");
 
-    assert_proof(&proofs.0[0], &oracle.proof1, "proof1 (require1)");
-    assert_proof(&proofs.0[1], &oracle.proof2, "proof2 (require2)");
-    assert_proof(&proofs.0[2], &oracle.proof_last, "proofLast (require3)");
+    assert_proof(
+        &proofs.0[0],
+        &oracle.proof1,
+        "proof1 (first challenged slot)",
+    );
+    assert_proof(
+        &proofs.0[1],
+        &oracle.proof2,
+        "proof2 (second challenged slot)",
+    );
+    assert_proof(&proofs.0[2], &oracle.proof_last, "proofLast (last slot)");
 }
 
 fn assert_proof(
@@ -330,9 +338,9 @@ fn witness_proofs_self_verify() {
     let idx = witness_indices(claim);
 
     for (p, require) in [
-        (&proofs.0[0], idx.require1),
-        (&proofs.0[1], idx.require2),
-        (&proofs.0[2], idx.require3),
+        (&proofs.0[0], idx.challenged[0]),
+        (&proofs.0[1], idx.challenged[1]),
+        (&proofs.0[2], idx.last),
     ] {
         assert!(
             p.rc_proof.verify(rc_root.as_slice()).expect("rc verify"),
