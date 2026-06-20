@@ -1,13 +1,8 @@
 //! Time-based settlement provider for bandwidth accounting.
 //!
-//! Peers accumulate a time-based allowance (refresh rate × elapsed seconds)
+//! Peers accumulate a time-based allowance (refresh rate * elapsed seconds)
 //! that forgives debt periodically, enabling bandwidth usage without payments.
-//!
-//! # Usage
-//!
-//! Use [`create_pseudosettle_actor`] to create a service/handle pair.
-//! The [`PseudosettleProvider`] implements [`SwarmSettlementProvider`] for
-//! integration with [`Accounting`].
+//! [`PseudosettleProvider`] implements [`SwarmSettlementProvider`].
 //!
 //! [`SwarmSettlementProvider`]: vertex_swarm_api::SwarmSettlementProvider
 
@@ -16,6 +11,7 @@
 extern crate alloc;
 
 mod error;
+mod event;
 mod handle;
 mod service;
 
@@ -27,32 +23,25 @@ use vertex_swarm_api::{
     SwarmPeerState, SwarmResult, SwarmSettlementProvider,
 };
 use vertex_swarm_bandwidth::Accounting;
-use vertex_swarm_node::ClientCommand;
 use vertex_swarm_primitives::OverlayAddress;
 
 pub use error::PseudosettleSettlementError;
+pub use event::{PseudosettleEvent, PseudosettleNetworkCommand};
 pub use handle::PseudosettleHandle;
 pub use service::{PseudosettleCommand, PseudosettleService};
-pub use vertex_swarm_node::PseudosettleEvent;
 
 /// Time-based debt forgiveness provider.
 ///
-/// On `pre_allow()`, credits the peer based on elapsed time:
-/// `credit = min(elapsed_seconds × refresh_rate, abs(debt))`
-///
-/// With a handle, `settle()` delegates to the network service.
-/// Without a handle, only local refresh via `pre_allow()` is performed.
+/// On `pre_allow()`, credits the peer by `min(elapsed_seconds * refresh_rate,
+/// abs(debt))`. With a handle, `settle()` delegates to the network service;
+/// without one, only local refresh via `pre_allow()` happens.
 pub struct PseudosettleProvider<C> {
     config: C,
-    /// Optional handle for delegating to the service.
     handle: Option<PseudosettleHandle>,
 }
 
 impl<C: SwarmAccountingConfig> PseudosettleProvider<C> {
-    /// Create a new pseudosettle provider with the given configuration.
-    ///
-    /// This creates a provider without network settlement capability.
-    /// Use [`create_pseudosettle_actor`] for full functionality.
+    /// Create a provider without network settlement capability.
     pub fn new(config: C) -> Self {
         Self {
             config,
@@ -60,7 +49,7 @@ impl<C: SwarmAccountingConfig> PseudosettleProvider<C> {
         }
     }
 
-    /// Create a new pseudosettle provider with a handle for network settlement.
+    /// Create a provider with a handle for network settlement.
     pub fn with_handle(config: C, handle: PseudosettleHandle) -> Self {
         Self {
             config,
@@ -68,12 +57,12 @@ impl<C: SwarmAccountingConfig> PseudosettleProvider<C> {
         }
     }
 
-    /// Get the refresh rate in AU per second from the configuration.
+    /// Refresh rate in AU per second from the configuration.
     pub fn refresh_rate(&self) -> Au {
         self.config.refresh_rate()
     }
 
-    /// Get a reference to the configuration.
+    /// The configuration.
     pub fn config(&self) -> &C {
         &self.config
     }
@@ -90,11 +79,10 @@ impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for Pseudosettl
     }
 
     async fn settle(&self, peer: OverlayAddress, state: &dyn SwarmPeerState) -> SwarmResult<Au> {
-        // If we have a handle, delegate to the service
         if let Some(handle) = &self.handle {
             let balance = state.balance();
             if !balance.is_negative() {
-                return Ok(Au::ZERO); // Nothing to settle
+                return Ok(Au::ZERO);
             }
 
             let amount = balance.unsigned_abs();
@@ -105,7 +93,6 @@ impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for Pseudosettl
 
             Ok(accepted)
         } else {
-            // No handle - refresh happens automatically in pre_allow()
             Ok(Au::ZERO)
         }
     }
@@ -117,11 +104,11 @@ impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for Pseudosettl
 
 /// Create a pseudosettle actor (service + handle pair).
 ///
-/// Spawn the service as a background task. Use the handle to create
-/// a [`PseudosettleProvider`].
+/// The service emits [`PseudosettleNetworkCommand`]s on `network_command_tx`
+/// for the node layer to dispatch on the pseudosettle wire protocol.
 pub fn create_pseudosettle_actor<A: SwarmBandwidthAccounting + 'static>(
     event_rx: mpsc::UnboundedReceiver<PseudosettleEvent>,
-    client_command_tx: mpsc::UnboundedSender<ClientCommand>,
+    network_command_tx: mpsc::UnboundedSender<PseudosettleNetworkCommand>,
     accounting: Arc<A>,
     refresh_rate: Au,
 ) -> (PseudosettleService<A>, PseudosettleHandle) {
@@ -130,7 +117,7 @@ pub fn create_pseudosettle_actor<A: SwarmBandwidthAccounting + 'static>(
     let service = PseudosettleService::new(
         command_rx,
         event_rx,
-        client_command_tx,
+        network_command_tx,
         accounting,
         refresh_rate,
     );
@@ -155,15 +142,12 @@ fn refresh_allowance(state: &dyn SwarmPeerState, refresh_rate: Au) -> Au {
         return Au::ZERO;
     }
 
-    // Allowance is refresh_rate AU per elapsed second. The scaling is checked
-    // so a large rate times a long gap cannot wrap into a tiny allowance; on
-    // overflow the allowance saturates at the maximum, which is then capped by
-    // the actual debt below.
+    // Checked scaling so a large rate over a long gap cannot wrap into a tiny
+    // allowance; on overflow it saturates and the debt cap below still bounds it.
     let allowance = refresh_rate
         .checked_scale(elapsed)
         .unwrap_or(Au::from_amount(u64::MAX));
 
-    // Only add credit if balance is negative (we owe them)
     let balance = state.balance();
     let credit = if balance.is_negative() {
         let credit = allowance.min(-balance);
@@ -177,15 +161,11 @@ fn refresh_allowance(state: &dyn SwarmPeerState, refresh_rate: Au) -> Au {
     credit
 }
 
-/// Get current timestamp in seconds.
 fn current_timestamp() -> u64 {
     vertex_util_runtime::time::now_unix_secs()
 }
 
-/// Create a new pseudosettle-only accounting instance.
-///
-/// This is a convenience function that creates a `Accounting` with
-/// a `PseudosettleProvider`.
+/// Create an `Accounting` instance backed by a single `PseudosettleProvider`.
 pub fn new_pseudosettle_accounting<C: SwarmAccountingConfig + Clone + 'static, I: SwarmIdentity>(
     config: C,
     identity: I,
@@ -329,11 +309,8 @@ mod tests {
 
     #[test]
     fn test_refresh_allowance_does_not_overflow_into_a_tiny_allowance() {
-        // A very large refresh rate over a long gap previously multiplied with a
-        // raw saturating multiply: the checked scaling now bounds it instead of
-        // wrapping into a small allowance. The credit is still capped at the
-        // actual debt, so a large debt is fully forgiven and never under-credited
-        // by a wrapped allowance.
+        // A large rate over a long gap saturates instead of wrapping; the debt
+        // cap still bounds the credit, so the debt is fully forgiven.
         let state = PeerState::new(Au::from_amount(u64::MAX), Au::from_amount(u64::MAX));
         let debt = i64::MAX / 2;
         state.add_balance(Au::new(-debt));
@@ -341,7 +318,6 @@ mod tests {
 
         let credit = refresh_allowance(&state, Au::from_amount(u64::MAX));
 
-        // The whole debt is forgiven; the allowance never wrapped below it.
         assert_eq!(credit, Au::new(debt));
         assert_eq!(state.balance(), Au::ZERO);
     }

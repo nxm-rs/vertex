@@ -41,26 +41,19 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b  # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: taiki-e/install-action@1b57bc699ba2af96a06eb2a2a0d32b43a7d8e8b8  # just
+        with:
+          tool: just
       - name: Clippy (production)
         run: cargo clippy --lib --all-features -- -D warnings
       - name: Clippy (tests)
         run: cargo clippy --tests --benches --all-features -- -D warnings -A clippy::unwrap_used -A clippy::expect_used -A clippy::indexing_slicing
-      # Keep the embedded FFI cone free of the native observability server stack
-      # (Prometheus exporter, OTLP appender). Pure `cargo tree`, no compile.
-      - name: Cone guard (ffi)
-        run: |
-          tree="$(cargo tree -p vertex-ffi -e normal)"
-          leaked=""
-          for crate in metrics-exporter-prometheus opentelemetry-appender-tracing; do
-            if grep -q "$crate" <<<"$tree"; then
-              leaked="$leaked $crate"
-            fi
-          done
-          if [ -n "$leaked" ]; then
-            echo "cone guard: vertex-ffi pulls the observability server stack:$leaked" >&2
-            exit 1
-          fi
-          echo "cone guard: vertex-ffi is free of the observability server stack"
+      # Cone guards live in one place: the `check-cone` just target. It keeps the
+      # embedded FFI cone free of the native observability server stack and asserts
+      # the pseudosettle provider never pulls the libp2p-aware node crate. Calling
+      # the target here is the single source of truth so the two never drift.
+      - name: Cone guard
+        run: just check-cone
 
   test:
     name: test
@@ -117,7 +110,7 @@ jobs:
       # `+nightly` is load-bearing: rust-toolchain.toml pins the stable
       # channel and would otherwise override the installed nightly.
       - name: Build peer stack for wasm32
-        run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-util-runtime -p vertex-swarm-peer-score -p vertex-swarm-peer-manager -p vertex-tasks -p vertex-net-dnsaddr-doh
+        run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-util-runtime -p vertex-swarm-peer-score -p vertex-swarm-peer-manager -p vertex-tasks -p vertex-net-dnsaddr-doh -p vertex-swarm-bandwidth-pseudosettle
       # The full client cone: `vertex-swarm-node` pulls topology and every
       # `/swarm/...` wire protocol, so this is the milestone wasm build for a
       # browser client node.

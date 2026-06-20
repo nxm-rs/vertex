@@ -12,11 +12,11 @@ use vertex_swarm_api::{
     SwarmScoringEvent,
 };
 use vertex_swarm_net_pseudosettle::PaymentAck;
-use vertex_swarm_node::{ClientCommand, PseudosettleEvent};
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
 
 use crate::error::PseudosettleSettlementError;
+use crate::event::{PseudosettleEvent, PseudosettleNetworkCommand};
 
 /// Commands from the handle to the service.
 pub enum PseudosettleCommand {
@@ -46,7 +46,7 @@ pub struct PseudosettleService<A: SwarmBandwidthAccounting> {
     /// Receive events routed from the network layer.
     event_rx: mpsc::UnboundedReceiver<PseudosettleEvent>,
     /// Send commands to the network layer.
-    command_tx: mpsc::UnboundedSender<ClientCommand>,
+    command_tx: mpsc::UnboundedSender<PseudosettleNetworkCommand>,
     /// Reference to accounting for balance updates.
     accounting: Arc<A>,
     /// AU per second for rate limiting settlements.
@@ -64,7 +64,7 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
     pub fn new(
         command_rx: mpsc::UnboundedReceiver<PseudosettleCommand>,
         event_rx: mpsc::UnboundedReceiver<PseudosettleEvent>,
-        command_tx: mpsc::UnboundedSender<ClientCommand>,
+        command_tx: mpsc::UnboundedSender<PseudosettleNetworkCommand>,
         accounting: Arc<A>,
         refresh_rate: Au,
     ) -> Self {
@@ -81,15 +81,11 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
     }
 
     /// Attach a peer reporter so settlement violations feed peer scoring.
-    ///
-    /// Reporting is best-effort and non-blocking. Without a reporter the
-    /// service behaves exactly as before.
     pub fn with_reporter(mut self, reporter: Arc<dyn PeerReporter>) -> Self {
         self.reporter = Some(reporter);
         self
     }
 
-    /// Report an accounting violation if a reporter is attached.
     fn report_violation(&self, peer: &OverlayAddress) {
         if let Some(reporter) = &self.reporter {
             reporter.report_peer(
@@ -100,7 +96,6 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
         }
     }
 
-    /// Run the service event loop with graceful shutdown support.
     async fn run(mut self, shutdown: GracefulShutdown) {
         let mut shutdown = std::pin::pin!(shutdown);
 
@@ -133,14 +128,12 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
                 amount,
                 response_tx,
             } => {
-                // Check if we already have a pending settlement with this peer
                 if self.pending.contains_key(&peer) {
                     let _ =
                         response_tx.send(Err(PseudosettleSettlementError::SettlementInProgress));
                     return;
                 }
 
-                // Check rate limiting
                 let now = current_timestamp();
                 if let Some(&last) = self.last_settlement.get(&peer)
                     && now <= last
@@ -149,7 +142,6 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
                     return;
                 }
 
-                // Store the offer and response channel for when we get the ack
                 self.pending.insert(
                     peer,
                     PendingSettlement {
@@ -161,13 +153,11 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
 
                 debug!(%peer, %amount, "Sending pseudosettle request");
 
-                // Send via network
-                if let Err(e) = self.command_tx.send(ClientCommand::SendPseudosettle {
+                if let Err(e) = self.command_tx.send(PseudosettleNetworkCommand::Send {
                     peer,
                     amount: wire_from_au(amount),
                 }) {
                     warn!(%peer, error = ?e, "Failed to send pseudosettle command");
-                    // Remove the pending entry and notify failure
                     if let Some(pending) = self.pending.remove(&peer) {
                         let _ = pending.response_tx.send(Err(
                             PseudosettleSettlementError::NetworkError(e.to_string()),
@@ -183,18 +173,15 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
             PseudosettleEvent::Sent { peer, ack } => {
                 debug!(%peer, amount = %ack.amount, "Pseudosettle ack received");
 
-                // Complete pending request with accepted amount
                 if let Some(pending) = self.pending.remove(&peer) {
+                    // An ack may accept at most the offered amount; over-acceptance
+                    // desyncs the mutual books.
                     if ack.amount > wire_from_au(pending.amount) {
-                        // Law broken: an ack may accept at most the amount
-                        // offered for settlement; over-acceptance desyncs
-                        // the mutual books.
                         self.report_violation(&peer);
                     }
 
                     let accepted = au_from_wire(ack.amount);
 
-                    // Credit our balance (we paid, debt reduced)
                     let handle = self.accounting.for_peer(peer);
                     handle.record(accepted, Direction::Upload);
 
@@ -210,14 +197,12 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
             } => {
                 debug!(%peer, %amount, %request_id, "Pseudosettle request received");
 
-                // Check rate limiting
                 let now = current_timestamp();
                 if let Some(&last) = self.last_settlement.get(&peer)
                     && now <= last
                 {
-                    // Too soon - ack with 0 amount
                     let ack = PaymentAck::now(U256::ZERO);
-                    let _ = self.command_tx.send(ClientCommand::AckPseudosettle {
+                    let _ = self.command_tx.send(PseudosettleNetworkCommand::Ack {
                         peer,
                         request_id,
                         ack,
@@ -225,22 +210,19 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
                     return;
                 }
 
-                // Calculate acceptable amount based on time-based refresh
                 let handle = self.accounting.for_peer(peer);
                 let acceptable = self.calculate_acceptable(&peer, &handle, au_from_wire(amount));
 
                 if acceptable.is_positive() {
-                    // Credit peer's balance (they paid us)
                     handle.record(acceptable, Direction::Download);
                     self.last_settlement.insert(peer, now);
                 }
 
-                // Ack with accepted amount
                 let ack = PaymentAck::now(wire_from_au(acceptable));
 
                 debug!(%peer, %acceptable, "Sending pseudosettle ack");
 
-                if let Err(e) = self.command_tx.send(ClientCommand::AckPseudosettle {
+                if let Err(e) = self.command_tx.send(PseudosettleNetworkCommand::Ack {
                     peer,
                     request_id,
                     ack,
@@ -251,24 +233,20 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
         }
     }
 
-    /// Calculate acceptable amount, capped at what the peer owes us and the
-    /// time-based allowance since the last settlement.
+    /// Acceptable amount, capped at what the peer owes us and the time-based
+    /// allowance since the last settlement.
     fn calculate_acceptable(&self, peer: &OverlayAddress, handle: &A::Peer, requested: Au) -> Au {
         let balance = handle.balance();
 
-        // They can only pay us if they owe us (positive balance means they owe us)
+        // A positive balance means they owe us; only then can they pay.
         if !balance.is_positive() {
             return Au::ZERO;
         }
 
-        // Cap at what they actually owe us
         let owed = balance;
 
-        // Cap at time-based allowance: refresh_rate AU accumulate per second.
-        // The scaling is checked so a large rate times a long gap cannot wrap
-        // into a tiny allowance, which is the bug behind the historical
-        // saturating multiply; on overflow the allowance saturates at the
-        // maximum and the request and owed caps below still bound the result.
+        // Checked scaling so a large rate over a long gap cannot wrap into a tiny
+        // allowance; on overflow it saturates and the caps below still bound it.
         let now = current_timestamp();
         let elapsed = self
             .last_settlement
@@ -283,18 +261,13 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
     }
 }
 
-/// Convert a wire settlement amount (`U256`) into AU.
-///
-/// Pseudosettle amounts on the wire are at most a `u64` of AU, so this takes
-/// the low 64 bits, matching the legacy behaviour. It is the only `U256` to AU
-/// crossing in this crate.
+/// Wire settlement amount (`U256`) to AU. Wire amounts are at most a `u64` of
+/// AU, so this takes the low 64 bits. The only `U256` to AU crossing here.
 fn au_from_wire(amount: U256) -> Au {
     Au::from_amount(amount.as_limbs()[0])
 }
 
-/// Convert an AU amount into the wire settlement representation (`U256`).
-///
-/// The only AU to `U256` crossing in this crate.
+/// AU to its wire representation (`U256`). The only AU to `U256` crossing here.
 fn wire_from_au(amount: Au) -> U256 {
     U256::from(amount.as_amount())
 }
@@ -305,7 +278,6 @@ impl<A: SwarmBandwidthAccounting + 'static> SpawnableTask for PseudosettleServic
     }
 }
 
-/// Get current timestamp in seconds.
 fn current_timestamp() -> u64 {
     vertex_util_runtime::time::now_unix_secs()
 }
@@ -388,8 +360,7 @@ mod tests {
         // The accounting effect of the ack is unchanged by reporting.
         assert_eq!(rx.try_recv().unwrap().unwrap(), Au::from_amount(200));
 
-        // Every over-acceptance ack is an independent wire-level violation,
-        // so a repeat offence reports again (no debounce).
+        // Each over-acceptance is an independent violation, so it reports again.
         let _rx = insert_pending(&mut svc, peer, Au::from_amount(100));
         svc.handle_event(PseudosettleEvent::Sent {
             peer,
@@ -423,8 +394,8 @@ mod tests {
         .await;
         assert_eq!(rx.try_recv().unwrap().unwrap(), Au::from_amount(10));
 
-        // An ack with no pending settlement is ignored, not reported: it can
-        // be a local race rather than provable peer misbehaviour.
+        // An ack with no pending settlement is ignored, not reported: it can be
+        // a local race rather than provable misbehaviour.
         svc.handle_event(PseudosettleEvent::Sent {
             peer,
             ack: PaymentAck::now(U256::from(10u64)),

@@ -8788,7 +8788,6 @@ dependencies = [
  "vertex-swarm-api",
  "vertex-swarm-bandwidth",
  "vertex-swarm-net-pseudosettle",
- "vertex-swarm-node",
  "vertex-swarm-primitives",
  "vertex-swarm-test-utils",
  "vertex-tasks",
