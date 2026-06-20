@@ -66,6 +66,7 @@ mod behaviour;
 mod events;
 mod forward;
 mod handler;
+mod storer;
 #[cfg(test)]
 mod timeout_repro;
 pub(crate) mod upgrade;
@@ -77,3 +78,4 @@ pub use events::{
     ClientCommand, ClientEvent, FailureKind, PseudosettleEvent, PushResponseTx, RetrievalResponseTx,
 };
 pub(crate) use forward::{NetworkForwarder, StubForwarder};
+pub(crate) use storer::StorerCapability;

@@ -58,6 +58,7 @@ use vertex_swarm_primitives::{CachedChunk, OverlayAddress, Stamp, StampedChunk, 
 
 use super::events::{PushResponseTx, RetrievalResponseTx};
 use super::forward::Forwarder;
+use super::storer::StorerCapability;
 use super::upgrade::{
     ClientInboundOutput, ClientInboundUpgrade, ClientOutboundInfo, ClientOutboundOutput,
     ClientOutboundUpgrade, ClientUpgradeError, FailureKind,
@@ -101,7 +102,11 @@ pub(crate) enum InboundOutcome {
     },
     /// A pushsync was forwarded and the storer's receipt relayed verbatim.
     Relayed { overlay: OverlayAddress },
-    /// A pushsync could not be forwarded; the substream was reset.
+    /// An inbound pushsync the node is responsible for was stored into the
+    /// reserve and acknowledged with a freshly signed custody receipt.
+    Stored { overlay: OverlayAddress },
+    /// A pushsync could not be forwarded (or, on the storer ingest path, could
+    /// not be stored or acknowledged); the substream was reset.
     PushFailed {
         overlay: OverlayAddress,
         address: ChunkAddress,
@@ -290,6 +295,12 @@ pub(crate) enum HandlerEvent {
         /// The peer that pushed.
         overlay: OverlayAddress,
     },
+    /// We took custody of an inbound pushsync delivery: stored it in the reserve
+    /// and acknowledged it with our own signed receipt.
+    InboundStored {
+        /// The peer that pushed.
+        overlay: OverlayAddress,
+    },
     /// We could not forward an inbound pushsync; the substream reset.
     InboundPushFailed {
         /// The peer that pushed.
@@ -429,8 +440,14 @@ pub(crate) struct ClientHandler {
     /// from it; forwarded retrieval deliveries are cached into it.
     store: Arc<dyn SwarmLocalStore>,
     /// The forwarder seam, shared from the behaviour. A cache miss forwards a
-    /// retrieval; every pushsync forwards. Stubbed in the cache-only client.
+    /// retrieval; a pushsync this node is not responsible for forwards. Stubbed
+    /// in the cache-only client.
     forward: Arc<dyn Forwarder>,
+    /// The storer ingest capability, present only on a storer node. When set,
+    /// an inbound pushsync delivery the node is responsible for is stored into
+    /// the reserve and acknowledged with a freshly signed custody receipt; when
+    /// absent (a client), every delivery takes the verbatim-relay path.
+    storer: Option<StorerCapability>,
     /// Counter for pseudosettle request IDs.
     next_request_id: u64,
     /// Pending commands to process.
@@ -463,16 +480,21 @@ impl ClientHandler {
     }
 
     /// Create a new handler in dormant state.
+    ///
+    /// `storer` is `Some` only on a storer node; a client passes `None` and runs
+    /// the verbatim-relay pushsync path unchanged.
     pub(crate) fn new(
         config: Config,
         store: Arc<dyn SwarmLocalStore>,
         forward: Arc<dyn Forwarder>,
+        storer: Option<StorerCapability>,
     ) -> Self {
         Self {
             config,
             state: State::Dormant,
             store,
             forward,
+            storer,
             next_request_id: 0,
             pending_commands: VecDeque::new(),
             pending_events: VecDeque::new(),
@@ -671,9 +693,14 @@ impl ClientHandler {
         }));
     }
 
-    /// Handle an inbound pushsync delivery by forwarding to a closer peer and
-    /// relaying the storer's receipt verbatim. The client never signs a receipt
-    /// (it takes no custody); a forward failure resets the substream.
+    /// Handle an inbound pushsync delivery.
+    ///
+    /// A storer that is responsible for the chunk takes custody: it stores the
+    /// delivery in its reserve and acknowledges it with its own freshly signed
+    /// custody receipt. Otherwise (a client, or a storer not responsible for the
+    /// address) the delivery is forwarded to a closer peer and the storer's
+    /// receipt relayed verbatim — this node never signs for a chunk it does not
+    /// store. A store or forward failure resets the substream.
     fn on_pushsync_delivery(
         &mut self,
         delivery: vertex_swarm_net_pushsync::Delivery,
@@ -689,6 +716,19 @@ impl ClientHandler {
         let chunk = *delivery.chunk;
         let address = *chunk.address();
         debug!(%overlay, %address, "Received pushsync delivery");
+
+        // Storer ingest: if this node holds a reserve and is responsible for the
+        // chunk, take custody locally instead of relaying. The capability is
+        // absent on a client, so the client path below is unchanged.
+        if let Some(storer) = &self.storer
+            && storer.reserve.is_responsible_for(&address)
+        {
+            let storer = storer.clone();
+            self.inbound.push(Box::pin(async move {
+                Self::store_and_sign(storer, chunk, address, overlay, responder).await
+            }));
+            return;
+        }
 
         let forward = Arc::clone(&self.forward);
         self.inbound.push(Box::pin(async move {
@@ -723,6 +763,61 @@ impl ClientHandler {
         }));
     }
 
+    /// Take custody of a delivery: store it into the reserve and acknowledge it
+    /// with a freshly signed custody receipt.
+    ///
+    /// Reached only when the node holds a [`StorerCapability`] and is responsible
+    /// for `address`. The chunk arrives as an always-stamped [`StampedChunk`], so
+    /// it goes into the reserve as a stamped [`CachedChunk`]. A reserve put
+    /// failure (a capacity error, or a backend error) or a sign failure resets the
+    /// substream rather than acknowledging a chunk we did not durably take.
+    async fn store_and_sign(
+        storer: StorerCapability,
+        chunk: StampedChunk,
+        address: ChunkAddress,
+        overlay: OverlayAddress,
+        responder: vertex_swarm_net_pushsync::PushsyncResponder,
+    ) -> InboundOutcome {
+        // Persist the delivery before acknowledging it: a receipt must never
+        // claim custody of a chunk that is not durably in the reserve. The
+        // reserve is always stamped; the pushsync delivery is always stamped, so
+        // the conversion preserves the stamp.
+        if let Err(e) = storer.reserve.put(CachedChunk::from(chunk)) {
+            debug!(%overlay, %address, error = %e, "Reserve put failed; not acknowledging");
+            responder.send_error();
+            return InboundOutcome::PushFailed { overlay, address };
+        }
+
+        // Mint our own custody receipt over the chunk address, declaring our
+        // current storage radius. The capability is the node's identity, so it
+        // supplies the signing key and the overlay-derivation inputs (network id
+        // and nonce); a forwarder upstream recovers our overlay from the
+        // signature exactly as it would a relayed receipt.
+        let storage_radius = storer.reserve.storage_radius();
+        let receipt = match Receipt::sign(&storer, address, storage_radius) {
+            Ok(receipt) => receipt,
+            Err(e) => {
+                // The chunk is stored, but we cannot prove custody. Reset rather
+                // than send an unsigned acknowledgement; the pusher retries.
+                debug!(%overlay, %address, error = %e, "Receipt sign failed; not acknowledging");
+                responder.send_error();
+                return InboundOutcome::PushFailed { overlay, address };
+            }
+        };
+
+        match responder.send_receipt(receipt.to_wire()).await {
+            Ok(()) => InboundOutcome::Stored { overlay },
+            Err(e) => {
+                // The chunk is stored; only the acknowledgement failed to reach
+                // the pusher. The pusher treats the reset as a failed push and
+                // retries, which is idempotent: the reserve put is
+                // content-addressed, so a re-delivery is a no-op.
+                debug!(%overlay, %address, error = %e, "Receipt send failed after store");
+                InboundOutcome::PushFailed { overlay, address }
+            }
+        }
+    }
+
     /// Turn a resolved inbound outcome into a scoring or metrics event.
     fn on_inbound_outcome(&mut self, outcome: InboundOutcome) {
         let event = match outcome {
@@ -732,6 +827,7 @@ impl ClientHandler {
                 HandlerEvent::InboundMissed { overlay, address }
             }
             InboundOutcome::Relayed { overlay } => HandlerEvent::InboundRelayed { overlay },
+            InboundOutcome::Stored { overlay } => HandlerEvent::InboundStored { overlay },
             InboundOutcome::PushFailed { overlay, address } => {
                 HandlerEvent::InboundPushFailed { overlay, address }
             }

@@ -112,7 +112,18 @@ pub enum ClientEvent {
         peer: OverlayAddress,
     },
 
-    /// We could not forward an inbound pushsync; the substream reset.
+    /// We took custody of an inbound pushsync delivery: stored it in the reserve
+    /// and acknowledged it with our own signed receipt.
+    ///
+    /// Reached only on a storer responsible for the chunk; this event is for
+    /// scoring and metrics only.
+    InboundStored {
+        /// The peer that pushed.
+        peer: OverlayAddress,
+    },
+
+    /// We could not forward an inbound pushsync (or, on the storer ingest path,
+    /// could not store or acknowledge it); the substream reset.
     InboundPushFailed {
         /// The peer that pushed.
         peer: OverlayAddress,
