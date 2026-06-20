@@ -49,7 +49,9 @@ pub const SAMPLE_SIZE: usize = 16;
 pub use anchor::{ClaimAnchor, SampleAnchor};
 pub use args::RedistributionArgs;
 pub use config::StorageConfig;
-pub use neighbourhood::{CommittedDepth, canonical_neighbourhood};
+pub use neighbourhood::{
+    CapacityDoubling, CapacityDoublingError, CommittedDepth, canonical_neighbourhood,
+};
 pub use proof::{ChunkInclusionProof, ChunkInclusionProofs, ProofError, make_inclusion_proofs};
 pub use sample::{SampleItem, reserve_commitment_content, reserve_sample};
 pub use witness::{WitnessIndices, witness_indices};
