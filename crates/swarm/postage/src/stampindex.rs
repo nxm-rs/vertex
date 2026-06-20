@@ -237,7 +237,7 @@ impl IncomingStamp {
     }
 
     /// The record this stamp would leave in its slot if admitted.
-    fn entry(&self) -> StampIndexEntry {
+    pub fn entry(&self) -> StampIndexEntry {
         StampIndexEntry::new(self.timestamp, self.stamp_hash, self.address)
     }
 }
