@@ -3,13 +3,15 @@
 //! plus the lazy bin-scan iterator.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use alloy_primitives::B256;
 use nectar_primitives::{Bin, ChunkAddress, ProximityOrder};
 use tracing::debug;
 use vertex_storage::{Database, DatabaseError, DbCursorRO, DbTx, DbTxMut, Table};
 use vertex_swarm_api::{
-    BinCursorStore, BinScanItem, ReserveStore, SwarmError, SwarmLocalStore, SwarmResult,
+    BinCursorStore, BinScanItem, ReserveStore, SettableRadius, SwarmError, SwarmLocalStore,
+    SwarmResult,
 };
 use vertex_swarm_postage::{
     AdmissionValidator, Arbitration, BatchStore, IncomingStamp, PostageContext, StampIndexTable,
@@ -52,8 +54,19 @@ pub struct DbReserve<DB: Database, BS: BatchStore> {
     reserve: Reserve,
     /// Local overlay address, resolved once at construction.
     overlay: OverlayAddress,
-    /// Current storage-responsibility radius.
-    radius: StorageRadius,
+    /// Current storage-responsibility radius, behind a cheap lock-free cell.
+    ///
+    /// The radius is the consensus-load-bearing output of the size-driven
+    /// dynamics ([`crate::radius`]): the [`RadiusController`](crate::RadiusController)
+    /// applies a new value via [`set_storage_radius`](Self::set_storage_radius)
+    /// as the reserve fills or drains, and [`storage_radius`](ReserveStore::storage_radius)
+    /// reads it. A single byte (`0..=MAX_PO`) is all the radius ever is, so an
+    /// [`AtomicU8`] is both the cheapest write target and a lock-free read on the
+    /// hot `is_responsible_for` path; `Relaxed` ordering suffices because the
+    /// radius carries no happens-before relationship with other reserve state
+    /// (callers that need a consistent (radius, occupancy) pair re-derive the
+    /// radius from the occupancy themselves).
+    radius: AtomicU8,
 }
 
 impl<DB: Database, BS: BatchStore> DbReserve<DB, BS> {
@@ -93,8 +106,40 @@ impl<DB: Database, BS: BatchStore> DbReserve<DB, BS> {
             batches,
             reserve,
             overlay,
-            radius,
+            radius: AtomicU8::new(radius.get()),
         })
+    }
+
+    /// Read the current radius cell back into a [`StorageRadius`].
+    ///
+    /// The cell only ever holds a value written from a [`StorageRadius`] (a valid
+    /// `0..=MAX_PO` bin), so the `Bin::try_from` reconstruction never fails; the
+    /// `unwrap_or(StorageRadius::ZERO)` is a total fallback that keeps the read
+    /// infallible rather than panicking on a value the cell cannot hold.
+    fn load_radius(&self) -> StorageRadius {
+        let raw = self.radius.load(Ordering::Relaxed);
+        Bin::try_from(raw)
+            .map(StorageRadius::new)
+            .unwrap_or(StorageRadius::ZERO)
+    }
+
+    /// Apply a new storage-responsibility radius.
+    ///
+    /// This is the write seam the size-driven dynamics ([`crate::radius`]) feed:
+    /// the [`RadiusController`](crate::RadiusController) derives the radius from
+    /// the reserve's occupancy against its capacity and calls this to commit it,
+    /// after which [`storage_radius`](ReserveStore::storage_radius) and
+    /// [`is_responsible_for`](ReserveStore::is_responsible_for) observe the new
+    /// value. Committing the radius is a single relaxed atomic store; it does not
+    /// itself move any chunk (the controller sheds bins through the eviction
+    /// verbs before narrowing responsibility), so it never blocks or fails.
+    ///
+    /// Exposed both as this inherent method and through the
+    /// [`SettableRadius`](vertex_swarm_api::SettableRadius) extension trait so the
+    /// control loop can target it either concretely or generically over a
+    /// [`ReserveStore`].
+    pub fn set_storage_radius(&self, radius: StorageRadius) {
+        self.radius.store(radius.get(), Ordering::Relaxed);
     }
 
     /// The local overlay address.
@@ -431,11 +476,11 @@ where
     BS::Error: Send + Sync + 'static,
 {
     fn storage_radius(&self) -> StorageRadius {
-        self.radius
+        self.load_radius()
     }
 
     fn is_responsible_for(&self, address: &ChunkAddress) -> bool {
-        address.proximity(&self.overlay()).get() >= self.radius.get()
+        address.proximity(&self.overlay()).get() >= self.radius.load(Ordering::Relaxed)
     }
 
     fn count(&self) -> SwarmResult<u64> {
@@ -583,6 +628,17 @@ where
             }
         }
         self.evict_entries(&targets)
+    }
+}
+
+impl<DB: Database, BS: BatchStore + Send + Sync> SettableRadius for DbReserve<DB, BS>
+where
+    BS::Error: Send + Sync + 'static,
+{
+    fn set_storage_radius(&self, radius: StorageRadius) {
+        // Delegates to the inherent method (the same write the controller's apply
+        // path takes); the trait exposes that write generically over a reserve.
+        DbReserve::set_storage_radius(self, radius);
     }
 }
 

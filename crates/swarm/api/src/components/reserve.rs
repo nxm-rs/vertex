@@ -125,6 +125,36 @@ pub trait ReserveStore: SwarmLocalStore {
     fn evict_batch(&self, batch: BatchId, up_to_bin: Option<Bin>, max: u64) -> SwarmResult<u64>;
 }
 
+/// A [`ReserveStore`] whose storage radius can be committed at runtime.
+///
+/// The radius is the consensus-load-bearing output of the size-driven dynamics:
+/// it feeds the committed depth a redistribution round commits on chain, and it
+/// changes as the reserve fills or drains. [`ReserveStore::storage_radius`] is
+/// the *read* seam every consumer uses; this trait adds the matching *write*
+/// seam, kept separate so the read surface (which is used widely and behind
+/// `dyn`) carries no mutation capability and only the eviction-control loop
+/// depends on being able to move the radius.
+///
+/// The write is a single commit of an already-derived radius: deriving the value
+/// (from occupancy against capacity) and shedding the bins that fall out of
+/// responsibility are the control loop's job (the storer's radius controller);
+/// this method only publishes the result so subsequent
+/// [`storage_radius`](ReserveStore::storage_radius) /
+/// [`is_responsible_for`](ReserveStore::is_responsible_for) reads observe it. It
+/// is infallible and non-blocking: committing a radius moves no data.
+///
+/// Object-safe (`&self`, a `Copy` argument, no generics), so the controller can
+/// hold a `&dyn SettableRadius` as readily as a concrete reserve.
+#[auto_impl::auto_impl(&, Arc, Box)]
+pub trait SettableRadius: ReserveStore {
+    /// Commit a new storage-responsibility radius.
+    ///
+    /// After this returns, [`storage_radius`](ReserveStore::storage_radius)
+    /// reports `radius` and [`is_responsible_for`](ReserveStore::is_responsible_for)
+    /// is evaluated against it.
+    fn set_storage_radius(&self, radius: StorageRadius);
+}
+
 /// One entry yielded by a per-bin insertion-order scan.
 ///
 /// A flat, projected row of the reserve's append-only per-bin index: enough to
