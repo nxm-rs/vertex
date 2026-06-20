@@ -29,15 +29,21 @@
 //!   distinct types, so they cannot be transposed.
 //! - [`CommittedDepth`] / [`canonical_neighbourhood`]: the chunk addresses a
 //!   node is responsible for at a given depth.
+//! - [`CandidateFilter`] / [`RoundBatches`]: the consensus candidate-feed
+//!   filters (future timestamp, below-minimum-balance, rogue/invalid stamp)
+//!   applied against a round-consistent batch snapshot before sampling.
 //! - [`SampleItem`] / [`reserve_sample`]: the [`SAMPLE_SIZE`] chunks with the
-//!   smallest transformed addresses.
+//!   smallest transformed addresses. Each item carries the exact stamp its slot
+//!   was won with.
 //! - [`WitnessIndices`] / [`witness_indices`]: the sample slots a claim opens.
 //! - [`make_inclusion_proofs`] / [`ChunkInclusionProof`]: the proof of
-//!   entitlement submitted to the contract.
+//!   entitlement submitted to the contract, each witness carrying the precise
+//!   winning stamp as its single `PostageProof`.
 
 mod anchor;
 mod args;
 mod config;
+mod filter;
 mod neighbourhood;
 mod proof;
 mod sample;
@@ -49,6 +55,7 @@ pub const SAMPLE_SIZE: usize = 16;
 pub use anchor::{ClaimAnchor, SampleAnchor};
 pub use args::RedistributionArgs;
 pub use config::StorageConfig;
+pub use filter::{CandidateFilter, FilterRejection, RoundBatches};
 pub use neighbourhood::{
     CapacityDoubling, CapacityDoublingError, CommittedDepth, canonical_neighbourhood,
 };

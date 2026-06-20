@@ -3,6 +3,7 @@
 use nectar_primitives::bmt::Prover;
 use nectar_primitives::error::PrimitivesError;
 use nectar_primitives::{AnyChunk, DefaultHasher, Proof};
+use vertex_swarm_postage::Stamp;
 
 use crate::SAMPLE_SIZE;
 use crate::anchor::{ClaimAnchor, SampleAnchor};
@@ -12,7 +13,8 @@ use crate::witness::witness_indices;
 /// A single chunk's inclusion proof within the proof of entitlement.
 ///
 /// This is the structure submitted to `Redistribution.sol`. It bundles three
-/// BMT proofs for one witnessed sample item:
+/// BMT proofs for one witnessed sample item plus the exact postage stamp the
+/// slot was won with:
 ///
 /// - [`Self::rc_proof`] (`proofSegments`/`proveSegment`): the item's slot in the
 ///   reserve-commitment chunk.
@@ -20,8 +22,14 @@ use crate::witness::witness_indices;
 ///   (original) BMT segment proof over the chunk's own body.
 /// - [`Self::tr_proof`] (`proofSegments3`): a sample-anchor-prefixed (transformed)
 ///   BMT segment proof over the same body.
-///
-/// Postage and SOC witness data are tracked separately.
+/// - [`Self::postage_proof`]: the single [`Stamp`] the slot was won with. The
+///   consensus rule is that each witness carries **exactly one** postage proof,
+///   and it is the precise stamp `(batchID, 8-byte index, timestamp,
+///   signature)` the candidate was selected under, taken straight off the
+///   winning [`SampleItem::stamp`]. It is never re-loaded by `batchID` alone: a
+///   batch holds many distinct stamps, so a batch-keyed reload could witness a
+///   different stamp than the one that actually won the slot, which the on-chain
+///   verifier would reject.
 #[derive(Clone, Debug)]
 pub struct ChunkInclusionProof {
     /// Reserve-commitment chunk inclusion proof (OG of the RC chunk).
@@ -32,6 +40,9 @@ pub struct ChunkInclusionProof {
     pub tr_proof: Proof,
     /// The little-endian `u64` span of the witnessed chunk body (`chunkSpan`).
     pub chunk_span: u64,
+    /// The exact postage stamp the witnessed slot was won with (the witness's
+    /// single `PostageProof`).
+    pub postage_proof: Stamp,
 }
 
 /// The three-witness proof of entitlement.
@@ -115,6 +126,17 @@ pub enum ProofError {
     /// The sample did not contain exactly [`SAMPLE_SIZE`] items.
     #[error("reserve sample must have {SAMPLE_SIZE} items, got {0}")]
     SampleSize(usize),
+    /// A witnessed slot had no stamp pinned to it.
+    ///
+    /// Each witness must carry exactly one `PostageProof`: the precise stamp the
+    /// slot was won with (see [`ChunkInclusionProof::postage_proof`]). A winning
+    /// candidate must therefore be built with [`SampleItem::with_stamp`]; a slot
+    /// reaching proof time with [`SampleItem::stamp`] unset is a construction
+    /// bug, refused here rather than papered over by re-loading a stamp by
+    /// `batchID` (which could witness a different stamp than the one that won).
+    /// Carries the offending sample slot index.
+    #[error("witnessed sample slot {0} has no stamp to prove")]
+    MissingStamp(usize),
     /// A BMT proof could not be generated.
     #[error(transparent)]
     #[strum(serialize = "bmt_error")]
@@ -141,12 +163,18 @@ pub enum ProofError {
 /// and [`AnyChunk::data`] already delegate to the inner BMT body for both CAC
 /// and SOC, so a SOC needs no `id`/`signature` header slicing.
 ///
+/// Each emitted witness also carries the exact stamp its slot was won with
+/// ([`ChunkInclusionProof::postage_proof`]), read from [`SampleItem::stamp`]: it
+/// is the single `PostageProof` the consensus rule requires, and it is never
+/// re-loaded by `batchID` alone.
+///
 /// # Errors
 ///
 /// Returns an error if `items` does not contain exactly [`SAMPLE_SIZE`]
-/// elements, or if any underlying BMT proof generation fails (e.g. an
-/// out-of-range segment index). The anchors are `bytes32` by construction, so
-/// the function never has to check for an unset salt.
+/// elements, if a witnessed slot has no stamp pinned to it
+/// ([`ProofError::MissingStamp`]), or if any underlying BMT proof generation
+/// fails (e.g. an out-of-range segment index). The anchors are `bytes32` by
+/// construction, so the function never has to check for an unset salt.
 pub fn make_inclusion_proofs(
     items: &[SampleItem],
     sample: SampleAnchor,
@@ -176,6 +204,12 @@ pub fn make_inclusion_proofs(
         debug_assert!(slot < items.len(), "witness slot out of sample bounds");
         let item = items.get(slot).ok_or(ProofError::SampleSize(items.len()))?;
 
+        // The single PostageProof for this witness: the exact stamp the slot was
+        // won with, taken straight off the winning item. Never re-loaded by
+        // batchID (a batch holds many stamps), so the witnessed stamp is byte-
+        // identical to the one the candidate was selected under.
+        let postage_proof = item.stamp.clone().ok_or(ProofError::MissingStamp(slot))?;
+
         // RC chunk inclusion proof at the even slot holding the chunk address.
         let rc_proof = rc_hash.generate_proof(&rc_content, slot * 2)?;
 
@@ -198,6 +232,7 @@ pub fn make_inclusion_proofs(
             og_proof,
             tr_proof,
             chunk_span: body.span,
+            postage_proof,
         })
     };
 
