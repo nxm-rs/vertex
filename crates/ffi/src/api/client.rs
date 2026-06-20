@@ -78,6 +78,7 @@ impl VertexClient {
             identity,
             network,
             Default::default(),
+            Default::default(),
             ChunkVerifyConfig::default(),
             ChainConfig::default(),
             SwapConfig::default(),

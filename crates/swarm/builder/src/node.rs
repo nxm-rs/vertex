@@ -6,11 +6,12 @@
 use std::sync::Arc;
 
 use vertex_node_api::InfrastructureContext;
+use vertex_storage_redb::RedbDatabase;
 use vertex_swarm_accounting::DefaultBandwidthConfig;
 use vertex_swarm_api::{
-    SwarmAccountingConfig, SwarmIdentity, SwarmLaunchConfig, SwarmLocalStoreConfig,
-    SwarmNetworkConfig, SwarmPeerConfig, SwarmPricingConfig, SwarmRoutingConfig,
-    SwarmStorageConfig,
+    ReserveStore, SwarmAccountingConfig, SwarmIdentity, SwarmLaunchConfig, SwarmLocalStore,
+    SwarmLocalStoreConfig, SwarmNetworkConfig, SwarmPeerConfig, SwarmPricingConfig,
+    SwarmRoutingConfig, SwarmStorageConfig,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
@@ -22,6 +23,7 @@ use vertex_swarm_topology::KademliaConfig;
 use crate::config::{BootnodeConfig, ClientConfig, StorerConfig};
 use crate::error::SwarmNodeError;
 use crate::handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};
+use crate::launch::{CacheSeam, ReserveSeam};
 use crate::verify::ChunkVerifyConfig;
 
 /// Fluent transformation API for builders.
@@ -92,9 +94,12 @@ where
         ClientNodeBuilder {
             base: self,
             accounting,
+            local_store: LocalStoreConfig::default(),
             verify: ChunkVerifyConfig::default(),
             chain: ChainConfig::default(),
             swap: SwapConfig::default(),
+            cache: None,
+            reserve: None,
         }
     }
 }
@@ -108,9 +113,15 @@ where
 {
     base: NodeBuilder<I, N>,
     accounting: A,
+    local_store: LocalStoreConfig,
     verify: ChunkVerifyConfig,
     chain: ChainConfig,
     swap: SwapConfig,
+    /// `None` builds the default in-memory cache sized from `local_store`.
+    cache: Option<CacheSeam>,
+    /// Carried here so a wrapping storer builder keeps it across the storage
+    /// transition; consumed only by the storer build path.
+    reserve: Option<ReserveSeam>,
 }
 
 impl<I, N, A> BuilderExt for ClientNodeBuilder<I, N, A>
@@ -146,6 +157,51 @@ where
     /// Set the SWAP settlement configuration (chequebook, beneficiary, deploy).
     pub fn with_swap(mut self, swap: SwapConfig) -> Self {
         self.swap = swap;
+        self
+    }
+
+    /// Cache sizing for the default in-memory cache; ignored when a cache seam
+    /// is set.
+    pub fn with_local_store(mut self, local_store: LocalStoreConfig) -> Self {
+        self.local_store = local_store;
+        self
+    }
+
+    /// Override the cache with a pre-built local store, ignoring the shared
+    /// database handle.
+    pub fn with_cache(mut self, cache: Arc<dyn SwarmLocalStore>) -> Self {
+        self.cache = Some(CacheSeam::Ready(cache));
+        self
+    }
+
+    /// Override the cache with a factory invoked at build time with the opened
+    /// shared database (`None` in-memory).
+    pub fn with_cache_factory<F>(mut self, factory: F) -> Self
+    where
+        F: FnOnce(Option<Arc<RedbDatabase>>) -> Result<Arc<dyn SwarmLocalStore>, SwarmNodeError>
+            + Send
+            + 'static,
+    {
+        self.cache = Some(CacheSeam::Factory(Box::new(factory)));
+        self
+    }
+
+    /// Override the storer reserve with a pre-built store; consumed only by the
+    /// storer build path.
+    pub fn with_reserve(mut self, reserve: Arc<dyn ReserveStore>) -> Self {
+        self.reserve = Some(ReserveSeam::Ready(reserve));
+        self
+    }
+
+    /// Override the storer reserve with a factory invoked at build time with the
+    /// opened shared database (`None` in-memory).
+    pub fn with_reserve_factory<F>(mut self, factory: F) -> Self
+    where
+        F: FnOnce(Option<Arc<RedbDatabase>>) -> Result<Arc<dyn ReserveStore>, SwarmNodeError>
+            + Send
+            + 'static,
+    {
+        self.reserve = Some(ReserveSeam::Factory(Box::new(factory)));
         self
     }
 
@@ -201,6 +257,44 @@ where
 {
     pub fn spec(&self) -> &Arc<Spec> {
         self.client.spec()
+    }
+
+    /// Override the cache with a pre-built local store. See
+    /// [`ClientNodeBuilder::with_cache`].
+    pub fn with_cache(mut self, cache: Arc<dyn SwarmLocalStore>) -> Self {
+        self.client = self.client.with_cache(cache);
+        self
+    }
+
+    /// Override the cache with a factory. See
+    /// [`ClientNodeBuilder::with_cache_factory`].
+    pub fn with_cache_factory<F>(mut self, factory: F) -> Self
+    where
+        F: FnOnce(Option<Arc<RedbDatabase>>) -> Result<Arc<dyn SwarmLocalStore>, SwarmNodeError>
+            + Send
+            + 'static,
+    {
+        self.client = self.client.with_cache_factory(factory);
+        self
+    }
+
+    /// Override the reserve with a pre-built store. See
+    /// [`ClientNodeBuilder::with_reserve`].
+    pub fn with_reserve(mut self, reserve: Arc<dyn ReserveStore>) -> Self {
+        self.client = self.client.with_reserve(reserve);
+        self
+    }
+
+    /// Override the reserve with a factory. See
+    /// [`ClientNodeBuilder::with_reserve_factory`].
+    pub fn with_reserve_factory<F>(mut self, factory: F) -> Self
+    where
+        F: FnOnce(Option<Arc<RedbDatabase>>) -> Result<Arc<dyn ReserveStore>, SwarmNodeError>
+            + Send
+            + 'static,
+    {
+        self.client = self.client.with_reserve_factory(factory);
+        self
     }
 }
 
@@ -266,30 +360,34 @@ impl DefaultClientBuilder {
             config.bandwidth().clone(),
             config.verify(),
         )
+        .with_local_store(config.local_store().clone())
         .with_chain(config.chain().clone())
         .with_swap(config.swap().clone())
     }
 
-    /// Convert to config for building.
+    /// Convert to config for building. Drops any store seam, since [`ClientConfig`]
+    /// is `Clone`; prefer [`build`](Self::build), which consumes the seam directly.
     pub fn into_config(self) -> ClientConfig {
         ClientConfig::new(
             self.base.spec,
             self.base.identity,
             self.base.network,
             self.accounting,
+            self.local_store,
             self.verify,
             self.chain,
             self.swap,
         )
     }
 
-    /// Build the client node. Delegates to SwarmLaunchConfig::build().
+    /// Build the client node, honoring any cache seam set on the builder.
     pub async fn build(
-        self,
+        mut self,
         ctx: &dyn InfrastructureContext,
     ) -> Result<BuiltClient, SwarmNodeError> {
+        let cache = self.cache.take();
         let config = self.into_config();
-        let (task, providers) = config.build(ctx).await?;
+        let (task, providers) = crate::launch::build_client(config, ctx, cache).await?;
         Ok(BuiltNode::new(task, providers))
     }
 }
@@ -341,13 +439,16 @@ impl DefaultStorerBuilder {
         )
     }
 
-    /// Build the storer node. Delegates to SwarmLaunchConfig::build().
+    /// Build the storer node, honoring any cache or reserve seam set on the
+    /// builder.
     pub async fn build(
-        self,
+        mut self,
         ctx: &dyn InfrastructureContext,
     ) -> Result<BuiltStorer, SwarmNodeError> {
+        let cache = self.client.cache.take();
+        let reserve = self.client.reserve.take();
         let config = self.into_config();
-        let (task, providers) = config.build(ctx).await?;
+        let (task, providers) = crate::launch::build_storer(config, ctx, cache, reserve).await?;
         Ok(BuiltNode::new(task, providers))
     }
 }
