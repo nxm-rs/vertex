@@ -1,9 +1,5 @@
-//! ClientNode - Swarm node with client protocols for chunk retrieval and upload.
-//!
-//! A [`ClientNode`] extends the base topology protocols with client protocols:
-//! pricing, retrieval, pushsync, and settlement (pseudosettle/swap).
-//!
-//! Use this for nodes that need to read from and write to the Swarm network.
+//! [`ClientNode`]: base topology protocols plus client protocols (pricing,
+//! retrieval, pushsync, settlement) for reading from and writing to the network.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -39,14 +35,12 @@ use crate::{ClientHandle, ClientService};
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "ClientNodeEvent")]
 pub(crate) struct ClientNodeBehaviour<I: SwarmIdentity + Clone> {
-    /// Transport-level connection caps (total, per-peer, pending). Listed
-    /// first so a denied connection is rejected before the other behaviours
-    /// allocate per-connection state.
+    /// Connection caps (total, per-peer, pending). First so a denied connection
+    /// is rejected before other behaviours allocate per-connection state.
     pub(crate) connection_limits: connection_limits::Behaviour,
     pub(crate) identify: identify::Behaviour,
-    /// NAT traversal (AutoNAT v2, UPnP) and LAN discovery (mDNS), composed as
-    /// one platform sub-behaviour. The browser sibling is a no-op: a wasm
-    /// client dials over websockets and never listens.
+    /// NAT traversal and LAN discovery as one platform sub-behaviour; a no-op in
+    /// the browser, where a wasm client dials over websockets and never listens.
     pub(crate) nat: NatBehaviour,
     pub(crate) topology: TopologyBehaviour<I>,
     pub(crate) client: ClientBehaviour,
@@ -63,20 +57,18 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
         let agent_versions = topology.agent_versions();
         Self {
             connection_limits,
-            // Identify advertises addresses scoped to each peer (see
+            // Identify advertises addresses scoped per peer (see
             // `addresses_for_remote`), so a public peer never receives our
-            // private or loopback addresses. A NAT'd node with no public address
-            // sends an empty listen set to public peers; peers tolerate this
-            // (they fall back to the connection's remote multiaddr).
+            // private or loopback addresses.
             identify: identify::Behaviour::new(
                 identify::Config::new(local_public_key),
                 agent_versions,
             ),
             nat,
             topology,
-            // The cache-only client never relays: the forwarder is stubbed so a
-            // cache miss and every inbound pushsync reset the substream. The real
-            // multi-hop relay is filled in separately.
+            // Cache-only client never relays: the stub forwarder resets the
+            // substream on cache miss and every inbound pushsync. The real relay
+            // is installed by `enable_forwarding`.
             client: ClientBehaviour::new(
                 ClientBehaviourConfig::default(),
                 store,
@@ -86,9 +78,8 @@ impl<I: SwarmIdentity + Clone> ClientNodeBehaviour<I> {
     }
 }
 
-/// Assemble the client base node, wiring the platform NAT sub-behaviour
-/// (AutoNAT v2, UPnP, and mDNS natively; a no-op in the browser) into the
-/// composite.
+/// Assemble the client base node, wiring the platform NAT sub-behaviour into
+/// the composite.
 async fn build_client_base<I, C>(
     infra: BuiltInfrastructure<I>,
     network_config: &C,
@@ -146,10 +137,8 @@ impl From<ClientEvent> for ClientNodeEvent {
     }
 }
 
-/// A Swarm client node with pricing, retrieval, and pushsync protocols.
-///
-/// Unlike [`BootNode`](super::BootNode), this includes client protocols for
-/// reading from and writing to the Swarm network.
+/// A Swarm client node with pricing, retrieval, and pushsync protocols. Unlike
+/// [`BootNode`](super::BootNode), it can read from and write to the network.
 pub struct ClientNode<I: SwarmIdentity + Clone> {
     base: BaseNode<I, ClientNodeBehaviour<I>>,
     client_event_tx: mpsc::Sender<ClientEvent>,
@@ -173,21 +162,12 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
         self.base.topology_handle()
     }
 
-    /// Enable multi-hop forwarding (relay) for this node.
-    ///
-    /// Installs the real network forwarder in place of the default stub, so a
+    /// Enable multi-hop forwarding (relay), replacing the default stub so a
     /// retrieval cache miss forwards to a strictly-closer peer and an inbound
     /// pushsync relays toward the chunk's neighbourhood, accounting both legs.
-    /// Must be called during node assembly, before the event loop accepts
-    /// connections: a handler created earlier would capture the stub.
     ///
-    /// `topology` selects strictly-closer relay candidates, provides the locally
-    /// observed neighbourhood depth that bounds the receipt depth check, yields
-    /// the network id (via its identity spec) the decode boundary uses to recover
-    /// a receipt signer, and yields the peer reporter that is the single scoring
-    /// path a shallow relayed receipt is reported through; `accounting` drives the
-    /// two-leg prepare/apply. The topology and accounting handles are typically
-    /// the same ones the origin path uses.
+    /// Must be called during node assembly, before the event loop accepts
+    /// connections: a handler created earlier captures the stub.
     pub fn enable_forwarding<T, A>(
         &mut self,
         topology: Arc<T>,
@@ -207,9 +187,8 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
         let local = self.overlay_address();
         let network_id = topology.identity().spec().network_id();
         let reporter = topology.reporter();
-        // The decode boundary needs the network id to recover an inbound custody
-        // receipt's signer; set it on the behaviour config before any handler is
-        // created (handlers clone the config at connection establishment).
+        // Network id recovers an inbound receipt's signer; set it before any
+        // handler is created (handlers clone the config at connection setup).
         self.base
             .swarm
             .behaviour_mut()
@@ -225,29 +204,22 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
             .set_forwarder(forwarder);
     }
 
-    /// Install the storer ingest capability on the client behaviour.
-    ///
-    /// Turns the inbound pushsync path from forward-only into store-and-sign for
-    /// chunks this node is responsible for: a responsible delivery is put into
-    /// `reserve` and acknowledged with a receipt signed by the node's identity
-    /// key, bound to the node's identity nonce. Deliveries the node is not
-    /// responsible for still forward (see [`enable_forwarding`](Self::enable_forwarding)).
+    /// Install the storer ingest capability, turning the inbound pushsync path
+    /// from forward-only into store-and-sign for chunks this node is responsible
+    /// for: a responsible delivery is put into `reserve` and acknowledged with a
+    /// receipt signed by the identity key, bound to its nonce. Non-responsible
+    /// deliveries still forward (see
+    /// [`enable_forwarding`](Self::enable_forwarding)).
     ///
     /// Must be called during node assembly, before the event loop accepts
-    /// connections: a handler created earlier would not capture the capability.
-    /// Only the storer launch path calls this; a client never does.
+    /// connections: a handler created earlier does not capture the capability.
     pub fn enable_storage(&mut self, reserve: Arc<dyn vertex_swarm_api::ReserveStore>) {
         use vertex_swarm_api::SwarmSpec;
 
         let identity = self.base.identity();
         let nonce = identity.nonce();
-        // The storer overlay a minted receipt binds is derived from the same
-        // identity that signs it, so the capability carries the identity's
-        // network id and nonce alongside the signer rather than re-deriving them
-        // elsewhere.
         let network_id = identity.spec().network_id();
-        // The identity's concrete signer is erased to the synchronous signer
-        // trait; `I::Signer: Signer + SignerSync`, so the coercion is sound.
+        // `I::Signer: Signer + SignerSync`, so erasing to SignerSync is sound.
         let signer: Arc<dyn alloy_signer::SignerSync + Send + Sync> = identity.signer();
         let capability = crate::protocol::StorerCapability::new(reserve, signer, network_id, nonce);
         self.base
@@ -294,9 +266,6 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
     }
 
     /// Run the event loop with graceful shutdown support.
-    ///
-    /// When the shutdown signal fires, the node will complete its current work
-    /// and exit gracefully.
     pub async fn run(mut self, shutdown: GracefulShutdown) -> Result<()> {
         info!("Starting client node event loop");
 
@@ -439,11 +408,8 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
         self
     }
 
-    /// Inject the client chunk cache.
-    ///
-    /// The behaviour serves inbound retrievals from it and the client service
-    /// caches its own deliveries into it. When unset, the build creates a
-    /// default in-memory cache with the standard budget and SOC TTL.
+    /// Inject the client chunk cache (served for inbound retrievals and used for
+    /// the client's own deliveries). Defaults to an in-memory cache when unset.
     pub fn with_store(mut self, store: Arc<dyn SwarmLocalStore>) -> Self {
         self.store = Some(store);
         self
@@ -462,11 +428,8 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
         self
     }
 
-    /// Route swap wire events to the SWAP settlement service.
-    ///
-    /// When set, swap cheque events are forwarded to this channel so the
-    /// settlement service can validate and credit received cheques and complete
-    /// outbound settlements.
+    /// Route swap cheque events to the SWAP settlement service for validation,
+    /// crediting, and outbound settlement.
     #[cfg(feature = "swap")]
     pub fn with_swap_events(
         mut self,
@@ -503,9 +466,6 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
             }
         };
 
-        // Default to an in-memory cache sized by the standard budget and SOC
-        // TTL; an embedder or the native builder injects its own via
-        // `with_store`.
         let store: Arc<dyn SwarmLocalStore> = self.store.unwrap_or_else(|| {
             Arc::new(vertex_swarm_localstore::ChunkStore::with_budget(
                 vertex_swarm_localstore::DEFAULT_CACHE_BUDGET_BYTES as usize,
@@ -515,7 +475,6 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
 
         let mut base = build_client_base(infra, network_config, Arc::clone(&store)).await?;
 
-        // Register the local PeerId for address advertisement in handshakes
         base.swarm
             .behaviour()
             .topology
@@ -546,8 +505,6 @@ impl<I: SwarmIdentity + Clone> ClientNodeBuilder<I> {
         let (event_tx, event_rx) = mpsc::channel(crate::client_service::DEFAULT_CHANNEL_CAPACITY);
 
         let (client_service, client_handle) = ClientService::with_channels(command_tx, event_rx);
-        // The service caches the client's own retrieval deliveries into the same
-        // cache the behaviour serves inbound requests from.
         let client_service = client_service.with_store(store);
 
         let node = ClientNode {

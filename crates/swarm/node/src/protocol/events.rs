@@ -1,19 +1,8 @@
 //! Events and commands for the client behaviour.
 //!
-//! The client behaviour emits [`ClientEvent`]s and accepts [`ClientCommand`]s.
-//!
-//! # Design
-//!
-//! The client behaviour handles:
-//! - Protocol negotiation and stream management
-//! - Message encoding/decoding
-//! - Per-peer connection state
-//!
-//! # Settlement Events
-//!
-//! Settlement-specific events ([`PseudosettleEvent`]) are defined here
-//! for routing to the respective settlement services. The behaviour routes these
-//! events based on optional senders configured at construction time.
+//! The behaviour emits [`ClientEvent`]s and accepts [`ClientCommand`]s. Settlement
+//! events ([`PseudosettleEvent`], [`SwapEvent`]) are routed to their services via
+//! optional senders configured at construction time.
 
 use alloy_primitives::U256;
 use libp2p::PeerId;
@@ -29,24 +18,17 @@ use crate::client_service::{ChunkTransferError, RetrievalResult};
 
 /// Channel on which an outbound retrieval request resolves.
 ///
-/// The sender travels with the request from the caller through the behaviour
-/// and handler into the outbound substream state, so the response (or any
-/// failure along the way) resolves the caller directly. Dropping the sender
+/// The sender travels with the request to the outbound substream; dropping it
 /// anywhere on that path surfaces as [`ChunkTransferError::Cancelled`].
 pub type RetrievalResponseTx = oneshot::Sender<Result<RetrievalResult, ChunkTransferError>>;
 
 /// Channel on which an outbound chunk push resolves.
 ///
-/// Same lifecycle as [`RetrievalResponseTx`]: the storer's verified receipt or
-/// the failure that prevented it resolves the caller directly. The receipt is a
-/// [`Receipt`]: a receipt whose storer could not be recovered is rejected at the
-/// decode boundary and surfaces here as an error, never as a value.
+/// A receipt whose storer cannot be recovered is rejected at decode and surfaces
+/// here as an error, never as a value.
 pub type PushResponseTx = oneshot::Sender<Result<Receipt, ChunkTransferError>>;
 
 /// Why a retrieval or pushsync request failed, classified for peer scoring.
-///
-/// Derived from the typed codec error at the point the failure is observed, so
-/// the client service never parses error strings to decide how to score a peer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureKind {
     /// The peer delivered or pushed a chunk that failed address or stamp
@@ -58,16 +40,10 @@ pub enum FailureKind {
 }
 
 /// Events emitted by the client behaviour.
-///
-/// `ChunkReceived` carries a whole chunk, so it dwarfs the other variants; the
-/// size difference is accepted rather than boxing a value that is emitted once
-/// per delivery and consumed immediately.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum ClientEvent {
     /// Received a payment threshold from a peer.
-    ///
-    /// Validate this threshold and decide whether to continue or disconnect.
     PricingReceived {
         /// The peer's overlay address.
         peer: OverlayAddress,
@@ -83,10 +59,7 @@ pub enum ClientEvent {
         peer: OverlayAddress,
     },
 
-    /// We served an inbound retrieval request from our cache.
-    ///
-    /// The chunk has already gone down the wire; this event is for scoring and
-    /// metrics only.
+    /// We served an inbound retrieval request from our cache (scoring/metrics only).
     InboundServed {
         /// The peer we served.
         peer: OverlayAddress,
@@ -112,11 +85,9 @@ pub enum ClientEvent {
         peer: OverlayAddress,
     },
 
-    /// We took custody of an inbound pushsync delivery: stored it in the reserve
-    /// and acknowledged it with our own signed receipt.
-    ///
-    /// Reached only on a storer responsible for the chunk; this event is for
-    /// scoring and metrics only.
+    /// We stored an inbound pushsync delivery in the reserve and acknowledged it
+    /// with our own signed receipt. Reached only on a storer responsible for the
+    /// chunk (scoring/metrics only).
     InboundStored {
         /// The peer that pushed.
         peer: OverlayAddress,
@@ -132,8 +103,6 @@ pub enum ClientEvent {
     },
 
     /// Received a chunk from a peer (response to our request).
-    ///
-    /// Record the bandwidth usage for accounting.
     ChunkReceived {
         /// The peer that sent the chunk.
         peer: OverlayAddress,
@@ -181,10 +150,8 @@ pub enum ClientEvent {
         kind: FailureKind,
     },
 
-    /// A peer sent us malformed data on an inbound substream.
-    ///
-    /// The chunk or request failed reconstruction at decode and was rejected;
-    /// the sender is scored adversely for invalid data.
+    /// A peer sent malformed data on an inbound substream; rejected at decode and
+    /// scored adversely for invalid data.
     InboundInvalidData {
         /// The peer that sent the malformed data.
         peer: OverlayAddress,
@@ -192,10 +159,7 @@ pub enum ClientEvent {
         protocol: &'static str,
     },
 
-    /// A settlement is needed with a peer.
-    ///
-    /// Emitted when the balance crosses the payment threshold. Initiate
-    /// swap or pseudosettle accordingly.
+    /// The balance crossed the payment threshold; settle via swap or pseudosettle.
     SettlementNeeded {
         /// The peer to settle with.
         peer: OverlayAddress,
@@ -249,9 +213,7 @@ pub enum ClientEvent {
         peer_rate: U256,
     },
 
-    /// A peer's handler has been activated.
-    ///
-    /// This is emitted after the ActivatePeer command is processed.
+    /// A peer's handler has been activated (after [`ClientCommand::ActivatePeer`]).
     PeerActivated {
         /// The libp2p peer ID.
         peer_id: PeerId,
@@ -282,20 +244,13 @@ pub enum ClientEvent {
 
 /// Commands accepted by the client behaviour.
 ///
-/// Request commands ([`Self::RetrieveChunk`], [`Self::PushChunk`]) carry the
-/// response channel for their outcome, so the enum is intentionally not
-/// `Clone`.
-///
-/// `PushChunk` carries a whole [`StampedChunk`], so it dwarfs the other
-/// variants; the size difference is accepted rather than boxing a value that is
-/// constructed once per upload and moved straight onto the wire.
+/// Request commands ([`Self::RetrieveChunk`], [`Self::PushChunk`]) carry their
+/// response channel, so the enum is intentionally not `Clone`.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum ClientCommand {
-    /// Activate the handler for a peer after handshake completes.
-    ///
-    /// This is sent by the node when TopologyEvent::PeerAuthenticated is received.
-    /// The handler transitions from dormant to active state.
+    /// Activate the handler for a peer after handshake completes, transitioning it
+    /// from dormant to active.
     ActivatePeer {
         /// The libp2p peer ID.
         peer_id: PeerId,
@@ -306,9 +261,6 @@ pub enum ClientCommand {
     },
 
     /// Announce our payment threshold to a peer.
-    ///
-    /// The threshold value depends on the peer's node type (Storer vs Client)
-    /// and configuration.
     AnnouncePricing {
         /// The peer to announce to.
         peer: OverlayAddress,
@@ -376,10 +328,7 @@ pub enum ClientCommand {
     },
 }
 
-/// Events routed to the pseudosettle service.
-///
-/// These events are extracted from [`ClientEvent`] and sent to the
-/// pseudosettle service via a dedicated channel for type-safe handling.
+/// Events extracted from [`ClientEvent`] and routed to the pseudosettle service.
 #[derive(Debug, Clone)]
 pub enum PseudosettleEvent {
     /// We sent a pseudosettle and received an ack.
@@ -400,12 +349,7 @@ pub enum PseudosettleEvent {
     },
 }
 
-/// Events routed to the swap settlement service.
-///
-/// These events are extracted from [`ClientEvent`] and sent to the swap
-/// service via a dedicated channel for type-safe handling. They carry strong
-/// types ([`SignedCheque`], typed peer, typed rate) so the service never sees
-/// raw wire bytes.
+/// Events extracted from [`ClientEvent`] and routed to the swap settlement service.
 #[cfg(feature = "swap")]
 #[derive(Debug, Clone)]
 pub enum SwapEvent {

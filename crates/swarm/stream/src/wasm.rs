@@ -1,24 +1,10 @@
-//! Browser binding for the streaming get/put pipelines.
+//! wasm-bindgen adapter exposing [`get_stream`](crate::get_stream) and
+//! [`put_stream`](crate::put_stream) to JavaScript as async iterators.
 //!
-//! This is the wasm-bindgen adapter over the transport-agnostic core in this
-//! crate: the same [`get_stream`](crate::get_stream) and
-//! [`put_stream`](crate::put_stream) pipelines, surfaced to JavaScript as async
-//! iterators. A browser host drives them with `for await (const item of
-//! stream)`; each `next()` resolves to a plain object carrying the chunk (or the
-//! per-item error) and a `done` flag, the JS async-iterator protocol.
-//!
-//! The bound lives in Rust exactly as on native: the adapter holds the core
-//! stream and polls it one item per `next()` call, so a browser consumer that
-//! awaits slowly transitively pauses the network reads. Payload crosses the
-//! boundary as a `js_sys` `Uint8Array` copied once per item; inside Rust the
-//! chunk stays `Bytes`.
-//!
-//! The provider and sender are taken as trait objects
-//! (`Arc<dyn SwarmChunkProvider>`, `Arc<dyn SwarmChunkSender>`) so the exported
-//! types are concrete (wasm-bindgen cannot export generics) while still wrapping
-//! the one core. The browser client wires its real provider in when the wasm
-//! client builder lands; until then the adapter is exercised against in-memory
-//! providers in tests, the same core path the native FFI uses.
+//! Each `next()` polls the core stream once, so a slowly-awaiting consumer
+//! transitively pauses the network reads. Provider and sender are trait objects
+//! because wasm-bindgen cannot export generics. Payload crosses the boundary as
+//! a `Uint8Array` copied once per item; inside Rust the chunk stays `Bytes`.
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -34,26 +20,16 @@ use wasm_bindgen::prelude::*;
 
 use crate::{StreamConfig, VerifiedChunk, get_stream, put_stream};
 
-/// Boxed core download stream over a trait-object provider.
 type CoreGetStream = Pin<Box<dyn Stream<Item = (ChunkAddress, SwarmResult<VerifiedChunk>)>>>;
-/// Boxed core upload stream over a trait-object sender.
 type CorePutStream = Pin<Box<dyn Stream<Item = (ChunkAddress, SwarmResult<PushReceipt>)>>>;
 
-/// Translate the boundary stream config from JS into the core config.
-///
-/// Limiting is by chunk count: only `max_concurrency` is used. `window_bytes` is
-/// kept in the JS signature for stability but ignored (byte/bandwidth limiting
-/// belongs at the connection layer). The core clamps to at least one.
+/// `window_bytes` is kept for ABI stability but ignored; limiting is by chunk count.
 fn config_from(_window_bytes: u32, max_concurrency: u32) -> StreamConfig {
     StreamConfig::new(max_concurrency as usize)
 }
 
-/// Build the JS result object `{ done, address, data, error }` for one download
-/// item.
-///
-/// `data` is a `Uint8Array` of the chunk's wire bytes on success, or `null` on a
-/// per-address error; `error` carries the failure message. A single object shape
-/// keeps the JS async-iterator contract uniform across success and failure.
+/// Build `{ done, address, data, stamp, error }` for one download item. `data`
+/// is a `Uint8Array` on success or `null` on a per-address error.
 fn download_item(
     address: &ChunkAddress,
     result: SwarmResult<VerifiedChunk>,
@@ -68,14 +44,12 @@ fn download_item(
     match result {
         Ok(verified) => {
             let (chunk, stamp) = verified.into_parts();
-            // One copy at the boundary; the chunk stayed `Bytes` until here.
             set(
                 &obj,
                 "data",
                 &Uint8Array::from(chunk.into_bytes().as_ref()).into(),
             )?;
-            // A storer may omit the stamp from a delivery; emit a null stamp
-            // when absent.
+            // A storer may omit the stamp from a delivery.
             let stamp_value = match stamp {
                 Some(stamp) => Uint8Array::from(stamp.to_bytes().as_ref()).into(),
                 None => JsValue::NULL,
@@ -92,7 +66,7 @@ fn download_item(
     Ok(obj.into())
 }
 
-/// Build the JS result object `{ done, address, error }` for one upload ack.
+/// Build `{ done, address, storer, error }` for one upload ack.
 fn upload_item(
     address: &ChunkAddress,
     result: SwarmResult<PushReceipt>,
@@ -121,32 +95,24 @@ fn upload_item(
     Ok(obj.into())
 }
 
-/// The terminal `{ done: true }` object every async iterator returns once the
-/// stream is exhausted.
+/// The terminal `{ done: true }` object returned once the stream is exhausted.
 fn done_item() -> Result<JsValue, JsValue> {
     let obj = Object::new();
     set(&obj, "done", &JsValue::TRUE)?;
     Ok(obj.into())
 }
 
-/// Set `key` to `value` on `obj`, mapping a reflection failure to a `JsValue`
-/// error.
 fn set(obj: &Object, key: &str, value: &JsValue) -> Result<(), JsValue> {
     Reflect::set(obj, &JsValue::from_str(key), value).map(|_| ())
 }
 
-/// Parse a 32-byte chunk address from a JS byte array, rejecting a wrong length.
 fn parse_address(bytes: &[u8]) -> Result<ChunkAddress, JsValue> {
     ChunkAddress::from_slice(bytes)
         .map_err(|_| JsValue::from_str(&format!("invalid chunk address: {} bytes", bytes.len())))
 }
 
-/// A browser-facing streaming download.
-///
-/// Constructed by [`get_stream_wasm`]. Drive it from JS with the async-iterator
-/// protocol: each `await stream.next()` yields the next download item, ending
-/// with `{ done: true }`. The pipeline keeps at most `max_concurrency` chunks in
-/// flight.
+/// Browser-facing streaming download. Constructed by [`get_stream_wasm`]; drive
+/// with `await stream.next()` until `{ done: true }`.
 #[wasm_bindgen]
 pub struct WasmGetStream {
     inner: CoreGetStream,
@@ -154,11 +120,8 @@ pub struct WasmGetStream {
 
 #[wasm_bindgen]
 impl WasmGetStream {
-    /// Resolve the next download item, or `{ done: true }` when exhausted.
-    ///
-    /// Polls the core stream once. Because the adapter advances only when JS
-    /// awaits, a slow consumer paces the network reads. Items arrive in
-    /// completion order, each carrying its address.
+    /// Resolve the next download item, or `{ done: true }` when exhausted. Items
+    /// arrive in completion order, each carrying its address.
     pub async fn next(&mut self) -> Result<JsValue, JsValue> {
         match self.inner.next().await {
             Some((address, result)) => download_item(&address, result),
@@ -167,11 +130,8 @@ impl WasmGetStream {
     }
 }
 
-/// A browser-facing streaming upload.
-///
-/// Constructed by [`put_stream_wasm`]. Each `await stream.next()` feeds the next
-/// chunk's push to completion and yields its ack, ending with `{ done: true }`.
-/// Rust owns the bounded in-flight window, so a slow consumer pauses the pushes.
+/// Browser-facing streaming upload. Constructed by [`put_stream_wasm`]; each
+/// `await stream.next()` drives the next push to completion and yields its ack.
 #[wasm_bindgen]
 pub struct WasmPutStream {
     inner: CorePutStream,
@@ -189,11 +149,8 @@ impl WasmPutStream {
     }
 }
 
-/// Open a byte-bounded streaming download over `provider`.
-///
-/// `addresses` is a flat list of 32-byte chunk addresses; a malformed entry is
-/// rejected up front. The returned [`WasmGetStream`] is a JS async iterator over
-/// the verified chunks, at most `max_concurrency` in flight.
+/// Open a streaming download over `provider`. `addresses` is a flat list of
+/// 32-byte chunk addresses; a malformed entry is rejected up front.
 pub fn get_stream_wasm(
     provider: Arc<dyn SwarmChunkProvider>,
     addresses: Vec<Vec<u8>>,
@@ -209,12 +166,8 @@ pub fn get_stream_wasm(
     Ok(WasmGetStream { inner })
 }
 
-/// Open a byte-bounded streaming upload over `sender`.
-///
-/// `chunks` are pre-reconstructed [`StampedChunk`]s; the caller (the wasm client)
-/// reconstructs them from wire bytes before calling, the same way the native FFI
-/// does at its boundary. The returned [`WasmPutStream`] is a JS async iterator
-/// over the per-chunk acks, at most `max_concurrency` in flight.
+/// Open a streaming upload over `sender`. `chunks` are pre-reconstructed
+/// [`StampedChunk`]s; the caller reconstructs them from wire bytes first.
 pub fn put_stream_wasm(
     sender: Arc<dyn SwarmChunkSender>,
     chunks: Vec<StampedChunk>,

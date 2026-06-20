@@ -110,13 +110,11 @@ pub trait DbTx: Send + Sync {
     /// Count the number of entries in a table.
     fn count<T: Table>(&self) -> Result<usize, DatabaseError>;
 
-    /// Open a lazy, streaming read-only [`DbCursorRO`] over table `T`.
+    /// Open a streaming read-only [`DbCursorRO`] over table `T`.
     ///
-    /// The cursor owns its own read snapshot, so the returned boxed iterator may
-    /// outlive this transaction handle. Backends that cannot provide a held
-    /// cursor (e.g. a read cursor over an uncommitted write transaction) return
-    /// [`DatabaseError::InitCursor`]; the default implementation does so, and a
-    /// backing read transaction overrides it with a real cursor.
+    /// The cursor owns its own read snapshot, so the boxed iterator may outlive
+    /// this handle. Backends that cannot hold a cursor (e.g. over an uncommitted
+    /// write transaction) return [`DatabaseError::InitCursor`], as does this default.
     fn cursor<T: Table>(&self) -> Result<Box<dyn DbCursorRO<T> + Send>, DatabaseError> {
         Err(DatabaseError::InitCursor(DatabaseErrorInfo::msg(
             "this transaction does not support read cursors",
@@ -168,18 +166,10 @@ pub trait DbCursorRO<T: Table>: Send + Sync {
 
 /// Read-write cursor for modifying entries during iteration.
 ///
-/// # Status
-///
-/// This trait is declared but intentionally has no backend implementation yet
-/// (see issue #214). The read-only [`DbCursorRO`] path is implemented over redb
-/// without any self-referential lifetime, because redb's `ReadOnlyTable` owns
-/// its transaction guard and is detached from the read transaction. A write
-/// cursor is materially harder: redb's write-side `Table` borrows the
-/// `WriteTransaction` with a real lifetime, so a held write cursor reintroduces
-/// a self-referential borrow. The current consumer (the storer's reserve and
-/// `BinSeqIndex` maintenance) writes via direct keyed `put`/`delete` inside a
-/// write transaction, which gives no positional advantage over a write cursor
-/// on a B-tree, so the read-write cursor is deferred until a consumer needs it.
+/// Declared but not yet backed by an implementation (issue #214): a held write
+/// cursor over redb would reintroduce a self-referential borrow of the write
+/// transaction, and current consumers write via direct keyed `put`/`delete`
+/// with no positional advantage on a B-tree. Deferred until a consumer needs it.
 pub trait DbCursorRW<T: Table>: DbCursorRO<T> {
     /// Insert or update the entry at the current cursor position.
     fn upsert(&mut self, key: T::Key, value: T::Value) -> Result<(), DatabaseError>;
@@ -215,10 +205,8 @@ impl<T: DbTx + ?Sized> IndexedRead for T {
 
 /// Write with automatic secondary index maintenance (blanket-implemented for all `DbTxMut`).
 pub trait IndexedWrite: DbTxMut {
-    /// Insert or update a primary entry, maintaining the secondary index.
-    ///
-    /// Handles three cases: fresh insert, update with unchanged index key,
-    /// and update with changed index key (stale index entry is removed).
+    /// Insert or update a primary entry, maintaining the secondary index
+    /// (removing the stale index entry when the index key changes).
     fn put_indexed<I: SecondaryIndex>(
         &self,
         pk: <I::Primary as Table>::Key,
@@ -243,7 +231,6 @@ impl<T: DbTxMut + ?Sized> IndexedWrite for T {
     ) -> Result<(), DatabaseError> {
         let new_idx = I::extract(&value);
 
-        // If an existing entry has a different index key, remove the stale index entry.
         if let Some(old_value) = self.get::<I::Primary>(pk.clone())? {
             let old_idx = I::extract(&old_value);
             if old_idx != new_idx {
@@ -251,7 +238,6 @@ impl<T: DbTxMut + ?Sized> IndexedWrite for T {
             }
         }
 
-        // Always write both entries to keep index self-healing.
         self.put::<I::Primary>(pk.clone(), value)?;
         self.put::<I>(new_idx, pk)?;
         Ok(())

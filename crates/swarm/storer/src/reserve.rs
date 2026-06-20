@@ -10,44 +10,31 @@ use vertex_swarm_primitives::OverlayAddress;
 
 use crate::{ChunkStore, StorerError, StorerResult};
 
-/// Eviction strategy when reserve is full.
+/// Eviction strategy for the in-memory reserve when full.
 ///
-/// Note: [`DbReserve`](crate::DbReserve) does not consult this in-memory
-/// strategy. Its capacity is managed by the caller through the proximity- and
-/// batch-scoped eviction primitives on
-/// [`ReserveStore`](vertex_swarm_api::ReserveStore)
-/// (`evict_furthest`/`evict_from_bin`/`evict_batch`), which compact the on-disk
-/// indexes atomically. This enum and [`Reserve::try_reserve`] remain for the
-/// in-memory store paths and are superseded for the db reserve.
+/// [`DbReserve`](crate::DbReserve) ignores this; it evicts through the
+/// proximity- and batch-scoped [`ReserveStore`](vertex_swarm_api::ReserveStore) primitives.
 #[derive(Debug, Clone, Copy, Default)]
 pub enum EvictionStrategy {
-    /// Don't evict, return error when full.
+    /// Return an error when full instead of evicting.
     #[default]
     NoEviction,
-    /// Evict oldest chunks (FIFO-like based on iteration order).
+    /// Evict the oldest chunk by iteration order.
     EvictOldest,
-    /// Evict chunks furthest from our address (requires overlay).
+    /// Evict the chunk furthest from our overlay address.
     EvictFurthest,
 }
 
-/// Reserve capacity tracker.
-///
-/// Manages the storage quota and handles eviction when needed.
+/// Reserve capacity tracker with eviction.
 pub struct Reserve {
-    /// Maximum chunk capacity.
     capacity: u64,
-    /// Current chunk count.
     count: RwLock<u64>,
-    /// Eviction strategy.
     strategy: EvictionStrategy,
-    /// Local overlay address, threaded from the node identity at construction.
-    /// Required by [`EvictionStrategy::EvictFurthest`] to rank chunks by
-    /// proximity; `None` for the proximity-agnostic strategies.
+    /// Required by [`EvictionStrategy::EvictFurthest`]; `None` otherwise.
     overlay: Option<OverlayAddress>,
 }
 
 impl Reserve {
-    /// Create a new reserve with the given capacity.
     pub fn new(capacity: u64) -> Self {
         Self {
             capacity,
@@ -57,7 +44,6 @@ impl Reserve {
         }
     }
 
-    /// Create a reserve with a specific eviction strategy.
     pub fn with_strategy(capacity: u64, strategy: EvictionStrategy) -> Self {
         Self {
             capacity,
@@ -67,23 +53,19 @@ impl Reserve {
         }
     }
 
-    /// Thread the node identity, enabling proximity-ranked eviction
-    /// ([`EvictionStrategy::EvictFurthest`]). Stores the derived overlay address
-    /// (the reserve only needs its own location in address space, not the
-    /// identity's signing capability), matching how the rest of the node is
-    /// wired off the identity.
+    /// Set the overlay address from the node identity, enabling
+    /// [`EvictionStrategy::EvictFurthest`].
     #[must_use]
     pub fn with_identity(mut self, identity: &impl SwarmIdentity) -> Self {
         self.overlay = Some(identity.overlay_address());
         self
     }
 
-    /// The local overlay address, if set. Required for `EvictFurthest`.
     pub fn overlay(&self) -> Option<OverlayAddress> {
         self.overlay
     }
 
-    /// Initialize count from an existing store.
+    /// Seed the count from an existing store.
     pub fn initialize_from<S: ChunkStore>(&self, store: &S) -> StorerResult<()> {
         let count = store.count()?;
         *self.count.write() = count;
@@ -91,37 +73,28 @@ impl Reserve {
         Ok(())
     }
 
-    /// Get the capacity.
     pub fn capacity(&self) -> u64 {
         self.capacity
     }
 
-    /// Get the current count.
     pub fn count(&self) -> u64 {
         *self.count.read()
     }
 
-    /// Set the current count directly.
-    ///
-    /// Used by the per-entry [`DbReserve`](crate::DbReserve) to seed the
-    /// in-memory size from the persisted entry-table count at construction (the
-    /// authoritative size is the entry count, not the address count).
     pub fn set_count(&self, count: u64) {
         *self.count.write() = count;
     }
 
-    /// Get available space.
     pub fn available(&self) -> u64 {
         let count = *self.count.read();
         self.capacity.saturating_sub(count)
     }
 
-    /// Check if there's room for a new chunk.
     pub fn has_room(&self) -> bool {
         *self.count.read() < self.capacity
     }
 
-    /// Get utilization percentage (0-100).
+    /// Utilization percentage (0-100).
     pub fn utilization(&self) -> u8 {
         let count = *self.count.read();
         if self.capacity == 0 {
@@ -130,10 +103,7 @@ impl Reserve {
         ((count * 100) / self.capacity) as u8
     }
 
-    /// Try to reserve space for a new chunk.
-    ///
-    /// Returns `Ok(())` if space is available, or attempts eviction
-    /// based on the configured strategy.
+    /// Reserve space for a chunk, evicting per the configured strategy if full.
     pub fn try_reserve<S: ChunkStore>(&self, store: &S) -> StorerResult<()> {
         if self.has_room() {
             return Ok(());
@@ -149,39 +119,35 @@ impl Reserve {
             }
             EvictionStrategy::EvictOldest => self.evict_oldest(store),
             EvictionStrategy::EvictFurthest => {
-                // For now, fall back to oldest
-                // TODO: Implement furthest eviction with overlay address
+                // TODO: rank by proximity to self.overlay; for now fall back.
                 warn!("EvictFurthest not implemented, falling back to EvictOldest");
                 self.evict_oldest(store)
             }
         }
     }
 
-    /// Record that a chunk was added.
     pub fn on_added(&self) {
         let mut count = self.count.write();
         *count += 1;
     }
 
-    /// Record that a chunk was removed.
     pub fn on_removed(&self) {
         let mut count = self.count.write();
         *count = count.saturating_sub(1);
     }
 
-    /// Record that `n` chunks were removed at once (a batch/bin eviction).
+    /// Decrement the count by `n` after a batch or bin eviction.
     pub fn on_removed_n(&self, n: u64) {
         let mut count = self.count.write();
         *count = count.saturating_sub(n);
     }
 
-    /// Evict the oldest chunk (first one encountered in iteration).
     fn evict_oldest<S: ChunkStore>(&self, store: &S) -> StorerResult<()> {
         let mut to_evict = None;
 
         store.for_each(|addr| {
             to_evict = Some(*addr);
-            false // Stop after first
+            false // stop after the first
         })?;
 
         if let Some(addr) = to_evict {
@@ -190,7 +156,7 @@ impl Reserve {
             self.on_removed();
             Ok(())
         } else {
-            // Store is empty but we're "full"? Shouldn't happen
+            // Empty but reported full; should not happen.
             Err(StorerError::StorageFull {
                 capacity: self.capacity,
                 used: 0,
@@ -199,21 +165,16 @@ impl Reserve {
     }
 }
 
-/// Statistics about the reserve.
+/// Reserve statistics snapshot.
 #[derive(Debug, Clone)]
 pub struct ReserveStats {
-    /// Total capacity in chunks.
     pub capacity: u64,
-    /// Current chunk count.
     pub count: u64,
-    /// Available space.
     pub available: u64,
-    /// Utilization percentage.
     pub utilization: u8,
 }
 
 impl Reserve {
-    /// Get reserve statistics.
     pub fn stats(&self) -> ReserveStats {
         ReserveStats {
             capacity: self.capacity,
@@ -253,7 +214,6 @@ mod tests {
         let reserve =
             Reserve::with_strategy(2, EvictionStrategy::EvictFurthest).with_identity(&identity);
         assert_eq!(reserve.overlay(), Some(identity.overlay_address()));
-        // The proximity-agnostic constructors leave it unset.
         assert_eq!(Reserve::new(2).overlay(), None);
     }
 

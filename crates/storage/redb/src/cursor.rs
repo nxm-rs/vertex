@@ -1,37 +1,17 @@
 //! Lazy, streaming read-only cursor over a redb table.
 //!
 //! [`RedbCursorRO`] implements [`DbCursorRO`] without materialising the table.
-//! It is reachable from a caller-held read transaction (see
-//! [`RedbReadTx::cursor`](crate::RedbReadTx::cursor)), so a cursor-backed
-//! iterator can outlive the call that created it (unlike `Database::view`,
-//! whose borrowed transaction is dropped at the closure boundary).
+//! It owns the [`redb::ReadOnlyTable`], which `Arc`-pins the read snapshot via
+//! its transaction guard, so the cursor (and any `Range` it builds) can outlive
+//! the [`RedbReadTx::cursor`](crate::RedbReadTx::cursor) call that created it.
 //!
-//! # Lifetime approach
-//!
-//! redb 2.6.3's `ReadOnlyTable<K, V>` has no lifetime parameter: it owns an
-//! `Arc<TransactionGuard>` plus an `Arc`-backed B-tree, so it is fully detached
-//! from the `&ReadTransaction` used to open it. The guard's `Drop` is what ends
-//! the read snapshot, so while the table (and any `Range` it produces, each of
-//! which clones the guard) is alive the snapshot stays pinned even after the
-//! originating `ReadTransaction` is dropped. Its inherent `range()` returns a
-//! `Range<'static, K, V>` whose `'static` lifetime is genuine. The cursor
-//! therefore simply owns the [`redb::ReadOnlyTable`] with no borrow
-//! relationship to any transaction; no `self_cell`, `ouroboros`, or hand-rolled
-//! unsafe is required.
-//!
-//! # Direction model
-//!
-//! A single redb `Range` is one iterator that consumes from both ends of a
-//! fixed range; its forward (`next`) and backward (`next_back`) frontiers do
-//! not share a single movable position. A faithful bidirectional cursor cannot
-//! be backed by one persistent `Range`. Instead we keep a live forward range
-//! for `next()` (amortised O(1) B-tree traversal) and, for any backward or
-//! seeking move, rebuild a fresh range from the cached current key (O(log n)).
-//! The current position is cached as raw encoded key/value bytes so that
-//! `current()` needs no `Clone` bound on `T::Value`.
+//! redb's `Range` is a single iterator consuming from both ends of a fixed
+//! range, so it cannot back a movable bidirectional cursor. We keep a live
+//! forward range for `next()` (amortised O(1)) and rebuild a fresh range from
+//! the cached current key for any backward or seeking move (O(log n)). The
+//! current position is cached as raw key/value bytes so `current()` needs no
+//! `Clone` bound on `T::Value`.
 
-// The cursor's helpers return `Result<Option<(T::Key, T::Value)>, _>`, matching
-// the `DbCursorRO` trait signatures (which carry the same allow in traits.rs).
 #![allow(clippy::type_complexity)]
 
 use std::marker::PhantomData;
@@ -49,23 +29,17 @@ struct Position {
 
 /// A lazy read-only cursor over a single redb table.
 ///
-/// Owns the opened [`ReadOnlyTable`] (which Arc-pins the read snapshot via its
-/// transaction guard), so it is self-contained and may be held across calls and
-/// returned from a function, outliving the transaction it was opened from.
+/// Owns its [`ReadOnlyTable`] (which `Arc`-pins the read snapshot), so it may be
+/// held across calls and returned from a function, outliving the originating tx.
 pub struct RedbCursorRO<T: Table> {
-    /// Owned, `'static`-detached table handle used to build ranges on demand.
-    /// Keeps the read snapshot alive through its `Arc<TransactionGuard>`.
     table: ReadOnlyTable<&'static [u8], &'static [u8]>,
     /// Live forward range driving `next()`; rebuilt by seeking/backward moves.
     forward: Option<Range<'static, &'static [u8], &'static [u8]>>,
-    /// The current entry, if the cursor points at a real row. `None` after a
-    /// seek miss or once iteration has run off either end.
     current: Option<Position>,
-    /// The raw key the cursor logically sits at, used as the exclusive upper
-    /// bound for `prev()`. On a hit this equals `current.key`; on a seek miss it
-    /// is the (absent) seek key, so `prev()` still steps back into the table.
-    /// This is what makes the `seek(hi)` then `prev()` range-tail pattern work
-    /// even when `hi` lies beyond every stored key.
+    /// Raw key the cursor logically sits at, used as the exclusive upper bound
+    /// for `prev()`. On a seek miss it holds the absent seek key, so the
+    /// `seek(hi)` then `prev()` range-tail pattern works even when `hi` lies
+    /// beyond every stored key.
     anchor: Option<Vec<u8>>,
     _marker: PhantomData<fn() -> T>,
 }
@@ -76,12 +50,6 @@ fn read_err(context: &str, err: redb::StorageError) -> DatabaseError {
 }
 
 impl<T: Table> RedbCursorRO<T> {
-    /// Open a cursor over table `T` from a held read transaction.
-    ///
-    /// The table must already exist (it is created during database
-    /// initialisation); opening a never-created table yields
-    /// [`DatabaseError::InitCursor`]. An empty but existent table opens
-    /// successfully and yields no entries.
     pub(crate) fn new(table: ReadOnlyTable<&'static [u8], &'static [u8]>) -> Self {
         Self {
             table,
@@ -92,17 +60,13 @@ impl<T: Table> RedbCursorRO<T> {
         }
     }
 
-    /// Decode a raw key/value pair into owned `(T::Key, T::Value)`.
-    ///
-    /// Values borrowed from a redb `AccessGuard` must be decoded before the
-    /// guard is dropped, so callers extract the raw bytes first and decode here.
     fn decode_pair(key: &[u8], value: &[u8]) -> Result<(T::Key, T::Value), DatabaseError> {
         let k = T::Key::decode(key)?;
         let v = decode_value::<T>(value)?;
         Ok((k, v))
     }
 
-    /// Cache the entry (as both `current` and `anchor`) and return the decoded pair.
+    /// Cache the entry as both `current` and `anchor`, returning the decoded pair.
     fn record(
         &mut self,
         key: Vec<u8>,
@@ -114,8 +78,8 @@ impl<T: Table> RedbCursorRO<T> {
         Ok(pair)
     }
 
-    /// Build a full-table forward range. The explicit byte-slice bound avoids
-    /// the `RangeFull` type-inference ambiguity on the generic `range()` method.
+    /// Full-table forward range. The explicit byte-slice bound avoids the
+    /// `RangeFull` type-inference ambiguity on the generic `range()` method.
     fn full_range(&self) -> Result<Range<'static, &'static [u8], &'static [u8]>, DatabaseError> {
         let empty: &[u8] = &[];
         self.table
@@ -123,7 +87,7 @@ impl<T: Table> RedbCursorRO<T> {
             .map_err(|e| read_err(&format!("cursor range {}", T::NAME), e))
     }
 
-    /// Build a forward range starting at (and including) `from`.
+    /// Forward range starting at and including `from`.
     fn range_from(
         &self,
         from: &[u8],
@@ -141,15 +105,14 @@ impl<T: Table> RedbCursorRO<T> {
         match range.next() {
             Some(entry) => {
                 let (k, v) = entry.map_err(|e| read_err(&format!("cursor next {}", T::NAME), e))?;
-                // Decode the borrowed slices into owned bytes before the guards drop.
+                // Own the bytes before the access guards drop.
                 let key = k.value().to_vec();
                 let value = v.value().to_vec();
                 drop((k, v));
                 Ok(Some(self.record(key, value)?))
             }
             None => {
-                // Exhausted: clear the live range and the current entry, but keep
-                // the anchor so a subsequent prev() can still step back from the
+                // Keep the anchor so a subsequent prev() can step back from the
                 // last visited key.
                 self.forward = None;
                 self.current = None;
@@ -173,8 +136,7 @@ impl<T: Table> DbCursorRO<T> for RedbCursorRO<T> {
                 let key = k.value().to_vec();
                 let value = v.value().to_vec();
                 drop((k, v));
-                // No live forward range after positioning at the tail; prev()
-                // will rebuild from the cached key.
+                // No forward range at the tail; prev() rebuilds from the cached key.
                 self.forward = None;
                 Ok(Some(self.record(key, value)?))
             }
@@ -193,9 +155,8 @@ impl<T: Table> DbCursorRO<T> for RedbCursorRO<T> {
         self.forward = Some(self.range_from(key_bytes)?);
         let found = self.advance_forward()?;
         if found.is_none() {
-            // No key at or after the seek key: cache it as the anchor so the
-            // range-tail pattern (seek(hi) then prev()) can step back to the
-            // greatest key strictly below `hi`.
+            // No key at or after `key`: anchor on it so a following prev() steps
+            // back to the greatest key strictly below it.
             self.anchor = Some(key_bytes.to_vec());
         }
         Ok(found)
@@ -213,10 +174,9 @@ impl<T: Table> DbCursorRO<T> for RedbCursorRO<T> {
                 let value = guard.value().to_vec();
                 drop(guard);
                 let key_vec = key_bytes.to_vec();
-                // Anchor a forward range at the found key so next() continues from here.
                 self.forward = Some(self.range_from(key_bytes)?);
-                // Consume the just-found element off the forward range so a
-                // following next() yields the *successor*, matching seek().
+                // Drop the just-found element so a following next() yields the
+                // successor, matching seek().
                 if let Some(range) = self.forward.as_mut() {
                     let _ = range.next();
                 }
@@ -227,13 +187,11 @@ impl<T: Table> DbCursorRO<T> for RedbCursorRO<T> {
     }
 
     fn next(&mut self) -> Result<Option<(T::Key, T::Value)>, DatabaseError> {
-        // If a live forward range exists (e.g. mid-scan after seek()/next()),
-        // just advance it. Otherwise (after last()/prev()/a fresh cursor)
-        // rebuild it as the strict successor of the anchor, or from the start.
+        // Mid-scan: advance the live range. Otherwise rebuild it as the strict
+        // successor of the anchor, or from the start when there is no anchor.
         if self.forward.is_none() {
             match &self.anchor {
                 Some(anchor) => {
-                    // Strict successor: range starts at the anchor, skip it.
                     let mut range = self.range_from(anchor)?;
                     let _ = range.next();
                     self.forward = Some(range);
@@ -245,10 +203,7 @@ impl<T: Table> DbCursorRO<T> for RedbCursorRO<T> {
     }
 
     fn prev(&mut self) -> Result<Option<(T::Key, T::Value)>, DatabaseError> {
-        // Previous element relative to the current position: the greatest key
-        // strictly less than the anchor key. With no anchor (fresh cursor or
-        // after running off the front) there is nothing before the start, so
-        // return None.
+        // Greatest key strictly less than the anchor; nothing before the start.
         let Some(upper) = self.anchor.clone() else {
             return Ok(None);
         };
@@ -263,14 +218,12 @@ impl<T: Table> DbCursorRO<T> for RedbCursorRO<T> {
                 let key = k.value().to_vec();
                 let value = v.value().to_vec();
                 drop((k, v));
-                // Direction changed; drop any forward range so the next next()
-                // rebuilds from this new position.
+                // Direction changed; force next() to rebuild from this position.
                 self.forward = None;
                 Ok(Some(self.record(key, value)?))
             }
             None => {
-                // Ran off the front: no entry below the anchor. Clear position so
-                // current() reports None and a further prev() stays None.
+                // Off the front: clear position so current() and further prev() report None.
                 self.forward = None;
                 self.current = None;
                 self.anchor = None;
@@ -298,7 +251,7 @@ mod tests {
 
     use crate::RedbDatabase;
 
-    // -- A simple u64 -> u64 byte-ordered table --
+    // A simple u64 -> u64 byte-ordered table.
 
     #[derive(
         Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -320,7 +273,7 @@ mod tests {
 
     table!(NumTable, "nums", K, u64);
 
-    // -- A composite (Bin, u64) -> [u8; 4] table modelling the storer BinSeqIndex --
+    // A composite (Bin, u64) -> [u8; 4] table, big-endian so byte order is logical order.
 
     #[derive(
         Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -328,7 +281,6 @@ mod tests {
     struct BinSeq(u8, u64);
 
     impl Encode for BinSeq {
-        // Big-endian, bin most-significant, so byte order == logical order.
         type Encoded = [u8; 9];
         fn encode(self) -> Self::Encoded {
             let mut out = [0u8; 9];
@@ -452,9 +404,8 @@ mod tests {
         fill_nums(&db, &[10, 20, 30, 100, 110]);
         let tx = db.tx().unwrap();
         let mut c = tx.cursor::<NumTable>().unwrap();
-        // Last entry strictly below the range upper bound 40 is 30 -- and crucially
-        // NOT the global table maximum (110). This proves the range-tail comes from
-        // seek(hi) + prev(), never a global last().
+        // Last entry strictly below upper bound 40 is 30, not the global max 110:
+        // proves the range-tail comes from seek(hi) + prev(), not a global last().
         assert_eq!(c.seek(K(40)).unwrap(), Some((K(100), 1000)));
         assert_eq!(c.prev().unwrap(), Some((K(30), 300)));
         assert_ne!(c.current().unwrap(), Some((K(110), 1100)));
@@ -540,15 +491,12 @@ mod tests {
 
     #[test]
     fn cursor_outlives_originating_call() {
-        // The cursor owns its table handle, which Arc-pins the read snapshot, so
-        // it can be returned from a function and iterated after that function
-        // (and the RedbReadTx it was opened from) has returned.
+        // The cursor Arc-pins the snapshot, so it survives `tx` being dropped here.
         fn make_cursor(db: &RedbDatabase) -> crate::RedbCursorRO<NumTable> {
             let tx = db.tx().unwrap();
             let mut c = tx.cursor::<NumTable>().unwrap();
             c.seek(K(10)).unwrap();
             c
-            // `tx` is dropped here, at the end of this function.
         }
 
         let db = setup();
@@ -566,7 +514,7 @@ mod tests {
         assert_ss::<crate::RedbCursorRO<NumTable>>();
     }
 
-    // -- Storer-shaped BinSeqIndex pattern --
+    // Composite-key bin scan and per-bin topmost-seq pattern.
 
     #[test]
     fn bin_scan_and_topmost_seq() {
@@ -616,10 +564,8 @@ mod tests {
         assert!(matches!(below, Some((BinSeq(b, _), _)) if b != 9));
     }
 
-    // -- Streaming / no-materialise confirmation --
-
-    // A value type that counts how many times it is deserialised, so a test can
-    // assert the cursor decodes only what it consumes (lazy), not the whole table.
+    // A value type that counts deserialisations, so a test can assert the cursor
+    // decodes only what it consumes, not the whole table.
     static DECODE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
     #[derive(Debug, PartialEq, serde::Serialize)]

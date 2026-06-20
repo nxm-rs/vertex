@@ -1,50 +1,18 @@
-//! The stamp-index arbiter: newest-timestamp-wins keyed by the full
+//! Stamp-index arbiter: newest-timestamp-wins per slot, keyed by the full
 //! `(batchID, 8-byte stampIndex)`.
 //!
-//! # What this decides
+//! An issuer may re-use a slot, so the reserve must decide whether an incoming
+//! stamp is the newest seen for its `(batch, index)` slot (admit, displacing
+//! the previous occupant) or stale (reject).
 //!
-//! A postage batch is partitioned into *buckets*, and each bucket holds a fixed
-//! number of *index* slots. A stamp commits to one slot via its
-//! [`StampIndex`], whose canonical 8-byte big-endian encoding is
-//! `[bucket: 4][index: 4]` (see [`StampIndex::to_be_bytes`]). The settlement
-//! contract lets an issuer *re-use* a slot: a later stamp under the same batch
-//! and the same `(bucket, index)` supersedes the earlier one. The reserve must
-//! therefore decide, when it sees a stamped chunk, whether that stamp is the
-//! newest the node has seen for its slot (admit, possibly displacing the
-//! previous occupant) or stale (reject).
+//! Consensus-observable rule: ordering is by the stamp timestamp (8-byte
+//! big-endian). `prev >= curr` rejects, so equal timestamps reject (a
+//! re-presentation must not overwrite). The comparison keys on the full
+//! `(batchID, stampIndex)`: two indices within the same bucket are distinct
+//! slots and both admit.
 //!
-//! This module is that decision, and nothing else. It does not touch the
-//! reserve, the payload store, or any of the proximity indexes. PR-D's reserve
-//! calls into it; here it is a self-contained, independently tested unit.
-//!
-//! # The rule (consensus-observable)
-//!
-//! Ordering is by the stamp *timestamp* (an 8-byte big-endian value on the
-//! wire), per slot:
-//!
-//! - **newer** incoming timestamp than the stored one: **admit**, and report
-//!   the displaced entry so the caller can evict the chunk it stamped;
-//! - **no stored entry** for the slot: **admit** with nothing displaced;
-//! - **equal or older** incoming timestamp: **reject**. Equality rejects: a
-//!   re-presentation of an already-seen stamp (same timestamp) must not
-//!   overwrite, and an older stamp is plainly stale. In bee's words,
-//!   `prev >= curr` rejects.
-//!
-//! The comparison is `prev >= curr` on the raw big-endian timestamp, evaluated
-//! against the *full* `(batchID, stampIndex)` key. Keying by the bucket alone
-//! is wrong and was refuted at the design gate: two distinct indices within the
-//! same bucket are different slots and must both be admissible. The
-//! [`distinct_indices_same_bucket_both_admit`](tests) test guards that.
-//!
-//! # Why a hash and an address travel with the timestamp
-//!
-//! When a newer stamp displaces an older one, the caller must remove *exactly*
-//! the chunk the old stamp admitted, identified by its content address and the
-//! precise stamp version (its stamp hash, a keccak over the canonical stamp
-//! bytes). Storing `(timestamp, stamp_hash, address)` in the slot lets the
-//! arbiter hand back a fully-formed [`DisplacedEntry`] without a second lookup,
-//! and lets an inclusion proof later carry the exact stamp a sample slot was
-//! won with rather than re-loading one by batch id alone.
+//! Each slot stores `(timestamp, stamp_hash, address)` so a displacement can
+//! report exactly the chunk to evict without a second lookup.
 
 use alloy_primitives::B256;
 use nectar_postage::{BatchId, StampIndex};
@@ -53,40 +21,28 @@ use std::sync::Arc;
 use vertex_storage::{Database, DatabaseError, DbTx, DbTxMut, Decode, Encode, Table, table};
 
 // Stamp-index table: `(batchID, stampIndex_be8) -> (timestamp, stampHash, addr)`.
+// The key is laid out big-endian as `[batch: 32][index: 8]` so byte order
+// matches `(batchID, stampIndex)` lexicographic order and a batch's slots are
+// contiguous and ascending. The value is a tiny fixed record (8 + 32 + 32),
+// not worth compressing.
 //
-// The compound key is laid out big-endian as `[batch: 32][index: 8]` so that
-// the byte order matches `(batchID, stampIndex)` lexicographic order: every
-// slot of a batch is contiguous and ascending by `(bucket, index)`. The value
-// is the data needed to identify and evict the slot's current occupant.
-//
-// Uncompressed: the value is a tiny fixed record (8 + 32 + 32 bytes) for which
-// compression is pure overhead.
-//
-// This handle is `pub` and re-exported from the crate root *on purpose*. The
-// reserve (PR-D) decides admission inside its own atomic put transaction rather
-// than calling [`DbStampIndexArbiter`], but it must address the *same* physical
-// table. Rather than re-invoke `table!` there (which would create a second
-// type-level handle to the same on-disk table, free to drift in name or value
-// codec and silently desynchronise it), the reserve imports this single handle.
-// The name and the `(key, value)` codec binding therefore live in exactly one
-// place, here.
+// This handle is `pub` and re-exported so any code addressing the same physical
+// table imports one handle rather than re-invoking `table!` (which would create
+// a second type-level binding free to drift in name or codec). The name and
+// codec binding live only here.
 table!(pub StampIndexTable, "postage_stamp_index", StampSlotKey, StampIndexEntry, compressed = false);
 
 /// The full per-slot key: a postage batch and a stamp index within it.
 ///
-/// This is the *full* `(batchID, 8-byte stampIndex)` key the rule keys on, not
-/// the bucket alone. The 8-byte stamp index is itself `[bucket: 4][index: 4]`
-/// big-endian, so the 40-byte key sorts batch-major, then bucket, then index.
+/// The 8-byte stamp index is `[bucket: 4][index: 4]` big-endian, so the 40-byte
+/// key sorts batch-major, then bucket, then index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StampSlotKey {
-    /// The postage batch the slot belongs to.
     pub batch_id: BatchId,
-    /// The stamp index (bucket and within-bucket position) within the batch.
     pub stamp_index: StampIndex,
 }
 
 impl StampSlotKey {
-    /// Construct a slot key from its batch and stamp index.
     pub const fn new(batch_id: BatchId, stamp_index: StampIndex) -> Self {
         Self {
             batch_id,
@@ -95,11 +51,8 @@ impl StampSlotKey {
     }
 }
 
-// `StampIndex` is a foreign type that implements neither `PartialOrd` nor `Ord`,
-// so `StampSlotKey`'s ordering is defined directly on the canonical 40-byte
-// encoding. This is also exactly the on-disk key order (batch-major, then
-// bucket, then index), so the `Key` bound's `Ord` agrees byte-for-byte with the
-// storage layout.
+// `StampIndex` is foreign and unordered, so ordering is defined on the canonical
+// 40-byte encoding, which equals the on-disk key order (batch, bucket, index).
 impl Ord for StampSlotKey {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.encode().cmp(&other.encode())
@@ -112,10 +65,7 @@ impl PartialOrd for StampSlotKey {
     }
 }
 
-// The key codec is hand-rolled (rather than a serde derive) so the on-disk byte
-// order is exactly `[batch: 32][index_be8: 8]`. `StampIndex` and `BatchId` are
-// foreign types without local codecs, and serde would not pin the ordering, so
-// the newtype carries the canonical big-endian layout directly.
+// Hand-rolled codec so the on-disk byte order is exactly `[batch: 32][index_be8: 8]`.
 impl Encode for StampSlotKey {
     type Encoded = [u8; 40];
 
@@ -139,12 +89,9 @@ impl Decode for StampSlotKey {
     }
 }
 
-// `StampSlotKey` is used as a redb table key, which requires `serde` (the `Key`
-// blanket bound). It is never actually serialised through serde on the storage
-// path - the `Encode`/`Decode` codec above is - but the bound must be
-// satisfied. The two halves are serialised as a `([u8; 32], [u8; 8])` tuple:
-// serde implements arrays only up to length 32, so the 40-byte encoding cannot
-// be a single array, but the batch and index halves are within that limit.
+// The `Key` blanket bound requires `serde`, though the storage path uses the
+// `Encode`/`Decode` codec above. Serialised as a `([u8; 32], [u8; 8])` tuple
+// because serde implements arrays only up to length 32.
 impl serde::Serialize for StampSlotKey {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let parts: ([u8; 32], [u8; 8]) = (self.batch_id.0, self.stamp_index.to_be_bytes());
@@ -164,22 +111,19 @@ impl<'de> serde::Deserialize<'de> for StampSlotKey {
 
 /// The occupant of a stamp-index slot: the stamp version recorded for it.
 ///
-/// Stored as the [`StampIndexTable`] value. The timestamp is kept in its raw
-/// 8-byte big-endian form so the ordering comparison is byte-exact with the
-/// wire representation and identical to bee's `binary.BigEndian.Uint64`.
+/// Stored as the [`StampIndexTable`] value. The timestamp is kept raw 8-byte
+/// big-endian so the ordering comparison is byte-exact with the wire form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StampIndexEntry {
     /// The stamp timestamp, raw 8-byte big-endian (as it appears on the wire).
     pub timestamp: [u8; 8],
-    /// Keccak over the canonical 113-byte stamp, identifying the exact stamp
-    /// version. Lets the caller evict precisely the chunk this stamp admitted.
+    /// Keccak over the canonical 113-byte stamp: the exact stamp version, so the
+    /// caller can evict precisely the chunk this stamp admitted.
     pub stamp_hash: B256,
-    /// The content address the stamp was applied to.
     pub address: ChunkAddress,
 }
 
 impl StampIndexEntry {
-    /// Construct a slot occupant record.
     pub const fn new(timestamp: [u8; 8], stamp_hash: B256, address: ChunkAddress) -> Self {
         Self {
             timestamp,
@@ -188,7 +132,6 @@ impl StampIndexEntry {
         }
     }
 
-    /// The timestamp as a `u64`, decoded from its big-endian bytes.
     #[inline]
     pub const fn timestamp_u64(&self) -> u64 {
         u64::from_be_bytes(self.timestamp)
@@ -196,25 +139,18 @@ impl StampIndexEntry {
 }
 
 /// An incoming stamped-chunk presentation to arbitrate.
-///
-/// Carries the full slot identity `(batch_id, stamp_index)` plus the data that
-/// would be recorded if it wins: its timestamp, stamp hash and address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IncomingStamp {
-    /// The postage batch the stamp draws on.
     pub batch_id: BatchId,
-    /// The stamp index (bucket and within-bucket position).
     pub stamp_index: StampIndex,
     /// The stamp timestamp, raw 8-byte big-endian.
     pub timestamp: [u8; 8],
     /// Keccak over the canonical 113-byte stamp.
     pub stamp_hash: B256,
-    /// The content address the stamp was applied to.
     pub address: ChunkAddress,
 }
 
 impl IncomingStamp {
-    /// Construct an incoming stamp from its parts.
     pub const fn new(
         batch_id: BatchId,
         stamp_index: StampIndex,
@@ -231,7 +167,6 @@ impl IncomingStamp {
         }
     }
 
-    /// The slot this stamp competes for.
     fn slot(&self) -> StampSlotKey {
         StampSlotKey::new(self.batch_id, self.stamp_index)
     }
@@ -242,70 +177,45 @@ impl IncomingStamp {
     }
 }
 
-/// The entry an admission displaced: the slot's previous occupant.
-///
-/// When an incoming stamp is newer than the one already in its slot, the older
-/// occupant is reported here so the caller can evict exactly the chunk it
-/// admitted (by `address` and `stamp_hash`).
+/// The slot's previous occupant, reported on admission so the caller can evict
+/// exactly the chunk it admitted (by `address` and `stamp_hash`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DisplacedEntry {
-    /// The address the displaced stamp was applied to.
     pub address: ChunkAddress,
-    /// The displaced stamp's hash (its precise version).
     pub stamp_hash: B256,
-    /// The displaced stamp's timestamp, raw 8-byte big-endian.
+    /// Raw 8-byte big-endian.
     pub timestamp: [u8; 8],
 }
 
 /// Why an incoming stamp was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RejectReason {
-    /// The slot already holds a stamp whose timestamp is greater than or equal
-    /// to the incoming one (`prev >= curr`). Equal timestamps reject: a
-    /// re-presentation does not overwrite, and an older stamp is stale.
-    NotNewer {
-        /// The stored (previous) timestamp, big-endian.
-        stored: [u8; 8],
-        /// The incoming timestamp, big-endian.
-        incoming: [u8; 8],
-    },
+    /// The slot holds a stamp whose timestamp is `>=` the incoming one. Equal
+    /// rejects, older rejects.
+    NotNewer { stored: [u8; 8], incoming: [u8; 8] },
 }
 
 /// The arbiter's verdict for an incoming stamp.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Arbitration {
-    /// The stamp is the newest seen for its slot and is admitted. If a previous
-    /// occupant was displaced, it is reported so the caller can evict it; a
-    /// `None` means the slot was empty.
-    Admit {
-        /// The previous occupant, if any, that the admission displaced.
-        displaced: Option<DisplacedEntry>,
-    },
-    /// The stamp is stale (equal or older than the stored one) and is rejected.
-    Reject {
-        /// Why the stamp was rejected.
-        reason: RejectReason,
-    },
+    /// Admitted as the newest seen for its slot. `displaced` is the previous
+    /// occupant to evict, or `None` if the slot was empty.
+    Admit { displaced: Option<DisplacedEntry> },
+    /// Rejected as stale.
+    Reject { reason: RejectReason },
 }
 
-/// Pure, storage-free core of the rule.
+/// Pure, storage-free core of the rule: decide the verdict for `incoming`
+/// against the slot's current occupant (`stored`, `None` if empty).
 ///
-/// Given the slot's current occupant (`stored`, `None` if empty) and the
-/// incoming stamp, decide the verdict. Admission does not itself write; the
-/// caller (here [`DbStampIndexArbiter`], in PR-D the reserve, inside its own
-/// transaction) persists the new entry when the verdict is
-/// [`Arbitration::Admit`].
-///
-/// This is split out so the comparison can be reused verbatim inside the
-/// reserve's atomic put transaction without going through this module's own
-/// database handle, keeping the rule defined in exactly one place.
+/// Does not write; the caller persists the new entry on [`Arbitration::Admit`]
+/// inside the atomic put transaction.
 pub fn decide(stored: Option<&StampIndexEntry>, incoming: &IncomingStamp) -> Arbitration {
     match stored {
         None => Arbitration::Admit { displaced: None },
         Some(prev) => {
-            // Compare raw big-endian bytes, which orders identically to the
-            // decoded u64 and is byte-exact with the wire timestamp. `prev >=
-            // curr` rejects (equal rejects, older rejects).
+            // Raw big-endian compare, byte-exact with the wire timestamp;
+            // `prev >= curr` rejects.
             if prev.timestamp >= incoming.timestamp {
                 Arbitration::Reject {
                     reason: RejectReason::NotNewer {
@@ -335,43 +245,32 @@ pub enum StampIndexError {
 }
 
 /// The object-safe arbiter interface.
-///
-/// Arbitrate an incoming stamp against the slot it competes for, persisting the
-/// new occupant on admission and reporting any displaced one. Object-safe (no
-/// generic methods, no `Self`-by-value), so the reserve can hold a
-/// `dyn StampIndexArbiter` if it chooses.
 pub trait StampIndexArbiter {
-    /// Arbitrate `incoming` against its slot.
-    ///
-    /// On [`Arbitration::Admit`] the slot is updated to the incoming stamp
-    /// atomically before returning, and any previous occupant is reported as
-    /// `displaced`. On [`Arbitration::Reject`] the slot is left untouched.
+    /// Arbitrate `incoming` against its slot. On [`Arbitration::Admit`] the slot
+    /// is updated atomically before returning; on [`Arbitration::Reject`] it is
+    /// left untouched.
     fn arbitrate(&self, incoming: &IncomingStamp) -> Result<Arbitration, StampIndexError>;
 
-    /// Look up the current occupant of a slot, if any.
     fn get(&self, slot: &StampSlotKey) -> Result<Option<StampIndexEntry>, StampIndexError>;
 }
 
-/// A [`StampIndexArbiter`] backed by a [`StampIndexTable`] over a
-/// `vertex-storage` `Database`.
+/// A [`StampIndexArbiter`] backed by a [`StampIndexTable`].
 ///
-/// Generic over the backend so the same code serves an in-memory database
-/// (tests) and an on-disk redb database (production). Each arbitration is a
-/// single read-then-conditional-write transaction, so the slot never observes a
-/// partial update and the displaced entry reported is exactly the one removed.
+/// Each arbitration is a single read-then-conditional-write transaction, so the
+/// slot never observes a partial update and the reported displaced entry is
+/// exactly the one removed.
 pub struct DbStampIndexArbiter<DB: Database> {
     db: Arc<DB>,
 }
 
 impl<DB: Database> DbStampIndexArbiter<DB> {
-    /// Create an arbiter over a shared database handle, ensuring the stamp-index
-    /// table exists so the read path works on a fresh database.
+    /// Ensures the stamp-index table exists so the read path works on a fresh
+    /// database.
     pub fn new(db: Arc<DB>) -> Result<Self, StampIndexError> {
         db.update(|tx| tx.ensure_table(StampIndexTable::NAME))?;
         Ok(Self { db })
     }
 
-    /// Borrow the shared database handle.
     pub fn database(&self) -> &Arc<DB> {
         &self.db
     }
@@ -380,11 +279,8 @@ impl<DB: Database> DbStampIndexArbiter<DB> {
 impl<DB: Database> StampIndexArbiter for DbStampIndexArbiter<DB> {
     fn arbitrate(&self, incoming: &IncomingStamp) -> Result<Arbitration, StampIndexError> {
         let slot = incoming.slot();
-        // Read-then-conditional-write in one transaction: the verdict is
-        // computed from the slot's current occupant and, on admission, the new
-        // entry is written before the transaction commits. No await is involved
-        // (redb is synchronous), so the slot cannot change between the read and
-        // the write.
+        // Read-then-conditional-write in one synchronous transaction, so the
+        // slot cannot change between the read and the write.
         let verdict = self.db.update(|tx| {
             let stored = tx.get::<StampIndexTable>(slot)?;
             let verdict = decide(stored.as_ref(), incoming);
@@ -438,15 +334,12 @@ mod tests {
         IncomingStamp::new(batch_id, idx, ts(timestamp), stamp_hash, address)
     }
 
-    // --- the exhaustive timestamp matrix, against a fresh slot each time -----
-
     #[test]
     fn empty_slot_admits_with_nothing_displaced() {
         let a = arbiter();
         let inc = incoming(batch(1), StampIndex::new(3, 7), 100, hash(0xaa), addr(0xa1));
         let verdict = a.arbitrate(&inc).unwrap();
         assert_eq!(verdict, Arbitration::Admit { displaced: None });
-        // The slot now holds the incoming stamp.
         let slot = StampSlotKey::new(batch(1), StampIndex::new(3, 7));
         assert_eq!(
             a.get(&slot).unwrap(),
@@ -473,7 +366,6 @@ mod tests {
                 }),
             }
         );
-        // The slot now holds the newer stamp.
         let slot = StampSlotKey::new(batch(1), idx);
         assert_eq!(
             a.get(&slot).unwrap(),
@@ -500,7 +392,6 @@ mod tests {
                 },
             }
         );
-        // The slot still holds the original stamp.
         let slot = StampSlotKey::new(batch(1), idx);
         assert_eq!(
             a.get(&slot).unwrap(),
@@ -533,14 +424,10 @@ mod tests {
         );
     }
 
-    // --- the design-gate regression guard ----------------------------------
-
     #[test]
     fn distinct_indices_same_bucket_both_admit() {
-        // Two stamps in the SAME bucket but DIFFERENT within-bucket indices are
-        // DIFFERENT slots. Both must admit. Keying by bucket alone (the refuted
-        // design) would have the second reject or displace the first; the full
-        // (batch, stampIndex) key keeps them independent.
+        // Same bucket, different within-bucket index = different slots, both
+        // admit. The full (batch, stampIndex) key keeps them independent.
         let a = arbiter();
         let bucket = 42;
         let one = incoming(
@@ -562,14 +449,11 @@ mod tests {
             a.arbitrate(&one).unwrap(),
             Arbitration::Admit { displaced: None }
         );
-        // Same bucket, same (equal) timestamp, different index: still admits,
-        // displacing nothing, because it is a distinct slot.
         assert_eq!(
             a.arbitrate(&two).unwrap(),
             Arbitration::Admit { displaced: None }
         );
 
-        // Both slots are populated independently.
         assert_eq!(
             a.get(&StampSlotKey::new(batch(1), StampIndex::new(bucket, 0)))
                 .unwrap(),
@@ -584,7 +468,7 @@ mod tests {
 
     #[test]
     fn same_slot_different_batches_are_independent() {
-        // The full key includes the batch id: the same (bucket, index) under two
+        // The batch id is part of the key: same (bucket, index) under two
         // batches are two slots.
         let a = arbiter();
         let idx = StampIndex::new(5, 9);
@@ -599,8 +483,6 @@ mod tests {
             Arbitration::Admit { displaced: None }
         );
     }
-
-    // --- the pure decision core, exhaustively ------------------------------
 
     #[test]
     fn decide_core_matrix() {
@@ -653,8 +535,6 @@ mod tests {
         let e = StampIndexEntry::new(ts(0x0102_0304_0506_0708), hash(0), addr(0));
         assert_eq!(e.timestamp_u64(), 0x0102_0304_0506_0708);
     }
-
-    // --- key codec and ordering --------------------------------------------
 
     #[test]
     fn slot_key_codec_roundtrip() {

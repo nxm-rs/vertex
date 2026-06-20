@@ -32,10 +32,7 @@ pub trait HasTopology: Send + Sync {
     fn topology(&self) -> &Self::Topology;
 }
 
-/// Chunk client access (client/storer levels).
-///
-/// Exposes the components' chunk client so the gRPC chunk service and embedders
-/// (FFI) can drive uploads and downloads. Mirrors [`HasTopology`].
+/// Chunk client access (client/storer levels), driving uploads and downloads.
 #[auto_impl::auto_impl(&, Arc, Box)]
 pub trait HasChunkClient: Send + Sync {
     /// The chunk client type.
@@ -66,18 +63,12 @@ pub trait HasStore: Send + Sync {
 
 /// Reserve access (storer level).
 ///
-/// Narrows [`HasStore`] to the storer reserve: the proximity-ordered,
-/// always-stamped [`ReserveStore`]. A storer that runs a reserve exposes it here
-/// so the redistribution and sync subsystems can query radius, capacity, and
-/// per-bin insertion order without depending on the concrete store type.
+/// Narrows [`HasStore`] to the proximity-ordered, always-stamped reserve so the
+/// redistribution and sync subsystems can query radius, capacity, and per-bin
+/// insertion order without naming the concrete store type.
 #[auto_impl::auto_impl(&, Arc, Box)]
 pub trait HasReserve: HasStore {
     /// The reserve type.
-    ///
-    /// Bounded by [`BinCursorStore`] (which refines [`ReserveStore`]) so the
-    /// wired handle exposes both the proximity axis and the per-bin
-    /// insertion-order axis the redistribution sampler and sync need; without it
-    /// the cursor surface would be unreachable behind the erased handle.
     type Reserve: BinCursorStore;
 
     /// Get the reserve.
@@ -93,8 +84,6 @@ pub struct BootnodeComponents<T> {
 }
 
 impl<T> BootnodeComponents<T> {
-    /// Wire bootnode components. Crate-visible: only the builder constructs
-    /// components, via the [`construct`] seam.
     pub(crate) fn new(topology: T) -> Self {
         Self { topology }
     }
@@ -110,14 +99,8 @@ impl<T: Send + Sync> HasTopology for BootnodeComponents<T> {
 
 /// Client components (topology + chunk client).
 ///
-/// The transport-facing read surface a built client/storer exposes: topology
-/// for the node service, chunk client for the chunk service.
-///
-/// Accounting is deliberately not a component. It is a builder-wired internal of
-/// the network chunk client — the network chunk provider settles through a
-/// shared accounting `Arc` plumbed in at launch — so it never surfaces as a
-/// served capability. Local (non-network) providers do not account at all, and
-/// bootnodes run only a listen-only pricing handler (no accounting state).
+/// Accounting is intentionally absent: it is a builder-wired internal of the
+/// network chunk client, not a served capability.
 ///
 /// Construction is builder-exclusive; see [`construct`].
 #[derive(Debug, Clone)]
@@ -127,8 +110,6 @@ pub struct ClientComponents<T, C> {
 }
 
 impl<T, C> ClientComponents<T, C> {
-    /// Wire client components. Crate-visible: only the builder constructs
-    /// components, via the [`construct`] seam.
     pub(crate) fn new(topology: T, chunk_client: C) -> Self {
         Self {
             topology,
@@ -163,8 +144,6 @@ pub struct StorerComponents<T, C, S> {
 }
 
 impl<T, C, S> StorerComponents<T, C, S> {
-    /// Wire storer components. Crate-visible: only the builder constructs
-    /// components, via the [`construct`] seam.
     pub(crate) fn new(topology: T, chunk_client: C, store: S) -> Self {
         Self {
             client: ClientComponents::new(topology, chunk_client),
@@ -199,26 +178,22 @@ impl<T: Send + Sync, C: Send + Sync, S: Send + Sync> HasStore for StorerComponen
 
 /// Builder-only construction seam for the component containers.
 ///
-/// Components are a builder-wired provider DAG over shared `Arc`s (the chunk
-/// provider already embeds the topology handle); only the builder wires those
-/// `Arc`s correctly, so the public containers expose no constructors. The
-/// builder and the in-process node reach construction through these
-/// `#[doc(hidden)]` free functions instead. Not part of the stable API.
+/// Containers wire shared `Arc`s that only the builder assembles correctly, so
+/// they expose no public constructors; the builder and in-process node reach
+/// construction through these `#[doc(hidden)]` functions. Not part of the stable
+/// API.
 #[doc(hidden)]
 pub mod construct {
     use super::{BootnodeComponents, ClientComponents, StorerComponents};
 
-    /// Wire [`BootnodeComponents`].
     pub fn bootnode<T>(topology: T) -> BootnodeComponents<T> {
         BootnodeComponents::new(topology)
     }
 
-    /// Wire [`ClientComponents`].
     pub fn client<T, C>(topology: T, chunk_client: C) -> ClientComponents<T, C> {
         ClientComponents::new(topology, chunk_client)
     }
 
-    /// Wire [`StorerComponents`].
     pub fn storer<T, C, S>(topology: T, chunk_client: C, store: S) -> StorerComponents<T, C, S> {
         StorerComponents::new(topology, chunk_client, store)
     }

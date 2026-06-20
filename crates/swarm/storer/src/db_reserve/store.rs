@@ -1,6 +1,6 @@
-//! The [`DbReserve`] store: its construction and accessors, and the storage
-//! lattice implementations (`SwarmLocalStore`, `ReserveStore`, `BinCursorStore`)
-//! plus the lazy bin-scan iterator.
+//! The [`DbReserve`] store: construction, accessors, and the storage lattice
+//! impls (`SwarmLocalStore`, `ReserveStore`, `BinCursorStore`) plus the lazy
+//! bin-scan iterator.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -33,47 +33,30 @@ use super::tx::{
 
 /// Persisting, proximity-ordered, per-stamped-entry reserve.
 ///
-/// Owns a shared database handle (so the payload and all index rows commit in
-/// one transaction), an [`AdmissionValidator`] (validate-on-ingest), a
-/// [`BatchStore`] (to load the batch a stamp references for validation), the
-/// capacity/eviction [`Reserve`] counter, the local overlay and the storage
-/// radius. Implements the storage lattice [`SwarmLocalStore`] ->
-/// [`ReserveStore`] -> [`BinCursorStore`].
+/// Implements the storage lattice [`SwarmLocalStore`] -> [`ReserveStore`] ->
+/// [`BinCursorStore`]. The payload and all index rows commit in one transaction
+/// per operation via the shared database handle.
 pub struct DbReserve<DB: Database, BS: BatchStore> {
-    /// Shared database handle: the payload and every secondary row are written
-    /// in one transaction per operation.
     db: Arc<DB>,
-    /// Validate-on-ingest admission for stamped chunks (PR-A).
+    /// Validate-on-ingest admission for stamped chunks.
     admission: AdmissionValidator,
-    /// The batch store the admission path reads to load a stamp's batch.
+    /// Loads the batch a stamp references, and the live [`PostageContext`].
     batches: BS,
-    /// Confirmation context cache is the validator's; the batch store provides
-    /// the live [`PostageContext`] on each put.
-    /// Capacity counter; see [`Reserve`]. The authoritative size is the [`Entry`]
-    /// table count, but the in-memory counter is kept in step for cheap reads.
+    /// In-memory size counter, kept in step with the authoritative [`Entry`]
+    /// table count for cheap reads.
     reserve: Reserve,
-    /// Local overlay address, resolved once at construction.
     overlay: OverlayAddress,
-    /// Current storage-responsibility radius, behind a cheap lock-free cell.
+    /// Current storage-responsibility radius (a single `0..=MAX_PO` byte).
     ///
-    /// The radius is the consensus-load-bearing output of the size-driven
-    /// dynamics ([`crate::radius`]): the [`RadiusController`](crate::RadiusController)
-    /// applies a new value via [`set_storage_radius`](Self::set_storage_radius)
-    /// as the reserve fills or drains, and [`storage_radius`](ReserveStore::storage_radius)
-    /// reads it. A single byte (`0..=MAX_PO`) is all the radius ever is, so an
-    /// [`AtomicU8`] is both the cheapest write target and a lock-free read on the
-    /// hot `is_responsible_for` path; `Relaxed` ordering suffices because the
-    /// radius carries no happens-before relationship with other reserve state
-    /// (callers that need a consistent (radius, occupancy) pair re-derive the
-    /// radius from the occupancy themselves).
+    /// `Relaxed` suffices: the radius carries no happens-before relationship
+    /// with other reserve state, so callers needing a consistent
+    /// (radius, occupancy) pair re-derive the radius from the occupancy.
     radius: AtomicU8,
 }
 
 impl<DB: Database, BS: BatchStore> DbReserve<DB, BS> {
-    /// Construct a per-entry reserve over a shared database.
-    ///
-    /// Ensures all six tables exist, threads the identity through [`Reserve`] for
-    /// the overlay, and initialises the in-memory size from the persisted
+    /// Construct a per-entry reserve over a shared database, ensuring all six
+    /// tables exist and initialising the in-memory size from the persisted
     /// [`Entry`] table (per-entry count, not per-address).
     pub fn new(
         db: Arc<DB>,
@@ -96,7 +79,6 @@ impl<DB: Database, BS: BatchStore> DbReserve<DB, BS> {
 
         let overlay = identity.overlay_address();
         let reserve = Reserve::with_strategy(capacity, strategy).with_identity(identity);
-        // Per-entry size: initialise from the Entry table count.
         let size = db.view(|tx| tx.count::<Entry>())? as u64;
         reserve.set_count(size);
 
@@ -110,12 +92,9 @@ impl<DB: Database, BS: BatchStore> DbReserve<DB, BS> {
         })
     }
 
-    /// Read the current radius cell back into a [`StorageRadius`].
-    ///
-    /// The cell only ever holds a value written from a [`StorageRadius`] (a valid
-    /// `0..=MAX_PO` bin), so the `Bin::try_from` reconstruction never fails; the
-    /// `unwrap_or(StorageRadius::ZERO)` is a total fallback that keeps the read
-    /// infallible rather than panicking on a value the cell cannot hold.
+    /// Read the radius cell back into a [`StorageRadius`]. The cell only ever
+    /// holds a valid `0..=MAX_PO` bin, so the fallback is unreachable but keeps
+    /// the read infallible.
     fn load_radius(&self) -> StorageRadius {
         let raw = self.radius.load(Ordering::Relaxed);
         Bin::try_from(raw)
@@ -123,36 +102,23 @@ impl<DB: Database, BS: BatchStore> DbReserve<DB, BS> {
             .unwrap_or(StorageRadius::ZERO)
     }
 
-    /// Apply a new storage-responsibility radius.
-    ///
-    /// This is the write seam the size-driven dynamics ([`crate::radius`]) feed:
-    /// the [`RadiusController`](crate::RadiusController) derives the radius from
-    /// the reserve's occupancy against its capacity and calls this to commit it,
-    /// after which [`storage_radius`](ReserveStore::storage_radius) and
-    /// [`is_responsible_for`](ReserveStore::is_responsible_for) observe the new
-    /// value. Committing the radius is a single relaxed atomic store; it does not
-    /// itself move any chunk (the controller sheds bins through the eviction
-    /// verbs before narrowing responsibility), so it never blocks or fails.
-    ///
-    /// Exposed both as this inherent method and through the
-    /// [`SettableRadius`](vertex_swarm_api::SettableRadius) extension trait so the
-    /// control loop can target it either concretely or generically over a
-    /// [`ReserveStore`].
+    /// Apply a new storage-responsibility radius (a single relaxed atomic
+    /// store). The controller sheds bins via the eviction verbs before
+    /// narrowing responsibility, so this moves no chunk and never fails. Also
+    /// exposed via the [`SettableRadius`](vertex_swarm_api::SettableRadius)
+    /// trait for generic callers.
     pub fn set_storage_radius(&self, radius: StorageRadius) {
         self.radius.store(radius.get(), Ordering::Relaxed);
     }
 
-    /// The local overlay address.
     fn overlay(&self) -> OverlayAddress {
         self.overlay
     }
 
-    /// The proximity order of a chunk address relative to the local overlay.
     fn po_of(&self, address: &ChunkAddress) -> u8 {
         address.proximity(&self.overlay).get()
     }
 
-    /// The bin a chunk address falls into relative to the local overlay.
     fn bin_of(&self, address: &ChunkAddress) -> Bin {
         address.bin(&self.overlay)
     }
@@ -181,42 +147,32 @@ impl<DB: Database, BS: BatchStore> DbReserve<DB, BS> {
     }
 }
 
-/// The batch-store reads on the synchronous `put` path. These map the typed
-/// [`BatchStore::Error`] straight into [`SwarmError::storage`], which preserves
-/// it as the diagnostic source; that conversion needs the error to be
-/// `Send + Sync + 'static`, so it is the only bound this seam adds (on the
-/// associated error, never on the store itself).
+/// Batch-store reads on the synchronous `put` path. The typed
+/// [`BatchStore::Error`] maps into [`SwarmError::storage`] (preserved as the
+/// diagnostic source), which requires the `Send + Sync + 'static` bound on the
+/// associated error.
 impl<DB: Database, BS: BatchStore> DbReserve<DB, BS>
 where
     BS::Error: Send + Sync + 'static,
 {
     /// Load the batch a stamp references, returning `None` if unknown.
-    ///
-    /// [`BatchStore`] is synchronous, so the read is a direct call on the
-    /// `put` path with no executor or bridge.
     fn load_batch(&self, batch_id: &BatchId) -> SwarmResult<Option<nectar_postage::Batch>> {
         self.batches.get(batch_id).map_err(SwarmError::storage)
     }
 
-    /// The current postage context from the batch store.
     fn context(&self) -> SwarmResult<PostageContext> {
         self.batches.context().map_err(SwarmError::storage)
     }
 }
 
-// The storage lattice (`SwarmLocalStore: Send + Sync`) requires the store to be
-// shareable across the node's async tasks, so the lattice impls keep the
-// `BS: Send + Sync` bound. This is the lattice's own threading contract, not the
-// async-trait colouring the sync-core change removed: `BatchStore` is now
-// synchronous, but `DbReserve` is still held behind a shared handle and read
-// from several tasks. The `BS::Error` bound is what lets the typed batch-store
-// error map into `SwarmError::storage` on the `put` path.
+// `SwarmLocalStore: Send + Sync` requires the store to be shareable across the
+// node's async tasks, hence the `BS: Send + Sync` bound. The `BS::Error` bound
+// lets the typed batch-store error map into `SwarmError::storage` on `put`.
 impl<DB: Database, BS: BatchStore + Send + Sync> SwarmLocalStore for DbReserve<DB, BS>
 where
     BS::Error: Send + Sync + 'static,
 {
     fn put(&self, chunk: CachedChunk) -> SwarmResult<()> {
-        // The reserve is always stamped: a stampless put is invalid.
         let address = *chunk.address();
         let (any, stamp) = chunk.into_parts();
         let stamp = stamp.ok_or_else(|| SwarmError::InvalidChunk {
@@ -224,10 +180,8 @@ where
             reason: "reserve put requires a stamp; a stampless put is invalid".into(),
         })?;
 
-        // --- validate-on-ingest (PR-A) --------------------------------------
-        // Load the batch and validate the stamp before any write. A stamp for an
-        // unknown batch, or one that fails structural/signature checks, is
-        // rejected and nothing is written.
+        // Validate the stamp against its batch before any write. An unknown
+        // batch or a failed structural/signature check rejects without writing.
         let batch = self
             .load_batch(&stamp.batch())?
             .ok_or_else(|| SwarmError::InvalidChunk {
@@ -242,7 +196,6 @@ where
                 reason: format!("stamp failed admission: {e}"),
             })?;
 
-        // Project the per-entry data.
         let hash = stamp_hash(&stamp);
         let po = self.po_of(&address);
         let bin = self.bin_of(&address);
@@ -258,20 +211,16 @@ where
             address,
         );
 
-        // --- arbitrate + write, atomically ----------------------------------
         let outcome = self
             .db
             .update(|tx| {
                 // Newest-wins arbitration against the full (batch, stampIndex)
-                // slot, evaluated inside this transaction so the slot cannot
-                // change between the read and the conditional write.
+                // slot, inside the tx so the slot cannot change between the read
+                // and the conditional write.
                 let stored = tx.get::<StampIndexTable>(slot)?;
                 match decide(stored.as_ref(), &incoming) {
                     Arbitration::Reject { .. } => Ok(PutOutcome::Rejected),
                     Arbitration::Admit { displaced } => {
-                        // Restamp: the slot held an older stamp for this slot.
-                        // Delete the four rows of the displaced entry and
-                        // decrement its payload before writing the new entry.
                         if let Some(d) = displaced {
                             let target = EvictTarget {
                                 batch: incoming.batch_id,
@@ -279,29 +228,20 @@ where
                                 addr: d.address,
                             };
                             // A restamp may re-point the slot at a DIFFERENT
-                            // content address, whose proximity order (and hence
-                            // po-major Entry/BatchGroup key) differs from the
-                            // incoming chunk's `po`. Delete the displaced rows
-                            // using the displaced address's own proximity, never
-                            // the incoming chunk's, or the lookup misses and the
-                            // displaced rows are orphaned with a leaked refcount.
+                            // content address whose proximity order differs from
+                            // the incoming chunk's. Delete the displaced rows
+                            // under the displaced address's own proximity, or the
+                            // lookup misses and the rows leak a refcount.
                             let displaced_po = self.po_of(&d.address);
-                            let removed = delete_entry_rows_in_tx(tx, displaced_po, &target)?;
-                            // The slot occupant is overwritten below; do not
-                            // touch BinCounter (monotonic).
-                            let _ = removed;
+                            let _ = delete_entry_rows_in_tx(tx, displaced_po, &target)?;
                         }
 
-                        // Assign the next bin sequence and write Replay. The
-                        // counter is monotonic and never rewound on eviction, so
-                        // its value is the count of entries ever admitted to this
-                        // bin. Exhausting a u64 requires more than 1.8e19 puts
-                        // into a single bin, which is unreachable in any node
-                        // lifetime (over half a million years at one million puts
-                        // per second). A silent wrap would reuse sequence 0 and
+                        // BinCounter is monotonic and never rewound on eviction,
+                        // so its value is the count of entries ever admitted to
+                        // this bin. A silent wrap would reuse sequence 0 and
                         // overwrite a live Replay row, corrupting sync cursor
-                        // ordering and resumability, so the overflow is surfaced
-                        // as a hard error rather than wrapped.
+                        // ordering, so overflow is a hard error (unreachable: a
+                        // u64 outlasts any node lifetime).
                         let next = tx
                             .get::<BinCounter>(BinKey::from_bin(bin))?
                             .unwrap_or(0)
@@ -323,7 +263,6 @@ where
                             },
                         )?;
 
-                        // Entry + BatchGroup.
                         tx.put::<Entry>(
                             EntryKey::new(po, incoming.batch_id, hash, address),
                             EntryValue {
@@ -337,10 +276,8 @@ where
                             (),
                         )?;
 
-                        // Refcounted payload: bump if present, else write body.
                         bump_or_insert_payload(tx, address, &typed_bytes)?;
 
-                        // Update the arbiter slot to the incoming stamp.
                         tx.put::<StampIndexTable>(slot, incoming.entry())?;
 
                         Ok(if displaced.is_some() {
@@ -354,8 +291,8 @@ where
             .map_err(storage_err)?;
 
         match outcome {
-            // A new entry: size grows by one. A restamp displaced one entry and
-            // added one, so the size is unchanged. A reject writes nothing.
+            // Restamp is size-neutral (one displaced, one added); reject writes
+            // nothing.
             PutOutcome::Admitted => self.reserve.on_added(),
             PutOutcome::Restamped | PutOutcome::Rejected => {}
         }
@@ -363,21 +300,15 @@ where
     }
 
     fn get(&self, address: &ChunkAddress) -> SwarmResult<Option<CachedChunk>> {
-        // Return the chunk with its NEWEST valid stamp. The content body lives in
-        // the refcounted payload; the stamps live per entry. The newest stamp is
-        // the one with the greatest timestamp among this address's entries. (A
-        // chunk under N batches has up to N entries here; document: get resolves
-        // the single newest. Per-entry/per-stamp access is via the bin scan.)
+        // Resolve the chunk with its newest stamp (greatest timestamp). The body
+        // is the refcounted payload; stamps are per entry. An address under N
+        // batches has up to N entries; per-entry access is via the bin scan.
         let result = self.db.view(|tx| {
             let Some(payload) = tx.get::<Payload>(*address)? else {
                 return Ok(None);
             };
-            // Find the newest stamp across this address's entries by scanning the
-            // proximity-keyed Entry table is O(n); instead read entries grouped
-            // by address is not directly keyed, so walk this address's entries by
-            // probing every (po) is unnecessary: the address pins the po, so the
-            // entries for an address share one po prefix and differ by (batch,
-            // stampHash). Walk that contiguous sub-range.
+            // The address pins the po, so its entries share one po prefix and
+            // differ by (batch, stampHash). Walk that contiguous sub-range.
             let po = address.proximity(&self.overlay).get();
             let mut cursor = tx.cursor::<Entry>()?;
             let mut best: Option<(u64, Vec<u8>)> = None;
@@ -407,30 +338,28 @@ where
             Some(v) => v,
         };
         let Some((_, stamp_bytes)) = best else {
-            // Payload present but no entry: should not happen (refcount
-            // invariant), treat as absent.
+            // Payload without an entry violates the refcount invariant; treat as
+            // absent.
             return Ok(None);
         };
         let stamp = decode_stamp(&stamp_bytes).map_err(|e| SwarmError::InvalidChunk {
             address: Some(*address),
             reason: format!("stored entry stamp failed to decode: {e}"),
         })?;
-        // Recombine the shared body with the newest stamp and decode.
         let stamped = StampedChunk::new(decode_body(address, &typed_bytes)?, stamp);
         Ok(Some(CachedChunk::from(stamped)))
     }
 
     fn contains(&self, address: &ChunkAddress) -> bool {
-        // Present iff a payload row exists (refcount >= 1). A backend error is
-        // treated as "not present" per the infallible contract.
+        // Present iff a payload row exists. A backend error reads as "not
+        // present" per the infallible contract.
         self.db
             .view(|tx| Ok(tx.get::<Payload>(*address)?.is_some()))
             .unwrap_or(false)
     }
 
     fn remove(&self, address: &ChunkAddress) -> SwarmResult<()> {
-        // Remove EVERY stamped entry for the address (and the shared payload).
-        // Collect the entries first (read cursor), then delete in one tx.
+        // Remove every stamped entry for the address and the shared payload.
         let targets = self.entries_for_address(address)?;
         let _ = self.evict_entries(&targets)?;
         Ok(())
@@ -439,8 +368,8 @@ where
 
 impl<DB: Database, BS: BatchStore> DbReserve<DB, BS> {
     /// Collect every stamped entry for an address (its `(batch, stampHash)`
-    /// pairs), for a full removal. The address pins the proximity order, so the
-    /// entries are a contiguous sub-range of the `po` prefix.
+    /// pairs). The address pins the proximity order, so the entries are a
+    /// contiguous sub-range of the `po` prefix.
     fn entries_for_address(&self, address: &ChunkAddress) -> SwarmResult<Vec<EvictTarget>> {
         let po = self.po_of(address);
         let mut targets = Vec::new();
@@ -484,7 +413,6 @@ where
     }
 
     fn count(&self) -> SwarmResult<u64> {
-        // Per-entry size: the Entry table count.
         Ok(self
             .db
             .view(|tx| tx.count::<Entry>())
@@ -496,9 +424,8 @@ where
     }
 
     fn count_in(&self, po: ProximityOrder) -> SwarmResult<u64> {
-        // Cursor range over the Entry `(po, ...)` prefix: every entry at this
-        // proximity order is contiguous (po is the leading key byte), so seek to
-        // the first key at this po and count forward while po stays equal.
+        // po is the leading Entry key byte, so entries at this po are contiguous:
+        // seek and count forward while po stays equal.
         let target = po.get();
         let tx = self.db.tx().map_err(storage_err)?;
         let mut cursor = tx.cursor::<Entry>().map_err(storage_err)?;
@@ -522,9 +449,8 @@ where
     }
 
     fn evict_furthest(&self) -> SwarmResult<Option<ChunkAddress>> {
-        // The furthest entry is the one with the smallest proximity order; the
-        // Entry table is keyed `[po][...]`, so `first()` is that entry in
-        // O(log n). Eviction is per-entry: a single furthest stamped entry goes.
+        // The furthest entry has the smallest po; the Entry table is keyed
+        // `[po][...]`, so `first()` is that entry. Per-entry eviction: one goes.
         let target = {
             let tx = self.db.tx().map_err(storage_err)?;
             let mut cursor = tx.cursor::<Entry>().map_err(storage_err)?;
@@ -551,11 +477,9 @@ where
         if max == 0 {
             return Ok(0);
         }
-        // Collect up to `max` entries in this proximity bin via the Entry `[po]`
-        // prefix, then delete them in one atomic tx. The Entry table is keyed by
-        // proximity-order-to-overlay; for the reserve a `Bin` *is* that proximity
-        // order (see `ReserveStore`), so cross the boundary explicitly here rather
-        // than punning the byte.
+        // Collect up to `max` entries in this bin via the Entry `[po]` prefix,
+        // then delete in one atomic tx. For the reserve a `Bin` is the proximity
+        // order, so cross the boundary explicitly rather than punning the byte.
         let target = po_of_reserve_bin(bin);
         let mut targets: Vec<EvictTarget> = Vec::new();
         {
@@ -592,10 +516,10 @@ where
             return Ok(0);
         }
         // Collect up to `max` of the batch's entries via the BatchGroup
-        // `[batch][po][addr][stampHash]` prefix. A `Some(b)` bound (bins strictly
-        // shallower than `b`) is a contiguous front slice: stop as soon as po >=
-        // b. Then delete in one atomic tx. The bound is a reserve `Bin`, i.e. a
-        // proximity-order-to-overlay; cross to the keyed proximity order explicitly.
+        // `[batch][po][addr][stampHash]` prefix, then delete in one atomic tx. A
+        // `Some(b)` bound selects bins strictly shallower than `b`, a contiguous
+        // front slice: stop as soon as po >= b. The bound is a reserve `Bin`;
+        // cross to the keyed proximity order explicitly.
         let bound = up_to_bin.map(po_of_reserve_bin);
         let mut targets: Vec<EvictTarget> = Vec::new();
         {
@@ -636,8 +560,6 @@ where
     BS::Error: Send + Sync + 'static,
 {
     fn set_storage_radius(&self, radius: StorageRadius) {
-        // Delegates to the inherent method (the same write the controller's apply
-        // path takes); the trait exposes that write generically over a reserve.
         DbReserve::set_storage_radius(self, radius);
     }
 }
@@ -660,9 +582,9 @@ where
         bin: Bin,
         start_seq: u64,
     ) -> SwarmResult<Box<dyn Iterator<Item = SwarmResult<BinScanItem>> + Send + 'a>> {
-        // Lazy cursor over Replay: seek to `(bin, start_seq)` and stream forward
-        // while the key's bin stays equal. The cursor owns its read snapshot, so
-        // the iterator outlives this call.
+        // Seek to `(bin, start_seq)` and stream forward while the key's bin stays
+        // equal. The cursor owns its read snapshot, so the iterator outlives this
+        // call.
         let tx = self.db.tx().map_err(storage_err)?;
         let mut cursor = tx.cursor::<Replay>().map_err(storage_err)?;
         let seek = cursor

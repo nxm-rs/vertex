@@ -1,8 +1,6 @@
-//! ClientBehaviour for managing client-side protocols.
-//!
-//! This behaviour manages multiple client protocols (pricing, retrieval, pushsync)
-//! using a per-connection handler pattern. Handlers start in dormant state and are
-//! activated after handshake completion.
+//! `ClientBehaviour`: the client-side protocols (pricing, retrieval, pushsync)
+//! driven through a per-connection [`ClientHandler`]. Handlers are created
+//! dormant and activated after handshake completion.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -34,12 +32,10 @@ use super::{
 
 const DEFAULT_MAX_PENDING_EVENTS: usize = 4096;
 
-/// Configuration for the client behaviour.
 #[derive(Debug, Clone)]
 pub(crate) struct Config {
-    /// Handler configuration.
     pub(crate) handler: HandlerConfig,
-    /// Maximum pending events before dropping new ones.
+    /// Pending-event queue cap; events past it are dropped.
     pub(crate) max_pending_events: usize,
 }
 
@@ -53,9 +49,8 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Build a config for the given local node role. The handler's inbound
-    /// protocol set is narrowed by role: bootnodes advertise pricing only,
-    /// clients and storers advertise the full client protocol set.
+    /// The handler's inbound protocol set is narrowed by role: bootnodes
+    /// advertise pricing only, clients and storers the full set.
     pub(crate) fn for_role(local_role: vertex_swarm_primitives::SwarmNodeType) -> Self {
         let mut cfg = Self::default();
         cfg.handler.local_role = local_role;
@@ -63,46 +58,31 @@ impl Config {
     }
 }
 
-/// The ClientBehaviour manages client-side protocols.
-///
-/// It creates handlers in dormant state for each connection, and activates
-/// them after receiving `ActivatePeer` commands (typically sent after
-/// handshake completion).
-///
-/// # Event Routing
-///
-/// Settlement events can be routed directly to settlement services via optional
-/// event senders. Use [`route_pseudosettle_events`](Self::route_pseudosettle_events)
-/// to configure routing. Events are still emitted as [`ClientEvent`] for other consumers.
+/// Creates dormant handlers per connection and activates them on an
+/// `ActivatePeer` command (sent after handshake completion). Settlement events
+/// can additionally be routed to dedicated sinks via the `route_*` setters;
+/// they are still emitted as [`ClientEvent`].
 pub(crate) struct ClientBehaviour {
     config: Config,
-    /// The client cache, cloned into each handler at connection establishment so
-    /// inbound retrievals can serve from it.
+    /// Cloned into each handler at connection establishment so inbound
+    /// retrievals can serve from it.
     store: Arc<dyn SwarmLocalStore>,
-    /// The forwarder seam, cloned into each handler so a cache miss or a
-    /// pushsync can relay to a closer peer.
+    /// Cloned into each handler so a cache miss or pushsync can relay to a
+    /// closer peer.
     forward: Arc<dyn Forwarder>,
-    /// The storer ingest capability, present only on a storer node and cloned
-    /// into each handler. When absent (a client) every inbound pushsync takes the
-    /// verbatim-relay path; when set, deliveries the node is responsible for are
-    /// stored and acknowledged with a signed receipt.
+    /// Present only on a storer. When set, deliveries the node is responsible
+    /// for are stored and acknowledged with a signed receipt; when absent every
+    /// inbound pushsync takes the verbatim-relay path.
     storer: Option<StorerCapability>,
-    /// Map of peer_id -> overlay for activated peers.
     peer_overlays: HashMap<PeerId, OverlayAddress>,
-    /// Map of overlay -> peer_id for reverse lookup.
     overlay_peers: HashMap<OverlayAddress, PeerId>,
-    /// Pending events to emit.
     pending_events: VecDeque<ToSwarm<ClientEvent, HandlerCommand>>,
-    /// Optional sender for pseudosettle events.
     pseudosettle_event_tx: Option<mpsc::UnboundedSender<PseudosettleEvent>>,
-    /// Optional sender for swap events.
     #[cfg(feature = "swap")]
     swap_event_tx: Option<mpsc::UnboundedSender<SwapEvent>>,
 }
 
 impl ClientBehaviour {
-    /// Create a new client behaviour with the given configuration, cache, and
-    /// forwarder.
     pub(crate) fn new(
         config: Config,
         store: Arc<dyn SwarmLocalStore>,
@@ -123,40 +103,30 @@ impl ClientBehaviour {
     }
 
     /// Install the storer ingest capability, turning inbound pushsync into a
-    /// store-and-sign path for chunks this node is responsible for.
+    /// store-and-sign path for chunks this node is responsible for. Only a
+    /// storer installs this; a client keeps the verbatim-relay path.
     ///
-    /// Must be called before any peer connects, for the same reason as
-    /// [`set_forwarder`](Self::set_forwarder): handlers clone the capability at
-    /// connection establishment, so a handler created earlier would not see it.
-    /// Only a storer node installs this; a client never does and keeps the
-    /// verbatim-relay path.
+    /// Must run before any peer connects: handlers clone it at connection setup.
     pub(crate) fn set_storer(&mut self, storer: StorerCapability) {
         self.storer = Some(storer);
     }
 
     /// Install the multi-hop relay forwarder, replacing the default stub.
     ///
-    /// Must be called before any peer connects: handlers clone the forwarder at
-    /// connection establishment, so a handler created before this call captures
-    /// the stub. The node builder installs the real forwarder during assembly,
-    /// well before the event loop accepts connections.
+    /// Must run before any peer connects: handlers clone it at connection setup.
     pub(crate) fn set_forwarder(&mut self, forward: Arc<dyn Forwarder>) {
         self.forward = forward;
     }
 
-    /// Set the network id used to recover an inbound custody receipt's signer at
-    /// the decode boundary.
+    /// Network id used to recover an inbound custody receipt's signer at the
+    /// decode boundary.
     ///
-    /// Must be called before any peer connects, for the same reason as
-    /// [`set_forwarder`](Self::set_forwarder): handlers clone the config at
-    /// connection establishment, so a handler created earlier captures the
-    /// default. The node builder sets it during assembly.
+    /// Must run before any peer connects: handlers clone the config at connection
+    /// setup.
     pub(crate) fn set_network_id(&mut self, network_id: nectar_primitives::NetworkId) {
         self.config.handler.network_id = network_id;
     }
 
-    /// Build a dormant handler for a new connection, sharing the cache and
-    /// forwarder into it.
     fn new_handler(&self) -> ClientHandler {
         ClientHandler::new(
             self.config.handler.clone(),
@@ -166,10 +136,7 @@ impl ClientBehaviour {
         )
     }
 
-    /// Route pseudosettle events to the given sink.
-    ///
-    /// Once routed, pseudosettle-related events will be sent to this channel
-    /// in addition to being emitted as [`ClientEvent`].
+    /// Also send pseudosettle events to `tx` (still emitted as [`ClientEvent`]).
     pub(crate) fn route_pseudosettle_events(
         &mut self,
         tx: mpsc::UnboundedSender<PseudosettleEvent>,
@@ -177,11 +144,7 @@ impl ClientBehaviour {
         self.pseudosettle_event_tx = Some(tx);
     }
 
-    /// Route swap events to the given sink.
-    ///
-    /// Once routed, swap-related events will be sent to this channel in addition
-    /// to being emitted as [`ClientEvent`]. The node wires this up when a swap
-    /// settlement service is present.
+    /// Also send swap events to `tx` (still emitted as [`ClientEvent`]).
     #[cfg(feature = "swap")]
     // Wired by the node builder when the swap settlement service is present.
     #[allow(dead_code)]
@@ -189,7 +152,6 @@ impl ClientBehaviour {
         self.swap_event_tx = Some(tx);
     }
 
-    /// Push an event if the queue isn't full, otherwise drop with a metric.
     fn push_event(&mut self, event: ToSwarm<ClientEvent, HandlerCommand>) {
         if self.pending_events.len() >= self.config.max_pending_events {
             warn!("Behaviour event queue full, dropping event");
@@ -199,7 +161,6 @@ impl ClientBehaviour {
         self.pending_events.push_back(event);
     }
 
-    /// Handle a command from the application layer.
     pub(crate) fn on_command(&mut self, command: ClientCommand) {
         match command {
             ClientCommand::ActivatePeer {
@@ -316,12 +277,10 @@ impl ClientBehaviour {
         }
     }
 
-    /// Handle an event from a handler.
     fn on_handler_event(&mut self, peer_id: PeerId, event: HandlerEvent) {
         match event {
             HandlerEvent::Activated { overlay } => {
                 debug!(%peer_id, %overlay, "Handler activated");
-                // Already tracked in on_command, just emit event
                 self.pending_events
                     .push_back(ToSwarm::GenerateEvent(ClientEvent::PeerActivated {
                         peer_id,
@@ -450,7 +409,6 @@ impl ClientBehaviour {
                 amount,
                 request_id,
             } => {
-                // Route to pseudosettle service if configured
                 if let Some(tx) = &self.pseudosettle_event_tx
                     && tx
                         .send(PseudosettleEvent::Received {
@@ -470,7 +428,6 @@ impl ClientBehaviour {
                 }));
             }
             HandlerEvent::PseudosettleSent { overlay, ack } => {
-                // Route to pseudosettle service if configured
                 if let Some(tx) = &self.pseudosettle_event_tx
                     && tx
                         .send(PseudosettleEvent::Sent {
@@ -493,7 +450,6 @@ impl ClientBehaviour {
                 cheque,
                 peer_rate,
             } => {
-                // Route to swap service if configured
                 if let Some(tx) = &self.swap_event_tx
                     && tx
                         .send(SwapEvent::ChequeReceived {
@@ -514,7 +470,6 @@ impl ClientBehaviour {
             }
             #[cfg(feature = "swap")]
             HandlerEvent::SwapChequeSent { overlay, peer_rate } => {
-                // Route to swap service if configured
                 if let Some(tx) = &self.swap_event_tx
                     && tx
                         .send(SwapEvent::ChequeSent {
@@ -546,7 +501,6 @@ impl NetworkBehaviour for ClientBehaviour {
         _local_addr: &Multiaddr,
         _remote_addr: &Multiaddr,
     ) -> Result<THandler<Self>, ConnectionDenied> {
-        // Create a dormant handler - will be activated after handshake
         Ok(self.new_handler())
     }
 
@@ -558,7 +512,6 @@ impl NetworkBehaviour for ClientBehaviour {
         _role_override: Endpoint,
         _port_use: libp2p::core::transport::PortUse,
     ) -> Result<THandler<Self>, ConnectionDenied> {
-        // Create a dormant handler - will be activated after handshake
         Ok(self.new_handler())
     }
 
@@ -567,7 +520,6 @@ impl NetworkBehaviour for ClientBehaviour {
             && info.remaining_established == 0
             && let Some(overlay) = self.peer_overlays.remove(&info.peer_id)
         {
-            // Clean up peer tracking if last connection
             self.overlay_peers.remove(&overlay);
             debug!(peer_id = %info.peer_id, %overlay, "Peer disconnected");
             self.pending_events
@@ -619,7 +571,7 @@ mod tests {
     use crate::client_service::RetrievalResult;
     use crate::protocol::StubForwarder;
 
-    /// A clock fixed at a single instant, for SOC freshness tests.
+    /// Fixed-instant clock for SOC freshness tests.
     struct FixedClock(i64);
 
     impl Clock for FixedClock {
@@ -651,7 +603,6 @@ mod tests {
         OverlayAddress::from([n; 32])
     }
 
-    /// Build a swarm whose `ClientBehaviour` serves from `store`.
     fn swarm_with_store(store: Arc<dyn SwarmLocalStore>) -> Swarm<ClientBehaviour> {
         Swarm::new_ephemeral_tokio(move |_| {
             ClientBehaviour::new(
@@ -662,8 +613,8 @@ mod tests {
         })
     }
 
-    /// Connect two client swarms and activate both handlers with the given
-    /// overlays so the request/serve path is live.
+    /// Connect two client swarms and activate both handlers so the
+    /// request/serve path is live.
     async fn connect_and_activate(
         client: &mut Swarm<ClientBehaviour>,
         server: &mut Swarm<ClientBehaviour>,
@@ -676,7 +627,6 @@ mod tests {
         server.listen().with_memory_addr_external().await;
         client.connect(server).await;
 
-        // Activate each side's handler for the other peer.
         client
             .behaviour_mut()
             .on_command(ClientCommand::ActivatePeer {
@@ -693,7 +643,6 @@ mod tests {
             });
     }
 
-    /// Drive both swarms until the retrieval response channel resolves.
     async fn drive_until_retrieved(
         client: &mut Swarm<ClientBehaviour>,
         server: &mut Swarm<ClientBehaviour>,
@@ -745,8 +694,7 @@ mod tests {
 
     #[tokio::test]
     async fn serves_a_fresh_soc_from_the_cache() {
-        // A single-owner chunk stamped at 900ns, served at 1000ns under a 500ns
-        // TTL: still fresh, so it serves from cache.
+        // SOC stamped at 900ns, served at 1000ns under a 500ns TTL: still fresh.
         let chunk = soc_chunk(b"feed v1", 900);
         let address = *chunk.address();
 
@@ -780,9 +728,9 @@ mod tests {
 
     #[tokio::test]
     async fn expired_soc_is_not_served_and_resets() {
-        // The same SOC stamped at 900ns but served at 2000ns under a 500ns TTL is
-        // expired: the cache reads it as a miss and, with the stub forwarder, the
-        // inbound retrieval resets instead of serving a stale revision.
+        // SOC stamped at 900ns, served at 2000ns under a 500ns TTL: expired, so
+        // the cache misses and the inbound retrieval resets rather than serving a
+        // stale revision.
         let chunk = soc_chunk(b"feed v1", 900);
         let address = *chunk.address();
 
@@ -817,9 +765,8 @@ mod tests {
 
     #[tokio::test]
     async fn cache_miss_resets_with_stub_forwarder() {
-        // The server's cache is empty and its forwarder is the stub, so the
-        // inbound retrieval cannot be served or forwarded: the substream resets
-        // and the requester sees a remote failure.
+        // Empty cache plus stub forwarder: the inbound retrieval can neither
+        // serve nor forward, so the substream resets and the requester fails.
         let address = *content_chunk(b"never cached").address();
 
         let mut client = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
@@ -846,9 +793,8 @@ mod tests {
 
     #[tokio::test]
     async fn inbound_pushsync_resets_with_stub_forwarder() {
-        // The cache-only client never takes custody: an inbound pushsync forwards,
-        // and with the stub forwarder the forward fails, so the substream resets
-        // and the pusher sees a failure. No receipt is ever signed.
+        // A cache-only client never takes custody: inbound pushsync forwards, the
+        // stub forward fails, the substream resets, and no receipt is signed.
         let chunk = content_chunk(b"pushed chunk");
 
         let mut client = swarm_with_store(Arc::new(ChunkStore::with_budget(1 << 20, 1_000)));
@@ -885,20 +831,15 @@ mod tests {
 
     // --- Storer ingest (store + sign) integration tests ---
     //
-    // A storer holds a `StorerCapability`: an inbound pushsync delivery the node
-    // is responsible for is stored in the reserve and acknowledged with the
-    // node's own signed receipt, instead of being relayed. A delivery the node is
-    // NOT responsible for still forwards (the verbatim-relay path), which with the
-    // stub forwarder resets — exactly as a client does. Both branches are driven
-    // here through the real libp2p handler.
+    // A storer holds a `StorerCapability`: a responsible delivery is stored and
+    // acknowledged with a signed receipt; a non-responsible delivery forwards
+    // (verbatim-relay), which resets under the stub forwarder. Both branches run
+    // through the real libp2p handler.
 
-    /// A minimal in-memory `ReserveStore` for the ingest tests.
-    ///
-    /// Backs the point-access surface with a map and answers `is_responsible_for`
-    /// from a fixed flag, so a test can put the handler on either branch
-    /// deterministically. The proximity-axis accounting methods are trivial: the
-    /// ingest path only exercises `is_responsible_for`, `put`, and
-    /// `storage_radius`.
+    /// In-memory `ReserveStore` for the ingest tests. `is_responsible_for` is a
+    /// fixed flag so a test can pin either branch; the proximity-axis accounting
+    /// methods are stubs since the ingest path only uses `is_responsible_for`,
+    /// `put`, and `storage_radius`.
     struct MockReserve {
         chunks: std::sync::Mutex<
             std::collections::HashMap<
@@ -987,9 +928,8 @@ mod tests {
         }
     }
 
-    /// Build a server swarm that holds the storer ingest capability: the inbound
-    /// pushsync path stores responsible deliveries and signs receipts. Returns the
-    /// swarm, the shared reserve (to assert what was stored), and the signer (to
+    /// Server swarm holding the storer ingest capability. Returns the swarm, the
+    /// shared reserve (to assert what was stored), the signer and nonce (to
     /// assert the receipt recovers to the storer's overlay).
     fn storer_swarm(
         responsible: bool,
@@ -1018,7 +958,6 @@ mod tests {
                 store,
                 Arc::new(StubForwarder),
             );
-            // The receipt is signed/recovered against this network id.
             behaviour.set_network_id(NetworkId::MAINNET);
             let capability = crate::protocol::StorerCapability::new(
                 Arc::clone(&reserve_for_swarm) as Arc<dyn vertex_swarm_api::ReserveStore>,
@@ -1071,8 +1010,8 @@ mod tests {
             .expect("push resolved within timeout");
 
         let receipt = result.expect("the responsible storer signs and returns a receipt");
-        // The receipt acknowledges this chunk, declares the storer's radius, and
-        // recovers to the storer's own overlay (its identity key + nonce).
+        // The receipt acknowledges the chunk, declares the storer's radius, and
+        // recovers to the storer's own overlay.
         assert_eq!(receipt.address, address);
         assert_eq!(receipt.storage_radius, radius);
         let expected_storer = compute_overlay(&signer.address(), NetworkId::MAINNET, &nonce);
@@ -1080,7 +1019,6 @@ mod tests {
             receipt.storer, expected_storer,
             "the receipt recovers to the storer that signed it"
         );
-        // The chunk is durably in the reserve before the receipt was sent.
         assert!(
             reserve.contains(&address),
             "the responsible storer took custody of the chunk"
@@ -1092,9 +1030,9 @@ mod tests {
         use vertex_swarm_api::StorageRadius;
         use vertex_swarm_primitives::Bin;
 
-        // The storer holds the ingest capability but is NOT responsible for this
-        // chunk, so it takes the forward path. With the stub forwarder the forward
-        // fails and the substream resets; nothing is stored and no receipt signed.
+        // The storer holds the ingest capability but is NOT responsible, so it
+        // forwards; the stub forward fails, the substream resets, nothing is
+        // stored, and no receipt is signed.
         let chunk = content_chunk(b"not my responsibility");
         let address = *chunk.address();
         let radius = StorageRadius::new(Bin::new(4).unwrap());
@@ -1139,10 +1077,10 @@ mod tests {
     // --- Three-node relay (forwarding) integration tests ---
     //
     // These drive the real `NetworkForwarder` through the libp2p harness: node B
-    // sits between requester A and storer C, its forwarder's outbound
-    // `ClientHandle` feeding back into B's own behaviour so the upstream leg is a
-    // genuine A->B->C path. The relay verifies, accounts both legs, caches the
-    // forwarded chunk, and relays the storer's receipt verbatim.
+    // relays between requester A and storer C, its outbound `ClientHandle`
+    // feeding back into B's own behaviour for a genuine A->B->C path. The relay
+    // verifies, accounts both legs, caches the forwarded chunk, and relays the
+    // storer's receipt verbatim.
 
     use nectar_primitives::NetworkId;
     use vertex_swarm_api::{
@@ -1159,8 +1097,8 @@ mod tests {
     use crate::ClientHandle;
     use crate::protocol::NetworkForwarder;
 
-    /// A reporter that drops every report; the relay harness only cares about
-    /// the forward outcome, not the scoring side effect, for the happy path.
+    /// Drops every report; the relay harness asserts on forward outcome, not the
+    /// scoring side effect.
     struct NoopReporter;
 
     impl PeerReporter for NoopReporter {
@@ -1185,7 +1123,7 @@ mod tests {
         Arc::new(ClientAccounting::new(bandwidth, pricer))
     }
 
-    /// An overlay sharing `leading_bits` leading bits with `address`.
+    /// An overlay sharing exactly `leading_bits` leading bits with `address`.
     fn overlay_at_proximity(
         address: &nectar_primitives::ChunkAddress,
         leading_bits: usize,
@@ -1199,9 +1137,9 @@ mod tests {
         OverlayAddress::from(bytes)
     }
 
-    /// Build node B: an empty-cache client whose forwarder relays to `storer`
-    /// (returned by the mock topology) over a `ClientHandle` wired back into B.
-    /// Returns B and the receiver carrying B's own outbound relay commands.
+    /// Node B: a client whose forwarder relays to `storer` (via the mock
+    /// topology) over a `ClientHandle` wired back into B. Returns B and the
+    /// receiver carrying B's outbound relay commands.
     fn relay_node(
         store: Arc<dyn SwarmLocalStore>,
         local: OverlayAddress,
@@ -1220,8 +1158,8 @@ mod tests {
                 store,
                 Arc::new(StubForwarder),
             );
-            // The decode boundary recovers an inbound receipt's signer with this
-            // network id; the storer test receipts are ground against it too.
+            // Inbound receipts are recovered against this network id; the storer
+            // test receipts are ground against it too.
             behaviour.set_network_id(NetworkId::MAINNET);
             let forwarder = Arc::new(NetworkForwarder::new(
                 local,
@@ -1251,8 +1189,6 @@ mod tests {
         let provide_price = accounting.pricing().peer_price(&a_overlay, &address);
         let receive_price = accounting.pricing().peer_price(&c_overlay, &address);
 
-        // C serves the chunk from its cache; B caches the forwarded delivery; A
-        // holds no store of its own.
         let c_store: Arc<dyn SwarmLocalStore> =
             Arc::new(ChunkStore::with_budget(1 << 20, 1_000_000_000));
         c_store.put(chunk.clone().into()).unwrap();
@@ -1267,7 +1203,6 @@ mod tests {
         );
         let mut c = swarm_with_store(c_store);
 
-        // A <-> B and B <-> C, activated with the chosen overlays.
         connect_and_activate(&mut a, &mut b, a_overlay, b_overlay).await;
         connect_and_activate(&mut b, &mut c, b_overlay, c_overlay).await;
 
@@ -1278,7 +1213,7 @@ mod tests {
             response: tx,
         });
 
-        // Drive all three swarms; B's forwarder commands are pumped back into B.
+        // B's forwarder commands are pumped back into B.
         let result = {
             let drive = async {
                 loop {
@@ -1320,8 +1255,8 @@ mod tests {
             "B is debited for the chunk C served it"
         );
 
-        // B cached the forwarded content chunk by address even though the serve
-        // path stripped the stamp: a later get from its store hits, stampless.
+        // The forwarded content chunk is cached stampless (the serve path strips
+        // the stamp), so a later get hits.
         let cached = b_store
             .get(&address)
             .unwrap()
@@ -1334,10 +1269,9 @@ mod tests {
 
     #[tokio::test]
     async fn relay_does_not_cache_a_forwarded_soc() {
-        // The same three-node relay, but the chunk is a single-owner chunk. A
-        // retrieved SOC arrives stampless (the serve path ships data only) and so
-        // carries no version signal, so the relay must forward it without caching:
-        // caching a stampless SOC could later serve a stale revision.
+        // A retrieved SOC arrives stampless, so it carries no version signal: the
+        // relay forwards it without caching (a cached stampless SOC could later
+        // serve a stale revision).
         let chunk = soc_chunk(b"feed revision", 900);
         let address = *chunk.address();
 
@@ -1347,8 +1281,7 @@ mod tests {
 
         let accounting = relay_accounting();
 
-        // C serves the SOC from its cache (a generous TTL keeps it fresh); B is
-        // the relay whose store we assert stays empty; A holds no store.
+        // A generous TTL keeps C's cached SOC fresh.
         let c_store: Arc<dyn SwarmLocalStore> =
             Arc::new(ChunkStore::with_budget(1 << 20, u64::MAX));
         c_store.put(chunk.clone().into()).unwrap();
@@ -1398,7 +1331,6 @@ mod tests {
             "the SOC arrives intact at A"
         );
 
-        // B forwarded the SOC but did not cache it: a get from its store misses.
         assert!(
             b_store.get(&address).unwrap().is_none(),
             "a forwarded SOC must not be cached"
@@ -1407,10 +1339,9 @@ mod tests {
 
     #[tokio::test]
     async fn relay_without_strictly_closer_peer_resets_rather_than_looping() {
-        // B's only routing candidate is no closer to the chunk than the
-        // requester A, so the loop bound rejects it: B cannot forward sideways or
-        // backwards, the inbound retrieval resets, and A sees a remote failure.
-        // No accounting reservation is taken.
+        // B's only candidate is no closer to the chunk than requester A, so the
+        // loop bound rejects it: B cannot forward sideways or backwards, the
+        // inbound retrieval resets, and no accounting reservation is taken.
         let chunk = content_chunk(b"nowhere closer to relay to");
         let address = *chunk.address();
 
@@ -1480,19 +1411,16 @@ mod tests {
         let chunk = content_chunk(b"pushed through B to C");
         let address = *chunk.address();
 
-        // A (pusher) is far; B relays to the strictly-closer C; C is the storer
-        // of record. C's forwarder ClientHandle is answered by the test with a
-        // signed receipt, modelling C taking custody and signing. B and C must
-        // relay that receipt VERBATIM (the cache-only client never signs), so A
-        // sees C's exact signature, nonce, and radius. The relay seams verify the
-        // receipt depth before relaying, so the receipt must be genuinely deep:
-        // signed over the 32-byte chunk address by a key whose overlay (via the
-        // nonce) reaches at least the storer's declared radius for the chunk.
+        // A (pusher) is far; B relays to the strictly-closer C, the storer of
+        // record. The test answers C's outbound push with a signed receipt. B and
+        // C relay that receipt verbatim (a cache-only client never signs), so A
+        // sees C's exact signature, nonce, and radius. The relay seams verify
+        // receipt depth, so the receipt must be genuinely deep: the signer's
+        // overlay (via the nonce) must reach the declared radius for the chunk.
         let a_overlay = overlay_at_proximity(&address, 2);
         let b_overlay = overlay_at_proximity(&address, 3);
         let c_overlay = overlay_at_proximity(&address, 18);
 
-        // The storer's signed receipt, produced once at C and never re-signed.
         // The relay forwarders derive overlays with NetworkId::MAINNET, so grind
         // the nonce against that network id.
         let storer_radius = StorageRadius::new(Bin::new(7).unwrap());
@@ -1509,9 +1437,6 @@ mod tests {
             }
             counter += 1;
         };
-        // C's wire receipt, produced once and never re-signed. The decode
-        // boundary at each hop recovers its storer; the test answers C's outbound
-        // push command with the recovered `Receipt`.
         let storer_receipt = WireReceipt::new(address, signature, nonce, storer_radius);
         let receipt_for_c =
             Receipt::reconstruct(storer_receipt.clone(), NetworkId::MAINNET).expect("reconstructs");
@@ -1559,10 +1484,9 @@ mod tests {
                         _ = a.select_next_some() => {}
                         _ = b.select_next_some() => {}
                         _ = c.select_next_some() => {}
-                        // B's relay leg flows through B's own behaviour.
                         Some(cmd) = b_commands.recv() => b.behaviour_mut().on_command(cmd),
                         // C is the storer: answer its outbound push with the
-                        // signed receipt instead of forwarding it on.
+                        // signed receipt instead of forwarding on.
                         Some(cmd) = c_commands.recv() => {
                             if let ClientCommand::PushChunk { response, .. } = cmd {
                                 let _ = response.send(Ok(receipt_for_c.clone()));
@@ -1578,9 +1502,8 @@ mod tests {
         };
 
         let relayed = result.expect("A receives the storer's receipt through B");
-        // The receipt is relayed verbatim across both hops: A sees C's exact
-        // signature, nonce, and radius, never a re-signed value, and the recovered
-        // storer matches C's storer at every hop.
+        // Verbatim across both hops: A sees C's exact wire receipt and storer,
+        // never a re-signed value.
         assert_eq!(relayed.to_wire(), storer_receipt);
         assert_eq!(relayed.storer, receipt_for_c.storer);
 

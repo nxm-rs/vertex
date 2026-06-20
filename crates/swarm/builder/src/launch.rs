@@ -66,11 +66,9 @@ where
 
 /// Open the shared database when persistence is configured.
 ///
-/// `ctx.db_path()` is the single source of truth for the storage mode: `None`
-/// means the node runs fully in-memory and no database is opened, `Some(path)`
-/// opens (or creates) the database file there and spawns the periodic metrics
-/// task. An open failure on a configured path degrades to in-memory operation
-/// instead of aborting the node; the warning spells out what is lost.
+/// `ctx.db_path()` selects the storage mode: `None` runs fully in-memory,
+/// `Some(path)` opens (or creates) the file and spawns the metrics task. An open
+/// failure on a configured path degrades to in-memory rather than aborting.
 fn open_shared_database(ctx: &dyn InfrastructureContext) -> Option<Arc<RedbDatabase>> {
     let Some(path) = ctx.db_path() else {
         info!("Node storage: in-memory (opt into persistence with --db.persist or --db.path)");
@@ -115,22 +113,12 @@ fn spawn_db_metrics_task(ctx: &dyn InfrastructureContext, db: Arc<RedbDatabase>)
         });
 }
 
-/// Construct, validate, and log the shared chain provider for a chain-needing
-/// node.
+/// Build and validate the shared chain provider for a chain-needing node.
 ///
-/// Selects the network address book from the spec, then builds and validates a
-/// wallet-filled alloy provider over the configured RPC URL signed by the node's
-/// Ethereum identity. The chain is a shared provider, not a long-lived service,
-/// so there is nothing to spawn: the returned [`SharedChainProvider`] is a
-/// cloneable handle that future chain consumers (the SWAP settlement service in
-/// a later PR) borrow to build their clients (for example a
-/// `ChequebookContract`).
-///
-/// Returns:
-/// - `Ok(Some(provider))` when the chain is connected and validated.
-/// - `Ok(None)` when the chain is deliberately skipped (no RPC URL configured,
-///   or a development network with no canonical deployment).
-/// - `Err` only when a configured connection fails to connect or validate.
+/// Returns `Ok(None)` when the chain is deliberately skipped (no RPC URL, or a
+/// network with no canonical deployment), `Err` only when a configured
+/// connection fails. The returned [`SharedChainProvider`] is a cloneable handle,
+/// not a spawned service.
 #[cfg(feature = "chain")]
 async fn build_node_chain_provider(
     spec: &Arc<Spec>,
@@ -206,44 +194,34 @@ macro_rules! define_launch_types {
 }
 
 define_launch_types!(
-    /// Associated type set for the bootnode launch path: spec, identity, and
-    /// topology only, with no bandwidth accounting.
+    /// Bootnode launch types: spec, identity, topology, no accounting.
     BootnodeLaunchTypes
 );
 define_launch_types!(
-    /// Associated type set for the client launch path: the bootnode types plus
-    /// the default bandwidth accounting stack.
+    /// Client launch types: bootnode types plus the default accounting stack.
     ClientLaunchTypes,
     with_client
 );
 define_launch_types!(
-    /// Associated type set for the storer launch path: the bootnode types plus
-    /// the default bandwidth accounting stack.
+    /// Storer launch types: bootnode types plus the default accounting stack.
     StorerLaunchTypes,
     with_client
 );
 
-/// Factory that turns the opened shared database (if any) into the node's
-/// `SwarmLocalStore`.
+/// Turns the opened shared database (if any) into the node's `SwarmLocalStore`.
 ///
-/// The store is the single surface the retrieval handler consults before going
-/// to the network, so each node type wires its own: the client builds a
-/// byte-bounded in-memory cache (the database handle is ignored), while the
-/// storer builds the persisting reserve over the same database the peer store
-/// backs onto. The factory receives the opened database so the storer reserve
-/// and the peer store share one handle rather than opening the file twice.
+/// Each node type wires its own: the client ignores the handle and builds an
+/// in-memory cache, the storer builds the persisting reserve over the same
+/// database the peer store backs onto (one handle, not two opens).
 type StoreFactory<'a> =
     Box<dyn FnOnce(Option<Arc<RedbDatabase>>) -> Result<NodeStore, SwarmNodeError> + Send + 'a>;
 
-/// The node's local store, plus the storer reserve view when the node is a
-/// storer.
+/// The node's local store, plus the storer reserve view when the node is a storer.
 ///
-/// A storer's local store *is* its reserve, but the two trait objects are
-/// distinct (`Arc<dyn ReserveStore>` does not upcast to `Arc<dyn SwarmLocalStore>`),
-/// so both views of the one `DbReserve` are carried here: `local` is what the
-/// retrieval handler and the components share, and `reserve` is the proximity-axis
-/// view the pushsync ingest path needs (`is_responsible_for`, `put`,
-/// `storage_radius`). A client leaves `reserve` `None`.
+/// A storer's local store *is* its reserve, but `Arc<dyn ReserveStore>` does not
+/// upcast to `Arc<dyn SwarmLocalStore>`, so both views of the one `DbReserve` are
+/// carried: `local` for retrieval and components, `reserve` for pushsync ingest.
+/// A client leaves `reserve` `None`.
 struct NodeStore {
     local: Arc<dyn vertex_swarm_api::SwarmLocalStore>,
     reserve: Option<Arc<dyn vertex_swarm_api::ReserveStore>>,
@@ -266,28 +244,22 @@ struct ClientNodeParams<'a> {
     swap: &'a SwapConfig,
 }
 
-/// Outputs of [`build_client_backed_node`]: the long-running node task plus the
-/// handles the node-type-specific RPC providers wrap.
+/// Outputs of [`build_client_backed_node`]: the node task plus the handles the
+/// node-type-specific RPC providers wrap.
 struct ClientNodeParts {
     task: NodeTaskFn,
     topology: TopologyHandle<Arc<Identity>>,
     chunks: VerifiedChunkProvider,
-    /// The node's local store, erased to the trait. The node holds its own
-    /// clone; the storer wires this one as its components' store so the
-    /// retrieval-serving reserve and the served store are the same instance.
+    /// The node's local store, erased to the trait; the storer wires this same
+    /// instance into its components so retrieval and storage share one store.
     store: Arc<dyn vertex_swarm_api::SwarmLocalStore>,
 }
 
-/// Shared launch path for the node types backed by a client node (client and
-/// storer).
+/// Shared launch path for the client- and storer-backed node types.
 ///
-/// Builds the node, then the bandwidth accounting (reporting violations to the
-/// peer manager, with SWAP settlement embedded when enabled) and the verified
-/// chunk provider with score- and affordability-aware candidate selection,
-/// spawns the client service and the SWAP settlement service, connects the
-/// chain provider when the node type requires one, and wraps the node run loop
-/// in a task that owns the accounting and chain handles for the node's
-/// lifetime.
+/// Wires accounting (violations to the peer manager, SWAP settlement when
+/// enabled) and the selection-aware verified chunk provider, then spawns the run
+/// loop in a task owning the accounting and chain handles for the node's lifetime.
 async fn build_client_backed_node(
     ctx: &dyn InfrastructureContext,
     params: ClientNodeParams<'_>,
@@ -298,22 +270,14 @@ async fn build_client_backed_node(
     let db = open_shared_database(ctx);
     let peer_store = create_peer_store(&db);
 
-    // Build the node's local store from the opened database. The client ignores
-    // the handle and runs an in-memory cache; the storer builds the persisting
-    // reserve over the same `db` so the reserve and the peer store share one
-    // handle. The same store serves inbound retrievals and holds local
-    // deliveries: the retrieval handler consults `SwarmLocalStore::get` before
-    // the network, so a storer serves from its reserve.
     let NodeStore {
         local: store,
         reserve,
     } = (params.make_store)(db.clone())?;
-    // The node consumes its own clone; the returned handle is the same instance
-    // the storer surfaces as its components' store.
     let node_store = Arc::clone(&store);
 
-    // Prepare SWAP settlement first: the provider must be embedded in the
-    // accounting, and the swap event sink must be routed at node build time.
+    // SWAP settlement is prepared first: the provider embeds in the accounting
+    // and the swap event sink routes at node build time.
     #[cfg(feature = "swap")]
     let (swap_provider, swap_wiring) = crate::swap::SwapWiring::prepare(
         params.spec,
@@ -341,9 +305,8 @@ async fn build_client_backed_node(
         ctx.executor(),
     );
 
-    // The peer manager behind the topology handle is the reporting authority:
-    // accounting and the settlement services report violations through it so
-    // misbehaving peers are scored down.
+    // The peer manager is the reporting authority: accounting and the settlement
+    // services report violations through it so misbehaving peers are scored down.
     let reporter: Arc<dyn PeerReporter> = topology.peer_manager().clone();
 
     let accounting_builder = AccountingBuilder::new(params.bandwidth.clone())
@@ -358,31 +321,26 @@ async fn build_client_backed_node(
     };
     #[cfg(not(feature = "swap"))]
     let accounting = accounting_builder.build(params.identity);
-    // Share one accounting instance across the selector, the two-leg forwarder,
+    // One accounting instance is shared by the selector, the two-leg forwarder,
     // and the node task that keeps it alive.
     let accounting = Arc::new(accounting);
 
-    // Enable multi-hop forwarding: a retrieval cache miss relays to a
-    // strictly-closer peer and an inbound pushsync relays toward the chunk's
-    // neighbourhood, accounting both legs over the same accounting instance the
-    // origin path uses. Installed before the event loop accepts connections.
+    // Multi-hop forwarding: a retrieval cache miss relays to a strictly-closer
+    // peer and an inbound pushsync relays toward the chunk's neighbourhood,
+    // accounting both legs over the same instance. Must precede the event loop.
     node.enable_forwarding(
         Arc::new(topology.clone()),
         Arc::clone(&accounting),
         client_handle.clone(),
     );
 
-    // Storer ingest: when the node is a storer, give the inbound pushsync path
-    // its reserve so a delivery the node is responsible for is stored and
-    // acknowledged with a signed receipt instead of being relayed. Installed
-    // before the event loop accepts connections, alongside forwarding. A client
-    // has no reserve and keeps the verbatim-relay path.
+    // Storer ingest: the inbound pushsync path gets the reserve so a delivery the
+    // node is responsible for is stored and acknowledged with a signed receipt
+    // instead of relayed. A client has no reserve and keeps the verbatim relay.
     if let Some(reserve) = reserve {
         node.enable_storage(reserve);
     }
 
-    // Retrieval and pushsync candidate selection consults peer scores and
-    // affordability on top of proximity order.
     let selector = Arc::new(PeerSelector::new(
         Arc::new(topology.clone()),
         accounting.bandwidth().clone(),
@@ -390,17 +348,9 @@ async fn build_client_backed_node(
         Arc::new(AccountingSettlement::new(accounting.bandwidth().clone())),
     ));
 
-    // Outbound self-throttle: pace our retrieval and pushsync requests under
-    // each peer's pseudosettle allowance so a burst never crosses the remote's
-    // settlement trigger. The allowance signal is the same `PeerAffordability`
-    // the selector consults, built once in accounting. One bucket token is one
-    // AU: the bucket refills at the pseudosettle per-second forgiveness rate
-    // (`refresh_rate` AU/sec) and each request costs the exact per-chunk
-    // proximity price the remote meters, taken from the same pricer the
-    // accounting layer debits through, so a neighborhood chunk paces at the full
-    // forgiveness rate while a distant one costs proportionally more. The bucket
-    // is sized to a configurable percent of the headroom toward the payment
-    // threshold, keeping a burst below the swap trigger with a margin to spare.
+    // Outbound self-throttle: pace our retrieval and pushsync requests under each
+    // peer's pseudosettle allowance so a burst never crosses the settlement
+    // trigger. See `SelfThrottle` for the token/price/sizing model.
     let throttle = Arc::new(SelfThrottle::new(&accounting, params.bandwidth));
     let throttled_handle = client_handle.clone().with_throttle(Arc::clone(&throttle));
 
@@ -408,11 +358,8 @@ async fn build_client_backed_node(
         NetworkChunkProvider::new(throttled_handle, topology.clone()).with_selector(selector);
     let chunks = VerifyingChunkProvider::new(chunk_provider, params.verify);
 
-    // Spawn client service as independent task with graceful shutdown. The
-    // client service reports retrieval and pushsync outcomes (success,
-    // failure, and malformed-chunk invalid data) through the same peer manager
-    // authority that accounting uses.
-    // The service shares the same throttle instance the handle paces against, so
+    // The client service reports retrieval and pushsync outcomes through the same
+    // peer manager authority accounting uses, and shares the handle's throttle so
     // a peer disconnect clears that peer's bucket.
     let client_service = client_service
         .with_reporter(Arc::clone(&reporter))
@@ -435,9 +382,9 @@ async fn build_client_backed_node(
         .await?
     };
 
-    // Spawn the SWAP settlement service over the shared accounting instance,
-    // forwarding its cheque commands to the node and cashing received cheques
-    // on chain when a provider is present.
+    // SWAP settlement service over the shared accounting: forwards cheque
+    // commands to the node and cashes received cheques on chain when a provider
+    // is present.
     #[cfg(feature = "swap")]
     if let Some(wiring) = swap_wiring {
         wiring.spawn(
@@ -450,8 +397,8 @@ async fn build_client_backed_node(
         );
     }
 
-    // Return node task - accounting is moved into the closure to keep it
-    // alive. The chain provider is held alive the same way.
+    // Accounting and the chain provider are moved into the task to keep them
+    // alive for the node's lifetime.
     let task = single_task(move |shutdown| async move {
         let _accounting = accounting;
         #[cfg(feature = "chain")]
@@ -526,16 +473,14 @@ impl SwarmLaunchConfig for ClientConfig {
                 network: self.network(),
                 bandwidth: self.bandwidth(),
                 verify: self.verify(),
-                // The cache-only client builds its chunk cache over a
-                // byte-bounded LRU; no reserve, signer, radius, or redb is
-                // wired, so the opened database handle is ignored.
+                // Cache-only client: a byte-bounded LRU, no reserve, so the
+                // opened database handle is ignored and every pushsync relays.
                 make_store: Box::new(|_db| {
                     Ok(NodeStore {
                         local: Arc::new(vertex_swarm_localstore::ChunkStore::with_budget(
                             vertex_swarm_localstore::DEFAULT_CACHE_BUDGET_BYTES as usize,
                             vertex_swarm_localstore::DEFAULT_SOC_CACHE_TTL_NS,
                         )),
-                        // A client has no reserve: every inbound pushsync relays.
                         reserve: None,
                     })
                 }),
@@ -565,33 +510,14 @@ impl SwarmLaunchConfig for StorerConfig {
         self,
         ctx: &dyn InfrastructureContext,
     ) -> Result<(NodeTaskFn, Self::Providers), Self::Error> {
-        // The storer's local store is the persisting reserve. Its capacity is a
-        // consensus quantity, not a function of local disk: the Swarm spec fixes
-        // the reserve at a power-of-two number of chunks
-        // (`DEFAULT_RESERVE_CAPACITY = 2^22`), and the redistribution game derives
-        // the storage radius, and thence the committed depth it samples and
-        // commits on chain, from occupancy relative to exactly that figure. Two
-        // nodes covering the same neighbourhood must therefore agree on the
-        // capacity regardless of how much disk each has provisioned, so the
-        // capacity is read from the spec, never estimated from a byte budget (the
-        // byte budget governs only the client cache and disk provisioning). Start
-        // at radius 0 (responsible for everything until the radius manager raises
-        // it); furthest-from-neighbourhood eviction sheds under pressure.
-        // `redistribution_enabled` is read here so the storage config is no longer
-        // discarded; the redistribution subsystem (which consumes it) is not part
-        // of this train.
+        // Reserve capacity is a consensus quantity read from the spec, not local
+        // disk: a fixed power-of-two chunk count from which the redistribution game
+        // derives storage radius and committed depth, so nodes covering one
+        // neighbourhood must agree on it regardless of disk.
         let _redistribution_enabled = self.storage().redistribution_enabled();
         let capacity = self.spec().reserve_capacity;
         let identity = self.identity().clone();
 
-        // The storer's local store is the persisting reserve, built over the
-        // database the launch path opens. The launch path returns the same
-        // erased handle the node holds (`Arc<dyn ReserveStore>` does not upcast
-        // to `Arc<dyn SwarmLocalStore>`, so the concrete `Arc<DbReserve>` is
-        // kept and the launch path erases the one `SwarmLocalStore` handle the
-        // node and the components share). Serving-on-retrieval reads it because
-        // the retrieval handler consults `SwarmLocalStore::get` before the
-        // network.
         let parts = build_client_backed_node(
             ctx,
             ClientNodeParams {
@@ -615,42 +541,21 @@ impl SwarmLaunchConfig for StorerConfig {
     }
 }
 
-/// Block confirmations a batch must accrue before the reserve will admit chunks
-/// stamped under it.
-///
-/// Matches the intent's `blockThreshold` (`10`): a batch's creation must be
-/// sufficiently confirmed on chain before it is usable, so a reorg cannot
-/// retroactively invalidate admitted chunks. The chain-driven ingest (#391/#392)
-/// will make this configurable once the postage indexer feeds a live
-/// `PostageContext`; until then the reserve runs with no batches and admits
-/// nothing, so the threshold is the admission policy that takes effect the moment
-/// the batch store is populated.
+/// Block confirmations a batch must accrue before the reserve admits chunks
+/// stamped under it, so a reorg cannot retroactively invalidate admitted chunks.
 const RESERVE_CONFIRMATION_THRESHOLD: u64 = 10;
 
 /// Build the storer reserve over the shared database, erased to the local-store
 /// trait.
 ///
-/// Reuses the opened shared database when present so the reserve, its batch
-/// store and the peer store share one handle; falls back to an in-memory redb
-/// when the node runs without persistence, keeping the storer servable (the
-/// reserve just does not survive a restart, matching the in-memory degradation
-/// elsewhere). Both the in-memory open and the reserve's table creation are
-/// surfaced as a build error rather than panicking.
+/// Reuses the opened database when present so the reserve, its batch store and
+/// the peer store share one handle; falls back to in-memory redb without
+/// persistence. Open and table-creation failures surface as a build error.
 ///
-/// The reserve now admits only stamped chunks, so it is built over two further
-/// collaborators sharing the same database:
-///
-/// - a [`DbBatchStore`](vertex_swarm_postage::DbBatchStore), the authoritative
-///   postage batch set and live [`PostageContext`] the admission policy reads;
-/// - an [`AdmissionValidator`](vertex_swarm_postage::AdmissionValidator)
-///   enforcing [`RESERVE_CONFIRMATION_THRESHOLD`] block confirmations plus the
-///   structural and signature checks before a stamped chunk enters the reserve.
-///
-/// The batch store starts empty: until the postage indexer (#391/#392) feeds
-/// `Created`/`TopUp`/`DepthIncrease`/`Expired` events the reserve admits nothing,
-/// which is the correct conservative behaviour for a storer with no known
-/// batches. The wiring is in place so populating the batch store is all that is
-/// left to make the storer admit live traffic.
+/// Admits only stamped chunks, gated by a `DbBatchStore` (the batch set) and an
+/// `AdmissionValidator` enforcing [`RESERVE_CONFIRMATION_THRESHOLD`] confirmations
+/// plus structural and signature checks. The batch store starts empty, so the
+/// reserve admits nothing until the postage indexer populates it.
 fn build_storer_reserve(
     db: Option<Arc<RedbDatabase>>,
     identity: &Arc<Identity>,
@@ -669,8 +574,8 @@ fn build_storer_reserve(
                 .into_arc()
         }
     };
-    // The batch store and the reserve share one database handle, so the postage
-    // ingest seam and the reserve see a single consistent view.
+    // Batch store and reserve share one handle so the postage ingest seam and the
+    // reserve see a single consistent view.
     let batches =
         DbBatchStore::new(Arc::clone(&db)).map_err(|e| SwarmNodeError::Build(e.into()))?;
     let admission = AdmissionValidator::new(RESERVE_CONFIRMATION_THRESHOLD);
@@ -686,8 +591,8 @@ fn build_storer_reserve(
         )
         .map_err(|e| SwarmNodeError::Build(e.into()))?,
     );
-    // One `DbReserve`, two trait-object views: the local-store view the node and
-    // components share, and the reserve view the pushsync ingest path uses.
+    // One `DbReserve`, two trait-object views: local-store (node and components)
+    // and reserve (pushsync ingest).
     Ok(NodeStore {
         local: Arc::clone(&reserve) as Arc<dyn vertex_swarm_api::SwarmLocalStore>,
         reserve: Some(reserve as Arc<dyn vertex_swarm_api::ReserveStore>),
@@ -845,9 +750,8 @@ mod tests {
         );
     }
 
-    /// The launch path hands the peer manager to the accounting builder as the
-    /// peer reporter. Verify that composition end to end: an accounting
-    /// violation must reach the peer manager and lower the peer's score.
+    /// An accounting violation must reach the peer manager wired as reporter and
+    /// lower the peer's score.
     #[test]
     fn accounting_violation_reaches_peer_manager() {
         let identity = test_identity_arc();
@@ -878,20 +782,9 @@ mod tests {
         assert!(after < baseline, "violation must lower the score");
     }
 
-    /// The storer store factory builds the persisting reserve (not the
-    /// cache-only client store) and falls back to an in-memory database when
-    /// persistence is not configured.
-    ///
-    /// The reworked reserve admits only stamped chunks whose batch is known and
-    /// whose stamp passes the admission validator the factory wires. This test
-    /// owns the *wiring* contract: that the factory yields a working
-    /// `SwarmLocalStore` handle, that it is the admission-gated reserve (a put
-    /// for an unknown batch is rejected, proving admission is wired and not
-    /// bypassed), and that the handle serves back what the reserve holds. The
-    /// full admissible-put path (batch registration, signature recovery, owner
-    /// match) is exercised exhaustively by the reserve crate's own tests, which
-    /// can reach the batch store the factory deliberately erases; reproducing it
-    /// here would only re-test the reserve through a narrower seam.
+    /// The storer factory builds the admission-gated reserve, not the cache-only
+    /// client store: a put for an unknown batch is rejected, proving admission is
+    /// wired. The full admissible-put path is covered by the reserve crate.
     #[test]
     fn storer_reserve_factory_builds_admission_gated_store() {
         use alloy_primitives::{B256, Signature};
@@ -900,14 +793,11 @@ mod tests {
         use vertex_swarm_primitives::CachedChunk;
 
         let identity = test_identity_arc();
-        // The reserve capacity is a consensus power-of-two chunk count (the spec
-        // fixes the default at 2^22); a small power of two keeps the test cheap
-        // while matching that shape.
+        // A small power of two matches the consensus chunk-count shape cheaply.
         let capacity: u64 = 1 << 12;
 
         // db = None exercises the in-memory fallback.
         let node_store = build_storer_reserve(None, &identity, capacity).expect("reserve builds");
-        // A storer always exposes the reserve view the pushsync ingest path needs.
         assert!(
             node_store.reserve.is_some(),
             "the storer factory yields the reserve view"
@@ -928,10 +818,9 @@ mod tests {
             "an empty reserve serves nothing"
         );
 
-        // A stamped put whose batch is unknown to the (empty) batch store is
-        // rejected by the wired admission validator. This is the load-bearing
-        // assertion: it proves the factory built the admission-gated reserve and
-        // did not fall back to a store that accepts arbitrary chunks.
+        // A stamped put for a batch unknown to the empty batch store is rejected
+        // by the wired admission validator, proving the factory did not fall back
+        // to a store that accepts arbitrary chunks.
         let chunk: AnyChunk = ContentChunk::new(b"unadmissible".to_vec())
             .expect("valid content chunk")
             .into();

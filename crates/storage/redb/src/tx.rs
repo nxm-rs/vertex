@@ -13,20 +13,13 @@ use vertex_util_runtime::time::Instant;
 
 use crate::metrics::{mode, operation};
 
-/// Dynamically create a redb TableDefinition from a table name.
-///
-/// All tables use `&[u8]` for both keys and values — the vertex-storage
-/// Encode/Decode traits handle keys; postcard+zstd handles values.
+/// All tables use `&[u8]` keys and values; Encode/Decode handle keys, postcard+zstd handle values.
 fn table_def(name: &str) -> TableDefinition<'_, &[u8], &[u8]> {
     TableDefinition::new(name)
 }
 
-/// Intern a table name string to get a `&'static str`.
-///
-/// redb's `TableDefinition::new` requires `&'static str` for table creation.
-/// This function leaks the string on first use per unique name, then returns
-/// the cached reference on subsequent calls. Safe because table names are a
-/// small finite set initialized once at startup.
+/// Leak a table name once to satisfy redb's `&'static str` requirement, caching by name; bounded
+/// since table names are a small finite set fixed at startup.
 fn intern_table_name(name: &str) -> &'static str {
     static INTERNED: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
     let set = INTERNED.get_or_init(|| Mutex::new(HashSet::new()));
@@ -39,7 +32,7 @@ fn intern_table_name(name: &str) -> &'static str {
     leaked
 }
 
-/// Deserialize a value from raw bytes, decompressing first if the table uses compression.
+/// Decode a stored value, zstd-decompressing first when the table compresses.
 pub(crate) fn decode_value<T: Table>(raw: &[u8]) -> Result<T::Value, DatabaseError> {
     if T::COMPRESS_VALUES {
         let bytes = zstd::decode_all(raw).map_err(|e| {
@@ -60,7 +53,6 @@ pub(crate) fn decode_value<T: Table>(raw: &[u8]) -> Result<T::Value, DatabaseErr
     })
 }
 
-/// Record a completed DB operation's metrics.
 fn record_op(table: &'static str, op: &'static str, outcome: &'static str, elapsed: f64) {
     counter!("db_operations_total", "table" => table, "operation" => op, "outcome" => outcome)
         .increment(1);
@@ -68,10 +60,8 @@ fn record_op(table: &'static str, op: &'static str, outcome: &'static str, elaps
         .record(elapsed);
 }
 
-/// Shared read operations for both read-only and read-write transactions.
-///
-/// Both `RedbReadTx` and `RedbWriteTx` have an `inner` field whose
-/// `open_table` returns a type implementing `ReadableTable + ReadableTableMetadata`.
+/// Shared `DbTx` read methods for both transaction kinds. Requires an `inner` field whose
+/// `open_table` yields a `ReadableTable + ReadableTableMetadata`.
 macro_rules! impl_db_tx_reads {
     () => {
         fn get<T: Table>(&self, key: T::Key) -> Result<Option<T::Value>, DatabaseError> {
@@ -234,15 +224,9 @@ impl RedbReadTx {
         }
     }
 
-    /// Open a lazy, streaming read-only cursor over table `T`.
-    ///
-    /// The returned [`RedbCursorRO`] owns its table handle (which Arc-pins this
-    /// transaction's read snapshot), so it may be held and iterated after this
-    /// `RedbReadTx` is dropped. This is the held-transaction cursor path that
-    /// `Database::view` cannot provide, since `view` drops its borrowed
-    /// transaction at the closure boundary.
-    ///
-    /// Errors with [`DatabaseError::InitCursor`] if the table does not exist.
+    /// Open a streaming read cursor over table `T`. The cursor owns its table handle, which
+    /// Arc-pins the read snapshot, so it outlives this `RedbReadTx`. Errors
+    /// [`DatabaseError::InitCursor`] if the table does not exist.
     pub fn cursor<T: Table>(&self) -> Result<crate::cursor::RedbCursorRO<T>, DatabaseError> {
         let def = table_def(T::NAME);
         let table = self.inner.open_table(def).map_err(|e| {
@@ -258,11 +242,8 @@ impl RedbReadTx {
 impl DbTx for RedbReadTx {
     impl_db_tx_reads!();
 
-    /// Open a held read cursor over table `T`.
-    ///
-    /// Delegates to the inherent [`RedbReadTx::cursor`] and erases the concrete
-    /// [`RedbCursorRO`] behind the trait's boxed [`DbCursorRO`]. The cursor owns
-    /// its read snapshot, so the box is `Send` and outlives this transaction.
+    /// Boxes the inherent [`RedbReadTx::cursor`] behind the trait's [`DbCursorRO`]; the cursor
+    /// owns its snapshot, so the box is `Send` and outlives this transaction.
     fn cursor<T: Table>(
         &self,
     ) -> Result<Box<dyn vertex_storage::DbCursorRO<T> + Send>, DatabaseError> {
@@ -279,8 +260,8 @@ impl Drop for RedbReadTx {
 
 /// Read-write transaction wrapping `redb::WriteTransaction`.
 ///
-/// Uses `ManuallyDrop` so `commit()` can move out the inner transaction
-/// while still recording tx duration on drop.
+/// `ManuallyDrop` lets `commit()` move out the inner transaction while `Drop` still records
+/// tx duration.
 pub struct RedbWriteTx {
     inner: ManuallyDrop<redb::WriteTransaction>,
     start: Instant,
@@ -306,8 +287,8 @@ impl Drop for RedbWriteTx {
         histogram!("db_tx_duration_seconds", "mode" => mode::WRITE)
             .record(self.start.elapsed().as_secs_f64());
         if !self.committed {
-            // SAFETY: Only dropped once, and `commit()` sets committed=true
-            // before this runs, so we only drop here if commit wasn't called.
+            // SAFETY: `committed` is false, so `commit()` never took `inner`; this is the
+            // single drop of it.
             unsafe { ManuallyDrop::drop(&mut self.inner) };
         }
     }
@@ -318,7 +299,7 @@ impl DbTxMut for RedbWriteTx {
         let start = Instant::now();
         let _span = tracing::trace_span!("db_commit").entered();
 
-        // SAFETY: We set committed=true so Drop won't double-drop.
+        // SAFETY: setting `committed` first stops `Drop` from also taking `inner`.
         self.committed = true;
         let inner = unsafe { ManuallyDrop::take(&mut self.inner) };
         let result = inner.commit().map_err(DatabaseError::commit_err);

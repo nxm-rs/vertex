@@ -17,10 +17,8 @@ vertex_net_codec::protocol_error! {
 
         /// Chunk bytes did not match the delivery's address.
         ///
-        /// Carries the message string rather than the source error: chunk
-        /// reconstruction now returns nectar's `StampError`, which `InvalidStamp`
-        /// already claims via `#[from]`, so this variant cannot also derive a
-        /// `From<StampError>`. The call site maps the error to its string.
+        /// Carries a string rather than a source error because the underlying
+        /// `StampError` is already claimed by `InvalidStamp` via `#[from]`.
         #[error("invalid chunk: {0}")]
         InvalidChunk(String),
 
@@ -36,22 +34,18 @@ vertex_net_codec::protocol_error! {
         #[error("invalid storage radius: {0}")]
         InvalidStorageRadius(u32),
 
-        /// A custody receipt's signature did not recover to a signer overlay.
-        /// An all-zero (structural failure) signature, or any signature that
-        /// fails public-key recovery, lands here. Such a receipt is rejected at
-        /// the decode boundary and never reaches a domain consumer.
+        /// Custody receipt signature failed public-key recovery (including the
+        /// all-zero structural-failure signature). Rejected at the decode boundary.
         #[error("custody receipt signature did not recover to a signer overlay")]
         MalformedReceiptSignature,
     }
 }
 
 impl PushsyncError {
-    /// True when the error is a malformed-chunk signal: the delivered bytes
-    /// failed address or stamp reconstruction, or the address itself was
-    /// unparseable. These are attributable to the sending peer and warrant an
-    /// adverse score, distinct from a transport or negotiation failure. Receipt
-    /// decoding errors are excluded since they describe a storer's reply, not a
-    /// chunk a peer pushed at us.
+    /// True for malformed-chunk signals attributable to the sending peer
+    /// (address or stamp reconstruction failed). Excludes receipt-decode errors,
+    /// which describe a storer's reply rather than a chunk pushed at us, and so
+    /// must not feed an adverse score.
     #[must_use]
     pub fn is_invalid_chunk(&self) -> bool {
         matches!(
@@ -75,8 +69,6 @@ mod tests {
 
     #[test]
     fn receipt_decode_errors_are_not_invalid_chunk() {
-        // A bad nonce length describes a storer reply, not a chunk a peer
-        // pushed at us, so it must not be scored as invalid data.
         assert!(!PushsyncError::InvalidNonceLength(3).is_invalid_chunk());
         assert!(!PushsyncError::ConnectionClosed.is_invalid_chunk());
     }

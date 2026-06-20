@@ -1,15 +1,11 @@
-//! gRPC service registry for dynamic service composition.
-//!
-//! The [`GrpcRegistry`] allows protocols to register their gRPC services
-//! during the build phase, eliminating the need for a separate "providers"
-//! extraction step.
+//! gRPC service registry: protocols register their services during the build
+//! phase, then the registry composes them into a tonic server.
 
 use std::net::SocketAddr;
 use tonic::service::Routes;
 
-/// Registry for gRPC services that protocols register during build.
-///
-/// Collects services and file descriptors, then builds into a tonic server.
+/// Collects gRPC services and reflection file descriptors, then builds a tonic
+/// server.
 ///
 /// # Example
 ///
@@ -17,13 +13,9 @@ use tonic::service::Routes;
 /// use vertex_rpc_server::GrpcRegistry;
 ///
 /// let mut registry = GrpcRegistry::new();
-///
-/// // Protocol registers its services during build
 /// registry.add_service(MyServiceServer::new(my_service));
 /// registry.add_descriptor(MY_FILE_DESCRIPTOR_SET);
-///
-/// // Launcher builds the server from the registry
-/// let server = registry.into_router();
+/// let server = registry.into_server(addr)?;
 /// ```
 #[derive(Default)]
 pub struct GrpcRegistry {
@@ -32,14 +24,10 @@ pub struct GrpcRegistry {
 }
 
 impl GrpcRegistry {
-    /// Create a new empty registry.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Add a gRPC service to the registry.
-    ///
-    /// Services are accumulated and will be composed into a single router.
     pub fn add_service<S>(&mut self, service: S)
     where
         S: tonic::codegen::Service<
@@ -58,38 +46,29 @@ impl GrpcRegistry {
         });
     }
 
-    /// Add file descriptors for gRPC reflection.
-    ///
-    /// Descriptors are used by tools like `grpcurl` for service discovery.
+    /// Add file descriptors for gRPC reflection (used by tools like `grpcurl`).
     pub fn add_descriptor(&mut self, descriptor: &'static [u8]) {
         self.descriptors.push(descriptor);
     }
 
-    /// Check if any services have been registered.
     pub fn is_empty(&self) -> bool {
         self.routes.is_none()
     }
 
-    /// Get the registered file descriptors.
     pub fn descriptors(&self) -> &[&'static [u8]] {
         &self.descriptors
     }
 
-    /// Consume the registry and return the composed routes.
-    ///
-    /// Returns `None` if no services were registered.
     pub fn into_routes(self) -> Option<Routes> {
         self.routes
     }
 
-    /// Build a gRPC server from this registry.
-    ///
-    /// Includes reflection service if descriptors were registered.
+    /// Build a gRPC server, registering a reflection service if any descriptors
+    /// were added.
     pub fn into_server(
         mut self,
         addr: SocketAddr,
     ) -> Result<GrpcServerHandle, tonic_reflection::server::Error> {
-        // Build reflection service if we have descriptors
         if !self.descriptors.is_empty() {
             let mut reflection_builder = tonic_reflection::server::Builder::configure();
             for desc in &self.descriptors {
@@ -122,14 +101,10 @@ pub struct GrpcServerHandle {
 }
 
 impl GrpcServerHandle {
-    /// Get the address the server will bind to.
     pub fn addr(&self) -> SocketAddr {
         self.addr
     }
 
-    /// Serve the gRPC server.
-    ///
-    /// Returns when the server shuts down.
     pub async fn serve(self) -> Result<(), tonic::transport::Error> {
         if let Some(routes) = self.routes {
             configure_server(tonic::transport::Server::builder())
@@ -137,7 +112,6 @@ impl GrpcServerHandle {
                 .serve(self.addr)
                 .await
         } else {
-            // No services registered, just return
             Ok(())
         }
     }
@@ -153,24 +127,20 @@ impl GrpcServerHandle {
                 .serve_with_shutdown(self.addr, signal)
                 .await
         } else {
-            // No services registered, wait for shutdown signal
             signal.await;
             Ok(())
         }
     }
 }
 
-/// Max simultaneous HTTP/2 streams a single connection may open. Each streaming
-/// RPC (chunk upload/download/has) is one stream, so this bounds how many an
-/// untrusted client can run at once.
+/// Max simultaneous HTTP/2 streams per connection. Each streaming chunk RPC is
+/// one stream, bounding how many an untrusted client can run at once.
 const MAX_CONCURRENT_STREAMS: u32 = 256;
 /// Max in-flight requests served concurrently per connection.
 const MAX_CONNECTION_CONCURRENCY: usize = 256;
 
-/// Apply connection-level limits that bound the gRPC amplification surface (the
-/// streaming chunk RPCs are reachable by untrusted clients). Per-stream memory
-/// is already bounded by each handler's concurrency; these cap how many streams
-/// and requests one connection can run.
+/// Connection-level limits bounding the gRPC amplification surface; streaming
+/// chunk RPCs are reachable by untrusted clients.
 fn configure_server(builder: tonic::transport::Server) -> tonic::transport::Server {
     builder
         .concurrency_limit_per_connection(MAX_CONNECTION_CONCURRENCY)

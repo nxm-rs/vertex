@@ -39,7 +39,6 @@ pub trait TransportServer: Send + 'static {
 
 /// Components that can register themselves into a [`Transport`]'s registry.
 pub trait ServeWith<Tr: Transport>: Send + Sync {
-    /// Register services into the transport's registry.
     fn register(&self, reg: &mut Tr::Registry);
 }
 
@@ -67,7 +66,7 @@ impl TransportServer for GrpcServerHandle {
     }
 }
 
-/// Bridge existing gRPC registrants into the generic seam with zero churn.
+/// Any gRPC registrant serves over [`GrpcTransport`].
 impl<C: RegistersGrpcServices> ServeWith<GrpcTransport> for C {
     fn register(&self, reg: &mut GrpcRegistry) {
         self.register_grpc_services(reg);

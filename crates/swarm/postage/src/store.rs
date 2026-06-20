@@ -1,43 +1,29 @@
-//! Persisting batch store over the `vertex-storage` `Database`, and the
-//! [`BatchEventHandler`] ingest seam.
+//! Persisting batch store over the `vertex-storage` `Database`, plus the
+//! [`BatchEventHandler`] on-chain ingest seam.
 //!
-//! [`DbBatchStore`] is generic over the storage backend, so the same code
-//! serves an in-memory database (tests) and an on-disk redb database
-//! (production). It defines two tables:
+//! [`DbBatchStore`] is generic over the backend (in-memory for tests, redb for
+//! production) and defines two tables:
 //!
 //! - [`Batches`]: `BatchId -> Batch`, the authoritative batch set.
-//! - [`ContextTable`]: a single-row table holding the current
-//!   [`PostageContext`]. redb has no schema-level singleton, so the singleton is
-//!   modelled as a one-key table under a fixed key.
+//! - [`ContextTable`]: the current [`PostageContext`], stored as one row under a
+//!   fixed key since redb has no schema-level singleton.
 //!
-//! Every method is a single transaction. The [`BatchStore`] trait is
-//! synchronous (redb is sync), so each method is a plain function and no redb
-//! transaction guard is ever held across an `await` point; async, where it is
-//! needed at all, is added at the true edges (gRPC, FFI), not by the store.
+//! Every method is a single transaction. The [`BatchStore`] trait is sync, so no
+//! transaction guard is ever held across an `await`.
 
 use nectar_postage::{Batch, BatchEvent, BatchEventHandler, BatchId, BatchStore, PostageContext};
 use std::sync::Arc;
 use vertex_storage::{Database, DatabaseError, DbTx, DbTxMut, Decode, Encode, Table, table};
 
-// Batch table: `BatchId -> Batch`.
-//
-// The authoritative set of batches the node knows about. Values are compressed
-// (the default): `Batch` serialises to a small but compressible record.
+// `BatchId -> Batch`, compressed (the default).
 table!(pub(crate) Batches, "postage_batches", BatchIdKey, Batch);
 
-// Context singleton table: fixed key -> `PostageContext`.
-//
-// redb offers no schema-level singleton, so the postage context is stored as a
-// single row under [`ContextKey::SINGLETON`]. Uncompressed: the value is a tiny
-// fixed record (a u64 and a u128).
+// Single-row `PostageContext` under [`ContextKey::SINGLETON`]. Uncompressed: the
+// value is a tiny fixed record.
 table!(pub(crate) ContextTable, "postage_context", ContextKey, PostageContext, compressed = false);
 
-/// Key newtype wrapping a [`BatchId`] for the [`Batches`] table.
-///
-/// [`BatchId`] is `alloy_primitives::B256`, a foreign type, so the
-/// vertex-storage [`Encode`]/[`Decode`] codecs cannot be implemented on it
-/// directly (orphan rule). This local newtype carries the 32-byte big-endian
-/// encoding, which is also the natural byte order of the id.
+/// Key newtype carrying the 32-byte big-endian [`BatchId`] for the [`Batches`]
+/// table (local newtype works around the orphan rule on the foreign `B256`).
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -58,16 +44,13 @@ impl Decode for BatchIdKey {
     }
 }
 
-/// Key for the [`ContextTable`] singleton.
-///
-/// The context table holds exactly one row; this single-byte key is its address.
+/// Single-byte key addressing the lone [`ContextTable`] row.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 pub(crate) struct ContextKey(u8);
 
 impl ContextKey {
-    /// The sole key under which the postage context is stored.
     const SINGLETON: Self = Self(0);
 }
 
@@ -86,34 +69,24 @@ impl Decode for ContextKey {
     }
 }
 
-/// Error type returned by [`DbBatchStore`] operations.
-///
-/// Wraps the underlying [`DatabaseError`]; the [`BatchStore`] trait requires the
-/// associated error to implement [`std::error::Error`], which this does (via
-/// `thiserror`).
+/// Error returned by [`DbBatchStore`] operations.
 #[derive(Debug, thiserror::Error)]
 pub enum DbBatchStoreError {
-    /// An error from the underlying database.
     #[error("postage batch store database error: {0}")]
     Database(#[from] DatabaseError),
 }
 
 /// Batch store backed by the `vertex-storage` `Database` trait.
 ///
-/// Generic over the backend, so persistence is decided by whichever database
-/// the node opens. The store is cheap to clone-by-`Arc` and thread-safe for
-/// concurrent reads and writes. It implements both [`BatchStore`] (persistence)
-/// and [`BatchEventHandler`] (the on-chain ingest seam).
+/// Implements both [`BatchStore`] (persistence) and [`BatchEventHandler`]
+/// (on-chain ingest). Cheap to clone by `Arc` and thread-safe.
 pub struct DbBatchStore<DB: Database> {
     db: Arc<DB>,
 }
 
 impl<DB: Database> DbBatchStore<DB> {
-    /// Create a batch store over a shared database handle.
-    ///
-    /// Ensures both the batch table and the context singleton table exist, so
-    /// every read path works on a fresh database without a separate
-    /// initialisation step.
+    /// Create a store, ensuring both tables exist so read paths work on a fresh
+    /// database without a separate init step.
     pub fn new(db: Arc<DB>) -> Result<Self, DbBatchStoreError> {
         db.update(|tx| {
             tx.ensure_table(Batches::NAME)?;
@@ -123,23 +96,13 @@ impl<DB: Database> DbBatchStore<DB> {
         Ok(Self { db })
     }
 
-    /// Borrow the shared database handle.
     pub fn database(&self) -> &Arc<DB> {
         &self.db
     }
 
-    /// Load a batch, apply `mutate` to it, and store it back, all inside a
-    /// single read-write transaction.
-    ///
-    /// This is the atomic read-modify-write the `TopUp` and `DepthIncrease`
-    /// events need: the load and the store share one transaction, so a
-    /// concurrent writer cannot interleave between the read and the write and
-    /// have its update silently clobbered (a lost update). A missing batch is a
-    /// no-op (the event is for a batch the node never saw, or already removed),
+    /// Atomic read-modify-write in one transaction, so a concurrent writer
+    /// cannot clobber the update (lost update). A missing batch is a no-op,
     /// matching the idempotent ingest contract.
-    ///
-    /// `mutate` runs on the loaded value only and performs no I/O, so the
-    /// transaction is held for the minimum span.
     fn mutate_sync(
         &self,
         id: &BatchId,
@@ -155,30 +118,15 @@ impl<DB: Database> DbBatchStore<DB> {
         Ok(())
     }
 
-    /// Remove an expired batch from the store, the *acknowledgement* half of the
-    /// evict-before-remove expiry contract.
-    ///
-    /// This is the bare store removal: it drops the batch row and returns
-    /// whether it existed. It performs **no** reserve eviction, because the
-    /// reserve lives downstream of this crate. It must therefore be driven only
-    /// as the acknowledgement of the reserve's evict-then-acknowledge entry
-    /// point (`ExpirySweep::on_expired_event`), which evicts the batch's stamped
-    /// entries first and runs this acknowledgement only once eviction has
-    /// succeeded. Calling it standalone for a live `Expired` event orphans the
-    /// reserve entries stamped under the batch; see the [`BatchEventHandler`]
-    /// impl docs.
-    ///
-    /// Idempotent: acknowledging an already-removed batch returns `false` and is
-    /// a harmless no-op, so a redelivered `Expired` event is safe.
+    /// Acknowledgement half of the evict-before-remove expiry contract: drops the
+    /// batch row (idempotent) and returns whether it existed, evicting nothing.
+    /// Drive only via the reserve's evict-then-acknowledge path; see the
+    /// [`BatchEventHandler`] impl docs.
     pub fn acknowledge_expired(&self, id: &BatchId) -> Result<bool, DbBatchStoreError> {
         self.remove(id)
     }
 }
 
-// The `BatchStore` trait is synchronous: redb is itself synchronous, so each
-// method is a single transaction with no executor in sight. Async, where it is
-// needed at all, is added at the true edges (a gRPC service, an FFI boundary),
-// not here in the store.
 impl<DB: Database> BatchStore for DbBatchStore<DB> {
     type Error = DbBatchStoreError;
 
@@ -198,9 +146,7 @@ impl<DB: Database> BatchStore for DbBatchStore<DB> {
     }
 
     fn contains(&self, id: &BatchId) -> Result<bool, Self::Error> {
-        // No key-presence primitive on the transaction trait yet, so presence
-        // is a full read whose value is discarded.
-        // TODO(#214): switch to a key-presence check once available.
+        // TODO(#214): switch to a key-presence check once the tx trait has one.
         Ok(self.get(id)?.is_some())
     }
 
@@ -218,10 +164,7 @@ impl<DB: Database> BatchStore for DbBatchStore<DB> {
     }
 
     fn batch_ids(&self) -> Result<Vec<BatchId>, Self::Error> {
-        // Iterate the batch table via the lazy read-only cursor (#396): the
-        // cursor owns its read snapshot, so it is detached from the borrowed
-        // transaction handle. Only keys are needed; values are still decoded by
-        // the cursor, but no per-batch second lookup is performed.
+        // Lazy read-only cursor owns its snapshot; only keys are needed.
         let tx = self.db.tx()?;
         let mut cursor = tx.cursor::<Batches>()?;
         let mut ids = Vec::new();
@@ -240,49 +183,16 @@ impl<DB: Database> BatchStore for DbBatchStore<DB> {
     }
 }
 
-/// The on-chain ingest seam.
+/// On-chain ingest seam: an indexer decodes contract logs into [`BatchEvent`]s
+/// and drives this handler, one transaction per variant. Unknown batches are an
+/// idempotent no-op (ordering is the indexer's responsibility).
 ///
-/// An external `PostageIndexer` decodes contract logs into [`BatchEvent`]s and
-/// drives this handler; see the crate-level documentation. The four variants
-/// map onto store mutations:
-///
-/// - [`BatchEvent::Created`]: the batch is fully described by the event, so it
-///   is written directly (`put`).
-/// - [`BatchEvent::TopUp`]: only the new normalised value is on the wire, so the
-///   batch is loaded, its value updated ([`Batch::set_value`]) and written back
-///   inside one transaction ([`DbBatchStore::mutate_sync`]), so a concurrent
-///   writer cannot clobber the update. A top-up for an unknown batch is a no-op
-///   (the create was missed; the indexer is responsible for ordering, this
-///   handler is idempotent).
-/// - [`BatchEvent::DepthIncrease`]: as top-up, but updates the depth
-///   ([`Batch::set_depth`]).
-/// - [`BatchEvent::Expired`]: the batch is removed via
-///   [`DbBatchStore::acknowledge_expired`].
-///
-/// Each mutation is a single transaction, so the store never observes a partial
-/// event application. Both this handler and the [`BatchStore`] trait are
-/// synchronous, so the handler reuses the store methods (and the `mutate_sync`
-/// helper) directly, with no executor.
-///
-/// # `Expired` is the bare removal, not the orphan-safe path
-///
-/// Handling [`BatchEvent::Expired`] here removes the batch from the store and
-/// nothing more. It does **not** evict the reserve entries stamped under that
-/// batch, because this crate is the parent of the reserve and cannot reach it.
-/// Removing the batch before its entries are evicted orphans those entries: once
-/// the batch leaves the store the reserve's reconciliation sweep can no longer
-/// see it, so the entries are never shed, which inflates the reserve size and
-/// therefore the consensus-committed storage radius.
-///
-/// The enforced ordering is **evict before remove**, and it is owned jointly
-/// with the reserve: the live ingest wiring (#391/#392) must route an `Expired`
-/// event through the reserve's evict-then-acknowledge entry point
-/// (`ExpirySweep::on_expired_event`), passing [`acknowledge_expired`] as the
-/// acknowledgement so the store removal runs *only after* eviction has
-/// succeeded. Driving `handle_event(Expired)` (or [`acknowledge_expired`])
-/// standalone for the live `Expired` path is therefore a bug: it skips the
-/// eviction and strands entries. The other three variants have no reserve
-/// coupling and are safe to drive directly.
+/// `Expired` here is the bare removal: it does not evict the reserve entries
+/// stamped under the batch (the reserve is downstream). Removing the batch
+/// first orphans them, inflating the reserve size and the consensus-committed
+/// storage radius, so live ingest must route `Expired` through the reserve's
+/// evict-then-acknowledge entry point (passing [`acknowledge_expired`]) rather
+/// than calling this directly. The other three variants are safe to drive here.
 ///
 /// [`acknowledge_expired`]: DbBatchStore::acknowledge_expired
 impl<DB: Database> BatchEventHandler for DbBatchStore<DB> {
@@ -443,7 +353,7 @@ mod tests {
             .unwrap();
         assert_eq!(store.get(&id).unwrap().unwrap().value(), 5000);
 
-        // Top-up for an unknown batch is a no-op (idempotent ingest).
+        // Top-up for an unknown batch is a no-op.
         let unknown = B256::repeat_byte(0xff);
         store
             .handle_event(BatchEvent::TopUp {
@@ -488,8 +398,6 @@ mod tests {
 
     #[test]
     fn acknowledge_expired_is_idempotent() {
-        // The explicit removal seam returns whether the batch existed, and a
-        // second acknowledgement is a harmless no-op (redelivered Expired event).
         let store = in_memory_store();
         let batch = sample_batch(0x05, 1000, 20);
         let id = batch.id();
@@ -504,11 +412,8 @@ mod tests {
 
     #[test]
     fn mutate_event_is_single_transaction() {
-        // The TopUp/DepthIncrease path loads, mutates and stores inside one
-        // transaction (mutate_sync), so the round trip is atomic. We cannot
-        // schedule a real interleaving in a single-threaded test, but we can
-        // assert the combined effect of two successive mutations is the last
-        // writer's value with no lost write, exercising the one-transaction path.
+        // Two successive mutations leave both fields at their last-written value,
+        // with no lost write.
         let mut store = in_memory_store();
         let batch = sample_batch(0x06, 1000, 20);
         let id = batch.id();
@@ -532,19 +437,10 @@ mod tests {
         assert_eq!(got.depth(), 30, "depth update applied");
     }
 
-    /// Regression marker for the remove-before-evict race (the orphan hazard).
-    ///
-    /// The orphan-safe ordering (evict the reserve entries, then acknowledge the
-    /// store removal) is enforced by the reserve crate's
-    /// `ExpirySweep::on_expired_event`, which is downstream of this crate, so the
-    /// race cannot be reproduced from `vertex-swarm-postage` alone (there is no
-    /// reserve here to orphan). The end-to-end "removal before sweep orphans
-    /// entries" regression lives in the reserve crate's tests (PR-D/PR-E), where
-    /// both halves are in scope. This crate's contribution is the explicit
-    /// [`DbBatchStore::acknowledge_expired`] seam and the contract documentation;
-    /// this ignored test records the cross-crate gap so it is not lost.
+    /// Marker for the remove-before-evict race: not reproducible here (no reserve
+    /// to orphan), only via the [`DbBatchStore::acknowledge_expired`] seam.
     #[test]
-    #[ignore = "cross-crate: enforced and regression-tested in the reserve crate (PR-D/PR-E)"]
+    #[ignore = "cross-crate: enforced and regression-tested in the reserve crate"]
     fn remove_before_evict_orphans_entries_is_reserve_crate_concern() {}
 
     #[test]

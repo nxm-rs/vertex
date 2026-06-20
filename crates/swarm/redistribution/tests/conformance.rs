@@ -1,21 +1,15 @@
 //! Conformance tests against the canonical Swarm reference vectors.
 //!
-//! These are consensus checks. The vertex sampler and proof of entitlement must
-//! be byte-exact, because the same values are verified on chain by
-//! `Redistribution.sol`. The fixtures here are authoritative oracles for the
-//! Swarm storage-incentives protocol:
+//! Consensus checks: the sampler and proof of entitlement must be byte-exact,
+//! since the same values are verified on chain by `Redistribution.sol`.
+//! Fixtures: a single-CAC transformed-address vector (anchor
+//! `swarm-test-anchor-deterministic!` over a 4 KiB pattern chunk) and
+//! `fixtures/inclusion_proofs.json` (`anchor1 = 100`, `anchor2 = 30`: 16 sorted
+//! sample items plus the three inclusion proofs).
 //!
-//! - The single-CAC transformed-address vector uses the deterministic anchor
-//!   `swarm-test-anchor-deterministic!` over a 4 KiB pattern chunk.
-//! - `fixtures/inclusion_proofs.json` captures a deterministic regression
-//!   scenario (`anchor1 = 100`, `anchor2 = 30`): the 16 sorted sample items
-//!   (chunk address, transformed address, full chunk data, type) and the three
-//!   inclusion proofs (`proof1`/`proof2`/`proofLast`).
-//!
-//! The anchor-keyed transformed address itself is a nectar primitive
-//! ([`AnyChunk::transformed_address`]); nectar owns its conformance vectors.
-//! These tests exercise the *redistribution* layer on top of it: sampling, the
-//! reserve-commitment chunk, the witness indices and the inclusion proofs.
+//! These exercise the redistribution layer (sampling, reserve-commitment chunk,
+//! witness indices, inclusion proofs); the transformed address itself is a
+//! nectar primitive ([`AnyChunk::transformed_address`]) with its own vectors.
 
 #![allow(
     clippy::unwrap_used,
@@ -39,15 +33,10 @@ use nectar_primitives::{
 
 use vertex_swarm_postage::{BatchId, Stamp, StampIndex};
 
-/// A deterministic synthetic stamp for fixture item `slot`.
-///
-/// The reference inclusion-proof vectors are stamp independent (they pin the
-/// RC/OG/TR BMT geometry, which the stamp never feeds), but a proof of
-/// entitlement now requires each witnessed slot to carry the exact stamp it was
-/// won with. We therefore pin a distinct, deterministic stamp per slot so the
-/// byte-for-byte proof assertions remain unchanged while the proof can also be
-/// shown to witness *that precise* stamp (see the exact-stamp test). The batch
-/// id is the slot index so different slots carry distinguishable stamps.
+/// A deterministic synthetic stamp for fixture item `slot`, distinct per slot so
+/// the exact-stamp witness test can confirm each slot carries its own. The stamp
+/// never feeds the RC/OG/TR BMT geometry, so the byte-for-byte proof vectors are
+/// unaffected.
 fn fixture_stamp(slot: usize) -> Stamp {
     let batch: BatchId = B256::repeat_byte(0xc0 + slot as u8);
     let index = StampIndex::new(slot as u32, slot as u32);
@@ -61,8 +50,8 @@ const ANCHOR_CAC: &[u8] = b"swarm-test-anchor-deterministic!";
 const WANT_CHUNK_ADDR: &str = "902406053a7a2f3a17f16097e1d0b4b6a4abeae6b84968f5503ae621f9522e16";
 const WANT_TRANSFORMED: &str = "9dee91d1ed794460474ffc942996bd713176731db4581a3c6470fe9862905a60";
 
-/// Reproduce the canonical single-CAC chunk-address and transformed-address
-/// vector. The chunk content is 4096 bytes of the repeating pattern `i % 256`.
+/// Single-CAC chunk-address and transformed-address vector over 4096 bytes of
+/// the repeating pattern `i % 256`.
 #[test]
 fn cac_transformed_address_matches_reference_vector() {
     let mut content = vec![0u8; 4096];
@@ -143,20 +132,16 @@ fn h(s: &str) -> B256 {
     B256::from_slice(&hex::decode(s.trim_start_matches("0x")).expect("hex"))
 }
 
-/// Decode the sample-time anchor (`anchor1`, a bytes32) from the oracle's hex.
 fn sample_anchor(oracle: &Oracle) -> SampleAnchor {
     SampleAnchor::new(h(&oracle.anchor1))
 }
 
-/// Decode the claim-time anchor (`anchor2`, a bytes32) from the oracle's hex.
 fn claim_anchor(oracle: &Oracle) -> ClaimAnchor {
     ClaimAnchor::new(h(&oracle.anchor2))
 }
 
-/// Parse one oracle item's raw chunk wire bytes into the typed [`AnyChunk`] the
-/// sampler operates on. A `CAC` is a `span || payload` content body; a `SOC` is
-/// `id || signature || span || payload`. The chunk's `TryFrom` enforces the
-/// minimum sizes, so malformed bytes become parse errors, not panics.
+/// Parse one oracle item's raw wire bytes into a typed [`AnyChunk`]. A `CAC` is
+/// `span || payload`; a `SOC` is `id || signature || span || payload`.
 fn parse_chunk(it: &OracleItem) -> DefaultAnyChunk {
     let bytes = hex::decode(&it.chunk_data).expect("chunk data hex");
     if it.chunk_type == "SOC" {
@@ -170,15 +155,9 @@ fn parse_chunk(it: &OracleItem) -> DefaultAnyChunk {
     }
 }
 
-/// Rebuild every sample item from the oracle (typed chunk + transformed address),
-/// asserting the parsed chunk address and the recomputed transformed address
-/// both match the reference.
-///
-/// Each item is pinned with a deterministic [`fixture_stamp`] so a proof of
-/// entitlement can be built (it requires the winning stamp on every witnessed
-/// slot). The stamp does not feed the RC/OG/TR BMT proofs, so attaching it
-/// leaves every byte-for-byte proof assertion unchanged; it does let the
-/// exact-stamp test confirm the proof witnesses *that* stamp.
+/// Rebuild every sample item from the oracle, asserting the parsed chunk address
+/// and recomputed transformed address both match the reference. Each item is
+/// pinned with a [`fixture_stamp`] so a proof of entitlement can be built.
 fn rebuild_items(oracle: &Oracle, sample: SampleAnchor) -> Vec<SampleItem> {
     oracle
         .items
@@ -210,7 +189,6 @@ fn transformed_addresses_match_reference_for_all_sample_items() {
     let sample = sample_anchor(&oracle);
     let items = rebuild_items(&oracle, sample);
     assert_eq!(items.len(), SAMPLE_SIZE);
-    // rebuild_items asserts every transformed address internally.
 }
 
 #[test]
@@ -219,8 +197,8 @@ fn reserve_sample_reproduces_reference_sorted_order() {
     let sample = sample_anchor(&oracle);
     let items = rebuild_items(&oracle, sample);
 
-    // The reference sample is already the sorted 16; feeding it (in any order)
-    // to reserve_sample must reproduce the exact same ordering.
+    // The reference sample is the sorted 16; feeding it in any order must
+    // reproduce the same ordering.
     let mut shuffled = items.clone();
     shuffled.reverse();
     let got = reserve_sample(shuffled);
@@ -262,8 +240,8 @@ fn witness_indices_match_reference() {
     assert_eq!(idx.segment_index, oracle.segment_index);
 }
 
-/// The headline conformance check: every proof segment, prove segment and chunk
-/// span of the proof of entitlement must equal the reference, byte for byte.
+/// Every proof segment, prove segment and chunk span of the proof of entitlement
+/// must equal the reference, byte for byte.
 #[test]
 fn inclusion_proofs_match_reference_byte_for_byte() {
     let oracle = load_oracle();
@@ -286,9 +264,8 @@ fn inclusion_proofs_match_reference_byte_for_byte() {
     assert_proof(&proofs.0[2], &oracle.proof_last, "proofLast (last slot)");
 }
 
-/// Each witness must carry the *exact* stamp the sample slot was won with: the
-/// `postage_proof` of witness *k* must be byte-identical to the stamp pinned to
-/// the slot that witness opens, never a stamp re-loaded by batch id alone.
+/// Each witness's `postage_proof` must be byte-identical to the stamp pinned to
+/// the slot it opens, not a stamp re-loaded by batch id alone.
 #[test]
 fn inclusion_proof_witnesses_the_exact_winning_stamp() {
     let oracle = load_oracle();
@@ -299,8 +276,7 @@ fn inclusion_proof_witnesses_the_exact_winning_stamp() {
     let idx = witness_indices(claim);
     let proofs = make_inclusion_proofs(&items, sample, claim).expect("proofs build");
 
-    // Submission order is [challenged0, challenged1, last]; each carried stamp
-    // must equal the stamp pinned to the very slot it opened.
+    // Submission order is [challenged0, challenged1, last].
     for (proof, slot) in [
         (&proofs.0[0], idx.challenged[0]),
         (&proofs.0[1], idx.challenged[1]),
@@ -311,8 +287,7 @@ fn inclusion_proof_witnesses_the_exact_winning_stamp() {
             proof.postage_proof, won_with,
             "witness for slot {slot} must carry that slot's exact winning stamp",
         );
-        // The precise identity the consensus rule pins: batch id and the full
-        // 8-byte stamp index, not merely the batch.
+        // The consensus identity is batch id plus the full 8-byte stamp index.
         assert_eq!(proof.postage_proof.batch(), won_with.batch());
         assert_eq!(
             proof.postage_proof.stamp_index().to_be_bytes(),
@@ -321,16 +296,15 @@ fn inclusion_proof_witnesses_the_exact_winning_stamp() {
         );
     }
 
-    // A distinct slot carries a distinct stamp, so a batch-keyed reload (which
-    // could not tell two stamps of one batch apart) would not satisfy this.
+    // Distinct slots carry distinct stamps, so a batch-keyed reload would not
+    // satisfy this.
     assert_ne!(
         proofs.0[0].postage_proof, proofs.0[2].postage_proof,
         "different witnessed slots must carry their own distinct stamps",
     );
 }
 
-/// A sample slot that reaches proof time with no pinned stamp is refused, rather
-/// than papered over by re-loading a stamp by batch id.
+/// A sample slot that reaches proof time with no pinned stamp is refused.
 #[test]
 fn inclusion_proof_rejects_a_slot_without_a_stamp() {
     use vertex_swarm_redistribution::ProofError;
@@ -351,19 +325,18 @@ fn inclusion_proof_rejects_a_slot_without_a_stamp() {
     );
 }
 
-/// The same content presented under two different batches is sampled **at most
-/// once**, and the committed reserve-commitment bytes are identical regardless
-/// of insertion order. Only *which batch's stamp* travels with the surviving
-/// slot is order dependent, which is consensus-safe: the chain commits the
-/// (order-invariant) `chunk_address || transformed_address` pair and binds the
-/// witnessed stamp to the chunk, not to a canonical batch. See the
-/// `reserve_sample` function note.
+/// The same content under two batches is sampled at most once, and the committed
+/// reserve-commitment bytes are identical regardless of insertion order. Only
+/// which batch's stamp travels with the surviving slot is order dependent, which
+/// is consensus-safe: the chain commits the order-invariant
+/// `chunk_address || transformed_address` pair and binds the witnessed stamp to
+/// the chunk, not to a canonical batch.
 #[test]
 fn same_content_multi_batch_ties_to_one_slot_with_stable_commitment() {
     let anchor = SampleAnchor::new(B256::repeat_byte(0x5a));
 
-    // One content chunk, two distinct batches: same chunk address and (under one
-    // anchor) the same transformed address, so they tie.
+    // One content chunk, two distinct batches: same chunk and transformed
+    // address under one anchor, so they tie.
     let chunk: DefaultAnyChunk =
         DefaultContentChunk::new(b"shared payload under two batches".to_vec())
             .expect("cac builds")
@@ -398,22 +371,20 @@ fn same_content_multi_batch_ties_to_one_slot_with_stable_commitment() {
     let forward = reserve_sample(vec![item_a.clone(), item_b.clone()]);
     let reverse = reserve_sample(vec![item_b.clone(), item_a.clone()]);
 
-    // At most once: a single slot in either order.
     assert_eq!(forward.len(), 1, "tied content must collapse to one slot");
     assert_eq!(reverse.len(), 1, "tied content must collapse to one slot");
 
-    // The committed bytes (chunk_address || transformed_address) are byte-
-    // identical across orders: nothing order dependent reaches the chain.
+    // The committed bytes are byte-identical across orders: nothing order
+    // dependent reaches the chain.
     assert_eq!(
         reserve_commitment_content(&forward),
         reserve_commitment_content(&reverse),
         "the reserve commitment must be insertion-order invariant",
     );
 
-    // The only order-dependent quantity is which batch's stamp survives; both
-    // orders keep the last CAC seen (consensus-safe, documented as order-agnostic
-    // against bee). This pins the observed behaviour without asserting it is
-    // consensus-binding.
+    // The only order-dependent quantity is which batch's stamp survives: both
+    // orders keep the last CAC seen. Pins the observed behaviour without
+    // asserting it is consensus-binding.
     assert_eq!(
         forward[0].stamp.as_ref().map(Stamp::batch),
         Some(stamp_b.batch()),
@@ -431,7 +402,7 @@ fn assert_proof(
     want: &OracleProof,
     label: &str,
 ) {
-    // RC chunk inclusion proof: proofSegments / proveSegment.
+    // RC: proofSegments / proveSegment.
     assert_eq!(
         got.rc_proof.segment,
         h(&want.prove_segment),
@@ -444,7 +415,7 @@ fn assert_proof(
         "RC",
     );
 
-    // OG (plain) BMT segment proof: proofSegments2 / proveSegment2 / chunkSpan.
+    // OG (plain BMT): proofSegments2 / proveSegment2 / chunkSpan.
     assert_eq!(
         got.og_proof.segment,
         h(&want.prove_segment2),
@@ -458,8 +429,8 @@ fn assert_proof(
     );
     assert_eq!(got.chunk_span, want.chunk_span, "{label}: chunk span");
 
-    // TR (anchor-prefixed) BMT segment proof: proofSegments3. The protocol proves
-    // the same segment content as OG, so the proven segment must agree too.
+    // TR (anchor-prefixed BMT): proofSegments3, proving the same segment content
+    // as OG.
     assert_eq!(
         got.tr_proof.segment,
         h(&want.prove_segment2),
@@ -484,8 +455,8 @@ fn assert_segments(got: &[B256], want: &[String], label: &str, which: &str) {
     }
 }
 
-/// Each witnessed proof must self-verify against the relevant BMT root, a
-/// secondary guard on top of the byte-for-byte fixture comparison.
+/// Each witnessed proof self-verifies against the relevant BMT root, guarding on
+/// top of the byte-for-byte fixture comparison.
 #[test]
 fn witness_proofs_self_verify() {
     let oracle = load_oracle();
@@ -512,7 +483,6 @@ fn witness_proofs_self_verify() {
             "RC proof must verify against the reserve-commitment root",
         );
 
-        // OG proof verifies against the witnessed body's plain BMT root.
         assert!(
             p.og_proof
                 .verify(plain_root(&items[require].chunk).as_slice())
@@ -520,9 +490,8 @@ fn witness_proofs_self_verify() {
             "OG proof must verify against the chunk's plain BMT root",
         );
 
-        // TR proof verifies against the inner body's anchor-prefixed BMT root.
-        // For a CAC that root *is* the transformed address; for a SOC the
-        // transformed address is keccak(soc_addr || this root), so we verify
+        // For a CAC the prefixed root is the transformed address; for a SOC the
+        // transformed address is keccak(soc_addr || this root), so verify
         // against the prefixed root directly.
         assert!(
             p.tr_proof
@@ -534,8 +503,7 @@ fn witness_proofs_self_verify() {
 }
 
 /// The plain BMT root of the witnessed chunk body. For a CAC this is the chunk
-/// address; for a SOC it is the wrapped CAC's address. The typed `span`/`data`
-/// accessors already expose the inner body, so there is no header slicing.
+/// address; for a SOC it is the wrapped CAC's address.
 fn plain_root(chunk: &DefaultAnyChunk) -> SwarmAddress {
     let mut hasher = DefaultHasher::new();
     hasher.set_span(chunk.span());
@@ -544,8 +512,8 @@ fn plain_root(chunk: &DefaultAnyChunk) -> SwarmAddress {
 }
 
 /// The anchor-prefixed BMT root of the witnessed chunk body (the TR proof's
-/// root). For a CAC this equals the transformed address; for a SOC it is the
-/// inner component of the transformed address.
+/// root). For a CAC this equals the transformed address; for a SOC it is its
+/// inner component.
 fn prefixed_root(chunk: &DefaultAnyChunk, anchor: &[u8]) -> SwarmAddress {
     let mut hasher = DefaultHasher::with_prefix(anchor);
     hasher.set_span(chunk.span());

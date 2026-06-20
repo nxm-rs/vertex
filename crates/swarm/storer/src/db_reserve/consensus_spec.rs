@@ -1,13 +1,12 @@
 //! Consensus spec tests for the per-entry reserve.
 //!
-//! Each test builds a `DbReserve` over an in-memory redb-backed `vertex-storage`
-//! `Database`, a `DbBatchStore` populated with a real `Batch`, and signs real
-//! stamps with an `alloy-signer-local` wallet so the validate-on-ingest admission
-//! path runs exactly as in production. The invariants asserted here are the
-//! consensus-load-bearing ones: per-entry size counting, newest-wins / equal- and
-//! older-reject arbitration on the full `(batchID, stampIndex)` slot, refcounted
-//! payload survival under partial eviction, exact-stamp-in-proof, and full
-//! compaction (no tombstones) on removal.
+//! Each test builds a `DbReserve` over an in-memory redb `Database` and a
+//! `DbBatchStore` with a real `Batch`, signing real stamps so the
+//! validate-on-ingest path runs as in production. Covers the
+//! consensus-load-bearing invariants: per-entry size counting, newest-wins
+//! arbitration on the full `(batchID, stampIndex)` slot, refcounted payload
+//! survival under partial eviction, exact-stamp-in-proof, and full compaction
+//! (no tombstones) on removal.
 
 #![allow(
     clippy::unwrap_used,
@@ -29,10 +28,8 @@ use vertex_swarm_postage::DbBatchStore;
 use vertex_swarm_test_utils::MockIdentity;
 
 const THRESHOLD: u64 = 8;
-// bucket_depth 1 splits the address space by the top bit, so two distinct
-// content addresses can be coerced into the *same* bucket (top bit 0) and
-// therefore compete for the same `(batch, stampIndex)` arbiter slot. depth 18
-// gives ample per-bucket capacity for index 0.
+// bucket_depth 1 splits by the top bit, so distinct addresses can be coerced
+// into the same bucket (top bit 0) to compete for one arbiter slot.
 const BUCKET_DEPTH: u8 = 1;
 const DEPTH: u8 = 18;
 
@@ -40,27 +37,23 @@ fn signer() -> PrivateKeySigner {
     PrivateKeySigner::from_bytes(&B256::repeat_byte(0x42)).expect("valid signer")
 }
 
-/// A batch owned by `owner`, created at block 0, with ample value so it is
-/// not expired against a zero cumulative payout.
+/// Ample value so it is not expired against a zero cumulative payout.
 fn batch_for(owner: Address, id: B256) -> Batch {
     Batch::new(id, 1_000_000, 0, owner, DEPTH, BUCKET_DEPTH, false)
 }
 
-/// A live context past the confirmation threshold with zero payout (so a
-/// fresh batch is usable and not expired).
+/// Past the confirmation threshold with zero payout, so a fresh batch is usable.
 fn live_context() -> PostageContext {
     PostageContext::new(THRESHOLD + 1, 0)
 }
 
-/// A content chunk whose address falls in bucket 0 of a `BUCKET_DEPTH` batch
-/// (top bit clear), searched by varying the payload. Returns the chunk and
-/// its address.
+/// A content chunk whose address falls in bucket 0 (top bit clear), found by
+/// varying the payload.
 fn content_chunk_in_bucket0(seed: u64) -> (nectar_primitives::AnyChunk, ChunkAddress) {
     for n in 0..100_000u64 {
         let payload = format!("vertex reserve consensus fixture {seed}/{n}").into_bytes();
         let chunk = ContentChunk::new(payload).expect("valid content chunk");
         let addr = *chunk.address();
-        // bucket_for_address with bucket_depth 1 == top bit of byte 0.
         if addr.as_slice()[0] & 0x80 == 0 {
             return (chunk.into(), addr);
         }
@@ -68,9 +61,7 @@ fn content_chunk_in_bucket0(seed: u64) -> (nectar_primitives::AnyChunk, ChunkAdd
     panic!("no bucket-0 content chunk found within the search bound");
 }
 
-/// Sign a real stamp for `address` under `batch` at `timestamp`, at the given
-/// within-bucket `index`, with the bucket derived from the address so
-/// `validate_bucket` passes.
+/// Bucket is derived from the address so `validate_bucket` passes.
 fn signed_stamp(
     signer: &PrivateKeySigner,
     batch: &Batch,
@@ -89,13 +80,9 @@ fn signed_stamp(
     Stamp::with_index(batch.id(), stamp_index, timestamp, sig)
 }
 
-/// A test reserve and its shared database, plus the batch store the
-/// validate-on-ingest path reads.
-///
-/// The reserve owns its own `DbBatchStore` (the `BatchStore` trait is
-/// implemented on the store, not on `Arc<store>`), and the fixture holds a
-/// second store over the *same* database for populating and reading batches:
-/// both see identical persisted state.
+/// A test reserve and its shared database. The reserve owns its own
+/// `DbBatchStore`; the fixture holds a second store over the same database for
+/// populating and reading batches, so both see identical persisted state.
 struct Fixture {
     reserve: DbReserve<RedbDatabase, DbBatchStore<RedbDatabase>>,
     db: Arc<RedbDatabase>,
@@ -105,14 +92,11 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// Build a reserve over a fresh in-memory database with a single batch
-    /// already registered and the live context persisted.
     fn new() -> Self {
         Self::with_batches(&[B256::repeat_byte(0x11)])
     }
 
-    /// Build a reserve whose batch store already holds the given batch ids
-    /// (all owned by the shared signer), with the live context persisted.
+    /// All batches are owned by the shared signer, with the live context persisted.
     fn with_batches(batch_ids: &[B256]) -> Self {
         let db = RedbDatabase::in_memory().unwrap().into_arc();
         let batches = DbBatchStore::new(Arc::clone(&db)).unwrap();
@@ -125,7 +109,6 @@ impl Fixture {
 
         let identity = MockIdentity::with_first_byte(0x00);
         let overlay = identity.overlay_address();
-        // The reserve's own store handle over the same shared database.
         let reserve_batches = DbBatchStore::new(Arc::clone(&db)).unwrap();
         let reserve = DbReserve::new(
             Arc::clone(&db),
@@ -146,7 +129,6 @@ impl Fixture {
         }
     }
 
-    /// The single batch id this fixture was built with.
     fn batch_id(&self) -> BatchId {
         BatchId::repeat_byte(0x11)
     }
@@ -166,12 +148,10 @@ impl Fixture {
             .put(CachedChunk::new(chunk.clone(), Some(stamp)))
     }
 
-    /// Count rows in a table via a full cursor walk.
     fn row_count<T: Table>(&self) -> u64 {
         self.db.view(|tx| tx.count::<T>()).unwrap() as u64
     }
 
-    /// The refcount stored for an address's payload, or `None` if absent.
     fn payload_refcnt(&self, addr: &ChunkAddress) -> Option<u64> {
         self.db
             .view(|tx| Ok(tx.get::<Payload>(*addr)?.map(|p| p.refcnt)))
@@ -181,10 +161,9 @@ impl Fixture {
 
 #[test]
 fn reserve_size_counts_stamped_entries_not_addresses() {
-    // Same content address stamped under N distinct batches must leave the
-    // reserve size == N (one Entry row per (batchID, stampIndex, address)),
-    // NOT 1. The reserve size feeds storage_radius / committedDepth, which is
-    // consensus-committed.
+    // One content address under N batches leaves size == N (one Entry per
+    // (batchID, stampIndex, address)), not 1. Size feeds the consensus-committed
+    // storage_radius.
     let ids = [
         B256::repeat_byte(0x11),
         B256::repeat_byte(0x22),
@@ -207,38 +186,33 @@ fn reserve_size_counts_stamped_entries_not_addresses() {
         ids.len() as u64,
         "one Entry row per stamped entry"
     );
-    // One shared, refcounted payload: N entries, one body, refcnt == N.
     assert_eq!(fx.row_count::<Payload>(), 1, "one shared content payload");
     assert_eq!(fx.payload_refcnt(&addr), Some(ids.len() as u64));
 }
 
 #[test]
 fn newest_timestamp_wins_full_index_keying() {
-    // Two stamps for the SAME (batchID, full 8-byte stampIndex): a newer
-    // timestamp displaces the older entry (size stays 1, slot updated); an
-    // EQUAL timestamp REJECTS (prev >= curr); an OLDER timestamp REJECTS.
-    // Distinct indices in the same bucket are different slots and both admit
-    // (the gate-refuted bucket-only keying must NOT collapse them).
+    // On one (batchID, stampIndex) slot: a newer timestamp displaces the entry,
+    // an equal or older timestamp rejects (prev >= curr). Distinct indices in
+    // the same bucket are separate slots and both admit.
     let fx = Fixture::new();
     let id = fx.batch_id();
     let (chunk, addr) = content_chunk_in_bucket0(2);
 
-    // First stamp at index 0, timestamp 100.
     fx.put(&chunk, &addr, id, 0, 100).unwrap();
     assert_eq!(fx.reserve.count().unwrap(), 1);
 
-    // Newer timestamp on the SAME slot: restamp, size unchanged.
+    // Newer timestamp: restamp, size unchanged, newer stamp survives.
     fx.put(&chunk, &addr, id, 0, 200).unwrap();
     assert_eq!(
         fx.reserve.count().unwrap(),
         1,
         "restamp displaces the old entry; size unchanged"
     );
-    // The surviving entry carries the newer stamp (timestamp 200).
     let got = fx.reserve.get(&addr).unwrap().expect("present");
     assert_eq!(got.stamp().expect("stamped").timestamp(), 200);
 
-    // Equal timestamp on the same slot: REJECT, nothing changes.
+    // Equal timestamp: reject.
     fx.put(&chunk, &addr, id, 0, 200).unwrap();
     assert_eq!(fx.reserve.count().unwrap(), 1);
     assert_eq!(
@@ -253,7 +227,7 @@ fn newest_timestamp_wins_full_index_keying() {
         "equal-timestamp re-presentation does not overwrite"
     );
 
-    // Older timestamp on the same slot: REJECT.
+    // Older timestamp: reject.
     fx.put(&chunk, &addr, id, 0, 150).unwrap();
     assert_eq!(
         fx.reserve
@@ -267,8 +241,7 @@ fn newest_timestamp_wins_full_index_keying() {
         "older stamp is stale and rejected"
     );
 
-    // A DISTINCT index in the same bucket is a different slot: it admits and
-    // adds a second entry (bucket-only keying would wrongly collapse these).
+    // A distinct index in the same bucket is a different slot: it admits.
     fx.put(&chunk, &addr, id, 1, 50).unwrap();
     assert_eq!(
         fx.reserve.count().unwrap(),
@@ -279,10 +252,9 @@ fn newest_timestamp_wins_full_index_keying() {
 
 #[test]
 fn refcounted_payload_survives_partial_eviction() {
-    // Same content under two batches: one Payload row, refcnt 2. The
-    // second-batch put must NOT rewrite the body (refcnt bump only). Evicting
-    // one entry leaves the body present (refcnt 1) and the surviving entry
-    // still resolves.
+    // Same content under two batches: one Payload row at refcnt 2; the second
+    // put bumps the refcount without rewriting the body. Evicting one entry
+    // leaves the body (refcnt 1); evicting the last drops it.
     let ids = [B256::repeat_byte(0x11), B256::repeat_byte(0x22)];
     let fx = Fixture::with_batches(&ids);
     let (chunk, addr) = content_chunk_in_bucket0(3);
@@ -312,7 +284,6 @@ fn refcounted_payload_survives_partial_eviction() {
     );
     assert_eq!(fx.reserve.count().unwrap(), 2, "two stamped entries");
 
-    // Evict the furthest entry: one entry goes, the body survives (refcnt 1).
     let evicted = fx.reserve.evict_furthest().unwrap();
     assert_eq!(evicted, Some(addr));
     assert_eq!(fx.reserve.count().unwrap(), 1, "one entry removed");
@@ -321,11 +292,9 @@ fn refcounted_payload_survives_partial_eviction() {
         Some(1),
         "shared body survives partial eviction"
     );
-    // The surviving entry still resolves to the chunk.
     let got = fx.reserve.get(&addr).unwrap().expect("survivor present");
     assert_eq!(got.address(), &addr);
 
-    // Evicting the last entry drops the body entirely (no tombstone).
     fx.reserve.evict_furthest().unwrap();
     assert_eq!(fx.reserve.count().unwrap(), 0);
     assert_eq!(fx.payload_refcnt(&addr), None, "last entry drops the body");
@@ -333,24 +302,22 @@ fn refcounted_payload_survives_partial_eviction() {
 
 #[test]
 fn restamp_to_different_address_cleans_displaced_rows() {
-    // A restamp re-points the (batchID, stampIndex) slot at a DIFFERENT
-    // content address. The displaced entry's rows must be deleted using the
-    // DISPLACED address's proximity (regression guard for the orphaned-row /
-    // leaked-refcount bug), and its payload refcount decremented exactly once.
+    // Restamping the (batchID, stampIndex) slot onto a different address must
+    // delete the displaced entry's rows using the displaced address's proximity
+    // and decrement its payload refcount exactly once (no orphaned rows, no
+    // leaked refcount).
     let fx = Fixture::new();
     let id = fx.batch_id();
-    // Two distinct addresses, both in bucket 0, so they share index slot 0.
+    // Both in bucket 0, so they share index slot 0.
     let (chunk_a, addr_a) = content_chunk_in_bucket0(10);
     let (chunk_b, addr_b) = content_chunk_in_bucket0(20);
     assert_ne!(addr_a, addr_b, "fixtures must be distinct addresses");
 
-    // Stamp A into slot (id, index 0) at timestamp 100.
     fx.put(&chunk_a, &addr_a, id, 0, 100).unwrap();
     assert_eq!(fx.reserve.count().unwrap(), 1);
     assert!(fx.reserve.contains(&addr_a));
 
-    // Restamp the SAME slot onto address B at a newer timestamp: A is
-    // displaced, B admitted. Size unchanged (one displaced, one added).
+    // Restamp the slot onto B at a newer timestamp: A displaced, B admitted.
     fx.put(&chunk_b, &addr_b, id, 0, 200).unwrap();
     assert_eq!(
         fx.reserve.count().unwrap(),
@@ -358,14 +325,12 @@ fn restamp_to_different_address_cleans_displaced_rows() {
         "restamp to a different address displaces A and admits B"
     );
 
-    // A's body and all its index rows are gone (no orphaned rows, no leaked
-    // refcount); B is present and resolves.
     assert!(!fx.reserve.contains(&addr_a), "displaced A body removed");
     assert_eq!(fx.payload_refcnt(&addr_a), None, "A refcount not leaked");
     assert!(fx.reserve.contains(&addr_b), "B present");
     assert_eq!(fx.payload_refcnt(&addr_b), Some(1));
 
-    // Exactly one of each index row remains (B's), no A residue.
+    // Exactly one of each row remains (B's), no A residue.
     assert_eq!(fx.row_count::<Entry>(), 1, "one Entry row (B)");
     assert_eq!(fx.row_count::<BatchGroup>(), 1, "one BatchGroup row (B)");
     assert_eq!(fx.row_count::<Replay>(), 1, "one Replay row (B)");
@@ -374,9 +339,8 @@ fn restamp_to_different_address_cleans_displaced_rows() {
 
 #[test]
 fn get_returns_exact_admitting_stamp() {
-    // get() must surface the PRECISE stamp the entry was admitted with
-    // (stored per entry), byte-for-byte, not a stamp re-loaded by batchID
-    // alone. An inclusion proof carries exactly this stamp.
+    // get() surfaces the per-entry admitting stamp byte-for-byte, not one
+    // re-loaded by batchID alone. An inclusion proof carries exactly this stamp.
     let fx = Fixture::new();
     let id = fx.batch_id();
     let (chunk, addr) = content_chunk_in_bucket0(4);
@@ -401,10 +365,8 @@ fn get_returns_exact_admitting_stamp() {
 
 #[test]
 fn removal_fully_compacts_all_tables_no_tombstones() {
-    // remove() must delete every row of every stamped entry for an address
-    // across all six tables, leaving no tombstone. Store the same content
-    // under two batches (two entries, one shared payload), then remove and
-    // assert all tables are empty.
+    // remove() deletes every row of every stamped entry for an address across
+    // all six tables, leaving no tombstone.
     let ids = [B256::repeat_byte(0x11), B256::repeat_byte(0x22)];
     let fx = Fixture::with_batches(&ids);
     let (chunk, addr) = content_chunk_in_bucket0(5);
@@ -421,8 +383,7 @@ fn removal_fully_compacts_all_tables_no_tombstones() {
     assert_eq!(fx.row_count::<BatchGroup>(), 0, "no BatchGroup tombstones");
     assert_eq!(fx.row_count::<Replay>(), 0, "no Replay tombstones");
     assert_eq!(fx.row_count::<Payload>(), 0, "no Payload tombstones");
-    // The arbiter slots for both batches are cleared, so a later older stamp
-    // is admitted afresh (slot did not pin a stale newest).
+    // The arbiter slot is cleared, so it does not pin a stale newest timestamp.
     let slot0 = StampSlotKey::new(BatchId::from(ids[0]), StampIndex::new(0, 0));
     assert!(
         fx.db
@@ -435,8 +396,8 @@ fn removal_fully_compacts_all_tables_no_tombstones() {
 
 #[test]
 fn unknown_batch_and_stampless_puts_are_rejected() {
-    // A stamp referencing a batch the node does not know is refused, and a
-    // stampless put is invalid; neither writes anything.
+    // A stamp for an unknown batch and a stampless put are both refused, writing
+    // nothing.
     let fx = Fixture::new();
     let (chunk, addr) = content_chunk_in_bucket0(6);
 
@@ -448,7 +409,7 @@ fn unknown_batch_and_stampless_puts_are_rejected() {
     assert!(matches!(err, SwarmError::InvalidChunk { .. }));
     assert!(!fx.reserve.contains(&addr));
 
-    // Unknown batch: sign under a batch id the store does not hold.
+    // Sign under a batch id the store does not hold.
     let unknown = Batch::new(
         B256::repeat_byte(0x99),
         1_000_000,
@@ -469,9 +430,8 @@ fn unknown_batch_and_stampless_puts_are_rejected() {
 
 #[test]
 fn bin_scan_replays_entries_in_insertion_order() {
-    // The Replay table feeds the redistribution/sync consumer in per-bin
-    // insertion order, surfacing the precise (address, batch, stampHash) of
-    // each stamped entry without a body read.
+    // The Replay table surfaces each entry's (address, batch, stampHash) in
+    // per-bin insertion order without a body read.
     let ids = [B256::repeat_byte(0x11), B256::repeat_byte(0x22)];
     let fx = Fixture::with_batches(&ids);
     let (chunk, addr) = content_chunk_in_bucket0(7);
@@ -494,32 +454,21 @@ fn bin_scan_replays_entries_in_insertion_order() {
     assert!(items.iter().all(|i| i.address == addr));
 }
 
-// sample-at-most-once (a chunk under N batches contributes at most one slot to
-// a sample, equal transformed address collapses, CAC beats SOC) is a SAMPLER
-// property, not a reserve one: the reserve exposes the per-entry Replay
-// projection (address, batch, stampHash, chunk_type) the sampler consumes, but
-// the collapse is performed by the sampler (PR-F), not here. The reserve-side
-// guarantee that the projection is per-entry and carries the chunk type is
-// covered by bin_scan_replays_entries_in_insertion_order plus the ReplayValue
-// schema; the collapse itself is asserted in PR-F.
+// Sample-at-most-once collapse is a sampler property; the reserve only supplies
+// the per-entry Replay projection, covered by
+// bin_scan_replays_entries_in_insertion_order.
 #[test]
-#[ignore = "sample-at-most-once collapse is a PR-F sampler property; reserve only supplies the per-entry Replay projection"]
-fn sample_collapses_duplicate_transformed_address() {
-    // Intentionally deferred to PR-F (sampler). See the comment above: the
-    // reserve's responsibility (a per-entry, chunk-typed Replay projection) is
-    // covered by the bin-scan test; the at-most-once collapse over transformed
-    // addresses belongs to the sampler that consumes that projection.
-}
+#[ignore = "sampler property; reserve only supplies the per-entry Replay projection"]
+fn sample_collapses_duplicate_transformed_address() {}
 
-// --- radius dynamics (PR-E): expiry -> evict_batch end to end -----------
+// --- radius dynamics: expiry -> evict_batch end to end -----------
 
 #[test]
 fn batch_expiry_sweep_evicts_only_the_expired_batch() {
     use crate::expiry::ExpirySweep;
 
-    // Two batches, each holding one stamped entry of a distinct content
-    // address (distinct addresses so neither eviction touches the other's
-    // refcounted payload).
+    // Two batches with distinct content addresses, so neither eviction touches
+    // the other's refcounted payload.
     let live_id = B256::repeat_byte(0x11);
     let expiring_id = B256::repeat_byte(0x22);
     let fx = Fixture::with_batches(&[live_id, expiring_id]);
@@ -530,19 +479,16 @@ fn batch_expiry_sweep_evicts_only_the_expired_batch() {
     fx.put(&chunk_b, &addr_b, expiring_id, 0, 100).unwrap();
     assert_eq!(fx.reserve.count().unwrap(), 2, "two stamped entries");
 
-    // batch_for sets value = 1_000_000. Advance the chain's cumulative
-    // payout so it catches one batch's value but not the other: lower the
-    // expiring batch's value below total_amount, leave the live one above.
+    // Lower the expiring batch's value below the cumulative payout, leaving the
+    // live one above, so only the expiring batch is expired.
     let mut expiring = fx.batches.get(&expiring_id).unwrap().unwrap();
     expiring.set_value(500);
     fx.batches.put(expiring).unwrap();
-    // total_amount = 1000 >= the expiring batch's value (500), but < the
-    // live batch's value (1_000_000).
+    // total_amount 1000 >= expiring value (500), < live value (1_000_000).
     fx.batches
         .set_context(PostageContext::new(THRESHOLD + 1, 1000))
         .unwrap();
 
-    // Run the sweep through the reserve's own batch-store handle (same DB).
     let reserve_batches = DbBatchStore::new(Arc::clone(&fx.db)).unwrap();
     let report = ExpirySweep::new(&reserve_batches, &fx.reserve)
         .run()
@@ -559,7 +505,6 @@ fn batch_expiry_sweep_evicts_only_the_expired_batch() {
         1,
         "the live batch's entry survives expiry of the other"
     );
-    // The expired batch's payload is gone; the live one's remains.
     assert_eq!(fx.payload_refcnt(&addr_b), None, "expired payload removed");
     assert_eq!(
         fx.payload_refcnt(&addr_a),
@@ -577,11 +522,8 @@ fn batch_expiry_sweep_evicts_only_the_expired_batch() {
 
 #[test]
 fn settable_radius_cell_round_trips_through_the_read_seam() {
-    // The settable radius cell (the SEAM the train was missing): a write via
-    // SettableRadius::set_storage_radius is observed by the ReserveStore read
-    // seam (storage_radius / is_responsible_for). Before this cell existed the
-    // derived radius had no write target and committedDepth could never change
-    // at runtime.
+    // A write via SettableRadius::set_storage_radius is observed by the
+    // storage_radius / is_responsible_for reads.
     use vertex_swarm_api::SettableRadius;
 
     let fx = Fixture::new();
@@ -592,17 +534,16 @@ fn settable_radius_cell_round_trips_through_the_read_seam() {
     );
 
     let target = StorageRadius::new(Bin::try_from(5).unwrap());
-    // Drive the write through the trait object form to prove object safety.
+    // Through the trait object form to prove object safety.
     let dyn_reserve: &dyn SettableRadius = &fx.reserve;
     dyn_reserve.set_storage_radius(target);
 
     assert_eq!(
         fx.reserve.storage_radius(),
         target,
-        "the read seam observes the committed radius"
+        "the read observes the committed radius"
     );
-    // is_responsible_for now evaluates against the new radius: an address at
-    // proximity 5+ is in responsibility, a shallower one is not.
+    // is_responsible_for evaluates against the new radius.
     let (_chunk, addr) = content_chunk_in_bucket0(909);
     let po = addr.proximity(&fx.overlay).get();
     assert_eq!(
@@ -614,13 +555,12 @@ fn settable_radius_cell_round_trips_through_the_read_seam() {
 
 #[test]
 fn radius_controller_apply_commits_a_shrink_through_the_seam() {
-    // The apply path (the wiring seam #391 consumes): from a radius above the
-    // floor, an under-filled, idle reserve shrinks one step, and apply commits
-    // the shallower radius through SettableRadius so the read seam sees it.
+    // From a radius above the floor, an under-filled idle reserve shrinks one
+    // step, and apply commits the shallower radius through SettableRadius.
     use crate::RadiusController;
 
     let fx = Fixture::new();
-    // Start above the floor with no entries (within-radius 0 < threshold).
+    // Above the floor with no entries (within-radius 0 < threshold).
     fx.reserve
         .set_storage_radius(StorageRadius::new(Bin::try_from(5).unwrap()));
 
@@ -677,10 +617,9 @@ fn nothing_evicted_when_no_batch_is_expired() {
 
 #[test]
 fn expired_event_evicts_reserve_before_store_removal() {
-    // The orphan-avoidance contract: on an `Expired` event the reserve
-    // entries must be shed BEFORE the batch leaves the store, otherwise the
-    // reconciliation sweep (which reads batch_ids) could never see them and
-    // they would be orphaned, inflating reserve size and the radius.
+    // On an `Expired` event the reserve entries are shed before the batch leaves
+    // the store; otherwise the reconciliation sweep (which reads batch_ids)
+    // could never see them and they would be orphaned, inflating size and radius.
     use crate::expiry::ExpirySweep;
     use std::cell::Cell;
 
@@ -693,8 +632,8 @@ fn expired_event_evicts_reserve_before_store_removal() {
     let reserve_batches = DbBatchStore::new(Arc::clone(&fx.db)).unwrap();
     let sweep = ExpirySweep::new(&reserve_batches, &fx.reserve);
 
-    // The acknowledgement (store removal) asserts the reserve is already
-    // empty of the batch by the time it runs, proving the ordering.
+    // The acknowledgement (store removal) asserts the reserve is already empty,
+    // proving the ordering.
     let acked = Cell::new(false);
     let removed = sweep
         .on_expired_event::<_, std::io::Error>(expiring_id, || {
@@ -716,10 +655,8 @@ fn expired_event_evicts_reserve_before_store_removal() {
 
 #[test]
 fn expired_event_does_not_acknowledge_when_eviction_fails_is_skipped() {
-    // Documents the short-circuit contract: a failing acknowledgement leaves
-    // the eviction done but surfaces the error so the caller can retry the
-    // removal. (Eviction failure itself is exercised by the reserve's own
-    // error tests; here we cover the acknowledge-error funnel.)
+    // A failing acknowledgement leaves the eviction done but surfaces the error
+    // so the caller can retry the removal.
     use crate::expiry::ExpirySweep;
 
     let expiring_id = B256::repeat_byte(0x44);
@@ -740,8 +677,7 @@ fn expired_event_does_not_acknowledge_when_eviction_fails_is_skipped() {
         "acknowledge error is funnelled through SwarmError::storage"
     );
     // The eviction still happened (it precedes the acknowledge); the caller
-    // is responsible for retrying the store removal, which a later `run`
-    // backstop would also catch were the batch still present.
+    // retries the store removal, which a later `run` backstop also catches.
     assert_eq!(fx.reserve.count().unwrap(), 0, "eviction already applied");
     assert_eq!(fx.payload_refcnt(&addr), None);
 }

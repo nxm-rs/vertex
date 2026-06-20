@@ -1,13 +1,10 @@
-//! gRPC adapter wrapping an api component container.
+//! gRPC adapter over an api component container.
 //!
-//! [`GrpcAdapter<C>`] is the gRPC transport's view of a built node: it wraps an
-//! api component container `C` and registers exactly the services the container's
-//! capabilities expose. The node status service is gated on [`HasTopology`]; the
-//! chunk service is gated on [`HasChunkClient`]. Registration is driven through
-//! per-shape [`RegistersGrpcServices`] impls (one per concrete container) so the
-//! optional chunk capability never produces overlapping blanket impls.
-//!
-//! The adapter is constructed only at `bin/vertex`, the gRPC selection point.
+//! [`GrpcAdapter<C>`] registers exactly the services `C`'s capabilities expose:
+//! the node status service is gated on [`HasTopology`], the chunk service on
+//! [`HasChunkClient`]. Registration uses per-shape [`RegistersGrpcServices`]
+//! impls (one per concrete container) to avoid overlapping blanket impls for the
+//! optional chunk capability.
 
 use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
 use vertex_swarm_api::{
@@ -18,27 +15,22 @@ use vertex_swarm_stream::ChunkClient;
 
 use crate::{ChunkService, NodeService, proto};
 
-/// gRPC transport adapter over an api component container `C`.
-///
-/// The gRPC surface is driven by the capabilities `C` exposes. Capability access
-/// ([`HasTopology`], [`HasChunkClient`]) delegates to `C`.
+/// gRPC adapter over an api component container `C`; capability accessors
+/// delegate to `C`.
 #[derive(Debug, Clone)]
 pub struct GrpcAdapter<C> {
     components: C,
 }
 
 impl<C> GrpcAdapter<C> {
-    /// Wrap a components container.
     pub fn new(components: C) -> Self {
         Self { components }
     }
 
-    /// Access the wrapped components.
     pub fn components(&self) -> &C {
         &self.components
     }
 
-    /// Consume and return the wrapped components.
     pub fn into_components(self) -> C {
         self.components
     }
@@ -62,9 +54,6 @@ impl<C: HasChunkClient> HasChunkClient for GrpcAdapter<C> {
 
 impl<C> GrpcAdapter<C> {
     /// Register the node status service and the shared reflection descriptor.
-    ///
-    /// Gated on [`HasTopology`]: any container carrying a topology that satisfies
-    /// the node service bounds can expose status and topology queries.
     pub fn register_node(&self, registry: &mut GrpcRegistry)
     where
         C: HasTopology,
@@ -83,9 +72,6 @@ impl<C> GrpcAdapter<C> {
     }
 
     /// Register the chunk upload/download service.
-    ///
-    /// Gated on [`HasChunkClient`]: only containers carrying a chunk client
-    /// expose the chunk service.
     pub fn register_chunk(&self, registry: &mut GrpcRegistry)
     where
         C: HasChunkClient,
@@ -119,13 +105,8 @@ where
     }
 }
 
-/// Storer nodes register the node status service and the chunk service.
-///
-/// `StorerComponents` exposes the topology and chunk client through the same
-/// `HasTopology`/`HasChunkClient` accessors the client container does (it
-/// delegates to its embedded `ClientComponents`), so the same two services
-/// register. The store axis (`S`) carries no served capability yet: a
-/// reserve-specific service can be gated on `HasReserve` once one exists.
+/// Storer nodes register the node status service and the chunk service; the
+/// store axis (`S`) carries no served capability yet.
 impl<T, C, S> RegistersGrpcServices for GrpcAdapter<StorerComponents<T, C, S>>
 where
     T: SwarmTopologyState + SwarmTopologyStats + SwarmTopologyPeers + Clone + Send + Sync + 'static,
