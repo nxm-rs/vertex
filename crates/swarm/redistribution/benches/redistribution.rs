@@ -38,6 +38,7 @@ use nectar_primitives::{
     SwarmAddress,
 };
 
+use vertex_swarm_postage::{BatchId, Stamp, StampIndex};
 use vertex_swarm_redistribution::{
     ClaimAnchor, CommittedDepth, SAMPLE_SIZE, SampleAnchor, SampleItem, canonical_neighbourhood,
     make_inclusion_proofs, reserve_sample,
@@ -126,14 +127,33 @@ fn soc_chunk(n: u64) -> DefaultAnyChunk {
         .expect("SOC chunk builds")
 }
 
+/// A deterministic synthetic stamp for pool item `n`.
+///
+/// `make_inclusion_proofs` requires every witnessed slot to carry the exact
+/// stamp it was won with, so the pool pins a distinct, deterministic stamp per
+/// item. The stamp does not feed the sample ordering (the transformed address is
+/// stamp independent) nor the RC/OG/TR BMT proofs, so attaching it leaves the
+/// `reserve_sample` benchmark's measured work unchanged while letting the
+/// `make_inclusion_proofs` benchmark build a proof at all. The batch id varies
+/// with `n` so distinct slots carry distinguishable stamps.
+fn fixture_stamp(n: u64) -> Stamp {
+    let mut bytes = [0u8; 32];
+    bytes[..8].copy_from_slice(&n.wrapping_mul(0x9E37_79B9_7F4A_7C15).to_le_bytes());
+    let batch: BatchId = B256::from(bytes);
+    let index = StampIndex::new(n as u32, n as u32);
+    let sig = alloy_primitives::Signature::test_signature();
+    Stamp::with_index(batch, index, 1, sig)
+}
+
 /// A reserve-shaped pool of `count` sample items over distinct CAC bodies.
 ///
-/// Each item carries a real typed CAC and its transformed address, exactly the
-/// work `reserve_sample` orders by. Built outside the measured region.
+/// Each item carries a real typed CAC, its transformed address and a
+/// deterministic winning stamp, exactly the inputs `reserve_sample` orders by
+/// and `make_inclusion_proofs` witnesses. Built outside the measured region.
 fn sample_pool(count: usize) -> Vec<SampleItem> {
     let sample = sample_anchor();
     (0..count as u64)
-        .map(|n| SampleItem::new(sample, cac_chunk(n)))
+        .map(|n| SampleItem::with_stamp(sample, cac_chunk(n), fixture_stamp(n)))
         .collect()
 }
 
