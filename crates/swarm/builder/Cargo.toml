@@ -61,6 +61,10 @@ vertex-swarm-peer-score.workspace = true
 vertex-net-peer-store.workspace = true
 vertex-storage-redb.workspace = true
 vertex-swarm-redistribution.workspace = true
+# The persisting reserve the storer launch path wires as the node's local store.
+vertex-swarm-storer.workspace = true
+# The batch store and admission validator the reserve requires for stamped admission.
+vertex-swarm-postage.workspace = true
 vertex-swarm-topology.workspace = true
 vertex-swarm-api.workspace = true
 vertex-swarm-node = { workspace = true, features = ["cli"] }
@@ -117,6 +121,9 @@ nectar-postage.workspace = true
 alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 vertex-swarm-test-utils.workspace = true
+# The `CachedChunk` value the storer reserve stores and serves, exercised by the
+# store-factory test.
+vertex-swarm-primitives.workspace = true
 
 # Client upload/download examples. They build a client through the public builder
 # and drive the chunk sender/provider directly, the way an FFI or gRPC embedder
