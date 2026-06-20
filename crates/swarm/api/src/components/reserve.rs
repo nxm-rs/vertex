@@ -36,6 +36,18 @@ use super::SwarmLocalStore;
 /// The [`storage_radius`](Self::storage_radius) is the responsibility boundary the
 /// reserve advertises: chunks at or within it are ones the node is responsible
 /// for ([`is_responsible_for`](Self::is_responsible_for)).
+///
+/// # Bin and proximity order in the reserve
+///
+/// [`Bin`] (a routing-table slot) and [`ProximityOrder`] (a metric distance) are
+/// distinct nectar types. In *this* trait they coincide deliberately: the reserve
+/// measures everything relative to the *local overlay*, so a chunk's reserve bin
+/// is exactly its proximity order to the overlay, and the two share the
+/// `0..=MAX_PO` range. The bin-scoped verbs ([`evict_from_bin`](Self::evict_from_bin),
+/// the `up_to_bin` bound of [`evict_batch`](Self::evict_batch)) therefore name a
+/// [`Bin`] but address the proximity index keyed by proximity order; an
+/// implementation crosses the boundary explicitly via [`From<ProximityOrder>`](Bin)
+/// / [`Bin::get`] rather than treating the two as an unchecked `u8` pun.
 #[auto_impl::auto_impl(&, Arc, Box)]
 pub trait ReserveStore: SwarmLocalStore {
     /// The reserve's current storage-responsibility radius.
@@ -98,6 +110,18 @@ pub trait ReserveStore: SwarmLocalStore {
     /// grows); with `up_to_bin = None` the whole batch is evicted (an expired or
     /// invalidated batch). Deletes the chunk value and every secondary index entry
     /// for each target in a single atomic transaction.
+    ///
+    /// # Expiry ordering seam
+    ///
+    /// This is the entry point an expiry handler must call to drain an expired
+    /// batch's entries *before* the batch is removed from the postage
+    /// [`BatchStore`](vertex_swarm_postage::BatchStore). The reserve size counts
+    /// per stamped entry and drives the consensus radius, so the invariant is
+    /// evict-then-remove: if a batch were removed from the batch store first, its
+    /// entries would be orphaned in the reserve (no batch to discover them),
+    /// inflating size and the committed radius. Removing the batch first is a bug;
+    /// route an expiry through `evict_batch(batch, None, ..)` until it returns `0`
+    /// and only then remove the batch.
     fn evict_batch(&self, batch: BatchId, up_to_bin: Option<Bin>, max: u64) -> SwarmResult<u64>;
 }
 

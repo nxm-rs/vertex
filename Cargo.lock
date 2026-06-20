@@ -9299,6 +9299,8 @@ name = "vertex-swarm-postage"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
  "nectar-postage",
  "nectar-primitives",
  "serde",
@@ -9389,6 +9391,8 @@ name = "vertex-swarm-storer"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
  "async-trait",
  "hashlink 0.10.0",
  "metrics",
@@ -9405,6 +9409,7 @@ dependencies = [
  "vertex-storage",
  "vertex-storage-redb",
  "vertex-swarm-api",
+ "vertex-swarm-postage",
  "vertex-swarm-primitives",
  "vertex-swarm-test-utils",
 ]

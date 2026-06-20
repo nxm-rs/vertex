@@ -101,6 +101,15 @@ impl Reserve {
         *self.count.read()
     }
 
+    /// Set the current count directly.
+    ///
+    /// Used by the per-entry [`DbReserve`](crate::DbReserve) to seed the
+    /// in-memory size from the persisted entry-table count at construction (the
+    /// authoritative size is the entry count, not the address count).
+    pub fn set_count(&self, count: u64) {
+        *self.count.write() = count;
+    }
+
     /// Get available space.
     pub fn available(&self) -> u64 {
         let count = *self.count.read();

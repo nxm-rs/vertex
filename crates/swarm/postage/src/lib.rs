@@ -71,6 +71,7 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+mod admission;
 mod stampindex;
 mod store;
 
@@ -89,6 +90,7 @@ pub use nectar_postage::{
 };
 
 // This crate's own additions.
+pub use admission::{AdmissionError, AdmissionValidator};
 pub use stampindex::{
     Arbitration, DbStampIndexArbiter, DisplacedEntry, IncomingStamp, RejectReason,
     StampIndexArbiter, StampIndexEntry, StampIndexError, StampIndexTable, StampSlotKey, decide,

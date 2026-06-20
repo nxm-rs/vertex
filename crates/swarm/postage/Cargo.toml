@@ -34,6 +34,8 @@ thiserror.workspace = true
 
 [dev-dependencies]
 alloy-primitives.workspace = true
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
 tempfile = "3"
 vertex-storage-redb.workspace = true
 
