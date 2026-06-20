@@ -85,8 +85,14 @@ Refuse to write any of these in a review of your own code:
 
 ### Documentation
 
-- Every `pub` item in `lib.rs` and `mod.rs` has a rustdoc comment. Inner items get rustdoc when their role is not obvious from the signature.
-- Crate root carries a short architectural paragraph: what the crate owns, what it does not, and how it connects to neighbours. `crates/swarm/api/src/lib.rs` is the bar.
-- Do not reference internal plan labels in shipped docs. Describe consumers by name.
+Terse by default. Calibrate low. The code carries the "what"; rustdoc carries the intent and the one non-obvious invariant a reader genuinely needs, and nothing else. PR #412 cut the #350 stack from essay-level verbosity to roughly a fifth: that is the bar. When unsure, cut.
+
+- Crate root (`lib.rs`) carries a short architectural paragraph: what the crate owns, what it does not, and how it connects to neighbours. `crates/swarm/api/src/lib.rs` is the bar. Short, not an essay.
+- Module docs (`//!`) state what the module is plus the single load-bearing invariant. No multi-section essays: no `# What this decides`, `# The rule`, `# Why X`, `# Notes` scaffolding. A few lines, not a page. The stamp-index arbiter went from a 48-line module essay to 15 lines in #412 without losing a thing.
+- Item docs (`///`): write one only where the contract is not obvious from the signature. Delete docs that restate the signature: `fn new(batch_id, stamp_index)` does not need "Construct from its batch and stamp index". Exception: crates with `#![warn(missing_docs)]` (for example `vertex-swarm-api`, `vertex-node-api`) need a terse one-line doc on every `pub` item, so write the one line, not a paragraph.
+- Inline `//` comments only where the next line cannot speak for itself: a byte or on-disk layout, a non-obvious ordering or memory-ordering reason, an infallibility or safety note, a consensus-observable boundary. Delete comments that narrate what the code plainly does. State a given invariant once, not three times.
+- Keep, terse: wire and on-disk layouts, consensus-observable rules, genuine safety or ordering rationale, and `# Safety` / `# Errors` / `# Panics` sections that carry real information.
+- Do not reference internal plan labels in shipped docs (no "Unit N", "PR-D", "the design gate"). Describe consumers and components by name.
 - Do not reference bee inline. Architectural comparisons, if genuinely needed, belong in a single paragraph at the crate root, not scattered through call sites.
 - No em-dashes in code, rustdoc, commit messages, PR bodies, or review comments. Use ASCII hyphens or split the sentence.
+- Oxford English in all docs and comments: British vocabulary (behaviour, colour, centre) with `-ize` endings (organize, serialize, initialize), per the org `CONTRIBUTING.md`.
