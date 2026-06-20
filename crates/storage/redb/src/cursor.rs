@@ -21,6 +21,11 @@ use vertex_storage::{DatabaseError, DatabaseErrorInfo, DbCursorRO, Decode, Encod
 
 use crate::tx::decode_value;
 
+/// redb's raw byte-keyed read-only table backing every cursor.
+type RawTable = ReadOnlyTable<&'static [u8], &'static [u8]>;
+/// A forward range over [`RawTable`], pinned to the cursor's snapshot.
+type RawRange = Range<'static, &'static [u8], &'static [u8]>;
+
 /// Raw encoded key/value bytes for the cursor's current entry.
 struct Position {
     key: Vec<u8>,
@@ -32,9 +37,9 @@ struct Position {
 /// Owns its [`ReadOnlyTable`] (which `Arc`-pins the read snapshot), so it may be
 /// held across calls and returned from a function, outliving the originating tx.
 pub struct RedbCursorRO<T: Table> {
-    table: ReadOnlyTable<&'static [u8], &'static [u8]>,
+    table: RawTable,
     /// Live forward range driving `next()`; rebuilt by seeking/backward moves.
-    forward: Option<Range<'static, &'static [u8], &'static [u8]>>,
+    forward: Option<RawRange>,
     current: Option<Position>,
     /// Raw key the cursor logically sits at, used as the exclusive upper bound
     /// for `prev()`. On a seek miss it holds the absent seek key, so the
@@ -50,7 +55,7 @@ fn read_err(context: &str, err: redb::StorageError) -> DatabaseError {
 }
 
 impl<T: Table> RedbCursorRO<T> {
-    pub(crate) fn new(table: ReadOnlyTable<&'static [u8], &'static [u8]>) -> Self {
+    pub(crate) fn new(table: RawTable) -> Self {
         Self {
             table,
             forward: None,
@@ -80,7 +85,7 @@ impl<T: Table> RedbCursorRO<T> {
 
     /// Full-table forward range. The explicit byte-slice bound avoids the
     /// `RangeFull` type-inference ambiguity on the generic `range()` method.
-    fn full_range(&self) -> Result<Range<'static, &'static [u8], &'static [u8]>, DatabaseError> {
+    fn full_range(&self) -> Result<RawRange, DatabaseError> {
         let empty: &[u8] = &[];
         self.table
             .range(empty..)
@@ -88,10 +93,7 @@ impl<T: Table> RedbCursorRO<T> {
     }
 
     /// Forward range starting at and including `from`.
-    fn range_from(
-        &self,
-        from: &[u8],
-    ) -> Result<Range<'static, &'static [u8], &'static [u8]>, DatabaseError> {
+    fn range_from(&self, from: &[u8]) -> Result<RawRange, DatabaseError> {
         self.table
             .range(from..)
             .map_err(|e| read_err(&format!("cursor seek {}", T::NAME), e))
@@ -601,5 +603,79 @@ mod tests {
         c.next().unwrap();
         // Exactly three values decoded, not 1000.
         assert_eq!(DECODE_COUNT.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn exists_does_not_deserialise_value() {
+        use vertex_storage::DbTx;
+
+        let db = setup();
+        fill_nums(&db, &[10, 20, 30]);
+
+        DECODE_COUNT.store(0, Ordering::SeqCst);
+        let tx = db.tx().unwrap();
+        assert!(tx.exists::<CountTable>(K(20)).unwrap());
+        assert!(!tx.exists::<CountTable>(K(25)).unwrap());
+        // Presence is probed without ever decoding the stored value.
+        assert_eq!(DECODE_COUNT.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn exists_works_on_write_tx() {
+        use vertex_storage::DbTx;
+
+        // A write transaction has no cursor, so `exists` must not fall through
+        // to the cursor-based default; the duplicate check in the storer's
+        // `put` relies on this.
+        let db = setup();
+        db.update(|tx| {
+            assert!(!tx.exists::<NumTable>(K(7)).unwrap());
+            tx.put::<NumTable>(K(7), 70)?;
+            assert!(tx.exists::<NumTable>(K(7)).unwrap());
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn first_key_empty_and_non_empty() {
+        use vertex_storage::DbTx;
+
+        let db = setup();
+        // Empty table reports no first key on both tx kinds.
+        let tx = db.tx().unwrap();
+        assert_eq!(tx.first_key::<NumTable>().unwrap(), None);
+        drop(tx);
+        db.update(|tx| {
+            assert_eq!(tx.first_key::<NumTable>().unwrap(), None);
+            Ok(())
+        })
+        .unwrap();
+
+        fill_nums(&db, &[30, 10, 20]);
+        // Lowest-ordered key, on the read tx.
+        let tx = db.tx().unwrap();
+        assert_eq!(tx.first_key::<NumTable>().unwrap(), Some(K(10)));
+        drop(tx);
+        // And on the write tx, where the cursor default would error.
+        db.update(|tx| {
+            assert_eq!(tx.first_key::<NumTable>().unwrap(), Some(K(10)));
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn first_key_does_not_deserialise_value() {
+        use vertex_storage::DbTx;
+
+        let db = setup();
+        fill_nums(&db, &[10, 20, 30]);
+
+        DECODE_COUNT.store(0, Ordering::SeqCst);
+        let tx = db.tx().unwrap();
+        assert_eq!(tx.first_key::<CountTable>().unwrap(), Some(K(10)));
+        // Only the key is decoded; the value guard is dropped undecoded.
+        assert_eq!(DECODE_COUNT.load(Ordering::SeqCst), 0);
     }
 }
