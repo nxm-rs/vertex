@@ -50,9 +50,11 @@ impl ProtocolConfig {
         self.identity.identity(spec, network_dir, self.node_type)
     }
 
-    /// Create validated bandwidth accounting configuration.
+    /// Create validated bandwidth accounting configuration. Mode is seeded from
+    /// the resolved node type unless `--bandwidth.mode` is set; assumes the CLI
+    /// has already applied [`override_node_type`](Self::override_node_type).
     pub fn bandwidth_config(&self) -> Result<DefaultBandwidthConfig, BandwidthConfigError> {
-        DefaultBandwidthConfig::try_from(&self.bandwidth)
+        DefaultBandwidthConfig::try_from((self.node_type, &self.bandwidth))
     }
 
     /// Create local store configuration.
@@ -101,5 +103,33 @@ impl NodeProtocolConfig for ProtocolConfig {
         self.redistribution = args.redistribution.clone();
         self.chain = args.chain.clone();
         self.swap = args.swap.clone();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use vertex_swarm_api::SwarmAccountingConfig;
+    use vertex_swarm_primitives::BandwidthMode;
+
+    use super::*;
+
+    #[test]
+    fn bandwidth_config_seeds_mode_from_node_type() {
+        for (node_type, expected) in [
+            (SwarmNodeType::Bootnode, BandwidthMode::None),
+            (SwarmNodeType::Client, BandwidthMode::Pseudosettle),
+            (SwarmNodeType::Storer, BandwidthMode::Both),
+        ] {
+            let config = ProtocolConfig {
+                node_type,
+                ..ProtocolConfig::default()
+            };
+            let bandwidth = config.bandwidth_config().expect("default args validate");
+            assert_eq!(
+                SwarmAccountingConfig::mode(&bandwidth),
+                expected,
+                "node type {node_type:?}"
+            );
+        }
     }
 }

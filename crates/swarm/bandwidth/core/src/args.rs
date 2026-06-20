@@ -55,9 +55,10 @@ impl From<BandwidthMode> for BandwidthModeArg {
 #[command(next_help_heading = "Bandwidth Accounting")]
 #[serde(default)]
 pub struct BandwidthArgs {
-    /// Bandwidth accounting mode.
-    #[arg(long = "bandwidth.mode", value_enum, default_value_t = BandwidthModeArg::Pseudosettle)]
-    pub mode: BandwidthModeArg,
+    /// Bandwidth accounting mode. Unset derives the mode from the node type
+    /// ([`BandwidthMode::default_for`]); setting it overrides that default.
+    #[arg(long = "bandwidth.mode", value_enum)]
+    pub mode: Option<BandwidthModeArg>,
 
     /// Payment threshold (triggers settlement when exceeded).
     #[arg(long = "bandwidth.threshold", default_value_t = DEFAULT_PAYMENT_THRESHOLD)]
@@ -93,7 +94,7 @@ pub struct BandwidthArgs {
 impl Default for BandwidthArgs {
     fn default() -> Self {
         Self {
-            mode: BandwidthModeArg::default(),
+            mode: None,
             payment_threshold: DEFAULT_PAYMENT_THRESHOLD,
             payment_tolerance_percent: DEFAULT_PAYMENT_TOLERANCE_PERCENT,
             refresh_rate: DEFAULT_REFRESH_RATE,
@@ -106,10 +107,21 @@ impl Default for BandwidthArgs {
 }
 
 impl BandwidthArgs {
-    /// Create validated BandwidthConfig from these CLI arguments.
+    /// Validated config, mode seeded from `node_type` unless `--bandwidth.mode` is set.
     pub fn accounting_config(
         &self,
+        node_type: vertex_swarm_primitives::SwarmNodeType,
     ) -> Result<crate::DefaultBandwidthConfig, crate::BandwidthConfigError> {
-        crate::BandwidthConfig::try_from(self)
+        crate::BandwidthConfig::try_from((node_type, self))
+    }
+
+    /// The override when set, otherwise the node-type default.
+    pub fn effective_mode(
+        &self,
+        node_type: vertex_swarm_primitives::SwarmNodeType,
+    ) -> BandwidthMode {
+        self.mode
+            .map(BandwidthMode::from)
+            .unwrap_or_else(|| BandwidthMode::default_for(node_type))
     }
 }

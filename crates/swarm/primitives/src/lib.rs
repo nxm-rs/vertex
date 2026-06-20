@@ -467,6 +467,22 @@ mod tests {
     }
 
     #[test]
+    fn bandwidth_mode_default_by_node_type() {
+        assert_eq!(
+            BandwidthMode::default_for(SwarmNodeType::Bootnode),
+            BandwidthMode::None
+        );
+        assert_eq!(
+            BandwidthMode::default_for(SwarmNodeType::Client),
+            BandwidthMode::Pseudosettle
+        );
+        assert_eq!(
+            BandwidthMode::default_for(SwarmNodeType::Storer),
+            BandwidthMode::Both
+        );
+    }
+
+    #[test]
     fn connection_profile_string_round_trip() {
         use std::str::FromStr;
 
@@ -501,6 +517,16 @@ pub enum BandwidthMode {
 }
 
 impl BandwidthMode {
+    /// The default accounting mode for a node type: a bootnode does no accounting,
+    /// a client pseudosettles, a storer runs both pseudosettle and swap.
+    pub const fn default_for(node_type: SwarmNodeType) -> Self {
+        match node_type {
+            SwarmNodeType::Bootnode => BandwidthMode::None,
+            SwarmNodeType::Client => BandwidthMode::Pseudosettle,
+            SwarmNodeType::Storer => BandwidthMode::Both,
+        }
+    }
+
     pub fn pseudosettle_enabled(self) -> bool {
         matches!(self, BandwidthMode::Pseudosettle | BandwidthMode::Both)
     }

@@ -9,15 +9,16 @@ use tracing::{info, warn};
 use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
-use vertex_swarm_api::{
-    BootnodeComponents, ClientComponents, PeerReporter, StorerComponents, SwarmClientAccounting,
-    SwarmLaunchConfig, SwarmNodeType, construct,
-};
 #[cfg(feature = "chain")]
-use vertex_swarm_api::{SwarmAccountingConfig, SwarmSpec};
+use vertex_swarm_api::SwarmSpec;
+use vertex_swarm_api::{
+    BootnodeComponents, ClientComponents, PeerReporter, StorerComponents, SwarmAccountingConfig,
+    SwarmClientAccounting, SwarmLaunchConfig, SwarmNodeType, construct,
+};
 use vertex_swarm_bandwidth::{
     Accounting, AccountingBuilder, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
 };
+use vertex_swarm_bandwidth_pseudosettle::PseudosettleProvider;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::NetworkConfig;
 use vertex_swarm_node::{AccountingSettlement, BootNode, ClientNode, PeerSelector, SelfThrottle};
@@ -218,17 +219,27 @@ type StoreFactory<'a> =
 
 /// The node's local store, plus the storer reserve view when the node is a storer.
 ///
-/// A storer's local store *is* its reserve: both views point at the one
-/// `DbReserve` so it is reused without rebuilding (`local` for retrieval and
-/// components, `reserve` for pushsync ingest). A client leaves `reserve` `None`.
+/// A storer's local store *is* its reserve. `ReserveStore: SwarmLocalStore`, so
+/// the one `DbReserve` upcasts to the local-store view (trait upcasting is stable
+/// at the workspace MSRV); both views are carried so the single instance is reused
+/// without rebuilding: `local` for retrieval and components, `reserve` for
+/// pushsync ingest. A client leaves `reserve` `None`.
 struct NodeStore {
     local: Arc<dyn vertex_swarm_api::SwarmLocalStore>,
     reserve: Option<Arc<dyn vertex_swarm_api::ReserveStore>>,
 }
 
-/// A cache override supplied through the builder. With no seam the launch path
-/// builds the default in-memory [`vertex_swarm_localstore::ChunkStore`] sized
-/// from the local-store config.
+/// A cache override supplied through the builder.
+///
+/// `Ready` hands the launch path a fully constructed cache; `Factory` defers
+/// construction to build time and is given the opened shared database (if any),
+/// so an embedder can size or back the cache from the same handle the rest of
+/// the node uses. When no seam is supplied the launch path builds the default
+/// in-memory [`vertex_swarm_localstore::ChunkStore`] sized from the local-store
+/// config, leaving existing callers unchanged.
+///
+/// This crate is native-only (see the crate-root docs), so both variants are
+/// always available.
 pub(crate) enum CacheSeam {
     /// A pre-built cache, used as-is.
     Ready(Arc<dyn vertex_swarm_api::SwarmLocalStore>),
@@ -236,9 +247,11 @@ pub(crate) enum CacheSeam {
     Factory(CacheFactory),
 }
 
-/// A reserve override supplied through the builder. With no seam the storer
-/// launch path builds the default admission-gated [`DbReserve`] over the shared
-/// database.
+/// A reserve override supplied through the builder.
+///
+/// Mirrors [`CacheSeam`] for the storer reserve view. When no seam is supplied
+/// the storer launch path builds the default admission-gated [`DbReserve`] over
+/// the shared database.
 pub(crate) enum ReserveSeam {
     /// A pre-built reserve, used as-is.
     Ready(Arc<dyn vertex_swarm_api::ReserveStore>),
@@ -247,6 +260,9 @@ pub(crate) enum ReserveSeam {
 }
 
 /// Builds a cache from the opened shared database (if any).
+///
+/// The database handle is `RedbDatabase`-typed; this crate is native-only (see
+/// the crate-root docs), so the factory is always available.
 pub(crate) type CacheFactory = Box<
     dyn FnOnce(
             Option<Arc<RedbDatabase>>,
@@ -288,6 +304,19 @@ struct ClientNodeParts {
     /// The node's local store, erased to the trait; the storer wires this same
     /// instance into its components so retrieval and storage share one store.
     store: Arc<dyn vertex_swarm_api::SwarmLocalStore>,
+}
+
+/// Wire the pseudosettle provider when the mode enables it. The caller adds swap
+/// afterwards, so `Both` ends up pseudosettle-then-swap.
+fn with_default_settlement<P>(
+    builder: AccountingBuilder<DefaultBandwidthConfig, P>,
+    bandwidth: &DefaultBandwidthConfig,
+) -> AccountingBuilder<DefaultBandwidthConfig, P> {
+    if SwarmAccountingConfig::mode(bandwidth).pseudosettle_enabled() {
+        builder.with_settlement(PseudosettleProvider::new(bandwidth.clone()))
+    } else {
+        builder
+    }
 }
 
 /// Shared launch path for the client- and storer-backed node types.
@@ -347,6 +376,10 @@ async fn build_client_backed_node(
     let accounting_builder = AccountingBuilder::new(params.bandwidth.clone())
         .with_pricer_from_config(Arc::clone(params.spec))
         .with_reporter(Arc::clone(&reporter));
+
+    // Pseudosettle before swap, so settlement tries time-based forgiveness first.
+    let accounting_builder = with_default_settlement(accounting_builder, params.bandwidth);
+
     #[cfg(feature = "swap")]
     let accounting = match swap_provider {
         Some(provider) => accounting_builder
@@ -503,7 +536,10 @@ impl SwarmLaunchConfig for ClientConfig {
     }
 }
 
-/// Build a client node. `cache == None` builds the default in-memory cache, no
+/// Build a client node, optionally overriding the cache through a builder seam.
+///
+/// `cache == None` reproduces the default cache: a byte-bounded in-memory
+/// [`vertex_swarm_localstore::ChunkStore`] sized from the local-store config, no
 /// reserve, so every pushsync relays and the opened database handle is ignored.
 pub(crate) async fn build_client(
     config: ClientConfig,
@@ -540,8 +576,12 @@ pub(crate) async fn build_client(
     Ok((parts.task, providers))
 }
 
-/// Resolve a client cache seam into the internal store factory. A client never
-/// has a reserve, so the reserve view is always `None`.
+/// Resolve a client cache seam into the internal store factory.
+///
+/// With no seam the factory builds the default in-memory cache sized from the
+/// config; a `Ready` seam returns the supplied cache verbatim; a `Factory` seam
+/// is invoked at build time with the opened shared database. A client never has a
+/// reserve, so the reserve view is always `None`.
 fn client_store_factory(
     cache: Option<CacheSeam>,
     cache_budget_bytes: u64,
@@ -569,7 +609,8 @@ fn client_store_factory(
     }
 }
 
-/// The default client cache: a byte-bounded in-memory LRU sized from the config.
+/// The default client cache: a byte-bounded in-memory LRU sized from the
+/// local-store config, erased to the local-store trait.
 fn default_cache(
     cache_budget_bytes: u64,
     soc_cache_ttl: u64,
@@ -597,16 +638,22 @@ impl SwarmLaunchConfig for StorerConfig {
     }
 }
 
-/// Shared return type for the seam-aware entrypoint and the trait impl.
+/// The storer providers, named so the seam-aware entrypoint and the trait impl
+/// share one return type.
 type StorerProviders = StorerComponents<
     TopologyHandle<Arc<Identity>>,
     VerifiedChunkProvider,
     Arc<dyn vertex_swarm_api::SwarmLocalStore>,
 >;
 
-/// Build a storer node. Both `None` uses the default admission-gated [`DbReserve`]
-/// as both reserve and local store; a reserve seam replaces the reserve, a cache
-/// seam replaces only the local-store view.
+/// Build a storer node, optionally overriding the cache and reserve through
+/// builder seams.
+///
+/// Both `None` reproduces the default: the admission-gated [`DbReserve`] over the
+/// shared database serves as both the reserve (pushsync ingest) and the local
+/// store (retrieval and components). A reserve seam replaces that reserve; a
+/// cache seam replaces only the local-store view, leaving the reserve view to the
+/// supplied or default reserve.
 pub(crate) async fn build_storer(
     config: StorerConfig,
     ctx: &dyn InfrastructureContext,
@@ -644,8 +691,10 @@ pub(crate) async fn build_storer(
 }
 
 /// Resolve a storer's cache and reserve seams into the internal store factory.
-/// The resolved reserve is the local store unless a cache seam supplies a
-/// separate local-store view.
+///
+/// With no reserve seam the default admission-gated reserve is built over the
+/// shared database. The resolved reserve is the local store unless a cache seam
+/// supplies a separate local-store view.
 fn storer_store_factory(
     cache: Option<CacheSeam>,
     reserve: Option<ReserveSeam>,
@@ -653,11 +702,14 @@ fn storer_store_factory(
     capacity: u64,
 ) -> StoreFactory<'static> {
     Box::new(move |db| {
+        // Resolve the reserve view, then the local-store view. With no cache
+        // seam the reserve is the local store, so the default path reuses the
+        // single `DbReserve` that `build_storer_reserve` erases to both views.
         let reserve: Arc<dyn vertex_swarm_api::ReserveStore> = match reserve {
             None => {
                 let store = build_storer_reserve(db.clone(), &identity, capacity)?;
-                // With no cache seam the reserve is already the local store, so
-                // return the paired views as-is.
+                // No cache seam: the reserve is already the local store, so return
+                // the paired views as-is without splitting them back apart.
                 if cache.is_none() {
                     return Ok(store);
                 }
@@ -668,6 +720,8 @@ fn storer_store_factory(
             Some(ReserveSeam::Ready(reserve)) => reserve,
             Some(ReserveSeam::Factory(factory)) => factory(db.clone())?,
         };
+        // A cache seam overrides the local-store view; otherwise the reserve is
+        // the local store.
         let local: Arc<dyn vertex_swarm_api::SwarmLocalStore> = match cache {
             None => Arc::clone(&reserve) as Arc<dyn vertex_swarm_api::SwarmLocalStore>,
             Some(CacheSeam::Ready(local)) => local,
@@ -921,6 +975,49 @@ mod tests {
         assert!(after < baseline, "violation must lower the score");
     }
 
+    /// Client and storer both get a pseudosettle provider; a `None` mode wires none.
+    #[test]
+    fn default_settlement_wires_pseudosettle_per_node_type() {
+        let identity = test_identity_arc();
+
+        let build = |node_type| {
+            let bandwidth = DefaultBandwidthConfig::for_node_type(node_type);
+            let builder = AccountingBuilder::new(bandwidth.clone())
+                .with_pricer_from_config(identity.spec().clone());
+            with_default_settlement(builder, &bandwidth)
+                .build(&identity)
+                .bandwidth()
+                .provider_names()
+                .iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+        };
+
+        // Both carry pseudosettle; swap is wired separately and not exercised here.
+        assert_eq!(
+            build(SwarmNodeType::Client),
+            vec!["pseudosettle".to_string()]
+        );
+        assert_eq!(
+            build(SwarmNodeType::Storer),
+            vec!["pseudosettle".to_string()]
+        );
+
+        // A `None` mode wires no settlement provider at all.
+        let none_bandwidth = DefaultBandwidthConfig::for_node_type(SwarmNodeType::Bootnode);
+        assert_eq!(none_bandwidth.mode(), vertex_swarm_api::BandwidthMode::None);
+        let none_builder = AccountingBuilder::new(none_bandwidth.clone())
+            .with_pricer_from_config(identity.spec().clone());
+        assert!(
+            with_default_settlement(none_builder, &none_bandwidth)
+                .build(&identity)
+                .bandwidth()
+                .provider_names()
+                .is_empty(),
+            "a None mode must wire no settlement provider"
+        );
+    }
+
     /// The storer factory builds the admission-gated reserve, not the cache-only
     /// client store: a put for an unknown batch is rejected, proving admission is
     /// wired. The full admissible-put path is covered by the reserve crate.
@@ -981,6 +1078,8 @@ mod tests {
         );
     }
 
+    /// With no seam the client factory builds the default in-memory cache sized
+    /// from the supplied budget, accepts a content chunk, and exposes no reserve.
     #[test]
     fn client_factory_default_builds_a_working_cache() {
         use nectar_primitives::{AnyChunk, ContentChunk};
@@ -1007,6 +1106,8 @@ mod tests {
         );
     }
 
+    /// A `with_cache` seam is used verbatim: the same `Arc` reaches the node
+    /// store, no default cache is built.
     #[test]
     fn client_factory_honors_a_ready_cache_seam() {
         let cache: Arc<dyn vertex_swarm_api::SwarmLocalStore> = Arc::new(
@@ -1021,9 +1122,12 @@ mod tests {
         assert!(node_store.reserve.is_none());
     }
 
+    /// A `with_reserve` seam is used as both the reserve and, with no cache seam,
+    /// the local-store view.
     #[test]
     fn storer_factory_honors_a_ready_reserve_seam() {
         let identity = test_identity_arc();
+        // Build a real reserve to use as the seam value.
         let seam_reserve = build_storer_reserve(None, &identity, 1 << 12)
             .expect("reserve builds")
             .reserve
@@ -1041,8 +1145,9 @@ mod tests {
             Arc::ptr_eq(&seam_reserve, &reserve),
             "the supplied reserve must reach the node store unchanged"
         );
-        // With no cache seam reserve and local share one allocation: the count is
-        // reserve + local + the seam handle still held here.
+        // With no cache seam the reserve is the local store: both views point at
+        // the one allocation, so the strong count counts reserve, local, and the
+        // seam handle still held here.
         assert_eq!(
             Arc::strong_count(&reserve),
             3,
@@ -1050,5 +1155,6 @@ mod tests {
         );
     }
 
+    /// Test SOC cache TTL: any non-zero value works for the cache-shape tests.
     const DEFAULT_SOC_CACHE_TTL_NS_TEST: u64 = vertex_swarm_localstore::DEFAULT_SOC_CACHE_TTL_NS;
 }
