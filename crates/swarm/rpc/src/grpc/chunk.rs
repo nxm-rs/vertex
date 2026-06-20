@@ -15,29 +15,19 @@ use vertex_swarm_stream::{
     get_stream_from, parse_address,
 };
 
-/// Whether the chunk service trusts a caller's per-request `validate` flag or
-/// always validates the postage stamp signature on upload.
-///
-/// The `validate` flag on an upload request is caller-controlled, so on a
-/// publicly reachable endpoint a caller could set `validate = false` and have
-/// the node forward a chunk carrying an unverified (or forged) stamp. This
-/// policy moves that decision server-side: a public endpoint enforces
-/// validation; a private/trusted endpoint may honour the per-request flag.
-/// Embedded callers (FFI, wasm) trust the implementer and do not pass through
-/// this service, so they keep honouring their own flag.
+/// Server-side policy for the caller-controlled per-request `validate` flag. A
+/// public endpoint must not let a caller skip stamp-signature validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StampValidation {
-    /// Always validate the stamp signature, ignoring the request's `validate`
-    /// flag. The safe default for a publicly reachable gRPC endpoint.
+    /// Always validate, ignoring the request flag. Default for public endpoints.
     #[default]
     Enforce,
-    /// Honour the request's `validate` flag (trust by default, opt in to
-    /// validation). For a private or otherwise trusted endpoint.
+    /// Honour the request's `validate` flag. For trusted/private endpoints.
     PerRequest,
 }
 
 impl StampValidation {
-    /// The effective validate decision for a request whose flag is `requested`.
+    /// Effective validate decision for a request whose flag is `requested`.
     #[must_use]
     pub fn resolve(self, requested: bool) -> bool {
         match self {
@@ -54,9 +44,7 @@ pub struct ChunkService<P> {
 }
 
 impl<P> ChunkService<P> {
-    /// Create a new chunk service. Defaults to [`StampValidation::Enforce`]: a
-    /// gRPC endpoint validates stamps unless an operator opts into trusting the
-    /// per-request flag via [`Self::with_stamp_validation`].
+    /// Defaults to [`StampValidation::Enforce`].
     pub fn new(provider: P) -> Self {
         Self {
             provider,
@@ -64,8 +52,6 @@ impl<P> ChunkService<P> {
         }
     }
 
-    /// Set the stamp-validation policy (e.g. [`StampValidation::PerRequest`] for
-    /// a trusted/private endpoint).
     #[must_use]
     pub fn with_stamp_validation(mut self, stamp_validation: StampValidation) -> Self {
         self.stamp_validation = stamp_validation;
@@ -73,16 +59,13 @@ impl<P> ChunkService<P> {
     }
 }
 
-/// Parse a 32-byte chunk address, mapping the core [`parse_address`] error to a
-/// gRPC `invalid_argument` status.
 #[allow(clippy::result_large_err)]
 fn parse_chunk_address(bytes: &[u8]) -> Result<ChunkAddress, Status> {
     parse_address(bytes).map_err(|e| Status::invalid_argument(e.to_string()))
 }
 
-/// Build a [`StampedChunk`] from an upload request: the bytes self-validate
-/// against the supplied address (an address that does not match the bytes is
-/// rejected, which also pins the chunk variant).
+/// Build a [`StampedChunk`], rejecting bytes that do not hash to the supplied
+/// address (which also pins the chunk variant).
 #[allow(clippy::result_large_err)]
 fn parse_stamped_chunk(req: &UploadChunkRequest) -> Result<StampedChunk, Status> {
     let address = parse_chunk_address(&req.address)?;
@@ -95,8 +78,7 @@ fn parse_stamped_chunk(req: &UploadChunkRequest) -> Result<StampedChunk, Status>
     })
 }
 
-/// Map a unary retrieval failure to a gRPC status: absence becomes `not_found`,
-/// all else `internal`.
+/// Absence becomes `not_found`, all else `internal`.
 #[allow(clippy::result_large_err)]
 fn retrieval_status(error: &SwarmError) -> Status {
     match error {
@@ -107,7 +89,6 @@ fn retrieval_status(error: &SwarmError) -> Status {
     }
 }
 
-/// A successful retrieval response carrying the chunk and its address.
 fn retrieved_response(
     address: ChunkAddress,
     data: Vec<u8>,
@@ -124,8 +105,8 @@ fn retrieved_response(
     }
 }
 
-/// A per-address retrieval failure response. `address` is the raw requested
-/// bytes, echoed for correlation (even when they failed to parse).
+/// `address` is the raw requested bytes, echoed for correlation even when they
+/// failed to parse.
 fn retrieve_error(address: Vec<u8>, message: String) -> RetrieveChunkResponse {
     RetrieveChunkResponse {
         result: Some(retrieve_chunk_response::Result::Error(ChunkError {
@@ -135,9 +116,6 @@ fn retrieve_error(address: Vec<u8>, message: String) -> RetrieveChunkResponse {
     }
 }
 
-/// Map a verified download item onto the wire response, carrying the real
-/// `served_by` the streaming retrieve path now threads through (previously
-/// emitted empty).
 fn verified_response(address: ChunkAddress, verified: VerifiedChunk) -> RetrieveChunkResponse {
     let served_by = verified.served_by().as_bytes().to_vec();
     let (chunk, stamp) = verified.into_parts();
@@ -149,7 +127,6 @@ fn verified_response(address: ChunkAddress, verified: VerifiedChunk) -> Retrieve
     )
 }
 
-/// A successful upload receipt response carrying the chunk address.
 fn receipt_response(address: ChunkAddress, receipt: PushReceipt) -> UploadChunkResponse {
     let PushReceipt {
         storer,
@@ -169,8 +146,8 @@ fn receipt_response(address: ChunkAddress, receipt: PushReceipt) -> UploadChunkR
     }
 }
 
-/// A per-chunk upload failure response. `address` is the raw request bytes,
-/// echoed for correlation (even when they failed to parse).
+/// `address` is the raw request bytes, echoed for correlation even when they
+/// failed to parse.
 fn upload_error(address: Vec<u8>, message: String) -> UploadChunkResponse {
     UploadChunkResponse {
         result: Some(upload_chunk_response::Result::Error(ChunkError {
@@ -192,8 +169,7 @@ impl<P: ChunkClient> Chunk for ChunkService<P> {
         let req = request.into_inner();
         let address = parse_chunk_address(&req.address)?;
 
-        // Verify-by-default: `get` proves the bytes answer the address before
-        // responding, so a wrong-bytes delivery errors instead of returning.
+        // `get` verifies the bytes answer the address, so wrong bytes error.
         match self.provider.get(address).await {
             Ok(verified) => Ok(Response::new(verified_response(address, verified))),
             Err(e) => Err(retrieval_status(&e)),
@@ -221,8 +197,6 @@ impl<P: ChunkClient> Chunk for ChunkService<P> {
         let address = parse_chunk_address(&req.address)?;
         let stamped = parse_stamped_chunk(&req)?;
 
-        // The endpoint's policy resolves the effective decision from the caller's
-        // flag: a public endpoint (Enforce) always validates the stamp.
         let validate = self.stamp_validation.resolve(req.validate);
         let receipt = self
             .provider
@@ -235,13 +209,10 @@ impl<P: ChunkClient> Chunk for ChunkService<P> {
 
     type UploadChunksStream = ResponseStream<UploadChunkResponse>;
 
-    /// Upload a stream of pre-stamped chunks; receipts return in completion
-    /// order, each carrying its address. A per-chunk failure is one error item,
-    /// not a teardown.
-    ///
-    /// Pushes are driven directly off the inbound stream via `buffer_unordered`,
-    /// which pulls a new request only as a push slot frees, so server memory is
-    /// bounded by the concurrency, not by the (untrusted) request count.
+    /// Receipts return in completion order; a per-chunk failure is one error
+    /// item, not a teardown. `buffer_unordered` pulls a new request only as a
+    /// push slot frees, bounding server memory by the concurrency rather than
+    /// the untrusted request count.
     async fn upload_chunks(
         &self,
         request: Request<Streaming<UploadChunkRequest>>,
@@ -257,11 +228,9 @@ impl<P: ChunkClient> Chunk for ChunkService<P> {
                     let req = item.map_err(|status| {
                         Status::internal(format!("inbound stream error: {status}"))
                     })?;
-                    // Apply the endpoint policy, same as the unary RPC.
                     let validate = stamp_validation.resolve(req.validate);
                     Ok(match parse_stamped_chunk(&req) {
-                        // Echo the raw requested bytes so a malformed address is
-                        // still correlatable by the client.
+                        // Echo the raw bytes so a malformed address stays correlatable.
                         Err(status) => upload_error(req.address, status.message().to_string()),
                         Ok(stamped) => {
                             let address = *stamped.address();
@@ -280,41 +249,23 @@ impl<P: ChunkClient> Chunk for ChunkService<P> {
 
     type RetrieveChunksStream = ResponseStream<RetrieveChunkResponse>;
 
-    /// Retrieve a stream of chunks by address; responses return in completion
-    /// order, each carrying its address and its serving overlay. A per-address
-    /// failure is one error item, not a teardown.
-    ///
-    /// Valid addresses route through the core [`get_stream_from`], so this path
-    /// shares one bounded, verify-by-default prefetch with the FFI and wasm
-    /// download paths instead of a hand-rolled `buffer_unordered`. The native
-    /// preset keeps enough forwarding retrievals in flight to saturate a bulk
-    /// download. Malformed addresses and inbound-stream errors are emitted as
-    /// their own error items, interleaved with the verified deliveries.
+    /// Per-address failure is one error item, not a teardown. Valid addresses
+    /// route through the bounded, verify-by-default [`get_stream_from`] prefetch
+    /// shared with the FFI and wasm download paths; malformed addresses and
+    /// inbound-stream errors interleave as their own error items.
     async fn retrieve_chunks(
         &self,
         request: Request<Streaming<RetrieveChunkRequest>>,
     ) -> Result<Response<Self::RetrieveChunksStream>, Status> {
         let inbound = request.into_inner();
 
-        // Malformed addresses and inbound-stream errors are not addresses the
-        // core can retrieve, but must still surface as their own error items
-        // rather than tear the stream down. They go onto this channel as a side
-        // effect of parsing, and are interleaved with the core's deliveries
-        // below.
-        //
-        // The channel is *bounded*: malformed requests never occupy a core
-        // prefetch slot, so an unbounded channel would let a client streaming
-        // nothing but bad requests faster than the consumer drains responses
-        // grow the heap without limit (the core's prefetch only gates valid
-        // addresses). A bounded channel makes `send` park the parser when the
-        // consumer is slow, which transitively pauses the inbound reads, capping
-        // buffered errors at the same chunk-count order as the valid-address
-        // prefetch.
+        // Side channel for errors that never reach the prefetch (malformed
+        // bytes, inbound errors). Bounded so a flood of bad requests cannot
+        // outrun a slow consumer: `send` parks the parser, back-pressuring the
+        // inbound reads.
         let (err_tx, err_rx) =
             tokio::sync::mpsc::channel::<RetrieveChunkResponse>(NATIVE_DOWNLOAD_CONCURRENCY);
 
-        // Parse the inbound feed into the core's address source, diverting every
-        // non-address (malformed bytes, inbound error) onto the error channel.
         let addresses = inbound.filter_map(move |item| {
             let err_tx = err_tx.clone();
             async move {
@@ -330,7 +281,6 @@ impl<P: ChunkClient> Chunk for ChunkService<P> {
                     }
                     Ok(req) => match parse_chunk_address(&req.address) {
                         Ok(address) => Some(address),
-                        // Echo the raw requested bytes for client-side correlation.
                         Err(status) => {
                             let _ = err_tx
                                 .send(retrieve_error(req.address, status.message().to_string()))
@@ -342,8 +292,6 @@ impl<P: ChunkClient> Chunk for ChunkService<P> {
             }
         });
 
-        // Valid addresses route through the core: one bounded, verify-by-default
-        // prefetch shared with the FFI and wasm download paths.
         let verified = get_stream_from(
             self.provider.clone(),
             addresses,
@@ -361,8 +309,8 @@ impl<P: ChunkClient> Chunk for ChunkService<P> {
 
     type HasChunksStream = ResponseStream<HasChunkResponse>;
 
-    /// Stream existence checks. `has_chunk` is a local sync lookup, so each
-    /// request maps straight to a response carrying its address.
+    /// `has_chunk` is a local sync lookup, so each request maps straight to a
+    /// response.
     async fn has_chunks(
         &self,
         request: Request<Streaming<HasChunkRequest>>,
@@ -392,7 +340,6 @@ mod tests {
     use super::*;
     use crate::proto::chunk::ChunkType;
 
-    /// Build a content chunk and return its wire encoding plus address.
     fn content_wire(data: &[u8]) -> (Vec<u8>, ChunkAddress) {
         let chunk: ContentChunk = ContentChunk::new(data.to_vec()).expect("valid content chunk");
         let address = *chunk.address();
@@ -455,8 +402,6 @@ mod tests {
 
     #[test]
     fn stamp_validation_resolves_per_policy() {
-        // Enforce always validates, ignoring the caller's flag; PerRequest
-        // honours it. The default is the safe Enforce.
         assert!(StampValidation::Enforce.resolve(false));
         assert!(StampValidation::Enforce.resolve(true));
         assert!(!StampValidation::PerRequest.resolve(false));
@@ -464,10 +409,8 @@ mod tests {
         assert_eq!(StampValidation::default(), StampValidation::Enforce);
     }
 
-    /// Streaming retrieve now threads the serving overlay through: a verified
-    /// item maps onto the wire response with a populated `served_by`, where the
-    /// streaming path previously emitted it empty. This drives the same
-    /// `get_stream_from` core the RPC routes through.
+    /// A verified item maps onto the wire response with a populated `served_by`,
+    /// driving the same `get_stream_from` core the RPC routes through.
     #[tokio::test]
     async fn retrieve_chunks_emits_served_by() {
         use vertex_swarm_api::{ChunkRetrievalResult, OverlayAddress, SwarmResult};
@@ -475,7 +418,6 @@ mod tests {
 
         const SERVED_BY: [u8; 32] = [0x5b; 32];
 
-        /// Provider serving one known content chunk from a fixed overlay.
         #[derive(Clone)]
         struct OneChunkProvider {
             chunk: AnyChunk,
@@ -505,8 +447,6 @@ mod tests {
             chunk: AnyChunk::Content(content),
         };
 
-        // Route a single address through the very core `retrieve_chunks` uses,
-        // then map it the same way the RPC does.
         let mut out = get_stream_from(
             provider,
             futures::stream::iter(vec![address]),

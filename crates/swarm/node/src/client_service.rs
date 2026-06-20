@@ -1,8 +1,6 @@
-//! Client service for managing network interactions.
+//! Client service bridging business logic and the network layer.
 //!
-//! The `ClientService` bridges the business logic layer with the network layer.
-//! It owns channels to communicate with `ClientBehaviour` and processes
-//! incoming events.
+//! Owns channels to `ClientBehaviour` and processes incoming events.
 
 use std::sync::Arc;
 
@@ -18,9 +16,7 @@ use vertex_tasks::{GracefulShutdown, SpawnableTask};
 use crate::protocol::{ClientCommand, ClientEvent, FailureKind};
 use crate::throttle::{ProtocolKind, SelfThrottle};
 
-/// Report source label for retrieval-protocol peer scoring.
 const RETRIEVAL_SOURCE: ReportSource = ReportSource::Protocol("retrieval");
-/// Report source label for pushsync-protocol peer scoring.
 const PUSHSYNC_SOURCE: ReportSource = ReportSource::Protocol("pushsync");
 
 pub(crate) const DEFAULT_CHANNEL_CAPACITY: usize = 256;
@@ -28,35 +24,25 @@ pub(crate) const DEFAULT_CHANNEL_CAPACITY: usize = 256;
 /// Handle for sending commands to the network layer.
 ///
 /// Request methods ([`Self::retrieve_chunk`], [`Self::push_chunk`]) thread a
-/// response channel through the command into the per-connection handler, so
-/// each outbound request is a self-contained future: the substream that
-/// carries the request is the correlation, and no shared rendezvous state
-/// exists. Concurrent requests for the same chunk address never collide, so
-/// callers may freely race the same address across peers.
-/// Outbound self-throttle shared by both chunk-transfer protocols.
-///
-/// When set, [`ClientHandle::retrieve_chunk`] and [`ClientHandle::push_chunk`]
-/// pace themselves under the remote peer's pseudosettle allowance before the
-/// request is dispatched. Without it, requests dispatch immediately, exactly as
-/// before the throttle existed (and as the unit tests rely on).
+/// response channel through the command into the per-connection handler, so each
+/// outbound request is a self-contained future correlated by its substream with
+/// no shared rendezvous state. Concurrent requests for the same chunk address
+/// never collide, so callers may race the same address across peers.
 #[derive(Clone)]
 pub struct ClientHandle {
     command_tx: mpsc::Sender<ClientCommand>,
+    /// When set, requests pace themselves under the peer's pseudosettle
+    /// allowance before dispatch.
     throttle: Option<Arc<SelfThrottle>>,
 }
 
 /// Result of a chunk retrieval.
 ///
-/// The chunk is address-validated at decode (BMT hash for content, owner plus
-/// signature for single-owner), so it answers the request regardless of the
-/// stamp. The stamp is optional: a storer answers a retrieval with the chunk
-/// bytes and may omit the stamp from the delivery, which is never re-read on
-/// this path. A stampless chunk is served to the caller; a stampless content
-/// chunk is also cached by address (content is immutable), while a retrieved
-/// single-owner chunk is never cached (it has no version signal).
+/// The chunk is address-validated at decode, so it answers the request
+/// regardless of the stamp. The stamp is optional: a storer may omit it from the
+/// delivery, and it is never re-read on this path.
 #[derive(Debug)]
 pub struct RetrievalResult {
-    /// The retrieved chunk.
     pub chunk: AnyChunk,
     /// The postage stamp the responder attached, if any.
     pub stamp: Option<Stamp>,
@@ -66,43 +52,32 @@ pub struct RetrievalResult {
 
 /// Outcome error shared by both chunk transfer operations.
 ///
-/// Both [`ClientHandle::retrieve_chunk`] (get) and
-/// [`ClientHandle::push_chunk`] (put) resolve through this single type. Most
-/// variants are operation-agnostic and can surface from either path; the two
-/// operation-specific variants are called out below.
+/// Both [`ClientHandle::retrieve_chunk`] and [`ClientHandle::push_chunk`]
+/// resolve through this type; most variants surface from either path.
 #[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum ChunkTransferError {
-    // Shared variants: either a get or a put can produce these.
-    /// Channel closed.
     #[error("Network channel closed")]
     ChannelClosed,
-    /// The target peer has no active connection.
     #[error("Peer not connected")]
     NotConnected,
-    /// Request cancelled.
     #[error("Request cancelled")]
     Cancelled,
-    /// The request was dispatched but the peer did not complete it within the
-    /// per-protocol deadline (`retrieval_timeout` for a get, `pushsync_timeout`
-    /// for a put). This is the liveness boundary against a withholding peer: the
-    /// outbound substream's upgrade timeout fires and the attempt resolves here
-    /// rather than hanging. It is retryable (see [`Self::is_retryable`]): another
-    /// candidate may answer promptly.
+    /// The peer did not complete the request within the per-protocol deadline
+    /// (`retrieval_timeout` / `pushsync_timeout`). The liveness boundary against
+    /// a withholding peer; retryable against another candidate.
     #[error("Request timed out")]
     TimedOut,
-    /// Local protocol failure (dial, stream, or an inactive handler). Failures
-    /// reported by the remote peer are carried by [`Self::Remote`] instead.
+    /// Local protocol failure (dial, stream, or inactive handler). Remote-side
+    /// failures are carried by [`Self::Remote`].
     #[error("Protocol error: {0}")]
     Protocol(String),
-    /// The remote peer reported a failure (a retrieval error delivery or a
-    /// non-success pushsync receipt). The reason is intentionally not carried:
-    /// the remote's error string is adversarial input we never read.
+    /// The remote reported a failure. The reason is not carried: the remote's
+    /// error string is adversarial input we never read.
     #[error("Remote peer reported a failure")]
     Remote,
 
-    // Retrieval-specific: only a get produces this.
-    /// Chunk not found.
+    /// Retrieval only.
     #[error("Chunk not found: {0}")]
     NotFound(ChunkAddress),
 }
@@ -110,15 +85,10 @@ pub enum ChunkTransferError {
 impl ChunkTransferError {
     /// Whether retrying the request against another candidate may succeed.
     ///
-    /// A timeout, a remote-reported failure, or a transient local protocol
-    /// error are all worth retrying on a fresh peer: a different candidate may
-    /// hold the chunk and answer within the deadline. A cancelled or
+    /// Timeout, remote failure, transient protocol error, and not-found are
+    /// retryable (another candidate may hold the chunk); a cancelled or
     /// channel-closed request reflects a local teardown that another attempt
-    /// cannot fix, and a not-found is the chunk's own absence at the queried
-    /// peer (still potentially elsewhere, so the get path races other
-    /// candidates regardless). The classification exists so callers route a
-    /// withholding peer's `TimedOut` to the next candidate rather than treating
-    /// it as terminal.
+    /// cannot fix.
     pub fn is_retryable(&self) -> bool {
         match self {
             Self::TimedOut | Self::Remote | Self::Protocol(_) | Self::NotFound(_) => true,
@@ -128,7 +98,7 @@ impl ChunkTransferError {
 }
 
 impl ClientHandle {
-    /// Create a new client handle without outbound self-throttling.
+    /// Create a handle without outbound self-throttling.
     pub fn new(command_tx: mpsc::Sender<ClientCommand>) -> Self {
         Self {
             command_tx,
@@ -144,9 +114,10 @@ impl ClientHandle {
         self
     }
 
-    /// Send a command to the network layer (non-blocking).
+    /// Send a command to the network layer.
     ///
-    /// Uses `try_send` because callers (e.g. the libp2p event loop) must not block.
+    /// Non-blocking `try_send`: callers such as the libp2p event loop must not
+    /// block.
     pub fn send_command(&self, command: ClientCommand) -> Result<(), ChunkTransferError> {
         self.command_tx.try_send(command).map_err(|e| match e {
             mpsc::error::TrySendError::Full(_) => {
@@ -160,17 +131,13 @@ impl ClientHandle {
 
     /// Retrieve a chunk from a specific peer.
     ///
-    /// Sends a retrieval command carrying the response channel and waits for
-    /// the outcome. The request is self-contained: any failure on the path
-    /// (peer not connected, queue overflow, substream error, disconnect)
-    /// resolves or drops the channel, so this future never hangs.
+    /// Any failure on the path resolves or drops the response channel, so this
+    /// future never hangs.
     pub async fn retrieve_chunk(
         &self,
         peer: OverlayAddress,
         address: ChunkAddress,
     ) -> Result<RetrievalResult, ChunkTransferError> {
-        // Pace ourselves under the peer's pseudosettle allowance before issuing
-        // the request, so a burst does not trip the remote's refuse threshold.
         if let Some(throttle) = &self.throttle {
             throttle
                 .acquire(peer, address, ProtocolKind::Retrieval)
@@ -190,11 +157,9 @@ impl ClientHandle {
 
     /// Push a stamped chunk to a specific peer.
     ///
-    /// Sends a push command carrying the response channel and waits for the
-    /// storer's [`Receipt`]. Same failure semantics as [`Self::retrieve_chunk`]:
-    /// the future never hangs. The receipt is already storer-verified (the decode
-    /// boundary rejects an unrecoverable receipt), so an `Ok` here always carries
-    /// a recovered storer.
+    /// Same failure semantics as [`Self::retrieve_chunk`]. The returned
+    /// [`Receipt`] is storer-verified at the decode boundary, so an `Ok` here
+    /// always carries a recovered storer.
     pub async fn push_chunk(
         &self,
         peer: OverlayAddress,
@@ -202,8 +167,6 @@ impl ClientHandle {
     ) -> Result<Receipt, ChunkTransferError> {
         let address = *chunk.address();
 
-        // Pace ourselves under the peer's pseudosettle allowance before issuing
-        // the push, so a burst does not trip the remote's refuse threshold.
         if let Some(throttle) = &self.throttle {
             throttle
                 .acquire(peer, address, ProtocolKind::Pushsync)
@@ -223,34 +186,24 @@ impl ClientHandle {
     }
 }
 
-/// Client service that processes network events.
-///
-/// This is the business logic layer that handles `ClientEvent` from the network.
+/// Business-logic layer that processes `ClientEvent`s from the network.
 pub struct ClientService {
-    /// Handle for sending commands.
     handle: ClientHandle,
-    /// Event receiver from the network.
     event_rx: mpsc::Receiver<ClientEvent>,
-    /// Optional peer scoring authority. Retrieval and pushsync outcomes feed
-    /// it so honest peers climb and misbehaving peers are scored down.
-    /// Best-effort: without a reporter, outcomes only surface as logs.
+    /// Peer scoring authority fed by retrieval and pushsync outcomes.
+    /// Best-effort: without it, outcomes only surface as logs.
     reporter: Option<Arc<dyn PeerReporter>>,
-    /// Optional client cache. The service caches the client's own successful
-    /// retrieval of a content chunk here (immutable, served indefinitely, with or
-    /// without a stamp), so a later request can serve it from the cache. A
-    /// retrieved single-owner chunk is never cached: it has no version signal and
-    /// could serve a stale revision.
+    /// Client cache for the node's own retrieval deliveries. Content chunks are
+    /// cached; single-owner chunks are not (no version signal).
     store: Option<Arc<dyn SwarmLocalStore>>,
-    /// Optional outbound self-throttle, shared with the client handle. On
-    /// disconnect the service clears the peer's bucket so memory does not grow
-    /// with the count of distinct peers seen and a reconnect starts fresh.
+    /// Outbound self-throttle shared with the handle; cleared per peer on
+    /// disconnect so memory does not grow with distinct peers seen.
     throttle: Option<Arc<SelfThrottle>>,
 }
 
 impl ClientService {
-    /// Create a new client service with default channel capacity.
-    ///
-    /// Returns the service and a sender for events (to be used by the network layer).
+    /// Create a service with default channel capacity, returning the service, an
+    /// event sender for the network layer, and a command handle.
     pub fn new() -> (Self, mpsc::Sender<ClientEvent>, ClientHandle) {
         let (command_tx, _command_rx) = mpsc::channel(DEFAULT_CHANNEL_CAPACITY);
         let (event_tx, event_rx) = mpsc::channel(DEFAULT_CHANNEL_CAPACITY);
@@ -268,9 +221,8 @@ impl ClientService {
         (service, event_tx, handle)
     }
 
-    /// Create with explicit channels.
-    ///
-    /// Use this when the network layer creates the command channel.
+    /// Create with explicit channels, for when the network layer owns the
+    /// command channel.
     pub fn with_channels(
         command_tx: mpsc::Sender<ClientCommand>,
         event_rx: mpsc::Receiver<ClientEvent>,
@@ -289,9 +241,6 @@ impl ClientService {
     }
 
     /// Attach a peer reporter so retrieval and pushsync outcomes feed scoring.
-    ///
-    /// Reporting is best-effort and non-blocking. Without a reporter, outcomes
-    /// only surface as logs, exactly as before.
     #[must_use]
     pub fn with_reporter(mut self, reporter: Arc<dyn PeerReporter>) -> Self {
         self.reporter = Some(reporter);
@@ -301,23 +250,20 @@ impl ClientService {
     /// Attach the client cache so the service caches its own retrieval
     /// deliveries.
     ///
-    /// A content chunk resolved from one of our own outbound retrievals is cached
-    /// here (immutable, served indefinitely, with or without a stamp). A
-    /// single-owner chunk is never cached from retrieval, since a stampless SOC
-    /// has no version signal and could serve a stale revision. Without a store,
-    /// deliveries are not cached and a repeat request always hits the network.
+    /// Content chunks are cached by address (immutable); single-owner chunks are
+    /// not, since a stampless SOC has no version signal and could serve a stale
+    /// revision.
     #[must_use]
     pub fn with_store(mut self, store: Arc<dyn SwarmLocalStore>) -> Self {
         self.store = Some(store);
         self
     }
 
-    /// Attach the outbound self-throttle so the service clears a peer's bucket
-    /// on disconnect.
+    /// Attach the outbound self-throttle so the service clears a peer's bucket on
+    /// disconnect.
     ///
-    /// This must be the same [`SelfThrottle`] instance attached to the
-    /// [`ClientHandle`] via [`ClientHandle::with_throttle`], so the bucket the
-    /// outbound API paces against is the one cleared here.
+    /// Must be the same [`SelfThrottle`] instance attached to the
+    /// [`ClientHandle`] via [`ClientHandle::with_throttle`].
     #[must_use]
     pub fn with_throttle(mut self, throttle: Arc<SelfThrottle>) -> Self {
         self.throttle = Some(throttle);
@@ -329,7 +275,6 @@ impl ClientService {
         self.handle.clone()
     }
 
-    /// Report a scoring event for a peer if a reporter is configured.
     fn report(&self, peer: &OverlayAddress, event: SwarmScoringEvent, source: ReportSource) {
         if let Some(reporter) = &self.reporter {
             reporter.report_peer(peer, event, source);
@@ -390,15 +335,9 @@ impl ClientService {
                 stamp,
                 latency,
             } => {
-                // The requester is resolved directly by the handler; this
-                // event exists for accounting, peer scoring, and caching. The
-                // chunk was already verified against the requested address at
-                // decode, so an honest delivery raises the peer's score. A
-                // retrieved content chunk (CAC) is immutable, so it is cached by
-                // address (with or without a stamp, exactly as delivered) and a
-                // later request serves it locally. A retrieved SOC is never
-                // cached: it arrives without a version signal and could serve a
-                // stale revision, so it is delivered to the caller only.
+                // The requester is resolved by the handler; this event exists for
+                // accounting, scoring, and caching. Content chunks are cached by
+                // address (immutable); SOCs are not (no version signal).
                 debug!(%peer, %address, ?latency, "Chunk received");
                 if let Some(store) = &self.store
                     && chunk.is_content()
@@ -447,8 +386,8 @@ impl ClientService {
                 address,
                 latency,
             } => {
-                // The pusher is resolved directly by the handler; this event
-                // exists for accounting and peer scoring.
+                // The pusher is resolved by the handler; this event exists for
+                // accounting and scoring.
                 debug!(%peer, %address, ?latency, "Receipt received");
                 self.report(
                     &peer,
@@ -459,9 +398,6 @@ impl ClientService {
 
             ClientEvent::PeerDisconnected { peer_id, overlay } => {
                 debug!(%peer_id, %overlay, "Peer disconnected");
-                // Drop the peer's throttle bucket so memory does not grow with
-                // the count of distinct peers seen and a reconnect starts from a
-                // fresh allowance rather than stale credit.
                 if let Some(throttle) = &self.throttle {
                     throttle.clear(&overlay);
                 }
@@ -489,24 +425,12 @@ impl ClientService {
                 error,
                 kind,
             } => {
-                // The requester is resolved directly by the handler; this
-                // event exists for peer scoring.
-                //
-                // A malformed chunk is invalid data (weight -10): the peer
-                // handed back bytes that failed address/stamp reconstruction,
-                // which is genuine misbehaviour and is scored adversely.
-                //
-                // A plain `Protocol` failure (the remote reported "I don't have
-                // it" / could not forward, a timeout, or a transport error) is
-                // NOT scored: a peer not holding or not forwarding a requested
-                // chunk is the expected, blameless outcome for the vast majority
-                // of peers on any given retrieval, and on a bulk download the
-                // flood of such misses would otherwise decay scores past the
-                // disconnect threshold and prune the peer set (erode Kademlia
-                // depth). The staggered race already steers around an unhelpful
-                // candidate within a request; bee likewise uses a temporary
-                // per-chunk skiplist here, never a connection-killing score
-                // penalty. Only misbehaviour touches the persistent score.
+                // Scoring policy: a malformed chunk is misbehaviour and scored
+                // adversely. A plain `Protocol` failure (miss, timeout, or
+                // transport error) is blameless and not scored, so a bulk
+                // download's flood of misses cannot decay the peer set past the
+                // disconnect threshold; the staggered race steers around an
+                // unhelpful candidate within a request instead.
                 warn!(%peer, %address, %error, ?kind, "Retrieval failed");
                 match kind {
                     FailureKind::InvalidChunk => {
@@ -518,8 +442,7 @@ impl ClientService {
                         self.report(&peer, SwarmScoringEvent::InvalidData, RETRIEVAL_SOURCE);
                     }
                     FailureKind::Protocol => {
-                        // Blameless miss/timeout: count it for visibility but do
-                        // not penalise the peer's score.
+                        // Blameless miss: counted but not scored.
                         metrics::counter!(
                             "swarm.client.retrieval_miss",
                             "protocol" => "retrieval",
@@ -535,12 +458,8 @@ impl ClientService {
                 error,
                 kind,
             } => {
-                // The pusher is resolved directly by the handler; this event
-                // exists for peer scoring. Same classification as retrieval: a
-                // malformed receipt is invalid data (scored), while a plain
-                // `Protocol` failure (the peer could not store/forward, a
-                // timeout, or a transport error) is a blameless outcome that
-                // must not drive the peer toward disconnection.
+                // Same scoring policy as retrieval: a malformed receipt is
+                // scored, a plain `Protocol` failure is blameless.
                 warn!(%peer, %address, %error, ?kind, "Push failed");
                 match kind {
                     FailureKind::InvalidChunk => {
@@ -562,9 +481,8 @@ impl ClientService {
             }
 
             ClientEvent::InboundInvalidData { peer, protocol } => {
-                // A peer pushed us a malformed chunk or sent a malformed
-                // retrieval request: the decode rejected it and it was never
-                // relayed. Score the sender adversely for invalid data.
+                // Decode rejected a malformed inbound chunk or request before
+                // relay; score the sender adversely.
                 warn!(%peer, %protocol, "Inbound malformed data rejected");
                 metrics::counter!(
                     "swarm.client.invalid_chunk",
@@ -595,7 +513,6 @@ impl ClientService {
                 // TODO: Credit peer's balance in accounting system:
                 //   accounting.for_peer(peer).credit(amount.as_u64() as i64);
 
-                // Send ack with current timestamp
                 let ack = PaymentAck::now(amount);
 
                 if let Err(e) = self.handle.send_command(ClientCommand::AckPseudosettle {
@@ -671,14 +588,12 @@ mod tests {
     }
 
     impl RecordingReporter {
-        /// Return the single recorded report, asserting exactly one exists.
         fn single(&self) -> (OverlayAddress, SwarmScoringEvent, ReportSource) {
             let reports = self.reports.lock().unwrap();
             assert_eq!(reports.len(), 1, "expected exactly one report");
             *reports.first().expect("one report")
         }
 
-        /// Assert that no scoring report was recorded.
         fn assert_none(&self) {
             let reports = self.reports.lock().unwrap();
             assert!(reports.is_empty(), "expected no report, got {reports:?}");
@@ -713,10 +628,7 @@ mod tests {
 
     #[test]
     fn plain_retrieval_failure_does_not_penalise_peer() {
-        // A blameless miss/timeout (`FailureKind::Protocol`) is the expected
-        // outcome for a peer that simply does not hold or cannot forward the
-        // chunk. It must not touch the peer's persistent score, so a bulk
-        // download cannot decay the peer set past the disconnect threshold.
+        // `FailureKind::Protocol` is a blameless miss and must not be scored.
         let (service, reporter) = service_with_reporter();
         service.process_event(ClientEvent::RetrievalFailed {
             peer: peer(2),
@@ -743,9 +655,8 @@ mod tests {
 
     #[test]
     fn plain_push_failure_does_not_penalise_peer() {
-        // Mirror of the retrieval case: a peer that could not store/forward a
-        // pushed chunk (timeout, transport error, remote-reported failure) is
-        // not misbehaving and must not be scored toward disconnection.
+        // Mirror of the retrieval case: a `FailureKind::Protocol` push failure
+        // must not be scored.
         let (service, reporter) = service_with_reporter();
         service.process_event(ClientEvent::PushFailed {
             peer: peer(4),
@@ -787,7 +698,7 @@ mod tests {
         assert_eq!(source, ReportSource::Protocol("pushsync"));
     }
 
-    // Throttle wiring at the outbound-API boundary.
+    // Throttle wiring at the outbound API boundary.
     use crate::throttle::SelfThrottle;
     use vertex_swarm_api::{
         Au, BandwidthMode, PeerAffordability, SwarmBandwidthAccounting, SwarmClientAccounting,
@@ -799,10 +710,7 @@ mod tests {
     use vertex_swarm_test_utils::MockIdentity;
 
     /// A fixed per-peer allowance, in AU, for the throttle's allowance signal.
-    ///
-    /// Also stands in as the [`SwarmBandwidthAccounting`] half of the client
-    /// accounting mock: the throttle reads only affordability and pricing off the
-    /// accounting object, so the accounting surface is a no-op.
+    /// Also serves as a no-op [`SwarmBandwidthAccounting`] half of the mock.
     #[derive(Clone)]
     struct FixedAllowance(u64);
     impl PeerAffordability for FixedAllowance {
@@ -847,8 +755,8 @@ mod tests {
         }
     }
 
-    /// A pricer that meters every chunk at one AU, so the throttle's bucket holds
-    /// exactly `tokens` requests.
+    /// Meters every chunk at one AU, so the bucket holds exactly `tokens`
+    /// requests.
     #[derive(Clone)]
     struct OneAuPricer;
     impl SwarmPricing for OneAuPricer {
@@ -860,8 +768,7 @@ mod tests {
         }
     }
 
-    /// Minimal [`SwarmClientAccounting`] bundling a fixed allowance and the
-    /// one-AU pricer so [`SelfThrottle::new`] can extract both.
+    /// Bundles the fixed allowance and one-AU pricer for [`SelfThrottle::new`].
     #[derive(Clone)]
     struct MockClientAccounting {
         bandwidth: FixedAllowance,
@@ -879,9 +786,8 @@ mod tests {
         }
     }
 
-    /// Build a handle whose throttle gives each peer a bucket of `tokens`
-    /// one-AU requests (refresh rate and per-request chunk price are both 1 AU,
-    /// so the bucket holds exactly `tokens` requests and refills one per second).
+    /// Build a handle whose throttle gives each peer a bucket of `tokens` one-AU
+    /// requests, refilling one per second.
     fn throttled_handle(tokens: u64) -> (ClientHandle, mpsc::Receiver<ClientCommand>) {
         let (tx, rx) = mpsc::channel::<ClientCommand>(16);
         let accounting = MockClientAccounting {
@@ -889,7 +795,7 @@ mod tests {
             pricing: OneAuPricer,
         };
         // Only refresh_rate (1 AU/sec) and throttle_allowance_percent (100) are
-        // read off the config; the rest are placeholders the throttle ignores.
+        // read; the rest are placeholders.
         let config = DefaultBandwidthConfig::new(
             BandwidthMode::Pseudosettle,
             0,
@@ -973,7 +879,7 @@ mod tests {
 
     #[tokio::test]
     async fn unthrottled_handle_dispatches_immediately() {
-        // Without a throttle the handle behaves exactly as before: no pacing.
+        // Without a throttle there is no pacing.
         let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
         let handle = ClientHandle::new(tx);
         let address = test_address();

@@ -1,42 +1,19 @@
 //! Memory-bounded streaming multi-chunk get/put pipelines.
 //!
-//! The single-chunk [`SwarmChunkProvider::retrieve_chunk`] and
-//! [`SwarmChunkSender`] entry points serve one address at a time. A file is
-//! thousands of chunks, so a caller that wants a whole manifest has two bad
-//! options on its own: issue them one by one and eat the round-trip latency, or
-//! spawn one future per address and let an unbounded fan-out blow the heap on a
-//! slow or hostile consumer. This module is the third option: a stream that
-//! prefetches ahead of the consumer up to a fixed number of chunks, never more,
-//! and stops pulling new work the instant the consumer stops draining.
+//! Turns the single-chunk [`SwarmChunkProvider`] / [`SwarmChunkSender`] entry
+//! points into [`Stream`]s over a whole address list, prefetching ahead of the
+//! consumer up to a fixed number of chunks and stopping the instant it stops
+//! draining. Backpressure is transitive: a slow consumer pauses the network
+//! reads, so memory stays flat regardless of list length.
 //!
-//! Limiting is by chunk count, not bytes: a Swarm chunk is size-bounded, so a
-//! count bounds memory without inspecting each chunk. Byte/bandwidth limiting is
-//! a separate seam at the libp2p connection layer. Both pipelines are plain
-//! [`Stream`]s, FFI-agnostic and `Send` where the provider is, and advance only
-//! when polled. A host that polls slowly (a paused Dart `StreamSink`, a browser
-//! `ReadableStream` under backpressure) transitively pauses the network reads,
-//! so memory stays flat no matter how long the address list is.
+//! Transport-agnostic core shared by the FFI, wasm, and gRPC chunk adapters;
+//! depends only on the trait surface, never on a node internal type.
 //!
-//! The crate is the transport-agnostic core that every chunk-bulk consumer
-//! shares: the native FFI adapter in `vertex-ffi` wraps these streams as Dart
-//! sinks, the browser adapter in the [`wasm`] module surfaces them to
-//! JavaScript as async iterators, and the future gRPC chunk service streams
-//! the same items over the wire. The pipelines depend only on the
-//! [`SwarmChunkProvider`] and [`SwarmChunkSender`] traits, never on a node
-//! internal type, so the same combinator serves all three.
-//!
-//! Downloads deliver [`VerifiedChunk`] only: every chunk is proven to answer the
-//! address that requested it before it leaves the stream, so a peer that returns
-//! the wrong bytes for an address surfaces as an error item, never as a chunk a
-//! consumer might trust. The stamp on a delivery is optional (a storer may omit
-//! it), so the verified item carries an `Option<Stamp>`.
-//!
-//! The in-window concurrency is built on the per-request outbound futures: each
-//! retrieval or push is a self-contained future correlated by its own substream,
-//! so racing many addresses at once never aliases response state. Items are
-//! yielded in completion order, not input order: ordering it costs head-of-line
-//! blocking, so every item carries its chunk address and reordering is the
-//! consumer's job.
+//! Limiting is by chunk count, not bytes (a Swarm chunk is size-bounded);
+//! byte/bandwidth limiting lives at the libp2p connection layer. Items are
+//! yielded in completion order, so each carries its chunk address and reordering
+//! is the consumer's job. Downloads yield [`VerifiedChunk`] only: a chunk proven
+//! to answer the requested address surfaces wrong bytes as an error item.
 
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
@@ -52,29 +29,15 @@ use vertex_swarm_api::{
     OverlayAddress, PushReceipt, Stamp, StampedChunk, SwarmChunkProvider, SwarmChunkSender,
     SwarmError, SwarmResult,
 };
-// `MaybeSendBoxFuture` (native = `Send`, wasm = `!Send`) is the crate's MaybeSend
-// seam: every boxed core future is held in a `Send`-on-native / `!Send`-on-wasm
-// alias so the streams stay `Send` for tonic on native without forcing `Send` on
-// wasm. The later `ChunkClientExt` extension trait reuses this same convention
-// (via [`MaybeSendIter`] and this alias) for its RPITIT return types.
+// `MaybeSendBoxFuture` is `Send` on native (so the streams stay `Send` for
+// tonic) and `!Send` on wasm. The `MaybeSend*` markers below follow the same
+// split.
 use vertex_tasks::MaybeSendBoxFuture;
 
 /// A downloaded chunk proven to answer the address that requested it.
 ///
-/// The chunk's address is derived from its own bytes (the BMT hash for a content
-/// chunk, owner plus signature for a single-owner chunk), and the download stream
-/// proves that address equals the requested one before yielding the item, so a
-/// peer that returns the wrong bytes surfaces as an error rather than a trusted
-/// chunk.
-///
-/// The stamp is optional: a storer answers a retrieval with the chunk bytes and
-/// may omit the stamp from the delivery, which is never re-read on the download
-/// path. Address integrity does not depend on the stamp, so a stampless delivery
-/// is still a fully verified chunk.
-///
-/// The overlay of the peer that served the chunk is carried through as
-/// `served_by`, so the streaming retrieve path can report provenance the same way
-/// the unary path does (it previously emitted an empty `served_by`).
+/// The stamp is optional: address integrity does not depend on it, so a
+/// stampless delivery is still fully verified.
 #[derive(Debug, Clone)]
 pub struct VerifiedChunk {
     chunk: AnyChunk,
@@ -83,19 +46,16 @@ pub struct VerifiedChunk {
 }
 
 impl VerifiedChunk {
-    /// The verified chunk.
     #[must_use]
     pub fn chunk(&self) -> &AnyChunk {
         &self.chunk
     }
 
-    /// The chunk's address (delegates to the chunk).
     #[must_use]
     pub fn address(&self) -> &ChunkAddress {
         self.chunk.address()
     }
 
-    /// The postage stamp the responder attached, if any.
     #[must_use]
     pub fn stamp(&self) -> Option<&Stamp> {
         self.stamp.as_ref()
@@ -107,7 +67,6 @@ impl VerifiedChunk {
         self.served_by
     }
 
-    /// Split into the chunk and its optional stamp.
     #[must_use]
     pub fn into_parts(self) -> (AnyChunk, Option<Stamp>) {
         (self.chunk, self.stamp)
@@ -115,8 +74,7 @@ impl VerifiedChunk {
 }
 
 /// Maximum wire size of a single Swarm chunk: an 8-byte span plus a 4096-byte
-/// body. A chunk is size-bounded, which is why these pipelines bound memory by
-/// chunk count rather than by bytes.
+/// body.
 pub const MAX_CHUNK_BYTES: usize = 8 + nectar_primitives::DEFAULT_BODY_SIZE;
 
 /// Sustained rate (chunks/s) a native node is assumed to serve from one bulk
@@ -134,12 +92,6 @@ pub const NATIVE_DOWNLOAD_CONCURRENCY: usize =
         / (1000 * 100);
 
 /// How many chunks a streaming pipeline keeps in flight at once.
-///
-/// Limiting is by chunk count, not bytes: a Swarm chunk is size-bounded
-/// ([`MAX_CHUNK_BYTES`]), so a count bounds memory just as well without
-/// inspecting each chunk. Byte/bandwidth limiting is a separate concern that
-/// belongs at the libp2p connection layer, where it can rate-limit specific
-/// peers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamConfig {
     /// Hard cap on chunks in flight at once.
@@ -147,24 +99,18 @@ pub struct StreamConfig {
 }
 
 impl StreamConfig {
-    /// Up to 32 chunks in flight: a typical mobile or browser client, enough
-    /// prefetch to hide round-trip latency without a long list growing the heap.
+    /// Up to 32 chunks in flight: a typical mobile or browser client.
     pub const DEFAULT: Self = Self {
         max_concurrency: 32,
     };
 
-    /// High-throughput preset for a native node serving a bulk download.
-    ///
-    /// Concurrency is the bandwidth-delay product (Little's law): the in-flight
-    /// retrievals needed to keep a sustained serve rate saturated across one mean
-    /// retrieval latency, plus headroom for jitter. Derived from
-    /// [`NATIVE_DOWNLOAD_CONCURRENCY`] rather than picked by hand.
+    /// High-throughput preset for a native node serving a bulk download:
+    /// the bandwidth-delay product of [`NATIVE_DOWNLOAD_CONCURRENCY`].
     pub const NATIVE_DOWNLOAD: Self = Self {
         max_concurrency: NATIVE_DOWNLOAD_CONCURRENCY,
     };
 
-    /// Build a config, clamping to at least one in flight so the stream always
-    /// makes forward progress.
+    /// Clamps to at least one in flight so the stream always makes progress.
     #[must_use]
     pub fn new(max_concurrency: usize) -> Self {
         Self {
@@ -180,10 +126,6 @@ impl Default for StreamConfig {
 }
 
 /// A chunk address parse failed: the input was not exactly 32 bytes.
-///
-/// One neutral error every adapter (FFI, wasm, gRPC) maps onto its own error
-/// type, so the address-length check lives once in [`parse_address`] instead of
-/// three near-identical copies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("invalid chunk address: expected 32 bytes, got {got}")]
 pub struct ParseAddressError {
@@ -192,10 +134,6 @@ pub struct ParseAddressError {
 }
 
 /// Parse a 32-byte chunk address from raw bytes.
-///
-/// The single source of the address-length check shared by the FFI, wasm, and
-/// gRPC boundaries. Each adapter maps [`ParseAddressError`] onto its own error
-/// type at the call site.
 pub fn parse_address(bytes: &[u8]) -> Result<ChunkAddress, ParseAddressError> {
     ChunkAddress::from_slice(bytes).map_err(|_| ParseAddressError { got: bytes.len() })
 }
@@ -221,19 +159,15 @@ where
         provider,
         pending: addresses.into_iter().collect(),
         in_flight: FuturesUnordered::new(),
-        // Clamp to at least one even on a raw `StreamConfig { max_concurrency: 0 }`
-        // literal, so the pipeline never busy-loops without admitting work.
+        // Clamp to >= 1 so a raw `StreamConfig { max_concurrency: 0 }` literal
+        // never busy-loops without admitting work.
         limit: config.max_concurrency.max(1),
     }
 }
 
 pin_project_lite::pin_project! {
-    /// Stream returned by [`get_stream`].
-    ///
-    /// Holds the provider, the queue of addresses not yet requested, and the set
-    /// of in-flight retrievals. Each poll tops the in-flight set up to the
-    /// concurrency limit (prefetch), then yields the next completed retrieval.
-    /// Pin-projected so the provider need not be [`Unpin`].
+    /// Stream returned by [`get_stream`]. Each poll tops the in-flight set up to
+    /// the concurrency limit, then yields the next completed retrieval.
     #[must_use = "a stream does nothing unless polled"]
     pub struct GetStream<P> {
         provider: P,
@@ -243,13 +177,8 @@ pin_project_lite::pin_project! {
     }
 }
 
-/// Retrieve one chunk and prove it answers `address`.
-///
-/// The provider establishes content integrity (the chunk hashes to its own
-/// address); this proves that address equals the requested one, turning a
-/// delivery into a [`VerifiedChunk`]. A mismatch is treated as invalid data from
-/// the peer, not a value to hand back. The stamp is carried through unchanged: it
-/// is optional, and address integrity does not depend on it.
+/// Retrieve one chunk and prove its address equals the requested one, turning
+/// the delivery into a [`VerifiedChunk`]. A mismatch is an invalid-data error.
 pub async fn retrieve_verified<P>(provider: P, address: ChunkAddress) -> SwarmResult<VerifiedChunk>
 where
     P: SwarmChunkProvider,
@@ -268,9 +197,9 @@ where
     })
 }
 
-/// Prefetch: admit pending addresses until the in-flight set hits the
-/// concurrency limit or the queue drains. Each future carries its address out so
-/// a completion-ordered item stays correlatable.
+/// Admit pending addresses until the in-flight set hits the limit or the queue
+/// drains. Each future carries its address out so a completion-ordered item
+/// stays correlatable.
 fn get_refill<P>(
     provider: &P,
     pending: &mut VecDeque<ChunkAddress>,
@@ -301,24 +230,19 @@ where
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.project();
 
-        // Prefetch first: top the in-flight window up before polling it, so a
-        // drained slot is immediately refilled from the pending queue.
+        // Top the window up before polling it, so a drained slot is refilled.
         get_refill(this.provider, this.pending, this.in_flight, *this.limit);
 
         match this.in_flight.poll_next_unpin(cx) {
-            // A slot completed. Refill so the next poll already has work queued,
-            // then hand the result out. This is where backpressure lives: the
-            // refill admits exactly one replacement per drained slot, so a
-            // consumer that stops polling stops all new requests.
+            // Backpressure: refill admits exactly one replacement per drained
+            // slot, so a consumer that stops polling stops all new requests.
             Poll::Ready(Some(item)) => {
                 get_refill(this.provider, this.pending, this.in_flight, *this.limit);
                 Poll::Ready(Some(item))
             }
-            // No in-flight work and nothing pending: the stream is done.
             Poll::Ready(None) if this.pending.is_empty() => Poll::Ready(None),
-            // The in-flight set is momentarily empty but addresses remain (the
-            // limit was zero-length this tick). Refill admitted them above;
-            // re-poll on the next wake.
+            // Empty in-flight set but addresses remain; refill admitted them
+            // above, so re-poll on the next wake.
             Poll::Ready(None) => {
                 cx.waker().wake_by_ref();
                 Poll::Pending
@@ -333,9 +257,7 @@ where
     }
 }
 
-/// Marker for the address-source stream's thread-safety requirement: `Send` on
-/// native so [`GetStreamFrom`] stays `Send` for tonic, unconstrained on wasm.
-/// Mirrors [`MaybeSendIter`] for a [`Stream`] source. Blanket-implemented, so
+/// `Send` bound on an address-source [`Stream`], native-only. Blanket-impl;
 /// callers never name it.
 #[cfg(not(target_arch = "wasm32"))]
 pub trait MaybeSendStream: Send {}
@@ -346,11 +268,8 @@ pub trait MaybeSendStream {}
 #[cfg(target_arch = "wasm32")]
 impl<T> MaybeSendStream for T {}
 
-/// Marker bound for a value's thread-safety requirement: `Send` on native so an
-/// `impl Future + MaybeSend` returned from [`ChunkClientExt`] stays `Send` for
-/// the generic tonic handler, unconstrained on wasm. Mirrors [`MaybeSendIter`]
-/// and the [`MaybeSendBoxFuture`] split. Blanket-implemented, so callers never
-/// name it.
+/// `Send` bound on a [`ChunkClientExt`] return value, native-only. Blanket-impl;
+/// callers never name it.
 #[cfg(not(target_arch = "wasm32"))]
 pub trait MaybeSend: Send {}
 #[cfg(not(target_arch = "wasm32"))]
@@ -361,16 +280,11 @@ pub trait MaybeSend {}
 impl<T> MaybeSend for T {}
 
 /// Capability alias for a lean chunk client: retrieves, sends, cloneable, and
-/// shareable across threads for the lifetime of the program.
+/// shareable across threads. Blanket-impl, so callers never name it.
 ///
-/// A blanket impl means any type satisfying the bound is a `ChunkClient` without
-/// naming it; the alias only exists so the capability is stated once instead of
-/// repeated at every consumer (the gRPC chunk service, the FFI client, etc.).
-///
-/// `Send + Sync + 'static` is required even on wasm here: a chunk client is held
-/// behind the wasm `Arc<dyn SwarmChunkProvider>` export and shared, so the alias
-/// is uniform across targets. The per-call `Send` divergence lives in
-/// [`MaybeSend`] on the [`ChunkClientExt`] return types, not in this bound.
+/// `Send + Sync + 'static` holds even on wasm (a client is shared behind an
+/// `Arc<dyn SwarmChunkProvider>`); the per-call `Send` divergence lives in
+/// [`MaybeSend`] on the [`ChunkClientExt`] return types instead.
 pub trait ChunkClient:
     SwarmChunkProvider + SwarmChunkSender + Clone + Send + Sync + 'static
 {
@@ -381,24 +295,12 @@ impl<T> ChunkClient for T where
 {
 }
 
-/// Ergonomic chunk verbs over a [`ChunkClient`], as default methods.
-///
-/// Blanket-implemented for every [`ChunkClient`], so a consumer calls `get` /
-/// `put` / `get_many` / `put_many` directly on its client without importing the
-/// free functions or hand-rolling verification. The single-chunk methods are
-/// `async` returning `impl Future<Output = …> + MaybeSend` via RPITIT (not
-/// async-fn-in-trait), so the future stays `Send` on native for the generic
-/// tonic handler while wasm stays `!Send`. The bulk methods return the existing
-/// [`GetStream`] / [`PutStream`] types unchanged.
-///
-/// The chunk core is complete as a primitive; these verbs compose it, they do
-/// not add new ones.
+/// Ergonomic chunk verbs (`get` / `put` / `get_many` / `put_many`) over a
+/// [`ChunkClient`], blanket-implemented as default methods. The single-chunk
+/// methods return `impl Future + MaybeSend` (RPITIT) so the future stays `Send`
+/// on native; the bulk methods return [`GetStream`] / [`PutStream`].
 pub trait ChunkClientExt: ChunkClient {
-    /// Retrieve and verify one chunk, proving it answers `address`.
-    ///
-    /// Wraps [`retrieve_verified`]: the returned chunk is proven to hash to the
-    /// requested address, so a peer answering with the wrong bytes surfaces as an
-    /// error rather than a trusted chunk.
+    /// Retrieve and verify one chunk via [`retrieve_verified`].
     fn get(
         &self,
         address: ChunkAddress,
@@ -406,11 +308,8 @@ pub trait ChunkClientExt: ChunkClient {
         retrieve_verified(self.clone(), address)
     }
 
-    /// Upload one stamped chunk.
-    ///
-    /// `validate` selects the stamp-signature check: `true` dispatches to
-    /// [`SwarmChunkSender::send_chunk`] (validates the stamp matches the chunk),
-    /// `false` to [`SwarmChunkSender::send_chunk_unchecked`] (trusts the caller).
+    /// Upload one stamped chunk. `validate` selects [`SwarmChunkSender::send_chunk`]
+    /// (checks the stamp) over [`SwarmChunkSender::send_chunk_unchecked`].
     fn put(
         &self,
         chunk: StampedChunk,
@@ -426,10 +325,7 @@ pub trait ChunkClientExt: ChunkClient {
         }
     }
 
-    /// Retrieve and verify many chunks as a bounded, completion-ordered stream.
-    ///
-    /// Returns the same [`GetStream`] as [`get_stream`]; see it for the prefetch
-    /// and verification semantics.
+    /// Retrieve and verify many chunks; see [`get_stream`].
     fn get_many(
         &self,
         addresses: impl IntoIterator<Item = ChunkAddress>,
@@ -438,10 +334,7 @@ pub trait ChunkClientExt: ChunkClient {
         get_stream(self.clone(), addresses, config)
     }
 
-    /// Upload many stamped chunks as a bounded, completion-ordered stream.
-    ///
-    /// Returns the same [`PutStream`] as [`put_stream`]; see it for the bounded
-    /// concurrency and lazy-materialization semantics.
+    /// Upload many stamped chunks; see [`put_stream`].
     fn put_many<I>(&self, chunks: I, config: StreamConfig) -> PutStream<Self>
     where
         I: IntoIterator<Item = StampedChunk>,
@@ -453,16 +346,9 @@ pub trait ChunkClientExt: ChunkClient {
 
 impl<T: ChunkClient> ChunkClientExt for T {}
 
-/// Like [`get_stream`], but sourced from a [`Stream`] of addresses instead of an
-/// iterator.
-///
-/// The gRPC inbound retrieve path receives addresses as a wire stream, not an
-/// eager list; this routes that path through the same refill/verify core
-/// ([`retrieve_verified`]) instead of a hand-rolled `buffer_unordered`. Same
-/// bounded prefetch and completion-order semantics as [`get_stream`]: at most
-/// [`StreamConfig::max_concurrency`] retrievals are in flight, and a new address
-/// is pulled from the source only as a slot frees, so a slow source or consumer
-/// transitively pauses the network reads.
+/// Like [`get_stream`], but sourced from a [`Stream`] of addresses (a wire
+/// stream) instead of an eager iterator. Same bounded-prefetch and
+/// completion-order semantics: a new address is pulled only as a slot frees.
 pub fn get_stream_from<P, St>(
     provider: P,
     addresses: St,
@@ -481,14 +367,9 @@ where
 }
 
 pin_project_lite::pin_project! {
-    /// Stream returned by [`get_stream_from`].
-    ///
-    /// Holds the provider, the (pinned) address source, and the set of in-flight
-    /// retrievals. Each poll tops the in-flight set up to the concurrency limit
-    /// by pulling ready addresses from the source, then yields the next completed
-    /// retrieval. The source is taken to `None` once exhausted so it is no longer
-    /// polled. Pin-projected so neither the provider nor the source need be
-    /// [`Unpin`].
+    /// Stream returned by [`get_stream_from`]. Each poll pulls ready addresses
+    /// from the source up to the limit, then yields the next completed
+    /// retrieval; the source is taken to `None` once exhausted.
     #[must_use = "a stream does nothing unless polled"]
     pub struct GetStreamFrom<P, St> {
         provider: P,
@@ -509,10 +390,8 @@ where
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
 
-        // Prefetch: admit ready addresses from the source until the in-flight set
-        // hits the limit or the source has no address ready. A pending source
-        // stops admitting without parking the whole pipeline, since in-flight work
-        // may still complete below.
+        // Admit ready addresses up to the limit. A pending source stops admitting
+        // without parking the pipeline, since in-flight work may still complete.
         let mut source_pending = false;
         while this.in_flight.len() < *this.limit {
             let Some(source) = this.source.as_mut().as_pin_mut() else {
@@ -525,7 +404,7 @@ where
                         (address, retrieve_verified(provider, address).await)
                     }));
                 }
-                // Source drained: drop it so it is never polled again.
+                // Drained: drop the source so it is never polled again.
                 Poll::Ready(None) => {
                     this.source.set(None);
                     break;
@@ -538,14 +417,10 @@ where
         }
 
         match this.in_flight.poll_next_unpin(cx) {
-            // A slot completed: hand it out. The next poll refills, exactly one
-            // replacement per drained slot, so a stalled consumer stops all reads.
             Poll::Ready(Some(item)) => Poll::Ready(Some(item)),
-            // Nothing in flight and the source is exhausted: the stream is done.
             Poll::Ready(None) if this.source.is_none() => Poll::Ready(None),
-            // Nothing in flight but the source could still yield. If the source
-            // parked it will wake us; otherwise it had an address ready that the
-            // limit admitted this tick, so re-poll.
+            // Nothing in flight but the source could still yield. If it parked it
+            // will wake us; otherwise an address was admitted this tick, re-poll.
             Poll::Ready(None) => {
                 if !source_pending {
                     cx.waker().wake_by_ref();
@@ -557,21 +432,17 @@ where
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        // The source is a lazy stream, so only the in-flight set is a known lower
-        // bound; the upper bound is unknown until the source ends.
+        // Lazy source: only the in-flight set is a known lower bound.
         (self.in_flight.len(), None)
     }
 }
 
 /// Stream of push receipts for a list of chunks to upload.
 ///
-/// Yields `(address, result)` per input chunk in completion order. At most
-/// [`StreamConfig::max_concurrency`] pushes run at once.
-///
-/// `chunks` is consumed lazily: the pipeline pulls the next [`StampedChunk`] from
-/// the iterator only when it admits a push, so a caller that builds each chunk on
-/// demand holds at most `max_concurrency` materialized chunks at once, not the
-/// whole list.
+/// Yields `(address, result)` per input chunk in completion order, at most
+/// [`StreamConfig::max_concurrency`] pushes at once. `chunks` is pulled lazily as
+/// pushes are admitted, so a caller that builds chunks on demand holds at most
+/// `max_concurrency` of them resident, not the whole list.
 pub fn put_stream<S, I>(sender: S, chunks: I, config: StreamConfig) -> PutStream<S>
 where
     S: SwarmChunkSender + Clone + 'static,
@@ -587,11 +458,9 @@ where
 
 /// Stream of push receipts for a feed of fallibly-produced chunks.
 ///
-/// Like [`put_stream`], but each feed entry pairs a target `address` with a
-/// `SwarmResult<StampedChunk>`, so a per-chunk build failure (byte/address
-/// mismatch, bad stamp) surfaces as that address's error item instead of
-/// aborting the upload. A feed `Err` issues no push. The address is carried
-/// through so a completion-ordered receipt stays correlatable.
+/// Like [`put_stream`], but each entry pairs an `address` with a
+/// `SwarmResult<StampedChunk>`: a per-chunk build failure surfaces as that
+/// address's error item (issuing no push) instead of aborting the upload.
 pub fn try_put_stream<S, I>(sender: S, chunks: I, config: StreamConfig) -> PutStream<S>
 where
     S: SwarmChunkSender + Clone + 'static,
@@ -602,17 +471,14 @@ where
         sender,
         pending: BoxedChunks::box_chunks(chunks.into_iter()).peekable(),
         in_flight: FuturesUnordered::new(),
-        // Clamp to at least one even on a raw `StreamConfig { max_concurrency: 0 }`
-        // literal, so the pipeline never busy-loops without admitting work.
+        // Clamp to >= 1 so a raw `StreamConfig { max_concurrency: 0 }` literal
+        // never busy-loops without admitting work.
         limit: config.max_concurrency.max(1),
     }
 }
 
-/// Marker for the pending-chunk iterator's thread-safety requirement: `Send` on
-/// native so [`PutStream`] stays `Send` (the FFI handle is driven across the
-/// runtime and the tests spawn it), unconstrained on wasm. Mirrors the native vs
-/// wasm split of [`MaybeSendBoxFuture`]. Blanket-implemented, so callers never
-/// name it.
+/// `Send` bound on the pending-chunk iterator so [`PutStream`] stays `Send`,
+/// native-only. Blanket-impl; callers never name it.
 #[cfg(not(target_arch = "wasm32"))]
 pub trait MaybeSendIter: Send {}
 #[cfg(not(target_arch = "wasm32"))]
@@ -622,14 +488,13 @@ pub trait MaybeSendIter {}
 #[cfg(target_arch = "wasm32")]
 impl<T> MaybeSendIter for T {}
 
-/// Boxed pending-chunk feed. `Send` on native so [`PutStream`] stays `Send`;
-/// not required `Send` on wasm.
+/// Boxed pending-chunk feed, `Send` on native so [`PutStream`] stays `Send`.
 #[cfg(not(target_arch = "wasm32"))]
 type BoxedChunks = Box<dyn Iterator<Item = (ChunkAddress, SwarmResult<StampedChunk>)> + Send>;
 #[cfg(target_arch = "wasm32")]
 type BoxedChunks = Box<dyn Iterator<Item = (ChunkAddress, SwarmResult<StampedChunk>)>>;
 
-/// Box a feed iterator into [`BoxedChunks`] with the right `Send`-ness per target.
+/// Box a feed iterator into [`BoxedChunks`] with the per-target `Send`-ness.
 trait BoxedChunksExt {
     fn box_chunks<
         I: Iterator<Item = (ChunkAddress, SwarmResult<StampedChunk>)> + MaybeSendIter + 'static,
@@ -648,17 +513,14 @@ impl BoxedChunksExt for BoxedChunks {
     }
 }
 
-/// Iterator the upload pipeline pulls chunks from. Boxed so the stream type is
-/// independent of how the caller produces chunks (an eager `Vec` or a lazy
-/// reconstruct-on-demand feed), and peekable so the stream can detect the end.
+/// Source the upload pipeline pulls chunks from. Boxed so the stream type is
+/// independent of how the caller produces chunks; peekable so the stream can
+/// detect the end.
 type PendingChunks = std::iter::Peekable<BoxedChunks>;
 
 pin_project_lite::pin_project! {
-    /// Stream returned by [`put_stream`].
-    ///
-    /// Admits up to `limit` pushes at once and pulls pending chunks lazily, so
-    /// only admitted chunks are materialized. Pin-projected so the sender need
-    /// not be [`Unpin`].
+    /// Stream returned by [`put_stream`]. Admits up to `limit` pushes at once,
+    /// pulling pending chunks lazily so only admitted chunks are materialized.
     #[must_use = "a stream does nothing unless polled"]
     pub struct PutStream<S> {
         sender: S,
@@ -668,8 +530,8 @@ pin_project_lite::pin_project! {
     }
 }
 
-/// Push one chunk, carrying its address out alongside the receipt so a
-/// completion-ordered item stays correlatable.
+/// Push one chunk, carrying its address out alongside the receipt for
+/// correlation.
 async fn push_chunk<S>(
     sender: S,
     address: ChunkAddress,
@@ -682,9 +544,8 @@ where
     (address, receipt)
 }
 
-/// Admit pending chunks up to the concurrency cap. Each in-flight future carries
-/// its address out for correlation; a feed error issues no push and is yielded
-/// from a ready future carrying its address.
+/// Admit pending chunks up to the cap. A feed error issues no push and is
+/// yielded from a ready future carrying its address.
 fn put_refill<S>(
     sender: &S,
     pending: &mut PendingChunks,
@@ -719,9 +580,8 @@ where
         put_refill(this.sender, this.pending, this.in_flight, *this.limit);
 
         match this.in_flight.poll_next_unpin(cx) {
-            // A push completed. Refill so the next poll already has work queued:
-            // exactly one replacement per drained slot, so a consumer that stops
-            // polling stops all new pushes.
+            // Backpressure: exactly one replacement per drained slot, so a
+            // consumer that stops polling stops all new pushes.
             Poll::Ready(Some((address, result))) => {
                 put_refill(this.sender, this.pending, this.in_flight, *this.limit);
                 Poll::Ready(Some((address, result)))
@@ -736,9 +596,8 @@ where
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        // The pending source is a lazy iterator, so only its declared bound is
-        // known; the in-flight set is exact. The lower bound counts in-flight
-        // plus whatever the iterator guarantees remain.
+        // Lazy pending iterator: only its declared bound is known; in-flight is
+        // exact.
         let (pending_lo, pending_hi) = self.pending.size_hint();
         let lower = pending_lo + self.in_flight.len();
         let upper = pending_hi.map(|hi| hi + self.in_flight.len());
@@ -766,8 +625,7 @@ mod tests {
         Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig)
     }
 
-    /// Build a content chunk from distinct bytes so each test chunk has a unique
-    /// address.
+    /// A content chunk seeded so each test chunk has a unique address.
     fn chunk_for(seed: u8) -> StampedChunk {
         let payload = vec![seed; 64];
         let chunk = ContentChunk::new(payload).expect("valid content chunk");
@@ -938,8 +796,7 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for (address, result) in results {
             let verified = result.expect("retrieval succeeds");
-            // The item's address correlates to the verified chunk; order is the
-            // consumer's job, so we assert membership not position.
+            // Unordered: assert membership not position.
             assert_eq!(*verified.address(), address);
             seen.insert(address);
         }
@@ -948,8 +805,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_stream_caps_concurrency() {
-        // A cap of 3 permits exactly 3 concurrent retrievals even though many
-        // addresses are pending.
+        // A cap of 3 permits exactly 3 concurrent retrievals.
         let chunks: Vec<_> = (0..16).map(chunk_for).collect();
         let addresses: Vec<_> = chunks.iter().map(|c| *c.address()).collect();
         let provider = MapProvider::gated(chunks);
@@ -959,14 +815,11 @@ mod tests {
 
         let mut stream = get_stream(provider, addresses, StreamConfig::new(3));
 
-        // Drive the stream forward without consuming: poll it so it fills the
-        // in-flight set, then let the gated retrievals settle.
         let driver = tokio::spawn(async move {
             let _ = stream.next().await;
             stream
         });
 
-        // Wait until the pipeline has saturated its in-flight set.
         loop {
             if in_flight.load(Ordering::SeqCst) >= 3 {
                 break;
@@ -1076,7 +929,7 @@ mod tests {
     }
 
     /// A stampless delivery still verifies against its address and is yielded as
-    /// a `VerifiedChunk` carrying no stamp. This is the bee-interop download path.
+    /// a `VerifiedChunk` carrying no stamp.
     #[tokio::test]
     async fn get_stream_accepts_stampless_delivery() {
         let chunk = chunk_for(5).into_parts().0;
@@ -1092,8 +945,7 @@ mod tests {
         assert!(verified.stamp().is_none(), "no stamp is carried through");
     }
 
-    /// The verified chunk carries the overlay the provider reported as
-    /// `served_by`, so the streaming retrieve path no longer loses provenance.
+    /// The verified chunk carries the overlay the provider reported as `served_by`.
     #[tokio::test]
     async fn get_stream_carries_served_by() {
         let chunk = chunk_for(7);

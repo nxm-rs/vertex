@@ -4,33 +4,18 @@ use nectar_postage::Stamp;
 use nectar_primitives::{AnyChunk, ChunkAddress};
 
 /// A chunk together with its postage stamp.
-///
-/// Re-exported from `nectar-postage`: the canonical `StampedChunk` now lives
-/// upstream (chunk plus stamp, with the typed/wire codec), so vertex consumes
-/// it directly instead of carrying its own copy. The vertex-specific serve-time
-/// and cache type-states ([`VerifiedStampedChunk`], [`CachedChunk`]) wrap it,
-/// and [`StampedChunkExt`] adds the vertex-only `verify_answers` gate.
 pub use nectar_postage::StampedChunk;
 
-/// Vertex-only extensions to nectar's [`StampedChunk`].
-///
-/// `verify_answers` is a vertex serve-time gate, not a property of the chunk
-/// type, so it cannot be an inherent method on the upstream type (the orphan
-/// rule). It is expressed as an extension trait instead.
+/// Serve-time verification gate on [`StampedChunk`], as an extension trait
+/// because the orphan rule forbids an inherent method on the upstream type.
 pub trait StampedChunkExt {
     /// Prove this chunk answers a request for `requested`, consuming it into a
     /// [`VerifiedStampedChunk`].
     ///
-    /// The chunk's address is derived from its own bytes (the BMT hash for a
-    /// content chunk, owner plus id for a single-owner chunk), so an equal
-    /// address means the bytes are exactly the ones the requester asked for.
-    /// This is the verify-before-the-wire check expressed as a type-state: only
-    /// a [`VerifiedStampedChunk`] can be handed to a responder, so a chunk that
-    /// does not answer the request cannot be served by construction.
-    ///
-    /// Returns the chunk unchanged in [`Err`] on a mismatch so the caller can
-    /// treat it as a miss without losing the value. The error is boxed because a
-    /// [`StampedChunk`] is large (a full chunk payload plus a stamp).
+    /// The chunk's address is derived from its own bytes, so an equal address
+    /// means the bytes are exactly the ones the requester asked for. Returns the
+    /// chunk unchanged in [`Err`] on a mismatch so the caller can treat it as a
+    /// miss without losing the value (boxed because a [`StampedChunk`] is large).
     fn verify_answers(
         self,
         requested: ChunkAddress,
@@ -52,30 +37,24 @@ impl StampedChunkExt for StampedChunk {
 
 /// A [`StampedChunk`] proven to answer a specific request.
 ///
-/// Constructed only by [`StampedChunkExt::verify_answers`], which checks the
-/// chunk's content-derived address against the requested address. A responder
-/// accepts only this type, so a chunk that does not match the request can never
-/// be sent down the wire: the gate is a compile-time guarantee rather than a
-/// runtime check at the send site.
+/// Constructed only by [`StampedChunkExt::verify_answers`]. A responder accepts
+/// only this type, so an unverified chunk cannot be sent down the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedStampedChunk(StampedChunk);
 
 impl VerifiedStampedChunk {
-    /// The chunk's address.
     #[inline]
     #[must_use]
     pub fn address(&self) -> &ChunkAddress {
         self.0.address()
     }
 
-    /// Borrow the underlying stamped chunk.
     #[inline]
     #[must_use]
     pub fn stamped(&self) -> &StampedChunk {
         &self.0
     }
 
-    /// Consume into the underlying stamped chunk for sending down the wire.
     #[inline]
     #[must_use]
     pub fn into_inner(self) -> StampedChunk {
@@ -85,21 +64,11 @@ impl VerifiedStampedChunk {
 
 /// A chunk paired with an *optional* postage stamp, as the local cache holds it.
 ///
-/// The cache stores two kinds of entry that differ only in whether a stamp is
-/// present:
-///
-/// - A content chunk (CAC) is immutable: its address is the BMT hash of its
-///   content, so a cached copy is valid forever and carries no freshness signal.
-///   The retrieval path delivers it stampless (a storer answers a retrieval with
-///   the chunk bytes only), and the cache stores it with `stamp == None`.
-/// - A single-owner chunk (SOC) is mutable at a fixed address; the cache orders
-///   versions by the stamp's signed timestamp, so a cached SOC always carries a
-///   stamp (`stamp == Some`). The retrieval path never caches a SOC, since a
-///   stampless SOC has no version signal and could serve a stale revision.
-///
-/// [`StampedChunk`] remains the always-stamped currency on the network paths
-/// (pushsync, upload, the stamped reserve). This type is the cache value, where
-/// a stampless content chunk is a first-class entry.
+/// A content chunk (CAC) is immutable and cached stampless (`stamp == None`). A
+/// single-owner chunk (SOC) is mutable at a fixed address, ordered by the
+/// stamp's signed timestamp, so a cached SOC always carries a stamp; the
+/// retrieval path never caches a SOC since a stampless one has no version signal.
+/// [`StampedChunk`] remains the always-stamped currency on the network paths.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CachedChunk {
     chunk: AnyChunk,
@@ -107,35 +76,30 @@ pub struct CachedChunk {
 }
 
 impl CachedChunk {
-    /// Pair a chunk with an optional stamp.
     #[inline]
     #[must_use]
     pub fn new(chunk: AnyChunk, stamp: Option<Stamp>) -> Self {
         Self { chunk, stamp }
     }
 
-    /// The chunk.
     #[inline]
     #[must_use]
     pub fn chunk(&self) -> &AnyChunk {
         &self.chunk
     }
 
-    /// The postage stamp, if one was cached with the chunk.
     #[inline]
     #[must_use]
     pub fn stamp(&self) -> Option<&Stamp> {
         self.stamp.as_ref()
     }
 
-    /// The chunk's address (delegates to the chunk).
     #[inline]
     #[must_use]
     pub fn address(&self) -> &ChunkAddress {
         self.chunk.address()
     }
 
-    /// Split into the chunk and its optional stamp.
     #[inline]
     #[must_use]
     pub fn into_parts(self) -> (AnyChunk, Option<Stamp>) {
@@ -159,9 +123,8 @@ mod tests {
 
     use super::*;
 
-    // `StampedChunk` is generic over the chunk body size with a default; the
-    // `reconstruct` constructor takes no argument that pins it, so spell the
-    // default-body-size instantiation out for those call sites.
+    // Pins the default body size for `reconstruct` call sites, which take no
+    // argument that fixes the generic.
     type DefaultStampedChunk = StampedChunk;
 
     fn test_stamp() -> Stamp {
@@ -199,7 +162,7 @@ mod tests {
             .expect("content reconstruct");
         assert!(rebuilt.chunk().is_content());
         assert_eq!(*rebuilt.address(), address);
-        // Encode is byte-identical to the original wire data.
+        // Re-encode is byte-identical to the original wire data.
         assert_eq!(rebuilt.into_parts().0.into_bytes(), data);
     }
 
@@ -235,7 +198,6 @@ mod tests {
             .clone()
             .verify_answers(wrong)
             .expect_err("wrong address must fail");
-        // The value is returned unchanged so the caller can treat it as a miss.
         assert_eq!(*returned, stamped);
     }
 

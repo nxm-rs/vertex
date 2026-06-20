@@ -17,21 +17,17 @@ vertex_net_codec::protocol_error! {
 
         /// Chunk bytes did not match the requested address.
         ///
-        /// Carries the message string rather than the source error: chunk
-        /// reconstruction now goes through nectar's `AnyChunk::from_wire_bytes`,
-        /// which returns `PrimitivesError` — already claimed by `InvalidAddress`
-        /// via `#[from]` — so this variant cannot also derive a
-        /// `From<PrimitivesError>`. The call site maps the error to its string.
+        /// Carries a string, not the source `PrimitivesError`, because that type
+        /// is already claimed by `InvalidAddress` via `#[from]`.
         #[error("invalid chunk: {0}")]
         InvalidChunk(String),
     }
 }
 
 impl RetrievalError {
-    /// True when the error is a malformed-chunk signal: the delivered bytes
-    /// failed address or stamp reconstruction, or the address itself was
-    /// unparseable. These are attributable to the sending peer and warrant an
-    /// adverse score, distinct from a transport or negotiation failure.
+    /// True for malformed-chunk signals attributable to the sending peer
+    /// (bad bytes, stamp, or address), which warrant an adverse score; false
+    /// for transport or negotiation failures.
     #[must_use]
     pub fn is_invalid_chunk(&self) -> bool {
         matches!(

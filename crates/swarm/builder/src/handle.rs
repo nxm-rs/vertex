@@ -12,15 +12,11 @@ use vertex_tasks::{GracefulShutdown, NodeTask, NodeTaskFn};
 use crate::providers::NetworkChunkProvider;
 use crate::verify::VerifyingChunkProvider;
 
-/// Network chunk provider wrapped with config-gated download verification.
 type VerifiedChunkProvider = VerifyingChunkProvider<NetworkChunkProvider<Arc<Identity>>>;
 
-/// Build output from launching a Swarm node.
-///
-/// Contains the node's main event loop task function and the api component
-/// container. The component type `P` determines the node's capabilities; all
-/// containers implement `HasTopology` for topology access. The transport (gRPC
-/// today) is wired at `bin/vertex`, not here.
+/// Build output from launching a Swarm node: the event-loop task function plus
+/// the component container `P`, which determines the node's capabilities. All
+/// containers implement `HasTopology`. The transport is wired at `bin/vertex`.
 pub struct BuiltNode<P> {
     task_fn: NodeTaskFn,
     providers: P,
@@ -31,7 +27,7 @@ impl<P> BuiltNode<P> {
         Self { task_fn, providers }
     }
 
-    /// Consume and create the main event loop task with graceful shutdown.
+    /// Build the event-loop task wired to the shutdown signal.
     pub fn into_task(self, shutdown: GracefulShutdown) -> NodeTask {
         (self.task_fn)(shutdown)
     }
@@ -48,14 +44,12 @@ impl<P> BuiltNode<P> {
         self.providers
     }
 
-    /// Decompose into task function and providers.
     pub fn into_parts(self) -> (NodeTaskFn, P) {
         (self.task_fn, self.providers)
     }
 }
 
 impl<P: HasTopology> BuiltNode<P> {
-    /// Access the topology handle.
     pub fn topology(&self) -> &P::Topology {
         self.providers.topology()
     }
@@ -68,10 +62,9 @@ pub type BuiltBootnode = BuiltNode<BootnodeComponents<TopologyHandle<Arc<Identit
 pub type BuiltClient =
     BuiltNode<ClientComponents<TopologyHandle<Arc<Identity>>, VerifiedChunkProvider>>;
 
-/// Built storer node (topology + chunks + the persisting reserve as the local
-/// store). The store is erased to `Arc<dyn SwarmLocalStore>`: the launch path
-/// keeps the concrete reserve and shares one trait handle with the node so
-/// serving-on-retrieval reads the reserve.
+/// Built storer node (topology + chunks + persisting reserve as the local
+/// store). The store is erased to `Arc<dyn SwarmLocalStore>` so one handle is
+/// shared for serve-on-retrieval while the launch path keeps the concrete reserve.
 pub type BuiltStorer = BuiltNode<
     StorerComponents<
         TopologyHandle<Arc<Identity>>,

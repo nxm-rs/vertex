@@ -11,7 +11,7 @@ use vertex_tasks::TaskExecutor;
 
 use crate::{InfrastructureError, LaunchError, NodeHandle};
 
-/// Context for launching a node with executor, directories, and API config.
+/// Executor, directories, and API config needed to launch a node.
 #[derive(Clone)]
 pub struct LaunchContext<A = ()> {
     pub executor: TaskExecutor,
@@ -21,7 +21,7 @@ pub struct LaunchContext<A = ()> {
 }
 
 impl<A> LaunchContext<A> {
-    /// Create a new launch context with an in-memory database configuration.
+    /// Defaults to an in-memory database configuration.
     pub fn new(executor: TaskExecutor, dirs: DataDirs, api: A) -> Self {
         Self {
             executor,
@@ -31,14 +31,13 @@ impl<A> LaunchContext<A> {
         }
     }
 
-    /// Set the resolved database configuration.
     #[must_use]
     pub fn with_database_config(mut self, database: DatabaseConfig) -> Self {
         self.database = database;
         self
     }
 
-    /// Get the data directory root.
+    /// Data directory root.
     pub fn data_dir(&self) -> &std::path::PathBuf {
         &self.dirs.root
     }
@@ -59,7 +58,7 @@ impl<A: Send + Sync> InfrastructureContext for LaunchContext<A> {
 }
 
 impl<A: NodeRpcConfig> LaunchContext<A> {
-    /// Get the gRPC socket address from configuration.
+    /// gRPC socket address; falls back to localhost if the configured address is unparseable.
     pub fn grpc_addr(&self) -> SocketAddr {
         let ip: IpAddr = self.api.grpc_addr().parse().unwrap_or_else(|_| {
             tracing::warn!(
@@ -76,13 +75,11 @@ impl<A: NodeRpcConfig> LaunchContext<A> {
 pub struct NodeBuilder;
 
 impl NodeBuilder {
-    /// Create a new node builder.
     #[must_use]
     pub fn new() -> Self {
         Self
     }
 
-    /// Add launch context (executor, data directories, and API config).
     #[must_use]
     pub fn with_launch_context<A>(
         self,
@@ -108,29 +105,25 @@ pub struct WithLaunchContext<A> {
 }
 
 impl<A> WithLaunchContext<A> {
-    /// Get a reference to the launch context.
     pub fn context(&self) -> &LaunchContext<A> {
         &self.ctx
     }
 
-    /// Set the resolved database configuration on the launch context.
     #[must_use]
     pub fn with_database_config(mut self, database: DatabaseConfig) -> Self {
         self.ctx = self.ctx.with_database_config(database);
         self
     }
 
-    /// Get the data directories.
     pub fn dirs(&self) -> &DataDirs {
         &self.ctx.dirs
     }
 
-    /// Get the task executor.
     pub fn executor(&self) -> &TaskExecutor {
         &self.ctx.executor
     }
 
-    /// Provide the protocol configuration (protocol type inferred from config).
+    /// Protocol type is inferred from the config.
     #[must_use]
     pub fn with_protocol<C: NodeBuildsProtocol>(self, config: C) -> WithProtocol<C::Protocol, A> {
         tracing::info!("Protocol: {}", config.protocol_name());
@@ -151,14 +144,11 @@ impl<P: NodeProtocol, A: NodeRpcConfig + Send + Sync> WithProtocol<P, A>
 where
     P::Config: NodeBuildsProtocol,
 {
-    /// Get a reference to the launch context.
     pub fn context(&self) -> &LaunchContext<A> {
         &self.ctx
     }
 
-    /// Launch the node, serving its components with the chosen transport.
-    ///
-    /// The transport is selected by the caller; this path names no transport.
+    /// Launch the node, serving its components with the caller-selected transport.
     pub async fn launch_with<Tr: Transport>(
         self,
     ) -> Result<NodeHandle<P::Components>, LaunchError<P::BuildError>>
@@ -167,22 +157,18 @@ where
     {
         use tracing::info;
 
-        // Infrastructure configuration
         info!("Data directory: {}", self.ctx.dirs.root.display());
         info!("RPC address: {}", self.ctx.grpc_addr());
 
         let addr = self.ctx.grpc_addr();
 
-        // Launch the protocol (builds components and spawns services)
         let components = P::launch(self.config, &self.ctx)
             .await
             .map_err(LaunchError::Protocol)?;
 
-        // Populate the transport registry from the components.
         let mut registry = Tr::Registry::default();
         components.register(&mut registry);
 
-        // Bind the server and spawn it as a critical task.
         let server = Tr::into_server(registry, addr)
             .map_err(|e| InfrastructureError::Transport(e.into()))?;
 
@@ -203,7 +189,7 @@ where
         ))
     }
 
-    /// Launch the node with the gRPC transport (back-compat alias).
+    /// Launch with the gRPC transport.
     pub async fn launch(self) -> Result<NodeHandle<P::Components>, LaunchError<P::BuildError>>
     where
         P::Components: ServeWith<GrpcTransport>,
@@ -216,19 +202,15 @@ impl<P: NodeProtocol> WithProtocol<P, ()>
 where
     P::Config: NodeBuildsProtocol,
 {
-    /// Launch the node without gRPC server.
-    ///
-    /// Use this when you don't need the gRPC API.
+    /// Launch without a gRPC server.
     pub async fn launch_without_grpc(
         self,
     ) -> Result<NodeHandle<P::Components>, LaunchError<P::BuildError>> {
         use tracing::info;
 
-        // Infrastructure configuration
         info!("Data directory: {}", self.ctx.dirs.root.display());
         info!("gRPC: disabled");
 
-        // Launch the protocol (builds components and spawns services)
         let components = P::launch(self.config, &self.ctx)
             .await
             .map_err(LaunchError::Protocol)?;
