@@ -432,6 +432,11 @@ impl ClientService {
                 metrics::counter!("swarm.client.inbound_relayed").increment(1);
             }
 
+            ClientEvent::InboundStored { peer } => {
+                debug!(%peer, "Stored inbound pushsync delivery and signed a receipt");
+                metrics::counter!("swarm.client.inbound_stored").increment(1);
+            }
+
             ClientEvent::InboundPushFailed { peer, address } => {
                 debug!(%peer, %address, "Inbound pushsync failed (substream reset)");
                 metrics::counter!("swarm.client.inbound_push_failed").increment(1);
