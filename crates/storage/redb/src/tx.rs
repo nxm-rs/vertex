@@ -95,6 +95,70 @@ macro_rules! impl_db_tx_reads {
             result
         }
 
+        fn exists<T: Table>(&self, key: T::Key) -> Result<bool, DatabaseError> {
+            let start = Instant::now();
+            let _span = tracing::trace_span!("db_exists", table = T::NAME).entered();
+
+            let def = table_def(T::NAME);
+            let table = self.inner.open_table(def).map_err(|e| {
+                DatabaseError::Read(DatabaseErrorInfo::with_source(
+                    format!("open table {}", T::NAME),
+                    e,
+                ))
+            })?;
+            let encoded = key.encode();
+            // `get` returns an AccessGuard; probing `is_some()` never calls
+            // `.value()`, so the stored value is not decoded.
+            let present = table
+                .get(encoded.as_ref())
+                .map_err(|e| {
+                    DatabaseError::Read(DatabaseErrorInfo::with_source(
+                        format!("exists in {}", T::NAME),
+                        e,
+                    ))
+                })?
+                .is_some();
+
+            record_op(
+                T::NAME,
+                operation::GET,
+                "success",
+                start.elapsed().as_secs_f64(),
+            );
+            Ok(present)
+        }
+
+        fn first_key<T: Table>(&self) -> Result<Option<T::Key>, DatabaseError> {
+            let start = Instant::now();
+            let _span = tracing::trace_span!("db_first_key", table = T::NAME).entered();
+
+            let def = table_def(T::NAME);
+            let table = self.inner.open_table(def).map_err(|e| {
+                DatabaseError::Read(DatabaseErrorInfo::with_source(
+                    format!("open table {}", T::NAME),
+                    e,
+                ))
+            })?;
+            // `first` decodes only the key; the value guard is dropped undecoded.
+            let key = match table.first().map_err(|e| {
+                DatabaseError::Read(DatabaseErrorInfo::with_source(
+                    format!("first_key in {}", T::NAME),
+                    e,
+                ))
+            })? {
+                Some((k, _v)) => Some(T::Key::decode(k.value())?),
+                None => None,
+            };
+
+            record_op(
+                T::NAME,
+                operation::KEYS,
+                "success",
+                start.elapsed().as_secs_f64(),
+            );
+            Ok(key)
+        }
+
         fn entries<T: Table>(&self) -> Result<Vec<(T::Key, T::Value)>, DatabaseError> {
             let start = Instant::now();
             let _span = tracing::trace_span!("db_entries", table = T::NAME).entered();

@@ -146,8 +146,8 @@ impl<DB: Database> BatchStore for DbBatchStore<DB> {
     }
 
     fn contains(&self, id: &BatchId) -> Result<bool, Self::Error> {
-        // TODO(#214): switch to a key-presence check once the tx trait has one.
-        Ok(self.get(id)?.is_some())
+        // Key-presence probe: never decodes the batch value.
+        Ok(self.db.view(|tx| tx.exists::<Batches>(BatchIdKey(*id)))?)
     }
 
     fn context(&self) -> Result<PostageContext, Self::Error> {
@@ -164,7 +164,8 @@ impl<DB: Database> BatchStore for DbBatchStore<DB> {
     }
 
     fn batch_ids(&self) -> Result<Vec<BatchId>, Self::Error> {
-        // Lazy read-only cursor owns its snapshot; only keys are needed.
+        // Lazy read-only cursor owns its snapshot. Each step decodes its value
+        // because the cursor has no key-only mode; only the keys are retained.
         let tx = self.db.tx()?;
         let mut cursor = tx.cursor::<Batches>()?;
         let mut ids = Vec::new();

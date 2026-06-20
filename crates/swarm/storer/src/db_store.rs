@@ -41,11 +41,8 @@ impl<DB: Database> ChunkStore for DbChunkStore<DB> {
     fn put(&self, address: &ChunkAddress, data: &[u8]) -> StorerResult<()> {
         self.db.update(|tx| {
             // Chunks are content-addressed: never overwrite an existing entry.
-            // The duplicate probe deserializes the existing value because the
-            // transaction trait has no key-presence primitive; the table is
-            // uncompressed so the cost is one length parse plus a copy.
-            // TODO(#214): switch to a key-presence check once available.
-            if tx.get::<ChunkTable>(*address)?.is_none() {
+            // The duplicate probe checks key presence without decoding the value.
+            if !tx.exists::<ChunkTable>(*address)? {
                 tx.put::<ChunkTable>(*address, data.to_vec())?;
             }
             Ok(())
@@ -58,13 +55,8 @@ impl<DB: Database> ChunkStore for DbChunkStore<DB> {
     }
 
     fn contains(&self, address: &ChunkAddress) -> StorerResult<bool> {
-        // Presence is probed via a full value read: the transaction trait has
-        // no key-presence primitive yet, so this deserializes the chunk and
-        // discards it.
-        // TODO(#214): switch to a key-presence check once available.
-        Ok(self
-            .db
-            .view(|tx| Ok(tx.get::<ChunkTable>(*address)?.is_some()))?)
+        // Key-presence probe: never decodes the chunk value.
+        Ok(self.db.view(|tx| tx.exists::<ChunkTable>(*address))?)
     }
 
     fn delete(&self, address: &ChunkAddress) -> StorerResult<()> {
@@ -84,17 +76,18 @@ impl<DB: Database> ChunkStore for DbChunkStore<DB> {
     where
         F: FnMut(&ChunkAddress) -> bool,
     {
-        // The transaction trait has no streaming or cursor read, so all keys
-        // are materialized up front (values are never deserialized). Early
-        // exit via the callback still skips the rest of the walk, but callers
-        // that only need the first key, such as Reserve::evict_oldest, pay an
-        // O(N) key scan per call.
-        // TODO(#214): iterate via a cursor once the trait exposes one.
-        let keys = self.db.view(|tx| tx.keys::<ChunkTable>())?;
-        for address in &keys {
-            if !callback(address) {
+        // Stream entries via a lazy cursor: callers that only need the first key,
+        // such as Reserve::evict_oldest, stop after one step instead of paying an
+        // O(N) scan. Each step still decodes its value because the cursor has no
+        // key-only mode.
+        let tx = self.db.tx()?;
+        let mut cursor = tx.cursor::<ChunkTable>()?;
+        let mut entry = cursor.first()?;
+        while let Some((address, _data)) = entry {
+            if !callback(&address) {
                 break;
             }
+            entry = cursor.next()?;
         }
         Ok(())
     }
