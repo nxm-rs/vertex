@@ -35,6 +35,7 @@
 
 #[cfg(feature = "chain")]
 mod chain;
+mod composite;
 pub mod config;
 mod error;
 mod handle;
