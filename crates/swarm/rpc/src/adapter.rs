@@ -11,8 +11,8 @@
 
 use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
 use vertex_swarm_api::{
-    BootnodeComponents, ClientComponents, HasChunkClient, HasTopology, SwarmTopologyPeers,
-    SwarmTopologyState, SwarmTopologyStats,
+    BootnodeComponents, ClientComponents, HasChunkClient, HasTopology, StorerComponents,
+    SwarmTopologyPeers, SwarmTopologyState, SwarmTopologyStats,
 };
 use vertex_swarm_stream::ChunkClient;
 
@@ -107,8 +107,7 @@ where
     }
 }
 
-/// Client and storer nodes register the node status service and the chunk
-/// service.
+/// Client nodes register the node status service and the chunk service.
 impl<T, C> RegistersGrpcServices for GrpcAdapter<ClientComponents<T, C>>
 where
     T: SwarmTopologyState + SwarmTopologyStats + SwarmTopologyPeers + Clone + Send + Sync + 'static,
@@ -117,7 +116,27 @@ where
     fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
         self.register_node(registry);
         self.register_chunk(registry);
+    }
+}
 
-        // TODO: Add storer-specific RPC services (storage, redistribution, etc.)
+/// Storer nodes register the node status service and the chunk service.
+///
+/// `StorerComponents` exposes the topology and chunk client through the same
+/// `HasTopology`/`HasChunkClient` accessors the client container does (it
+/// delegates to its embedded `ClientComponents`), so the same two services
+/// register. The store axis (`S`) carries no served capability yet: a
+/// reserve-specific service can be gated on `HasReserve` once one exists.
+impl<T, C, S> RegistersGrpcServices for GrpcAdapter<StorerComponents<T, C, S>>
+where
+    T: SwarmTopologyState + SwarmTopologyStats + SwarmTopologyPeers + Clone + Send + Sync + 'static,
+    C: ChunkClient + Send + Sync,
+    S: Send + Sync,
+{
+    fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
+        self.register_node(registry);
+        self.register_chunk(registry);
+
+        // TODO: Add storer-specific RPC services (reserve, redistribution) once
+        // they exist; gate them on `HasReserve`.
     }
 }

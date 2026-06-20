@@ -165,7 +165,6 @@ pub struct StorerComponents<T, C, S> {
 impl<T, C, S> StorerComponents<T, C, S> {
     /// Wire storer components. Crate-visible: only the builder constructs
     /// components, via the [`construct`] seam.
-    #[expect(dead_code, reason = "storer wiring lands with the storer extension")]
     pub(crate) fn new(topology: T, chunk_client: C, store: S) -> Self {
         Self {
             client: ClientComponents::new(topology, chunk_client),
@@ -207,7 +206,7 @@ impl<T: Send + Sync, C: Send + Sync, S: Send + Sync> HasStore for StorerComponen
 /// `#[doc(hidden)]` free functions instead. Not part of the stable API.
 #[doc(hidden)]
 pub mod construct {
-    use super::{BootnodeComponents, ClientComponents};
+    use super::{BootnodeComponents, ClientComponents, StorerComponents};
 
     /// Wire [`BootnodeComponents`].
     pub fn bootnode<T>(topology: T) -> BootnodeComponents<T> {
@@ -217,5 +216,10 @@ pub mod construct {
     /// Wire [`ClientComponents`].
     pub fn client<T, C>(topology: T, chunk_client: C) -> ClientComponents<T, C> {
         ClientComponents::new(topology, chunk_client)
+    }
+
+    /// Wire [`StorerComponents`].
+    pub fn storer<T, C, S>(topology: T, chunk_client: C, store: S) -> StorerComponents<T, C, S> {
+        StorerComponents::new(topology, chunk_client, store)
     }
 }
