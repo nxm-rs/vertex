@@ -1,22 +1,10 @@
-//! SWAP settlement wiring for the client launch path.
+//! SWAP settlement wiring behind the `swap` feature.
 //!
-//! Ties three pieces together behind the `swap` feature: a [`SwapProvider`]
-//! registered with the accounting builder so [`BandwidthMode`] selection drives
-//! cheque issuance, the [`SwapService`] actor that owns the cheque-exchange state
-//! machine, and the wire plumbing that routes swap events from the node into the
-//! service and the service's `SendCheque` commands back to the node.
-//!
-//! The provider and the service share one accounting instance: the provider
-//! delegates outbound settlement to the service through a [`SwapHandle`], and the
-//! service credits received cheques against the same balances. Because the
-//! provider must be embedded in the accounting before it is built, the wiring is
-//! split: [`SwapWiring::prepare`] builds the handle and provider up front, then
-//! [`SwapWiring::spawn`] constructs and spawns the service once the accounting
-//! instance and the node command channel exist.
-//!
-//! Cheque exchange is chain-free. With the `chain` feature also enabled, a
-//! cashout client built over the shared provider redeems received cheques on
-//! chain.
+//! The provider and the service share one accounting instance, so the wiring is
+//! split: [`SwapWiring::prepare`] builds the handle and provider before the
+//! accounting is built, then [`SwapWiring::spawn`] spawns the service once the
+//! accounting instance and node command channel exist. With the `chain` feature
+//! a cashout client redeems received cheques on chain.
 
 use std::sync::Arc;
 
@@ -39,11 +27,7 @@ use vertex_swarm_spec::Spec;
 #[cfg(feature = "chain")]
 use crate::chain::SharedChainProvider;
 
-/// Resolved swap settlement parameters and the channels that connect the
-/// provider, the service, and the node.
-///
-/// Produced by [`SwapWiring::prepare`] before the accounting is built; consumed
-/// by [`SwapWiring::spawn`] after the node command channel exists.
+/// Resolved swap parameters and the channels connecting provider, service, and node.
 pub(crate) struct SwapWiring {
     command_rx: mpsc::UnboundedReceiver<SwapCommand>,
     swap_event_tx: mpsc::UnboundedSender<SwapEvent>,
@@ -55,13 +39,8 @@ pub(crate) struct SwapWiring {
 }
 
 impl SwapWiring {
-    /// Build the swap handle and provider when SWAP settlement is enabled.
-    ///
-    /// Returns `None` (and leaves accounting swap-free) when the bandwidth mode
-    /// does not enable SWAP, or when SWAP is requested but the required chequebook
-    /// address and settlement chain cannot be resolved. The returned provider is
-    /// registered with the accounting builder; the returned wiring is later handed
-    /// to [`SwapWiring::spawn`].
+    /// Build the swap handle and provider, or `None` when the mode does not enable
+    /// SWAP or the chequebook and settlement chain cannot be resolved.
     pub(crate) fn prepare<C>(
         spec: &Arc<Spec>,
         identity: &Arc<Identity>,
@@ -73,12 +52,6 @@ impl SwapWiring {
     {
         let mode = config.mode();
         if !mode.swap_enabled() {
-            if swap_config.enable {
-                warn!(
-                    ?mode,
-                    "--swap set but bandwidth mode does not enable SWAP; settlement not wired"
-                );
-            }
             return None;
         }
 
@@ -99,16 +72,12 @@ impl SwapWiring {
             return None;
         };
 
-        // The beneficiary defaults to the node Ethereum address: the only payout
-        // address a cheque sent to us may name.
         let beneficiary = swap_config
             .beneficiary
             .unwrap_or_else(|| identity.ethereum_address());
 
         let (swap_event_tx, swap_event_rx) = mpsc::unbounded_channel();
-        // The handle backs the provider; its command channel is drained by the
-        // service spawned in `spawn`. The handle is created here so the provider
-        // can be embedded in the accounting before the accounting is built.
+        // Handle created here so the provider can be embedded in accounting before it is built.
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let handle = SwapHandle::new(command_tx);
         let provider = SwapProvider::with_handle(config.clone(), handle);
@@ -128,20 +97,12 @@ impl SwapWiring {
         Some((provider, wiring))
     }
 
-    /// The sender the node behaviour routes swap wire events into.
+    /// Sender the node behaviour routes swap wire events into.
     pub(crate) fn swap_event_sender(&self) -> mpsc::UnboundedSender<SwapEvent> {
         self.swap_event_tx.clone()
     }
 
-    /// Construct, spawn, and wire the swap service.
-    ///
-    /// The service records cheque-driven balance changes against `accounting`
-    /// (the same instance the provider settles through), drains the provider's
-    /// command channel, and consumes routed swap wire events. Cheque violations
-    /// are reported through `reporter` so they feed peer scoring. Its
-    /// `SendCheque` commands are forwarded to the node through `client_handle`.
-    /// With the `chain` feature and a connected provider, received cheques are
-    /// also cashed on chain, paying out to our beneficiary.
+    /// Construct, spawn, and wire the swap service against the shared `accounting`.
     pub(crate) fn spawn<A>(
         self,
         ctx: &dyn InfrastructureContext,
@@ -152,9 +113,7 @@ impl SwapWiring {
     ) where
         A: SwarmBandwidthAccounting + 'static,
     {
-        // The service speaks unbounded `ClientCommand`; the node command channel
-        // is bounded and reached through `ClientHandle::send_command`. Bridge the
-        // two with a forwarding task so the service never blocks on a full queue.
+        // Bridge the service's unbounded commands to the bounded node channel so it never blocks.
         let (client_command_tx, client_command_rx) = mpsc::unbounded_channel();
         spawn_command_bridge(ctx, client_command_rx, client_handle);
 
@@ -178,10 +137,6 @@ impl SwapWiring {
 }
 
 /// Forward the swap service's `ClientCommand`s to the node command channel.
-///
-/// The service emits commands on an unbounded channel; this task drains it and
-/// hands each command to the node through `ClientHandle::send_command`, which is
-/// non-blocking. The task ends when the service drops its sender or on shutdown.
 fn spawn_command_bridge(
     ctx: &dyn InfrastructureContext,
     mut client_command_rx: mpsc::UnboundedReceiver<ClientCommand>,
@@ -209,8 +164,7 @@ fn spawn_command_bridge(
     );
 }
 
-/// Attach an on-chain cashout client to the swap service when a chain provider is
-/// present, so received cheques are redeemed paying out to our beneficiary.
+/// Attach an on-chain cashout client when a chain provider is present.
 #[cfg(feature = "chain")]
 fn attach_cashout<A, S>(
     service: SwapService<A, S>,

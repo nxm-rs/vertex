@@ -19,9 +19,10 @@ default = []
 # chain code.
 chain = ["vertex-swarm-builder/chain"]
 # SWAP cheque-based settlement. Wires the chequebook settlement service into the
-# accounting and surfaces the `--swap` flags. Chain-free on its own (cheque
-# exchange needs no chain); combine with `chain` for on-chain cashout. Off by
-# default so the default binary stays swap-free and chain-free.
+# accounting and reads the `--swap.*` knobs; selected by `--bandwidth.mode`.
+# Chain-free on its own (cheque exchange needs no chain); combine with `chain`
+# for on-chain cashout. Off by default so the default binary stays swap-free and
+# chain-free.
 swap = ["vertex-swarm-builder/swap"]
 # Node role: a storer settles bandwidth over SWAP, so it turns the chain stack,
 # the on-chain chequebook client, and the swap settlement service on. Selected by
