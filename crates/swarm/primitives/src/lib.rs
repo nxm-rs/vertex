@@ -483,6 +483,14 @@ mod tests {
     }
 
     #[test]
+    fn bandwidth_mode_with_swap_folds_in_swap() {
+        assert_eq!(BandwidthMode::None.with_swap(), BandwidthMode::Swap);
+        assert_eq!(BandwidthMode::Pseudosettle.with_swap(), BandwidthMode::Both);
+        assert_eq!(BandwidthMode::Swap.with_swap(), BandwidthMode::Swap);
+        assert_eq!(BandwidthMode::Both.with_swap(), BandwidthMode::Both);
+    }
+
+    #[test]
     fn connection_profile_string_round_trip() {
         use std::str::FromStr;
 
@@ -517,8 +525,16 @@ pub enum BandwidthMode {
 }
 
 impl BandwidthMode {
-    /// The default accounting mode for a node type: a bootnode does no accounting,
-    /// a client pseudosettles, a storer runs both pseudosettle and swap.
+    /// The default accounting mode for a node type.
+    ///
+    /// A bootnode does no bandwidth accounting, a client forgives debt over
+    /// time but issues no cheques ([`BandwidthMode::Pseudosettle`]), and a storer
+    /// runs both providers ([`BandwidthMode::Both`]): pseudosettle for light peers
+    /// that cannot pay and swap with the peers it settles against.
+    ///
+    /// This seeds the `BandwidthConfig::for_node_type` constructor; an operator
+    /// override is carried separately as `Option<BandwidthMode>` (`None` means
+    /// use this default), never inferred from value equality.
     pub const fn default_for(node_type: SwarmNodeType) -> Self {
         match node_type {
             SwarmNodeType::Bootnode => BandwidthMode::None,
@@ -533,6 +549,14 @@ impl BandwidthMode {
 
     pub fn swap_enabled(self) -> bool {
         matches!(self, BandwidthMode::Swap | BandwidthMode::Both)
+    }
+
+    /// Return this mode with SWAP folded in, preserving any pseudosettle leg.
+    pub const fn with_swap(self) -> Self {
+        match self {
+            BandwidthMode::None | BandwidthMode::Swap => BandwidthMode::Swap,
+            BandwidthMode::Pseudosettle | BandwidthMode::Both => BandwidthMode::Both,
+        }
     }
 
     pub fn is_enabled(self) -> bool {
