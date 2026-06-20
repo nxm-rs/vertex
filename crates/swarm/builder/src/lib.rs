@@ -12,10 +12,11 @@
 //! The crate has two build modes, selected by the `chain` cargo feature:
 //!
 //! - Default (`chain` off): the light, chain-free build. No Ethereum RPC stack
-//!   is compiled in; a storer or a SWAP-enabled client runs without on-chain
-//!   staking or settlement. This is what the default `vertex` binary and the
-//!   wasm client resolve, and the cone guard enforces that the chain crates and
-//!   their alloy RPC dependencies never reach this cone.
+//!   is compiled in; only chain-free node types (a bootnode, a client without
+//!   SWAP) launch, and a chain-needing node type hard-fails the build with
+//!   `SwarmNodeError::ChainRequired`. This is what the default `vertex` binary
+//!   and the wasm client resolve, and the cone guard enforces that the chain
+//!   crates and their alloy RPC dependencies never reach this cone.
 //! - `chain` on: pulls `vertex-chain` and the on-chain chequebook client, and
 //!   constructs a shared Ethereum alloy provider for chain-needing node types.
 //!   The chain is a shared provider, not a long-lived service: the launch path
