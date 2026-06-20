@@ -27,6 +27,11 @@
 //!
 //! The chain knobs (RPC URL and transaction tuning) live on the node configs in
 //! every build; without the feature they are inert.
+//!
+//! Native-only: it depends unconditionally on the redb backend, so it never
+//! enters the wasm cone (the wasm client composes through `vertex-swarm-node`).
+//! The store seams therefore carry `RedbDatabase`-typed factory closures without
+//! cfg-gating.
 
 #[cfg(feature = "chain")]
 mod chain;

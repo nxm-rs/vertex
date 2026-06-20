@@ -59,6 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         identity,
         NetworkConfig::default(),
         Default::default(),
+        Default::default(),
         verify,
         ChainConfig::default(),
         SwapConfig::default(),
