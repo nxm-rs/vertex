@@ -274,6 +274,15 @@ impl ClientBehaviour {
                     });
                 }
             }
+            // `ClientCommand` carries swap variants when `client-protocol/swap`
+            // is on, which Cargo feature unification can turn on (a workspace
+            // build also compiling `accounting-swap`) even when this crate's
+            // `swap` feature is off. The swap wire is then not linked here, so
+            // drop the command. The all-features build keeps full exhaustiveness.
+            // Unreachable when nothing in the build enables `client-protocol/swap`.
+            #[cfg(not(feature = "swap"))]
+            #[allow(unreachable_patterns)]
+            _ => {}
         }
     }
 
