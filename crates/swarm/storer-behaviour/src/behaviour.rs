@@ -33,7 +33,10 @@ const CHUNK_QUOTA: Quota = Quota::n_every(
     Duration::from_secs(1),
 );
 
-/// Events emitted by [`PullsyncBehaviour`].
+/// Events emitted by [`PullsyncBehaviour`]. `request_id` echoes the command
+/// that opened the exchange so the puller drops a stale buffered reply rather
+/// than matching it to a later command for the same peer and bin; it never
+/// crosses the wire.
 #[derive(Debug, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum PullsyncEvent {
@@ -41,6 +44,7 @@ pub enum PullsyncEvent {
     /// epoch.
     CursorsReceived {
         peer: PeerId,
+        request_id: u64,
         cursors: Vec<u64>,
         epoch: u64,
     },
@@ -48,6 +52,7 @@ pub enum PullsyncEvent {
     /// offer covered; the puller advances its cursor to it.
     RangeDelivered {
         peer: PeerId,
+        request_id: u64,
         bin: Bin,
         topmost: u64,
         chunks: Vec<StampedChunk>,
@@ -55,6 +60,7 @@ pub enum PullsyncEvent {
     /// An outbound command against `peer` failed.
     Failed {
         peer: PeerId,
+        request_id: u64,
         failure: PullsyncFailure,
     },
 }
@@ -80,22 +86,26 @@ impl PullsyncBehaviour {
     }
 
     /// Open the cursor handshake against `peer`. The peer's cursors arrive as a
-    /// [`PullsyncEvent::CursorsReceived`].
-    pub fn fetch_cursors(&mut self, peer: PeerId) {
+    /// [`PullsyncEvent::CursorsReceived`] carrying `request_id`.
+    pub fn fetch_cursors(&mut self, peer: PeerId, request_id: u64) {
         self.events.push_back(ToSwarm::NotifyHandler {
             peer_id: peer,
             handler: NotifyHandler::Any,
-            event: PullsyncCommand::FetchCursors,
+            event: PullsyncCommand::FetchCursors { request_id },
         });
     }
 
     /// Open a range exchange against `peer` for `bin` from `start`. The selected
-    /// chunks arrive as a [`PullsyncEvent::RangeDelivered`].
-    pub fn sync_range(&mut self, peer: PeerId, bin: Bin, start: u64) {
+    /// chunks arrive as a [`PullsyncEvent::RangeDelivered`] carrying `request_id`.
+    pub fn sync_range(&mut self, peer: PeerId, request_id: u64, bin: Bin, start: u64) {
         self.events.push_back(ToSwarm::NotifyHandler {
             peer_id: peer,
             handler: NotifyHandler::Any,
-            event: PullsyncCommand::SyncRange { bin, start },
+            event: PullsyncCommand::SyncRange {
+                request_id,
+                bin,
+                start,
+            },
         });
     }
 
@@ -151,25 +161,34 @@ impl NetworkBehaviour for PullsyncBehaviour {
         event: THandlerOutEvent<Self>,
     ) {
         let event = match event {
-            PullsyncHandlerEvent::CursorsReceived { cursors, epoch } => {
-                PullsyncEvent::CursorsReceived {
-                    peer: peer_id,
-                    cursors,
-                    epoch,
-                }
-            }
+            PullsyncHandlerEvent::CursorsReceived {
+                request_id,
+                cursors,
+                epoch,
+            } => PullsyncEvent::CursorsReceived {
+                peer: peer_id,
+                request_id,
+                cursors,
+                epoch,
+            },
             PullsyncHandlerEvent::RangeDelivered {
+                request_id,
                 bin,
                 topmost,
                 chunks,
             } => PullsyncEvent::RangeDelivered {
                 peer: peer_id,
+                request_id,
                 bin,
                 topmost,
                 chunks,
             },
-            PullsyncHandlerEvent::OutboundFailed { failure } => PullsyncEvent::Failed {
+            PullsyncHandlerEvent::OutboundFailed {
+                request_id,
+                failure,
+            } => PullsyncEvent::Failed {
                 peer: peer_id,
+                request_id,
                 failure,
             },
         };

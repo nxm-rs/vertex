@@ -166,7 +166,7 @@ async fn cursor_handshake_round_trips() {
     let server_peer = *server.local_peer_id();
 
     connect(&mut puller, &mut server).await;
-    puller.behaviour_mut().fetch_cursors(server_peer);
+    puller.behaviour_mut().fetch_cursors(server_peer, 1);
 
     let event = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -186,10 +186,12 @@ async fn cursor_handshake_round_trips() {
     match event {
         PullsyncEvent::CursorsReceived {
             peer,
+            request_id,
             cursors,
             epoch,
         } => {
             assert_eq!(peer, server_peer);
+            assert_eq!(request_id, 1, "the reply echoes the command request id");
             assert_eq!(epoch, 7);
             assert_eq!(cursors.len(), Bin::COUNT);
             assert_eq!(cursors.get(5), Some(&2), "bin 5 holds two entries");
@@ -209,7 +211,7 @@ async fn range_exchange_delivers_the_page() {
     let server_peer = *server.local_peer_id();
 
     connect(&mut puller, &mut server).await;
-    puller.behaviour_mut().sync_range(server_peer, bin, 0);
+    puller.behaviour_mut().sync_range(server_peer, 2, bin, 0);
 
     let event = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -229,11 +231,13 @@ async fn range_exchange_delivers_the_page() {
     match event {
         PullsyncEvent::RangeDelivered {
             peer,
+            request_id,
             bin: got_bin,
             topmost,
             chunks,
         } => {
             assert_eq!(peer, server_peer);
+            assert_eq!(request_id, 2, "the reply echoes the command request id");
             assert_eq!(got_bin, bin);
             assert_eq!(topmost, 2, "topmost covers both entries");
             assert_eq!(chunks.len(), 2, "the whole page is wanted and delivered");
@@ -256,7 +260,7 @@ async fn empty_range_completes_with_no_want() {
     let server_peer = *server.local_peer_id();
 
     connect(&mut puller, &mut server).await;
-    puller.behaviour_mut().sync_range(server_peer, bin, 0);
+    puller.behaviour_mut().sync_range(server_peer, 3, bin, 0);
 
     let event = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -276,11 +280,13 @@ async fn empty_range_completes_with_no_want() {
     match event {
         PullsyncEvent::RangeDelivered {
             peer,
+            request_id,
             bin: got_bin,
             topmost,
             chunks,
         } => {
             assert_eq!(peer, server_peer);
+            assert_eq!(request_id, 3, "the reply echoes the command request id");
             assert_eq!(got_bin, bin);
             assert_eq!(topmost, 0, "an empty range yields topmost 0, not start");
             assert!(chunks.is_empty(), "an empty range delivers no chunks");

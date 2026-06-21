@@ -45,7 +45,9 @@ impl TopologyNeighbours {
 impl NeighbourSource for TopologyNeighbours {
     fn targets(&self) -> Vec<SyncTarget> {
         let depth = self.topology.depth();
-        let bins: Vec<Bin> = neighborhood_bins(depth, Bin::MAX).collect();
+        // Scope to the routing table's deepest bin, matching `neighbors(depth)`;
+        // bins above it hold no peers, so driving ranges there wastes a pass.
+        let bins: Vec<Bin> = neighborhood_bins(depth, self.topology.max_bin()).collect();
         self.topology
             .neighbors(depth)
             .into_iter()

@@ -47,8 +47,16 @@ use crate::{ClientHandle, ClientService};
 /// sub-behaviour. Mirrors the `ClientCommand` path: the puller's
 /// [`PullsyncControl`] enqueues these and the swarm loop drains them.
 enum PullsyncCommand {
-    FetchCursors { peer: PeerId },
-    SyncRange { peer: PeerId, bin: Bin, start: u64 },
+    FetchCursors {
+        peer: PeerId,
+        request_id: u64,
+    },
+    SyncRange {
+        peer: PeerId,
+        request_id: u64,
+        bin: Bin,
+        start: u64,
+    },
 }
 
 /// [`PullsyncControl`] bridge: the puller's outbound command surface, sending
@@ -59,20 +67,25 @@ pub struct StorerPullsyncControl {
 }
 
 impl PullsyncControl for StorerPullsyncControl {
-    fn fetch_cursors(&self, peer: PeerId) {
+    fn fetch_cursors(&self, peer: PeerId, request_id: u64) {
         if self
             .command_tx
-            .try_send(PullsyncCommand::FetchCursors { peer })
+            .try_send(PullsyncCommand::FetchCursors { peer, request_id })
             .is_err()
         {
             metrics::counter!("swarm.pullsync.commands_dropped").increment(1);
         }
     }
 
-    fn sync_range(&self, peer: PeerId, bin: Bin, start: u64) {
+    fn sync_range(&self, peer: PeerId, request_id: u64, bin: Bin, start: u64) {
         if self
             .command_tx
-            .try_send(PullsyncCommand::SyncRange { peer, bin, start })
+            .try_send(PullsyncCommand::SyncRange {
+                peer,
+                request_id,
+                bin,
+                start,
+            })
             .is_err()
         {
             metrics::counter!("swarm.pullsync.commands_dropped").increment(1);
@@ -451,12 +464,38 @@ impl<I: SwarmIdentity + Clone> StorerNode<I> {
     }
 
     fn handle_pullsync_command(&mut self, command: PullsyncCommand) {
+        let (peer, request_id) = match &command {
+            PullsyncCommand::FetchCursors { peer, request_id }
+            | PullsyncCommand::SyncRange {
+                peer, request_id, ..
+            } => (*peer, *request_id),
+        };
+
+        // A `NotifyHandler` for an unconnected peer is dropped silently, leaving
+        // the puller to wait out its full response timeout. Synthesize the
+        // failure so it abandons the target at once.
+        if !self.base.swarm.is_connected(&peer) {
+            self.route_pullsync_event(PullsyncEvent::Failed {
+                peer,
+                request_id,
+                failure: vertex_swarm_storer_behaviour::PullsyncFailure::Stream(
+                    "peer not connected".into(),
+                ),
+            });
+            return;
+        }
+
         let pullsync = &mut self.base.swarm.behaviour_mut().storer.pullsync;
         match command {
-            PullsyncCommand::FetchCursors { peer } => pullsync.fetch_cursors(peer),
-            PullsyncCommand::SyncRange { peer, bin, start } => {
-                pullsync.sync_range(peer, bin, start)
+            PullsyncCommand::FetchCursors { peer, request_id } => {
+                pullsync.fetch_cursors(peer, request_id)
             }
+            PullsyncCommand::SyncRange {
+                peer,
+                request_id,
+                bin,
+                start,
+            } => pullsync.sync_range(peer, request_id, bin, start),
         }
     }
 
