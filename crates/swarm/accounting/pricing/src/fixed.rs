@@ -3,11 +3,9 @@
 use std::sync::Arc;
 
 use nectar_primitives::{ChunkAddress, SwarmAddress};
-use vertex_swarm_api::Au;
+use vertex_swarm_api::{Au, SwarmPricing};
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_spec::SwarmSpec;
-
-use crate::Pricer;
 
 /// Prices chunks based on Kademlia proximity to peer.
 #[derive(Debug)]
@@ -32,7 +30,7 @@ impl<S: SwarmSpec> FixedPricer<S> {
     }
 }
 
-impl<S: SwarmSpec> Pricer for FixedPricer<S> {
+impl<S: SwarmSpec + Send + Sync + 'static> SwarmPricing for FixedPricer<S> {
     fn price(&self, _chunk: &ChunkAddress) -> Au {
         Au::from_amount(self.base_price)
     }
@@ -50,16 +48,6 @@ impl<S: SwarmSpec> Pricer for FixedPricer<S> {
         Au::from_amount(self.base_price)
             .checked_scale(factor)
             .unwrap_or(Au::from_amount(u64::MAX))
-    }
-}
-
-impl<S: SwarmSpec + Send + Sync + 'static> vertex_swarm_api::SwarmPricing for FixedPricer<S> {
-    fn price(&self, chunk: &ChunkAddress) -> Au {
-        Pricer::price(self, chunk)
-    }
-
-    fn peer_price(&self, peer: &OverlayAddress, chunk: &ChunkAddress) -> Au {
-        Pricer::peer_price(self, peer, chunk)
     }
 }
 
