@@ -55,6 +55,13 @@ pub struct PseudosettleService<A: SwarmBandwidthAccounting> {
     pending: HashMap<OverlayAddress, PendingSettlement>,
     /// Track last settlement time per peer (for rate limiting).
     last_settlement: HashMap<OverlayAddress, u64>,
+    /// First time we started accounting for a peer's inbound settlements.
+    ///
+    /// The time-based allowance accrues from this point, never from the Unix
+    /// epoch. On first contact, and after a reconnect that cleared
+    /// `last_settlement`, the grant is bounded by the genuine wall-clock elapsed
+    /// since this instant, not by the absolute timestamp.
+    first_seen: HashMap<OverlayAddress, u64>,
     /// Optional reporter feeding settlement violations into peer scoring.
     reporter: Option<Arc<dyn PeerReporter>>,
 }
@@ -76,6 +83,7 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
             refresh_rate,
             pending: HashMap::new(),
             last_settlement: HashMap::new(),
+            first_seen: HashMap::new(),
             reporter: None,
         }
     }
@@ -192,7 +200,10 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
                         self.report_violation(&peer);
                     }
 
-                    let accepted = au_from_wire(ack.amount);
+                    // Credit at most what we offered: an ack can never accept
+                    // more than the offer, so a violating over-ack is clamped to
+                    // the offer rather than inflating our credited balance.
+                    let accepted = au_from_wire(ack.amount).min(pending.amount);
 
                     // Credit our balance (we paid, debt reduced)
                     let handle = self.accounting.for_peer(peer);
@@ -224,6 +235,11 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
                     });
                     return;
                 }
+
+                // Anchor the allowance clock the first time we account for this
+                // peer (or after a reconnect cleared its state), so the elapsed
+                // interval is genuine wall-clock, never the absolute timestamp.
+                self.first_seen.entry(peer).or_insert(now);
 
                 // Calculate acceptable amount based on time-based refresh
                 let handle = self.accounting.for_peer(peer);
@@ -265,15 +281,21 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
         let owed = balance;
 
         // Cap at time-based allowance: refresh_rate AU accumulate per second.
-        // The scaling is checked so a large rate times a long gap cannot wrap
-        // into a tiny allowance, which is the bug behind the historical
-        // saturating multiply; on overflow the allowance saturates at the
-        // maximum and the request and owed caps below still bound the result.
+        // The elapsed interval is measured from the last settlement, or, with
+        // none yet, from when we first started accounting for this peer. It is
+        // never seeded from `now`: that would treat the whole Unix epoch as
+        // elapsed and overflow the scaling into an unbounded grant, defeating
+        // the only anti-free-ride brake on first contact and after a reconnect.
+        // On overflow the allowance saturates, but the request and owed caps
+        // below still bound the result.
         let now = current_timestamp();
-        let elapsed = self
+        let since = self
             .last_settlement
             .get(peer)
-            .map_or(now, |&last| now.saturating_sub(last));
+            .or_else(|| self.first_seen.get(peer))
+            .copied()
+            .unwrap_or(now);
+        let elapsed = now.saturating_sub(since);
         let allowance = self
             .refresh_rate
             .checked_scale(elapsed)
@@ -385,8 +407,9 @@ mod tests {
         assert_eq!(reported_peer, peer);
         assert_eq!(event, SwarmScoringEvent::AccountingViolation);
         assert_eq!(source, ReportSource::Accounting);
-        // The accounting effect of the ack is unchanged by reporting.
-        assert_eq!(rx.try_recv().unwrap().unwrap(), Au::from_amount(200));
+        // The over-ack is clamped to the offer: we credit at most what we
+        // offered, never the inflated acked amount.
+        assert_eq!(rx.try_recv().unwrap().unwrap(), Au::from_amount(100));
 
         // Every over-acceptance ack is an independent wire-level violation,
         // so a repeat offence reports again (no debounce).
@@ -434,6 +457,91 @@ mod tests {
         assert!(reporter.reports.lock().is_empty());
     }
 
+    // The peer owes us far more than any plausible time-based allowance, so
+    // the only thing capping a grant is `refresh_rate * elapsed`. Returns the
+    // service (with the owed balance recorded) and the per-second refresh rate.
+    fn service_with_large_debt(peer: OverlayAddress, refresh_rate: Au) -> TestService {
+        let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
+        let (_evt_tx, event_rx) = mpsc::unbounded_channel();
+        let (client_tx, _client_rx) = mpsc::unbounded_channel();
+        let accounting = Arc::new(Accounting::new(BandwidthConfig::default(), test_identity()));
+        let svc =
+            PseudosettleService::new(command_rx, event_rx, client_tx, accounting, refresh_rate);
+        // Peer owes us a very large amount (positive balance).
+        svc.accounting
+            .for_peer(peer)
+            .record(Au::from_amount(1_000_000_000_000), Direction::Upload);
+        svc
+    }
+
+    #[test]
+    fn first_contact_grant_is_bounded_by_elapsed_not_unbounded() {
+        let peer = test_peer();
+        let refresh_rate = Au::from_amount(4_500_000);
+        let mut svc = service_with_large_debt(peer, refresh_rate);
+
+        // First contact: anchor the allowance clock at `now`, exactly as the
+        // inbound `Received` path does before computing the acceptable amount.
+        let now = current_timestamp();
+        svc.first_seen.insert(peer, now);
+        assert!(!svc.last_settlement.contains_key(&peer));
+
+        let handle = svc.accounting.for_peer(peer);
+        let requested = Au::from_amount(1_000_000_000_000);
+        let acceptable = svc.calculate_acceptable(&peer, &handle, requested);
+
+        // With elapsed near zero the grant must be a tiny multiple of the
+        // refresh rate, never the full debt. Allow a small wall-clock slack.
+        let ceiling = refresh_rate.checked_scale(5).unwrap();
+        assert!(
+            acceptable <= ceiling,
+            "first-contact grant {acceptable} exceeded the elapsed-bounded ceiling {ceiling}"
+        );
+        // Pre-fix this saturated to the full debt; prove it is genuinely small.
+        assert!(acceptable < Au::from_amount(1_000_000_000));
+    }
+
+    #[test]
+    fn reconnect_does_not_reset_to_unbounded_grant() {
+        let peer = test_peer();
+        let refresh_rate = Au::from_amount(4_500_000);
+        let mut svc = service_with_large_debt(peer, refresh_rate);
+
+        // Simulate a reconnect: `last_settlement` is cleared (in-memory state
+        // lost), but the inbound path re-anchors `first_seen` to now.
+        let now = current_timestamp();
+        svc.last_settlement.remove(&peer);
+        svc.first_seen.insert(peer, now);
+
+        let handle = svc.accounting.for_peer(peer);
+        let acceptable =
+            svc.calculate_acceptable(&peer, &handle, Au::from_amount(1_000_000_000_000));
+
+        let ceiling = refresh_rate.checked_scale(5).unwrap();
+        assert!(
+            acceptable <= ceiling,
+            "post-reconnect grant {acceptable} exceeded the elapsed-bounded ceiling {ceiling}"
+        );
+    }
+
+    #[tokio::test]
+    async fn over_ack_is_clamped_to_offer() {
+        let mut svc = build_service();
+        let peer = test_peer();
+
+        // We offered 100 but the peer acks 250: credit is clamped to 100.
+        let mut rx = insert_pending(&mut svc, peer, Au::from_amount(100));
+        svc.handle_event(PseudosettleEvent::Sent {
+            peer,
+            ack: PaymentAck::now(U256::from(250u64)),
+        })
+        .await;
+
+        assert_eq!(rx.try_recv().unwrap().unwrap(), Au::from_amount(100));
+        let handle = svc.accounting.for_peer(peer);
+        assert_eq!(handle.balance(), Au::from_amount(100));
+    }
+
     #[tokio::test]
     async fn no_reporter_behaviour_unchanged() {
         let mut svc = build_service();
@@ -446,9 +554,10 @@ mod tests {
         })
         .await;
 
-        // Same outcome as with a reporter: the ack completes the settlement.
-        assert_eq!(rx.try_recv().unwrap().unwrap(), Au::from_amount(200));
+        // Same outcome as with a reporter: the ack completes the settlement,
+        // and the over-ack is clamped to the offer with or without reporting.
+        assert_eq!(rx.try_recv().unwrap().unwrap(), Au::from_amount(100));
         let handle = svc.accounting.for_peer(peer);
-        assert_eq!(handle.balance(), Au::from_amount(200));
+        assert_eq!(handle.balance(), Au::from_amount(100));
     }
 }
