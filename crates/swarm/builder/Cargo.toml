@@ -20,20 +20,25 @@ default = []
 # so the chain code itself can build for wasm when its features are selected.
 chain = [
     "dep:vertex-chain",
+    "dep:vertex-chain-index",
+    "dep:vertex-chain-index-framework",
     "vertex-swarm-accounting-chequebook/swap-chequebook",
+    # Per-domain indexing registrations composed into the one ContractIndexer.
+    "vertex-swarm-postage/chain",
+    "vertex-swarm-accounting-chequebook/chain",
+    "vertex-swarm-redistribution/chain",
     "dep:alloy-provider",
     "dep:alloy-network",
     "dep:alloy-signer-local",
     "dep:alloy-chains",
-    # When the swap service is also present, the chain unlocks on-chain cashout
-    # of received cheques. Without `swap` this is a no-op.
+    # With `swap` present, also unlocks on-chain cheque cashout and the swap-oracle
+    # registration; a no-op without `swap`.
     "vertex-swarm-accounting-swap?/swap-chequebook",
+    "vertex-swarm-accounting-swap?/chain",
 ]
-# SWAP cheque-based settlement. Wires the chequebook settlement service into
-# bandwidth accounting and routes the swap wire events. Chain-free on its own:
-# cheque exchange (sign, send, validate, credit) needs no chain. Combine with
-# `chain` to enable on-chain cashout of received cheques. Off by default so the
-# chain-free client node stays the default cone.
+# SWAP cheque settlement: wires the chequebook service into accounting and routes
+# swap wire events. Chain-free on its own; add `chain` for on-chain cashout. Off
+# by default so the client stays the default cone.
 swap = [
     "dep:vertex-swarm-accounting-swap",
     "vertex-swarm-node/swap",
@@ -41,9 +46,8 @@ swap = [
     "dep:alloy-signer",
     "dep:alloy-signer-local",
 ]
-# Node role: the storer settles bandwidth over SWAP, so it pulls in the chain
-# stack, the on-chain chequebook client, and the swap settlement service.
-# Client nodes leave this off.
+# Storer role: settles bandwidth over SWAP, so it pulls the chain stack and the
+# swap settlement service. Clients leave this off.
 storer = ["chain", "swap"]
 
 [dependencies]
@@ -81,12 +85,14 @@ vertex-swarm-spec.workspace = true
 
 # vertex - chain (optional, behind the `chain` feature)
 vertex-chain = { workspace = true, optional = true }
-# The on-chain chequebook client. Pure cheque codec by default; the builder's
-# `chain` feature enables `swap-chequebook` on it to construct the SWAP
-# settlement client.
+# Reorg-safe event engine and the contract-indexing framework the registrations
+# compose into.
+vertex-chain-index = { workspace = true, optional = true }
+vertex-chain-index-framework = { workspace = true, optional = true }
+# On-chain chequebook client; `chain` enables its `swap-chequebook` to build the
+# SWAP settlement client.
 vertex-swarm-accounting-chequebook = { workspace = true, optional = true }
-# The chequebook settlement service (optional, behind the `swap` feature). Cheque
-# exchange is chain-free; `swap` + `chain` turns on the service's `swap-chequebook`
+# Chequebook settlement service (behind `swap`); `swap` + `chain` enables its
 # cashout path.
 vertex-swarm-accounting-swap = { workspace = true, optional = true }
 
@@ -95,10 +101,9 @@ nectar-primitives.workspace = true
 
 # alloy
 alloy-primitives.workspace = true
-# chain feature: native HTTP transport (reqwest + native-tls) and the wallet
-# signer built from the node Ethereum identity. native-tls (system OpenSSL) is
-# used because the rustls path drags in a root-certs crate outside the workspace
-# license allow-list.
+# Native HTTP transport (reqwest + native-tls). native-tls (system OpenSSL) over
+# rustls because the rustls path drags in a root-certs crate outside the license
+# allow-list.
 alloy-provider = { workspace = true, optional = true, features = [
     "reqwest",
     "reqwest-native-tls",
@@ -126,10 +131,11 @@ nectar-postage.workspace = true
 alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 vertex-swarm-test-utils.workspace = true
+# The `CachedChunk` the store-factory test exercises.
+vertex-swarm-primitives.workspace = true
 
-# Client upload/download examples. They build a client through the public builder
-# and drive the chunk sender/provider directly, the way an FFI or gRPC embedder
-# would.
+# Client upload/download examples driving the public builder the way an FFI or
+# gRPC embedder would.
 [[example]]
 name = "upload_chunk"
 path = "examples/upload_chunk.rs"
