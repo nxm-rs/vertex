@@ -5,6 +5,21 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 use vertex_swarm_api::{Au, SwarmPeerState};
 
+/// Add `delta` to an atomic balance, saturating at the [`i64`] bounds.
+///
+/// Plain `fetch_add` wraps on overflow, which could flip a balance's sign and
+/// invert owed/owes (M8). A compare-exchange loop applies saturating addition.
+fn saturating_fetch_add(atomic: &AtomicI64, delta: i64) {
+    let mut current = atomic.load(Ordering::Relaxed);
+    loop {
+        let next = current.saturating_add(delta);
+        match atomic.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
 /// Atomic per-peer balance state (serializable for persistence).
 ///
 /// - Positive balance: peer owes us (we provided service)
@@ -54,9 +69,12 @@ impl PeerState {
         Au::new(self.balance.load(Ordering::Relaxed))
     }
 
-    /// Add to the balance atomically.
+    /// Add to the balance atomically, saturating at the [`i64`] bounds.
+    ///
+    /// Saturating (M8): an adversarial price or settlement sequence must not
+    /// wrap the balance and flip owed/owes.
     pub fn add_balance(&self, amount: Au) {
-        self.balance.fetch_add(amount.get(), Ordering::Relaxed);
+        saturating_fetch_add(&self.balance, amount.get());
     }
 
     /// Set the balance atomically.
@@ -103,10 +121,9 @@ impl PeerState {
         Au::new(self.surplus_balance.load(Ordering::Relaxed))
     }
 
-    /// Add to surplus balance.
+    /// Add to surplus balance, saturating at the [`i64`] bounds.
     pub fn add_surplus(&self, amount: Au) {
-        self.surplus_balance
-            .fetch_add(amount.get(), Ordering::Relaxed);
+        saturating_fetch_add(&self.surplus_balance, amount.get());
     }
 
     /// Get the payment threshold in AU.
@@ -149,7 +166,7 @@ impl SwarmPeerState for PeerState {
     }
 
     fn add_balance(&self, amount: Au) {
-        self.balance.fetch_add(amount.get(), Ordering::Relaxed);
+        saturating_fetch_add(&self.balance, amount.get());
     }
 
     fn last_refresh(&self) -> u64 {
@@ -231,6 +248,22 @@ mod tests {
 
         state.set_balance(au(200));
         assert_eq!(state.balance(), au(200));
+    }
+
+    #[test]
+    fn test_add_balance_saturates_instead_of_wrapping() {
+        let state = PeerState::new(au(1000), au(10000));
+
+        // Adding into the positive bound saturates rather than wrapping to a
+        // negative balance (which would flip owed/owes).
+        state.set_balance(Au::new(i64::MAX));
+        state.add_balance(au(1000));
+        assert_eq!(state.balance(), Au::new(i64::MAX));
+
+        // The negative bound saturates too.
+        state.set_balance(Au::new(i64::MIN));
+        state.add_balance(au(-1000));
+        assert_eq!(state.balance(), Au::new(i64::MIN));
     }
 
     #[test]

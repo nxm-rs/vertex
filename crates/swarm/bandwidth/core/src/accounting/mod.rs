@@ -115,7 +115,9 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
 
         let current_balance = state.balance();
         let reserved = state.reserved_balance();
-        let projected = current_balance - price - reserved;
+        let projected = current_balance
+            .saturating_sub(price)
+            .saturating_sub(reserved);
 
         let disconnect_threshold = self.config.disconnect_threshold();
         let threshold = -disconnect_threshold;
@@ -148,12 +150,35 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
     }
 
     /// Prepare a provide action (we are providing service, balance increases).
+    ///
+    /// Hard serve-refuse (H3): refuse to serve once the peer's projected debt to
+    /// us (committed balance plus outstanding provides plus this price) would
+    /// cross the per-peer payment threshold, the point at which the peer is
+    /// expected to settle. Without this gate a peer could free-ride up to the
+    /// disconnect threshold per episode; the gate restores serve headroom only
+    /// once the peer settles. The receive side keeps its own
+    /// disconnect-threshold guard in [`Accounting::prepare_receive`].
     pub fn prepare_provide(
         &self,
         peer: OverlayAddress,
         price: Au,
     ) -> Result<ProvideAction, AccountingError> {
         let state = self.get_or_create_peer(peer);
+
+        let payment_threshold = state.payment_threshold();
+        // Projected debt the peer would owe us once this provide commits.
+        let projected = state
+            .balance()
+            .saturating_add(state.shadow_reserved_balance())
+            .saturating_add(price);
+        if projected > payment_threshold {
+            return Err(AccountingError::PaymentThreshold {
+                peer,
+                balance: projected,
+                threshold: payment_threshold,
+            });
+        }
+
         state.add_shadow_reserved(price);
         Ok(ProvideAction::new(state, price))
     }
@@ -370,7 +395,8 @@ impl SwarmPeerBandwidth for AccountingPeerHandle {
     fn record(&self, amount: Au, direction: Direction) {
         match direction {
             Direction::Upload => self.state.add_balance(amount),
-            Direction::Download => self.state.add_balance(-amount),
+            // Saturating negation: `-amount` would wrap on `i64::MIN` (M8).
+            Direction::Download => self.state.add_balance(Au::ZERO.saturating_sub(amount)),
         }
     }
 
@@ -381,7 +407,7 @@ impl SwarmPeerBandwidth for AccountingPeerHandle {
         // Check threshold
         let balance = self.state.balance();
         let reserved = self.state.reserved_balance();
-        let projected = balance - amount - reserved;
+        let projected = balance.saturating_sub(amount).saturating_sub(reserved);
 
         projected >= -self.disconnect_threshold
     }
@@ -744,6 +770,59 @@ mod tests {
             accounting.allowance_remaining(&peer),
             SMALL_DISCONNECT_THRESHOLD
         );
+    }
+
+    #[test]
+    fn test_provide_refused_past_payment_threshold_until_settled() {
+        // Payment threshold 1000, disconnect 1250.
+        let accounting = Accounting::new(small_config(), test_identity());
+        let peer = test_peer();
+        let handle = accounting.for_peer(peer);
+
+        // Serving up to the payment threshold is allowed.
+        let provide = accounting
+            .prepare_provide(peer, au(1000))
+            .expect("at payment threshold is allowed");
+        provide.apply();
+        assert_eq!(handle.balance(), au(1000));
+
+        // The peer now owes us exactly the payment threshold. Any further
+        // service is refused: it would push the projected debt over the
+        // threshold (H3 free-ride stop), even though the disconnect threshold
+        // (1250) has not been reached.
+        assert!(matches!(
+            accounting.prepare_provide(peer, au(1)),
+            Err(AccountingError::PaymentThreshold { .. })
+        ));
+
+        // The peer settles (we forgive/receive its debt), restoring headroom.
+        handle.record(au(600), Direction::Download);
+        assert_eq!(handle.balance(), au(400));
+
+        // Service resumes within the recovered headroom.
+        let provide = accounting
+            .prepare_provide(peer, au(600))
+            .expect("settled peer is served again");
+        provide.apply();
+        assert_eq!(handle.balance(), au(1000));
+    }
+
+    #[test]
+    fn test_provide_refusal_counts_outstanding_reservations() {
+        let accounting = Accounting::new(small_config(), test_identity());
+        let peer = test_peer();
+
+        // An outstanding (un-applied) provide reserves shadow balance, so a
+        // second provide that together crosses the threshold is refused.
+        let _outstanding = accounting
+            .prepare_provide(peer, au(900))
+            .expect("first provide reserved");
+        assert!(matches!(
+            accounting.prepare_provide(peer, au(200)),
+            Err(AccountingError::PaymentThreshold { .. })
+        ));
+        // A smaller provide that stays under the threshold still succeeds.
+        assert!(accounting.prepare_provide(peer, au(100)).is_ok());
     }
 
     #[test]
