@@ -61,31 +61,36 @@ pub type MaybeSendBoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 #[cfg(target_arch = "wasm32")]
 pub type MaybeSendBoxFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
-/// Marker for a `Send` bound that follows the platform executor: `Send` on
-/// native (multi-thread tokio), no bound on `wasm32` (the browser event loop
-/// runs `!Send` timer and fetch futures). Blanket-impl; callers never name it.
-///
-/// This is the unboxed sibling of [`MaybeSendBoxFuture`]; use it as the return
-/// bound on an `impl Future` an `async fn` produces, which cannot be a boxed
-/// alias. The single canonical home for the divergence; crates must not define
-/// per-crate cfg-gated siblings.
+/// `Send` on native, unbounded on wasm32. Blanket-impl; the canonical home for
+/// the marker, so crates must not define per-crate siblings.
 #[cfg(not(target_arch = "wasm32"))]
 pub trait MaybeSend: Send {}
 #[cfg(not(target_arch = "wasm32"))]
 impl<T: Send + ?Sized> MaybeSend for T {}
-
-/// Marker for a `Send` bound that follows the platform executor: `Send` on
-/// native (multi-thread tokio), no bound on `wasm32` (the browser event loop
-/// runs `!Send` timer and fetch futures). Blanket-impl; callers never name it.
-///
-/// This is the unboxed sibling of [`MaybeSendBoxFuture`]; use it as the return
-/// bound on an `impl Future` an `async fn` produces, which cannot be a boxed
-/// alias. The single canonical home for the divergence; crates must not define
-/// per-crate cfg-gated siblings.
 #[cfg(target_arch = "wasm32")]
 pub trait MaybeSend {}
 #[cfg(target_arch = "wasm32")]
 impl<T: ?Sized> MaybeSend for T {}
+
+/// `Send` on native, unbounded on wasm32, for a `Stream`. Blanket-impl.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSendStream: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send> MaybeSendStream for T {}
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSendStream {}
+#[cfg(target_arch = "wasm32")]
+impl<T> MaybeSendStream for T {}
+
+/// `Send` on native, unbounded on wasm32, for an `Iterator`. Blanket-impl.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSendIter: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send> MaybeSendIter for T {}
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSendIter {}
+#[cfg(target_arch = "wasm32")]
+impl<T> MaybeSendIter for T {}
 
 /// A boxed future representing a node's main event loop.
 pub type NodeTask = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -105,10 +110,8 @@ pub trait SpawnableTask: Send + 'static {
     ///
     /// The service should listen for the shutdown signal and exit gracefully when received.
     ///
-    /// The future is [`MaybeSend`]: `Send` on native, where the multi-thread
-    /// executor spawns it through the Send-bounded path; unbounded on wasm,
-    /// where an on-chain settlement future is `!Send` and the task runs on the
-    /// browser event loop.
+    /// The future is [`MaybeSend`]: `Send` on native, unbounded on wasm (where a
+    /// settlement future is `!Send` and runs on the browser event loop).
     fn into_task(self, shutdown: GracefulShutdown) -> impl Future<Output = ()> + MaybeSend;
 }
 
@@ -810,12 +813,8 @@ impl TaskExecutor {
         })
     }
 
-    /// Browser variant of [`Self::spawn_service`].
-    ///
-    /// A service task can own a `!Send` future on wasm (an on-chain settlement
-    /// future is `!Send` on the browser fetch transport), so it runs on the
-    /// browser event loop through the local spawner rather than the Send-bounded
-    /// critical one. There is no separate panic-monitoring pool in the browser.
+    /// Browser variant of [`Self::spawn_service`]: the task future may be `!Send`,
+    /// so it runs on the local spawner (no panic-monitoring pool in the browser).
     #[cfg(target_arch = "wasm32")]
     pub fn spawn_service<S: SpawnableTask>(&self, name: &'static str, service: S) -> TaskHandle {
         self.spawn_local_with_graceful_shutdown_signal(name, |shutdown| service.into_task(shutdown))
