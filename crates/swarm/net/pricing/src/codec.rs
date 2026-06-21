@@ -2,8 +2,8 @@
 //!
 //! # Wire Format
 //!
-//! The payment threshold is encoded as big-endian bytes with leading zeros trimmed,
-//! matching Go's `big.Int.Bytes()` serialization used by Bee.
+//! The payment threshold is encoded as trimmed big-endian bytes (leading zero
+//! bytes removed).
 
 use alloy_primitives::U256;
 use vertex_net_codec::{Codec, ProtoMessage, decode_u256_be, encode_u256_be};

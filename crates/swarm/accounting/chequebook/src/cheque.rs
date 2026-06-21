@@ -26,8 +26,7 @@
 //! JSON bytes. Verification rebuilds the EIP-712 hash and recovers against it
 //! (see [`SignedCheque::recover_signer`]), so the JSON only needs to be
 //! cross-implementation parseable and to round-trip the field values; it does not
-//! need to be byte-identical. The whole JSON path is slated for protobuf
-//! replacement, tracked in issue #183.
+//! need to be byte-identical.
 //!
 //! For parseability the encoding follows the field-value conventions other
 //! Swarm nodes emit: PascalCase keys, lowercase `0x`-hex addresses,
@@ -241,9 +240,9 @@ struct WireCheque {
     beneficiary: Address,
     // Bare decimal JSON number across the full 256-bit range. A helper is needed
     // on both sides: `serde_json` is built here without `arbitrary_precision`, so
-    // its native number path tops out at `u64`/`i64` and a bee-sized payout would
-    // either fail to encode or decode lossily through `f64`. The helper carries
-    // the decimal token verbatim through a `RawValue`.
+    // its native number path tops out at `u64`/`i64` and a full 256-bit payout
+    // would either fail to encode or decode lossily through `f64`. The helper
+    // carries the decimal token verbatim through a `RawValue`.
     #[serde(with = "payout_number")]
     cumulative_payout: U256,
     // Standard base64 (padded, standard alphabet) over the fixed 65-byte
@@ -258,11 +257,10 @@ struct WireCheque {
 /// `arbitrary_precision`: its native number path tops out at `u64`/`i64`, so
 /// `U256`'s own serde cannot emit or accept a 256-bit value as a bare JSON
 /// number (encode would fall back to a `0x`-hex string, decode would coerce a
-/// bee-sized payout through a lossy `f64`). A [`RawValue`] carries the decimal
+/// full 256-bit payout through a lossy `f64`). A [`RawValue`] carries the decimal
 /// token verbatim in both directions. The decoder rejects anything that is not a
 /// bare decimal number (quoted strings, signs, decimal points, exponents),
-/// keeping the payout shape strict. The whole helper disappears with the
-/// protobuf migration tracked in issue #183.
+/// keeping the payout shape strict.
 mod payout_number {
     use alloy_primitives::U256;
     use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
