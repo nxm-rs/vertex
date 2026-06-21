@@ -33,7 +33,7 @@ The protocol crates under `crates/swarm/net/` are codec-and-upgrade crates, not 
 
 The shared command and event contract between that behaviour and its settlement services lives in `vertex-swarm-client-protocol`, below both `node` and `accounting/*`, so the settlement crates depend down on the contract rather than up on `node`.
 
-Aspirational, not current: a `#[derive(NetworkBehaviour)]` composite per node type (`vertex-swarm-client-behaviour`, `vertex-swarm-storer-behaviour`, modelled on `topology`) remains a possible future direction. It is not how the client protocols are wired today. If such a crate ever lands it would live in `crates/swarm/` (libp2p-aware tier), keep `crates/swarm/net/` one-protocol-per-crate, and let `swarm/node` select the composite per node type.
+Plan of record: composite behaviour crates per node type, mirroring `topology`. `vertex-swarm-client-behaviour` extracts the hand-rolled `ClientBehaviour`/`ClientHandler`/upgrade/forward/`StorerCapability` as-is (still one `NetworkBehaviour`, never reshaped into derived sub-behaviours), and `vertex-swarm-storer-behaviour` is a `#[derive(NetworkBehaviour)]` composite of the client behaviour plus a `PullsyncBehaviour`. Both live in `crates/swarm/` (libp2p-aware tier), keep `crates/swarm/net/` one-protocol-per-crate, depend down on `vertex-swarm-client-protocol` and `api` traits (never up on `node` or concrete accounting), and let `swarm/node` select the composite per node type. Until the extraction lands, the client protocols are still wired in `swarm/node` (`protocol/`) as described above. See `docs/design/composite-behaviours.md` for the layering, the no-cycle argument, and the sequenced E1-E5 plan.
 
 ## Nectar boundary
 

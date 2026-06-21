@@ -133,3 +133,4 @@ graph TD
 - [Chunks](chunks.md) - Chunk architecture and storage
 - [Swarm API](../swarm/api.md) - Protocol trait definitions
 - [Client Architecture](../client/architecture.md) - libp2p integration layer
+- [Composite Behaviour Layering](../design/composite-behaviours.md) - Planned client and storer composite `NetworkBehaviour` crates layered over topology

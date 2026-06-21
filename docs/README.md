@@ -57,6 +57,7 @@ Production monitoring: metrics, tracing, and logging.
 
 Internal design documents for planned changes.
 
+- [**Composite Behaviour Layering**](design/composite-behaviours.md) - Client and storer composite `NetworkBehaviour` crates layered over topology, mirroring the node-type hierarchy
 - [**Chunk Size Const Generic**](design/chunk-size-const-generic.md) - Making chunk body size a compile-time const generic
 - [**Chain Service**](design/chain-service.md) - Node-wide chain access built on a shared alloy provider, with a thin chain crate for config, errors, and provider extensions
 - [**Accounting and Settlement**](design/accounting-settlement.md) - Ledger, pseudosettle (always on) and SWAP (opt-in via `--swap`), wire conformance, and security invariants
