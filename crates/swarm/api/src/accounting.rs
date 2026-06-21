@@ -126,10 +126,13 @@ impl Au {
     }
 
     /// The absolute value as a non-negative amount.
+    ///
+    /// Saturates at [`i64::MAX`]: `|i64::MIN|` does not fit a positive `i64`, so
+    /// the raw cast would wrap it back to a negative value (M8).
     #[inline]
     #[must_use]
     pub const fn unsigned_abs(self) -> Au {
-        Self(self.0.unsigned_abs() as i64)
+        Self::from_amount(self.0.unsigned_abs())
     }
 
     /// Checked addition, `None` on overflow.
@@ -299,6 +302,16 @@ mod tests {
     fn as_amount_clamps_negatives() {
         assert_eq!(Au::new(-5).as_amount(), 0);
         assert_eq!(Au::new(5).as_amount(), 5);
+    }
+
+    #[test]
+    fn unsigned_abs_saturates_at_i64_min() {
+        // |i64::MIN| has no positive i64 representation; it must saturate to
+        // i64::MAX rather than wrap back to a negative value (M8).
+        assert_eq!(Au::new(i64::MIN).unsigned_abs(), Au::new(i64::MAX));
+        assert_eq!(Au::new(-5).unsigned_abs(), Au::new(5));
+        assert_eq!(Au::new(5).unsigned_abs(), Au::new(5));
+        assert_eq!(Au::ZERO.unsigned_abs(), Au::ZERO);
     }
 
     #[test]
