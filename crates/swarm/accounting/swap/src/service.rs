@@ -22,7 +22,7 @@ use vertex_swarm_api::{
 };
 use vertex_swarm_client_protocol::{ClientCommand, SwapEvent};
 use vertex_swarm_primitives::OverlayAddress;
-use vertex_tasks::{GracefulShutdown, SpawnableTask};
+use vertex_tasks::{GracefulShutdown, MaybeSend, SpawnableTask};
 
 use crate::error::SwapSettlementError;
 
@@ -434,7 +434,7 @@ where
     A: SwarmBandwidthAccounting + 'static,
     S: SignerSync + Send + Sync + 'static,
 {
-    fn into_task(self, shutdown: GracefulShutdown) -> impl Future<Output = ()> + Send {
+    fn into_task(self, shutdown: GracefulShutdown) -> impl Future<Output = ()> + MaybeSend {
         self.run(shutdown)
     }
 }

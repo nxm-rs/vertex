@@ -14,7 +14,7 @@ use vertex_swarm_api::{
 use vertex_swarm_client_protocol::{ClientCommand, PseudosettleEvent};
 use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_primitives::OverlayAddress;
-use vertex_tasks::{GracefulShutdown, SpawnableTask};
+use vertex_tasks::{GracefulShutdown, MaybeSend, SpawnableTask};
 
 use crate::error::PseudosettleSettlementError;
 
@@ -322,7 +322,7 @@ fn wire_from_au(amount: Au) -> U256 {
 }
 
 impl<A: SwarmBandwidthAccounting + 'static> SpawnableTask for PseudosettleService<A> {
-    fn into_task(self, shutdown: GracefulShutdown) -> impl Future<Output = ()> + Send {
+    fn into_task(self, shutdown: GracefulShutdown) -> impl Future<Output = ()> + MaybeSend {
         self.run(shutdown)
     }
 }

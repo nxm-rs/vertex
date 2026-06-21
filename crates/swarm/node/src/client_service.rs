@@ -12,7 +12,7 @@ pub use vertex_swarm_client_protocol::{ChunkTransferError, RetrievalResult};
 use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_net_pushsync::Receipt;
 use vertex_swarm_primitives::{CachedChunk, OverlayAddress, StampedChunk};
-use vertex_tasks::{GracefulShutdown, SpawnableTask};
+use vertex_tasks::{GracefulShutdown, MaybeSend, SpawnableTask};
 
 use crate::protocol::{ClientCommand, ClientEvent, FailureKind};
 use crate::throttle::{ProtocolKind, SelfThrottle};
@@ -499,7 +499,10 @@ impl Default for ClientService {
 }
 
 impl SpawnableTask for ClientService {
-    fn into_task(self, shutdown: GracefulShutdown) -> impl std::future::Future<Output = ()> + Send {
+    fn into_task(
+        self,
+        shutdown: GracefulShutdown,
+    ) -> impl std::future::Future<Output = ()> + MaybeSend {
         self.run(shutdown)
     }
 }
