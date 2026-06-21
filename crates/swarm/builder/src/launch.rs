@@ -24,6 +24,7 @@ use vertex_swarm_node::{AccountingSettlement, BootNode, ClientNode, PeerSelector
 use vertex_swarm_peer_manager::{
     DEFAULT_TICK_INTERVAL, DbPeerSnapshotStore, PeerSnapshot, spawn_peer_manager_task,
 };
+use vertex_swarm_postage::DbBatchStore;
 use vertex_swarm_spec::{Loggable, Spec};
 use vertex_swarm_storer::DbReserve;
 use vertex_swarm_topology::{KademliaConfig, TopologyHandle};
@@ -241,6 +242,11 @@ struct NodeStore {
     /// whose reserve is the default [`DbReserve`]. A reserve seam that is not a
     /// `DbReserve` leaves this `None`, so pullsync inbound serving is skipped.
     pullsync: Option<Arc<dyn vertex_swarm_api::PullStorage>>,
+    /// A second handle onto the reserve's batch set, carried only for the default
+    /// [`DbReserve`], so the puller's funding verifier reads the same batches the
+    /// reserve admits against. A reserve seam leaves this `None` and the puller
+    /// falls back to the signature-only verifier.
+    batches: Option<DbBatchStore<RedbDatabase>>,
 }
 
 /// A cache override supplied through the builder. With no seam the launch path
@@ -355,6 +361,7 @@ async fn build_client_backed_node(
         local: store,
         reserve,
         pullsync,
+        batches,
     } = (params.make_store)(db.clone())?;
     let node_store = Arc::clone(&store);
 
@@ -391,6 +398,7 @@ async fn build_client_backed_node(
             db.clone(),
             reserve.clone(),
             pullsync,
+            batches,
             #[cfg(feature = "swap")]
             swap_event_sender,
         )
@@ -579,6 +587,7 @@ async fn assemble_storer_node(
     db: Option<Arc<RedbDatabase>>,
     reserve: Option<Arc<dyn vertex_swarm_api::BinCursorStore>>,
     pullsync: Option<Arc<dyn vertex_swarm_api::PullStorage>>,
+    batches: Option<DbBatchStore<RedbDatabase>>,
     #[cfg(feature = "swap")] swap_event_sender: Option<
         tokio::sync::mpsc::UnboundedSender<vertex_swarm_node::SwapEvent>,
     >,
@@ -619,6 +628,7 @@ async fn assemble_storer_node(
         reserve.clone(),
         intervals,
         pullsync_control,
+        batches,
     );
     node.set_puller(puller_handle);
     let forward_topology = topology.clone();
@@ -676,8 +686,24 @@ fn spawn_storer_puller(
     reserve: Arc<dyn vertex_swarm_api::BinCursorStore>,
     intervals: Arc<vertex_swarm_storer::DbIntervalStore<RedbDatabase>>,
     control: vertex_swarm_node::StorerPullsyncControl,
+    batches: Option<DbBatchStore<RedbDatabase>>,
 ) -> vertex_swarm_puller::PullerHandle {
-    use vertex_swarm_puller::{PullerConfig, PullerSeams, SignatureVerifier, spawn_puller};
+    use vertex_swarm_api::PullChunkVerifier;
+    use vertex_swarm_postage::AdmissionValidator;
+    use vertex_swarm_puller::{
+        FundingVerifier, PullerConfig, PullerSeams, SignatureVerifier, spawn_puller,
+    };
+
+    // With the default reserve the puller verifies on-chain batch funding against
+    // the same batch set the reserve admits against; a reserve seam leaves no batch
+    // handle, so the puller falls back to the signature-only gate.
+    let verifier: Box<dyn PullChunkVerifier> = match batches {
+        Some(batches) => Box::new(FundingVerifier::new(
+            batches,
+            AdmissionValidator::new(RESERVE_CONFIRMATION_THRESHOLD),
+        )),
+        None => Box::new(SignatureVerifier),
+    };
 
     // The peer manager is the reporting authority: a neighbour that serves an
     // unverifiable chunk is scored down through it, the same path accounting and
@@ -687,7 +713,7 @@ fn spawn_storer_puller(
     let seams = PullerSeams {
         control,
         intervals,
-        verifier: SignatureVerifier,
+        verifier,
         // The reserve admits through its `SwarmLocalStore` put (the blanket
         // `ReserveAdmit` impl).
         admit: reserve as Arc<dyn vertex_swarm_api::SwarmLocalStore>,
@@ -810,6 +836,7 @@ fn client_store_factory(
                 local: default_cache(cache_budget_bytes, soc_cache_ttl),
                 reserve: None,
                 pullsync: None,
+                batches: None,
             })
         }),
         Some(CacheSeam::Ready(local)) => Box::new(move |_db| {
@@ -817,6 +844,7 @@ fn client_store_factory(
                 local,
                 reserve: None,
                 pullsync: None,
+                batches: None,
             })
         }),
         Some(CacheSeam::Factory(factory)) => Box::new(move |db| {
@@ -824,6 +852,7 @@ fn client_store_factory(
                 local: factory(db)?,
                 reserve: None,
                 pullsync: None,
+                batches: None,
             })
         }),
     }
@@ -922,6 +951,15 @@ pub(crate) async fn build_storer(
     Ok((parts.task, providers))
 }
 
+/// The storer reserve resolved from its seam: the reserve view, the optional
+/// pullsync server snapshot, and the optional second batch-store handle (both
+/// present only for the default [`DbReserve`]).
+type ResolvedReserve = (
+    Arc<dyn vertex_swarm_api::BinCursorStore>,
+    Option<Arc<dyn vertex_swarm_api::PullStorage>>,
+    Option<DbBatchStore<RedbDatabase>>,
+);
+
 /// Resolve a storer's cache and reserve seams into the internal store factory.
 ///
 /// The reserve (pushsync ingest) is carried separately while the retrieval-serve
@@ -940,10 +978,7 @@ fn storer_store_factory(
         // The pullsync server snapshot is only available for the default
         // `DbReserve`; a reserve seam erases to `BinCursorStore`, leaving pullsync
         // inbound serving unwired for that override.
-        let (reserve, pullsync): (
-            Arc<dyn vertex_swarm_api::BinCursorStore>,
-            Option<Arc<dyn vertex_swarm_api::PullStorage>>,
-        ) = match reserve {
+        let (reserve, pullsync, batches): ResolvedReserve = match reserve {
             None => {
                 let built = build_storer_reserve(db.clone(), &identity, capacity)?;
                 (
@@ -951,10 +986,11 @@ fn storer_store_factory(
                         .reserve
                         .ok_or_else(|| SwarmNodeError::Build(STORER_RESERVE_MISSING.into()))?,
                     built.pullsync,
+                    built.batches,
                 )
             }
-            Some(ReserveSeam::Ready(reserve)) => (reserve, None),
-            Some(ReserveSeam::Factory(factory)) => (factory(db.clone())?, None),
+            Some(ReserveSeam::Ready(reserve)) => (reserve, None, None),
+            Some(ReserveSeam::Factory(factory)) => (factory(db.clone())?, None, None),
         };
         let cache: Arc<dyn vertex_swarm_api::SwarmLocalStore> = match cache {
             None => default_cache(cache_budget_bytes, soc_cache_ttl),
@@ -971,6 +1007,7 @@ fn storer_store_factory(
             local,
             reserve: Some(reserve),
             pullsync,
+            batches,
         })
     })
 }
@@ -996,7 +1033,7 @@ fn build_storer_reserve(
     capacity: u64,
 ) -> Result<NodeStore, SwarmNodeError> {
     use vertex_swarm_api::StorageRadius;
-    use vertex_swarm_postage::{AdmissionValidator, DbBatchStore};
+    use vertex_swarm_postage::AdmissionValidator;
     use vertex_swarm_storer::EvictionStrategy;
 
     let db = match db {
@@ -1009,7 +1046,8 @@ fn build_storer_reserve(
         }
     };
     // Batch store and reserve share one handle so the postage ingest seam and the
-    // reserve see a single consistent view.
+    // reserve see a single consistent view. The clone is a second handle onto the
+    // same tables, carried out for the puller's funding verifier.
     let batches =
         DbBatchStore::new(Arc::clone(&db)).map_err(|e| SwarmNodeError::Build(e.into()))?;
     let admission = AdmissionValidator::new(RESERVE_CONFIRMATION_THRESHOLD);
@@ -1017,7 +1055,7 @@ fn build_storer_reserve(
         DbReserve::new(
             db,
             identity.as_ref(),
-            batches,
+            batches.clone(),
             admission,
             capacity,
             EvictionStrategy::EvictFurthest,
@@ -1032,6 +1070,7 @@ fn build_storer_reserve(
         local: Arc::clone(&reserve) as Arc<dyn vertex_swarm_api::SwarmLocalStore>,
         pullsync: Some(Arc::clone(&reserve) as Arc<dyn vertex_swarm_api::PullStorage>),
         reserve: Some(reserve as Arc<dyn vertex_swarm_api::BinCursorStore>),
+        batches: Some(batches),
     })
 }
 

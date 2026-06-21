@@ -9407,6 +9407,8 @@ name = "vertex-swarm-puller"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
  "auto_impl",
  "libp2p",
  "nectar-postage",
@@ -9416,6 +9418,7 @@ dependencies = [
  "tokio",
  "tracing",
  "vertex-swarm-api",
+ "vertex-swarm-postage",
  "vertex-swarm-primitives",
  "vertex-swarm-storer-behaviour",
  "vertex-tasks",
