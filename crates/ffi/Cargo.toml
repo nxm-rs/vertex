@@ -19,8 +19,8 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = []
 # Enable on-chain SWAP settlement for the embedded client. Forwards to the
-# builder's chain feature; native-only and off by default so the FFI client
-# stays chain-free unless the host opts in.
+# builder's chain feature; off by default so the FFI client stays chain-free
+# unless the host opts in.
 chain = ["vertex-swarm-builder/chain"]
 
 [dependencies]
