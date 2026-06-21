@@ -34,11 +34,9 @@ use tokio::sync::oneshot;
 use vertex_swarm_localstore::ChunkStore;
 use vertex_swarm_primitives::{OverlayAddress, SwarmNodeType};
 
-use super::behaviour::{ClientBehaviour, Config as BehaviourConfig};
-use super::forward::StubForwarder;
 use crate::ChunkTransferError;
 use crate::client_service::RetrievalResult;
-use crate::protocol::ClientCommand;
+use crate::protocol::{BehaviourConfig, ClientBehaviour, ClientCommand, StubForwarder};
 use vertex_swarm_api::SwarmLocalStore;
 use vertex_swarm_net_retrieval::{RetrievalInboundProtocol, RetrievalResponder, inbound};
 

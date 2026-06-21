@@ -47,7 +47,7 @@ use super::upgrade::{
     ClientInboundOutput, ClientInboundUpgrade, ClientOutboundInfo, ClientOutboundOutput,
     ClientOutboundUpgrade, ClientUpgradeError, FailureKind,
 };
-use crate::client_service::{ChunkTransferError, RetrievalResult};
+use vertex_swarm_client_protocol::{ChunkTransferError, RetrievalResult};
 use vertex_swarm_net_pushsync::PROTOCOL_NAME as PUSHSYNC_PROTOCOL;
 use vertex_swarm_net_retrieval::PROTOCOL_NAME as RETRIEVAL_PROTOCOL;
 
@@ -102,24 +102,24 @@ pub(crate) enum InboundOutcome {
 /// withholding peer. Do not collapse them into the shared `timeout` (used by
 /// pricing, pseudosettle, and swap); tuning one must not move settlement.
 #[derive(Debug, Clone)]
-pub(crate) struct Config {
+pub struct Config {
     /// Shared deadline for pricing, pseudosettle, and swap.
-    pub(crate) timeout: Duration,
+    pub timeout: Duration,
     /// Outbound retrieval deadline; see the type-level note.
-    pub(crate) retrieval_timeout: Duration,
+    pub retrieval_timeout: Duration,
     /// Outbound pushsync deadline; see the type-level note.
-    pub(crate) pushsync_timeout: Duration,
-    pub(crate) max_pending_commands: usize,
-    pub(crate) max_pending_events: usize,
+    pub pushsync_timeout: Duration,
+    pub max_pending_commands: usize,
+    pub max_pending_events: usize,
     /// Controls which protocols are advertised on inbound upgrades and which
     /// outbound commands are honoured. Bootnodes only speak pricing.
-    pub(crate) local_role: SwarmNodeType,
+    pub local_role: SwarmNodeType,
     /// Used to recover the signer overlay of an inbound custody receipt at decode
     /// (`compute_overlay(eth, network_id, nonce)`).
-    pub(crate) network_id: NetworkId,
+    pub network_id: NetworkId,
     /// Advertised swap exchange rate sent in the swap headers exchange.
     #[cfg(feature = "swap")]
-    pub(crate) swap_exchange_rate: U256,
+    pub swap_exchange_rate: U256,
 }
 
 impl Default for Config {
@@ -141,7 +141,7 @@ impl Default for Config {
 /// Commands sent from the behaviour to the handler.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
-pub(crate) enum HandlerCommand {
+pub enum HandlerCommand {
     /// Activate the handler after handshake completion.
     Activate {
         overlay: OverlayAddress,
@@ -171,7 +171,7 @@ pub(crate) enum HandlerCommand {
 /// Events emitted by the handler to the behaviour.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
-pub(crate) enum HandlerEvent {
+pub enum HandlerEvent {
     /// Handler has been activated.
     Activated { overlay: OverlayAddress },
     /// Received pricing threshold from peer.
@@ -287,7 +287,7 @@ struct StoredResponse {
 
 /// Swarm client connection handler managing multiple client protocols on a
 /// single peer connection.
-pub(crate) struct ClientHandler {
+pub struct ClientHandler {
     config: Config,
     state: State,
     /// Client cache: inbound retrievals serve from it, forwarded deliveries cache

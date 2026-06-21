@@ -19,7 +19,6 @@ nectar-primitives.workspace = true
 vertex-swarm-primitives.workspace = true
 
 ## vertex - network (libp2p layer)
-vertex-swarm-net-headers.workspace = true
 vertex-swarm-net-identify.workspace = true
 vertex-swarm-net-pricing.workspace = true
 vertex-swarm-net-pseudosettle.workspace = true
@@ -43,6 +42,7 @@ vertex-net-ratelimiter.workspace = true
 
 ## vertex - swarm (libp2p-free abstractions)
 vertex-swarm-api.workspace = true
+vertex-swarm-client-behaviour.workspace = true
 vertex-swarm-client-protocol.workspace = true
 vertex-swarm-identity.workspace = true
 vertex-swarm-localstore.workspace = true
@@ -123,7 +123,11 @@ std = []
 # SWAP cheque-based settlement. Pulls the swap wire protocol and surfaces
 # `SwapEvent` plus the `ClientCommand::SendCheque` variant for a settlement
 # service to consume.
-swap = ["dep:vertex-swarm-net-swap", "vertex-swarm-client-protocol/swap"]
+swap = [
+    "dep:vertex-swarm-net-swap",
+    "vertex-swarm-client-behaviour/swap",
+    "vertex-swarm-client-protocol/swap",
+]
 cli = [
     "dep:clap",
     "dep:serde",

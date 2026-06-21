@@ -43,7 +43,7 @@ use vertex_swarm_net_swap::{
 };
 /// Errors from client protocol upgrades.
 #[derive(Debug, Error)]
-pub(crate) enum ClientUpgradeError {
+pub enum ClientUpgradeError {
     /// Pricing protocol error.
     #[error("pricing error: {0}")]
     Pricing(#[source] ProtocolError),
@@ -119,7 +119,7 @@ impl ClientUpgradeError {
 }
 
 /// Output from a client inbound upgrade.
-pub(crate) enum ClientInboundOutput {
+pub enum ClientInboundOutput {
     /// Received pricing threshold.
     Pricing(AnnouncePaymentThreshold),
     /// Received retrieval request (with responder to send delivery).
@@ -175,7 +175,7 @@ impl std::fmt::Debug for ClientInboundOutput {
 ///   local node's [`SwarmNodeType`]. Bootnodes advertise pricing only
 ///   (listen-only); clients and storers advertise the full set.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ClientInboundUpgrade {
+pub struct ClientInboundUpgrade {
     advertised: ProtocolSet,
     /// Our advertised swap exchange rate, sent in the headers exchange.
     #[cfg(feature = "swap")]
@@ -325,7 +325,7 @@ pub(crate) enum ClientOutboundRequest {
 
 /// Output from a client outbound upgrade.
 #[derive(Debug)]
-pub(crate) enum ClientOutboundOutput {
+pub enum ClientOutboundOutput {
     /// Pricing announcement sent successfully.
     Pricing,
     /// Received chunk delivery.
@@ -343,7 +343,7 @@ pub(crate) enum ClientOutboundOutput {
 ///
 /// Unlike inbound, outbound requests know which protocol to use.
 #[derive(Clone, Debug)]
-pub(crate) struct ClientOutboundUpgrade {
+pub struct ClientOutboundUpgrade {
     request: ClientOutboundRequest,
 }
 
@@ -471,7 +471,7 @@ impl OutboundUpgrade<Stream> for ClientOutboundUpgrade {
 /// pushsync carry their caller's response channel here, and the handler
 /// resolves it from whichever path terminates the request.
 #[derive(Debug)]
-pub(crate) enum ClientOutboundInfo {
+pub enum ClientOutboundInfo {
     /// Pricing announcement.
     Pricing,
     /// Retrieval request with chunk address and the caller's response channel.
