@@ -32,8 +32,8 @@ use vertex_swarm_api::{
     PeerReporter, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmIdentity, SwarmSpec,
 };
 use vertex_swarm_identity::Identity;
+use vertex_swarm_node::ClientHandle;
 use vertex_swarm_node::args::SwapConfig;
-use vertex_swarm_node::{ClientCommand, ClientHandle};
 use vertex_swarm_spec::Spec;
 
 #[cfg(feature = "chain")]
@@ -152,7 +152,12 @@ impl SwapWiring {
         // is bounded and reached through `ClientHandle::send_command`. Bridge the
         // two with a forwarding task so the service never blocks on a full queue.
         let (client_command_tx, client_command_rx) = mpsc::unbounded_channel();
-        spawn_command_bridge(ctx, client_command_rx, client_handle);
+        crate::launch::spawn_client_command_bridge(
+            ctx,
+            "swarm.swap_command_bridge",
+            client_command_rx,
+            client_handle,
+        );
 
         let service = SwapService::new(
             self.command_rx,
@@ -172,38 +177,6 @@ impl SwapWiring {
 
         ctx.executor().spawn_service("swarm.swap_service", service);
     }
-}
-
-/// Forward the swap service's `ClientCommand`s to the node command channel.
-///
-/// The service emits commands on an unbounded channel; this task drains it and
-/// hands each command to the node through `ClientHandle::send_command`, which is
-/// non-blocking. The task ends when the service drops its sender or on shutdown.
-fn spawn_command_bridge(
-    ctx: &dyn InfrastructureContext,
-    mut client_command_rx: mpsc::UnboundedReceiver<ClientCommand>,
-    client_handle: ClientHandle,
-) {
-    ctx.executor().spawn_with_graceful_shutdown_signal(
-        "swarm.swap_command_bridge",
-        move |shutdown| async move {
-            let mut shutdown = std::pin::pin!(shutdown);
-            loop {
-                tokio::select! {
-                    guard = &mut shutdown => {
-                        drop(guard);
-                        break;
-                    }
-                    command = client_command_rx.recv() => {
-                        let Some(command) = command else { break };
-                        if let Err(e) = client_handle.send_command(command) {
-                            warn!(error = %e, "Failed to forward swap command to node");
-                        }
-                    }
-                }
-            }
-        },
-    );
 }
 
 /// Attach an on-chain cashout client to the swap service when a chain provider is
