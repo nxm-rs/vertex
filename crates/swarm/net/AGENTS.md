@@ -10,6 +10,7 @@ Root-level rules in `/AGENTS.md` apply here too. The notes below are the area-sp
 - `hive`: signed peer-record gossip for topology bootstrap.
 - `pricing`: `/swarm/pricing/1.0.0/pricing`. Payment threshold announcement.
 - `pseudosettle`: `/swarm/pseudosettle/1.0.0/pseudosettle`. Bandwidth micro-payments.
+- `pullsync`: `/swarm/pullsync/1.4.0/cursors` (Syn/Ack cursor handshake) and `/swarm/pullsync/1.4.0/pullsync` (Get/Offer/Want/Delivery range exchange). One protocol, two streams: the "one `PROTOCOL_NAME` per crate" rule bends here, exposed as `PROTOCOL_CURSORS` and `PROTOCOL_SYNC`.
 - `pushsync`: `/swarm/pushsync/1.3.1/pushsync`. Chunk push with receipts.
 - `retrieval`: `/swarm/retrieval/1.4.0/retrieval`. Chunk request and delivery.
 - `headers`: shared header frame used by request-response protocols, with trace-context propagation. W3C propagation over OpenTelemetry is native-only (`tracing.rs`); the wasm sibling (`tracing_wasm.rs`, Pattern C) is no-op inject/extract since a browser client has no OTLP backend. The on-wire `tracing-span-context` field is unaffected.
