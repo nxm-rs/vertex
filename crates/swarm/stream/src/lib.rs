@@ -29,10 +29,8 @@ use vertex_swarm_api::{
     OverlayAddress, PushReceipt, Stamp, StampedChunk, SwarmChunkProvider, SwarmChunkSender,
     SwarmError, SwarmResult,
 };
-// `MaybeSendBoxFuture` is `Send` on native (so the streams stay `Send` for
-// tonic) and `!Send` on wasm. The `MaybeSend*` markers below follow the same
-// split.
-use vertex_tasks::MaybeSendBoxFuture;
+// `Send` on native (so the streams stay `Send` for tonic), unbounded on wasm.
+use vertex_tasks::{MaybeSend, MaybeSendBoxFuture, MaybeSendIter, MaybeSendStream};
 
 /// A downloaded chunk proven to answer the address that requested it.
 ///
@@ -257,28 +255,6 @@ where
     }
 }
 
-/// `Send` bound on an address-source [`Stream`], native-only. Blanket-impl;
-/// callers never name it.
-#[cfg(not(target_arch = "wasm32"))]
-pub trait MaybeSendStream: Send {}
-#[cfg(not(target_arch = "wasm32"))]
-impl<T: Send> MaybeSendStream for T {}
-#[cfg(target_arch = "wasm32")]
-pub trait MaybeSendStream {}
-#[cfg(target_arch = "wasm32")]
-impl<T> MaybeSendStream for T {}
-
-/// `Send` bound on a [`ChunkClientExt`] return value, native-only. Blanket-impl;
-/// callers never name it.
-#[cfg(not(target_arch = "wasm32"))]
-pub trait MaybeSend: Send {}
-#[cfg(not(target_arch = "wasm32"))]
-impl<T: Send> MaybeSend for T {}
-#[cfg(target_arch = "wasm32")]
-pub trait MaybeSend {}
-#[cfg(target_arch = "wasm32")]
-impl<T> MaybeSend for T {}
-
 /// Capability alias for a lean chunk client: retrieves, sends, cloneable, and
 /// shareable across threads. Blanket-impl, so callers never name it.
 ///
@@ -476,17 +452,6 @@ where
         limit: config.max_concurrency.max(1),
     }
 }
-
-/// `Send` bound on the pending-chunk iterator so [`PutStream`] stays `Send`,
-/// native-only. Blanket-impl; callers never name it.
-#[cfg(not(target_arch = "wasm32"))]
-pub trait MaybeSendIter: Send {}
-#[cfg(not(target_arch = "wasm32"))]
-impl<T: Send> MaybeSendIter for T {}
-#[cfg(target_arch = "wasm32")]
-pub trait MaybeSendIter {}
-#[cfg(target_arch = "wasm32")]
-impl<T> MaybeSendIter for T {}
 
 /// Boxed pending-chunk feed, `Send` on native so [`PutStream`] stays `Send`.
 #[cfg(not(target_arch = "wasm32"))]
