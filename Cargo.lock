@@ -9506,6 +9506,8 @@ dependencies = [
  "tracing",
  "vertex-net-ratelimiter",
  "vertex-swarm-api",
+ "vertex-swarm-client-behaviour",
+ "vertex-swarm-client-protocol",
  "vertex-swarm-net-handler-core",
  "vertex-swarm-net-headers",
  "vertex-swarm-net-pullsync",
