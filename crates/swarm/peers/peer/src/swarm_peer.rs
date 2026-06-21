@@ -16,14 +16,13 @@
 use crate::error::SwarmPeerError;
 use crate::serde_multiaddr::{deserialize_multiaddrs, serialize_multiaddrs};
 use alloy_primitives::{Address, Signature};
-use alloy_signer::{Signer, SignerSync};
 use libp2p::Multiaddr;
 use nectar_primitives::signing::sign_data;
 use nectar_primitives::{NetworkId, SwarmAddress, compute_overlay};
 pub use nectar_primitives::{Nonce, Timestamp};
 use std::time::Duration;
 use vertex_net_local::{AddressScope, IpCapability, classify_multiaddr};
-use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
+use vertex_swarm_primitives::OverlaySigner;
 
 /// Borrowed view of the on-wire `SwarmPeer` fields, used as input to
 /// [`SwarmPeer::parse`].
@@ -81,7 +80,7 @@ impl SwarmPeer {
     /// that signed it. At least one multiaddr is required; the timestamp must
     /// be strictly positive (matches bee's `ErrTimestampInvalid`).
     pub fn sign(
-        identity: &impl SwarmIdentity,
+        identity: &impl OverlaySigner,
         multiaddrs: Vec<Multiaddr>,
         timestamp: Timestamp,
         chequebook: Option<Address>,
@@ -100,10 +99,9 @@ impl SwarmPeer {
         // signal of "peer actually advertised a chequebook".
         let chequebook = chequebook.filter(|a| !a.is_zero());
 
-        let signer = identity.signer();
-        let network_id = identity.spec().network_id();
+        let network_id = identity.network_id();
         let nonce = identity.nonce();
-        let overlay = identity.overlay_address();
+        let overlay = identity.overlay();
 
         let multiaddrs_bytes = serialize_multiaddrs(&multiaddrs);
         let msg = sign_data(
@@ -114,10 +112,10 @@ impl SwarmPeer {
             timestamp,
             chequebook.as_ref(),
         );
-        let signature = signer.sign_message_sync(&msg)?;
-        // Cache the signer's ethereum address rather than re-recover on
-        // every access. The `Signer` trait provides it directly.
-        let ethereum_address = signer.address();
+        let signature = identity.sign_message_sync(&msg)?;
+        // Cache the signer's ethereum address rather than re-recover on every
+        // access.
+        let ethereum_address = identity.address();
 
         Ok(Self {
             multiaddrs,
@@ -352,6 +350,7 @@ fn parse_chequebook(bytes: &[u8]) -> Result<Option<Address>, SwarmPeerError> {
 )]
 mod tests {
     use super::*;
+    use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use nectar_primitives::{MAINNET, SwarmSpec};
     use std::sync::Arc;
@@ -424,7 +423,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(parsed, addr);
-        assert_eq!(*parsed.ethereum_address(), identity.ethereum_address());
+        assert_eq!(*parsed.ethereum_address(), identity.address());
         assert_eq!(parsed.chequebook(), Some(&Address::from([0xAB; 20])));
     }
 
@@ -449,7 +448,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(parsed.chequebook(), None);
-        assert_eq!(*parsed.ethereum_address(), identity.ethereum_address());
+        assert_eq!(*parsed.ethereum_address(), identity.address());
     }
 
     #[test]
@@ -471,14 +470,14 @@ mod tests {
         let zero_cb = Address::ZERO;
         let msg = sign_data(
             &multiaddrs_bytes,
-            &identity.overlay_address(),
+            &identity.overlay(),
             network_id,
             &nonce,
             timestamp,
             Some(&zero_cb),
         );
         let recovered = addr.signature().recover_address_from_msg(msg).unwrap();
-        assert_eq!(recovered, identity.ethereum_address());
+        assert_eq!(recovered, identity.address());
     }
 
     #[test]
@@ -634,7 +633,7 @@ mod tests {
         let multiaddrs_bytes = addr.serialize_multiaddrs();
         let parsed =
             SwarmPeer::parse(wire(&addr, &multiaddrs_bytes, &[]), network_id, None).unwrap();
-        assert_eq!(*parsed.ethereum_address(), identity.ethereum_address());
+        assert_eq!(*parsed.ethereum_address(), identity.address());
     }
 
     #[test]

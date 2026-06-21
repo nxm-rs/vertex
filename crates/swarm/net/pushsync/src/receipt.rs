@@ -16,36 +16,14 @@
 //! credible local floor it returns [`DepthVerdict::Unverifiable`] rather than
 //! trusting the radius alone.
 
-use alloy_signer::SignerSync;
 use nectar_primitives::ChunkAddress;
 use vertex_swarm_primitives::{
-    NeighborhoodDepth, NetworkId, Nonce, OverlayAddress, StorageRadius, compute_overlay,
+    NeighborhoodDepth, NetworkId, Nonce, OverlayAddress, OverlaySigner, StorageRadius,
+    compute_overlay,
 };
 
 use crate::codec::WireReceipt;
 use crate::error::PushsyncError;
-
-/// A node identity that can mint its own custody receipt.
-///
-/// Bundles the three facets of the node identity that [`Receipt::sign`] needs:
-/// the signing key, plus the `network_id` and `nonce` that derive the storer
-/// overlay via [`compute_overlay`]. Lives in the pushsync layer because pushsync
-/// sits below the node and cannot depend on the node's full identity type; a
-/// node-layer identity implements this trait.
-pub trait ReceiptSigner {
-    /// The synchronous signing key. Erased trait objects
-    /// (`dyn SignerSync + Send + Sync`) satisfy this via `alloy-signer`'s blanket
-    /// impls, so this crate need not be generic over the concrete signer.
-    type Signer: alloy_signer::SignerSync + ?Sized;
-
-    fn signer(&self) -> &Self::Signer;
-
-    fn network_id(&self) -> NetworkId;
-
-    /// The identity nonce. Binds the storer overlay but is not part of the
-    /// signed message.
-    fn nonce(&self) -> Nonce;
-}
 
 /// Length in bytes of a well-formed recoverable signature.
 const SIGNATURE_LEN: usize = 65;
@@ -177,7 +155,7 @@ impl Receipt {
     ///
     /// Storer-side counterpart to [`reconstruct`](Self::reconstruct): produces a
     /// fresh receipt a forwarder will later reconstruct. The signer, `network_id`
-    /// and `nonce` come from the [`ReceiptSigner`] identity; `storage_radius`
+    /// and `nonce` come from the [`OverlaySigner`] identity; `storage_radius`
     /// tracks the reserve and stays an explicit argument.
     ///
     /// The `storer` is derived by recovering the Ethereum address from the freshly
@@ -185,13 +163,12 @@ impl Receipt {
     /// does, so the receipt is self-consistent under recovery and verified by
     /// construction.
     pub fn sign(
-        identity: &impl ReceiptSigner,
+        identity: &impl OverlaySigner,
         address: ChunkAddress,
         storage_radius: StorageRadius,
     ) -> Result<Self, PushsyncError> {
         let nonce = identity.nonce();
         let signature = identity
-            .signer()
             .sign_message_sync(address.as_bytes())
             .map_err(|_| PushsyncError::MalformedReceiptSignature)?;
         // Derive the overlay the same way `reconstruct` does, so a forwarder
@@ -226,14 +203,16 @@ impl Receipt {
 
 #[cfg(test)]
 mod tests {
+    use alloy_primitives::{Address, B256, ChainId, Signature};
     use alloy_signer_local::PrivateKeySigner;
     use nectar_primitives::Bin;
+    use vertex_swarm_primitives::SignerSync;
 
     use super::*;
 
     const NET: NetworkId = NetworkId::MAINNET;
 
-    /// Test-only [`ReceiptSigner`] so the tests mint through [`Receipt::sign`].
+    /// Test-only [`OverlaySigner`] so the tests mint through [`Receipt::sign`].
     struct TestIdentity {
         signer: PrivateKeySigner,
         nonce: Nonce,
@@ -245,11 +224,19 @@ mod tests {
         }
     }
 
-    impl ReceiptSigner for TestIdentity {
-        type Signer = PrivateKeySigner;
+    impl SignerSync for TestIdentity {
+        fn sign_hash_sync(&self, hash: &B256) -> alloy_signer::Result<Signature> {
+            self.signer.sign_hash_sync(hash)
+        }
 
-        fn signer(&self) -> &Self::Signer {
-            &self.signer
+        fn chain_id_sync(&self) -> Option<ChainId> {
+            self.signer.chain_id_sync()
+        }
+    }
+
+    impl OverlaySigner for TestIdentity {
+        fn address(&self) -> Address {
+            self.signer.address()
         }
 
         fn network_id(&self) -> NetworkId {

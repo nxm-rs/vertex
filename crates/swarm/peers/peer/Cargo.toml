@@ -14,7 +14,6 @@ nectar-primitives = { workspace = true }
 nectar-swarms.workspace = true
 
 ## vertex crates
-vertex-swarm-api = { workspace = true }
 vertex-swarm-spec.workspace = true
 vertex-swarm-primitives = { workspace = true, features = ["serde"] }
 

@@ -8,31 +8,34 @@
 
 use std::sync::Arc;
 
-use alloy_signer::SignerSync;
+use alloy_primitives::{Address, B256, ChainId, Signature};
 use vertex_swarm_api::{ReserveStore, SwarmIdentity, SwarmSpec};
-use vertex_swarm_net_pushsync::ReceiptSigner;
-use vertex_swarm_primitives::{NetworkId, Nonce};
+use vertex_swarm_primitives::{NetworkId, Nonce, OverlaySigner, SignerSync};
 
 /// Reserve plus the node's receipt-signing identity, shared into each handler.
 ///
-/// `network_id` and `nonce` are the overlay-derivation inputs a forwarder
-/// recovers from the minted receipt; implementing [`ReceiptSigner`] lets the
-/// handler pass this straight to [`vertex_swarm_net_pushsync::Receipt::sign`].
-/// `put` admits unconditionally; capacity is held out of band by the eviction
-/// primitives ([`ReserveStore::evict_from_bin`] /
-/// [`evict_batch`](ReserveStore::evict_batch)), not by ingest back-pressure.
+/// The signer is erased to `dyn SignerSync`; `address`, `network_id` and `nonce`
+/// are the overlay-derivation inputs a forwarder recovers from the minted
+/// receipt. Implementing [`OverlaySigner`] lets the handler pass this straight to
+/// [`vertex_swarm_net_pushsync::Receipt::sign`]. `put` admits unconditionally;
+/// capacity is held out of band by the eviction primitives
+/// ([`ReserveStore::evict_from_bin`] / [`evict_batch`](ReserveStore::evict_batch)),
+/// not by ingest back-pressure.
 #[derive(Clone)]
 pub struct StorerCapability {
     pub(crate) reserve: Arc<dyn ReserveStore>,
     signer: Arc<dyn SignerSync + Send + Sync>,
+    // `dyn SignerSync` omits `address()` (it is on the async `Signer`), so the
+    // overlay-derivation address is captured at construction.
+    address: Address,
     network_id: NetworkId,
     nonce: Nonce,
 }
 
 impl StorerCapability {
     /// Build the capability from the node identity. The signer is erased to
-    /// `dyn SignerSync`; `network_id` and `nonce` are read off the identity so
-    /// the minted receipt's overlay derives from the same key.
+    /// `dyn SignerSync`; `address`, `network_id` and `nonce` are read off the
+    /// identity so the minted receipt's overlay derives from the same key.
     pub fn new(reserve: Arc<dyn ReserveStore>, identity: &impl SwarmIdentity) -> Self {
         // `I::Signer: Signer + SignerSync + Send + Sync`, so erasing to
         // SignerSync is sound.
@@ -40,17 +43,26 @@ impl StorerCapability {
         Self {
             reserve,
             signer,
+            address: identity.address(),
             network_id: identity.spec().network_id(),
             nonce: identity.nonce(),
         }
     }
 }
 
-impl ReceiptSigner for StorerCapability {
-    type Signer = dyn SignerSync + Send + Sync;
+impl SignerSync for StorerCapability {
+    fn sign_hash_sync(&self, hash: &B256) -> alloy_signer::Result<Signature> {
+        self.signer.sign_hash_sync(hash)
+    }
 
-    fn signer(&self) -> &Self::Signer {
-        &*self.signer
+    fn chain_id_sync(&self) -> Option<ChainId> {
+        self.signer.chain_id_sync()
+    }
+}
+
+impl OverlaySigner for StorerCapability {
+    fn address(&self) -> Address {
+        self.address
     }
 
     fn network_id(&self) -> NetworkId {

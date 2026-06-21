@@ -5,14 +5,16 @@ use alloy_primitives::Address;
 use alloy_signer::{Signer, SignerSync};
 use nectar_primitives::SwarmAddress;
 use std::sync::Arc;
-use vertex_swarm_primitives::{Nonce, SwarmNodeType, compute_overlay};
+use vertex_swarm_primitives::{OverlaySigner, SwarmNodeType};
 
 /// Identity trait for Swarm network participation.
 ///
-/// Provides cryptographic identity for handshake and overlay address derivation.
-/// Implementations should be wrapped in `Arc` for sharing across components.
+/// The signing and overlay-derivation facet is the [`OverlaySigner`] supertrait;
+/// this trait adds the spec, concrete signer handle, and node role. The two
+/// associated types (`Spec`, `Signer`) are what keep it from being object-safe,
+/// so a consumer that needs an erased handle depends on `OverlaySigner` instead.
 #[auto_impl::auto_impl(&, Arc, Box)]
-pub trait SwarmIdentity: Send + Sync + 'static {
+pub trait SwarmIdentity: OverlaySigner + Send + Sync + 'static {
     /// The network specification type.
     type Spec: SwarmSpec;
 
@@ -22,27 +24,20 @@ pub trait SwarmIdentity: Send + Sync + 'static {
     /// Get the network specification.
     fn spec(&self) -> &Self::Spec;
 
-    /// Get the nonce for overlay address derivation.
-    fn nonce(&self) -> Nonce;
-
     /// Get the signer for handshake authentication.
     fn signer(&self) -> Arc<Self::Signer>;
 
     /// The node type (capability level).
     fn node_type(&self) -> SwarmNodeType;
 
-    /// Overlay address for Kademlia routing.
+    /// Overlay address for Kademlia routing (the [`OverlaySigner`] facet).
     fn overlay_address(&self) -> SwarmAddress {
-        compute_overlay(
-            &self.ethereum_address(),
-            self.spec().network_id(),
-            &self.nonce(),
-        )
+        self.overlay()
     }
 
-    /// Ethereum address derived from the signing key.
+    /// Ethereum address derived from the signing key (the [`OverlaySigner`] facet).
     fn ethereum_address(&self) -> Address {
-        self.signer().address()
+        self.address()
     }
 
     /// Whether this node is a Storer (stores chunks).

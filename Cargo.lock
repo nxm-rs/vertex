@@ -9324,7 +9324,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "vertex-net-local",
- "vertex-swarm-api",
  "vertex-swarm-identity",
  "vertex-swarm-primitives",
  "vertex-swarm-spec",
@@ -9392,7 +9391,9 @@ name = "vertex-swarm-primitives"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-signer",
  "alloy-signer-local",
+ "auto_impl",
  "getrandom 0.2.17",
  "getrandom 0.4.2",
  "nectar-postage",

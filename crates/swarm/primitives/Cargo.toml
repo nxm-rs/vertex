@@ -17,6 +17,11 @@ nectar-postage = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true, features = ["derive"], optional = true }
+# `OverlaySigner` extends alloy's `SignerSync` and re-exports it, so the whole
+# workspace shares one signing trait rather than a hand-rolled duplicate.
+alloy-primitives = { workspace = true }
+alloy-signer = { workspace = true }
+auto_impl = "1.1"
 
 # On wasm, nectar-primitives leaves the alloy-primitives `getrandom` feature
 # unselected even though its nonce generation calls `B256::random()`. Select

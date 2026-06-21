@@ -36,9 +36,11 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+mod signer;
 mod stamped;
 mod validated;
 
+pub use signer::{OverlaySigner, Signer, SignerSync};
 pub use stamped::{CachedChunk, StampedChunk, StampedChunkExt, VerifiedStampedChunk};
 pub use validated::{ValidatedChunk, ValidationError};
 
