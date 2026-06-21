@@ -112,6 +112,36 @@ pub trait DbTx: Send + Sync {
     /// Get all entries from a table as key/value pairs.
     fn entries<T: Table>(&self) -> Result<Vec<(T::Key, T::Value)>, DatabaseError>;
 
+    /// Get the entries whose encoded key lies in `[from, to]` (inclusive), in
+    /// ascending key order.
+    ///
+    /// Backends with native ordered range support (redb) scan only the bounded
+    /// key range; the default falls back to a full [`entries`](Self::entries)
+    /// scan filtered by the encoded-key bounds, so a backend without range
+    /// support is still correct (just not bounded). Use this for a key-prefix
+    /// scan (e.g. one contract's `(tag, ..)` range) instead of materializing the
+    /// whole table.
+    fn range<T: Table>(
+        &self,
+        from: T::Key,
+        to: T::Key,
+    ) -> Result<Vec<(T::Key, T::Value)>, DatabaseError> {
+        let lo = from.encode();
+        let hi = to.encode();
+        let (lo, hi) = (lo.as_ref().to_vec(), hi.as_ref().to_vec());
+        let mut rows: Vec<(T::Key, T::Value)> = self
+            .entries::<T>()?
+            .into_iter()
+            .filter(|(k, _)| {
+                let enc = k.clone().encode();
+                let enc = enc.as_ref();
+                enc >= lo.as_slice() && enc <= hi.as_slice()
+            })
+            .collect();
+        rows.sort_by(|(a, _), (b, _)| a.clone().encode().as_ref().cmp(b.clone().encode().as_ref()));
+        Ok(rows)
+    }
+
     /// Get all keys from a table without deserializing values.
     fn keys<T: Table>(&self) -> Result<Vec<T::Key>, DatabaseError> {
         Ok(self.entries::<T>()?.into_iter().map(|(k, _)| k).collect())
