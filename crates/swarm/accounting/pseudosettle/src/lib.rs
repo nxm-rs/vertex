@@ -22,11 +22,11 @@ mod service;
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
+use vertex_swarm_accounting::Accounting;
 use vertex_swarm_api::{
     Au, BandwidthMode, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmError, SwarmIdentity,
     SwarmPeerState, SwarmResult, SwarmSettlementProvider,
 };
-use vertex_swarm_bandwidth::Accounting;
 use vertex_swarm_node::ClientCommand;
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -200,9 +200,9 @@ pub fn new_pseudosettle_accounting<C: SwarmAccountingConfig + Clone + 'static, I
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vertex_swarm_accounting::BandwidthConfig;
+    use vertex_swarm_accounting::PeerState;
     use vertex_swarm_api::{Direction, SwarmBandwidthAccounting, SwarmPeerBandwidth};
-    use vertex_swarm_bandwidth::BandwidthConfig;
-    use vertex_swarm_bandwidth::PeerState;
     use vertex_swarm_test_utils::{test_identity, test_peer};
 
     #[test]

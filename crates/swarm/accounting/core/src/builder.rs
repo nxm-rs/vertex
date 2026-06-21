@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
+use vertex_swarm_accounting_pricing::NoPricer;
 use vertex_swarm_api::{
     PeerReporter, SwarmAccountingConfig, SwarmIdentity, SwarmPricing, SwarmPricingBuilder,
     SwarmPricingConfig, SwarmSettlementProvider, SwarmSpec,
 };
-use vertex_swarm_bandwidth_pricing::NoPricer;
 
 use crate::{Accounting, ClientAccounting};
 
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn test_builder_with_custom_pricing() {
-        use vertex_swarm_bandwidth_pricing::FixedPricer;
+        use vertex_swarm_accounting_pricing::FixedPricer;
 
         let identity = test_identity();
         let config = DefaultBandwidthConfig::default();

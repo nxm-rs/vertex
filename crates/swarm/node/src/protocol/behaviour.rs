@@ -1083,12 +1083,12 @@ mod tests {
     // storer's receipt verbatim.
 
     use nectar_primitives::NetworkId;
+    use vertex_swarm_accounting::{
+        Accounting, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
+    };
     use vertex_swarm_api::{
         Au, PeerReporter, ReportSource, SwarmBandwidthAccounting, SwarmClientAccounting,
         SwarmPeerBandwidth, SwarmPricing, SwarmScoringEvent,
-    };
-    use vertex_swarm_bandwidth::{
-        Accounting, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
     };
     use vertex_swarm_identity::Identity;
     use vertex_swarm_spec::Spec;

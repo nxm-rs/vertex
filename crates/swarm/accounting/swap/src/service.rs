@@ -15,11 +15,11 @@ use alloy_primitives::{Address, U256};
 use alloy_signer::SignerSync;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
+use vertex_swarm_accounting_chequebook::{Cheque, ChequeExt, SignedCheque};
 use vertex_swarm_api::{
     Au, Direction, PeerReporter, ReportSource, SwarmBandwidthAccounting, SwarmPeerBandwidth,
     SwarmScoringEvent,
 };
-use vertex_swarm_bandwidth_chequebook::{Cheque, ChequeExt, SignedCheque};
 use vertex_swarm_node::{ClientCommand, SwapEvent};
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
@@ -444,7 +444,7 @@ where
 mod tests {
     use super::*;
     use alloy_signer_local::PrivateKeySigner;
-    use vertex_swarm_bandwidth::{Accounting, BandwidthConfig};
+    use vertex_swarm_accounting::{Accounting, BandwidthConfig};
     use vertex_swarm_test_utils::{Identity, test_identity, test_peer};
 
     const CHAIN: NamedChain = NamedChain::Gnosis;

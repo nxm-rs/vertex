@@ -70,5 +70,5 @@ pub use error::SwarmNodeError;
 pub use chain::{SharedChainProvider, build_chain_provider};
 
 // Re-exports
+pub use vertex_swarm_accounting::{AccountingBuilder, NoAccountingBuilder};
 pub use vertex_swarm_api::{BootnodeComponents, ClientComponents, StorerComponents};
-pub use vertex_swarm_bandwidth::{AccountingBuilder, NoAccountingBuilder};

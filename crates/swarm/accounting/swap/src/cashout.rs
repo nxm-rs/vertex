@@ -9,7 +9,7 @@
 use alloy_primitives::Address;
 use alloy_provider::DynProvider;
 use vertex_chain::{ChainConfig, TxError};
-use vertex_swarm_bandwidth_chequebook::{ChequebookContract, SignedCheque};
+use vertex_swarm_accounting_chequebook::{ChequebookContract, SignedCheque};
 
 /// On-chain redeemer for received cheques.
 ///
@@ -53,7 +53,7 @@ mod tests {
     use alloy_provider::{ProviderBuilder, mock::Asserter};
     use alloy_sol_types::SolCall;
     use nectar_contracts::IChequebook;
-    use vertex_swarm_bandwidth_chequebook::{
+    use vertex_swarm_accounting_chequebook::{
         Bytes as ChequeBytes, Cheque, ChequeExt, SignedCheque,
     };
 

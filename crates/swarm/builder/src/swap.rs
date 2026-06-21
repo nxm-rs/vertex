@@ -26,11 +26,11 @@ use alloy_signer_local::PrivateKeySigner;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use vertex_node_api::InfrastructureContext;
+use vertex_swarm_accounting_swap::service::SwapCommand;
+use vertex_swarm_accounting_swap::{SwapEvent, SwapHandle, SwapProvider, SwapService};
 use vertex_swarm_api::{
     PeerReporter, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmIdentity, SwarmSpec,
 };
-use vertex_swarm_bandwidth_swap::service::SwapCommand;
-use vertex_swarm_bandwidth_swap::{SwapEvent, SwapHandle, SwapProvider, SwapService};
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::SwapConfig;
 use vertex_swarm_node::{ClientCommand, ClientHandle};
@@ -224,7 +224,7 @@ where
     A: SwarmBandwidthAccounting + 'static,
     S: alloy_signer::SignerSync + Send + Sync + 'static,
 {
-    use vertex_swarm_bandwidth_swap::cashout::Cashout;
+    use vertex_swarm_accounting_swap::cashout::Cashout;
 
     let Some(provider) = chain_provider else {
         return service;

@@ -11,7 +11,7 @@ use asynchronous_codec::Framed;
 use bytes::Bytes;
 use futures::{SinkExt, TryStreamExt, future::BoxFuture};
 use tracing::debug;
-use vertex_swarm_bandwidth_chequebook::SignedCheque;
+use vertex_swarm_accounting_chequebook::SignedCheque;
 use vertex_swarm_net_headers::{
     HeaderedInbound, HeaderedOutbound, HeaderedStream, Inbound, Outbound,
 };
@@ -139,7 +139,7 @@ pub fn outbound(cheque: SignedCheque, our_rate: alloy_primitives::U256) -> SwapO
 mod tests {
     use super::*;
     use alloy_primitives::{Address, U256};
-    use vertex_swarm_bandwidth_chequebook::{Cheque, ChequeExt};
+    use vertex_swarm_accounting_chequebook::{Cheque, ChequeExt};
 
     fn test_signed_cheque() -> SignedCheque {
         let cheque = Cheque::new(

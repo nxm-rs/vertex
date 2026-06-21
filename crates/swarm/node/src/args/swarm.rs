@@ -5,7 +5,7 @@
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
-use vertex_swarm_bandwidth::BandwidthArgs;
+use vertex_swarm_accounting::BandwidthArgs;
 use vertex_swarm_identity::IdentityArgs;
 use vertex_swarm_localstore::LocalStoreArgs;
 use vertex_swarm_primitives::SwarmNodeType;

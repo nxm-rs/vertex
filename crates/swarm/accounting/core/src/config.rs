@@ -1,7 +1,7 @@
 //! Validated bandwidth accounting configuration.
 
+use vertex_swarm_accounting_pricing::FixedPricingConfig;
 use vertex_swarm_api::{Au, BandwidthMode, SwarmAccountingConfig, SwarmPricingConfig};
-use vertex_swarm_bandwidth_pricing::FixedPricingConfig;
 
 use crate::args::{BandwidthArgs, BandwidthModeArg};
 use crate::constants::*;

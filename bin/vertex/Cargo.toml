@@ -49,7 +49,7 @@ vertex-storage-redb.workspace = true
 
 # vertex - swarm protocol
 vertex-swarm-api.workspace = true
-vertex-swarm-bandwidth.workspace = true
+vertex-swarm-accounting.workspace = true
 vertex-swarm-builder.workspace = true
 vertex-swarm-node = { workspace = true, features = ["cli"] }
 vertex-swarm-identity.workspace = true

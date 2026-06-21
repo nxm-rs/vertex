@@ -20,7 +20,7 @@
 use alloy_primitives::{Address, U256};
 use asynchronous_codec::{Decoder, Encoder};
 use bytes::{Bytes, BytesMut};
-use vertex_swarm_bandwidth_chequebook::{Cheque, ChequeExt, SignedCheque};
+use vertex_swarm_accounting_chequebook::{Cheque, ChequeExt, SignedCheque};
 use vertex_swarm_net_swap::{EmitCheque, EmitChequeCodec, Handshake, HandshakeCodec};
 
 /// Build the signed cheque used in the `EmitCheque` framing tests.

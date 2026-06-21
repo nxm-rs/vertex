@@ -4,7 +4,7 @@ use clap::Args;
 use serde::{Deserialize, Serialize};
 use vertex_swarm_primitives::BandwidthMode;
 
-pub use vertex_swarm_bandwidth_pricing::FixedPricingArgs;
+pub use vertex_swarm_accounting_pricing::FixedPricingArgs;
 
 use crate::constants::*;
 

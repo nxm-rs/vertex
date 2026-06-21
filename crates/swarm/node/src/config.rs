@@ -6,7 +6,7 @@ use std::sync::Arc;
 use eyre::Result;
 use serde::{Deserialize, Serialize};
 use vertex_node_api::NodeProtocolConfig;
-use vertex_swarm_bandwidth::{BandwidthArgs, BandwidthConfigError, DefaultBandwidthConfig};
+use vertex_swarm_accounting::{BandwidthArgs, BandwidthConfigError, DefaultBandwidthConfig};
 use vertex_swarm_identity::{Identity, IdentityArgs};
 use vertex_swarm_localstore::{LocalStoreArgs, LocalStoreConfig};
 use vertex_swarm_primitives::SwarmNodeType;

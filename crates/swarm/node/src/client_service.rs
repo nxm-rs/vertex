@@ -700,12 +700,12 @@ mod tests {
 
     // Throttle wiring at the outbound API boundary.
     use crate::throttle::SelfThrottle;
+    use vertex_swarm_accounting::{
+        DefaultBandwidthConfig, NoAccounting, NoPeerBandwidth, NoProvideAction, NoReceiveAction,
+    };
     use vertex_swarm_api::{
         Au, BandwidthMode, PeerAffordability, SwarmBandwidthAccounting, SwarmClientAccounting,
         SwarmPricing, SwarmResult,
-    };
-    use vertex_swarm_bandwidth::{
-        DefaultBandwidthConfig, NoAccounting, NoPeerBandwidth, NoProvideAction, NoReceiveAction,
     };
     use vertex_swarm_test_utils::MockIdentity;
 
