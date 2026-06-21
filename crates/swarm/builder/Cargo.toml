@@ -22,6 +22,23 @@ chain = [
     "swap",
     "vertex-chain/provider",
     "vertex-swarm-node/swap-chequebook",
+    # The unified contract indexer: the reorg-safe event engine and the framework
+    # crate, plus each domain's per-contract indexing registration, composed into
+    # one `ContractIndexer` over the shared provider (see `spawn_chain_indexer`).
+    "dep:vertex-chain-index",
+    "dep:vertex-chain-index-framework",
+    # The `Chain`/`NamedChain` selector `network_of` maps onto the indexer's
+    # `Network`. Only needed on the chain path; optional to keep it out of the
+    # default client cone.
+    "dep:alloy-chains",
+    "dep:vertex-swarm-postage",
+    "dep:vertex-swarm-redistribution",
+    "vertex-swarm-postage/chain",
+    "vertex-swarm-redistribution/chain",
+    "vertex-swarm-accounting-chequebook/chain",
+    # The swap-oracle registration only exists when the swap accounting crate is
+    # present (i.e. with the `swap` feature); a no-op otherwise.
+    "vertex-swarm-accounting-swap?/chain",
 ]
 # SWAP cheque-based settlement. The swap settlement service and its accounting
 # wiring live in `vertex-swarm-node`; this feature turns them on there. SWAP is
@@ -29,7 +46,11 @@ chain = [
 # without a resolvable chain. Pseudosettle is the chain-free settlement path.
 # Combine with `chain` to also cash received cheques on chain. Off by default so the
 # default client node stays the chain-free cone.
-swap = ["vertex-swarm-node/swap"]
+swap = [
+    "vertex-swarm-node/swap",
+    # The swap-oracle domain registration composed by the chain indexer.
+    "dep:vertex-swarm-accounting-swap",
+]
 # The storer code cone: the persisting reserve, the neighbourhood puller, the
 # batch store, and the redistribution config, plus the storer node module in
 # `vertex-swarm-node`. Pulling this keeps the storer builders, configs and launch
@@ -90,12 +111,23 @@ vertex-swarm-spec.workspace = true
 # builds the provider here and hands it to the node's swap wiring for on-chain
 # cashout.
 vertex-chain = { workspace = true, optional = true }
+# The reorg-safe event engine and the contract-indexing framework the domain
+# registrations compose into. Behind `chain`; out of the default client cone.
+vertex-chain-index = { workspace = true, optional = true }
+vertex-chain-index-framework = { workspace = true, optional = true }
+# On-chain chequebook factory + swap-oracle indexing. The chequebook registration
+# is needed wherever the chain is (cashout); the swap registration only with the
+# `swap` accounting crate.
+vertex-swarm-accounting-chequebook = { workspace = true, optional = true }
+vertex-swarm-accounting-swap = { workspace = true, optional = true }
 
 # nectar
 nectar-primitives.workspace = true
 
 # alloy
 alloy-primitives.workspace = true
+# The chain selector `network_of` maps onto the indexer `Network`; behind `chain`.
+alloy-chains = { workspace = true, optional = true }
 
 # async
 tokio = { workspace = true, features = ["sync"] }

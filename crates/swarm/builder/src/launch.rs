@@ -36,6 +36,13 @@ use vertex_swarm_node::args::SwapConfig;
 #[cfg(feature = "swap")]
 use vertex_swarm_node::{NodeChainError, node_chain_provider};
 
+#[cfg(feature = "chain")]
+use vertex_chain::SharedChainProvider;
+#[cfg(feature = "chain")]
+use vertex_chain_index::EventEngine;
+#[cfg(feature = "chain")]
+use vertex_chain_index_framework::{ContractIndexer, Network};
+
 pub(crate) type PeerStore = Arc<dyn PeerSnapshotStore<PeerSnapshot>>;
 
 /// Stats collection interval for database metrics.
@@ -102,6 +109,88 @@ fn map_chain_error(err: NodeChainError) -> SwarmNodeError {
         NodeChainError::Required { node_type } => SwarmNodeError::ChainRequired { node_type },
         NodeChainError::Build(message) => SwarmNodeError::Chain(message),
     }
+}
+
+/// Map an alloy chain to the [`Network`] selector each domain's registration is
+/// built from. Returns `None` for a chain with no canonical Swarm deployment.
+#[cfg(feature = "chain")]
+fn network_of(chain: alloy_chains::Chain) -> Option<Network> {
+    use alloy_chains::NamedChain;
+    if chain == alloy_chains::Chain::from(NamedChain::Gnosis) {
+        Some(Network::Mainnet)
+    } else if chain == alloy_chains::Chain::from(NamedChain::Sepolia) {
+        Some(Network::Testnet)
+    } else {
+        None
+    }
+}
+
+/// Compose every domain's registration into the single [`ContractIndexer`] and
+/// spawn one [`EventEngine`] driving it over the shared chain provider. No-op
+/// without persistence or a chain provider.
+///
+/// The watched network is spec-derived (the shared provider carries only the live
+/// connection, not the address book): a chain with no canonical Swarm deployment
+/// is skipped.
+#[cfg(feature = "chain")]
+fn spawn_chain_indexer(
+    ctx: &dyn InfrastructureContext,
+    spec: &Arc<Spec>,
+    db: &Option<Arc<RedbDatabase>>,
+    chain_provider: Option<&SharedChainProvider>,
+) {
+    let Some(provider) = chain_provider else {
+        return;
+    };
+    let Some(db) = db.as_ref() else {
+        info!(
+            "Chain indexer skipped: no shared database (run with persistence to index contracts)"
+        );
+        return;
+    };
+    let Some(network) = network_of(spec.chain) else {
+        warn!("Chain indexer skipped: chain has no canonical Swarm deployment");
+        return;
+    };
+
+    // Collect every domain's registration into the one unified indexer. Swap is
+    // only present when the node also carries the `swap` settlement feature (its
+    // crate is a dependency only under `swap`).
+    #[allow(unused_mut)]
+    let mut registrations = vec![
+        vertex_swarm_postage::index::registration(network),
+        vertex_swarm_accounting_chequebook::registration(network),
+        vertex_swarm_redistribution::index::registration(network),
+    ];
+    #[cfg(feature = "swap")]
+    registrations.push(vertex_swarm_accounting_swap::index::registration(network));
+
+    let indexer = match ContractIndexer::from_registrations(Arc::clone(db), registrations) {
+        Ok(indexer) => Arc::new(indexer),
+        Err(e) => {
+            warn!(error = %e, "Chain indexer registration failed; contract indexing not enabled");
+            return;
+        }
+    };
+
+    // The shared provider's `DynProvider` is a `ChainReader` by the engine's
+    // blanket impl. Clone it for the engine; the node keeps its own handle for
+    // SWAP and cashout.
+    let reader = Arc::new(provider.provider().clone());
+    let engine = EventEngine::new(reader, Arc::clone(db)).register(indexer);
+
+    ctx.executor().spawn_with_graceful_shutdown_signal(
+        "chain.event_engine",
+        move |shutdown| async move {
+            let shutdown = async move {
+                let _ = shutdown.await;
+            };
+            if let Err(e) = engine.run(shutdown).await {
+                tracing::error!(error = %e, "chain event engine exited with error");
+            }
+        },
+    );
+    info!("Chain indexer enabled");
 }
 
 fn create_peer_store(db: &Option<Arc<RedbDatabase>>) -> Option<PeerStore> {
@@ -329,6 +418,13 @@ pub(crate) async fn build_client_backed_node<F: NodeAssembly>(
 
     let db = open_shared_database(ctx);
     let peer_store = create_peer_store(&db);
+
+    // Index every configured contract domain into the shared database before the
+    // provider and database are moved into the tail and node assembly; a no-op
+    // without a provider or a persistent database. `chain` implies `swap`, so the
+    // swap-carried provider is always resolved here when this is compiled in.
+    #[cfg(feature = "chain")]
+    spawn_chain_indexer(ctx, params.spec, &db, chain_provider.as_ref());
 
     let tail_params = ClientTailParams {
         node_type,
