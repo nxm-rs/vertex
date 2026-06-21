@@ -1,12 +1,14 @@
 //! Mock identity implementations and test helpers.
 
+use alloy_primitives::{Address, B256, ChainId, Signature};
+use alloy_signer::SignerSync;
 use alloy_signer_local::LocalSigner;
 use nectar_primitives::SwarmAddress;
 use std::sync::Arc;
 use vertex_swarm_api::{SwarmIdentity, SwarmNodeType};
 use vertex_swarm_identity::Identity;
-use vertex_swarm_primitives::Nonce;
-use vertex_swarm_spec::Spec;
+use vertex_swarm_primitives::{NetworkId, Nonce, OverlaySigner};
+use vertex_swarm_spec::{Spec, SwarmSpec};
 
 /// A mock identity for testing Swarm components.
 ///
@@ -87,6 +89,35 @@ impl MockIdentity {
     }
 }
 
+impl SignerSync for MockIdentity {
+    fn sign_hash_sync(&self, hash: &B256) -> alloy_signer::Result<Signature> {
+        self.signer.sign_hash_sync(hash)
+    }
+
+    fn chain_id_sync(&self) -> Option<ChainId> {
+        self.signer.chain_id_sync()
+    }
+}
+
+impl OverlaySigner for MockIdentity {
+    fn address(&self) -> Address {
+        self.signer.address()
+    }
+
+    fn network_id(&self) -> NetworkId {
+        self.spec.network_id()
+    }
+
+    fn nonce(&self) -> Nonce {
+        self.nonce
+    }
+
+    /// Returns the test-controlled overlay, which need not match the signer.
+    fn overlay(&self) -> SwarmAddress {
+        self.overlay
+    }
+}
+
 impl SwarmIdentity for MockIdentity {
     type Spec = Spec;
     type Signer = LocalSigner<alloy_signer::k256::ecdsa::SigningKey>;
@@ -95,20 +126,12 @@ impl SwarmIdentity for MockIdentity {
         &self.spec
     }
 
-    fn nonce(&self) -> Nonce {
-        self.nonce
-    }
-
     fn signer(&self) -> Arc<Self::Signer> {
         self.signer.clone()
     }
 
     fn node_type(&self) -> SwarmNodeType {
         self.node_type
-    }
-
-    fn overlay_address(&self) -> SwarmAddress {
-        self.overlay
     }
 }
 

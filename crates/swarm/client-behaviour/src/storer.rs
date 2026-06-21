@@ -8,65 +8,39 @@
 
 use std::sync::Arc;
 
-use alloy_signer::SignerSync;
 use vertex_swarm_api::ReserveStore;
-use vertex_swarm_net_pushsync::ReceiptSigner;
-use vertex_swarm_primitives::{NetworkId, Nonce};
+use vertex_swarm_primitives::OverlaySigner;
 
-/// Reserve plus the node's receipt-signing identity, shared into each handler.
+/// Reserve plus the node's overlay-signing identity, shared into each handler.
 ///
-/// `network_id` and `nonce` are the overlay-derivation inputs a forwarder
-/// recovers from the minted receipt; implementing [`ReceiptSigner`] lets the
-/// handler pass this straight to [`vertex_swarm_net_pushsync::Receipt::sign`].
+/// The identity is erased to `Arc<dyn OverlaySigner>` so the non-generic client
+/// behaviour can hold it; the handler mints a custody receipt straight from it
+/// via [`vertex_swarm_net_pushsync::Receipt::sign`], which reads the signer and
+/// the overlay-derivation inputs (`network_id`, `nonce`) through the one handle.
 /// `put` admits unconditionally; capacity is held out of band by the eviction
 /// primitives ([`ReserveStore::evict_from_bin`] /
 /// [`evict_batch`](ReserveStore::evict_batch)), not by ingest back-pressure.
 #[derive(Clone)]
 pub struct StorerCapability {
     pub(crate) reserve: Arc<dyn ReserveStore>,
-    signer: Arc<dyn SignerSync + Send + Sync>,
-    network_id: NetworkId,
-    nonce: Nonce,
+    pub(crate) signer: Arc<dyn OverlaySigner + Send + Sync>,
 }
 
 impl StorerCapability {
     pub fn new(
         reserve: Arc<dyn ReserveStore>,
-        signer: Arc<dyn SignerSync + Send + Sync>,
-        network_id: NetworkId,
-        nonce: Nonce,
+        signer: Arc<dyn OverlaySigner + Send + Sync>,
     ) -> Self {
-        Self {
-            reserve,
-            signer,
-            network_id,
-            nonce,
-        }
-    }
-}
-
-impl ReceiptSigner for StorerCapability {
-    type Signer = dyn SignerSync + Send + Sync;
-
-    fn signer(&self) -> &Self::Signer {
-        &*self.signer
-    }
-
-    fn network_id(&self) -> NetworkId {
-        self.network_id
-    }
-
-    fn nonce(&self) -> Nonce {
-        self.nonce
+        Self { reserve, signer }
     }
 }
 
 impl std::fmt::Debug for StorerCapability {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Never log the signer key; show only the public overlay-derivation inputs.
+        // Never log the signing key; show only the public overlay-derivation inputs.
         f.debug_struct("StorerCapability")
-            .field("network_id", &self.network_id)
-            .field("nonce", &self.nonce)
+            .field("network_id", &self.signer.network_id())
+            .field("nonce", &self.signer.nonce())
             .finish_non_exhaustive()
     }
 }
