@@ -4,6 +4,7 @@ mod bandwidth;
 mod localstore;
 mod peers;
 mod pricing;
+mod pullsync;
 mod reserve;
 mod topology;
 
@@ -14,6 +15,7 @@ pub use self::bandwidth::{
 pub use self::localstore::{SwarmLocalStore, SwarmLocalStoreConfig};
 pub use self::peers::SwarmPeerResolver;
 pub use self::pricing::{SwarmPricing, SwarmPricingBuilder, SwarmPricingConfig};
+pub use self::pullsync::{IntervalStore, PullChunkVerifier, PullStorage, VerifyError};
 pub use self::reserve::{BinCursorStore, BinScanItem, ReserveStore, SettableRadius};
 pub use self::topology::{
     SwarmTopology, SwarmTopologyBins, SwarmTopologyCommands, SwarmTopologyPeers,
