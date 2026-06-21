@@ -11,13 +11,24 @@ description = "Swarm redistribution (storage incentives) configuration"
 [lints]
 workspace = true
 
+[features]
+# Default is minimal so the wasm/light cone stays clean.
+default = []
+# On-chain indexing (watched contracts + lazy views) for Redistribution and
+# StakeRegistry, over the generic index framework.
+chain = [
+    "dep:vertex-chain-index-framework",
+    "dep:nectar-contracts",
+    "dep:vertex-storage",
+    "dep:alloy-sol-types",
+    "dep:alloy-rpc-types-eth",
+]
+
 [dependencies]
 # vertex
 vertex-swarm-api.workspace = true
-# Canonical postage surface: the sampler filters and the inclusion-proof stamp
-# witness consume `Stamp`, `BatchId` and `PostageContext` from here, which
-# re-exports the nectar definitions verbatim, so there is one canonical copy of
-# each postage type across the workspace (never redefined).
+# Canonical postage surface: `Stamp`, `BatchId`, `PostageContext` (nectar
+# re-exports) for the sampler filters and inclusion-proof stamp witness.
 vertex-swarm-postage.workspace = true
 
 # swarm
@@ -32,10 +43,20 @@ strum.workspace = true
 clap = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
 
+# chain feature: indexing framework plus the storage and alloy types the
+# domains decode with (`alloy-primitives` is already a hard dep above).
+vertex-chain-index-framework = { workspace = true, optional = true }
+nectar-contracts = { workspace = true, features = ["std"], optional = true }
+vertex-storage = { workspace = true, optional = true }
+alloy-sol-types = { workspace = true, optional = true }
+alloy-rpc-types-eth = { workspace = true, optional = true }
+
 [dev-dependencies]
 serde_json.workspace = true
 alloy-signer-local.workspace = true
 criterion.workspace = true
+vertex-storage-redb = { workspace = true }
+vertex-chain-index = { workspace = true }
 
 [[bench]]
 name = "redistribution"
