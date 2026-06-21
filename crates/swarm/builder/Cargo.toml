@@ -65,6 +65,9 @@ vertex-storage-redb.workspace = true
 vertex-swarm-redistribution.workspace = true
 # The persisting reserve the storer launch path wires as the node's local store.
 vertex-swarm-storer.workspace = true
+# The neighbourhood pull-sync service the storer launch path spawns over the
+# reserve, with the node providing the concrete seam impls.
+vertex-swarm-puller.workspace = true
 # The batch store and admission validator the reserve requires for stamped admission.
 vertex-swarm-postage.workspace = true
 vertex-swarm-topology.workspace = true

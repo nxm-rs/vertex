@@ -237,6 +237,10 @@ const STORER_RESERVE_MISSING: &str = "storer reserve missing";
 struct NodeStore {
     local: Arc<dyn vertex_swarm_api::SwarmLocalStore>,
     reserve: Option<Arc<dyn vertex_swarm_api::BinCursorStore>>,
+    /// The reserve as the pullsync server snapshot, carried only for a storer
+    /// whose reserve is the default [`DbReserve`]. A reserve seam that is not a
+    /// `DbReserve` leaves this `None`, so pullsync inbound serving is skipped.
+    pullsync: Option<Arc<dyn vertex_swarm_api::PullStorage>>,
 }
 
 /// A cache override supplied through the builder. With no seam the launch path
@@ -350,6 +354,7 @@ async fn build_client_backed_node(
     let NodeStore {
         local: store,
         reserve,
+        pullsync,
     } = (params.make_store)(db.clone())?;
     let node_store = Arc::clone(&store);
 
@@ -364,19 +369,44 @@ async fn build_client_backed_node(
         swap_enabled,
     )
     .unzip();
-
-    let node_builder = ClientNode::builder(params.identity.clone()).with_store(node_store);
     #[cfg(feature = "swap")]
-    let node_builder = match swap_wiring.as_ref() {
-        Some(wiring) => node_builder.with_swap_events(wiring.swap_event_sender()),
-        None => node_builder,
-    };
-    let (mut node, client_service, client_handle) = node_builder
-        .build(params.network, peer_store)
-        .await
-        .map_err(|e| SwarmNodeError::Build(e.into()))?;
+    let swap_event_sender = swap_wiring.as_ref().map(|w| w.swap_event_sender());
 
-    let topology = node.topology_handle().clone();
+    // A storer runs the pullsync protocol over a `StorerBehaviour`; every other
+    // client-backed node runs the bare client behaviour. The branch differs only
+    // in node assembly and the optional puller spawn; accounting, selection, and
+    // settlement wiring below is identical.
+    let StorerCapable {
+        topology,
+        client_service,
+        client_handle,
+        run,
+    } = if node_type == SwarmNodeType::Storer {
+        assemble_storer_node(
+            ctx,
+            params.identity,
+            params.network,
+            node_store,
+            peer_store,
+            db.clone(),
+            reserve.clone(),
+            pullsync,
+            #[cfg(feature = "swap")]
+            swap_event_sender,
+        )
+        .await?
+    } else {
+        assemble_client_node(
+            params.identity,
+            params.network,
+            node_store,
+            peer_store,
+            #[cfg(feature = "swap")]
+            swap_event_sender,
+        )
+        .await?
+    };
+
     spawn_peer_manager_task(
         Arc::clone(topology.peer_manager()),
         DEFAULT_TICK_INTERVAL,
@@ -403,23 +433,13 @@ async fn build_client_backed_node(
     // and the node task that keeps it alive.
     let accounting = Arc::new(accounting);
 
-    // Multi-hop forwarding: a retrieval cache miss relays to a strictly-closer
-    // peer and an inbound pushsync relays toward the chunk's neighbourhood,
-    // accounting both legs over the same instance. Must precede the event loop.
-    node.enable_forwarding(
-        Arc::new(topology.clone()),
+    // Multi-hop forwarding plus storer ingest must precede the event loop. The
+    // run closure applies both to its concrete node, then returns the run task.
+    let task = (run)(
         Arc::clone(&accounting),
+        reporter.clone(),
         client_handle.clone(),
     );
-
-    // Storer ingest: the inbound pushsync path gets the reserve so a delivery the
-    // node is responsible for is stored and acknowledged with a signed receipt
-    // instead of relayed. A client has no reserve and keeps the verbatim relay. The
-    // same reserve is carried out through `ClientNodeParts` for the served reserve
-    // capabilities.
-    if let Some(reserve) = reserve.clone() {
-        node.enable_storage(reserve as Arc<dyn vertex_swarm_api::ReserveStore>);
-    }
 
     let selector = Arc::new(PeerSelector::new(
         Arc::new(topology.clone()),
@@ -462,16 +482,9 @@ async fn build_client_backed_node(
         );
     }
 
-    // Accounting and the chain provider are moved into the task to keep them
-    // alive for the node's lifetime.
-    let task = single_task(move |shutdown| async move {
-        let _accounting = accounting;
-        #[cfg(feature = "chain")]
-        let _chain_provider = chain_provider;
-        if let Err(e) = node.start_and_run(shutdown).await {
-            tracing::error!(error = %e, %node_type, "Node error");
-        }
-    });
+    // The chain provider is kept alive for the node's lifetime by the run task.
+    #[cfg(feature = "chain")]
+    let task = wrap_with_chain(task, chain_provider);
 
     info!(%node_type, "Node built successfully");
     Ok(ClientNodeParts {
@@ -480,6 +493,213 @@ async fn build_client_backed_node(
         chunks,
         store,
         reserve,
+    })
+}
+
+/// The shared accounting type both client-backed node types build: the default
+/// bandwidth accounting wrapped with the config pricer.
+type SharedAccounting = Arc<
+    ClientAccounting<Arc<Accounting<DefaultBandwidthConfig, Arc<Identity>>>, FixedPricer<Spec>>,
+>;
+
+/// A run-task factory: applies multi-hop forwarding (and storer ingest) over the
+/// shared accounting, then returns the node's event-loop task. The factory keeps
+/// the concrete node type out of the shared launch tail.
+type RunTaskFn = Box<
+    dyn FnOnce(
+        SharedAccounting,
+        Arc<dyn PeerReporter>,
+        vertex_swarm_node::ClientHandle,
+    ) -> NodeTaskFn,
+>;
+
+/// Node-type-agnostic outputs of node assembly: the topology handle, the client
+/// service and handle, and the run-task factory. Both branches produce these.
+struct StorerCapable {
+    topology: TopologyHandle<Arc<Identity>>,
+    client_service: vertex_swarm_node::ClientService,
+    client_handle: vertex_swarm_node::ClientHandle,
+    run: RunTaskFn,
+}
+
+/// Assemble a bare `ClientNode` and its run-task factory.
+async fn assemble_client_node(
+    identity: &Arc<Identity>,
+    network: &NetworkConfig<KademliaConfig>,
+    node_store: Arc<dyn vertex_swarm_api::SwarmLocalStore>,
+    peer_store: Option<PeerStore>,
+    #[cfg(feature = "swap")] swap_event_sender: Option<
+        tokio::sync::mpsc::UnboundedSender<vertex_swarm_node::SwapEvent>,
+    >,
+) -> Result<StorerCapable, SwarmNodeError> {
+    let node_builder = ClientNode::builder(identity.clone()).with_store(node_store);
+    #[cfg(feature = "swap")]
+    let node_builder = match swap_event_sender {
+        Some(tx) => node_builder.with_swap_events(tx),
+        None => node_builder,
+    };
+    let (mut node, client_service, client_handle) = node_builder
+        .build(network, peer_store)
+        .await
+        .map_err(|e| SwarmNodeError::Build(e.into()))?;
+    let topology = node.topology_handle().clone();
+    let forward_topology = topology.clone();
+
+    let run: RunTaskFn = Box::new(move |accounting, _reporter, client_handle| {
+        node.enable_forwarding(
+            Arc::new(forward_topology),
+            Arc::clone(&accounting),
+            client_handle,
+        );
+        single_task(move |shutdown| async move {
+            let _accounting = accounting;
+            if let Err(e) = node.start_and_run(shutdown).await {
+                tracing::error!(error = %e, "Client node error");
+            }
+        })
+    });
+
+    Ok(StorerCapable {
+        topology,
+        client_service,
+        client_handle,
+        run,
+    })
+}
+
+/// Assemble a `StorerNode` with the reserve-backed pullsync syncer, spawn its
+/// puller over the topology seams, and return the run-task factory.
+#[allow(clippy::too_many_arguments)]
+async fn assemble_storer_node(
+    ctx: &dyn InfrastructureContext,
+    identity: &Arc<Identity>,
+    network: &NetworkConfig<KademliaConfig>,
+    node_store: Arc<dyn vertex_swarm_api::SwarmLocalStore>,
+    peer_store: Option<PeerStore>,
+    db: Option<Arc<RedbDatabase>>,
+    reserve: Option<Arc<dyn vertex_swarm_api::BinCursorStore>>,
+    pullsync: Option<Arc<dyn vertex_swarm_api::PullStorage>>,
+    #[cfg(feature = "swap")] swap_event_sender: Option<
+        tokio::sync::mpsc::UnboundedSender<vertex_swarm_node::SwapEvent>,
+    >,
+) -> Result<StorerCapable, SwarmNodeError> {
+    use vertex_swarm_node::StorerNode;
+
+    // A storer without a `PullStorage`-shaped reserve cannot serve pullsync; this
+    // only happens with a reserve seam that is not the default `DbReserve`.
+    let pullsync_storage =
+        pullsync.ok_or_else(|| SwarmNodeError::Build(STORER_PULLSYNC_MISSING.into()))?;
+
+    let mut node_builder = StorerNode::builder(identity.clone())
+        .with_store(node_store)
+        .with_pullsync_storage(pullsync_storage);
+    #[cfg(feature = "swap")]
+    {
+        node_builder = match swap_event_sender {
+            Some(tx) => node_builder.with_swap_events(tx),
+            None => node_builder,
+        };
+    }
+    let (mut node, client_service, client_handle, pullsync_control) = node_builder
+        .build(network, peer_store)
+        .await
+        .map_err(|e| SwarmNodeError::Build(e.into()))?;
+    let topology = node.topology_handle().clone();
+
+    // The reserve is the puller's admit seam (a `SwarmLocalStore` put) and the
+    // pushsync ingest store; the interval store persists per-peer sync progress.
+    let reserve = reserve.ok_or_else(|| SwarmNodeError::Build(STORER_RESERVE_MISSING.into()))?;
+    let intervals = open_interval_store(db)?;
+    // The puller consumes the node's pullsync control (its commands reach the run
+    // loop and dispatch to the pullsync sub-behaviour); the node forwards
+    // delivered pullsync events back through the returned handle.
+    let puller_handle = spawn_storer_puller(
+        ctx,
+        topology.clone(),
+        reserve.clone(),
+        intervals,
+        pullsync_control,
+    );
+    node.set_puller(puller_handle);
+    let forward_topology = topology.clone();
+
+    let run: RunTaskFn = Box::new(move |accounting, _reporter, client_handle| {
+        node.enable_forwarding(
+            Arc::new(forward_topology),
+            Arc::clone(&accounting),
+            client_handle,
+        );
+        node.enable_storage(reserve as Arc<dyn vertex_swarm_api::ReserveStore>);
+        single_task(move |shutdown| async move {
+            let _accounting = accounting;
+            if let Err(e) = node.start_and_run(shutdown).await {
+                tracing::error!(error = %e, "Storer node error");
+            }
+        })
+    });
+
+    Ok(StorerCapable {
+        topology,
+        client_service,
+        client_handle,
+        run,
+    })
+}
+
+/// Guard message: a storer whose reserve is not the default `DbReserve` cannot
+/// serve pullsync.
+const STORER_PULLSYNC_MISSING: &str = "storer pullsync reserve view missing";
+
+/// Open the puller's interval store over the shared database, or an in-memory
+/// database when persistence is off (intervals reset on restart, matching the
+/// in-memory reserve).
+fn open_interval_store(
+    db: Option<Arc<RedbDatabase>>,
+) -> Result<Arc<vertex_swarm_storer::DbIntervalStore<RedbDatabase>>, SwarmNodeError> {
+    let db = match db {
+        Some(db) => db,
+        None => RedbDatabase::in_memory()
+            .map_err(|e| SwarmNodeError::Build(e.into()))?
+            .into_arc(),
+    };
+    vertex_swarm_storer::DbIntervalStore::new(db)
+        .map(Arc::new)
+        .map_err(|e| SwarmNodeError::Build(e.into()))
+}
+
+/// Spawn the neighbourhood puller, returning the handle the node forwards
+/// pullsync events through. The control surface lives on the node side and is
+/// driven by the puller's `PullsyncControl` command channel.
+fn spawn_storer_puller(
+    ctx: &dyn InfrastructureContext,
+    topology: TopologyHandle<Arc<Identity>>,
+    reserve: Arc<dyn vertex_swarm_api::BinCursorStore>,
+    intervals: Arc<vertex_swarm_storer::DbIntervalStore<RedbDatabase>>,
+    control: vertex_swarm_node::StorerPullsyncControl,
+) -> vertex_swarm_puller::PullerHandle {
+    use vertex_swarm_puller::{PullerConfig, PullerSeams, SignatureVerifier, spawn_puller};
+
+    let seams = PullerSeams {
+        control,
+        intervals,
+        verifier: SignatureVerifier,
+        // The reserve admits through its `SwarmLocalStore` put (the blanket
+        // `ReserveAdmit` impl).
+        admit: reserve as Arc<dyn vertex_swarm_api::SwarmLocalStore>,
+        readiness: crate::pullsync::TopologyReadiness::new(topology.clone()),
+        neighbours: crate::pullsync::TopologyNeighbours::new(topology),
+    };
+    spawn_puller(ctx.executor(), seams, PullerConfig::default())
+}
+
+/// Wrap a run task so the chain provider stays alive for the node's lifetime.
+#[cfg(feature = "chain")]
+fn wrap_with_chain(task: NodeTaskFn, chain_provider: Option<SharedChainProvider>) -> NodeTaskFn {
+    Box::new(move |shutdown| {
+        Box::pin(async move {
+            let _chain_provider = chain_provider;
+            task(shutdown).await;
+        })
     })
 }
 
@@ -583,18 +803,21 @@ fn client_store_factory(
             Ok(NodeStore {
                 local: default_cache(cache_budget_bytes, soc_cache_ttl),
                 reserve: None,
+                pullsync: None,
             })
         }),
         Some(CacheSeam::Ready(local)) => Box::new(move |_db| {
             Ok(NodeStore {
                 local,
                 reserve: None,
+                pullsync: None,
             })
         }),
         Some(CacheSeam::Factory(factory)) => Box::new(move |db| {
             Ok(NodeStore {
                 local: factory(db)?,
                 reserve: None,
+                pullsync: None,
             })
         }),
     }
@@ -708,12 +931,24 @@ fn storer_store_factory(
     soc_cache_ttl: u64,
 ) -> StoreFactory<'static> {
     Box::new(move |db| {
-        let reserve: Arc<dyn vertex_swarm_api::BinCursorStore> = match reserve {
-            None => build_storer_reserve(db.clone(), &identity, capacity)?
-                .reserve
-                .ok_or_else(|| SwarmNodeError::Build(STORER_RESERVE_MISSING.into()))?,
-            Some(ReserveSeam::Ready(reserve)) => reserve,
-            Some(ReserveSeam::Factory(factory)) => factory(db.clone())?,
+        // The pullsync server snapshot is only available for the default
+        // `DbReserve`; a reserve seam erases to `BinCursorStore`, leaving pullsync
+        // inbound serving unwired for that override.
+        let (reserve, pullsync): (
+            Arc<dyn vertex_swarm_api::BinCursorStore>,
+            Option<Arc<dyn vertex_swarm_api::PullStorage>>,
+        ) = match reserve {
+            None => {
+                let built = build_storer_reserve(db.clone(), &identity, capacity)?;
+                (
+                    built
+                        .reserve
+                        .ok_or_else(|| SwarmNodeError::Build(STORER_RESERVE_MISSING.into()))?,
+                    built.pullsync,
+                )
+            }
+            Some(ReserveSeam::Ready(reserve)) => (reserve, None),
+            Some(ReserveSeam::Factory(factory)) => (factory(db.clone())?, None),
         };
         let cache: Arc<dyn vertex_swarm_api::SwarmLocalStore> = match cache {
             None => default_cache(cache_budget_bytes, soc_cache_ttl),
@@ -729,6 +964,7 @@ fn storer_store_factory(
         Ok(NodeStore {
             local,
             reserve: Some(reserve),
+            pullsync,
         })
     })
 }
@@ -783,10 +1019,12 @@ fn build_storer_reserve(
         )
         .map_err(|e| SwarmNodeError::Build(e.into()))?,
     );
-    // One `DbReserve`, two trait-object views: local-store (node and components)
-    // and reserve (pushsync ingest plus the served reserve capabilities).
+    // One `DbReserve`, three trait-object views: local-store (node and
+    // components), reserve (pushsync ingest plus the served reserve capabilities),
+    // and pullsync server snapshot (the inbound syncer's cursor and range source).
     Ok(NodeStore {
         local: Arc::clone(&reserve) as Arc<dyn vertex_swarm_api::SwarmLocalStore>,
+        pullsync: Some(Arc::clone(&reserve) as Arc<dyn vertex_swarm_api::PullStorage>),
         reserve: Some(reserve as Arc<dyn vertex_swarm_api::BinCursorStore>),
     })
 }

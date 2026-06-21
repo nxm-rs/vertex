@@ -26,7 +26,7 @@ pub use node::{
     NodeBuildError,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use node::{BootNode, BootNodeBuilder, StorerNode, StorerNodeBuilder};
+pub use node::{BootNode, BootNodeBuilder, StorerNode, StorerNodeBuilder, StorerPullsyncControl};
 
 pub use vertex_swarm_api::SwarmNodeType;
 

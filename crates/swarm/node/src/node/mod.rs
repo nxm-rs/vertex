@@ -25,6 +25,7 @@ mod launch;
 mod nat;
 pub(crate) mod stats;
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(unreachable_pub)]
 mod storer;
 pub(crate) mod task;
 
@@ -36,4 +37,4 @@ pub use client::{ClientNode, ClientNodeBuilder};
 pub use error::NodeBuildError;
 pub use launch::{ClientLauncher, LaunchedClient};
 #[cfg(not(target_arch = "wasm32"))]
-pub use storer::{StorerNode, StorerNodeBuilder};
+pub use storer::{StorerNode, StorerNodeBuilder, StorerPullsyncControl};
