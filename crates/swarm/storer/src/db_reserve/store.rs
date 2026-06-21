@@ -11,8 +11,8 @@ use nectar_primitives::{Bin, ChunkAddress, ProximityOrder};
 use tracing::debug;
 use vertex_storage::{Database, DatabaseError, DbCursorRO, DbTx, DbTxMut, Table};
 use vertex_swarm_api::{
-    BinCursorStore, BinScanItem, ReserveStore, SettableRadius, SwarmError, SwarmLocalStore,
-    SwarmResult,
+    BinCursorStore, BinScanItem, PullStorage, ReserveStore, SettableRadius, SwarmError,
+    SwarmLocalStore, SwarmResult,
 };
 use vertex_swarm_postage::{
     AdmissionValidator, Arbitration, BatchStore, IncomingStamp, PostageContext, StampIndexTable,
@@ -581,6 +581,17 @@ where
 {
     fn set_storage_radius(&self, radius: StorageRadius) {
         DbReserve::set_storage_radius(self, radius);
+    }
+}
+
+/// Server snapshot the pullsync inbound syncer reads: the per-bin cursors of
+/// [`BinCursorStore`] plus the generation marker a puller checks for a wipe.
+impl<DB: Database, BS: BatchStore + Send + Sync> PullStorage for DbReserve<DB, BS>
+where
+    BS::Error: Send + Sync + 'static,
+{
+    fn reserve_epoch(&self) -> u64 {
+        self.epoch
     }
 }
 
