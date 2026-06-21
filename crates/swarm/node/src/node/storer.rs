@@ -367,8 +367,15 @@ impl<I: SwarmIdentity + Clone> StorerNode<I> {
                 }
 
                 result = topo_events.recv() => {
-                    if let Ok(event) = result {
-                        self.handle_topology_service_event(event);
+                    match result {
+                        Ok(event) => self.handle_topology_service_event(event),
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            warn!(skipped, "Storer node lagged behind topology events");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            info!("Topology event channel closed, shutting down storer node");
+                            break;
+                        }
                     }
                 }
             }

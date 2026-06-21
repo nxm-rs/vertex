@@ -15,7 +15,7 @@ use futures::StreamExt;
 use libp2p::connection_limits;
 use libp2p::{PeerId, identity::PublicKey, swarm::NetworkBehaviour, swarm::SwarmEvent};
 use nectar_primitives::SwarmAddress;
-use tracing::info;
+use tracing::{info, warn};
 use vertex_swarm_api::{
     SwarmIdentity, SwarmIdentityConfig, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig,
 };
@@ -202,8 +202,15 @@ impl<I: SwarmIdentity + Clone> BootNode<I> {
                     }
                 }
                 result = topo_events.recv() => {
-                    if let Ok(event) = result {
-                        self.handle_topology_event(event);
+                    match result {
+                        Ok(event) => self.handle_topology_event(event),
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            warn!(skipped, "Bootnode lagged behind topology events");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            info!("Topology event channel closed, shutting down bootnode");
+                            break;
+                        }
                     }
                 }
             }
