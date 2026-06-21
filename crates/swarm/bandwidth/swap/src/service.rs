@@ -67,12 +67,9 @@ struct PeerChequeState {
     info: Option<PeerSwapInfo>,
     /// Cumulative payout of the last cheque we issued to this peer.
     last_sent_payout: U256,
-    /// Cumulative payout credited from this peer so far. Advances only by the
-    /// amount actually settled, so a remainder withheld by the bounce limit
-    /// stays claimable on a later cheque.
+    /// Cumulative payout credited from this peer; advances by the settled amount.
     last_received_payout: U256,
-    /// Cumulative cheque value credited but not confirmed cashed. Cashing is
-    /// stubbed for v1, so this only grows; the bounce limit caps it (#438).
+    /// Credited-but-uncashed value, capped by the bounce limit.
     received_uncashed: U256,
 }
 
@@ -96,8 +93,7 @@ pub struct SwapService<A: SwarmBandwidthAccounting, S> {
     chain: NamedChain,
     /// Per-peer cheque accounting state.
     peers: HashMap<OverlayAddress, PeerChequeState>,
-    /// Per-peer cap on uncashed cheque exposure (cumulative-payout units). See
-    /// [`accept_cheque`](Self::accept_cheque) and #438.
+    /// Per-peer uncashed cheque exposure cap.
     bounce_limit: U256,
     /// Track pending outbound settlements (waiting for the wire ack).
     pending: HashMap<OverlayAddress, PendingSettlement>,
@@ -164,7 +160,7 @@ where
         self
     }
 
-    /// Set the per-peer uncashed cheque exposure cap (#438).
+    /// Set the per-peer uncashed cheque exposure cap.
     pub fn with_bounce_limit(mut self, bounce_limit: U256) -> Self {
         self.bounce_limit = bounce_limit;
         self
@@ -360,14 +356,8 @@ where
 
     /// Validate a received cheque and return the incremental amount to credit.
     ///
-    /// Requires a learned swap identity for the peer, then verifies the cheque
-    /// names our beneficiary, that the signature is canonical (low-s, canonical
-    /// `v`) and recovers to the peer's expected issuer, that the cumulative
-    /// payout strictly increases versus the last accepted cheque, and that the
-    /// increment fits the accounting-unit type. The credited amount is capped so
-    /// the peer's uncashed exposure stays within the bounce limit (#438). On
-    /// success the per-peer cumulative payout and uncashed exposure advance by the
-    /// settled amount.
+    /// Credit is capped so the peer's uncashed exposure stays within the bounce
+    /// limit; the cumulative payout advances by the settled amount.
     fn accept_cheque(
         &mut self,
         peer: OverlayAddress,
@@ -408,13 +398,7 @@ where
             return Err(SwapSettlementError::NonIncreasingPayout { last, received });
         }
 
-        // Bound uncashed exposure. Cashing is stubbed for v1, so a received
-        // cheque settles debt on structural validation alone; without a cap a
-        // peer could buy unbounded real service with cheques that may never
-        // cash. Credit only up to the bounce limit, advancing the cumulative
-        // payout by the settled amount so the withheld remainder stays claimable
-        // on a later cheque once exposure drops. The real fix is to credit on
-        // confirmed cashout; see #438.
+        // Cap credit at the bounce limit while cashing is stubbed.
         let headroom = bounce_limit.saturating_sub(state.received_uncashed);
         if headroom.is_zero() {
             return Err(SwapSettlementError::ExposureLimit {
@@ -627,10 +611,8 @@ mod tests {
 
     #[test]
     fn malleable_twin_cannot_double_credit() {
-        // A high-s twin recovers to the same issuer for the same cumulative
-        // payout, so the original credits and the twin is then rejected by the
-        // monotonicity guard. Malleability cannot mint a second credit; strict
-        // canonicalisation is enforced on chain at cash time (#438).
+        // A malleable twin shares the issuer and cumulative payout, so the
+        // monotonicity guard rejects it on replay.
         use alloy_primitives::Signature;
         let issuer = PrivateKeySigner::random();
         let mut svc = build_service(PrivateKeySigner::random());
@@ -654,9 +636,8 @@ mod tests {
             Au::from_amount(1_000)
         );
 
-        // Its malleable twin (r, n - s, !v) recovers to the same issuer for the
-        // same payout, so it is rejected as non-increasing rather than crediting
-        // a second time.
+        // The twin (r, n - s, !v) recovers to the same issuer for the same
+        // payout, so it is rejected as non-increasing.
         let n: U256 = "0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"
             .parse()
             .unwrap();

@@ -105,8 +105,7 @@ pub struct SwapConfig {
     /// Whether to deploy a fresh chequebook on startup.
     pub deploy: bool,
 
-    /// Per-peer cap on uncashed cheque exposure, in cumulative-payout units
-    /// (#438).
+    /// Per-peer cap on uncashed cheque exposure, in cumulative-payout units.
     pub bounce_limit: u128,
 }
 

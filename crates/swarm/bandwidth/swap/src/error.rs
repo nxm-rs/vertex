@@ -71,9 +71,7 @@ pub enum SwapSettlementError {
     #[error("cheque validation failed: {0}")]
     ValidationFailed(String),
 
-    /// Accepting the cheque would push the peer's uncashed exposure past the
-    /// per-peer bounce limit. Cashing is stubbed for v1, so the cap is hard:
-    /// debt stops being settled for this peer until cashout confirms (#438).
+    /// Crediting would push the peer's uncashed exposure past the bounce limit.
     #[error("uncashed exposure at bounce limit: exposure {exposure}, limit {limit}")]
     ExposureLimit {
         /// The peer's current uncashed cumulative-payout exposure.
