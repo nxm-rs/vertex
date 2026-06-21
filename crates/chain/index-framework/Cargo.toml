@@ -1,0 +1,32 @@
+[package]
+name = "vertex-chain-index-framework"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Generic, configuration-driven contract-indexing framework over the vertex-chain-index engine (mechanism only; names no contract)"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Indexer trait and error taxonomy.
+vertex-chain-index = { workspace = true }
+# Event store and secondary index machinery.
+vertex-storage = { workspace = true }
+
+# Log types, combined filter, store key primitives. No `sol!`: names no ABI.
+alloy-primitives = { workspace = true, features = ["serde"] }
+alloy-rpc-types-eth = { workspace = true }
+
+# Stored rows and keys derive serde.
+serde = { workspace = true, features = ["derive"] }
+
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+vertex-storage-redb = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
