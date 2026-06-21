@@ -8,6 +8,7 @@ use std::{
     task::{Context, Poll},
 };
 
+use alloy_primitives::U256;
 use libp2p::{
     Multiaddr, PeerId,
     core::Endpoint,
@@ -18,13 +19,14 @@ use libp2p::{
 };
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
-use vertex_swarm_api::SwarmLocalStore;
+use vertex_swarm_api::{Au, SwarmLocalStore};
+use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_primitives::OverlayAddress;
 
 #[cfg(feature = "swap")]
 use vertex_swarm_client_protocol::SwapEvent;
 use vertex_swarm_client_protocol::{
-    ChunkTransferError, ClientCommand, ClientEvent, PseudosettleEvent,
+    ChunkTransferError, ClientCommand, ClientEvent, PseudosettleAck, PseudosettleEvent,
 };
 
 use super::{
@@ -246,7 +248,10 @@ impl ClientBehaviour {
                     self.push_event(ToSwarm::NotifyHandler {
                         peer_id,
                         handler: libp2p::swarm::NotifyHandler::Any,
-                        event: HandlerCommand::AckPseudosettle { request_id, ack },
+                        event: HandlerCommand::AckPseudosettle {
+                            request_id,
+                            ack: wire_ack(ack),
+                        },
                     });
                 } else {
                     debug!(%peer, "Unknown peer for pseudosettle ack");
@@ -437,12 +442,10 @@ impl ClientBehaviour {
                 }));
             }
             HandlerEvent::PseudosettleSent { overlay, ack } => {
+                let ack = domain_ack(ack);
                 if let Some(tx) = &self.pseudosettle_event_tx
                     && tx
-                        .send(PseudosettleEvent::Sent {
-                            peer: overlay,
-                            ack: ack.clone(),
-                        })
+                        .send(PseudosettleEvent::Sent { peer: overlay, ack })
                         .is_err()
                 {
                     warn!(%overlay, "Pseudosettle event channel closed");
@@ -556,5 +559,31 @@ impl NetworkBehaviour for ClientBehaviour {
             return Poll::Ready(event);
         }
         Poll::Pending
+    }
+}
+
+/// Assemble the wire ack from the deciding service's domain decision.
+///
+/// The clock was sampled in the deciding service and is preserved verbatim; only
+/// the amount crosses the AU boundary here.
+fn wire_ack(ack: PseudosettleAck) -> PaymentAck {
+    PaymentAck::new(U256::from(ack.accepted.as_amount()), ack.timestamp)
+}
+
+/// Convert a decoded wire ack into the domain decision.
+///
+/// In-spec pseudosettle amounts fit in a `u64` of AU; a larger wire value is out
+/// of spec and saturates to the maximum AU so the deciding service still detects
+/// the over-acceptance in AU space rather than wrapping to a small amount. The
+/// responder's sampled timestamp passes through unchanged.
+fn domain_ack(ack: PaymentAck) -> PseudosettleAck {
+    let accepted = if ack.amount > U256::from(u64::MAX) {
+        Au::from_amount(u64::MAX)
+    } else {
+        Au::from_amount(ack.amount.as_limbs()[0])
+    };
+    PseudosettleAck {
+        accepted,
+        timestamp: ack.timestamp,
     }
 }

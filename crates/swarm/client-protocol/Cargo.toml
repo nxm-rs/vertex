@@ -14,7 +14,7 @@ workspace = true
 [dependencies]
 nectar-primitives = { workspace = true }
 vertex-swarm-primitives = { workspace = true }
-vertex-swarm-net-pseudosettle = { workspace = true }
+vertex-swarm-api = { workspace = true }
 vertex-swarm-net-pushsync = { workspace = true }
 vertex-swarm-net-swap = { workspace = true, optional = true }
 alloy-primitives = { workspace = true }

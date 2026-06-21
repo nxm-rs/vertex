@@ -7,9 +7,9 @@ use std::sync::Arc;
 use nectar_primitives::ChunkAddress;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
-use vertex_swarm_api::{PeerReporter, ReportSource, SwarmLocalStore, SwarmScoringEvent};
+use vertex_swarm_api::{Au, PeerReporter, ReportSource, SwarmLocalStore, SwarmScoringEvent};
+use vertex_swarm_client_protocol::PseudosettleAck;
 pub use vertex_swarm_client_protocol::{ChunkTransferError, RetrievalResult};
-use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_net_pushsync::Receipt;
 use vertex_swarm_primitives::{CachedChunk, OverlayAddress, StampedChunk};
 use vertex_tasks::{GracefulShutdown, MaybeSend, SpawnableTask};
@@ -453,7 +453,10 @@ impl ClientService {
                 // TODO: Credit peer's balance in accounting system:
                 //   accounting.for_peer(peer).credit(amount.as_u64() as i64);
 
-                let ack = PaymentAck::now(amount);
+                let ack = PseudosettleAck {
+                    accepted: Au::from_amount(amount.as_limbs()[0]),
+                    timestamp: vertex_util_runtime::time::now_unix_nanos(),
+                };
 
                 if let Err(e) = self.handle.send_command(ClientCommand::AckPseudosettle {
                     peer,
@@ -465,7 +468,7 @@ impl ClientService {
             }
 
             ClientEvent::PseudosettleSent { peer, peer_id, ack } => {
-                debug!(%peer, %peer_id, amount = %ack.amount, timestamp = ack.timestamp, "Pseudosettle sent, received ack");
+                debug!(%peer, %peer_id, amount = %ack.accepted, timestamp = ack.timestamp, "Pseudosettle sent, received ack");
             }
 
             #[cfg(feature = "swap")]
