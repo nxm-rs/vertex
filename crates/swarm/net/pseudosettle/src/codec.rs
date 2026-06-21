@@ -4,8 +4,8 @@
 //! - `PaymentCodec` - Encodes/decodes `Payment` messages only
 //! - `PaymentAckCodec` - Encodes/decodes `PaymentAck` messages only
 //!
-//! Amounts are encoded as big-endian bytes with leading zeros trimmed,
-//! matching Go's `big.Int.Bytes()` serialization used by Bee.
+//! Amounts are encoded as trimmed big-endian bytes (leading zero bytes
+//! removed).
 
 use alloy_primitives::U256;
 use vertex_net_codec::{

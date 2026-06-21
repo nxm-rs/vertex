@@ -7,7 +7,7 @@
 //! The cheque rides as a JSON object in a protobuf `bytes` field. It is encoded
 //! and decoded with `serde_json` directly over [`SignedCheque`]; the JSON is
 //! transport-only (the signature is EIP-712 over the cheque fields, not the JSON
-//! bytes) and is slated for protobuf replacement, tracked in issue #183.
+//! bytes).
 
 use alloy_primitives::Address;
 use vertex_net_codec::{Codec, ProtoMessage};

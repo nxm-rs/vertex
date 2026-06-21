@@ -47,8 +47,7 @@
 //! directly. The shape follows the field-value conventions other Swarm nodes
 //! emit: PascalCase keys, lowercase `0x`-hex addresses, `CumulativePayout` as a
 //! bare decimal JSON number spanning the full 256-bit range, and `Signature` as
-//! standard base64. This whole JSON path is slated for protobuf replacement,
-//! tracked in issue #183.
+//! standard base64.
 
 #[cfg(feature = "swap-chequebook")]
 pub mod chain;
