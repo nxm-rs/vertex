@@ -72,6 +72,7 @@ members = [
     "crates/swarm/client-protocol",
     "crates/swarm/client-behaviour",
     "crates/swarm/node",
+    "crates/swarm/storer-behaviour",
     "crates/swarm/topology",
     "crates/swarm/peers/peer-manager",
     "crates/swarm/peers/peer-score",
@@ -223,6 +224,7 @@ vertex-swarm-test-utils = { path = "crates/swarm/test-utils" }
 vertex-swarm-client-protocol = { path = "crates/swarm/client-protocol" }
 vertex-swarm-client-behaviour = { path = "crates/swarm/client-behaviour" }
 vertex-swarm-node = { path = "crates/swarm/node" }
+vertex-swarm-storer-behaviour = { path = "crates/swarm/storer-behaviour" }
 
 # topology (in swarm/)
 vertex-swarm-topology = { path = "crates/swarm/topology" }

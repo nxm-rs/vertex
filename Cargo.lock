@@ -9490,6 +9490,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "vertex-swarm-storer-behaviour"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "futures",
+ "libp2p",
+ "libp2p-swarm-test",
+ "metrics",
+ "nectar-postage",
+ "nectar-primitives",
+ "strum 0.28.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "vertex-net-ratelimiter",
+ "vertex-swarm-api",
+ "vertex-swarm-net-handler-core",
+ "vertex-swarm-net-headers",
+ "vertex-swarm-net-pullsync",
+ "vertex-swarm-primitives",
+ "vertex-tasks",
+]
+
+[[package]]
 name = "vertex-swarm-stream"
 version = "0.1.0"
 dependencies = [
