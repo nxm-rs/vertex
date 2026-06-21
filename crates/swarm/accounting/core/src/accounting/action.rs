@@ -8,15 +8,6 @@ use vertex_swarm_api::Au;
 
 use super::PeerState;
 
-/// Trait for accounting actions.
-pub trait AccountingAction: Send {
-    /// Apply the action, committing the balance change.
-    fn apply(self);
-
-    /// Clean up without applying (releases reservations).
-    fn cleanup(&self);
-}
-
 /// Action for receiving service from a peer (balance decreases).
 ///
 /// Reserves balance on creation; commits on apply(), releases on drop.
@@ -50,14 +41,6 @@ impl Drop for ReceiveAction {
             self.state.sub_reserved(self.price);
         }
     }
-}
-
-impl AccountingAction for ReceiveAction {
-    fn apply(self) {
-        ReceiveAction::apply(self);
-    }
-
-    fn cleanup(&self) {}
 }
 
 impl vertex_swarm_api::AccountingAction for ReceiveAction {
@@ -103,14 +86,6 @@ impl Drop for ProvideAction {
             self.state.sub_shadow_reserved(self.price);
         }
     }
-}
-
-impl AccountingAction for ProvideAction {
-    fn apply(self) {
-        ProvideAction::apply(self);
-    }
-
-    fn cleanup(&self) {}
 }
 
 impl vertex_swarm_api::AccountingAction for ProvideAction {

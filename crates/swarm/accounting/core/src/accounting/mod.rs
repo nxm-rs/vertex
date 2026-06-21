@@ -21,7 +21,7 @@ mod action;
 mod error;
 mod peer;
 
-pub use action::{AccountingAction, ProvideAction, ReceiveAction};
+pub use action::{ProvideAction, ReceiveAction};
 pub use error::AccountingError;
 pub use peer::{PeerState, PeerStateSnapshot};
 
