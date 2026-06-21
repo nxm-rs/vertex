@@ -4,7 +4,7 @@
 //! domain type is exercised through the public `ProtoMessage` API, never a
 //! private reimplementation of the byte layout, and the serialized protobuf
 //! bytes are asserted against fixed vectors. A single byte of drift in a field
-//! tag, ordering, or the MSB-first `Want` bitvector surfaces as a mismatch.
+//! tag, ordering, or the LSB-first `Want` bitvector surfaces as a mismatch.
 
 #![allow(
     clippy::expect_used,
@@ -113,31 +113,33 @@ fn offer_two_descriptors_fixed_bytes() {
     assert_eq!(decoded, offer);
 }
 
-/// The `Want` bitvector is MSB-first: bit `i` is the high bit of byte `i / 8`.
-/// Wanting chunks 0, 7, 8, and 15 of a 16-chunk offer encodes the literal bytes
-/// `0x81 0x81` on field 1.
+/// The `Want` bitvector is LSB-first: bit `i` is `0x01 << (i % 8)` in byte
+/// `i / 8`, and the byte length is `len / 8 + 1`. Wanting chunks 0, 1, and 8 of
+/// a 16-chunk offer encodes the literal bytes `0x03 0x01 0x00` on field 1; the
+/// asymmetric bit 1 (`0x02`, not `0x40`) pins the ordering, and the third byte
+/// is the `len / 8 + 1` trailing byte.
 #[test]
-fn want_bitvector_is_msb_first_fixed_bytes() {
+fn want_bitvector_is_lsb_first_fixed_bytes() {
     let mut bv = BitVector::new(16);
     bv.set(0);
-    bv.set(7);
+    bv.set(1);
     bv.set(8);
-    bv.set(15);
-    assert_eq!(bv.as_bytes(), &[0x81, 0x81]);
+    // Byte 0: bits 0,1 -> 0x03. Byte 1: bit 8 -> 0x01. Byte 2: len/8+1 pad -> 0x00.
+    assert_eq!(bv.as_bytes(), &[0x03, 0x01, 0x00]);
 
     let bytes = proto_bytes(Want::new(bv.clone()));
-    // field 1 (bit_vector), length-delimited: tag 0x0a, len 2, then 0x81 0x81.
-    assert_eq!(bytes, vec![0x0a, 0x02, 0x81, 0x81]);
+    // field 1 (bit_vector), length-delimited: tag 0x0a, len 3, then 0x03 0x01 0x00.
+    assert_eq!(bytes, vec![0x0a, 0x03, 0x03, 0x01, 0x00]);
 
-    // The selection survives a round-trip and counts four wanted chunks.
+    // The selection survives a round-trip and counts three wanted chunks.
     let want = Want::new(bv);
     let decoded = Want::from_proto(want.clone().into_proto().unwrap()).unwrap();
-    assert_eq!(decoded.count(), 4);
+    assert_eq!(decoded.count(), 3);
     assert!(decoded.wanted.get(0));
-    assert!(decoded.wanted.get(7));
+    assert!(decoded.wanted.get(1));
     assert!(decoded.wanted.get(8));
-    assert!(decoded.wanted.get(15));
-    assert!(!decoded.wanted.get(1));
+    assert!(!decoded.wanted.get(2));
+    assert!(!decoded.wanted.get(7));
 }
 
 /// A delivery pins the field order `address(1)`, `data(2)`, `stamp(3)` and

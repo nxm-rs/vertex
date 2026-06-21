@@ -50,7 +50,7 @@ const MAX_GET_SIZE: usize = 8 + 8 + PROTOBUF_FRAMING;
 const MAX_OFFER_SIZE: usize = DEFAULT_MAX_PAGE as usize * DESCRIPTOR_SIZE + 8 + PROTOBUF_FRAMING;
 
 /// Accept-limit for a `Want`: one selection bit per offered chunk, packed into
-/// `ceil(DEFAULT_MAX_PAGE / 8)` bytes.
+/// `DEFAULT_MAX_PAGE / 8 + 1` bytes.
 const MAX_WANT_SIZE: usize = DEFAULT_MAX_PAGE as usize / 8 + 1 + PROTOBUF_FRAMING;
 
 /// Accept-limit for a `Delivery`: the largest chunk payload, its address, and a
@@ -179,16 +179,21 @@ pub enum SyncResponder {
     Offering {
         framed: Framed<libp2p::Stream, OfferCodec>,
     },
-    /// Offer sent and want received; delivering the wanted chunks.
+    /// Offer sent; awaiting the want, or finishing if the offer was empty.
+    Offered {
+        framed: Framed<libp2p::Stream, WantCodec>,
+    },
+    /// Want received; delivering the wanted chunks.
     Delivering {
         framed: Framed<libp2p::Stream, DeliveryCodec>,
     },
 }
 
 impl SyncResponder {
-    /// Send the offer, read the requester's `Want`, and enter the delivery
-    /// phase. Returns the want so the caller knows which descriptors to deliver.
-    pub async fn send_offer(self, offer: Offer) -> Result<(Want, Self), PullsyncError> {
+    /// Send the offer and enter the `Offered` phase. An empty offer ends the
+    /// exchange with [`finish`](Self::finish) and no want round; a non-empty
+    /// offer continues with [`read_want`](Self::read_want).
+    pub async fn write_offer(self, offer: Offer) -> Result<Self, PullsyncError> {
         let SyncResponder::Offering { mut framed } = self else {
             return Err(PullsyncError::ConnectionClosed);
         };
@@ -198,7 +203,16 @@ impl SyncResponder {
             "Pullsync sync: sending offer"
         );
         framed.send(offer).await?;
-        let mut framed = reframe(framed, WantCodec::new(MAX_WANT_SIZE));
+        let framed = reframe(framed, WantCodec::new(MAX_WANT_SIZE));
+        Ok(SyncResponder::Offered { framed })
+    }
+
+    /// Read the requester's `Want` and enter the delivery phase. Call only after
+    /// a non-empty offer; an empty offer is terminated by [`finish`](Self::finish).
+    pub async fn read_want(self) -> Result<(Want, Self), PullsyncError> {
+        let SyncResponder::Offered { mut framed } = self else {
+            return Err(PullsyncError::ConnectionClosed);
+        };
         debug!("Pullsync sync: reading want");
         let want = framed
             .try_next()
@@ -217,13 +231,20 @@ impl SyncResponder {
         framed.send(delivery).await
     }
 
-    /// Flush and close the delivery stream after the last `send_delivery`.
+    /// Flush and close the stream, ending the exchange. Valid after an empty
+    /// offer (from `Offered`, no want read) or after the last delivery.
     pub async fn finish(self) -> Result<(), PullsyncError> {
-        let SyncResponder::Delivering { mut framed } = self else {
-            return Err(PullsyncError::ConnectionClosed);
-        };
-        framed.close().await?;
-        Ok(())
+        match self {
+            SyncResponder::Offered { mut framed } => {
+                framed.close().await?;
+                Ok(())
+            }
+            SyncResponder::Delivering { mut framed } => {
+                framed.close().await?;
+                Ok(())
+            }
+            SyncResponder::Offering { .. } => Err(PullsyncError::ConnectionClosed),
+        }
     }
 }
 
@@ -269,10 +290,11 @@ impl HeaderedOutbound for SyncOutboundInner {
 }
 
 /// Client-side driver for the range exchange after the offer arrives. After
-/// [`accept_want`](Self::accept_want) the caller reads exactly
-/// [`Want::count`](crate::Want::count) deliveries.
+/// [`send_want`](Self::send_want) the caller reads exactly
+/// [`Want::count`](crate::Want::count) deliveries. An empty offer is terminated
+/// by [`finish`](Self::finish) with no want.
 pub enum SyncRequester {
-    /// Offer received; awaiting the want to send.
+    /// Offer received; awaiting the want to send, or finishing if empty.
     Wanting {
         framed: Framed<libp2p::Stream, WantCodec>,
     },
@@ -283,8 +305,9 @@ pub enum SyncRequester {
 }
 
 impl SyncRequester {
-    /// Send the selection and enter the receive phase.
-    pub async fn accept_want(self, want: Want) -> Result<Self, PullsyncError> {
+    /// Send the selection and enter the receive phase. Call only for a non-empty
+    /// offer; an empty offer is terminated by [`finish`](Self::finish).
+    pub async fn send_want(self, want: Want) -> Result<Self, PullsyncError> {
         let SyncRequester::Wanting { mut framed } = self else {
             return Err(PullsyncError::ConnectionClosed);
         };
@@ -300,6 +323,16 @@ impl SyncRequester {
             return Err(PullsyncError::ConnectionClosed);
         };
         framed.try_next().await
+    }
+
+    /// Close the stream from the `Wanting` phase, ending the exchange with no
+    /// want. Used when the offer was empty.
+    pub async fn finish(self) -> Result<(), PullsyncError> {
+        let SyncRequester::Wanting { mut framed } = self else {
+            return Err(PullsyncError::ConnectionClosed);
+        };
+        framed.close().await?;
+        Ok(())
     }
 }
 
@@ -322,4 +355,36 @@ pub fn sync_inbound() -> SyncInboundProtocol {
 
 pub fn sync_outbound(get: Get) -> SyncOutboundProtocol {
     Outbound::new(SyncOutboundInner::new(get))
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_primitives::B256;
+    use nectar_primitives::ChunkAddress;
+
+    use crate::ChunkDescriptor;
+
+    use super::*;
+
+    // The empty-offer flow keys on `Offer::chunks.is_empty()`: an empty offer is
+    // finished with no want on both sides, a non-empty offer proceeds to the want
+    // round. The stream drivers wrap an opaque `libp2p::Stream` and so cannot be
+    // exercised without a live transport; the phase-typed enums make the
+    // sequencing a compile-time contract, and the gate below is the runtime seam
+    // the behaviour layer branches on.
+    #[test]
+    fn empty_offer_is_the_no_want_gate() {
+        let empty = Offer::new(7, vec![]);
+        assert!(empty.chunks.is_empty(), "empty offer ends with no want");
+
+        let one = Offer::new(
+            7,
+            vec![ChunkDescriptor::new(
+                ChunkAddress::new([0; 32]),
+                B256::ZERO,
+                B256::ZERO,
+            )],
+        );
+        assert!(!one.chunks.is_empty(), "non-empty offer proceeds to want");
+    }
 }

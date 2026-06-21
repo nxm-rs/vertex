@@ -1,8 +1,9 @@
-//! MSB-first selection bitvector for the pullsync `Want` reply: bit `i` selects
-//! `chunks[i]` of the preceding `Offer`. Byte length is `ceil(len / 8)`; trailing
-//! pad bits are zero.
+//! LSB-first selection bitvector for the pullsync `Want` reply: bit `i` selects
+//! `chunks[i]` of the preceding `Offer`. Bit `i` is `0x01 << (i % 8)` in byte
+//! `i / 8`; the byte length is `len / 8 + 1` (always one trailing byte, even
+//! when `len` is a multiple of 8), and trailing pad bits are zero.
 
-/// A fixed-length set of selection bits, packed MSB-first one bit per offered
+/// A fixed-length set of selection bits, packed LSB-first one bit per offered
 /// chunk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BitVector {
@@ -10,12 +11,18 @@ pub struct BitVector {
     len: usize,
 }
 
+/// Byte length for a vector selecting over `len` chunks: `len / 8 + 1`, always
+/// one trailing byte.
+const fn byte_len(len: usize) -> usize {
+    len / 8 + 1
+}
+
 impl BitVector {
     /// An all-clear vector sized for `len` chunks.
     #[must_use]
     pub fn new(len: usize) -> Self {
         Self {
-            bytes: vec![0u8; len.div_ceil(8)],
+            bytes: vec![0u8; byte_len(len)],
             len,
         }
     }
@@ -29,9 +36,9 @@ impl BitVector {
     }
 
     /// Wrap raw wire bytes selecting over `len` chunks; `bytes` must be exactly
-    /// `ceil(len / 8)` long.
+    /// `len / 8 + 1` long.
     pub fn from_bytes(bytes: Vec<u8>, len: usize) -> Result<Self, BitVectorError> {
-        let expected = len.div_ceil(8);
+        let expected = byte_len(len);
         if bytes.len() != expected {
             return Err(BitVectorError {
                 expected,
@@ -61,7 +68,7 @@ impl BitVector {
         }
         self.bytes
             .get(i / 8)
-            .is_some_and(|byte| byte & (0x80 >> (i % 8)) != 0)
+            .is_some_and(|byte| byte & (0x01 << (i % 8)) != 0)
     }
 
     /// Mark `chunks[i]` as wanted. No-op for `i >= len`.
@@ -69,7 +76,7 @@ impl BitVector {
         if i < self.len
             && let Some(byte) = self.bytes.get_mut(i / 8)
         {
-            *byte |= 0x80 >> (i % 8);
+            *byte |= 0x01 << (i % 8);
         }
     }
 
@@ -96,7 +103,7 @@ impl BitVector {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("bitvector length mismatch: expected {expected} bytes, got {got}")]
 pub struct BitVectorError {
-    /// Bytes required for the offer (`ceil(len / 8)`).
+    /// Bytes required for the offer (`len / 8 + 1`).
     pub expected: usize,
     /// Bytes actually received.
     pub got: usize,
@@ -107,35 +114,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bit_i_is_msb_first_within_each_byte() {
+    fn bit_i_is_lsb_first_within_each_byte() {
         let mut bv = BitVector::new(16);
         bv.set(0);
-        bv.set(7);
+        bv.set(1);
         bv.set(8);
-        bv.set(15);
-        // Byte 0: bits 0 and 7 -> 0b1000_0001 = 0x81.
-        // Byte 1: bits 8 and 15 -> 0b1000_0001 = 0x81.
-        assert_eq!(bv.as_bytes(), &[0x81, 0x81]);
+        // Byte 0: bits 0 and 1 -> 0b0000_0011 = 0x03.
+        // Byte 1: bit 8 -> 0b0000_0001 = 0x01.
+        // Byte 2: trailing len/8+1 pad byte -> 0x00.
+        assert_eq!(bv.as_bytes(), &[0x03, 0x01, 0x00]);
         assert!(bv.get(0));
-        assert!(bv.get(7));
+        assert!(bv.get(1));
         assert!(bv.get(8));
-        assert!(bv.get(15));
-        assert!(!bv.get(1));
+        assert!(!bv.get(2));
+        assert!(!bv.get(7));
         assert!(!bv.get(9));
     }
 
     #[test]
-    fn single_high_bit_is_0x80() {
+    fn single_bit_one_is_0x02_not_0x40() {
         let mut bv = BitVector::new(8);
-        bv.set(0);
-        assert_eq!(bv.as_bytes(), &[0x80]);
+        bv.set(1);
+        // LSB-first: bit 1 is 0x02. MSB-first would be 0x40.
+        assert_eq!(bv.as_bytes(), &[0x02, 0x00]);
     }
 
     #[test]
-    fn byte_length_is_ceil_div_eight() {
-        assert_eq!(BitVector::new(0).as_bytes().len(), 0);
+    fn byte_length_is_len_div_eight_plus_one() {
+        assert_eq!(BitVector::new(0).as_bytes().len(), 1);
         assert_eq!(BitVector::new(1).as_bytes().len(), 1);
-        assert_eq!(BitVector::new(8).as_bytes().len(), 1);
+        assert_eq!(BitVector::new(8).as_bytes().len(), 2);
         assert_eq!(BitVector::new(9).as_bytes().len(), 2);
         assert_eq!(BitVector::new(250).as_bytes().len(), 32);
     }
@@ -159,9 +167,9 @@ mod tests {
 
     #[test]
     fn from_bytes_rejects_wrong_length() {
-        assert!(BitVector::from_bytes(vec![0u8; 2], 16).is_ok());
+        assert!(BitVector::from_bytes(vec![0u8; 3], 16).is_ok());
         let err = BitVector::from_bytes(vec![0u8; 1], 16).expect_err("too short");
-        assert_eq!(err.expected, 2);
+        assert_eq!(err.expected, 3);
         assert_eq!(err.got, 1);
     }
 

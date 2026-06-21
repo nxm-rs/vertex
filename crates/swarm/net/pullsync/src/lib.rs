@@ -4,8 +4,8 @@
 //!
 //! Wire invariants: `Ack.cursors[bin]` is the topmost id held for that bin (`0`
 //! when empty); in the range exchange `Want` bit `i` selects `chunks[i]` of the
-//! preceding `Offer` (MSB-first), answered by one `Delivery` per set bit in offer
-//! order.
+//! preceding `Offer` (LSB-first), answered by one `Delivery` per set bit in offer
+//! order. An empty `Offer` ends the exchange with no `Want`.
 
 mod bitvector;
 pub use bitvector::{BitVector, BitVectorError};
