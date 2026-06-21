@@ -5,6 +5,51 @@ use nectar_primitives::ChunkAddress;
 use std::string::String;
 use vertex_swarm_primitives::OverlayAddress;
 
+use crate::Au;
+
+/// Errors raised while preparing a per-peer accounting decision.
+#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum AccountingError {
+    /// Peer has exceeded disconnect threshold.
+    #[error("peer {peer} balance {balance} exceeds disconnect threshold {threshold}")]
+    DisconnectThreshold {
+        /// The peer whose balance breached the threshold.
+        peer: OverlayAddress,
+        /// The peer's current balance.
+        balance: Au,
+        /// The disconnect threshold that was exceeded.
+        threshold: Au,
+    },
+
+    /// Operation would exceed payment threshold.
+    #[error("peer {peer} balance {balance} exceeds payment threshold {threshold}")]
+    PaymentThreshold {
+        /// The peer whose balance breached the threshold.
+        peer: OverlayAddress,
+        /// The peer's current balance.
+        balance: Au,
+        /// The payment threshold that was exceeded.
+        threshold: Au,
+    },
+
+    /// Peer not found.
+    #[error("peer {0} not found")]
+    PeerNotFound(OverlayAddress),
+
+    /// Settlement failed.
+    #[error("settlement failed: {0}")]
+    SettlementFailed(String),
+
+    /// Channel closed (service stopped).
+    #[error("channel closed")]
+    ChannelClosed,
+}
+
+impl AccountingError {
+    vertex_metrics::impl_record_error!("accounting_errors_total");
+}
+
 /// Error type for Swarm API operations.
 #[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
@@ -129,6 +174,13 @@ pub enum SwarmError {
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
+    /// A typed accounting decision failed.
+    ///
+    /// Carries the [`AccountingError`] so its discriminant survives the boundary
+    /// rather than collapsing into a single `accounting` label.
+    #[error(transparent)]
+    AccountingDecision(#[from] AccountingError),
+
     /// Internal error.
     #[error("internal error: {message}")]
     Internal {
@@ -187,6 +239,7 @@ impl SwarmError {
             Self::Network { .. }
                 | Self::PeerUnavailable { .. }
                 | Self::Accounting { .. }
+                | Self::AccountingDecision { .. }
                 | Self::NoStorer { .. }
                 | Self::AllPeersFailed { .. }
                 | Self::UnconfirmedCustody { .. }

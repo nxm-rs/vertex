@@ -259,13 +259,11 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> SwarmBandwidthAccounting for Ac
         price: Au,
         originated: bool,
     ) -> SwarmResult<ReceiveAction> {
-        Accounting::prepare_receive(self, peer, price, originated)
-            .map_err(vertex_swarm_api::SwarmError::accounting)
+        Ok(Accounting::prepare_receive(self, peer, price, originated)?)
     }
 
     fn prepare_provide(&self, peer: OverlayAddress, price: Au) -> SwarmResult<ProvideAction> {
-        Accounting::prepare_provide(self, peer, price)
-            .map_err(vertex_swarm_api::SwarmError::accounting)
+        Ok(Accounting::prepare_provide(self, peer, price)?)
     }
 }
 
