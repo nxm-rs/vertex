@@ -114,14 +114,9 @@ impl ChequeExt for Cheque {
 pub struct SignedCheque {
     /// The unsigned cheque data.
     pub cheque: Cheque,
-    /// The raw signature payload (canonically 65 bytes: r[32] + s[32] + v[1]).
-    ///
-    /// Kept as opaque [`Bytes`] rather than a typed
-    /// [`alloy_primitives::Signature`] on purpose. A typed `Signature` fixes the
-    /// length at 65 bytes, rejects non-canonical `v` values, and renormalizes
-    /// `v` to `27 + parity` on re-encode. The opaque payload preserves whatever
-    /// a peer sends and is parsed into a `Signature` only when verifying or
-    /// recovering a signer (see [`Self::recover_signer`]).
+    /// Raw 65-byte signature (r, s, v), kept opaque so it round-trips the peer's
+    /// bytes; parsed into a `Signature` only on recovery (see
+    /// [`Self::recover_signer`]).
     pub signature: Bytes,
 }
 

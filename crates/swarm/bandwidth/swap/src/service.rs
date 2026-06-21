@@ -67,8 +67,10 @@ struct PeerChequeState {
     info: Option<PeerSwapInfo>,
     /// Cumulative payout of the last cheque we issued to this peer.
     last_sent_payout: U256,
-    /// Cumulative payout of the last cheque we accepted from this peer.
+    /// Cumulative payout credited from this peer; advances by the settled amount.
     last_received_payout: U256,
+    /// Credited-but-uncashed value, capped by the bounce limit.
+    received_uncashed: U256,
 }
 
 /// Processes settlement commands from handles and network events.
@@ -91,6 +93,8 @@ pub struct SwapService<A: SwarmBandwidthAccounting, S> {
     chain: NamedChain,
     /// Per-peer cheque accounting state.
     peers: HashMap<OverlayAddress, PeerChequeState>,
+    /// Per-peer uncashed cheque exposure cap.
+    bounce_limit: U256,
     /// Track pending outbound settlements (waiting for the wire ack).
     pending: HashMap<OverlayAddress, PendingSettlement>,
     /// Optional reporter feeding settlement violations into peer scoring.
@@ -132,6 +136,7 @@ where
             beneficiary,
             chain,
             peers: HashMap::new(),
+            bounce_limit: crate::constants::DEFAULT_BOUNCE_LIMIT,
             pending: HashMap::new(),
             reporter: None,
             #[cfg(feature = "swap-chequebook")]
@@ -152,6 +157,12 @@ where
     /// service behaves exactly as before.
     pub fn with_reporter(mut self, reporter: Arc<dyn PeerReporter>) -> Self {
         self.reporter = Some(reporter);
+        self
+    }
+
+    /// Set the per-peer uncashed cheque exposure cap.
+    pub fn with_bounce_limit(mut self, bounce_limit: U256) -> Self {
+        self.bounce_limit = bounce_limit;
         self
     }
 
@@ -345,11 +356,8 @@ where
 
     /// Validate a received cheque and return the incremental amount to credit.
     ///
-    /// Requires a learned swap identity for the peer, then verifies the cheque
-    /// names our beneficiary, that the signature recovers to the peer's expected
-    /// issuer, that the cumulative payout strictly increases versus the last
-    /// accepted cheque, and that the increment fits the accounting-unit type. On
-    /// success the per-peer last-received payout is advanced.
+    /// Credit is capped so the peer's uncashed exposure stays within the bounce
+    /// limit; the cumulative payout advances by the settled amount.
     fn accept_cheque(
         &mut self,
         peer: OverlayAddress,
@@ -382,6 +390,7 @@ where
             });
         }
 
+        let bounce_limit = self.bounce_limit;
         let state = self.peers.entry(peer).or_default();
         let received = cheque.cheque.cumulativePayout;
         let last = state.last_received_payout;
@@ -389,13 +398,23 @@ where
             return Err(SwapSettlementError::NonIncreasingPayout { last, received });
         }
 
-        let increment = received - last;
+        // Cap credit at the bounce limit while cashing is stubbed.
+        let headroom = bounce_limit.saturating_sub(state.received_uncashed);
+        if headroom.is_zero() {
+            return Err(SwapSettlementError::ExposureLimit {
+                exposure: state.received_uncashed,
+                limit: bounce_limit,
+            });
+        }
+
+        let increment = (received - last).min(headroom);
         // The only `U256` to AU crossing in the swap path. An increment above
         // what an accounting unit can hold is rejected rather than wrapped,
         // surfacing as `AmountOverflow` so the books stay in sync.
         let amount: Au = increment.try_into()?;
 
-        state.last_received_payout = received;
+        state.last_received_payout += increment;
+        state.received_uncashed += increment;
         Ok(amount)
     }
 
@@ -515,6 +534,123 @@ mod tests {
         );
     }
 
+    /// Register a peer with a known issuer and a tight bounce limit.
+    fn build_with_limit(issuer: &PrivateKeySigner, limit: u64) -> (TestService, OverlayAddress) {
+        let mut svc =
+            build_service(PrivateKeySigner::random()).with_bounce_limit(U256::from(limit));
+        let peer = test_peer();
+        svc.peers.entry(peer).or_default().info = Some(PeerSwapInfo {
+            beneficiary: Address::repeat_byte(0x22),
+            issuer: issuer.address(),
+        });
+        (svc, peer)
+    }
+
+    #[test]
+    fn accept_cheque_caps_credit_at_bounce_limit() {
+        // Exposure accumulates across cheques and is capped at the bounce limit:
+        // a cheque that would cross the limit credits only up to it.
+        let issuer = PrivateKeySigner::random();
+        let (mut svc, peer) = build_with_limit(&issuer, 1_500);
+
+        let first = peer_cheque(&issuer, Address::repeat_byte(0xaa), OUR_BENEFICIARY, 1_000);
+        assert_eq!(
+            svc.accept_cheque(peer, &first).unwrap(),
+            Au::from_amount(1_000)
+        );
+
+        // 1_000 already exposed; only 500 of headroom remains under the 1_500
+        // limit, so a 1_000-payout increment credits just the 500.
+        let second = peer_cheque(&issuer, Address::repeat_byte(0xaa), OUR_BENEFICIARY, 2_000);
+        assert_eq!(
+            svc.accept_cheque(peer, &second).unwrap(),
+            Au::from_amount(500)
+        );
+        assert_eq!(
+            svc.peers.get(&peer).unwrap().received_uncashed,
+            U256::from(1_500u64)
+        );
+    }
+
+    #[test]
+    fn accept_cheque_blocked_once_exposure_maxed() {
+        // Once exposure is at the limit, further cheques are refused (debt stops
+        // being settled) rather than crediting beyond the cap.
+        let issuer = PrivateKeySigner::random();
+        let (mut svc, peer) = build_with_limit(&issuer, 1_000);
+
+        let first = peer_cheque(&issuer, Address::repeat_byte(0xaa), OUR_BENEFICIARY, 1_000);
+        assert_eq!(
+            svc.accept_cheque(peer, &first).unwrap(),
+            Au::from_amount(1_000)
+        );
+
+        let second = peer_cheque(&issuer, Address::repeat_byte(0xaa), OUR_BENEFICIARY, 2_000);
+        assert!(matches!(
+            svc.accept_cheque(peer, &second),
+            Err(SwapSettlementError::ExposureLimit { .. })
+        ));
+    }
+
+    #[test]
+    fn accept_cheque_in_limit_credits_normally() {
+        // A normal in-limit cheque still credits the full increment.
+        let issuer = PrivateKeySigner::random();
+        let (mut svc, peer) = build_with_limit(&issuer, 10_000);
+
+        let cheque = peer_cheque(&issuer, Address::repeat_byte(0xaa), OUR_BENEFICIARY, 1_000);
+        assert_eq!(
+            svc.accept_cheque(peer, &cheque).unwrap(),
+            Au::from_amount(1_000)
+        );
+        assert_eq!(
+            svc.peers.get(&peer).unwrap().received_uncashed,
+            U256::from(1_000u64)
+        );
+    }
+
+    #[test]
+    fn malleable_twin_cannot_double_credit() {
+        // A malleable twin shares the issuer and cumulative payout, so the
+        // monotonicity guard rejects it on replay.
+        use alloy_primitives::Signature;
+        let issuer = PrivateKeySigner::random();
+        let mut svc = build_service(PrivateKeySigner::random());
+        let peer = test_peer();
+        svc.peers.entry(peer).or_default().info = Some(PeerSwapInfo {
+            beneficiary: Address::repeat_byte(0x22),
+            issuer: issuer.address(),
+        });
+
+        let chequebook = Address::repeat_byte(0xaa);
+        let payout = U256::from(1_000u64);
+        let cheque = Cheque::new(chequebook, OUR_BENEFICIARY, payout);
+        let hash = cheque.signing_hash(CHAIN);
+        let sig = issuer.sign_hash_sync(&hash).unwrap();
+        let (r, s, v) = (sig.r(), sig.s(), sig.v());
+
+        // The original cheque credits its full payout.
+        let original = SignedCheque::from_signature(cheque, sig);
+        assert_eq!(
+            svc.accept_cheque(peer, &original).unwrap(),
+            Au::from_amount(1_000)
+        );
+
+        // The twin (r, n - s, !v) recovers to the same issuer for the same
+        // payout, so it is rejected as non-increasing.
+        let n: U256 = "0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"
+            .parse()
+            .unwrap();
+        let twin = SignedCheque::from_signature(
+            Cheque::new(chequebook, OUR_BENEFICIARY, payout),
+            Signature::new(r, n - s, !v),
+        );
+        assert!(matches!(
+            svc.accept_cheque(peer, &twin),
+            Err(SwapSettlementError::NonIncreasingPayout { .. })
+        ));
+    }
+
     #[test]
     fn accept_cheque_rejects_non_increasing_payout() {
         let issuer = PrivateKeySigner::random();
@@ -572,7 +708,9 @@ mod tests {
     #[test]
     fn accept_cheque_rejects_amount_overflow() {
         let issuer = PrivateKeySigner::random();
-        let mut svc = build_service(PrivateKeySigner::random());
+        // Lift the bounce limit clear of the increment so the AU-conversion
+        // overflow path is reached rather than the exposure cap.
+        let mut svc = build_service(PrivateKeySigner::random()).with_bounce_limit(U256::MAX);
         let peer = test_peer();
         svc.peers.entry(peer).or_default().info = Some(PeerSwapInfo {
             beneficiary: Address::repeat_byte(0x22),

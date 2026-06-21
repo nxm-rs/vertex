@@ -24,6 +24,7 @@ extern crate alloc;
 
 #[cfg(feature = "swap-chequebook")]
 pub mod cashout;
+pub mod constants;
 pub mod error;
 pub mod handle;
 pub mod service;

@@ -52,6 +52,7 @@ pub(crate) struct SwapWiring {
     chequebook: Address,
     beneficiary: Address,
     chain: NamedChain,
+    bounce_limit: u128,
 }
 
 impl SwapWiring {
@@ -123,6 +124,7 @@ impl SwapWiring {
             chequebook,
             beneficiary,
             chain,
+            bounce_limit: swap_config.bounce_limit,
         };
 
         Some((provider, wiring))
@@ -168,7 +170,8 @@ impl SwapWiring {
             self.beneficiary,
             self.chain,
         )
-        .with_reporter(reporter);
+        .with_reporter(reporter)
+        .with_bounce_limit(alloy_primitives::U256::from(self.bounce_limit));
 
         #[cfg(feature = "chain")]
         let service = attach_cashout(service, chain_provider, self.beneficiary);
