@@ -39,13 +39,13 @@ use vertex_swarm_api::{
     Au, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmError, SwarmPeerState, SwarmResult,
     SwarmSettlementProvider,
 };
-use vertex_swarm_node::ClientCommand;
+use vertex_swarm_client_protocol::ClientCommand;
 use vertex_swarm_primitives::OverlayAddress;
 
 pub use error::SwapSettlementError;
 pub use handle::SwapHandle;
 pub use service::{PeerSwapInfo, SwapCommand, SwapService};
-pub use vertex_swarm_node::SwapEvent;
+pub use vertex_swarm_client_protocol::SwapEvent;
 
 /// Chequebook-based settlement provider.
 ///

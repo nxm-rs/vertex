@@ -11,8 +11,8 @@ use vertex_swarm_api::{
     Au, Direction, PeerReporter, ReportSource, SwarmBandwidthAccounting, SwarmPeerBandwidth,
     SwarmScoringEvent,
 };
+use vertex_swarm_client_protocol::{ClientCommand, PseudosettleEvent};
 use vertex_swarm_net_pseudosettle::PaymentAck;
-use vertex_swarm_node::{ClientCommand, PseudosettleEvent};
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
 

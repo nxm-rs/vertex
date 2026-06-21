@@ -1,0 +1,32 @@
+[package]
+name = "vertex-swarm-client-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Command and event contract shared between the client behaviour and its settlement services"
+
+[lints]
+workspace = true
+
+[dependencies]
+nectar-primitives = { workspace = true }
+vertex-swarm-primitives = { workspace = true }
+vertex-swarm-net-pseudosettle = { workspace = true }
+vertex-swarm-net-pushsync = { workspace = true }
+vertex-swarm-net-swap = { workspace = true, optional = true }
+alloy-primitives = { workspace = true }
+# PeerId only. The command and event variants key per-connection state by the
+# libp2p peer identity; no NetworkBehaviour or Swarm lives here.
+libp2p = { workspace = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+
+[features]
+default = ["std"]
+std = []
+# Surfaces the swap cheque variants and the swap settlement event.
+swap = ["dep:vertex-swarm-net-swap"]

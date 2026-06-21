@@ -8757,8 +8757,8 @@ dependencies = [
  "tracing",
  "vertex-swarm-accounting",
  "vertex-swarm-api",
+ "vertex-swarm-client-protocol",
  "vertex-swarm-net-pseudosettle",
- "vertex-swarm-node",
  "vertex-swarm-primitives",
  "vertex-swarm-test-utils",
  "vertex-tasks",
@@ -8786,7 +8786,7 @@ dependencies = [
  "vertex-swarm-accounting",
  "vertex-swarm-accounting-chequebook",
  "vertex-swarm-api",
- "vertex-swarm-node",
+ "vertex-swarm-client-protocol",
  "vertex-swarm-primitives",
  "vertex-swarm-test-utils",
  "vertex-tasks",
@@ -8866,6 +8866,22 @@ dependencies = [
  "vertex-swarm-test-utils",
  "vertex-swarm-topology",
  "vertex-tasks",
+]
+
+[[package]]
+name = "vertex-swarm-client-protocol"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "libp2p",
+ "nectar-primitives",
+ "strum 0.28.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "vertex-swarm-net-pseudosettle",
+ "vertex-swarm-net-pushsync",
+ "vertex-swarm-net-swap",
+ "vertex-swarm-primitives",
 ]
 
 [[package]]
@@ -9207,6 +9223,7 @@ dependencies = [
  "vertex-swarm-accounting",
  "vertex-swarm-accounting-pricing",
  "vertex-swarm-api",
+ "vertex-swarm-client-protocol",
  "vertex-swarm-identity",
  "vertex-swarm-localstore",
  "vertex-swarm-net-headers",

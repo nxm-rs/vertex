@@ -20,7 +20,7 @@ use vertex_swarm_api::{
     Au, Direction, PeerReporter, ReportSource, SwarmBandwidthAccounting, SwarmPeerBandwidth,
     SwarmScoringEvent,
 };
-use vertex_swarm_node::{ClientCommand, SwapEvent};
+use vertex_swarm_client_protocol::{ClientCommand, SwapEvent};
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
 

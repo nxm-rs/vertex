@@ -68,6 +68,7 @@ members = [
     "crates/swarm/test-utils",
 
     # Node (libp2p boundary)
+    "crates/swarm/client-protocol",
     "crates/swarm/node",
     "crates/swarm/topology",
     "crates/swarm/peers/peer-manager",
@@ -216,6 +217,7 @@ vertex-swarm-stream = { path = "crates/swarm/stream" }
 vertex-swarm-test-utils = { path = "crates/swarm/test-utils" }
 
 # node (libp2p boundary)
+vertex-swarm-client-protocol = { path = "crates/swarm/client-protocol" }
 vertex-swarm-node = { path = "crates/swarm/node" }
 
 # topology (in swarm/)
