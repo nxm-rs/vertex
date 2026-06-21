@@ -422,6 +422,7 @@ impl<I: SwarmIdentity + Clone> StorerNode<I> {
                 overlay,
                 peer_id,
                 node_type,
+                trusted,
                 ..
             } => {
                 self.base.swarm.behaviour_mut().storer.client.on_command(
@@ -429,6 +430,7 @@ impl<I: SwarmIdentity + Clone> StorerNode<I> {
                         peer_id,
                         overlay,
                         node_type,
+                        trusted,
                     },
                 );
             }

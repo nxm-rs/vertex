@@ -16,7 +16,7 @@ use vertex_swarm_api::{
 use vertex_swarm_peer_score::ScoreOutcome;
 use vertex_swarm_primitives::OverlayAddress;
 
-use crate::entry::on_health_changed;
+use crate::entry::{TrustLevel, on_health_changed};
 use crate::manager::PeerManager;
 
 impl<I: SwarmIdentity> PeerManager<I> {
@@ -97,6 +97,25 @@ impl<I: SwarmIdentity> PeerManager<I> {
                 });
             }
             ScoreOutcome::Disconnect => {
+                // A configured trusted peer is never evicted on score: the
+                // operator asked us to keep it connected, so a low score
+                // downgrades to a warning instead of a disconnect request. The
+                // score still moved (the event was applied), but no network-side
+                // eviction is triggered.
+                if self.trust_level(overlay) == TrustLevel::Trusted {
+                    counter!("peer_manager_trusted_disconnect_suppressed_total").increment(1);
+                    warn!(
+                        ?overlay,
+                        score = change.new_score,
+                        source = source_label,
+                        "trusted peer crossed disconnect threshold; suppressing disconnect"
+                    );
+                    self.emit(PeerLifecycleEvent::ScoreWarning {
+                        overlay: *overlay,
+                        score: change.new_score,
+                    });
+                    return;
+                }
                 // Back the peer off so the dialer does not immediately
                 // reconnect the connection topology is about to close.
                 let old_state = entry.health_state();
@@ -114,6 +133,25 @@ impl<I: SwarmIdentity> PeerManager<I> {
                 });
             }
             ScoreOutcome::Ban => {
+                // Trusted peers are exempt from score-driven auto-bans: an
+                // auto-ban removes them from routing and closes the connection,
+                // the opposite of "never evicted". An operator can still ban a
+                // trusted peer explicitly via the ban command
+                // (BanCause::Requested), which does not flow through here.
+                if self.trust_level(overlay) == TrustLevel::Trusted {
+                    counter!("peer_manager_trusted_ban_suppressed_total").increment(1);
+                    warn!(
+                        ?overlay,
+                        score = change.new_score,
+                        source = source_label,
+                        "trusted peer crossed ban threshold; suppressing auto-ban"
+                    );
+                    self.emit(PeerLifecycleEvent::ScoreWarning {
+                        overlay: *overlay,
+                        score: change.new_score,
+                    });
+                    return;
+                }
                 let reason = format!(
                     "score {:+.1} at or below ban threshold after {event_label}",
                     change.new_score

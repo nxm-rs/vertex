@@ -2067,6 +2067,81 @@ mod tests {
     }
 
     #[test]
+    fn trusted_peer_is_not_disconnected_on_low_score() {
+        let pm = thresholds_manager();
+        let overlay = test_overlay(1);
+        // Connect as a configured trusted peer.
+        pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Client,
+            ConnectionDirection::Outbound,
+            TrustLevel::Trusted,
+            None,
+        );
+        assert_eq!(pm.trust_level(&overlay), TrustLevel::Trusted);
+        let mut rx = pm.subscribe();
+
+        // Drive the score across the disconnect threshold; a Normal peer would
+        // get DisconnectRequested + backoff here.
+        for _ in 0..7 {
+            pm.report_peer(
+                &overlay,
+                SwarmScoringEvent::ProtocolError,
+                ReportSource::Topology,
+            );
+        }
+
+        let events = drain_events(&mut rx);
+        assert!(
+            !events.iter().any(|e| matches!(
+                e,
+                PeerLifecycleEvent::DisconnectRequested { overlay: o, .. } if *o == overlay
+            )),
+            "trusted peer must not be disconnected on low score"
+        );
+        assert!(
+            !pm.peer_is_in_backoff(&overlay),
+            "trusted peer disconnect suppression must not arm dial backoff"
+        );
+        assert!(!pm.is_banned(&overlay));
+    }
+
+    #[test]
+    fn trusted_peer_is_not_auto_banned_on_low_score() {
+        let pm = thresholds_manager();
+        let overlay = test_overlay(1);
+        pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Client,
+            ConnectionDirection::Outbound,
+            TrustLevel::Trusted,
+            None,
+        );
+        let mut rx = pm.subscribe();
+
+        // Drive well past the ban threshold; a Normal peer would be auto-banned.
+        for _ in 0..15 {
+            pm.report_peer(
+                &overlay,
+                SwarmScoringEvent::ProtocolError,
+                ReportSource::Accounting,
+            );
+        }
+
+        assert!(
+            !pm.is_banned(&overlay),
+            "trusted peer must be exempt from score-driven auto-ban"
+        );
+        let events = drain_events(&mut rx);
+        assert!(
+            !events.iter().any(
+                |e| matches!(e, PeerLifecycleEvent::Banned { overlay: o, .. } if *o == overlay)
+            ),
+            "trusted peer must not emit a Banned lifecycle event from scoring"
+        );
+    }
+
+    #[test]
     fn test_report_peer_unknown_overlay_is_dropped() {
         let pm = manager();
         // No entry exists; the report must be a no-op, not a panic or insert.

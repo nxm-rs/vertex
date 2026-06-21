@@ -169,14 +169,19 @@ impl ClientBehaviour {
                 peer_id,
                 overlay,
                 node_type,
+                trusted,
             } => {
-                debug!(%peer_id, %overlay, ?node_type, "Activating peer");
+                debug!(%peer_id, %overlay, ?node_type, trusted, "Activating peer");
                 self.peer_overlays.insert(peer_id, overlay);
                 self.overlay_peers.insert(overlay, peer_id);
                 self.push_event(ToSwarm::NotifyHandler {
                     peer_id,
                     handler: libp2p::swarm::NotifyHandler::Any,
-                    event: HandlerCommand::Activate { overlay, node_type },
+                    event: HandlerCommand::Activate {
+                        overlay,
+                        node_type,
+                        trusted,
+                    },
                 });
             }
             ClientCommand::AnnouncePricing { peer, threshold } => {
@@ -546,13 +551,31 @@ impl NetworkBehaviour for ClientBehaviour {
             && info.remaining_established == 0
             && let Some(overlay) = self.peer_overlays.remove(&info.peer_id)
         {
-            self.overlay_peers.remove(&overlay);
-            debug!(peer_id = %info.peer_id, %overlay, "Peer disconnected");
-            self.pending_events
-                .push_back(ToSwarm::GenerateEvent(ClientEvent::PeerDisconnected {
-                    peer_id: info.peer_id,
-                    overlay,
-                }));
+            // Only drop the overlay->peer entry when it still points at the
+            // connection that closed. A reconnect dial-race can complete a fresh
+            // handshake for the same overlay (a new `ActivatePeer` re-pointing
+            // `overlay_peers` at the new peer id) before the old connection's
+            // `ConnectionClosed` arrives; removing unconditionally would delete
+            // the freshly re-activated, live entry and leave the overlay
+            // de-activated for retrieval. Guarding on the stored peer id keeps
+            // the live entry and only retracts a genuinely stale mapping.
+            let still_current = self.overlay_peers.get(&overlay) == Some(&info.peer_id);
+            if still_current {
+                self.overlay_peers.remove(&overlay);
+                debug!(peer_id = %info.peer_id, %overlay, "Peer disconnected");
+                self.pending_events.push_back(ToSwarm::GenerateEvent(
+                    ClientEvent::PeerDisconnected {
+                        peer_id: info.peer_id,
+                        overlay,
+                    },
+                ));
+            } else {
+                debug!(
+                    peer_id = %info.peer_id,
+                    %overlay,
+                    "Stale connection closed; overlay already re-activated on a newer connection"
+                );
+            }
         }
     }
 

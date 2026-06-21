@@ -896,6 +896,16 @@ impl<I: SwarmIdentity + Clone + 'static> NetworkBehaviour for TopologyBehaviour<
             // expired; connection events are the other publication path.
             self.refresh_published_depth();
             self.evaluator_handle.trigger_evaluation();
+            // Keep configured contacts dialable. The known-peer evaluator only
+            // re-dials peers in the routing table; a configured bootnode or
+            // trusted peer that has dropped (or never completed a handshake)
+            // never enters that table, so on a private net with no discovery it
+            // would be abandoned after the initial attempt. `connect_bootnodes`
+            // skips any that are already tracked, so this is a no-op once they
+            // are connected and cannot cause a dial storm. Gated on a known dial
+            // capability so we do not spend attempts the reachability filter
+            // would drop while `ip` is still unknown.
+            self.redial_configured_contacts_if_needed();
         }
 
         // Poll composed protocols and process their events
@@ -1717,6 +1727,60 @@ mod tests {
             assert!(
                 drain_dials(&mut behaviour).is_empty(),
                 "no redial storm: bootnode already tracked after first transition"
+            );
+        }
+
+        /// An untracked trusted peer is re-dialed from the periodic tick.
+        #[tokio::test]
+        async fn untracked_trusted_peer_redialed_from_periodic_tick() {
+            let mut behaviour = test_behaviour_listening();
+
+            let trusted_peer = PeerId::random();
+            let trusted: Multiaddr = format!("/ip4/203.0.113.9/tcp/1634/p2p/{trusted_peer}")
+                .parse()
+                .expect("valid trusted multiaddr");
+            behaviour.trusted_peers = vec![trusted];
+
+            // Make the dial capability known so the reachability filter admits
+            // the address (mirrors a listen address having arrived).
+            behaviour
+                .nat_discovery
+                .on_new_listen_addr("/ip4/192.0.2.1/tcp/1634".parse().expect("valid"));
+
+            // The trusted peer is not tracked yet, so the periodic re-dial path
+            // issues the dial.
+            behaviour.redial_configured_contacts_if_needed();
+            let dialed = drain_dials(&mut behaviour);
+            assert!(
+                dialed.contains(&trusted_peer),
+                "untracked trusted peer must be re-dialed from the periodic path, dialed: {dialed:?}"
+            );
+
+            // It is now in the dial tracker, so a subsequent periodic pass does
+            // not re-dial it: no dial storm.
+            behaviour.redial_configured_contacts_if_needed();
+            assert!(
+                drain_dials(&mut behaviour).is_empty(),
+                "already-tracked trusted peer must not be re-dialed"
+            );
+        }
+
+        /// The periodic re-dial path is a no-op while the dial capability is unknown.
+        #[tokio::test]
+        async fn periodic_redial_noop_while_capability_unknown() {
+            let mut behaviour = test_behaviour_listening();
+
+            let trusted_peer = PeerId::random();
+            let trusted: Multiaddr = format!("/ip4/203.0.113.10/tcp/1634/p2p/{trusted_peer}")
+                .parse()
+                .expect("valid trusted multiaddr");
+            behaviour.trusted_peers = vec![trusted];
+
+            // No listen address yet: capability ip is None.
+            behaviour.redial_configured_contacts_if_needed();
+            assert!(
+                drain_dials(&mut behaviour).is_empty(),
+                "periodic re-dial must not fire while the capability is unknown"
             );
         }
     }

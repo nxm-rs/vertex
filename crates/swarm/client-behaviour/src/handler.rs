@@ -146,6 +146,8 @@ pub enum HandlerCommand {
     Activate {
         overlay: OverlayAddress,
         node_type: SwarmNodeType,
+        /// Whether this is an explicitly configured trusted peer (forces keep-alive).
+        trusted: bool,
     },
     /// Announce our payment threshold to the peer.
     AnnouncePricing { threshold: U256 },
@@ -286,7 +288,11 @@ enum State {
     /// Waiting for activation command.
     Dormant,
     /// Active and processing protocols.
-    Active { overlay: OverlayAddress },
+    Active {
+        overlay: OverlayAddress,
+        /// Whether to force `connection_keep_alive` (set for trusted peers).
+        keep_alive: bool,
+    },
 }
 
 /// A pending inbound pseudosettle response awaiting the application's ack.
@@ -422,11 +428,14 @@ impl ClientHandler {
             .map(|s| s.response)
     }
 
-    fn activate(&mut self, overlay: OverlayAddress, node_type: SwarmNodeType) {
+    fn activate(&mut self, overlay: OverlayAddress, node_type: SwarmNodeType, keep_alive: bool) {
         match &self.state {
             State::Dormant => {
-                debug!(%overlay, ?node_type, "Handler activated");
-                self.state = State::Active { overlay };
+                debug!(%overlay, ?node_type, keep_alive, "Handler activated");
+                self.state = State::Active {
+                    overlay,
+                    keep_alive,
+                };
                 self.pending_events
                     .push_back(HandlerEvent::Activated { overlay });
             }
@@ -804,6 +813,17 @@ impl ConnectionHandler for ClientHandler {
         SubstreamProtocol::new(upgrade, ()).with_timeout(self.config.timeout)
     }
 
+    /// Keep a trusted peer's connection open, exempting it from the idle timeout.
+    fn connection_keep_alive(&self) -> bool {
+        matches!(
+            self.state,
+            State::Active {
+                keep_alive: true,
+                ..
+            }
+        )
+    }
+
     fn poll(
         &mut self,
         cx: &mut Context<'_>,
@@ -852,8 +872,12 @@ impl ConnectionHandler for ClientHandler {
 
         while let Some(cmd) = self.pending_commands.pop_front() {
             match cmd {
-                HandlerCommand::Activate { overlay, node_type } => {
-                    self.activate(overlay, node_type);
+                HandlerCommand::Activate {
+                    overlay,
+                    node_type,
+                    trusted,
+                } => {
+                    self.activate(overlay, node_type, trusted);
                     if let Some(event) = self.pending_events.pop_front() {
                         return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
                     }

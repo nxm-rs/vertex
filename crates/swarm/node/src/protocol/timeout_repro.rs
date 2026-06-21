@@ -179,6 +179,7 @@ async fn withholding_peer_resolves_as_timed_out_within_the_deadline() {
             peer_id: server_peer,
             overlay: server_overlay,
             node_type: SwarmNodeType::Client,
+            trusted: false,
         });
 
     let address = ChunkAddress::new([0x11; 32]);
