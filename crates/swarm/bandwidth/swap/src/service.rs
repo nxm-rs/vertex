@@ -390,13 +390,6 @@ where
             });
         }
 
-        // Reject malleable signatures before crediting: low-s (EIP-2) and a
-        // canonical recovery byte, so a peer cannot mint a second wire-distinct
-        // cheque for the same payout.
-        cheque
-            .ensure_canonical()
-            .map_err(|e| SwapSettlementError::ValidationFailed(e.to_string()))?;
-
         let recovered = cheque
             .recover_signer(self.chain)
             .map_err(|e| SwapSettlementError::ValidationFailed(e.to_string()))?;
@@ -633,9 +626,11 @@ mod tests {
     }
 
     #[test]
-    fn accept_cheque_rejects_non_canonical_signature() {
-        // A high-s twin of a valid signature still recovers to the issuer but
-        // must be rejected as malleable before any credit.
+    fn malleable_twin_cannot_double_credit() {
+        // A high-s twin recovers to the same issuer for the same cumulative
+        // payout, so the original credits and the twin is then rejected by the
+        // monotonicity guard. Malleability cannot mint a second credit; strict
+        // canonicalisation is enforced on chain at cash time (#438).
         use alloy_primitives::Signature;
         let issuer = PrivateKeySigner::random();
         let mut svc = build_service(PrivateKeySigner::random());
@@ -645,22 +640,33 @@ mod tests {
             issuer: issuer.address(),
         });
 
-        let cheque = Cheque::new(
-            Address::repeat_byte(0xaa),
-            OUR_BENEFICIARY,
-            U256::from(1_000u64),
-        );
+        let chequebook = Address::repeat_byte(0xaa);
+        let payout = U256::from(1_000u64);
+        let cheque = Cheque::new(chequebook, OUR_BENEFICIARY, payout);
         let hash = cheque.signing_hash(CHAIN);
         let sig = issuer.sign_hash_sync(&hash).unwrap();
+        let (r, s, v) = (sig.r(), sig.s(), sig.v());
+
+        // The original cheque credits its full payout.
+        let original = SignedCheque::from_signature(cheque, sig);
+        assert_eq!(
+            svc.accept_cheque(peer, &original).unwrap(),
+            Au::from_amount(1_000)
+        );
+
+        // Its malleable twin (r, n - s, !v) recovers to the same issuer for the
+        // same payout, so it is rejected as non-increasing rather than crediting
+        // a second time.
         let n: U256 = "0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"
             .parse()
             .unwrap();
-        let high_s = Signature::new(sig.r(), n - sig.s(), !sig.v());
-        let signed = SignedCheque::from_signature(cheque, high_s);
-
+        let twin = SignedCheque::from_signature(
+            Cheque::new(chequebook, OUR_BENEFICIARY, payout),
+            Signature::new(r, n - s, !v),
+        );
         assert!(matches!(
-            svc.accept_cheque(peer, &signed),
-            Err(SwapSettlementError::ValidationFailed(_))
+            svc.accept_cheque(peer, &twin),
+            Err(SwapSettlementError::NonIncreasingPayout { .. })
         ));
     }
 
