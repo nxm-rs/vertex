@@ -12,25 +12,22 @@ description = "Postage batch store and event ingest seam for the vertex Swarm no
 workspace = true
 
 [dependencies]
-## nectar (re-exported public surface; do not redefine these types)
-# The `serde` feature is required so `Batch` satisfies the vertex-storage
-# `Value` bound (Serialize + DeserializeOwned) for the `Batches` table, and so
-# `ChunkAddress` (a `nectar_primitives::SwarmAddress`) is serialisable when it
-# is stored in the stamp-index entry value.
+# nectar re-exports (do not redefine). `serde` so `Batch` and `ChunkAddress`
+# meet the vertex-storage `Value` bound for the stored tables.
 nectar-postage = { workspace = true, features = ["serde"] }
 nectar-primitives = { workspace = true, features = ["serde"] }
 
-## vertex
-# The `alloy` feature provides the fixed-size codec for `Address`; `BatchId`
-# (a `B256`) is encoded by a local newtype codec in this crate.
+# `alloy` feature: fixed-size codec for `Address`.
 vertex-storage = { workspace = true, features = ["alloy"] }
 
-## misc
-# `alloy-primitives` provides `B256`, the stamp-hash type carried through the
-# arbiter (with `serde` so the stamp-index entry value serialises).
+# `serde` so the `B256` stamp hash in the stamp-index entry value serialises.
 alloy-primitives = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
+
+# chain feature: the indexing framework plus the `sol!` decode for PostageStamp.
+vertex-chain-index-framework = { workspace = true, optional = true }
+alloy-sol-types = { workspace = true, optional = true }
 
 [dev-dependencies]
 alloy-primitives.workspace = true
@@ -38,7 +35,14 @@ alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 tempfile = "3"
 vertex-storage-redb.workspace = true
+# chain-feature tests: drive the indexer over an in-memory db with synthetic logs.
+alloy-rpc-types-eth.workspace = true
+alloy-sol-types.workspace = true
+vertex-chain-index.workspace = true
 
 [features]
 default = ["std"]
 std = []
+# `chain` adds on-chain PostageStamp indexing. Off by default so the wasm/light
+# cone stays clean; the storer role turns it on.
+chain = ["std", "dep:vertex-chain-index-framework", "dep:alloy-sol-types"]
