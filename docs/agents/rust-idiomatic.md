@@ -83,6 +83,14 @@ Refuse to write any of these in a review of your own code:
 - No `#[ignore]` tests on `main`. If a test is flaky, fix it or delete it.
 - Tests assert on enum variants (`matches!(err, HandshakeError::NetworkIdMismatch)`), never on `err.to_string()`.
 
+Scope local verification to the change; CI runs the full matrix per PR, so your job is to catch what the change can actually break, not to re-run everything.
+
+- Test the crates you touched: `cargo test -p <crate>`, not `cargo test --workspace`. Reach wider only when the change is genuinely cross-cutting (a shared trait signature, a workspace-wide refactor).
+- Never run benches as a correctness check, and never run them at all outside performance work. `cargo bench` and running `--benches` add nothing to a feature, fix, or doc change; clippy already lints them.
+- Doc and comment only changes (rustdoc deflation, comment edits) cannot change runtime behaviour. Verify them with `cargo clippy --all-features -- -D warnings` on the affected crates (the real risk is `missing_docs` in a `#![warn(missing_docs)]` crate) plus `cargo test --doc -p <crate>` only when a changed file holds a `///` code fence. Do not run the test suite or benches.
+- When rebuilding or reshaping commits whose code is meant to be unchanged (a comment-only restack, a pure move), prove it with a code-equivalence diff against the known-good baseline (`git diff <baseline> <new> -- '*.rs'` with comment and blank lines filtered out should be empty). An empty code delta means compile and tests already match the baseline; do not recompile the world to reconfirm it.
+- A compiler-diagnostic stream that contradicts a just-finished bulk edit is usually a stale reindex. Confirm with one targeted `cargo check`, not a full rebuild.
+
 ### Documentation
 
 Terse by default. Calibrate low. The code carries the "what"; rustdoc carries the intent and the one non-obvious invariant a reader genuinely needs, and nothing else. PR #412 cut the #350 stack from essay-level verbosity to roughly a fifth: that is the bar. When unsure, cut.
