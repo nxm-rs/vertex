@@ -30,7 +30,7 @@ vertex node --mode <bootnode|client|storer>  # default: client
 Kademlia peer discovery and routing table maintenance. All nodes participate in the DHT to find peers and route requests.
 
 ### Bandwidth Accounting
-Fair resource usage tracking via Pseudosettle (soft accounting) and/or SWAP (payment channels with chequebook). Required for any data transfer.
+Fair resource usage tracking. Soft accounting (pseudosettle) is always on for client and storer nodes; monetary settlement (SWAP, cheques over a chequebook) is opt-in. Required for any data transfer. See [Accounting and settlement](../design/accounting-settlement.md) for the full model.
 
 ### Retrieval
 Fetching chunks from peers using the retrieval protocol. Requires bandwidth accounting.
@@ -52,16 +52,17 @@ Participating in the storage incentive game. Requires staking BZZ tokens. Nodes 
 | **Client** | Persistent recommended | Ephemeral OK | Postage batches tied to wallet |
 | **Storer** | Persistent | Persistent | Overlay address determines storage responsibility, staking tied to wallet |
 
-## Bandwidth Accounting Modes
+## Bandwidth Settlement
 
-Bandwidth accounting can be configured independently of node type (except Bootnode which has no accounting):
+Settlement is two roles on different debt bases, not a configurable mode enum. Bootnodes have no accounting.
 
-| Mode | Description | Use Case |
-|------|-------------|----------|
-| **None** | No accounting | Bootnodes only (automatically set) |
-| **Pseudosettle** | Soft accounting without real payments | Default for Client/Storer |
-| **SWAP** | Payment channels with chequebook | Production with real payments |
-| **Both** | Pseudosettle until threshold, then SWAP | Hybrid approach |
+| Node Type | Soft accounting (pseudosettle) | Monetary settlement (SWAP) |
+|-----------|:------------------------------:|----------------------------|
+| **Bootnode** | No | No |
+| **Client** | Always on | Off by default; `--swap` opts in (chequebook over chain) |
+| **Storer** | Always on | On by default; `--swap=false` opts out |
+
+Soft accounting forgives total debt over time at the configured refresh rate and is always on for client and storer nodes. SWAP settles only originated debt and is selected by node type plus the `--swap` flag, which overrides the per-node-type default either way. There is no runtime mode enum. For the ledger, the two settlement roles, and how they are selected at build time, see [Accounting and settlement](../design/accounting-settlement.md).
 
 ## Protocol Dependency Diagram
 
@@ -82,7 +83,7 @@ Each layer builds on the one below. A Storer node runs all protocols from Bootno
 |-----------|--------|
 | **Bootnode** | Implemented |
 | **Client** | Implemented |
-| **Storer** | Not yet implemented |
+| **Storer** | Storage and pullsync implemented; redistribution pending |
 
 ## Type System Representation
 
