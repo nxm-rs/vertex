@@ -9,7 +9,7 @@ use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
 use vertex_swarm_accounting::DefaultBandwidthConfig;
 use vertex_swarm_api::{
-    ReserveStore, SwarmAccountingConfig, SwarmIdentity, SwarmLaunchConfig, SwarmLocalStore,
+    BinCursorStore, SwarmAccountingConfig, SwarmIdentity, SwarmLaunchConfig, SwarmLocalStore,
     SwarmLocalStoreConfig, SwarmNetworkConfig, SwarmPeerConfig, SwarmPricingConfig,
     SwarmRoutingConfig, SwarmStorageConfig,
 };
@@ -197,18 +197,25 @@ where
         self
     }
 
-    /// Override the storer reserve with a pre-built store; consumed only by the
-    /// storer build path.
-    pub fn with_reserve(mut self, reserve: Arc<dyn ReserveStore>) -> Self {
+    /// Override the storer reserve with a pre-built store.
+    ///
+    /// Carried on the client builder so it survives the storage transition;
+    /// consumed only by the storer build path. A client never wires a reserve.
+    /// The reserve must implement [`BinCursorStore`] so the served reserve
+    /// capabilities can query per-bin counts and insertion cursors.
+    pub fn with_reserve(mut self, reserve: Arc<dyn BinCursorStore>) -> Self {
         self.reserve = Some(ReserveSeam::Ready(reserve));
         self
     }
 
-    /// Override the storer reserve with a factory invoked at build time with the
-    /// opened shared database (`None` in-memory).
+    /// Override the storer reserve with a factory invoked at build time.
+    ///
+    /// The factory receives the opened shared database (`None` in-memory). The
+    /// reserve must implement [`BinCursorStore`] so the served reserve
+    /// capabilities can query per-bin counts and insertion cursors.
     pub fn with_reserve_factory<F>(mut self, factory: F) -> Self
     where
-        F: FnOnce(Option<Arc<RedbDatabase>>) -> Result<Arc<dyn ReserveStore>, SwarmNodeError>
+        F: FnOnce(Option<Arc<RedbDatabase>>) -> Result<Arc<dyn BinCursorStore>, SwarmNodeError>
             + Send
             + 'static,
     {
@@ -291,7 +298,7 @@ where
 
     /// Override the reserve with a pre-built store. See
     /// [`ClientNodeBuilder::with_reserve`].
-    pub fn with_reserve(mut self, reserve: Arc<dyn ReserveStore>) -> Self {
+    pub fn with_reserve(mut self, reserve: Arc<dyn BinCursorStore>) -> Self {
         self.client = self.client.with_reserve(reserve);
         self
     }
@@ -300,7 +307,7 @@ where
     /// [`ClientNodeBuilder::with_reserve_factory`].
     pub fn with_reserve_factory<F>(mut self, factory: F) -> Self
     where
-        F: FnOnce(Option<Arc<RedbDatabase>>) -> Result<Arc<dyn ReserveStore>, SwarmNodeError>
+        F: FnOnce(Option<Arc<RedbDatabase>>) -> Result<Arc<dyn BinCursorStore>, SwarmNodeError>
             + Send
             + 'static,
     {

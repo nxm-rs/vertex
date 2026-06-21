@@ -1,0 +1,54 @@
+syntax = "proto3";
+package vertex.swarm.reserve.v1;
+
+// Reserve service exposes the storer's proximity-ordered, always-stamped local
+// chunk reserve: its storage-responsibility radius, fill against capacity, and
+// per-bin counts and insertion cursors.
+service Reserve {
+  // GetReserveState returns the reserve's radius, current count, and capacity.
+  rpc GetReserveState(GetReserveStateRequest) returns (GetReserveStateResponse);
+
+  // GetReserveBins returns per-bin chunk counts and insertion cursors for every
+  // bin within the node's area of responsibility, i.e. from the current storage
+  // radius up to and including the maximum proximity order. These are the bins
+  // that hold reserve chunks and whose cursors drive redistribution and sync.
+  rpc GetReserveBins(GetReserveBinsRequest) returns (GetReserveBinsResponse);
+}
+
+message GetReserveStateRequest {}
+
+message GetReserveStateResponse {
+  // Current storage-responsibility radius (0-31). Chunks at or beyond it are
+  // within the node's area of responsibility.
+  uint32 storage_radius = 1;
+
+  // Total chunks currently held in the reserve.
+  uint64 count = 2;
+
+  // Maximum number of chunks the reserve will hold.
+  uint64 capacity = 3;
+}
+
+message GetReserveBinsRequest {}
+
+message GetReserveBinsResponse {
+  // Current storage-responsibility radius (0-31), echoed so the caller can
+  // correlate the bin slice with the radius it was taken at.
+  uint32 storage_radius = 1;
+
+  // One entry per bin within the area of responsibility, from the storage
+  // radius up to and including the maximum proximity order, ascending. The
+  // per-bin counts sum to the total reported by GetReserveState.
+  repeated ReserveBin bins = 2;
+}
+
+message ReserveBin {
+  // Proximity order of the bin relative to the local overlay (0-31).
+  uint32 proximity_order = 1;
+
+  // Chunks held at this proximity order.
+  uint64 count = 2;
+
+  // Highest insertion sequence assigned in this bin so far (0 if empty).
+  uint64 cursor = 3;
+}

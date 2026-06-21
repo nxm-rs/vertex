@@ -134,25 +134,31 @@ impl<T: Send + Sync, C: Send + Sync> HasChunkClient for ClientComponents<T, C> {
     }
 }
 
-/// Storer components (client + local store).
+/// Storer components (client + local store + reserve).
 ///
-/// Construction is builder-exclusive; see [`construct`].
+/// `S` is the retrieval-serve view ([`HasStore`]); `R` is the proximity-ordered
+/// reserve ([`HasReserve`]). Both stay generic so this crate names no concrete
+/// backend. Construction is builder-exclusive; see [`construct`].
 #[derive(Debug)]
-pub struct StorerComponents<T, C, S> {
+pub struct StorerComponents<T, C, S, R> {
     client: ClientComponents<T, C>,
     store: S,
+    reserve: R,
 }
 
-impl<T, C, S> StorerComponents<T, C, S> {
-    pub(crate) fn new(topology: T, chunk_client: C, store: S) -> Self {
+impl<T, C, S, R> StorerComponents<T, C, S, R> {
+    pub(crate) fn new(topology: T, chunk_client: C, store: S, reserve: R) -> Self {
         Self {
             client: ClientComponents::new(topology, chunk_client),
             store,
+            reserve,
         }
     }
 }
 
-impl<T: Send + Sync, C: Send + Sync, S: Send + Sync> HasTopology for StorerComponents<T, C, S> {
+impl<T: Send + Sync, C: Send + Sync, S: Send + Sync, R: Send + Sync> HasTopology
+    for StorerComponents<T, C, S, R>
+{
     type Topology = T;
 
     fn topology(&self) -> &T {
@@ -160,7 +166,9 @@ impl<T: Send + Sync, C: Send + Sync, S: Send + Sync> HasTopology for StorerCompo
     }
 }
 
-impl<T: Send + Sync, C: Send + Sync, S: Send + Sync> HasChunkClient for StorerComponents<T, C, S> {
+impl<T: Send + Sync, C: Send + Sync, S: Send + Sync, R: Send + Sync> HasChunkClient
+    for StorerComponents<T, C, S, R>
+{
     type ChunkClient = C;
 
     fn chunk_client(&self) -> &C {
@@ -168,11 +176,23 @@ impl<T: Send + Sync, C: Send + Sync, S: Send + Sync> HasChunkClient for StorerCo
     }
 }
 
-impl<T: Send + Sync, C: Send + Sync, S: Send + Sync> HasStore for StorerComponents<T, C, S> {
+impl<T: Send + Sync, C: Send + Sync, S: Send + Sync, R: Send + Sync> HasStore
+    for StorerComponents<T, C, S, R>
+{
     type Store = S;
 
     fn store(&self) -> &S {
         &self.store
+    }
+}
+
+impl<T: Send + Sync, C: Send + Sync, S: Send + Sync, R: BinCursorStore> HasReserve
+    for StorerComponents<T, C, S, R>
+{
+    type Reserve = R;
+
+    fn reserve(&self) -> &R {
+        &self.reserve
     }
 }
 
@@ -194,7 +214,12 @@ pub mod construct {
         ClientComponents::new(topology, chunk_client)
     }
 
-    pub fn storer<T, C, S>(topology: T, chunk_client: C, store: S) -> StorerComponents<T, C, S> {
-        StorerComponents::new(topology, chunk_client, store)
+    pub fn storer<T, C, S, R>(
+        topology: T,
+        chunk_client: C,
+        store: S,
+        reserve: R,
+    ) -> StorerComponents<T, C, S, R> {
+        StorerComponents::new(topology, chunk_client, store, reserve)
     }
 }
