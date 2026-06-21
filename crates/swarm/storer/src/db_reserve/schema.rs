@@ -41,6 +41,30 @@ table!(pub(crate) Replay, "reserve_replay", ReplayKey, ReplayValue, compressed =
 // wrapping.
 table!(pub(crate) BinCounter, "reserve_bin_counter", BinKey, u64, compressed = false);
 
+// Single-key metadata table; the only key is `EPOCH_KEY`.
+table!(pub(crate) ReserveMetadata, "reserve_metadata", MetadataKey, u64, compressed = false);
+
+/// Single-byte discriminant for [`ReserveMetadata`] rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(crate) struct MetadataKey(pub u8);
+
+pub(crate) const EPOCH_KEY: MetadataKey = MetadataKey(0x00);
+
+impl Encode for MetadataKey {
+    type Encoded = [u8; 1];
+
+    fn encode(self) -> Self::Encoded {
+        [self.0]
+    }
+}
+
+impl Decode for MetadataKey {
+    fn decode(value: &[u8]) -> Result<Self, DatabaseError> {
+        let bytes: [u8; 1] = value.try_into().map_err(|_| DatabaseError::Decode)?;
+        Ok(Self(bytes[0]))
+    }
+}
+
 // Stamp-index arbiter slot is the `StampIndexTable` handle owned by the postage
 // crate. The reserve only controls *when* it is written: it runs `decide`
 // arbitration inside its own atomic put so admission and the six-table write

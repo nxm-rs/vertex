@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use alloy_primitives::B256;
 use nectar_primitives::{Bin, ChunkAddress, ProximityOrder};
@@ -23,8 +24,8 @@ use crate::{EvictionStrategy, Reserve, StorerError};
 
 use super::EvictTarget;
 use super::schema::{
-    BatchGroup, BatchGroupKey, BinCounter, BinKey, Entry, EntryKey, EntryValue, Payload, Replay,
-    ReplayKey, ReplayValue, stamp_hash,
+    BatchGroup, BatchGroupKey, BinCounter, BinKey, EPOCH_KEY, Entry, EntryKey, EntryValue, Payload,
+    Replay, ReplayKey, ReplayValue, ReserveMetadata, stamp_hash,
 };
 use super::tx::{
     PutOutcome, bump_or_insert_payload, decode_body, decode_stamp, delete_entry_in_tx,
@@ -52,6 +53,8 @@ pub struct DbReserve<DB: Database, BS: BatchStore> {
     /// with other reserve state, so callers needing a consistent
     /// (radius, occupancy) pair re-derive the radius from the occupancy.
     radius: AtomicU8,
+    /// Reserve generation marker; changes only on reserve recreate.
+    epoch: u64,
 }
 
 impl<DB: Database, BS: BatchStore> DbReserve<DB, BS> {
@@ -67,14 +70,24 @@ impl<DB: Database, BS: BatchStore> DbReserve<DB, BS> {
         strategy: EvictionStrategy,
         radius: StorageRadius,
     ) -> Result<Self, StorerError> {
-        db.update(|tx| {
+        let epoch = db.update(|tx| {
             tx.ensure_table(Payload::NAME)?;
             tx.ensure_table(Entry::NAME)?;
             tx.ensure_table(BatchGroup::NAME)?;
             tx.ensure_table(Replay::NAME)?;
             tx.ensure_table(BinCounter::NAME)?;
             tx.ensure_table(StampIndexTable::NAME)?;
-            Ok(())
+            tx.ensure_table(ReserveMetadata::NAME)?;
+            if let Some(e) = tx.get::<ReserveMetadata>(EPOCH_KEY)? {
+                Ok(e)
+            } else {
+                let e = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64;
+                tx.put::<ReserveMetadata>(EPOCH_KEY, e)?;
+                Ok(e)
+            }
         })?;
 
         let overlay = identity.overlay_address();
@@ -89,6 +102,7 @@ impl<DB: Database, BS: BatchStore> DbReserve<DB, BS> {
             reserve,
             overlay,
             radius: AtomicU8::new(radius.get()),
+            epoch,
         })
     }
 
@@ -109,6 +123,12 @@ impl<DB: Database, BS: BatchStore> DbReserve<DB, BS> {
     /// trait for generic callers.
     pub fn set_storage_radius(&self, radius: StorageRadius) {
         self.radius.store(radius.get(), Ordering::Relaxed);
+    }
+
+    /// Reserve generation marker; changes only on reserve recreate, letting a
+    /// pull-syncer detect a wipe and invalidate cached cursors.
+    pub fn reserve_epoch(&self) -> u64 {
+        self.epoch
     }
 
     fn overlay(&self) -> OverlayAddress {
@@ -626,5 +646,61 @@ impl Iterator for BinScanIter {
             batch_id: value.batch_id,
             stamp_hash: value.stamp_hash,
         }))
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test assertions over known-bounds fixtures"
+)]
+mod epoch_tests {
+    use std::sync::Arc;
+
+    use vertex_storage_redb::RedbDatabase;
+    use vertex_swarm_postage::{AdmissionValidator, DbBatchStore};
+    use vertex_swarm_primitives::StorageRadius;
+    use vertex_swarm_test_utils::MockIdentity;
+
+    use crate::EvictionStrategy;
+
+    use super::DbReserve;
+
+    fn open_reserve(db: Arc<RedbDatabase>) -> DbReserve<RedbDatabase, DbBatchStore<RedbDatabase>> {
+        let identity = MockIdentity::with_first_byte(0x00);
+        let batches = DbBatchStore::new(Arc::clone(&db)).unwrap();
+        DbReserve::new(
+            db,
+            &identity,
+            batches,
+            AdmissionValidator::new(8),
+            10_000,
+            EvictionStrategy::NoEviction,
+            StorageRadius::ZERO,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn epoch_is_nonzero() {
+        let db = RedbDatabase::in_memory().unwrap().into_arc();
+        let reserve = open_reserve(db);
+        assert_ne!(reserve.reserve_epoch(), 0);
+    }
+
+    #[test]
+    fn epoch_survives_reopen() {
+        let db = RedbDatabase::in_memory().unwrap().into_arc();
+        let epoch_first = open_reserve(Arc::clone(&db)).reserve_epoch();
+        let epoch_second = open_reserve(Arc::clone(&db)).reserve_epoch();
+        assert_eq!(epoch_first, epoch_second);
+    }
+
+    #[test]
+    fn distinct_reserves_get_distinct_epochs() {
+        // Nanosecond wall-clock resolution makes a collision negligible.
+        let epoch_a = open_reserve(RedbDatabase::in_memory().unwrap().into_arc()).reserve_epoch();
+        let epoch_b = open_reserve(RedbDatabase::in_memory().unwrap().into_arc()).reserve_epoch();
+        assert_ne!(epoch_a, epoch_b);
     }
 }
