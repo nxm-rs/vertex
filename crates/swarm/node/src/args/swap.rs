@@ -13,7 +13,7 @@ use clap::Args;
 use serde::{Deserialize, Serialize};
 
 /// SWAP settlement CLI arguments.
-#[derive(Debug, Default, Args, Clone, Serialize, Deserialize)]
+#[derive(Debug, Args, Clone, Serialize, Deserialize)]
 #[command(next_help_heading = "Swap")]
 #[serde(default)]
 pub struct SwapArgs {
@@ -41,6 +41,35 @@ pub struct SwapArgs {
     #[arg(long = "swap.deploy")]
     #[serde(default)]
     pub deploy: bool,
+
+    /// Per-peer cap on uncashed cheque exposure, in cumulative-payout units.
+    /// A received cheque settles debt on structural validation while on-chain
+    /// cashing is stubbed for v1, so this bounds how much uncashed value can buy
+    /// real service before crediting for the peer stops. Defaults to ten times
+    /// the default payment threshold.
+    #[arg(long = "swap.bounce-limit", default_value_t = DEFAULT_BOUNCE_LIMIT)]
+    #[serde(default = "default_bounce_limit")]
+    pub bounce_limit: u128,
+}
+
+/// Default per-peer uncashed cheque exposure cap (ten times the default payment
+/// threshold of `13_500_000` units).
+const DEFAULT_BOUNCE_LIMIT: u128 = 135_000_000;
+
+fn default_bounce_limit() -> u128 {
+    DEFAULT_BOUNCE_LIMIT
+}
+
+impl Default for SwapArgs {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            chequebook: None,
+            beneficiary: None,
+            deploy: false,
+            bounce_limit: DEFAULT_BOUNCE_LIMIT,
+        }
+    }
 }
 
 impl SwapArgs {
@@ -51,6 +80,7 @@ impl SwapArgs {
             chequebook: self.chequebook,
             beneficiary: self.beneficiary,
             deploy: self.deploy,
+            bounce_limit: self.bounce_limit,
         }
     }
 }
@@ -60,7 +90,7 @@ impl SwapArgs {
 /// Plain data with no chain-crate types so it compiles in every build. The
 /// builder reads these fields only under the `swap` feature; without it they are
 /// inert.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwapConfig {
     /// Whether SWAP settlement is requested via the dedicated flag.
     pub enable: bool,
@@ -74,6 +104,16 @@ pub struct SwapConfig {
 
     /// Whether to deploy a fresh chequebook on startup.
     pub deploy: bool,
+
+    /// Per-peer cap on uncashed cheque exposure, in cumulative-payout units
+    /// (#438).
+    pub bounce_limit: u128,
+}
+
+impl Default for SwapConfig {
+    fn default() -> Self {
+        SwapArgs::default().swap_config()
+    }
 }
 
 #[cfg(test)]
@@ -87,6 +127,7 @@ mod tests {
         assert_eq!(cfg.chequebook, None);
         assert_eq!(cfg.beneficiary, None);
         assert!(!cfg.deploy);
+        assert_eq!(cfg.bounce_limit, DEFAULT_BOUNCE_LIMIT);
     }
 
     #[test]
@@ -98,11 +139,13 @@ mod tests {
             chequebook: Some(chequebook),
             beneficiary: Some(beneficiary),
             deploy: true,
+            bounce_limit: 42,
         };
         let cfg = args.swap_config();
         assert!(cfg.enable);
         assert_eq!(cfg.chequebook, Some(chequebook));
         assert_eq!(cfg.beneficiary, Some(beneficiary));
         assert!(cfg.deploy);
+        assert_eq!(cfg.bounce_limit, 42);
     }
 }

@@ -81,4 +81,10 @@ pub enum ChequeError {
     /// The cheque could not be encoded to wire JSON.
     #[error("failed to encode cheque json: {0}")]
     Encode(&'static str),
+
+    /// The signature is malleable: a non-canonical `v` byte or a high-`s`
+    /// component. ECDSA is malleable, so only the low-`s` (EIP-2) form with a
+    /// canonical recovery byte is accepted.
+    #[error("non-canonical signature: {0}")]
+    NonCanonicalSignature(&'static str),
 }

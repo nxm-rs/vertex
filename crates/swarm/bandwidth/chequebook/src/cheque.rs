@@ -121,7 +121,9 @@ pub struct SignedCheque {
     /// length at 65 bytes, rejects non-canonical `v` values, and renormalizes
     /// `v` to `27 + parity` on re-encode. The opaque payload preserves whatever
     /// a peer sends and is parsed into a `Signature` only when verifying or
-    /// recovering a signer (see [`Self::recover_signer`]).
+    /// recovering a signer (see [`Self::recover_signer`]). The accept path calls
+    /// [`Self::ensure_canonical`] before crediting, so the preserved bytes never
+    /// settle debt in a malleable form.
     pub signature: Bytes,
 }
 
@@ -182,6 +184,29 @@ impl SignedCheque {
 
         Signature::try_from(self.signature.as_ref())
             .map_err(|e| ChequeError::SignatureRecovery(format!("invalid signature: {e}")))
+    }
+
+    /// Reject a malleable signature.
+    ///
+    /// ECDSA signatures are malleable: for any valid `(r, s)` the pair
+    /// `(r, n - s)` is equally valid, and the `v` byte can be encoded in several
+    /// forms. A peer must not be able to mint a second wire-distinct cheque for
+    /// the same payout, so the accept path requires the canonical form: low-`s`
+    /// (EIP-2) and a recovery byte in `{0, 1, 27, 28}` (no EIP-155 replay byte on
+    /// a bare cheque signature). The cheque body and EIP-712 recovery are left
+    /// untouched; this only validates the signature encoding.
+    pub fn ensure_canonical(&self) -> Result<(), ChequeError> {
+        let sig = self.parse_signature()?;
+        if sig.normalize_s().is_some() {
+            return Err(ChequeError::NonCanonicalSignature("high-s component"));
+        }
+        // `parse_signature` already accepts and length-checks the bytes; reject
+        // the replay-protected (EIP-155, >= 35) and any non-`{0,1,27,28}` v form
+        // so only the canonical recovery byte settles debt.
+        match self.signature.last() {
+            Some(0 | 1 | 27 | 28) => Ok(()),
+            _ => Err(ChequeError::NonCanonicalSignature("non-canonical v byte")),
+        }
     }
 
     /// Recover the signer address from the signature.
@@ -362,6 +387,63 @@ mod tests {
             signed.verify(wrong, MAINNET_CHAIN),
             Err(ChequeError::InvalidSigner { .. })
         ));
+    }
+
+    #[test]
+    fn ensure_canonical_accepts_a_fresh_signature() {
+        // A signature straight from the signer is low-s with a canonical v.
+        let signer = PrivateKeySigner::random();
+        let cheque = test_cheque();
+        let hash = cheque.signing_hash(MAINNET_CHAIN);
+        let sig = signer.sign_hash_sync(&hash).unwrap();
+        let signed = SignedCheque::from_signature(cheque, sig);
+
+        signed.ensure_canonical().unwrap();
+    }
+
+    #[test]
+    fn ensure_canonical_rejects_high_s() {
+        // Flip the signature to its malleable twin (r, n - s) and a flipped
+        // parity; it still recovers to a valid signer but must be rejected.
+        let signer = PrivateKeySigner::random();
+        let cheque = test_cheque();
+        let hash = cheque.signing_hash(MAINNET_CHAIN);
+        let sig = signer.sign_hash_sync(&hash).unwrap();
+
+        let high_s = Signature::new(sig.r(), n_minus_s(sig.s()), !sig.v());
+        let signed = SignedCheque::from_signature(cheque, high_s);
+
+        assert!(matches!(
+            signed.ensure_canonical(),
+            Err(ChequeError::NonCanonicalSignature(_))
+        ));
+    }
+
+    #[test]
+    fn ensure_canonical_rejects_non_canonical_v() {
+        // A recovery byte outside {0,1,27,28} (here an EIP-155 replay byte) is
+        // rejected even with a low-s component.
+        let signer = PrivateKeySigner::random();
+        let cheque = test_cheque();
+        let hash = cheque.signing_hash(MAINNET_CHAIN);
+        let sig = signer.sign_hash_sync(&hash).unwrap();
+
+        let mut raw = sig.as_bytes().to_vec();
+        *raw.last_mut().unwrap() = 37; // EIP-155 form, parses but non-canonical.
+        let signed = SignedCheque::new(cheque, Bytes::from(raw));
+
+        assert!(matches!(
+            signed.ensure_canonical(),
+            Err(ChequeError::NonCanonicalSignature(_))
+        ));
+    }
+
+    /// `n - s` over the secp256k1 group order, the malleable twin of `s`.
+    fn n_minus_s(s: U256) -> U256 {
+        let n: U256 = "0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"
+            .parse()
+            .unwrap();
+        n - s
     }
 
     #[test]
