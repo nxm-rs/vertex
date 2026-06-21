@@ -165,6 +165,48 @@ impl<DB: Database, BS: BatchStore> DbReserve<DB, BS> {
         self.reserve.on_removed_n(removed);
         Ok(removed)
     }
+
+    /// Evict the furthest entries until the reserve is within capacity, returning
+    /// the number removed. The [`Entry`] table is proximity-major, so the furthest
+    /// entries (smallest proximity order) are its leading keys: walk forward from
+    /// the front collecting the overflow, then delete that batch atomically.
+    ///
+    /// `BinCounter` is never touched, so a pull-sync cursor resumes correctly
+    /// across the eviction.
+    pub fn evict_to_capacity(&self) -> SwarmResult<u64> {
+        let capacity = self.reserve.capacity();
+        let count = self.reserve.count();
+        let Some(overflow) = count.checked_sub(capacity).filter(|n| *n > 0) else {
+            return Ok(0);
+        };
+
+        let mut targets: Vec<EvictTarget> = Vec::with_capacity(overflow as usize);
+        {
+            let tx = self.db.tx().map_err(storage_err)?;
+            let mut cursor = tx.cursor::<Entry>().map_err(storage_err)?;
+            let mut row = cursor.first().map_err(storage_err)?;
+            while let Some((key, _)) = row {
+                targets.push(EvictTarget {
+                    batch: key.batch,
+                    stamp_hash: key.stamp_hash,
+                    addr: key.addr,
+                });
+                if targets.len() as u64 >= overflow {
+                    break;
+                }
+                row = cursor.next().map_err(storage_err)?;
+            }
+        }
+        if targets.is_empty() {
+            return Ok(0);
+        }
+        debug!(
+            overflow,
+            collected = targets.len(),
+            "evicting the furthest entries to keep the reserve within capacity"
+        );
+        self.evict_entries(&targets)
+    }
 }
 
 /// Batch-store reads on the synchronous `put` path. The typed

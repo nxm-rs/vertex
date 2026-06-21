@@ -3,6 +3,7 @@
 //! The [`Reserve`] tracks storage capacity and handles eviction
 //! when the store is full.
 
+use nectar_primitives::{ChunkAddress, ProximityOrder};
 use parking_lot::RwLock;
 use tracing::{debug, warn};
 use vertex_swarm_api::SwarmIdentity;
@@ -118,11 +119,15 @@ impl Reserve {
                 })
             }
             EvictionStrategy::EvictOldest => self.evict_oldest(store),
-            EvictionStrategy::EvictFurthest => {
-                // TODO: rank by proximity to self.overlay; for now fall back.
-                warn!("EvictFurthest not implemented, falling back to EvictOldest");
-                self.evict_oldest(store)
-            }
+            EvictionStrategy::EvictFurthest => match self.overlay {
+                Some(overlay) => self.evict_furthest(store, &overlay),
+                None => {
+                    // Furthest ranking is undefined without our overlay; fall back
+                    // to oldest rather than evict on a meaningless metric.
+                    warn!("EvictFurthest needs an overlay; falling back to EvictOldest");
+                    self.evict_oldest(store)
+                }
+            },
         }
     }
 
@@ -152,6 +157,37 @@ impl Reserve {
 
         if let Some(addr) = to_evict {
             debug!(%addr, "Evicting chunk");
+            store.delete(&addr)?;
+            self.on_removed();
+            Ok(())
+        } else {
+            // Empty but reported full; should not happen.
+            Err(StorerError::StorageFull {
+                capacity: self.capacity,
+                used: 0,
+            })
+        }
+    }
+
+    /// Evict the chunk with the lowest proximity order to `overlay`, i.e. the one
+    /// furthest from us. Ties broken by iteration order.
+    fn evict_furthest<S: ChunkStore>(
+        &self,
+        store: &S,
+        overlay: &OverlayAddress,
+    ) -> StorerResult<()> {
+        let mut furthest: Option<(ProximityOrder, ChunkAddress)> = None;
+
+        store.for_each(|addr| {
+            let po = addr.proximity(overlay);
+            if furthest.is_none_or(|(best, _)| po < best) {
+                furthest = Some((po, *addr));
+            }
+            true
+        })?;
+
+        if let Some((_, addr)) = furthest {
+            debug!(%addr, "Evicting furthest chunk");
             store.delete(&addr)?;
             self.on_removed();
             Ok(())
@@ -265,5 +301,31 @@ mod tests {
         reserve.try_reserve(&store).unwrap();
         assert!(reserve.has_room());
         assert_eq!(store.count().unwrap(), 1);
+    }
+
+    #[test]
+    fn evict_furthest_drops_the_lowest_proximity_chunk() {
+        use vertex_swarm_test_utils::MockIdentity;
+
+        // Overlay is all-zero, so 0x00.. is closest and 0x80.. (top bit set) is
+        // furthest. Furthest eviction must drop the 0x80 address and keep 0x00.
+        let identity = MockIdentity::with_first_byte(0x00);
+        let reserve =
+            Reserve::with_strategy(2, EvictionStrategy::EvictFurthest).with_identity(&identity);
+        let store = MemoryChunkStore::new();
+
+        let near = test_address(0x00);
+        let far = test_address(0x80);
+        store.put(&near, b"data").unwrap();
+        store.put(&far, b"data").unwrap();
+        reserve.on_added();
+        reserve.on_added();
+
+        assert!(!reserve.has_room());
+        reserve.try_reserve(&store).unwrap();
+
+        assert!(reserve.has_room());
+        assert!(store.contains(&near).unwrap(), "closest chunk retained");
+        assert!(!store.contains(&far).unwrap(), "furthest chunk evicted");
     }
 }

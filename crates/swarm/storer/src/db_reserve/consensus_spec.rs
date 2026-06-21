@@ -61,6 +61,22 @@ fn content_chunk_in_bucket0(seed: u64) -> (nectar_primitives::AnyChunk, ChunkAdd
     panic!("no bucket-0 content chunk found within the search bound");
 }
 
+/// A content chunk whose address has exactly `target_po` leading bits clear, so
+/// its proximity order to the zero overlay is `target_po`. Lets a test place
+/// chunks at chosen distances to assert furthest-first eviction.
+fn content_chunk_at_po(seed: u64, target_po: u8) -> (nectar_primitives::AnyChunk, ChunkAddress) {
+    let overlay = ChunkAddress::with_first_byte(0x00);
+    for n in 0..1_000_000u64 {
+        let payload = format!("vertex reserve po fixture {seed}/{target_po}/{n}").into_bytes();
+        let chunk = ContentChunk::new(payload).expect("valid content chunk");
+        let addr = *chunk.address();
+        if addr.proximity(&overlay).get() == target_po {
+            return (chunk.into(), addr);
+        }
+    }
+    panic!("no content chunk at proximity order {target_po} within the search bound");
+}
+
 /// Bucket is derived from the address so `validate_bucket` passes.
 fn signed_stamp(
     signer: &PrivateKeySigner,
@@ -98,6 +114,12 @@ impl Fixture {
 
     /// All batches are owned by the shared signer, with the live context persisted.
     fn with_batches(batch_ids: &[B256]) -> Self {
+        Self::with_capacity(batch_ids, 10_000)
+    }
+
+    /// As [`with_batches`](Self::with_batches), at a chosen reserve capacity so the
+    /// furthest-eviction trigger can be exercised at a small bound.
+    fn with_capacity(batch_ids: &[B256], capacity: u64) -> Self {
         let db = RedbDatabase::in_memory().unwrap().into_arc();
         let batches = DbBatchStore::new(Arc::clone(&db)).unwrap();
         let signer = signer();
@@ -115,7 +137,7 @@ impl Fixture {
             &identity,
             reserve_batches,
             AdmissionValidator::new(THRESHOLD),
-            10_000,
+            capacity,
             EvictionStrategy::NoEviction,
             StorageRadius::ZERO,
         )
@@ -680,4 +702,153 @@ fn expired_event_does_not_acknowledge_when_eviction_fails_is_skipped() {
     // retries the store removal, which a later `run` backstop also catches.
     assert_eq!(fx.reserve.count().unwrap(), 0, "eviction already applied");
     assert_eq!(fx.payload_refcnt(&addr), None);
+}
+
+// --- furthest-eviction to capacity -----------------------------------
+
+#[test]
+fn evict_to_capacity_drops_the_furthest_entries_first() {
+    // Capacity 2, three entries at distinct proximity orders. The two furthest
+    // (lowest proximity) are evicted; the closest survives.
+    let id = B256::repeat_byte(0x11);
+    let fx = Fixture::with_capacity(&[id], 2);
+    let batch_id = fx.batch_id();
+
+    let (far_chunk, far_addr) = content_chunk_at_po(1, 0); // furthest
+    let (mid_chunk, mid_addr) = content_chunk_at_po(2, 3); // middle
+    let (near_chunk, near_addr) = content_chunk_at_po(3, 9); // closest
+
+    // Distinct stamp indices so the per-bucket arbiter slots never collide.
+    fx.put(&far_chunk, &far_addr, batch_id, 0, 100).unwrap();
+    fx.put(&mid_chunk, &mid_addr, batch_id, 1, 100).unwrap();
+    fx.put(&near_chunk, &near_addr, batch_id, 2, 100).unwrap();
+    assert_eq!(
+        fx.reserve.count().unwrap(),
+        3,
+        "three entries, over capacity"
+    );
+
+    let removed = fx.reserve.evict_to_capacity().unwrap();
+    assert_eq!(removed, 1, "one entry over capacity is shed");
+    assert_eq!(fx.reserve.count().unwrap(), 2, "back within capacity");
+
+    assert!(
+        !fx.reserve.contains(&far_addr),
+        "the furthest entry is evicted"
+    );
+    assert!(
+        fx.reserve.contains(&mid_addr),
+        "the middle entry is retained"
+    );
+    assert!(
+        fx.reserve.contains(&near_addr),
+        "the closest entry is retained"
+    );
+
+    // Idempotent at capacity.
+    assert_eq!(
+        fx.reserve.evict_to_capacity().unwrap(),
+        0,
+        "no eviction when already within capacity"
+    );
+}
+
+#[test]
+fn evict_to_capacity_does_not_rewind_bin_cursors() {
+    // A bin's monotonic insertion cursor must survive eviction so a pull-sync
+    // resume point stays valid: a scan from a sequence past the evicted entry
+    // still resolves the survivor.
+    let id = B256::repeat_byte(0x11);
+    let fx = Fixture::with_capacity(&[id], 1);
+    let batch_id = fx.batch_id();
+
+    // Two entries in the same bin (same proximity order to the zero overlay), so
+    // their insertion sequences are 1 and 2 in that bin.
+    let (first_chunk, first_addr) = content_chunk_at_po(1, 5);
+    let (second_chunk, second_addr) = content_chunk_at_po(2, 5);
+    let bin = first_addr.bin(&fx.overlay);
+    assert_eq!(bin, second_addr.bin(&fx.overlay), "fixtures share a bin");
+
+    fx.put(&first_chunk, &first_addr, batch_id, 0, 100).unwrap();
+    fx.put(&second_chunk, &second_addr, batch_id, 1, 100)
+        .unwrap();
+    let cursor_before = fx.reserve.bin_cursor(bin).unwrap();
+    assert_eq!(
+        cursor_before, 2,
+        "two insertions advance the bin cursor to 2"
+    );
+
+    // Over capacity by one: the furthest (here the first by tie order) is shed.
+    let removed = fx.reserve.evict_to_capacity().unwrap();
+    assert_eq!(removed, 1);
+
+    let cursor_after = fx.reserve.bin_cursor(bin).unwrap();
+    assert_eq!(
+        cursor_after, cursor_before,
+        "the monotonic bin cursor is never rewound on eviction"
+    );
+
+    // The evicted entry's Replay row is compacted away, leaving exactly the
+    // survivor; its sequence is one of the two originally assigned (1 or 2),
+    // never renumbered, so a resume point computed before eviction stays valid.
+    let items: Vec<_> = fx
+        .reserve
+        .scan_bin_from(bin, 0)
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(items.len(), 1, "exactly the survivor's Replay row remains");
+    assert!(
+        items[0].seq == 1 || items[0].seq == 2,
+        "the survivor keeps its original sequence; no renumbering"
+    );
+    // Resuming from one past the cursor yields nothing (no new inserts), proving
+    // the cursor was not rewound below the survivor.
+    let tail: Vec<_> = fx
+        .reserve
+        .scan_bin_from(bin, cursor_after + 1)
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(tail.is_empty(), "no entries beyond the unchanged cursor");
+}
+
+#[test]
+fn evict_to_capacity_frees_the_body_only_on_the_last_reference() {
+    // One content address under two batches: the shared payload survives the
+    // first entry's eviction (refcnt 2 -> 1) and is freed only when the last
+    // referencing entry goes.
+    let ids = [B256::repeat_byte(0x11), B256::repeat_byte(0x22)];
+    let fx = Fixture::with_capacity(&ids, 1);
+    let (chunk, addr) = content_chunk_at_po(1, 4);
+
+    fx.put(&chunk, &addr, ids[0], 0, 100).unwrap();
+    fx.put(&chunk, &addr, ids[1], 0, 100).unwrap();
+    assert_eq!(
+        fx.reserve.count().unwrap(),
+        2,
+        "two stamped entries share a body"
+    );
+    assert_eq!(fx.payload_refcnt(&addr), Some(2));
+
+    // Capacity 1, so one of the two entries is shed; the body remains refcounted.
+    let removed = fx.reserve.evict_to_capacity().unwrap();
+    assert_eq!(removed, 1, "one entry over capacity is shed");
+    assert_eq!(fx.reserve.count().unwrap(), 1);
+    assert_eq!(
+        fx.payload_refcnt(&addr),
+        Some(1),
+        "shared body survives while another entry references it"
+    );
+    assert!(fx.reserve.contains(&addr), "body still present");
+
+    // Drop the reserve to capacity 0 by evicting the last entry directly; the
+    // body is freed only now.
+    fx.reserve.evict_furthest().unwrap();
+    assert_eq!(fx.reserve.count().unwrap(), 0);
+    assert_eq!(
+        fx.payload_refcnt(&addr),
+        None,
+        "body freed only when the last referencing entry is evicted"
+    );
 }
