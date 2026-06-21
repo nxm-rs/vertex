@@ -96,6 +96,9 @@ members = [
     # Storer (chunk storage and staking)
     "crates/swarm/storer",
 
+    # Puller (neighbourhood pull-sync service)
+    "crates/swarm/puller",
+
     # Postage (batch store + on-chain event ingest seam)
     "crates/swarm/postage",
 
@@ -246,6 +249,9 @@ vertex-swarm-redistribution = { path = "crates/swarm/redistribution" }
 
 # storer (chunk storage and staking)
 vertex-swarm-storer = { path = "crates/swarm/storer" }
+
+# puller (neighbourhood pull-sync service)
+vertex-swarm-puller = { path = "crates/swarm/puller" }
 
 # postage (batch store + on-chain event ingest seam)
 vertex-swarm-postage = { path = "crates/swarm/postage" }
