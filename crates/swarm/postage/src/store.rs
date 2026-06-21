@@ -79,9 +79,21 @@ pub enum DbBatchStoreError {
 /// Batch store backed by the `vertex-storage` `Database` trait.
 ///
 /// Implements both [`BatchStore`] (persistence) and [`BatchEventHandler`]
-/// (on-chain ingest). Cheap to clone by `Arc` and thread-safe.
+/// (on-chain ingest). Cloning shares the one `Arc<DB>`, so every clone reads and
+/// writes the same tables (the reserve and the puller's funding verifier hold
+/// independent handles onto the same batch set).
 pub struct DbBatchStore<DB: Database> {
     db: Arc<DB>,
+}
+
+// Hand-written so the clone bounds only the `Arc`, not `DB` (the backend is never
+// `Clone`); a clone shares the one handle onto the same tables.
+impl<DB: Database> Clone for DbBatchStore<DB> {
+    fn clone(&self) -> Self {
+        Self {
+            db: Arc::clone(&self.db),
+        }
+    }
 }
 
 impl<DB: Database> DbBatchStore<DB> {

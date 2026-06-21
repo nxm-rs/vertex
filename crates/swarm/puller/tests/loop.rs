@@ -570,6 +570,84 @@ impl PullChunkVerifier for AddressRejectVerifier {
     }
 }
 
+// Rejects every chunk as an unknown batch, the transient catch-up verdict.
+#[derive(Clone, Copy)]
+struct UnknownBatchVerifier;
+
+impl PullChunkVerifier for UnknownBatchVerifier {
+    fn verify(&self, _chunk: &StampedChunk) -> Result<(), VerifyError> {
+        Err(VerifyError::UnknownBatch)
+    }
+}
+
+// An unknown batch is the common transient case during catch-up (the chain
+// indexer lags pull-sync), not peer misbehaviour. The peer is neither reported
+// nor skipped, and the interval is not advanced so the page is retried once the
+// batch is indexed.
+#[tokio::test]
+async fn unknown_batch_does_not_report_or_skip_peer() {
+    let control = MockControl::default();
+    let intervals = MockIntervals::default();
+    let admit = MockAdmit::default();
+    let reporter = MockReporter::default();
+
+    let peer = PeerId::random();
+    let peer_ov = overlay(1);
+    let target = SyncTarget {
+        peer,
+        overlay: peer_ov,
+        bins: vec![bin(2)],
+    };
+
+    let (events_tx, events_rx) = mpsc::channel(32);
+    let mut puller = Puller::new(
+        PullerSeams {
+            control: control.clone(),
+            intervals: intervals.clone(),
+            verifier: UnknownBatchVerifier,
+            admit: admit.clone(),
+            readiness: NoGate,
+            neighbours: OneTarget(target),
+            reporter: reporter.clone(),
+        },
+        events_rx,
+        PullerConfig::default(),
+    );
+
+    events_tx
+        .send(PullsyncEvent::CursorsReceived {
+            peer,
+            request_id: 0,
+            cursors: vec![],
+            epoch: 1,
+        })
+        .await
+        .unwrap();
+    events_tx
+        .send(PullsyncEvent::RangeDelivered {
+            peer,
+            request_id: 1,
+            bin: bin(2),
+            topmost: 10,
+            chunks: vec![stamped(0xbb)],
+        })
+        .await
+        .unwrap();
+
+    puller.sync_pass().await;
+
+    // Transient rejection: nothing admitted, the peer is not reported, and the
+    // interval is not advanced so the page is retried on a later pass.
+    assert!(admit.admitted.lock().unwrap().is_empty());
+    assert!(
+        reporter.reports.lock().unwrap().is_empty(),
+        "an unknown batch must not report the peer"
+    );
+    assert_eq!(intervals.interval(&peer_ov, bin(2)).unwrap(), 0);
+    // The bin stopped on the unverified page: exactly one range, from 0.
+    assert_eq!(*control.ranges.lock().unwrap(), vec![(peer, bin(2), 0)]);
+}
+
 // A neighbour that serves an unverifiable chunk is reported for invalid data and
 // skipped for the rest of the pass; a different neighbour in the same pass still
 // syncs through to its caught-up page.

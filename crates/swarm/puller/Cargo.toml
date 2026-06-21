@@ -14,9 +14,13 @@ workspace = true
 [dependencies]
 ## vertex
 vertex-swarm-api.workspace = true
+vertex-swarm-postage.workspace = true
 vertex-swarm-primitives.workspace = true
 vertex-swarm-storer-behaviour.workspace = true
 vertex-tasks.workspace = true
+
+## nectar (the `BatchStore` trait and postage models)
+nectar-postage.workspace = true
 
 ## p2p (PeerId only; no NetworkBehaviour or Swarm)
 libp2p.workspace = true
@@ -36,6 +40,8 @@ strum.workspace = true
 
 [dev-dependencies]
 alloy-primitives.workspace = true
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
 nectar-postage.workspace = true
 nectar-primitives.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time", "test-util"] }

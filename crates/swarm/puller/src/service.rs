@@ -279,8 +279,11 @@ where
 
     /// Drive one bin from its persisted interval upward until caught up.
     ///
-    /// Returns `true` if a delivered chunk failed verification: the peer is
-    /// reported for invalid data and skipped for the rest of the pass.
+    /// Returns `true` only on a peer-blameworthy rejection: that peer is reported
+    /// for invalid data and skipped for the rest of the pass. A transient
+    /// rejection (an unknown batch during catch-up) also leaves the interval
+    /// unadvanced so the page is retried on a later pass, but neither reports nor
+    /// skips the peer.
     async fn sync_bin(&mut self, target: &SyncTarget, bin: Bin) -> bool {
         loop {
             let start = match self.intervals.interval(&target.overlay, bin) {
@@ -300,6 +303,7 @@ where
             };
 
             let mut rejected = false;
+            let mut blameworthy = false;
             for chunk in chunks {
                 match self.verifier.verify(&chunk) {
                     Ok(()) => {
@@ -308,24 +312,28 @@ where
                         }
                     }
                     Err(e) => {
-                        // A rejected chunk taints the whole offer: do not advance
+                        // Any rejection taints the whole offer: do not advance
                         // past it, or the unverified span is skipped forever.
                         rejected = true;
+                        blameworthy |= e.is_peer_blameworthy();
                         debug!(overlay = %target.overlay, reason = <&'static str>::from(&e), "puller rejected chunk");
                     }
                 }
             }
 
-            // A tainted page does not advance the interval; report the source for
-            // invalid data and stop, so the same poison peer is skipped for the
-            // rest of the pass rather than re-requested.
+            // A tainted page never advances the interval. A blameworthy rejection
+            // also reports the source for invalid data and skips it for the rest
+            // of the pass; a transient one (an unknown batch the indexer has not
+            // caught up to) only stops this bin so the page is retried later.
             if rejected {
-                self.reporter.report_peer(
-                    &target.overlay,
-                    SwarmScoringEvent::InvalidData,
-                    PULLSYNC_SOURCE,
-                );
-                return true;
+                if blameworthy {
+                    self.reporter.report_peer(
+                        &target.overlay,
+                        SwarmScoringEvent::InvalidData,
+                        PULLSYNC_SOURCE,
+                    );
+                }
+                return blameworthy;
             }
 
             // Caught up: the offer covered nothing past the resume point.

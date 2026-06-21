@@ -65,6 +65,19 @@ pub enum VerifyError {
     Malformed,
 }
 
+impl VerifyError {
+    /// Whether the serving peer is to blame for this rejection.
+    ///
+    /// Only [`UnknownBatch`](Self::UnknownBatch) is exempt: the chain indexer
+    /// lags pull-sync during catch-up, so a freshly pulled chunk's batch may not
+    /// be indexed locally yet. That is indexer lag, not malice, so the peer is
+    /// neither scored nor skipped and the page is retried once the batch lands.
+    /// Every other rejection is a genuinely bad stamp the peer served.
+    pub fn is_peer_blameworthy(&self) -> bool {
+        !matches!(self, Self::UnknownBatch)
+    }
+}
+
 /// Admission gate the puller runs before accepting a delivered chunk.
 ///
 /// A pluggable seam: the full check is stamp signature recovery plus on-chain

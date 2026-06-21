@@ -21,4 +21,4 @@ pub use service::{
     BuiltPuller, DEFAULT_EVENT_CAPACITY, DEFAULT_PEER_RESPONSE_TIMEOUT, DEFAULT_TAIL_BACKOFF,
     Puller, PullerConfig, PullerHandle, PullerSeams, build_puller, spawn_puller,
 };
-pub use verifier::SignatureVerifier;
+pub use verifier::{FundingVerifier, SignatureVerifier};
