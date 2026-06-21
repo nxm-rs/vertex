@@ -245,6 +245,12 @@ impl SwarmNodeType {
         matches!(self, SwarmNodeType::Storer)
     }
 
+    /// Whether SWAP settlement defaults on for this node type. Storers settle
+    /// monetarily by default to provide maximum support; clients are opt-in.
+    pub fn swap_default(&self) -> bool {
+        matches!(self, SwarmNodeType::Storer)
+    }
+
     /// Whether this node type requires a persistent (keystore-backed) signing
     /// key. Bootnodes need a stable overlay address across restarts so peers
     /// can reach them via their well-known overlay. Storers need a stable key

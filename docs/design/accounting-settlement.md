@@ -8,7 +8,7 @@ The accounting layer separates the ledger, the settlement mechanisms, and how th
 
 ## Settlement
 
-Two roles on different debt bases, not a pipeline. Soft accounting forgives total debt over time at the configured refresh rate; it is always on for client and storer nodes, realised on the wire by the pseudosettle protocol. Monetary settlement (SWAP) is optional, settles only originated debt, and is opt-in via `--swap`. There is no runtime mode enum: pseudosettle is the default and SWAP is selected by the flag plus the node type.
+Two roles on different debt bases, not a pipeline. Soft accounting forgives total debt over time at the configured refresh rate; it is always on for client and storer nodes, realised on the wire by the pseudosettle protocol. Monetary settlement (SWAP) settles only originated debt and defaults on for storers, which provide maximum support, and off for clients; `--swap` overrides either way, so a client (including a wasm client) can opt in. There is no runtime mode enum. The SWAP cheque-exchange path is built to compile for wasm; only on-chain cashout is native.
 
 ## Wire conformance
 

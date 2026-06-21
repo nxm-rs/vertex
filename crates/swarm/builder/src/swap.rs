@@ -68,11 +68,12 @@ impl SwapWiring {
         identity: &Arc<Identity>,
         config: &C,
         swap_config: &SwapConfig,
+        swap_enabled: bool,
     ) -> Option<(SwapProvider<C>, Self)>
     where
         C: SwarmAccountingConfig + Clone + 'static,
     {
-        if !swap_config.enable {
+        if !swap_enabled {
             return None;
         }
 
