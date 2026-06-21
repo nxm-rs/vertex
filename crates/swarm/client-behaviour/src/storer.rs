@@ -22,7 +22,7 @@ use vertex_swarm_primitives::{NetworkId, Nonce};
 /// primitives ([`ReserveStore::evict_from_bin`] /
 /// [`evict_batch`](ReserveStore::evict_batch)), not by ingest back-pressure.
 #[derive(Clone)]
-pub(crate) struct StorerCapability {
+pub struct StorerCapability {
     pub(crate) reserve: Arc<dyn ReserveStore>,
     signer: Arc<dyn SignerSync + Send + Sync>,
     network_id: NetworkId,
@@ -30,7 +30,7 @@ pub(crate) struct StorerCapability {
 }
 
 impl StorerCapability {
-    pub(crate) fn new(
+    pub fn new(
         reserve: Arc<dyn ReserveStore>,
         signer: Arc<dyn SignerSync + Send + Sync>,
         network_id: NetworkId,

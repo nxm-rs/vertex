@@ -8870,6 +8870,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "vertex-swarm-client-behaviour"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-signer",
+ "futures",
+ "futures-bounded 0.2.4",
+ "libp2p",
+ "metrics",
+ "nectar-postage",
+ "nectar-primitives",
+ "strum 0.28.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "vertex-swarm-api",
+ "vertex-swarm-client-protocol",
+ "vertex-swarm-net-headers",
+ "vertex-swarm-net-pricing",
+ "vertex-swarm-net-pseudosettle",
+ "vertex-swarm-net-pushsync",
+ "vertex-swarm-net-retrieval",
+ "vertex-swarm-net-swap",
+ "vertex-swarm-primitives",
+ "vertex-swarm-test-utils",
+ "vertex-util-runtime",
+]
+
+[[package]]
 name = "vertex-swarm-client-protocol"
 version = "0.1.0"
 dependencies = [
@@ -9224,10 +9253,10 @@ dependencies = [
  "vertex-swarm-accounting",
  "vertex-swarm-accounting-pricing",
  "vertex-swarm-api",
+ "vertex-swarm-client-behaviour",
  "vertex-swarm-client-protocol",
  "vertex-swarm-identity",
  "vertex-swarm-localstore",
- "vertex-swarm-net-headers",
  "vertex-swarm-net-identify",
  "vertex-swarm-net-pricing",
  "vertex-swarm-net-pseudosettle",
