@@ -13,7 +13,10 @@ use libp2p::PeerId;
 use nectar_postage::Stamp;
 use nectar_primitives::ContentChunk;
 use tokio::sync::mpsc;
-use vertex_swarm_api::{IntervalStore, PullChunkVerifier, SwarmResult, VerifyError};
+use vertex_swarm_api::{
+    IntervalStore, PeerReporter, PullChunkVerifier, ReportSource, SwarmResult, SwarmScoringEvent,
+    VerifyError,
+};
 use vertex_swarm_primitives::{Bin, OverlayAddress, StampedChunk};
 use vertex_swarm_puller::{
     NeighbourSource, Puller, PullerConfig, PullerSeams, PullsyncControl, PullsyncEvent,
@@ -109,6 +112,23 @@ impl ReserveAdmit for MockAdmit {
     }
 }
 
+/// Records every reported scoring event by reported overlay.
+#[derive(Clone, Default)]
+struct MockReporter {
+    reports: Arc<Mutex<Vec<(OverlayAddress, SwarmScoringEvent, ReportSource)>>>,
+}
+
+impl PeerReporter for MockReporter {
+    fn report_peer(
+        &self,
+        overlay: &OverlayAddress,
+        event: SwarmScoringEvent,
+        source: ReportSource,
+    ) {
+        self.reports.lock().unwrap().push((*overlay, event, source));
+    }
+}
+
 /// Verifier with a fixed verdict for all chunks.
 #[derive(Clone, Copy)]
 struct FixedVerifier {
@@ -157,6 +177,7 @@ struct Harness {
     control: MockControl,
     intervals: MockIntervals,
     admit: MockAdmit,
+    reporter: MockReporter,
     events_tx: mpsc::Sender<PullsyncEvent>,
     peer: PeerId,
     overlay: OverlayAddress,
@@ -164,13 +185,22 @@ struct Harness {
 
 /// Build a puller over the mocks and the scripted target, returning the puller
 /// (caller spawns it) and the harness handles to assert against.
-type TestPuller =
-    Puller<MockControl, PullsyncEvent, MockIntervals, FixedVerifier, MockAdmit, NoGate, OneTarget>;
+type TestPuller = Puller<
+    MockControl,
+    PullsyncEvent,
+    MockIntervals,
+    FixedVerifier,
+    MockAdmit,
+    NoGate,
+    OneTarget,
+    MockReporter,
+>;
 
 fn harness(accept: bool) -> (TestPuller, Harness) {
     let control = MockControl::default();
     let intervals = MockIntervals::default();
     let admit = MockAdmit::default();
+    let reporter = MockReporter::default();
     let peer = PeerId::random();
     let ov = overlay(1);
     let target = SyncTarget {
@@ -188,6 +218,7 @@ fn harness(accept: bool) -> (TestPuller, Harness) {
             admit: admit.clone(),
             readiness: NoGate,
             neighbours: OneTarget(target),
+            reporter: reporter.clone(),
         },
         events_rx,
         PullerConfig::default(),
@@ -199,6 +230,7 @@ fn harness(accept: bool) -> (TestPuller, Harness) {
             control,
             intervals,
             admit,
+            reporter,
             events_tx,
             peer,
             overlay: ov,
@@ -334,6 +366,15 @@ async fn rejected_chunk_is_not_admitted_and_interval_not_advanced() {
     assert_eq!(h.intervals.interval(&h.overlay, bin(2)).unwrap(), 0);
     // Exactly one sync_range was issued (from 0); the tainted page stops the bin.
     assert_eq!(*h.control.ranges.lock().unwrap(), vec![(h.peer, bin(2), 0)]);
+    // The serving peer's overlay was reported for invalid data through pullsync.
+    assert_eq!(
+        *h.reporter.reports.lock().unwrap(),
+        vec![(
+            h.overlay,
+            SwarmScoringEvent::InvalidData,
+            ReportSource::Protocol("pullsync")
+        )]
+    );
 }
 
 // A late reply from a prior timed-out command stays buffered in the channel. It
@@ -448,6 +489,7 @@ async fn silent_peer_is_abandoned_and_pass_proceeds() {
             admit: admit.clone(),
             readiness: NoGate,
             neighbours: TwoTargets(targets),
+            reporter: MockReporter::default(),
         },
         events_rx,
         PullerConfig {
@@ -508,5 +550,147 @@ async fn silent_peer_is_abandoned_and_pass_proceeds() {
         *control.ranges.lock().unwrap(),
         vec![(live, bin(2), 0)],
         "only the live peer drove a range exchange"
+    );
+}
+
+// Rejects only the one chunk at the poison address, so one peer's page fails
+// verification while another's passes in the same pass.
+#[derive(Clone, Copy)]
+struct AddressRejectVerifier {
+    poison: nectar_primitives::ChunkAddress,
+}
+
+impl PullChunkVerifier for AddressRejectVerifier {
+    fn verify(&self, chunk: &StampedChunk) -> Result<(), VerifyError> {
+        if *chunk.address() == self.poison {
+            Err(VerifyError::InvalidSignature)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+// A neighbour that serves an unverifiable chunk is reported for invalid data and
+// skipped for the rest of the pass; a different neighbour in the same pass still
+// syncs through to its caught-up page.
+#[tokio::test]
+async fn poison_peer_is_reported_and_skipped_other_peer_syncs() {
+    let control = MockControl::default();
+    let intervals = MockIntervals::default();
+    let admit = MockAdmit::default();
+    let reporter = MockReporter::default();
+
+    let poison = PeerId::random();
+    let poison_ov = overlay(1);
+    let good = PeerId::random();
+    let good_ov = overlay(2);
+
+    let targets = vec![
+        SyncTarget {
+            peer: poison,
+            overlay: poison_ov,
+            bins: vec![bin(2)],
+        },
+        SyncTarget {
+            peer: good,
+            overlay: good_ov,
+            bins: vec![bin(2)],
+        },
+    ];
+
+    let bad_chunk = stamped(0xbb);
+    let bad_addr = *bad_chunk.address();
+    let good_chunk = stamped(0xaa);
+    let good_addr = *good_chunk.address();
+
+    let (events_tx, events_rx) = mpsc::channel(32);
+    let mut puller = Puller::new(
+        PullerSeams {
+            control: control.clone(),
+            intervals: intervals.clone(),
+            verifier: AddressRejectVerifier { poison: bad_addr },
+            admit: admit.clone(),
+            readiness: NoGate,
+            neighbours: TwoTargets(targets),
+            reporter: reporter.clone(),
+        },
+        events_rx,
+        PullerConfig::default(),
+    );
+
+    // Poison peer: cursor id 0, then a page (id 1) whose chunk fails verification.
+    // The page taints the bin, so no id-2 catch-up is issued for this peer.
+    events_tx
+        .send(PullsyncEvent::CursorsReceived {
+            peer: poison,
+            request_id: 0,
+            cursors: vec![],
+            epoch: 1,
+        })
+        .await
+        .unwrap();
+    events_tx
+        .send(PullsyncEvent::RangeDelivered {
+            peer: poison,
+            request_id: 1,
+            bin: bin(2),
+            topmost: 10,
+            chunks: vec![bad_chunk],
+        })
+        .await
+        .unwrap();
+    // Good peer: cursor id 2, a verifiable page (id 3), then a caught-up page
+    // (id 4) at the advanced resume point.
+    events_tx
+        .send(PullsyncEvent::CursorsReceived {
+            peer: good,
+            request_id: 2,
+            cursors: vec![],
+            epoch: 1,
+        })
+        .await
+        .unwrap();
+    events_tx
+        .send(PullsyncEvent::RangeDelivered {
+            peer: good,
+            request_id: 3,
+            bin: bin(2),
+            topmost: 10,
+            chunks: vec![good_chunk],
+        })
+        .await
+        .unwrap();
+    events_tx
+        .send(PullsyncEvent::RangeDelivered {
+            peer: good,
+            request_id: 4,
+            bin: bin(2),
+            topmost: 10,
+            chunks: vec![],
+        })
+        .await
+        .unwrap();
+
+    puller.sync_pass().await;
+
+    // The poison peer was reported once for invalid data through pullsync.
+    assert_eq!(
+        *reporter.reports.lock().unwrap(),
+        vec![(
+            poison_ov,
+            SwarmScoringEvent::InvalidData,
+            ReportSource::Protocol("pullsync")
+        )]
+    );
+    // It was skipped: no admit, no interval advance, exactly one range (from 0).
+    assert_eq!(intervals.interval(&poison_ov, bin(2)).unwrap(), 0);
+    // The good peer synced: its chunk admitted and its interval advanced to 10.
+    assert_eq!(*admit.admitted.lock().unwrap(), vec![good_addr]);
+    assert_eq!(intervals.interval(&good_ov, bin(2)).unwrap(), 10);
+    // The poison peer drove one range (the tainted page); the good peer drove the
+    // fetch from 0 and the catch-up from 10.
+    assert_eq!(
+        *control.ranges.lock().unwrap(),
+        vec![(poison, bin(2), 0), (good, bin(2), 0), (good, bin(2), 10)]
     );
 }

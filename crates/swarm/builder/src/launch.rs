@@ -679,6 +679,11 @@ fn spawn_storer_puller(
 ) -> vertex_swarm_puller::PullerHandle {
     use vertex_swarm_puller::{PullerConfig, PullerSeams, SignatureVerifier, spawn_puller};
 
+    // The peer manager is the reporting authority: a neighbour that serves an
+    // unverifiable chunk is scored down through it, the same path accounting and
+    // the protocol handlers use.
+    let reporter: Arc<dyn PeerReporter> = topology.peer_manager().clone();
+
     let seams = PullerSeams {
         control,
         intervals,
@@ -688,6 +693,7 @@ fn spawn_storer_puller(
         admit: reserve as Arc<dyn vertex_swarm_api::SwarmLocalStore>,
         readiness: crate::pullsync::TopologyReadiness::new(topology.clone()),
         neighbours: crate::pullsync::TopologyNeighbours::new(topology),
+        reporter,
     };
     spawn_puller(ctx.executor(), seams, PullerConfig::default())
 }
