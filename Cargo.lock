@@ -8334,6 +8334,7 @@ dependencies = [
  "alloy-provider",
  "alloy-rpc-types-eth",
  "alloy-sol-types",
+ "getrandom 0.2.17",
  "nectar-contracts",
  "nectar-swarms",
  "strum 0.28.0",
