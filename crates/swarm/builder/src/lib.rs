@@ -49,9 +49,6 @@ mod pullsync;
 mod swap;
 pub mod verify;
 
-// Traits
-pub use node::BuilderExt;
-
 // Builders
 pub use node::{
     ClientNodeBuilder, DefaultClientBuilder, DefaultNodeBuilder, DefaultStorerBuilder, NodeBuilder,

@@ -80,22 +80,6 @@ impl<C, P> AccountingBuilder<C, P> {
         self
     }
 
-    /// Apply a transformation function.
-    pub fn apply<F>(self, f: F) -> Self
-    where
-        F: FnOnce(Self) -> Self,
-    {
-        f(self)
-    }
-
-    /// Apply a transformation function if condition is true.
-    pub fn apply_if<F>(self, cond: bool, f: F) -> Self
-    where
-        F: FnOnce(Self) -> Self,
-    {
-        if cond { f(self) } else { self }
-    }
-
     /// Get a reference to the config.
     pub fn config(&self) -> &C {
         &self.config
@@ -177,17 +161,6 @@ mod tests {
 
         let _accounting = AccountingBuilder::new(config)
             .with_pricing(pricer)
-            .build(&identity);
-    }
-
-    #[test]
-    fn test_builder_apply() {
-        let identity = test_identity();
-        let config = DefaultBandwidthConfig::default();
-
-        let _accounting = AccountingBuilder::new(config)
-            .with_pricer_from_config(identity.spec().clone())
-            .apply_if(true, |b| b)
             .build(&identity);
     }
 }

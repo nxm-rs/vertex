@@ -26,23 +26,6 @@ use crate::handle::{BuiltBootnode, BuiltClient, BuiltNode, BuiltStorer};
 use crate::launch::{CacheSeam, ReserveSeam};
 use crate::verify::ChunkVerifyConfig;
 
-/// Fluent transformation API for builders.
-pub trait BuilderExt: Sized {
-    fn apply<F>(self, f: F) -> Self
-    where
-        F: FnOnce(Self) -> Self,
-    {
-        f(self)
-    }
-
-    fn apply_if<F>(self, cond: bool, f: F) -> Self
-    where
-        F: FnOnce(Self) -> Self,
-    {
-        if cond { f(self) } else { self }
-    }
-}
-
 /// Builder for bootnodes.
 pub struct NodeBuilder<I, N>
 where
@@ -52,13 +35,6 @@ where
     spec: Arc<Spec>,
     identity: I,
     network: N,
-}
-
-impl<I, N> BuilderExt for NodeBuilder<I, N>
-where
-    I: SwarmIdentity,
-    N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
-{
 }
 
 impl<I, N> NodeBuilder<I, N>
@@ -122,14 +98,6 @@ where
     /// Carried here so a wrapping storer builder keeps it across the storage
     /// transition; consumed only by the storer build path.
     reserve: Option<ReserveSeam>,
-}
-
-impl<I, N, A> BuilderExt for ClientNodeBuilder<I, N, A>
-where
-    I: SwarmIdentity,
-    N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
-    A: SwarmAccountingConfig + SwarmPricingConfig,
-{
 }
 
 impl<I, N, A> ClientNodeBuilder<I, N, A>
@@ -253,16 +221,6 @@ where
     client: ClientNodeBuilder<I, N, A>,
     local_store: S,
     storage: St,
-}
-
-impl<I, N, A, S, St> BuilderExt for StorerNodeBuilder<I, N, A, S, St>
-where
-    I: SwarmIdentity,
-    N: SwarmNetworkConfig + SwarmPeerConfig + SwarmRoutingConfig,
-    A: SwarmAccountingConfig + SwarmPricingConfig,
-    S: SwarmLocalStoreConfig,
-    St: SwarmStorageConfig,
-{
 }
 
 impl<I, N, A, S, St> StorerNodeBuilder<I, N, A, S, St>
