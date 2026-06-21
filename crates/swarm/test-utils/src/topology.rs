@@ -3,8 +3,9 @@
 use nectar_primitives::{ChunkAddress, SwarmAddress};
 use std::sync::Arc;
 use vertex_swarm_api::{
-    SwarmIdentity, SwarmNodeType, SwarmTopologyBins, SwarmTopologyPeers, SwarmTopologyRouting,
-    SwarmTopologyState, SwarmTopologyStats,
+    PeerDiagnostics, SwarmIdentity, SwarmNodeType, SwarmTopologyAdmin, SwarmTopologyBins,
+    SwarmTopologyCommands, SwarmTopologyPeers, SwarmTopologyRouting, SwarmTopologyState,
+    SwarmTopologyStats,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress};
@@ -25,6 +26,7 @@ pub struct MockTopology {
     depth: u8,
     credible: bool,
     closest: Vec<OverlayAddress>,
+    diagnostics: Vec<PeerDiagnostics>,
 }
 
 impl Default for MockTopology {
@@ -38,6 +40,7 @@ impl Default for MockTopology {
             depth: 0,
             credible: true,
             closest: Vec::new(),
+            diagnostics: Vec::new(),
         }
     }
 }
@@ -65,6 +68,7 @@ impl MockTopology {
             depth,
             credible: true,
             closest: Vec::new(),
+            diagnostics: Vec::new(),
         }
     }
 
@@ -122,6 +126,13 @@ impl MockTopology {
     #[must_use]
     pub fn with_closest(mut self, closest: Vec<OverlayAddress>) -> Self {
         self.closest = closest;
+        self
+    }
+
+    /// Set the diagnostics returned by [`SwarmTopologyAdmin::peer_diagnostics`].
+    #[must_use]
+    pub fn with_diagnostics(mut self, diagnostics: Vec<PeerDiagnostics>) -> Self {
+        self.diagnostics = diagnostics;
         self
     }
 
@@ -196,6 +207,56 @@ impl SwarmTopologyStats for MockTopology {
 
     fn stored_peers_count(&self) -> usize {
         self.stored
+    }
+}
+
+impl SwarmTopologyAdmin for MockTopology {
+    fn peer_diagnostics(&self, connected_only: bool) -> Vec<PeerDiagnostics> {
+        self.diagnostics
+            .iter()
+            .filter(|d| !connected_only || d.connected)
+            .cloned()
+            .collect()
+    }
+}
+
+/// Error type for [`MockTopology`]'s [`SwarmTopologyCommands`] impl.
+#[derive(Debug)]
+pub struct MockTopologyError;
+
+impl std::fmt::Display for MockTopologyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("mock topology command error")
+    }
+}
+
+impl std::error::Error for MockTopologyError {}
+
+impl SwarmTopologyCommands for MockTopology {
+    type Error = MockTopologyError;
+
+    async fn connect_bootnodes(&self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    async fn dial(&self, _addr: libp2p::Multiaddr) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    async fn disconnect(&self, _peer: OverlayAddress) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    async fn ban_peer(
+        &self,
+        _peer: OverlayAddress,
+        _reason: Option<String>,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    async fn save_peers(&self) -> Result<(), Self::Error> {
+        Ok(())
     }
 }
 

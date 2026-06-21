@@ -18,8 +18,9 @@ pub use self::pricing::{SwarmPricing, SwarmPricingBuilder, SwarmPricingConfig};
 pub use self::pullsync::{IntervalStore, PullChunkVerifier, PullStorage, VerifyError};
 pub use self::reserve::{BinCursorStore, BinScanItem, ReserveStore, SettableRadius};
 pub use self::topology::{
-    SwarmTopology, SwarmTopologyBins, SwarmTopologyCommands, SwarmTopologyPeers,
-    SwarmTopologyReporting, SwarmTopologyRouting, SwarmTopologyState, SwarmTopologyStats,
+    PeerConnectionDirection, PeerDiagnostics, PeerTrustLevel, SwarmTopology, SwarmTopologyAdmin,
+    SwarmTopologyBins, SwarmTopologyCommands, SwarmTopologyPeers, SwarmTopologyReporting,
+    SwarmTopologyRouting, SwarmTopologyState, SwarmTopologyStats,
 };
 
 use crate::SwarmIdentity;

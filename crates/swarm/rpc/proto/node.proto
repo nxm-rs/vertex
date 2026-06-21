@@ -8,6 +8,15 @@ service Node {
 
   // GetTopology returns detailed Kademlia topology information.
   rpc GetTopology(GetTopologyRequest) returns (GetTopologyResponse);
+
+  // AddPeer dials a peer by multiaddr and marks the dial for connection.
+  rpc AddPeer(AddPeerRequest) returns (AddPeerResponse);
+
+  // RemovePeer disconnects (closes all connections to) a peer by overlay.
+  rpc RemovePeer(RemovePeerRequest) returns (RemovePeerResponse);
+
+  // ListPeers returns per-peer diagnostics for every known peer.
+  rpc ListPeers(ListPeersRequest) returns (ListPeersResponse);
 }
 
 message GetStatusRequest {}
@@ -68,4 +77,91 @@ message PeerInfo {
 
   // Multiaddrs (including /p2p/<peer_id> suffix).
   repeated string multiaddrs = 2;
+}
+
+// --- Peer administration (operator control over the node's peer set) ---
+
+message AddPeerRequest {
+  // Multiaddr of the peer to dial. Should include a /p2p/<peer_id> component.
+  string multiaddr = 1;
+}
+
+message AddPeerResponse {
+  // Whether the dial command was accepted by the topology. The dial is
+  // fire-and-forget; ListPeers is the authoritative way to observe the
+  // resulting connection.
+  bool accepted = 1;
+}
+
+message RemovePeerRequest {
+  // Overlay address (hex encoded) of the peer to disconnect.
+  string overlay = 1;
+}
+
+message RemovePeerResponse {
+  // Whether the disconnect command was accepted by the topology.
+  bool accepted = 1;
+}
+
+message ListPeersRequest {
+  // When true, include peers that are known but not currently connected.
+  // Defaults to false (connected peers only).
+  bool include_known = 1;
+}
+
+message ListPeersResponse {
+  repeated PeerDiagnostics peers = 1;
+}
+
+// Trust level applied to a peer.
+enum TrustLevel {
+  TRUST_LEVEL_NORMAL = 0;
+  TRUST_LEVEL_LOCAL_SUBNET = 1;
+  TRUST_LEVEL_TRUSTED = 2;
+}
+
+// Direction of a peer connection.
+enum ConnectionDirection {
+  CONNECTION_DIRECTION_UNSPECIFIED = 0;
+  CONNECTION_DIRECTION_INBOUND = 1;
+  CONNECTION_DIRECTION_OUTBOUND = 2;
+}
+
+// Per-peer diagnostics, assembled from the peer manager and connection registry.
+message PeerDiagnostics {
+  // Overlay address (hex encoded).
+  string overlay = 1;
+
+  // libp2p peer id, if currently mapped in the connection registry.
+  optional string peer_id = 2;
+
+  // Known multiaddrs from the stored peer record.
+  repeated string multiaddrs = 3;
+
+  // First IP parsed from the peer's multiaddrs, if any.
+  optional string ip = 4;
+
+  // Proximity order / bin of this peer relative to the local overlay.
+  uint32 proximity_order = 5;
+
+  // Current reputation score, if the peer is tracked.
+  optional double score = 6;
+
+  // Whether the peer currently has a handshake-complete connection.
+  bool connected = 7;
+
+  // Unix seconds at which the current connection completed its handshake.
+  optional uint64 connected_since = 8;
+
+  // Seconds since the current connection completed its handshake.
+  optional uint64 uptime_secs = 9;
+
+  // Direction of the current connection.
+  ConnectionDirection direction = 10;
+
+  // Trust level applied to this peer.
+  TrustLevel trust = 11;
+
+  // Whether a completed handshake has verified this peer in this process.
+  bool verified = 12;
 }

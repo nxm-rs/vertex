@@ -5,13 +5,15 @@ use std::sync::Arc;
 use libp2p::{Multiaddr, PeerId};
 use nectar_primitives::ChunkAddress;
 use tokio::sync::{broadcast, mpsc};
+use vertex_net_local::extract_ip;
+use vertex_net_peer_registry::ConnectionDirection;
 use vertex_swarm_api::{
-    PeerReporter, SwarmIdentity, SwarmSpec, SwarmTopologyBins, SwarmTopologyCommands,
-    SwarmTopologyPeers, SwarmTopologyReporting, SwarmTopologyRouting, SwarmTopologyState,
-    SwarmTopologyStats,
+    PeerConnectionDirection, PeerDiagnostics, PeerReporter, PeerTrustLevel, SwarmIdentity,
+    SwarmSpec, SwarmTopologyAdmin, SwarmTopologyBins, SwarmTopologyCommands, SwarmTopologyPeers,
+    SwarmTopologyReporting, SwarmTopologyRouting, SwarmTopologyState, SwarmTopologyStats,
 };
 use vertex_swarm_net_identify as identify;
-use vertex_swarm_peer_manager::PeerManager;
+use vertex_swarm_peer_manager::{PeerManager, TrustLevel};
 use vertex_swarm_primitives::{Bin, NeighborhoodDepth, OverlayAddress, all_bins};
 
 use crate::behaviour::ConnectionRegistry;
@@ -398,6 +400,70 @@ impl<I: SwarmIdentity> SwarmTopologyStats for TopologyHandle<I> {
     }
 }
 
+fn map_direction(direction: ConnectionDirection) -> PeerConnectionDirection {
+    match direction {
+        ConnectionDirection::Outbound => PeerConnectionDirection::Outbound,
+        ConnectionDirection::Inbound => PeerConnectionDirection::Inbound,
+    }
+}
+
+fn map_trust(trust: TrustLevel) -> PeerTrustLevel {
+    match trust {
+        TrustLevel::Normal => PeerTrustLevel::Normal,
+        TrustLevel::LocalSubnet => PeerTrustLevel::LocalSubnet,
+        TrustLevel::Trusted => PeerTrustLevel::Trusted,
+    }
+}
+
+impl<I: SwarmIdentity> TopologyHandle<I> {
+    fn diagnostics_for(&self, overlay: OverlayAddress) -> PeerDiagnostics {
+        let multiaddrs = self
+            .peer_manager
+            .get_swarm_peer(&overlay)
+            .map(|p| p.multiaddrs().to_vec())
+            .unwrap_or_default();
+        let ip = multiaddrs.iter().find_map(extract_ip);
+        let connected = self.peer_manager.is_connected(&overlay);
+        let connected_since = self.peer_manager.connected_since(&overlay);
+        let uptime_secs = connected_since.and_then(|since| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|now| now.as_secs().saturating_sub(since))
+        });
+
+        PeerDiagnostics {
+            overlay,
+            peer_id: self.connection_registry.resolve_peer_id(&overlay),
+            multiaddrs,
+            ip,
+            proximity_order: self.peer_manager.index().bin_for(&overlay).get(),
+            score: self.peer_manager.get_peer_score(&overlay),
+            connected,
+            connected_since,
+            uptime_secs,
+            direction: self
+                .peer_manager
+                .connection_direction(&overlay)
+                .map(map_direction),
+            trust: map_trust(self.peer_manager.trust_level(&overlay)),
+            verified: self.peer_manager.is_verified(&overlay),
+        }
+    }
+}
+
+impl<I: SwarmIdentity> SwarmTopologyAdmin for TopologyHandle<I> {
+    fn peer_diagnostics(&self, connected_only: bool) -> Vec<PeerDiagnostics> {
+        self.peer_manager
+            .index()
+            .all_peers()
+            .into_iter()
+            .map(|overlay| self.diagnostics_for(overlay))
+            .filter(|d| !connected_only || d.connected)
+            .collect()
+    }
+}
+
 impl<I: SwarmIdentity> SwarmTopologyCommands for TopologyHandle<I> {
     type Error = TopologyError;
 
@@ -582,6 +648,7 @@ mod tests {
                 peer_id: test_peer_id(n),
                 node_type,
                 direction: ConnectionDirection::Outbound,
+                trusted: false,
             });
         }
 
