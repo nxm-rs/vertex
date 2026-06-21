@@ -37,14 +37,13 @@ mod types;
 
 pub use self::accounting::{Au, AuConversionError};
 pub use self::components::{
-    AccountingAction, BandwidthMode, BinCursorStore, BinScanItem, BootnodeComponents,
-    ClientComponents, Direction, HasChunkClient, HasIdentity, HasReserve, HasStore, HasTopology,
-    ReserveStore, SettableRadius, StorerComponents, SwarmAccountingConfig,
-    SwarmBandwidthAccounting, SwarmClientAccounting, SwarmLocalStore, SwarmLocalStoreConfig,
-    SwarmPeerBandwidth, SwarmPeerResolver, SwarmPeerState, SwarmPricing, SwarmPricingBuilder,
-    SwarmPricingConfig, SwarmSettlementProvider, SwarmTopology, SwarmTopologyBins,
-    SwarmTopologyCommands, SwarmTopologyPeers, SwarmTopologyReporting, SwarmTopologyRouting,
-    SwarmTopologyState, SwarmTopologyStats, construct,
+    AccountingAction, BinCursorStore, BinScanItem, BootnodeComponents, ClientComponents, Direction,
+    HasChunkClient, HasIdentity, HasReserve, HasStore, HasTopology, ReserveStore, SettableRadius,
+    StorerComponents, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmClientAccounting,
+    SwarmLocalStore, SwarmLocalStoreConfig, SwarmPeerBandwidth, SwarmPeerResolver, SwarmPeerState,
+    SwarmPricing, SwarmPricingBuilder, SwarmPricingConfig, SwarmSettlementProvider, SwarmTopology,
+    SwarmTopologyBins, SwarmTopologyCommands, SwarmTopologyPeers, SwarmTopologyReporting,
+    SwarmTopologyRouting, SwarmTopologyState, SwarmTopologyStats, construct,
 };
 pub use self::config::{
     DEFAULT_PEER_BAN_THRESHOLD, DEFAULT_PEER_DISCONNECT_THRESHOLD, DEFAULT_PEER_MAX_PER_BIN,

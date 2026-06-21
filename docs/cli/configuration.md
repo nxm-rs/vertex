@@ -26,7 +26,7 @@ flowchart LR
     C --> D["NodeConfig\n- mode\n- network\n- bandwidth\n- storage\n- identity"]
 ```
 
-The `SwarmSpec` provides network-level constants (network ID, bootnodes, contract addresses, default pricing parameters). CLI arguments provide node-level configuration (ports, capacity, mode selection, accounting mode) and can override network defaults where appropriate.
+The `SwarmSpec` provides network-level constants (network ID, bootnodes, contract addresses, default pricing parameters). CLI arguments provide node-level configuration (ports, capacity, node type, settlement selection) and can override network defaults where appropriate.
 
 ## Argument Groups
 
@@ -71,14 +71,9 @@ When both `--db.path` and `--db.persist` are given, the explicit path wins.
 
 What persistence covers: peer snapshots (the identity-only records described in [Peer Management](../networking/peer-management.md)), written periodically and on shutdown so a restarted node warm-starts its peer set. Peer scores, bans, and dial backoff are runtime-only and are never persisted in either mode. If the configured database cannot be opened, the node logs a warning and continues fully in-memory rather than aborting.
 
-## Bandwidth Modes
+## Bandwidth accounting
 
-| Mode | Description | Use Case |
-|------|-------------|----------|
-| **none** | No accounting | Bootnodes (set automatically) |
-| **pseudosettle** | Soft accounting without real payments | Default, testing, trusted networks |
-| **swap** | Payment channels with chequebook | Production with real payments |
-| **both** | Pseudosettle until threshold, then SWAP | Hybrid approach |
+Soft accounting (pseudosettle) is always on for client and storer nodes; it needs no flag. Monetary settlement (SWAP) is opt-in via `--swap` and selected purely by that flag plus the node type.
 
 ## Observability Flags
 

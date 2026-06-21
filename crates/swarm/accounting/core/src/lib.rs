@@ -35,7 +35,7 @@ pub use accounting::{
     Accounting, AccountingAction, AccountingError, AccountingPeerHandle, PeerState,
     PeerStateSnapshot, ProvideAction, ReceiveAction,
 };
-pub use args::{BandwidthArgs, BandwidthModeArg};
+pub use args::BandwidthArgs;
 pub use builder::{AccountingBuilder, NoAccountingBuilder};
 pub use client_accounting::ClientAccounting;
 pub use config::{BandwidthConfig, BandwidthConfigError, DefaultBandwidthConfig};

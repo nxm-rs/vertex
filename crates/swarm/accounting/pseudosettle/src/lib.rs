@@ -24,8 +24,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use vertex_swarm_accounting::Accounting;
 use vertex_swarm_api::{
-    Au, BandwidthMode, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmError, SwarmIdentity,
-    SwarmPeerState, SwarmResult, SwarmSettlementProvider,
+    Au, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmError, SwarmIdentity, SwarmPeerState,
+    SwarmResult, SwarmSettlementProvider,
 };
 use vertex_swarm_node::ClientCommand;
 use vertex_swarm_primitives::OverlayAddress;
@@ -81,10 +81,6 @@ impl<C: SwarmAccountingConfig> PseudosettleProvider<C> {
 
 #[async_trait::async_trait]
 impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for PseudosettleProvider<C> {
-    fn supported_mode(&self) -> BandwidthMode {
-        BandwidthMode::Pseudosettle
-    }
-
     fn pre_allow(&self, _peer: OverlayAddress, state: &dyn SwarmPeerState) -> Au {
         refresh_allowance(state, self.config.refresh_rate())
     }

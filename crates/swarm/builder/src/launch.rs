@@ -12,12 +12,12 @@ use vertex_storage_redb::RedbDatabase;
 use vertex_swarm_accounting::{
     Accounting, AccountingBuilder, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
 };
+#[cfg(feature = "chain")]
+use vertex_swarm_api::SwarmSpec;
 use vertex_swarm_api::{
     BootnodeComponents, ClientComponents, PeerReporter, StorerComponents, SwarmClientAccounting,
     SwarmLaunchConfig, SwarmNodeType, construct,
 };
-#[cfg(feature = "chain")]
-use vertex_swarm_api::{SwarmAccountingConfig, SwarmSpec};
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::NetworkConfig;
 use vertex_swarm_node::{AccountingSettlement, BootNode, ClientNode, PeerSelector, SelfThrottle};
@@ -276,6 +276,13 @@ async fn build_client_backed_node(
     } = (params.make_store)(db.clone())?;
     let node_store = Arc::clone(&store);
 
+    // SWAP defaults on for storers (maximum support) and off for clients; an
+    // explicit --swap overrides. Resolved once and shared with the chain check.
+    #[cfg(feature = "swap")]
+    let swap_enabled = params.swap.enable.unwrap_or(node_type.swap_default());
+    #[cfg(all(not(feature = "swap"), feature = "chain"))]
+    let swap_enabled = false;
+
     // SWAP settlement is prepared first: the provider embeds in the accounting
     // and the swap event sink routes at node build time.
     #[cfg(feature = "swap")]
@@ -284,6 +291,7 @@ async fn build_client_backed_node(
         params.identity,
         params.bandwidth,
         params.swap,
+        swap_enabled,
     )
     .unzip();
 
@@ -368,19 +376,16 @@ async fn build_client_backed_node(
         .spawn_service("swarm.client_service", client_service);
 
     // A storer always needs a chain (staking, oracle, settlement); a client
-    // needs one only when SWAP settlement is enabled.
+    // needs one only when SWAP is enabled.
     #[cfg(feature = "chain")]
-    let chain_provider = {
-        let swap_enabled = SwarmAccountingConfig::mode(params.bandwidth).swap_enabled();
-        build_node_chain_provider(
-            params.spec,
-            params.identity,
-            node_type,
-            swap_enabled,
-            params.chain,
-        )
-        .await?
-    };
+    let chain_provider = build_node_chain_provider(
+        params.spec,
+        params.identity,
+        node_type,
+        swap_enabled,
+        params.chain,
+    )
+    .await?;
 
     // SWAP settlement service over the shared accounting: forwards cheque
     // commands to the node and cashes received cheques on chain when a provider

@@ -704,8 +704,8 @@ mod tests {
         DefaultBandwidthConfig, NoAccounting, NoPeerBandwidth, NoProvideAction, NoReceiveAction,
     };
     use vertex_swarm_api::{
-        Au, BandwidthMode, PeerAffordability, SwarmBandwidthAccounting, SwarmClientAccounting,
-        SwarmPricing, SwarmResult,
+        Au, PeerAffordability, SwarmBandwidthAccounting, SwarmClientAccounting, SwarmPricing,
+        SwarmResult,
     };
     use vertex_swarm_test_utils::MockIdentity;
 
@@ -796,16 +796,7 @@ mod tests {
         };
         // Only refresh_rate (1 AU/sec) and throttle_allowance_percent (100) are
         // read; the rest are placeholders.
-        let config = DefaultBandwidthConfig::new(
-            BandwidthMode::Pseudosettle,
-            0,
-            0,
-            1,
-            0,
-            1,
-            100,
-            Default::default(),
-        );
+        let config = DefaultBandwidthConfig::new(0, 0, 1, 0, 1, 100, Default::default());
         let throttle = Arc::new(SelfThrottle::new(&accounting, &config));
         (ClientHandle::new(tx).with_throttle(throttle), rx)
     }

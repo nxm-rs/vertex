@@ -7,9 +7,9 @@
 //! optional `swap-chequebook` feature adds an on-chain client for redeeming
 //! received cheques.
 //!
-//! Swap is one of the pluggable [`SwarmSettlementProvider`]s selected by
-//! [`BandwidthMode`], alongside pseudosettle. The two compose: pseudosettle
-//! forgives debt up to a time-based allowance, swap pays the remainder.
+//! Swap is one of the pluggable [`SwarmSettlementProvider`]s, alongside
+//! pseudosettle. The two compose: pseudosettle forgives debt up to a time-based
+//! allowance, swap pays the remainder.
 //!
 //! # Usage
 //!
@@ -36,8 +36,8 @@ use alloy_primitives::Address;
 use alloy_signer::SignerSync;
 use tokio::sync::mpsc;
 use vertex_swarm_api::{
-    Au, BandwidthMode, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmError, SwarmPeerState,
-    SwarmResult, SwarmSettlementProvider,
+    Au, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmError, SwarmPeerState, SwarmResult,
+    SwarmSettlementProvider,
 };
 use vertex_swarm_node::ClientCommand;
 use vertex_swarm_primitives::OverlayAddress;
@@ -52,7 +52,7 @@ pub use vertex_swarm_node::SwapEvent;
 /// On `settle()`, when the peer's debt crosses the payment threshold the
 /// provider delegates to the service, which issues and sends a signed cheque.
 /// Without a handle it is inert (it never issues cheques on its own), so it
-/// composes safely with pseudosettle in [`BandwidthMode::Both`].
+/// composes safely alongside pseudosettle.
 pub struct SwapProvider<C> {
     config: C,
     /// Optional handle for delegating to the service.
@@ -98,10 +98,6 @@ impl<C: SwarmAccountingConfig> SwapProvider<C> {
 
 #[async_trait::async_trait]
 impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for SwapProvider<C> {
-    fn supported_mode(&self) -> BandwidthMode {
-        BandwidthMode::Swap
-    }
-
     fn pre_allow(&self, _peer: OverlayAddress, _state: &dyn SwarmPeerState) -> Au {
         // SWAP does not modify the balance during the allow check; payment is
         // driven by `settle()` once debt crosses the threshold.
@@ -184,17 +180,13 @@ mod tests {
     use alloy_primitives::{Address, U256};
     use alloy_signer_local::PrivateKeySigner;
     use vertex_swarm_accounting_chequebook::{Cheque, ChequeExt, SignedCheque};
-    use vertex_swarm_api::{BandwidthMode, SwarmAccountingConfig};
+    use vertex_swarm_api::SwarmAccountingConfig;
 
     const CHAIN: NamedChain = NamedChain::Gnosis;
 
     struct SwapTestConfig;
 
     impl SwarmAccountingConfig for SwapTestConfig {
-        fn mode(&self) -> BandwidthMode {
-            BandwidthMode::Swap
-        }
-
         fn payment_threshold(&self) -> Au {
             Au::from_amount(13_500_000)
         }
