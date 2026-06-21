@@ -34,6 +34,14 @@ pub trait IntervalStore: Send + Sync {
 
     /// Record the last reserve epoch seen for `peer`.
     fn set_peer_epoch(&self, peer: &OverlayAddress, epoch: u64) -> SwarmResult<()>;
+
+    /// Clear every per-bin interval for `peer` and record `epoch`, atomically.
+    ///
+    /// The epoch is the commit barrier: a recorded epoch matching the advertised
+    /// one must never coexist with a stale interval, so the interval clear and the
+    /// epoch write commit together or not at all. No non-atomic default impl over
+    /// the per-field setters is permitted.
+    fn reset_peer(&self, peer: &OverlayAddress, epoch: u64) -> SwarmResult<()>;
 }
 
 /// Why a delivered chunk was refused admission to the reserve.

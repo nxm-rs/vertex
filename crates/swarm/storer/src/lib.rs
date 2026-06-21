@@ -8,6 +8,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 mod cache;
+mod db_intervals;
 mod db_reserve;
 mod db_store;
 mod error;
@@ -17,6 +18,7 @@ mod reserve;
 mod traits;
 
 pub use cache::ChunkCache;
+pub use db_intervals::DbIntervalStore;
 pub use db_reserve::DbReserve;
 pub use db_store::DbChunkStore;
 pub use error::StorerError;
