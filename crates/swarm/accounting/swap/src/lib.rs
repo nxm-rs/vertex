@@ -27,6 +27,8 @@ pub mod cashout;
 pub mod constants;
 pub mod error;
 pub mod handle;
+#[cfg(feature = "chain")]
+pub mod index;
 pub mod service;
 
 use std::sync::Arc;

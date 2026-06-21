@@ -40,6 +40,13 @@ mod proof;
 mod sample;
 mod witness;
 
+/// On-chain indexing for the Redistribution and StakeRegistry contracts, behind
+/// the non-default `chain` feature. Both are lazy domains (no reducer, no
+/// projection tables) over the generic [`vertex_chain_index_framework`]; the
+/// node builder collects [`index::registration`] into the unified indexer.
+#[cfg(feature = "chain")]
+pub mod index;
+
 /// Number of chunks retained in a reserve sample (the protocol's `SampleSize`).
 pub const SAMPLE_SIZE: usize = 16;
 

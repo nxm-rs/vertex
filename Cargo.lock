@@ -8363,6 +8363,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "vertex-chain-index-framework"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rpc-types-eth",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "vertex-chain-index",
+ "vertex-storage",
+ "vertex-storage-redb",
+]
+
+[[package]]
 name = "vertex-ffi"
 version = "0.1.0"
 dependencies = [
@@ -8716,6 +8731,7 @@ dependencies = [
  "alloy-network",
  "alloy-primitives",
  "alloy-provider",
+ "alloy-rpc-types-eth",
  "alloy-signer",
  "alloy-signer-local",
  "alloy-sol-types",
@@ -8730,6 +8746,10 @@ dependencies = [
  "tokio",
  "tracing",
  "vertex-chain",
+ "vertex-chain-index",
+ "vertex-chain-index-framework",
+ "vertex-storage",
+ "vertex-storage-redb",
 ]
 
 [[package]]
@@ -8774,6 +8794,7 @@ dependencies = [
  "alloy-contract",
  "alloy-primitives",
  "alloy-provider",
+ "alloy-rpc-types-eth",
  "alloy-signer",
  "alloy-signer-local",
  "alloy-sol-types",
@@ -8784,6 +8805,10 @@ dependencies = [
  "tokio",
  "tracing",
  "vertex-chain",
+ "vertex-chain-index",
+ "vertex-chain-index-framework",
+ "vertex-storage",
+ "vertex-storage-redb",
  "vertex-swarm-accounting",
  "vertex-swarm-accounting-chequebook",
  "vertex-swarm-api",
@@ -8844,6 +8869,8 @@ dependencies = [
  "tokio",
  "tracing",
  "vertex-chain",
+ "vertex-chain-index",
+ "vertex-chain-index-framework",
  "vertex-net-peer-store",
  "vertex-node-api",
  "vertex-storage-redb",
@@ -9376,13 +9403,17 @@ name = "vertex-swarm-postage"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-rpc-types-eth",
  "alloy-signer",
  "alloy-signer-local",
+ "alloy-sol-types",
  "nectar-postage",
  "nectar-primitives",
  "serde",
  "tempfile",
  "thiserror 2.0.18",
+ "vertex-chain-index",
+ "vertex-chain-index-framework",
  "vertex-storage",
  "vertex-storage-redb",
 ]
@@ -9429,14 +9460,21 @@ name = "vertex-swarm-redistribution"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-rpc-types-eth",
  "alloy-signer-local",
+ "alloy-sol-types",
  "clap 4.6.1",
  "codspeed-criterion-compat",
+ "nectar-contracts",
  "nectar-primitives",
  "serde",
  "serde_json",
  "strum 0.28.0",
  "thiserror 2.0.18",
+ "vertex-chain-index",
+ "vertex-chain-index-framework",
+ "vertex-storage",
+ "vertex-storage-redb",
  "vertex-swarm-api",
  "vertex-swarm-postage",
 ]

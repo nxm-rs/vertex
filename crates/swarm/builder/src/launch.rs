@@ -45,6 +45,10 @@ use vertex_swarm_node::args::SwapConfig;
 
 #[cfg(feature = "chain")]
 use crate::chain::SharedChainProvider;
+#[cfg(feature = "chain")]
+use vertex_chain_index::EventEngine;
+#[cfg(feature = "chain")]
+use vertex_chain_index_framework::{ContractIndexer, Network};
 
 type PeerStore = Arc<dyn PeerSnapshotStore<PeerSnapshot>>;
 
@@ -157,6 +161,83 @@ async fn build_node_chain_provider(
     let provider = crate::chain::build_chain_provider(rpc_url, signer, address_book).await?;
 
     Ok(Some(provider))
+}
+
+/// Map an alloy chain to the [`Network`] selector each domain's registration is
+/// built from. Returns `None` for a chain with no canonical Swarm deployment.
+#[cfg(feature = "chain")]
+fn network_of(chain: alloy_chains::Chain) -> Option<Network> {
+    use alloy_chains::NamedChain;
+    if chain == alloy_chains::Chain::from(NamedChain::Gnosis) {
+        Some(Network::Mainnet)
+    } else if chain == alloy_chains::Chain::from(NamedChain::Sepolia) {
+        Some(Network::Testnet)
+    } else {
+        None
+    }
+}
+
+/// Compose every domain's registration into the single [`ContractIndexer`] and
+/// spawn one [`EventEngine`] driving it over the shared chain provider. No-op
+/// without persistence or a chain provider.
+#[cfg(feature = "chain")]
+fn spawn_chain_indexer(
+    ctx: &dyn InfrastructureContext,
+    db: &Option<Arc<RedbDatabase>>,
+    chain_provider: Option<&SharedChainProvider>,
+) {
+    let Some(provider) = chain_provider else {
+        return;
+    };
+    let Some(db) = db.as_ref() else {
+        info!(
+            "Chain indexer skipped: no shared database (run with persistence to index contracts)"
+        );
+        return;
+    };
+    let Some(network) = network_of(provider.addresses().chain) else {
+        warn!("Chain indexer skipped: chain has no canonical Swarm deployment");
+        return;
+    };
+
+    // Collect every domain's registration into the one unified indexer. Swap is
+    // only present when the node also carries the `swap` settlement feature (its
+    // crate is a dependency only under `swap`).
+    #[allow(unused_mut)]
+    let mut registrations = vec![
+        vertex_swarm_postage::index::registration(network),
+        vertex_swarm_accounting_chequebook::registration(network),
+        vertex_swarm_redistribution::index::registration(network),
+    ];
+    #[cfg(feature = "swap")]
+    registrations.push(vertex_swarm_accounting_swap::index::registration(network));
+
+    let indexer = match ContractIndexer::from_registrations(Arc::clone(db), registrations) {
+        Ok(indexer) => Arc::new(indexer),
+        Err(e) => {
+            warn!(error = %e, "Chain indexer registration failed; contract indexing not enabled");
+            return;
+        }
+    };
+
+    // The shared provider's `DynProvider` is a `ChainReader` by the engine's
+    // blanket impl. Clone it for the engine; the node keeps its own handle for
+    // SWAP and cashout.
+    let reader = Arc::new(provider.provider().clone());
+    let engine = EventEngine::new(reader, Arc::clone(db)).register(indexer);
+
+    ctx.executor().spawn_with_graceful_shutdown_signal(
+        "chain.event_engine",
+        move |shutdown| async move {
+            let shutdown = async move {
+                let _ = shutdown.await;
+            };
+            if let Err(e) = engine.run(shutdown).await {
+                tracing::error!(error = %e, "chain event engine exited with error");
+            }
+        },
+    );
+    info!("Chain indexer enabled");
 }
 
 fn create_peer_store(db: &Option<Arc<RedbDatabase>>) -> Option<PeerStore> {
@@ -510,6 +591,11 @@ async fn build_client_backed_node(
             chain_provider.as_ref(),
         );
     }
+
+    // Index every configured contract domain into the shared database before the
+    // node starts; a no-op without a provider or a persistent database.
+    #[cfg(feature = "chain")]
+    spawn_chain_indexer(ctx, &db, chain_provider.as_ref());
 
     // The chain provider is kept alive for the node's lifetime by the run task.
     #[cfg(feature = "chain")]
@@ -1076,17 +1162,12 @@ fn storer_store_factory(
 /// stamped under it, so a reorg cannot retroactively invalidate admitted chunks.
 const RESERVE_CONFIRMATION_THRESHOLD: u64 = 10;
 
-/// Build the storer reserve over the shared database, erased to the local-store
-/// trait.
+/// Build the storer reserve over the shared database (in-memory fallback without
+/// persistence), erased to the local-store trait.
 ///
-/// Reuses the opened database when present so the reserve, its batch store and
-/// the peer store share one handle; falls back to in-memory redb without
-/// persistence. Open and table-creation failures surface as a build error.
-///
-/// Admits only stamped chunks, gated by a `DbBatchStore` (the batch set) and an
-/// `AdmissionValidator` enforcing [`RESERVE_CONFIRMATION_THRESHOLD`] confirmations
-/// plus structural and signature checks. The batch store starts empty, so the
-/// reserve admits nothing until the postage indexer populates it.
+/// Admits only stamped chunks gated by a `DbBatchStore` and an
+/// `AdmissionValidator`; the batch store starts empty, so nothing is admitted
+/// until the postage indexer populates it.
 fn build_storer_reserve(
     db: Option<Arc<RedbDatabase>>,
     identity: &Arc<Identity>,
