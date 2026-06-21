@@ -15,7 +15,7 @@ use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use bytes::Bytes;
 use serde_json::Value;
-use vertex_swarm_bandwidth_chequebook::{ChequeExt, SignedCheque, cheque::Cheque};
+use vertex_swarm_accounting_chequebook::{ChequeExt, SignedCheque, cheque::Cheque};
 
 /// Gnosis Chain, the cheque signing chain on mainnet.
 const MAINNET_CHAIN: NamedChain = NamedChain::Gnosis;

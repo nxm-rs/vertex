@@ -11,7 +11,7 @@
 
 use alloy_primitives::Address;
 use vertex_net_codec::{Codec, ProtoMessage};
-use vertex_swarm_bandwidth_chequebook::SignedCheque;
+use vertex_swarm_accounting_chequebook::SignedCheque;
 
 use crate::error::SwapError;
 
@@ -83,7 +83,7 @@ mod tests {
     use alloy_primitives::U256;
     use asynchronous_codec::{Decoder, Encoder};
     use bytes::{Bytes, BytesMut};
-    use vertex_swarm_bandwidth_chequebook::{Cheque, ChequeExt};
+    use vertex_swarm_accounting_chequebook::{Cheque, ChequeExt};
 
     fn test_signed_cheque() -> SignedCheque {
         let cheque = Cheque::new(

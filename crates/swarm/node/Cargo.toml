@@ -48,7 +48,7 @@ vertex-swarm-localstore.workspace = true
 vertex-swarm-spec.workspace = true
 
 ## vertex - infrastructure
-vertex-swarm-bandwidth.workspace = true
+vertex-swarm-accounting.workspace = true
 vertex-tasks.workspace = true
 vertex-util-runtime.workspace = true
 
@@ -86,7 +86,7 @@ tracing.workspace = true
 clap = { workspace = true, features = ["derive", "env"], optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 vertex-node-api = { workspace = true, optional = true }
-vertex-swarm-bandwidth-pricing = { workspace = true, optional = true, features = ["cli"] }
+vertex-swarm-accounting-pricing = { workspace = true, optional = true, features = ["cli"] }
 vertex-swarm-redistribution = { workspace = true, optional = true }
 
 # p2p: the native transport pulls tcp/dns/mdns/upnp/autonat; the browser build
@@ -127,7 +127,7 @@ cli = [
     "dep:clap",
     "dep:serde",
     "dep:vertex-node-api",
-    "dep:vertex-swarm-bandwidth-pricing",
+    "dep:vertex-swarm-accounting-pricing",
     "dep:vertex-swarm-redistribution",
     "vertex-swarm-localstore/cli",
     "vertex-swarm-primitives/serde",

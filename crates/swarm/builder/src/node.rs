@@ -6,12 +6,12 @@
 use std::sync::Arc;
 
 use vertex_node_api::InfrastructureContext;
+use vertex_swarm_accounting::DefaultBandwidthConfig;
 use vertex_swarm_api::{
     SwarmAccountingConfig, SwarmIdentity, SwarmLaunchConfig, SwarmLocalStoreConfig,
     SwarmNetworkConfig, SwarmPeerConfig, SwarmPricingConfig, SwarmRoutingConfig,
     SwarmStorageConfig,
 };
-use vertex_swarm_bandwidth::DefaultBandwidthConfig;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};

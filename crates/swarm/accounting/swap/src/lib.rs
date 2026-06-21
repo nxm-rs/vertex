@@ -183,8 +183,8 @@ mod tests {
     use super::*;
     use alloy_primitives::{Address, U256};
     use alloy_signer_local::PrivateKeySigner;
+    use vertex_swarm_accounting_chequebook::{Cheque, ChequeExt, SignedCheque};
     use vertex_swarm_api::{BandwidthMode, SwarmAccountingConfig};
-    use vertex_swarm_bandwidth_chequebook::{Cheque, ChequeExt, SignedCheque};
 
     const CHAIN: NamedChain = NamedChain::Gnosis;
 

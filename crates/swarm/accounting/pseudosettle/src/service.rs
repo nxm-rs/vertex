@@ -336,7 +336,7 @@ fn current_timestamp() -> u64 {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use vertex_swarm_bandwidth::{Accounting, BandwidthConfig};
+    use vertex_swarm_accounting::{Accounting, BandwidthConfig};
     use vertex_swarm_test_utils::{Identity, test_identity, test_peer};
 
     type TestService = PseudosettleService<Accounting<BandwidthConfig, Identity>>;

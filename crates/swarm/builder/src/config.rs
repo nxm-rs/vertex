@@ -14,8 +14,8 @@
 use std::sync::Arc;
 
 use vertex_node_api::NodeBuildsProtocol;
+use vertex_swarm_accounting::DefaultBandwidthConfig;
 use vertex_swarm_api::SwarmProtocol;
-use vertex_swarm_bandwidth::DefaultBandwidthConfig;
 use vertex_swarm_identity::Identity;
 use vertex_swarm_localstore::LocalStoreConfig;
 use vertex_swarm_node::args::{ChainConfig, NetworkConfig, SwapConfig};

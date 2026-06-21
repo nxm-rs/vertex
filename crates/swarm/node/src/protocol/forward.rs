@@ -558,12 +558,12 @@ mod tests {
     use nectar_postage::Stamp;
     use nectar_primitives::{AnyChunk, ContentChunk, NetworkId, Nonce, compute_overlay};
     use tokio::sync::mpsc;
+    use vertex_swarm_accounting::{
+        Accounting, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
+    };
     use vertex_swarm_api::{
         Au, ReportSource, SwarmBandwidthAccounting, SwarmPeerBandwidth, SwarmPricing,
         SwarmScoringEvent,
-    };
-    use vertex_swarm_bandwidth::{
-        Accounting, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
     };
     use vertex_swarm_identity::Identity;
     use vertex_swarm_net_pushsync::WireReceipt;

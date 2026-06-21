@@ -32,7 +32,7 @@
 //! layered. When to issue a cheque (debt crossing the payment threshold), when
 //! to expect a cheque, and when to disconnect a peer that exceeds the
 //! disconnect threshold without paying are decided by the swap
-//! `SwarmSettlementProvider` in the `vertex-swarm-bandwidth-swap` crate, driven
+//! `SwarmSettlementProvider` in the `vertex-swarm-accounting-swap` crate, driven
 //! by the per-peer balance state, and connected to this wire layer by the node
 //! builder's accounting wiring. This crate carries no thresholds and makes no
 //! settlement decisions.

@@ -9,15 +9,15 @@ use tracing::{info, warn};
 use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
+use vertex_swarm_accounting::{
+    Accounting, AccountingBuilder, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
+};
 use vertex_swarm_api::{
     BootnodeComponents, ClientComponents, PeerReporter, StorerComponents, SwarmClientAccounting,
     SwarmLaunchConfig, SwarmNodeType, construct,
 };
 #[cfg(feature = "chain")]
 use vertex_swarm_api::{SwarmAccountingConfig, SwarmSpec};
-use vertex_swarm_bandwidth::{
-    Accounting, AccountingBuilder, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
-};
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::NetworkConfig;
 use vertex_swarm_node::{AccountingSettlement, BootNode, ClientNode, PeerSelector, SelfThrottle};

@@ -1,5 +1,5 @@
 [package]
-name = "vertex-swarm-bandwidth-swap"
+name = "vertex-swarm-accounting-swap"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,8 +12,8 @@ description = "Chequebook-based settlement provider for Swarm bandwidth accounti
 workspace = true
 
 [dependencies]
-vertex-swarm-bandwidth-chequebook = { workspace = true }
-vertex-swarm-bandwidth = { workspace = true }
+vertex-swarm-accounting-chequebook = { workspace = true }
+vertex-swarm-accounting = { workspace = true }
 vertex-swarm-node = { workspace = true, features = ["swap"] }
 vertex-swarm-primitives = { workspace = true }
 vertex-swarm-api = { workspace = true }
@@ -48,5 +48,5 @@ std = []
 swap-chequebook = [
     "dep:vertex-chain",
     "dep:alloy-provider",
-    "vertex-swarm-bandwidth-chequebook/swap-chequebook",
+    "vertex-swarm-accounting-chequebook/swap-chequebook",
 ]

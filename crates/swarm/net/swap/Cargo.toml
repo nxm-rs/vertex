@@ -16,7 +16,7 @@ workspace = true
 vertex-net-codec.workspace = true
 vertex-swarm-net-headers.workspace = true
 vertex-swarm-net-proto.workspace = true
-vertex-swarm-bandwidth-chequebook.workspace = true
+vertex-swarm-accounting-chequebook.workspace = true
 
 ## async
 futures.workspace = true
