@@ -8,8 +8,6 @@
 //! Settlement is handled by pluggable [`SwarmSettlementProvider`] implementations:
 //! - **Pseudosettle**: Time-based debt forgiveness (soft accounting)
 //! - **Swap**: Chequebook-based real payments
-//!
-//! Providers are configured via [`SwarmAccountingConfig`] which specifies the [`BandwidthMode`].
 
 use core::future::Future;
 use std::vec::Vec;
@@ -18,8 +16,6 @@ use nectar_primitives::ChunkAddress;
 use vertex_swarm_primitives::OverlayAddress;
 
 use crate::{Au, SwarmIdentity, SwarmPricing, SwarmResult};
-
-pub use vertex_swarm_primitives::BandwidthMode;
 
 /// Direction of data transfer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,9 +61,6 @@ pub trait SwarmPeerState: Send + Sync {
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Arc, Box)]
 pub trait SwarmSettlementProvider: Send + Sync + 'static {
-    /// The bandwidth mode this provider supports.
-    fn supported_mode(&self) -> BandwidthMode;
-
     /// Called before checking if a transfer is allowed.
     /// Returns the amount of balance adjustment (positive = credit added).
     fn pre_allow(&self, peer: OverlayAddress, state: &dyn SwarmPeerState) -> Au;
@@ -83,21 +76,6 @@ pub trait SwarmSettlementProvider: Send + Sync + 'static {
 /// Configuration for bandwidth accounting.
 #[auto_impl::auto_impl(&, Arc)]
 pub trait SwarmAccountingConfig: Send + Sync {
-    /// The bandwidth accounting mode.
-    fn mode(&self) -> BandwidthMode;
-
-    /// Check if a settlement provider is enabled for this configuration.
-    fn provider_enabled(&self, provider: &dyn SwarmSettlementProvider) -> bool {
-        let mode = self.mode();
-        let supported = provider.supported_mode();
-        match supported {
-            BandwidthMode::Pseudosettle => mode.pseudosettle_enabled(),
-            BandwidthMode::Swap => mode.swap_enabled(),
-            BandwidthMode::Both => mode.pseudosettle_enabled() || mode.swap_enabled(),
-            BandwidthMode::None => true, // No-op provider always works
-        }
-    }
-
     /// Payment threshold in AU (triggers settlement when peer debt exceeds this).
     fn payment_threshold(&self) -> Au;
 
@@ -124,11 +102,6 @@ pub trait SwarmAccountingConfig: Send + Sync {
             .checked_scale(100 + self.payment_tolerance_percent())
             .unwrap_or(Au::from_amount(u64::MAX));
         Au::from_amount(scaled.as_amount() / 100)
-    }
-
-    /// Check if bandwidth accounting is enabled.
-    fn is_enabled(&self) -> bool {
-        self.mode().is_enabled()
     }
 }
 

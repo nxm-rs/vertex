@@ -481,35 +481,3 @@ mod tests {
         assert!(ConnectionProfile::from_str("turbo").is_err());
     }
 }
-
-/// Bandwidth accounting mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, strum::Display, strum::FromRepr)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
-#[strum(serialize_all = "lowercase")]
-#[repr(u8)]
-pub enum BandwidthMode {
-    /// No bandwidth accounting (dev/testing only).
-    None = 0,
-    /// Soft accounting without real payments (default).
-    #[default]
-    Pseudosettle = 1,
-    /// Real payment channels with chequebook.
-    Swap = 2,
-    /// Both pseudosettle and SWAP.
-    Both = 3,
-}
-
-impl BandwidthMode {
-    pub fn pseudosettle_enabled(self) -> bool {
-        matches!(self, BandwidthMode::Pseudosettle | BandwidthMode::Both)
-    }
-
-    pub fn swap_enabled(self) -> bool {
-        matches!(self, BandwidthMode::Swap | BandwidthMode::Both)
-    }
-
-    pub fn is_enabled(self) -> bool {
-        !matches!(self, BandwidthMode::None)
-    }
-}

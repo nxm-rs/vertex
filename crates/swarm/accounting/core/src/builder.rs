@@ -64,8 +64,8 @@ impl<C, P> AccountingBuilder<C, P> {
 
     /// Add a settlement provider.
     ///
-    /// Multiple providers can be added. They are called in order during settlement.
-    /// For `BandwidthMode::Both`, add pseudosettle before swap.
+    /// Multiple providers can be added. They are called in order during
+    /// settlement; add pseudosettle before swap.
     pub fn with_settlement(mut self, provider: impl SwarmSettlementProvider + 'static) -> Self {
         self.providers.push(Box::new(provider));
         self

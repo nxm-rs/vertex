@@ -1,21 +1,15 @@
 //! Validated bandwidth accounting configuration.
 
 use vertex_swarm_accounting_pricing::FixedPricingConfig;
-use vertex_swarm_api::{Au, BandwidthMode, SwarmAccountingConfig, SwarmPricingConfig};
+use vertex_swarm_api::{Au, SwarmAccountingConfig, SwarmPricingConfig};
 
-use crate::args::{BandwidthArgs, BandwidthModeArg};
+use crate::args::BandwidthArgs;
 use crate::constants::*;
 
 /// Error during bandwidth configuration validation.
 #[derive(Debug, Clone, thiserror::Error, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum BandwidthConfigError {
-    #[error("bandwidth options have no effect when mode is 'none'")]
-    OptionsWithDisabledMode,
-    #[error("early-percent only applies to 'swap' or 'both' modes")]
-    EarlyPercentWithoutSwap,
-    #[error("refresh-rate only applies to 'pseudosettle' or 'both' modes")]
-    RefreshRateWithoutPseudosettle,
     #[error("throttle-allowance-percent must be in 1..=100")]
     ThrottleAllowancePercentOutOfRange,
 }
@@ -26,7 +20,6 @@ pub enum BandwidthConfigError {
 /// for the standard CLI-produced configuration with fixed pricing.
 #[derive(Debug, Clone)]
 pub struct BandwidthConfig<P = FixedPricingConfig> {
-    mode: BandwidthMode,
     payment_threshold: u64,
     payment_tolerance_percent: u64,
     refresh_rate: u64,
@@ -43,7 +36,6 @@ impl<P> BandwidthConfig<P> {
     /// Create with explicit values.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        mode: BandwidthMode,
         payment_threshold: u64,
         payment_tolerance_percent: u64,
         refresh_rate: u64,
@@ -53,7 +45,6 @@ impl<P> BandwidthConfig<P> {
         pricing: P,
     ) -> Self {
         Self {
-            mode,
             payment_threshold,
             payment_tolerance_percent,
             refresh_rate,
@@ -81,38 +72,11 @@ impl TryFrom<&BandwidthArgs> for BandwidthConfig<FixedPricingConfig> {
     type Error = BandwidthConfigError;
 
     fn try_from(args: &BandwidthArgs) -> Result<Self, Self::Error> {
-        let default = BandwidthArgs::default();
-
-        match args.mode {
-            BandwidthModeArg::None => {
-                let has_non_default = args.refresh_rate != default.refresh_rate
-                    || args.payment_threshold != default.payment_threshold
-                    || args.payment_tolerance_percent != default.payment_tolerance_percent
-                    || args.early_payment_percent != default.early_payment_percent
-                    || args.client_only_factor != default.client_only_factor;
-                if has_non_default {
-                    return Err(BandwidthConfigError::OptionsWithDisabledMode);
-                }
-            }
-            BandwidthModeArg::Pseudosettle => {
-                if args.early_payment_percent != default.early_payment_percent {
-                    return Err(BandwidthConfigError::EarlyPercentWithoutSwap);
-                }
-            }
-            BandwidthModeArg::Swap => {
-                if args.refresh_rate != default.refresh_rate {
-                    return Err(BandwidthConfigError::RefreshRateWithoutPseudosettle);
-                }
-            }
-            BandwidthModeArg::Both => {}
-        }
-
         if !(1..=100).contains(&args.throttle_allowance_percent) {
             return Err(BandwidthConfigError::ThrottleAllowancePercentOutOfRange);
         }
 
         Ok(Self {
-            mode: args.mode.into(),
             payment_threshold: args.payment_threshold,
             payment_tolerance_percent: args.payment_tolerance_percent,
             refresh_rate: args.refresh_rate,
@@ -127,7 +91,6 @@ impl TryFrom<&BandwidthArgs> for BandwidthConfig<FixedPricingConfig> {
 impl Default for BandwidthConfig<FixedPricingConfig> {
     fn default() -> Self {
         Self {
-            mode: BandwidthMode::Pseudosettle,
             payment_threshold: DEFAULT_PAYMENT_THRESHOLD,
             payment_tolerance_percent: DEFAULT_PAYMENT_TOLERANCE_PERCENT,
             refresh_rate: DEFAULT_REFRESH_RATE,
@@ -143,10 +106,6 @@ impl<P> SwarmAccountingConfig for BandwidthConfig<P>
 where
     P: Send + Sync,
 {
-    fn mode(&self) -> BandwidthMode {
-        self.mode
-    }
-
     fn payment_threshold(&self) -> Au {
         Au::from_amount(self.payment_threshold)
     }

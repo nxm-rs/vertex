@@ -471,7 +471,6 @@ mod tests {
         // config; the remaining fields are placeholders that the throttle never
         // touches.
         let config = DefaultBandwidthConfig::new(
-            vertex_swarm_api::BandwidthMode::Pseudosettle,
             0,
             0,
             refresh_rate,

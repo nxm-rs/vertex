@@ -64,8 +64,8 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> Accounting<C, I> {
 
     /// Create a new accounting instance with the given settlement providers.
     ///
-    /// Providers are called in order during settlement operations.
-    /// For `BandwidthMode::Both`, pseudosettle should come before swap.
+    /// Providers are called in order during settlement operations; pseudosettle
+    /// should come before swap.
     pub fn with_providers(
         config: C,
         identity: I,
@@ -580,10 +580,6 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SwarmSettlementProvider for FixedAdjustProvider {
-        fn supported_mode(&self) -> vertex_swarm_api::BandwidthMode {
-            vertex_swarm_api::BandwidthMode::None
-        }
-
         fn pre_allow(
             &self,
             _peer: OverlayAddress,
@@ -646,7 +642,6 @@ mod tests {
     /// disconnect threshold is 1250.
     fn small_config() -> BandwidthConfig {
         BandwidthConfig::new(
-            vertex_swarm_api::BandwidthMode::Pseudosettle,
             1000,
             25,
             0,

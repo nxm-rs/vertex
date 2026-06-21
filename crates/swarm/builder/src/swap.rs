@@ -1,8 +1,8 @@
 //! SWAP settlement wiring for the client launch path.
 //!
 //! Ties three pieces together behind the `swap` feature: a [`SwapProvider`]
-//! registered with the accounting builder so [`BandwidthMode`] selection drives
-//! cheque issuance, the [`SwapService`] actor that owns the cheque-exchange state
+//! registered with the accounting builder when `--swap` is set, the
+//! [`SwapService`] actor that owns the cheque-exchange state
 //! machine, and the wire plumbing that routes swap events from the node into the
 //! service and the service's `SendCheque` commands back to the node.
 //!
@@ -58,11 +58,11 @@ pub(crate) struct SwapWiring {
 impl SwapWiring {
     /// Build the swap handle and provider when SWAP settlement is enabled.
     ///
-    /// Returns `None` (and leaves accounting swap-free) when the bandwidth mode
-    /// does not enable SWAP, or when SWAP is requested but the required chequebook
-    /// address and settlement chain cannot be resolved. The returned provider is
-    /// registered with the accounting builder; the returned wiring is later handed
-    /// to [`SwapWiring::spawn`].
+    /// Returns `None` (and leaves accounting swap-free) when `--swap` is not set,
+    /// or when SWAP is requested but the required chequebook address and
+    /// settlement chain cannot be resolved. The returned provider is registered
+    /// with the accounting builder; the returned wiring is later handed to
+    /// [`SwapWiring::spawn`].
     pub(crate) fn prepare<C>(
         spec: &Arc<Spec>,
         identity: &Arc<Identity>,
@@ -72,14 +72,7 @@ impl SwapWiring {
     where
         C: SwarmAccountingConfig + Clone + 'static,
     {
-        let mode = config.mode();
-        if !mode.swap_enabled() {
-            if swap_config.enable {
-                warn!(
-                    ?mode,
-                    "--swap set but bandwidth mode does not enable SWAP; settlement not wired"
-                );
-            }
+        if !swap_config.enable {
             return None;
         }
 

@@ -1,6 +1,6 @@
-//! No-op settlement provider for `BandwidthMode::None`.
+//! No-op settlement provider.
 
-use vertex_swarm_api::{Au, BandwidthMode, SwarmPeerState, SwarmResult, SwarmSettlementProvider};
+use vertex_swarm_api::{Au, SwarmPeerState, SwarmResult, SwarmSettlementProvider};
 use vertex_swarm_primitives::OverlayAddress;
 
 /// No-op settlement provider (always returns 0, never settles).
@@ -9,10 +9,6 @@ pub struct NoSettlement;
 
 #[async_trait::async_trait]
 impl SwarmSettlementProvider for NoSettlement {
-    fn supported_mode(&self) -> BandwidthMode {
-        BandwidthMode::None
-    }
-
     fn pre_allow(&self, _peer: OverlayAddress, _state: &dyn SwarmPeerState) -> Au {
         Au::ZERO
     }
@@ -39,6 +35,5 @@ mod tests {
 
         assert_eq!(provider.pre_allow(test_peer(), &state), Au::ZERO);
         assert_eq!(provider.name(), "none");
-        assert_eq!(provider.supported_mode(), BandwidthMode::None);
     }
 }

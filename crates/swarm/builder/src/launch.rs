@@ -12,12 +12,12 @@ use vertex_storage_redb::RedbDatabase;
 use vertex_swarm_accounting::{
     Accounting, AccountingBuilder, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
 };
+#[cfg(feature = "chain")]
+use vertex_swarm_api::SwarmSpec;
 use vertex_swarm_api::{
     BootnodeComponents, ClientComponents, PeerReporter, StorerComponents, SwarmClientAccounting,
     SwarmLaunchConfig, SwarmNodeType, construct,
 };
-#[cfg(feature = "chain")]
-use vertex_swarm_api::{SwarmAccountingConfig, SwarmSpec};
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::NetworkConfig;
 use vertex_swarm_node::{AccountingSettlement, BootNode, ClientNode, PeerSelector, SelfThrottle};
@@ -368,10 +368,13 @@ async fn build_client_backed_node(
         .spawn_service("swarm.client_service", client_service);
 
     // A storer always needs a chain (staking, oracle, settlement); a client
-    // needs one only when SWAP settlement is enabled.
+    // needs one only when SWAP settlement is enabled via `--swap`.
     #[cfg(feature = "chain")]
     let chain_provider = {
-        let swap_enabled = SwarmAccountingConfig::mode(params.bandwidth).swap_enabled();
+        #[cfg(feature = "swap")]
+        let swap_enabled = params.swap.enable;
+        #[cfg(not(feature = "swap"))]
+        let swap_enabled = false;
         build_node_chain_provider(
             params.spec,
             params.identity,
