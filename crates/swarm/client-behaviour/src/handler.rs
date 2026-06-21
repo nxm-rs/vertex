@@ -610,7 +610,7 @@ impl ClientHandler {
         // overlay-derivation inputs; an upstream forwarder recovers our overlay
         // from the signature.
         let storage_radius = storer.reserve.storage_radius();
-        let receipt = match Receipt::sign(&storer, address, storage_radius) {
+        let receipt = match Receipt::sign(&storer.signer, address, storage_radius) {
             Ok(receipt) => receipt,
             Err(e) => {
                 // Stored, but cannot prove custody. Reset rather than send an

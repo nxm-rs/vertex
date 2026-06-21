@@ -289,7 +289,9 @@ impl<I: SwarmIdentity + Clone> StorerNode<I> {
     /// Install the storer ingest capability on the client sub-behaviour. See
     /// [`ClientNode::enable_storage`](super::ClientNode::enable_storage).
     pub fn enable_storage(&mut self, reserve: Arc<dyn vertex_swarm_api::ReserveStore>) {
-        let capability = crate::protocol::StorerCapability::new(reserve, self.base.identity());
+        let signer: Arc<dyn vertex_swarm_primitives::OverlaySigner + Send + Sync> =
+            Arc::new(self.base.identity().clone());
+        let capability = crate::protocol::StorerCapability::new(reserve, signer);
         self.base
             .swarm
             .behaviour_mut()

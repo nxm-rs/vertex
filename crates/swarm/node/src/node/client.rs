@@ -214,7 +214,9 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
     /// Must be called during node assembly, before the event loop accepts
     /// connections: a handler created earlier does not capture the capability.
     pub fn enable_storage(&mut self, reserve: Arc<dyn vertex_swarm_api::ReserveStore>) {
-        let capability = crate::protocol::StorerCapability::new(reserve, self.base.identity());
+        let signer: Arc<dyn vertex_swarm_primitives::OverlaySigner + Send + Sync> =
+            Arc::new(self.base.identity().clone());
+        let capability = crate::protocol::StorerCapability::new(reserve, signer);
         self.base
             .swarm
             .behaviour_mut()

@@ -425,7 +425,7 @@ fn storer_swarm(
         let identity = Identity::new(signer_for_swarm.clone(), nonce, spec, SwarmNodeType::Storer);
         let capability = crate::protocol::StorerCapability::new(
             Arc::clone(&reserve_for_swarm) as Arc<dyn vertex_swarm_api::ReserveStore>,
-            &identity,
+            Arc::new(identity) as Arc<dyn vertex_swarm_primitives::OverlaySigner + Send + Sync>,
         );
         behaviour.set_storer(capability);
         behaviour
