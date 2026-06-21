@@ -56,6 +56,8 @@ vertex-swarm-accounting.workspace = true
 vertex-swarm-accounting-pricing.workspace = true
 vertex-swarm-accounting-pseudosettle.workspace = true
 vertex-swarm-localstore.workspace = true
+# The `CachedChunk` value the cache-then-reserve serve view passes through.
+vertex-swarm-primitives.workspace = true
 vertex-swarm-peer-manager.workspace = true
 vertex-swarm-peer-score.workspace = true
 vertex-net-peer-store.workspace = true
@@ -121,9 +123,6 @@ nectar-postage.workspace = true
 alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 vertex-swarm-test-utils.workspace = true
-# The `CachedChunk` value the storer reserve stores and serves, exercised by the
-# store-factory test.
-vertex-swarm-primitives.workspace = true
 
 # Client upload/download examples. They build a client through the public builder
 # and drive the chunk sender/provider directly, the way an FFI or gRPC embedder

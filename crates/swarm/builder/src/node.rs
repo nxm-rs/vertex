@@ -167,15 +167,26 @@ where
         self
     }
 
-    /// Override the cache with a pre-built local store, ignoring the shared
-    /// database handle.
+    /// Override the cache with a pre-built local store.
+    ///
+    /// Replaces the default in-memory [`ChunkStore`]. The opened shared database
+    /// handle is not offered; use [`with_cache_factory`](Self::with_cache_factory)
+    /// to back the cache onto it.
+    ///
+    /// On a client this is the full retrieval-serve view; on a storer only the
+    /// forwarding-cache layer of the cache-then-reserve view (read after the reserve,
+    /// written for out-of-AoR chunks, never for reserve admission).
     pub fn with_cache(mut self, cache: Arc<dyn SwarmLocalStore>) -> Self {
         self.cache = Some(CacheSeam::Ready(cache));
         self
     }
 
-    /// Override the cache with a factory invoked at build time with the opened
-    /// shared database (`None` in-memory).
+    /// Override the cache with a factory invoked at build time.
+    ///
+    /// The factory receives the opened shared database (`None` in-memory) so the
+    /// cache can size or back itself from the same handle the rest of the node
+    /// uses. The client-versus-storer seam meaning of [`with_cache`](Self::with_cache)
+    /// applies: on a storer the built store is only the forwarding-cache layer.
     pub fn with_cache_factory<F>(mut self, factory: F) -> Self
     where
         F: FnOnce(Option<Arc<RedbDatabase>>) -> Result<Arc<dyn SwarmLocalStore>, SwarmNodeError>
