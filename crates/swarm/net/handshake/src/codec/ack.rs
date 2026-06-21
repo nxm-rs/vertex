@@ -114,7 +114,7 @@ pub(crate) fn welcome_message_from_proto(
 mod tests {
     use super::*;
     use libp2p::Multiaddr;
-    use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
+    use vertex_swarm_api::SwarmSpec;
     use vertex_swarm_identity::Identity;
     use vertex_swarm_test_utils::test_spec_isolated as test_spec;
 
@@ -122,17 +122,8 @@ mod tests {
         let spec = test_spec();
         let identity = Identity::random(spec.clone(), SwarmNodeType::Storer);
         let multiaddr: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
-        let signer = identity.signer();
-        SwarmPeer::sign(
-            &*signer,
-            vec![multiaddr],
-            identity.overlay_address(),
-            spec.network_id(),
-            identity.nonce(),
-            Timestamp::now(),
-            None,
-        )
-        .expect("should sign peer")
+        SwarmPeer::sign(&identity, vec![multiaddr], Timestamp::now(), None)
+            .expect("should sign peer")
     }
 
     #[test]

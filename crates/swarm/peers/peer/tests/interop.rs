@@ -27,14 +27,24 @@
     reason = "conformance fixtures: panicking on malformed test inputs is intended"
 )]
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use alloy_primitives::{Address, B256, Signature};
 use alloy_signer_local::PrivateKeySigner;
 use libp2p::Multiaddr;
 use nectar_primitives::SwarmAddress;
+use vertex_swarm_identity::Identity;
 use vertex_swarm_peer::{SwarmPeer, SwarmPeerWire};
-use vertex_swarm_primitives::{NetworkId, Nonce, Timestamp, compute_overlay};
+use vertex_swarm_primitives::{NetworkId, Nonce, SwarmNodeType, Timestamp, compute_overlay};
+use vertex_swarm_spec::SpecBuilder;
+
+/// A persistent identity reproducing the vector's signer, nonce and network id,
+/// so `SwarmPeer::sign` derives exactly the vector's pinned overlay.
+fn vector_identity(signer: PrivateKeySigner, network_id: NetworkId, nonce: Nonce) -> Identity {
+    let spec = Arc::new(SpecBuilder::testnet().network_id(network_id.get()).build());
+    Identity::new(signer, nonce, spec, SwarmNodeType::Storer)
+}
 
 /// Decode a fixed-size lowercase hex string into a byte array.
 fn hex_to_array<const N: usize>(hex: &str) -> [u8; N] {
@@ -212,16 +222,9 @@ fn handshake_15_sign_produces_pinned_signature_and_overlay() {
             "vector {idx}: overlay mismatch",
         );
 
-        let peer = SwarmPeer::sign(
-            &signer,
-            vec![multiaddr],
-            overlay,
-            network_id,
-            nonce,
-            timestamp,
-            chequebook,
-        )
-        .expect("sign succeeds");
+        let identity = vector_identity(signer, network_id, nonce);
+        let peer = SwarmPeer::sign(&identity, vec![multiaddr], timestamp, chequebook)
+            .expect("sign succeeds");
 
         assert_eq!(
             *peer.signature(),
@@ -242,16 +245,9 @@ fn handshake_15_parse_recovers_pinned_signer() {
         let multiaddr = v.multiaddr();
         let chequebook = v.chequebook();
 
-        let peer = SwarmPeer::sign(
-            &signer,
-            vec![multiaddr],
-            v.expected_overlay(),
-            network_id,
-            nonce,
-            timestamp,
-            chequebook,
-        )
-        .expect("sign succeeds");
+        let identity = vector_identity(signer, network_id, nonce);
+        let peer = SwarmPeer::sign(&identity, vec![multiaddr], timestamp, chequebook)
+            .expect("sign succeeds");
 
         let multiaddrs_bytes = peer.serialize_multiaddrs();
         let chequebook_bytes = peer

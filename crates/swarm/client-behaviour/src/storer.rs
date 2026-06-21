@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use alloy_signer::SignerSync;
-use vertex_swarm_api::ReserveStore;
+use vertex_swarm_api::{ReserveStore, SwarmIdentity, SwarmSpec};
 use vertex_swarm_net_pushsync::ReceiptSigner;
 use vertex_swarm_primitives::{NetworkId, Nonce};
 
@@ -30,17 +30,18 @@ pub struct StorerCapability {
 }
 
 impl StorerCapability {
-    pub fn new(
-        reserve: Arc<dyn ReserveStore>,
-        signer: Arc<dyn SignerSync + Send + Sync>,
-        network_id: NetworkId,
-        nonce: Nonce,
-    ) -> Self {
+    /// Build the capability from the node identity. The signer is erased to
+    /// `dyn SignerSync`; `network_id` and `nonce` are read off the identity so
+    /// the minted receipt's overlay derives from the same key.
+    pub fn new(reserve: Arc<dyn ReserveStore>, identity: &impl SwarmIdentity) -> Self {
+        // `I::Signer: Signer + SignerSync + Send + Sync`, so erasing to
+        // SignerSync is sound.
+        let signer: Arc<dyn SignerSync + Send + Sync> = identity.signer();
         Self {
             reserve,
             signer,
-            network_id,
-            nonce,
+            network_id: identity.spec().network_id(),
+            nonce: identity.nonce(),
         }
     }
 }

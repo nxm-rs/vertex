@@ -17,7 +17,6 @@ use parking_lot::RwLock;
 use tracing::debug;
 use vertex_swarm_api::SwarmIdentity;
 use vertex_swarm_peer::{SwarmPeer, Timestamp};
-use vertex_swarm_spec::SwarmSpec;
 
 use vertex_net_peer_registry::ConnectionDirection;
 
@@ -147,17 +146,7 @@ where
         addrs: Vec<Multiaddr>,
         now: Timestamp,
     ) -> Result<SwarmPeer, HandshakeError> {
-        let signer = self.identity.signer();
-        SwarmPeer::sign(
-            &*signer,
-            addrs,
-            self.identity.overlay_address(),
-            self.identity.spec().network_id(),
-            self.identity.nonce(),
-            now,
-            None,
-        )
-        .map_err(HandshakeError::from)
+        SwarmPeer::sign(&self.identity, addrs, now, None).map_err(HandshakeError::from)
     }
 
     /// Create with custom config.

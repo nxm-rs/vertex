@@ -398,7 +398,9 @@ fn storer_swarm(
 ) {
     use alloy_signer_local::PrivateKeySigner;
     use nectar_primitives::NetworkId;
+    use vertex_swarm_identity::Identity;
     use vertex_swarm_primitives::Nonce;
+    use vertex_swarm_spec::SpecBuilder;
 
     let reserve = Arc::new(MockReserve::new(responsible, radius));
     let signer = PrivateKeySigner::random();
@@ -415,11 +417,15 @@ fn storer_swarm(
             Arc::new(StubForwarder),
         );
         behaviour.set_network_id(NetworkId::MAINNET);
+        let spec = Arc::new(
+            SpecBuilder::mainnet()
+                .network_id(NetworkId::MAINNET.get())
+                .build(),
+        );
+        let identity = Identity::new(signer_for_swarm.clone(), nonce, spec, SwarmNodeType::Storer);
         let capability = crate::protocol::StorerCapability::new(
             Arc::clone(&reserve_for_swarm) as Arc<dyn vertex_swarm_api::ReserveStore>,
-            Arc::new(signer_for_swarm.clone()) as Arc<dyn alloy_signer::SignerSync + Send + Sync>,
-            NetworkId::MAINNET,
-            nonce,
+            &identity,
         );
         behaviour.set_storer(capability);
         behaviour

@@ -16,13 +16,14 @@
 use crate::error::SwarmPeerError;
 use crate::serde_multiaddr::{deserialize_multiaddrs, serialize_multiaddrs};
 use alloy_primitives::{Address, Signature};
-use alloy_signer::SignerSync;
+use alloy_signer::{Signer, SignerSync};
 use libp2p::Multiaddr;
 use nectar_primitives::signing::sign_data;
 use nectar_primitives::{NetworkId, SwarmAddress, compute_overlay};
 pub use nectar_primitives::{Nonce, Timestamp};
 use std::time::Duration;
 use vertex_net_local::{AddressScope, IpCapability, classify_multiaddr};
+use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 
 /// Borrowed view of the on-wire `SwarmPeer` fields, used as input to
 /// [`SwarmPeer::parse`].
@@ -71,22 +72,20 @@ pub struct SwarmPeer {
 }
 
 impl SwarmPeer {
-    /// Sign and construct a `SwarmPeer` from its components.
+    /// Sign and construct a `SwarmPeer` from the node identity plus the
+    /// per-handshake fields.
     ///
-    /// At least one multiaddr is required. The timestamp must be
-    /// strictly positive (matches bee's `ErrTimestampInvalid`).
-    pub fn sign<S>(
-        signer: &S,
+    /// The overlay, `network_id` and `nonce` are read from `identity`, and the
+    /// overlay is derived the same way [`parse`](Self::parse) recovers it, so a
+    /// record this node signs cannot bind an overlay inconsistent with the key
+    /// that signed it. At least one multiaddr is required; the timestamp must
+    /// be strictly positive (matches bee's `ErrTimestampInvalid`).
+    pub fn sign(
+        identity: &impl SwarmIdentity,
         multiaddrs: Vec<Multiaddr>,
-        overlay: SwarmAddress,
-        network_id: NetworkId,
-        nonce: Nonce,
         timestamp: Timestamp,
         chequebook: Option<Address>,
-    ) -> Result<Self, SwarmPeerError>
-    where
-        S: alloy_signer::Signer + SignerSync + ?Sized,
-    {
+    ) -> Result<Self, SwarmPeerError> {
         if multiaddrs.is_empty() {
             return Err(SwarmPeerError::NoMultiaddrs);
         }
@@ -100,6 +99,11 @@ impl SwarmPeer {
         // both into `None` here we keep `chequebook().is_some()` a faithful
         // signal of "peer actually advertised a chequebook".
         let chequebook = chequebook.filter(|a| !a.is_zero());
+
+        let signer = identity.signer();
+        let network_id = identity.spec().network_id();
+        let nonce = identity.nonce();
+        let overlay = identity.overlay_address();
 
         let multiaddrs_bytes = serialize_multiaddrs(&multiaddrs);
         let msg = sign_data(
@@ -350,7 +354,10 @@ mod tests {
     use super::*;
     use alloy_signer_local::PrivateKeySigner;
     use nectar_primitives::{MAINNET, SwarmSpec};
-    use vertex_swarm_primitives::compute_overlay;
+    use std::sync::Arc;
+    use vertex_swarm_identity::Identity;
+    use vertex_swarm_primitives::SwarmNodeType;
+    use vertex_swarm_spec::SpecBuilder;
 
     fn now_secs() -> i64 {
         // Tests do not depend on real wall-clock; a fixed value is fine.
@@ -366,13 +373,16 @@ mod tests {
         skew_tolerance().as_secs() as i64
     }
 
-    fn signer_with_overlay(
-        network_id: NetworkId,
-        nonce: Nonce,
-    ) -> (PrivateKeySigner, SwarmAddress) {
-        let signer = PrivateKeySigner::random();
-        let overlay = compute_overlay(&signer.address(), network_id, &nonce);
-        (signer, overlay)
+    /// A persistent identity with the given network id and nonce, so the
+    /// derived overlay is deterministic for the test.
+    fn test_identity(network_id: NetworkId, nonce: Nonce) -> Identity {
+        let spec = Arc::new(SpecBuilder::testnet().network_id(network_id.get()).build());
+        Identity::new(
+            PrivateKeySigner::random(),
+            nonce,
+            spec,
+            SwarmNodeType::Storer,
+        )
     }
 
     /// Build a borrowed wire view from a `SwarmPeer` plus the serialized
@@ -399,19 +409,10 @@ mod tests {
         let timestamp = Timestamp::from_seconds(now_secs());
         let chequebook = Some(Address::from([0xAB; 20]));
 
-        let (signer, overlay) = signer_with_overlay(network_id, nonce);
+        let identity = test_identity(network_id, nonce);
         let multiaddrs: Vec<Multiaddr> = vec!["/ip4/127.0.0.1/tcp/1234".parse().unwrap()];
 
-        let addr = SwarmPeer::sign(
-            &signer,
-            multiaddrs.clone(),
-            overlay,
-            network_id,
-            nonce,
-            timestamp,
-            chequebook,
-        )
-        .unwrap();
+        let addr = SwarmPeer::sign(&identity, multiaddrs, timestamp, chequebook).unwrap();
 
         let multiaddrs_bytes = addr.serialize_multiaddrs();
         let cb_bytes = addr.chequebook().unwrap().as_slice().to_vec();
@@ -423,7 +424,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(parsed, addr);
-        assert_eq!(*parsed.ethereum_address(), signer.address());
+        assert_eq!(*parsed.ethereum_address(), identity.ethereum_address());
         assert_eq!(parsed.chequebook(), Some(&Address::from([0xAB; 20])));
     }
 
@@ -433,13 +434,10 @@ mod tests {
         let nonce = Nonce::from([0x22u8; 32]);
         let timestamp = Timestamp::from_seconds(now_secs());
 
-        let (signer, overlay) = signer_with_overlay(network_id, nonce);
+        let identity = test_identity(network_id, nonce);
         let multiaddrs: Vec<Multiaddr> = vec!["/ip4/10.0.0.1/tcp/1633".parse().unwrap()];
 
-        let addr = SwarmPeer::sign(
-            &signer, multiaddrs, overlay, network_id, nonce, timestamp, None,
-        )
-        .unwrap();
+        let addr = SwarmPeer::sign(&identity, multiaddrs, timestamp, None).unwrap();
 
         // Empty bytes on the wire == None and must verify against all-zero pad.
         let multiaddrs_bytes = addr.serialize_multiaddrs();
@@ -451,7 +449,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(parsed.chequebook(), None);
-        assert_eq!(*parsed.ethereum_address(), signer.address());
+        assert_eq!(*parsed.ethereum_address(), identity.ethereum_address());
     }
 
     #[test]
@@ -462,13 +460,10 @@ mod tests {
         let nonce = Nonce::from([0x33u8; 32]);
         let timestamp = Timestamp::from_seconds(now_secs());
 
-        let (signer, overlay) = signer_with_overlay(network_id, nonce);
+        let identity = test_identity(network_id, nonce);
         let multiaddrs: Vec<Multiaddr> = vec!["/ip4/127.0.0.1/tcp/1234".parse().unwrap()];
 
-        let addr = SwarmPeer::sign(
-            &signer, multiaddrs, overlay, network_id, nonce, timestamp, None,
-        )
-        .unwrap();
+        let addr = SwarmPeer::sign(&identity, multiaddrs, timestamp, None).unwrap();
 
         // Manually verify that signing with all-zero chequebook bytes produced
         // the same signature as Option::None.
@@ -476,14 +471,14 @@ mod tests {
         let zero_cb = Address::ZERO;
         let msg = sign_data(
             &multiaddrs_bytes,
-            &overlay,
+            &identity.overlay_address(),
             network_id,
             &nonce,
             timestamp,
             Some(&zero_cb),
         );
         let recovered = addr.signature().recover_address_from_msg(msg).unwrap();
-        assert_eq!(recovered, signer.address());
+        assert_eq!(recovered, identity.ethereum_address());
     }
 
     #[test]
@@ -498,21 +493,13 @@ mod tests {
     fn rejects_non_positive_timestamp_on_sign() {
         let network_id = NetworkId::new(1);
         let nonce = Nonce::from([0u8; 32]);
-        let (signer, overlay) = signer_with_overlay(network_id, nonce);
+        let identity = test_identity(network_id, nonce);
         let multiaddrs: Vec<Multiaddr> = vec!["/ip4/127.0.0.1/tcp/1234".parse().unwrap()];
 
         // Non-positive timestamp is a structural protocol violation,
         // distinct from a clock-skew failure: it returns `InvalidTimestamp`
         // (bee `ErrTimestampInvalid`), not `TimestampOutsideSkewWindow`.
-        let res = SwarmPeer::sign(
-            &signer,
-            multiaddrs,
-            overlay,
-            network_id,
-            nonce,
-            Timestamp::from_seconds(0),
-            None,
-        );
+        let res = SwarmPeer::sign(&identity, multiaddrs, Timestamp::from_seconds(0), None);
         assert!(matches!(res, Err(SwarmPeerError::InvalidTimestamp)));
     }
 
@@ -524,16 +511,13 @@ mod tests {
         // timestamp of 0 must still be rejected as `InvalidTimestamp`.
         let network_id = NetworkId::new(1);
         let nonce = Nonce::from([0u8; 32]);
-        let (signer, overlay) = signer_with_overlay(network_id, nonce);
+        let identity = test_identity(network_id, nonce);
         let multiaddrs: Vec<Multiaddr> = vec!["/ip4/127.0.0.1/tcp/1234".parse().unwrap()];
         // Sign with a valid timestamp so we have a real wire form, then
         // fabricate a wire view with `timestamp = 0` for the parse-side test.
         let addr = SwarmPeer::sign(
-            &signer,
+            &identity,
             multiaddrs,
-            overlay,
-            network_id,
-            nonce,
             Timestamp::from_seconds(now_secs()),
             None,
         )
@@ -555,17 +539,14 @@ mod tests {
         // `chequebook().is_some()` is not malleable.
         let network_id = NetworkId::new(1);
         let nonce = Nonce::from([0x33u8; 32]);
-        let (signer, overlay) = signer_with_overlay(network_id, nonce);
+        let identity = test_identity(network_id, nonce);
         let multiaddrs: Vec<Multiaddr> = vec!["/ip4/127.0.0.1/tcp/1234".parse().unwrap()];
 
         // Sign with `Some(Address::ZERO)` and confirm `chequebook()` is None
         // both immediately after signing and after a wire roundtrip.
         let addr = SwarmPeer::sign(
-            &signer,
+            &identity,
             multiaddrs,
-            overlay,
-            network_id,
-            nonce,
             Timestamp::from_seconds(now_secs()),
             Some(Address::ZERO),
         )
@@ -593,16 +574,8 @@ mod tests {
     fn rejects_empty_multiaddrs_on_sign() {
         let network_id = NetworkId::new(1);
         let nonce = Nonce::from([0u8; 32]);
-        let (signer, overlay) = signer_with_overlay(network_id, nonce);
-        let res = SwarmPeer::sign(
-            &signer,
-            vec![],
-            overlay,
-            network_id,
-            nonce,
-            Timestamp::from_seconds(now_secs()),
-            None,
-        );
+        let identity = test_identity(network_id, nonce);
+        let res = SwarmPeer::sign(&identity, vec![], Timestamp::from_seconds(now_secs()), None);
         assert!(matches!(res, Err(SwarmPeerError::NoMultiaddrs)));
     }
 
@@ -613,21 +586,13 @@ mod tests {
         let now = now_secs();
         let tolerance = skew_tolerance();
         let tolerance_secs = skew_tolerance_secs();
-        let (signer, overlay) = signer_with_overlay(network_id, nonce);
+        let identity = test_identity(network_id, nonce);
         let multiaddrs: Vec<Multiaddr> = vec!["/ip4/127.0.0.1/tcp/1234".parse().unwrap()];
 
         // Helper: sign + parse against `now`, return whether parsing succeeded.
         let try_parse = |signed_at: i64| -> Result<(), SwarmPeerError> {
             let ts = Timestamp::from_seconds(signed_at);
-            let addr = SwarmPeer::sign(
-                &signer,
-                multiaddrs.clone(),
-                overlay,
-                network_id,
-                nonce,
-                ts,
-                None,
-            )?;
+            let addr = SwarmPeer::sign(&identity, multiaddrs.clone(), ts, None)?;
             let multiaddrs_bytes = addr.serialize_multiaddrs();
             SwarmPeer::parse(
                 wire(&addr, &multiaddrs_bytes, &[]),
@@ -660,42 +625,51 @@ mod tests {
         // Caller can opt out of skew enforcement entirely.
         let network_id = NetworkId::new(1);
         let nonce = Nonce::from([0u8; 32]);
-        let (signer, overlay) = signer_with_overlay(network_id, nonce);
+        let identity = test_identity(network_id, nonce);
         let multiaddrs: Vec<Multiaddr> = vec!["/ip4/127.0.0.1/tcp/1234".parse().unwrap()];
 
         let ts = Timestamp::from_seconds(now_secs() + 10 * skew_tolerance_secs());
-        let addr =
-            SwarmPeer::sign(&signer, multiaddrs, overlay, network_id, nonce, ts, None).unwrap();
+        let addr = SwarmPeer::sign(&identity, multiaddrs, ts, None).unwrap();
 
         let multiaddrs_bytes = addr.serialize_multiaddrs();
         let parsed =
             SwarmPeer::parse(wire(&addr, &multiaddrs_bytes, &[]), network_id, None).unwrap();
-        assert_eq!(*parsed.ethereum_address(), signer.address());
+        assert_eq!(*parsed.ethereum_address(), identity.ethereum_address());
     }
 
     #[test]
     fn invalid_overlay_rejected() {
         let network_id = NetworkId::new(1);
         let nonce = Nonce::from([0u8; 32]);
-        let (signer, _overlay) = signer_with_overlay(network_id, nonce);
+        let signer = PrivateKeySigner::random();
         let bogus_overlay = SwarmAddress::new([0xFF; 32]);
         let multiaddrs: Vec<Multiaddr> = vec!["/ip4/127.0.0.1/tcp/1234".parse().unwrap()];
+        let timestamp = Timestamp::from_seconds(now_secs());
 
-        // Sign with bogus overlay: signature is valid for the chosen bytes
-        // but recovered overlay won't match.
-        let addr = SwarmPeer::sign(
-            &signer,
-            multiaddrs,
-            bogus_overlay,
+        // `sign` now derives the overlay from the identity, so a mismatch can
+        // only be fabricated on the wire: sign over the bogus overlay (the
+        // signature is valid for those bytes) and claim it, but parse recovers
+        // the signer's real overlay, which will not match.
+        let multiaddrs_bytes = serialize_multiaddrs(&multiaddrs);
+        let msg = sign_data(
+            &multiaddrs_bytes,
+            &bogus_overlay,
             network_id,
-            nonce,
-            Timestamp::from_seconds(now_secs()),
+            &nonce,
+            timestamp,
             None,
-        )
-        .unwrap();
-        let multiaddrs_bytes = addr.serialize_multiaddrs();
+        );
+        let signature = signer.sign_message_sync(&msg).unwrap();
+        let bogus_wire = SwarmPeerWire {
+            multiaddrs_bytes: &multiaddrs_bytes,
+            signature,
+            overlay: bogus_overlay,
+            nonce,
+            timestamp,
+            chequebook_bytes: &[],
+        };
         let res = SwarmPeer::parse(
-            wire(&addr, &multiaddrs_bytes, &[]),
+            bogus_wire,
             network_id,
             Some((Timestamp::from_seconds(now_secs()), skew_tolerance())),
         );
