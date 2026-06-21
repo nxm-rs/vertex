@@ -11,7 +11,6 @@ description = "Time-based settlement provider for Swarm bandwidth accounting"
 [dependencies]
 vertex-swarm-accounting = { workspace = true }
 vertex-swarm-client-protocol = { workspace = true }
-vertex-swarm-net-pseudosettle = { workspace = true }
 vertex-swarm-primitives = { workspace = true }
 vertex-swarm-api = { workspace = true }
 vertex-tasks = { workspace = true }

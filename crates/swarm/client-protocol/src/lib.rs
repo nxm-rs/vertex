@@ -15,7 +15,7 @@ use alloy_primitives::U256;
 use libp2p::PeerId;
 use nectar_primitives::{AnyChunk, ChunkAddress};
 use tokio::sync::oneshot;
-use vertex_swarm_net_pseudosettle::PaymentAck;
+use vertex_swarm_api::Au;
 use vertex_swarm_net_pushsync::Receipt;
 #[cfg(feature = "swap")]
 use vertex_swarm_net_swap::SignedCheque;
@@ -45,6 +45,21 @@ pub struct RetrievalResult {
     pub stamp: Option<Stamp>,
     /// The peer that served the chunk.
     pub peer: OverlayAddress,
+}
+
+/// A pseudosettle acknowledgement in domain terms.
+///
+/// The `client-behaviour` wire boundary converts to and from the on-wire ack:
+/// `accepted` is the amount the responder granted, and `timestamp` is the
+/// Unix-nanosecond clock the responder sampled when deciding it. The receiver
+/// refreshes its allowance against `timestamp`, so the sampling point stays in
+/// the deciding service and is never re-sampled at the boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PseudosettleAck {
+    /// The amount accepted by the responder.
+    pub accepted: Au,
+    /// Unix nanoseconds the responder sampled when deciding the accepted amount.
+    pub timestamp: i64,
 }
 
 /// Outcome error shared by both chunk transfer operations.
@@ -252,7 +267,7 @@ pub enum ClientEvent {
         /// The libp2p peer ID.
         peer_id: PeerId,
         /// The ack received.
-        ack: PaymentAck,
+        ack: PseudosettleAck,
     },
 
     /// Received a swap cheque from a peer.
@@ -371,7 +386,7 @@ pub enum ClientCommand {
         /// Request ID from the received payment.
         request_id: u64,
         /// The ack to send.
-        ack: PaymentAck,
+        ack: PseudosettleAck,
     },
 
     /// Send a swap cheque to a peer.
@@ -402,7 +417,7 @@ pub enum PseudosettleEvent {
         /// The peer we settled with.
         peer: OverlayAddress,
         /// The acknowledgment received.
-        ack: PaymentAck,
+        ack: PseudosettleAck,
     },
     /// A peer sent us a pseudosettle request.
     Received {
