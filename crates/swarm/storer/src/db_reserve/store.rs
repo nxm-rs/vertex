@@ -53,9 +53,7 @@ pub struct DbReserve<DB: Database, BS: BatchStore> {
     /// with other reserve state, so callers needing a consistent
     /// (radius, occupancy) pair re-derive the radius from the occupancy.
     radius: AtomicU8,
-    /// Stable instance identifier, loaded once at open and cached for cheap
-    /// reads. Changes only when the reserve is recreated; a pull-syncer
-    /// comparing this across calls detects a wipe and invalidates cached cursors.
+    /// Reserve generation marker; changes only on reserve recreate.
     epoch: u64,
 }
 
@@ -80,7 +78,6 @@ impl<DB: Database, BS: BatchStore> DbReserve<DB, BS> {
             tx.ensure_table(BinCounter::NAME)?;
             tx.ensure_table(StampIndexTable::NAME)?;
             tx.ensure_table(ReserveMetadata::NAME)?;
-            // Load the persisted epoch or generate and persist one on first open.
             if let Some(e) = tx.get::<ReserveMetadata>(EPOCH_KEY)? {
                 Ok(e)
             } else {
@@ -128,11 +125,8 @@ impl<DB: Database, BS: BatchStore> DbReserve<DB, BS> {
         self.radius.store(radius.get(), Ordering::Relaxed);
     }
 
-    /// Stable instance identifier captured once at reserve creation.
-    ///
-    /// A pull-syncer compares this value across cursor handshakes to detect
-    /// that the reserve was wiped and recreated, invalidating its cached
-    /// per-bin cursors.
+    /// Reserve generation marker; changes only on reserve recreate, letting a
+    /// pull-syncer detect a wipe and invalidate cached cursors.
     pub fn reserve_epoch(&self) -> u64 {
         self.epoch
     }
@@ -704,9 +698,7 @@ mod epoch_tests {
 
     #[test]
     fn distinct_reserves_get_distinct_epochs() {
-        // Two independent in-memory databases each generate their epoch from
-        // the nanosecond wall clock. Nanosecond resolution on real hardware
-        // makes collision negligible (one in ~584 years).
+        // Nanosecond wall-clock resolution makes a collision negligible.
         let epoch_a = open_reserve(RedbDatabase::in_memory().unwrap().into_arc()).reserve_epoch();
         let epoch_b = open_reserve(RedbDatabase::in_memory().unwrap().into_arc()).reserve_epoch();
         assert_ne!(epoch_a, epoch_b);

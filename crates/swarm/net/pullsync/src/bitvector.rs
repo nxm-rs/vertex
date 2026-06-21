@@ -1,9 +1,6 @@
-//! MSB-first selection bitvector for the pullsync `Want` reply.
-//!
-//! Bit `i` (the high bit of byte `i / 8`, counting from the most significant)
-//! is set exactly when the requester wants `chunks[i]` from the preceding
-//! `Offer`. The byte length is `ceil(len / 8)`; trailing pad bits in the final
-//! byte are zero and unused.
+//! MSB-first selection bitvector for the pullsync `Want` reply: bit `i` selects
+//! `chunks[i]` of the preceding `Offer`. Byte length is `ceil(len / 8)`; trailing
+//! pad bits are zero.
 
 /// A fixed-length set of selection bits, packed MSB-first one bit per offered
 /// chunk.
@@ -23,22 +20,16 @@ impl BitVector {
         }
     }
 
-    /// Wrap raw wire bytes, sizing the selection at one bit per byte
-    /// (`8 * bytes.len()`).
-    ///
-    /// The `Want` frame carries no explicit chunk count, so the byte length is
-    /// the only length signal; the trailing pad bits of the final byte are
-    /// preserved but address no chunk in the offer.
+    /// Wrap raw wire bytes, sizing the selection at `8 * bytes.len()`. The `Want`
+    /// frame carries no explicit chunk count, so byte length is the only signal.
     #[must_use]
     pub fn from_wire_bytes(bytes: Vec<u8>) -> Self {
         let len = bytes.len() * 8;
         Self { bytes, len }
     }
 
-    /// Wrap raw wire bytes as a vector selecting over `len` chunks.
-    ///
-    /// `bytes` must be exactly `ceil(len / 8)` long, the only length a
-    /// conformant peer sends for an offer of `len` chunks.
+    /// Wrap raw wire bytes selecting over `len` chunks; `bytes` must be exactly
+    /// `ceil(len / 8)` long.
     pub fn from_bytes(bytes: Vec<u8>, len: usize) -> Result<Self, BitVectorError> {
         let expected = len.div_ceil(8);
         if bytes.len() != expected {
@@ -107,7 +98,7 @@ impl BitVector {
 pub struct BitVectorError {
     /// Bytes required for the offer (`ceil(len / 8)`).
     pub expected: usize,
-    /// Bytes actually present on the wire.
+    /// Bytes actually received.
     pub got: usize,
 }
 

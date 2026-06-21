@@ -1,16 +1,11 @@
-//! Pullsync protocol for Swarm storer range synchronisation.
+//! Pullsync protocol for Swarm storer range synchronisation, over two streams:
+//! [`PROTOCOL_CURSORS`] to learn a peer's per-bin cursors, then [`PROTOCOL_SYNC`]
+//! per bin to pull missing chunks.
 //!
-//! Pullsync runs on two streams under one protocol base. A storer first opens
-//! [`PROTOCOL_CURSORS`] to learn a peer's per-bin sync cursors, then opens
-//! [`PROTOCOL_SYNC`] per bin to pull the chunks it is missing.
-//!
-//! Two load-bearing wire invariants:
-//!
-//! - `Ack.cursors` is indexed by bin: `cursors[bin]` is the topmost id held for
-//!   that bin (`0` when empty).
-//! - In the range exchange, bit `i` of the `Want` bitvector selects `chunks[i]`
-//!   from the preceding `Offer` (MSB-first within each byte). The responder then
-//!   sends one `Delivery` per set bit, in offer order.
+//! Wire invariants: `Ack.cursors[bin]` is the topmost id held for that bin (`0`
+//! when empty); in the range exchange `Want` bit `i` selects `chunks[i]` of the
+//! preceding `Offer` (MSB-first), answered by one `Delivery` per set bit in offer
+//! order.
 
 mod bitvector;
 pub use bitvector::{BitVector, BitVectorError};

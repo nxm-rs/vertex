@@ -1,15 +1,9 @@
-//! Protocol upgrades for pullsync's two streams.
+//! Protocol upgrades for pullsync's two headered streams.
 //!
-//! Both sub-protocols are headered (the headers exchange is automatic):
-//!
-//! - **Cursors** ([`PROTOCOL_CURSORS`]): one round. Outbound sends `Syn` and
-//!   reads `Ack`; inbound reads `Syn` and returns a responder that sends `Ack`.
-//! - **Sync** ([`PROTOCOL_SYNC`]): four phases on one stream. Outbound sends
-//!   `Get`, reads `Offer`, sends `Want`, then reads one `Delivery` per set bit.
-//!   Inbound reads `Get` and returns a responder driven by the behaviour layer:
-//!   `send_offer`, `recv_want`, `send_delivery` per wanted chunk, then `finish`.
-//!   Each phase switches the codec on the same stream via `into_parts()`, which
-//!   preserves any bytes already buffered.
+//! - **Cursors** ([`PROTOCOL_CURSORS`]): `Syn` then `Ack`.
+//! - **Sync** ([`PROTOCOL_SYNC`]): `Get`, `Offer`, `Want`, then one `Delivery`
+//!   per set bit, all on one stream. Each phase swaps the codec via [`reframe`],
+//!   preserving any bytes already buffered.
 
 use asynchronous_codec::{Decoder, Encoder, Framed};
 use futures::{SinkExt, TryStreamExt, future::BoxFuture};
@@ -178,11 +172,8 @@ impl HeaderedInbound for SyncInboundInner {
     }
 }
 
-/// Server-side driver for the range exchange, advanced by the behaviour layer.
-///
-/// The type encodes the phase: `Offering` accepts [`send_offer`](Self::send_offer);
-/// `Delivering` accepts [`send_delivery`](Self::send_delivery) and
-/// [`finish`](Self::finish). Calling out of phase is a compile error.
+/// Server-side driver for the range exchange. The variant encodes the phase, so
+/// calling a method out of phase is a compile error.
 pub enum SyncResponder {
     /// Awaiting the offer for the requested range.
     Offering {
@@ -244,7 +235,6 @@ pub struct SyncOutboundInner {
 }
 
 impl SyncOutboundInner {
-    /// Create an outbound range exchange for the given `Get`.
     pub fn new(get: Get) -> Self {
         Self { get }
     }
@@ -278,10 +268,9 @@ impl HeaderedOutbound for SyncOutboundInner {
     }
 }
 
-/// Client-side driver for the range exchange after the offer arrives.
-///
-/// `accept_want` sends the selection and moves to receiving the deliveries; the
-/// caller then reads exactly [`Want::count`](crate::Want::count) deliveries.
+/// Client-side driver for the range exchange after the offer arrives. After
+/// [`accept_want`](Self::accept_want) the caller reads exactly
+/// [`Want::count`](crate::Want::count) deliveries.
 pub enum SyncRequester {
     /// Offer received; awaiting the want to send.
     Wanting {
@@ -314,31 +303,23 @@ impl SyncRequester {
     }
 }
 
-/// Inbound cursor-handshake protocol type for the handler.
 pub type CursorsInboundProtocol = Inbound<CursorsInboundInner>;
-/// Outbound cursor-handshake protocol type for the handler.
 pub type CursorsOutboundProtocol = Outbound<CursorsOutboundInner>;
-/// Inbound range-exchange protocol type for the handler.
 pub type SyncInboundProtocol = Inbound<SyncInboundInner>;
-/// Outbound range-exchange protocol type for the handler.
 pub type SyncOutboundProtocol = Outbound<SyncOutboundInner>;
 
-/// Create an inbound cursor-handshake handler.
 pub fn cursors_inbound() -> CursorsInboundProtocol {
     Inbound::new(CursorsInboundInner)
 }
 
-/// Create an outbound cursor-handshake handler.
 pub fn cursors_outbound() -> CursorsOutboundProtocol {
     Outbound::new(CursorsOutboundInner)
 }
 
-/// Create an inbound range-exchange handler.
 pub fn sync_inbound() -> SyncInboundProtocol {
     Inbound::new(SyncInboundInner)
 }
 
-/// Create an outbound range-exchange handler for the given `Get`.
 pub fn sync_outbound(get: Get) -> SyncOutboundProtocol {
     Outbound::new(SyncOutboundInner::new(get))
 }

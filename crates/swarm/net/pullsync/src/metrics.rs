@@ -1,8 +1,6 @@
-//! Metric name suffixes for pullsync.
-//!
-//! Exchange-level success and error counts come from the headered-stream layer;
-//! these name the range-exchange volume counters and the per-page latency
-//! histogram a behaviour layer records.
+//! Metric names for pullsync's range-exchange volume counters and per-page
+//! latency histogram. Exchange-level success and error counts come from the
+//! headered-stream layer.
 
 /// Total chunk descriptors offered across all pages.
 pub const CHUNKS_OFFERED_TOTAL: &str = "swarm.pullsync.chunks_offered_total";

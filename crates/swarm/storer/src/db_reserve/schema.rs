@@ -41,17 +41,10 @@ table!(pub(crate) Replay, "reserve_replay", ReplayKey, ReplayValue, compressed =
 // wrapping.
 table!(pub(crate) BinCounter, "reserve_bin_counter", BinKey, u64, compressed = false);
 
-// Reserve metadata: `MetadataKey -> u64`. Single-key table holding stable
-// instance metadata. The only current key is `EPOCH_KEY`, a nanosecond creation
-// timestamp written once when the reserve is first created; a pull-syncer reads
-// it alongside per-bin cursors to detect that the reserve was recreated and
-// invalidate its cached cursor set.
+// Single-key metadata table; the only key is `EPOCH_KEY`.
 table!(pub(crate) ReserveMetadata, "reserve_metadata", MetadataKey, u64, compressed = false);
 
 /// Single-byte discriminant for [`ReserveMetadata`] rows.
-///
-/// `0x00` is the epoch: a nanosecond unix timestamp captured once at reserve
-/// creation. It changes only when the reserve is recreated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) struct MetadataKey(pub u8);
 

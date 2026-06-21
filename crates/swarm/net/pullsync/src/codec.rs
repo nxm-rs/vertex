@@ -13,17 +13,11 @@ use vertex_swarm_primitives::{BatchId, Bin, StampedChunk};
 use crate::bitvector::BitVector;
 use crate::error::PullsyncError;
 
-/// Codec for the cursor-handshake `Syn`.
 pub(crate) type SynCodec = Codec<Syn, PullsyncError>;
-/// Codec for the cursor-handshake `Ack`.
 pub(crate) type AckCodec = Codec<Ack, PullsyncError>;
-/// Codec for a range-exchange `Get`.
 pub(crate) type GetCodec = Codec<Get, PullsyncError>;
-/// Codec for a range-exchange `Offer`.
 pub(crate) type OfferCodec = Codec<Offer, PullsyncError>;
-/// Codec for a range-exchange `Want`.
 pub(crate) type WantCodec = Codec<Want, PullsyncError>;
-/// Codec for a range-exchange `Delivery`.
 pub(crate) type DeliveryCodec = Codec<Delivery, PullsyncError>;
 
 /// Open the cursor handshake. Carries no payload.
@@ -44,17 +38,12 @@ impl ProtoMessage for Syn {
     }
 }
 
-/// Cursor handshake reply: the responder's per-bin sync cursors and epoch.
-///
-/// `cursors` is indexed by bin: `cursors[bin]` is the topmost bin id the
-/// responder holds for that bin, or `0` when the bin is empty. `epoch`
-/// identifies the responder's reserve generation so a requester can detect a
-/// reserve reset.
+/// Cursor handshake reply. `cursors[bin]` is the topmost id the responder holds
+/// for that bin (`0` when empty); `epoch` is its reserve generation marker, so a
+/// requester can detect a reserve reset.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ack {
-    /// Per-bin topmost cursors, indexed by bin.
     pub cursors: Vec<u64>,
-    /// The responder's reserve epoch.
     pub epoch: u64,
 }
 
@@ -78,20 +67,15 @@ impl ProtoMessage for Ack {
     }
 }
 
-/// Request the chunks in `bin` from bin id `start` upward.
-///
-/// `bin` is a typed [`Bin`]; the wire field is `int32` and is converted at this
-/// boundary. A bin outside `0..=MAX_PO` is a decode error.
+/// Request the chunks in `bin` from bin id `start` (inclusive) upward. The wire
+/// `bin` field is `int32`; a value outside `0..=MAX_PO` is a decode error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Get {
-    /// The bin to synchronise.
     pub bin: Bin,
-    /// The bin id to start from (inclusive).
     pub start: u64,
 }
 
 impl Get {
-    /// Create a new `Get` for `bin` starting at `start`.
     pub fn new(bin: Bin, start: u64) -> Self {
         Self { bin, start }
     }
@@ -120,20 +104,15 @@ impl ProtoMessage for Get {
 }
 
 /// One chunk advertised in an [`Offer`]: 32B address, 32B batch id, 32B stamp
-/// hash. No chunk data, only the identity a requester needs to decide whether to
-/// want it.
+/// hash. No chunk data, only the identity a requester needs to want it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChunkDescriptor {
-    /// The chunk address.
     pub address: ChunkAddress,
-    /// The postage batch the chunk is stamped under.
     pub batch_id: BatchId,
-    /// An opaque hash identifying the chunk's stamp.
     pub stamp_hash: B256,
 }
 
 impl ChunkDescriptor {
-    /// Create a descriptor from its three 32-byte fields.
     pub fn new(address: ChunkAddress, batch_id: BatchId, stamp_hash: B256) -> Self {
         Self {
             address,
@@ -170,21 +149,17 @@ fn b256_from_slice(slice: &[u8], field: &'static str) -> Result<B256, PullsyncEr
     })
 }
 
-/// The responder's answer to a [`Get`]: chunk descriptors for the requested
-/// range, up to [`DEFAULT_MAX_PAGE`](crate::DEFAULT_MAX_PAGE) per page.
-///
-/// `topmost` is the highest bin id covered by this page, so the requester
-/// advances its cursor even when it wants none of the offered chunks.
+/// The responder's answer to a [`Get`]: descriptors for the range, up to
+/// [`DEFAULT_MAX_PAGE`](crate::DEFAULT_MAX_PAGE) per page. `topmost` is the
+/// highest bin id covered, so the requester advances its cursor even when it
+/// wants none of the offered chunks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Offer {
-    /// The highest bin id this page covers.
     pub topmost: u64,
-    /// The descriptors on offer.
     pub chunks: Vec<ChunkDescriptor>,
 }
 
 impl Offer {
-    /// Create an offer covering `topmost` with the given descriptors.
     pub fn new(topmost: u64, chunks: Vec<ChunkDescriptor>) -> Self {
         Self { topmost, chunks }
     }
@@ -224,12 +199,10 @@ impl ProtoMessage for Offer {
 /// order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Want {
-    /// The MSB-first selection bitvector over the preceding offer.
     pub wanted: BitVector,
 }
 
 impl Want {
-    /// Create a want carrying the given selection bits.
     pub fn new(wanted: BitVector) -> Self {
         Self { wanted }
     }
@@ -253,27 +226,20 @@ impl ProtoMessage for Want {
     }
 
     fn from_proto(proto: Self::Proto) -> Result<Self, Self::DecodeError> {
-        // The byte length implies the bit count; an explicit offer length is not
-        // on the wire, so the vector is sized from the bytes alone (8 bits each).
         Ok(Self {
             wanted: BitVector::from_wire_bytes(proto.bit_vector),
         })
     }
 }
 
-/// A single wanted chunk: a full [`StampedChunk`] reconstructed and validated
-/// against its own address on decode.
-///
-/// The pairing is boxed: a [`StampedChunk`] is large, and boxing keeps the
-/// enclosing message types small.
+/// A single wanted chunk: a full [`StampedChunk`], validated against its own
+/// address on decode. Boxed to keep the enclosing message types small.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delivery {
-    /// The chunk paired with its postage stamp.
     pub chunk: Box<StampedChunk>,
 }
 
 impl Delivery {
-    /// Create a delivery from a stamped chunk.
     pub fn new(chunk: StampedChunk) -> Self {
         Self {
             chunk: Box::new(chunk),

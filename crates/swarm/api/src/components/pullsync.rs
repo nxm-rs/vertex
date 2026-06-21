@@ -1,5 +1,5 @@
-//! Pullsync trait surface: the server snapshot, puller interval persistence, and
-//! the chunk-admission verifier seam.
+//! Pullsync trait surface: server snapshot, puller interval persistence, and the
+//! chunk-admission verifier seam.
 
 use nectar_primitives::Bin;
 use vertex_swarm_primitives::{OverlayAddress, StampedChunk};
@@ -9,27 +9,18 @@ use crate::SwarmResult;
 use super::BinCursorStore;
 
 /// Server-side snapshot the cursor handshake and range responder read.
-///
-/// The two primitives the handshake and range responder compose with: the
-/// inherited per-bin insertion-order surface ([`bin_cursor`](BinCursorStore::bin_cursor)
-/// for the handshake, [`scan_bin_from`](BinCursorStore::scan_bin_from) for the
-/// Offer page, [`get`](super::SwarmLocalStore::get) for the Delivery body) plus a
-/// `reserve_epoch` creation marker. The epoch changes only when the reserve is
-/// recreated, so a puller that observes a new epoch knows its persisted cursors
-/// are stale. Cursor enumeration is the caller's, keyed by the typed [`Bin`].
 #[auto_impl::auto_impl(&, Arc, Box)]
 pub trait PullStorage: BinCursorStore {
-    /// Creation marker for the current reserve. A change invalidates every
-    /// cursor a puller persisted against the old reserve.
+    /// Reserve generation marker; changes only on reserve recreate, so a new
+    /// value tells a puller its persisted cursors are stale.
     fn reserve_epoch(&self) -> u64;
 }
 
 /// Puller-side persistence of sync progress per `(peer, bin)`.
 ///
-/// Tracks the last synced insertion sequence per bin and the last epoch seen per
-/// peer. A `peer_epoch` that no longer matches the peer's advertised
-/// [`reserve_epoch`](PullStorage::reserve_epoch) means the peer's reserve was
-/// recreated, so the puller resets that peer's per-bin intervals to `0`.
+/// A stored `peer_epoch` that no longer matches the peer's advertised
+/// [`reserve_epoch`](PullStorage::reserve_epoch) means the puller must reset that
+/// peer's intervals to `0`.
 #[auto_impl::auto_impl(&, Arc, Box)]
 pub trait IntervalStore: Send + Sync {
     /// Last synced insertion sequence for `peer` in `bin` (`0` if never synced).
@@ -46,8 +37,6 @@ pub trait IntervalStore: Send + Sync {
 }
 
 /// Why a delivered chunk was refused admission to the reserve.
-///
-/// The label-carrying refusal reasons for the puller's admission metric.
 #[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum VerifyError {
@@ -71,11 +60,7 @@ pub enum VerifyError {
 /// Admission gate the puller runs before accepting a delivered chunk.
 ///
 /// A pluggable seam: the full check is stamp signature recovery plus on-chain
-/// batch funding, but the batch-store and funding machinery are injected
-/// separately, so an interim signature-only implementation satisfies the
-/// signature arm while leaving [`UnknownBatch`](VerifyError::UnknownBatch) and
-/// [`InsufficientFunding`](VerifyError::InsufficientFunding) to the injected
-/// verifier. Synchronous to match the stateless stamp validators it composes.
+/// batch funding, so an interim signature-only impl is valid.
 #[auto_impl::auto_impl(&, Arc, Box)]
 pub trait PullChunkVerifier: Send + Sync {
     /// Verify a delivered chunk before it enters the reserve.
