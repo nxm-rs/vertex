@@ -7,18 +7,24 @@
 //! verifying and admitting each delivered chunk before advancing the interval.
 //! When caught up it backs off and re-passes (live tail).
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use libp2p::PeerId;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
-use vertex_swarm_api::{IntervalStore, PullChunkVerifier};
+use vertex_swarm_api::{
+    IntervalStore, PeerReporter, PullChunkVerifier, ReportSource, SwarmScoringEvent,
+};
 use vertex_swarm_primitives::{Bin, OverlayAddress};
 use vertex_tasks::{GracefulShutdown, MaybeSend, SpawnableTask, time};
 
 use crate::seams::{
     NeighbourSource, PullsyncControl, PullsyncEvent, ReadinessGate, ReserveAdmit, SyncTarget,
 };
+
+/// Reporting source stamped on puller-originated scoring events.
+const PULLSYNC_SOURCE: ReportSource = ReportSource::Protocol("pullsync");
 
 /// Backoff between sync passes once the neighbourhood is caught up.
 pub const DEFAULT_TAIL_BACKOFF: Duration = Duration::from_secs(5);
@@ -48,8 +54,8 @@ impl Default for PullerConfig {
 }
 
 /// The decoupling seams the [`Puller`] drives, bundled so the loop and its
-/// constructors take one value rather than six.
-pub struct PullerSeams<C, S, V, A, G, N> {
+/// constructors take one value rather than seven.
+pub struct PullerSeams<C, S, V, A, G, N, R> {
     /// Outbound command surface, bridged to `PullsyncBehaviour`.
     pub control: C,
     /// Per-peer interval and epoch persistence.
@@ -62,6 +68,8 @@ pub struct PullerSeams<C, S, V, A, G, N> {
     pub readiness: G,
     /// Source of neighbours and in-scope bins.
     pub neighbours: N,
+    /// Scoring sink for peers that serve unverifiable chunks.
+    pub reporter: R,
 }
 
 /// Neighbourhood pull-sync service.
@@ -70,7 +78,7 @@ pub struct PullerSeams<C, S, V, A, G, N> {
 /// mocks unchanged. The reserve epoch is read from each peer's cursor handshake;
 /// a change resets that peer's persisted intervals so a wiped or recreated source
 /// reserve is re-synced from zero.
-pub struct Puller<C, E, S, V, A, G, N> {
+pub struct Puller<C, E, S, V, A, G, N, R> {
     control: C,
     events: mpsc::Receiver<E>,
     intervals: S,
@@ -78,6 +86,7 @@ pub struct Puller<C, E, S, V, A, G, N> {
     admit: A,
     readiness: G,
     neighbours: N,
+    reporter: R,
     config: PullerConfig,
     /// Monotonic id stamped on each outbound command so a late reply from a
     /// timed-out command cannot be matched to the next command for the same
@@ -85,7 +94,7 @@ pub struct Puller<C, E, S, V, A, G, N> {
     next_request_id: u64,
 }
 
-impl<C, S, V, A, G, N> Puller<C, PullsyncEvent, S, V, A, G, N>
+impl<C, S, V, A, G, N, R> Puller<C, PullsyncEvent, S, V, A, G, N, R>
 where
     C: PullsyncControl,
     S: IntervalStore,
@@ -93,10 +102,11 @@ where
     A: ReserveAdmit,
     G: ReadinessGate,
     N: NeighbourSource,
+    R: PeerReporter,
 {
     /// Construct a puller over the decoupling seams and its event receiver.
     pub fn new(
-        seams: PullerSeams<C, S, V, A, G, N>,
+        seams: PullerSeams<C, S, V, A, G, N, R>,
         events: mpsc::Receiver<PullsyncEvent>,
         config: PullerConfig,
     ) -> Self {
@@ -107,6 +117,7 @@ where
             admit,
             readiness,
             neighbours,
+            reporter,
         } = seams;
         Self {
             control,
@@ -116,6 +127,7 @@ where
             admit,
             readiness,
             neighbours,
+            reporter,
             config,
             next_request_id: 0,
         }
@@ -164,32 +176,49 @@ where
 
     /// One sync pass: fetch and sync every current neighbour target once.
     ///
+    /// A peer that serves an unverifiable chunk is reported and added to a
+    /// per-pass skip set, so the same poison source is not re-requested for the
+    /// remainder of this pass; the next pass re-evaluates targets afresh (by
+    /// then scoring may have dropped it).
+    ///
     /// Public for deterministic testing; the live driver wraps it with the
     /// readiness gate and tail backoff in [`run`](Self::run).
     pub async fn sync_pass(&mut self) {
+        let mut rejected = HashSet::new();
         for target in self.neighbours.targets() {
-            self.sync_peer(&target).await;
+            if rejected.contains(&target.peer) {
+                continue;
+            }
+            if self.sync_peer(&target).await {
+                rejected.insert(target.peer);
+            }
         }
     }
 
     /// Fetch a peer's cursors, reconcile its epoch, then sync each in-scope bin.
-    async fn sync_peer(&mut self, target: &SyncTarget) {
+    ///
+    /// Returns `true` if a delivered chunk failed verification, so the caller
+    /// skips this peer for the rest of the pass.
+    async fn sync_peer(&mut self, target: &SyncTarget) -> bool {
         let request_id = self.next_request_id();
         self.control.fetch_cursors(target.peer, request_id);
 
         let epoch = match self.await_cursors(target.peer, request_id).await {
             Some(epoch) => epoch,
-            None => return,
+            None => return false,
         };
 
         if let Err(e) = self.reconcile_epoch(&target.overlay, epoch) {
             warn!(overlay = %target.overlay, error = %e, "puller epoch reconcile failed");
-            return;
+            return false;
         }
 
         for bin in &target.bins {
-            self.sync_bin(target, *bin).await;
+            if self.sync_bin(target, *bin).await {
+                return true;
+            }
         }
+        false
     }
 
     /// Drain the event stream until this command's cursor handshake answers,
@@ -249,13 +278,16 @@ where
     }
 
     /// Drive one bin from its persisted interval upward until caught up.
-    async fn sync_bin(&mut self, target: &SyncTarget, bin: Bin) {
+    ///
+    /// Returns `true` if a delivered chunk failed verification: the peer is
+    /// reported for invalid data and skipped for the rest of the pass.
+    async fn sync_bin(&mut self, target: &SyncTarget, bin: Bin) -> bool {
         loop {
             let start = match self.intervals.interval(&target.overlay, bin) {
                 Ok(start) => start,
                 Err(e) => {
                     warn!(overlay = %target.overlay, error = %e, "puller interval read failed");
-                    return;
+                    return false;
                 }
             };
 
@@ -264,7 +296,7 @@ where
 
             let (topmost, chunks) = match self.await_range(target.peer, request_id, bin).await {
                 Some(page) => page,
-                None => return,
+                None => return false,
             };
 
             let mut rejected = false;
@@ -284,20 +316,26 @@ where
                 }
             }
 
-            // A tainted page does not advance the interval; stop tailing this bin
-            // so the same start is retried on a later pass rather than spun on now.
+            // A tainted page does not advance the interval; report the source for
+            // invalid data and stop, so the same poison peer is skipped for the
+            // rest of the pass rather than re-requested.
             if rejected {
-                return;
+                self.reporter.report_peer(
+                    &target.overlay,
+                    SwarmScoringEvent::InvalidData,
+                    PULLSYNC_SOURCE,
+                );
+                return true;
             }
 
             // Caught up: the offer covered nothing past the resume point.
             if topmost <= start {
-                return;
+                return false;
             }
 
             if let Err(e) = self.intervals.set_interval(&target.overlay, bin, topmost) {
                 warn!(overlay = %target.overlay, error = %e, "puller interval write failed");
-                return;
+                return false;
             }
         }
     }
@@ -370,7 +408,7 @@ impl PullerHandle {
 /// Default event-channel capacity.
 pub const DEFAULT_EVENT_CAPACITY: usize = 256;
 
-impl<C, S, V, A, G, N> SpawnableTask for Puller<C, PullsyncEvent, S, V, A, G, N>
+impl<C, S, V, A, G, N, R> SpawnableTask for Puller<C, PullsyncEvent, S, V, A, G, N, R>
 where
     C: PullsyncControl + 'static,
     S: IntervalStore + 'static,
@@ -378,6 +416,7 @@ where
     A: ReserveAdmit + 'static,
     G: ReadinessGate + Send + 'static,
     N: NeighbourSource + 'static,
+    R: PeerReporter + 'static,
 {
     fn into_task(
         self,
@@ -389,15 +428,16 @@ where
 
 /// A constructed [`Puller`] paired with the handle the node bridge feeds events
 /// through.
-pub type BuiltPuller<C, S, V, A, G, N> = (Puller<C, PullsyncEvent, S, V, A, G, N>, PullerHandle);
+pub type BuiltPuller<C, S, V, A, G, N, R> =
+    (Puller<C, PullsyncEvent, S, V, A, G, N, R>, PullerHandle);
 
 /// Build a puller plus its event handle, wiring an mpsc channel of the given
 /// capacity between the node bridge and the loop.
-pub fn build_puller<C, S, V, A, G, N>(
-    seams: PullerSeams<C, S, V, A, G, N>,
+pub fn build_puller<C, S, V, A, G, N, R>(
+    seams: PullerSeams<C, S, V, A, G, N, R>,
     config: PullerConfig,
     event_capacity: usize,
-) -> BuiltPuller<C, S, V, A, G, N>
+) -> BuiltPuller<C, S, V, A, G, N, R>
 where
     C: PullsyncControl,
     S: IntervalStore,
@@ -405,6 +445,7 @@ where
     A: ReserveAdmit,
     G: ReadinessGate,
     N: NeighbourSource,
+    R: PeerReporter,
 {
     let (events_tx, events_rx) = mpsc::channel(event_capacity);
     let puller = Puller::new(seams, events_rx, config);
@@ -412,9 +453,9 @@ where
 }
 
 /// Spawn the puller as a graceful-shutdown service, returning its event handle.
-pub fn spawn_puller<C, S, V, A, G, N>(
+pub fn spawn_puller<C, S, V, A, G, N, R>(
     executor: &vertex_tasks::TaskExecutor,
-    seams: PullerSeams<C, S, V, A, G, N>,
+    seams: PullerSeams<C, S, V, A, G, N, R>,
     config: PullerConfig,
 ) -> PullerHandle
 where
@@ -424,6 +465,7 @@ where
     A: ReserveAdmit + 'static,
     G: ReadinessGate + Send + 'static,
     N: NeighbourSource + 'static,
+    R: PeerReporter + 'static,
 {
     let (puller, handle) = build_puller(seams, config, DEFAULT_EVENT_CAPACITY);
     executor.spawn_service("swarm.puller", puller);
