@@ -171,6 +171,7 @@ fn storer(storage: MockStorage) -> Swarm<StorerBehaviour> {
 fn event_routes_to_pullsync_arm() {
     let event = PullsyncEvent::CursorsReceived {
         peer: libp2p::PeerId::random(),
+        request_id: 1,
         cursors: vec![0, 1, 2],
         epoch: 7,
     };
@@ -197,7 +198,7 @@ async fn composite_routes_pullsync_range() {
     puller
         .behaviour_mut()
         .pullsync
-        .sync_range(server_peer, bin, 0);
+        .sync_range(server_peer, 1, bin, 0);
 
     let event = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -217,11 +218,13 @@ async fn composite_routes_pullsync_range() {
     match event {
         StorerBehaviourEvent::Pullsync(PullsyncEvent::RangeDelivered {
             peer,
+            request_id,
             bin: got_bin,
             topmost,
             chunks,
         }) => {
             assert_eq!(peer, server_peer);
+            assert_eq!(request_id, 1, "the reply echoes the command request id");
             assert_eq!(got_bin, bin);
             assert_eq!(topmost, 2);
             let delivered: Vec<ChunkAddress> = chunks.iter().map(|c| *c.address()).collect();

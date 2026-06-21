@@ -78,29 +78,43 @@ const fn nonzero(n: u32) -> NonZeroU32 {
     }
 }
 
-/// Commands from the behaviour to the handler.
+/// Commands from the behaviour to the handler. `request_id` correlates the
+/// reply event the puller awaits; it never crosses the wire.
 #[derive(Debug)]
 pub enum PullsyncCommand {
     /// Open the cursor handshake and report the peer's per-bin cursors.
-    FetchCursors,
+    FetchCursors { request_id: u64 },
     /// Open a range exchange for `bin` from `start` and collect the deliveries.
-    SyncRange { bin: Bin, start: u64 },
+    SyncRange {
+        request_id: u64,
+        bin: Bin,
+        start: u64,
+    },
 }
 
-/// Events from the handler to the behaviour.
+/// Events from the handler to the behaviour. `request_id` echoes the command
+/// that opened the exchange so the puller can drop a stale buffered reply.
 #[derive(Debug)]
 pub enum PullsyncHandlerEvent {
     /// Cursor handshake answered.
-    CursorsReceived { cursors: Vec<u64>, epoch: u64 },
+    CursorsReceived {
+        request_id: u64,
+        cursors: Vec<u64>,
+        epoch: u64,
+    },
     /// Range exchange delivered chunks for `bin`, with `topmost` the highest id
     /// the offer covered (the puller advances its cursor to it).
     RangeDelivered {
+        request_id: u64,
         bin: Bin,
         topmost: u64,
         chunks: Vec<StampedChunk>,
     },
     /// An outbound command failed.
-    OutboundFailed { failure: PullsyncFailure },
+    OutboundFailed {
+        request_id: u64,
+        failure: PullsyncFailure,
+    },
 }
 
 /// Outcome of one inbound serving future. The reply is already sent inside the
@@ -114,11 +128,15 @@ enum InboundOutcome {
 /// Outcome of one outbound range future.
 enum RangeOutcome {
     Delivered {
+        request_id: u64,
         bin: Bin,
         topmost: u64,
         chunks: Vec<StampedChunk>,
     },
-    Failed(PullsyncFailure),
+    Failed {
+        request_id: u64,
+        failure: PullsyncFailure,
+    },
 }
 
 /// Per-connection pullsync handler.
@@ -199,9 +217,10 @@ impl PullsyncHandler {
     }
 
     /// Drive a negotiated outbound range to completion.
-    fn drive_range(&mut self, bin: Bin, offer: Offer, requester: SyncRequester) {
-        self.outbound
-            .push(Box::pin(drive_range_inner(bin, offer, requester)));
+    fn drive_range(&mut self, request_id: u64, bin: Bin, offer: Offer, requester: SyncRequester) {
+        self.outbound.push(Box::pin(drive_range_inner(
+            request_id, bin, offer, requester,
+        )));
     }
 
     /// Index of the first queued command that may dispatch now. A `FetchCursors`
@@ -209,7 +228,7 @@ impl PullsyncHandler {
     fn next_dispatchable_command(&self) -> Option<usize> {
         let has_range_slot = self.outbound.len() < MAX_OUTBOUND_DRIVING;
         self.pending_commands.iter().position(|cmd| match cmd {
-            PullsyncCommand::FetchCursors => true,
+            PullsyncCommand::FetchCursors { .. } => true,
             PullsyncCommand::SyncRange { .. } => has_range_slot,
         })
     }
@@ -343,7 +362,12 @@ fn page_bin(
 /// Select every chunk in the offer, send the want, and collect the deliveries.
 /// Admission and verification belong to the puller service; the command surface
 /// wants all offered chunks so the round-trip is exercised end to end.
-async fn drive_range_inner(bin: Bin, offer: Offer, requester: SyncRequester) -> RangeOutcome {
+async fn drive_range_inner(
+    request_id: u64,
+    bin: Bin,
+    offer: Offer,
+    requester: SyncRequester,
+) -> RangeOutcome {
     let topmost = offer.topmost;
     let expected = offer.chunks.len();
 
@@ -352,11 +376,15 @@ async fn drive_range_inner(bin: Bin, offer: Offer, requester: SyncRequester) -> 
     if expected == 0 {
         return match requester.finish().await {
             Ok(()) => RangeOutcome::Delivered {
+                request_id,
                 bin,
                 topmost,
                 chunks: Vec::new(),
             },
-            Err(e) => RangeOutcome::Failed(PullsyncFailure::Stream(e.to_string())),
+            Err(e) => RangeOutcome::Failed {
+                request_id,
+                failure: PullsyncFailure::Stream(e.to_string()),
+            },
         };
     }
 
@@ -366,7 +394,12 @@ async fn drive_range_inner(bin: Bin, offer: Offer, requester: SyncRequester) -> 
     }
     let mut requester = match requester.send_want(Want::new(want)).await {
         Ok(r) => r,
-        Err(e) => return RangeOutcome::Failed(PullsyncFailure::Stream(e.to_string())),
+        Err(e) => {
+            return RangeOutcome::Failed {
+                request_id,
+                failure: PullsyncFailure::Stream(e.to_string()),
+            };
+        }
     };
 
     let mut chunks = Vec::with_capacity(expected);
@@ -376,11 +409,22 @@ async fn drive_range_inner(bin: Bin, offer: Offer, requester: SyncRequester) -> 
         match timeout(READ_TIMEOUT, requester.next_delivery()).await {
             Ok(Ok(Some(delivery))) => chunks.push(*delivery.chunk),
             Ok(Ok(None)) => break,
-            Ok(Err(e)) => return RangeOutcome::Failed(PullsyncFailure::Stream(e.to_string())),
-            Err(_) => return RangeOutcome::Failed(PullsyncFailure::TimedOut),
+            Ok(Err(e)) => {
+                return RangeOutcome::Failed {
+                    request_id,
+                    failure: PullsyncFailure::Stream(e.to_string()),
+                };
+            }
+            Err(_) => {
+                return RangeOutcome::Failed {
+                    request_id,
+                    failure: PullsyncFailure::TimedOut,
+                };
+            }
         }
     }
     RangeOutcome::Delivered {
+        request_id,
         bin,
         topmost,
         chunks,
@@ -426,20 +470,28 @@ impl ConnectionHandler for PullsyncHandler {
         if let Poll::Ready(Some(outcome)) = self.outbound.poll_next_unpin(cx) {
             let event = match outcome {
                 RangeOutcome::Delivered {
+                    request_id,
                     bin,
                     topmost,
                     chunks,
                 } => {
                     crate::metrics::outbound_range_delivered(chunks.len() as u64);
                     PullsyncHandlerEvent::RangeDelivered {
+                        request_id,
                         bin,
                         topmost,
                         chunks,
                     }
                 }
-                RangeOutcome::Failed(failure) => {
+                RangeOutcome::Failed {
+                    request_id,
+                    failure,
+                } => {
                     crate::metrics::outbound_failed();
-                    PullsyncHandlerEvent::OutboundFailed { failure }
+                    PullsyncHandlerEvent::OutboundFailed {
+                        request_id,
+                        failure,
+                    }
                 }
             };
             return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
@@ -453,12 +505,17 @@ impl ConnectionHandler for PullsyncHandler {
             && let Some(cmd) = self.pending_commands.remove(idx)
         {
             let (protocol, info) = match cmd {
-                PullsyncCommand::FetchCursors => {
-                    (PullsyncOutboundUpgrade::Cursors, OutboundInfo::Cursors)
-                }
-                PullsyncCommand::SyncRange { bin, start } => (
+                PullsyncCommand::FetchCursors { request_id } => (
+                    PullsyncOutboundUpgrade::Cursors,
+                    OutboundInfo::Cursors { request_id },
+                ),
+                PullsyncCommand::SyncRange {
+                    request_id,
+                    bin,
+                    start,
+                } => (
                     PullsyncOutboundUpgrade::Sync(Get::new(bin, start)),
-                    OutboundInfo::Sync { bin },
+                    OutboundInfo::Sync { request_id, bin },
                 ),
             };
             return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
@@ -505,24 +562,31 @@ impl ConnectionHandler for PullsyncHandler {
                 protocol,
                 info,
             }) => match (protocol, info) {
-                (OutboundOutput::Cursors(ack), OutboundInfo::Cursors) => {
+                (OutboundOutput::Cursors(ack), OutboundInfo::Cursors { request_id }) => {
                     crate::metrics::outbound_cursors_received();
                     self.core.push_event(PullsyncHandlerEvent::CursorsReceived {
+                        request_id,
                         cursors: ack.cursors,
                         epoch: ack.epoch,
                     });
                 }
-                (OutboundOutput::Sync(offer, requester), OutboundInfo::Sync { bin }) => {
-                    self.drive_range(bin, offer, requester);
+                (
+                    OutboundOutput::Sync(offer, requester),
+                    OutboundInfo::Sync { request_id, bin },
+                ) => {
+                    self.drive_range(request_id, bin, offer, requester);
                 }
                 (_, info) => warn!(?info, "Mismatched pullsync outbound output"),
             },
 
             ConnectionEvent::DialUpgradeError(DialUpgradeError { error, info }) => {
+                let request_id = info.request_id();
                 let failure = classify(&error.to_string());
                 debug!(?info, %error, "Pullsync outbound error");
-                self.core
-                    .push_event(PullsyncHandlerEvent::OutboundFailed { failure });
+                self.core.push_event(PullsyncHandlerEvent::OutboundFailed {
+                    request_id,
+                    failure,
+                });
             }
 
             ConnectionEvent::ListenUpgradeError(ListenUpgradeError { error, .. }) => {
@@ -545,11 +609,22 @@ fn classify(error: &str) -> PullsyncFailure {
     }
 }
 
-/// Per-connection outbound open info carried alongside an outbound request.
+/// Per-connection outbound open info carried alongside an outbound request,
+/// echoing the command's `request_id` back to the puller via the reply event.
 #[derive(Debug)]
 pub enum OutboundInfo {
-    Cursors,
-    Sync { bin: Bin },
+    Cursors { request_id: u64 },
+    Sync { request_id: u64, bin: Bin },
+}
+
+impl OutboundInfo {
+    fn request_id(&self) -> u64 {
+        match self {
+            OutboundInfo::Cursors { request_id } | OutboundInfo::Sync { request_id, .. } => {
+                *request_id
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -566,16 +641,26 @@ mod tests {
         let stalled = pending::<Result<(), PullsyncFailure>>();
         let outcome = match timeout(READ_TIMEOUT, stalled).await {
             Ok(Ok(())) => RangeOutcome::Delivered {
+                request_id: 0,
                 bin: Bin::ZERO,
                 topmost: 0,
                 chunks: Vec::new(),
             },
-            Ok(Err(e)) => RangeOutcome::Failed(PullsyncFailure::Stream(e.to_string())),
-            Err(_) => RangeOutcome::Failed(PullsyncFailure::TimedOut),
+            Ok(Err(e)) => RangeOutcome::Failed {
+                request_id: 0,
+                failure: PullsyncFailure::Stream(e.to_string()),
+            },
+            Err(_) => RangeOutcome::Failed {
+                request_id: 0,
+                failure: PullsyncFailure::TimedOut,
+            },
         };
         assert!(matches!(
             outcome,
-            RangeOutcome::Failed(PullsyncFailure::TimedOut)
+            RangeOutcome::Failed {
+                failure: PullsyncFailure::TimedOut,
+                ..
+            }
         ));
     }
 }

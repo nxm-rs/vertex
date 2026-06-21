@@ -16,14 +16,15 @@ pub use vertex_swarm_storer_behaviour::PullsyncEvent;
 /// Outbound command surface the puller drives, bridged to `PullsyncBehaviour`.
 ///
 /// Each call opens an outbound substream against `peer`; its result arrives as a
-/// [`PullsyncEvent`] on the puller's event receiver.
+/// [`PullsyncEvent`] on the puller's event receiver, echoing `request_id` so the
+/// puller can discard a stale reply from a prior, timed-out command.
 #[auto_impl::auto_impl(&, Arc, Box)]
 pub trait PullsyncControl: Send + Sync {
     /// Open the cursor handshake against `peer`.
-    fn fetch_cursors(&self, peer: PeerId);
+    fn fetch_cursors(&self, peer: PeerId, request_id: u64);
 
     /// Open a range exchange against `peer` for `bin` from `start`.
-    fn sync_range(&self, peer: PeerId, bin: Bin, start: u64);
+    fn sync_range(&self, peer: PeerId, request_id: u64, bin: Bin, start: u64);
 }
 
 /// Readiness gate the puller awaits before each sync pass.

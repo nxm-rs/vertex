@@ -79,6 +79,10 @@ pub struct Puller<C, E, S, V, A, G, N> {
     readiness: G,
     neighbours: N,
     config: PullerConfig,
+    /// Monotonic id stamped on each outbound command so a late reply from a
+    /// timed-out command cannot be matched to the next command for the same
+    /// peer and bin. Local to the in-process surface; never on the wire.
+    next_request_id: u64,
 }
 
 impl<C, S, V, A, G, N> Puller<C, PullsyncEvent, S, V, A, G, N>
@@ -113,7 +117,16 @@ where
             readiness,
             neighbours,
             config,
+            next_request_id: 0,
         }
+    }
+
+    /// Next outbound command id; wraps after `u64::MAX` commands, which the
+    /// await never confuses for a stale in-flight reply.
+    fn next_request_id(&mut self) -> u64 {
+        let id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+        id
     }
 
     /// Run the sync loop until `shutdown` fires.
@@ -161,9 +174,10 @@ where
 
     /// Fetch a peer's cursors, reconcile its epoch, then sync each in-scope bin.
     async fn sync_peer(&mut self, target: &SyncTarget) {
-        self.control.fetch_cursors(target.peer);
+        let request_id = self.next_request_id();
+        self.control.fetch_cursors(target.peer, request_id);
 
-        let epoch = match self.await_cursors(target.peer).await {
+        let epoch = match self.await_cursors(target.peer, request_id).await {
             Some(epoch) => epoch,
             None => return,
         };
@@ -178,19 +192,29 @@ where
         }
     }
 
-    /// Drain the event stream until this peer's cursor handshake answers,
-    /// returning its advertised reserve epoch. `None` abandons this peer: it
-    /// failed, the deadline elapsed, or the stream closed.
-    async fn await_cursors(&mut self, peer: PeerId) -> Option<u64> {
+    /// Drain the event stream until this command's cursor handshake answers,
+    /// returning its advertised reserve epoch. Matching is keyed on `request_id`
+    /// so a stale reply from a prior timed-out command is discarded rather than
+    /// taken for this one. `None` abandons this peer: it failed, the deadline
+    /// elapsed, or the stream closed.
+    async fn await_cursors(&mut self, peer: PeerId, request_id: u64) -> Option<u64> {
         let ceiling = self.config.peer_response_timeout;
         let events = &mut self.events;
         let drained = async {
             loop {
                 match events.recv().await? {
-                    PullsyncEvent::CursorsReceived { peer: p, epoch, .. } if p == peer => {
+                    PullsyncEvent::CursorsReceived {
+                        request_id: id,
+                        epoch,
+                        ..
+                    } if id == request_id => {
                         return Some(epoch);
                     }
-                    PullsyncEvent::Failed { peer: p, failure } if p == peer => {
+                    PullsyncEvent::Failed {
+                        request_id: id,
+                        failure,
+                        ..
+                    } if id == request_id => {
                         debug!(%peer, %failure, "puller cursor handshake failed");
                         return None;
                     }
@@ -235,9 +259,10 @@ where
                 }
             };
 
-            self.control.sync_range(target.peer, bin, start);
+            let request_id = self.next_request_id();
+            self.control.sync_range(target.peer, request_id, bin, start);
 
-            let (topmost, chunks) = match self.await_range(target.peer, bin).await {
+            let (topmost, chunks) = match self.await_range(target.peer, request_id, bin).await {
                 Some(page) => page,
                 None => return,
             };
@@ -277,12 +302,16 @@ where
         }
     }
 
-    /// Drain the event stream until this peer's range page for `bin` answers,
-    /// returning `(topmost, chunks)`. `None` abandons this peer: it failed, the
-    /// deadline elapsed, or the stream closed.
+    /// Drain the event stream until this command's range page answers,
+    /// returning `(topmost, chunks)`. Matching is keyed on `request_id` so a
+    /// stale reply buffered from a prior timed-out command for the same peer and
+    /// bin is discarded rather than advancing the interval past undelivered
+    /// data. `None` abandons this peer: it failed, the deadline elapsed, or the
+    /// stream closed.
     async fn await_range(
         &mut self,
         peer: PeerId,
+        request_id: u64,
         bin: Bin,
     ) -> Option<(u64, Vec<vertex_swarm_primitives::StampedChunk>)> {
         let ceiling = self.config.peer_response_timeout;
@@ -291,12 +320,16 @@ where
             loop {
                 match events.recv().await? {
                     PullsyncEvent::RangeDelivered {
-                        peer: p,
-                        bin: b,
+                        request_id: id,
                         topmost,
                         chunks,
-                    } if p == peer && b == bin => return Some((topmost, chunks)),
-                    PullsyncEvent::Failed { peer: p, failure } if p == peer => {
+                        ..
+                    } if id == request_id => return Some((topmost, chunks)),
+                    PullsyncEvent::Failed {
+                        request_id: id,
+                        failure,
+                        ..
+                    } if id == request_id => {
                         debug!(%peer, %failure, "puller range exchange failed");
                         return None;
                     }

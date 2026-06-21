@@ -38,15 +38,19 @@ impl vertex_swarm_puller::ReadinessGate for NoGate {
 struct MockControl {
     fetched: Arc<Mutex<Vec<PeerId>>>,
     ranges: Arc<Mutex<Vec<(PeerId, Bin, u64)>>>,
+    /// Request ids stamped on each `sync_range`, in issue order, so a test can
+    /// reply with the live id rather than guessing it.
+    range_ids: Arc<Mutex<Vec<u64>>>,
 }
 
 impl PullsyncControl for MockControl {
-    fn fetch_cursors(&self, peer: PeerId) {
+    fn fetch_cursors(&self, peer: PeerId, _request_id: u64) {
         self.fetched.lock().unwrap().push(peer);
     }
 
-    fn sync_range(&self, peer: PeerId, bin: Bin, start: u64) {
+    fn sync_range(&self, peer: PeerId, request_id: u64, bin: Bin, start: u64) {
         self.ranges.lock().unwrap().push((peer, bin, start));
+        self.range_ids.lock().unwrap().push(request_id);
     }
 }
 
@@ -223,13 +227,16 @@ async fn non_empty_range_syncs_verifies_admits_and_advances() {
         puller,
         &h,
         vec![
+            // Cursors take request id 0, the first command of the pass.
             PullsyncEvent::CursorsReceived {
                 peer: h.peer,
+                request_id: 0,
                 cursors: vec![],
                 epoch: 1,
             },
             PullsyncEvent::RangeDelivered {
                 peer: h.peer,
+                request_id: 1,
                 bin: bin(2),
                 topmost: 10,
                 chunks: vec![chunk],
@@ -237,6 +244,7 @@ async fn non_empty_range_syncs_verifies_admits_and_advances() {
             // Caught up: topmost unchanged at the new resume point.
             PullsyncEvent::RangeDelivered {
                 peer: h.peer,
+                request_id: 2,
                 bin: bin(2),
                 topmost: 10,
                 chunks: vec![],
@@ -269,12 +277,14 @@ async fn epoch_change_resets_intervals() {
             // New epoch 2 differs from the stored 1: reset before syncing.
             PullsyncEvent::CursorsReceived {
                 peer: h.peer,
+                request_id: 0,
                 cursors: vec![],
                 epoch: 2,
             },
             // Empty page at the reset resume point: caught up immediately.
             PullsyncEvent::RangeDelivered {
                 peer: h.peer,
+                request_id: 1,
                 bin: bin(2),
                 topmost: 0,
                 chunks: vec![],
@@ -303,11 +313,13 @@ async fn rejected_chunk_is_not_admitted_and_interval_not_advanced() {
         vec![
             PullsyncEvent::CursorsReceived {
                 peer: h.peer,
+                request_id: 0,
                 cursors: vec![],
                 epoch: 1,
             },
             PullsyncEvent::RangeDelivered {
                 peer: h.peer,
+                request_id: 1,
                 bin: bin(2),
                 topmost: 10,
                 chunks: vec![chunk],
@@ -322,6 +334,72 @@ async fn rejected_chunk_is_not_admitted_and_interval_not_advanced() {
     assert_eq!(h.intervals.interval(&h.overlay, bin(2)).unwrap(), 0);
     // Exactly one sync_range was issued (from 0); the tainted page stops the bin.
     assert_eq!(*h.control.ranges.lock().unwrap(), vec![(h.peer, bin(2), 0)]);
+}
+
+// A late reply from a prior timed-out command stays buffered in the channel. It
+// carries that command's (now stale) request id, so the next command's await
+// must skip it rather than take it for its own delivery and advance the interval
+// past data the new command has not yet received.
+#[tokio::test]
+async fn stale_range_reply_is_ignored() {
+    let (puller, h) = harness(true);
+    let chunk = stamped(0xcc);
+    let addr = *chunk.address();
+
+    run_pass(
+        puller,
+        &h,
+        vec![
+            PullsyncEvent::CursorsReceived {
+                peer: h.peer,
+                request_id: 0,
+                cursors: vec![],
+                epoch: 1,
+            },
+            // Buffered before the real reply: a stale page from a request id the
+            // current `sync_range` (id 1) never issued. Its high topmost would
+            // wrongly skip to 500 if matched on peer and bin alone.
+            PullsyncEvent::RangeDelivered {
+                peer: h.peer,
+                request_id: 99,
+                bin: bin(2),
+                topmost: 500,
+                chunks: vec![],
+            },
+            // The current command's own delivery.
+            PullsyncEvent::RangeDelivered {
+                peer: h.peer,
+                request_id: 1,
+                bin: bin(2),
+                topmost: 10,
+                chunks: vec![chunk],
+            },
+            // Caught up at the new resume point (request id 2).
+            PullsyncEvent::RangeDelivered {
+                peer: h.peer,
+                request_id: 2,
+                bin: bin(2),
+                topmost: 10,
+                chunks: vec![],
+            },
+        ],
+    )
+    .await;
+
+    // The stale page was discarded: the interval advanced only to the id-1
+    // delivery's topmost, and exactly its chunk was admitted.
+    assert_eq!(*h.admit.admitted.lock().unwrap(), vec![addr]);
+    assert_eq!(
+        h.intervals.interval(&h.overlay, bin(2)).unwrap(),
+        10,
+        "the interval advances by the new command's delivery, not the stale 500"
+    );
+    // Two range commands issued (the id-1 fetch from 0, the id-2 catch-up from
+    // 10); the stale reply triggered no extra command.
+    assert_eq!(
+        *h.control.ranges.lock().unwrap(),
+        vec![(h.peer, bin(2), 0), (h.peer, bin(2), 10)]
+    );
 }
 
 struct TwoTargets(Vec<SyncTarget>);
@@ -391,10 +469,13 @@ async fn silent_peer_is_abandoned_and_pass_proceeds() {
     // Let the silent peer's await park, then elapse its deadline.
     tokio::time::sleep(timeout + std::time::Duration::from_secs(1)).await;
 
-    // The pass is now awaiting the live peer; deliver its cursor and caught-up page.
+    // The pass is now awaiting the live peer; deliver its cursor and caught-up
+    // page. The silent peer consumed request id 0; the live peer's cursor takes
+    // id 1 and its range id 2.
     events_tx
         .send(PullsyncEvent::CursorsReceived {
             peer: live,
+            request_id: 1,
             cursors: vec![],
             epoch: 1,
         })
@@ -403,6 +484,7 @@ async fn silent_peer_is_abandoned_and_pass_proceeds() {
     events_tx
         .send(PullsyncEvent::RangeDelivered {
             peer: live,
+            request_id: 2,
             bin: bin(2),
             topmost: 0,
             chunks: vec![],
