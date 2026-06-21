@@ -53,10 +53,14 @@
 #[cfg(feature = "swap-chequebook")]
 pub mod chain;
 pub mod cheque;
+#[cfg(feature = "chain")]
+pub mod index;
 
 #[cfg(feature = "swap-chequebook")]
 pub use chain::ChequebookContract;
 pub use cheque::{Cheque, ChequeExt, SignedCheque};
+#[cfg(feature = "chain")]
+pub use index::{TAG_CHEQUEBOOK, registration};
 
 // Re-export commonly used types
 pub use alloy_primitives::{Address, U256};

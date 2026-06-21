@@ -31,6 +31,13 @@ tracing = { workspace = true }
 vertex-chain = { workspace = true, optional = true }
 alloy-provider = { workspace = true, optional = true }
 
+# `chain`: indexing framework plus the ABIs, storage, and alloy types it decodes with.
+vertex-chain-index-framework = { workspace = true, optional = true }
+nectar-contracts = { workspace = true, features = ["std"], optional = true }
+vertex-storage = { workspace = true, optional = true }
+alloy-sol-types = { workspace = true, optional = true }
+alloy-rpc-types-eth = { workspace = true, optional = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
 vertex-swarm-test-utils = { workspace = true }
@@ -39,6 +46,8 @@ alloy-signer-local = { workspace = true }
 nectar-contracts = { workspace = true }
 alloy-contract = { workspace = true }
 alloy-sol-types = { workspace = true }
+vertex-storage-redb = { workspace = true }
+vertex-chain-index = { workspace = true }
 
 [features]
 default = ["std"]
@@ -49,4 +58,14 @@ swap-chequebook = [
     "dep:vertex-chain",
     "dep:alloy-provider",
     "vertex-swarm-accounting-chequebook/swap-chequebook",
+]
+# On-chain swap-price-oracle indexing (lazy settlement-scalar views). Off by
+# default so the wasm/light cone stays clean.
+chain = [
+    "std",
+    "dep:vertex-chain-index-framework",
+    "dep:nectar-contracts",
+    "dep:vertex-storage",
+    "dep:alloy-sol-types",
+    "dep:alloy-rpc-types-eth",
 ]
