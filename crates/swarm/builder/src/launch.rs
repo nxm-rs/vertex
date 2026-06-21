@@ -222,15 +222,21 @@ define_launch_types!(
 type StoreFactory<'a> =
     Box<dyn FnOnce(Option<Arc<RedbDatabase>>) -> Result<NodeStore, SwarmNodeError> + Send + 'a>;
 
+/// Guard message: a storer with no reserve is an internal wiring bug, not config.
+const STORER_RESERVE_MISSING: &str = "storer reserve missing";
+
 /// The node's local store, plus the storer reserve view when the node is a storer.
 ///
 /// `local` is the retrieval-serve view: a client's in-memory cache, or a storer's
 /// [`composite::CacheThenReserve`] layering the cache over the reserve (reserve
-/// wins on overlap). `reserve` is the separate pushsync-ingest view, carried only
-/// for a storer. A client leaves `reserve` `None`.
+/// wins on overlap). `reserve` is the separate storer reserve view, erased to
+/// [`BinCursorStore`](vertex_swarm_api::BinCursorStore) and carried only for a
+/// storer; it feeds pushsync ingest (upcast to `Arc<dyn ReserveStore>` at the
+/// `enable_storage` call site) and the served reserve capabilities. A client
+/// leaves `reserve` `None`.
 struct NodeStore {
     local: Arc<dyn vertex_swarm_api::SwarmLocalStore>,
-    reserve: Option<Arc<dyn vertex_swarm_api::ReserveStore>>,
+    reserve: Option<Arc<dyn vertex_swarm_api::BinCursorStore>>,
 }
 
 /// A cache override supplied through the builder. With no seam the launch path
@@ -248,7 +254,7 @@ pub(crate) enum CacheSeam {
 /// database.
 pub(crate) enum ReserveSeam {
     /// A pre-built reserve, used as-is.
-    Ready(Arc<dyn vertex_swarm_api::ReserveStore>),
+    Ready(Arc<dyn vertex_swarm_api::BinCursorStore>),
     /// A factory invoked at build time with the opened shared database.
     Factory(ReserveFactory),
 }
@@ -265,7 +271,7 @@ pub(crate) type CacheFactory = Box<
 pub(crate) type ReserveFactory = Box<
     dyn FnOnce(
             Option<Arc<RedbDatabase>>,
-        ) -> Result<Arc<dyn vertex_swarm_api::ReserveStore>, SwarmNodeError>
+        ) -> Result<Arc<dyn vertex_swarm_api::BinCursorStore>, SwarmNodeError>
         + Send,
 >;
 
@@ -295,6 +301,10 @@ struct ClientNodeParts {
     /// The node's local store, erased to the trait; the storer wires this same
     /// instance into its components so retrieval and storage share one store.
     store: Arc<dyn vertex_swarm_api::SwarmLocalStore>,
+    /// The storer reserve, erased to [`BinCursorStore`]; `None` for a client. The
+    /// storer wires this same instance so its components and the run loop share
+    /// one reserve.
+    reserve: Option<Arc<dyn vertex_swarm_api::BinCursorStore>>,
 }
 
 /// Shared launch path for the client- and storer-backed node types.
@@ -404,9 +414,11 @@ async fn build_client_backed_node(
 
     // Storer ingest: the inbound pushsync path gets the reserve so a delivery the
     // node is responsible for is stored and acknowledged with a signed receipt
-    // instead of relayed. A client has no reserve and keeps the verbatim relay.
-    if let Some(reserve) = reserve {
-        node.enable_storage(reserve);
+    // instead of relayed. A client has no reserve and keeps the verbatim relay. The
+    // same reserve is carried out through `ClientNodeParts` for the served reserve
+    // capabilities.
+    if let Some(reserve) = reserve.clone() {
+        node.enable_storage(reserve as Arc<dyn vertex_swarm_api::ReserveStore>);
     }
 
     let selector = Arc::new(PeerSelector::new(
@@ -467,6 +479,7 @@ async fn build_client_backed_node(
         topology,
         chunks,
         store,
+        reserve,
     })
 }
 
@@ -604,6 +617,7 @@ impl SwarmLaunchConfig for StorerConfig {
         TopologyHandle<Arc<Identity>>,
         VerifiedChunkProvider,
         Arc<dyn vertex_swarm_api::SwarmLocalStore>,
+        Arc<dyn vertex_swarm_api::BinCursorStore>,
     >;
     type Error = SwarmNodeError;
 
@@ -620,6 +634,7 @@ type StorerProviders = StorerComponents<
     TopologyHandle<Arc<Identity>>,
     VerifiedChunkProvider,
     Arc<dyn vertex_swarm_api::SwarmLocalStore>,
+    Arc<dyn vertex_swarm_api::BinCursorStore>,
 >;
 
 /// Build a storer node, optionally overriding the cache and reserve through
@@ -670,7 +685,11 @@ pub(crate) async fn build_storer(
     )
     .await?;
 
-    let providers = construct::storer(parts.topology, parts.chunks, parts.store);
+    // A missing reserve is a wiring bug: the launch path builds the default.
+    let reserve = parts
+        .reserve
+        .ok_or_else(|| SwarmNodeError::Build(STORER_RESERVE_MISSING.into()))?;
+    let providers = construct::storer(parts.topology, parts.chunks, parts.store, reserve);
     Ok((parts.task, providers))
 }
 
@@ -689,10 +708,10 @@ fn storer_store_factory(
     soc_cache_ttl: u64,
 ) -> StoreFactory<'static> {
     Box::new(move |db| {
-        let reserve: Arc<dyn vertex_swarm_api::ReserveStore> = match reserve {
+        let reserve: Arc<dyn vertex_swarm_api::BinCursorStore> = match reserve {
             None => build_storer_reserve(db.clone(), &identity, capacity)?
                 .reserve
-                .ok_or_else(|| SwarmNodeError::Build("storer reserve missing".into()))?,
+                .ok_or_else(|| SwarmNodeError::Build(STORER_RESERVE_MISSING.into()))?,
             Some(ReserveSeam::Ready(reserve)) => reserve,
             Some(ReserveSeam::Factory(factory)) => factory(db.clone())?,
         };
@@ -765,10 +784,10 @@ fn build_storer_reserve(
         .map_err(|e| SwarmNodeError::Build(e.into()))?,
     );
     // One `DbReserve`, two trait-object views: local-store (node and components)
-    // and reserve (pushsync ingest).
+    // and reserve (pushsync ingest plus the served reserve capabilities).
     Ok(NodeStore {
         local: Arc::clone(&reserve) as Arc<dyn vertex_swarm_api::SwarmLocalStore>,
-        reserve: Some(reserve as Arc<dyn vertex_swarm_api::ReserveStore>),
+        reserve: Some(reserve as Arc<dyn vertex_swarm_api::BinCursorStore>),
     })
 }
 
