@@ -27,13 +27,13 @@ use vertex_swarm_api::{
     Au, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmError, SwarmIdentity, SwarmPeerState,
     SwarmResult, SwarmSettlementProvider,
 };
-use vertex_swarm_node::ClientCommand;
+use vertex_swarm_client_protocol::ClientCommand;
 use vertex_swarm_primitives::OverlayAddress;
 
 pub use error::PseudosettleSettlementError;
 pub use handle::PseudosettleHandle;
 pub use service::{PseudosettleCommand, PseudosettleService};
-pub use vertex_swarm_node::PseudosettleEvent;
+pub use vertex_swarm_client_protocol::PseudosettleEvent;
 
 /// Time-based debt forgiveness provider.
 ///

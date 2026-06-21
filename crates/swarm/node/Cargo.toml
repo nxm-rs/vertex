@@ -43,6 +43,7 @@ vertex-net-ratelimiter.workspace = true
 
 ## vertex - swarm (libp2p-free abstractions)
 vertex-swarm-api.workspace = true
+vertex-swarm-client-protocol.workspace = true
 vertex-swarm-identity.workspace = true
 vertex-swarm-localstore.workspace = true
 vertex-swarm-spec.workspace = true
@@ -122,7 +123,7 @@ std = []
 # SWAP cheque-based settlement. Pulls the swap wire protocol and surfaces
 # `SwapEvent` plus the `ClientCommand::SendCheque` variant for a settlement
 # service to consume.
-swap = ["dep:vertex-swarm-net-swap"]
+swap = ["dep:vertex-swarm-net-swap", "vertex-swarm-client-protocol/swap"]
 cli = [
     "dep:clap",
     "dep:serde",

@@ -72,10 +72,10 @@ mod timeout_repro;
 pub(crate) mod upgrade;
 
 pub(crate) use behaviour::{ClientBehaviour, Config as BehaviourConfig};
-#[cfg(feature = "swap")]
-pub use events::SwapEvent;
-pub use events::{
-    ClientCommand, ClientEvent, FailureKind, PseudosettleEvent, PushResponseTx, RetrievalResponseTx,
-};
 pub(crate) use forward::{NetworkForwarder, StubForwarder};
 pub(crate) use storer::StorerCapability;
+#[cfg(feature = "swap")]
+pub use vertex_swarm_client_protocol::SwapEvent;
+pub use vertex_swarm_client_protocol::{
+    ClientCommand, ClientEvent, FailureKind, PseudosettleEvent, PushResponseTx, RetrievalResponseTx,
+};

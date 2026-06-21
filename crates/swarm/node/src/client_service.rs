@@ -4,13 +4,14 @@
 
 use std::sync::Arc;
 
-use nectar_primitives::{AnyChunk, ChunkAddress};
+use nectar_primitives::ChunkAddress;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_api::{PeerReporter, ReportSource, SwarmLocalStore, SwarmScoringEvent};
+pub use vertex_swarm_client_protocol::{ChunkTransferError, RetrievalResult};
 use vertex_swarm_net_pseudosettle::PaymentAck;
 use vertex_swarm_net_pushsync::Receipt;
-use vertex_swarm_primitives::{CachedChunk, OverlayAddress, Stamp, StampedChunk};
+use vertex_swarm_primitives::{CachedChunk, OverlayAddress, StampedChunk};
 use vertex_tasks::{GracefulShutdown, SpawnableTask};
 
 use crate::protocol::{ClientCommand, ClientEvent, FailureKind};
@@ -34,67 +35,6 @@ pub struct ClientHandle {
     /// When set, requests pace themselves under the peer's pseudosettle
     /// allowance before dispatch.
     throttle: Option<Arc<SelfThrottle>>,
-}
-
-/// Result of a chunk retrieval.
-///
-/// The chunk is address-validated at decode, so it answers the request
-/// regardless of the stamp. The stamp is optional: a storer may omit it from the
-/// delivery, and it is never re-read on this path.
-#[derive(Debug)]
-pub struct RetrievalResult {
-    pub chunk: AnyChunk,
-    /// The postage stamp the responder attached, if any.
-    pub stamp: Option<Stamp>,
-    /// The peer that served the chunk.
-    pub peer: OverlayAddress,
-}
-
-/// Outcome error shared by both chunk transfer operations.
-///
-/// Both [`ClientHandle::retrieve_chunk`] and [`ClientHandle::push_chunk`]
-/// resolve through this type; most variants surface from either path.
-#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
-#[strum(serialize_all = "snake_case")]
-pub enum ChunkTransferError {
-    #[error("Network channel closed")]
-    ChannelClosed,
-    #[error("Peer not connected")]
-    NotConnected,
-    #[error("Request cancelled")]
-    Cancelled,
-    /// The peer did not complete the request within the per-protocol deadline
-    /// (`retrieval_timeout` / `pushsync_timeout`). The liveness boundary against
-    /// a withholding peer; retryable against another candidate.
-    #[error("Request timed out")]
-    TimedOut,
-    /// Local protocol failure (dial, stream, or inactive handler). Remote-side
-    /// failures are carried by [`Self::Remote`].
-    #[error("Protocol error: {0}")]
-    Protocol(String),
-    /// The remote reported a failure. The reason is not carried: the remote's
-    /// error string is adversarial input we never read.
-    #[error("Remote peer reported a failure")]
-    Remote,
-
-    /// Retrieval only.
-    #[error("Chunk not found: {0}")]
-    NotFound(ChunkAddress),
-}
-
-impl ChunkTransferError {
-    /// Whether retrying the request against another candidate may succeed.
-    ///
-    /// Timeout, remote failure, transient protocol error, and not-found are
-    /// retryable (another candidate may hold the chunk); a cancelled or
-    /// channel-closed request reflects a local teardown that another attempt
-    /// cannot fix.
-    pub fn is_retryable(&self) -> bool {
-        match self {
-            Self::TimedOut | Self::Remote | Self::Protocol(_) | Self::NotFound(_) => true,
-            Self::ChannelClosed | Self::NotConnected | Self::Cancelled => false,
-        }
-    }
 }
 
 impl ClientHandle {
