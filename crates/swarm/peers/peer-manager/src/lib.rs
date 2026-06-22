@@ -18,7 +18,10 @@ mod tasks;
 
 pub use entry::{PeerSnapshot, TrustLevel};
 pub use ip_tracker::IpTrackerConfig;
-pub use manager::{LIFECYCLE_CHANNEL_CAPACITY, PeerManager, PeerManagerConfig, PeerManagerHandle};
+pub use manager::{
+    ConnectionAdmission, LIFECYCLE_CHANNEL_CAPACITY, PeerManager, PeerManagerConfig,
+    PeerManagerHandle,
+};
 pub use proximity_index::{AddError, ProximityIndex};
 pub use score_distribution::ScoreDistribution;
 pub use snapshot_store::DbPeerSnapshotStore;

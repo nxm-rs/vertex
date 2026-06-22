@@ -37,6 +37,26 @@ use crate::ip_tracker::{IpGroup, IpTracker, IpTrackerConfig, RecordOutcome};
 use crate::proximity_index::{AddError, ProximityIndex};
 use crate::score_distribution::ScoreDistribution;
 
+/// Outcome of a [`PeerManager::on_peer_connected`] admission decision; lets the
+/// caller tear down a rejected connection rather than leave it half-open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionAdmission {
+    /// The peer was recorded and connected.
+    Admitted,
+    /// Rejected by the live per-IP concurrent-connection cap.
+    RejectedIpCap,
+    /// Rejected because the Kademlia bin was full and none could be displaced.
+    RejectedBinFull,
+}
+
+impl ConnectionAdmission {
+    /// Whether the peer was admitted and recorded.
+    #[must_use]
+    pub fn is_admitted(self) -> bool {
+        matches!(self, ConnectionAdmission::Admitted)
+    }
+}
+
 /// Cheap-to-clone handle onto the peer manager.
 ///
 /// The manager is always shared behind an `Arc`; cloning the handle is a
@@ -152,6 +172,12 @@ pub struct PeerManager<I: SwarmIdentity> {
     /// One short lock per handshake completion and overlay removal; never
     /// touched on per-message paths.
     pub(crate) ip_tracker: Mutex<IpTracker>,
+    /// Live concurrent-connection count per IP group.
+    pub(crate) live_ip_connections: DashMap<IpGroup, usize>,
+    /// IP group each currently-counted overlay was admitted from (for decrement on disconnect).
+    pub(crate) connection_ip_group: DashMap<OverlayAddress, IpGroup>,
+    /// Live per-IP concurrent-connection admission cap; `None` is unlimited.
+    pub(crate) max_connections_per_ip: Option<usize>,
 }
 
 impl<I: SwarmIdentity> PeerManager<I> {
@@ -173,6 +199,7 @@ impl<I: SwarmIdentity> PeerManager<I> {
         let local_overlay = identity.overlay_address();
         let max_po = identity.spec().max_po();
         let (lifecycle_tx, _) = broadcast::channel(LIFECYCLE_CHANNEL_CAPACITY);
+        let max_connections_per_ip = ip_tracker.max_connections_per_ip;
         let pm = Arc::new(Self {
             _identity: PhantomData,
             index: ProximityIndex::new(local_overlay, max_po, max_per_bin),
@@ -186,6 +213,9 @@ impl<I: SwarmIdentity> PeerManager<I> {
             score_distribution: Arc::new(ScoreDistribution::new()),
             lifecycle_tx,
             ip_tracker: Mutex::new(IpTracker::new(ip_tracker)),
+            live_ip_connections: DashMap::new(),
+            connection_ip_group: DashMap::new(),
+            max_connections_per_ip,
         });
         pm.load_from_store();
         pm
@@ -570,6 +600,8 @@ impl<I: SwarmIdentity> PeerManager<I> {
     /// [`TrustLevel::LocalSubnet`] or above are exempt: several nodes on
     /// one home LAN share an IP legitimately and must never trip the
     /// cycling detector.
+    ///
+    /// Returns the [`ConnectionAdmission`] outcome; a rejection records nothing.
     pub fn on_peer_connected(
         &self,
         swarm_peer: SwarmPeer,
@@ -577,19 +609,46 @@ impl<I: SwarmIdentity> PeerManager<I> {
         direction: ConnectionDirection,
         trust: TrustLevel,
         remote_ip: Option<IpAddr>,
-    ) {
+    ) -> ConnectionAdmission {
         let overlay = OverlayAddress::from(*swarm_peer.overlay());
         debug!(?overlay, ?node_type, %direction, %trust, "peer connected");
+
+        // Per-IP concurrent-connection admission, before anything is
+        // recorded. Peers at LocalSubnet trust or above are exempt (a home
+        // LAN shares one IP legitimately); `None` cap is unlimited. The
+        // reserved slot is released if downstream admission then drops the
+        // peer.
+        let counted_ip_group = if let Some(ip) = remote_ip
+            && trust < TrustLevel::LocalSubnet
+        {
+            if !self.try_admit_ip_connection(overlay, ip) {
+                counter!("peer_manager_ip_connection_rejected_total").increment(1);
+                warn!(
+                    ?overlay,
+                    %ip,
+                    cap = ?self.max_connections_per_ip,
+                    "dropping connected peer: per-IP connection cap reached"
+                );
+                return ConnectionAdmission::RejectedIpCap;
+            }
+            Some(IpGroup::from(ip))
+        } else {
+            None
+        };
 
         let Some(entry) = self.insert_peer(overlay, swarm_peer, node_type) else {
             // Per-bin admission found only connected peers to displace.
             // Topology's own connection limits sit far below the bin cap, so
             // this is a pathological state worth surfacing.
+            if let Some(group) = counted_ip_group {
+                self.connection_ip_group.remove(&overlay);
+                self.release_ip_connection_for_group(group);
+            }
             warn!(
                 ?overlay,
                 "dropping connected peer: bin full of connected peers"
             );
-            return;
+            return ConnectionAdmission::RejectedBinFull;
         };
         entry.confirm_node_type(node_type);
         if entry.mark_verified() {
@@ -611,6 +670,8 @@ impl<I: SwarmIdentity> PeerManager<I> {
         {
             self.track_ip_association(overlay, ip);
         }
+
+        ConnectionAdmission::Admitted
     }
 
     /// Record an overlay sighting from `ip` and act on a cap crossing.
@@ -649,6 +710,61 @@ impl<I: SwarmIdentity> PeerManager<I> {
         }
     }
 
+    /// Reserve a live per-IP slot for `overlay` from `ip` under one shard lock;
+    /// `false` when the cap is reached.
+    fn try_admit_ip_connection(&self, overlay: OverlayAddress, ip: IpAddr) -> bool {
+        let Some(cap) = self.max_connections_per_ip else {
+            // Unlimited: still record the group so a future cap could
+            // account for it, and so disconnect bookkeeping is symmetric.
+            let group = IpGroup::from(ip);
+            if self.connection_ip_group.insert(overlay, group).is_none() {
+                *self.live_ip_connections.entry(group).or_insert(0) += 1;
+                gauge!("peer_manager_max_live_ip_connections")
+                    .set(self.live_ip_connections.len() as f64);
+            }
+            return true;
+        };
+
+        let group = IpGroup::from(ip);
+        // Already counted (reconnect of a still-tracked overlay): admit
+        // without changing the count.
+        if self.connection_ip_group.contains_key(&overlay) {
+            return true;
+        }
+
+        let mut slot = self.live_ip_connections.entry(group).or_insert(0);
+        if *slot >= cap {
+            return false;
+        }
+        *slot += 1;
+        drop(slot);
+        self.connection_ip_group.insert(overlay, group);
+        gauge!("peer_manager_max_live_ip_connections").set(self.live_ip_connections.len() as f64);
+        true
+    }
+
+    /// Decrement the live connection counter for `group`, dropping it at zero.
+    fn release_ip_connection_for_group(&self, group: IpGroup) {
+        if let dashmap::mapref::entry::Entry::Occupied(mut e) =
+            self.live_ip_connections.entry(group)
+        {
+            let count = e.get_mut();
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                e.remove();
+            }
+        }
+        gauge!("peer_manager_max_live_ip_connections").set(self.live_ip_connections.len() as f64);
+    }
+
+    /// Live concurrent connections currently counted from `ip`'s group.
+    #[must_use]
+    pub fn live_connections_from_ip(&self, ip: IpAddr) -> usize {
+        self.live_ip_connections
+            .get(&IpGroup::from(ip))
+            .map_or(0, |r| *r.value())
+    }
+
     /// Distinct overlays seen from `ip`'s tracking group (exact address
     /// for IPv4, /64 prefix for IPv6) within the sighting window.
     ///
@@ -681,6 +797,10 @@ impl<I: SwarmIdentity> PeerManager<I> {
         debug!(?overlay, reason, "peer disconnected");
         if let Some(entry) = self.peers.get(overlay) {
             entry.clear_connected();
+        }
+        // Release the live per-IP connection slot reserved at connect time.
+        if let Some((_, group)) = self.connection_ip_group.remove(overlay) {
+            self.release_ip_connection_for_group(group);
         }
         self.emit(PeerLifecycleEvent::Disconnected { overlay: *overlay });
     }
@@ -895,6 +1015,11 @@ impl<I: SwarmIdentity> PeerManager<I> {
         }
         if self.banned_set.remove(overlay).is_some() {
             gauge!("peer_manager_banned_peers").decrement(1.0);
+        }
+        // Release any live per-IP connection slot still held (a peer removed
+        // while connected never reaches on_peer_disconnected for the slot).
+        if let Some((_, group)) = self.connection_ip_group.remove(overlay) {
+            self.release_ip_connection_for_group(group);
         }
         let tracked = {
             let mut tracker = self.ip_tracker.lock();
@@ -2022,6 +2147,7 @@ mod tests {
                     max_overlays_per_ip: cap,
                     window: Duration::from_secs(900),
                     max_sightings_per_ip: cap * 4,
+                    ..Default::default()
                 },
                 ..Default::default()
             },
@@ -2141,6 +2267,121 @@ mod tests {
         assert!(!pm.ip_cycling_suspected(other));
         connect_from_ip(&pm, 4, other, TrustLevel::Normal);
         assert!(pm.get_peer_score(&test_overlay(4)).unwrap() > 0.0);
+    }
+
+    /// Manager with a small live per-IP connection cap.
+    fn conn_cap_manager(cap: Option<usize>) -> Arc<PeerManager<MockIdentity>> {
+        PeerManager::new(
+            &mock_identity(),
+            PeerManagerConfig {
+                ip_tracker: IpTrackerConfig {
+                    max_connections_per_ip: cap,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn test_per_ip_connection_cap_rejects_over_cap() {
+        let pm = conn_cap_manager(Some(2));
+
+        // Two connections from one IP are admitted.
+        for n in 1..=2 {
+            connect_from_ip(&pm, n, ATTACKER_IP, TrustLevel::Normal);
+            assert!(pm.is_connected(&test_overlay(n)));
+        }
+        assert_eq!(pm.live_connections_from_ip(ATTACKER_IP), 2);
+
+        // The third is rejected: never inserted, never connected.
+        connect_from_ip(&pm, 3, ATTACKER_IP, TrustLevel::Normal);
+        assert!(pm.get_swarm_peer(&test_overlay(3)).is_none());
+        assert!(!pm.is_connected(&test_overlay(3)));
+        assert_eq!(pm.live_connections_from_ip(ATTACKER_IP), 2);
+    }
+
+    #[test]
+    fn test_per_ip_connection_cap_returns_rejected_outcome() {
+        let pm = conn_cap_manager(Some(1));
+
+        // The first connection from the IP is admitted.
+        let admitted = pm.on_peer_connected(
+            test_swarm_peer(1),
+            SwarmNodeType::Client,
+            ConnectionDirection::Inbound,
+            TrustLevel::Normal,
+            Some(ATTACKER_IP),
+        );
+        assert_eq!(admitted, ConnectionAdmission::Admitted);
+        assert!(admitted.is_admitted());
+
+        // The over-cap connection is reported as rejected so the caller can
+        // tear it down instead of treating it as live. Nothing is recorded.
+        let rejected = pm.on_peer_connected(
+            test_swarm_peer(2),
+            SwarmNodeType::Client,
+            ConnectionDirection::Inbound,
+            TrustLevel::Normal,
+            Some(ATTACKER_IP),
+        );
+        assert_eq!(rejected, ConnectionAdmission::RejectedIpCap);
+        assert!(!rejected.is_admitted());
+        assert!(!pm.is_connected(&test_overlay(2)));
+        assert!(pm.get_swarm_peer(&test_overlay(2)).is_none());
+    }
+
+    #[test]
+    fn test_per_ip_connection_cap_freed_on_disconnect() {
+        let pm = conn_cap_manager(Some(2));
+
+        for n in 1..=2 {
+            connect_from_ip(&pm, n, ATTACKER_IP, TrustLevel::Normal);
+        }
+        // Disconnecting one frees a slot for a new connection.
+        pm.on_peer_disconnected(&test_overlay(1), "test");
+        assert_eq!(pm.live_connections_from_ip(ATTACKER_IP), 1);
+
+        connect_from_ip(&pm, 3, ATTACKER_IP, TrustLevel::Normal);
+        assert!(pm.is_connected(&test_overlay(3)));
+        assert_eq!(pm.live_connections_from_ip(ATTACKER_IP), 2);
+    }
+
+    #[test]
+    fn test_per_ip_connection_cap_exempts_local_subnet() {
+        let pm = conn_cap_manager(Some(1));
+
+        // A home LAN behind one IP: every node is admitted despite the cap.
+        for n in 1..=5 {
+            connect_from_ip(&pm, n, ATTACKER_IP, TrustLevel::LocalSubnet);
+            assert!(pm.is_connected(&test_overlay(n)));
+        }
+        // Exempt peers are not counted at all.
+        assert_eq!(pm.live_connections_from_ip(ATTACKER_IP), 0);
+    }
+
+    #[test]
+    fn test_per_ip_connection_cap_unlimited_when_none() {
+        let pm = conn_cap_manager(None);
+
+        for n in 1..=10 {
+            connect_from_ip(&pm, n, ATTACKER_IP, TrustLevel::Normal);
+            assert!(pm.is_connected(&test_overlay(n)));
+        }
+    }
+
+    #[test]
+    fn test_per_ip_connection_cap_reconnect_not_double_counted() {
+        let pm = conn_cap_manager(Some(2));
+
+        connect_from_ip(&pm, 1, ATTACKER_IP, TrustLevel::Normal);
+        // Same overlay reconnecting must not consume a second slot.
+        connect_from_ip(&pm, 1, ATTACKER_IP, TrustLevel::Normal);
+        assert_eq!(pm.live_connections_from_ip(ATTACKER_IP), 1);
+
+        // The second distinct overlay still fits under the cap.
+        connect_from_ip(&pm, 2, ATTACKER_IP, TrustLevel::Normal);
+        assert_eq!(pm.live_connections_from_ip(ATTACKER_IP), 2);
     }
 
     #[test]

@@ -161,7 +161,83 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             RoutingCapacity::reserve_inbound(&*self.routing, &overlay);
         }
 
-        // Transition to Active state in connection registry
+        // Decide admission BEFORE any takeover. The per-IP and per-bin
+        // admission caps run here, while the connection registry still holds
+        // the incumbent: a rejection must NEVER evict or close a healthy
+        // incumbent. On rejection `on_peer_connected` has recorded nothing,
+        // so we close only the newcomer and return without having called
+        // `activate()` (which would tear down the incumbent's registry slot)
+        // or `routing.connected`. The routing-capacity reservation made
+        // earlier (reserve_inbound / handshake_completed has NOT run yet for
+        // this newcomer) is the inbound reservation only; it is released by
+        // `handle_connection_closed` when the CloseConnection we push lands,
+        // keeping the counters symmetric.
+        //
+        // The trust level is computed here because topology owns the dial
+        // reason (explicitly configured peers dial with `DialReason::Trusted`)
+        // and the listen addresses needed to judge subnet locality; the peer
+        // manager stores the result so eviction ranking reads one atomic
+        // instead of re-deriving address scope per trim round.
+        let trust = if dial_reason == Some(DialReason::Trusted) {
+            TrustLevel::Trusted
+        } else if crate::behaviour::peer_is_local(
+            &info.swarm_peer,
+            &self.nat_discovery.listen_addrs(),
+        ) {
+            TrustLevel::LocalSubnet
+        } else {
+            TrustLevel::Normal
+        };
+        let remote_ip = self.connection_remote_ips.get(&connection_id).copied();
+        let admission = self.peer_manager.on_peer_connected(
+            info.swarm_peer.clone(),
+            info.node_type,
+            direction,
+            trust,
+            remote_ip,
+        );
+
+        if !admission.is_admitted() {
+            let reason = match admission {
+                vertex_swarm_peer_manager::ConnectionAdmission::RejectedIpCap => {
+                    RejectionReason::IpCapReached
+                }
+                // The bin-full case is the pathological "bin holds only
+                // connected peers" state; surface it as bin saturation.
+                vertex_swarm_peer_manager::ConnectionAdmission::RejectedBinFull => {
+                    RejectionReason::BinSaturated
+                }
+                vertex_swarm_peer_manager::ConnectionAdmission::Admitted => unreachable!(),
+            };
+            debug!(
+                %peer_id,
+                %overlay,
+                ?direction,
+                ?reason,
+                "Rejecting connection: peer manager admission failed (incumbent, if any, left intact)"
+            );
+            self.emit_event(TopologyEvent::PeerRejected {
+                overlay,
+                peer_id,
+                reason,
+                direction,
+            });
+            // Close ONLY this newcomer's specific connection. Using
+            // `CloseConnection::One` (not `All`) is what protects a healthy
+            // incumbent that shares this PeerId on another connection (the
+            // `Replaced { old_id: Some(..) }` / by-PeerId duplicate case):
+            // `All` would tear that incumbent's connection down too, undoing
+            // the whole point of deciding admission before the takeover.
+            self.pending_actions.push_back(ToSwarm::CloseConnection {
+                peer_id,
+                connection: libp2p::swarm::CloseConnection::One(connection_id),
+            });
+            return;
+        }
+
+        // Admission succeeded: now transition to Active state in the
+        // connection registry. A duplicate handshake takes over from the
+        // incumbent here, which is safe because admission already passed.
         let activate_result = self
             .connection_registry
             .activate(peer_id, connection_id, overlay);
@@ -192,8 +268,13 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 // Its registry entry is now overwritten, so handle_connection_closed
                 // will not emit PeerDisconnected -- we must decrement here.
                 // The peer manager holds the authoritative handshake-confirmed
-                // node type; on_peer_connected for the new connection has not
-                // run yet, so this still reads the old connection's value.
+                // node type. `on_peer_connected` for the newcomer has already
+                // run (admission is decided before this takeover), but it only
+                // (re)confirms the value for the asserted `overlay`: when the
+                // incumbent is a *different* overlay (`old_id = Some`) this
+                // reads the incumbent's own node type; when it is the same
+                // overlay (racing dialers, `old_id = None`) the value is
+                // identical, so reading it after admission is still correct.
                 let old_overlay = old_id.as_ref().unwrap_or(&overlay);
                 let old_node_type = self
                     .peer_manager
@@ -225,31 +306,6 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             }
             ActivateResult::Accepted => {}
         }
-
-        // Store peer metadata and connection state. The trust level is
-        // computed here because topology owns the dial reason (explicitly
-        // configured peers dial with `DialReason::Trusted`) and the listen
-        // addresses needed to judge subnet locality; the peer manager stores
-        // the result so eviction ranking reads one atomic instead of
-        // re-deriving address scope per trim round.
-        let trust = if dial_reason == Some(DialReason::Trusted) {
-            TrustLevel::Trusted
-        } else if crate::behaviour::peer_is_local(
-            &info.swarm_peer,
-            &self.nat_discovery.listen_addrs(),
-        ) {
-            TrustLevel::LocalSubnet
-        } else {
-            TrustLevel::Normal
-        };
-        let remote_ip = self.connection_remote_ips.get(&connection_id).copied();
-        self.peer_manager.on_peer_connected(
-            info.swarm_peer.clone(),
-            info.node_type,
-            direction,
-            trust,
-            remote_ip,
-        );
 
         // Feed reachability BEFORE notifying routing: `trim_overpopulated_bins`
         // ranks eviction victims by reachability (least-reachable first), so the

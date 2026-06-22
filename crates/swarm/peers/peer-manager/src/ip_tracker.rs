@@ -83,18 +83,14 @@ pub struct IpTrackerConfig {
     /// new overlays inside a single window; the oldest sighting is
     /// evicted when the bound is reached.
     pub max_sightings_per_ip: usize,
+    /// Hard cap on live concurrent connections per IP group (`None` =
+    /// unlimited, the default); trusted/local-subnet peers exempt.
+    pub max_connections_per_ip: Option<usize>,
 }
 
 impl IpTrackerConfig {
-    /// Default distinct-overlay cap per IP group (16).
-    ///
-    /// Conservative: many legitimate peers can share one IPv4 address
-    /// behind NAT or CGNAT, but they complete handshakes as they connect
-    /// and then hold the connection, so even a large cohort rarely
-    /// produces 16 distinct overlays inside one window. Local-subnet and
-    /// explicitly trusted peers are exempt before the tracker is
-    /// consulted, so a home LAN never counts against the cap.
-    pub const DEFAULT_MAX_OVERLAYS_PER_IP: usize = 16;
+    /// Default distinct-overlay cap per IP group (128); sized for high-density IPs.
+    pub const DEFAULT_MAX_OVERLAYS_PER_IP: usize = 128;
 
     /// Default sighting window (15 minutes).
     ///
@@ -103,12 +99,11 @@ impl IpTrackerConfig {
     /// (a NAT cohort redialing at once) clears quickly.
     pub const DEFAULT_WINDOW: Duration = Duration::from_secs(15 * 60);
 
-    /// Default per-IP sighting bound (64).
-    ///
-    /// Four times the overlay cap: enough history to keep the
-    /// distinct-overlay count exact well past the detection threshold,
-    /// small enough that a flooding IP costs a fixed few KB.
-    pub const DEFAULT_MAX_SIGHTINGS_PER_IP: usize = 64;
+    /// Default per-IP sighting bound (512, 4x the overlay cap).
+    pub const DEFAULT_MAX_SIGHTINGS_PER_IP: usize = 512;
+
+    /// Default live per-IP connection cap: disabled (`None`).
+    pub const DEFAULT_MAX_CONNECTIONS_PER_IP: Option<usize> = None;
 }
 
 impl Default for IpTrackerConfig {
@@ -117,6 +112,7 @@ impl Default for IpTrackerConfig {
             max_overlays_per_ip: Self::DEFAULT_MAX_OVERLAYS_PER_IP,
             window: Self::DEFAULT_WINDOW,
             max_sightings_per_ip: Self::DEFAULT_MAX_SIGHTINGS_PER_IP,
+            max_connections_per_ip: Self::DEFAULT_MAX_CONNECTIONS_PER_IP,
         }
     }
 }
@@ -327,6 +323,7 @@ mod tests {
             max_overlays_per_ip: cap,
             window: Duration::from_secs(900),
             max_sightings_per_ip: cap * 4,
+            ..Default::default()
         })
     }
 
@@ -486,6 +483,7 @@ mod tests {
             max_overlays_per_ip: 2,
             window: Duration::from_secs(900),
             max_sightings_per_ip: 3,
+            ..Default::default()
         });
         let ip = v4(1);
         for n in 1..=3 {

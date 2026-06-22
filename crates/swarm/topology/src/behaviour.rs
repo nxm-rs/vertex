@@ -1176,6 +1176,16 @@ mod tests {
         test_behaviour_with(TopologyConfig::default())
     }
 
+    /// A behaviour with live per-IP connection cap `cap`.
+    fn test_behaviour_with_ip_cap(cap: usize) -> TopologyBehaviour<Identity> {
+        let identity = Identity::random(vertex_swarm_spec::init_testnet(), SwarmNodeType::Client);
+        let (behaviour, _handle) = TopologyBehaviourBuilder::new(identity, &EventTestConfig::new())
+            .with_max_connections_per_ip(Some(cap))
+            .try_build()
+            .expect("build without runtime");
+        behaviour
+    }
+
     /// A listening (non-dial-only) behaviour whose IP capability starts
     /// unknown until the first `NewListenAddr` arrives.
     fn test_behaviour_listening() -> TopologyBehaviour<Identity> {
@@ -1267,6 +1277,222 @@ mod tests {
                     peer_id: closed, ..
                 } => assert_eq!(closed, peer_id),
                 _ => panic!("expected CloseConnection from banned-set reconciliation"),
+            }
+        }
+
+        /// A per-IP cap rejection must close the connection and skip routing.
+        #[tokio::test]
+        async fn per_ip_cap_rejection_closes_connection_and_skips_routing() {
+            use std::net::{IpAddr, Ipv4Addr};
+
+            use libp2p::swarm::ConnectionId;
+            use vertex_swarm_net_handshake::{HandshakeEvent, HandshakeInfo};
+            use vertex_swarm_test_utils::make_swarm_peer_minimal;
+
+            // Cap of 1 live connection per IP; both peers arrive from the SAME
+            // public remote IP, mirroring two wss peers behind one bootnode.
+            let mut behaviour = test_behaviour_with_ip_cap(1);
+            let remote_ip = IpAddr::V4(Ipv4Addr::new(5, 78, 94, 214));
+
+            // No-multiaddr peers classify as Normal trust (not LocalSubnet),
+            // so they are subject to the cap.
+            let first = make_swarm_peer_minimal(1);
+            let second = make_swarm_peer_minimal(2);
+            let first_overlay = OverlayAddress::from(*first.overlay());
+            let second_overlay = OverlayAddress::from(*second.overlay());
+
+            // Drive a full handshake completion for each peer: register the
+            // pending inbound connection and its remote IP, then complete.
+            let complete = |behaviour: &mut TopologyBehaviour<Identity>,
+                            peer: &vertex_swarm_peer::SwarmPeer,
+                            conn: u16| {
+                let peer_id = PeerId::random();
+                let connection_id = ConnectionId::new_unchecked(conn as usize);
+                behaviour
+                    .connection_registry
+                    .connected_inbound(peer_id, connection_id);
+                behaviour
+                    .connection_remote_ips
+                    .insert(connection_id, remote_ip);
+                let info = HandshakeInfo {
+                    peer_id,
+                    swarm_peer: peer.clone(),
+                    node_type: SwarmNodeType::Client,
+                    welcome_message: String::new(),
+                    observed_multiaddr: Multiaddr::empty(),
+                };
+                behaviour.process_protocol_event(
+                    peer_id,
+                    connection_id,
+                    crate::composed::ProtocolEvent::Handshake(HandshakeEvent::Completed {
+                        peer_id,
+                        connection_id,
+                        direction: vertex_net_peer_registry::ConnectionDirection::Inbound,
+                        info: Box::new(info),
+                    }),
+                );
+                peer_id
+            };
+
+            // First peer fits under the cap: admitted into routing.
+            complete(&mut behaviour, &first, 1);
+            assert!(
+                behaviour.peer_manager.is_connected(&first_overlay),
+                "first peer must be recorded by the peer manager"
+            );
+            assert_eq!(
+                behaviour.routing.connected_peers_total(),
+                1,
+                "first peer must be added to routing"
+            );
+
+            // Second peer from the same IP is over the cap: it must be
+            // rejected, not recorded, and not added to routing.
+            let second_peer_id = complete(&mut behaviour, &second, 2);
+            assert!(
+                !behaviour.peer_manager.is_connected(&second_overlay),
+                "over-cap peer must NOT be recorded by the peer manager"
+            );
+            assert_eq!(
+                behaviour.routing.connected_peers_total(),
+                1,
+                "over-cap peer must NOT be added to routing"
+            );
+            assert_eq!(
+                behaviour.peer_manager.live_connections_from_ip(remote_ip),
+                1,
+                "the cap must hold at exactly one live connection for the IP"
+            );
+
+            // The rejected connection is closed (no half-open orphan).
+            match next_action(&mut behaviour).await {
+                ToSwarm::CloseConnection { peer_id, .. } => {
+                    assert_eq!(
+                        peer_id, second_peer_id,
+                        "the over-cap peer's connection must be closed"
+                    );
+                }
+                other => panic!("expected CloseConnection for the over-cap peer, got {other:?}"),
+            }
+        }
+
+        /// A `Replaced` takeover rejected by the per-IP cap must keep the incumbent intact.
+        #[tokio::test]
+        async fn replaced_then_rejected_keeps_incumbent() {
+            use std::net::{IpAddr, Ipv4Addr};
+
+            use libp2p::swarm::ConnectionId;
+            use vertex_swarm_net_handshake::{HandshakeEvent, HandshakeInfo};
+            use vertex_swarm_test_utils::make_swarm_peer_minimal;
+
+            // Cap of 1 live connection per IP; both connections arrive from
+            // the SAME public remote IP.
+            let mut behaviour = test_behaviour_with_ip_cap(1);
+            let remote_ip = IpAddr::V4(Ipv4Addr::new(5, 78, 94, 214));
+
+            // The newcomer shares the incumbent's PeerId but asserts a
+            // DIFFERENT overlay, which is what the registry resolves to a
+            // `Replaced { old_id: Some(..) }` takeover.
+            let shared_peer_id = PeerId::random();
+            let incumbent = make_swarm_peer_minimal(1);
+            let newcomer = make_swarm_peer_minimal(2);
+            let incumbent_overlay = OverlayAddress::from(*incumbent.overlay());
+            let newcomer_overlay = OverlayAddress::from(*newcomer.overlay());
+
+            let complete = |behaviour: &mut TopologyBehaviour<Identity>,
+                            peer: &vertex_swarm_peer::SwarmPeer,
+                            conn: u16| {
+                let connection_id = ConnectionId::new_unchecked(conn as usize);
+                behaviour
+                    .connection_registry
+                    .connected_inbound(shared_peer_id, connection_id);
+                behaviour
+                    .connection_remote_ips
+                    .insert(connection_id, remote_ip);
+                let info = HandshakeInfo {
+                    peer_id: shared_peer_id,
+                    swarm_peer: peer.clone(),
+                    node_type: SwarmNodeType::Client,
+                    welcome_message: String::new(),
+                    observed_multiaddr: Multiaddr::empty(),
+                };
+                behaviour.process_protocol_event(
+                    shared_peer_id,
+                    connection_id,
+                    crate::composed::ProtocolEvent::Handshake(HandshakeEvent::Completed {
+                        peer_id: shared_peer_id,
+                        connection_id,
+                        direction: vertex_net_peer_registry::ConnectionDirection::Inbound,
+                        info: Box::new(info),
+                    }),
+                );
+            };
+
+            // The incumbent connects first and fills the cap for the IP.
+            complete(&mut behaviour, &incumbent, 1);
+            assert!(
+                behaviour.peer_manager.is_connected(&incumbent_overlay),
+                "incumbent must be recorded by the peer manager"
+            );
+            assert_eq!(
+                behaviour.routing.connected_peers_total(),
+                1,
+                "incumbent must be added to routing"
+            );
+
+            // A duplicate (same PeerId, new overlay) arrives from the same IP.
+            // It would be a `Replaced` takeover, but the cap rejects it. The
+            // incumbent must survive untouched.
+            complete(&mut behaviour, &newcomer, 2);
+
+            assert!(
+                behaviour.peer_manager.is_connected(&incumbent_overlay),
+                "the rejected duplicate must NOT evict the incumbent"
+            );
+            assert!(
+                !behaviour.peer_manager.is_connected(&newcomer_overlay),
+                "the over-cap newcomer must NOT be recorded"
+            );
+            assert_eq!(
+                behaviour.routing.connected_peers_total(),
+                1,
+                "routing must still hold exactly the incumbent"
+            );
+            assert_eq!(
+                behaviour.peer_manager.live_connections_from_ip(remote_ip),
+                1,
+                "the cap must still hold exactly one live connection (the incumbent)"
+            );
+
+            // Only the newcomer's connection is closed; the incumbent's stays
+            // open. The newcomer shares the incumbent's PeerId, so assert the
+            // specific connection id (2) is the one being torn down.
+            match next_action(&mut behaviour).await {
+                ToSwarm::CloseConnection {
+                    peer_id,
+                    connection,
+                } => {
+                    assert_eq!(
+                        peer_id, shared_peer_id,
+                        "the close must target the (shared) PeerId"
+                    );
+                    // Only the newcomer's specific connection (id 2) is closed;
+                    // `One` (not `All`) leaves the incumbent's connection (id 1)
+                    // open even though it shares this PeerId.
+                    match connection {
+                        libp2p::swarm::CloseConnection::One(conn) => assert_eq!(
+                            conn,
+                            ConnectionId::new_unchecked(2),
+                            "only the newcomer's connection must be closed"
+                        ),
+                        libp2p::swarm::CloseConnection::All => {
+                            panic!("must NOT close all connections for the shared PeerId")
+                        }
+                    }
+                }
+                other => {
+                    panic!("expected CloseConnection for the over-cap newcomer, got {other:?}")
+                }
             }
         }
 
