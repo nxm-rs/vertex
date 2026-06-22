@@ -35,6 +35,8 @@ pub use base::BaseNode;
 pub use bootnode::{BootNode, BootNodeBuilder};
 pub use builder::BuiltInfrastructure;
 pub use client::{ClientNode, ClientNodeBuilder};
+#[cfg(feature = "swap")]
+pub use core::SwapWiring;
 pub use core::{
     ClientCore, ClientCoreCtx, PseudosettleWiring, SharedAccounting, assemble_client_core,
     spawn_client_command_bridge,

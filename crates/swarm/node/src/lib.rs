@@ -21,6 +21,8 @@ mod selection;
 mod staggered_race;
 mod throttle;
 
+#[cfg(feature = "swap")]
+pub use node::SwapWiring;
 pub use node::{
     BaseNode, BuiltInfrastructure, ClientCore, ClientCoreCtx, ClientLauncher, ClientNode,
     ClientNodeBuilder, LaunchedClient, NodeBuildError, PseudosettleWiring, SharedAccounting,
