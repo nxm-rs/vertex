@@ -127,7 +127,7 @@ Deploy: `.github/workflows/pages.yml` builds the demo with `--public-url /vertex
 1. Done: `bin/swarm-wasm-lib` and `bin/wasm-playground` removed; `bin/swarm-demo` is the live browser client.
 2. Add a `wasm32-unknown-unknown` build step to CI for the wasm-cone crates listed above. Done for the peer stack (the `wasm` job builds `vertex-swarm-peer-score` and `vertex-swarm-peer-manager`, which pulls the whole peer cone) and for `vertex-tasks`; extend the `-p` list as more cone crates become buildable.
 3. Audit tokio features in every wasm-cone crate; trim to the minimum.
-4. Add an `IndexedDb` `Database` backend (likely under `crates/storage/indexeddb`) gated on `cfg(target_arch = "wasm32")`.
+4. Done: `vertex-storage-indexeddb` is the `IndexedDb` `Database` backend under `crates/storage/indexeddb`, gated on `cfg(target_arch = "wasm32")`. The synchronous `Database` trait fronts an in-memory authoritative map mirrored to IndexedDB by a fire-and-forget `spawn_local` task. `ChunkStore` in `vertex-swarm-localstore` is widened over a `CacheBackend` byte-store so its single `SwarmLocalStore` impl is unchanged; the wasm-only `IndexedDbBackend` (the `indexeddb` feature) mirrors the resident LRU through to it.
 5. Done: `libp2p-websocket-websys` is wired into `crates/swarm/node`'s client variant under wasm cfg (`build_swarm`).
 6. Build a richer browser client on top of `vertex_swarm_node::ClientLauncher` (the fluent launcher shared by native embedders and the browser; `bin/swarm-demo` launches through it) that adds the IndexedDB backend and upload/download flows.
 

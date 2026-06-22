@@ -1,0 +1,29 @@
+[package]
+name = "vertex-storage-indexeddb"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "IndexedDB backend for vertex-storage (browser-only)"
+
+# The whole crate is browser-only. On every other target it builds as an empty
+# lib so it can stay a workspace member without polluting the native cone.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+vertex-storage.workspace = true
+postcard.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+idb.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+js-sys.workspace = true
+futures.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test.workspace = true
+serde = { workspace = true, features = ["derive", "std"] }
+
+[lints]
+workspace = true

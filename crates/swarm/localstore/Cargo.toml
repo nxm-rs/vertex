@@ -26,9 +26,18 @@ nectar-postage.workspace = true
 clap = { workspace = true, features = ["derive"], optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 
+# The IndexedDB-mirroring backend is browser-only; the storage trait and its
+# IndexedDB backend are pulled only on wasm32 under the `indexeddb` feature.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+vertex-storage = { workspace = true, optional = true }
+vertex-storage-indexeddb = { workspace = true, optional = true }
+
 [dev-dependencies]
 alloy-primitives.workspace = true
 alloy-signer-local.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test.workspace = true
 
 [features]
 default = []
@@ -36,3 +45,6 @@ default = []
 # clap and serde; the cache wrapper is available without it, which keeps the
 # wasm client cone free of the CLI dependencies.
 cli = ["dep:clap", "dep:serde"]
+# IndexedDB-backed cache backend for the browser client. Browser-only: the code
+# is also gated on `cfg(target_arch = "wasm32")`, so the native build ignores it.
+indexeddb = ["dep:vertex-storage", "dep:vertex-storage-indexeddb", "dep:serde"]
