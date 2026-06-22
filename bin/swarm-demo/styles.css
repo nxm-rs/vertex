@@ -309,6 +309,19 @@ table.bins tr.filled td { color: var(--green); }
   border-radius: 6px; padding: 6px 8px; font-size: 11px;
 }
 .files-mount .log { height: 120px; }
+
+/* streamed-download progress */
+.dl-progress { margin: 6px 0 10px; display: flex; align-items: center; gap: 8px; }
+.dl-bar {
+  flex: 1; height: 8px; background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--line); border-radius: 5px; overflow: hidden;
+}
+.dl-bar-fill {
+  height: 100%; width: 0%; background: var(--cyan);
+  box-shadow: 0 0 8px var(--cyan); transition: width 0.15s ease-out;
+}
+.dl-progress-text { color: var(--cyan); font-size: 11px; white-space: nowrap; }
+
 .event { display: flex; gap: 8px; padding: 1px 0; }
 .event .kind { flex: 0 0 9rem; color: var(--muted); }
 .event.peer_ready .kind { color: var(--green); }

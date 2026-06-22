@@ -9,15 +9,42 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use futures::StreamExt;
+use js_sys::Uint8Array;
 use nectar_mantaray::error::MantarayError;
 use nectar_mantaray::{Entry, PlainManifest};
 use nectar_primitives::store::ChunkStoreError;
 use nectar_primitives::{AnyChunk, ChunkAddress, DEFAULT_BODY_SIZE, Joiner};
 use vertex_swarm_api::SwarmChunkProvider;
 use wasm_bindgen::JsValue;
+use wasm_bindgen::prelude::*;
 
 use super::cache::MemoryCache;
 use super::net_get::NetworkChunkGet;
+
+#[wasm_bindgen]
+extern "C" {
+    /// A browser download sink (see `assets/download-sink.js`): ordered segment
+    /// writes with backpressure, streamed to disk via the File System Access API
+    /// or a service worker. The Rust side never inspects the chosen path.
+    #[wasm_bindgen(js_name = DownloadSink)]
+    pub type DownloadSink;
+
+    /// Announce the total byte count once the joiner is open (drives progress).
+    #[wasm_bindgen(method, js_name = setTotal)]
+    fn set_total(this: &DownloadSink, total: f64);
+
+    /// Write one ordered segment; resolves when the sink can accept more.
+    #[wasm_bindgen(method, catch)]
+    async fn write(this: &DownloadSink, chunk: Uint8Array) -> Result<JsValue, JsValue>;
+
+    /// Finish the download, flushing and closing the underlying stream.
+    #[wasm_bindgen(method, catch)]
+    async fn close(this: &DownloadSink) -> Result<JsValue, JsValue>;
+
+    /// Cancel the download with a human-readable reason.
+    #[wasm_bindgen(method)]
+    fn abort(this: &DownloadSink, reason: &str);
+}
 
 /// Bytes of a single child reference in a plain-mode intermediate node body.
 const REF_SIZE: usize = 32;
@@ -43,6 +70,77 @@ pub async fn download_reference(
         // `root` is a plain file content chunk: join it directly.
         None => download_file(root, provider, cache).await,
     }
+}
+
+/// Stream the file at `root` to a browser `sink`, resolving a single-file
+/// manifest if `root` is one. Bytes flow to disk in order with backpressure;
+/// no full copy of the file is held in wasm memory.
+pub async fn stream_reference(
+    root: ChunkAddress,
+    provider: Arc<dyn SwarmChunkProvider>,
+    cache: &MemoryCache,
+    sink: &DownloadSink,
+) -> Result<(), JsValue> {
+    let file_root = match probe_manifest_entries(root, provider.clone(), cache).await? {
+        Some(entries) => pick_manifest_file(&entries)?,
+        None => root,
+    };
+    stream_file(file_root, provider, cache, sink).await
+}
+
+/// Prefetch the chunk tree at `file_root`, then stream its ordered segments to
+/// `sink`. Each segment is dropped after the write resolves, bounding memory.
+pub async fn stream_file(
+    file_root: ChunkAddress,
+    provider: Arc<dyn SwarmChunkProvider>,
+    cache: &MemoryCache,
+    sink: &DownloadSink,
+) -> Result<(), JsValue> {
+    prefetch_tree(file_root, provider.clone(), cache).await?;
+
+    let getter = NetworkChunkGet::new(provider, cache.snapshot_map());
+    let joiner = Joiner::<NetworkChunkGet, DEFAULT_BODY_SIZE>::new(getter, file_root)
+        .await
+        .map_err(|e| JsValue::from_str(&format!("joiner open: {e}")))?
+        .with_concurrency(DOWNLOAD_CONCURRENCY);
+
+    // Total is known once the joiner is open; announce it before streaming so
+    // the progress bar can show a fraction rather than a bare byte count.
+    sink.set_total(joiner.size() as f64);
+
+    if joiner.size() == 0 {
+        return finish(sink).await;
+    }
+
+    let stream = joiner.into_stream();
+    futures::pin_mut!(stream);
+    while let Some(segment) = stream.next().await {
+        let segment = match segment {
+            Ok(seg) => seg,
+            Err(e) => {
+                sink.abort(&format!("joiner read: {e}"));
+                return Err(JsValue::from_str(&format!("joiner read: {e}")));
+            }
+        };
+        // Copy this segment into a JS view and write it; await applies the
+        // sink's backpressure. The segment is dropped at the end of the loop
+        // body, so peak wasm buffering is one segment plus its JS copy.
+        let view = Uint8Array::from(&segment[..]);
+        if let Err(e) = sink.write(view).await {
+            sink.abort("write failed");
+            return Err(JsValue::from_str(&format!("sink write: {e:?}")));
+        }
+    }
+
+    finish(sink).await
+}
+
+/// Close `sink`, mapping a close failure to a `JsValue` error.
+async fn finish(sink: &DownloadSink) -> Result<(), JsValue> {
+    sink.close()
+        .await
+        .map(|_| ())
+        .map_err(|e| JsValue::from_str(&format!("sink close: {e:?}")))
 }
 
 /// Probe whether `root` is a manifest, returning its entries or `None` if not.
