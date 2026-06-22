@@ -42,6 +42,8 @@ pub use core::{
     spawn_client_command_bridge,
 };
 pub use error::NodeBuildError;
+#[cfg(feature = "swap")]
+pub use launch::LauncherSwapConfig;
 pub use launch::{ClientLauncher, LaunchedClient};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storer::{StorerNode, StorerNodeBuilder, StorerPullsyncControl};

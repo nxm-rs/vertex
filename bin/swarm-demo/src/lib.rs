@@ -23,15 +23,23 @@ mod ui;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use tracing::info;
+use alloy_primitives::Address;
+use tracing::{info, warn};
 use vertex_net_dnsaddr_doh::{DohClient, resolve_mainnet_wss_bootnodes};
-use vertex_swarm_api::SwarmIdentity;
+use vertex_swarm_api::{SwarmIdentity, SwarmLocalStore};
 use vertex_swarm_identity::Identity;
-use vertex_swarm_node::{ClientLauncher, SwarmNodeType};
+use vertex_swarm_localstore::{
+    ChunkStore, DEFAULT_CACHE_BUDGET_BYTES, DEFAULT_SOC_CACHE_TTL_NS, IndexedDbBackend, SystemClock,
+};
+use vertex_swarm_node::{ClientLauncher, LauncherSwapConfig, SwarmNodeType};
 use vertex_swarm_spec::{init_mainnet, mainnet_wss_bootnodes};
 use vertex_swarm_topology::{TopologyEvent, TopologyHandle};
+use vertex_storage_indexeddb::IndexedDbDatabase;
 use vertex_tasks::TaskManager;
 use wasm_bindgen::prelude::*;
+
+/// IndexedDB database name for the browser client cache.
+const CACHE_DB_NAME: &str = "vertex-swarm-cache";
 
 /// Maximum topology events buffered between UI drains.
 ///
@@ -190,8 +198,26 @@ pub async fn start() -> Result<SwarmDemo, JsValue> {
         bootnodes.len()
     ));
 
-    let client = ClientLauncher::new(identity)
-        .with_bootnodes(bootnodes)
+    // The IndexedDB-backed cache survives a page reload; a failed open falls
+    // back to the launcher's in-memory default so the demo still runs.
+    let mut launcher = ClientLauncher::new(identity).with_bootnodes(bootnodes);
+    match open_indexeddb_store().await {
+        Ok(store) => {
+            info!("using IndexedDB-backed client cache");
+            launcher = launcher.with_store(store);
+        }
+        Err(e) => warn!(?e, "IndexedDB cache unavailable, using the in-memory cache"),
+    }
+
+    // SWAP cheque settlement is enabled when a chequebook address is supplied
+    // through the page config; without one the client settles by pseudosettle
+    // alone. Cheque exchange is chain-free unless an RPC URL is also supplied.
+    if let Some(swap) = swap_config_from_page() {
+        info!(chequebook = %swap.chequebook, "SWAP settlement enabled");
+        launcher = launcher.with_swap(swap);
+    }
+
+    let client = launcher
         .launch()
         .await
         .map_err(|e| JsValue::from_str(&format!("failed to launch client: {e}")))?;
@@ -212,6 +238,44 @@ pub async fn start() -> Result<SwarmDemo, JsValue> {
         _task_manager: task_manager,
     };
     Ok(demo)
+}
+
+/// Open the IndexedDB-backed client cache.
+///
+/// Hydrates the resident LRU from any chunks persisted in a prior session and
+/// mirrors future writes back to IndexedDB. Returned erased as the
+/// [`SwarmLocalStore`] the launcher takes.
+async fn open_indexeddb_store() -> Result<Arc<dyn SwarmLocalStore>, JsValue> {
+    let db = IndexedDbDatabase::open(CACHE_DB_NAME, &[IndexedDbBackend::store_name()])
+        .await
+        .map_err(|e| JsValue::from_str(&format!("failed to open IndexedDB cache: {e}")))?;
+    let backend = IndexedDbBackend::new(db.into_arc(), DEFAULT_CACHE_BUDGET_BYTES as usize);
+    let store = ChunkStore::with_backend(backend, DEFAULT_SOC_CACHE_TTL_NS, SystemClock);
+    Ok(Arc::new(store))
+}
+
+/// Read the optional SWAP config from the page URL query string.
+///
+/// `?chequebook=0x...` enables SWAP cheque settlement; an additional `&rpc=...`
+/// turns on on-chain cashout of received cheques. Returns `None` when no
+/// chequebook is supplied or the address does not parse, leaving the client on
+/// pseudosettle-only settlement.
+fn swap_config_from_page() -> Option<LauncherSwapConfig> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
+
+    let chequebook_raw = params.get("chequebook")?;
+    let chequebook = match chequebook_raw.parse::<Address>() {
+        Ok(address) => address,
+        Err(e) => {
+            warn!(?e, "ignoring unparsable chequebook address");
+            return None;
+        }
+    };
+
+    let mut config = LauncherSwapConfig::new(chequebook);
+    config.rpc_url = params.get("rpc").filter(|url| !url.is_empty());
+    Some(config)
 }
 
 /// Forward topology events from the broadcast subscription to both consumers.

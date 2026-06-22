@@ -9314,6 +9314,7 @@ dependencies = [
  "vertex-net-peer-store",
  "vertex-net-ratelimiter",
  "vertex-node-api",
+ "vertex-storage-indexeddb",
  "vertex-swarm-accounting",
  "vertex-swarm-accounting-pricing",
  "vertex-swarm-accounting-pseudosettle",

@@ -21,8 +21,6 @@ mod selection;
 mod staggered_race;
 mod throttle;
 
-#[cfg(feature = "swap")]
-pub use node::SwapWiring;
 pub use node::{
     BaseNode, BuiltInfrastructure, ClientCore, ClientCoreCtx, ClientLauncher, ClientNode,
     ClientNodeBuilder, LaunchedClient, NodeBuildError, PseudosettleWiring, SharedAccounting,
@@ -30,6 +28,8 @@ pub use node::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use node::{BootNode, BootNodeBuilder, StorerNode, StorerNodeBuilder, StorerPullsyncControl};
+#[cfg(feature = "swap")]
+pub use node::{LauncherSwapConfig, SwapWiring};
 
 pub use vertex_swarm_api::SwarmNodeType;
 
