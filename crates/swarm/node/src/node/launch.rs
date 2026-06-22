@@ -3,19 +3,29 @@
 //! [`ClientLauncher`] is the lightweight entry point shared by native
 //! embedders and the browser client: no database, no chain provider, no RPC
 //! server. It composes a [`ClientNode`] from an identity and a handful of
-//! network knobs, spawns the node run loop, the client service, and the
+//! network knobs, wires the shared client core (pseudosettle accounting,
+//! candidate selector, outbound throttle, relay forwarder), spawns the node
+//! run loop, the client service, the pseudosettle settlement service, and the
 //! peer-manager tick on the current [`TaskExecutor`], and hands back a
 //! [`LaunchedClient`] with the handles a caller needs to observe the topology
-//! and issue chunk reads and writes. The full native stack (storage, chain,
-//! settlement, RPC) goes through `vertex-swarm-builder` instead.
+//! and issue chunk reads and writes. Settlement here is pseudosettle only; the
+//! full native stack (storage, chain, swap, RPC) goes through
+//! `vertex-swarm-builder` instead.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use eyre::{Result, WrapErr};
 use libp2p::{Multiaddr, PeerId};
 use nectar_primitives::SwarmAddress;
+use vertex_swarm_accounting::DefaultBandwidthConfig;
 use vertex_swarm_api::{
-    DefaultPeerConfig, SwarmIdentity, SwarmNetworkConfig, SwarmPeerConfig, SwarmRoutingConfig,
+    DefaultPeerConfig, PeerReporter, SwarmClientAccounting, SwarmLocalStore, SwarmNetworkConfig,
+    SwarmPeerConfig, SwarmRoutingConfig,
+};
+use vertex_swarm_identity::Identity;
+use vertex_swarm_localstore::{
+    ChunkStore, DEFAULT_CACHE_BUDGET_BYTES, DEFAULT_SOC_CACHE_TTL_NS, SystemClock,
 };
 use vertex_swarm_peer_manager::{DEFAULT_TICK_INTERVAL, spawn_peer_manager_task};
 use vertex_swarm_spec::HasSpec;
@@ -23,6 +33,7 @@ use vertex_swarm_topology::{KademliaConfig, TopologyHandle};
 use vertex_tasks::TaskExecutor;
 
 use super::client::ClientNode;
+use super::core::{ClientCoreCtx, PseudosettleWiring, SharedAccounting, assemble_client_core};
 use crate::ClientHandle;
 
 /// Default connection idle timeout for a launched client.
@@ -122,22 +133,24 @@ impl SwarmRoutingConfig for LaunchNetworkConfig {
 ///     .await?;
 /// let topology = launched.topology().clone();
 /// ```
-pub struct ClientLauncher<I: SwarmIdentity + Clone> {
-    identity: I,
+pub struct ClientLauncher {
+    identity: Arc<Identity>,
     bootnodes: Vec<Multiaddr>,
     kademlia: KademliaConfig,
+    bandwidth: DefaultBandwidthConfig,
     max_peers: usize,
     idle_timeout: Duration,
 }
 
-impl<I: SwarmIdentity + Clone> ClientLauncher<I> {
+impl ClientLauncher {
     /// Create a launcher for the given identity with default settings.
     #[must_use]
-    pub fn new(identity: I) -> Self {
+    pub fn new(identity: impl Into<Arc<Identity>>) -> Self {
         Self {
-            identity,
+            identity: identity.into(),
             bootnodes: Vec::new(),
             kademlia: KademliaConfig::default(),
+            bandwidth: DefaultBandwidthConfig::default(),
             max_peers: DEFAULT_MAX_PEERS,
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
         }
@@ -161,6 +174,16 @@ impl<I: SwarmIdentity + Clone> ClientLauncher<I> {
         self
     }
 
+    /// Set the bandwidth accounting configuration.
+    ///
+    /// Drives the pseudosettle allowance, the per-chunk price, and the outbound
+    /// self-throttle sizing. Defaults to [`DefaultBandwidthConfig::default`].
+    #[must_use]
+    pub fn with_bandwidth(mut self, bandwidth: DefaultBandwidthConfig) -> Self {
+        self.bandwidth = bandwidth;
+        self
+    }
+
     /// Set the transport-layer cap on established connections.
     #[must_use]
     pub fn with_max_peers(mut self, max: usize) -> Self {
@@ -178,11 +201,15 @@ impl<I: SwarmIdentity + Clone> ClientLauncher<I> {
     /// Build and start the client node, returning its handles.
     ///
     /// Assembles a [`ClientNode`] over the platform transport (TCP with DNS
-    /// natively, secure websockets in the browser), spawns the node run loop,
-    /// the client service, and the peer-manager tick on the current
-    /// [`TaskExecutor`], and returns a [`LaunchedClient`]. The node dials its
-    /// bootnodes as part of startup; from there the Kademlia routing table
-    /// fills on its own.
+    /// natively, secure websockets in the browser), wires the shared client
+    /// core (pseudosettle accounting, candidate selector, outbound throttle,
+    /// and the relay forwarder), spawns the node run loop, the client service,
+    /// the pseudosettle settlement service, and the peer-manager tick on the
+    /// current [`TaskExecutor`], and returns a [`LaunchedClient`]. The node
+    /// dials its bootnodes as part of startup; from there the Kademlia routing
+    /// table fills on its own.
+    ///
+    /// Settlement is pseudosettle only; swap stays a native-builder concern.
     ///
     /// The returned handles own nothing the spawned tasks need, so the client
     /// keeps running after they are dropped. Shutdown goes through the task
@@ -193,10 +220,7 @@ impl<I: SwarmIdentity + Clone> ClientLauncher<I> {
     /// Returns an error if the swarm fails to assemble (transport or behaviour
     /// construction). Failures after spawn, including the run loop exiting
     /// with an error, are logged by the spawned task.
-    pub async fn launch(self) -> Result<LaunchedClient<I>>
-    where
-        I: HasSpec,
-    {
+    pub async fn launch(self) -> Result<LaunchedClient> {
         let config = LaunchNetworkConfig {
             bootnodes: self.bootnodes,
             peer: DefaultPeerConfig::default(),
@@ -205,15 +229,64 @@ impl<I: SwarmIdentity + Clone> ClientLauncher<I> {
             idle_timeout: self.idle_timeout,
         };
 
-        let (node, client_service, client_handle) = ClientNode::builder(self.identity)
-            .with_kademlia_config(self.kademlia)
-            .build(&config, None)
-            .await
-            .wrap_err("failed to build client node")?;
+        let spec = Arc::clone(HasSpec::spec(&self.identity));
+
+        // The launcher owns the in-memory client cache so callers can read it
+        // back; the node serves inbound retrievals and the client's own
+        // deliveries from the same store.
+        let store = Arc::new(ChunkStore::with_budget(
+            DEFAULT_CACHE_BUDGET_BYTES as usize,
+            DEFAULT_SOC_CACHE_TTL_NS,
+        ));
+
+        // Pseudosettle wiring is prepared before the node so the event sink
+        // routes wire events at build time and the provider embeds in the
+        // accounting the core assembles.
+        let (pseudosettle_provider, pseudosettle_wiring) =
+            PseudosettleWiring::prepare(&self.bandwidth);
+
+        let store_dyn: Arc<dyn SwarmLocalStore> = store.clone();
+        let (mut node, client_service, client_handle) =
+            ClientNode::builder(Arc::clone(&self.identity))
+                .with_kademlia_config(self.kademlia)
+                .with_store(store_dyn)
+                .with_pseudosettle_events(pseudosettle_wiring.event_sender())
+                .build(&config, None)
+                .await
+                .wrap_err("failed to build client node")?;
 
         let topology = node.topology_handle().clone();
         let overlay = node.overlay_address();
         let peer_id = *node.local_peer_id();
+
+        // The peer manager is the reporting authority: accounting and the
+        // pseudosettle service report violations through it.
+        let reporter: Arc<dyn PeerReporter> = topology.peer_manager().clone();
+
+        // Assemble the shared client middle (accounting, selector, throttle,
+        // service) the native builder also goes through; the embedded client
+        // carries no native-only settlement, so the swap providers are absent.
+        let core = assemble_client_core(ClientCoreCtx {
+            spec,
+            identity: Arc::clone(&self.identity),
+            bandwidth: self.bandwidth,
+            topology: topology.clone(),
+            client_service,
+            client_handle: client_handle.clone(),
+            pseudosettle_provider,
+            extra_settlement: Vec::new(),
+            reporter: Arc::clone(&reporter),
+        });
+
+        // Multi-hop forwarding must precede the event loop: a handler created
+        // earlier captures the stub forwarder. The node is borrowed mutably
+        // here and then moved into the run loop below, so the borrow and the
+        // move stay in this scope.
+        node.enable_forwarding(
+            Arc::new(topology.clone()),
+            Arc::clone(&core.accounting),
+            core.throttled_handle.clone(),
+        );
 
         let executor = TaskExecutor::current();
 
@@ -229,7 +302,17 @@ impl<I: SwarmIdentity + Clone> ClientLauncher<I> {
         // It must run even for callers that never issue downloads, so the node
         // can answer the protocols its peers speak during topology building.
         // Its task is `Send`, so it goes through the ordinary service spawner.
-        executor.spawn_service("swarm.client_service", client_service);
+        executor.spawn_service("swarm.client_service", core.client_service);
+
+        // The pseudosettle settlement service applies time-based refresh over
+        // the same shared accounting and forwards our outbound settlement to
+        // the node through the unthrottled handle.
+        pseudosettle_wiring.spawn(
+            &executor,
+            core.accounting.bandwidth().clone(),
+            core.client_handle.clone(),
+            reporter,
+        );
 
         // The node run loop owns the libp2p swarm. It starts listening (a
         // no-op for a dial-only client) and then dials bootnodes and services
@@ -238,7 +321,9 @@ impl<I: SwarmIdentity + Clone> ClientLauncher<I> {
 
         Ok(LaunchedClient {
             topology,
-            client: client_handle,
+            client: core.throttled_handle,
+            accounting: core.accounting,
+            store,
             overlay,
             peer_id,
         })
@@ -250,7 +335,7 @@ impl<I: SwarmIdentity + Clone> ClientLauncher<I> {
 /// The native swarm and its futures are `Send`, so the run loop spawns as a
 /// critical task on the tokio runtime and participates in graceful shutdown.
 #[cfg(not(target_arch = "wasm32"))]
-fn spawn_node_run_loop<I: SwarmIdentity + Clone>(executor: &TaskExecutor, node: ClientNode<I>) {
+fn spawn_node_run_loop(executor: &TaskExecutor, node: ClientNode<Arc<Identity>>) {
     executor.spawn_critical_with_graceful_shutdown_signal(
         "swarm.client_node",
         move |shutdown| async move {
@@ -267,7 +352,7 @@ fn spawn_node_run_loop<I: SwarmIdentity + Clone>(executor: &TaskExecutor, node: 
 /// loop goes through the executor's local spawner instead of the Send-bounded
 /// critical one.
 #[cfg(target_arch = "wasm32")]
-fn spawn_node_run_loop<I: SwarmIdentity + Clone>(executor: &TaskExecutor, node: ClientNode<I>) {
+fn spawn_node_run_loop(executor: &TaskExecutor, node: ClientNode<Arc<Identity>>) {
     executor.spawn_local_with_graceful_shutdown_signal(
         "swarm.client_node",
         move |shutdown| async move {
@@ -283,23 +368,36 @@ fn spawn_node_run_loop<I: SwarmIdentity + Clone>(executor: &TaskExecutor, node: 
 /// Returned by [`ClientLauncher::launch`]. The spawned tasks do not depend on
 /// this value staying alive; dropping it leaves the node running until the
 /// executor shuts down.
-pub struct LaunchedClient<I: SwarmIdentity> {
-    topology: TopologyHandle<I>,
+pub struct LaunchedClient {
+    topology: TopologyHandle<Arc<Identity>>,
     client: ClientHandle,
+    accounting: SharedAccounting,
+    store: Arc<ChunkStore<SystemClock>>,
     overlay: SwarmAddress,
     peer_id: PeerId,
 }
 
-impl<I: SwarmIdentity> LaunchedClient<I> {
+impl LaunchedClient {
     /// Topology handle for readiness polling and
     /// [`TopologyEvent`](vertex_swarm_topology::TopologyEvent) subscription.
-    pub fn topology(&self) -> &TopologyHandle<I> {
+    pub fn topology(&self) -> &TopologyHandle<Arc<Identity>> {
         &self.topology
     }
 
-    /// Client handle for chunk retrieval and upload.
+    /// Throttled client handle for chunk retrieval and upload.
     pub fn client(&self) -> &ClientHandle {
         &self.client
+    }
+
+    /// The shared client accounting (selector, throttle, forwarder, service,
+    /// and settlement all read this instance).
+    pub fn accounting(&self) -> &SharedAccounting {
+        &self.accounting
+    }
+
+    /// The in-memory client chunk cache.
+    pub fn store(&self) -> &Arc<ChunkStore<SystemClock>> {
+        &self.store
     }
 
     /// The node's overlay address.

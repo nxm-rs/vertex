@@ -7,12 +7,19 @@
 //! task spawning, handle plumbing), not connectivity; the cluster tests cover
 //! the connected paths.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use std::sync::Arc;
 
 use eyre::Result;
-use vertex_swarm_api::{SwarmIdentity as _, SwarmNodeType, SwarmTopologyStats as _};
+use nectar_primitives::{AnyChunk, ContentChunk};
+use vertex_swarm_api::{
+    SwarmClientAccounting as _, SwarmIdentity as _, SwarmLocalStore as _, SwarmNodeType,
+    SwarmTopologyStats as _,
+};
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::ClientLauncher;
+use vertex_swarm_primitives::CachedChunk;
 use vertex_swarm_spec::SpecBuilder;
 use vertex_swarm_test_utils::TEST_NETWORK_ID;
 use vertex_tasks::{TaskExecutor, TaskManager};
@@ -47,6 +54,23 @@ async fn launcher_brings_up_client_node() -> Result<()> {
     // client handle is clonable for embedding.
     let _peer_id = launched.local_peer_id();
     let _client = launched.client().clone();
+
+    // The launcher now wires the shared client core: the accounting carries the
+    // pseudosettle settlement mechanism instead of an empty provider list.
+    let providers = launched.accounting().bandwidth().provider_names();
+    assert!(
+        providers.contains(&"pseudosettle"),
+        "expected pseudosettle in the launched provider list, got {providers:?}"
+    );
+
+    // The in-memory client cache round-trips a content chunk.
+    let chunk: AnyChunk = ContentChunk::new(&b"launcher core round trip"[..])
+        .expect("valid content chunk")
+        .into();
+    let cached = CachedChunk::new(chunk, None);
+    let address = *cached.address();
+    launched.store().put(cached).expect("put");
+    assert!(launched.store().contains(&address));
 
     Ok(())
 }

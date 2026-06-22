@@ -9299,6 +9299,7 @@ dependencies = [
  "vertex-swarm-topology",
  "vertex-tasks",
  "vertex-util-runtime",
+ "wasm-bindgen-test",
 ]
 
 [[package]]

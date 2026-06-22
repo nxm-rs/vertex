@@ -21,6 +21,7 @@
 mod ui;
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use tracing::info;
 use vertex_net_dnsaddr_doh::{DohClient, resolve_mainnet_wss_bootnodes};
@@ -46,7 +47,7 @@ const EVENT_BUFFER_CAP: usize = 256;
 /// handle is the read surface the UI polls.
 #[wasm_bindgen]
 pub struct SwarmDemo {
-    topology: TopologyHandle<Identity>,
+    topology: TopologyHandle<Arc<Identity>>,
     events: std::rc::Rc<std::cell::RefCell<VecDeque<TopologyEvent>>>,
     overlay: String,
     // The task manager owns the global executor the node tasks were spawned
@@ -222,7 +223,7 @@ pub async fn start() -> Result<SwarmDemo, JsValue> {
 /// receiver skips ahead and keeps going rather than stalling, since the live
 /// counters come from `readiness`, not this stream.
 fn spawn_event_pump(
-    topology: TopologyHandle<Identity>,
+    topology: TopologyHandle<Arc<Identity>>,
     events: std::rc::Rc<std::cell::RefCell<VecDeque<TopologyEvent>>>,
 ) {
     use tokio::sync::broadcast::error::RecvError;
@@ -253,7 +254,7 @@ fn spawn_event_pump(
 /// Each tick snapshots readiness into the stats grid and per-bin table. The
 /// scrolling event log is updated by the event pump as events arrive, not here.
 /// Runs on the browser event loop for the session.
-fn spawn_render_loop(topology: TopologyHandle<Identity>) {
+fn spawn_render_loop(topology: TopologyHandle<Arc<Identity>>) {
     use gloo_timers::future::TimeoutFuture;
 
     wasm_bindgen_futures::spawn_local(async move {
@@ -265,7 +266,7 @@ fn spawn_render_loop(topology: TopologyHandle<Identity>) {
 }
 
 /// Render a single frame: the status line, stats grid, and per-bin table.
-fn render_once(topology: &TopologyHandle<Identity>) {
+fn render_once(topology: &TopologyHandle<Arc<Identity>>) {
     let snap = topology.readiness();
 
     if snap.connected_peers == 0 {

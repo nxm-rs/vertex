@@ -14,6 +14,8 @@
 //! transport is real TCP (`tokio::time::pause()` would freeze timers without
 //! freezing the OS network stack).
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use std::collections::HashSet;
 use std::time::Duration;
 

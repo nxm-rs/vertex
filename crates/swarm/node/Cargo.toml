@@ -113,6 +113,14 @@ libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "6454fdf3450f91f
 libp2p-websocket-websys.workspace = true
 
 [dev-dependencies]
+nectar-postage.workspace = true
+alloy-signer-local.workspace = true
+
+# Native test harness: the multi-thread runtime, the cluster rig (which spawns
+# `!Send` node futures), the behaviour test rig, and the tracing subscriber are
+# native-only and would drag native-only transitive crates (mio, errno) into the
+# wasm test build, so they stay off wasm32.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
 vertex-swarm-test-utils = { workspace = true, features = ["cluster"] }
 vertex-swarm-topology.workspace = true
@@ -120,8 +128,11 @@ eyre.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 libp2p-swarm-test.workspace = true
 rand_08.workspace = true
-nectar-postage.workspace = true
-alloy-signer-local.workspace = true
+
+# Wasm test harness: the network-free identity fixtures plus the bindgen runner.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+vertex-swarm-test-utils.workspace = true
+wasm-bindgen-test.workspace = true
 
 [features]
 default = ["std"]
