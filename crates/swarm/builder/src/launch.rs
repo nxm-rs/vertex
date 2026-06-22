@@ -145,16 +145,19 @@ async fn build_node_chain_provider(
         return Err(SwarmNodeError::ChainRequired { node_type });
     };
 
-    let Some(address_book) = ChainAddressBook::from_swarm(spec.swarm()) else {
+    // A network with no canonical deployment cannot settle on chain; fail fast
+    // before connecting. The address book itself is resolved at the edge by each
+    // chain consumer, not carried in the provider handle.
+    if ChainAddressBook::from_swarm(spec.swarm()).is_none() {
         tracing::debug!(
             %node_type,
             "chain required but the network has no canonical contract deployment"
         );
         return Err(SwarmNodeError::ChainRequired { node_type });
-    };
+    }
 
     let signer = (*identity.signer()).clone();
-    let provider = crate::chain::build_chain_provider(rpc_url, signer, address_book)
+    let provider = crate::chain::build_chain_provider(rpc_url, signer, spec.chain)
         .await
         .map_err(|e| SwarmNodeError::Chain(e.to_string()))?;
 
@@ -505,6 +508,8 @@ async fn build_client_backed_node(
             Arc::clone(&reporter),
             #[cfg(feature = "chain")]
             chain_provider.as_ref(),
+            #[cfg(feature = "chain")]
+            params.spec,
         );
     }
 

@@ -145,6 +145,7 @@ impl SwapWiring {
         client_handle: ClientHandle,
         reporter: Arc<dyn PeerReporter>,
         #[cfg(feature = "chain")] chain_provider: Option<&SharedChainProvider>,
+        #[cfg(feature = "chain")] spec: &Arc<Spec>,
     ) where
         A: SwarmBandwidthAccounting + 'static,
     {
@@ -173,7 +174,7 @@ impl SwapWiring {
         .with_bounce_limit(alloy_primitives::U256::from(self.bounce_limit));
 
         #[cfg(feature = "chain")]
-        let service = attach_cashout(service, chain_provider, self.beneficiary);
+        let service = attach_cashout(service, chain_provider, spec, self.beneficiary);
 
         executor.spawn_service("swarm.swap_service", service);
     }
@@ -181,25 +182,32 @@ impl SwapWiring {
 
 /// Attach an on-chain cashout client to the swap service when a chain provider is
 /// present, so received cheques are redeemed paying out to our beneficiary.
+///
+/// The contract address book is resolved here from the spec, since the provider
+/// handle carries only the live connection.
 #[cfg(feature = "chain")]
 fn attach_cashout<A, S>(
     service: SwapService<A, S>,
     chain_provider: Option<&SharedChainProvider>,
+    spec: &Arc<Spec>,
     beneficiary: Address,
 ) -> SwapService<A, S>
 where
     A: SwarmBandwidthAccounting + 'static,
     S: alloy_signer::SignerSync + Send + Sync + 'static,
 {
+    use vertex_chain::ChainConfig;
     use vertex_swarm_accounting_swap::cashout::Cashout;
 
     let Some(provider) = chain_provider else {
         return service;
     };
-    let cashout = Cashout::new(
-        provider.provider().clone(),
-        *provider.addresses(),
-        beneficiary,
-    );
+    let Some(config) = ChainConfig::from_swarm(spec.swarm()) else {
+        warn!(
+            "chain provider present but the network has no canonical contract deployment; cashout not wired"
+        );
+        return service;
+    };
+    let cashout = Cashout::new(provider.provider().clone(), config, beneficiary);
     service.with_cashout(cashout)
 }

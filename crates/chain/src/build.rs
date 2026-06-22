@@ -13,12 +13,10 @@
 //! TLS, browser fetch on `wasm32`), so the same body builds a
 //! [`SharedChainProvider`] on a native node and in the wasm client.
 
-use alloy_chains::NamedChain;
+use alloy_chains::{Chain, NamedChain};
 use alloy_provider::{DynProvider, Provider, ProviderBuilder};
 use alloy_signer_local::PrivateKeySigner;
 use tracing::info;
-
-use crate::ChainConfig;
 
 /// A failure constructing or validating the shared chain provider.
 #[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
@@ -33,12 +31,12 @@ pub enum ProviderBuildError {
     #[error("chain id query failed: {0}")]
     ChainId(String),
 
-    /// The endpoint reported a different chain than the address book expects.
+    /// The endpoint reported a different chain than the spec expects.
     #[error("RPC endpoint reports chain id {connected}, expected {expected} ({name})")]
     WrongChain {
         /// Chain id the endpoint reported.
         connected: u64,
-        /// Chain id the address book expects.
+        /// Chain id the spec expects.
         expected: u64,
         /// Human-readable name for `expected`, or `unknown`.
         name: String,
@@ -48,31 +46,22 @@ pub enum ProviderBuildError {
 /// A cloneable, type-erased handle to the node's shared chain provider.
 ///
 /// Wraps a [`DynProvider`] (itself an `Arc` internally) so every chain consumer
-/// holds the same connection without naming the concrete filler stack. Consumers
-/// build their clients (for example a chequebook contract) over a clone of the
-/// inner provider; the [`ChainConfig`] supplies the contract addresses.
+/// holds the same connection without naming the concrete filler stack. The handle
+/// carries only the live connection; the validation chain and the contract
+/// addresses are spec-derived and read at the edge by each consumer.
 #[derive(Clone)]
-pub struct SharedChainProvider {
-    provider: DynProvider,
-    addresses: ChainConfig,
-}
+pub struct SharedChainProvider(DynProvider);
 
 impl SharedChainProvider {
     /// The shared alloy provider. Clone it for a chain client.
     pub fn provider(&self) -> &DynProvider {
-        &self.provider
-    }
-
-    /// The network contract address book for this chain.
-    pub fn addresses(&self) -> &ChainConfig {
-        &self.addresses
+        &self.0
     }
 }
 
 impl std::fmt::Debug for SharedChainProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SharedChainProvider")
-            .field("chain", &self.addresses.chain)
             .finish_non_exhaustive()
     }
 }
@@ -82,16 +71,15 @@ impl std::fmt::Debug for SharedChainProvider {
 /// Builds a wallet-filled alloy provider over `rpc_url` signed by `signer` (the
 /// recommended gas, fee, chain-id, and nonce fillers plus the wallet filler so
 /// writes are signed by the node identity), validates the connected chain id
-/// against `addresses.chain` so an operator pointed at the wrong endpoint fails
-/// fast at startup, and erases the provider into a cloneable
-/// [`SharedChainProvider`].
+/// against `expected` so an operator pointed at the wrong endpoint fails fast at
+/// startup, and erases the provider into a cloneable [`SharedChainProvider`].
 ///
 /// Logs the chain id once the connection is validated. There is no service to
 /// spawn: the returned handle is the chain, and consumers borrow it.
 pub async fn build_chain_provider(
     rpc_url: &str,
     signer: PrivateKeySigner,
-    addresses: ChainConfig,
+    expected: Chain,
 ) -> Result<SharedChainProvider, ProviderBuildError> {
     let provider = ProviderBuilder::new()
         .wallet(signer)
@@ -104,7 +92,7 @@ pub async fn build_chain_provider(
         .get_chain_id()
         .await
         .map_err(|e| ProviderBuildError::ChainId(e.to_string()))?;
-    let expected = addresses.chain.id();
+    let expected = expected.id();
     if connected != expected {
         return Err(ProviderBuildError::WrongChain {
             connected,
@@ -117,10 +105,7 @@ pub async fn build_chain_provider(
 
     info!(chain_id = expected, "Chain access enabled");
 
-    Ok(SharedChainProvider {
-        provider: provider.erased(),
-        addresses,
-    })
+    Ok(SharedChainProvider(provider.erased()))
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -134,7 +119,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_rpc_url_is_a_build_error() {
         let signer = PrivateKeySigner::random();
-        let err = build_chain_provider("not a url", signer, ChainConfig::testnet())
+        let err = build_chain_provider("not a url", signer, Chain::sepolia())
             .await
             .expect_err("an unparseable RPC URL must fail");
         assert!(
