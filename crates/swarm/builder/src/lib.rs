@@ -43,7 +43,6 @@ mod handle;
 mod launch;
 mod node;
 mod providers;
-mod pseudosettle;
 mod pullsync;
 #[cfg(feature = "swap")]
 mod swap;

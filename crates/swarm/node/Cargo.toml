@@ -49,6 +49,7 @@ vertex-swarm-spec.workspace = true
 
 ## vertex - infrastructure
 vertex-swarm-accounting.workspace = true
+vertex-swarm-accounting-pseudosettle.workspace = true
 vertex-tasks.workspace = true
 vertex-util-runtime.workspace = true
 

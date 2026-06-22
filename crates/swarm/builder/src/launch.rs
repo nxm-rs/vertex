@@ -20,7 +20,10 @@ use vertex_swarm_api::{
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::NetworkConfig;
-use vertex_swarm_node::{AccountingSettlement, BootNode, ClientNode, PeerSelector, SelfThrottle};
+use vertex_swarm_node::{
+    AccountingSettlement, BootNode, ClientNode, PeerSelector, PseudosettleWiring, SelfThrottle,
+    SharedAccounting,
+};
 use vertex_swarm_peer_manager::{
     DEFAULT_TICK_INTERVAL, DbPeerSnapshotStore, PeerSnapshot, spawn_peer_manager_task,
 };
@@ -369,7 +372,7 @@ async fn build_client_backed_node(
     // prepare the provider so it embeds in the accounting, and the event sink so
     // pseudosettle wire events route at node build time.
     let (pseudosettle_provider, pseudosettle_wiring) =
-        crate::pseudosettle::PseudosettleWiring::prepare(params.bandwidth);
+        PseudosettleWiring::prepare(params.bandwidth);
     let pseudosettle_event_sender = pseudosettle_wiring.event_sender();
 
     // SWAP settlement is prepared next: the provider embeds in the accounting
@@ -496,7 +499,7 @@ async fn build_client_backed_node(
     // Pseudosettle settlement service over the shared accounting: applies
     // time-based refresh and forwards our outbound settlement to the node.
     pseudosettle_wiring.spawn(
-        ctx,
+        ctx.executor(),
         accounting.bandwidth().clone(),
         client_handle.clone(),
         Arc::clone(&reporter),
@@ -508,7 +511,7 @@ async fn build_client_backed_node(
     #[cfg(feature = "swap")]
     if let Some(wiring) = swap_wiring {
         wiring.spawn(
-            ctx,
+            ctx.executor(),
             accounting.bandwidth().clone(),
             client_handle,
             Arc::clone(&reporter),
@@ -530,44 +533,6 @@ async fn build_client_backed_node(
         reserve,
     })
 }
-
-/// Forward a settlement service's `ClientCommand`s to the node command channel.
-///
-/// A settlement service (pseudosettle or swap) emits commands on an unbounded
-/// channel; this task drains it and hands each command to the node through the
-/// non-blocking [`ClientHandle::send_command`], so the service never blocks on a
-/// full queue. The task ends when the service drops its sender or on shutdown.
-pub(crate) fn spawn_client_command_bridge(
-    ctx: &dyn InfrastructureContext,
-    task_name: &'static str,
-    mut command_rx: tokio::sync::mpsc::UnboundedReceiver<vertex_swarm_node::ClientCommand>,
-    client_handle: vertex_swarm_node::ClientHandle,
-) {
-    ctx.executor()
-        .spawn_with_graceful_shutdown_signal(task_name, move |shutdown| async move {
-            let mut shutdown = std::pin::pin!(shutdown);
-            loop {
-                tokio::select! {
-                    guard = &mut shutdown => {
-                        drop(guard);
-                        break;
-                    }
-                    command = command_rx.recv() => {
-                        let Some(command) = command else { break };
-                        if let Err(e) = client_handle.send_command(command) {
-                            warn!(error = %e, "Failed to forward settlement command to node");
-                        }
-                    }
-                }
-            }
-        });
-}
-
-/// The shared accounting type both client-backed node types build: the default
-/// bandwidth accounting wrapped with the config pricer.
-type SharedAccounting = Arc<
-    ClientAccounting<Arc<Accounting<DefaultBandwidthConfig, Arc<Identity>>>, FixedPricer<Spec>>,
->;
 
 /// A run-task factory: applies multi-hop forwarding (and storer ingest) over the
 /// shared accounting, then returns the node's event-loop task. The factory keeps
