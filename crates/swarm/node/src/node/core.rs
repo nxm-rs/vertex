@@ -502,4 +502,47 @@ mod tests {
             vec!["pseudosettle"]
         );
     }
+
+    /// A swap-enabled client registers both settlement providers, pseudosettle
+    /// first (soft accounting) and swap second (originated-debt settlement),
+    /// matching the order the launch tail composes them in. A chain-free config
+    /// is enough: the provider list does not depend on cashout.
+    #[cfg(feature = "swap")]
+    #[test]
+    fn client_accounting_wires_pseudosettle_and_swap() {
+        use alloy_primitives::Address;
+
+        let identity = test_identity_arc();
+        let config = DefaultBandwidthConfig::default();
+        let spec = identity.spec().clone();
+
+        let (pseudosettle_provider, _) = PseudosettleWiring::prepare(&config);
+        let (swap_provider, _) = SwapWiring::prepare(
+            &spec,
+            &identity,
+            &config,
+            Some(Address::repeat_byte(0xab)),
+            None,
+            false,
+            0,
+            true,
+        )
+        .expect("swap wiring is prepared for a chequebook on a named chain");
+
+        // Compose the accounting exactly as the launch tail does: pseudosettle
+        // registered first, swap pushed in through the same extra-settlement seam.
+        let accounting = AccountingBuilder::new(config)
+            .with_pricer_from_config(spec)
+            .with_settlement(pseudosettle_provider)
+            .with_settlements(vec![
+                Box::new(swap_provider) as Box<dyn SwarmSettlementProvider>
+            ])
+            .build(&identity);
+
+        assert_eq!(
+            accounting.bandwidth().provider_names(),
+            vec!["pseudosettle", "swap"],
+            "a swap-enabled client reports pseudosettle then swap"
+        );
+    }
 }
