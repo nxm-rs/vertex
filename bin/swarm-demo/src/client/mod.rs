@@ -19,6 +19,7 @@ use vertex_swarm_node::LaunchedClient;
 use wasm_bindgen::prelude::*;
 
 use cache::MemoryCache;
+pub use download::DownloadSink;
 use network::BrowserChunkProvider;
 
 /// Fallback batch geometry, used only when on-chain discovery is unavailable.
@@ -124,10 +125,24 @@ impl SwarmClient {
     }
 
     /// Reassemble the file referenced by `reference_hex` (a file root) into bytes.
+    /// Buffers the whole file; prefer [`SwarmClient::stream_to_sink`] for large
+    /// files. Kept for callers that want the bytes in hand.
     #[wasm_bindgen(js_name = downloadFile)]
     pub async fn download_file(&self, reference_hex: String) -> Result<Vec<u8>, JsValue> {
         let root = parse_address(&reference_hex)?;
         download::download_reference(root, self.provider.clone(), &self.cache).await
+    }
+
+    /// Stream the file at `reference_hex` to a browser download `sink`, in order
+    /// and with backpressure, without buffering the whole file in wasm memory.
+    #[wasm_bindgen(js_name = streamToSink)]
+    pub async fn stream_to_sink(
+        &self,
+        reference_hex: String,
+        sink: download::DownloadSink,
+    ) -> Result<(), JsValue> {
+        let root = parse_address(&reference_hex)?;
+        download::stream_reference(root, self.provider.clone(), &self.cache, &sink).await
     }
 
     /// List the entries of the manifest rooted at `root_hex` (JS `{ path, address }`).
