@@ -33,7 +33,10 @@ pub use node::{LauncherSwapConfig, SwapWiring};
 
 pub use vertex_swarm_api::SwarmNodeType;
 
-pub use client_service::{ChunkTransferError, ClientHandle, ClientService, RetrievalResult};
+pub use client_service::{
+    ChunkTransferError, ClientHandle, ClientService, DEFAULT_PEER_INFLIGHT_RETRIEVALS,
+    PeerInflightLimiter, RetrievalResult,
+};
 #[cfg(feature = "swap")]
 pub use protocol::SwapEvent;
 pub use protocol::{
