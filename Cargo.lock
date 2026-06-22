@@ -9276,6 +9276,7 @@ dependencies = [
  "vertex-node-api",
  "vertex-swarm-accounting",
  "vertex-swarm-accounting-pricing",
+ "vertex-swarm-accounting-pseudosettle",
  "vertex-swarm-api",
  "vertex-swarm-client-behaviour",
  "vertex-swarm-client-protocol",
@@ -9298,6 +9299,7 @@ dependencies = [
  "vertex-swarm-topology",
  "vertex-tasks",
  "vertex-util-runtime",
+ "wasm-bindgen-test",
 ]
 
 [[package]]

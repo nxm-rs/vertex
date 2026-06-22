@@ -123,6 +123,12 @@ jobs:
       # browser client node.
       - name: Build client cone for wasm32
         run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-node
+      # The wasm-bindgen acceptance test for the converged client core: it
+      # composes the pseudosettle accounting and round-trips the in-memory
+      # cache, the first wasm test in the repo. Built here (not run, which needs
+      # a headless browser runner) as the wasm-reachability gate.
+      - name: Build wasm client-core test for wasm32
+        run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-node --test wasm_client_core
       # The chain-free SWAP path: cheque exchange (sign, send, validate, credit)
       # needs no chain, so the accounting stack and `vertex-swarm-node/swap`
       # build for wasm with default features. The on-chain cashout path

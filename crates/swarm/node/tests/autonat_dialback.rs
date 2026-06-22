@@ -8,6 +8,7 @@
 //! event loop. It guards against an upstream libp2p change altering the autonat
 //! event shapes our handlers destructure.
 
+#![cfg(not(target_arch = "wasm32"))]
 #![allow(clippy::expect_used)]
 
 use std::time::Duration;

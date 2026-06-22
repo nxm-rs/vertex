@@ -25,16 +25,16 @@ use alloy_primitives::Address;
 use alloy_signer_local::PrivateKeySigner;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
-use vertex_node_api::InfrastructureContext;
 use vertex_swarm_accounting_swap::service::SwapCommand;
 use vertex_swarm_accounting_swap::{SwapEvent, SwapHandle, SwapProvider, SwapService};
 use vertex_swarm_api::{
     PeerReporter, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmIdentity, SwarmSpec,
 };
 use vertex_swarm_identity::Identity;
-use vertex_swarm_node::ClientHandle;
 use vertex_swarm_node::args::SwapConfig;
+use vertex_swarm_node::{ClientHandle, spawn_client_command_bridge};
 use vertex_swarm_spec::Spec;
+use vertex_tasks::TaskExecutor;
 
 #[cfg(feature = "chain")]
 use crate::chain::SharedChainProvider;
@@ -140,7 +140,7 @@ impl SwapWiring {
     /// also cashed on chain, paying out to our beneficiary.
     pub(crate) fn spawn<A>(
         self,
-        ctx: &dyn InfrastructureContext,
+        executor: &TaskExecutor,
         accounting: Arc<A>,
         client_handle: ClientHandle,
         reporter: Arc<dyn PeerReporter>,
@@ -152,8 +152,8 @@ impl SwapWiring {
         // is bounded and reached through `ClientHandle::send_command`. Bridge the
         // two with a forwarding task so the service never blocks on a full queue.
         let (client_command_tx, client_command_rx) = mpsc::unbounded_channel();
-        crate::launch::spawn_client_command_bridge(
-            ctx,
+        spawn_client_command_bridge(
+            executor,
             "swarm.swap_command_bridge",
             client_command_rx,
             client_handle,
@@ -175,7 +175,7 @@ impl SwapWiring {
         #[cfg(feature = "chain")]
         let service = attach_cashout(service, chain_provider, self.beneficiary);
 
-        ctx.executor().spawn_service("swarm.swap_service", service);
+        executor.spawn_service("swarm.swap_service", service);
     }
 }
 

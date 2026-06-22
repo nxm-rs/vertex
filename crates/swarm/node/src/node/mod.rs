@@ -16,6 +16,7 @@ mod bootnode;
 mod builder;
 #[allow(unreachable_pub)]
 mod client;
+mod core;
 mod error;
 mod launch;
 // NAT traversal and LAN discovery only exist natively. The browser client
@@ -34,6 +35,10 @@ pub use base::BaseNode;
 pub use bootnode::{BootNode, BootNodeBuilder};
 pub use builder::BuiltInfrastructure;
 pub use client::{ClientNode, ClientNodeBuilder};
+pub use core::{
+    ClientCore, ClientCoreCtx, PseudosettleWiring, SharedAccounting, assemble_client_core,
+    spawn_client_command_bridge,
+};
 pub use error::NodeBuildError;
 pub use launch::{ClientLauncher, LaunchedClient};
 #[cfg(not(target_arch = "wasm32"))]
