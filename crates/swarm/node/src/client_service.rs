@@ -2,10 +2,12 @@
 //!
 //! Owns channels to `ClientBehaviour` and processes incoming events.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use nectar_primitives::ChunkAddress;
-use tokio::sync::{mpsc, oneshot};
+use parking_lot::Mutex;
+use tokio::sync::{Semaphore, mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_api::{
     Au, BandwidthDebit, PeerReporter, ReportSource, SwarmLocalStore, SwarmPricing,
@@ -25,6 +27,58 @@ const PUSHSYNC_SOURCE: ReportSource = ReportSource::Protocol("pushsync");
 
 pub(crate) const DEFAULT_CHANNEL_CAPACITY: usize = 256;
 
+/// Default per-peer cap on concurrent in-flight retrieval substreams (native),
+/// to stay under a remote's inbound substream limit.
+pub const DEFAULT_PEER_INFLIGHT_RETRIEVALS: usize = 12;
+
+/// Per-peer concurrency limiter for outbound retrievals (one semaphore per peer).
+///
+/// Entries are created lazily on first acquire and pruned on disconnect via
+/// [`Self::forget`], so the map stays bounded by the live peer set rather than
+/// growing with every peer ever contacted.
+#[derive(Debug)]
+pub struct PeerInflightLimiter {
+    limit: usize,
+    peers: Mutex<HashMap<OverlayAddress, Arc<Semaphore>>>,
+}
+
+impl PeerInflightLimiter {
+    /// Build a limiter admitting `limit` concurrent retrievals per peer (clamped to >=1).
+    #[must_use]
+    pub fn new(limit: usize) -> Self {
+        Self {
+            limit: limit.max(1),
+            peers: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The per-peer semaphore for `peer`, created on first use.
+    fn semaphore(&self, peer: OverlayAddress) -> Arc<Semaphore> {
+        Arc::clone(
+            self.peers
+                .lock()
+                .entry(peer)
+                .or_insert_with(|| Arc::new(Semaphore::new(self.limit))),
+        )
+    }
+
+    /// Wait for an in-flight slot against `peer`; hold the permit for the request.
+    async fn acquire(&self, peer: OverlayAddress) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        self.semaphore(peer).acquire_owned().await.ok()
+    }
+
+    /// Drop per-peer slot bookkeeping for a disconnected peer; safe while requests are in flight.
+    pub fn forget(&self, peer: &OverlayAddress) {
+        self.peers.lock().remove(peer);
+    }
+
+    /// Number of peers with a live semaphore entry (the limiter's memory footprint).
+    #[must_use]
+    pub fn tracked_peers(&self) -> usize {
+        self.peers.lock().len()
+    }
+}
+
 /// Handle for sending commands to the network layer.
 ///
 /// Request methods ([`Self::retrieve_chunk`], [`Self::push_chunk`]) thread a
@@ -38,6 +92,8 @@ pub struct ClientHandle {
     /// When set, requests pace themselves under the peer's pseudosettle
     /// allowance before dispatch.
     throttle: Option<Arc<SelfThrottle>>,
+    /// Optional per-peer in-flight retrieval cap (see [`PeerInflightLimiter`]).
+    inflight: Option<Arc<PeerInflightLimiter>>,
 }
 
 impl ClientHandle {
@@ -46,6 +102,7 @@ impl ClientHandle {
         Self {
             command_tx,
             throttle: None,
+            inflight: None,
         }
     }
 
@@ -54,6 +111,13 @@ impl ClientHandle {
     #[must_use]
     pub fn with_throttle(mut self, throttle: Arc<SelfThrottle>) -> Self {
         self.throttle = Some(throttle);
+        self
+    }
+
+    /// Attach a per-peer in-flight retrieval cap.
+    #[must_use]
+    pub fn with_inflight_limiter(mut self, inflight: Arc<PeerInflightLimiter>) -> Self {
+        self.inflight = Some(inflight);
         self
     }
 
@@ -84,6 +148,14 @@ impl ClientHandle {
         address: ChunkAddress,
         originated: bool,
     ) -> Result<RetrievalResult, ChunkTransferError> {
+        // Hold one per-peer in-flight slot for the request lifetime (released on
+        // drop, including a cancelled race leg). Acquired before the throttle so a
+        // peer at its cap waits for a slot rather than spinning the throttle.
+        let _permit = match &self.inflight {
+            Some(inflight) => inflight.acquire(peer).await,
+            None => None,
+        };
+
         if let Some(throttle) = &self.throttle {
             throttle
                 .acquire(peer, address, ProtocolKind::Retrieval)
@@ -153,6 +225,9 @@ pub struct ClientService {
     /// accounting. Present only on the full builder; absent on the lightweight
     /// launcher, where the origin debit is a no-op.
     accounting: Option<OriginAccounting>,
+    /// Per-peer in-flight retrieval cap shared with the handle; the peer's entry
+    /// is forgotten on disconnect.
+    inflight: Option<Arc<PeerInflightLimiter>>,
 }
 
 /// The pricing and debit handles the service needs to debit own-request
@@ -178,6 +253,7 @@ impl ClientService {
             store: None,
             throttle: None,
             accounting: None,
+            inflight: None,
         };
 
         (service, event_tx, handle)
@@ -198,6 +274,7 @@ impl ClientService {
             store: None,
             throttle: None,
             accounting: None,
+            inflight: None,
         };
 
         (service, handle)
@@ -230,6 +307,15 @@ impl ClientService {
     #[must_use]
     pub fn with_throttle(mut self, throttle: Arc<SelfThrottle>) -> Self {
         self.throttle = Some(throttle);
+        self
+    }
+
+    /// Attach the per-peer in-flight limiter so the service forgets a peer's
+    /// entry on disconnect; must be the same instance attached to the handle via
+    /// [`ClientHandle::with_inflight_limiter`].
+    #[must_use]
+    pub fn with_inflight_limiter(mut self, inflight: Arc<PeerInflightLimiter>) -> Self {
+        self.inflight = Some(inflight);
         self
     }
 
@@ -407,6 +493,11 @@ impl ClientService {
                 debug!(%peer_id, %overlay, "Peer disconnected");
                 if let Some(throttle) = &self.throttle {
                     throttle.clear(&overlay);
+                }
+                // Forget the peer's in-flight entry; an outstanding permit keeps
+                // its own semaphore alive (`Arc`), so this is safe mid-request.
+                if let Some(inflight) = &self.inflight {
+                    inflight.forget(&overlay);
                 }
             }
 
@@ -1065,5 +1156,193 @@ mod tests {
             error: "x".into(),
             kind: FailureKind::InvalidChunk,
         });
+    }
+
+    mod inflight_limiter {
+        use super::*;
+
+        #[tokio::test]
+        async fn caps_concurrent_permits_per_peer() {
+            // A limit of two admits two concurrent permits against one peer and
+            // refuses a third until one is dropped.
+            let limiter = PeerInflightLimiter::new(2);
+            let p = peer(1);
+
+            let a = limiter.acquire(p).await.expect("first permit");
+            let b = limiter.acquire(p).await.expect("second permit");
+
+            // The peer is at its cap: a third acquire must not resolve while both
+            // permits are held.
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), limiter.acquire(p))
+                    .await
+                    .is_err(),
+                "third concurrent permit blocks at the per-peer cap"
+            );
+
+            // Releasing one permit frees a slot, so the next acquire resolves.
+            drop(a);
+            let _c = tokio::time::timeout(Duration::from_millis(200), limiter.acquire(p))
+                .await
+                .expect("a freed slot admits the next request")
+                .expect("permit");
+            drop(b);
+        }
+
+        #[tokio::test]
+        async fn caps_are_independent_per_peer() {
+            // One peer at its cap does not starve another: the cap is per-overlay.
+            let limiter = PeerInflightLimiter::new(1);
+            let p1 = peer(1);
+            let p2 = peer(2);
+
+            let _held = limiter.acquire(p1).await.expect("p1 permit");
+            // p1 is now full, but p2 has its own full-capacity semaphore.
+            let _other = tokio::time::timeout(Duration::from_millis(200), limiter.acquire(p2))
+                .await
+                .expect("a different peer is not blocked")
+                .expect("p2 permit");
+        }
+
+        #[tokio::test]
+        async fn zero_limit_is_clamped_to_one() {
+            // A misconfigured zero limit must still admit one request so a
+            // download can make progress.
+            let limiter = PeerInflightLimiter::new(0);
+            let _permit = limiter.acquire(peer(1)).await.expect("clamped to one");
+        }
+
+        #[tokio::test]
+        async fn forget_resets_a_peer_to_full_capacity() {
+            // Dropping a peer's bookkeeping (on disconnect) lets a later
+            // reconnect start from a fresh full-capacity semaphore.
+            let limiter = PeerInflightLimiter::new(1);
+            let p = peer(1);
+
+            let held = limiter.acquire(p).await.expect("permit");
+            // Forgetting while a permit is outstanding is safe: the outstanding
+            // permit keeps its own semaphore alive, and a fresh entry is created.
+            limiter.forget(&p);
+            let _fresh = tokio::time::timeout(Duration::from_millis(200), limiter.acquire(p))
+                .await
+                .expect("a forgotten peer gets a fresh full-capacity entry")
+                .expect("permit");
+            drop(held);
+        }
+
+        #[tokio::test]
+        async fn forget_prunes_the_per_peer_map() {
+            // The per-peer map is created lazily on first acquire and must shrink
+            // again on forget, so a node that churns through many peers does not
+            // accumulate one semaphore entry per peer ever seen.
+            let limiter = PeerInflightLimiter::new(2);
+            assert_eq!(limiter.tracked_peers(), 0, "no peers tracked initially");
+
+            let a = limiter.acquire(peer(1)).await.expect("p1 permit");
+            let b = limiter.acquire(peer(2)).await.expect("p2 permit");
+            assert_eq!(
+                limiter.tracked_peers(),
+                2,
+                "each contacted peer adds one entry"
+            );
+
+            limiter.forget(&peer(1));
+            assert_eq!(
+                limiter.tracked_peers(),
+                1,
+                "forgetting a peer drops its entry"
+            );
+            limiter.forget(&peer(2));
+            assert_eq!(
+                limiter.tracked_peers(),
+                0,
+                "the map returns to empty once every peer is forgotten"
+            );
+
+            drop((a, b));
+        }
+    }
+
+    /// On `PeerDisconnected` the service forgets the peer's in-flight semaphore
+    /// through the limiter it shares with the handle, so the per-peer map is
+    /// bounded by the live peer set and does not grow with every peer contacted.
+    #[tokio::test]
+    async fn disconnect_forgets_inflight_entry() {
+        use libp2p::PeerId;
+
+        let limiter = Arc::new(PeerInflightLimiter::new(4));
+        let (service, _event_tx, _handle) = ClientService::new();
+        let service = service.with_inflight_limiter(Arc::clone(&limiter));
+
+        // Two peers each take a permit, creating a per-peer entry apiece.
+        let p1 = peer(1);
+        let p2 = peer(2);
+        let _a = limiter.acquire(p1).await.expect("p1 permit");
+        let _b = limiter.acquire(p2).await.expect("p2 permit");
+        assert_eq!(limiter.tracked_peers(), 2, "both peers are tracked");
+
+        // The disconnect event for p1 must prune exactly p1's entry.
+        service.process_event(ClientEvent::PeerDisconnected {
+            peer_id: PeerId::random(),
+            overlay: p1,
+        });
+        assert_eq!(
+            limiter.tracked_peers(),
+            1,
+            "disconnect forgets the disconnected peer's in-flight entry"
+        );
+        assert_eq!(
+            limiter.semaphore(p2).available_permits(),
+            3,
+            "the surviving peer keeps its in-flight bookkeeping (one permit held)"
+        );
+
+        // A second disconnect prunes the last entry: the map does not grow
+        // unbounded across a churn of peers.
+        service.process_event(ClientEvent::PeerDisconnected {
+            peer_id: PeerId::random(),
+            overlay: p2,
+        });
+        assert_eq!(
+            limiter.tracked_peers(),
+            0,
+            "the per-peer map returns to empty once both peers disconnect"
+        );
+    }
+
+    /// A handle with a limiter still dispatches when a slot is available.
+    #[tokio::test]
+    async fn handle_with_inflight_limiter_still_dispatches() {
+        let (tx, mut rx) = mpsc::channel::<ClientCommand>(16);
+        let handle =
+            ClientHandle::new(tx).with_inflight_limiter(Arc::new(PeerInflightLimiter::new(4)));
+
+        let p = peer(3);
+        let address = test_address();
+        let retrieval = tokio::spawn(async move { handle.retrieve_chunk(p, address, true).await });
+
+        match rx.recv().await.expect("command emitted") {
+            ClientCommand::RetrieveChunk {
+                peer: cmd_peer,
+                response,
+                ..
+            } => {
+                assert_eq!(cmd_peer, p);
+                let chunk: nectar_primitives::AnyChunk =
+                    nectar_primitives::ContentChunk::new(&b"inflight-test"[..])
+                        .expect("valid content chunk")
+                        .into();
+                response
+                    .send(Ok(RetrievalResult {
+                        chunk,
+                        stamp: None,
+                        peer: p,
+                    }))
+                    .expect("receiver alive");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        retrieval.await.unwrap().expect("retrieval resolves");
     }
 }

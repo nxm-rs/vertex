@@ -46,7 +46,8 @@ use vertex_swarm_accounting_swap::{SwapEvent, SwapHandle, SwapProvider, SwapServ
 use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 
 use crate::{
-    AccountingSettlement, ClientCommand, ClientHandle, ClientService, PeerSelector, SelfThrottle,
+    AccountingSettlement, ClientCommand, ClientHandle, ClientService,
+    DEFAULT_PEER_INFLIGHT_RETRIEVALS, PeerInflightLimiter, PeerSelector, SelfThrottle,
 };
 
 /// The concrete shared accounting both client-backed node types build: the
@@ -155,15 +156,25 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
     // peer's pseudosettle allowance so a burst never crosses the settlement
     // trigger.
     let throttle = Arc::new(SelfThrottle::new(&accounting, &bandwidth));
-    let throttled_handle = client_handle.clone().with_throttle(Arc::clone(&throttle));
+
+    // Per-peer in-flight retrieval cap: a wide download spreads concurrent
+    // retrievals across peers, but the degenerate single-holder case must not
+    // funnel them all onto one peer past its inbound serving cap.
+    let inflight = Arc::new(PeerInflightLimiter::new(DEFAULT_PEER_INFLIGHT_RETRIEVALS));
+    let throttled_handle = client_handle
+        .clone()
+        .with_throttle(Arc::clone(&throttle))
+        .with_inflight_limiter(Arc::clone(&inflight));
 
     // The service reports through the same peer-manager authority accounting
-    // uses, shares the handle's throttle so a disconnect clears that peer's
-    // bucket, and debits the serving peer for our own-request deliveries through
-    // the same shared accounting the selector, throttle, and forwarder use.
+    // uses, shares the handle's throttle and in-flight limiter so a disconnect
+    // clears that peer's bucket and forgets its in-flight entry, and debits the
+    // serving peer for our own-request deliveries through the same shared
+    // accounting the selector, throttle, and forwarder use.
     let client_service = client_service
         .with_reporter(reporter)
         .with_throttle(Arc::clone(&throttle))
+        .with_inflight_limiter(inflight)
         .with_accounting(
             Arc::new(accounting.pricing().clone()),
             accounting.bandwidth().clone(),
