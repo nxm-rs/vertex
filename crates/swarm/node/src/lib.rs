@@ -22,8 +22,9 @@ mod staggered_race;
 mod throttle;
 
 pub use node::{
-    BaseNode, BuiltInfrastructure, ClientLauncher, ClientNode, ClientNodeBuilder, LaunchedClient,
-    NodeBuildError, PseudosettleWiring, SharedAccounting, spawn_client_command_bridge,
+    BaseNode, BuiltInfrastructure, ClientCore, ClientCoreCtx, ClientLauncher, ClientNode,
+    ClientNodeBuilder, LaunchedClient, NodeBuildError, PseudosettleWiring, SharedAccounting,
+    assemble_client_core, spawn_client_command_bridge,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use node::{BootNode, BootNodeBuilder, StorerNode, StorerNodeBuilder, StorerPullsyncControl};

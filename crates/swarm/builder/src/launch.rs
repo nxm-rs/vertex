@@ -9,9 +9,7 @@ use tracing::{info, warn};
 use vertex_net_peer_store::PeerSnapshotStore;
 use vertex_node_api::InfrastructureContext;
 use vertex_storage_redb::RedbDatabase;
-use vertex_swarm_accounting::{
-    Accounting, AccountingBuilder, ClientAccounting, DefaultBandwidthConfig, FixedPricer,
-};
+use vertex_swarm_accounting::{Accounting, ClientAccounting, DefaultBandwidthConfig, FixedPricer};
 #[cfg(feature = "chain")]
 use vertex_swarm_api::SwarmSpec;
 use vertex_swarm_api::{
@@ -21,8 +19,7 @@ use vertex_swarm_api::{
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::args::NetworkConfig;
 use vertex_swarm_node::{
-    AccountingSettlement, BootNode, ClientNode, PeerSelector, PseudosettleWiring, SelfThrottle,
-    SharedAccounting,
+    BootNode, ClientCoreCtx, ClientNode, PseudosettleWiring, SharedAccounting, assemble_client_core,
 };
 use vertex_swarm_peer_manager::{
     DEFAULT_TICK_INTERVAL, DbPeerSnapshotStore, PeerSnapshot, spawn_peer_manager_task,
@@ -437,70 +434,57 @@ async fn build_client_backed_node(
     // services report violations through it so misbehaving peers are scored down.
     let reporter: Arc<dyn PeerReporter> = topology.peer_manager().clone();
 
-    // Pseudosettle is registered first so soft accounting forgives total debt
-    // before SWAP settles originated debt; the order matches `settle_all`.
-    let accounting_builder = AccountingBuilder::new(params.bandwidth.clone())
-        .with_pricer_from_config(Arc::clone(params.spec))
-        .with_reporter(Arc::clone(&reporter))
-        .with_settlement(pseudosettle_provider);
-    #[cfg(feature = "swap")]
-    let accounting = match swap_provider {
-        Some(provider) => accounting_builder
-            .with_settlement(provider)
-            .build(params.identity),
-        None => accounting_builder.build(params.identity),
+    // SWAP is the only native-only provider; pseudosettle is registered first
+    // inside the core so soft accounting forgives total debt before SWAP settles.
+    let extra_settlement: Vec<Box<dyn vertex_swarm_api::SwarmSettlementProvider>> = {
+        #[cfg(feature = "swap")]
+        {
+            swap_provider
+                .map(|provider| {
+                    Box::new(provider) as Box<dyn vertex_swarm_api::SwarmSettlementProvider>
+                })
+                .into_iter()
+                .collect()
+        }
+        #[cfg(not(feature = "swap"))]
+        Vec::new()
     };
-    #[cfg(not(feature = "swap"))]
-    let accounting = accounting_builder.build(params.identity);
-    // One accounting instance is shared by the selector, the two-leg forwarder,
-    // and the node task that keeps it alive.
-    let accounting = Arc::new(accounting);
+
+    // Assemble the shared client middle (accounting, selector, throttle, service)
+    // once; both client entry points wire the same instances through this.
+    let core = assemble_client_core(ClientCoreCtx {
+        spec: Arc::clone(params.spec),
+        identity: params.identity.clone(),
+        bandwidth: params.bandwidth.clone(),
+        topology: topology.clone(),
+        client_service,
+        client_handle: client_handle.clone(),
+        pseudosettle_provider,
+        extra_settlement,
+        reporter: Arc::clone(&reporter),
+    });
 
     // Multi-hop forwarding plus storer ingest must precede the event loop. The
-    // run closure applies both to its concrete node, then returns the run task.
+    // run closure applies both to its concrete node over the shared accounting
+    // and throttled handle, then returns the run task.
     let task = (run)(
-        Arc::clone(&accounting),
+        Arc::clone(&core.accounting),
         reporter.clone(),
-        client_handle.clone(),
+        core.throttled_handle.clone(),
     );
 
-    let selector = Arc::new(PeerSelector::new(
-        Arc::new(topology.clone()),
-        accounting.bandwidth().clone(),
-        Arc::new(accounting.pricing().clone()),
-        Arc::new(AccountingSettlement::new(accounting.bandwidth().clone())),
-    ));
-
-    // Outbound self-throttle: pace our retrieval and pushsync requests under each
-    // peer's pseudosettle allowance so a burst never crosses the settlement
-    // trigger. See `SelfThrottle` for the token/price/sizing model.
-    let throttle = Arc::new(SelfThrottle::new(&accounting, params.bandwidth));
-    let throttled_handle = client_handle.clone().with_throttle(Arc::clone(&throttle));
-
-    let chunk_provider =
-        NetworkChunkProvider::new(throttled_handle, topology.clone()).with_selector(selector);
+    let chunk_provider = NetworkChunkProvider::new(core.throttled_handle.clone(), topology.clone())
+        .with_selector(Arc::clone(&core.selector));
     let chunks = VerifyingChunkProvider::new(chunk_provider, params.verify);
 
-    // The client service reports retrieval and pushsync outcomes through the same
-    // peer manager authority accounting uses, shares the handle's throttle so a
-    // peer disconnect clears that peer's bucket, and debits the serving peer for
-    // our own retrievals and pushes through the same shared accounting the
-    // selector, throttle, and forwarder use.
-    let client_service = client_service
-        .with_reporter(Arc::clone(&reporter))
-        .with_throttle(throttle)
-        .with_accounting(
-            Arc::new(accounting.pricing().clone()),
-            accounting.bandwidth().clone(),
-        );
     ctx.executor()
-        .spawn_service("swarm.client_service", client_service);
+        .spawn_service("swarm.client_service", core.client_service);
 
     // Pseudosettle settlement service over the shared accounting: applies
     // time-based refresh and forwards our outbound settlement to the node.
     pseudosettle_wiring.spawn(
         ctx.executor(),
-        accounting.bandwidth().clone(),
+        core.accounting.bandwidth().clone(),
         client_handle.clone(),
         Arc::clone(&reporter),
     );
@@ -512,7 +496,7 @@ async fn build_client_backed_node(
     if let Some(wiring) = swap_wiring {
         wiring.spawn(
             ctx.executor(),
-            accounting.bandwidth().clone(),
+            core.accounting.bandwidth().clone(),
             client_handle,
             Arc::clone(&reporter),
             #[cfg(feature = "chain")]
@@ -1112,6 +1096,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use nectar_primitives::Nonce;
+    use vertex_swarm_accounting::AccountingBuilder;
     use vertex_swarm_api::{Au, SwarmAccountingConfig, SwarmIdentity};
     use vertex_swarm_node::args::NetworkArgs;
     use vertex_swarm_peer_manager::{PeerManager, PeerManagerConfig};
