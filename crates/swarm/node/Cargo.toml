@@ -142,8 +142,11 @@ libp2p-swarm-test.workspace = true
 rand_08.workspace = true
 
 # Wasm test harness: the network-free identity fixtures plus the bindgen runner.
+# `vertex-storage-indexeddb` opens the database the IndexedDB cache test mirrors
+# through; it builds empty off wasm32, so it is wasm-only here.
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 vertex-swarm-test-utils.workspace = true
+vertex-storage-indexeddb.workspace = true
 wasm-bindgen-test.workspace = true
 
 [features]
@@ -179,3 +182,9 @@ cli = [
     "vertex-swarm-primitives/serde",
     "alloy-primitives/serde",
 ]
+# Browser-only IndexedDB cache backend for the embedded client. Test-facing on
+# the node crate: it enables the localstore backend so the wasm acceptance test
+# can round-trip a chunk through the persisted store. The launcher itself takes
+# any `SwarmLocalStore` through `with_store`, so the node crate needs no backend
+# code of its own.
+indexeddb = ["vertex-swarm-localstore/indexeddb"]

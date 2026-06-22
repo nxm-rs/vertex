@@ -27,14 +27,24 @@ crate-type = ["cdylib"]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_arch, values("wasm32"))'] }
 
 [dependencies]
-# The wasm client launch path and topology monitoring surface.
-vertex-swarm-node = { path = "../../crates/swarm/node" }
+# The wasm client launch path and topology monitoring surface. The `swap`
+# features wire SWAP cheque settlement into the launched client: cheque exchange
+# is chain-free, and `swap-chequebook` adds on-chain cashout when an RPC URL is
+# supplied.
+vertex-swarm-node = { path = "../../crates/swarm/node", features = ["swap", "swap-chequebook"] }
 vertex-swarm-api = { path = "../../crates/swarm/api" }
 vertex-swarm-identity = { path = "../../crates/swarm/identity" }
 vertex-swarm-spec = { path = "../../crates/swarm/spec" }
 vertex-swarm-topology = { path = "../../crates/swarm/topology" }
 vertex-swarm-primitives = { path = "../../crates/swarm/primitives" }
+# The client cache: the IndexedDB-backed `ChunkStore` survives a page reload.
+vertex-swarm-localstore = { path = "../../crates/swarm/localstore", features = ["indexeddb"] }
+vertex-storage-indexeddb = { path = "../../crates/storage/indexeddb" }
 vertex-net-dnsaddr-doh = { path = "../../crates/net/dnsaddr-doh" }
+
+# Chequebook address parsing for the optional SWAP config input. Pinned to the
+# workspace version so the `Address` type unifies with the node crate's.
+alloy-primitives = { version = "1.6", default-features = false }
 # The task manager establishes the global executor that the node spawn paths
 # (topology tasks, peer-manager tick, client service) resolve through
 # `TaskExecutor::current`. The demo owns it for the page session.
@@ -52,8 +62,10 @@ web-sys = { version = "0.3", features = [
     "Window",
     "Element",
     "HtmlElement",
+    "Location",
     "Node",
     "Text",
+    "UrlSearchParams",
 ] }
 gloo-timers = { version = "0.3", features = ["futures"] }
 console_error_panic_hook = "0.1"

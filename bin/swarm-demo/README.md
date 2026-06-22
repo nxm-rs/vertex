@@ -8,10 +8,14 @@ This crate is wasm-only (`crate-type = ["cdylib"]`) and is intentionally **not**
 
 ## How it is wired
 
-The native node builder (`vertex-swarm-builder`) pulls the redb database, the chain provider, the SWAP settlement service, and the gRPC server, none of which build for `wasm32`. So the demo does not use it. Instead it goes through the fluent launcher in `vertex-swarm-node`, shared by native embedders and the browser:
+The native node builder (`vertex-swarm-builder`) pulls the redb database and the gRPC server, neither of which builds for `wasm32`. So the demo does not use it. Instead it goes through the fluent launcher in `vertex-swarm-node`, shared by native embedders and the browser:
 
 - `vertex_swarm_node::ClientLauncher::new(identity).with_bootnodes(bootnodes).launch()` composes a `ClientNode` (connection-limits + identify + topology + client protocols) over the browser WebSocket transport, spawns the node run loop and the peer-manager tick on the wasm executor, and returns a `LaunchedClient` whose `topology()` accessor hands the demo its `TopologyHandle`.
 - The node run loop owns a `!Send` libp2p swarm (the websocket transport futures are `!Send`), so it is spawned through `TaskExecutor::spawn_local_with_graceful_shutdown_signal`, a wasm-only sibling of the Send-bounded spawner that routes through `wasm_bindgen_futures::spawn_local`.
+- The client cache is the IndexedDB-backed `ChunkStore` (`vertex-storage-indexeddb` mirrored through `vertex-swarm-localstore`'s `indexeddb` feature), supplied through `with_store`, so cached chunks survive a page reload. A failed open falls back to the in-memory default.
+- SWAP cheque settlement (`vertex-swarm-node`'s `swap`/`swap-chequebook` features) is wired through `with_swap` when a chequebook address is supplied in the page URL query string. Cheque exchange is chain-free; an RPC URL turns on on-chain cashout.
+
+Settlement and the cache read their optional config from the page URL: `?chequebook=0x...` enables SWAP, and an additional `&rpc=https://...` turns on cashout. Without a chequebook the client settles by pseudosettle alone.
 
 The wasm-bindgen surface in `src/lib.rs` is small: a `#[wasm_bindgen(start)]` `main` that calls the exported async `start`, plus a `SwarmDemo` handle exposing `readiness()` (a JS snapshot object) and `drainEvents()` (the buffered topology events). The UI in `src/ui.rs` renders into the document via `web-sys`, updated on a one-second poll loop.
 

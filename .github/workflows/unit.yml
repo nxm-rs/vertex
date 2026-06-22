@@ -111,6 +111,9 @@ jobs:
         with:
           toolchain: nightly
           targets: wasm32-unknown-unknown
+          # rust-src is needed to rebuild std from source for the threaded-wasm
+          # demo (its `.cargo/config.toml` sets `build-std`).
+          components: rust-src
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
           cache-on-failure: true
@@ -124,15 +127,16 @@ jobs:
       - name: Build client cone for wasm32
         run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-node
       # The wasm-bindgen acceptance test for the converged client core: it
-      # composes the pseudosettle accounting and round-trips the in-memory
-      # cache, the first wasm test in the repo. Built here (not run, which needs
-      # a headless browser runner) as the wasm-reachability gate.
+      # composes the pseudosettle and SWAP accounting, round-trips the in-memory
+      # and IndexedDB-backed caches, and is the wasm-reachability gate. Built
+      # with the `swap-chequebook` and `indexeddb` features so the swap-provider
+      # and persisted-cache test bodies are compiled. Built here (not run, which
+      # needs a headless browser runner).
       - name: Build wasm client-core test for wasm32
-        run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-node --test wasm_client_core
+        run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-node --features "swap-chequebook indexeddb" --test wasm_client_core
       # The chain-free SWAP path: cheque exchange (sign, send, validate, credit)
       # needs no chain, so the accounting stack and `vertex-swarm-node/swap`
-      # build for wasm with default features. The on-chain cashout path
-      # (`swap-chequebook`) is excluded; it lands in a later change.
+      # build for wasm with default features.
       - name: Build chain-free swap path for wasm32
         run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-node --features swap -p vertex-swarm-accounting-swap -p vertex-swarm-accounting-chequebook -p vertex-swarm-accounting-pseudosettle -p vertex-swarm-accounting-pricing -p vertex-swarm-accounting
       # The on-chain cashout path: the chequebook client and the swap cashout
@@ -140,11 +144,14 @@ jobs:
       # browser fetch transport they build for wasm. `vertex-chain` is the shared
       # provider crate they sit on; its `provider` feature builds the
       # `build_chain_provider` construction seam over the browser fetch transport.
+      # `vertex-swarm-node/swap-chequebook` is the full launcher cone wiring that
+      # cashout into the embedded client.
       - name: Build cashout path for wasm32
         run: |
           cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-accounting-chequebook --features swap-chequebook
           cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-accounting-swap --features swap-chequebook
           cargo +nightly build --target wasm32-unknown-unknown -p vertex-chain --features provider
+          cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-node --features swap-chequebook
       # The wasm-bindgen reachability test for the construction seam: it asserts
       # `ProviderBuilder::new().connect_http(url)` links and constructs on wasm32
       # without a live RPC. Built here (not run, which needs a headless browser).
@@ -157,6 +164,14 @@ jobs:
         run: |
           cargo +nightly build --target wasm32-unknown-unknown -p vertex-storage-indexeddb
           cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-localstore --features indexeddb
+      # The browser demo is the integration target: a swap-capable client node
+      # with the IndexedDB cache. It is its own workspace root (own
+      # `.cargo/config.toml` with the threaded-wasm `build-std` config), so it is
+      # built from inside its directory. Its `vertex-swarm-node` dep carries the
+      # `swap`/`swap-chequebook` and `indexeddb` features.
+      - name: Build browser demo for wasm32
+        working-directory: bin/swarm-demo
+        run: cargo +nightly build --target wasm32-unknown-unknown
 
   ci-success:
     name: ci success
