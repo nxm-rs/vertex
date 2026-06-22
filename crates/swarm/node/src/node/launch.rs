@@ -285,7 +285,7 @@ impl ClientLauncher {
         node.enable_forwarding(
             Arc::new(topology.clone()),
             Arc::clone(&core.accounting),
-            core.throttled_handle.clone(),
+            core.client_handle.clone(),
         );
 
         let executor = TaskExecutor::current();

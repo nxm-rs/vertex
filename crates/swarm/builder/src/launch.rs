@@ -465,12 +465,14 @@ async fn build_client_backed_node(
     });
 
     // Multi-hop forwarding plus storer ingest must precede the event loop. The
-    // run closure applies both to its concrete node over the shared accounting
-    // and throttled handle, then returns the run task.
+    // run closure applies both to its concrete node over the shared accounting,
+    // then returns the run task. The forwarder relay legs run over the
+    // unthrottled handle: the self-throttle paces only our own origin retrieval
+    // and pushsync, never chunks we relay on another peer's behalf.
     let task = (run)(
         Arc::clone(&core.accounting),
         reporter.clone(),
-        core.throttled_handle.clone(),
+        core.client_handle.clone(),
     );
 
     let chunk_provider = NetworkChunkProvider::new(core.throttled_handle.clone(), topology.clone())
