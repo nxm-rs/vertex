@@ -8333,6 +8333,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-provider",
  "alloy-rpc-types-eth",
+ "alloy-signer-local",
  "alloy-sol-types",
  "getrandom 0.2.17",
  "nectar-contracts",
@@ -8340,6 +8341,8 @@ dependencies = [
  "strum 0.28.0",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
+ "wasm-bindgen-test",
 ]
 
 [[package]]
@@ -8827,9 +8830,7 @@ name = "vertex-swarm-builder"
 version = "0.1.0"
 dependencies = [
  "alloy-chains",
- "alloy-network",
  "alloy-primitives",
- "alloy-provider",
  "alloy-signer",
  "alloy-signer-local",
  "async-trait",

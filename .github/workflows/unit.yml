@@ -138,12 +138,18 @@ jobs:
       # The on-chain cashout path: the chequebook client and the swap cashout
       # logic are transport-generic, so with `swap-chequebook` selecting the
       # browser fetch transport they build for wasm. `vertex-chain` is the shared
-      # provider crate they sit on.
+      # provider crate they sit on; its `provider` feature builds the
+      # `build_chain_provider` construction seam over the browser fetch transport.
       - name: Build cashout path for wasm32
         run: |
           cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-accounting-chequebook --features swap-chequebook
           cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-accounting-swap --features swap-chequebook
-          cargo +nightly build --target wasm32-unknown-unknown -p vertex-chain
+          cargo +nightly build --target wasm32-unknown-unknown -p vertex-chain --features provider
+      # The wasm-bindgen reachability test for the construction seam: it asserts
+      # `ProviderBuilder::new().connect_http(url)` links and constructs on wasm32
+      # without a live RPC. Built here (not run, which needs a headless browser).
+      - name: Build chain provider wasm test for wasm32
+        run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-chain --features provider --tests
 
   ci-success:
     name: ci success

@@ -28,6 +28,8 @@
 //!
 //! [`alloy`]: alloy_provider
 
+#[cfg(feature = "provider")]
+mod build;
 mod config;
 mod error;
 mod provider;
@@ -36,6 +38,8 @@ mod tx;
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "provider")]
+pub use build::{ProviderBuildError, SharedChainProvider, build_chain_provider};
 pub use config::ChainConfig;
 pub use error::{ChainError, TxError};
 pub use provider::ProviderExt;

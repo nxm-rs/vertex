@@ -154,7 +154,9 @@ async fn build_node_chain_provider(
     };
 
     let signer = (*identity.signer()).clone();
-    let provider = crate::chain::build_chain_provider(rpc_url, signer, address_book).await?;
+    let provider = crate::chain::build_chain_provider(rpc_url, signer, address_book)
+        .await
+        .map_err(|e| SwarmNodeError::Chain(e.to_string()))?;
 
     Ok(Some(provider))
 }
