@@ -357,6 +357,10 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             peer_id,
             node_type,
             direction,
+            // A configured trusted peer is pinned for the session; the client
+            // handler keeps its connection warm so the idle-connection timeout
+            // never closes it (and a trusted re-dial re-activates it).
+            trusted: trust == TrustLevel::Trusted,
         });
 
         // Notify gossip task -- exchange happens immediately or after delay (for gossip dials)

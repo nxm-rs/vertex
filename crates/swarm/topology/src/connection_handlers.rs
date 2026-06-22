@@ -7,10 +7,11 @@ use vertex_net_local::{AddressScope, classify_multiaddr, extract_ip};
 use vertex_net_peer_registry::ConnectionState;
 use vertex_swarm_api::{ReportSource, SwarmIdentity, SwarmScoringEvent};
 use vertex_swarm_net_handshake::HANDSHAKE_TIMEOUT;
+use vertex_swarm_peer_manager::TrustLevel;
 use vertex_swarm_primitives::SwarmNodeType;
 
 use crate::error::{DialError, DisconnectReason};
-use crate::events::TopologyEvent;
+use crate::events::{DialReason, TopologyEvent};
 use crate::gossip::GossipInput;
 use crate::kademlia::{RoutingCapacity, SwarmRouting};
 
@@ -162,36 +163,29 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             }
         };
 
-        // Handle early disconnects (post-handshake connections that fail
-        // quickly). Only an early disconnect we can attribute to the *peer or
-        // our own side* is evidence of a bad peer; a remote-induced transport
-        // reset/error is not.
-        //
-        // Under sustained retrieval load, remote peers commonly tear down a
-        // connection with an `ECONNRESET` (errno 104), surfaced by libp2p as
-        // `ConnectionError::IO(_)` and classified above as
-        // `DisconnectReason::ConnectionError`, faster than fresh handshakes
-        // complete. Treating that as an early-disconnect penalty arms the
-        // dial-backoff (`record_early_disconnect` -> `record_dial_failure`),
-        // which removes the peer from `is_dialable()` and starves candidate
-        // selection ("no new connection candidates"). The node then cannot
-        // refill and bleeds down. A remote reset is a transient, not a verdict
-        // on the peer: skip the lifecycle penalty so the peer stays DIALABLE
-        // and is re-included by candidate selection once load subsides.
-        //
-        // We still penalize a `LocalClose` early disconnect: an orderly close
-        // shortly after handshake reflects our-side abort or the peer cleanly
-        // refusing to keep the session, which is the genuinely suspicious case
-        // the early-disconnect heuristic exists to catch. `BinTrimmed` is our
-        // own eviction and is never penalized.
+        // Early disconnect (a post-handshake connection that fails quickly). The
+        // metric is recorded for every such close so the reset-vs-penalty split
+        // stays observable; whether the close arms the dial-backoff penalty is
+        // decided by `early_disconnect_penalty_applies`, which exempts blameless
+        // closes (remote ECONNRESET, keep-alive timeout, our own bin trim), a
+        // configured bootnode (intentionally disconnected after the initial hive
+        // gossip), and a pinned trusted peer. The dial reason is read from the
+        // connection state just removed, so a peer dialed as a bootnode is
+        // recognised even though its stored trust level is Normal.
+        let dial_reason = removed_state.as_ref().and_then(|s| *s.reason());
+        let is_trusted = self.peer_manager.trust_level(&overlay) == TrustLevel::Trusted;
         if let Some(duration) = connection_duration
             && duration < self.early_disconnect_threshold
         {
-            // Always record the metric (even for the transient case) so the
-            // reset-vs-penalty split stays observable.
             self.metrics.record_early_disconnect(disconnect_reason);
 
-            if early_disconnect_penalizes(disconnect_reason) {
+            if early_disconnect_penalty_applies(
+                disconnect_reason,
+                dial_reason,
+                is_trusted,
+                duration,
+                self.early_disconnect_threshold,
+            ) {
                 debug!(
                     %overlay,
                     ?duration,
@@ -201,15 +195,13 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 self.peer_manager
                     .record_early_disconnect(&overlay, duration);
             } else {
-                // Remote-induced transport reset/error (IO ECONNRESET,
-                // keep-alive timeout) or our own bin trim: not evidence of a
-                // bad peer. Do NOT arm dial-backoff; keep the peer dialable so
-                // the node can redial and refill after load subsides.
                 debug!(
                     %overlay,
                     ?duration,
                     ?disconnect_reason,
-                    "early disconnect from a transient/remote cause; keeping peer dialable (no backoff)"
+                    ?dial_reason,
+                    is_trusted,
+                    "early disconnect from a transient/remote/exempt cause; keeping peer dialable (no backoff)"
                 );
             }
         }
@@ -353,6 +345,21 @@ pub(crate) fn early_disconnect_penalizes(reason: DisconnectReason) -> bool {
     }
 }
 
+/// Whether the early-disconnect penalty applies; suppressed for blameless
+/// closes, configured bootnodes, trusted peers, and connections past `threshold`.
+fn early_disconnect_penalty_applies(
+    disconnect_reason: DisconnectReason,
+    dial_reason: Option<DialReason>,
+    is_trusted: bool,
+    duration: std::time::Duration,
+    threshold: std::time::Duration,
+) -> bool {
+    early_disconnect_penalizes(disconnect_reason)
+        && dial_reason != Some(DialReason::Bootnode)
+        && !is_trusted
+        && duration < threshold
+}
+
 /// Map a classified dial error to the scoring event reported against the
 /// peer, or `None` when the failure is not attributable to the peer.
 ///
@@ -460,6 +467,83 @@ mod tests {
     #[test]
     fn local_close_early_disconnect_is_penalized() {
         assert!(early_disconnect_penalizes(DisconnectReason::LocalClose));
+    }
+
+    use std::time::Duration;
+
+    const SHORT: Duration = Duration::from_secs(1);
+    const THRESHOLD: Duration = Duration::from_secs(30);
+
+    /// A fast `LocalClose` of an ordinary peer in the window is penalised.
+    #[test]
+    fn early_disconnect_penalises_an_ordinary_quick_drop() {
+        assert!(early_disconnect_penalty_applies(
+            DisconnectReason::LocalClose,
+            Some(DialReason::Discovery),
+            false,
+            SHORT,
+            THRESHOLD,
+        ));
+    }
+
+    /// A remote-reset quick drop of an ordinary peer is exempt.
+    #[test]
+    fn early_disconnect_exempts_a_remote_reset_quick_drop() {
+        assert!(!early_disconnect_penalty_applies(
+            DisconnectReason::ConnectionError,
+            Some(DialReason::Discovery),
+            false,
+            SHORT,
+            THRESHOLD,
+        ));
+    }
+
+    /// A configured bootnode quick drop must not be penalised.
+    #[test]
+    fn early_disconnect_exempts_a_configured_bootnode() {
+        assert!(!early_disconnect_penalty_applies(
+            DisconnectReason::LocalClose,
+            Some(DialReason::Bootnode),
+            false,
+            SHORT,
+            THRESHOLD,
+        ));
+    }
+
+    /// A trusted peer is never penalised for an early disconnect.
+    #[test]
+    fn early_disconnect_exempts_a_trusted_peer() {
+        assert!(!early_disconnect_penalty_applies(
+            DisconnectReason::LocalClose,
+            Some(DialReason::Trusted),
+            true,
+            SHORT,
+            THRESHOLD,
+        ));
+    }
+
+    /// A local bin-trim eviction is never an early-disconnect penalty.
+    #[test]
+    fn early_disconnect_skips_bin_trimmed_evictions() {
+        assert!(!early_disconnect_penalty_applies(
+            DisconnectReason::BinTrimmed,
+            Some(DialReason::Discovery),
+            false,
+            SHORT,
+            THRESHOLD,
+        ));
+    }
+
+    /// A connection that outlived the threshold is not an *early* disconnect.
+    #[test]
+    fn early_disconnect_ignores_long_lived_connections() {
+        assert!(!early_disconnect_penalty_applies(
+            DisconnectReason::LocalClose,
+            Some(DialReason::Discovery),
+            false,
+            THRESHOLD + Duration::from_secs(1),
+            THRESHOLD,
+        ));
     }
 
     /// Locally-denied dials carry no score penalty; network failures do.

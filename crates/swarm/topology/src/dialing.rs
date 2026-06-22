@@ -13,6 +13,7 @@ use vertex_util_runtime::rand::non_crypto_rng;
 
 use crate::DialReason;
 use crate::behaviour::BootnodeResolutionFuture;
+use crate::extract_peer_id;
 use crate::gossip::GossipInput;
 use crate::kademlia::RoutingCapacity;
 
@@ -123,6 +124,35 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         }
 
         self.pending_actions.push_back(ToSwarm::Dial { opts });
+    }
+
+    /// Re-dial any untracked configured bootnode or trusted peer from the
+    /// periodic tick, gated on a known dial capability.
+    pub(crate) fn redial_configured_contacts_if_needed(&mut self) {
+        if self.bootnodes.is_empty() && self.trusted_peers.is_empty() {
+            return;
+        }
+
+        // No point dialing until the capability is known; the unknown->known
+        // edge handler already re-issues the attempt.
+        if !self.nat_discovery.dial_capability().ip.is_known() {
+            return;
+        }
+
+        // Skip the work entirely while every configured contact with a
+        // resolvable peer id is already tracked.
+        let any_untracked = self
+            .bootnodes
+            .iter()
+            .chain(self.trusted_peers.iter())
+            .filter_map(extract_peer_id)
+            .any(|peer_id| !self.is_peer_tracked(&peer_id));
+        if !any_untracked {
+            return;
+        }
+
+        debug!("Re-dialing untracked configured bootnodes/trusted peers");
+        self.connect_bootnodes();
     }
 
     pub(crate) fn connect_bootnodes(&mut self) {

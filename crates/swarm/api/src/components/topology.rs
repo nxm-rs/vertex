@@ -86,6 +86,65 @@ pub trait SwarmTopologyPeers: SwarmTopologyBins {
     ) -> Vec<(OverlayAddress, Vec<libp2p::Multiaddr>)>;
 }
 
+/// Direction of a peer connection, mirrored here so the diagnostics surface does
+/// not depend on the peer-registry crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerConnectionDirection {
+    /// We dialed the peer.
+    Outbound,
+    /// The peer dialed us.
+    Inbound,
+}
+
+/// Trust level applied to a peer, mirrored here for the diagnostics surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerTrustLevel {
+    /// No special standing.
+    Normal,
+    /// Loopback, link-local, or same-subnet peer.
+    LocalSubnet,
+    /// Explicitly configured trusted peer.
+    Trusted,
+}
+
+/// Per-peer diagnostics assembled from the peer manager and connection registry.
+#[derive(Debug, Clone)]
+pub struct PeerDiagnostics {
+    /// Overlay address.
+    pub overlay: OverlayAddress,
+    /// libp2p peer id, if currently mapped in the connection registry.
+    pub peer_id: Option<libp2p::PeerId>,
+    /// Known multiaddrs from the stored peer record.
+    pub multiaddrs: Vec<libp2p::Multiaddr>,
+    /// First IP parsed from the peer's multiaddrs, if any.
+    pub ip: Option<std::net::IpAddr>,
+    /// Proximity order / bin of this peer relative to the local overlay.
+    pub proximity_order: u8,
+    /// Current reputation score, if tracked.
+    pub score: Option<f64>,
+    /// Whether the peer currently has a handshake-complete connection.
+    pub connected: bool,
+    /// Unix seconds at which the current connection completed its handshake.
+    pub connected_since: Option<u64>,
+    /// Seconds since the current connection completed its handshake.
+    pub uptime_secs: Option<u64>,
+    /// Direction of the current connection.
+    pub direction: Option<PeerConnectionDirection>,
+    /// Trust level applied to this peer.
+    pub trust: PeerTrustLevel,
+    /// Whether a completed handshake has verified this peer in this process.
+    pub verified: bool,
+}
+
+/// Read-only peer-administration diagnostics over the topology, backing the
+/// `ListPeers` operator endpoint.
+#[auto_impl::auto_impl(&, Arc)]
+pub trait SwarmTopologyAdmin: Send + Sync {
+    /// Per-peer diagnostics for every peer the node knows; when `connected_only`
+    /// is true, only peers with a current handshake-complete connection.
+    fn peer_diagnostics(&self, connected_only: bool) -> Vec<PeerDiagnostics>;
+}
+
 /// Connection and storage statistics for topology monitoring.
 #[auto_impl::auto_impl(&, Arc)]
 pub trait SwarmTopologyStats: SwarmTopologyBins {

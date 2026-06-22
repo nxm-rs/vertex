@@ -9502,6 +9502,7 @@ dependencies = [
  "vertex-swarm-api",
  "vertex-swarm-primitives",
  "vertex-swarm-stream",
+ "vertex-swarm-test-utils",
 ]
 
 [[package]]

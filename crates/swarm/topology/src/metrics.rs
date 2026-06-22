@@ -370,6 +370,7 @@ mod tests {
             peer_id: test_peer_id(1),
             node_type: SwarmNodeType::Storer,
             direction: ConnectionDirection::Outbound,
+            trusted: false,
         };
 
         metrics.record_event(&event);
@@ -381,6 +382,7 @@ mod tests {
             peer_id: test_peer_id(2),
             node_type: SwarmNodeType::Client,
             direction: ConnectionDirection::Inbound,
+            trusted: false,
         };
 
         metrics.record_event(&event);
@@ -455,12 +457,14 @@ mod tests {
             peer_id: test_peer_id(1),
             node_type: SwarmNodeType::Storer,
             direction: ConnectionDirection::Outbound,
+            trusted: false,
         });
         metrics.record_event(&TopologyEvent::PeerReady {
             overlay: test_overlay(2),
             peer_id: test_peer_id(2),
             node_type: SwarmNodeType::Client,
             direction: ConnectionDirection::Outbound,
+            trusted: false,
         });
         assert_eq!(metrics.connected_storers(), 1);
         assert_eq!(metrics.connected_clients(), 1);
@@ -491,6 +495,7 @@ mod tests {
                 peer_id: test_peer_id(i),
                 node_type: SwarmNodeType::Storer,
                 direction: ConnectionDirection::Outbound,
+                trusted: false,
             });
         }
         for i in 10..12 {
@@ -499,6 +504,7 @@ mod tests {
                 peer_id: test_peer_id(i),
                 node_type: SwarmNodeType::Client,
                 direction: ConnectionDirection::Inbound,
+                trusted: false,
             });
         }
         assert_eq!(metrics.connected_storers(), 3);
@@ -555,6 +561,7 @@ mod tests {
             peer_id: test_peer_id(1),
             node_type: pm.node_type(&overlay).unwrap(),
             direction: ConnectionDirection::Outbound,
+            trusted: false,
         });
         assert_eq!(metrics.connected_storers(), 1);
         assert_eq!(metrics.connected_clients(), 0);

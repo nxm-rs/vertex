@@ -9,7 +9,8 @@
 use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
 use vertex_swarm_api::{
     BinCursorStore, BootnodeComponents, ClientComponents, HasChunkClient, HasReserve, HasStore,
-    HasTopology, StorerComponents, SwarmTopologyPeers, SwarmTopologyState, SwarmTopologyStats,
+    HasTopology, StorerComponents, SwarmTopologyAdmin, SwarmTopologyCommands, SwarmTopologyPeers,
+    SwarmTopologyState, SwarmTopologyStats,
 };
 use vertex_swarm_stream::ChunkClient;
 
@@ -76,6 +77,8 @@ impl<C> GrpcAdapter<C> {
         C::Topology: SwarmTopologyState
             + SwarmTopologyStats
             + SwarmTopologyPeers
+            + SwarmTopologyAdmin
+            + SwarmTopologyCommands
             + Clone
             + Send
             + Sync
@@ -113,7 +116,15 @@ impl<C> GrpcAdapter<C> {
 /// Bootnodes register the node status service only.
 impl<T> RegistersGrpcServices for GrpcAdapter<BootnodeComponents<T>>
 where
-    T: SwarmTopologyState + SwarmTopologyStats + SwarmTopologyPeers + Clone + Send + Sync + 'static,
+    T: SwarmTopologyState
+        + SwarmTopologyStats
+        + SwarmTopologyPeers
+        + SwarmTopologyAdmin
+        + SwarmTopologyCommands
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
     fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
         self.register_node(registry);
@@ -123,7 +134,15 @@ where
 /// Client nodes register the node status service and the chunk service.
 impl<T, C> RegistersGrpcServices for GrpcAdapter<ClientComponents<T, C>>
 where
-    T: SwarmTopologyState + SwarmTopologyStats + SwarmTopologyPeers + Clone + Send + Sync + 'static,
+    T: SwarmTopologyState
+        + SwarmTopologyStats
+        + SwarmTopologyPeers
+        + SwarmTopologyAdmin
+        + SwarmTopologyCommands
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     C: ChunkClient + Send + Sync,
 {
     fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
@@ -136,7 +155,15 @@ where
 /// reserve service over the `R` reserve axis.
 impl<T, C, S, R> RegistersGrpcServices for GrpcAdapter<StorerComponents<T, C, S, R>>
 where
-    T: SwarmTopologyState + SwarmTopologyStats + SwarmTopologyPeers + Clone + Send + Sync + 'static,
+    T: SwarmTopologyState
+        + SwarmTopologyStats
+        + SwarmTopologyPeers
+        + SwarmTopologyAdmin
+        + SwarmTopologyCommands
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     C: ChunkClient + Send + Sync,
     S: Send + Sync,
     R: BinCursorStore + Clone + 'static,

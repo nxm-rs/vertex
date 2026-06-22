@@ -337,6 +337,8 @@ pub enum ClientCommand {
         overlay: OverlayAddress,
         /// The peer's node type.
         node_type: SwarmNodeType,
+        /// Whether this is an explicitly configured trusted peer (kept alive).
+        trusted: bool,
     },
 
     /// Announce our payment threshold to a peer.

@@ -36,6 +36,8 @@ pub enum TopologyEvent {
         node_type: SwarmNodeType,
         /// Whether we dialed or they dialed us.
         direction: ConnectionDirection,
+        /// Whether this is an explicitly configured trusted peer (kept alive).
+        trusted: bool,
     },
     /// Connection was rejected (bin saturated, duplicate, etc.).
     PeerRejected {

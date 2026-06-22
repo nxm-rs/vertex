@@ -89,6 +89,7 @@ async fn connect_and_activate(
             peer_id: server_peer,
             overlay: server_overlay,
             node_type: SwarmNodeType::Client,
+            trusted: false,
         });
     server
         .behaviour_mut()
@@ -96,6 +97,7 @@ async fn connect_and_activate(
             peer_id: client_peer,
             overlay: client_overlay,
             node_type: SwarmNodeType::Client,
+            trusted: false,
         });
 }
 

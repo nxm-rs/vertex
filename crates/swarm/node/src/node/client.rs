@@ -340,6 +340,7 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
                 overlay,
                 peer_id,
                 node_type,
+                trusted,
                 ..
             } => {
                 self.base
@@ -350,6 +351,7 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
                         peer_id,
                         overlay,
                         node_type,
+                        trusted,
                     });
             }
             TopologyEvent::PeerDisconnected { .. } => {}
