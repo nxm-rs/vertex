@@ -14,6 +14,19 @@
 //! layer), so the two protocols cannot each pace against a private, divergent
 //! view of the same allowance.
 //!
+//! # Per-peer in-flight cap
+//!
+//! The allowance pacing alone bounds the long-run *rate* to a peer but not the
+//! instantaneous *fan-out*: a file download issues its chunk requests
+//! concurrently, and against a fresh peer the allowance bucket admits a large
+//! burst before it bites. Too many requests in flight to one peer at once
+//! overruns the connection-level stream budget the remote enforces and it resets
+//! the streams, churning the connection. A per-peer concurrency permit
+//! ([`MAX_INFLIGHT_PER_PEER`]) bounds how many of our requests are outstanding to
+//! any single peer, holding the permit for the request's lifetime. The cap is
+//! per-peer, not global, so a retrieval race across many peers is unaffected;
+//! only the depth piled onto each individual peer is bounded.
+//!
 //! # Token model
 //!
 //! One token is one accounting unit (AU). A request costs the AU price the
@@ -62,11 +75,13 @@
 //! requests pace at the full forgiveness rate instead of being throttled as if
 //! every chunk were the most distant possible.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures_timer::Delay;
 use nectar_primitives::ChunkAddress;
 use parking_lot::Mutex;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use vertex_net_ratelimiter::{Quota, SelfRateLimiter};
 use vertex_swarm_accounting::DefaultBandwidthConfig;
 use vertex_swarm_api::{
@@ -96,6 +111,15 @@ impl ProtocolKind {
             ProtocolKind::Retrieval => "retrieval_self_throttled_total",
         }
     }
+
+    /// The `_total` counter name incremented when a request of this kind had to
+    /// wait for one of the peer's in-flight slots to free up.
+    fn inflight_capped_metric(self) -> &'static str {
+        match self {
+            ProtocolKind::Pushsync => "pushsync_inflight_capped_total",
+            ProtocolKind::Retrieval => "retrieval_inflight_capped_total",
+        }
+    }
 }
 
 /// Upper bound retries before a single throttle wait gives up and admits the
@@ -121,6 +145,15 @@ const MAX_THROTTLE_ITERATIONS: usize = 64;
 /// allowance acquire resolves in well under this bound; it only bites when an
 /// allowance is persistently collapsing.
 const MAX_THROTTLE_WAIT: Duration = Duration::from_secs(2);
+
+/// Maximum requests we keep in flight to a single peer at once.
+///
+/// Mirrors the reference client's small per-peer multiplex fan-out: a serving
+/// peer caps the inbound streams it will accept from us before it resets them,
+/// so holding only a few requests outstanding to any one peer keeps us under
+/// that budget. The cap is per-peer, so a retrieval race across many peers still
+/// runs at full width; it only bounds the depth on each peer.
+const MAX_INFLIGHT_PER_PEER: usize = 4;
 
 /// Paces outbound pushsync and retrieval requests under the remote peer's
 /// pseudosettle allowance.
@@ -148,6 +181,10 @@ pub struct SelfThrottle {
     /// Percent (1..=100) of the payment-threshold headroom the bucket is sized
     /// to, leaving a margin below the settlement trigger. Clamped into 1..=100.
     allowance_percent: u64,
+    /// Per-peer concurrency permits, each a [`MAX_INFLIGHT_PER_PEER`]-permit
+    /// semaphore created on first use. A request holds one permit for its
+    /// lifetime, so at most that many requests are outstanding to one peer.
+    inflight: Mutex<HashMap<OverlayAddress, Arc<Semaphore>>>,
 }
 
 impl SelfThrottle {
@@ -189,7 +226,18 @@ impl SelfThrottle {
             pricing,
             refresh_rate,
             allowance_percent,
+            inflight: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The peer's concurrency semaphore, created on first use.
+    fn peer_semaphore(&self, peer: &OverlayAddress) -> Arc<Semaphore> {
+        Arc::clone(
+            self.inflight
+                .lock()
+                .entry(*peer)
+                .or_insert_with(|| Arc::new(Semaphore::new(MAX_INFLIGHT_PER_PEER))),
+        )
     }
 
     /// Re-size `peer`'s bucket to its current allowance.
@@ -235,13 +283,18 @@ impl SelfThrottle {
         saturating_u32(self.pricing.peer_price(peer, address).as_amount().max(1))
     }
 
-    /// Wait until the peer's bucket admits a request for `address`, then return.
+    /// Admit a request for `address` to `peer`, returning a permit the caller
+    /// holds for the request's lifetime.
     ///
-    /// Returns immediately when the bucket has room. Otherwise it sleeps the
-    /// bucket's own wait hint and retries, re-syncing the live allowance each
-    /// iteration so a growing allowance shortens the wait and a shrinking one
-    /// lengthens it. The first delay increments the per-peer throttle metric for
-    /// `kind`.
+    /// First waits for a per-peer concurrency permit
+    /// ([`MAX_INFLIGHT_PER_PEER`]): the returned [`ThrottlePermit`] holds it, so
+    /// while it is alive one of the peer's in-flight slots is taken and a later
+    /// request to the same peer waits here once the slots are full. Then paces
+    /// against the peer's allowance bucket: returns once the bucket has room,
+    /// otherwise sleeping the bucket's wait hint and retrying, re-syncing the live
+    /// allowance each iteration so a growing allowance shortens the wait and a
+    /// shrinking one lengthens it. The first delay increments the per-peer
+    /// throttle metric for `kind`.
     ///
     /// The cost charged is the exact per-chunk proximity price the remote will
     /// debit ([`SwarmPricing::peer_price`]), so a neighborhood chunk paces at the
@@ -263,7 +316,24 @@ impl SelfThrottle {
         peer: OverlayAddress,
         address: ChunkAddress,
         kind: ProtocolKind,
-    ) {
+    ) -> Option<ThrottlePermit> {
+        // Reserve one of the peer's in-flight slots without blocking. A full peer
+        // returns `None`: the caller skips it and races the next-closest peer
+        // instead of serialising behind this one's slots. The permit is held for
+        // the request's lifetime, freeing the slot on drop. The semaphore is never
+        // closed, so the only error is a closed semaphore; treat it as no slot.
+        let slot = match self.peer_semaphore(&peer).try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                metrics::counter!(
+                    kind.inflight_capped_metric(),
+                    "peer_overlay" => peer.to_string(),
+                )
+                .increment(1);
+                return None;
+            }
+        };
+
         let cost = self.request_cost(&peer, &address);
         let mut throttled = false;
         let mut waited = Duration::ZERO;
@@ -271,7 +341,7 @@ impl SelfThrottle {
             self.sync_quota(&peer);
             let decision = self.limiter.lock().try_send(peer, cost);
             match decision {
-                Ok(()) => return,
+                Ok(()) => return Some(ThrottlePermit { _slot: slot }),
                 Err(delay) => {
                     if !throttled {
                         throttled = true;
@@ -302,6 +372,7 @@ impl SelfThrottle {
             ?kind,
             "self-throttle iteration budget exhausted; releasing request"
         );
+        Some(ThrottlePermit { _slot: slot })
     }
 
     /// Drop the peer's bucket on disconnect so memory does not grow with the
@@ -309,7 +380,21 @@ impl SelfThrottle {
     /// allowance rather than stale credit.
     pub fn clear(&self, peer: &OverlayAddress) {
         self.limiter.lock().clear(peer);
+        // Drop the peer's semaphore so its entry does not outlive the peer. Any
+        // permits still outstanding keep their own `Arc` alive until their
+        // requests finish; a reconnect creates a fresh full semaphore.
+        self.inflight.lock().remove(peer);
     }
+}
+
+/// Admission permit for one outbound request.
+///
+/// Holds the peer's in-flight slot for the request's lifetime: keep it alive
+/// until the request completes, then drop it to free the slot for the next
+/// request to that peer. Carries no data; its only effect is the held permit.
+#[must_use = "dropping the permit immediately frees the peer's in-flight slot"]
+pub(crate) struct ThrottlePermit {
+    _slot: OwnedSemaphorePermit,
 }
 
 /// Clamp an AU amount into the GCRA's `u32` token range.
@@ -711,7 +796,7 @@ mod tests {
         // A generous allowance must resolve promptly; the parking timer
         // (`futures-timer`) does not honor a paused tokio clock, so this is a
         // real but tight bound.
-        tokio::time::timeout(
+        let _ = tokio::time::timeout(
             Duration::from_secs(1),
             t.acquire(peer(1), address(1), ProtocolKind::Pushsync),
         )
@@ -726,8 +811,10 @@ mod tests {
         // and then resolve.
         let alloc = DynamicAllowance::new(COST);
         let t = throttle(alloc.clone());
-        t.acquire(peer(1), address(1), ProtocolKind::Pushsync).await;
-        tokio::time::timeout(
+        // Drop the first permit immediately so only the rate bucket, not the
+        // in-flight cap, gates the second acquire.
+        drop(t.acquire(peer(1), address(1), ProtocolKind::Pushsync).await);
+        let _ = tokio::time::timeout(
             Duration::from_secs(5),
             t.acquire(peer(1), address(1), ProtocolKind::Pushsync),
         )
@@ -743,7 +830,7 @@ mod tests {
         let alloc = DynamicAllowance::new(0);
         let t = throttle(alloc.clone());
         let start = std::time::Instant::now();
-        tokio::time::timeout(
+        let _ = tokio::time::timeout(
             MAX_THROTTLE_WAIT + Duration::from_secs(2),
             t.acquire(peer(1), address(1), ProtocolKind::Pushsync),
         )
@@ -753,6 +840,67 @@ mod tests {
         assert!(
             start.elapsed() <= MAX_THROTTLE_WAIT + Duration::from_secs(2),
             "acquire parked too long under a collapsed allowance"
+        );
+    }
+
+    #[tokio::test]
+    async fn inflight_cap_skips_beyond_the_limit_then_admits_after_release() {
+        // A generous allowance never rate-throttles, so the per-peer in-flight
+        // cap is the only bound: the first MAX_INFLIGHT_PER_PEER acquires hold
+        // their slots, the next is skipped (`None`) rather than blocking, and a
+        // freed slot admits the next request.
+        let alloc = DynamicAllowance::new(u64::from(u32::MAX));
+        let t = throttle(alloc.clone());
+
+        let mut permits = Vec::new();
+        for _ in 0..MAX_INFLIGHT_PER_PEER {
+            permits.push(
+                t.acquire(peer(1), address(1), ProtocolKind::Retrieval)
+                    .await
+                    .expect("slots up to the cap are admitted at once"),
+            );
+        }
+
+        // The next acquire is skipped without blocking: no slot is free.
+        assert!(
+            t.acquire(peer(1), address(1), ProtocolKind::Retrieval)
+                .await
+                .is_none(),
+            "an acquire beyond the in-flight cap is skipped, not blocked"
+        );
+
+        // Drop one permit; an acquire now succeeds.
+        permits.pop();
+        assert!(
+            t.acquire(peer(1), address(1), ProtocolKind::Retrieval)
+                .await
+                .is_some(),
+            "a freed slot admits the next request"
+        );
+    }
+
+    #[tokio::test]
+    async fn inflight_cap_is_per_peer() {
+        // Saturating one peer's slots must not affect a different peer: the
+        // retrieval race across many peers stays full-width.
+        let alloc = DynamicAllowance::new(u64::from(u32::MAX));
+        let t = throttle(alloc.clone());
+
+        let mut held = Vec::new();
+        for _ in 0..MAX_INFLIGHT_PER_PEER {
+            held.push(
+                t.acquire(peer(1), address(1), ProtocolKind::Retrieval)
+                    .await
+                    .expect("peer(1) slots fill"),
+            );
+        }
+
+        // peer(2) has its own full set of slots.
+        assert!(
+            t.acquire(peer(2), address(1), ProtocolKind::Retrieval)
+                .await
+                .is_some(),
+            "a different peer's slots are independent"
         );
     }
 }

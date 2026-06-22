@@ -89,6 +89,12 @@ pub enum ChunkTransferError {
     #[error("Remote peer reported a failure")]
     Remote,
 
+    /// We already have the most we will keep in flight to this peer, so the
+    /// request was not sent. Our own back-pressure, not the peer's fault:
+    /// retryable against another candidate and never scored against the peer.
+    #[error("Peer at in-flight capacity")]
+    Busy,
+
     /// Retrieval only.
     #[error("Chunk not found: {0}")]
     NotFound(ChunkAddress),
@@ -103,7 +109,9 @@ impl ChunkTransferError {
     /// cannot fix.
     pub fn is_retryable(&self) -> bool {
         match self {
-            Self::TimedOut | Self::Remote | Self::Protocol(_) | Self::NotFound(_) => true,
+            Self::TimedOut | Self::Remote | Self::Protocol(_) | Self::NotFound(_) | Self::Busy => {
+                true
+            }
             Self::ChannelClosed | Self::NotConnected | Self::Cancelled => false,
         }
     }

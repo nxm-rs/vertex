@@ -84,11 +84,18 @@ impl ClientHandle {
         address: ChunkAddress,
         originated: bool,
     ) -> Result<RetrievalResult, ChunkTransferError> {
-        if let Some(throttle) = &self.throttle {
-            throttle
-                .acquire(peer, address, ProtocolKind::Retrieval)
-                .await;
-        }
+        // Reserve the peer's in-flight slot, held for the whole request and
+        // dropped when this future returns. A saturated peer yields `Busy` so the
+        // caller's race skips it for the next-closest peer rather than piling on.
+        let _permit = match &self.throttle {
+            Some(throttle) => Some(
+                throttle
+                    .acquire(peer, address, ProtocolKind::Retrieval)
+                    .await
+                    .ok_or(ChunkTransferError::Busy)?,
+            ),
+            None => None,
+        };
 
         let (tx, rx) = oneshot::channel();
 
@@ -116,11 +123,19 @@ impl ClientHandle {
     ) -> Result<Receipt, ChunkTransferError> {
         let address = *chunk.address();
 
-        if let Some(throttle) = &self.throttle {
-            throttle
-                .acquire(peer, address, ProtocolKind::Pushsync)
-                .await;
-        }
+        // Reserve the peer's in-flight slot, held for the whole request and
+        // dropped when this future returns. A saturated peer yields `Busy` so the
+        // caller's sequential walk moves to the next candidate rather than piling
+        // on this one.
+        let _permit = match &self.throttle {
+            Some(throttle) => Some(
+                throttle
+                    .acquire(peer, address, ProtocolKind::Pushsync)
+                    .await
+                    .ok_or(ChunkTransferError::Busy)?,
+            ),
+            None => None,
+        };
 
         let (tx, rx) = oneshot::channel();
 

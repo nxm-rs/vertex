@@ -1,23 +1,51 @@
 //! Browser download + manifest-walk flow.
 //!
 //! Manifests are read against the in-memory cache with a network prefetch-retry
-//! loop. File reassembly enumerates the chunk tree, prefetches it breadth-first
-//! with real concurrency (the joiner's own DFS would serialise to ~1 in flight),
-//! then assembles from the warm cache.
+//! loop. Buffered reassembly (`download_file`) enumerates the chunk tree and
+//! prefetches it breadth-first before assembling from the warm cache. The
+//! streamed path (`stream_file`) skips that prefetch and lets the joiner drive
+//! retrieval sequentially, so it never fetches far ahead of the sink.
 
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use futures::StreamExt;
+use js_sys::Uint8Array;
 use nectar_mantaray::error::MantarayError;
 use nectar_mantaray::{Entry, PlainManifest};
 use nectar_primitives::store::ChunkStoreError;
 use nectar_primitives::{AnyChunk, ChunkAddress, DEFAULT_BODY_SIZE, Joiner};
 use vertex_swarm_api::SwarmChunkProvider;
 use wasm_bindgen::JsValue;
+use wasm_bindgen::prelude::*;
 
 use super::cache::MemoryCache;
 use super::net_get::NetworkChunkGet;
+
+#[wasm_bindgen]
+extern "C" {
+    /// A browser download sink (see `assets/download-sink.js`): ordered segment
+    /// writes with backpressure, streamed to disk via the File System Access API
+    /// or a service worker. The Rust side never inspects the chosen path.
+    #[wasm_bindgen(js_name = DownloadSink)]
+    pub type DownloadSink;
+
+    /// Announce the total byte count once the joiner is open (drives progress).
+    #[wasm_bindgen(method, js_name = setTotal)]
+    fn set_total(this: &DownloadSink, total: f64);
+
+    /// Write one ordered segment; resolves when the sink can accept more.
+    #[wasm_bindgen(method, catch)]
+    async fn write(this: &DownloadSink, chunk: Uint8Array) -> Result<JsValue, JsValue>;
+
+    /// Finish the download, flushing and closing the underlying stream.
+    #[wasm_bindgen(method, catch)]
+    async fn close(this: &DownloadSink) -> Result<JsValue, JsValue>;
+
+    /// Cancel the download with a human-readable reason.
+    #[wasm_bindgen(method)]
+    fn abort(this: &DownloadSink, reason: &str);
+}
 
 /// Bytes of a single child reference in a plain-mode intermediate node body.
 const REF_SIZE: usize = 32;
@@ -25,8 +53,19 @@ const REF_SIZE: usize = 32;
 /// Maximum prefetch round trips before giving up on a manifest op.
 const MAX_PREFETCH_ITERS: usize = 4096;
 
-/// Chunk retrievals kept in flight while prefetching a file's chunk tree.
-const DOWNLOAD_CONCURRENCY: usize = 32;
+/// Chunk retrievals kept in flight while prefetching a buffered download's tree.
+///
+/// Only the buffered (`download_file`) path prefetches the whole tree; the
+/// streamed path reads sequentially instead (see [`stream_file`]). Kept modest so
+/// the breadth-first warm-up does not itself flood storers; per-storer pressure
+/// is bounded by the provider's per-peer caps regardless.
+const PREFETCH_CONCURRENCY: usize = 8;
+
+/// Chunk reads the joiner keeps in flight. This is the streamed path's sole
+/// retrieval breadth (it does not prefetch), so it acts as a sequential
+/// lookahead window: wide enough to hide latency, narrow enough that per-storer
+/// pressure stays inside the provider's per-peer caps.
+const JOIN_CONCURRENCY: usize = 8;
 
 /// Download the file at `root`, resolving it as a single-file manifest if it is one.
 pub async fn download_reference(
@@ -43,6 +82,78 @@ pub async fn download_reference(
         // `root` is a plain file content chunk: join it directly.
         None => download_file(root, provider, cache).await,
     }
+}
+
+/// Stream the file at `root` to a browser `sink`, resolving a single-file
+/// manifest if `root` is one. Bytes flow to disk in order with backpressure;
+/// no full copy of the file is held in wasm memory.
+pub async fn stream_reference(
+    root: ChunkAddress,
+    provider: Arc<dyn SwarmChunkProvider>,
+    cache: &MemoryCache,
+    sink: &DownloadSink,
+) -> Result<(), JsValue> {
+    let file_root = match probe_manifest_entries(root, provider.clone(), cache).await? {
+        Some(entries) => pick_manifest_file(&entries)?,
+        None => root,
+    };
+    stream_file(file_root, provider, cache, sink).await
+}
+
+/// Stream the file at `file_root` to `sink` as ordered segments. Retrieval is
+/// driven by the joiner reading sequentially (a bounded lookahead window), not by
+/// a whole-tree prefetch: pre-fetching the entire tree up front would flood
+/// storers far ahead of where the sink has consumed. Each segment is dropped
+/// after its write resolves, bounding memory.
+pub async fn stream_file(
+    file_root: ChunkAddress,
+    provider: Arc<dyn SwarmChunkProvider>,
+    cache: &MemoryCache,
+    sink: &DownloadSink,
+) -> Result<(), JsValue> {
+    let getter = NetworkChunkGet::new(provider, cache.snapshot_map());
+    let joiner = Joiner::<NetworkChunkGet, DEFAULT_BODY_SIZE>::new(getter, file_root)
+        .await
+        .map_err(|e| JsValue::from_str(&format!("joiner open: {e}")))?
+        .with_concurrency(JOIN_CONCURRENCY);
+
+    // Total is known once the joiner is open; announce it before streaming so
+    // the progress bar can show a fraction rather than a bare byte count.
+    sink.set_total(joiner.size() as f64);
+
+    if joiner.size() == 0 {
+        return finish(sink).await;
+    }
+
+    let stream = joiner.into_stream();
+    futures::pin_mut!(stream);
+    while let Some(segment) = stream.next().await {
+        let segment = match segment {
+            Ok(seg) => seg,
+            Err(e) => {
+                sink.abort(&format!("joiner read: {e}"));
+                return Err(JsValue::from_str(&format!("joiner read: {e}")));
+            }
+        };
+        // Copy this segment into a JS view and write it; await applies the
+        // sink's backpressure. The segment is dropped at the end of the loop
+        // body, so peak wasm buffering is one segment plus its JS copy.
+        let view = Uint8Array::from(&segment[..]);
+        if let Err(e) = sink.write(view).await {
+            sink.abort("write failed");
+            return Err(JsValue::from_str(&format!("sink write: {e:?}")));
+        }
+    }
+
+    finish(sink).await
+}
+
+/// Close `sink`, mapping a close failure to a `JsValue` error.
+async fn finish(sink: &DownloadSink) -> Result<(), JsValue> {
+    sink.close()
+        .await
+        .map(|_| ())
+        .map_err(|e| JsValue::from_str(&format!("sink close: {e:?}")))
 }
 
 /// Probe whether `root` is a manifest, returning its entries or `None` if not.
@@ -196,7 +307,7 @@ async fn prefetch_tree(
                     }
                 }
             })
-            .buffer_unordered(DOWNLOAD_CONCURRENCY)
+            .buffer_unordered(PREFETCH_CONCURRENCY)
             .collect()
             .await;
 
@@ -245,7 +356,7 @@ async fn join_to_bytes(root: ChunkAddress, getter: NetworkChunkGet) -> Result<Ve
     let joiner = Joiner::<NetworkChunkGet, DEFAULT_BODY_SIZE>::new(getter, root)
         .await
         .map_err(|e| JsValue::from_str(&format!("joiner open: {e}")))?
-        .with_concurrency(DOWNLOAD_CONCURRENCY);
+        .with_concurrency(JOIN_CONCURRENCY);
 
     if joiner.size() == 0 {
         return Ok(Vec::new());
