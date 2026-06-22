@@ -20,6 +20,7 @@ allow = [
     "MPL-2.0",
     "Unicode-3.0",
     "CDDL-1.0",    # inferno (pprof flamegraph generation)
+    "CDLA-Permissive-2.0", # webpki-root-certs (bundled CA root set for the rustls native transport)
 ]
 
 [bans]

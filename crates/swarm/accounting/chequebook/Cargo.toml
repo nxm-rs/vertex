@@ -17,9 +17,10 @@ workspace = true
 default = []
 # `swap-chequebook` adds the native on-chain chequebook client over a shared
 # alloy provider. It is off by default; a node role that settles over SWAP (the
-# storer) turns it on. It enables an HTTP transport with native-tls: the rustls
-# path drags in a platform root-certs crate under a license outside the
-# workspace allow-list, so the HTTP transport uses native-tls (system OpenSSL).
+# storer) turns it on. It enables an HTTP transport with rustls (aws-lc-rs plus
+# rustls-platform-verifier); the bundled root certs are CDLA-Permissive-2.0,
+# which is allow-listed in the workspace deny.toml, so the HTTP transport no
+# longer depends on the system OpenSSL.
 swap-chequebook = [
     "dep:vertex-chain",
     "dep:alloy-contract",
@@ -56,11 +57,14 @@ serde = { workspace = true, features = ["derive"] }
 serde_with = { workspace = true, features = ["base64"] }
 serde_json = { workspace = true }
 
-# Native uses the reqwest transport with native-tls (system OpenSSL).
+# Native uses the reqwest transport with rustls (aws-lc-rs plus
+# rustls-platform-verifier); the bundled root certs are CDLA-Permissive-2.0,
+# which is allow-listed in the workspace deny.toml, so native TLS no longer
+# depends on the system OpenSSL.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 alloy-provider = { workspace = true, optional = true, features = [
     "reqwest",
-    "reqwest-native-tls",
+    "reqwest-rustls-tls",
 ] }
 
 # On wasm, the secp256k1 backend pulled in by `alloy-primitives/k256` reaches
