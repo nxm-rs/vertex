@@ -1,8 +1,10 @@
 # Node-type API: the Client-centred builder
 
-This note records the builder API for the three Swarm node types and the seams that make each component swappable. The target layering already exists structurally in the tree; the work is to promote internal closures to public methods, derive the accounting mode from the node type, wire the missing pseudosettle provider, collapse the swap knobs to one signal, and establish the chain-provider and cache seams so a wasm node can run up to a Client-with-SWAP.
+> Status note: the accounting and settlement half of this RFC predates the accounting and settlement reshape (epic #441), which removed the `BandwidthMode` runtime enum. The settlement model is now `feature = "swap"` plus `SwarmNodeType::swap_default()` plus an `Option<bool>` operator override, documented in `docs/design/accounting-settlement.md`. This RFC has been refreshed to that vocabulary: where it says "swap defaults on for storers" it means `swap_default()`, and "the swap override" means the `Option<bool>` (`--swap`) flag. The structural builder and seam design (the cache, reserve, settlement, pricer, and chain seams, and the three-level transition builder) is unchanged by the reshape. Read `docs/design/accounting-settlement.md` for the authoritative settlement model.
 
-The maintainer has locked the four decisions that were previously open (storer chain is mandatory, the accounting `A` generic must flow, a storer gains a forwarding cache layered over its reserve, and the `--swap` flag is deleted). They are recorded here as settled design, not as questions.
+This note records the builder API for the three Swarm node types and the seams that make each component swappable. The target layering already exists structurally in the tree; the work is to promote internal closures to public methods, derive the swap default from the node type, wire the missing pseudosettle provider, keep the swap signal coherent, and establish the chain-provider and cache seams so a wasm node can run up to a Client-with-SWAP.
+
+The maintainer has locked the four decisions that were previously open (storer chain is mandatory, the accounting `A` generic must flow, a storer gains a forwarding cache layered over its reserve, and swap selection is one coherent signal). They are recorded here as settled design, not as questions.
 
 ## 0. Summary
 
@@ -18,22 +20,22 @@ Two prerequisites gate everything and land first, in order: split the pseudosett
 
 - Cache. `SwarmLocalStore` (`crates/swarm/api/src/components/localstore.rs:33`), `auto_impl(&, Arc, Box)`, four methods over `CachedChunk`. Injected at the node level via `ClientNode::with_store(Arc<dyn SwarmLocalStore>)` (`crates/swarm/node/src/node/client.rs:413`). Default `ChunkStore` (`crates/swarm/localstore`). Wasm-clean.
 - Reserve. `ReserveStore: SwarmLocalStore` plus `BinCursorStore` / `SettableRadius` (`crates/swarm/api/src/components/reserve.rs`). Bolted in via `ClientNode::enable_storage(Arc<dyn ReserveStore>)` (`client.rs:216`) which installs `StorerCapability` (`crates/swarm/node/src/protocol/storer.rs`). The `is_responsible_for -> put -> Receipt::sign` chain and reserve-backed retrieval already work. The reserve's `SwarmLocalStore::get` reads the `Payload` table (`crates/swarm/storer/src/db_reserve/store.rs:302`).
-- Settlement. `SwarmSettlementProvider` (`crates/swarm/api/src/components/bandwidth.rs:66`), object-safe async trait, `auto_impl(&, Arc, Box)`, added via `AccountingBuilder::with_settlement` (`crates/swarm/bandwidth/core/src/builder.rs`). Pseudosettle and swap are sibling impls selected by `BandwidthMode`.
+- Settlement. `SwarmSettlementProvider` (`crates/swarm/api/src/components/bandwidth.rs:66`), object-safe async trait, `auto_impl(&, Arc, Box)`, added via `AccountingBuilder::with_settlement` (`crates/swarm/bandwidth/core/src/builder.rs`). Pseudosettle and swap are sibling impls; pseudosettle is always wired for client-backed nodes, swap is wired when swap is enabled.
 - Pricer. Generic `AccountingBuilder<C, P>`; `FixedPricer` / `NoPricer`.
-- Node-type mode default has a home. `BandwidthMode::default_for(node_type)` exists at `crates/swarm/primitives/src/lib.rs:313`, mirroring `ConnectionProfile::default_for`.
-- Chain access. `SharedChainProvider` and `build_chain_provider` (`crates/swarm/builder/src/chain.rs:32,68`) wrap a shared alloy provider behind the builder `chain` feature. `SwarmNodeType::needs_chain(swap_enabled)` (`primitives/src/lib.rs:269`) already encodes "storer always, client only with swap, bootnode never".
+- Node-type swap default has a home. `SwarmNodeType::swap_default()` (`crates/swarm/primitives/src/lib.rs:250`) returns true for a storer and false otherwise, mirroring `ConnectionProfile::default_for`.
+- Chain access. `SharedChainProvider` and `build_chain_provider` (`crates/swarm/builder/src/chain.rs:32,68`) wrap a shared alloy provider behind the builder `chain` feature. `SwarmNodeType::needs_chain(swap_enabled)` (`primitives/src/lib.rs:275`) already encodes "storer always, client only with swap, bootnode never".
 
 ### The specific gaps, with paths
 
 - The light client default is not actually light: zero providers wired. `build_client_backed_node` calls the pricer and reporter and conditionally the swap provider, but never adds a `PseudosettleProvider`. The default client runs an empty provider list: pure balance tracking, no time-based forgiveness. This is a correctness bug.
-- Node-type mode default is not wired into config construction. `BandwidthConfig::default()` hardcodes `mode: BandwidthMode::Pseudosettle` for all node types (`crates/swarm/bandwidth/core/src/config.rs:130`). `default_for` exists but no config-construction path calls it, so the storer-defaults-swap-on target silently does not happen.
+- Node-type swap default is not wired into construction. There is no path that resolves the effective swap state from the node type, so the storer-defaults-swap-on target silently does not happen.
 - Cache and reserve are constructed inline, not injected, at the public builder. The client cache is hardcoded to `ChunkStore::with_budget(DEFAULT_CACHE_BUDGET_BYTES, DEFAULT_SOC_CACHE_TTL_NS)` (`launch.rs:480`), ignoring `SwarmLocalStoreConfig`; the reserve is hardcoded `DbReserve` (`build_storer_reserve`, `launch.rs:559`). The `StoreFactory` / `NodeStore{local, reserve}` plumbing (`launch.rs:216-228`) is the right internal shape but is private.
-- Swap is scattered, but less than feared. `SwapConfig.enable` (the `--swap` flag, `crates/swarm/node/src/args/swap.rs:25,66`) feeds nothing into `BandwidthMode`; `SwapWiring::prepare` keys solely on `mode().swap_enabled()` and only warns when `--swap` disagrees with the mode (`crates/swarm/builder/src/swap.rs`). So today there is one semantic knob (`BandwidthMode`), one compile gate (the `swap` feature), and one inert flag.
+- Swap selection is split across three signals, and they should be reconciled to one resolution site. The `swap` cargo feature is the compile gate, `SwarmNodeType::swap_default()` is the per-node-type default, and `SwapConfig.enable: Option<bool>` (`crates/swarm/node/src/args/swap.rs`) is the operator override. The effective swap state is `params.swap.enable.unwrap_or(node_type.swap_default())`, resolved once and shared with the chain precondition.
 - The typed `A` parameter does not reach the providers. `ClientNodeBuilder<I, N, A>` is generic over accounting config, but `define_launch_types!` (`launch.rs:184-192`) pins `Accounting = ClientAccounting<Arc<Accounting<DefaultBandwidthConfig, Arc<Identity>>>, FixedPricer<Arc<Spec>>>`. `A` is named at the builder but discarded at the launch types.
 - Two divergent assembly paths. Native `build_client_backed_node` wires accounting, forwarding, cache, and verify; the wasm `ClientLauncher::launch` (`crates/swarm/node/src/node/launch.rs`) builds a bare `ClientNode` with none of these and returns a raw handle, not a chunk provider.
 - Reserve is invisible to operators. `StorerComponents<T, C, S>` erases `S` to `Arc<dyn SwarmLocalStore>` (`launch.rs:502-506`), so it impls `HasStore` but not `HasReserve`; reserve gRPC services are a TODO at `crates/swarm/rpc/src/adapter.rs:120`.
 - Pseudosettle provider taints the wasm cone. The provider type is wasm-pure, but the crate hard-imports `vertex_swarm_node::ClientCommand` (`crates/swarm/bandwidth/pseudosettle/src/lib.rs:30`) and re-exports `PseudosettleEvent` (`:36`). Importing `PseudosettleProvider` drags libp2p into wasm.
-- Chain build is degrade-not-fail for everyone. `build_node_chain_provider` (`launch.rs:123`) returns `Ok(None)` and only warns when a chain-needing node has no RPC URL or no canonical deployment. A swap-defaulted storer with no RPC URL builds, accepts pushsync, signs receipts, and silently never settles or stakes. The locked decision makes this a hard error for a storer (section 2.8).
+- Chain build is degrade-not-fail for everyone. `build_node_chain_provider` returns `Ok(None)` and only warns when a chain-needing node has no RPC URL or no canonical deployment. A swap-defaulted storer with no RPC URL builds, accepts pushsync, signs receipts, and silently never settles or stakes. The locked decision makes this a hard error for a storer (section 2.8).
 
 ## 2. Recommended model
 
@@ -41,32 +43,32 @@ Two prerequisites gate everything and land first, in order: split the pseudosett
 
 Keep the three-level fluent transition builder. The node-type axis is expressed by transition methods (`with_accounting` -> Client, `with_storage` / `with_reserve` -> Storer) and by which seams are wired, not by phantom type-state on every field. A type-state builder is rejected: it explodes the signatures FFI and gRPC must name, and it fights the cfg-gating. The legal progression is enforced by construction; you cannot reach `StorerNodeBuilder` without going through `ClientNodeBuilder`.
 
-### 2.2 Accounting default matrix
+### 2.2 Settlement default matrix
 
-The mode default lives in one place: `BandwidthMode::default_for(node_type)` (`primitives/src/lib.rs:313`), seeded into a new config constructor `BandwidthConfig::for_node_type(node_type)`. Operator override is carried as `Option<BandwidthMode>` (None == derive from node type), never inferred from value-equality. This avoids silently upgrading an explicit `Pseudosettle` on a storer to `Both`.
+The swap default lives in one place: `SwarmNodeType::swap_default()` (`primitives/src/lib.rs:250`), resolved against the operator override at one site as `swap_enabled = params.swap.enable.unwrap_or(node_type.swap_default())`. The override is the `Option<bool>` from `SwapConfig.enable` (None == derive from node type), never inferred from value-equality. There is no runtime mode enum: pseudosettle is always on for client-backed nodes, and swap is the additive layer gated by the resolved `swap_enabled`.
 
-| Node type | BandwidthMode | Providers wired | Served store | Reserve | Chain | Wasm |
+| Node type | Swap default | Providers wired | Served store | Reserve | Chain | Wasm |
 |---|---|---|---|---|---|---|
-| Bootnode | `None` (no accounting) | none | none | none | no | n/a (native) |
-| Client (light) | `Pseudosettle` | `PseudosettleProvider` (fix) | in-memory `ChunkStore`, budget from cfg | none | no | yes, this IS the wasm cone |
-| Client + SWAP (CDN) | `Both` | `Pseudosettle` + `Swap` | in-memory `ChunkStore` | none | yes (cheque) | yes, feature + RPC provider (section 4) |
-| Storer | `Both` (default ON) | `Pseudosettle` + `Swap` | cache-then-reserve composite (section 2.5) | `DbReserve` or injected | yes, mandatory (section 2.8) | no (native) |
+| Bootnode | n/a (no accounting) | none | none | none | no | n/a (native) |
+| Client (light) | off | `PseudosettleProvider` (fix) | in-memory `ChunkStore`, budget from cfg | none | no | yes, this IS the wasm cone |
+| Client + SWAP (CDN) | off, `--swap` opts in | `Pseudosettle` + `Swap` | in-memory `ChunkStore` | none | yes (cheque) | yes, feature + RPC provider (section 4) |
+| Storer | on (`swap_default()`) | `Pseudosettle` + `Swap` | cache-then-reserve composite (section 2.5) | `DbReserve` or injected | yes, mandatory (section 2.8) | no (native) |
 
 Rules:
 
-- The light Client default equals the wasm Client cone equals `bandwidth-core` (Pseudosettle, in-memory cache, no chain or swap).
-- `PseudosettleProvider` is wired whenever `mode.pseudosettle_enabled()`. This fixes the empty-provider-list bug. Pseudosettle stays active on a Storer because a Storer still relays to light clients that cannot issue cheques; `Both` is exactly pseudosettle-then-swap.
-- Storer is `Both`, not `Swap`: keep pseudosettle for light peers, run swap with redistribution peers.
+- The light Client default equals the wasm Client cone equals `bandwidth-core` (pseudosettle only, in-memory cache, no chain or swap).
+- `PseudosettleProvider` is always wired for a client-backed node. This fixes the empty-provider-list bug. Pseudosettle stays active on a Storer because a Storer still relays to light clients that cannot issue cheques; the swap layer is added on top.
+- A Storer runs both pseudosettle and swap: keep pseudosettle for light peers, run swap with redistribution peers.
 
 ### 2.3 Where the swap signal lives
 
-`--bandwidth.mode` is the sole authoritative knob. The locked decision deletes the `--swap` CLI flag and the inert `SwapConfig.enable` field. Three orthogonal questions, three answers:
+The effective swap state is resolved at exactly one site: `swap_enabled = params.swap.enable.unwrap_or(node_type.swap_default())`. Three orthogonal questions, three answers:
 
-- "Is swap on?" answered everywhere by `mode().swap_enabled()`. The mode is derived from the node-type default plus the presence of a `SwapConfig` at exactly one documented site (the config constructor), or overridden explicitly by `--bandwidth.mode`.
-- "Turn swap on for this client." one builder method, `ClientNodeBuilder::with_swap(SwapConfig)` (CDN). For a Storer swap is on by node-type default; `with_swap` still supplies the chequebook.
+- "Is swap on?" answered by the resolved `swap_enabled`: the node-type default (`swap_default()`) unless the operator override (`SwapConfig.enable: Option<bool>`, the `--swap` flag) says otherwise. There is no runtime mode enum.
+- "Turn swap on for this client." one builder method, `ClientNodeBuilder::with_swap(SwapConfig)` (CDN). Calling it sets the override and supplies the chequebook. For a Storer swap is on by node-type default; `with_swap` still supplies the chequebook.
 - "Can this build contain swap at all?" the `swap` cargo feature, unchanged in its compile-gating role. `with_swap`, the `swap` field, and `SwapConfig` are gated so a build without the feature cannot reference them.
 
-Deletions: remove `SwapArgs::enable` and the `--swap` arg (`args/swap.rs:23-25`), remove `SwapConfig.enable` (`:66`) and the `swap_config()` line that sets it, and remove the warn path in `SwapWiring::prepare` that compares the flag to the mode. `with_swap` mutating the effective mode to include swap is new behaviour, documented as such, not a simplification of an existing coupling.
+The override stays an `Option<bool>` so `None` means "use the node-type default" and an explicit `Some(false)` can disable swap on a storer without value-equality guessing. `with_swap` sets the override to `Some(true)` and records the chequebook; that the override is honoured over the node-type default is the documented behaviour.
 
 ### 2.4 In-memory-default swappable cache
 
@@ -110,7 +112,7 @@ Forwarding is node-type-uniform: every client-backed node calls `enable_forwardi
 
 ### 2.8 Storer chain is mandatory
 
-Locked decision: a Storer uses a dual settlement provider (`BandwidthMode::Both`, pseudosettle and swap), and a Storer build hard-fails if the chain does not resolve. A storer needs the chain for postage regardless of settlement (it stakes, reads the price oracle, and indexes batches), and once it holds a provider for postage it holds it for the chequebook, so chain is mandatory for a storer. The `Ok(None)` degrade path (`launch.rs:118,134,141,146`) must not apply to a storer.
+Locked decision: a Storer uses dual settlement (pseudosettle and swap, with swap on by `swap_default()`), and a Storer build hard-fails if the chain does not resolve. A storer needs the chain for postage regardless of settlement (it stakes, reads the price oracle, and indexes batches), and once it holds a provider for postage it holds it for the chequebook, so chain is mandatory for a storer. The `Ok(None)` degrade path must not apply to a storer.
 
 Concretely, `build_node_chain_provider` keeps `Ok(None)` only for a pure light client (which has no chain at all). For a storer (and for a swap-enabled CDN client, which has elected swap and therefore needs the chequebook on chain), a missing RPC URL or a network with no canonical deployment is a build-time error, not a warning. Use one coherent error variant, for example `SwarmNodeError::ChainRequired { node_type }`, raised inside `build_node_chain_provider` when `node_type.needs_chain(swap_enabled)` holds and the provider could not be constructed. This changes startup semantics, so it is a scoped change with its own test, not folded into the seam-promotion work.
 
@@ -130,31 +132,23 @@ Treat this as a real workstream in the migration plan (section 6, step 7), separ
 
 ```rust
 // ============================================================================
-// crates/swarm/primitives/src/lib.rs  -- already present (lib.rs:313).
-// Maps Bootnode -> None, Client -> Pseudosettle, Storer -> Both.
+// crates/swarm/primitives/src/lib.rs  -- already present (lib.rs:250).
+// Swap defaults on for a Storer (maximum support) and off otherwise.
 // ============================================================================
-impl BandwidthMode {
-    pub const fn default_for(node_type: SwarmNodeType) -> Self {
-        match node_type {
-            SwarmNodeType::Bootnode => BandwidthMode::None,
-            SwarmNodeType::Client => BandwidthMode::Pseudosettle,
-            SwarmNodeType::Storer => BandwidthMode::Both,
-        }
+impl SwarmNodeType {
+    pub fn swap_default(&self) -> bool {
+        matches!(self, SwarmNodeType::Storer)
     }
 }
 
 // ============================================================================
-// crates/swarm/bandwidth/core/src/config.rs  -- new constructor + explicit intent.
+// crates/swarm/builder/src/launch.rs  -- one resolution site, shared with the
+// chain precondition. The override is the Option<bool> from SwapConfig.enable.
 // ============================================================================
-impl<P> BandwidthConfig<P> {
-    /// Seed the mode from the node type. Operator override is carried separately
-    /// as `Option<BandwidthMode>` (None == use this default), never inferred from
-    /// value equality.
-    pub fn for_node_type(node_type: SwarmNodeType) -> Self
-    where P: Default {
-        Self { mode: BandwidthMode::default_for(node_type), ..Self::default() }
-    }
-}
+#[cfg(feature = "swap")]
+let swap_enabled = params.swap.enable.unwrap_or(node_type.swap_default());
+#[cfg(not(feature = "swap"))]
+let swap_enabled = false;
 
 // ============================================================================
 // crates/swarm/builder/src/node.rs  -- ClientNodeBuilder gains injectable seams.
@@ -198,9 +192,9 @@ impl<I, N, A> ClientNodeBuilder<I, N, A> /* same bounds */ {
     pub fn with_settlement(mut self, p: impl SwarmSettlementProvider + 'static) -> Self;
 
     /// THE swap seam. Calling it == swap ON for a CDN client (no reserve):
-    /// records the chequebook, flips the effective mode to include swap, and
-    /// marks the chain needed. Feature-gated, not target-gated, so a wasm
-    /// SWAP client can call it given a wasm chain-provider transport (section 4).
+    /// records the chequebook, sets the swap override to enabled, and marks the
+    /// chain needed. Feature-gated, not target-gated, so a wasm SWAP client can
+    /// call it given a wasm chain-provider transport (section 4).
     #[cfg(feature = "swap")]
     pub fn with_swap(mut self, swap: SwapConfig) -> Self;
 
@@ -240,26 +234,27 @@ impl<I, N, A, S, St> StorerNodeBuilder<I, N, A, S, St> /* existing bounds */ {
 
 ```rust
 // 1. Light client (wasm-clean default): pseudosettle wired, in-memory cache, no chain.
+//    swap_default() is false for a Client, so swap stays off without an override.
 let client = NodeBuilder::new(spec, identity, network)
-    .with_accounting(BandwidthConfig::for_node_type(SwarmNodeType::Client))
+    .with_accounting(accounting_cfg)
     .build(ctx).await?;
 
-// 2. CDN client: swap on, NO reserve, forwarding cache is the client cache.
+// 2. CDN client: swap on via the override, NO reserve, forwarding cache is the client cache.
 let cdn = NodeBuilder::new(spec, identity, network)
-    .with_accounting(BandwidthConfig::for_node_type(SwarmNodeType::Client))
-    .with_swap(SwapConfig { chequebook, beneficiary: None, deploy: false }) // the only swap knob
+    .with_accounting(accounting_cfg)
+    .with_swap(SwapConfig { chequebook, beneficiary: None, deploy: false }) // override -> swap on
     .build(ctx).await?;
 
-// 3. Storer: swap defaulted ON by node type, default DbReserve, chain mandatory.
+// 3. Storer: swap defaulted ON by swap_default(), default DbReserve, chain mandatory.
 let storer = NodeBuilder::new(spec, identity, network)
-    .with_accounting(BandwidthConfig::for_node_type(SwarmNodeType::Storer)) // mode = Both
+    .with_accounting(accounting_cfg)
     .with_chain(chain_cfg)                         // build hard-fails without it
     .with_storage(local_store_cfg, storage_cfg)    // builds default DbReserve at build()
     .build(ctx).await?;
 
 // 3b. Storer with a custom reserve and a persistent forwarding cache:
 let storer = NodeBuilder::new(spec, identity, network)
-    .with_accounting(BandwidthConfig::for_node_type(SwarmNodeType::Storer))
+    .with_accounting(accounting_cfg)
     .with_chain(chain_cfg)
     .with_cache_factory(|db| Ok(Arc::new(RedbForwardCache::open(db)?) as _)) // forwarding layer
     .with_storage(local_store_cfg, storage_cfg)
@@ -284,7 +279,7 @@ All three drive the same `ClientConfig` / `StorerConfig` -> `Default*Builder` pa
 - gRPC (desktop and server ops). Native-only by design (tonic + libp2p + tokio); never in the wasm cone. The CLI keeps its `match node_type` constructing the matching `*Config`. The per-container `RegistersGrpcServices` dispatch stays finite because the seams are trait objects. Add the native-only `ReserveService` gated on `HasReserve` once `StorerComponents` carries the typed reserve.
 - FFI (native and mobile embedding). `VertexClientConfig` gains optional swap fields mapping to `with_swap`, gated under the ffi `chain` feature (which forwards to the builder chain feature). `with_cache_factory` / `with_reserve_factory` and any `RedbDatabase`-typed signature stay `cfg(not(target_arch = "wasm32"))` in the ffi crate too, mirroring the builder.
 - wasm (browser). Two configurations now live in the wasm cone, an additive split, not one fixed shape:
-  - Light client. `db_path = None` (in-memory cache), `mode = Pseudosettle`, no swap, no reserve. This stays the minimal wasm cone and needs no feature beyond the base; it is just "never call the native-only methods."
+  - Light client. `db_path = None` (in-memory cache), pseudosettle only, no swap, no reserve. This stays the minimal wasm cone and needs no feature beyond the base; it is just "never call the native-only methods."
   - Client + SWAP. Additive: the `swap` feature plus a wasm-compatible chain provider. Swap and chain are not target-gated off on wasm. The chain code already compiles for wasm given the right transport (alloy `Provider` with `default-features = false`, no reqwest or native TLS; see `docs/design/chain-service.md`). A wasm SWAP client supplies an RPC endpoint reachable from the browser (fetch or WS JSON-RPC) and a wasm provider impl built over it. The persistent cache, where used, is the IndexedDB backend (section 2.4).
 
 ### cfg discipline that keeps the wasm cone clean
@@ -312,18 +307,18 @@ A bleeding-edge implementer replaces a component by passing a trait object; no e
 
 - Custom cache: implement `SwarmLocalStore`, pass `Arc::new(MyCache) as Arc<dyn SwarmLocalStore>` to `with_cache`, or a `with_cache_factory` closure for a db-backed cache. On a storer this supplies the forwarding cache layer.
 - Custom reserve: implement `ReserveStore` (+ `BinCursorStore` / `SettableRadius`), pass to `StorerNodeBuilder::with_reserve`. The one Arc serves both ingest and the reserve leg of the served composite via arc upcast.
-- Custom settlement scheme: implement `SwarmSettlementProvider`, pass to `with_settlement`; it is appended after the node-type base providers and fires per `BandwidthMode`.
+- Custom settlement scheme: implement `SwarmSettlementProvider`, pass to `with_settlement`; it is appended after the node-type base providers (pseudosettle, and swap when enabled).
 - Custom chain transport: supply a wasm or native alloy provider over your own RPC; the settlement service consumes the `Provider` bound, not a concrete client.
 - Genuinely different accounting struct (rare): drop to the node-level `ClientNode` builder + `AccountingBuilder<C, P>`, which is fully generic. With `A` flowing (section 2.9) the typed `ClientNodeBuilder` already carries the config and pricer; the node-level layer is the escape hatch for a different bundle.
 
 ## 6. Migration plan (each step independently shippable)
 
 1. Split the pseudosettle provider from the node crate (hard prerequisite). Extract a wasm-clean `PseudosettleProvider` with zero `vertex_swarm_node` deps (remove the `ClientCommand` import at `pseudosettle/src/lib.rs:30`; leave `PseudosettleService` / `PseudosettleHandle` / `PseudosettleEvent` in the native service path or behind a cfg gate). Extend `just check-cone`. No builder change yet.
-2. Wire pseudosettle as the default provider plus the node-type mode default. Add `BandwidthConfig::for_node_type`, carry operator mode as `Option<BandwidthMode>`, wire `PseudosettleProvider` whenever `mode.pseudosettle_enabled()` in `build_client_backed_node`. Validate pseudosettle refresh semantics against the reference (a live-path behavioural change, not a wire change).
-3. Delete the inert swap flag. Remove `SwapArgs::enable` and the `--swap` arg, remove `SwapConfig.enable`, remove the `SwapWiring::prepare` warn path. `--bandwidth.mode` is the sole authoritative knob.
+2. Wire pseudosettle as the default provider for every client-backed node. Always add `PseudosettleProvider` in `build_client_backed_node`; it has no per-node-type gate. Validate pseudosettle refresh semantics against the reference (a live-path behavioural change, not a wire change).
+3. Resolve swap selection at one site. Derive the effective swap state as `swap_enabled = swap.enable.unwrap_or(node_type.swap_default())` in `build_client_backed_node` and share it with the chain precondition. The `--swap` flag is the `Option<bool>` override (None defers to `swap_default()`); the `swap` cargo feature stays the compile gate.
 4. Promote the cache and reserve seams to public builder methods. `with_cache` / `with_cache_factory`, `with_reserve` / `with_reserve_factory`; derive both reserve views by the arc-upcast already in `launch.rs:597-598`; route `cache_budget_bytes` through to the client default cache. `with_settlement` passthrough.
 5. Storer cache-then-reserve composite. Add `CacheThenReserve` as the storer retrieval-serve view, route forwarded/out-of-AoR writes to the cache and in-AoR pushsync to the reserve, keep the reserve view separate for ingest. `with_cache` becomes the forwarding-cache seam on a storer.
-6. Make the swap seam idiomatic. `ClientNodeBuilder::with_swap(SwapConfig)` records the chequebook, flips the effective mode to include swap, and marks chain needed. Feature-gated, not target-gated.
+6. Make the swap seam idiomatic. `ClientNodeBuilder::with_swap(SwapConfig)` records the chequebook, sets the swap override to enabled, and marks chain needed. Feature-gated, not target-gated.
 7. Make `A` flow. Generalise `define_launch_types!`'s `with_client` arm over the accounting config and pricer, thread the accounting type parameter (or its associated bandwidth and pricing types) through `ClientComponents` / `StorerComponents` and the gRPC adapter, and stop discarding `A` at the launch types. Separable workstream with its own review.
 8. `StorerComponents` `HasReserve` + `ReserveService`. Carry typed `S` so `HasReserve` is impl-able; add the native-only gRPC reserve service (closes `adapter.rs:120`). Land the type change and service together.
 9. Storer chain hard-fail. Make `build_node_chain_provider` return a build error (`SwarmNodeError::ChainRequired`) for a storer or a swap-enabled CDN client whose chain did not resolve; keep `Ok(None)` only for a pure light client. Own test, scoped PR (changes startup semantics).
@@ -341,4 +336,4 @@ The four previously-open items (storer chain mandatory, `A` flows, storer forwar
 
 ## Relevant files
 
-`crates/swarm/builder/src/node.rs`, `crates/swarm/builder/src/launch.rs` (`StoreFactory` / `NodeStore` at :216-228, `define_launch_types!` at :184-192, client `make_store` at :478-486, `build_storer_reserve` at :559-599, dual-Arc upcast at :597-598, `build_node_chain_provider` at :123, chain wiring at :370-383), `crates/swarm/builder/src/chain.rs:32,68` (`SharedChainProvider`, `build_chain_provider`), `crates/swarm/builder/src/swap.rs`, `crates/swarm/node/src/args/swap.rs:23,25,66` (`--swap` flag and `SwapConfig.enable`), `crates/swarm/bandwidth/core/src/config.rs:130`, `crates/swarm/bandwidth/core/src/builder.rs`, `crates/swarm/bandwidth/pseudosettle/src/lib.rs:30,36` (`ClientCommand` import, `PseudosettleEvent` re-export), `crates/swarm/primitives/src/lib.rs:269` (`needs_chain`), `:313` (`BandwidthMode::default_for`), `crates/swarm/api/src/components/localstore.rs:33` (`SwarmLocalStore`), `crates/swarm/api/src/components/reserve.rs`, `crates/swarm/api/src/components/bandwidth.rs:66,227`, `crates/swarm/storer/src/db_reserve/store.rs:26,302` (six tables, `Payload`-table `get`), `crates/swarm/node/src/node/client.rs:216,413` (`enable_storage`, `with_store`), `crates/swarm/node/src/node/launch.rs` (`ClientLauncher`), `crates/swarm/rpc/src/adapter.rs:120`, `crates/ffi/src/api/client.rs`, `bin/vertex/src/cli.rs`, `docs/design/chain-service.md`.
+`crates/swarm/builder/src/node.rs`, `crates/swarm/builder/src/launch.rs` (`StoreFactory` / `NodeStore` at :216-228, `define_launch_types!` at :184-192, client `make_store` at :478-486, `build_storer_reserve` at :559-599, dual-Arc upcast at :597-598, `build_node_chain_provider` at :123, chain wiring at :370-383), `crates/swarm/builder/src/chain.rs:32,68` (`SharedChainProvider`, `build_chain_provider`), `crates/swarm/builder/src/swap.rs`, `crates/swarm/node/src/args/swap.rs` (`--swap` flag and `SwapConfig.enable: Option<bool>`), `crates/swarm/bandwidth/core/src/config.rs`, `crates/swarm/bandwidth/core/src/builder.rs`, `crates/swarm/bandwidth/pseudosettle/src/lib.rs:30,36` (`ClientCommand` import, `PseudosettleEvent` re-export), `crates/swarm/primitives/src/lib.rs:275` (`needs_chain`), `:250` (`swap_default`), `crates/swarm/api/src/components/localstore.rs:33` (`SwarmLocalStore`), `crates/swarm/api/src/components/reserve.rs`, `crates/swarm/api/src/components/bandwidth.rs:66,227`, `crates/swarm/storer/src/db_reserve/store.rs:26,302` (six tables, `Payload`-table `get`), `crates/swarm/node/src/node/client.rs:216,413` (`enable_storage`, `with_store`), `crates/swarm/node/src/node/launch.rs` (`ClientLauncher`), `crates/swarm/rpc/src/adapter.rs:120`, `crates/ffi/src/api/client.rs`, `bin/vertex/src/cli.rs`, `docs/design/chain-service.md`.
