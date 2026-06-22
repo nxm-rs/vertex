@@ -479,11 +479,17 @@ async fn build_client_backed_node(
     let chunks = VerifyingChunkProvider::new(chunk_provider, params.verify);
 
     // The client service reports retrieval and pushsync outcomes through the same
-    // peer manager authority accounting uses, and shares the handle's throttle so
-    // a peer disconnect clears that peer's bucket.
+    // peer manager authority accounting uses, shares the handle's throttle so a
+    // peer disconnect clears that peer's bucket, and debits the serving peer for
+    // our own retrievals and pushes through the same shared accounting the
+    // selector, throttle, and forwarder use.
     let client_service = client_service
         .with_reporter(Arc::clone(&reporter))
-        .with_throttle(throttle);
+        .with_throttle(throttle)
+        .with_accounting(
+            Arc::new(accounting.pricing().clone()),
+            accounting.bandwidth().clone(),
+        );
     ctx.executor()
         .spawn_service("swarm.client_service", client_service);
 
@@ -1315,6 +1321,67 @@ mod tests {
             .get_peer_score(&overlay)
             .expect("peer still scored");
         assert!(after < baseline, "violation must lower the score");
+    }
+
+    /// The shared accounting wired into the client service via `with_accounting`
+    /// debits the serving peer for an own-request delivery. This proves the
+    /// builder's wiring expression activates the origin debit, not just that the
+    /// service supports it.
+    #[tokio::test]
+    async fn builder_wiring_debits_an_origin_delivery() {
+        use nectar_primitives::{AnyChunk, ChunkAddress, ContentChunk};
+        use vertex_swarm_api::{SwarmBandwidthAccounting, SwarmPeerBandwidth, SwarmPricing};
+        use vertex_swarm_node::{ClientEvent, ClientService};
+
+        let identity = test_identity_arc();
+        let config = DefaultBandwidthConfig::default();
+        let accounting = Arc::new(
+            AccountingBuilder::new(config)
+                .with_pricer_from_config(identity.spec().clone())
+                .build(&identity),
+        );
+
+        let chunk: AnyChunk = ContentChunk::new(b"origin debit through the builder".to_vec())
+            .expect("valid content chunk")
+            .into();
+        let address = *chunk.address();
+        let overlay = ChunkAddress::from([0x5cu8; 32]);
+        let price = accounting.pricing().peer_price(&overlay, &address);
+        assert!(price > Au::ZERO, "the per-chunk price is non-zero");
+
+        // The same wiring expression `build_client_backed_node` uses.
+        let (service, event_tx, _handle) = ClientService::new();
+        let service = service.with_accounting(
+            Arc::new(accounting.pricing().clone()),
+            accounting.bandwidth().clone(),
+        );
+
+        let manager = TaskManager::current();
+        let handle = manager
+            .executor()
+            .spawn_service("test.client_service", service);
+
+        event_tx
+            .send(ClientEvent::ChunkReceived {
+                peer: overlay,
+                address,
+                chunk,
+                stamp: None,
+                latency: std::time::Duration::from_millis(1),
+                originated: true,
+            })
+            .await
+            .expect("service is running");
+        // Dropping the sender closes the channel, so the run loop drains the one
+        // queued event and then exits.
+        drop(event_tx);
+        handle.await.expect("service task joins cleanly");
+
+        assert_eq!(
+            accounting.bandwidth().for_peer(overlay).balance(),
+            -price,
+            "an own-request delivery debits the serving peer by the per-chunk price"
+        );
     }
 
     /// The storer factory builds the admission-gated reserve, not the cache-only

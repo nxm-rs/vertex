@@ -195,6 +195,9 @@ pub enum ClientEvent {
         stamp: Option<Stamp>,
         /// Time from request to delivery, for latency scoring.
         latency: core::time::Duration,
+        /// True if this was our own request, false if a relay leg. Only an
+        /// origin delivery is debited; the forwarder debits its own legs.
+        originated: bool,
     },
 
     /// A chunk retrieval request failed.
@@ -217,6 +220,9 @@ pub enum ClientEvent {
         address: ChunkAddress,
         /// Time from push to receipt, for latency scoring.
         latency: core::time::Duration,
+        /// True if this was our own push, false if a relay leg. Only an origin
+        /// receipt is debited; the forwarder debits its own legs.
+        originated: bool,
     },
 
     /// A chunk push failed.
@@ -238,14 +244,6 @@ pub enum ClientEvent {
         peer: OverlayAddress,
         /// The protocol that rejected the data.
         protocol: &'static str,
-    },
-
-    /// The balance crossed the payment threshold; settle via swap or pseudosettle.
-    SettlementNeeded {
-        /// The peer to settle with.
-        peer: OverlayAddress,
-        /// Current balance (positive = they owe us).
-        balance: i64,
     },
 
     /// Received a pseudosettle payment from a peer.
@@ -357,6 +355,9 @@ pub enum ClientCommand {
         address: ChunkAddress,
         /// Resolves with the retrieved chunk or the failure.
         response: RetrievalResponseTx,
+        /// True for our own request, false for a forwarder relay leg. Echoed
+        /// back on the completion event so only origin requests are debited.
+        originated: bool,
     },
 
     /// Push a chunk to a peer.
@@ -369,6 +370,9 @@ pub enum ClientCommand {
         chunk: StampedChunk,
         /// Resolves with the storer's receipt or the failure.
         response: PushResponseTx,
+        /// True for our own push, false for a forwarder relay leg. Echoed back
+        /// on the completion event so only origin pushes are debited.
+        originated: bool,
     },
 
     /// Send a pseudosettle payment to a peer.

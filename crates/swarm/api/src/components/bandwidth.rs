@@ -193,6 +193,25 @@ pub trait SwarmBandwidthAccounting: Send + Sync {
     fn prepare_provide(&self, peer: OverlayAddress, price: Au) -> SwarmResult<Self::ProvideAction>;
 }
 
+/// Object-safe receive debit for callers that hold accounting behind a trait
+/// object (the client service, which cannot name the `ReceiveAction` type).
+///
+/// Commits in one step: the chunk is in hand when an origin request completes,
+/// so there is nothing to hold and release. An `Err` carries the
+/// disconnect-threshold breach the accounting already reported through its peer
+/// reporter.
+pub trait BandwidthDebit: Send + Sync {
+    /// Debit `peer` by `price` for a received chunk, committing immediately.
+    fn debit_received(&self, peer: OverlayAddress, price: Au, originated: bool) -> SwarmResult<()>;
+}
+
+impl<B: SwarmBandwidthAccounting> BandwidthDebit for B {
+    fn debit_received(&self, peer: OverlayAddress, price: Au, originated: bool) -> SwarmResult<()> {
+        self.prepare_receive(peer, price, originated)
+            .map(AccountingAction::apply)
+    }
+}
+
 /// Combined pricing and bandwidth accounting for client operations.
 ///
 /// Unifies chunk pricing and bandwidth accounting so callers don't need

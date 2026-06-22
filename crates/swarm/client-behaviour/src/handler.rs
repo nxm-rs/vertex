@@ -153,11 +153,15 @@ pub enum HandlerCommand {
     RetrieveChunk {
         address: ChunkAddress,
         response: RetrievalResponseTx,
+        /// True for our own request, false for a forwarder relay leg.
+        originated: bool,
     },
     /// Push a chunk to the peer for storage.
     PushChunk {
         chunk: StampedChunk,
         response: PushResponseTx,
+        /// True for our own push, false for a forwarder relay leg.
+        originated: bool,
     },
     /// Send a pseudosettle payment to the peer.
     SendPseudosettle { amount: U256 },
@@ -207,12 +211,18 @@ pub enum HandlerEvent {
         chunk: AnyChunk,
         stamp: Option<Stamp>,
         latency: Duration,
+        /// Stamped from the per-substream request state: true for an origin
+        /// request, false for a forwarder relay leg.
+        originated: bool,
     },
     /// Received a receipt from peer. `latency` is request-to-receipt, for scoring.
     ReceiptReceived {
         overlay: OverlayAddress,
         address: ChunkAddress,
         latency: Duration,
+        /// Stamped from the per-substream request state: true for an origin
+        /// push, false for a forwarder relay leg.
+        originated: bool,
     },
     /// An outbound retrieval failed. The requester is already resolved through
     /// its response channel; this feeds scoring and metrics. `kind` distinguishes
@@ -657,6 +667,7 @@ impl ClientHandler {
         address: ChunkAddress,
         response: RetrievalResponseTx,
         latency: Duration,
+        originated: bool,
     ) {
         let overlay = self.overlay();
         match delivery {
@@ -690,6 +701,7 @@ impl ClientHandler {
                     chunk: chunk.clone(),
                     stamp: stamp.clone(),
                     latency,
+                    originated,
                 });
                 let _ = response.send(Ok(RetrievalResult {
                     chunk,
@@ -707,6 +719,7 @@ impl ClientHandler {
         address: ChunkAddress,
         response: PushResponseTx,
         latency: Duration,
+        originated: bool,
     ) {
         let overlay = self.overlay();
         match response_msg {
@@ -741,6 +754,7 @@ impl ClientHandler {
                             overlay,
                             address: receipt_address,
                             latency,
+                            originated,
                         });
                         let _ = response.send(Ok(receipt));
                     }
@@ -856,7 +870,11 @@ impl ConnectionHandler for ClientHandler {
                         });
                     }
                 }
-                HandlerCommand::RetrieveChunk { address, response } => {
+                HandlerCommand::RetrieveChunk {
+                    address,
+                    response,
+                    originated,
+                } => {
                     let upgrade = ClientOutboundUpgrade::retrieval(address);
                     return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
                         protocol: SubstreamProtocol::new(
@@ -865,12 +883,17 @@ impl ConnectionHandler for ClientHandler {
                                 address,
                                 response,
                                 requested_at: Instant::now(),
+                                originated,
                             },
                         )
                         .with_timeout(self.config.retrieval_timeout),
                     });
                 }
-                HandlerCommand::PushChunk { chunk, response } => {
+                HandlerCommand::PushChunk {
+                    chunk,
+                    response,
+                    originated,
+                } => {
                     let address = *chunk.address();
                     let delivery = vertex_swarm_net_pushsync::Delivery::new(chunk);
                     let upgrade = ClientOutboundUpgrade::pushsync(delivery);
@@ -881,6 +904,7 @@ impl ConnectionHandler for ClientHandler {
                                 address,
                                 response,
                                 requested_at: Instant::now(),
+                                originated,
                             },
                         )
                         .with_timeout(self.config.pushsync_timeout),
@@ -993,6 +1017,7 @@ impl ConnectionHandler for ClientHandler {
                         address,
                         response,
                         requested_at,
+                        originated: _,
                     } => {
                         // A timeout is never a malformed chunk; an `Apply` error
                         // may be a malformed delivery.
@@ -1028,6 +1053,7 @@ impl ConnectionHandler for ClientHandler {
                         address,
                         response,
                         requested_at,
+                        originated: _,
                     } => {
                         let kind = apply_error
                             .map_or(FailureKind::Protocol, |e| e.pushsync_failure_kind());
@@ -1162,10 +1188,11 @@ impl ClientHandler {
                     address,
                     response,
                     requested_at,
+                    originated,
                 },
             ) => {
                 let latency = requested_at.elapsed();
-                self.on_retrieval_response(delivery, address, response, latency);
+                self.on_retrieval_response(delivery, address, response, latency, originated);
             }
             (
                 ClientOutboundOutput::Pushsync(receipt),
@@ -1173,11 +1200,12 @@ impl ClientHandler {
                     address,
                     response,
                     requested_at,
+                    originated,
                 },
             ) => {
                 let latency = requested_at.elapsed();
                 debug!(%address, "Received pushsync receipt");
-                self.on_pushsync_receipt(receipt, address, response, latency);
+                self.on_pushsync_receipt(receipt, address, response, latency, originated);
             }
             (
                 ClientOutboundOutput::Pseudosettle(ack),

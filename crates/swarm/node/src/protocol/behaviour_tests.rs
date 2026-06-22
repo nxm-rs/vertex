@@ -140,6 +140,7 @@ async fn serves_a_content_chunk_from_the_cache() {
             peer: server_overlay,
             address,
             response: tx,
+            originated: true,
         });
 
     let result = drive_until_retrieved(&mut client, &mut server, rx).await;
@@ -174,6 +175,7 @@ async fn serves_a_fresh_soc_from_the_cache() {
             peer: server_overlay,
             address,
             response: tx,
+            originated: true,
         });
 
     let delivered = drive_until_retrieved(&mut client, &mut server, rx)
@@ -210,6 +212,7 @@ async fn expired_soc_is_not_served_and_resets() {
             peer: server_overlay,
             address,
             response: tx,
+            originated: true,
         });
 
     let result = drive_until_retrieved(&mut client, &mut server, rx).await;
@@ -238,6 +241,7 @@ async fn cache_miss_resets_with_stub_forwarder() {
             peer: server_overlay,
             address,
             response: tx,
+            originated: true,
         });
 
     let result = drive_until_retrieved(&mut client, &mut server, rx).await;
@@ -265,6 +269,7 @@ async fn inbound_pushsync_resets_with_stub_forwarder() {
         address: *chunk.address(),
         chunk,
         response: tx,
+        originated: true,
     });
 
     let drive = async {
@@ -455,6 +460,7 @@ async fn responsible_storer_stores_and_signs_a_receipt() {
         address,
         chunk,
         response: tx,
+        originated: true,
     });
 
     let drive = async {
@@ -510,6 +516,7 @@ async fn non_responsible_storer_forwards_instead_of_storing() {
         address,
         chunk,
         response: tx,
+        originated: true,
     });
 
     let drive = async {
@@ -670,6 +677,7 @@ async fn three_node_retrieval_relays_verifies_and_accounts() {
         peer: b_overlay,
         address,
         response: tx,
+        originated: true,
     });
 
     // B's forwarder commands are pumped back into B.
@@ -762,6 +770,7 @@ async fn relay_does_not_cache_a_forwarded_soc() {
         peer: b_overlay,
         address,
         response: tx,
+        originated: true,
     });
 
     let result = {
@@ -825,6 +834,7 @@ async fn relay_without_strictly_closer_peer_resets_rather_than_looping() {
         peer: b_overlay,
         address,
         response: tx,
+        originated: true,
     });
 
     let result = {
@@ -932,6 +942,7 @@ async fn three_node_pushsync_relays_receipt_verbatim_and_accounts() {
         address,
         chunk,
         response: tx,
+        originated: true,
     });
 
     let result = {

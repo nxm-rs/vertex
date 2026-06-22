@@ -195,13 +195,18 @@ impl ClientBehaviour {
                 peer,
                 address,
                 response,
+                originated,
             } => {
                 if let Some(&peer_id) = self.overlay_peers.get(&peer) {
                     debug!(%peer_id, %peer, %address, "Retrieving chunk");
                     self.push_event(ToSwarm::NotifyHandler {
                         peer_id,
                         handler: libp2p::swarm::NotifyHandler::Any,
-                        event: HandlerCommand::RetrieveChunk { address, response },
+                        event: HandlerCommand::RetrieveChunk {
+                            address,
+                            response,
+                            originated,
+                        },
                     });
                 } else {
                     debug!(%peer, "Unknown peer for retrieval");
@@ -213,13 +218,18 @@ impl ClientBehaviour {
                 address,
                 chunk,
                 response,
+                originated,
             } => {
                 if let Some(&peer_id) = self.overlay_peers.get(&peer) {
                     debug!(%peer_id, %peer, %address, "Pushing chunk");
                     self.push_event(ToSwarm::NotifyHandler {
                         peer_id,
                         handler: libp2p::swarm::NotifyHandler::Any,
-                        event: HandlerCommand::PushChunk { chunk, response },
+                        event: HandlerCommand::PushChunk {
+                            chunk,
+                            response,
+                            originated,
+                        },
                     });
                 } else {
                     debug!(%peer, "Unknown peer for push");
@@ -352,6 +362,7 @@ impl ClientBehaviour {
                 chunk,
                 stamp,
                 latency,
+                originated,
             } => {
                 self.pending_events
                     .push_back(ToSwarm::GenerateEvent(ClientEvent::ChunkReceived {
@@ -360,17 +371,20 @@ impl ClientBehaviour {
                         chunk,
                         stamp,
                         latency,
+                        originated,
                     }));
             }
             HandlerEvent::ReceiptReceived {
                 overlay,
                 address,
                 latency,
+                originated,
             } => {
                 self.push_event(ToSwarm::GenerateEvent(ClientEvent::ReceiptReceived {
                     peer: overlay,
                     address,
                     latency,
+                    originated,
                 }));
             }
             HandlerEvent::RetrievalFailed {

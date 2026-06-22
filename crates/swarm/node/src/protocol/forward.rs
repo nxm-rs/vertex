@@ -152,7 +152,10 @@ where
                     }
                 };
 
-                match handle.retrieve_chunk(closer, address).await {
+                // `originated = false`: this is a relay leg, so the service must
+                // not debit the completion event. The forwarder debits this leg
+                // itself via `prepare_receive_chunk` above.
+                match handle.retrieve_chunk(closer, address, false).await {
                     Ok(result) => {
                         // Edge verification: the relayed chunk must answer the
                         // requested address before we account, cache, or relay
@@ -236,7 +239,9 @@ where
                     }
                 };
 
-                match handle.push_chunk(closer, chunk.clone()).await {
+                // `originated = false`: a relay leg, debited by the forwarder
+                // above, so the service must not debit the completion event.
+                match handle.push_chunk(closer, chunk.clone(), false).await {
                     Ok(receipt) => {
                         // The receipt's storer was recovered and verified at the
                         // decode boundary, so a malformed receipt never reaches
@@ -507,7 +512,9 @@ mod tests {
                     peer,
                     address: requested,
                     response,
+                    originated,
                 } => {
+                    assert!(!originated, "a relay leg is never an origin request");
                     assert_eq!(peer, closer, "the upstream leg targets the closer peer");
                     assert_eq!(requested, address);
                     response
@@ -666,7 +673,9 @@ mod tests {
                     address: requested,
                     chunk: pushed,
                     response,
+                    originated,
                 } => {
+                    assert!(!originated, "a relay leg is never an origin push");
                     assert_eq!(peer, closer);
                     assert_eq!(requested, address);
                     assert_eq!(*pushed.address(), address);

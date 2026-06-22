@@ -480,6 +480,9 @@ pub enum ClientOutboundInfo {
         response: super::events::RetrievalResponseTx,
         /// When the outbound substream was requested, for latency scoring.
         requested_at: vertex_util_runtime::time::Instant,
+        /// True for an origin request, false for a forwarder relay leg. Stamped
+        /// onto the completion event so only origin requests are debited.
+        originated: bool,
     },
     /// Pushsync request with chunk address and the caller's response channel.
     Pushsync {
@@ -487,6 +490,9 @@ pub enum ClientOutboundInfo {
         response: super::events::PushResponseTx,
         /// When the outbound substream was requested, for latency scoring.
         requested_at: vertex_util_runtime::time::Instant,
+        /// True for an origin push, false for a forwarder relay leg. Stamped
+        /// onto the completion event so only origin pushes are debited.
+        originated: bool,
     },
     /// Pseudosettle payment with amount.
     Pseudosettle { amount: U256 },
