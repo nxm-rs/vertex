@@ -20,23 +20,17 @@ default = []
 # client. Off by default to keep the default client cone lean.
 chain = [
     "vertex-chain/provider",
-    "vertex-swarm-accounting-chequebook/swap-chequebook",
-    # When the swap service is also present, the chain unlocks on-chain cashout
-    # of received cheques. Without `swap` this is a no-op.
-    "vertex-swarm-accounting-swap?/swap-chequebook",
+    # The on-chain cashout of received cheques and its chequebook client live in
+    # the node crate's swap wiring; the chain build unlocks them there. With `swap`
+    # off this is inert.
+    "vertex-swarm-node/swap-chequebook",
 ]
-# SWAP cheque-based settlement. Wires the chequebook settlement service into
-# bandwidth accounting and routes the swap wire events. Chain-free on its own:
-# cheque exchange (sign, send, validate, credit) needs no chain. Combine with
-# `chain` to enable on-chain cashout of received cheques. Off by default so the
-# chain-free client node stays the default cone.
-swap = [
-    "dep:vertex-swarm-accounting-swap",
-    "vertex-swarm-node/swap",
-    "dep:alloy-chains",
-    "dep:alloy-signer",
-    "dep:alloy-signer-local",
-]
+# SWAP cheque-based settlement. The swap settlement service and its accounting
+# wiring live in `vertex-swarm-node`; this feature turns them on there. Chain-free
+# on its own: cheque exchange (sign, send, validate, credit) needs no chain.
+# Combine with `chain` to enable on-chain cashout of received cheques. Off by
+# default so the chain-free client node stays the default cone.
+swap = ["vertex-swarm-node/swap"]
 # Node role: the storer settles bandwidth over SWAP, so it pulls in the chain
 # stack, the on-chain chequebook client, and the swap settlement service.
 # Client nodes leave this off.
@@ -76,28 +70,16 @@ vertex-swarm-identity.workspace = true
 vertex-swarm-spec.workspace = true
 
 # vertex - chain (behind the `chain` feature, which enables its `provider`
-# feature for the construction seam and target-split transport).
+# feature for the construction seam and target-split transport). The launch path
+# builds the provider here and hands it to the node's swap wiring for on-chain
+# cashout.
 vertex-chain = { workspace = true, optional = true }
-# The on-chain chequebook client. Pure cheque codec by default; the builder's
-# `chain` feature enables `swap-chequebook` on it to construct the SWAP
-# settlement client.
-vertex-swarm-accounting-chequebook = { workspace = true, optional = true }
-# The chequebook settlement service (optional, behind the `swap` feature). Cheque
-# exchange is chain-free; `swap` + `chain` turns on the service's `swap-chequebook`
-# cashout path.
-vertex-swarm-accounting-swap = { workspace = true, optional = true }
 
 # nectar
 nectar-primitives.workspace = true
 
 # alloy
 alloy-primitives.workspace = true
-# swap feature: the wallet signer built from the node Ethereum identity and the
-# settlement chain for EIP-712 domain construction. The HTTP transport itself
-# now lives in `vertex-chain`.
-alloy-signer = { workspace = true, optional = true }
-alloy-signer-local = { workspace = true, optional = true }
-alloy-chains = { workspace = true, optional = true }
 
 # async
 tokio = { workspace = true, features = ["sync"] }

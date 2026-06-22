@@ -8829,7 +8829,6 @@ dependencies = [
 name = "vertex-swarm-builder"
 version = "0.1.0"
 dependencies = [
- "alloy-chains",
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
@@ -8848,10 +8847,8 @@ dependencies = [
  "vertex-node-api",
  "vertex-storage-redb",
  "vertex-swarm-accounting",
- "vertex-swarm-accounting-chequebook",
  "vertex-swarm-accounting-pricing",
  "vertex-swarm-accounting-pseudosettle",
- "vertex-swarm-accounting-swap",
  "vertex-swarm-api",
  "vertex-swarm-identity",
  "vertex-swarm-localstore",
@@ -9246,6 +9243,7 @@ dependencies = [
 name = "vertex-swarm-node"
 version = "0.1.0"
 dependencies = [
+ "alloy-chains",
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
@@ -9271,6 +9269,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "vertex-chain",
  "vertex-net-local",
  "vertex-net-peer-store",
  "vertex-net-ratelimiter",
@@ -9278,6 +9277,7 @@ dependencies = [
  "vertex-swarm-accounting",
  "vertex-swarm-accounting-pricing",
  "vertex-swarm-accounting-pseudosettle",
+ "vertex-swarm-accounting-swap",
  "vertex-swarm-api",
  "vertex-swarm-client-behaviour",
  "vertex-swarm-client-protocol",

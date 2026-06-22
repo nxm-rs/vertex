@@ -44,8 +44,6 @@ mod launch;
 mod node;
 mod providers;
 mod pullsync;
-#[cfg(feature = "swap")]
-mod swap;
 pub mod verify;
 
 // Builders

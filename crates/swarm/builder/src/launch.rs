@@ -38,6 +38,8 @@ use crate::verify::{ChunkVerifyConfig, VerifyingChunkProvider};
 /// Network chunk provider wrapped with config-gated download verification.
 type VerifiedChunkProvider = VerifyingChunkProvider<NetworkChunkProvider<Arc<Identity>>>;
 
+#[cfg(feature = "swap")]
+use vertex_swarm_node::SwapWiring;
 #[cfg(feature = "chain")]
 use vertex_swarm_node::args::ChainConfig;
 #[cfg(feature = "swap")]
@@ -380,11 +382,14 @@ async fn build_client_backed_node(
     // SWAP settlement is prepared next: the provider embeds in the accounting
     // and the swap event sink routes at node build time.
     #[cfg(feature = "swap")]
-    let (swap_provider, swap_wiring) = crate::swap::SwapWiring::prepare(
+    let (swap_provider, swap_wiring) = SwapWiring::prepare(
         params.spec,
         params.identity,
         params.bandwidth,
-        params.swap,
+        params.swap.chequebook,
+        params.swap.beneficiary,
+        params.swap.deploy,
+        params.swap.bounce_limit,
         swap_enabled,
     )
     .unzip();

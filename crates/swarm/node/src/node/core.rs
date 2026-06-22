@@ -3,10 +3,10 @@
 //!
 //! Both client entry points wire the same accounting/selector/throttle middle.
 //! This module owns the pieces that middle needs to be reachable from the wasm
-//! launcher: the concrete shared accounting alias, the pseudosettle service
-//! wiring, and the command bridge that drains a settlement service onto the node
-//! command channel. Spawning takes a bare [`TaskExecutor`] so both the native
-//! context and the browser launcher drive it.
+//! launcher: the concrete shared accounting alias, the pseudosettle and (behind
+//! the `swap` feature) swap service wiring, and the command bridge that drains a
+//! settlement service onto the node command channel. Spawning takes a bare
+//! [`TaskExecutor`] so both the native context and the browser launcher drive it.
 
 use std::sync::Arc;
 
@@ -27,6 +27,23 @@ use vertex_swarm_identity::Identity;
 use vertex_swarm_spec::Spec;
 use vertex_swarm_topology::TopologyHandle;
 use vertex_tasks::TaskExecutor;
+
+#[cfg(feature = "swap")]
+use alloy_chains::NamedChain;
+#[cfg(feature = "swap")]
+use alloy_primitives::Address;
+#[cfg(feature = "swap")]
+use alloy_signer_local::PrivateKeySigner;
+#[cfg(feature = "swap")]
+use tracing::info;
+#[cfg(feature = "swap-chequebook")]
+use vertex_chain::SharedChainProvider;
+#[cfg(feature = "swap")]
+use vertex_swarm_accounting_swap::service::SwapCommand;
+#[cfg(feature = "swap")]
+use vertex_swarm_accounting_swap::{SwapEvent, SwapHandle, SwapProvider, SwapService};
+#[cfg(feature = "swap")]
+use vertex_swarm_api::{SwarmIdentity, SwarmSpec};
 
 use crate::{
     AccountingSettlement, ClientCommand, ClientHandle, ClientService, PeerSelector, SelfThrottle,
@@ -243,6 +260,186 @@ impl PseudosettleWiring {
 
         executor.spawn_service("swarm.pseudosettle_service", service);
     }
+}
+
+/// Resolved swap settlement parameters and the channels that connect the
+/// provider, the service, and the node.
+///
+/// Produced by [`SwapWiring::prepare`] before the accounting is built; consumed
+/// by [`SwapWiring::spawn`] after the node command channel exists.
+#[cfg(feature = "swap")]
+pub struct SwapWiring {
+    command_rx: mpsc::UnboundedReceiver<SwapCommand>,
+    swap_event_tx: mpsc::UnboundedSender<SwapEvent>,
+    swap_event_rx: mpsc::UnboundedReceiver<SwapEvent>,
+    signer: Arc<PrivateKeySigner>,
+    chequebook: Address,
+    beneficiary: Address,
+    chain: NamedChain,
+    bounce_limit: u128,
+}
+
+#[cfg(feature = "swap")]
+impl SwapWiring {
+    /// Build the swap handle and provider when SWAP settlement is enabled.
+    ///
+    /// Returns `None` (and leaves accounting swap-free) when `swap_enabled` is
+    /// false, or when SWAP is requested but the required chequebook address and
+    /// settlement chain cannot be resolved. `beneficiary` defaults to the node
+    /// Ethereum address when `None`: the only payout address a cheque sent to us
+    /// may name. The returned provider is registered with the accounting builder;
+    /// the returned wiring is later handed to [`SwapWiring::spawn`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare<C>(
+        spec: &Arc<Spec>,
+        identity: &Arc<Identity>,
+        config: &C,
+        chequebook: Option<Address>,
+        beneficiary: Option<Address>,
+        deploy: bool,
+        bounce_limit: u128,
+        swap_enabled: bool,
+    ) -> Option<(SwapProvider<C>, Self)>
+    where
+        C: SwarmAccountingConfig + Clone + 'static,
+    {
+        if !swap_enabled {
+            return None;
+        }
+
+        let Some(chequebook) = chequebook else {
+            warn!(
+                "SWAP enabled but no chequebook configured; settlement not wired (chequebook deploy not yet supported)"
+            );
+            return None;
+        };
+        if deploy {
+            warn!(
+                "chequebook deploy is not yet supported; using the configured chequebook address"
+            );
+        }
+
+        let Some(chain) = spec.chain().named() else {
+            warn!(
+                "SWAP enabled but the network has no named settlement chain; settlement not wired"
+            );
+            return None;
+        };
+
+        // The beneficiary defaults to the node Ethereum address: the only payout
+        // address a cheque sent to us may name.
+        let beneficiary = beneficiary.unwrap_or_else(|| identity.ethereum_address());
+
+        let (swap_event_tx, swap_event_rx) = mpsc::unbounded_channel();
+        // The handle backs the provider; its command channel is drained by the
+        // service spawned in `spawn`. The handle is created here so the provider
+        // can be embedded in the accounting before the accounting is built.
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
+        let handle = SwapHandle::new(command_tx);
+        let provider = SwapProvider::with_handle(config.clone(), handle);
+
+        info!(%chequebook, %beneficiary, %chain, "SWAP settlement enabled");
+
+        let wiring = Self {
+            command_rx,
+            swap_event_tx,
+            swap_event_rx,
+            signer: identity.signer(),
+            chequebook,
+            beneficiary,
+            chain,
+            bounce_limit,
+        };
+
+        Some((provider, wiring))
+    }
+
+    /// The sender the node behaviour routes swap wire events into.
+    pub fn swap_event_sender(&self) -> mpsc::UnboundedSender<SwapEvent> {
+        self.swap_event_tx.clone()
+    }
+
+    /// Construct, spawn, and wire the swap service.
+    ///
+    /// The service records cheque-driven balance changes against `accounting`
+    /// (the same instance the provider settles through), drains the provider's
+    /// command channel, and consumes routed swap wire events. Cheque violations
+    /// are reported through `reporter` so they feed peer scoring. Its
+    /// `SendCheque` commands are forwarded to the node through `client_handle`.
+    /// With the `swap-chequebook` feature and a connected chain provider, received
+    /// cheques are also cashed on chain, paying out to our beneficiary.
+    pub fn spawn<A>(
+        self,
+        executor: &TaskExecutor,
+        accounting: Arc<A>,
+        client_handle: ClientHandle,
+        reporter: Arc<dyn PeerReporter>,
+        #[cfg(feature = "swap-chequebook")] chain_provider: Option<&SharedChainProvider>,
+        #[cfg(feature = "swap-chequebook")] spec: &Arc<Spec>,
+    ) where
+        A: SwarmBandwidthAccounting + 'static,
+    {
+        // The service speaks unbounded `ClientCommand`; the node command channel
+        // is bounded and reached through `ClientHandle::send_command`. Bridge the
+        // two with a forwarding task so the service never blocks on a full queue.
+        let (client_command_tx, client_command_rx) = mpsc::unbounded_channel();
+        spawn_client_command_bridge(
+            executor,
+            "swarm.swap_command_bridge",
+            client_command_rx,
+            client_handle,
+        );
+
+        let service = SwapService::new(
+            self.command_rx,
+            self.swap_event_rx,
+            client_command_tx,
+            accounting,
+            self.signer,
+            self.chequebook,
+            self.beneficiary,
+            self.chain,
+        )
+        .with_reporter(reporter)
+        .with_bounce_limit(alloy_primitives::U256::from(self.bounce_limit));
+
+        #[cfg(feature = "swap-chequebook")]
+        let service = attach_cashout(service, chain_provider, spec, self.beneficiary);
+
+        executor.spawn_service("swarm.swap_service", service);
+    }
+}
+
+/// Attach an on-chain cashout client to the swap service when a chain provider is
+/// present, so received cheques are redeemed paying out to our beneficiary.
+///
+/// The contract address book is resolved here from the spec, since the provider
+/// handle carries only the live connection.
+#[cfg(feature = "swap-chequebook")]
+fn attach_cashout<A, S>(
+    service: SwapService<A, S>,
+    chain_provider: Option<&SharedChainProvider>,
+    spec: &Arc<Spec>,
+    beneficiary: Address,
+) -> SwapService<A, S>
+where
+    A: SwarmBandwidthAccounting + 'static,
+    S: alloy_signer::SignerSync + Send + Sync + 'static,
+{
+    use vertex_chain::ChainConfig;
+    use vertex_swarm_accounting_swap::cashout::Cashout;
+
+    let Some(provider) = chain_provider else {
+        return service;
+    };
+    let Some(config) = ChainConfig::from_swarm(spec.swarm()) else {
+        warn!(
+            "chain provider present but the network has no canonical contract deployment; cashout not wired"
+        );
+        return service;
+    };
+    let cashout = Cashout::new(provider.provider().clone(), config, beneficiary);
+    service.with_cashout(cashout)
 }
 
 /// Forward a settlement service's `ClientCommand`s to the node command channel.

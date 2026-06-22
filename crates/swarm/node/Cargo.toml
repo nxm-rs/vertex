@@ -29,6 +29,13 @@ vertex-swarm-net-retrieval.workspace = true
 
 ## vertex - settlement (optional, feature-gated)
 vertex-swarm-net-swap = { workspace = true, optional = true }
+# The swap settlement service and provider the client launch path wires behind
+# the `swap` feature. Cheque exchange is chain-free; `swap-chequebook` turns on
+# the service's on-chain cashout path.
+vertex-swarm-accounting-swap = { workspace = true, optional = true }
+# The chain provider and contract address book the on-chain cashout consumes,
+# behind `swap-chequebook`.
+vertex-chain = { workspace = true, optional = true }
 
 ## vertex - topology
 vertex-swarm-topology.workspace = true
@@ -58,6 +65,11 @@ alloy-primitives.workspace = true
 # The storer pushsync ingest path erases the identity's signer to `dyn SignerSync`
 # to sign custody receipts.
 alloy-signer.workspace = true
+# SWAP settlement wiring (optional, behind the `swap` feature): the named
+# settlement chain and the node identity's signer the swap service issues cheques
+# with.
+alloy-chains = { workspace = true, optional = true }
+alloy-signer-local = { workspace = true, optional = true }
 
 ## async
 async-trait.workspace = true
@@ -139,11 +151,23 @@ default = ["std"]
 std = []
 # SWAP cheque-based settlement. Pulls the swap wire protocol and surfaces
 # `SwapEvent` plus the `ClientCommand::SendCheque` variant for a settlement
-# service to consume.
+# service to consume, and wires the swap settlement service into the client core.
+# Chain-free on its own: cheque exchange needs no chain. Combine with
+# `swap-chequebook` for on-chain cashout of received cheques.
 swap = [
     "dep:vertex-swarm-net-swap",
+    "dep:vertex-swarm-accounting-swap",
+    "dep:alloy-chains",
+    "dep:alloy-signer-local",
     "vertex-swarm-client-behaviour/swap",
     "vertex-swarm-client-protocol/swap",
+]
+# On-chain cashout of received cheques over a shared alloy provider. Off by
+# default so the cheque-exchange path stays chain-free and wasm-friendly.
+swap-chequebook = [
+    "swap",
+    "vertex-chain/provider",
+    "vertex-swarm-accounting-swap/swap-chequebook",
 ]
 cli = [
     "dep:clap",
