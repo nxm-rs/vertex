@@ -14,17 +14,13 @@ workspace = true
 [features]
 default = []
 # Construct a shared Ethereum alloy provider for chain-needing node types
-# (storer, and a client with SWAP enabled). Pulls the alloy RPC stack and the
-# on-chain chequebook client. Off by default to keep the default client cone
-# lean. The alloy transport stack is target-split (native TLS vs browser fetch),
-# so the chain code itself can build for wasm when its features are selected.
+# (storer, and a client with SWAP enabled). The provider construction seam and
+# its target-split transport (native TLS vs browser fetch) live in `vertex-chain`
+# behind its `provider` feature; this feature also pulls the on-chain chequebook
+# client. Off by default to keep the default client cone lean.
 chain = [
-    "dep:vertex-chain",
+    "vertex-chain/provider",
     "vertex-swarm-accounting-chequebook/swap-chequebook",
-    "dep:alloy-provider",
-    "dep:alloy-network",
-    "dep:alloy-signer-local",
-    "dep:alloy-chains",
     # When the swap service is also present, the chain unlocks on-chain cashout
     # of received cheques. Without `swap` this is a no-op.
     "vertex-swarm-accounting-swap?/swap-chequebook",
@@ -79,7 +75,8 @@ vertex-swarm-net-pushsync.workspace = true
 vertex-swarm-identity.workspace = true
 vertex-swarm-spec.workspace = true
 
-# vertex - chain (optional, behind the `chain` feature)
+# vertex - chain (behind the `chain` feature, which enables its `provider`
+# feature for the construction seam and target-split transport).
 vertex-chain = { workspace = true, optional = true }
 # The on-chain chequebook client. Pure cheque codec by default; the builder's
 # `chain` feature enables `swap-chequebook` on it to construct the SWAP
@@ -95,15 +92,9 @@ nectar-primitives.workspace = true
 
 # alloy
 alloy-primitives.workspace = true
-# chain feature: native HTTP transport (reqwest + native-tls) and the wallet
-# signer built from the node Ethereum identity. native-tls (system OpenSSL) is
-# used because the rustls path drags in a root-certs crate outside the workspace
-# license allow-list.
-alloy-provider = { workspace = true, optional = true, features = [
-    "reqwest",
-    "reqwest-native-tls",
-] }
-alloy-network = { workspace = true, optional = true }
+# swap feature: the wallet signer built from the node Ethereum identity and the
+# settlement chain for EIP-712 domain construction. The HTTP transport itself
+# now lives in `vertex-chain`.
 alloy-signer = { workspace = true, optional = true }
 alloy-signer-local = { workspace = true, optional = true }
 alloy-chains = { workspace = true, optional = true }
