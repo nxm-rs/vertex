@@ -147,19 +147,54 @@ function notifyProgress(written, total) {
   }
 }
 
-export async function createDownloadSink(filename, sizeHint) {
-  // FAST PATH: File System Access. Call the picker synchronously here (still in
-  // the gesture), then await the writable.
-  if (typeof window !== 'undefined' && typeof window.showSaveFilePicker === 'function') {
-    const handle = await window.showSaveFilePicker({
-      suggestedName: filename || 'swarm-download.bin',
-    });
+// Build an FsaSink from a (possibly pending) save handle. Re-throws an
+// AbortError verbatim (user cancel, surfaced cleanly), and returns null on any
+// other failure so the caller falls back to the service-worker sink.
+async function fsaSinkFrom(handlePromise, sizeHint) {
+  try {
+    const handle = await handlePromise;
     const writable = await handle.createWritable();
     const sink = new FsaSink(writable);
     if (sizeHint != null) {
       sink.setTotal(sizeHint);
     }
     return sink;
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      const cancelled = new Error('save cancelled');
+      cancelled.name = 'AbortError';
+      throw cancelled;
+    }
+    // Lost-gesture SecurityError, picker unavailable, write error: fall back.
+    console.warn('save picker failed, falling back to service worker', err);
+    return null;
+  }
+}
+
+export async function createDownloadSink(filename, sizeHint) {
+  // FAST PATH: File System Access. The picker REQUIRES an active user gesture,
+  // which a prior await would have consumed, so the caller opens it
+  // synchronously in the click handler (see `openSavePicker`) and hands the
+  // resulting handle in via `window.__swarmSaveHandle`. If that handle is
+  // present, stream straight to it; if the picker threw for any reason other
+  // than a user cancel, fall through to the service-worker sink below.
+  const pending = typeof window !== 'undefined' ? window.__swarmSaveHandle : null;
+  if (pending) {
+    window.__swarmSaveHandle = null;
+    const sink = await fsaSinkFrom(pending, sizeHint);
+    if (sink) {
+      return sink;
+    }
+  } else if (typeof window !== 'undefined' && typeof window.showSaveFilePicker === 'function') {
+    // No in-gesture handle was prepared (non-UI caller, e.g. a test): try the
+    // picker directly, with the same cancel/fallback handling.
+    const handle = window.showSaveFilePicker({
+      suggestedName: filename || 'swarm-download.bin',
+    });
+    const sink = await fsaSinkFrom(handle, sizeHint);
+    if (sink) {
+      return sink;
+    }
   }
 
   // FALLBACK: service worker stream. Register (idempotent), open a port, tell
@@ -219,7 +254,26 @@ export async function createDownloadSink(filename, sizeHint) {
   return sink;
 }
 
+// Open the File System Access save picker synchronously, while the click
+// gesture is still active, and stash the resulting promise for the async sink
+// factory to consume. Returns true when a picker was opened (FSA available), so
+// the caller knows the in-gesture path was taken. The promise may reject (user
+// cancel, lost gesture); `createDownloadSink` handles that.
+export function openSavePicker(filename) {
+  if (typeof window === 'undefined' || typeof window.showSaveFilePicker !== 'function') {
+    return false;
+  }
+  // Must be called directly in the gesture: do not await before this line.
+  window.__swarmSaveHandle = window.showSaveFilePicker({
+    suggestedName: filename || 'swarm-download.bin',
+  });
+  // Swallow unhandled rejection here; the consumer awaits and handles it.
+  window.__swarmSaveHandle.catch(() => {});
+  return true;
+}
+
 // Expose for the wasm glue and for tests/manual use.
 if (typeof window !== 'undefined') {
   window.createDownloadSink = createDownloadSink;
+  window.openSavePicker = openSavePicker;
 }

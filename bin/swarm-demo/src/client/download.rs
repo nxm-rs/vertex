@@ -1,9 +1,10 @@
 //! Browser download + manifest-walk flow.
 //!
 //! Manifests are read against the in-memory cache with a network prefetch-retry
-//! loop. File reassembly enumerates the chunk tree, prefetches it breadth-first
-//! with real concurrency (the joiner's own DFS would serialise to ~1 in flight),
-//! then assembles from the warm cache.
+//! loop. Buffered reassembly (`download_file`) enumerates the chunk tree and
+//! prefetches it breadth-first before assembling from the warm cache. The
+//! streamed path (`stream_file`) skips that prefetch and lets the joiner drive
+//! retrieval sequentially, so it never fetches far ahead of the sink.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -52,8 +53,19 @@ const REF_SIZE: usize = 32;
 /// Maximum prefetch round trips before giving up on a manifest op.
 const MAX_PREFETCH_ITERS: usize = 4096;
 
-/// Chunk retrievals kept in flight while prefetching a file's chunk tree.
-const DOWNLOAD_CONCURRENCY: usize = 32;
+/// Chunk retrievals kept in flight while prefetching a buffered download's tree.
+///
+/// Only the buffered (`download_file`) path prefetches the whole tree; the
+/// streamed path reads sequentially instead (see [`stream_file`]). Kept modest so
+/// the breadth-first warm-up does not itself flood storers; per-storer pressure
+/// is bounded by the provider's per-peer caps regardless.
+const PREFETCH_CONCURRENCY: usize = 8;
+
+/// Chunk reads the joiner keeps in flight. This is the streamed path's sole
+/// retrieval breadth (it does not prefetch), so it acts as a sequential
+/// lookahead window: wide enough to hide latency, narrow enough that per-storer
+/// pressure stays inside the provider's per-peer caps.
+const JOIN_CONCURRENCY: usize = 8;
 
 /// Download the file at `root`, resolving it as a single-file manifest if it is one.
 pub async fn download_reference(
@@ -88,21 +100,22 @@ pub async fn stream_reference(
     stream_file(file_root, provider, cache, sink).await
 }
 
-/// Prefetch the chunk tree at `file_root`, then stream its ordered segments to
-/// `sink`. Each segment is dropped after the write resolves, bounding memory.
+/// Stream the file at `file_root` to `sink` as ordered segments. Retrieval is
+/// driven by the joiner reading sequentially (a bounded lookahead window), not by
+/// a whole-tree prefetch: pre-fetching the entire tree up front would flood
+/// storers far ahead of where the sink has consumed. Each segment is dropped
+/// after its write resolves, bounding memory.
 pub async fn stream_file(
     file_root: ChunkAddress,
     provider: Arc<dyn SwarmChunkProvider>,
     cache: &MemoryCache,
     sink: &DownloadSink,
 ) -> Result<(), JsValue> {
-    prefetch_tree(file_root, provider.clone(), cache).await?;
-
     let getter = NetworkChunkGet::new(provider, cache.snapshot_map());
     let joiner = Joiner::<NetworkChunkGet, DEFAULT_BODY_SIZE>::new(getter, file_root)
         .await
         .map_err(|e| JsValue::from_str(&format!("joiner open: {e}")))?
-        .with_concurrency(DOWNLOAD_CONCURRENCY);
+        .with_concurrency(JOIN_CONCURRENCY);
 
     // Total is known once the joiner is open; announce it before streaming so
     // the progress bar can show a fraction rather than a bare byte count.
@@ -294,7 +307,7 @@ async fn prefetch_tree(
                     }
                 }
             })
-            .buffer_unordered(DOWNLOAD_CONCURRENCY)
+            .buffer_unordered(PREFETCH_CONCURRENCY)
             .collect()
             .await;
 
@@ -343,7 +356,7 @@ async fn join_to_bytes(root: ChunkAddress, getter: NetworkChunkGet) -> Result<Ve
     let joiner = Joiner::<NetworkChunkGet, DEFAULT_BODY_SIZE>::new(getter, root)
         .await
         .map_err(|e| JsValue::from_str(&format!("joiner open: {e}")))?
-        .with_concurrency(DOWNLOAD_CONCURRENCY);
+        .with_concurrency(JOIN_CONCURRENCY);
 
     if joiner.size() == 0 {
         return Ok(Vec::new());

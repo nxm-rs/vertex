@@ -12,10 +12,18 @@ use crate::client::DownloadSink;
 #[wasm_bindgen]
 extern "C" {
     /// Build a browser download sink for `filename` (see `download-sink.js`).
-    /// Must be called inside the click gesture so the File System Access picker,
-    /// when present, is allowed to open. `size_hint` may be `NaN` if unknown.
+    /// `size_hint` may be `NaN` if unknown. On Chromium this consumes the save
+    /// handle opened in-gesture by [`open_save_picker`]; elsewhere it sets up the
+    /// service-worker sink.
     #[wasm_bindgen(js_namespace = window, js_name = createDownloadSink, catch)]
     async fn create_download_sink(filename: &str, size_hint: f64) -> Result<JsValue, JsValue>;
+
+    /// Open the File System Access save picker synchronously, in the click
+    /// gesture, stashing its handle for `create_download_sink`. Returns `true`
+    /// when a picker was opened (Chromium); `false` when FSA is unavailable and
+    /// the service-worker fallback will be used. Must be called before any await.
+    #[wasm_bindgen(js_namespace = window, js_name = openSavePicker)]
+    fn open_save_picker(filename: &str) -> bool;
 }
 
 const FILES_ROOT_ID: &str = "files";
@@ -190,23 +198,35 @@ fn wire_download(client: SwarmClient) {
 
     let cb = Closure::<dyn FnMut(Event)>::new(move |_e: Event| {
         let client = client.clone();
-        spawn_local(async move {
-            let reference = by_id_input(REF_INPUT_ID)
-                .map(|i| i.value())
-                .unwrap_or_default();
-            if reference.is_empty() {
-                log_line("download: enter a reference");
-                return;
-            }
 
+        let reference = by_id_input(REF_INPUT_ID)
+            .map(|i| i.value())
+            .unwrap_or_default();
+        if reference.is_empty() {
+            log_line("download: enter a reference");
+            return;
+        }
+
+        // Open the save picker SYNCHRONOUSLY, while this click is still an active
+        // user gesture: a later await inside `spawn_local` would consume it and
+        // the picker would be rejected with a SecurityError. The async sink
+        // factory consumes the stashed handle (and falls back if it failed).
+        let filename = "swarm-download.bin";
+        // Result is conveyed via the stashed save handle the factory consumes.
+        let _ = open_save_picker(filename);
+        install_progress_hook();
+
+        spawn_local(async move {
             // The total is unknown until the joiner opens; pass NaN and let the
             // sink switch from a bare byte count to a fraction via `setTotal`.
-            let filename = "swarm-download.bin";
-            install_progress_hook();
             let sink_val = match create_download_sink(filename, f64::NAN).await {
                 Ok(v) => v,
                 Err(e) => {
-                    log_line(&format!("download: could not start save: {e:?}"));
+                    if is_abort_error(&e) {
+                        log_line("download: save cancelled");
+                    } else {
+                        log_line(&format!("download: could not start save: {e:?}"));
+                    }
                     return;
                 }
             };
@@ -225,6 +245,16 @@ fn wire_download(client: SwarmClient) {
     btn.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())
         .expect("add click listener");
     cb.forget();
+}
+
+/// Whether a `JsValue` error is a DOMException with `name === "AbortError"`,
+/// i.e. the user cancelled the save dialog.
+fn is_abort_error(err: &JsValue) -> bool {
+    js_sys::Reflect::get(err, &JsValue::from_str("name"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .map(|name| name == "AbortError")
+        .unwrap_or(false)
 }
 
 /// Install the `window.__swarmDownloadProgress(written, total)` hook the sink
