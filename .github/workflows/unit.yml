@@ -123,6 +123,21 @@ jobs:
       # browser client node.
       - name: Build client cone for wasm32
         run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-node
+      # The chain-free SWAP path: cheque exchange (sign, send, validate, credit)
+      # needs no chain, so the accounting stack and `vertex-swarm-node/swap`
+      # build for wasm with default features. The on-chain cashout path
+      # (`swap-chequebook`) is excluded; it lands in a later change.
+      - name: Build chain-free swap path for wasm32
+        run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-node --features swap -p vertex-swarm-accounting-swap -p vertex-swarm-accounting-chequebook -p vertex-swarm-accounting-pseudosettle -p vertex-swarm-accounting-pricing -p vertex-swarm-accounting
+      # The on-chain cashout path: the chequebook client and the swap cashout
+      # logic are transport-generic, so with `swap-chequebook` selecting the
+      # browser fetch transport they build for wasm. `vertex-chain` is the shared
+      # provider crate they sit on.
+      - name: Build cashout path for wasm32
+        run: |
+          cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-accounting-chequebook --features swap-chequebook
+          cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-accounting-swap --features swap-chequebook
+          cargo +nightly build --target wasm32-unknown-unknown -p vertex-chain
 
   ci-success:
     name: ci success

@@ -8,12 +8,14 @@
 pub mod args;
 pub mod keystore;
 
+use alloy_primitives::{Address, B256, ChainId, Signature};
+use alloy_signer::SignerSync;
 use alloy_signer::k256::ecdsa::SigningKey;
 use alloy_signer_local::LocalSigner;
 use nectar_primitives::SwarmAddress;
 use std::sync::Arc;
 use vertex_swarm_api::{SwarmIdentity, SwarmIdentityConfig, SwarmNodeType};
-use vertex_swarm_primitives::{Nonce, compute_overlay};
+use vertex_swarm_primitives::{NetworkId, Nonce, OverlaySigner, compute_overlay};
 use vertex_swarm_spec::{HasSpec, Loggable, Spec, SwarmSpec};
 
 pub use args::IdentityArgs;
@@ -122,16 +124,41 @@ impl HasSpec for Identity {
     }
 }
 
+impl SignerSync for Identity {
+    fn sign_hash_sync(&self, hash: &B256) -> alloy_signer::Result<Signature> {
+        self.signer.sign_hash_sync(hash)
+    }
+
+    fn chain_id_sync(&self) -> Option<ChainId> {
+        self.signer.chain_id_sync()
+    }
+}
+
+impl OverlaySigner for Identity {
+    fn address(&self) -> Address {
+        self.signer.address()
+    }
+
+    fn network_id(&self) -> NetworkId {
+        self.spec.network_id()
+    }
+
+    fn nonce(&self) -> Nonce {
+        self.nonce
+    }
+
+    /// Returns the overlay cached at construction rather than recomputing it.
+    fn overlay(&self) -> SwarmAddress {
+        self.overlay
+    }
+}
+
 impl SwarmIdentity for Identity {
     type Spec = Arc<Spec>;
     type Signer = LocalSigner<SigningKey>;
 
     fn spec(&self) -> &Self::Spec {
         &self.spec
-    }
-
-    fn nonce(&self) -> Nonce {
-        self.nonce
     }
 
     fn signer(&self) -> Arc<Self::Signer> {
@@ -146,10 +173,6 @@ impl SwarmIdentity for Identity {
         self.welcome_message
             .as_deref()
             .or(Some("Buzzing in from the Rustacean hive"))
-    }
-
-    fn overlay_address(&self) -> SwarmAddress {
-        self.overlay
     }
 }
 

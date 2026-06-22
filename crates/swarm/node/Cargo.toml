@@ -19,10 +19,8 @@ nectar-primitives.workspace = true
 vertex-swarm-primitives.workspace = true
 
 ## vertex - network (libp2p layer)
-vertex-swarm-net-headers.workspace = true
 vertex-swarm-net-identify.workspace = true
 vertex-swarm-net-pricing.workspace = true
-vertex-swarm-net-pseudosettle.workspace = true
 
 ## vertex - identity
 vertex-swarm-peer.workspace = true
@@ -43,12 +41,14 @@ vertex-net-ratelimiter.workspace = true
 
 ## vertex - swarm (libp2p-free abstractions)
 vertex-swarm-api.workspace = true
+vertex-swarm-client-behaviour.workspace = true
+vertex-swarm-client-protocol.workspace = true
 vertex-swarm-identity.workspace = true
 vertex-swarm-localstore.workspace = true
 vertex-swarm-spec.workspace = true
 
 ## vertex - infrastructure
-vertex-swarm-bandwidth.workspace = true
+vertex-swarm-accounting.workspace = true
 vertex-tasks.workspace = true
 vertex-util-runtime.workspace = true
 
@@ -86,13 +86,19 @@ tracing.workspace = true
 clap = { workspace = true, features = ["derive", "env"], optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 vertex-node-api = { workspace = true, optional = true }
-vertex-swarm-bandwidth-pricing = { workspace = true, optional = true, features = ["cli"] }
+vertex-swarm-accounting-pricing = { workspace = true, optional = true, features = ["cli"] }
 vertex-swarm-redistribution = { workspace = true, optional = true }
 
 # p2p: the native transport pulls tcp/dns/mdns/upnp/autonat; the browser build
 # trims to the wire-protocol features and dials over a websocket transport.
+#
+# The storer protocol tier (pullsync syncer and puller) is native-only: the
+# storer node module is `cfg(not(wasm32))`, so these stay out of the wasm client
+# cone.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 libp2p.workspace = true
+vertex-swarm-storer-behaviour.workspace = true
+vertex-swarm-puller.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "6454fdf3450f91fdbb6e3306daa7a9a4e633c133", default-features = false, features = [
@@ -122,12 +128,16 @@ std = []
 # SWAP cheque-based settlement. Pulls the swap wire protocol and surfaces
 # `SwapEvent` plus the `ClientCommand::SendCheque` variant for a settlement
 # service to consume.
-swap = ["dep:vertex-swarm-net-swap"]
+swap = [
+    "dep:vertex-swarm-net-swap",
+    "vertex-swarm-client-behaviour/swap",
+    "vertex-swarm-client-protocol/swap",
+]
 cli = [
     "dep:clap",
     "dep:serde",
     "dep:vertex-node-api",
-    "dep:vertex-swarm-bandwidth-pricing",
+    "dep:vertex-swarm-accounting-pricing",
     "dep:vertex-swarm-redistribution",
     "vertex-swarm-localstore/cli",
     "vertex-swarm-primitives/serde",

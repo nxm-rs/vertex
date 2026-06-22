@@ -12,10 +12,11 @@
 //! The crate has two build modes, selected by the `chain` cargo feature:
 //!
 //! - Default (`chain` off): the light, chain-free build. No Ethereum RPC stack
-//!   is compiled in; a storer or a SWAP-enabled client runs without on-chain
-//!   staking or settlement. This is what the default `vertex` binary and the
-//!   wasm client resolve, and the cone guard enforces that the chain crates and
-//!   their alloy RPC dependencies never reach this cone.
+//!   is compiled in; only chain-free node types (a bootnode, a client without
+//!   SWAP) launch, and a chain-needing node type hard-fails the build with
+//!   `SwarmNodeError::ChainRequired`. This is what the default `vertex` binary
+//!   and the wasm client resolve, and the cone guard enforces that the chain
+//!   crates and their alloy RPC dependencies never reach this cone.
 //! - `chain` on: pulls `vertex-chain` and the on-chain chequebook client, and
 //!   constructs a shared Ethereum alloy provider for chain-needing node types.
 //!   The chain is a shared provider, not a long-lived service: the launch path
@@ -27,21 +28,26 @@
 //!
 //! The chain knobs (RPC URL and transaction tuning) live on the node configs in
 //! every build; without the feature they are inert.
+//!
+//! Native-only: it depends unconditionally on the redb backend, so it never
+//! enters the wasm cone (the wasm client composes through `vertex-swarm-node`).
+//! The store seams therefore carry `RedbDatabase`-typed factory closures without
+//! cfg-gating.
 
 #[cfg(feature = "chain")]
 mod chain;
+mod composite;
 pub mod config;
 mod error;
 mod handle;
 mod launch;
 mod node;
 mod providers;
+mod pseudosettle;
+mod pullsync;
 #[cfg(feature = "swap")]
 mod swap;
 pub mod verify;
-
-// Traits
-pub use node::BuilderExt;
 
 // Builders
 pub use node::{
@@ -70,5 +76,5 @@ pub use error::SwarmNodeError;
 pub use chain::{SharedChainProvider, build_chain_provider};
 
 // Re-exports
+pub use vertex_swarm_accounting::{AccountingBuilder, NoAccountingBuilder};
 pub use vertex_swarm_api::{BootnodeComponents, ClientComponents, StorerComponents};
-pub use vertex_swarm_bandwidth::{AccountingBuilder, NoAccountingBuilder};

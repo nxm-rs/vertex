@@ -4,14 +4,18 @@
 
 use std::sync::Arc;
 
-use nectar_primitives::{AnyChunk, ChunkAddress};
+use nectar_primitives::ChunkAddress;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
-use vertex_swarm_api::{PeerReporter, ReportSource, SwarmLocalStore, SwarmScoringEvent};
-use vertex_swarm_net_pseudosettle::PaymentAck;
+use vertex_swarm_api::{
+    Au, BandwidthDebit, PeerReporter, ReportSource, SwarmLocalStore, SwarmPricing,
+    SwarmScoringEvent,
+};
+use vertex_swarm_client_protocol::PseudosettleAck;
+pub use vertex_swarm_client_protocol::{ChunkTransferError, RetrievalResult};
 use vertex_swarm_net_pushsync::Receipt;
-use vertex_swarm_primitives::{CachedChunk, OverlayAddress, Stamp, StampedChunk};
-use vertex_tasks::{GracefulShutdown, SpawnableTask};
+use vertex_swarm_primitives::{CachedChunk, OverlayAddress, StampedChunk};
+use vertex_tasks::{GracefulShutdown, MaybeSend, SpawnableTask};
 
 use crate::protocol::{ClientCommand, ClientEvent, FailureKind};
 use crate::throttle::{ProtocolKind, SelfThrottle};
@@ -34,67 +38,6 @@ pub struct ClientHandle {
     /// When set, requests pace themselves under the peer's pseudosettle
     /// allowance before dispatch.
     throttle: Option<Arc<SelfThrottle>>,
-}
-
-/// Result of a chunk retrieval.
-///
-/// The chunk is address-validated at decode, so it answers the request
-/// regardless of the stamp. The stamp is optional: a storer may omit it from the
-/// delivery, and it is never re-read on this path.
-#[derive(Debug)]
-pub struct RetrievalResult {
-    pub chunk: AnyChunk,
-    /// The postage stamp the responder attached, if any.
-    pub stamp: Option<Stamp>,
-    /// The peer that served the chunk.
-    pub peer: OverlayAddress,
-}
-
-/// Outcome error shared by both chunk transfer operations.
-///
-/// Both [`ClientHandle::retrieve_chunk`] and [`ClientHandle::push_chunk`]
-/// resolve through this type; most variants surface from either path.
-#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
-#[strum(serialize_all = "snake_case")]
-pub enum ChunkTransferError {
-    #[error("Network channel closed")]
-    ChannelClosed,
-    #[error("Peer not connected")]
-    NotConnected,
-    #[error("Request cancelled")]
-    Cancelled,
-    /// The peer did not complete the request within the per-protocol deadline
-    /// (`retrieval_timeout` / `pushsync_timeout`). The liveness boundary against
-    /// a withholding peer; retryable against another candidate.
-    #[error("Request timed out")]
-    TimedOut,
-    /// Local protocol failure (dial, stream, or inactive handler). Remote-side
-    /// failures are carried by [`Self::Remote`].
-    #[error("Protocol error: {0}")]
-    Protocol(String),
-    /// The remote reported a failure. The reason is not carried: the remote's
-    /// error string is adversarial input we never read.
-    #[error("Remote peer reported a failure")]
-    Remote,
-
-    /// Retrieval only.
-    #[error("Chunk not found: {0}")]
-    NotFound(ChunkAddress),
-}
-
-impl ChunkTransferError {
-    /// Whether retrying the request against another candidate may succeed.
-    ///
-    /// Timeout, remote failure, transient protocol error, and not-found are
-    /// retryable (another candidate may hold the chunk); a cancelled or
-    /// channel-closed request reflects a local teardown that another attempt
-    /// cannot fix.
-    pub fn is_retryable(&self) -> bool {
-        match self {
-            Self::TimedOut | Self::Remote | Self::Protocol(_) | Self::NotFound(_) => true,
-            Self::ChannelClosed | Self::NotConnected | Self::Cancelled => false,
-        }
-    }
 }
 
 impl ClientHandle {
@@ -132,11 +75,14 @@ impl ClientHandle {
     /// Retrieve a chunk from a specific peer.
     ///
     /// Any failure on the path resolves or drops the response channel, so this
-    /// future never hangs.
+    /// future never hangs. `originated` is `true` for our own request and
+    /// `false` for a forwarder relay leg; it travels to the completion event so
+    /// only origin requests are debited (the forwarder accounts its own legs).
     pub async fn retrieve_chunk(
         &self,
         peer: OverlayAddress,
         address: ChunkAddress,
+        originated: bool,
     ) -> Result<RetrievalResult, ChunkTransferError> {
         if let Some(throttle) = &self.throttle {
             throttle
@@ -150,6 +96,7 @@ impl ClientHandle {
             peer,
             address,
             response: tx,
+            originated,
         })?;
 
         rx.await.map_err(|_| ChunkTransferError::Cancelled)?
@@ -159,11 +106,13 @@ impl ClientHandle {
     ///
     /// Same failure semantics as [`Self::retrieve_chunk`]. The returned
     /// [`Receipt`] is storer-verified at the decode boundary, so an `Ok` here
-    /// always carries a recovered storer.
+    /// always carries a recovered storer. `originated` distinguishes our own
+    /// push from a forwarder relay leg.
     pub async fn push_chunk(
         &self,
         peer: OverlayAddress,
         chunk: StampedChunk,
+        originated: bool,
     ) -> Result<Receipt, ChunkTransferError> {
         let address = *chunk.address();
 
@@ -180,6 +129,7 @@ impl ClientHandle {
             address,
             chunk,
             response: tx,
+            originated,
         })?;
 
         rx.await.map_err(|_| ChunkTransferError::Cancelled)?
@@ -199,6 +149,17 @@ pub struct ClientService {
     /// Outbound self-throttle shared with the handle; cleared per peer on
     /// disconnect so memory does not grow with distinct peers seen.
     throttle: Option<Arc<SelfThrottle>>,
+    /// Per-peer chunk pricer and the receive-debit half of the shared
+    /// accounting. Present only on the full builder; absent on the lightweight
+    /// launcher, where the origin debit is a no-op.
+    accounting: Option<OriginAccounting>,
+}
+
+/// The pricing and debit handles the service needs to debit own-request
+/// deliveries. Both halves come from the one shared accounting instance.
+struct OriginAccounting {
+    pricing: Arc<dyn SwarmPricing>,
+    bandwidth: Arc<dyn BandwidthDebit>,
 }
 
 impl ClientService {
@@ -216,6 +177,7 @@ impl ClientService {
             reporter: None,
             store: None,
             throttle: None,
+            accounting: None,
         };
 
         (service, event_tx, handle)
@@ -235,6 +197,7 @@ impl ClientService {
             reporter: None,
             store: None,
             throttle: None,
+            accounting: None,
         };
 
         (service, handle)
@@ -270,9 +233,42 @@ impl ClientService {
         self
     }
 
+    /// Attach the shared accounting so own-request deliveries debit the serving
+    /// peer by the per-chunk price.
+    ///
+    /// `pricing` and `bandwidth` are the two halves of the one accounting
+    /// instance the selector, throttle, and forwarder also share. Only origin
+    /// (own-request) completions are debited here; relay legs are accounted by
+    /// the forwarder, so debiting them here would double-charge.
+    #[must_use]
+    pub fn with_accounting(
+        mut self,
+        pricing: Arc<dyn SwarmPricing>,
+        bandwidth: Arc<dyn BandwidthDebit>,
+    ) -> Self {
+        self.accounting = Some(OriginAccounting { pricing, bandwidth });
+        self
+    }
+
     /// Get a handle for sending commands.
     pub fn handle(&self) -> ClientHandle {
         self.handle.clone()
+    }
+
+    /// Debit the serving peer by the per-chunk price for a completed
+    /// own-request delivery. A no-op when no accounting handle is attached.
+    ///
+    /// The chunk is already in hand, so the debit commits immediately. A
+    /// disconnect-threshold breach is already reported to peer scoring inside
+    /// accounting; this only logs it.
+    fn debit_origin(&self, peer: &OverlayAddress, address: &ChunkAddress) {
+        let Some(accounting) = &self.accounting else {
+            return;
+        };
+        let price = accounting.pricing.peer_price(peer, address);
+        if let Err(error) = accounting.bandwidth.debit_received(*peer, price, true) {
+            debug!(%peer, %address, %error, "origin debit refused at disconnect threshold");
+        }
     }
 
     fn report(&self, peer: &OverlayAddress, event: SwarmScoringEvent, source: ReportSource) {
@@ -334,11 +330,17 @@ impl ClientService {
                 chunk,
                 stamp,
                 latency,
+                originated,
             } => {
                 // The requester is resolved by the handler; this event exists for
                 // accounting, scoring, and caching. Content chunks are cached by
-                // address (immutable); SOCs are not (no version signal).
+                // address (immutable); SOCs are not (no version signal). The
+                // debit is origin-gated (a relay leg is debited by the
+                // forwarder); cache and scoring apply to every delivery.
                 debug!(%peer, %address, ?latency, "Chunk received");
+                if originated {
+                    self.debit_origin(&peer, &address);
+                }
                 if let Some(store) = &self.store
                     && chunk.is_content()
                 {
@@ -385,10 +387,15 @@ impl ClientService {
                 peer,
                 address,
                 latency,
+                originated,
             } => {
                 // The pusher is resolved by the handler; this event exists for
-                // accounting and scoring.
+                // accounting and scoring. The debit is origin-gated; a relay leg
+                // is debited by the forwarder.
                 debug!(%peer, %address, ?latency, "Receipt received");
+                if originated {
+                    self.debit_origin(&peer, &address);
+                }
                 self.report(
                     &peer,
                     SwarmScoringEvent::PushSuccess { latency },
@@ -496,11 +503,6 @@ impl ClientService {
                 );
             }
 
-            ClientEvent::SettlementNeeded { peer, balance } => {
-                debug!(%peer, %balance, "Settlement needed");
-                // TODO: Initiate settlement (swap or pseudosettle)
-            }
-
             ClientEvent::PseudosettleReceived {
                 peer,
                 peer_id,
@@ -513,7 +515,10 @@ impl ClientService {
                 // TODO: Credit peer's balance in accounting system:
                 //   accounting.for_peer(peer).credit(amount.as_u64() as i64);
 
-                let ack = PaymentAck::now(amount);
+                let ack = PseudosettleAck {
+                    accepted: Au::from_amount(amount.as_limbs()[0]),
+                    timestamp: vertex_util_runtime::time::now_unix_nanos(),
+                };
 
                 if let Err(e) = self.handle.send_command(ClientCommand::AckPseudosettle {
                     peer,
@@ -525,7 +530,7 @@ impl ClientService {
             }
 
             ClientEvent::PseudosettleSent { peer, peer_id, ack } => {
-                debug!(%peer, %peer_id, amount = %ack.amount, timestamp = ack.timestamp, "Pseudosettle sent, received ack");
+                debug!(%peer, %peer_id, amount = %ack.accepted, timestamp = ack.timestamp, "Pseudosettle sent, received ack");
             }
 
             #[cfg(feature = "swap")]
@@ -548,6 +553,15 @@ impl ClientService {
             } => {
                 debug!(%peer, %peer_id, %peer_rate, "Swap cheque sent");
             }
+            // `ClientEvent` carries swap variants when `client-protocol/swap`
+            // is on, which Cargo feature unification can turn on (a workspace
+            // build also compiling `accounting-swap`) even when this crate's
+            // `swap` feature is off. The swap wire is then not linked here, so
+            // ignore them. The all-features build keeps full exhaustiveness.
+            // Unreachable when nothing in the build enables `client-protocol/swap`.
+            #[cfg(not(feature = "swap"))]
+            #[allow(unreachable_patterns)]
+            _ => {}
         }
     }
 }
@@ -559,7 +573,10 @@ impl Default for ClientService {
 }
 
 impl SpawnableTask for ClientService {
-    fn into_task(self, shutdown: GracefulShutdown) -> impl std::future::Future<Output = ()> + Send {
+    fn into_task(
+        self,
+        shutdown: GracefulShutdown,
+    ) -> impl std::future::Future<Output = ()> + MaybeSend {
         self.run(shutdown)
     }
 }
@@ -687,6 +704,7 @@ mod tests {
             peer: peer(6),
             address: ChunkAddress::zero(),
             latency: Duration::from_millis(42),
+            originated: false,
         });
         let (_, event, source) = reporter.single();
         assert_eq!(
@@ -698,14 +716,148 @@ mod tests {
         assert_eq!(source, ReportSource::Protocol("pushsync"));
     }
 
+    /// A fixed per-chunk price for the origin-debit tests.
+    const ORIGIN_PRICE: u64 = 7;
+
+    /// Records every receive debit so a test can assert exactly which peer was
+    /// charged, how much, and that the `originated` flag carried through.
+    #[derive(Default)]
+    struct RecordingDebit {
+        debits: Mutex<Vec<(OverlayAddress, Au, bool)>>,
+    }
+
+    impl vertex_swarm_api::BandwidthDebit for RecordingDebit {
+        fn debit_received(
+            &self,
+            peer: OverlayAddress,
+            price: Au,
+            originated: bool,
+        ) -> vertex_swarm_api::SwarmResult<()> {
+            self.debits.lock().unwrap().push((peer, price, originated));
+            Ok(())
+        }
+    }
+
+    /// A pricer charging `ORIGIN_PRICE` for every peer and chunk.
+    struct FixedPricer;
+    impl vertex_swarm_api::SwarmPricing for FixedPricer {
+        fn price(&self, _chunk: &ChunkAddress) -> Au {
+            Au::from_amount(ORIGIN_PRICE)
+        }
+        fn peer_price(&self, _peer: &OverlayAddress, _chunk: &ChunkAddress) -> Au {
+            Au::from_amount(ORIGIN_PRICE)
+        }
+    }
+
+    fn service_with_accounting() -> (ClientService, Arc<RecordingDebit>) {
+        let debit = Arc::new(RecordingDebit::default());
+        let (service, _event_tx, _handle) = ClientService::new();
+        let service = service.with_accounting(
+            Arc::new(FixedPricer) as Arc<dyn SwarmPricing>,
+            Arc::clone(&debit) as Arc<dyn BandwidthDebit>,
+        );
+        (service, debit)
+    }
+
+    fn content_chunk() -> nectar_primitives::AnyChunk {
+        nectar_primitives::ContentChunk::new(&b"origin-debit-test"[..])
+            .expect("valid content chunk")
+            .into()
+    }
+
+    #[test]
+    fn origin_retrieval_debits_serving_peer_exactly_once() {
+        let (service, debit) = service_with_accounting();
+        service.process_event(ClientEvent::ChunkReceived {
+            peer: peer(1),
+            address: ChunkAddress::zero(),
+            chunk: content_chunk(),
+            stamp: None,
+            latency: Duration::from_millis(1),
+            originated: true,
+        });
+        let debits = debit.debits.lock().unwrap();
+        assert_eq!(
+            *debits,
+            vec![(peer(1), Au::from_amount(ORIGIN_PRICE), true)],
+            "an origin retrieval debits the serving peer once by the per-chunk price"
+        );
+    }
+
+    #[test]
+    fn relay_retrieval_is_not_debited_by_the_service() {
+        // The forwarder accounts a relay leg itself; the service must not also
+        // debit it, or the transfer is charged twice.
+        let (service, debit) = service_with_accounting();
+        service.process_event(ClientEvent::ChunkReceived {
+            peer: peer(2),
+            address: ChunkAddress::zero(),
+            chunk: content_chunk(),
+            stamp: None,
+            latency: Duration::from_millis(1),
+            originated: false,
+        });
+        assert!(
+            debit.debits.lock().unwrap().is_empty(),
+            "a relay retrieval is debited by the forwarder, never by the service"
+        );
+    }
+
+    #[test]
+    fn origin_push_debits_serving_peer_exactly_once() {
+        let (service, debit) = service_with_accounting();
+        service.process_event(ClientEvent::ReceiptReceived {
+            peer: peer(3),
+            address: ChunkAddress::zero(),
+            latency: Duration::from_millis(1),
+            originated: true,
+        });
+        let debits = debit.debits.lock().unwrap();
+        assert_eq!(
+            *debits,
+            vec![(peer(3), Au::from_amount(ORIGIN_PRICE), true)],
+            "an origin push debits the storer once by the per-chunk price"
+        );
+    }
+
+    #[test]
+    fn relay_push_is_not_debited_by_the_service() {
+        let (service, debit) = service_with_accounting();
+        service.process_event(ClientEvent::ReceiptReceived {
+            peer: peer(4),
+            address: ChunkAddress::zero(),
+            latency: Duration::from_millis(1),
+            originated: false,
+        });
+        assert!(
+            debit.debits.lock().unwrap().is_empty(),
+            "a relay push is debited by the forwarder, never by the service"
+        );
+    }
+
+    #[test]
+    fn origin_delivery_without_accounting_is_a_noop() {
+        // The lightweight launcher attaches no accounting; an origin delivery
+        // must not panic and simply skips the debit.
+        let (service, _event_tx, _handle) = ClientService::new();
+        service.process_event(ClientEvent::ChunkReceived {
+            peer: peer(5),
+            address: ChunkAddress::zero(),
+            chunk: content_chunk(),
+            stamp: None,
+            latency: Duration::from_millis(1),
+            originated: true,
+        });
+    }
+
     // Throttle wiring at the outbound API boundary.
     use crate::throttle::SelfThrottle;
-    use vertex_swarm_api::{
-        Au, BandwidthMode, PeerAffordability, SwarmBandwidthAccounting, SwarmClientAccounting,
-        SwarmPricing, SwarmResult,
-    };
-    use vertex_swarm_bandwidth::{
+    use vertex_swarm_accounting::{
         DefaultBandwidthConfig, NoAccounting, NoPeerBandwidth, NoProvideAction, NoReceiveAction,
+    };
+    use vertex_swarm_api::{
+        Au, PeerAffordability, SwarmBandwidthAccounting, SwarmClientAccounting, SwarmPricing,
+        SwarmResult,
     };
     use vertex_swarm_test_utils::MockIdentity;
 
@@ -796,16 +948,7 @@ mod tests {
         };
         // Only refresh_rate (1 AU/sec) and throttle_allowance_percent (100) are
         // read; the rest are placeholders.
-        let config = DefaultBandwidthConfig::new(
-            BandwidthMode::Pseudosettle,
-            0,
-            0,
-            1,
-            0,
-            1,
-            100,
-            Default::default(),
-        );
+        let config = DefaultBandwidthConfig::new(0, 0, 1, 0, 1, 100, Default::default());
         let throttle = Arc::new(SelfThrottle::new(&accounting, &config));
         (ClientHandle::new(tx).with_throttle(throttle), rx)
     }
@@ -817,7 +960,7 @@ mod tests {
         let (handle, mut rx) = throttled_handle(100);
         let peer = peer(1);
         let stamped = test_stamped_chunk();
-        let push = tokio::spawn(async move { handle.push_chunk(peer, stamped).await });
+        let push = tokio::spawn(async move { handle.push_chunk(peer, stamped, true).await });
 
         let cmd = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
@@ -857,7 +1000,7 @@ mod tests {
                         .ok();
                 }
             };
-            let (_outcome, ()) = tokio::join!(handle.retrieve_chunk(peer(1), address), serve);
+            let (_outcome, ()) = tokio::join!(handle.retrieve_chunk(peer(1), address, true), serve);
             start.elapsed()
         }
 
@@ -885,7 +1028,7 @@ mod tests {
         let address = test_address();
         let task = tokio::spawn({
             let handle = handle.clone();
-            async move { handle.retrieve_chunk(peer(1), address).await }
+            async move { handle.retrieve_chunk(peer(1), address, true).await }
         });
         let cmd = rx.recv().await.expect("command emitted");
         assert!(matches!(cmd, ClientCommand::RetrieveChunk { .. }));

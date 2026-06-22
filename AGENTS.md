@@ -30,9 +30,11 @@ Rules that catch the most review comments. None of these bend.
 - **No em-dashes.** ASCII hyphens or split the sentence. Source, rustdoc, markdown, commits, PR bodies, chat output.
 - **No inline references to the reference implementation in code or operator-facing docs.** Brief architectural notes belong only at the crate root rustdoc, not scattered through call sites. Agent-only files under `docs/agents/` are the exception, since their job is to talk about it.
 - **No "Unit N" internal plan labels in shipped rustdoc.** Describe consumers and components by name.
+- **Rustdoc is terse by default; calibrate low.** State the intent plus the one non-obvious invariant a reader actually needs: a wire or byte layout, a consensus-observable rule, a real safety or ordering reason. No multi-section module essays (`# What this decides` / `# The rule` / `# Why`), no `///` that merely restates the signature, no `//` that narrates the next line. The code stands on its own; comment only what it cannot say, once. PR #412 cut the #350 stack from essay-level verbosity to roughly a fifth; aim there. Full guidance in `docs/agents/rust-idiomatic.md`.
 - **Pre-commit is required, not polish.** `cargo fmt --all` and `cargo clippy --all-targets --all-features -- -D warnings`. Zero tolerance for unformatted or warning-bearing pushes.
+- **Scope verification to the change; CI runs the full matrix.** Test the crates you touched (`cargo test -p <crate>`), not the whole workspace. Never run benches as a correctness gate or outside performance work. A doc or comment only change needs clippy (for `missing_docs`) and doctests only if a `///` fence changed, never the test suite. For a comment-only restack or pure move, prove code-equivalence with a filtered `git diff` instead of recompiling the world. Full rules in `docs/agents/rust-idiomatic.md`.
 - **`git push` and `gh pr checks <N>` are one unit.** Watch CI until green. `MERGEABLE` is not the success signal.
-- **No Claude attribution in commit messages or PR bodies.** No "Co-Authored-By: Claude", no robot footer.
+- **No attribution in commits; AI disclosure required in PR bodies.** Commit messages stay clean: no "Co-Authored-By: Claude", no robot footer. PR bodies are the opposite: the org guide at `github.com/nxm-rs/.github` `CONTRIBUTING.md` REQUIRES a factual `AI Assistance: <tool> used for <parts>` line in every PR description. These do not conflict: the ban is on co-author lines and celebratory footers, the requirement is a plain factual disclosure. Omitting the disclosure risks PR closure or a ban.
 - **No wire change without a fork gate.** Use `SwarmHardfork` and `ForkDigest`. Never feature-flag wire bytes with cargo features.
 - **Primitives and layer-2 constructs live in `nectar`, not `vertex`.** See the Repo split section below before adding chunk, addressing, manifest, feed, BMT, postage, or other domain-primitive code here.
 - **Reach for the workspace derive macros before hand-rolling impls.** `thiserror`, `strum`, `derive_more`, `auto_impl(&, Arc, Box)`. Rules in `docs/agents/rust-idiomatic.md`.
@@ -126,7 +128,8 @@ Primary sources to consult during the Process step:
 ## Commits, PRs, CI
 
 - Conventional Commits, imperative mood. Scope by area: `feat(swarm-net-pushsync): ...`, `fix(topology): ...`, `chore(deps): ...`, `test(swarm-peer): ...`.
-- No em-dashes, no Claude attribution, no robot footers in commit messages or PR bodies.
+- No em-dashes in commit messages or PR bodies. No Claude attribution or robot footers in commit messages.
+- Read the org guide `github.com/nxm-rs/.github` `CONTRIBUTING.md` before opening any PR. It binds every nxm-rs repo and adds requirements beyond this file: Oxford English (British vocabulary with `-ize` endings), one PR does one thing, link an issue, and a mandatory `AI Assistance: <tool> used for <parts>` disclosure in the PR description. The PR body must cover What, Why (the linked issue), Testing, and that disclosure.
 - PR bodies are markdown: no hard-wrapped paragraphs. One logical line per paragraph. Let GitHub reflow.
 - After every `git push`, run `gh pr checks <N>` and watch until green.
 - Destructive operations (`git push --force` to a shared branch, `git reset --hard`, deleting branches): confirm with the human owner first.

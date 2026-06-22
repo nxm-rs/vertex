@@ -2,9 +2,5 @@
 
 vertex_net_codec::protocol_error! {
     /// Pseudosettle protocol errors.
-    pub enum PseudosettleError {
-        /// Invalid timestamp in acknowledgment.
-        #[error("invalid timestamp: {0}")]
-        InvalidTimestamp(String),
-    }
+    pub enum PseudosettleError {}
 }

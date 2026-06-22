@@ -61,6 +61,37 @@ pub type MaybeSendBoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 #[cfg(target_arch = "wasm32")]
 pub type MaybeSendBoxFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
+/// `Send` on native, unbounded on wasm32. Blanket-impl; the canonical home for
+/// the marker, so crates must not define per-crate siblings.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSend: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + ?Sized> MaybeSend for T {}
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSend {}
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> MaybeSend for T {}
+
+/// `Send` on native, unbounded on wasm32, for a `Stream`. Blanket-impl.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSendStream: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send> MaybeSendStream for T {}
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSendStream {}
+#[cfg(target_arch = "wasm32")]
+impl<T> MaybeSendStream for T {}
+
+/// `Send` on native, unbounded on wasm32, for an `Iterator`. Blanket-impl.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSendIter: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send> MaybeSendIter for T {}
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSendIter {}
+#[cfg(target_arch = "wasm32")]
+impl<T> MaybeSendIter for T {}
+
 /// A boxed future representing a node's main event loop.
 pub type NodeTask = Pin<Box<dyn Future<Output = ()> + Send>>;
 
@@ -78,7 +109,10 @@ pub trait SpawnableTask: Send + 'static {
     /// Consume self and return a future to run as a background task.
     ///
     /// The service should listen for the shutdown signal and exit gracefully when received.
-    fn into_task(self, shutdown: GracefulShutdown) -> impl Future<Output = ()> + Send;
+    ///
+    /// The future is [`MaybeSend`]: `Send` on native, unbounded on wasm (where a
+    /// settlement future is `!Send` and runs on the browser event loop).
+    fn into_task(self, shutdown: GracefulShutdown) -> impl Future<Output = ()> + MaybeSend;
 }
 
 /// Global [`TaskExecutor`] instance that can be accessed from anywhere.
@@ -772,10 +806,18 @@ impl TaskExecutor {
     /// This is the preferred way to spawn long-running services that implement
     /// [`SpawnableTask`]. The service receives a [`GracefulShutdown`] signal and
     /// is monitored for panics.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn spawn_service<S: SpawnableTask>(&self, name: &'static str, service: S) -> TaskHandle {
         self.spawn_critical_with_graceful_shutdown_signal(name, |shutdown| {
             service.into_task(shutdown)
         })
+    }
+
+    /// Browser variant of [`Self::spawn_service`]: the task future may be `!Send`,
+    /// so it runs on the local spawner (no panic-monitoring pool in the browser).
+    #[cfg(target_arch = "wasm32")]
+    pub fn spawn_service<S: SpawnableTask>(&self, name: &'static str, service: S) -> TaskHandle {
+        self.spawn_local_with_graceful_shutdown_signal(name, |shutdown| service.into_task(shutdown))
     }
 
     /// Spawns a periodic background task with graceful shutdown support.

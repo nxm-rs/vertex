@@ -68,10 +68,10 @@ use futures_timer::Delay;
 use nectar_primitives::ChunkAddress;
 use parking_lot::Mutex;
 use vertex_net_ratelimiter::{Quota, SelfRateLimiter};
+use vertex_swarm_accounting::DefaultBandwidthConfig;
 use vertex_swarm_api::{
     PeerAffordability, SwarmAccountingConfig, SwarmClientAccounting, SwarmPricing,
 };
-use vertex_swarm_bandwidth::DefaultBandwidthConfig;
 use vertex_swarm_primitives::OverlayAddress;
 
 use std::num::NonZeroU32;
@@ -400,15 +400,15 @@ mod tests {
 
     impl vertex_swarm_api::SwarmBandwidthAccounting for MockBandwidth {
         type Identity = vertex_swarm_test_utils::MockIdentity;
-        type Peer = vertex_swarm_bandwidth::NoPeerBandwidth;
-        type ReceiveAction = vertex_swarm_bandwidth::NoReceiveAction;
-        type ProvideAction = vertex_swarm_bandwidth::NoProvideAction;
+        type Peer = vertex_swarm_accounting::NoPeerBandwidth;
+        type ReceiveAction = vertex_swarm_accounting::NoReceiveAction;
+        type ProvideAction = vertex_swarm_accounting::NoProvideAction;
 
         fn identity(&self) -> &Self::Identity {
             unreachable!("throttle never reads the identity")
         }
         fn for_peer(&self, peer: OverlayAddress) -> Self::Peer {
-            vertex_swarm_bandwidth::NoAccounting::new(
+            vertex_swarm_accounting::NoAccounting::new(
                 vertex_swarm_test_utils::MockIdentity::with_first_byte(0),
             )
             .for_peer(peer)
@@ -423,14 +423,14 @@ mod tests {
             _price: Au,
             _originated: bool,
         ) -> vertex_swarm_api::SwarmResult<Self::ReceiveAction> {
-            Ok(vertex_swarm_bandwidth::NoReceiveAction)
+            Ok(vertex_swarm_accounting::NoReceiveAction)
         }
         fn prepare_provide(
             &self,
             _peer: OverlayAddress,
             _price: Au,
         ) -> vertex_swarm_api::SwarmResult<Self::ProvideAction> {
-            Ok(vertex_swarm_bandwidth::NoProvideAction)
+            Ok(vertex_swarm_accounting::NoProvideAction)
         }
     }
 
@@ -471,7 +471,6 @@ mod tests {
         // config; the remaining fields are placeholders that the throttle never
         // touches.
         let config = DefaultBandwidthConfig::new(
-            vertex_swarm_api::BandwidthMode::Pseudosettle,
             0,
             0,
             refresh_rate,

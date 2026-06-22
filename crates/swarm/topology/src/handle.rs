@@ -292,6 +292,20 @@ impl<I: SwarmIdentity> TopologyHandle<I> {
         &self.peer_manager
     }
 
+    /// Resolve a connected peer's libp2p [`PeerId`] from its overlay, or `None`
+    /// if not currently connected. Used by the pullsync puller to address its
+    /// outbound substreams.
+    pub fn resolve_peer_id(&self, overlay: &OverlayAddress) -> Option<PeerId> {
+        self.connection_registry.resolve_peer_id(overlay)
+    }
+
+    /// The deepest bin the routing table tracks. The pullsync puller scopes its
+    /// neighbourhood bins to this so it never drives ranges for bins the table
+    /// cannot hold.
+    pub fn max_bin(&self) -> Bin {
+        self.routing.max_bin()
+    }
+
     /// Get agent version for a peer by PeerId.
     pub fn agent_version(&self, peer_id: &PeerId) -> Option<String> {
         self.agent_versions.read().peek(peer_id).cloned()

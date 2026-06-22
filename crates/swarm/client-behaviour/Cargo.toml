@@ -1,0 +1,79 @@
+[package]
+name = "vertex-swarm-client-behaviour"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Hand-rolled client composite NetworkBehaviour multiplexing the headered client protocols"
+
+[lints]
+workspace = true
+
+[dependencies]
+## nectar
+nectar-primitives.workspace = true
+
+## vertex - primitives
+vertex-swarm-primitives.workspace = true
+
+## vertex - network (libp2p codecs and upgrades)
+vertex-swarm-net-headers.workspace = true
+vertex-swarm-net-pricing.workspace = true
+vertex-swarm-net-pseudosettle.workspace = true
+vertex-swarm-net-pushsync.workspace = true
+vertex-swarm-net-retrieval.workspace = true
+vertex-swarm-net-swap = { workspace = true, optional = true }
+
+## vertex - swarm (libp2p-free abstractions)
+vertex-swarm-api.workspace = true
+vertex-swarm-client-protocol.workspace = true
+
+## vertex - runtime
+vertex-util-runtime.workspace = true
+
+## crypto
+alloy-primitives.workspace = true
+# The storer pushsync ingest path erases the identity's signer to `dyn SignerSync`
+# to sign custody receipts.
+alloy-signer.workspace = true
+
+## async
+futures.workspace = true
+futures-bounded = "0.2"
+tokio = { workspace = true, features = ["sync"] }
+
+## observability
+metrics.workspace = true
+
+## misc
+strum.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+# The native transport pulls the full libp2p; the browser build trims to the
+# wire-protocol features, mirroring `vertex-swarm-node`.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+libp2p.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+libp2p = { git = "https://github.com/nxm-rs/rust-libp2p", rev = "6454fdf3450f91fdbb6e3306daa7a9a4e633c133", default-features = false, features = [
+    "noise",
+    "yamux",
+    "macros",
+    "ecdsa",
+    "identify",
+    "ping",
+] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
+nectar-postage.workspace = true
+vertex-swarm-test-utils = { workspace = true }
+
+[features]
+default = ["std"]
+std = []
+# SWAP cheque-based settlement wire plumbing.
+swap = ["dep:vertex-swarm-net-swap", "vertex-swarm-client-protocol/swap"]

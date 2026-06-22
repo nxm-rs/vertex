@@ -79,9 +79,21 @@ pub enum DbBatchStoreError {
 /// Batch store backed by the `vertex-storage` `Database` trait.
 ///
 /// Implements both [`BatchStore`] (persistence) and [`BatchEventHandler`]
-/// (on-chain ingest). Cheap to clone by `Arc` and thread-safe.
+/// (on-chain ingest). Cloning shares the one `Arc<DB>`, so every clone reads and
+/// writes the same tables (the reserve and the puller's funding verifier hold
+/// independent handles onto the same batch set).
 pub struct DbBatchStore<DB: Database> {
     db: Arc<DB>,
+}
+
+// Hand-written so the clone bounds only the `Arc`, not `DB` (the backend is never
+// `Clone`); a clone shares the one handle onto the same tables.
+impl<DB: Database> Clone for DbBatchStore<DB> {
+    fn clone(&self) -> Self {
+        Self {
+            db: Arc::clone(&self.db),
+        }
+    }
 }
 
 impl<DB: Database> DbBatchStore<DB> {
@@ -146,8 +158,8 @@ impl<DB: Database> BatchStore for DbBatchStore<DB> {
     }
 
     fn contains(&self, id: &BatchId) -> Result<bool, Self::Error> {
-        // TODO(#214): switch to a key-presence check once the tx trait has one.
-        Ok(self.get(id)?.is_some())
+        // Key-presence probe: never decodes the batch value.
+        Ok(self.db.view(|tx| tx.exists::<Batches>(BatchIdKey(*id)))?)
     }
 
     fn context(&self) -> Result<PostageContext, Self::Error> {
@@ -164,7 +176,8 @@ impl<DB: Database> BatchStore for DbBatchStore<DB> {
     }
 
     fn batch_ids(&self) -> Result<Vec<BatchId>, Self::Error> {
-        // Lazy read-only cursor owns its snapshot; only keys are needed.
+        // Lazy read-only cursor owns its snapshot. Each step decodes its value
+        // because the cursor has no key-only mode; only the keys are retained.
         let tx = self.db.tx()?;
         let mut cursor = tx.cursor::<Batches>()?;
         let mut ids = Vec::new();

@@ -99,6 +99,16 @@ pub trait DbTx: Send + Sync {
     /// Get a value by key from a table. Returns `None` if not found.
     fn get<T: Table>(&self, key: T::Key) -> Result<Option<T::Value>, DatabaseError>;
 
+    /// Check whether a key exists in a table without deserializing its value.
+    fn exists<T: Table>(&self, key: T::Key) -> Result<bool, DatabaseError> {
+        Ok(self.get::<T>(key)?.is_some())
+    }
+
+    /// Get the first (lowest-ordered) key in a table without deserializing values.
+    fn first_key<T: Table>(&self) -> Result<Option<T::Key>, DatabaseError> {
+        Ok(self.cursor::<T>()?.first()?.map(|(k, _)| k))
+    }
+
     /// Get all entries from a table as key/value pairs.
     fn entries<T: Table>(&self) -> Result<Vec<(T::Key, T::Value)>, DatabaseError>;
 
@@ -195,9 +205,8 @@ impl<T: DbTx + ?Sized> IndexedRead for T {
         &self,
         index_key: I::Key,
     ) -> Result<Option<<I::Primary as Table>::Value>, DatabaseError> {
-        let pk = match self.get::<I>(index_key)? {
-            Some(pk) => pk,
-            None => return Ok(None),
+        let Some(pk) = self.get::<I>(index_key)? else {
+            return Ok(None);
         };
         self.get::<I::Primary>(pk)
     }
@@ -247,9 +256,8 @@ impl<T: DbTxMut + ?Sized> IndexedWrite for T {
         &self,
         pk: <I::Primary as Table>::Key,
     ) -> Result<bool, DatabaseError> {
-        let value = match self.get::<I::Primary>(pk.clone())? {
-            Some(v) => v,
-            None => return Ok(false),
+        let Some(value) = self.get::<I::Primary>(pk.clone())? else {
+            return Ok(false);
         };
         let idx = I::extract(&value);
         self.delete::<I::Primary>(pk)?;

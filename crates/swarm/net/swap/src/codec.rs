@@ -7,11 +7,11 @@
 //! The cheque rides as a JSON object in a protobuf `bytes` field. It is encoded
 //! and decoded with `serde_json` directly over [`SignedCheque`]; the JSON is
 //! transport-only (the signature is EIP-712 over the cheque fields, not the JSON
-//! bytes) and is slated for protobuf replacement, tracked in issue #183.
+//! bytes).
 
 use alloy_primitives::Address;
 use vertex_net_codec::{Codec, ProtoMessage};
-use vertex_swarm_bandwidth_chequebook::SignedCheque;
+use vertex_swarm_accounting_chequebook::SignedCheque;
 
 use crate::error::SwapError;
 
@@ -83,7 +83,7 @@ mod tests {
     use alloy_primitives::U256;
     use asynchronous_codec::{Decoder, Encoder};
     use bytes::{Bytes, BytesMut};
-    use vertex_swarm_bandwidth_chequebook::{Cheque, ChequeExt};
+    use vertex_swarm_accounting_chequebook::{Cheque, ChequeExt};
 
     fn test_signed_cheque() -> SignedCheque {
         let cheque = Cheque::new(

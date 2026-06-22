@@ -105,17 +105,7 @@ fn prepare_local_peer<I: SwarmIdentity>(
         );
     }
 
-    let signer = identity.signer();
-    SwarmPeer::sign(
-        &*signer,
-        addrs,
-        identity.overlay_address(),
-        identity.spec().network_id(),
-        identity.nonce(),
-        Timestamp::now(),
-        None,
-    )
-    .map_err(HandshakeError::from)
+    SwarmPeer::sign(identity, addrs, Timestamp::now(), None).map_err(HandshakeError::from)
 }
 
 /// Handshake protocol for Swarm peer authentication.

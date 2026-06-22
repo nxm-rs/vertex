@@ -1,0 +1,32 @@
+[package]
+name = "vertex-swarm-accounting-pseudosettle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Time-based settlement provider for Swarm bandwidth accounting"
+
+[dependencies]
+vertex-swarm-accounting = { workspace = true }
+vertex-swarm-client-protocol = { workspace = true }
+vertex-swarm-primitives = { workspace = true }
+vertex-swarm-api = { workspace = true }
+vertex-tasks = { workspace = true }
+vertex-util-runtime = { workspace = true }
+alloy-primitives = { workspace = true }
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+vertex-swarm-test-utils = { workspace = true }
+
+[features]
+default = ["std"]
+std = []

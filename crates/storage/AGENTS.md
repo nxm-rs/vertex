@@ -23,6 +23,7 @@ Root-level rules in `/AGENTS.md` apply here too. The notes below are the area-sp
 - Do not leak `redb::Error` outside the backend crate.
 - Do not call `unwrap` or `expect` on transaction results. The lints warn but the policy is no exceptions in storage code paths.
 - Do not add long-lived background tasks here. Persistence tasks live in the consumer crates so the storage crates remain library-shaped.
+- Do not write essay rustdoc. Keep module and item docs terse: intent plus the one non-obvious invariant (a byte or on-disk layout, an ordering reason), no signature-restating `///`, no narrating `//`. See the Documentation section in `docs/agents/rust-idiomatic.md`.
 
 ## Tests
 

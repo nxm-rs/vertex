@@ -101,6 +101,7 @@ pub struct BinScanItem {
 /// bin keeps a monotonic cursor; entries can be replayed from an arbitrary
 /// sequence, so redistribution and sync stream "what landed since cursor C"
 /// without scanning the whole reserve.
+#[auto_impl::auto_impl(&, Arc, Box)]
 pub trait BinCursorStore: ReserveStore {
     /// Highest sequence assigned in `bin` so far (`0` if empty).
     fn bin_cursor(&self, bin: Bin) -> SwarmResult<u64>;

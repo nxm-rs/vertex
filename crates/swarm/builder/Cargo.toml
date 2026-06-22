@@ -14,20 +14,20 @@ workspace = true
 [features]
 default = []
 # Construct a shared Ethereum alloy provider for chain-needing node types
-# (storer, and a client with SWAP enabled). Native-only: pulls the alloy RPC
-# stack (HTTP transport via reqwest) and the on-chain chequebook client. Off by
-# default so the client node and the wasm build stay completely chain-free; the
-# cone guard (`just check-cone`) enforces this.
+# (storer, and a client with SWAP enabled). Pulls the alloy RPC stack and the
+# on-chain chequebook client. Off by default to keep the default client cone
+# lean. The alloy transport stack is target-split (native TLS vs browser fetch),
+# so the chain code itself can build for wasm when its features are selected.
 chain = [
     "dep:vertex-chain",
-    "vertex-swarm-bandwidth-chequebook/swap-chequebook",
+    "vertex-swarm-accounting-chequebook/swap-chequebook",
     "dep:alloy-provider",
     "dep:alloy-network",
     "dep:alloy-signer-local",
     "dep:alloy-chains",
     # When the swap service is also present, the chain unlocks on-chain cashout
     # of received cheques. Without `swap` this is a no-op.
-    "vertex-swarm-bandwidth-swap?/swap-chequebook",
+    "vertex-swarm-accounting-swap?/swap-chequebook",
 ]
 # SWAP cheque-based settlement. Wires the chequebook settlement service into
 # bandwidth accounting and routes the swap wire events. Chain-free on its own:
@@ -35,7 +35,7 @@ chain = [
 # `chain` to enable on-chain cashout of received cheques. Off by default so the
 # chain-free client node stays the default cone.
 swap = [
-    "dep:vertex-swarm-bandwidth-swap",
+    "dep:vertex-swarm-accounting-swap",
     "vertex-swarm-node/swap",
     "dep:alloy-chains",
     "dep:alloy-signer",
@@ -52,10 +52,12 @@ vertex-node-api.workspace = true
 vertex-tasks.workspace = true
 
 # vertex - swarm protocol
-vertex-swarm-bandwidth.workspace = true
-vertex-swarm-bandwidth-pricing.workspace = true
-vertex-swarm-bandwidth-pseudosettle.workspace = true
+vertex-swarm-accounting.workspace = true
+vertex-swarm-accounting-pricing.workspace = true
+vertex-swarm-accounting-pseudosettle.workspace = true
 vertex-swarm-localstore.workspace = true
+# The `CachedChunk` value the cache-then-reserve serve view passes through.
+vertex-swarm-primitives.workspace = true
 vertex-swarm-peer-manager.workspace = true
 vertex-swarm-peer-score.workspace = true
 vertex-net-peer-store.workspace = true
@@ -63,6 +65,9 @@ vertex-storage-redb.workspace = true
 vertex-swarm-redistribution.workspace = true
 # The persisting reserve the storer launch path wires as the node's local store.
 vertex-swarm-storer.workspace = true
+# The neighbourhood pull-sync service the storer launch path spawns over the
+# reserve, with the node providing the concrete seam impls.
+vertex-swarm-puller.workspace = true
 # The batch store and admission validator the reserve requires for stamped admission.
 vertex-swarm-postage.workspace = true
 vertex-swarm-topology.workspace = true
@@ -74,16 +79,16 @@ vertex-swarm-net-pushsync.workspace = true
 vertex-swarm-identity.workspace = true
 vertex-swarm-spec.workspace = true
 
-# vertex - chain (optional, native-only, behind the `chain` feature)
+# vertex - chain (optional, behind the `chain` feature)
 vertex-chain = { workspace = true, optional = true }
 # The on-chain chequebook client. Pure cheque codec by default; the builder's
 # `chain` feature enables `swap-chequebook` on it to construct the SWAP
 # settlement client.
-vertex-swarm-bandwidth-chequebook = { workspace = true, optional = true }
+vertex-swarm-accounting-chequebook = { workspace = true, optional = true }
 # The chequebook settlement service (optional, behind the `swap` feature). Cheque
 # exchange is chain-free; `swap` + `chain` turns on the service's `swap-chequebook`
 # cashout path.
-vertex-swarm-bandwidth-swap = { workspace = true, optional = true }
+vertex-swarm-accounting-swap = { workspace = true, optional = true }
 
 # nectar
 nectar-primitives.workspace = true
@@ -121,9 +126,6 @@ nectar-postage.workspace = true
 alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 vertex-swarm-test-utils.workspace = true
-# The `CachedChunk` value the storer reserve stores and serves, exercised by the
-# store-factory test.
-vertex-swarm-primitives.workspace = true
 
 # Client upload/download examples. They build a client through the public builder
 # and drive the chunk sender/provider directly, the way an FFI or gRPC embedder

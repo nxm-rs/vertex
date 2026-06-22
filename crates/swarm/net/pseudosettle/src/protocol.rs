@@ -171,42 +171,6 @@ mod tests {
     use super::*;
     use alloy_primitives::U256;
 
-    /// Validate that a timestamp is within acceptable bounds of the current time.
-    fn validate_timestamp(timestamp: i64, tolerance_secs: u64) -> Result<(), PseudosettleError> {
-        let now = vertex_util_runtime::time::now_unix_nanos();
-
-        let tolerance_nanos = (tolerance_secs as i64) * 1_000_000_000;
-        let diff = (now - timestamp).abs();
-
-        if diff > tolerance_nanos {
-            return Err(PseudosettleError::InvalidTimestamp(format!(
-                "timestamp {} is {}s away from current time (tolerance: {}s)",
-                timestamp,
-                diff / 1_000_000_000,
-                tolerance_secs
-            )));
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_validate_timestamp_valid() {
-        let now = vertex_util_runtime::time::now_unix_nanos();
-
-        assert!(validate_timestamp(now, 3).is_ok());
-        assert!(validate_timestamp(now - 1_000_000_000, 3).is_ok());
-        assert!(validate_timestamp(now + 2_000_000_000, 3).is_ok());
-    }
-
-    #[test]
-    fn test_validate_timestamp_invalid() {
-        let now = vertex_util_runtime::time::now_unix_nanos();
-
-        assert!(validate_timestamp(now - 5_000_000_000, 3).is_err());
-        assert!(validate_timestamp(now + 10_000_000_000, 3).is_err());
-    }
-
     #[test]
     fn test_payment_creation() {
         let payment = Payment::from_u64(1_000_000);
@@ -218,6 +182,9 @@ mod tests {
         let amount = U256::from(500_000u64);
         let ack = PaymentAck::now(amount);
         assert_eq!(ack.amount, amount);
-        assert!(validate_timestamp(ack.timestamp, 1).is_ok());
+
+        // `now` stamps the current wall clock; allow a one-second window.
+        let now = vertex_util_runtime::time::now_unix_nanos();
+        assert!((now - ack.timestamp).abs() < 1_000_000_000);
     }
 }

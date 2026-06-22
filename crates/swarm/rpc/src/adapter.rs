@@ -8,12 +8,12 @@
 
 use vertex_rpc_server::{GrpcRegistry, RegistersGrpcServices};
 use vertex_swarm_api::{
-    BootnodeComponents, ClientComponents, HasChunkClient, HasTopology, StorerComponents,
-    SwarmTopologyPeers, SwarmTopologyState, SwarmTopologyStats,
+    BinCursorStore, BootnodeComponents, ClientComponents, HasChunkClient, HasReserve, HasStore,
+    HasTopology, StorerComponents, SwarmTopologyPeers, SwarmTopologyState, SwarmTopologyStats,
 };
 use vertex_swarm_stream::ChunkClient;
 
-use crate::{ChunkService, NodeService, proto};
+use crate::{ChunkService, NodeService, ReserveService, proto};
 
 /// gRPC adapter over an api component container `C`; capability accessors
 /// delegate to `C`.
@@ -52,6 +52,22 @@ impl<C: HasChunkClient> HasChunkClient for GrpcAdapter<C> {
     }
 }
 
+impl<C: HasStore> HasStore for GrpcAdapter<C> {
+    type Store = C::Store;
+
+    fn store(&self) -> &Self::Store {
+        self.components.store()
+    }
+}
+
+impl<C: HasReserve> HasReserve for GrpcAdapter<C> {
+    type Reserve = C::Reserve;
+
+    fn reserve(&self) -> &Self::Reserve {
+        self.components.reserve()
+    }
+}
+
 impl<C> GrpcAdapter<C> {
     /// Register the node status service and the shared reflection descriptor.
     pub fn register_node(&self, registry: &mut GrpcRegistry)
@@ -81,6 +97,17 @@ impl<C> GrpcAdapter<C> {
         let chunk_server = proto::chunk::chunk_server::ChunkServer::new(chunk_service);
         registry.add_service(chunk_server);
     }
+
+    /// Register the storer reserve service.
+    pub fn register_reserve(&self, registry: &mut GrpcRegistry)
+    where
+        C: HasReserve,
+        C::Reserve: BinCursorStore + Clone + 'static,
+    {
+        let reserve_service = ReserveService::new(self.components.reserve().clone());
+        let reserve_server = proto::reserve::reserve_server::ReserveServer::new(reserve_service);
+        registry.add_service(reserve_server);
+    }
 }
 
 /// Bootnodes register the node status service only.
@@ -105,19 +132,18 @@ where
     }
 }
 
-/// Storer nodes register the node status service and the chunk service; the
-/// store axis (`S`) carries no served capability yet.
-impl<T, C, S> RegistersGrpcServices for GrpcAdapter<StorerComponents<T, C, S>>
+/// Storer nodes register the node status service, the chunk service, and the
+/// reserve service over the `R` reserve axis.
+impl<T, C, S, R> RegistersGrpcServices for GrpcAdapter<StorerComponents<T, C, S, R>>
 where
     T: SwarmTopologyState + SwarmTopologyStats + SwarmTopologyPeers + Clone + Send + Sync + 'static,
     C: ChunkClient + Send + Sync,
     S: Send + Sync,
+    R: BinCursorStore + Clone + 'static,
 {
     fn register_grpc_services(&self, registry: &mut GrpcRegistry) {
         self.register_node(registry);
         self.register_chunk(registry);
-
-        // TODO: Add storer-specific RPC services (reserve, redistribution) once
-        // they exist; gate them on `HasReserve`.
+        self.register_reserve(registry);
     }
 }

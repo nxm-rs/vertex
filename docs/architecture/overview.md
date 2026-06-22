@@ -47,7 +47,7 @@ graph LR
     subgraph "libp2p-free"
         api["vertex-swarm-api"]
         nodeapi["vertex-node-api"]
-        bandwidth["vertex-swarm-bandwidth-*"]
+        accounting["vertex-swarm-accounting-*"]
         storer["vertex-swarm-storer"]
         redistrib["vertex-swarm-redistribution"]
         rpc["vertex-rpc-*"]

@@ -8306,8 +8306,8 @@ dependencies = [
  "vertex-observability",
  "vertex-rpc-server",
  "vertex-storage-redb",
+ "vertex-swarm-accounting",
  "vertex-swarm-api",
- "vertex-swarm-bandwidth",
  "vertex-swarm-builder",
  "vertex-swarm-identity",
  "vertex-swarm-net-handshake",
@@ -8334,6 +8334,7 @@ dependencies = [
  "alloy-provider",
  "alloy-rpc-types-eth",
  "alloy-sol-types",
+ "getrandom 0.2.17",
  "nectar-contracts",
  "nectar-swarms",
  "strum 0.28.0",
@@ -8686,6 +8687,112 @@ dependencies = [
 ]
 
 [[package]]
+name = "vertex-swarm-accounting"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "auto_impl",
+ "clap 4.6.1",
+ "metrics",
+ "nectar-primitives",
+ "parking_lot",
+ "serde",
+ "strum 0.28.0",
+ "thiserror 2.0.18",
+ "vertex-metrics",
+ "vertex-swarm-accounting-pricing",
+ "vertex-swarm-api",
+ "vertex-swarm-primitives",
+ "vertex-swarm-spec",
+ "vertex-swarm-test-utils",
+]
+
+[[package]]
+name = "vertex-swarm-accounting-chequebook"
+version = "0.1.0"
+dependencies = [
+ "alloy-chains",
+ "alloy-contract",
+ "alloy-network",
+ "alloy-primitives",
+ "alloy-provider",
+ "alloy-signer",
+ "alloy-signer-local",
+ "alloy-sol-types",
+ "bytes",
+ "getrandom 0.2.17",
+ "nectar-contracts",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "strum 0.28.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "vertex-chain",
+]
+
+[[package]]
+name = "vertex-swarm-accounting-pricing"
+version = "0.1.0"
+dependencies = [
+ "auto_impl",
+ "clap 4.6.1",
+ "nectar-primitives",
+ "serde",
+ "vertex-swarm-api",
+ "vertex-swarm-primitives",
+ "vertex-swarm-spec",
+]
+
+[[package]]
+name = "vertex-swarm-accounting-pseudosettle"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "async-trait",
+ "parking_lot",
+ "strum 0.28.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "vertex-swarm-accounting",
+ "vertex-swarm-api",
+ "vertex-swarm-client-protocol",
+ "vertex-swarm-primitives",
+ "vertex-swarm-test-utils",
+ "vertex-tasks",
+ "vertex-util-runtime",
+]
+
+[[package]]
+name = "vertex-swarm-accounting-swap"
+version = "0.1.0"
+dependencies = [
+ "alloy-chains",
+ "alloy-contract",
+ "alloy-primitives",
+ "alloy-provider",
+ "alloy-signer",
+ "alloy-signer-local",
+ "alloy-sol-types",
+ "async-trait",
+ "nectar-contracts",
+ "strum 0.28.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "vertex-chain",
+ "vertex-swarm-accounting",
+ "vertex-swarm-accounting-chequebook",
+ "vertex-swarm-api",
+ "vertex-swarm-client-protocol",
+ "vertex-swarm-primitives",
+ "vertex-swarm-test-utils",
+ "vertex-tasks",
+]
+
+[[package]]
 name = "vertex-swarm-api"
 version = "0.1.0"
 dependencies = [
@@ -8716,113 +8823,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vertex-swarm-bandwidth"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "auto_impl",
- "clap 4.6.1",
- "metrics",
- "nectar-primitives",
- "parking_lot",
- "serde",
- "strum 0.28.0",
- "thiserror 2.0.18",
- "vertex-metrics",
- "vertex-swarm-api",
- "vertex-swarm-bandwidth-pricing",
- "vertex-swarm-primitives",
- "vertex-swarm-spec",
- "vertex-swarm-test-utils",
-]
-
-[[package]]
-name = "vertex-swarm-bandwidth-chequebook"
-version = "0.1.0"
-dependencies = [
- "alloy-chains",
- "alloy-contract",
- "alloy-network",
- "alloy-primitives",
- "alloy-provider",
- "alloy-signer",
- "alloy-signer-local",
- "alloy-sol-types",
- "bytes",
- "getrandom 0.2.17",
- "nectar-contracts",
- "serde",
- "serde_json",
- "serde_with",
- "strum 0.28.0",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "vertex-chain",
-]
-
-[[package]]
-name = "vertex-swarm-bandwidth-pricing"
-version = "0.1.0"
-dependencies = [
- "auto_impl",
- "clap 4.6.1",
- "nectar-primitives",
- "serde",
- "vertex-swarm-api",
- "vertex-swarm-primitives",
- "vertex-swarm-spec",
-]
-
-[[package]]
-name = "vertex-swarm-bandwidth-pseudosettle"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "async-trait",
- "parking_lot",
- "strum 0.28.0",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "vertex-swarm-api",
- "vertex-swarm-bandwidth",
- "vertex-swarm-net-pseudosettle",
- "vertex-swarm-node",
- "vertex-swarm-primitives",
- "vertex-swarm-test-utils",
- "vertex-tasks",
- "vertex-util-runtime",
-]
-
-[[package]]
-name = "vertex-swarm-bandwidth-swap"
-version = "0.1.0"
-dependencies = [
- "alloy-chains",
- "alloy-contract",
- "alloy-primitives",
- "alloy-provider",
- "alloy-signer",
- "alloy-signer-local",
- "alloy-sol-types",
- "async-trait",
- "nectar-contracts",
- "strum 0.28.0",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "vertex-chain",
- "vertex-swarm-api",
- "vertex-swarm-bandwidth",
- "vertex-swarm-bandwidth-chequebook",
- "vertex-swarm-node",
- "vertex-swarm-primitives",
- "vertex-swarm-test-utils",
- "vertex-tasks",
-]
-
-[[package]]
 name = "vertex-swarm-builder"
 version = "0.1.0"
 dependencies = [
@@ -8846,12 +8846,12 @@ dependencies = [
  "vertex-net-peer-store",
  "vertex-node-api",
  "vertex-storage-redb",
+ "vertex-swarm-accounting",
+ "vertex-swarm-accounting-chequebook",
+ "vertex-swarm-accounting-pricing",
+ "vertex-swarm-accounting-pseudosettle",
+ "vertex-swarm-accounting-swap",
  "vertex-swarm-api",
- "vertex-swarm-bandwidth",
- "vertex-swarm-bandwidth-chequebook",
- "vertex-swarm-bandwidth-pricing",
- "vertex-swarm-bandwidth-pseudosettle",
- "vertex-swarm-bandwidth-swap",
  "vertex-swarm-identity",
  "vertex-swarm-localstore",
  "vertex-swarm-net-pushsync",
@@ -8860,12 +8860,58 @@ dependencies = [
  "vertex-swarm-peer-score",
  "vertex-swarm-postage",
  "vertex-swarm-primitives",
+ "vertex-swarm-puller",
  "vertex-swarm-redistribution",
  "vertex-swarm-spec",
  "vertex-swarm-storer",
  "vertex-swarm-test-utils",
  "vertex-swarm-topology",
  "vertex-tasks",
+]
+
+[[package]]
+name = "vertex-swarm-client-behaviour"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-signer",
+ "futures",
+ "futures-bounded 0.2.4",
+ "libp2p",
+ "metrics",
+ "nectar-postage",
+ "nectar-primitives",
+ "strum 0.28.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "vertex-swarm-api",
+ "vertex-swarm-client-protocol",
+ "vertex-swarm-net-headers",
+ "vertex-swarm-net-pricing",
+ "vertex-swarm-net-pseudosettle",
+ "vertex-swarm-net-pushsync",
+ "vertex-swarm-net-retrieval",
+ "vertex-swarm-net-swap",
+ "vertex-swarm-primitives",
+ "vertex-swarm-test-utils",
+ "vertex-util-runtime",
+]
+
+[[package]]
+name = "vertex-swarm-client-protocol"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "libp2p",
+ "nectar-primitives",
+ "strum 0.28.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "vertex-swarm-api",
+ "vertex-swarm-net-pushsync",
+ "vertex-swarm-net-swap",
+ "vertex-swarm-primitives",
 ]
 
 [[package]]
@@ -9102,6 +9148,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "vertex-swarm-net-pullsync"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-signer-local",
+ "asynchronous-codec",
+ "bytes",
+ "futures",
+ "libp2p",
+ "nectar-postage",
+ "nectar-primitives",
+ "quick-protobuf",
+ "quick-protobuf-codec",
+ "strum 0.28.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "vertex-net-codec",
+ "vertex-swarm-net-headers",
+ "vertex-swarm-net-proto",
+ "vertex-swarm-primitives",
+]
+
+[[package]]
 name = "vertex-swarm-net-pushsync"
 version = "0.1.0"
 dependencies = [
@@ -9166,7 +9236,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "vertex-net-codec",
- "vertex-swarm-bandwidth-chequebook",
+ "vertex-swarm-accounting-chequebook",
  "vertex-swarm-net-headers",
  "vertex-swarm-net-proto",
 ]
@@ -9204,15 +9274,15 @@ dependencies = [
  "vertex-net-peer-store",
  "vertex-net-ratelimiter",
  "vertex-node-api",
+ "vertex-swarm-accounting",
+ "vertex-swarm-accounting-pricing",
  "vertex-swarm-api",
- "vertex-swarm-bandwidth",
- "vertex-swarm-bandwidth-pricing",
+ "vertex-swarm-client-behaviour",
+ "vertex-swarm-client-protocol",
  "vertex-swarm-identity",
  "vertex-swarm-localstore",
- "vertex-swarm-net-headers",
  "vertex-swarm-net-identify",
  "vertex-swarm-net-pricing",
- "vertex-swarm-net-pseudosettle",
  "vertex-swarm-net-pushsync",
  "vertex-swarm-net-retrieval",
  "vertex-swarm-net-swap",
@@ -9220,8 +9290,10 @@ dependencies = [
  "vertex-swarm-peer-manager",
  "vertex-swarm-peer-score",
  "vertex-swarm-primitives",
+ "vertex-swarm-puller",
  "vertex-swarm-redistribution",
  "vertex-swarm-spec",
+ "vertex-swarm-storer-behaviour",
  "vertex-swarm-test-utils",
  "vertex-swarm-topology",
  "vertex-tasks",
@@ -9250,7 +9322,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "vertex-net-local",
- "vertex-swarm-api",
  "vertex-swarm-identity",
  "vertex-swarm-primitives",
  "vertex-swarm-spec",
@@ -9318,7 +9389,9 @@ name = "vertex-swarm-primitives"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-signer",
  "alloy-signer-local",
+ "auto_impl",
  "getrandom 0.2.17",
  "getrandom 0.4.2",
  "nectar-postage",
@@ -9326,6 +9399,28 @@ dependencies = [
  "serde",
  "strum 0.28.0",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "vertex-swarm-puller"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
+ "auto_impl",
+ "libp2p",
+ "nectar-postage",
+ "nectar-primitives",
+ "strum 0.28.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "vertex-swarm-api",
+ "vertex-swarm-postage",
+ "vertex-swarm-primitives",
+ "vertex-swarm-storer-behaviour",
+ "vertex-tasks",
 ]
 
 [[package]]
@@ -9416,6 +9511,32 @@ dependencies = [
  "vertex-swarm-postage",
  "vertex-swarm-primitives",
  "vertex-swarm-test-utils",
+]
+
+[[package]]
+name = "vertex-swarm-storer-behaviour"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "futures",
+ "libp2p",
+ "libp2p-swarm-test",
+ "metrics",
+ "nectar-postage",
+ "nectar-primitives",
+ "strum 0.28.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "vertex-net-ratelimiter",
+ "vertex-swarm-api",
+ "vertex-swarm-client-behaviour",
+ "vertex-swarm-client-protocol",
+ "vertex-swarm-net-handler-core",
+ "vertex-swarm-net-headers",
+ "vertex-swarm-net-pullsync",
+ "vertex-swarm-primitives",
+ "vertex-tasks",
 ]
 
 [[package]]

@@ -214,14 +214,9 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
     /// Must be called during node assembly, before the event loop accepts
     /// connections: a handler created earlier does not capture the capability.
     pub fn enable_storage(&mut self, reserve: Arc<dyn vertex_swarm_api::ReserveStore>) {
-        use vertex_swarm_api::SwarmSpec;
-
-        let identity = self.base.identity();
-        let nonce = identity.nonce();
-        let network_id = identity.spec().network_id();
-        // `I::Signer: Signer + SignerSync`, so erasing to SignerSync is sound.
-        let signer: Arc<dyn alloy_signer::SignerSync + Send + Sync> = identity.signer();
-        let capability = crate::protocol::StorerCapability::new(reserve, signer, network_id, nonce);
+        let signer: Arc<dyn vertex_swarm_primitives::OverlaySigner + Send + Sync> =
+            Arc::new(self.base.identity().clone());
+        let capability = crate::protocol::StorerCapability::new(reserve, signer);
         self.base
             .swarm
             .behaviour_mut()
@@ -289,8 +284,15 @@ impl<I: SwarmIdentity + Clone> ClientNode<I> {
                 }
 
                 result = topo_events.recv() => {
-                    if let Ok(event) = result {
-                        self.handle_topology_service_event(event);
+                    match result {
+                        Ok(event) => self.handle_topology_service_event(event),
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            warn!(skipped, "Client node lagged behind topology events");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            info!("Topology event channel closed, shutting down client node");
+                            break;
+                        }
                     }
                 }
             }

@@ -1,8 +1,8 @@
 //! SWAP settlement wiring for the client launch path.
 //!
 //! Ties three pieces together behind the `swap` feature: a [`SwapProvider`]
-//! registered with the accounting builder so [`BandwidthMode`] selection drives
-//! cheque issuance, the [`SwapService`] actor that owns the cheque-exchange state
+//! registered with the accounting builder when `--swap` is set, the
+//! [`SwapService`] actor that owns the cheque-exchange state
 //! machine, and the wire plumbing that routes swap events from the node into the
 //! service and the service's `SendCheque` commands back to the node.
 //!
@@ -26,14 +26,14 @@ use alloy_signer_local::PrivateKeySigner;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use vertex_node_api::InfrastructureContext;
+use vertex_swarm_accounting_swap::service::SwapCommand;
+use vertex_swarm_accounting_swap::{SwapEvent, SwapHandle, SwapProvider, SwapService};
 use vertex_swarm_api::{
     PeerReporter, SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmIdentity, SwarmSpec,
 };
-use vertex_swarm_bandwidth_swap::service::SwapCommand;
-use vertex_swarm_bandwidth_swap::{SwapEvent, SwapHandle, SwapProvider, SwapService};
 use vertex_swarm_identity::Identity;
+use vertex_swarm_node::ClientHandle;
 use vertex_swarm_node::args::SwapConfig;
-use vertex_swarm_node::{ClientCommand, ClientHandle};
 use vertex_swarm_spec::Spec;
 
 #[cfg(feature = "chain")]
@@ -52,33 +52,28 @@ pub(crate) struct SwapWiring {
     chequebook: Address,
     beneficiary: Address,
     chain: NamedChain,
+    bounce_limit: u128,
 }
 
 impl SwapWiring {
     /// Build the swap handle and provider when SWAP settlement is enabled.
     ///
-    /// Returns `None` (and leaves accounting swap-free) when the bandwidth mode
-    /// does not enable SWAP, or when SWAP is requested but the required chequebook
-    /// address and settlement chain cannot be resolved. The returned provider is
-    /// registered with the accounting builder; the returned wiring is later handed
-    /// to [`SwapWiring::spawn`].
+    /// Returns `None` (and leaves accounting swap-free) when `--swap` is not set,
+    /// or when SWAP is requested but the required chequebook address and
+    /// settlement chain cannot be resolved. The returned provider is registered
+    /// with the accounting builder; the returned wiring is later handed to
+    /// [`SwapWiring::spawn`].
     pub(crate) fn prepare<C>(
         spec: &Arc<Spec>,
         identity: &Arc<Identity>,
         config: &C,
         swap_config: &SwapConfig,
+        swap_enabled: bool,
     ) -> Option<(SwapProvider<C>, Self)>
     where
         C: SwarmAccountingConfig + Clone + 'static,
     {
-        let mode = config.mode();
-        if !mode.swap_enabled() {
-            if swap_config.enable {
-                warn!(
-                    ?mode,
-                    "--swap set but bandwidth mode does not enable SWAP; settlement not wired"
-                );
-            }
+        if !swap_enabled {
             return None;
         }
 
@@ -123,6 +118,7 @@ impl SwapWiring {
             chequebook,
             beneficiary,
             chain,
+            bounce_limit: swap_config.bounce_limit,
         };
 
         Some((provider, wiring))
@@ -156,7 +152,12 @@ impl SwapWiring {
         // is bounded and reached through `ClientHandle::send_command`. Bridge the
         // two with a forwarding task so the service never blocks on a full queue.
         let (client_command_tx, client_command_rx) = mpsc::unbounded_channel();
-        spawn_command_bridge(ctx, client_command_rx, client_handle);
+        crate::launch::spawn_client_command_bridge(
+            ctx,
+            "swarm.swap_command_bridge",
+            client_command_rx,
+            client_handle,
+        );
 
         let service = SwapService::new(
             self.command_rx,
@@ -168,45 +169,14 @@ impl SwapWiring {
             self.beneficiary,
             self.chain,
         )
-        .with_reporter(reporter);
+        .with_reporter(reporter)
+        .with_bounce_limit(alloy_primitives::U256::from(self.bounce_limit));
 
         #[cfg(feature = "chain")]
         let service = attach_cashout(service, chain_provider, self.beneficiary);
 
         ctx.executor().spawn_service("swarm.swap_service", service);
     }
-}
-
-/// Forward the swap service's `ClientCommand`s to the node command channel.
-///
-/// The service emits commands on an unbounded channel; this task drains it and
-/// hands each command to the node through `ClientHandle::send_command`, which is
-/// non-blocking. The task ends when the service drops its sender or on shutdown.
-fn spawn_command_bridge(
-    ctx: &dyn InfrastructureContext,
-    mut client_command_rx: mpsc::UnboundedReceiver<ClientCommand>,
-    client_handle: ClientHandle,
-) {
-    ctx.executor().spawn_with_graceful_shutdown_signal(
-        "swarm.swap_command_bridge",
-        move |shutdown| async move {
-            let mut shutdown = std::pin::pin!(shutdown);
-            loop {
-                tokio::select! {
-                    guard = &mut shutdown => {
-                        drop(guard);
-                        break;
-                    }
-                    command = client_command_rx.recv() => {
-                        let Some(command) = command else { break };
-                        if let Err(e) = client_handle.send_command(command) {
-                            warn!(error = %e, "Failed to forward swap command to node");
-                        }
-                    }
-                }
-            }
-        },
-    );
 }
 
 /// Attach an on-chain cashout client to the swap service when a chain provider is
@@ -221,7 +191,7 @@ where
     A: SwarmBandwidthAccounting + 'static,
     S: alloy_signer::SignerSync + Send + Sync + 'static,
 {
-    use vertex_swarm_bandwidth_swap::cashout::Cashout;
+    use vertex_swarm_accounting_swap::cashout::Cashout;
 
     let Some(provider) = chain_provider else {
         return service;

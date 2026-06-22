@@ -140,11 +140,20 @@ pub async fn run() -> Result<()> {
                     .protocol
                     .bandwidth_config()
                     .map_err(|e| eyre::eyre!("bandwidth config error: {}", e))?;
+                let local_store = config.protocol.local_store_config();
                 let chain = config.protocol.chain_config();
                 let swap = config.protocol.swap_config();
 
-                let node_config =
-                    ClientConfig::new(spec, identity, network, bandwidth, verify, chain, swap);
+                let node_config = ClientConfig::new(
+                    spec,
+                    identity,
+                    network,
+                    bandwidth,
+                    local_store,
+                    verify,
+                    chain,
+                    swap,
+                );
 
                 let (task_fn, rpc_providers) = DefaultClientBuilder::from_config(node_config)
                     .build(&launch_ctx)

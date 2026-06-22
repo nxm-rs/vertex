@@ -78,8 +78,10 @@ impl<I: SwarmIdentity> SwarmChunkProvider for NetworkChunkProvider<I> {
         // so the staggered starts preserve the per-peer pacing. Losing attempts
         // are dropped when the race resolves.
         match race_candidates(closest_peers, RETRIEVAL_STAGGER, |peer_overlay| {
+            // `originated = true`: our own retrieval, so the client service
+            // debits the serving peer on delivery.
             self.client_handle
-                .retrieve_chunk(peer_overlay, chunk_address)
+                .retrieve_chunk(peer_overlay, chunk_address, true)
         })
         .await
         {
@@ -147,7 +149,13 @@ impl<I: SwarmIdentity> NetworkChunkProvider<I> {
             chunk_address: address,
         });
         for peer in closest {
-            match self.client_handle.push_chunk(peer, chunk.clone()).await {
+            // `originated = true`: our own push, so the client service debits
+            // the storer on receipt.
+            match self
+                .client_handle
+                .push_chunk(peer, chunk.clone(), true)
+                .await
+            {
                 Ok(receipt) => {
                     match accept_origin_receipt(
                         &receipt,
@@ -463,7 +471,7 @@ mod tests {
         ) -> Result<RetrievalResult, RaceFailure<ChunkTransferError>> {
             race_candidates(candidates, RETRIEVAL_STAGGER, move |peer| {
                 let handle = handle.clone();
-                async move { handle.retrieve_chunk(peer, address).await }
+                async move { handle.retrieve_chunk(peer, address, true).await }
             })
             .await
         }

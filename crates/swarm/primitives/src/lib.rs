@@ -36,9 +36,11 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+mod signer;
 mod stamped;
 mod validated;
 
+pub use signer::{OverlaySigner, Signer, SignerSync};
 pub use stamped::{CachedChunk, StampedChunk, StampedChunkExt, VerifiedStampedChunk};
 pub use validated::{ValidatedChunk, ValidationError};
 
@@ -242,6 +244,12 @@ impl SwarmNodeType {
     }
 
     pub fn supports_staking(&self) -> bool {
+        matches!(self, SwarmNodeType::Storer)
+    }
+
+    /// Whether SWAP settlement defaults on for this node type. Storers settle
+    /// monetarily by default to provide maximum support; clients are opt-in.
+    pub fn swap_default(&self) -> bool {
         matches!(self, SwarmNodeType::Storer)
     }
 
@@ -479,37 +487,5 @@ mod tests {
             assert_eq!(ConnectionProfile::from_str(name).expect("parses"), profile);
         }
         assert!(ConnectionProfile::from_str("turbo").is_err());
-    }
-}
-
-/// Bandwidth accounting mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, strum::Display, strum::FromRepr)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
-#[strum(serialize_all = "lowercase")]
-#[repr(u8)]
-pub enum BandwidthMode {
-    /// No bandwidth accounting (dev/testing only).
-    None = 0,
-    /// Soft accounting without real payments (default).
-    #[default]
-    Pseudosettle = 1,
-    /// Real payment channels with chequebook.
-    Swap = 2,
-    /// Both pseudosettle and SWAP.
-    Both = 3,
-}
-
-impl BandwidthMode {
-    pub fn pseudosettle_enabled(self) -> bool {
-        matches!(self, BandwidthMode::Pseudosettle | BandwidthMode::Both)
-    }
-
-    pub fn swap_enabled(self) -> bool {
-        matches!(self, BandwidthMode::Swap | BandwidthMode::Both)
-    }
-
-    pub fn is_enabled(self) -> bool {
-        !matches!(self, BandwidthMode::None)
     }
 }

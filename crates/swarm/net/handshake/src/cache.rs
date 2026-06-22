@@ -84,16 +84,14 @@ mod tests {
         // The record body is irrelevant to `needs_resign`; only the fingerprint
         // and timestamp drive the decision. Build a placeholder via a real sign
         // so the type is well formed.
-        use alloy_signer_local::LocalSigner;
-        use vertex_swarm_peer::SwarmPeer;
+        use vertex_swarm_identity::Identity;
+        use vertex_swarm_peer::{SwarmNodeType, SwarmPeer};
+        use vertex_swarm_test_utils::test_spec_isolated as test_spec;
 
-        let signer = LocalSigner::random();
+        let identity = Identity::random(test_spec(), SwarmNodeType::Storer);
         let record = SwarmPeer::sign(
-            &signer,
+            &identity,
             vec!["/ip4/127.0.0.1/tcp/1634".parse().expect("valid multiaddr")],
-            nectar_primitives::SwarmAddress::with_first_byte(0x01),
-            1.into(),
-            nectar_primitives::Nonce::ZERO,
             Timestamp::from_seconds(signed_at.max(1)),
             None,
         )
