@@ -189,6 +189,7 @@ async fn withholding_peer_resolves_as_timed_out_within_the_deadline() {
             peer: server_overlay,
             address,
             response: tx,
+            originated: true,
         });
 
     let start = Instant::now();
