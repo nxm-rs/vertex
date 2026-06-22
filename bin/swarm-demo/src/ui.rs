@@ -1,10 +1,4 @@
 //! Minimal DOM UI for the topology demo, driven through `web-sys`.
-//!
-//! [`mount`] builds the static panel once (header, status line, a stats grid, a
-//! per-bin table, and a scrolling event log). The render helpers
-//! ([`set_status`], [`render_stats`], [`render_bins`], [`append_event`]) update
-//! the live regions by id. Keeping the structure static and updating text and
-//! rows in place avoids rebuilding the tree on every one-second tick.
 
 use web_sys::{Document, Element};
 
@@ -19,7 +13,7 @@ const LOG_ID: &str = "log";
 /// Maximum log rows kept in the DOM before the oldest are trimmed.
 const MAX_LOG_ROWS: usize = 200;
 
-/// The document, or a panic: the app only runs in a browser with a document.
+/// The browser document (panics if absent).
 fn document() -> Document {
     web_sys::window()
         .and_then(|w| w.document())
@@ -30,29 +24,31 @@ fn by_id(id: &str) -> Option<Element> {
     document().get_element_by_id(id)
 }
 
-/// Build the static panel and mount it into the document body.
-///
-/// `overlay` is the node's ephemeral overlay address, shown in the header so the
-/// session identity is visible.
+/// Build the static topology panel and mount it.
 pub fn mount(overlay: &str) {
     let doc = document();
-    let body = doc.body().expect("document has a body");
 
-    let root = doc.create_element("div").expect("create div");
-    root.set_class_name("panel");
-    root.set_inner_html(&format!(
-        "<h1>Vertex Swarm browser client</h1>\
-         <p class=\"overlay\">overlay <code>{overlay}</code></p>\
+    let inner = format!(
+        "<p class=\"overlay\">overlay <code>{overlay}</code></p>\
          <p id=\"{STATUS_ID}\" class=\"status\">starting...</p>\
          <div id=\"{STATS_ID}\" class=\"stats\"></div>\
-         <h2>Bins</h2>\
+         <h3>Bins</h3>\
          <table class=\"bins\"><thead><tr>\
            <th>bin</th><th>connected</th><th>target</th><th>deficit</th>\
          </tr></thead><tbody id=\"{BINS_ID}\"></tbody></table>\
-         <h2>Events</h2>\
+         <h3>Events</h3>\
          <div id=\"{LOG_ID}\" class=\"log\"></div>"
-    ));
+    );
 
+    if let Some(container) = by_id("topo-mount") {
+        container.set_inner_html(&inner);
+        return;
+    }
+
+    let body = doc.body().expect("document has a body");
+    let root = doc.create_element("div").expect("create div");
+    root.set_class_name("panel");
+    root.set_inner_html(&format!("<h1>Vertex Swarm browser client</h1>{inner}"));
     body.append_child(&root).expect("append panel");
 }
 
@@ -85,8 +81,7 @@ pub struct Stats<'a> {
     pub is_saturated: bool,
 }
 
-/// Render the headline counters: connected peers, storers, depth, phase, and
-/// the saturation and routability flags.
+/// Render the headline counters into the stats grid.
 pub fn render_stats(stats: &Stats) {
     let Some(el) = by_id(STATS_ID) else {
         return;
@@ -116,9 +111,6 @@ pub fn render_stats(stats: &Stats) {
 }
 
 /// Replace the per-bin table body with the current per-bin fill.
-///
-/// `rows` is `(bin, connected, target, deficit)` where `target` is `None` for
-/// neighborhood bins, which connect to every available peer.
 pub fn render_bins(rows: &[(u32, u32, Option<u32>, u32)]) {
     let Some(el) = by_id(BINS_ID) else {
         return;

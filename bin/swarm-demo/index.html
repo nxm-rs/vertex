@@ -3,26 +3,110 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Vertex Swarm browser client</title>
+    <title>VERTEX // Swarm Scanner</title>
 
     <!--
-      Cross-origin isolation shim for GitHub Pages.
-
-      The wasm build is compiled with the `+atomics` target feature, so the
-      module needs SharedArrayBuffer, which the browser only grants on a
-      cross-origin-isolated page (COOP `same-origin` + COEP `require-corp`).
-      `trunk serve` sets those headers locally (see Trunk.toml). On GitHub Pages
-      response headers cannot be set, so this service worker injects them on the
-      client. It must load before the wasm bootstrap, so it is referenced here as
-      a plain unbundled script and copied verbatim into `dist/`.
+      Every JS library is vendored and served same-origin so the page has no
+      cross-origin subresources. globe.gl's UMD dist bundles three.js and
+      exposes a global `Globe`; it is a classic (non-module) script so the
+      global is set before app.js (an ES module) runs.
     -->
-    <script src="coi-serviceworker.js"></script>
+    <link data-trunk rel="copy-dir" href="assets" />
+    <script src="assets/vendor/globe.gl.min.js"></script>
 
+    <!-- wasm bootstrap (topology + Files panels mount into the scaffold below) -->
     <link data-trunk rel="rust" data-type="main" />
-    <link data-trunk rel="copy-file" href="coi-serviceworker.js" />
     <link data-trunk rel="css" href="styles.css" />
+
+    <!-- scanner orchestrator: globe + scoreboard + self panel + mock feed -->
+    <script type="module" src="assets/app.js"></script>
   </head>
   <body>
     <noscript>This demo needs JavaScript and WebAssembly.</noscript>
+
+    <div id="scanner">
+      <!-- ===== top bar ===== -->
+      <header id="topbar">
+        <div class="brand">
+          <span class="logo">◢◤</span>
+          <span class="title">VERTEX</span>
+          <span class="sub">SWARM&nbsp;SCANNER</span>
+        </div>
+        <div class="topbar-meta">
+          <span class="chip">FEED <b id="feed-mode-badge">…</b></span>
+          <span class="chip">PEERS <b id="peer-count-badge">0</b></span>
+          <span class="chip live"><span class="dot"></span>LIVE</span>
+        </div>
+      </header>
+
+      <!-- ===== main grid: left / globe / right ===== -->
+      <main id="grid">
+        <!-- LEFT column -->
+        <aside class="col col-left">
+          <!-- self panel -->
+          <section class="card glow">
+            <div class="card-head">
+              <h2>This Node</h2>
+              <button class="collapse-btn" data-collapse="self-panel-body" title="collapse">–</button>
+            </div>
+            <div id="self-panel-body" class="card-body self-body">
+              <div class="placeholder">resolving identity…</div>
+            </div>
+          </section>
+
+          <!-- topology stats (mounted by Rust wasm into #topo-mount) -->
+          <section class="card">
+            <div class="card-head">
+              <h2>Topology</h2>
+              <button class="collapse-btn" data-collapse="topo-mount" title="collapse">–</button>
+            </div>
+            <div id="topo-mount" class="card-body mount-body">
+              <div class="placeholder">starting wasm client…</div>
+            </div>
+          </section>
+        </aside>
+
+        <!-- CENTER globe (earth + country outlines backdrop) -->
+        <section class="col col-globe">
+          <div id="globe"></div>
+        </section>
+
+        <!-- RIGHT column: scoreboard -->
+        <aside class="col col-right">
+          <section class="card glow scoreboard-card">
+            <div class="card-head">
+              <h2>Connected Peers</h2>
+              <button class="collapse-btn" data-collapse="scoreboard-wrap" title="collapse">–</button>
+            </div>
+            <div id="scoreboard-wrap" class="card-body scoreboard-wrap">
+              <table id="scoreboard">
+                <thead>
+                  <tr>
+                    <th data-sort="overlay">OVERLAY</th>
+                    <th data-sort="score" class="num">SCORE</th>
+                    <th data-sort="po" class="num">PO</th>
+                    <th data-sort="uptime" class="num">UPTIME</th>
+                  </tr>
+                </thead>
+                <tbody id="scoreboard-body"></tbody>
+              </table>
+            </div>
+          </section>
+        </aside>
+      </main>
+
+      <!-- ===== bottom: Files (mounted by Rust wasm into #files-mount) ===== -->
+      <footer id="bottombar">
+        <section class="card">
+          <div class="card-head">
+            <h2>Files · Upload / Download</h2>
+            <button class="collapse-btn" data-collapse="files-mount" title="collapse">–</button>
+          </div>
+          <div id="files-mount" class="card-body mount-body files-mount">
+            <div class="placeholder">file client initializing…</div>
+          </div>
+        </section>
+      </footer>
+    </div>
   </body>
 </html>
