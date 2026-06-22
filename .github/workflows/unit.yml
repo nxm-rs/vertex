@@ -150,6 +150,13 @@ jobs:
       # without a live RPC. Built here (not run, which needs a headless browser).
       - name: Build chain provider wasm test for wasm32
         run: cargo +nightly build --target wasm32-unknown-unknown -p vertex-chain --features provider --tests
+      # The browser cache backend: the IndexedDB `Database` impl and the
+      # `ChunkStore` backend that mirrors to it build for wasm under the
+      # `indexeddb` feature.
+      - name: Build IndexedDB cache backend for wasm32
+        run: |
+          cargo +nightly build --target wasm32-unknown-unknown -p vertex-storage-indexeddb
+          cargo +nightly build --target wasm32-unknown-unknown -p vertex-swarm-localstore --features indexeddb
 
   ci-success:
     name: ci success

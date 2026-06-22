@@ -25,9 +25,11 @@
 //!   without a timestamp it has no version signal and could serve a stale copy.
 
 use nectar_primitives::ChunkAddress;
-use vertex_store::{BoundedLruStore, ByteSized};
+use vertex_store::ByteSized;
 use vertex_swarm_api::{SwarmLocalStore, SwarmResult};
 use vertex_swarm_primitives::CachedChunk;
+
+use crate::backend::{CacheBackend, LruBackend};
 
 /// A reader of the current wall-clock time in nanoseconds since the Unix epoch.
 ///
@@ -57,7 +59,7 @@ impl Clock for SystemClock {
 /// present, which is what the budget accounts; the payload is refcounted
 /// `Bytes`, so cloning a cache value is a refcount bump, not a copy.
 #[derive(Debug, Clone)]
-struct CacheValue(CachedChunk);
+pub struct CacheValue(pub(crate) CachedChunk);
 
 impl ByteSized for CacheValue {
     fn byte_size(&self) -> usize {
@@ -72,19 +74,24 @@ impl ByteSized for CacheValue {
     }
 }
 
-/// Client chunk cache: a [`SwarmLocalStore`] backed by a byte-bounded LRU.
+/// Client chunk cache: a [`SwarmLocalStore`] over a swappable byte-store backend.
 ///
 /// Lossy by design: inserting past the budget evicts least-recently-used
 /// entries. The SOC freshness policy is applied on `get` (an expired SOC reads
 /// as a miss) and on `put` (an older SOC does not overwrite a newer cached one).
-pub struct ChunkStore<C = SystemClock> {
-    inner: BoundedLruStore<ChunkAddress, CacheValue>,
+///
+/// The backend `B` is the byte-store: the default [`LruBackend`] is a resident
+/// byte-bounded LRU (native, and the serving copy in the browser). Only the
+/// backend swaps between targets; the freshness and last-write-wins policy in
+/// the [`SwarmLocalStore`] impl is backend-independent and lives here once.
+pub struct ChunkStore<C = SystemClock, B = LruBackend> {
+    inner: B,
     /// SOC serve TTL in nanoseconds, measured against the stamp timestamp.
     soc_cache_ttl: u64,
     clock: C,
 }
 
-impl ChunkStore<SystemClock> {
+impl ChunkStore<SystemClock, LruBackend> {
     /// Create a cache bounded to `max_bytes` of resident chunk bytes, serving
     /// single-owner chunks for `soc_cache_ttl` nanoseconds past their stamp
     /// timestamp.
@@ -94,12 +101,20 @@ impl ChunkStore<SystemClock> {
     }
 }
 
-impl<C: Clock> ChunkStore<C> {
+impl<C: Clock> ChunkStore<C, LruBackend> {
     /// Create a cache with an explicit clock (for deterministic tests).
     #[must_use]
     pub fn with_budget_and_clock(max_bytes: usize, soc_cache_ttl: u64, clock: C) -> Self {
+        Self::with_backend(LruBackend::with_budget(max_bytes), soc_cache_ttl, clock)
+    }
+}
+
+impl<C: Clock, B: CacheBackend> ChunkStore<C, B> {
+    /// Create a cache over an explicit byte-store backend and clock.
+    #[must_use]
+    pub fn with_backend(inner: B, soc_cache_ttl: u64, clock: C) -> Self {
         Self {
-            inner: BoundedLruStore::with_budget(max_bytes),
+            inner,
             soc_cache_ttl,
             clock,
         }
@@ -129,7 +144,7 @@ impl<C: Clock> ChunkStore<C> {
     }
 }
 
-impl<C: Clock> SwarmLocalStore for ChunkStore<C> {
+impl<C: Clock, B: CacheBackend> SwarmLocalStore for ChunkStore<C, B> {
     fn put(&self, chunk: CachedChunk) -> SwarmResult<()> {
         let address = *chunk.address();
         // Last-write-wins by timestamp for single-owner chunks: a forwarded SOC

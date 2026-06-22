@@ -8,6 +8,7 @@ Root-level rules in `/AGENTS.md` apply here too. The notes below are the area-sp
 
 - `vertex-storage`: traits (`Database`, `DbTxMut`, `DbTxRo`, `Table`), codecs, and the error hierarchy.
 - `vertex-storage-redb`: redb-backed implementation with stats and metrics modules.
+- `vertex-storage-indexeddb`: browser-only (`cfg(target_arch = "wasm32")`) `Database` impl for the wasm client cache. The trait is synchronous and IndexedDB is async, so it is an in-memory authoritative map mirrored to IndexedDB by a fire-and-forget `spawn_local` task; durability is best-effort. The owning persist task is the one sanctioned long-lived task in a storage crate because the IndexedDB handle is `!Send` and cannot live in the consumer; it terminates when the database is dropped.
 
 ## Dos
 
