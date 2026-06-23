@@ -804,6 +804,14 @@ async fn prefetch_tree(
     provider: Arc<dyn SwarmChunkProvider>,
     cache: &MemoryCache,
 ) -> Result<(), JsValue> {
+    // A congested wave can fail a chunk's whole candidate race on a transient
+    // transport error (or hang a single retrieval when a neighbourhood drains), so
+    // each cold fetch retries with backoff under a per-attempt timeout, matching
+    // the range path's bounds.
+    const MAX_CHUNK_RETRIES: u32 = 10;
+    const RETRY_BACKOFF_STEP: std::time::Duration = std::time::Duration::from_millis(250);
+    const ATTEMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(8000);
+
     // Addresses whose chunk we have already fetched (or queued to fetch) this
     // pass: dedups shared subtrees and guards against a malformed cycle.
     let mut seen: HashSet<ChunkAddress> = HashSet::new();
@@ -811,6 +819,7 @@ async fn prefetch_tree(
     let mut level: Vec<ChunkAddress> = vec![root];
     seen.insert(root);
 
+    let mut skipped = 0usize;
     while !level.is_empty() {
         // Fetch this whole level concurrently, skipping chunks already cached.
         let fetched: Vec<Result<AnyChunk, JsValue>> = futures::stream::iter(level.into_iter())
@@ -818,22 +827,27 @@ async fn prefetch_tree(
                 let provider = Arc::clone(&provider);
                 let cached = cache.fetch(&addr);
                 async move {
-                    match cached {
-                        Some(chunk) => Ok(chunk),
-                        None => {
-                            let chunk = provider
-                                .retrieve_chunk(&addr)
-                                .await
-                                .map(|r| r.chunk)
-                                .map_err(|e| JsValue::from_str(&format!("retrieve {addr}: {e}")))?;
-                            // Cede to the event loop so a batch of resolved
-                            // retrievals does not drain in one synchronous pass on
-                            // the single browser thread, starving the swarm run
-                            // loop that feeds the next responses.
-                            vertex_tasks::time::yield_to_event_loop().await;
-                            Ok(chunk)
+                    if let Some(chunk) = cached {
+                        return Ok(chunk);
+                    }
+                    let mut last = String::new();
+                    for attempt in 0..MAX_CHUNK_RETRIES {
+                        if attempt > 0 {
+                            vertex_tasks::time::sleep(RETRY_BACKOFF_STEP * attempt).await;
+                        }
+                        match retrieve_with_timeout(&provider, &addr, ATTEMPT_TIMEOUT).await {
+                            Ok(chunk) => {
+                                // Cede to the event loop so a batch of resolved
+                                // retrievals does not drain in one synchronous pass
+                                // on the single browser thread, starving the swarm
+                                // run loop that feeds the next responses.
+                                vertex_tasks::time::yield_to_event_loop().await;
+                                return Ok(chunk);
+                            }
+                            Err(e) => last = e,
                         }
                     }
+                    Err(JsValue::from_str(&format!("retrieve {addr}: {last}")))
                 }
             })
             .buffer_unordered(prefetch_concurrency())
@@ -841,10 +855,20 @@ async fn prefetch_tree(
             .await;
 
         // Insert the fetched chunks and gather the next level (children of the
-        // intermediate nodes). A retrieval error here fails the download.
+        // intermediate nodes). A chunk that exhausts its retries is a cache-warming
+        // miss, not a correctness failure: leave it for the joiner's own retrieval,
+        // which reaches it later once the burst has drained. Skipping an
+        // intermediate forgoes warming its subtree; the joiner re-fetches it and
+        // walks down. Never abort the whole download on one prefetch miss.
         let mut next: Vec<ChunkAddress> = Vec::new();
         for result in fetched {
-            let chunk = result?;
+            let chunk = match result {
+                Ok(chunk) => chunk,
+                Err(_) => {
+                    skipped += 1;
+                    continue;
+                }
+            };
             // Intermediate node ⇒ its body is packed child references; a leaf's
             // span fits one chunk body and ends the branch.
             if chunk.span() > DEFAULT_BODY_SIZE as u64 {
@@ -859,6 +883,9 @@ async fn prefetch_tree(
         level = next;
     }
 
+    if skipped > 0 {
+        tracing::debug!(skipped, "prefetch left chunks for the joiner");
+    }
     Ok(())
 }
 
