@@ -81,6 +81,34 @@ pub fn sleep(duration: Duration) -> impl Future<Output = ()> + 'static {
     gloo_timers::future::TimeoutFuture::new(millis)
 }
 
+/// Yield to the executor, ceding the thread so other ready work runs before this
+/// task is polled again.
+///
+/// On `wasm32` the executor is the browser's microtask queue, and a microtask
+/// yield (`futures::task::yield_now`) reschedules onto that same queue without
+/// ever returning to the JS event loop, so WebSocket reads and `setTimeout`
+/// timers (both macrotasks) stay starved while a hot loop keeps producing ready
+/// microtasks. This yields through `setTimeout(0)` instead: a macrotask boundary
+/// the event loop services the pending socket reads and timers across before the
+/// task resumes. Use it in a single-threaded wasm hot loop (a wide retrieval
+/// fan-out) that would otherwise monopolise the thread; without it the node run
+/// loop never polls the swarm and the download wedges.
+#[cfg(target_arch = "wasm32")]
+pub async fn yield_to_event_loop() {
+    gloo_timers::future::TimeoutFuture::new(0).await;
+}
+
+/// Yield to the executor, ceding the thread so other ready work runs before this
+/// task is polled again.
+///
+/// On native this is `tokio::task::yield_now`: the multi-threaded runtime drives
+/// timers and IO on their own threads, so a cooperative yield is all a hot loop
+/// needs to let co-located tasks make progress.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn yield_to_event_loop() {
+    tokio::task::yield_now().await;
+}
+
 /// Error returned by [`timeout`] when the deadline elapses before the wrapped
 /// future completes.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]

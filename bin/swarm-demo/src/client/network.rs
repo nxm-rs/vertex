@@ -46,12 +46,12 @@ struct InflightGuard {
 
 impl Drop for InflightGuard {
     fn drop(&mut self) {
-        if let Some(map) = peer_inflight_lock().as_mut() {
-            if let Some(c) = map.get_mut(&self.peer) {
-                *c = c.saturating_sub(1);
-                if *c == 0 {
-                    map.remove(&self.peer);
-                }
+        if let Some(map) = peer_inflight_lock().as_mut()
+            && let Some(c) = map.get_mut(&self.peer)
+        {
+            *c = c.saturating_sub(1);
+            if *c == 0 {
+                map.remove(&self.peer);
             }
         }
     }
@@ -116,7 +116,16 @@ static RETRIEVE_BUSY_RETRIES_A: AtomicU64 = AtomicU64::new(DEFAULT_RETRIEVE_BUSY
 /// keeps legs/chunk near 1-2 and spreads load evenly across all connected peers
 /// instead of piling the closest few past their in-flight cap. On by default;
 /// `lb=0` restores the widening-wave race for an A/B.
-const DEFAULT_LB_TOP_K: u64 = 16;
+///
+/// Sized to the prefetch fan-out: a wide download issues `DEFAULT_PREFETCH_CONCURRENCY`
+/// concurrent retrievals against this pool, and each pool peer admits only
+/// `MAX_INFLIGHT_PER_PEER` before bouncing the rest as `Busy`. A top-K below
+/// `fan-out / per-peer-cap` oversubscribes the pool, so the surplus requests spin
+/// the all-busy re-race (substreams-per-chunk climbs sharply and connections
+/// churn as the wasted legs reset streams). A top-K of 32 gives 32 * 8 = 256
+/// concurrent slots, matching the 256-wide prefetch, which roughly halves the
+/// measured substreams-per-chunk and the connection churn versus a narrow pool.
+const DEFAULT_LB_TOP_K: u64 = 32;
 const DEFAULT_LB_HEDGE_MS: u64 = 1200;
 static LB_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 static LB_TOP_K: AtomicU64 = AtomicU64::new(DEFAULT_LB_TOP_K);
@@ -439,6 +448,11 @@ impl SwarmChunkProvider for BrowserChunkProvider {
 }
 
 /// Outcome of the close-peer wave phase.
+// The `Hit` payload (a full chunk result) dwarfs the unit-ish failure variants,
+// but this enum is a short-lived per-chunk return value moved straight into a
+// match, never stored in bulk; boxing the hit would add a heap allocation on the
+// retrieval hot path to shrink a stack temporary that never persists.
+#[allow(clippy::large_enum_variant)]
 enum WaveOutcome {
     /// A connected peer served the chunk.
     Hit(ChunkRetrievalResult),

@@ -355,10 +355,16 @@ pub async fn list_tree_addresses(
                     let mut last = String::new();
                     for attempt in 0..LIST_RETRIES {
                         if attempt > 0 {
-                            futures_timer::Delay::new(LIST_BACKOFF * attempt).await;
+                            vertex_tasks::time::sleep(LIST_BACKOFF * attempt).await;
                         }
                         match provider.retrieve_chunk(&addr).await {
-                            Ok(r) => return Ok(r.chunk),
+                            Ok(r) => {
+                                // Cede between resolved retrievals so a batch does
+                                // not drain in one synchronous pass on the single
+                                // browser thread and starve the swarm run loop.
+                                vertex_tasks::time::yield_to_event_loop().await;
+                                return Ok(r.chunk);
+                            }
                             Err(e) => last = e.to_string(),
                         }
                     }
@@ -456,11 +462,18 @@ async fn prefetch_tree_pipelined(
             // Back off before a retry so a congested wave drains; the first
             // attempt (0) runs immediately.
             if attempt > 0 {
-                futures_timer::Delay::new(RETRY_BACKOFF_STEP * attempt).await;
+                vertex_tasks::time::sleep(RETRY_BACKOFF_STEP * attempt).await;
             }
             let outcome = match cached {
                 Some(chunk) => Ok(chunk),
-                None => provider.retrieve_chunk(&addr).await.map(|r| r.chunk),
+                None => {
+                    let r = provider.retrieve_chunk(&addr).await.map(|r| r.chunk);
+                    // Cede between resolved retrievals so the pool drain does not
+                    // monopolise the single browser thread and starve the swarm
+                    // run loop that feeds the next responses.
+                    vertex_tasks::time::yield_to_event_loop().await;
+                    r
+                }
             };
             (addr, depth, attempt, outcome)
         }
@@ -643,10 +656,22 @@ async fn prefetch_range_into_shared(
                         let mut last = String::new();
                         for attempt in 0..MAX_CHUNK_RETRIES {
                             if attempt > 0 {
-                                futures_timer::Delay::new(RETRY_BACKOFF_STEP * attempt).await;
+                                vertex_tasks::time::sleep(RETRY_BACKOFF_STEP * attempt).await;
                             }
                             match retrieve_with_timeout(&provider, &addr, ATTEMPT_TIMEOUT).await {
-                                Ok(chunk) => return Ok((chunk, node_offset)),
+                                Ok(chunk) => {
+                                    // Cede to the event loop before this future
+                                    // resolves and `buffer_unordered` re-polls the
+                                    // next ready one. On the single browser thread
+                                    // a wide fan-out otherwise drains a whole batch
+                                    // of resolved retrievals in one synchronous
+                                    // microtask pass, starving the swarm run loop
+                                    // and the socket reads that feed it; the
+                                    // macrotask yield lets the node deliver the
+                                    // next responses between chunks.
+                                    vertex_tasks::time::yield_to_event_loop().await;
+                                    return Ok((chunk, node_offset));
+                                }
                                 Err(e) => last = e,
                             }
                         }
@@ -703,8 +728,12 @@ async fn retrieve_with_timeout(
     addr: &ChunkAddress,
     timeout: std::time::Duration,
 ) -> Result<AnyChunk, String> {
+    // A `gloo` (`setTimeout`) timer, not `futures-timer`: the latter does not
+    // fire while the single browser thread is saturated, so the timeout would
+    // never bounce a hung retrieval. With the per-leg event-loop yield in the
+    // provider this timer now elapses and the caller re-races a stuck request.
     let fetch = std::pin::pin!(provider.retrieve_chunk(addr));
-    let delay = std::pin::pin!(futures_timer::Delay::new(timeout));
+    let delay = std::pin::pin!(vertex_tasks::time::sleep(timeout));
     match futures::future::select(fetch, delay).await {
         futures::future::Either::Left((Ok(r), _)) => Ok(r.chunk),
         futures::future::Either::Left((Err(e), _)) => Err(e.to_string()),
@@ -791,11 +820,19 @@ async fn prefetch_tree(
                 async move {
                     match cached {
                         Some(chunk) => Ok(chunk),
-                        None => provider
-                            .retrieve_chunk(&addr)
-                            .await
-                            .map(|r| r.chunk)
-                            .map_err(|e| JsValue::from_str(&format!("retrieve {addr}: {e}"))),
+                        None => {
+                            let chunk = provider
+                                .retrieve_chunk(&addr)
+                                .await
+                                .map(|r| r.chunk)
+                                .map_err(|e| JsValue::from_str(&format!("retrieve {addr}: {e}")))?;
+                            // Cede to the event loop so a batch of resolved
+                            // retrievals does not drain in one synchronous pass on
+                            // the single browser thread, starving the swarm run
+                            // loop that feeds the next responses.
+                            vertex_tasks::time::yield_to_event_loop().await;
+                            Ok(chunk)
+                        }
                     }
                 }
             })
@@ -848,11 +885,19 @@ async fn prefetch_into_shared(
                 async move {
                     match cached {
                         Some(chunk) => Ok(chunk),
-                        None => provider
-                            .retrieve_chunk(&addr)
-                            .await
-                            .map(|r| r.chunk)
-                            .map_err(|e| JsValue::from_str(&format!("retrieve {addr}: {e}"))),
+                        None => {
+                            let chunk = provider
+                                .retrieve_chunk(&addr)
+                                .await
+                                .map(|r| r.chunk)
+                                .map_err(|e| JsValue::from_str(&format!("retrieve {addr}: {e}")))?;
+                            // Cede to the event loop so a batch of resolved
+                            // retrievals does not drain in one synchronous pass on
+                            // the single browser thread, starving the swarm run
+                            // loop that feeds the next responses.
+                            vertex_tasks::time::yield_to_event_loop().await;
+                            Ok(chunk)
+                        }
                     }
                 }
             })
@@ -883,7 +928,7 @@ async fn prefetch_into_shared(
 
 /// Parse an intermediate node's body as packed 32-byte child chunk addresses.
 fn parse_child_refs(body: &[u8]) -> Result<Vec<ChunkAddress>, JsValue> {
-    if body.len() % REF_SIZE != 0 {
+    if !body.len().is_multiple_of(REF_SIZE) {
         return Err(JsValue::from_str(&format!(
             "malformed intermediate node: body length {} is not a multiple of {REF_SIZE}",
             body.len()

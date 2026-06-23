@@ -86,9 +86,10 @@ alloy-signer-local = { version = "2.0", default-features = false }
 # `alloc` enables the `buffer_unordered`/`FuturesUnordered` stream combinators
 # used to fetch a file's leaf chunks concurrently in the download path.
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
-# A wasm-compatible delay for the retrieval all-busy backoff (the same timer the
-# staggered candidate race uses). The wasm-bindgen feature drives it off the
-# browser event loop, matching the parent workspace's pin.
+# A `Send` wasm-compatible delay for the retrieval all-busy backoff, which runs
+# inside the `Send`-bounded `SwarmChunkProvider::retrieve_chunk` future where the
+# `!Send` `gloo` timer cannot. The wasm-bindgen feature drives it off the browser
+# event loop, matching the parent workspace's pin.
 futures-timer = { version = "3", features = ["wasm-bindgen"] }
 bytes = { version = "1", default-features = false }
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
