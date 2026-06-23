@@ -4,6 +4,7 @@
 mod client;
 mod files_ui;
 mod ui;
+mod worker;
 
 pub use client::SwarmClient;
 
@@ -250,6 +251,13 @@ fn score_object(total: f64) -> JsValue {
 /// wasm entrypoint: start the client and keep the handle alive for the session.
 #[wasm_bindgen(start)]
 pub fn main() {
+    // The wasm start hook fires on every module instantiation, including inside
+    // a Web Worker (which has no `window`/DOM). The UI boot is main-thread only;
+    // in a worker the entry point is `startWorkerNode`, so skip the DOM path
+    // here when there is no document.
+    if web_sys::window().is_none() {
+        return;
+    }
     wasm_bindgen_futures::spawn_local(async {
         match start().await {
             Ok(demo) => {
@@ -479,7 +487,7 @@ fn publish_handle(demo: SwarmDemo) {
 
 /// Install the browser tracing subscriber, quiet by default; `?trace`/`?debug`
 /// in the page URL raise verbosity.
-fn init_tracing() {
+pub(crate) fn init_tracing() {
     use tracing_subscriber::filter::{LevelFilter, Targets};
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
@@ -518,9 +526,11 @@ fn init_tracing() {
     };
 
     use tracing_subscriber::Layer;
-    tracing_subscriber::registry()
+    // `try_init`: a second call must not panic on an already-set global
+    // subscriber (the worker entry also initialises tracing).
+    let _ = tracing_subscriber::registry()
         .with(wasm_layer.with_filter(filter))
-        .init();
+        .try_init();
 }
 
 /// Read a one-shot verbosity override (`?trace`/`?verbose`/`?debug`) from the page URL.

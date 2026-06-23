@@ -18,9 +18,10 @@ use vertex_swarm_api::{SwarmChunkProvider, SwarmChunkSender};
 use vertex_swarm_node::LaunchedClient;
 use wasm_bindgen::prelude::*;
 
-use cache::MemoryCache;
+pub(crate) use cache::MemoryCache;
+pub(crate) use download::list_tree_addresses;
 pub use download::{DownloadSink, configure_prefetch, configure_prefetch_pipeline};
-use network::BrowserChunkProvider;
+pub(crate) use network::BrowserChunkProvider;
 pub use network::{configure_load_balance, configure_retrieval_race};
 
 /// Fallback batch geometry, used only when on-chain discovery is unavailable.
@@ -247,7 +248,7 @@ fn parse_b256(s: &str) -> Result<alloy_primitives::B256, JsValue> {
 }
 
 /// Parse a 32-byte hex value into a `ChunkAddress`.
-fn parse_address(s: &str) -> Result<ChunkAddress, JsValue> {
+pub(crate) fn parse_address(s: &str) -> Result<ChunkAddress, JsValue> {
     Ok(ChunkAddress::new(parse_hex_32(s)?))
 }
 

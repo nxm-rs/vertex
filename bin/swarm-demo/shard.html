@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Worker-sharded download harness</title>
+  <!-- Only the shard coordinator: the worker nodes import the wasm glue
+       themselves, so the main thread runs no node and does not compete for the
+       thread with retrieval. -->
+  <script type="module" src="/shard-download.js"></script>
+</head>
+<body>
+  <p>Worker-sharded download prototype. Drive via window.__shardDownload(ref, K, conc).</p>
+</body>
+</html>

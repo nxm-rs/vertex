@@ -303,6 +303,108 @@ pub async fn download_file(
     join_to_bytes(file_root, getter).await
 }
 
+/// Resolve the manifest at `root` to its file root, then breadth-first walk the
+/// chunk tree returning chunk addresses. Only intermediates are fetched (a leaf
+/// has no children to enumerate), so the walk costs one round trip per
+/// intermediate, not per leaf. `max_addresses` caps the collected set (0 = whole
+/// tree); the worker-sharded download partitions this set across worker nodes.
+pub async fn list_tree_addresses(
+    root: ChunkAddress,
+    provider: Arc<dyn SwarmChunkProvider>,
+    cache: &MemoryCache,
+    max_addresses: usize,
+) -> Result<Vec<ChunkAddress>, JsValue> {
+    let file_root = match probe_manifest_entries(root, provider.clone(), cache).await? {
+        Some(entries) => pick_manifest_file(&entries)?,
+        None => root,
+    };
+
+    // Only intermediate nodes need fetching to enumerate children; a transient
+    // forwarding miss on one must not abort the whole walk, so each is retried a
+    // few times with a short backoff (the same congestion that fails the wide
+    // download fan-out also fails a cold intermediate fetch).
+    const LIST_RETRIES: u32 = 3;
+    const LIST_BACKOFF: std::time::Duration = std::time::Duration::from_millis(200);
+
+    let mut out: Vec<ChunkAddress> = Vec::new();
+    let mut seen: HashSet<ChunkAddress> = HashSet::new();
+    seen.insert(file_root);
+
+    // `level` holds only nodes that must be fetched to enumerate their children
+    // (intermediates). Leaf addresses are recorded from their parent without a
+    // fetch, so the walk costs one round trip per intermediate, never per leaf.
+    let mut level: Vec<ChunkAddress> = vec![file_root];
+    out.push(file_root);
+
+    // A very large file has thousands of intermediates; enumerating the whole
+    // tree on a cold node is slow. A bounded sample of leaf addresses is enough
+    // to keep the shard workers saturated for a throughput measurement, so stop
+    // descending once `max_addresses` are collected (0 disables the cap).
+    while !level.is_empty() {
+        if max_addresses != 0 && out.len() >= max_addresses {
+            break;
+        }
+        let fetched: Vec<Result<AnyChunk, JsValue>> = futures::stream::iter(level.iter().copied())
+            .map(|addr| {
+                let provider = Arc::clone(&provider);
+                let cached = cache.fetch(&addr);
+                async move {
+                    if let Some(chunk) = cached {
+                        return Ok(chunk);
+                    }
+                    let mut last = String::new();
+                    for attempt in 0..LIST_RETRIES {
+                        if attempt > 0 {
+                            futures_timer::Delay::new(LIST_BACKOFF * attempt).await;
+                        }
+                        match provider.retrieve_chunk(&addr).await {
+                            Ok(r) => return Ok(r.chunk),
+                            Err(e) => last = e.to_string(),
+                        }
+                    }
+                    Err(JsValue::from_str(&format!("retrieve {addr}: {last}")))
+                }
+            })
+            .buffer_unordered(prefetch_concurrency())
+            .collect()
+            .await;
+
+        let mut next: Vec<ChunkAddress> = Vec::new();
+        for res in fetched {
+            // A cold worker may exhaust the retries on a deep intermediate; skip
+            // its subtree rather than abort the whole enumeration, so the shard
+            // set is a large best-effort sample (a throughput measure does not
+            // need every last leaf).
+            let chunk = match res {
+                Ok(chunk) => chunk,
+                Err(_) => continue,
+            };
+            // A leaf node (`span <= body size`) has no children; only an
+            // intermediate is decoded for child refs.
+            if chunk.span() > DEFAULT_BODY_SIZE as u64 {
+                let children = parse_child_refs(chunk.data())?;
+                let num = children.len().max(1) as u64;
+                // The Swarm chunk tree is balanced, so a node whose span spread
+                // across its children is at most one body each has leaf children:
+                // record them without a fetch. Otherwise the children are
+                // themselves intermediates that must be fetched to descend.
+                let children_are_leaves = chunk.span().div_ceil(num) <= DEFAULT_BODY_SIZE as u64;
+                for child in children {
+                    if seen.insert(child) {
+                        out.push(child);
+                        if !children_are_leaves {
+                            next.push(child);
+                        }
+                    }
+                }
+            }
+            cache.insert(chunk);
+        }
+        level = next;
+    }
+    Ok(out)
+}
+
 /// Prefetch the chunk tree into `cache` with no per-level barrier, admitting the
 /// shallowest pending node first.
 ///
