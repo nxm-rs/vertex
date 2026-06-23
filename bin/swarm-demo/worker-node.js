@@ -33,6 +33,28 @@ self.onmessage = async (e) => {
       self.postMessage({ type: 'chunk', id: msg.id, address: msg.address, bytes }, [buf]);
       return;
     }
+    if (msg.type === 'resolveRoot') {
+      if (!node) throw new Error('node not booted');
+      const fileRoot = await node.resolveFileRoot(msg.address);
+      self.postMessage({ type: 'resolveRoot', id: msg.id, fileRoot });
+      return;
+    }
+    if (msg.type === 'size') {
+      if (!node) throw new Error('node not booted');
+      const size = await node.fileSize(msg.fileRoot);
+      self.postMessage({ type: 'size', id: msg.id, size });
+      return;
+    }
+    if (msg.type === 'range') {
+      if (!node) throw new Error('node not booted');
+      // Download this worker's byte slice via the efficient range path, then
+      // transfer the whole slice to main in one large ArrayBuffer (no per-chunk
+      // postMessage). The coordinator writes it at `msg.offset`.
+      const bytes = await node.downloadRange(msg.fileRoot, msg.offset, msg.len, msg.width || 0);
+      const buf = bytes.buffer;
+      self.postMessage({ type: 'range', id: msg.id, offset: msg.offset, bytes }, [buf]);
+      return;
+    }
   } catch (err) {
     self.postMessage({ type: 'error', id: msg.id, address: msg.address, err: String(err && err.message ? err.message : err) });
   }

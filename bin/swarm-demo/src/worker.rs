@@ -50,6 +50,51 @@ impl WorkerNode {
         Ok(result.chunk.data().to_vec())
     }
 
+    /// Resolve `reference_hex` to its file root (the contained file's root if it
+    /// is a single-file manifest, else the reference itself), as a hex string.
+    /// The coordinator resolves this once and hands the file root to every worker
+    /// so each range download skips the manifest probe.
+    #[wasm_bindgen(js_name = resolveFileRoot)]
+    pub async fn resolve_file_root(&self, reference_hex: String) -> Result<String, JsValue> {
+        let root = parse_address(&reference_hex)?;
+        let cache = crate::client::MemoryCache::new();
+        let file_root =
+            crate::client::resolve_file_root(root, self.provider.clone(), &cache).await?;
+        Ok(file_root.to_string())
+    }
+
+    /// Total byte size of the file at `file_root_hex` (opens the joiner and reads
+    /// its span). The coordinator needs this to partition the file into K ranges.
+    #[wasm_bindgen(js_name = fileSize)]
+    pub async fn file_size(&self, file_root_hex: String) -> Result<f64, JsValue> {
+        let file_root = parse_address(&file_root_hex)?;
+        let size = crate::client::file_size(file_root, self.provider.clone()).await?;
+        Ok(size as f64)
+    }
+
+    /// Download the byte range `[offset, offset + len)` of the file at
+    /// `file_root_hex`, returning the slice bytes. Runs the wide concurrent
+    /// prefetch scoped to the range, so this worker fetches only its slice. The
+    /// coordinator writes the returned bytes at `offset` to reassemble the file.
+    #[wasm_bindgen(js_name = downloadRange)]
+    pub async fn download_range(
+        &self,
+        file_root_hex: String,
+        offset: f64,
+        len: f64,
+        width: usize,
+    ) -> Result<Vec<u8>, JsValue> {
+        let file_root = parse_address(&file_root_hex)?;
+        crate::client::download_range(
+            file_root,
+            offset as u64,
+            len as u64,
+            width,
+            self.provider.clone(),
+        )
+        .await
+    }
+
     /// Resolve the manifest at `reference_hex` to its file root, then walk the
     /// chunk tree returning every chunk address (intermediates and leaves) as a
     /// hex array. The shard coordinator partitions this list across workers.

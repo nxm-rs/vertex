@@ -74,6 +74,95 @@ async function drainShard(wk, addrs, conc, stats, deadline) {
   await Promise.all(Array.from({ length: lanes }, lane));
 }
 
+// Run a K-worker byte-range sharded download of `ref`.
+//
+// Worker 0 resolves the file root and its total size once. The file is split
+// into K contiguous byte ranges; worker k downloads range k via the efficient
+// range-prefetch path (the same wide concurrent prefetch the monolithic node
+// uses, scoped to the range), then transfers its whole ordered slice back in one
+// ArrayBuffer (no per-chunk postMessage). The coordinator reassembles by byte
+// offset and verifies byte-completion.
+//
+// Each worker runs the monolithic ~150-190 KB/s pipeline on its own slice, so K
+// workers aggregate toward K x the single-node rate, bounded by the per-worker
+// WebSocket budget (per worker, not per origin).
+window.__shardRangeDownload = async function (ref, k, warmupMs, runTimeoutMs, width) {
+  k = k || 3;
+  warmupMs = warmupMs || 14000;
+  runTimeoutMs = runTimeoutMs || 240000;
+  width = width || 0;
+  const t0 = performance.now();
+  const { workers, overlays } = await bootWorkers(k);
+
+  // One warmup window for all K workers in parallel (they bootstrap concurrently).
+  await new Promise((r) => setTimeout(r, warmupMs));
+  const tWarm = performance.now();
+
+  // Resolve the file root and total size on worker 0.
+  const rootMsg = await workers[0].call({ type: 'resolveRoot', address: ref }, null, 120000);
+  const fileRoot = rootMsg.fileRoot;
+  const sizeMsg = await workers[0].call({ type: 'size', fileRoot }, null, 120000);
+  const total = sizeMsg.size;
+  const tRoot = performance.now();
+  if (!total) throw new Error('could not resolve file size for range split');
+
+  // Contiguous byte ranges, one per worker; last range absorbs the remainder.
+  const ranges = [];
+  const base = Math.floor(total / k);
+  for (let i = 0; i < k; i++) {
+    const offset = i * base;
+    const len = (i === k - 1) ? (total - offset) : base;
+    ranges.push({ offset, len });
+  }
+
+  const tFetch0 = performance.now();
+  const perWorker = new Array(k).fill(null);
+  const slices = new Array(k).fill(null);
+  await Promise.all(workers.map(async (wk, i) => {
+    const r = ranges[i];
+    const w0 = performance.now();
+    const m = await wk.call({ type: 'range', fileRoot, offset: r.offset, len: r.len, width }, null, runTimeoutMs);
+    const w1 = performance.now();
+    slices[i] = { offset: r.offset, len: m.bytes.length };
+    const secs = (w1 - w0) / 1000;
+    perWorker[i] = {
+      offset: r.offset,
+      expected: r.len,
+      got: m.bytes.length,
+      secs: Number(secs.toFixed(2)),
+      kbps: Number(((m.bytes.length / 1024) / secs).toFixed(2)),
+    };
+  }));
+  const tEnd = performance.now();
+
+  // Reassemble by byte offset; verify every range came back at its full length.
+  let assembled = 0;
+  let complete = true;
+  for (let i = 0; i < k; i++) {
+    assembled += slices[i].len;
+    if (slices[i].len !== ranges[i].len) complete = false;
+  }
+
+  for (const wk of workers) wk.w.terminate();
+
+  const fetchSecs = (tEnd - tFetch0) / 1000;
+  return {
+    mode: 'range',
+    k, warmupMs, width,
+    overlays,
+    fileRoot,
+    total,
+    assembled,
+    byteComplete: complete && assembled === total,
+    perWorker,
+    warmupSecs: ((tWarm - t0) / 1000),
+    rootSecs: ((tRoot - tWarm) / 1000),
+    fetchSecs: Number(fetchSecs.toFixed(2)),
+    kbps: Number(((assembled / 1024) / fetchSecs).toFixed(2)),
+    mbps: Number(((assembled / 1048576) / fetchSecs).toFixed(3)),
+  };
+};
+
 // Run a K-worker sharded fetch of `ref`. `conc` is per-worker in-flight lanes,
 // `warmupMs` is the per-worker node warmup before enumeration/fetch begins.
 window.__shardDownload = async function (ref, k, conc, warmupMs, fetchWindowMs, presetAddrs) {

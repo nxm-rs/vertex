@@ -524,6 +524,204 @@ async fn prefetch_tree_pipelined(
     Ok(())
 }
 
+/// Resolve `root` to its file root: if `root` is a single-file manifest, return
+/// the contained file's root; otherwise `root` is already a file root.
+///
+/// The worker-sharded download resolves this once on one worker and hands the
+/// file root to every worker, so the K range downloads skip the manifest probe.
+pub async fn resolve_file_root(
+    root: ChunkAddress,
+    provider: Arc<dyn SwarmChunkProvider>,
+    cache: &MemoryCache,
+) -> Result<ChunkAddress, JsValue> {
+    match probe_manifest_entries(root, provider.clone(), cache).await? {
+        Some(entries) => pick_manifest_file(&entries),
+        None => Ok(root),
+    }
+}
+
+/// Total byte size of the file at `file_root` (opens the joiner, reads its span).
+pub async fn file_size(
+    file_root: ChunkAddress,
+    provider: Arc<dyn SwarmChunkProvider>,
+) -> Result<u64, JsValue> {
+    let getter = NetworkChunkGet::new(provider, HashMap::new());
+    let joiner = Joiner::<NetworkChunkGet, DEFAULT_BODY_SIZE>::new(getter, file_root)
+        .await
+        .map_err(|e| JsValue::from_str(&format!("joiner open: {e}")))?;
+    Ok(joiner.size())
+}
+
+/// Download the byte range `[offset, offset + len)` of the file at `file_root`.
+///
+/// Runs the same wide concurrent prefetch the monolithic streamed path uses, but
+/// scoped to the subtrees that overlap the range, so a worker fetches only the
+/// chunks for its slice. The joiner's `read_range` then assembles those bytes
+/// from the warm map. Returns the slice bytes; the coordinator writes them at
+/// `offset` to reassemble the file.
+pub async fn download_range(
+    file_root: ChunkAddress,
+    offset: u64,
+    len: u64,
+    width: usize,
+    provider: Arc<dyn SwarmChunkProvider>,
+) -> Result<Vec<u8>, JsValue> {
+    let getter = NetworkChunkGet::new(provider, HashMap::new());
+    let shared = getter.shared();
+    let provider = getter.provider();
+    let joiner = Joiner::<NetworkChunkGet, DEFAULT_BODY_SIZE>::new(getter, file_root)
+        .await
+        .map_err(|e| JsValue::from_str(&format!("joiner open: {e}")))?
+        .with_concurrency(JOIN_CONCURRENCY);
+
+    let size = joiner.size();
+    if size == 0 || offset >= size {
+        return Ok(Vec::new());
+    }
+    let end = offset.saturating_add(len).min(size);
+    let want = (end - offset) as usize;
+
+    // Warm only the chunks overlapping [offset, end), then read the range from the
+    // warm map. The prefetch width is per-worker: a worker node holds a small peer
+    // set, so a width tuned to its connected fan keeps the fan-out from collapsing
+    // its own neighbourhood (the dial-storm that caps a single wide-prefetch node).
+    let width = if width == 0 {
+        prefetch_concurrency()
+    } else {
+        width
+    };
+    prefetch_range_into_shared(file_root, offset, end, width, provider, shared).await?;
+    joiner
+        .read_range(offset, want)
+        .await
+        .map_err(|e| JsValue::from_str(&format!("joiner read_range: {e}")))
+}
+
+/// Prefetch into `shared` only the subtrees overlapping the byte range
+/// `[range_start, range_end)`, breadth-first at the configured width.
+///
+/// Each node carries its own byte offset and span; a child whose byte interval
+/// does not overlap the range is never queued, so a worker fetches just its
+/// slice's chunks (plus the ancestor intermediates on the path to them). Misses
+/// are non-fatal: a chunk left unwarmed is fetched by the joiner's own read.
+async fn prefetch_range_into_shared(
+    root: ChunkAddress,
+    range_start: u64,
+    range_end: u64,
+    width: usize,
+    provider: Arc<dyn SwarmChunkProvider>,
+    shared: Arc<Mutex<HashMap<ChunkAddress, AnyChunk>>>,
+) -> Result<(), JsValue> {
+    // Branching factor of a plain intermediate node: child refs packed per body.
+    const BRANCHES: u64 = (DEFAULT_BODY_SIZE / REF_SIZE) as u64;
+    // A congested wave fails a chunk's whole candidate race on a transient
+    // transport error rather than absence; re-race it after a short backoff
+    // before giving up, so the slice does not stall on a recoverable miss. A
+    // single retrieval can also hang indefinitely when a worker's neighbourhood
+    // momentarily drains (every close storer rejects the dial), so each attempt
+    // is bounded by a timeout that bounces the request and re-races it once the
+    // peer set recovers, instead of leaving an in-flight future pending forever.
+    const MAX_CHUNK_RETRIES: u32 = 10;
+    const RETRY_BACKOFF_STEP: std::time::Duration = std::time::Duration::from_millis(250);
+    const ATTEMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(8000);
+
+    let mut seen: HashSet<ChunkAddress> = HashSet::new();
+    seen.insert(root);
+    // (address, byte_offset) for nodes whose subtree overlaps the range.
+    let mut level: Vec<(ChunkAddress, u64)> = vec![(root, 0)];
+
+    while !level.is_empty() {
+        let fetched: Vec<Result<(AnyChunk, u64), JsValue>> =
+            futures::stream::iter(level.into_iter())
+                .map(|(addr, node_offset)| {
+                    let provider = Arc::clone(&provider);
+                    let cached = shared.lock().expect("cache mutex").get(&addr).cloned();
+                    async move {
+                        if let Some(chunk) = cached {
+                            return Ok((chunk, node_offset));
+                        }
+                        let mut last = String::new();
+                        for attempt in 0..MAX_CHUNK_RETRIES {
+                            if attempt > 0 {
+                                futures_timer::Delay::new(RETRY_BACKOFF_STEP * attempt).await;
+                            }
+                            match retrieve_with_timeout(&provider, &addr, ATTEMPT_TIMEOUT).await {
+                                Ok(chunk) => return Ok((chunk, node_offset)),
+                                Err(e) => last = e,
+                            }
+                        }
+                        Err(JsValue::from_str(&format!("retrieve {addr}: {last}")))
+                    }
+                })
+                .buffer_unordered(width.max(1))
+                .collect()
+                .await;
+
+        let mut next: Vec<(ChunkAddress, u64)> = Vec::new();
+        for result in fetched {
+            // A leaf that exhausts its retries is left for the joiner's own read
+            // (the joiner re-fetches a cold leaf); never abort the whole slice on
+            // one prefetch miss.
+            let (chunk, node_offset) = match result {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if chunk.span() > DEFAULT_BODY_SIZE as u64 {
+                // Per-child subtree span: the largest power-of-branches multiple
+                // of the body size strictly below this node's span. Child i then
+                // covers [node_offset + i*child_span, +child_span).
+                let child_span = child_subtree_span(chunk.span(), BRANCHES);
+                for (i, child) in parse_child_refs(chunk.data())?.into_iter().enumerate() {
+                    let child_offset = node_offset + (i as u64) * child_span;
+                    let child_end = child_offset + child_span;
+                    // Skip a child subtree that lies wholly outside the range.
+                    if child_end <= range_start || child_offset >= range_end {
+                        continue;
+                    }
+                    if seen.insert(child) {
+                        next.push((child, child_offset));
+                    }
+                }
+            }
+            shared
+                .lock()
+                .expect("cache mutex")
+                .insert(*chunk.address(), chunk);
+        }
+        level = next;
+    }
+
+    Ok(())
+}
+
+/// Retrieve one chunk, bouncing the request if it does not resolve within
+/// `timeout`. A single retrieval can hang indefinitely when the worker's
+/// neighbourhood drains (every close storer rejects the dial); the timeout lets
+/// the caller re-race it once the peer set recovers rather than block forever.
+async fn retrieve_with_timeout(
+    provider: &Arc<dyn SwarmChunkProvider>,
+    addr: &ChunkAddress,
+    timeout: std::time::Duration,
+) -> Result<AnyChunk, String> {
+    let fetch = std::pin::pin!(provider.retrieve_chunk(addr));
+    let delay = std::pin::pin!(futures_timer::Delay::new(timeout));
+    match futures::future::select(fetch, delay).await {
+        futures::future::Either::Left((Ok(r), _)) => Ok(r.chunk),
+        futures::future::Either::Left((Err(e), _)) => Err(e.to_string()),
+        futures::future::Either::Right(_) => Err("retrieval timed out".to_string()),
+    }
+}
+
+/// The byte span each child subtree of a node covering `span` bytes holds: the
+/// largest `DEFAULT_BODY_SIZE * BRANCHES^k` that is strictly less than `span`.
+fn child_subtree_span(span: u64, branches: u64) -> u64 {
+    let mut child = DEFAULT_BODY_SIZE as u64;
+    while child * branches < span {
+        child *= branches;
+    }
+    child
+}
+
 /// List the manifest at `root` as `(path, address_hex)` pairs.
 pub async fn ls_manifest(
     root: ChunkAddress,
