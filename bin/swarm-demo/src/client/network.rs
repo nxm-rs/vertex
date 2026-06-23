@@ -105,6 +105,10 @@ static LEG_BUSY: AtomicU64 = AtomicU64::new(0);
 /// per-chunk proximity ranking against the rest of the per-chunk thread work.
 static CLOSEST_TO_US: AtomicU64 = AtomicU64::new(0);
 static CLOSEST_TO_CALLS: AtomicU64 = AtomicU64::new(0);
+/// Total winning-leg latency (ms) and count, to size per-chunk forwarding RTT
+/// against the in-flight pool: the pool width over this latency caps throughput.
+static HIT_LATENCY_MS_SUM: AtomicU64 = AtomicU64::new(0);
+static HIT_LATENCY_CALLS: AtomicU64 = AtomicU64::new(0);
 
 /// Hard ceiling on connected peers a retrieval races before it stops widening.
 ///
@@ -210,13 +214,17 @@ impl SwarmChunkProvider for BrowserChunkProvider {
                     let cancelled = LEG_CANCELLED.load(Ordering::Relaxed);
                     let chanclosed = LEG_CHANCLOSED.load(Ordering::Relaxed);
                     let busy = LEG_BUSY.load(Ordering::Relaxed);
+                    let hit_lat_sum = HIT_LATENCY_MS_SUM.load(Ordering::Relaxed);
+                    let hit_lat_calls = HIT_LATENCY_CALLS.load(Ordering::Relaxed).max(1);
                     tracing::info!(
                         "retrieval-instrumentation served={served} legs={legs} \
                          substreams_per_chunk={spc} closest_to_us_mean={} closest_to_calls={ct_calls} \
                          leg_remote={remote} leg_notfound={notfound} leg_timeout={timeout} \
                          leg_protocol={protocol} leg_notconn={notconn} \
-                         leg_cancelled={cancelled} leg_chanclosed={chanclosed} leg_busy={busy}",
+                         leg_cancelled={cancelled} leg_chanclosed={chanclosed} leg_busy={busy} \
+                         hit_latency_ms_mean={}",
                         ct_us / ct_calls,
+                        hit_lat_sum / hit_lat_calls,
                     );
                 }
                 tracing::debug!(
@@ -311,7 +319,10 @@ impl BrowserChunkProvider {
                     let outcome = client.retrieve_chunk(peer, chunk_address, true).await;
                     let latency_ms = js_sys::Date::now() - started;
                     match &outcome {
-                        Ok(_) => {}
+                        Ok(_) => {
+                            HIT_LATENCY_MS_SUM.fetch_add(latency_ms as u64, Ordering::Relaxed);
+                            HIT_LATENCY_CALLS.fetch_add(1, Ordering::Relaxed);
+                        }
                         Err(ChunkTransferError::Remote) => {
                             LEG_REMOTE.fetch_add(1, Ordering::Relaxed);
                         }

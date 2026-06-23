@@ -59,13 +59,18 @@ const MAX_PREFETCH_ITERS: usize = 4096;
 /// Both download paths prefetch concurrently: `download_file` before assembling,
 /// `stream_file` alongside the ordered stream. The provider's per-peer in-flight
 /// cap skips a saturated storer to the next-closest one, so a wide fan-out
-/// spreads load across the neighbourhood instead of piling depth onto the closest
-/// few. This is a depth-stability knob, not a throughput lever: download
-/// throughput is bounded by per-chunk retrieval latency, which rises with this
-/// width as in-flight requests queue, so aggregate throughput stays flat while a
-/// wider fan-out holds the reserve depth steadier. Past a few hundred the fan-out
-/// starts shedding peers; this width sits below that knee.
-const DEFAULT_PREFETCH_CONCURRENCY: usize = 64;
+/// spreads load across the neighbourhood instead of piling depth onto the
+/// closest few, which also holds the reserve depth steadier.
+///
+/// It is also a throughput lever, but a sharply diminishing one: with the
+/// in-flight pool full, throughput is `pool / per-chunk-latency`, so doubling
+/// this roughly doubles throughput only until the connected peers' per-peer
+/// in-flight slots saturate. Past that the surplus requests queue at the
+/// semaphores (latency climbs) and re-race onto farther peers (more forwarding
+/// misses), so the marginal gain collapses. 128 sits near that knee for a
+/// light client holding a few hundred peers; higher trades latency and depth
+/// stability for little extra rate.
+const DEFAULT_PREFETCH_CONCURRENCY: usize = 128;
 
 static PREFETCH_CONCURRENCY_OVERRIDE: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(DEFAULT_PREFETCH_CONCURRENCY);
@@ -88,8 +93,7 @@ fn prefetch_concurrency() -> usize {
 /// starting the next. The pool stays full across level boundaries (no per-level
 /// barrier) but always admits the shallowest pending node first, so ancestors
 /// stay warm ahead of their leaves. Toggled by the `pipeline` URL param.
-static PREFETCH_PIPELINE: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static PREFETCH_PIPELINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Enable the pipelined (no per-level barrier) prefetch (`pipeline` URL param).
 pub fn configure_prefetch_pipeline(on: bool) {

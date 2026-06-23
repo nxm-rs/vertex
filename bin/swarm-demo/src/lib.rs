@@ -22,7 +22,7 @@ use vertex_swarm_localstore::{
 use vertex_swarm_node::{ClientLauncher, LauncherSwapConfig, SwarmNodeType};
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_spec::{init_mainnet, mainnet_wss_bootnodes};
-use vertex_swarm_topology::{TopologyEvent, TopologyHandle};
+use vertex_swarm_topology::{KademliaConfig, TopologyEvent, TopologyHandle};
 use vertex_tasks::TaskManager;
 use wasm_bindgen::prelude::*;
 
@@ -302,6 +302,9 @@ pub async fn start() -> Result<SwarmDemo, JsValue> {
     // The IndexedDB-backed cache survives a page reload; a failed open falls
     // back to the launcher's in-memory default so the demo still runs.
     let mut launcher = ClientLauncher::new(identity).with_bootnodes(bootnodes);
+    if let Some(kademlia) = kademlia_config_from_page() {
+        launcher = launcher.with_kademlia(kademlia);
+    }
     match open_indexeddb_store().await {
         Ok(store) => {
             info!("using IndexedDB-backed client cache");
@@ -415,6 +418,43 @@ fn apply_retrieval_overrides_from_page() {
     );
     client::configure_prefetch(parse("pf").map(|v| v as usize));
     client::configure_prefetch_pipeline(params.get("pipeline").is_some_and(|v| v != "0"));
+}
+
+/// Per-bin connection dial budget for the browser download client.
+///
+/// Above the node default so the taper holds more peers in every balanced bin.
+/// Under a wide concurrent download the closest bins drain faster than they
+/// refill; a larger budget keeps the neighbourhood depth from collapsing while
+/// the prefetch runs (measured: depth held for the whole download at this
+/// level, versus repeated dips to zero at the default). It does not raise
+/// download throughput on its own: retrieval over a light forwarding client is
+/// bounded by per-chunk forwarding latency against the per-peer in-flight slot
+/// budget, not by connected-peer count.
+const DEMO_TOTAL_TARGET: usize = 320;
+
+/// Build the download client's [`KademliaConfig`], applying [`DEMO_TOTAL_TARGET`]
+/// by default and honouring `tt` (total connected-peer target) and `nom`
+/// (per-balanced-bin floor) page-URL overrides for sweeping without a rebuild.
+///
+/// `nom` stuffs the shallow bins (bin 0/1/2, which cover most of the address
+/// space) but in measurement did not cut the forwarded-but-absent (`Remote`)
+/// miss rate: a shallow peer is still a poor entrypoint for a far chunk, so it
+/// is left unset by default.
+fn kademlia_config_from_page() -> Option<KademliaConfig> {
+    let parse = |k: &str| {
+        web_sys::window()
+            .and_then(|w| w.location().search().ok())
+            .and_then(|s| web_sys::UrlSearchParams::new_with_str(&s).ok())
+            .and_then(|p| p.get(k))
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|v| *v > 0)
+    };
+    let total = parse("tt").unwrap_or(DEMO_TOTAL_TARGET);
+    let mut config = KademliaConfig::default().with_total_target(total);
+    if let Some(nominal) = parse("nom") {
+        config = config.with_nominal(nominal);
+    }
+    Some(config)
 }
 
 /// Publish a running demo handle on `window.__swarmDemo` for the JS frontend.
