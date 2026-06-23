@@ -74,6 +74,64 @@ async function drainShard(wk, addrs, conc, stats, deadline) {
   await Promise.all(Array.from({ length: lanes }, lane));
 }
 
+// Classify a batch of references as plain (downloadable) or erasure-coded.
+//
+// Boots ONE headless worker node, waits a warmup for it to bootstrap a peer set,
+// then for each reference resolves its file root and reads the joiner span via
+// `fileSize`. A plain file's span equals its true byte length; an erasure-coded
+// file's root chunk carries a redundancy-level marker in the span's top byte, so
+// the joiner reports a level-polluted exabyte-scale value. The caller passes the
+// expected CSV size per ref; we tag plain when the reported size matches it and
+// erasure when it is an exabyte-scale garbage value (top span byte set).
+//
+// `refs` is an array of { ref, sizeBytes }. Returns one row per ref with the raw
+// fileSize the joiner reported, so the caller can audit the top span byte.
+window.__classifyRefs = async function (refs, warmupMs, perCallTimeoutMs) {
+  warmupMs = warmupMs || 16000;
+  perCallTimeoutMs = perCallTimeoutMs || 120000;
+  const t0 = performance.now();
+  const { workers, overlays } = await bootWorkers(1);
+  const wk = workers[0];
+
+  await new Promise((r) => setTimeout(r, warmupMs));
+  const tWarm = performance.now();
+
+  const rows = [];
+  for (const item of refs) {
+    const ref = item.ref;
+    const sizeBytes = item.sizeBytes;
+    const row = { ref, sizeBytes };
+    try {
+      const rootMsg = await wk.call({ type: 'resolveRoot', address: ref }, null, perCallTimeoutMs);
+      row.fileRoot = rootMsg.fileRoot;
+      const sizeMsg = await wk.call({ type: 'size', fileRoot: row.fileRoot }, null, perCallTimeoutMs);
+      // `size` is an f64 carrying a u64; an erasure root yields an exabyte-scale
+      // value (top span byte set), a plain root yields the exact byte length.
+      row.fileSize = sizeMsg.size;
+      // Plain when the joiner span matches the CSV byte length exactly. Erasure
+      // when the span is exabyte-scale garbage (>> any real ZIM, top byte set).
+      const matches = Number.isFinite(sizeBytes) && Math.abs(row.fileSize - sizeBytes) < 1;
+      const garbage = row.fileSize > 1e15; // ~petabyte+, far past any real file
+      row.classification = matches ? 'plain' : (garbage ? 'erasure' : 'unknown');
+    } catch (e) {
+      row.classification = 'error';
+      row.error = String(e && e.message ? e.message : e);
+    }
+    rows.push(row);
+    console.log('CLASSIFY-ROW ' + JSON.stringify(row));
+  }
+
+  for (const w of workers) w.w.terminate();
+  return {
+    overlays,
+    warmupSecs: (tWarm - t0) / 1000,
+    rows,
+    plain: rows.filter((r) => r.classification === 'plain').length,
+    erasure: rows.filter((r) => r.classification === 'erasure').length,
+    other: rows.filter((r) => r.classification !== 'plain' && r.classification !== 'erasure').length,
+  };
+};
+
 // Run a K-worker byte-range sharded download of `ref`.
 //
 // Worker 0 resolves the file root and its total size once. The file is split
