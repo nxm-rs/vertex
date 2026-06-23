@@ -21,7 +21,7 @@ use wasm_bindgen::prelude::*;
 use cache::MemoryCache;
 pub use download::{DownloadSink, configure_prefetch, configure_prefetch_pipeline};
 use network::BrowserChunkProvider;
-pub use network::configure_retrieval_race;
+pub use network::{configure_load_balance, configure_retrieval_race};
 
 /// Fallback batch geometry, used only when on-chain discovery is unavailable.
 const DEFAULT_BATCH_DEPTH: u8 = 20;

@@ -90,7 +90,39 @@ use vertex_swarm_api::{
 use vertex_swarm_primitives::OverlayAddress;
 
 use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+use vertex_tasks::time::Instant;
+
+/// Temporary latency-decomposition counters for the retrieval path.
+///
+/// Splits a retrieval leg's wall time into the part spent inside the admission
+/// throttle (allowance pacing) versus the on-wire RTT measured by the caller, so
+/// a loaded download can show whether inflation is queue/pacing or genuine
+/// forwarding RTT. Microsecond sums plus call counts; read and reset by the
+/// browser instrumentation. Measurement aid, not a shipping metric.
+static RETRIEVAL_THROTTLE_WAIT_US: AtomicU64 = AtomicU64::new(0);
+static RETRIEVAL_THROTTLE_CALLS: AtomicU64 = AtomicU64::new(0);
+static RETRIEVAL_INFLIGHT_CAPPED: AtomicU64 = AtomicU64::new(0);
+/// Sum of the *intended* allowance sleeps (the bucket's wait hints), separate
+/// from the wall-clock above. Wall minus intended is executor scheduling delay
+/// on the saturated single thread, distinguishing true pacing from backlog.
+static RETRIEVAL_THROTTLE_SLEEP_US: AtomicU64 = AtomicU64::new(0);
+/// Legs that paced at all (the bucket refused at least once).
+static RETRIEVAL_THROTTLE_PACED: AtomicU64 = AtomicU64::new(0);
+
+/// Snapshot the retrieval throttle-wait decomposition: `(total_wall_us, calls,
+/// inflight_capped, total_intended_sleep_us, paced_legs)`. Cumulative.
+pub fn retrieval_throttle_stats() -> (u64, u64, u64, u64, u64) {
+    (
+        RETRIEVAL_THROTTLE_WAIT_US.load(Ordering::Relaxed),
+        RETRIEVAL_THROTTLE_CALLS.load(Ordering::Relaxed),
+        RETRIEVAL_INFLIGHT_CAPPED.load(Ordering::Relaxed),
+        RETRIEVAL_THROTTLE_SLEEP_US.load(Ordering::Relaxed),
+        RETRIEVAL_THROTTLE_PACED.load(Ordering::Relaxed),
+    )
+}
 
 /// Which protocol is asking, so the throttle emits the right metric. The string
 /// is the metric prefix and round-trips through the `peer_overlay` label.
@@ -328,12 +360,27 @@ impl SelfThrottle {
         let slot = match self.peer_semaphore(&peer).try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => {
+                if kind == ProtocolKind::Retrieval {
+                    RETRIEVAL_INFLIGHT_CAPPED.fetch_add(1, Ordering::Relaxed);
+                }
                 metrics::counter!(
                     kind.inflight_capped_metric(),
                     "peer_overlay" => peer.to_string(),
                 )
                 .increment(1);
                 return None;
+            }
+        };
+
+        // Record how long this retrieval leg paces inside the throttle (allowance
+        // wait), separately from the on-wire RTT the caller times, so a loaded
+        // download can attribute latency inflation to pacing vs forwarding.
+        let throttle_started = (kind == ProtocolKind::Retrieval).then(Instant::now);
+        let record_wait = |started: Option<Instant>| {
+            if let Some(start) = started {
+                RETRIEVAL_THROTTLE_WAIT_US
+                    .fetch_add(start.elapsed().as_micros() as u64, Ordering::Relaxed);
+                RETRIEVAL_THROTTLE_CALLS.fetch_add(1, Ordering::Relaxed);
             }
         };
 
@@ -344,10 +391,16 @@ impl SelfThrottle {
             self.sync_quota(&peer);
             let decision = self.limiter.lock().try_send(peer, cost);
             match decision {
-                Ok(()) => return Some(ThrottlePermit { _slot: slot }),
+                Ok(()) => {
+                    record_wait(throttle_started);
+                    return Some(ThrottlePermit { _slot: slot });
+                }
                 Err(delay) => {
                     if !throttled {
                         throttled = true;
+                        if throttle_started.is_some() {
+                            RETRIEVAL_THROTTLE_PACED.fetch_add(1, Ordering::Relaxed);
+                        }
                         metrics::counter!(
                             kind.throttled_metric(),
                             "peer_overlay" => peer.to_string(),
@@ -363,6 +416,10 @@ impl SelfThrottle {
                         break;
                     }
                     waited = waited.saturating_add(wait);
+                    if throttle_started.is_some() {
+                        RETRIEVAL_THROTTLE_SLEEP_US
+                            .fetch_add(wait.as_micros() as u64, Ordering::Relaxed);
+                    }
                     Delay::new(wait).await;
                 }
             }
@@ -375,6 +432,7 @@ impl SelfThrottle {
             ?kind,
             "self-throttle iteration budget exhausted; releasing request"
         );
+        record_wait(throttle_started);
         Some(ThrottlePermit { _slot: slot })
     }
 

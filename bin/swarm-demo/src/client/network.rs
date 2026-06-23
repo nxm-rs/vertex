@@ -1,6 +1,8 @@
 //! Wasm-buildable proximity-routing chunk provider/sender for the browser client.
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -10,9 +12,77 @@ use vertex_swarm_api::{
     SwarmChunkSender, SwarmError, SwarmResult, SwarmTopologyRouting,
 };
 use vertex_swarm_identity::Identity;
-use vertex_swarm_node::{ChunkTransferError, ClientHandle, RaceFailure, race_candidates};
+use vertex_swarm_node::{
+    ChunkTransferError, ClientHandle, RaceFailure, race_candidates, retrieval_throttle_stats,
+};
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_topology::TopologyHandle;
+
+/// Live per-peer in-flight retrieval-leg counts, for the load-concentration
+/// histogram and least-loaded peer selection. Keyed by the peer we send the leg
+/// to (the connected forwarder), not the chunk's storer. Measurement aid plus
+/// the input to load-balanced selection.
+static PEER_INFLIGHT: Mutex<Option<HashMap<OverlayAddress, u32>>> = Mutex::new(None);
+
+fn peer_inflight_lock() -> std::sync::MutexGuard<'static, Option<HashMap<OverlayAddress, u32>>> {
+    let mut g = PEER_INFLIGHT.lock().unwrap_or_else(|p| p.into_inner());
+    if g.is_none() {
+        *g = Some(HashMap::new());
+    }
+    g
+}
+
+/// Mark a leg in flight to `peer`, returning a guard that decrements on drop.
+fn enter_inflight(peer: OverlayAddress) -> InflightGuard {
+    if let Some(map) = peer_inflight_lock().as_mut() {
+        *map.entry(peer).or_insert(0) += 1;
+    }
+    InflightGuard { peer }
+}
+
+struct InflightGuard {
+    peer: OverlayAddress,
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        if let Some(map) = peer_inflight_lock().as_mut() {
+            if let Some(c) = map.get_mut(&self.peer) {
+                *c = c.saturating_sub(1);
+                if *c == 0 {
+                    map.remove(&self.peer);
+                }
+            }
+        }
+    }
+}
+
+/// Snapshot the in-flight concentration: `(peers_with_load, max_on_one_peer,
+/// total_inflight, top10pct_share_x100)`. The last is the fraction of in-flight
+/// legs held by the busiest 10% of loaded peers, scaled by 100, the headline
+/// concentration figure (case 1 vs even spread).
+fn inflight_concentration() -> (usize, u32, u32, u32) {
+    let g = peer_inflight_lock();
+    let Some(map) = g.as_ref() else {
+        return (0, 0, 0, 0);
+    };
+    if map.is_empty() {
+        return (0, 0, 0, 0);
+    }
+    let mut counts: Vec<u32> = map.values().copied().collect();
+    counts.sort_unstable_by(|a, b| b.cmp(a));
+    let total: u32 = counts.iter().sum();
+    let peers = counts.len();
+    let max = counts.first().copied().unwrap_or(0);
+    let top10 = (peers / 10).max(1);
+    let top_sum: u32 = counts.iter().take(top10).sum();
+    let share = if total > 0 {
+        (top_sum * 100) / total
+    } else {
+        0
+    };
+    (peers, max, total, share)
+}
 
 /// Closest peers to try when pushing a chunk before giving up.
 const PUSH_CANDIDATE_COUNT: usize = 5;
@@ -40,6 +110,53 @@ static RETRIEVAL_STAGGER_MS: AtomicU64 = AtomicU64::new(DEFAULT_RETRIEVAL_STAGGE
 
 static RETRIEVE_CLOSE_BUDGET_A: AtomicU64 = AtomicU64::new(DEFAULT_RETRIEVE_CLOSE_BUDGET as u64);
 static RETRIEVE_BUSY_RETRIES_A: AtomicU64 = AtomicU64::new(DEFAULT_RETRIEVE_BUSY_RETRIES as u64);
+
+/// Load-balanced retrieval: assign each chunk to the least-in-flight peer drawn
+/// from the closest `LB_TOP_K`, then add one hedge leg after `LB_HEDGE_MS`. This
+/// keeps legs/chunk near 1-2 and spreads load evenly across all connected peers
+/// instead of piling the closest few past their in-flight cap. On by default;
+/// `lb=0` restores the widening-wave race for an A/B.
+const DEFAULT_LB_TOP_K: u64 = 16;
+const DEFAULT_LB_HEDGE_MS: u64 = 1200;
+static LB_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static LB_TOP_K: AtomicU64 = AtomicU64::new(DEFAULT_LB_TOP_K);
+static LB_HEDGE_MS: AtomicU64 = AtomicU64::new(DEFAULT_LB_HEDGE_MS);
+
+/// Override the load-balanced retrieval knobs from the page URL (`lb`, `lbtopk`,
+/// `lbhedge`). Measurement aid; absent params keep the defaults.
+pub fn configure_load_balance(enabled: Option<bool>, top_k: Option<u64>, hedge_ms: Option<u64>) {
+    if let Some(v) = enabled {
+        LB_ENABLED.store(v, Ordering::Relaxed);
+    }
+    if let Some(v) = top_k.filter(|v| *v > 0) {
+        LB_TOP_K.store(v, Ordering::Relaxed);
+    }
+    if let Some(v) = hedge_ms.filter(|v| *v > 0) {
+        LB_HEDGE_MS.store(v, Ordering::Relaxed);
+    }
+}
+
+fn lb_enabled() -> bool {
+    LB_ENABLED.load(Ordering::Relaxed)
+}
+fn lb_top_k() -> usize {
+    LB_TOP_K.load(Ordering::Relaxed) as usize
+}
+fn lb_hedge() -> Duration {
+    Duration::from_millis(LB_HEDGE_MS.load(Ordering::Relaxed))
+}
+
+/// Order `ranked` (proximity-ranked) by current in-flight load ascending, so the
+/// least-loaded close peer leads. Ties keep proximity order (stable sort).
+fn least_loaded_first(ranked: &[OverlayAddress]) -> Vec<OverlayAddress> {
+    let g = peer_inflight_lock();
+    let load = |p: &OverlayAddress| -> u32 {
+        g.as_ref().and_then(|m| m.get(p).copied()).unwrap_or(0)
+    };
+    let mut out = ranked.to_vec();
+    out.sort_by_key(|p| load(p));
+    out
+}
 
 /// Override the retrieval race knobs from the page URL (`rw`, `wavestep`,
 /// `stagger`, `budget`, `busy`). A measurement aid so a sweep needs no rebuild;
@@ -179,16 +296,48 @@ impl SwarmChunkProvider for BrowserChunkProvider {
             ));
         }
 
-        // Re-race on an all-busy wave: every close peer was momentarily at its
+        // Load-balanced path: send each chunk to the least-in-flight peer among
+        // the closest top-K (plus one delayed hedge), so legs/chunk stays near
+        // 1-2 and load spreads evenly instead of piling the closest few past
+        // their in-flight cap. The widening-wave race stays available via `lb=0`.
+        let race = |ranked: &[OverlayAddress]| {
+            let ranked = ranked.to_vec();
+            async move {
+                if lb_enabled() {
+                    let top_k = lb_top_k().min(ranked.len());
+                    let pool = least_loaded_first(&ranked[..top_k]);
+                    let outcome = self.race_load_balanced(&pool, chunk_address).await;
+                    // Fall back to the full widening-wave race when the two
+                    // least-loaded peers neither held nor forwarded the chunk:
+                    // the load-balanced pair is a fast common-case path, not a
+                    // coverage guarantee, so a real miss still walks every close
+                    // peer before failing the chunk. Busy stays a re-pick signal
+                    // for the caller, and a hit returns straight away.
+                    match outcome {
+                        WaveOutcome::Hit(_)
+                        | WaveOutcome::NoCandidates
+                        | WaveOutcome::Failed(ChunkTransferError::Busy) => outcome,
+                        WaveOutcome::NotFound | WaveOutcome::Failed(_) => {
+                            self.race_connected_waves(&ranked, chunk_address).await
+                        }
+                    }
+                } else {
+                    self.race_connected_waves(&ranked, chunk_address).await
+                }
+            }
+        };
+
+        // Re-pick on an all-busy wave: every chosen peer was momentarily at its
         // in-flight cap (a wide parallel download), which is transient
-        // back-pressure, not absence. Wait a short backoff and re-race.
-        let mut outcome = self.race_connected_waves(&ranked, chunk_address).await;
+        // back-pressure, not absence. Wait a short backoff and re-pick from the
+        // refreshed load picture.
+        let mut outcome = race(&ranked).await;
         for _ in 0..retrieve_busy_retries() {
             if !matches!(&outcome, WaveOutcome::Failed(ChunkTransferError::Busy)) {
                 break;
             }
             futures_timer::Delay::new(RETRIEVE_BUSY_BACKOFF).await;
-            outcome = self.race_connected_waves(&ranked, chunk_address).await;
+            outcome = race(&ranked).await;
         }
 
         match outcome {
@@ -216,15 +365,35 @@ impl SwarmChunkProvider for BrowserChunkProvider {
                     let busy = LEG_BUSY.load(Ordering::Relaxed);
                     let hit_lat_sum = HIT_LATENCY_MS_SUM.load(Ordering::Relaxed);
                     let hit_lat_calls = HIT_LATENCY_CALLS.load(Ordering::Relaxed).max(1);
+                    let hit_lat_mean = hit_lat_sum / hit_lat_calls;
+                    // Decompose the leg wall time: throttle-wait (allowance
+                    // pacing, off-wire) vs the remaining on-wire RTT. The full
+                    // leg latency is timed by the caller; the throttle reports
+                    // its own pacing wait, so RTT = full - throttle-wait.
+                    let (thr_wait_us, thr_calls, thr_capped, thr_sleep_us, thr_paced) =
+                        retrieval_throttle_stats();
+                    let thr_calls_nz = thr_calls.max(1);
+                    let throttle_wait_ms_mean = (thr_wait_us / thr_calls_nz) / 1000;
+                    // Intended allowance sleep (the bucket's wait hints) vs the
+                    // wall above: wall minus this is single-thread executor
+                    // backlog, separating true pacing from scheduling delay.
+                    let throttle_sleep_ms_mean = (thr_sleep_us / thr_calls_nz) / 1000;
+                    let rtt_ms_mean = hit_lat_mean.saturating_sub(throttle_wait_ms_mean);
+                    // Concentration of in-flight legs across forwarder peers.
+                    let (conc_peers, conc_max, conc_total, conc_top10_x100) =
+                        inflight_concentration();
                     tracing::info!(
                         "retrieval-instrumentation served={served} legs={legs} \
                          substreams_per_chunk={spc} closest_to_us_mean={} closest_to_calls={ct_calls} \
                          leg_remote={remote} leg_notfound={notfound} leg_timeout={timeout} \
                          leg_protocol={protocol} leg_notconn={notconn} \
                          leg_cancelled={cancelled} leg_chanclosed={chanclosed} leg_busy={busy} \
-                         hit_latency_ms_mean={}",
+                         hit_latency_ms_mean={hit_lat_mean} throttle_wait_ms_mean={throttle_wait_ms_mean} \
+                         throttle_sleep_ms_mean={throttle_sleep_ms_mean} throttle_paced={thr_paced} \
+                         rtt_ms_mean={rtt_ms_mean} throttle_capped={thr_capped} \
+                         conc_peers={conc_peers} conc_max={conc_max} conc_inflight={conc_total} \
+                         conc_top10_share={conc_top10_x100}",
                         ct_us / ct_calls,
-                        hit_lat_sum / hit_lat_calls,
                     );
                 }
                 tracing::debug!(
@@ -282,6 +451,111 @@ enum WaveOutcome {
 }
 
 impl BrowserChunkProvider {
+    /// One retrieval leg to `peer`: tracks in-flight load, times the leg, tallies
+    /// the per-outcome instrumentation, and returns the transfer result. Shared by
+    /// the widening-wave race and the load-balanced path.
+    async fn retrieve_leg(
+        &self,
+        peer: OverlayAddress,
+        chunk_address: SwarmAddress,
+    ) -> Result<vertex_swarm_node::RetrievalResult, ChunkTransferError> {
+        LEGS_DISPATCHED.fetch_add(1, Ordering::Relaxed);
+        let peer_po = chunk_address.proximity(&peer).get();
+        let _inflight = enter_inflight(peer);
+        let started = js_sys::Date::now();
+        let outcome = self.client.retrieve_chunk(peer, chunk_address, true).await;
+        let latency_ms = js_sys::Date::now() - started;
+        match &outcome {
+            Ok(_) => {
+                HIT_LATENCY_MS_SUM.fetch_add(latency_ms as u64, Ordering::Relaxed);
+                HIT_LATENCY_CALLS.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(ChunkTransferError::Remote) => {
+                LEG_REMOTE.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(ChunkTransferError::NotFound(_)) => {
+                LEG_NOTFOUND.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(ChunkTransferError::TimedOut) => {
+                LEG_TIMEOUT.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(ChunkTransferError::Protocol(_)) => {
+                LEG_PROTOCOL.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(ChunkTransferError::NotConnected) => {
+                LEG_NOTCONN.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(ChunkTransferError::Cancelled) => {
+                LEG_CANCELLED.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(ChunkTransferError::ChannelClosed) => {
+                LEG_CHANCLOSED.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(ChunkTransferError::Busy) => {
+                LEG_BUSY.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        match &outcome {
+            Ok(_) => tracing::debug!(
+                %peer, chunk = %chunk_address, peer_po, latency_ms,
+                "retrieval attempt: Hit"
+            ),
+            Err(ChunkTransferError::NotFound(_)) => tracing::debug!(
+                %peer, chunk = %chunk_address, peer_po, latency_ms,
+                "retrieval attempt: NotFound"
+            ),
+            Err(ChunkTransferError::TimedOut) => tracing::debug!(
+                %peer, chunk = %chunk_address, peer_po, latency_ms,
+                "retrieval attempt: Timeout"
+            ),
+            Err(e) => tracing::debug!(
+                %peer, chunk = %chunk_address, peer_po, latency_ms, error = %e,
+                "retrieval attempt: transport-error"
+            ),
+        }
+        outcome
+    }
+
+    /// Race the least-loaded close peers with a single delayed hedge.
+    ///
+    /// `pool` is the closest top-K connected peers ordered least-in-flight first.
+    /// The first leg goes to the least-loaded peer immediately; one hedge leg
+    /// follows after `lb_hedge()` if no answer has arrived. This keeps legs per
+    /// chunk near 1-2 and, because every chunk picks the currently least-loaded
+    /// peer, spreads load evenly across all connected peers rather than piling on
+    /// the few closest. An all-busy outcome surfaces as `Failed(Busy)` so the
+    /// caller re-picks from a refreshed load picture.
+    async fn race_load_balanced(
+        &self,
+        pool: &[OverlayAddress],
+        chunk_address: SwarmAddress,
+    ) -> WaveOutcome {
+        // Two distinct least-loaded peers: the primary and one hedge. The hedge
+        // stagger gives the primary a full RTT before the second leg opens, so a
+        // healthy primary needs only one substream.
+        let slice: Vec<_> = pool.iter().take(2).copied().collect();
+        if slice.is_empty() {
+            return WaveOutcome::NoCandidates;
+        }
+        match race_candidates(slice, lb_hedge(), |peer| {
+            self.retrieve_leg(peer, chunk_address)
+        })
+        .await
+        {
+            Ok(result) => WaveOutcome::Hit(ChunkRetrievalResult {
+                chunk: result.chunk,
+                stamp: result.stamp,
+                served_by: result.peer,
+            }),
+            Err(RaceFailure::NoCandidates) => WaveOutcome::NoCandidates,
+            Err(RaceFailure::AllFailed(ChunkTransferError::NotFound(a))) => {
+                let _ = a;
+                WaveOutcome::NotFound
+            }
+            Err(RaceFailure::AllFailed(e)) => WaveOutcome::Failed(e),
+        }
+    }
+
     /// Race the proximity-ranked connected peers in widening waves to the first answer.
     ///
     /// Each attempt logs the serving peer's proximity to the chunk at debug: a
@@ -311,76 +585,7 @@ impl BrowserChunkProvider {
             }
 
             match race_candidates(slice, retrieval_stagger(), |peer| {
-                let client = self.client.clone();
-                async move {
-                    LEGS_DISPATCHED.fetch_add(1, Ordering::Relaxed);
-                    let peer_po = chunk_address.proximity(&peer).get();
-                    let started = js_sys::Date::now();
-                    let outcome = client.retrieve_chunk(peer, chunk_address, true).await;
-                    let latency_ms = js_sys::Date::now() - started;
-                    match &outcome {
-                        Ok(_) => {
-                            HIT_LATENCY_MS_SUM.fetch_add(latency_ms as u64, Ordering::Relaxed);
-                            HIT_LATENCY_CALLS.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Err(ChunkTransferError::Remote) => {
-                            LEG_REMOTE.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Err(ChunkTransferError::NotFound(_)) => {
-                            LEG_NOTFOUND.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Err(ChunkTransferError::TimedOut) => {
-                            LEG_TIMEOUT.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Err(ChunkTransferError::Protocol(_)) => {
-                            LEG_PROTOCOL.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Err(ChunkTransferError::NotConnected) => {
-                            LEG_NOTCONN.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Err(ChunkTransferError::Cancelled) => {
-                            LEG_CANCELLED.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Err(ChunkTransferError::ChannelClosed) => {
-                            LEG_CHANCLOSED.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Err(ChunkTransferError::Busy) => {
-                            LEG_BUSY.fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
-                    match &outcome {
-                        Ok(_) => tracing::debug!(
-                            %peer,
-                            chunk = %chunk_address,
-                            peer_po,
-                            latency_ms,
-                            "retrieval attempt: Hit"
-                        ),
-                        Err(ChunkTransferError::NotFound(_)) => tracing::debug!(
-                            %peer,
-                            chunk = %chunk_address,
-                            peer_po,
-                            latency_ms,
-                            "retrieval attempt: NotFound"
-                        ),
-                        Err(ChunkTransferError::TimedOut) => tracing::debug!(
-                            %peer,
-                            chunk = %chunk_address,
-                            peer_po,
-                            latency_ms,
-                            "retrieval attempt: Timeout"
-                        ),
-                        Err(e) => tracing::debug!(
-                            %peer,
-                            chunk = %chunk_address,
-                            peer_po,
-                            latency_ms,
-                            error = %e,
-                            "retrieval attempt: transport-error"
-                        ),
-                    }
-                    outcome
-                }
+                self.retrieve_leg(peer, chunk_address)
             })
             .await
             {

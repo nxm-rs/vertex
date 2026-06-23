@@ -418,6 +418,11 @@ fn apply_retrieval_overrides_from_page() {
     );
     client::configure_prefetch(parse("pf").map(|v| v as usize));
     client::configure_prefetch_pipeline(params.get("pipeline").is_some_and(|v| v != "0"));
+    client::configure_load_balance(
+        params.get("lb").map(|v| v != "0"),
+        parse("lbtopk"),
+        parse("lbhedge"),
+    );
 }
 
 /// Per-bin connection dial budget for the browser download client.
