@@ -65,7 +65,35 @@ const MAX_PREFETCH_ITERS: usize = 4096;
 /// width as in-flight requests queue, so aggregate throughput stays flat while a
 /// wider fan-out holds the reserve depth steadier. Past a few hundred the fan-out
 /// starts shedding peers; this width sits below that knee.
-const PREFETCH_CONCURRENCY: usize = 128;
+const DEFAULT_PREFETCH_CONCURRENCY: usize = 64;
+
+static PREFETCH_CONCURRENCY_OVERRIDE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(DEFAULT_PREFETCH_CONCURRENCY);
+
+/// Override the prefetch fan-out width (`pf` URL param). Measurement aid so a
+/// concurrency sweep needs no rebuild.
+pub fn configure_prefetch(width: Option<usize>) {
+    if let Some(w) = width.filter(|w| *w > 0) {
+        PREFETCH_CONCURRENCY_OVERRIDE.store(w, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn prefetch_concurrency() -> usize {
+    PREFETCH_CONCURRENCY_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// When set, `download_file` walks the chunk tree with a single global in-flight
+/// pool that enqueues a node's children the instant the node decodes, instead of
+/// the level-synchronous breadth-first walk that drains each level fully before
+/// starting the next. Removes the per-level barrier so the slowest chunk in a
+/// level no longer stalls the whole level. Toggled by the `pipeline` URL param.
+static PREFETCH_PIPELINE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Enable the pipelined (no per-level barrier) prefetch (`pipeline` URL param).
+pub fn configure_prefetch_pipeline(on: bool) {
+    PREFETCH_PIPELINE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// Chunk reads the joiner keeps in flight while assembling from the warm cache.
 ///
@@ -256,10 +284,92 @@ pub async fn download_file(
     provider: Arc<dyn SwarmChunkProvider>,
     cache: &MemoryCache,
 ) -> Result<Vec<u8>, JsValue> {
-    prefetch_tree(file_root, provider.clone(), cache).await?;
+    if PREFETCH_PIPELINE.load(std::sync::atomic::Ordering::Relaxed) {
+        prefetch_tree_pipelined(file_root, provider.clone(), cache).await?;
+    } else {
+        prefetch_tree(file_root, provider.clone(), cache).await?;
+    }
 
     let getter = NetworkChunkGet::new(provider, cache.snapshot_map());
     join_to_bytes(file_root, getter).await
+}
+
+/// Prefetch the chunk tree into `cache` with no per-level barrier.
+///
+/// A single in-flight pool holds up to `prefetch_concurrency()` retrievals.
+/// Whenever an intermediate node decodes, its not-yet-seen children are admitted
+/// immediately rather than after the rest of the node's level finishes, so the
+/// pool stays full across level boundaries and one slow leg never stalls a whole
+/// level. Equivalent to `prefetch_tree` in what it fetches; it differs only in
+/// scheduling.
+async fn prefetch_tree_pipelined(
+    root: ChunkAddress,
+    provider: Arc<dyn SwarmChunkProvider>,
+    cache: &MemoryCache,
+) -> Result<(), JsValue> {
+    use futures::stream::FuturesUnordered;
+
+    // A pipelined leaf reaches the network earlier than under the level walk,
+    // so a transient miss must be retried rather than aborting the whole tree
+    // (the level walk masks this because it reaches a level only once its
+    // ancestors are warm). Each address is retried up to this many times before
+    // the download fails.
+    const MAX_CHUNK_RETRIES: u32 = 6;
+
+    let mut seen: HashSet<ChunkAddress> = HashSet::new();
+    seen.insert(root);
+
+    let limit = prefetch_concurrency().max(1);
+    let mut pending: Vec<ChunkAddress> = vec![root];
+    let mut in_flight = FuturesUnordered::new();
+
+    let spawn = |addr: ChunkAddress, attempt: u32| {
+        let provider = Arc::clone(&provider);
+        let cached = cache.fetch(&addr);
+        async move {
+            let outcome = match cached {
+                Some(chunk) => Ok(chunk),
+                None => provider.retrieve_chunk(&addr).await.map(|r| r.chunk),
+            };
+            (addr, attempt, outcome)
+        }
+    };
+
+    // Prime the pool, then refill from `pending` as slots free.
+    while in_flight.len() < limit {
+        match pending.pop() {
+            Some(addr) => in_flight.push(spawn(addr, 0)),
+            None => break,
+        }
+    }
+
+    while let Some((addr, attempt, outcome)) = in_flight.next().await {
+        let chunk = match outcome {
+            Ok(chunk) => chunk,
+            Err(_) if attempt + 1 < MAX_CHUNK_RETRIES => {
+                in_flight.push(spawn(addr, attempt + 1));
+                continue;
+            }
+            Err(e) => return Err(JsValue::from_str(&format!("retrieve {addr}: {e}"))),
+        };
+        if chunk.span() > DEFAULT_BODY_SIZE as u64 {
+            for child in parse_child_refs(chunk.data())? {
+                if seen.insert(child) {
+                    pending.push(child);
+                }
+            }
+        }
+        cache.insert(chunk);
+        // Refill freed slots from the work queue.
+        while in_flight.len() < limit {
+            match pending.pop() {
+                Some(addr) => in_flight.push(spawn(addr, 0)),
+                None => break,
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// List the manifest at `root` as `(path, address_hex)` pairs.
@@ -339,7 +449,7 @@ async fn prefetch_tree(
                     }
                 }
             })
-            .buffer_unordered(PREFETCH_CONCURRENCY)
+            .buffer_unordered(prefetch_concurrency())
             .collect()
             .await;
 
@@ -396,7 +506,7 @@ async fn prefetch_into_shared(
                     }
                 }
             })
-            .buffer_unordered(PREFETCH_CONCURRENCY)
+            .buffer_unordered(prefetch_concurrency())
             .collect()
             .await;
 

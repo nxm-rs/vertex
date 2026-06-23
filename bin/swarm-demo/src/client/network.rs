@@ -1,6 +1,8 @@
 //! Wasm-buildable proximity-routing chunk provider/sender for the browser client.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use nectar_primitives::SwarmAddress;
 use vertex_swarm_api::{
@@ -8,9 +10,7 @@ use vertex_swarm_api::{
     SwarmChunkSender, SwarmError, SwarmResult, SwarmTopologyRouting,
 };
 use vertex_swarm_identity::Identity;
-use vertex_swarm_node::{
-    ChunkTransferError, ClientHandle, RETRIEVAL_STAGGER, RaceFailure, race_candidates,
-};
+use vertex_swarm_node::{ChunkTransferError, ClientHandle, RaceFailure, race_candidates};
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_topology::TopologyHandle;
 
@@ -18,17 +18,89 @@ use vertex_swarm_topology::TopologyHandle;
 const PUSH_CANDIDATE_COUNT: usize = 5;
 
 /// Connected peers raced together in the first retrieval wave.
-const RETRIEVE_INITIAL_CANDIDATES: usize = 8;
+///
+/// The first wave is a latency hedge: more parallel legs find a fast responder
+/// sooner, which lowers per-chunk latency and (at fixed aggregate concurrency)
+/// raises throughput. It also multiplies single-thread substream work, so the
+/// width trades thread cost against tail latency. Tunable at runtime via the
+/// `rw` URL param to sweep without rebuilding.
+const DEFAULT_RETRIEVE_INITIAL_CANDIDATES: usize = 8;
 
 /// Additional connected peers admitted to the race on each later fallback wave.
-const RETRIEVE_WAVE_STEP: usize = 8;
+const DEFAULT_RETRIEVE_WAVE_STEP: usize = 8;
+
+/// Stagger between retrieval candidates joining a wave's race. Tunable via the
+/// `stagger` URL param (milliseconds).
+const DEFAULT_RETRIEVAL_STAGGER_MS: u64 = 500;
+
+static RETRIEVE_INITIAL_CANDIDATES: AtomicU64 =
+    AtomicU64::new(DEFAULT_RETRIEVE_INITIAL_CANDIDATES as u64);
+static RETRIEVE_WAVE_STEP: AtomicU64 = AtomicU64::new(DEFAULT_RETRIEVE_WAVE_STEP as u64);
+static RETRIEVAL_STAGGER_MS: AtomicU64 = AtomicU64::new(DEFAULT_RETRIEVAL_STAGGER_MS);
+
+static RETRIEVE_CLOSE_BUDGET_A: AtomicU64 = AtomicU64::new(DEFAULT_RETRIEVE_CLOSE_BUDGET as u64);
+static RETRIEVE_BUSY_RETRIES_A: AtomicU64 = AtomicU64::new(DEFAULT_RETRIEVE_BUSY_RETRIES as u64);
+
+/// Override the retrieval race knobs from the page URL (`rw`, `wavestep`,
+/// `stagger`, `budget`, `busy`). A measurement aid so a sweep needs no rebuild;
+/// absent params keep the defaults.
+#[allow(clippy::too_many_arguments)]
+pub fn configure_retrieval_race(
+    initial: Option<u64>,
+    wave_step: Option<u64>,
+    stagger_ms: Option<u64>,
+    budget: Option<u64>,
+    busy: Option<u64>,
+) {
+    if let Some(v) = initial.filter(|v| *v > 0) {
+        RETRIEVE_INITIAL_CANDIDATES.store(v, Ordering::Relaxed);
+    }
+    if let Some(v) = wave_step.filter(|v| *v > 0) {
+        RETRIEVE_WAVE_STEP.store(v, Ordering::Relaxed);
+    }
+    if let Some(v) = stagger_ms.filter(|v| *v > 0) {
+        RETRIEVAL_STAGGER_MS.store(v, Ordering::Relaxed);
+    }
+    if let Some(v) = budget.filter(|v| *v > 0) {
+        RETRIEVE_CLOSE_BUDGET_A.store(v, Ordering::Relaxed);
+    }
+    // `busy` may legitimately be set to 0 to disable re-racing.
+    if let Some(v) = busy {
+        RETRIEVE_BUSY_RETRIES_A.store(v, Ordering::Relaxed);
+    }
+}
+
+fn retrieval_stagger() -> Duration {
+    Duration::from_millis(RETRIEVAL_STAGGER_MS.load(Ordering::Relaxed))
+}
+
+fn retrieve_close_budget() -> usize {
+    RETRIEVE_CLOSE_BUDGET_A.load(Ordering::Relaxed) as usize
+}
+
+fn retrieve_busy_retries() -> usize {
+    RETRIEVE_BUSY_RETRIES_A.load(Ordering::Relaxed) as usize
+}
+
+/// Single-thread instrumentation: retrieval legs dispatched and chunks served.
+///
+/// A "leg" is one `client.retrieve_chunk` substream attempt. The dispatched/hit
+/// ratio is substreams-per-chunk, the headline multiplier on the single wasm
+/// thread. Reported periodically from the hit path; temporary measurement aid.
+static LEGS_DISPATCHED: AtomicU64 = AtomicU64::new(0);
+static CHUNKS_SERVED: AtomicU64 = AtomicU64::new(0);
+/// Total `closest_to` wall time (microseconds) and call count, to size the
+/// per-chunk proximity ranking against the rest of the per-chunk thread work.
+static CLOSEST_TO_US: AtomicU64 = AtomicU64::new(0);
+static CLOSEST_TO_CALLS: AtomicU64 = AtomicU64::new(0);
 
 /// Hard ceiling on connected peers a retrieval races before it stops widening.
 ///
 /// A retrieval never dials: it relies on the serving peer to forward the request
 /// toward the chunk's neighbourhood (the retrieval protocol is forwarding-based).
 /// Racing the closest connected peers is enough, so this is the only budget.
-const RETRIEVE_CLOSE_BUDGET: usize = 24;
+/// Tunable via the `budget` URL param.
+const DEFAULT_RETRIEVE_CLOSE_BUDGET: usize = 24;
 
 /// Times a retrieval re-races its candidates when every one was skipped for
 /// being at its per-peer in-flight cap.
@@ -36,8 +108,8 @@ const RETRIEVE_CLOSE_BUDGET: usize = 24;
 /// An all-busy wave is transient self-imposed back-pressure (a wide parallel
 /// download momentarily filled every close peer's slots), not chunk absence, so
 /// the retrieval waits a short backoff and re-races rather than failing the
-/// chunk.
-const RETRIEVE_BUSY_RETRIES: usize = 12;
+/// chunk. Tunable via the `busy` URL param.
+const DEFAULT_RETRIEVE_BUSY_RETRIES: usize = 12;
 
 /// Backoff between all-busy re-races, long enough for an in-flight slot to free.
 const RETRIEVE_BUSY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
@@ -70,10 +142,16 @@ impl SwarmChunkProvider for BrowserChunkProvider {
         let chunk_address = SwarmAddress::new(address.0.into());
 
         // Rank the connected peers by proximity to the chunk, but only the
-        // closest `RETRIEVE_CLOSE_BUDGET` of them.
+        // closest `retrieve_close_budget()` of them.
+        let closest_started = js_sys::Date::now();
         let ranked = self
             .topology
-            .closest_to(&chunk_address, RETRIEVE_CLOSE_BUDGET);
+            .closest_to(&chunk_address, retrieve_close_budget());
+        CLOSEST_TO_US.fetch_add(
+            ((js_sys::Date::now() - closest_started) * 1000.0) as u64,
+            Ordering::Relaxed,
+        );
+        CLOSEST_TO_CALLS.fetch_add(1, Ordering::Relaxed);
 
         if ranked.is_empty() {
             tracing::warn!(
@@ -89,7 +167,7 @@ impl SwarmChunkProvider for BrowserChunkProvider {
         // in-flight cap (a wide parallel download), which is transient
         // back-pressure, not absence. Wait a short backoff and re-race.
         let mut outcome = self.race_connected_waves(&ranked, chunk_address).await;
-        for _ in 0..RETRIEVE_BUSY_RETRIES {
+        for _ in 0..retrieve_busy_retries() {
             if !matches!(&outcome, WaveOutcome::Failed(ChunkTransferError::Busy)) {
                 break;
             }
@@ -99,6 +177,25 @@ impl SwarmChunkProvider for BrowserChunkProvider {
 
         match outcome {
             WaveOutcome::Hit(result) => {
+                let served = CHUNKS_SERVED.fetch_add(1, Ordering::Relaxed) + 1;
+                // Report the single-thread breakdown once per 100 chunks: the
+                // substreams-per-chunk multiplier and the mean `closest_to`
+                // cost, so iteration can see where the per-chunk thread time
+                // goes. Temporary measurement aid.
+                if served.is_multiple_of(20) {
+                    let legs = LEGS_DISPATCHED.load(Ordering::Relaxed);
+                    let ct_us = CLOSEST_TO_US.load(Ordering::Relaxed);
+                    let ct_calls = CLOSEST_TO_CALLS.load(Ordering::Relaxed).max(1);
+                    let spc = (legs as f64 / served as f64 * 100.0).round() / 100.0;
+                    // Single pre-formatted message: the browser console formatter
+                    // splits structured fields into separate args the harness
+                    // cannot scrape, so everything goes in the message string.
+                    tracing::info!(
+                        "retrieval-instrumentation served={served} legs={legs} \
+                         substreams_per_chunk={spc} closest_to_us_mean={} closest_to_calls={ct_calls}",
+                        ct_us / ct_calls,
+                    );
+                }
                 tracing::debug!(
                     chunk = %chunk_address,
                     served_by = %result.served_by,
@@ -171,9 +268,9 @@ impl BrowserChunkProvider {
 
         while attempted < available {
             let wave_len = if wave == 0 {
-                RETRIEVE_INITIAL_CANDIDATES
+                RETRIEVE_INITIAL_CANDIDATES.load(Ordering::Relaxed) as usize
             } else {
-                RETRIEVE_WAVE_STEP
+                RETRIEVE_WAVE_STEP.load(Ordering::Relaxed) as usize
             };
             let wave_end = (attempted + wave_len).min(available);
             let slice: Vec<_> = ranked[attempted..wave_end].to_vec();
@@ -182,9 +279,10 @@ impl BrowserChunkProvider {
                 break;
             }
 
-            match race_candidates(slice, RETRIEVAL_STAGGER, |peer| {
+            match race_candidates(slice, retrieval_stagger(), |peer| {
                 let client = self.client.clone();
                 async move {
+                    LEGS_DISPATCHED.fetch_add(1, Ordering::Relaxed);
                     let peer_po = chunk_address.proximity(&peer).get();
                     let started = js_sys::Date::now();
                     let outcome = client.retrieve_chunk(peer, chunk_address, true).await;

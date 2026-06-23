@@ -274,6 +274,7 @@ pub fn main() {
 pub async fn start() -> Result<SwarmDemo, JsValue> {
     console_error_panic_hook::set_once();
     init_tracing();
+    apply_retrieval_overrides_from_page();
 
     info!("starting browser Swarm client demo");
 
@@ -391,6 +392,29 @@ fn swap_config_from_page() -> Option<LauncherSwapConfig> {
     let mut config = LauncherSwapConfig::new(chequebook);
     config.rpc_url = params.get("rpc").filter(|url| !url.is_empty());
     Some(config)
+}
+
+/// Apply retrieval and prefetch overrides from the page URL (`rw`, `wavestep`,
+/// `stagger`, `budget`, `busy`, `pf`, `pipeline`). A measurement aid for
+/// sweeping the download tuning without rebuilding; absent params leave the
+/// compiled defaults in place.
+fn apply_retrieval_overrides_from_page() {
+    let Some(search) = web_sys::window().and_then(|w| w.location().search().ok()) else {
+        return;
+    };
+    let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) else {
+        return;
+    };
+    let parse = |k: &str| params.get(k).and_then(|v| v.parse::<u64>().ok());
+    client::configure_retrieval_race(
+        parse("rw"),
+        parse("wavestep"),
+        parse("stagger"),
+        parse("budget"),
+        parse("busy"),
+    );
+    client::configure_prefetch(parse("pf").map(|v| v as usize));
+    client::configure_prefetch_pipeline(params.get("pipeline").is_some_and(|v| v != "0"));
 }
 
 /// Publish a running demo handle on `window.__swarmDemo` for the JS frontend.
