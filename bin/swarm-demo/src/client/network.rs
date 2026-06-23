@@ -89,6 +89,18 @@ fn retrieve_busy_retries() -> usize {
 /// thread. Reported periodically from the hit path; temporary measurement aid.
 static LEGS_DISPATCHED: AtomicU64 = AtomicU64::new(0);
 static CHUNKS_SERVED: AtomicU64 = AtomicU64::new(0);
+/// Per-leg outcome tally, to separate a peer-coverage miss (the remote forwarded
+/// but no closer peer held the chunk: `Remote`/`NotFound`) from a transport
+/// failure (`Protocol`/`NotConnected`/`Cancelled`/`ChannelClosed`). Temporary
+/// measurement aid surfaced in the periodic instrumentation line.
+static LEG_REMOTE: AtomicU64 = AtomicU64::new(0);
+static LEG_NOTFOUND: AtomicU64 = AtomicU64::new(0);
+static LEG_TIMEOUT: AtomicU64 = AtomicU64::new(0);
+static LEG_PROTOCOL: AtomicU64 = AtomicU64::new(0);
+static LEG_NOTCONN: AtomicU64 = AtomicU64::new(0);
+static LEG_CANCELLED: AtomicU64 = AtomicU64::new(0);
+static LEG_CHANCLOSED: AtomicU64 = AtomicU64::new(0);
+static LEG_BUSY: AtomicU64 = AtomicU64::new(0);
 /// Total `closest_to` wall time (microseconds) and call count, to size the
 /// per-chunk proximity ranking against the rest of the per-chunk thread work.
 static CLOSEST_TO_US: AtomicU64 = AtomicU64::new(0);
@@ -190,9 +202,20 @@ impl SwarmChunkProvider for BrowserChunkProvider {
                     // Single pre-formatted message: the browser console formatter
                     // splits structured fields into separate args the harness
                     // cannot scrape, so everything goes in the message string.
+                    let remote = LEG_REMOTE.load(Ordering::Relaxed);
+                    let notfound = LEG_NOTFOUND.load(Ordering::Relaxed);
+                    let timeout = LEG_TIMEOUT.load(Ordering::Relaxed);
+                    let protocol = LEG_PROTOCOL.load(Ordering::Relaxed);
+                    let notconn = LEG_NOTCONN.load(Ordering::Relaxed);
+                    let cancelled = LEG_CANCELLED.load(Ordering::Relaxed);
+                    let chanclosed = LEG_CHANCLOSED.load(Ordering::Relaxed);
+                    let busy = LEG_BUSY.load(Ordering::Relaxed);
                     tracing::info!(
                         "retrieval-instrumentation served={served} legs={legs} \
-                         substreams_per_chunk={spc} closest_to_us_mean={} closest_to_calls={ct_calls}",
+                         substreams_per_chunk={spc} closest_to_us_mean={} closest_to_calls={ct_calls} \
+                         leg_remote={remote} leg_notfound={notfound} leg_timeout={timeout} \
+                         leg_protocol={protocol} leg_notconn={notconn} \
+                         leg_cancelled={cancelled} leg_chanclosed={chanclosed} leg_busy={busy}",
                         ct_us / ct_calls,
                     );
                 }
@@ -287,6 +310,33 @@ impl BrowserChunkProvider {
                     let started = js_sys::Date::now();
                     let outcome = client.retrieve_chunk(peer, chunk_address, true).await;
                     let latency_ms = js_sys::Date::now() - started;
+                    match &outcome {
+                        Ok(_) => {}
+                        Err(ChunkTransferError::Remote) => {
+                            LEG_REMOTE.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(ChunkTransferError::NotFound(_)) => {
+                            LEG_NOTFOUND.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(ChunkTransferError::TimedOut) => {
+                            LEG_TIMEOUT.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(ChunkTransferError::Protocol(_)) => {
+                            LEG_PROTOCOL.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(ChunkTransferError::NotConnected) => {
+                            LEG_NOTCONN.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(ChunkTransferError::Cancelled) => {
+                            LEG_CANCELLED.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(ChunkTransferError::ChannelClosed) => {
+                            LEG_CHANCLOSED.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(ChunkTransferError::Busy) => {
+                            LEG_BUSY.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
                     match &outcome {
                         Ok(_) => tracing::debug!(
                             %peer,
