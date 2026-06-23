@@ -62,15 +62,19 @@ const MAX_PREFETCH_ITERS: usize = 4096;
 /// spreads load across the neighbourhood instead of piling depth onto the
 /// closest few, which also holds the reserve depth steadier.
 ///
-/// It is also a throughput lever, but a sharply diminishing one: with the
-/// in-flight pool full, throughput is `pool / per-chunk-latency`, so doubling
-/// this roughly doubles throughput only until the connected peers' per-peer
-/// in-flight slots saturate. Past that the surplus requests queue at the
-/// semaphores (latency climbs) and re-race onto farther peers (more forwarding
-/// misses), so the marginal gain collapses. 128 sits near that knee for a
-/// light client holding a few hundred peers; higher trades latency and depth
-/// stability for little extra rate.
-const DEFAULT_PREFETCH_CONCURRENCY: usize = 128;
+/// It is also the dominant throughput lever: with the in-flight pool full,
+/// throughput is `pool / per-chunk-latency`, and per-chunk latency on a light
+/// forwarding client is a roughly fixed ~1.2s round trip, so wider concurrency
+/// raises rate near-linearly until the connected peers' per-peer in-flight slots
+/// saturate. Past saturation the surplus requests bounce off the per-peer cap
+/// and re-race onto farther peers (forwarding amplification climbs sharply), so
+/// the gain rolls over and then reverses as the wasted legs churn connections.
+/// Measured on the live network from the browser (a few hundred connected
+/// peers): rate climbs through 256 to a peak near 512, then falls back by 1024.
+/// 256 is the chosen operating point: it captures most of the achievable rate at
+/// a fraction of the leg amplification and connection churn that the raw peak
+/// (512) pays for it.
+const DEFAULT_PREFETCH_CONCURRENCY: usize = 256;
 
 static PREFETCH_CONCURRENCY_OVERRIDE: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(DEFAULT_PREFETCH_CONCURRENCY);
