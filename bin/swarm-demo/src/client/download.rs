@@ -85,8 +85,9 @@ fn prefetch_concurrency() -> usize {
 /// When set, `download_file` walks the chunk tree with a single global in-flight
 /// pool that enqueues a node's children the instant the node decodes, instead of
 /// the level-synchronous breadth-first walk that drains each level fully before
-/// starting the next. Removes the per-level barrier so the slowest chunk in a
-/// level no longer stalls the whole level. Toggled by the `pipeline` URL param.
+/// starting the next. The pool stays full across level boundaries (no per-level
+/// barrier) but always admits the shallowest pending node first, so ancestors
+/// stay warm ahead of their leaves. Toggled by the `pipeline` URL param.
 static PREFETCH_PIPELINE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -294,81 +295,122 @@ pub async fn download_file(
     join_to_bytes(file_root, getter).await
 }
 
-/// Prefetch the chunk tree into `cache` with no per-level barrier.
+/// Prefetch the chunk tree into `cache` with no per-level barrier, admitting the
+/// shallowest pending node first.
 ///
 /// A single in-flight pool holds up to `prefetch_concurrency()` retrievals.
-/// Whenever an intermediate node decodes, its not-yet-seen children are admitted
+/// Whenever an intermediate node decodes, its not-yet-seen children are queued
 /// immediately rather than after the rest of the node's level finishes, so the
 /// pool stays full across level boundaries and one slow leg never stalls a whole
-/// level. Equivalent to `prefetch_tree` in what it fetches; it differs only in
-/// scheduling.
+/// level. The pending queue is a min-heap on tree depth, so a freed slot always
+/// takes the shallowest waiting node: ancestors are dispatched ahead of their
+/// leaves, preserving the level walk's "warm ancestors first" ordering without
+/// its hard per-level drain. Equivalent to `prefetch_tree` in what it fetches; it
+/// differs only in scheduling.
 async fn prefetch_tree_pipelined(
     root: ChunkAddress,
     provider: Arc<dyn SwarmChunkProvider>,
     cache: &MemoryCache,
 ) -> Result<(), JsValue> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
     use futures::stream::FuturesUnordered;
 
-    // A pipelined leaf reaches the network earlier than under the level walk,
-    // so a transient miss must be retried rather than aborting the whole tree
-    // (the level walk masks this because it reaches a level only once its
-    // ancestors are warm). Each address is retried up to this many times before
-    // the download fails.
+    // A pipelined leaf reaches the network earlier than under the level walk, so
+    // the wide fan-out can momentarily congest the close peers and a chunk's whole
+    // candidate race fails on transient transport errors rather than chunk absence
+    // (the level walk masks this because it dispatches a level only once its
+    // ancestors are warm, never saturating the network as hard). Each address is
+    // retried up to this many times, with a backoff between retries so the
+    // congestion clears before the chunk re-races, before the download fails.
     const MAX_CHUNK_RETRIES: u32 = 6;
+    // Backoff before re-racing a failed chunk, grown per attempt so a congested
+    // wave drains before the retry re-hammers the same close peers.
+    const RETRY_BACKOFF_STEP: std::time::Duration = std::time::Duration::from_millis(150);
 
     let mut seen: HashSet<ChunkAddress> = HashSet::new();
     seen.insert(root);
 
     let limit = prefetch_concurrency().max(1);
-    let mut pending: Vec<ChunkAddress> = vec![root];
+    // Min-heap on depth: `Reverse((depth, addr))` pops the shallowest node, so
+    // freed slots always go to ancestors before their deeper descendants.
+    let mut pending: BinaryHeap<Reverse<(u32, ChunkAddress)>> = BinaryHeap::new();
+    pending.push(Reverse((0, root)));
     let mut in_flight = FuturesUnordered::new();
 
-    let spawn = |addr: ChunkAddress, attempt: u32| {
+    let spawn = |addr: ChunkAddress, depth: u32, attempt: u32| {
         let provider = Arc::clone(&provider);
         let cached = cache.fetch(&addr);
         async move {
+            // Back off before a retry so a congested wave drains; the first
+            // attempt (0) runs immediately.
+            if attempt > 0 {
+                futures_timer::Delay::new(RETRY_BACKOFF_STEP * attempt).await;
+            }
             let outcome = match cached {
                 Some(chunk) => Ok(chunk),
                 None => provider.retrieve_chunk(&addr).await.map(|r| r.chunk),
             };
-            (addr, attempt, outcome)
+            (addr, depth, attempt, outcome)
         }
     };
 
     // Prime the pool, then refill from `pending` as slots free.
     while in_flight.len() < limit {
         match pending.pop() {
-            Some(addr) => in_flight.push(spawn(addr, 0)),
+            Some(Reverse((depth, addr))) => in_flight.push(spawn(addr, depth, 0)),
             None => break,
         }
     }
 
-    while let Some((addr, attempt, outcome)) = in_flight.next().await {
+    let mut skipped = 0usize;
+    while let Some((addr, depth, attempt, outcome)) = in_flight.next().await {
         let chunk = match outcome {
             Ok(chunk) => chunk,
             Err(_) if attempt + 1 < MAX_CHUNK_RETRIES => {
-                in_flight.push(spawn(addr, attempt + 1));
+                in_flight.push(spawn(addr, depth, attempt + 1));
                 continue;
             }
-            Err(e) => return Err(JsValue::from_str(&format!("retrieve {addr}: {e}"))),
+            // Prefetch is a cache-warming optimisation, not the correctness path:
+            // a chunk that exhausts its retries (transient congestion against a
+            // deep-forwarding chunk) is left for the joiner's own retrieval, which
+            // reaches it later once the burst has drained and its ancestors are
+            // warm. Skipping an intermediate node forgoes warming its subtree; the
+            // joiner re-fetches that node and walks down. Never abort the whole
+            // download on one prefetch miss.
+            Err(_) => {
+                skipped += 1;
+                // Refill the freed slot before continuing so the pool stays full.
+                while in_flight.len() < limit {
+                    match pending.pop() {
+                        Some(Reverse((depth, addr))) => in_flight.push(spawn(addr, depth, 0)),
+                        None => break,
+                    }
+                }
+                continue;
+            }
         };
         if chunk.span() > DEFAULT_BODY_SIZE as u64 {
             for child in parse_child_refs(chunk.data())? {
                 if seen.insert(child) {
-                    pending.push(child);
+                    pending.push(Reverse((depth + 1, child)));
                 }
             }
         }
         cache.insert(chunk);
-        // Refill freed slots from the work queue.
+        // Refill freed slots, shallowest-first, from the work queue.
         while in_flight.len() < limit {
             match pending.pop() {
-                Some(addr) => in_flight.push(spawn(addr, 0)),
+                Some(Reverse((depth, addr))) => in_flight.push(spawn(addr, depth, 0)),
                 None => break,
             }
         }
     }
 
+    if skipped > 0 {
+        tracing::debug!(skipped, "pipelined prefetch left chunks for the joiner");
+    }
     Ok(())
 }
 

@@ -156,7 +156,7 @@ const MAX_THROTTLE_WAIT: Duration = Duration::from_secs(2);
 /// full peer is skipped to the next-closest peer rather than queued, so a wide
 /// download fan-out spreads across the neighbourhood instead of concentrating on
 /// the closest few and resetting their streams.
-const MAX_INFLIGHT_PER_PEER: usize = 4;
+const MAX_INFLIGHT_PER_PEER: usize = 8;
 
 /// Paces outbound pushsync and retrieval requests under the remote peer's
 /// pseudosettle allowance.
