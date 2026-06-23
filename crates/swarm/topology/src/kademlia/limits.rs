@@ -241,6 +241,12 @@ impl DepthAwareLimits {
         if target == usize::MAX {
             0
         } else {
+            // The trim floor is `max(target, oversaturation)`, and
+            // `oversaturation()` is itself floored at saturation. So even when a
+            // download-churn depth dip momentarily drops the closest bin out of
+            // the neighbourhood, trimming never cuts it below saturation: the
+            // closest peers retrieval and pushsync route through stay connected
+            // while the churn passes.
             connected.saturating_sub(target.max(self.oversaturation()))
         }
     }

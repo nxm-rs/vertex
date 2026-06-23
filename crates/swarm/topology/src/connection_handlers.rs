@@ -162,9 +162,24 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
             }
         };
 
-        // Penalize early disconnects (post-handshake connections that fail quickly).
-        // Skip BinTrimmed since we initiated the eviction.
-        if disconnect_reason != DisconnectReason::BinTrimmed
+        // Penalize early disconnects only when we can attribute the close to
+        // the peer. We skip two blameless cases:
+        //
+        // - `BinTrimmed`: we initiated the eviction, so it is never the peer's
+        //   fault.
+        // - `ConnectionError`: an IO error or keep-alive timeout is a remote or
+        //   transport close (the peer or the network dropped the connection),
+        //   not a fast post-handshake vanish we can blame. A peer that has been
+        //   actively serving us and is then reset by a transient transport
+        //   condition must not be scored down for it; doing so evicts and
+        //   redials honest serving peers and churns the neighbourhood. Only an
+        //   orderly local-attributable close (`LocalClose`) inside the window
+        //   still counts.
+        let blameless = matches!(
+            disconnect_reason,
+            DisconnectReason::BinTrimmed | DisconnectReason::ConnectionError
+        );
+        if !blameless
             && let Some(duration) = connection_duration
             && duration < self.early_disconnect_threshold
         {

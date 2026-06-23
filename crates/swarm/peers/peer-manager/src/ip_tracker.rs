@@ -86,38 +86,47 @@ pub struct IpTrackerConfig {
 }
 
 impl IpTrackerConfig {
-    /// Default distinct-overlay cap per IP group (16).
-    ///
-    /// Conservative: many legitimate peers can share one IPv4 address
-    /// behind NAT or CGNAT, but they complete handshakes as they connect
-    /// and then hold the connection, so even a large cohort rarely
-    /// produces 16 distinct overlays inside one window. Local-subnet and
-    /// explicitly trusted peers are exempt before the tracker is
-    /// consulted, so a home LAN never counts against the cap.
-    pub const DEFAULT_MAX_OVERLAYS_PER_IP: usize = 16;
-
     /// Default sighting window (15 minutes).
     ///
     /// Long enough that an attacker cannot simply pace identity rotation
     /// below notice, short enough that a reconnect burst after an outage
-    /// (a NAT cohort redialing at once) clears quickly.
+    /// (a NAT cohort redialing at once) clears quickly. Retained for the
+    /// re-enabled (capped) configuration; the default config disables the
+    /// caps entirely.
     pub const DEFAULT_WINDOW: Duration = Duration::from_secs(15 * 60);
 
-    /// Default per-IP sighting bound (64).
+    /// A configuration with the per-IP caps disabled.
     ///
-    /// Four times the overlay cap: enough history to keep the
-    /// distinct-overlay count exact well past the detection threshold,
-    /// small enough that a flooding IP costs a fixed few KB.
-    pub const DEFAULT_MAX_SIGHTINGS_PER_IP: usize = 64;
+    /// Many legitimate storers run a large cohort of independent nodes
+    /// behind one routable IPv4 address (one host, many ports). Each
+    /// completes its own handshake under its own overlay, so a per-IP
+    /// overlay cap misfires on those honest hosts: capping or penalising
+    /// their overlays makes us evict serving peers and redial their
+    /// siblings, hammering the host's own per-IP connection limits. The
+    /// caps are off by default for that reason; an operator can re-enable
+    /// them with explicit finite values when defending against a confirmed
+    /// identity-cycling attacker.
+    pub fn disabled() -> Self {
+        Self {
+            max_overlays_per_ip: usize::MAX,
+            window: Self::DEFAULT_WINDOW,
+            max_sightings_per_ip: usize::MAX,
+        }
+    }
+
+    /// Whether the per-IP caps are disabled (no overlay or sighting limit).
+    ///
+    /// When disabled the tracker records nothing and the cycling signal is
+    /// never raised, so a shared-IP cohort of honest nodes is never capped,
+    /// penalised, refused, or evicted for sharing one address.
+    pub fn is_disabled(&self) -> bool {
+        self.max_overlays_per_ip == usize::MAX && self.max_sightings_per_ip == usize::MAX
+    }
 }
 
 impl Default for IpTrackerConfig {
     fn default() -> Self {
-        Self {
-            max_overlays_per_ip: Self::DEFAULT_MAX_OVERLAYS_PER_IP,
-            window: Self::DEFAULT_WINDOW,
-            max_sightings_per_ip: Self::DEFAULT_MAX_SIGHTINGS_PER_IP,
-        }
+        Self::disabled()
     }
 }
 
@@ -207,6 +216,11 @@ impl IpTracker {
         group: IpGroup,
         now: u64,
     ) -> RecordOutcome {
+        // Caps disabled: track nothing and never raise the cycling signal, so
+        // a cohort of honest nodes behind one IP is never flagged.
+        if self.config.is_disabled() {
+            return RecordOutcome::AlreadyTracked;
+        }
         self.prune_group(group, now);
 
         let entry = self.groups.entry(group).or_default();
@@ -332,6 +346,25 @@ mod tests {
 
     fn v4(last: u8) -> IpGroup {
         IpGroup::from(IpAddr::from([203, 0, 113, last]))
+    }
+
+    #[test]
+    fn default_config_disables_the_caps() {
+        let config = IpTrackerConfig::default();
+        assert!(config.is_disabled());
+
+        // A disabled tracker records nothing and never flags, no matter how
+        // many distinct overlays arrive from one IP.
+        let mut t = IpTracker::new(config);
+        for n in 1..=100 {
+            assert_eq!(
+                t.record(test_overlay(n), v4(1), 100),
+                RecordOutcome::AlreadyTracked,
+                "a disabled tracker never flags cycling"
+            );
+        }
+        assert_eq!(t.tracked_ips(), 0);
+        assert_eq!(t.distinct_overlays(IpAddr::from([203, 0, 113, 1]), 100), 0);
     }
 
     #[test]

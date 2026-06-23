@@ -3,11 +3,12 @@
 //! Manifests are read against the in-memory cache with a network prefetch-retry
 //! loop. Buffered reassembly (`download_file`) enumerates the chunk tree and
 //! prefetches it breadth-first before assembling from the warm cache. The
-//! streamed path (`stream_file`) skips that prefetch and lets the joiner drive
-//! retrieval sequentially, so it never fetches far ahead of the sink.
+//! streamed path (`stream_file`) prefetches the tree concurrently with the
+//! joiner's ordered reads, so the joiner reads mostly cached chunks while the
+//! fan-out stays per-peer-bounded by the client throttle.
 
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
 use js_sys::Uint8Array;
@@ -53,19 +54,24 @@ const REF_SIZE: usize = 32;
 /// Maximum prefetch round trips before giving up on a manifest op.
 const MAX_PREFETCH_ITERS: usize = 4096;
 
-/// Chunk retrievals kept in flight while prefetching a buffered download's tree.
+/// Chunk retrievals the tree prefetch keeps in flight at once.
 ///
-/// Only the buffered (`download_file`) path prefetches the whole tree; the
-/// streamed path reads sequentially instead (see [`stream_file`]). Kept modest so
-/// the breadth-first warm-up does not itself flood storers; per-storer pressure
-/// is bounded by the provider's per-peer caps regardless.
-const PREFETCH_CONCURRENCY: usize = 8;
+/// Both download paths prefetch concurrently: `download_file` before assembling,
+/// `stream_file` alongside the ordered stream. This is the download's aggregate
+/// fan-out width, deliberately wide so many retrievals run in parallel across
+/// the whole neighbourhood. Per-storer pressure is not bounded here but by the
+/// provider's per-peer in-flight cap, which skips a saturated peer to the
+/// next-closest one; a wide fan-out over that cap spreads the load across many
+/// peers instead of piling depth onto the closest few.
+const PREFETCH_CONCURRENCY: usize = 32;
 
-/// Chunk reads the joiner keeps in flight. This is the streamed path's sole
-/// retrieval breadth (it does not prefetch), so it acts as a sequential
-/// lookahead window: wide enough to hide latency, narrow enough that per-storer
-/// pressure stays inside the provider's per-peer caps.
-const JOIN_CONCURRENCY: usize = 8;
+/// Chunk reads the joiner keeps in flight while assembling from the warm cache.
+///
+/// With the concurrent prefetch warming the shared map ahead of it, the joiner's
+/// ordered reads mostly hit the cache, so this is a lookahead window over warm
+/// chunks rather than the retrieval breadth. Per-storer pressure on any
+/// network miss is still bounded by the provider's per-peer cap.
+const JOIN_CONCURRENCY: usize = 16;
 
 /// Download the file at `root`, resolving it as a single-file manifest if it is one.
 pub async fn download_reference(
@@ -100,11 +106,17 @@ pub async fn stream_reference(
     stream_file(file_root, provider, cache, sink).await
 }
 
-/// Stream the file at `file_root` to `sink` as ordered segments. Retrieval is
-/// driven by the joiner reading sequentially (a bounded lookahead window), not by
-/// a whole-tree prefetch: pre-fetching the entire tree up front would flood
-/// storers far ahead of where the sink has consumed. Each segment is dropped
-/// after its write resolves, bounding memory.
+/// Stream the file at `file_root` to `sink` as ordered segments.
+///
+/// The joiner emits segments strictly in order, fetching one subtree at a time,
+/// so driving retrieval from the joiner alone serialises the whole download to
+/// one round trip per subtree. Instead a concurrent prefetch walks the chunk
+/// tree breadth-first and warms the shared map the joiner reads from, so the
+/// joiner's ordered reads hit the warm map at memory speed. The prefetch fans
+/// out wide across the neighbourhood; the per-peer in-flight cap in the client
+/// throttle is what keeps that fan-out from flooding any single storer. Each
+/// streamed segment is dropped after its write resolves, bounding wasm
+/// buffering to one segment in flight.
 pub async fn stream_file(
     file_root: ChunkAddress,
     provider: Arc<dyn SwarmChunkProvider>,
@@ -112,6 +124,10 @@ pub async fn stream_file(
     sink: &DownloadSink,
 ) -> Result<(), JsValue> {
     let getter = NetworkChunkGet::new(provider, cache.snapshot_map());
+    // The getter's live map, shared with the prefetch below so the joiner's
+    // ordered reads find prefetched chunks instead of re-fetching them.
+    let shared = getter.shared();
+    let provider = getter.provider();
     let joiner = Joiner::<NetworkChunkGet, DEFAULT_BODY_SIZE>::new(getter, file_root)
         .await
         .map_err(|e| JsValue::from_str(&format!("joiner open: {e}")))?
@@ -125,25 +141,39 @@ pub async fn stream_file(
         return finish(sink).await;
     }
 
-    let stream = joiner.into_stream();
-    futures::pin_mut!(stream);
-    while let Some(segment) = stream.next().await {
-        let segment = match segment {
-            Ok(seg) => seg,
-            Err(e) => {
-                sink.abort(&format!("joiner read: {e}"));
-                return Err(JsValue::from_str(&format!("joiner read: {e}")));
+    // Warm the getter's live map concurrently with the ordered stream: the
+    // prefetch races ahead fetching the tree in parallel (fanned wide across
+    // peers, bounded per-peer by the client throttle) while the joiner reads
+    // mostly cached segments in order and writes them to the sink.
+    let prefetch = prefetch_into_shared(file_root, provider, shared);
+    let stream_out = async {
+        let stream = joiner.into_stream();
+        futures::pin_mut!(stream);
+        while let Some(segment) = stream.next().await {
+            let segment = match segment {
+                Ok(seg) => seg,
+                Err(e) => {
+                    sink.abort(&format!("joiner read: {e}"));
+                    return Err(JsValue::from_str(&format!("joiner read: {e}")));
+                }
+            };
+            // Copy this segment into a JS view and write it; await applies the
+            // sink's backpressure. The segment is dropped at the end of the loop
+            // body, so peak wasm buffering is one segment plus its JS copy.
+            let view = Uint8Array::from(&segment[..]);
+            if let Err(e) = sink.write(view).await {
+                sink.abort("write failed");
+                return Err(JsValue::from_str(&format!("sink write: {e:?}")));
             }
-        };
-        // Copy this segment into a JS view and write it; await applies the
-        // sink's backpressure. The segment is dropped at the end of the loop
-        // body, so peak wasm buffering is one segment plus its JS copy.
-        let view = Uint8Array::from(&segment[..]);
-        if let Err(e) = sink.write(view).await {
-            sink.abort("write failed");
-            return Err(JsValue::from_str(&format!("sink write: {e:?}")));
         }
-    }
+        Ok(())
+    };
+
+    // Run both to completion. A prefetch error is non-fatal on its own (the
+    // joiner can still fetch the chunk itself), so only a stream error aborts.
+    let (prefetch_result, stream_result) = futures::future::join(prefetch, stream_out).await;
+    stream_result?;
+    prefetch_result?;
 
     finish(sink).await
 }
@@ -326,6 +356,62 @@ async fn prefetch_tree(
                 }
             }
             cache.insert(chunk);
+        }
+        level = next;
+    }
+
+    Ok(())
+}
+
+/// Prefetch the chunk tree at `root` into the joiner's live `shared` map,
+/// breadth-first and concurrent.
+///
+/// Like [`prefetch_tree`] but writes into the getter's `Arc<Mutex<_>>` rather
+/// than the `MemoryCache`, so the joiner streaming the same getter sees each
+/// chunk the moment it lands and never re-fetches it.
+async fn prefetch_into_shared(
+    root: ChunkAddress,
+    provider: Arc<dyn SwarmChunkProvider>,
+    shared: Arc<Mutex<HashMap<ChunkAddress, AnyChunk>>>,
+) -> Result<(), JsValue> {
+    let mut seen: HashSet<ChunkAddress> = HashSet::new();
+    let mut level: Vec<ChunkAddress> = vec![root];
+    seen.insert(root);
+
+    while !level.is_empty() {
+        let fetched: Vec<Result<AnyChunk, JsValue>> = futures::stream::iter(level.into_iter())
+            .map(|addr| {
+                let provider = Arc::clone(&provider);
+                let cached = shared.lock().expect("cache mutex").get(&addr).cloned();
+                async move {
+                    match cached {
+                        Some(chunk) => Ok(chunk),
+                        None => provider
+                            .retrieve_chunk(&addr)
+                            .await
+                            .map(|r| r.chunk)
+                            .map_err(|e| JsValue::from_str(&format!("retrieve {addr}: {e}"))),
+                    }
+                }
+            })
+            .buffer_unordered(PREFETCH_CONCURRENCY)
+            .collect()
+            .await;
+
+        let mut next: Vec<ChunkAddress> = Vec::new();
+        for result in fetched {
+            let chunk = result?;
+            if chunk.span() > DEFAULT_BODY_SIZE as u64 {
+                for child in parse_child_refs(chunk.data())? {
+                    if seen.insert(child) {
+                        next.push(child);
+                    }
+                }
+            }
+            shared
+                .lock()
+                .expect("cache mutex")
+                .insert(*chunk.address(), chunk);
         }
         level = next;
     }

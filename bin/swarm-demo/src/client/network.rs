@@ -30,6 +30,18 @@ const RETRIEVE_WAVE_STEP: usize = 8;
 /// Racing the closest connected peers is enough, so this is the only budget.
 const RETRIEVE_CLOSE_BUDGET: usize = 24;
 
+/// Times a retrieval re-races its candidates when every one was skipped for
+/// being at its per-peer in-flight cap.
+///
+/// An all-busy wave is transient self-imposed back-pressure (a wide parallel
+/// download momentarily filled every close peer's slots), not chunk absence, so
+/// the retrieval waits a short backoff and re-races rather than failing the
+/// chunk.
+const RETRIEVE_BUSY_RETRIES: usize = 12;
+
+/// Backoff between all-busy re-races, long enough for an in-flight slot to free.
+const RETRIEVE_BUSY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// A proximity-routing chunk provider/sender over the browser client node.
 #[derive(Clone)]
 pub struct BrowserChunkProvider {
@@ -73,7 +85,19 @@ impl SwarmChunkProvider for BrowserChunkProvider {
             ));
         }
 
-        match self.race_connected_waves(&ranked, chunk_address).await {
+        // Re-race on an all-busy wave: every close peer was momentarily at its
+        // in-flight cap (a wide parallel download), which is transient
+        // back-pressure, not absence. Wait a short backoff and re-race.
+        let mut outcome = self.race_connected_waves(&ranked, chunk_address).await;
+        for _ in 0..RETRIEVE_BUSY_RETRIES {
+            if !matches!(&outcome, WaveOutcome::Failed(ChunkTransferError::Busy)) {
+                break;
+            }
+            futures_timer::Delay::new(RETRIEVE_BUSY_BACKOFF).await;
+            outcome = self.race_connected_waves(&ranked, chunk_address).await;
+        }
+
+        match outcome {
             WaveOutcome::Hit(result) => {
                 tracing::debug!(
                     chunk = %chunk_address,

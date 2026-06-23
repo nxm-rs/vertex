@@ -306,6 +306,15 @@ impl ClientLauncher {
             idle_timeout: self.idle_timeout,
         };
 
+        // The launcher always builds a client (light) node, which advertises no
+        // storage in its handshake. The reference network therefore meters it
+        // with the light figures (payment threshold and refresh rate divided by
+        // the light factor), so our accounting and self-throttle must size to
+        // that same ceiling rather than the wider storer figures: a sustained
+        // download would otherwise cross the light disconnect limit the remote
+        // enforces on us before our own accounting engaged.
+        let bandwidth = self.bandwidth.light();
+
         let spec = Arc::clone(HasSpec::spec(&self.identity));
 
         // The launcher owns the client cache so callers can read it back; the
@@ -322,8 +331,7 @@ impl ClientLauncher {
         // Pseudosettle wiring is prepared before the node so the event sink
         // routes wire events at build time and the provider embeds in the
         // accounting the core assembles.
-        let (pseudosettle_provider, pseudosettle_wiring) =
-            PseudosettleWiring::prepare(&self.bandwidth);
+        let (pseudosettle_provider, pseudosettle_wiring) = PseudosettleWiring::prepare(&bandwidth);
 
         // SWAP wiring is prepared next when configured: the provider embeds in
         // the accounting and the swap event sink routes at node build time. The
@@ -334,7 +342,7 @@ impl ClientLauncher {
             Some(cfg) => SwapWiring::prepare(
                 &spec,
                 &self.identity,
-                &self.bandwidth,
+                &bandwidth,
                 Some(cfg.chequebook),
                 cfg.beneficiary,
                 false,
@@ -407,7 +415,7 @@ impl ClientLauncher {
         let core = assemble_client_core(ClientCoreCtx {
             spec: Arc::clone(&spec),
             identity: Arc::clone(&self.identity),
-            bandwidth: self.bandwidth,
+            bandwidth,
             topology: topology.clone(),
             client_service,
             client_handle: client_handle.clone(),

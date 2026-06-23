@@ -336,6 +336,19 @@ async fn build_client_backed_node(
     let node_type = params.node_type;
     log_build_start(node_type, params.spec);
 
+    // Default allowances follow node type. A non-storer advertises no storage in
+    // its handshake, so the reference network meters it with the light figures
+    // (payment threshold and refresh rate divided by the light factor). We size
+    // our own threshold and refresh rate to that same ceiling so we settle and
+    // self-throttle below the light disconnect limit the remote enforces on us,
+    // rather than pacing against the wider storer figures and being dropped
+    // before our own accounting engages. A storer keeps the full figures.
+    let bandwidth = if node_type.requires_storage() {
+        params.bandwidth.clone()
+    } else {
+        params.bandwidth.clone().light()
+    };
+
     // SWAP defaults on for storers (maximum support) and off for clients; an
     // explicit --swap overrides. Resolved once and shared with the chain check.
     #[cfg(feature = "swap")]
@@ -375,8 +388,7 @@ async fn build_client_backed_node(
     // Pseudosettle (soft accounting) is always on for client and storer nodes:
     // prepare the provider so it embeds in the accounting, and the event sink so
     // pseudosettle wire events route at node build time.
-    let (pseudosettle_provider, pseudosettle_wiring) =
-        PseudosettleWiring::prepare(params.bandwidth);
+    let (pseudosettle_provider, pseudosettle_wiring) = PseudosettleWiring::prepare(&bandwidth);
     let pseudosettle_event_sender = pseudosettle_wiring.event_sender();
 
     // SWAP settlement is prepared next: the provider embeds in the accounting
@@ -385,7 +397,7 @@ async fn build_client_backed_node(
     let (swap_provider, swap_wiring) = SwapWiring::prepare(
         params.spec,
         params.identity,
-        params.bandwidth,
+        &bandwidth,
         params.swap.chequebook,
         params.swap.beneficiary,
         params.swap.deploy,
@@ -465,7 +477,7 @@ async fn build_client_backed_node(
     let core = assemble_client_core(ClientCoreCtx {
         spec: Arc::clone(params.spec),
         identity: params.identity.clone(),
-        bandwidth: params.bandwidth.clone(),
+        bandwidth,
         topology: topology.clone(),
         client_service,
         client_handle: client_handle.clone(),

@@ -66,6 +66,24 @@ impl<P> BandwidthConfig<P> {
     pub fn throttle_allowance_percent(&self) -> u8 {
         self.throttle_allowance_percent
     }
+
+    /// This config scaled to the light metering a non-storer is held to.
+    ///
+    /// A light node advertises no storage in its handshake, so the reference
+    /// network meters it with `paymentThreshold / lightFactor` and
+    /// `refreshRate / lightFactor`. Our own payment threshold and refresh rate
+    /// must match that ceiling: pacing against the full (storer) figures would
+    /// let a burst cross the light disconnect limit the remote actually
+    /// enforces on us before our own settle and throttle engage. Both values
+    /// are floored at one so a large factor can never zero them.
+    pub fn light(self) -> Self {
+        let factor = self.client_only_factor.max(1);
+        Self {
+            payment_threshold: (self.payment_threshold / factor).max(1),
+            refresh_rate: (self.refresh_rate / factor).max(1),
+            ..self
+        }
+    }
 }
 
 impl TryFrom<&BandwidthArgs> for BandwidthConfig<FixedPricingConfig> {
@@ -149,6 +167,43 @@ mod tests {
             config.throttle_allowance_percent(),
             DEFAULT_THROTTLE_ALLOWANCE_PERCENT
         );
+    }
+
+    #[test]
+    fn light_scales_threshold_and_refresh_by_the_factor() {
+        let full = DefaultBandwidthConfig::default();
+        let factor = full.client_only_factor();
+        let full_threshold = full.payment_threshold().as_amount();
+        let full_refresh = full.refresh_rate().as_amount();
+        let full_disconnect = full.disconnect_threshold();
+        let full_tolerance = full.payment_tolerance_percent();
+
+        let light = full.light();
+        assert_eq!(
+            light.payment_threshold().as_amount(),
+            full_threshold / factor
+        );
+        assert_eq!(light.refresh_rate().as_amount(), full_refresh / factor);
+        // The disconnect threshold derives from the (now-light) payment
+        // threshold, so it scales down with it: we pace against the same light
+        // ceiling the reference network enforces on us.
+        assert!(light.disconnect_threshold() < full_disconnect);
+        // Tolerance and factor are unchanged.
+        assert_eq!(light.payment_tolerance_percent(), full_tolerance);
+        assert_eq!(light.client_only_factor(), factor);
+    }
+
+    #[test]
+    fn light_floors_at_one() {
+        let cfg = BandwidthConfig {
+            payment_threshold: 5,
+            refresh_rate: 5,
+            client_only_factor: 1000,
+            ..DefaultBandwidthConfig::default()
+        }
+        .light();
+        assert_eq!(cfg.payment_threshold().as_amount(), 1);
+        assert_eq!(cfg.refresh_rate().as_amount(), 1);
     }
 
     #[test]

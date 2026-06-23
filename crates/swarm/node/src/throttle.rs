@@ -151,8 +151,11 @@ const MAX_THROTTLE_WAIT: Duration = Duration::from_secs(2);
 /// Mirrors the reference client's small per-peer multiplex fan-out: a serving
 /// peer caps the inbound streams it will accept from us before it resets them,
 /// so holding only a few requests outstanding to any one peer keeps us under
-/// that budget. The cap is per-peer, so a retrieval race across many peers still
-/// runs at full width; it only bounds the depth on each peer.
+/// that budget. The cap is per-peer, so a wide retrieval race still runs at full
+/// aggregate width; it only bounds the depth piled on each peer. A request to a
+/// full peer is skipped to the next-closest peer rather than queued, so a wide
+/// download fan-out spreads across the neighbourhood instead of concentrating on
+/// the closest few and resetting their streams.
 const MAX_INFLIGHT_PER_PEER: usize = 4;
 
 /// Paces outbound pushsync and retrieval requests under the remote peer's

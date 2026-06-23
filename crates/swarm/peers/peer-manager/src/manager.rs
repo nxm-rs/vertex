@@ -615,15 +615,16 @@ impl<I: SwarmIdentity> PeerManager<I> {
 
     /// Record an overlay sighting from `ip` and act on a cap crossing.
     ///
-    /// Detection is score-based, not dial-filter-based: the flagged overlay
-    /// is reported through the single scoring path
-    /// ([`SwarmScoringEvent::RateLimitExceeded`]) rather than banned
-    /// outright, because a shared IPv4 address (CGNAT, campus NAT) can
-    /// front many legitimate peers and a direct ban would punish a cohort
-    /// for one abuser. Sustained cycling keeps producing fresh flagged
-    /// identities; the inbound handshake rate limiter is the enforcement
-    /// point that makes that expensive, and it reads the per-IP counts via
-    /// [`Self::overlays_seen_from_ip`].
+    /// The per-IP caps are disabled by default ([`IpTrackerConfig::disabled`]),
+    /// so the tracker records nothing and never flags: an honest cohort of
+    /// independent nodes behind one routable IP (one host, many ports) is
+    /// never capped, penalised, refused, or evicted for sharing an address.
+    ///
+    /// When an operator re-enables finite caps, detection is score-based, not
+    /// dial-filter-based: the flagged overlay is reported through the single
+    /// scoring path ([`SwarmScoringEvent::RateLimitExceeded`]) rather than
+    /// banned outright, because a shared IPv4 address can front many
+    /// legitimate peers and a direct ban would punish a cohort for one abuser.
     fn track_ip_association(&self, overlay: OverlayAddress, ip: IpAddr) {
         let now = unix_timestamp_secs();
         let (outcome, tracked) = {

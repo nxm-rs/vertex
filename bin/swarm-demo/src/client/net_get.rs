@@ -26,6 +26,17 @@ impl NetworkChunkGet {
             provider,
         }
     }
+
+    /// The getter's shared chunk map. A concurrent prefetch inserts into this so
+    /// the joiner's ordered reads find prefetched chunks without re-fetching.
+    pub fn shared(&self) -> Arc<Mutex<HashMap<ChunkAddress, AnyChunk>>> {
+        Arc::clone(&self.local)
+    }
+
+    /// The provider backing network fetches, shared with this getter.
+    pub fn provider(&self) -> Arc<dyn SwarmChunkProvider> {
+        Arc::clone(&self.provider)
+    }
 }
 
 impl ChunkGet<DEFAULT_BODY_SIZE> for NetworkChunkGet {
