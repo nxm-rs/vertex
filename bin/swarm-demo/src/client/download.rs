@@ -57,13 +57,15 @@ const MAX_PREFETCH_ITERS: usize = 4096;
 /// Chunk retrievals the tree prefetch keeps in flight at once.
 ///
 /// Both download paths prefetch concurrently: `download_file` before assembling,
-/// `stream_file` alongside the ordered stream. This is the download's aggregate
-/// fan-out width, deliberately wide so many retrievals run in parallel across
-/// the whole neighbourhood. Per-storer pressure is not bounded here but by the
-/// provider's per-peer in-flight cap, which skips a saturated peer to the
-/// next-closest one; a wide fan-out over that cap spreads the load across many
-/// peers instead of piling depth onto the closest few.
-const PREFETCH_CONCURRENCY: usize = 32;
+/// `stream_file` alongside the ordered stream. The provider's per-peer in-flight
+/// cap skips a saturated storer to the next-closest one, so a wide fan-out
+/// spreads load across the neighbourhood instead of piling depth onto the closest
+/// few. This is a depth-stability knob, not a throughput lever: download
+/// throughput is bounded by per-chunk retrieval latency, which rises with this
+/// width as in-flight requests queue, so aggregate throughput stays flat while a
+/// wider fan-out holds the reserve depth steadier. Past a few hundred the fan-out
+/// starts shedding peers; this width sits below that knee.
+const PREFETCH_CONCURRENCY: usize = 128;
 
 /// Chunk reads the joiner keeps in flight while assembling from the warm cache.
 ///
@@ -71,7 +73,7 @@ const PREFETCH_CONCURRENCY: usize = 32;
 /// ordered reads mostly hit the cache, so this is a lookahead window over warm
 /// chunks rather than the retrieval breadth. Per-storer pressure on any
 /// network miss is still bounded by the provider's per-peer cap.
-const JOIN_CONCURRENCY: usize = 16;
+const JOIN_CONCURRENCY: usize = 64;
 
 /// Download the file at `root`, resolving it as a single-file manifest if it is one.
 pub async fn download_reference(
