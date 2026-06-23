@@ -305,9 +305,39 @@ function waitForWasmHandle(timeoutMs = 40000, stepMs = 250) {
   });
 }
 
+// Wrap the wasm client's download/stream entry points so the globe's WebGL
+// animation loop is paused while a transfer is in flight. The globe and the
+// wasm node share one browser thread; pausing the render loop hands that thread
+// to retrieval and roughly triples bulk download throughput. Idempotent and
+// reference-counted; a no-op when the globe or handle is absent.
+function installGlobeRenderGovernor(handle) {
+  const client = handle && handle.client;
+  if (!globe || !client || client.__renderGovernorInstalled) return;
+  client.__renderGovernorInstalled = true;
+
+  let active = 0;
+  const pause = () => { if (active++ === 0 && globe.pauseAnimation) globe.pauseAnimation(); };
+  const resume = () => { if (active > 0 && --active === 0 && globe.resumeAnimation) globe.resumeAnimation(); };
+  const guard = (name) => {
+    const orig = client[name];
+    if (typeof orig !== 'function') return;
+    client[name] = function (...args) {
+      pause();
+      let out;
+      try { out = orig.apply(this, args); } catch (e) { resume(); throw e; }
+      return (out && typeof out.finally === 'function') ? out.finally(resume) : (resume(), out);
+    };
+  };
+  for (const name of ['downloadFile', 'streamToSink']) guard(name);
+}
+
+function isGlobeDisabled() {
+  return (window.location.search || '').toLowerCase().includes('noglobe');
+}
+
 async function boot() {
   const globeEl = document.getElementById('globe');
-  if (globeEl) initGlobe(globeEl);
+  if (globeEl && !isGlobeDisabled()) initGlobe(globeEl);
   initScoreboard();
   initCollapsibles();
 
@@ -322,6 +352,15 @@ async function boot() {
 
   const { feed, mode } = makePeerFeed({ handle });
   wireFeed(feed, mode);
+
+  // The 3D globe renders on a continuous WebGL animation loop, and the wasm
+  // node runs on the same single browser thread. A bulk download is bound by
+  // that thread's scheduling: while the globe paints every frame, the node's
+  // retrieval timers wake late and throughput drops sharply. Pause the globe's
+  // animation for the duration of a download or stream and resume after, so the
+  // thread is free for retrieval. Reference-counted so overlapping transfers
+  // keep the globe paused until the last one finishes.
+  installGlobeRenderGovernor(handle);
 
   // Expose for debugging / the verification harness.
   window.__scanner = { peers, getSelf: () => self, feed, mode };
