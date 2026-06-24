@@ -212,6 +212,42 @@ impl<B: SwarmBandwidthAccounting> BandwidthDebit for B {
     }
 }
 
+/// Object-safe receive *reservation* for callers that hold accounting behind a
+/// trait object and must hold the reservation across an in-flight request (the
+/// client handle, which cannot name the `ReceiveAction` type).
+///
+/// Unlike [`BandwidthDebit`], this does not commit: it reserves the price (so it
+/// counts against the peer's allowance from the moment the request is dispatched,
+/// matching the serving peer's shadow-reserved view of our in-flight debt) and
+/// returns the un-applied action boxed. The caller commits it with
+/// [`AccountingAction::apply_boxed`] once the chunk is in hand, or drops it to
+/// release the reservation on failure, timeout, or cancellation.
+pub trait BandwidthReserve: Send + Sync {
+    /// Reserve `price` against `peer` for an in-flight received chunk, returning
+    /// the un-applied action to hold across the request.
+    fn reserve_received(
+        &self,
+        peer: OverlayAddress,
+        price: Au,
+        originated: bool,
+    ) -> SwarmResult<Box<dyn AccountingAction>>;
+}
+
+impl<B: SwarmBandwidthAccounting> BandwidthReserve for B
+where
+    B::ReceiveAction: 'static,
+{
+    fn reserve_received(
+        &self,
+        peer: OverlayAddress,
+        price: Au,
+        originated: bool,
+    ) -> SwarmResult<Box<dyn AccountingAction>> {
+        self.prepare_receive(peer, price, originated)
+            .map(|action| Box::new(action) as Box<dyn AccountingAction>)
+    }
+}
+
 /// Combined pricing and bandwidth accounting for client operations.
 ///
 /// Unifies chunk pricing and bandwidth accounting so callers don't need

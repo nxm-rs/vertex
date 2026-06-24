@@ -166,7 +166,19 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
     let throttle = Arc::new(
         SelfThrottle::new(&accounting, &bandwidth).with_settle(accounting.bandwidth().clone()),
     );
-    let throttled_handle = client_handle.clone().with_throttle(Arc::clone(&throttle));
+    // The throttled handle is the retrieval dispatch path. Attach the reserver so
+    // an origin retrieval reserves its per-chunk debt at dispatch and holds it
+    // across the in-flight request: reserved balance is then non-zero during a
+    // wide download burst, the throttle back-pressures the fan-out against the
+    // payment-threshold headroom it consumes, and settlement fires before the
+    // serving peer's shadow-reserved view of our debt crosses its disconnect line.
+    let throttled_handle = client_handle
+        .clone()
+        .with_throttle(Arc::clone(&throttle))
+        .with_reserver(
+            Arc::new(accounting.pricing().clone()),
+            accounting.bandwidth().clone(),
+        );
 
     // The service reports through the same peer-manager authority accounting
     // uses, shares the handle's throttle so a disconnect clears that peer's

@@ -37,7 +37,8 @@ mod types;
 
 pub use self::accounting::{Au, AuConversionError};
 pub use self::components::{
-    AccountingAction, BandwidthDebit, BinCursorStore, BinScanItem, BootnodeComponents,
+    AccountingAction, BandwidthDebit, BandwidthReserve, BinCursorStore, BinScanItem,
+    BootnodeComponents,
     ClientComponents, Direction, HasChunkClient, HasIdentity, HasReserve, HasStore, HasTopology,
     IntervalStore, PullChunkVerifier, PullStorage, ReserveStore, SettableRadius, StorerComponents,
     SwarmAccountingConfig, SwarmBandwidthAccounting, SwarmClientAccounting, SwarmLocalStore,

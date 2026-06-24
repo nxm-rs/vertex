@@ -8,8 +8,8 @@ use nectar_primitives::ChunkAddress;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_api::{
-    Au, BandwidthDebit, PeerAffordability, PeerReporter, ReportSource, SwarmLocalStore,
-    SwarmPricing, SwarmScoringEvent,
+    Au, AccountingAction, BandwidthDebit, BandwidthReserve, PeerAffordability, PeerReporter,
+    ReportSource, SwarmLocalStore, SwarmPricing, SwarmScoringEvent,
 };
 use vertex_swarm_client_protocol::PseudosettleAck;
 pub use vertex_swarm_client_protocol::{ChunkTransferError, RetrievalResult};
@@ -39,6 +39,23 @@ pub struct ClientHandle {
     /// When set, requests pace themselves under the peer's pseudosettle
     /// allowance before dispatch.
     throttle: Option<Arc<SelfThrottle>>,
+    /// When set, an origin retrieval reserves its per-chunk price against the
+    /// serving peer at dispatch and holds the reservation across the in-flight
+    /// request, so our committed-debt view matches the serving peer's
+    /// shadow-reserved view of the in-flight leg. The reservation is applied on
+    /// delivery and released on failure. Absent on a handle with no accounting
+    /// (the lightweight launcher), where an origin retrieval is unaccounted.
+    reserver: Option<OriginReserver>,
+}
+
+/// The pricing and reservation handles a [`ClientHandle`] needs to reserve an
+/// origin retrieval's debt at dispatch. Both halves come from the one shared
+/// accounting instance, the same one the service debits and the throttle paces
+/// against, so the reservation and the allowance view never diverge.
+#[derive(Clone)]
+struct OriginReserver {
+    pricing: Arc<dyn SwarmPricing>,
+    bandwidth: Arc<dyn BandwidthReserve>,
 }
 
 impl ClientHandle {
@@ -47,6 +64,7 @@ impl ClientHandle {
         Self {
             command_tx,
             throttle: None,
+            reserver: None,
         }
     }
 
@@ -56,6 +74,52 @@ impl ClientHandle {
     pub fn with_throttle(mut self, throttle: Arc<SelfThrottle>) -> Self {
         self.throttle = Some(throttle);
         self
+    }
+
+    /// Attach the shared accounting so an origin retrieval reserves its
+    /// per-chunk price at dispatch and holds it across the in-flight request.
+    ///
+    /// `pricing` and `bandwidth` are two halves of the same accounting instance
+    /// the service debits and the throttle paces against. With this set, the
+    /// reservation (not the delivery event) is the single source of truth for
+    /// origin retrieval debt: the reservation counts against the peer's
+    /// allowance from dispatch, back-pressuring the download fan-out and firing
+    /// settlement before the serving peer's shadow-reserved view of our debt
+    /// crosses its disconnect line.
+    #[must_use]
+    pub fn with_reserver(
+        mut self,
+        pricing: Arc<dyn SwarmPricing>,
+        bandwidth: Arc<dyn BandwidthReserve>,
+    ) -> Self {
+        self.reserver = Some(OriginReserver { pricing, bandwidth });
+        self
+    }
+
+    /// Reserve the per-chunk price against `peer` for an origin retrieval,
+    /// returning the un-applied action to hold across the request, or `None`
+    /// when no reserver is attached or the request is a relay leg (which the
+    /// forwarder accounts itself). An accounting refusal at the disconnect
+    /// threshold also yields `None`: the request still goes out (the remote may
+    /// serve it), but no reservation is held.
+    fn reserve_origin(
+        &self,
+        peer: OverlayAddress,
+        address: &ChunkAddress,
+        originated: bool,
+    ) -> Option<Box<dyn AccountingAction>> {
+        if !originated {
+            return None;
+        }
+        let reserver = self.reserver.as_ref()?;
+        let price = reserver.pricing.peer_price(&peer, address);
+        match reserver.bandwidth.reserve_received(peer, price, true) {
+            Ok(action) => Some(action),
+            Err(error) => {
+                debug!(%peer, %address, %error, "origin reservation refused at disconnect threshold");
+                None
+            }
+        }
     }
 
     /// Send a command to the network layer.
@@ -98,6 +162,12 @@ impl ClientHandle {
             None => None,
         };
 
+        // Reserve our per-chunk debt at dispatch so the in-flight leg counts
+        // against the peer's allowance for the whole request, matching the
+        // serving peer's shadow-reserved view. Applied on delivery, released on
+        // any failure when the action drops with the future.
+        let reservation = self.reserve_origin(peer, &address, originated);
+
         let (tx, rx) = oneshot::channel();
 
         self.send_command(ClientCommand::RetrieveChunk {
@@ -107,7 +177,25 @@ impl ClientHandle {
             originated,
         })?;
 
-        rx.await.map_err(|_| ChunkTransferError::Cancelled)?
+        let outcome = rx.await.map_err(|_| ChunkTransferError::Cancelled)?;
+        Self::settle_reservation(reservation, &outcome);
+        outcome
+    }
+
+    /// Apply a held origin reservation on a delivered chunk, or drop it (release)
+    /// on any failure, so reserved balance never leaks and the committed debit is
+    /// never double-counted with the delivery event.
+    fn settle_reservation(
+        reservation: Option<Box<dyn AccountingAction>>,
+        outcome: &Result<RetrievalResult, ChunkTransferError>,
+    ) {
+        let Some(reservation) = reservation else {
+            return;
+        };
+        if outcome.is_ok() {
+            reservation.apply_boxed();
+        }
+        // On failure the reservation drops here, releasing the reserved balance.
     }
 
     /// Retrieve a chunk from a specific peer with non-blocking admission.
@@ -133,6 +221,10 @@ impl ClientHandle {
             None => None,
         };
 
+        // Reserve at dispatch, held across the in-flight request; applied on
+        // delivery, released on failure. See [`Self::retrieve_chunk`].
+        let reservation = self.reserve_origin(peer, &address, originated);
+
         let (tx, rx) = oneshot::channel();
 
         self.send_command(ClientCommand::RetrieveChunk {
@@ -142,7 +234,9 @@ impl ClientHandle {
             originated,
         })?;
 
-        rx.await.map_err(|_| ChunkTransferError::Cancelled)?
+        let outcome = rx.await.map_err(|_| ChunkTransferError::Cancelled)?;
+        Self::settle_reservation(reservation, &outcome);
+        outcome
     }
 
     /// Push a stamped chunk to a specific peer.
@@ -344,12 +438,13 @@ impl ClientService {
         self.handle.clone()
     }
 
-    /// Debit the serving peer by the per-chunk price for a completed
-    /// own-request delivery. A no-op when no accounting handle is attached.
+    /// Debit the storer by the per-chunk price for a completed own-request
+    /// pushsync delivery. A no-op when no accounting handle is attached.
     ///
-    /// The chunk is already in hand, so the debit commits immediately. A
-    /// disconnect-threshold breach is already reported to peer scoring inside
-    /// accounting; this only logs it.
+    /// Pushsync is sequential, so its origin debit commits immediately on the
+    /// receipt rather than reserving at dispatch (the wide-fan-out reservation
+    /// is the retrieval path's concern). A disconnect-threshold breach is
+    /// already reported to peer scoring inside accounting; this only logs it.
     fn debit_origin(&self, peer: &OverlayAddress, address: &ChunkAddress) {
         let Some(accounting) = &self.accounting else {
             return;
@@ -440,12 +535,15 @@ impl ClientService {
             } => {
                 // The requester is resolved by the handler; this event exists for
                 // accounting, scoring, and caching. Content chunks are cached by
-                // address (immutable); SOCs are not (no version signal). The
-                // debit is origin-gated (a relay leg is debited by the
-                // forwarder); cache and scoring apply to every delivery.
+                // address (immutable); SOCs are not (no version signal).
+                //
+                // An origin retrieval's debit is owned by the reservation the
+                // handle takes at dispatch and applies on this delivery, so the
+                // service must not debit it again here (that would double-count).
+                // A relay leg is debited by the forwarder. The settle and the
+                // cache and scoring apply to every delivery.
                 debug!(%peer, %address, ?latency, "Chunk received");
                 if originated {
-                    self.debit_origin(&peer, &address);
                     self.settle_origin(&peer);
                 }
                 if let Some(store) = &self.store
@@ -878,7 +976,10 @@ mod tests {
     }
 
     #[test]
-    fn origin_retrieval_debits_serving_peer_exactly_once() {
+    fn origin_retrieval_delivery_is_not_debited_by_the_service() {
+        // The origin retrieval debit is owned by the reservation the handle
+        // takes at dispatch and applies on delivery, so the service must not
+        // also debit it on the delivery event, or the transfer is charged twice.
         let (service, debit) = service_with_accounting();
         service.process_event(ClientEvent::ChunkReceived {
             peer: peer(1),
@@ -888,11 +989,9 @@ mod tests {
             latency: Duration::from_millis(1),
             originated: true,
         });
-        let debits = debit.debits.lock().unwrap();
-        assert_eq!(
-            *debits,
-            vec![(peer(1), Au::from_amount(ORIGIN_PRICE), true)],
-            "an origin retrieval debits the serving peer once by the per-chunk price"
+        assert!(
+            debit.debits.lock().unwrap().is_empty(),
+            "an origin retrieval delivery is debited by the held reservation, never by the service"
         );
     }
 
@@ -1177,5 +1276,164 @@ mod tests {
             error: "x".into(),
             kind: FailureKind::InvalidChunk,
         });
+    }
+
+    // Origin-retrieval reservation lifecycle on the handle: reserved at dispatch,
+    // applied on delivery, released on failure, skipped for relay legs.
+
+    /// Shared tally of how a held reservation ended: applied (committed) or
+    /// dropped without applying (released).
+    #[derive(Default)]
+    struct ReserveTally {
+        reserved: AtomicUsize,
+        applied: AtomicUsize,
+        released: AtomicUsize,
+    }
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// An [`AccountingAction`] that records its fate against a shared tally:
+    /// `apply` increments `applied`; dropping it un-applied increments
+    /// `released`, mirroring `ReceiveAction`'s reserve/apply/drop semantics
+    /// without needing a full accounting instance.
+    struct TallyAction {
+        tally: Arc<ReserveTally>,
+        applied: bool,
+    }
+
+    impl AccountingAction for TallyAction {
+        fn apply(mut self) {
+            self.tally.applied.fetch_add(1, Ordering::SeqCst);
+            self.applied = true;
+        }
+        fn apply_boxed(mut self: Box<Self>) {
+            self.tally.applied.fetch_add(1, Ordering::SeqCst);
+            self.applied = true;
+        }
+    }
+
+    impl Drop for TallyAction {
+        fn drop(&mut self) {
+            if !self.applied {
+                self.tally.released.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// A reserver that hands out [`TallyAction`]s tracked by a shared tally.
+    struct TallyReserve(Arc<ReserveTally>);
+
+    impl BandwidthReserve for TallyReserve {
+        fn reserve_received(
+            &self,
+            _peer: OverlayAddress,
+            _price: Au,
+            _originated: bool,
+        ) -> vertex_swarm_api::SwarmResult<Box<dyn AccountingAction>> {
+            self.0.reserved.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(TallyAction {
+                tally: Arc::clone(&self.0),
+                applied: false,
+            }))
+        }
+    }
+
+    fn reserving_handle() -> (ClientHandle, mpsc::Receiver<ClientCommand>, Arc<ReserveTally>) {
+        let (tx, rx) = mpsc::channel::<ClientCommand>(16);
+        let tally = Arc::new(ReserveTally::default());
+        let handle = ClientHandle::new(tx).with_reserver(
+            Arc::new(FixedPricer) as Arc<dyn SwarmPricing>,
+            Arc::new(TallyReserve(Arc::clone(&tally))) as Arc<dyn BandwidthReserve>,
+        );
+        (handle, rx, tally)
+    }
+
+    #[tokio::test]
+    async fn origin_retrieval_reserves_at_dispatch_and_applies_on_delivery() {
+        let (handle, mut rx, tally) = reserving_handle();
+        let address = test_address();
+        let task =
+            tokio::spawn(async move { handle.retrieve_chunk(peer(1), address, true).await });
+
+        let cmd = rx.recv().await.expect("command emitted");
+        // The reservation is taken before the command is sent.
+        assert_eq!(tally.reserved.load(Ordering::SeqCst), 1);
+        assert_eq!(tally.applied.load(Ordering::SeqCst), 0);
+
+        match cmd {
+            ClientCommand::RetrieveChunk { response, .. } => {
+                let chunk = nectar_primitives::ContentChunk::new(&b"reserve-apply"[..])
+                    .expect("valid content chunk");
+                response
+                    .send(Ok(RetrievalResult {
+                        chunk: chunk.into(),
+                        stamp: None,
+                        peer: peer(1),
+                    }))
+                    .ok();
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+        let _ = task.await.expect("join");
+        // A successful delivery applies the reservation, never releasing it.
+        assert_eq!(tally.applied.load(Ordering::SeqCst), 1);
+        assert_eq!(tally.released.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn origin_retrieval_releases_reservation_on_failure() {
+        let (handle, mut rx, tally) = reserving_handle();
+        let address = test_address();
+        let task =
+            tokio::spawn(async move { handle.retrieve_chunk(peer(1), address, true).await });
+
+        let cmd = rx.recv().await.expect("command emitted");
+        match cmd {
+            ClientCommand::RetrieveChunk { response, .. } => {
+                response.send(Err(ChunkTransferError::Remote)).ok();
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+        let _ = task.await.expect("join");
+        // A failed delivery releases the reservation, never applying it.
+        assert_eq!(tally.reserved.load(Ordering::SeqCst), 1);
+        assert_eq!(tally.applied.load(Ordering::SeqCst), 0);
+        assert_eq!(tally.released.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn origin_retrieval_releases_reservation_when_response_dropped() {
+        // A dropped response channel (cancellation) must release the reservation.
+        let (handle, mut rx, tally) = reserving_handle();
+        let address = test_address();
+        let task =
+            tokio::spawn(async move { handle.retrieve_chunk(peer(1), address, true).await });
+
+        let cmd = rx.recv().await.expect("command emitted");
+        drop(cmd); // drops the oneshot response sender -> Cancelled
+        let outcome = task.await.expect("join");
+        assert!(matches!(outcome, Err(ChunkTransferError::Cancelled)));
+        assert_eq!(tally.released.load(Ordering::SeqCst), 1);
+        assert_eq!(tally.applied.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn relay_retrieval_does_not_reserve() {
+        // A relay leg (`originated = false`) is accounted by the forwarder; the
+        // handle must not also reserve it.
+        let (handle, mut rx, tally) = reserving_handle();
+        let address = test_address();
+        let task =
+            tokio::spawn(async move { handle.retrieve_chunk(peer(1), address, false).await });
+
+        let cmd = rx.recv().await.expect("command emitted");
+        match cmd {
+            ClientCommand::RetrieveChunk { response, .. } => {
+                response.send(Err(ChunkTransferError::Remote)).ok();
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+        let _ = task.await.expect("join");
+        assert_eq!(tally.reserved.load(Ordering::SeqCst), 0);
     }
 }
