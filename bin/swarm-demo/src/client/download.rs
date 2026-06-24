@@ -1177,67 +1177,124 @@ async fn prefetch_tree(
     Ok(())
 }
 
-/// Prefetch the chunk tree at `root` into the joiner's live `shared` map,
-/// breadth-first and concurrent.
+/// Prefetch the chunk tree at `root` into the joiner's live `shared` map with a
+/// single pipelined in-flight pool (no per-level barrier).
 ///
-/// Like [`prefetch_tree`] but writes into the getter's `Arc<Mutex<_>>` rather
-/// than the `MemoryCache`, so the joiner streaming the same getter sees each
-/// chunk the moment it lands and never re-fetches it.
+/// Writes into the getter's `Arc<Mutex<_>>` rather than the `MemoryCache`, so
+/// the joiner streaming the same getter sees each chunk the moment it lands and
+/// never re-fetches it. A depth-ordered work queue dispatches ancestors before
+/// descendants so the intermediate spine is discovered fast, but leaves start as
+/// soon as their parent resolves rather than after the whole intermediate level
+/// drains, so the fan-out ramps to full width without stalling on the slowest
+/// intermediate.
 async fn prefetch_into_shared(
     root: ChunkAddress,
     provider: Arc<dyn SwarmChunkProvider>,
     shared: Arc<Mutex<HashMap<ChunkAddress, AnyChunk>>>,
 ) -> Result<(), JsValue> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
+    use futures::stream::FuturesUnordered;
+
+    // A pipelined node reaches the network earlier than under a level walk, so a
+    // chunk's whole candidate race can fail on transient transport congestion
+    // rather than chunk absence; retry a few times with backoff before leaving it
+    // for the joiner's own ordered retrieval.
+    const MAX_CHUNK_RETRIES: u32 = 6;
+    const RETRY_BACKOFF_STEP: std::time::Duration = std::time::Duration::from_millis(150);
+
     let mut seen: HashSet<ChunkAddress> = HashSet::new();
-    let mut level: Vec<ChunkAddress> = vec![root];
     seen.insert(root);
 
-    while !level.is_empty() {
-        let fetched: Vec<Result<AnyChunk, JsValue>> = futures::stream::iter(level.into_iter())
-            .map(|addr| {
-                let provider = Arc::clone(&provider);
-                let cached = shared.lock().expect("cache mutex").get(&addr).cloned();
-                async move {
-                    match cached {
-                        Some(chunk) => Ok(chunk),
-                        None => {
-                            let chunk = provider
-                                .retrieve_chunk(&addr)
-                                .await
-                                .map(|r| r.chunk)
-                                .map_err(|e| JsValue::from_str(&format!("retrieve {addr}: {e}")))?;
-                            // Cede to the event loop so a batch of resolved
-                            // retrievals does not drain in one synchronous pass on
-                            // the single browser thread, starving the swarm run
-                            // loop that feeds the next responses.
-                            maybe_yield_to_event_loop().await;
-                            Ok(chunk)
-                        }
-                    }
-                }
-            })
-            .buffer_unordered(prefetch_concurrency())
-            .collect()
-            .await;
+    let limit = prefetch_concurrency().max(1);
+    // Min-heap on depth: the shallowest (ancestor) node pops first, so the
+    // intermediate spine is fetched ahead of its leaves and the tree is
+    // discovered fast, while the global in-flight pool stays full across what
+    // used to be level boundaries. No per-level barrier: a leaf is dispatched the
+    // moment its parent intermediate resolves, not after the whole intermediate
+    // level drains, so the fan-out ramps to full width without waiting on the
+    // slowest intermediate.
+    let mut pending: BinaryHeap<Reverse<(u32, ChunkAddress)>> = BinaryHeap::new();
+    pending.push(Reverse((0, root)));
+    let mut in_flight = FuturesUnordered::new();
 
-        let mut next: Vec<ChunkAddress> = Vec::new();
-        for result in fetched {
-            let chunk = result?;
-            if chunk.span() > DEFAULT_BODY_SIZE as u64 {
-                for child in parse_child_refs(chunk.data())? {
-                    if seen.insert(child) {
-                        next.push(child);
-                    }
-                }
+    let spawn = |addr: ChunkAddress, depth: u32, attempt: u32| {
+        let provider = Arc::clone(&provider);
+        let cached = shared.lock().expect("cache mutex").get(&addr).cloned();
+        async move {
+            if attempt > 0 {
+                vertex_tasks::time::sleep(RETRY_BACKOFF_STEP * attempt).await;
             }
-            shared
-                .lock()
-                .expect("cache mutex")
-                .insert(*chunk.address(), chunk);
+            let outcome = match cached {
+                Some(chunk) => Ok(chunk),
+                None => {
+                    let r = provider.retrieve_chunk(&addr).await.map(|r| r.chunk);
+                    // Cede between resolved retrievals so the pool drain does not
+                    // monopolise the single browser thread and starve the swarm
+                    // run loop that feeds the next responses.
+                    maybe_yield_to_event_loop().await;
+                    r
+                }
+            };
+            (addr, depth, attempt, outcome)
         }
-        level = next;
+    };
+
+    // Prime the pool, then refill from `pending` as slots free.
+    while in_flight.len() < limit {
+        match pending.pop() {
+            Some(Reverse((depth, addr))) => in_flight.push(spawn(addr, depth, 0)),
+            None => break,
+        }
     }
 
+    let mut skipped = 0usize;
+    while let Some((addr, depth, attempt, outcome)) = in_flight.next().await {
+        let chunk = match outcome {
+            Ok(chunk) => chunk,
+            Err(_) if attempt + 1 < MAX_CHUNK_RETRIES => {
+                in_flight.push(spawn(addr, depth, attempt + 1));
+                continue;
+            }
+            // A node that exhausts its retries is left for the joiner's own
+            // ordered retrieval; never abort the whole download on one prefetch
+            // miss. Skipping an intermediate forgoes warming its subtree, which
+            // the joiner then re-fetches and walks.
+            Err(_) => {
+                skipped += 1;
+                while in_flight.len() < limit {
+                    match pending.pop() {
+                        Some(Reverse((depth, addr))) => in_flight.push(spawn(addr, depth, 0)),
+                        None => break,
+                    }
+                }
+                continue;
+            }
+        };
+        if chunk.span() > DEFAULT_BODY_SIZE as u64 {
+            for child in parse_child_refs(chunk.data())? {
+                if seen.insert(child) {
+                    pending.push(Reverse((depth + 1, child)));
+                }
+            }
+        }
+        shared
+            .lock()
+            .expect("cache mutex")
+            .insert(*chunk.address(), chunk);
+        // Refill freed slots, shallowest-first, from the work queue.
+        while in_flight.len() < limit {
+            match pending.pop() {
+                Some(Reverse((depth, addr))) => in_flight.push(spawn(addr, depth, 0)),
+                None => break,
+            }
+        }
+    }
+
+    if skipped > 0 {
+        tracing::info!("prefetch-skipped skipped={skipped} (pipelined into shared)");
+    }
     Ok(())
 }
 

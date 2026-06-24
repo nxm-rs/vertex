@@ -267,8 +267,12 @@ fn install_progress_hook() {
     {
         return;
     }
-    let cb = Closure::<dyn FnMut(f64, f64)>::new(|written: f64, total: f64| {
-        render_progress(written, total);
+    // Smoothed throughput across writes; restarts when `written` resets for a new
+    // download. Lives in the forgotten closure for the page session.
+    let meter = std::rc::Rc::new(std::cell::RefCell::new(RateMeter::default()));
+    let cb = Closure::<dyn FnMut(f64, f64)>::new(move |written: f64, total: f64| {
+        let bps = meter.borrow_mut().sample(written);
+        render_progress(written, total, bps);
     });
     let _ = js_sys::Reflect::set(
         &window,
@@ -279,8 +283,8 @@ fn install_progress_hook() {
     cb.forget();
 }
 
-/// Render `written`/`total` bytes into the progress bar and label.
-fn render_progress(written: f64, total: f64) {
+/// Render `written`/`total` bytes plus the smoothed throughput into the bar.
+fn render_progress(written: f64, total: f64, bps: f64) {
     let doc = document();
     let pct = if total.is_finite() && total > 0.0 {
         (written / total * 100.0).clamp(0.0, 100.0)
@@ -292,12 +296,65 @@ fn render_progress(written: f64, total: f64) {
     {
         el.style().set_property("width", &format!("{pct:.1}%")).ok();
     }
-    let label = if total.is_finite() && total > 0.0 {
-        format!("{} / {} bytes ({pct:.0}%)", written as u64, total as u64)
+    let rate = if bps > 0.0 {
+        format!(" - {}", fmt_rate(bps))
     } else {
-        format!("{} bytes", written as u64)
+        String::new()
+    };
+    let label = if total.is_finite() && total > 0.0 {
+        format!("{} / {} bytes ({pct:.0}%){rate}", written as u64, total as u64)
+    } else {
+        format!("{} bytes{rate}", written as u64)
     };
     set_text(DOWNLOAD_PROGRESS_TEXT_ID, &label);
+}
+
+/// Human-readable throughput (KB/s or MB/s) from a bytes/sec rate.
+fn fmt_rate(bps: f64) -> String {
+    let kbps = bps / 1024.0;
+    if kbps >= 1024.0 {
+        format!("{:.2} MB/s", kbps / 1024.0)
+    } else {
+        format!("{kbps:.1} KB/s")
+    }
+}
+
+/// Exponentially-smoothed download throughput, fed the cumulative bytes written.
+#[derive(Default)]
+struct RateMeter {
+    started: bool,
+    last_ms: f64,
+    last_written: f64,
+    ema_bps: f64,
+}
+
+impl RateMeter {
+    /// Feed the cumulative `written` byte count; returns the smoothed bytes/sec.
+    /// A drop in `written` (a new download) restarts the meter.
+    fn sample(&mut self, written: f64) -> f64 {
+        let now = js_sys::Date::now();
+        if !self.started || written < self.last_written {
+            self.started = true;
+            self.last_ms = now;
+            self.last_written = written;
+            self.ema_bps = 0.0;
+            return 0.0;
+        }
+        let dt = (now - self.last_ms) / 1000.0;
+        // Update only on a meaningful interval so per-chunk writes do not produce
+        // spiky tiny-`dt` samples; between updates report the last smoothed rate.
+        if dt >= 0.25 {
+            let inst = (written - self.last_written).max(0.0) / dt;
+            self.ema_bps = if self.ema_bps == 0.0 {
+                inst
+            } else {
+                0.6 * self.ema_bps + 0.4 * inst
+            };
+            self.last_ms = now;
+            self.last_written = written;
+        }
+        self.ema_bps
+    }
 }
 
 /// Show or hide the progress widget, resetting it when shown.
@@ -306,7 +363,7 @@ fn show_progress(visible: bool) {
     if let Some(el) = doc.get_element_by_id(DOWNLOAD_PROGRESS_ID) {
         if visible {
             el.remove_attribute("hidden").ok();
-            render_progress(0.0, f64::NAN);
+            render_progress(0.0, f64::NAN, 0.0);
         } else {
             el.set_attribute("hidden", "").ok();
         }
