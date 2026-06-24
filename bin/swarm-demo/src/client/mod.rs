@@ -19,7 +19,9 @@ use vertex_swarm_node::LaunchedClient;
 use wasm_bindgen::prelude::*;
 
 pub(crate) use cache::MemoryCache;
-pub use download::{DownloadSink, configure_prefetch, configure_prefetch_pipeline};
+pub use download::{
+    DownloadSink, configure_prefetch, configure_prefetch_pipeline, configure_yield_batch,
+};
 pub(crate) use download::{
     default_prefetch_width, download_range, fetch_leaves_at, file_size, list_leaf_offsets,
     list_tree_addresses, resolve_file_path, resolve_file_root,

@@ -92,6 +92,52 @@ pub fn default_prefetch_width() -> usize {
     prefetch_concurrency()
 }
 
+/// Resolved retrievals between macrotask yields in a prefetch drain.
+///
+/// Each resolved leg cedes to the browser event loop through a `setTimeout(0)`
+/// macrotask so the node run loop services the socket reads and timers that feed
+/// the next responses; without it a wide fan-out monopolises the single thread
+/// and the download wedges. Batching the yield (cede once every N resolutions)
+/// was measured against the per-chunk yield on the live network: it is
+/// throughput-neutral. At every N the prefetch pool already fills to its width
+/// (~520 legs in flight across the connected peers at their per-peer cap), so the
+/// resolve cadence is not the binding constraint; the per-leg latency is the
+/// client throttle's pseudosettle-allowance pacing (the leg wall time is almost
+/// entirely throttle wait, the on-wire RTT near zero). The default cedes per leg;
+/// the `yieldn` URL param batches it for A/B measurement.
+const DEFAULT_YIELD_BATCH: usize = 1;
+
+static YIELD_BATCH: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(DEFAULT_YIELD_BATCH);
+
+/// Resolutions counted toward the next macrotask yield, shared across every
+/// concurrent prefetch leg so the yield cadence is global, not per-future.
+static YIELD_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Override the prefetch yield batch size (`yieldn` URL param). The default is a
+/// per-leg yield; a larger value cedes once every N resolutions for an A/B.
+pub fn configure_yield_batch(n: Option<usize>) {
+    if let Some(n) = n.filter(|n| *n > 0) {
+        YIELD_BATCH.store(n, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Cede to the browser event loop once every `YIELD_BATCH` resolved retrievals.
+///
+/// Called by every prefetch leg the instant its retrieval resolves. The shared
+/// counter makes the cadence global across the whole fan-out, so a batch of N
+/// cedes once per N resolutions regardless of which leg resolves. The default of
+/// 1 cedes per leg.
+async fn maybe_yield_to_event_loop() {
+    let batch = YIELD_BATCH
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .max(1);
+    let n = YIELD_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if n.is_multiple_of(batch) {
+        vertex_tasks::time::yield_to_event_loop().await;
+    }
+}
+
 /// When set, `download_file` walks the chunk tree with a single global in-flight
 /// pool that enqueues a node's children the instant the node decodes, instead of
 /// the level-synchronous breadth-first walk that drains each level fully before
@@ -363,7 +409,7 @@ pub async fn list_tree_addresses(
                                 // Cede between resolved retrievals so a batch does
                                 // not drain in one synchronous pass on the single
                                 // browser thread and starve the swarm run loop.
-                                vertex_tasks::time::yield_to_event_loop().await;
+                                maybe_yield_to_event_loop().await;
                                 return Ok(r.chunk);
                             }
                             Err(e) => last = e.to_string(),
@@ -472,7 +518,7 @@ async fn prefetch_tree_pipelined(
                     // Cede between resolved retrievals so the pool drain does not
                     // monopolise the single browser thread and starve the swarm
                     // run loop that feeds the next responses.
-                    vertex_tasks::time::yield_to_event_loop().await;
+                    maybe_yield_to_event_loop().await;
                     r
                 }
             };
@@ -670,7 +716,7 @@ async fn prefetch_range_into_shared(
                                     // and the socket reads that feed it; the
                                     // macrotask yield lets the node deliver the
                                     // next responses between chunks.
-                                    vertex_tasks::time::yield_to_event_loop().await;
+                                    maybe_yield_to_event_loop().await;
                                     return Ok((chunk, node_offset));
                                 }
                                 Err(e) => last = e,
@@ -793,7 +839,7 @@ pub async fn list_leaf_offsets(
                             }
                             match provider.retrieve_chunk(&addr).await {
                                 Ok(r) => {
-                                    vertex_tasks::time::yield_to_event_loop().await;
+                                    maybe_yield_to_event_loop().await;
                                     return Ok((r.chunk, node_offset));
                                 }
                                 Err(e) => last = e.to_string(),
@@ -878,7 +924,7 @@ pub async fn fetch_leaves_at(
                     }
                     match retrieve_with_timeout(&provider, &addr, ATTEMPT_TIMEOUT).await {
                         Ok(chunk) => {
-                            vertex_tasks::time::yield_to_event_loop().await;
+                            maybe_yield_to_event_loop().await;
                             // `data()` is the leaf body (the span lives separately),
                             // so the file bytes at this offset are the body verbatim.
                             return Some((offset, chunk.data().to_vec()));
@@ -1006,7 +1052,7 @@ async fn prefetch_tree(
                                 // retrievals does not drain in one synchronous pass
                                 // on the single browser thread, starving the swarm
                                 // run loop that feeds the next responses.
-                                vertex_tasks::time::yield_to_event_loop().await;
+                                maybe_yield_to_event_loop().await;
                                 return Ok(chunk);
                             }
                             Err(e) => last = e,
@@ -1087,7 +1133,7 @@ async fn prefetch_into_shared(
                             // retrievals does not drain in one synchronous pass on
                             // the single browser thread, starving the swarm run
                             // loop that feeds the next responses.
-                            vertex_tasks::time::yield_to_event_loop().await;
+                            maybe_yield_to_event_loop().await;
                             Ok(chunk)
                         }
                     }

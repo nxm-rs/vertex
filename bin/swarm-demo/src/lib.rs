@@ -406,7 +406,7 @@ fn swap_config_from_page() -> Option<LauncherSwapConfig> {
 }
 
 /// Apply retrieval and prefetch overrides from the page URL (`rw`, `wavestep`,
-/// `stagger`, `budget`, `busy`, `pf`, `pipeline`). A measurement aid for
+/// `stagger`, `budget`, `busy`, `pf`, `yieldn`, `pipeline`). A measurement aid for
 /// sweeping the download tuning without rebuilding; absent params leave the
 /// compiled defaults in place.
 fn apply_retrieval_overrides_from_page() {
@@ -425,6 +425,7 @@ fn apply_retrieval_overrides_from_page() {
         parse("busy"),
     );
     client::configure_prefetch(parse("pf").map(|v| v as usize));
+    client::configure_yield_batch(parse("yieldn").map(|v| v as usize));
     client::configure_prefetch_pipeline(params.get("pipeline").is_some_and(|v| v != "0"));
     client::configure_load_balance(
         params.get("lb").map(|v| v != "0"),
