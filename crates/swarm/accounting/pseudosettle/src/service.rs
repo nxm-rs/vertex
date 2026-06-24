@@ -204,7 +204,22 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
                     // the offer rather than inflating our credited balance.
                     let accepted = ack.accepted.min(pending.amount);
 
-                    // Credit our balance (we paid, debt reduced)
+                    // Under-accept: the creditor approved less than we offered,
+                    // so its time-based allowance was short (a fast reconnect
+                    // leaves little forgiveness accrued). Our debt only partly
+                    // drained and we stay nearer its disconnect line; surface it
+                    // rather than silently crediting the partial.
+                    if accepted < pending.amount {
+                        debug!(
+                            %peer,
+                            offered = %pending.amount,
+                            accepted = %accepted,
+                            "pseudosettle partially accepted; debt not fully drained"
+                        );
+                    }
+
+                    // Credit our balance by the APPROVED amount (we paid, debt
+                    // reduced), never by what we requested.
                     let handle = self.accounting.for_peer(peer);
                     handle.record(accepted, Direction::Upload);
 
