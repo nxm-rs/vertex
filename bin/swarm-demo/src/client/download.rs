@@ -62,10 +62,11 @@ const MAX_PREFETCH_ITERS: usize = 4096;
 /// spreads load across the neighbourhood instead of piling depth onto the
 /// closest few, which also holds the reserve depth steadier.
 ///
-/// The effective ceiling is the load-balanced pool, `lb_top_k * per-peer-cap`
-/// slots, not connections: a width past that oversubscribes the pool and the
-/// surplus bounces off the per-peer cap into busy re-races (substreams-per-chunk
-/// climbs sharply). Measured on the live network from the browser: 512 is the
+/// The effective ceiling is the distributed scheduler's admission pool, roughly
+/// `connected-peers * per-peer-cap` slots, not connections: the fan-out spreads
+/// across the full connected set, and a width past the available slots bounces
+/// the surplus into busy re-picks. Measured on the live network from the
+/// browser: 512 is the
 /// peak, edging 256 by roughly a quarter at every worker count while still
 /// byte-completing and holding the socket budget; 1024 regresses on re-race
 /// churn. 512 is the operating point.

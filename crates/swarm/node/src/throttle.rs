@@ -456,6 +456,57 @@ impl SelfThrottle {
         Some(ThrottlePermit { _slot: slot })
     }
 
+    /// Non-blocking admission: return a permit only if the peer admits the
+    /// request *right now*, else `None`.
+    ///
+    /// The distributed retrieval scheduler polls this across the connected set
+    /// in proximity order and assigns each chunk to the first peer that admits,
+    /// so a busy or over-allowance peer is skipped to the next-closest rather
+    /// than waited on. Admission needs both a free in-flight slot *and* live
+    /// allowance headroom for the chunk's exact price: unlike [`Self::acquire`],
+    /// it never sleeps the bucket's wait hint, so a peer whose bucket is
+    /// momentarily empty returns `None` immediately instead of pacing.
+    pub(crate) fn try_acquire(
+        &self,
+        peer: OverlayAddress,
+        address: ChunkAddress,
+        kind: ProtocolKind,
+    ) -> Option<ThrottlePermit> {
+        let slot = match self.peer_semaphore(&peer).try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                if kind == ProtocolKind::Retrieval {
+                    RETRIEVAL_INFLIGHT_CAPPED.fetch_add(1, Ordering::Relaxed);
+                }
+                metrics::counter!(
+                    kind.inflight_capped_metric(),
+                    "peer_overlay" => peer.to_string(),
+                )
+                .increment(1);
+                return None;
+            }
+        };
+
+        let cost = self.request_cost(&peer, &address);
+        self.sync_quota(&peer);
+        match self.limiter.lock().try_send(peer, cost) {
+            Ok(()) => Some(ThrottlePermit { _slot: slot }),
+            Err(_) => {
+                if kind == ProtocolKind::Retrieval {
+                    RETRIEVAL_THROTTLE_PACED.fetch_add(1, Ordering::Relaxed);
+                }
+                metrics::counter!(
+                    kind.throttled_metric(),
+                    "peer_overlay" => peer.to_string(),
+                )
+                .increment(1);
+                // Drop the slot permit so a peer denied on allowance does not
+                // hold an in-flight slot it never used.
+                None
+            }
+        }
+    }
+
     /// Drop the peer's bucket on disconnect so memory does not grow with the
     /// count of distinct peers seen, and a later reconnect starts from a fresh
     /// allowance rather than stale credit.
@@ -955,6 +1006,55 @@ mod tests {
         assert!(
             t.acquire(peer(1), address(1), ProtocolKind::Retrieval)
                 .await
+                .is_some(),
+            "a freed slot admits the next request"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_acquire_admits_under_budget_and_skips_when_empty() {
+        // A one-request bucket admits the first non-blocking acquire, then refuses
+        // the second immediately (no wait): the distributed scheduler relies on
+        // this skip-don't-wait behaviour to fall through to the next-closest peer.
+        let alloc = DynamicAllowance::new(COST);
+        let t = throttle(alloc.clone());
+        let first = t.try_acquire(peer(1), address(1), ProtocolKind::Retrieval);
+        assert!(first.is_some(), "first non-blocking acquire admits");
+        assert!(
+            t.try_acquire(peer(1), address(1), ProtocolKind::Retrieval)
+                .is_none(),
+            "an empty bucket is skipped, not waited on"
+        );
+        // A different peer with its own bucket still admits.
+        assert!(
+            t.try_acquire(peer(2), address(1), ProtocolKind::Retrieval)
+                .is_some(),
+            "a distinct peer's bucket is independent"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_acquire_skips_a_full_peer_without_holding_a_slot() {
+        // A generous allowance never rate-throttles, so the in-flight cap is the
+        // only bound: the first MAX_INFLIGHT_PER_PEER non-blocking acquires hold
+        // their slots and the next is skipped without blocking.
+        let alloc = DynamicAllowance::new(u64::from(u32::MAX));
+        let t = throttle(alloc.clone());
+        let mut permits = Vec::new();
+        for _ in 0..MAX_INFLIGHT_PER_PEER {
+            permits.push(
+                t.try_acquire(peer(1), address(1), ProtocolKind::Retrieval)
+                    .expect("slots up to the cap admit at once"),
+            );
+        }
+        assert!(
+            t.try_acquire(peer(1), address(1), ProtocolKind::Retrieval)
+                .is_none(),
+            "a full peer is skipped, not blocked"
+        );
+        permits.pop();
+        assert!(
+            t.try_acquire(peer(1), address(1), ProtocolKind::Retrieval)
                 .is_some(),
             "a freed slot admits the next request"
         );

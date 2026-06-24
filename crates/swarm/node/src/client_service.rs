@@ -109,6 +109,41 @@ impl ClientHandle {
         rx.await.map_err(|_| ChunkTransferError::Cancelled)?
     }
 
+    /// Retrieve a chunk from a specific peer with non-blocking admission.
+    ///
+    /// Like [`Self::retrieve_chunk`] but admits through the throttle's
+    /// skip-don't-wait path: a peer at its in-flight cap or momentarily without
+    /// allowance headroom yields `Busy` at once rather than pacing. The
+    /// distributed scheduler polls this across the connected set in proximity
+    /// order and assigns the chunk to the first peer that admits, spreading the
+    /// download fan-out instead of queuing it on the closest few.
+    pub async fn try_retrieve_chunk(
+        &self,
+        peer: OverlayAddress,
+        address: ChunkAddress,
+        originated: bool,
+    ) -> Result<RetrievalResult, ChunkTransferError> {
+        let _permit = match &self.throttle {
+            Some(throttle) => Some(
+                throttle
+                    .try_acquire(peer, address, ProtocolKind::Retrieval)
+                    .ok_or(ChunkTransferError::Busy)?,
+            ),
+            None => None,
+        };
+
+        let (tx, rx) = oneshot::channel();
+
+        self.send_command(ClientCommand::RetrieveChunk {
+            peer,
+            address,
+            response: tx,
+            originated,
+        })?;
+
+        rx.await.map_err(|_| ChunkTransferError::Cancelled)?
+    }
+
     /// Push a stamped chunk to a specific peer.
     ///
     /// Same failure semantics as [`Self::retrieve_chunk`]. The returned

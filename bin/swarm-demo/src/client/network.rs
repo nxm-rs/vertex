@@ -111,59 +111,37 @@ static RETRIEVAL_STAGGER_MS: AtomicU64 = AtomicU64::new(DEFAULT_RETRIEVAL_STAGGE
 static RETRIEVE_CLOSE_BUDGET_A: AtomicU64 = AtomicU64::new(DEFAULT_RETRIEVE_CLOSE_BUDGET as u64);
 static RETRIEVE_BUSY_RETRIES_A: AtomicU64 = AtomicU64::new(DEFAULT_RETRIEVE_BUSY_RETRIES as u64);
 
-/// Load-balanced retrieval: assign each chunk to the least-in-flight peer drawn
-/// from the closest `LB_TOP_K`, then add one hedge leg after `LB_HEDGE_MS`. This
-/// keeps legs/chunk near 1-2 and spreads load evenly across all connected peers
-/// instead of piling the closest few past their in-flight cap. On by default;
-/// `lb=0` restores the widening-wave race for an A/B.
-///
-/// Sized to the prefetch fan-out: a wide download issues `DEFAULT_PREFETCH_CONCURRENCY`
-/// concurrent retrievals against this pool, and each pool peer admits only
-/// `MAX_INFLIGHT_PER_PEER` before bouncing the rest as `Busy`. A top-K below
-/// `fan-out / per-peer-cap` oversubscribes the pool, so the surplus requests spin
-/// the all-busy re-race (substreams-per-chunk climbs sharply and connections
-/// churn as the wasted legs reset streams). A top-K of 32 gives 32 * 8 = 256
-/// concurrent slots, matching the 256-wide prefetch, which roughly halves the
-/// measured substreams-per-chunk and the connection churn versus a narrow pool.
-const DEFAULT_LB_TOP_K: u64 = 32;
-const DEFAULT_LB_HEDGE_MS: u64 = 1200;
+/// Distributed retrieval scheduler: assign each chunk to the closest connected
+/// peer that admits right now (free in-flight slot and live allowance headroom),
+/// skipping busy or over-allowance peers to the next-closest across the full
+/// connected set. A wide prefetch issues hundreds of these concurrently, so each
+/// lands on a distinct closest-available peer and the load spreads across all
+/// ~120-160 peers instead of piling the closest few past their accounting refresh
+/// rate (the throughput ceiling the closest-only race hit). On by default; `lb=0`
+/// restores the widening-wave race for an A/B.
 static LB_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-static LB_TOP_K: AtomicU64 = AtomicU64::new(DEFAULT_LB_TOP_K);
-static LB_HEDGE_MS: AtomicU64 = AtomicU64::new(DEFAULT_LB_HEDGE_MS);
 
-/// Override the load-balanced retrieval knobs from the page URL (`lb`, `lbtopk`,
-/// `lbhedge`). Measurement aid; absent params keep the defaults.
-pub fn configure_load_balance(enabled: Option<bool>, top_k: Option<u64>, hedge_ms: Option<u64>) {
+/// Select the distributed scheduler (`lb=1`, default) or the widening-wave race
+/// (`lb=0`) from the page URL. The trailing two params are retained for URL
+/// compatibility with earlier sweeps and ignored. Measurement aid.
+pub fn configure_load_balance(enabled: Option<bool>, _top_k: Option<u64>, _hedge_ms: Option<u64>) {
     if let Some(v) = enabled {
         LB_ENABLED.store(v, Ordering::Relaxed);
-    }
-    if let Some(v) = top_k.filter(|v| *v > 0) {
-        LB_TOP_K.store(v, Ordering::Relaxed);
-    }
-    if let Some(v) = hedge_ms.filter(|v| *v > 0) {
-        LB_HEDGE_MS.store(v, Ordering::Relaxed);
     }
 }
 
 fn lb_enabled() -> bool {
     LB_ENABLED.load(Ordering::Relaxed)
 }
-fn lb_top_k() -> usize {
-    LB_TOP_K.load(Ordering::Relaxed) as usize
-}
-fn lb_hedge() -> Duration {
-    Duration::from_millis(LB_HEDGE_MS.load(Ordering::Relaxed))
-}
 
-/// Order `ranked` (proximity-ranked) by current in-flight load ascending, so the
-/// least-loaded close peer leads. Ties keep proximity order (stable sort).
-fn least_loaded_first(ranked: &[OverlayAddress]) -> Vec<OverlayAddress> {
+/// The least-in-flight peer in `peers` (ties broken toward the front, i.e. the
+/// closer peer). Used to spread the all-busy pacing leg across a saturated close
+/// neighbourhood rather than serialising it onto the single closest peer.
+fn least_loaded(peers: &[OverlayAddress]) -> Option<OverlayAddress> {
     let g = peer_inflight_lock();
     let load =
         |p: &OverlayAddress| -> u32 { g.as_ref().and_then(|m| m.get(p).copied()).unwrap_or(0) };
-    let mut out = ranked.to_vec();
-    out.sort_by_key(|p| load(p));
-    out
+    peers.iter().copied().min_by_key(|p| load(p))
 }
 
 /// Override the retrieval race knobs from the page URL (`rw`, `wavestep`,
@@ -235,13 +213,18 @@ static CLOSEST_TO_CALLS: AtomicU64 = AtomicU64::new(0);
 static HIT_LATENCY_MS_SUM: AtomicU64 = AtomicU64::new(0);
 static HIT_LATENCY_CALLS: AtomicU64 = AtomicU64::new(0);
 
-/// Hard ceiling on connected peers a retrieval races before it stops widening.
+/// Hard ceiling on connected peers a retrieval considers before it stops
+/// widening.
 ///
 /// A retrieval never dials: it relies on the serving peer to forward the request
 /// toward the chunk's neighbourhood (the retrieval protocol is forwarding-based).
-/// Racing the closest connected peers is enough, so this is the only budget.
-/// Tunable via the `budget` URL param.
-const DEFAULT_RETRIEVE_CLOSE_BUDGET: usize = 24;
+/// The distributed scheduler walks this many closest connected peers, assigning
+/// each chunk to the first that admits, so the budget is sized to span the whole
+/// connected set (a live browser session holds ~120-160 peers) rather than the
+/// closest few: spreading the prefetch fan-out across the full set is what lifts
+/// throughput off the closest-peer accounting ceiling. Tunable via the `budget`
+/// URL param.
+const DEFAULT_RETRIEVE_CLOSE_BUDGET: usize = 256;
 
 /// Times a retrieval re-races its candidates when every one was skipped for
 /// being at its per-peer in-flight cap.
@@ -254,6 +237,24 @@ const DEFAULT_RETRIEVE_BUSY_RETRIES: usize = 12;
 
 /// Backoff between all-busy re-races, long enough for an in-flight slot to free.
 const RETRIEVE_BUSY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Real (admitted, substream-opening) legs the distributed scheduler tries for
+/// one chunk before it stops widening. Bounds the substreams-per-chunk cost so a
+/// chunk whose close peers forward-but-cannot-serve does not walk the whole set
+/// opening streams; a genuinely absent chunk still surfaces as `NotFound` after
+/// this many real attempts.
+const ASSIGN_LEG_BUDGET: usize = 6;
+
+/// Closest peers the distributed scheduler probes for non-blocking admission
+/// before it concludes the neighbourhood is over its allowance and paces.
+///
+/// Spreading wins by landing each concurrent chunk on a distinct close-and-idle
+/// peer, which only needs a probe span wide enough to cover the close peers a
+/// wide prefetch fans onto, not the whole connected set: probing every peer when
+/// most are over their allowance just burns the single thread on admission
+/// bounces. This span is sized to the prefetch fan-out so concurrent chunks find
+/// distinct idle peers, while an all-busy span falls through to the pacing leg.
+const ASSIGN_PROBE_SPAN: usize = 48;
 
 /// A proximity-routing chunk provider/sender over the browser client node.
 #[derive(Clone)]
@@ -304,23 +305,28 @@ impl SwarmChunkProvider for BrowserChunkProvider {
             ));
         }
 
-        // Load-balanced path: send each chunk to the least-in-flight peer among
-        // the closest top-K (plus one delayed hedge), so legs/chunk stays near
-        // 1-2 and load spreads evenly instead of piling the closest few past
-        // their in-flight cap. The widening-wave race stays available via `lb=0`.
+        // Distributed scheduler (default): assign the chunk to the closest
+        // connected peer that admits *right now* (free in-flight slot and live
+        // allowance headroom), walking closest-to-farthest across the full
+        // connected set and skipping any busy or over-allowance peer rather than
+        // waiting on it. A wide prefetch issues hundreds of these concurrently,
+        // so each lands on a distinct closest-available peer and the load spreads
+        // across the whole connected set instead of piling on the closest few
+        // (whose accounting refresh caps throughput). The older least-loaded
+        // top-K race and the widening-wave race stay available via `lb=0`.
         let race = |ranked: &[OverlayAddress]| {
             let ranked = ranked.to_vec();
             async move {
                 if lb_enabled() {
-                    let top_k = lb_top_k().min(ranked.len());
-                    let pool = least_loaded_first(&ranked[..top_k]);
-                    let outcome = self.race_load_balanced(&pool, chunk_address).await;
-                    // Fall back to the full widening-wave race when the two
-                    // least-loaded peers neither held nor forwarded the chunk:
-                    // the load-balanced pair is a fast common-case path, not a
-                    // coverage guarantee, so a real miss still walks every close
-                    // peer before failing the chunk. Busy stays a re-pick signal
-                    // for the caller, and a hit returns straight away.
+                    let outcome = self.assign_closest_available(&ranked, chunk_address).await;
+                    // Coverage fall-through: the distributed scheduler bounds the
+                    // real legs it spends per chunk to keep the common case cheap,
+                    // so a hard deep-leaf chunk (its close peers forward but no
+                    // reachable peer holds it within the leg budget) can report a
+                    // premature `NotFound`/failure. Before surfacing that, walk
+                    // every candidate via the widening-wave race so a chunk only
+                    // fails after the whole connected set was tried. A hit or a
+                    // back-pressure (`Busy`) signal returns straight away.
                     match outcome {
                         WaveOutcome::Hit(_)
                         | WaveOutcome::NoCandidates
@@ -477,18 +483,80 @@ enum WaveOutcome {
 impl BrowserChunkProvider {
     /// One retrieval leg to `peer`: tracks in-flight load, times the leg, tallies
     /// the per-outcome instrumentation, and returns the transfer result. Shared by
-    /// the widening-wave race and the load-balanced path.
+    /// the widening-wave race and the load-balanced path. Uses the throttle's
+    /// blocking admission (paces against a momentarily empty allowance bucket).
     async fn retrieve_leg(
         &self,
         peer: OverlayAddress,
         chunk_address: SwarmAddress,
     ) -> Result<vertex_swarm_node::RetrievalResult, ChunkTransferError> {
-        LEGS_DISPATCHED.fetch_add(1, Ordering::Relaxed);
-        let peer_po = chunk_address.proximity(&peer).get();
+        self.retrieve_leg_inner(peer, chunk_address, false).await
+    }
+
+    /// One retrieval leg with non-blocking admission: a peer at its in-flight cap
+    /// or momentarily without allowance headroom returns `Busy` at once instead
+    /// of pacing, so the distributed scheduler can skip it to the next-closest
+    /// peer.
+    ///
+    /// A `Busy` admission opened no substream, so it takes the cheap path,
+    /// skipping the per-leg timing and inflight-guard bookkeeping: the scheduler
+    /// probes up to `ASSIGN_PROBE_SPAN` peers per chunk and a wide prefetch runs
+    /// hundreds of chunks at once, so charging the full instrumentation on every
+    /// bounce would starve the single wasm thread under the tail's all-busy
+    /// probing. Only an admitted leg (one that opened a substream) is timed.
+    async fn try_retrieve_leg(
+        &self,
+        peer: OverlayAddress,
+        chunk_address: SwarmAddress,
+    ) -> Result<vertex_swarm_node::RetrievalResult, ChunkTransferError> {
+        self.retrieve_leg_inner(peer, chunk_address, true).await
+    }
+
+    async fn retrieve_leg_inner(
+        &self,
+        peer: OverlayAddress,
+        chunk_address: SwarmAddress,
+        non_blocking: bool,
+    ) -> Result<vertex_swarm_node::RetrievalResult, ChunkTransferError> {
+        if non_blocking {
+            // A non-blocking admission either bounces on `Busy` (no substream
+            // opened) or admits and runs the leg. A bounce takes the cheap path:
+            // bump only `LEG_BUSY` and return, skipping the inflight guard and
+            // wall-clock timing so the tail's all-busy probing stays off the
+            // single wasm thread's critical path. An admitted leg is timed and
+            // tallied like any other.
+            let _inflight = enter_inflight(peer);
+            let started = js_sys::Date::now();
+            let outcome = self
+                .client
+                .try_retrieve_chunk(peer, chunk_address, true)
+                .await;
+            if matches!(&outcome, Err(ChunkTransferError::Busy)) {
+                LEG_BUSY.fetch_add(1, Ordering::Relaxed);
+                return outcome;
+            }
+            let latency_ms = js_sys::Date::now() - started;
+            return self.tally_leg(peer, chunk_address, latency_ms, outcome);
+        }
         let _inflight = enter_inflight(peer);
         let started = js_sys::Date::now();
         let outcome = self.client.retrieve_chunk(peer, chunk_address, true).await;
         let latency_ms = js_sys::Date::now() - started;
+        self.tally_leg(peer, chunk_address, latency_ms, outcome)
+    }
+
+    /// Tally one admitted leg's outcome (counters, hit latency, debug line) and
+    /// return it unchanged. Shared by the blocking and non-blocking leg paths;
+    /// never called for a `Busy` admission bounce, which opens no substream.
+    fn tally_leg(
+        &self,
+        peer: OverlayAddress,
+        chunk_address: SwarmAddress,
+        latency_ms: f64,
+        outcome: Result<vertex_swarm_node::RetrievalResult, ChunkTransferError>,
+    ) -> Result<vertex_swarm_node::RetrievalResult, ChunkTransferError> {
+        let peer_po = chunk_address.proximity(&peer).get();
+        LEGS_DISPATCHED.fetch_add(1, Ordering::Relaxed);
         match &outcome {
             Ok(_) => {
                 HIT_LATENCY_MS_SUM.fetch_add(latency_ms as u64, Ordering::Relaxed);
@@ -540,43 +608,93 @@ impl BrowserChunkProvider {
         outcome
     }
 
-    /// Race the least-loaded close peers with a single delayed hedge.
+    /// Assign the chunk to the closest connected peer that admits right now.
     ///
-    /// `pool` is the closest top-K connected peers ordered least-in-flight first.
-    /// The first leg goes to the least-loaded peer immediately; one hedge leg
-    /// follows after `lb_hedge()` if no answer has arrived. This keeps legs per
-    /// chunk near 1-2 and, because every chunk picks the currently least-loaded
-    /// peer, spreads load evenly across all connected peers rather than piling on
-    /// the few closest. An all-busy outcome surfaces as `Failed(Busy)` so the
-    /// caller re-picks from a refreshed load picture.
-    async fn race_load_balanced(
+    /// `ranked` is the full connected set ordered by proximity to the chunk. The
+    /// scheduler walks it closest-to-farthest, probing each peer's non-blocking
+    /// admission (free in-flight slot and live allowance headroom): a peer that
+    /// would have to pace bounces on `Busy` and is skipped to the next-closest, so
+    /// a wide concurrent prefetch spreads its fan-out across the whole connected
+    /// set instead of piling on the closest few (whose accounting refresh caps
+    /// throughput). The first peer that admits serves the leg.
+    ///
+    /// Two bounds keep this from degenerating into a probe storm under the
+    /// accounting ceiling the model identifies as the binding constraint:
+    ///
+    /// - A *real* leg (one that admitted and opened a substream) that comes back
+    ///   `NotFound` or with a transport fault is a genuine coverage miss, so the
+    ///   walk tries the next admitting peer, but only up to `ASSIGN_LEG_BUDGET`
+    ///   real legs before it stops widening: a chunk does not walk the whole set
+    ///   opening substreams.
+    /// - If the entire connected set is over its allowance (every probe bounced
+    ///   on `Busy`), spreading cannot help: the aggregate forgiveness rate is the
+    ///   bound. Rather than return `Busy` and spin the caller's re-pick, the chunk
+    ///   paces: one *blocking* leg on the closest peer waits out that peer's
+    ///   allowance bucket (the throttle's own forgiveness-rate pacing) and serves
+    ///   the chunk. This is the open-loop steady state the model predicts.
+    async fn assign_closest_available(
         &self,
-        pool: &[OverlayAddress],
+        ranked: &[OverlayAddress],
         chunk_address: SwarmAddress,
     ) -> WaveOutcome {
-        // Two distinct least-loaded peers: the primary and one hedge. The hedge
-        // stagger gives the primary a full RTT before the second leg opens, so a
-        // healthy primary needs only one substream.
-        let slice: Vec<_> = pool.iter().take(2).copied().collect();
-        if slice.is_empty() {
+        let Some((&closest, _)) = ranked.split_first() else {
             return WaveOutcome::NoCandidates;
-        }
-        match race_candidates(slice, lb_hedge(), |peer| {
-            self.retrieve_leg(peer, chunk_address)
-        })
-        .await
-        {
-            Ok(result) => WaveOutcome::Hit(ChunkRetrievalResult {
-                chunk: result.chunk,
-                stamp: result.stamp,
-                served_by: result.peer,
-            }),
-            Err(RaceFailure::NoCandidates) => WaveOutcome::NoCandidates,
-            Err(RaceFailure::AllFailed(ChunkTransferError::NotFound(a))) => {
-                let _ = a;
-                WaveOutcome::NotFound
+        };
+        let mut real_legs = 0usize;
+        let mut admitted_any = false;
+        let mut last_failure: Option<ChunkTransferError> = None;
+        let probe_span = ranked.len().min(ASSIGN_PROBE_SPAN);
+        for &peer in &ranked[..probe_span] {
+            match self.try_retrieve_leg(peer, chunk_address).await {
+                Ok(result) => {
+                    return WaveOutcome::Hit(ChunkRetrievalResult {
+                        chunk: result.chunk,
+                        stamp: result.stamp,
+                        served_by: result.peer,
+                    });
+                }
+                // The peer would have to pace (full slot or empty bucket): skip
+                // it to the next-closest without waiting. This is the spread.
+                Err(ChunkTransferError::Busy) => continue,
+                // The peer admitted but could not serve (forwarded-but-absent or a
+                // transport fault): record it and walk onward to the next admitting
+                // peer, up to the real-leg budget.
+                Err(e) => {
+                    admitted_any = true;
+                    last_failure = Some(e);
+                    real_legs += 1;
+                    if real_legs >= ASSIGN_LEG_BUDGET {
+                        break;
+                    }
+                }
             }
-            Err(RaceFailure::AllFailed(e)) => WaveOutcome::Failed(e),
+        }
+        // Every probe bounced on Busy: the whole probe span is over its
+        // allowance, so spreading is exhausted and the aggregate forgiveness rate
+        // is the bound. Pace one blocking leg rather than spin the caller's
+        // re-pick across an all-busy set. Pace on the *least-loaded* peer in the
+        // span, not the closest: under the deep-leaf tail (chunks served by a
+        // small close neighbourhood) the closest peer is the most contended, so
+        // pacing there serialises the tail onto one bucket. Pacing on the
+        // least-in-flight close peer spreads the wait across the neighbourhood's
+        // buckets, holding the tail at the neighbourhood's aggregate forgiveness
+        // rate instead of one peer's.
+        if !admitted_any {
+            let pace_peer = least_loaded(&ranked[..probe_span]).unwrap_or(closest);
+            return match self.retrieve_leg(pace_peer, chunk_address).await {
+                Ok(result) => WaveOutcome::Hit(ChunkRetrievalResult {
+                    chunk: result.chunk,
+                    stamp: result.stamp,
+                    served_by: result.peer,
+                }),
+                Err(ChunkTransferError::NotFound(_)) => WaveOutcome::NotFound,
+                Err(e) => WaveOutcome::Failed(e),
+            };
+        }
+        match last_failure {
+            Some(ChunkTransferError::NotFound(_)) => WaveOutcome::NotFound,
+            Some(e) => WaveOutcome::Failed(e),
+            None => WaveOutcome::NotFound,
         }
     }
 
