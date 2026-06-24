@@ -579,13 +579,18 @@ async fn prefetch_tree_pipelined(
     pending.push(Reverse((0, root)));
     let mut in_flight = FuturesUnordered::new();
 
-    let spawn = |addr: ChunkAddress, depth: u32, attempt: u32| {
+    let spawn = |addr: ChunkAddress, depth: u32, attempt: u32, skip_backoff: bool| {
         let provider = Arc::clone(&provider);
         let cached = cache.fetch(&addr);
         async move {
             // Back off before a retry so a congested wave drains; the first
-            // attempt (0) runs immediately.
-            if attempt > 0 {
+            // attempt (0) runs immediately. A retry after a connectivity failure
+            // skips the backoff: the prior peers are gone (the scheduler now routes
+            // around just-reset peers), so re-racing a fresh live peer at once,
+            // rather than parking the chunk behind the dead connection, recovers
+            // the in-flight work the reset lost. Backoff is kept for a not-found
+            // retry, where the chunk's ancestors may simply need to warm first.
+            if attempt > 0 && !skip_backoff {
                 vertex_tasks::time::sleep(RETRY_BACKOFF_STEP * attempt).await;
             }
             let outcome = match cached {
@@ -606,7 +611,7 @@ async fn prefetch_tree_pipelined(
     // Prime the pool, then refill from `pending` as slots free.
     while in_flight.len() < limit {
         match pending.pop() {
-            Some(Reverse((depth, addr))) => in_flight.push(spawn(addr, depth, 0)),
+            Some(Reverse((depth, addr))) => in_flight.push(spawn(addr, depth, 0, false)),
             None => break,
         }
     }
@@ -615,8 +620,12 @@ async fn prefetch_tree_pipelined(
     while let Some((addr, depth, attempt, outcome)) = in_flight.next().await {
         let chunk = match outcome {
             Ok(chunk) => chunk,
-            Err(_) if attempt + 1 < MAX_CHUNK_RETRIES => {
-                in_flight.push(spawn(addr, depth, attempt + 1));
+            Err(ref e) if attempt + 1 < MAX_CHUNK_RETRIES => {
+                // Re-dispatch a connectivity failure at once (the dead peers are on
+                // cooldown, so the re-race lands on a live peer); keep the backoff
+                // for a not-found, which is coverage, not a lost connection.
+                let skip_backoff = !e.is_not_found();
+                in_flight.push(spawn(addr, depth, attempt + 1, skip_backoff));
                 continue;
             }
             // Prefetch is a cache-warming optimisation, not the correctness path:
@@ -631,7 +640,7 @@ async fn prefetch_tree_pipelined(
                 // Refill the freed slot before continuing so the pool stays full.
                 while in_flight.len() < limit {
                     match pending.pop() {
-                        Some(Reverse((depth, addr))) => in_flight.push(spawn(addr, depth, 0)),
+                        Some(Reverse((depth, addr))) => in_flight.push(spawn(addr, depth, 0, false)),
                         None => break,
                     }
                 }
@@ -649,7 +658,7 @@ async fn prefetch_tree_pipelined(
         // Refill freed slots, shallowest-first, from the work queue.
         while in_flight.len() < limit {
             match pending.pop() {
-                Some(Reverse((depth, addr))) => in_flight.push(spawn(addr, depth, 0)),
+                Some(Reverse((depth, addr))) => in_flight.push(spawn(addr, depth, 0, false)),
                 None => break,
             }
         }
@@ -778,8 +787,9 @@ async fn prefetch_range_into_shared(
                             return Ok((chunk, node_offset));
                         }
                         let mut last = String::new();
+                        let mut skip_backoff = false;
                         for attempt in 0..MAX_CHUNK_RETRIES {
-                            if attempt > 0 {
+                            if attempt > 0 && !skip_backoff {
                                 vertex_tasks::time::sleep(RETRY_BACKOFF_STEP * attempt).await;
                             }
                             match retrieve_with_timeout(&provider, &addr, ATTEMPT_TIMEOUT).await {
@@ -796,7 +806,10 @@ async fn prefetch_range_into_shared(
                                     maybe_yield_to_event_loop().await;
                                     return Ok((chunk, node_offset));
                                 }
-                                Err(e) => last = e,
+                                Err(e) => {
+                                    skip_backoff = !e.is_not_found();
+                                    last = e.to_string();
+                                }
                             }
                         }
                         Err(JsValue::from_str(&format!("retrieve {addr}: {last}")))
@@ -851,7 +864,7 @@ async fn retrieve_with_timeout(
     provider: &Arc<dyn SwarmChunkProvider>,
     addr: &ChunkAddress,
     timeout: std::time::Duration,
-) -> Result<AnyChunk, String> {
+) -> Result<AnyChunk, vertex_swarm_api::SwarmError> {
     // A `gloo` (`setTimeout`) timer, not `futures-timer`: the latter does not
     // fire while the single browser thread is saturated, so the timeout would
     // never bounce a hung retrieval. With the per-leg event-loop yield in the
@@ -860,8 +873,10 @@ async fn retrieve_with_timeout(
     let delay = std::pin::pin!(vertex_tasks::time::sleep(timeout));
     match futures::future::select(fetch, delay).await {
         futures::future::Either::Left((Ok(r), _)) => Ok(r.chunk),
-        futures::future::Either::Left((Err(e), _)) => Err(e.to_string()),
-        futures::future::Either::Right(_) => Err("retrieval timed out".to_string()),
+        futures::future::Either::Left((Err(e), _)) => Err(e),
+        futures::future::Either::Right(_) => {
+            Err(vertex_swarm_api::SwarmError::network_msg("retrieval timed out"))
+        }
     }
 }
 
@@ -995,8 +1010,9 @@ pub async fn fetch_leaves_at(
         .map(|(addr, offset)| {
             let provider = Arc::clone(&provider);
             async move {
+                let mut skip_backoff = false;
                 for attempt in 0..MAX_RETRIES {
-                    if attempt > 0 {
+                    if attempt > 0 && !skip_backoff {
                         vertex_tasks::time::sleep(BACKOFF_STEP * attempt).await;
                     }
                     match retrieve_with_timeout(&provider, &addr, ATTEMPT_TIMEOUT).await {
@@ -1006,7 +1022,10 @@ pub async fn fetch_leaves_at(
                             // so the file bytes at this offset are the body verbatim.
                             return Some((offset, chunk.data().to_vec()));
                         }
-                        Err(_) => continue,
+                        Err(e) => {
+                            skip_backoff = !e.is_not_found();
+                            continue;
+                        }
                     }
                 }
                 None
@@ -1119,8 +1138,13 @@ async fn prefetch_tree(
                         return Ok(chunk);
                     }
                     let mut last = String::new();
+                    // A connectivity failure means the served peers are gone (the
+                    // scheduler now cools just-reset peers), so the next attempt
+                    // re-races a live peer at once: skip the backoff and only pay it
+                    // for a not-found, where the chunk's ancestors may need warming.
+                    let mut skip_backoff = false;
                     for attempt in 0..MAX_CHUNK_RETRIES {
-                        if attempt > 0 {
+                        if attempt > 0 && !skip_backoff {
                             vertex_tasks::time::sleep(RETRY_BACKOFF_STEP * attempt).await;
                         }
                         match retrieve_with_timeout(&provider, &addr, ATTEMPT_TIMEOUT).await {
@@ -1132,7 +1156,10 @@ async fn prefetch_tree(
                                 maybe_yield_to_event_loop().await;
                                 return Ok(chunk);
                             }
-                            Err(e) => last = e,
+                            Err(e) => {
+                                skip_backoff = !e.is_not_found();
+                                last = e.to_string();
+                            }
                         }
                     }
                     Err(JsValue::from_str(&format!("retrieve {addr}: {last}")))

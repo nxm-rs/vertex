@@ -28,7 +28,7 @@ pub(crate) use download::{
     list_tree_addresses, resolve_file_path, resolve_file_root,
 };
 pub(crate) use network::BrowserChunkProvider;
-pub use network::{configure_load_balance, configure_retrieval_race};
+pub use network::{configure_load_balance, configure_peer_cooldown, configure_retrieval_race};
 
 /// Fallback batch geometry, used only when on-chain discovery is unavailable.
 const DEFAULT_BATCH_DEPTH: u8 = 20;

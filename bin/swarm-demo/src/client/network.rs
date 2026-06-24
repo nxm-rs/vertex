@@ -24,6 +24,70 @@ use vertex_swarm_topology::TopologyHandle;
 /// the input to load-balanced selection.
 static PEER_INFLIGHT: Mutex<Option<HashMap<OverlayAddress, u32>>> = Mutex::new(None);
 
+/// Peers whose most recent retrieval leg failed with a transport fault
+/// (`NotConnected`/`Cancelled`/`ChannelClosed`/`Protocol`), keyed to the epoch-ms
+/// at which their cooldown expires. While a peer is cooling, the scheduler routes
+/// around it: a connection bee just io_reset for crossing its debt line is mid
+/// teardown, so dispatching there only burns a `NotConnected` leg and the single
+/// thread. The next chunk re-dispatches to a live peer instead of stalling behind
+/// the dead one. Selection never drops below one live candidate: if cooling would
+/// empty the span, the cooldown is ignored for that pick.
+static PEER_COOLDOWN: Mutex<Option<HashMap<OverlayAddress, f64>>> = Mutex::new(None);
+
+/// Cooldown applied to a peer whose leg just failed with a transport fault, in
+/// milliseconds. `0` disables routing-around (the pre-cooldown behaviour). Tunable
+/// via the `cooldown` URL param so a sweep needs no rebuild.
+static PEER_COOLDOWN_MS: AtomicU64 = AtomicU64::new(DEFAULT_PEER_COOLDOWN_MS);
+
+/// Default cooldown on a just-reset peer. Disabled (`0`): under the deep-leaf tail
+/// a handful of close peers serve the remaining chunks, and parking a just-reset
+/// one routes the next dispatch onto an even smaller live set, concentrating load
+/// and provoking more debt resets (measured: more disconnects, weaker tail rate
+/// than fast re-dispatch alone). Fast re-dispatch already recovers the reset's
+/// lost in-flight work without the routing-around. Opt in via the `cooldown` URL
+/// param to experiment.
+const DEFAULT_PEER_COOLDOWN_MS: u64 = 0;
+
+/// Record `peer` as just-failed-with-transport-fault: route around it until the
+/// cooldown elapses. No-op when the cooldown is disabled.
+fn mark_peer_reset(peer: OverlayAddress) {
+    let ms = PEER_COOLDOWN_MS.load(Ordering::Relaxed);
+    if ms == 0 {
+        return;
+    }
+    let expiry = js_sys::Date::now() + ms as f64;
+    let mut g = PEER_COOLDOWN.lock().unwrap_or_else(|p| p.into_inner());
+    g.get_or_insert_with(HashMap::new).insert(peer, expiry);
+}
+
+/// True if `peer` is within its post-reset cooldown window right now.
+fn peer_is_cooling(peer: &OverlayAddress) -> bool {
+    if PEER_COOLDOWN_MS.load(Ordering::Relaxed) == 0 {
+        return false;
+    }
+    let now = js_sys::Date::now();
+    let mut g = PEER_COOLDOWN.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(map) = g.as_mut() else {
+        return false;
+    };
+    match map.get(peer).copied() {
+        Some(expiry) if expiry > now => true,
+        Some(_) => {
+            map.remove(peer);
+            false
+        }
+        None => false,
+    }
+}
+
+/// Set the just-reset cooldown window from the page URL (`cooldown`, ms; `0`
+/// disables). Measurement aid so an A/B needs no rebuild.
+pub fn configure_peer_cooldown(ms: Option<u64>) {
+    if let Some(v) = ms {
+        PEER_COOLDOWN_MS.store(v, Ordering::Relaxed);
+    }
+}
+
 fn peer_inflight_lock() -> std::sync::MutexGuard<'static, Option<HashMap<OverlayAddress, u32>>> {
     let mut g = PEER_INFLIGHT.lock().unwrap_or_else(|p| p.into_inner());
     if g.is_none() {
@@ -623,15 +687,19 @@ impl BrowserChunkProvider {
             }
             Err(ChunkTransferError::Protocol(_)) => {
                 LEG_PROTOCOL.fetch_add(1, Ordering::Relaxed);
+                mark_peer_reset(peer);
             }
             Err(ChunkTransferError::NotConnected) => {
                 LEG_NOTCONN.fetch_add(1, Ordering::Relaxed);
+                mark_peer_reset(peer);
             }
             Err(ChunkTransferError::Cancelled) => {
                 LEG_CANCELLED.fetch_add(1, Ordering::Relaxed);
+                mark_peer_reset(peer);
             }
             Err(ChunkTransferError::ChannelClosed) => {
                 LEG_CHANCLOSED.fetch_add(1, Ordering::Relaxed);
+                mark_peer_reset(peer);
             }
             Err(ChunkTransferError::Busy) => {
                 LEG_BUSY.fetch_add(1, Ordering::Relaxed);
@@ -694,7 +762,15 @@ impl BrowserChunkProvider {
         let mut admitted_any = false;
         let mut last_failure: Option<ChunkTransferError> = None;
         let probe_span = ranked.len().min(ASSIGN_PROBE_SPAN);
-        for &peer in &ranked[..probe_span] {
+        // Route around peers whose connection just io_reset (mid teardown): they
+        // would only return a `NotConnected` leg. Keep the proximity order. If
+        // every peer in the span is cooling, fall through to the full span rather
+        // than report no candidate, so a transient all-cooling window never fails
+        // a chunk that a still-live peer could serve.
+        let span = &ranked[..probe_span];
+        let live: Vec<OverlayAddress> = span.iter().copied().filter(|p| !peer_is_cooling(p)).collect();
+        let probe: &[OverlayAddress] = if live.is_empty() { span } else { &live };
+        for &peer in probe {
             match self.try_retrieve_leg(peer, chunk_address).await {
                 Ok(result) => {
                     return WaveOutcome::Hit(ChunkRetrievalResult {
@@ -730,7 +806,7 @@ impl BrowserChunkProvider {
         // buckets, holding the tail at the neighbourhood's aggregate forgiveness
         // rate instead of one peer's.
         if !admitted_any {
-            let pace_peer = least_loaded(&ranked[..probe_span]).unwrap_or(closest);
+            let pace_peer = least_loaded(probe).unwrap_or(closest);
             return match self.retrieve_leg(pace_peer, chunk_address).await {
                 Ok(result) => WaveOutcome::Hit(ChunkRetrievalResult {
                     chunk: result.chunk,

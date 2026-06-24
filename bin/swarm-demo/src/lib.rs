@@ -438,12 +438,13 @@ fn apply_retrieval_overrides_from_page() {
     // deep-forwarding chunks in wide passes after the first wave drains beats
     // leaving them for the ordered joiner to grind one neighbourhood-bound
     // subtree at a time. Disable with `refetch=0`.
-    client::configure_prefetch_refetch(params.get("refetch").map_or(true, |v| v != "0"));
+    client::configure_prefetch_refetch(params.get("refetch").is_none_or(|v| v != "0"));
     client::configure_load_balance(
         params.get("lb").map(|v| v != "0"),
         parse("lbtopk"),
         parse("lbhedge"),
     );
+    client::configure_peer_cooldown(parse("cooldown"));
 }
 
 /// Per-bin connection dial budget for the browser download client.
