@@ -123,10 +123,13 @@ impl PeerSelector {
 
     /// Order `candidates` (in proximity order) for a request on `chunk`.
     ///
-    /// Applies the ranking described at the module level. When the request is
-    /// blocked on balance (candidates exist but none is affordable), triggers
-    /// best-effort settlement for the unaffordable candidates before
-    /// returning them in proximity order.
+    /// Applies the ranking described at the module level. Triggers best-effort
+    /// debtor-initiated settlement for any candidate whose real debt has reached
+    /// the early-payment trigger, so a peer's view of our debt is reduced before
+    /// it reaches the peer's threshold and it refuses or drops us. Settlement is
+    /// also triggered for the unaffordable candidates when the request is blocked
+    /// on balance (none is affordable), so even a debt that built without
+    /// crossing the early trigger is still settled before we give up on the peer.
     pub fn order(
         &self,
         candidates: Vec<OverlayAddress>,
@@ -141,6 +144,19 @@ impl PeerSelector {
             },
         );
 
+        // Proactively settle any candidate whose debt has reached the early
+        // trigger. The settlement service rate-limits per peer, so polling this
+        // every request is cheap: a settle is sent at most once per refresh
+        // interval and skipped while one is in flight.
+        for peer in &candidates {
+            if self.affordability.should_settle(peer) {
+                self.settlement.trigger_settlement(*peer);
+            }
+        }
+
+        // When the request is blocked on balance every unaffordable candidate is
+        // settled regardless of the early trigger: the next request must find a
+        // usable peer.
         if ranked.blocked_on_balance() {
             for peer in &ranked.unaffordable {
                 self.settlement.trigger_settlement(*peer);
@@ -235,6 +251,17 @@ mod tests {
 
     struct FixedAffordability {
         unaffordable: Vec<OverlayAddress>,
+        /// Peers whose debt has reached the early-payment trigger.
+        settle_due: Vec<OverlayAddress>,
+    }
+
+    impl FixedAffordability {
+        fn new(unaffordable: Vec<OverlayAddress>) -> Self {
+            Self {
+                unaffordable,
+                settle_due: Vec::new(),
+            }
+        }
     }
 
     impl PeerAffordability for FixedAffordability {
@@ -244,6 +271,10 @@ mod tests {
 
         fn allowance_remaining(&self, _overlay: &OverlayAddress) -> Au {
             Au::ZERO
+        }
+
+        fn should_settle(&self, overlay: &OverlayAddress) -> bool {
+            self.settle_due.contains(overlay)
         }
     }
 
@@ -351,7 +382,23 @@ mod tests {
     ) -> PeerSelector {
         PeerSelector::new(
             Arc::new(FixedScores(scores)),
-            Arc::new(FixedAffordability { unaffordable }),
+            Arc::new(FixedAffordability::new(unaffordable)),
+            Arc::new(UnitPricer),
+            settlement,
+        )
+    }
+
+    fn selector_with_settle_due(
+        unaffordable: Vec<OverlayAddress>,
+        settle_due: Vec<OverlayAddress>,
+        settlement: Arc<RecordingSettlement>,
+    ) -> PeerSelector {
+        PeerSelector::new(
+            Arc::new(FixedScores(HashMap::new())),
+            Arc::new(FixedAffordability {
+                unaffordable,
+                settle_due,
+            }),
             Arc::new(UnitPricer),
             settlement,
         )
@@ -382,6 +429,32 @@ mod tests {
             *settlement.triggered.lock().unwrap(),
             vec![peer(1), peer(2)]
         );
+    }
+
+    #[test]
+    fn selector_settles_proactively_when_debt_reaches_early_trigger() {
+        // A still-affordable peer whose debt has reached the early-payment
+        // trigger is settled before it becomes unaffordable, so its view of our
+        // debt is reduced before it would refuse or drop us.
+        let settlement = Arc::new(RecordingSettlement::default());
+        let sel = selector_with_settle_due(Vec::new(), vec![peer(1)], Arc::clone(&settlement));
+
+        let ordered = sel.order(vec![peer(1), peer(2)], &ChunkAddress::zero());
+        // Both stay affordable and keep proximity order.
+        assert_eq!(ordered, vec![peer(1), peer(2)]);
+        // Only the over-trigger peer is settled.
+        assert_eq!(*settlement.triggered.lock().unwrap(), vec![peer(1)]);
+    }
+
+    #[test]
+    fn selector_does_not_settle_below_the_early_trigger() {
+        // No candidate is over the trigger and all are affordable: no settle.
+        let settlement = Arc::new(RecordingSettlement::default());
+        let sel = selector_with_settle_due(Vec::new(), Vec::new(), Arc::clone(&settlement));
+
+        let ordered = sel.order(vec![peer(1), peer(2)], &ChunkAddress::zero());
+        assert_eq!(ordered, vec![peer(1), peer(2)]);
+        assert!(settlement.triggered.lock().unwrap().is_empty());
     }
 
     #[test]

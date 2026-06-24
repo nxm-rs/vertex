@@ -35,13 +35,19 @@ pub use handle::PseudosettleHandle;
 pub use service::{PseudosettleCommand, PseudosettleService};
 pub use vertex_swarm_client_protocol::PseudosettleEvent;
 
-/// Time-based debt forgiveness provider.
+/// Time-based settlement provider.
 ///
-/// On `pre_allow()`, credits the peer based on elapsed time:
-/// `credit = min(elapsed_seconds × refresh_rate, abs(debt))`
+/// `settle()` sends a pseudosettle message to the peer offering our real debt;
+/// the peer forgives up to its time-based allowance and acks the accepted
+/// amount, which the service credits back. Settlement is gated on the
+/// early-payment trigger so we offer once debt approaches the payment threshold,
+/// before the peer would refuse or drop us.
 ///
-/// With a handle, `settle()` delegates to the network service.
-/// Without a handle, only local refresh via `pre_allow()` is performed.
+/// The debtor's balance is never forgiven locally: a peer's view of our debt
+/// only drops when it acks a pseudosettle we sent, so our balance must track
+/// that real debt and recover only on the ack. `pre_allow()` is therefore a
+/// no-op; a local time-refresh here would mask the debt and suppress the network
+/// settle that actually reduces it at the peer.
 pub struct PseudosettleProvider<C> {
     config: C,
     /// Optional handle for delegating to the service.
@@ -77,33 +83,62 @@ impl<C: SwarmAccountingConfig> PseudosettleProvider<C> {
     pub fn config(&self) -> &C {
         &self.config
     }
+
+    /// The early-payment trigger: settle once debt reaches this fraction of the
+    /// payment threshold. Mirrors the reference accounting, which refreshes
+    /// before debt reaches the threshold so a concurrent burst does not block on
+    /// or trip the peer's limit. The trigger is `(100 - early_percent)%` of the
+    /// payment threshold, floored at one refresh-rate unit so a settle always
+    /// offers at least the minimum the peer will act on.
+    fn early_payment_trigger(&self) -> Au {
+        let threshold = self.config.payment_threshold();
+        let early = self.config.early_payment_percent().min(100);
+        let scaled = threshold
+            .checked_scale(100 - early)
+            .unwrap_or(Au::from_amount(u64::MAX));
+        Au::from_amount(scaled.as_amount() / 100).max(self.config.refresh_rate())
+    }
 }
 
 #[async_trait::async_trait]
 impl<C: SwarmAccountingConfig + 'static> SwarmSettlementProvider for PseudosettleProvider<C> {
-    fn pre_allow(&self, _peer: OverlayAddress, state: &dyn SwarmPeerState) -> Au {
-        refresh_allowance(state, self.config.refresh_rate())
+    fn pre_allow(&self, _peer: OverlayAddress, _state: &dyn SwarmPeerState) -> Au {
+        // The debtor never forgives its own debt locally: a peer reduces its view
+        // of our debt only when it acks a pseudosettle we sent. Crediting our own
+        // balance here would mask the real debt, so a debt that has actually
+        // climbed at the peer would look settled locally and `settle()` would
+        // never fire, letting the peer cut us off. Debt recovers only through the
+        // network ack credited in the service.
+        Au::ZERO
     }
 
     async fn settle(&self, peer: OverlayAddress, state: &dyn SwarmPeerState) -> SwarmResult<Au> {
-        // If we have a handle, delegate to the service
-        if let Some(handle) = &self.handle {
-            let balance = state.balance();
-            if !balance.is_negative() {
-                return Ok(Au::ZERO); // Nothing to settle
-            }
+        let Some(handle) = &self.handle else {
+            // Without a service handle the provider cannot send pseudosettle.
+            return Ok(Au::ZERO);
+        };
 
-            let amount = balance.unsigned_abs();
-            let accepted = handle
-                .settle(peer, amount)
-                .await
-                .map_err(SwarmError::payment_required)?;
-
-            Ok(accepted)
-        } else {
-            // No handle - refresh happens automatically in pre_allow()
-            Ok(Au::ZERO)
+        let balance = state.balance();
+        // Positive balance means the peer owes us; nothing for us to settle.
+        if !balance.is_negative() {
+            return Ok(Au::ZERO);
         }
+
+        let debt = balance.unsigned_abs();
+        // Only settle once debt reaches the early-payment trigger, so we offer
+        // before the peer's limit rather than on every chunk.
+        if debt < self.early_payment_trigger() {
+            return Ok(Au::ZERO);
+        }
+
+        // Offer the whole debt; the peer forgives up to its time-based allowance
+        // and acks the accepted amount, which the service credits back.
+        let accepted = handle
+            .settle(peer, debt)
+            .await
+            .map_err(SwarmError::payment_required)?;
+
+        Ok(accepted)
     }
 
     fn name(&self) -> &'static str {
@@ -134,48 +169,6 @@ pub fn create_pseudosettle_actor<A: SwarmBandwidthAccounting + 'static>(
     let handle = PseudosettleHandle::new(command_tx);
 
     (service, handle)
-}
-
-/// Apply time-based credit to peer's negative balance. Returns credit applied.
-fn refresh_allowance(state: &dyn SwarmPeerState, refresh_rate: Au) -> Au {
-    let now = current_timestamp();
-    let last = state.last_refresh();
-
-    if last == 0 {
-        state.set_last_refresh(now);
-        return Au::ZERO;
-    }
-
-    let elapsed = now.saturating_sub(last);
-    if elapsed == 0 {
-        return Au::ZERO;
-    }
-
-    // Allowance is refresh_rate AU per elapsed second. The scaling is checked
-    // so a large rate times a long gap cannot wrap into a tiny allowance; on
-    // overflow the allowance saturates at the maximum, which is then capped by
-    // the actual debt below.
-    let allowance = refresh_rate
-        .checked_scale(elapsed)
-        .unwrap_or(Au::from_amount(u64::MAX));
-
-    // Only add credit if balance is negative (we owe them)
-    let balance = state.balance();
-    let credit = if balance.is_negative() {
-        let credit = allowance.min(-balance);
-        state.add_balance(credit);
-        credit
-    } else {
-        Au::ZERO
-    };
-
-    state.set_last_refresh(now);
-    credit
-}
-
-/// Get current timestamp in seconds.
-fn current_timestamp() -> u64 {
-    vertex_util_runtime::time::now_unix_secs()
 }
 
 /// Create a new pseudosettle-only accounting instance.
@@ -228,154 +221,111 @@ mod tests {
     }
 
     #[test]
-    fn test_refresh_allowance_positive_balance() {
+    fn pre_allow_never_forgives_debt_locally() {
+        // The debtor's balance must track the real debt the peer sees; only a
+        // network ack reduces it. `pre_allow` must therefore leave the balance
+        // untouched, however much time has elapsed, so the debt cannot look
+        // settled locally while the peer still counts it.
+        let provider = PseudosettleProvider::new(BandwidthConfig::default());
         let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
-        state.add_balance(Au::new(1000));
-
-        let credit = refresh_allowance(&state, Au::from_amount(4_500_000));
-
-        assert_eq!(credit, Au::new(0));
-        assert_eq!(state.balance(), Au::new(1000));
-    }
-
-    #[test]
-    fn test_refresh_allowance_negative_balance() {
-        let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
-        state.add_balance(Au::new(-1000));
-        state.set_last_refresh(current_timestamp() - 1);
-
-        let credit = refresh_allowance(&state, Au::from_amount(100));
-
-        assert_eq!(credit, Au::new(100));
-        assert_eq!(state.balance(), Au::new(-900));
-    }
-
-    #[test]
-    fn test_refresh_allowance_caps_at_zero() {
-        let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
-        state.add_balance(Au::new(-100));
-        state.set_last_refresh(current_timestamp() - 10);
-
-        let credit = refresh_allowance(&state, Au::from_amount(1000));
-
-        assert_eq!(credit, Au::new(100));
-        assert_eq!(state.balance(), Au::new(0));
-    }
-
-    #[test]
-    fn test_settlement_too_soon_same_second() {
-        let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
-        let now = current_timestamp();
-
-        state.set_last_refresh(now);
         state.add_balance(Au::new(-10_000));
+        state.set_last_refresh(vertex_util_runtime::time::now_unix_secs() - 10);
 
-        let credit = refresh_allowance(&state, Au::from_amount(4_500_000));
+        let credit = provider.pre_allow(test_peer(), &state);
 
-        assert_eq!(credit, Au::new(0));
+        assert_eq!(credit, Au::ZERO);
         assert_eq!(state.balance(), Au::new(-10_000));
     }
 
     #[test]
-    fn test_time_limited_partial_acceptance() {
+    fn early_payment_trigger_is_fraction_of_threshold() {
+        // Default config: 13_500_000 threshold, 50% early percent => settle once
+        // debt reaches (100-50)% of the threshold, floored at one refresh-rate
+        // unit. Here the 50% figure (6_750_000) exceeds the refresh rate, so it
+        // wins.
+        let provider = PseudosettleProvider::new(BandwidthConfig::default());
+        assert_eq!(provider.early_payment_trigger(), Au::from_amount(6_750_000));
+    }
+
+    #[tokio::test]
+    async fn settle_is_a_noop_below_the_early_payment_trigger() {
+        // A small debt must not settle: a settle this far below the threshold
+        // would waste a round trip the peer would mostly time-cap to nothing.
+        let provider = PseudosettleProvider::new(BandwidthConfig::default());
         let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
-        state.add_balance(Au::new(-50_000));
-        state.set_last_refresh(current_timestamp() - 3);
+        state.add_balance(Au::new(-1_000));
 
-        let credit = refresh_allowance(&state, Au::from_amount(10_000));
-
-        assert_eq!(credit, Au::new(30_000));
-        assert_eq!(state.balance(), Au::new(-20_000));
+        let settled = provider
+            .settle(test_peer(), &state)
+            .await
+            .expect("settle below trigger is a no-op");
+        assert_eq!(settled, Au::ZERO);
     }
 
-    #[test]
-    fn test_full_debt_acceptance() {
+    #[tokio::test]
+    async fn settle_is_a_noop_when_not_in_debt() {
+        // A positive balance means the peer owes us; there is nothing to settle.
+        let provider = PseudosettleProvider::new(BandwidthConfig::default());
         let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
-        state.add_balance(Au::new(-10_000));
-        state.set_last_refresh(current_timestamp() - 10);
+        state.add_balance(Au::new(1_000_000));
 
-        let credit = refresh_allowance(&state, Au::from_amount(10_000));
-
-        assert_eq!(credit, Au::new(10_000));
-        assert_eq!(state.balance(), Au::new(0));
+        let settled = provider
+            .settle(test_peer(), &state)
+            .await
+            .expect("settle with a creditor balance is a no-op");
+        assert_eq!(settled, Au::ZERO);
     }
 
-    #[test]
-    fn test_sequential_refreshes() {
+    #[tokio::test]
+    async fn settle_without_handle_is_a_noop() {
+        // The handle-less provider (no network wiring) cannot send pseudosettle,
+        // even with a debt past the trigger.
+        let provider = PseudosettleProvider::new(BandwidthConfig::default());
         let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
-        let base_time = current_timestamp();
+        state.add_balance(Au::new(-10_000_000));
 
-        state.add_balance(Au::new(-100_000));
-        state.set_last_refresh(base_time - 5);
-
-        let credit1 = refresh_allowance(&state, Au::from_amount(10_000));
-        assert_eq!(credit1, Au::new(50_000));
-        assert_eq!(state.balance(), Au::new(-50_000));
-
-        let credit2 = refresh_allowance(&state, Au::from_amount(10_000));
-        assert_eq!(credit2, Au::new(0));
-        assert_eq!(state.balance(), Au::new(-50_000));
-
-        state.set_last_refresh(current_timestamp() - 3);
-
-        let credit3 = refresh_allowance(&state, Au::from_amount(10_000));
-        assert_eq!(credit3, Au::new(30_000));
-        assert_eq!(state.balance(), Au::new(-20_000));
+        let settled = provider
+            .settle(test_peer(), &state)
+            .await
+            .expect("handle-less settle is a no-op");
+        assert_eq!(settled, Au::ZERO);
     }
 
-    #[test]
-    fn test_refresh_allowance_does_not_overflow_into_a_tiny_allowance() {
-        // A very large refresh rate over a long gap previously multiplied with a
-        // raw saturating multiply: the checked scaling now bounds it instead of
-        // wrapping into a small allowance. The credit is still capped at the
-        // actual debt, so a large debt is fully forgiven and never under-credited
-        // by a wrapped allowance.
-        let state = PeerState::new(Au::from_amount(u64::MAX), Au::from_amount(u64::MAX));
-        let debt = i64::MAX / 2;
-        state.add_balance(Au::new(-debt));
-        state.set_last_refresh(current_timestamp() - 1_000_000);
-
-        let credit = refresh_allowance(&state, Au::from_amount(u64::MAX));
-
-        // The whole debt is forgiven; the allowance never wrapped below it.
-        assert_eq!(credit, Au::new(debt));
-        assert_eq!(state.balance(), Au::ZERO);
-    }
-
-    #[test]
-    fn test_first_refresh_initialization() {
-        let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
-
-        assert_eq!(state.last_refresh(), 0);
-        state.add_balance(Au::new(-10_000));
-
-        let credit = refresh_allowance(&state, Au::from_amount(10_000));
-
-        assert_eq!(credit, Au::new(0));
-        assert_eq!(state.balance(), Au::new(-10_000));
-        assert!(state.last_refresh() > 0);
-    }
-
-    #[test]
-    fn test_client_vs_storer_refresh_rate() {
-        let storer_state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
-        let client_state = PeerState::new_client_only(
-            Au::from_amount(13_500_000),
-            Au::from_amount(16_875_000),
-            10,
+    #[tokio::test]
+    async fn settle_sends_full_debt_once_over_the_trigger() {
+        // With a debt past the early-payment trigger and a wired handle, settle
+        // offers the whole debt on the wire. The drained command channel returns
+        // a service-stopped error mapped to payment_required, which proves the
+        // offer was sent (and carried the full debt) rather than skipped.
+        let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+        let provider = PseudosettleProvider::with_handle(
+            BandwidthConfig::default(),
+            PseudosettleHandle::new(command_tx),
         );
+        let state = PeerState::new(Au::from_amount(13_500_000), Au::from_amount(16_875_000));
+        let debt = 10_000_000;
+        state.add_balance(Au::new(-debt));
 
-        storer_state.add_balance(Au::new(-50_000));
-        client_state.add_balance(Au::new(-50_000));
-        storer_state.set_last_refresh(current_timestamp() - 10);
-        client_state.set_last_refresh(current_timestamp() - 10);
+        let peer = test_peer();
+        let settle = tokio::spawn(async move { provider.settle(peer, &state).await });
 
-        let storer_credit = refresh_allowance(&storer_state, Au::from_amount(10_000));
-        assert_eq!(storer_credit, Au::new(50_000));
-        assert_eq!(storer_state.balance(), Au::new(0));
-
-        let client_credit = refresh_allowance(&client_state, Au::from_amount(1_000));
-        assert_eq!(client_credit, Au::new(10_000));
-        assert_eq!(client_state.balance(), Au::new(-40_000));
+        // The provider sent a settle command carrying the full debt.
+        let cmd = command_rx.recv().await.expect("settle command sent");
+        match cmd {
+            PseudosettleCommand::Settle {
+                peer: p,
+                amount,
+                response_tx,
+            } => {
+                assert_eq!(p, peer);
+                assert_eq!(amount, Au::from_amount(debt as u64));
+                // Drop the response channel so the provider's pending await
+                // resolves with a cancellation; the offer on the wire was the
+                // observable effect. Holding it (via `..`) would deadlock the
+                // awaited settle below.
+                drop(response_tx);
+            }
+        }
+        let _ = settle.await;
     }
 }

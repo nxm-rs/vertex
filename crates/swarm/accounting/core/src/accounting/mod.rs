@@ -324,6 +324,41 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> PeerAffordability for Accountin
         let headroom = balance.saturating_add(threshold).saturating_sub(reserved);
         headroom.max(Au::ZERO)
     }
+
+    fn should_settle(&self, overlay: &OverlayAddress) -> bool {
+        // Settle once our real debt (including what is reserved and about to be
+        // debited) reaches the early-payment trigger, mirroring the reference
+        // accounting, which refreshes before debt reaches the threshold. The
+        // trigger is `(100 - early_percent)%` of the per-peer payment threshold,
+        // floored at one refresh-rate unit so it never sits below the minimum the
+        // peer will act on.
+        let (balance, reserved, threshold) = match self.peers.read().get(overlay) {
+            Some(state) => (
+                state.balance(),
+                state.reserved_balance(),
+                state.payment_threshold(),
+            ),
+            None => return false,
+        };
+
+        // Projected debt: the negated (balance less the pending reservation).
+        let debt = Au::ZERO
+            .saturating_sub(balance)
+            .saturating_add(reserved)
+            .max(Au::ZERO);
+        if debt <= Au::ZERO {
+            return false;
+        }
+
+        let early = self.config.early_payment_percent().min(100);
+        let trigger = threshold
+            .checked_scale(100 - early)
+            .map(|scaled| Au::from_amount(scaled.as_amount() / 100))
+            .unwrap_or(Au::from_amount(u64::MAX))
+            .max(self.config.refresh_rate());
+
+        debt >= trigger
+    }
 }
 
 /// Handle to a peer's accounting state. Cheap to clone.

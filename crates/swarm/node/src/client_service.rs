@@ -8,8 +8,8 @@ use nectar_primitives::ChunkAddress;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_api::{
-    Au, BandwidthDebit, PeerReporter, ReportSource, SwarmLocalStore, SwarmPricing,
-    SwarmScoringEvent,
+    Au, BandwidthDebit, PeerAffordability, PeerReporter, ReportSource, SwarmLocalStore,
+    SwarmPricing, SwarmScoringEvent,
 };
 use vertex_swarm_client_protocol::PseudosettleAck;
 pub use vertex_swarm_client_protocol::{ChunkTransferError, RetrievalResult};
@@ -18,6 +18,7 @@ use vertex_swarm_primitives::{CachedChunk, OverlayAddress, StampedChunk};
 use vertex_tasks::{GracefulShutdown, MaybeSend, SpawnableTask};
 
 use crate::protocol::{ClientCommand, ClientEvent, FailureKind};
+use crate::selection::SettlementTrigger;
 use crate::throttle::{ProtocolKind, SelfThrottle};
 
 const RETRIEVAL_SOURCE: ReportSource = ReportSource::Protocol("retrieval");
@@ -203,6 +204,21 @@ pub struct ClientService {
     /// accounting. Present only on the full builder; absent on the lightweight
     /// launcher, where the origin debit is a no-op.
     accounting: Option<OriginAccounting>,
+    /// Debtor-initiated settlement over the shared accounting. Present whenever
+    /// accounting is; absent on a service with no accounting. Each own-request
+    /// delivery that leaves us in debt past the early-payment trigger spawns a
+    /// best-effort settle here, so the demo's shared retrieval path settles even
+    /// though it never runs the full-node candidate selector.
+    settlement: Option<ClientSettlement>,
+}
+
+/// The affordability query and settlement trigger the service needs to send a
+/// debtor-initiated pseudosettle after an own-request delivery. Both read the
+/// same shared accounting the origin debit and the selector use, so the trigger
+/// and the rate-limited provider self-gate without any extra state here.
+struct ClientSettlement {
+    affordability: Arc<dyn PeerAffordability>,
+    trigger: Arc<dyn SettlementTrigger>,
 }
 
 /// The pricing and debit handles the service needs to debit own-request
@@ -228,6 +244,7 @@ impl ClientService {
             store: None,
             throttle: None,
             accounting: None,
+            settlement: None,
         };
 
         (service, event_tx, handle)
@@ -248,6 +265,7 @@ impl ClientService {
             store: None,
             throttle: None,
             accounting: None,
+            settlement: None,
         };
 
         (service, handle)
@@ -300,6 +318,27 @@ impl ClientService {
         self
     }
 
+    /// Attach debtor-initiated settlement so each own-request delivery that
+    /// leaves us past the early-payment trigger settles.
+    ///
+    /// `affordability` and `trigger` read the same shared accounting the origin
+    /// debit uses. The full-node retrieval path settles through the candidate
+    /// selector; the shared retrieval path the embedded launcher drives never
+    /// runs that selector, so without this the trigger is dead code for an
+    /// embedded client and its debt only ever climbs.
+    #[must_use]
+    pub fn with_settlement(
+        mut self,
+        affordability: Arc<dyn PeerAffordability>,
+        trigger: Arc<dyn SettlementTrigger>,
+    ) -> Self {
+        self.settlement = Some(ClientSettlement {
+            affordability,
+            trigger,
+        });
+        self
+    }
+
     /// Get a handle for sending commands.
     pub fn handle(&self) -> ClientHandle {
         self.handle.clone()
@@ -318,6 +357,23 @@ impl ClientService {
         let price = accounting.pricing.peer_price(peer, address);
         if let Err(error) = accounting.bandwidth.debit_received(*peer, price, true) {
             debug!(%peer, %address, %error, "origin debit refused at disconnect threshold");
+        }
+    }
+
+    /// Send a debtor-initiated pseudosettle to `peer` when the own-request debit
+    /// just committed has pushed our debt to the early-payment trigger.
+    ///
+    /// The provider self-gates on the same trigger and the service rate-limits
+    /// per peer, so triggering on every in-debt delivery is cheap: at most one
+    /// offer per refresh interval, skipped while one is in flight. A no-op
+    /// without settlement (a service with no accounting).
+    fn settle_origin(&self, peer: &OverlayAddress) {
+        let Some(settlement) = &self.settlement else {
+            return;
+        };
+        if settlement.affordability.should_settle(peer) {
+            debug!(%peer, "origin delivery past early-payment trigger; sending pseudosettle");
+            settlement.trigger.trigger_settlement(*peer);
         }
     }
 
@@ -390,6 +446,7 @@ impl ClientService {
                 debug!(%peer, %address, ?latency, "Chunk received");
                 if originated {
                     self.debit_origin(&peer, &address);
+                    self.settle_origin(&peer);
                 }
                 if let Some(store) = &self.store
                     && chunk.is_content()
@@ -445,6 +502,7 @@ impl ClientService {
                 debug!(%peer, %address, ?latency, "Receipt received");
                 if originated {
                     self.debit_origin(&peer, &address);
+                    self.settle_origin(&peer);
                 }
                 self.report(
                     &peer,
@@ -580,7 +638,11 @@ impl ClientService {
             }
 
             ClientEvent::PseudosettleSent { peer, peer_id, ack } => {
-                debug!(%peer, %peer_id, amount = %ack.accepted, timestamp = ack.timestamp, "Pseudosettle sent, received ack");
+                // The accepted amount is credited back to our balance by the
+                // pseudosettle service, which owns the same shared accounting and
+                // also receives this wire event. This is the observable proof the
+                // settle landed and our debt to the peer dropped by `accepted`.
+                debug!(%peer, %peer_id, accepted = %ack.accepted, timestamp = ack.timestamp, "Pseudosettle acked; debt credited back");
             }
 
             #[cfg(feature = "swap")]

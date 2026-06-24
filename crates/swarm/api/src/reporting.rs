@@ -214,6 +214,17 @@ pub trait PeerAffordability: Send + Sync {
     fn allowance_to_payment_threshold(&self, overlay: &OverlayAddress) -> Au {
         self.allowance_remaining(overlay)
     }
+
+    /// True when our debt to the peer has reached the early-payment trigger, so
+    /// a debtor-initiated settlement should be sent before the debt reaches the
+    /// peer's threshold and it refuses or drops us.
+    ///
+    /// The default is `false`; accounting overrides it with the real per-peer
+    /// debt against the configured trigger.
+    fn should_settle(&self, overlay: &OverlayAddress) -> bool {
+        let _ = overlay;
+        false
+    }
 }
 
 /// Why a peer's connection should be closed.
