@@ -58,19 +58,22 @@ const MAX_PREFETCH_ITERS: usize = 4096;
 ///
 /// Both download paths prefetch concurrently: `download_file` before assembling,
 /// `stream_file` alongside the ordered stream. The provider's per-peer in-flight
-/// cap skips a saturated storer to the next-closest one, so a wide fan-out
-/// spreads load across the neighbourhood instead of piling depth onto the
-/// closest few, which also holds the reserve depth steadier.
+/// cap skips a saturated storer to the next-closest one, so the fan-out spreads
+/// load across the neighbourhood instead of piling depth onto the closest few,
+/// which also holds the reserve depth steadier.
 ///
 /// The effective ceiling is the distributed scheduler's admission pool, roughly
-/// `connected-peers * per-peer-cap` slots, not connections: the fan-out spreads
-/// across the full connected set, and a width past the available slots bounces
-/// the surplus into busy re-picks. Measured on the live network from the
-/// browser: 512 is the
-/// peak, edging 256 by roughly a quarter at every worker count while still
-/// byte-completing and holding the socket budget; 1024 regresses on re-race
-/// churn. 512 is the operating point.
-const DEFAULT_PREFETCH_CONCURRENCY: usize = 512;
+/// `connected-peers * per-peer-cap` slots, not connections, and a width past the
+/// available slots bounces the surplus into busy re-picks. Measured on the live
+/// network from the browser: a 512-wide fan-out admits retrievals faster than a
+/// thin peer set can serve, so close storers reset under the in-flight load in a
+/// synchronised wave (the surplus also lands on just-disconnected peers, so most
+/// of it bounces as not-connected). 256 spreads the same work without
+/// overrunning the serving capacity: against 512 it cut the in-download
+/// transport-reset count by ~89% (median 28 to 3) and raised throughput ~36%
+/// (median 241 to 327 KB/s), n=8 byte-verified each; 128 starves the pipeline
+/// and throughput regresses. 256 is the operating point.
+const DEFAULT_PREFETCH_CONCURRENCY: usize = 256;
 
 static PREFETCH_CONCURRENCY_OVERRIDE: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(DEFAULT_PREFETCH_CONCURRENCY);
