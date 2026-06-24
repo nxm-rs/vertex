@@ -93,7 +93,40 @@ use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use futures::future::BoxFuture;
+use vertex_swarm_api::{SwarmBandwidthAccounting, SwarmPeerBandwidth};
+use vertex_tasks::TaskExecutor;
 use vertex_tasks::time::Instant;
+
+/// Awaitable debtor-initiated settle for one peer, the pre-pay seam the throttle
+/// drives before a request crosses the early-payment trigger.
+///
+/// Object-safe so the throttle holds it as `Arc<dyn PeerSettle>` without naming
+/// the bandwidth accounting's per-peer handle type. The returned future settles
+/// the peer's debt through pseudosettle and resolves once the offer is acked (or
+/// refused, which is also a resolution). Send (settling is `Send` by the
+/// [`SwarmPeerBandwidth::settle`] contract) so the non-blocking path can spawn
+/// it on either the native or browser executor. Implemented over any
+/// [`SwarmBandwidthAccounting`].
+pub(crate) trait PeerSettle: Send + Sync {
+    /// Settle `peer`'s outstanding debt, resolving when the offer completes.
+    fn settle(&self, peer: OverlayAddress) -> BoxFuture<'static, ()>;
+}
+
+impl<B> PeerSettle for B
+where
+    B: SwarmBandwidthAccounting + 'static,
+    B::Peer: 'static,
+{
+    fn settle(&self, peer: OverlayAddress) -> BoxFuture<'static, ()> {
+        let handle = self.for_peer(peer);
+        Box::pin(async move {
+            if let Err(error) = handle.settle().await {
+                tracing::debug!(%peer, %error, "pre-send settle failed");
+            }
+        })
+    }
+}
 
 /// Temporary latency-decomposition counters for the retrieval path.
 ///
@@ -240,6 +273,13 @@ pub struct SelfThrottle {
     /// semaphore created on first use. A request holds one permit for its
     /// lifetime, so at most that many requests are outstanding to one peer.
     inflight: Mutex<HashMap<OverlayAddress, Arc<Semaphore>>>,
+    /// Awaitable debtor-initiated settle, the pre-pay seam. When a request would
+    /// be admitted to a peer already past the early-payment trigger
+    /// ([`PeerAffordability::should_settle`]), the throttle settles that peer
+    /// first so the request is pre-paid and the committed debt never crosses the
+    /// line the remote drops us at. Absent (`None`) on a throttle built without
+    /// settlement (the in-memory test helper), where requests only pace.
+    settle: Option<Arc<dyn PeerSettle>>,
 }
 
 impl SelfThrottle {
@@ -282,7 +322,22 @@ impl SelfThrottle {
             refresh_rate,
             allowance_percent,
             inflight: Mutex::new(HashMap::new()),
+            settle: None,
         }
+    }
+
+    /// Attach the awaitable debtor-initiated settle so a request to a peer past
+    /// the early-payment trigger pre-pays before dispatch.
+    ///
+    /// Without it the throttle only paces; with it a blocking acquire settles and
+    /// waits before admitting, and a non-blocking try-acquire kicks off a settle
+    /// and skips the peer for this poll so a later poll finds it affordable. The
+    /// settle source is the same shared accounting the pacing reads, so the
+    /// pre-pay and the allowance view never diverge.
+    #[must_use]
+    pub(crate) fn with_settle(mut self, settle: Arc<dyn PeerSettle>) -> Self {
+        self.settle = Some(settle);
+        self
     }
 
     /// The peer's concurrency semaphore, created on first use.
@@ -404,6 +459,19 @@ impl SelfThrottle {
             }
         };
 
+        // Pre-pay: if this peer is already past the early-payment trigger, settle
+        // its debt before the request goes out. The committed debit lands on
+        // delivery, so settling first keeps that debit from pushing the peer's
+        // view of our debt across the line it drops us at. Awaited here so the
+        // request is genuinely pre-paid rather than racing the settle. The
+        // provider rate-limits per peer, so a settle already in flight resolves
+        // cheaply without a redundant offer.
+        if let Some(settle) = &self.settle
+            && self.allowance.should_settle(&peer)
+        {
+            settle.settle(peer).await;
+        }
+
         let cost = self.request_cost(&peer, &address);
         let mut throttled = false;
         let mut waited = Duration::ZERO;
@@ -472,6 +540,20 @@ impl SelfThrottle {
         address: ChunkAddress,
         kind: ProtocolKind,
     ) -> Option<ThrottlePermit> {
+        // Pre-pay, non-blocking variant: a peer past the early-payment trigger has
+        // a settle kicked off in the background so its debt drains, but the
+        // request is NOT skipped: the bucket below already paces against the
+        // payment-threshold headroom, and skipping the (typically closest) peer
+        // would shift load to farther peers and re-dial, churning the
+        // neighbourhood. The scheduler keeps admitting through the bucket while
+        // the background settle resets the balance.
+        if let Some(settle) = &self.settle
+            && self.allowance.should_settle(&peer)
+            && let Ok(executor) = TaskExecutor::try_current()
+        {
+            executor.spawn(settle.settle(peer));
+        }
+
         let slot = match self.peer_semaphore(&peer).try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => {
@@ -588,6 +670,50 @@ mod tests {
         }
     }
 
+    /// Allowance whose `should_settle` verdict is swappable, so the pre-pay gate
+    /// can be exercised independently of the bucket arithmetic. Always affordable
+    /// so only the settle gate, not the rate limiter, governs admission.
+    struct SettleSignal {
+        settle: std::sync::atomic::AtomicBool,
+    }
+
+    impl SettleSignal {
+        fn new(should_settle: bool) -> Arc<Self> {
+            Arc::new(Self {
+                settle: std::sync::atomic::AtomicBool::new(should_settle),
+            })
+        }
+        fn set(&self, should_settle: bool) {
+            self.settle.store(should_settle, Ordering::SeqCst);
+        }
+    }
+
+    impl PeerAffordability for SettleSignal {
+        fn can_afford(&self, _overlay: &OverlayAddress, _price: Au) -> bool {
+            true
+        }
+        fn allowance_remaining(&self, _overlay: &OverlayAddress) -> Au {
+            Au::from_amount(u64::from(u32::MAX))
+        }
+        fn should_settle(&self, _overlay: &OverlayAddress) -> bool {
+            self.settle.load(Ordering::SeqCst)
+        }
+    }
+
+    /// Records every peer the pre-pay gate asks to settle. The future resolves
+    /// immediately; the test asserts on the recorded calls.
+    #[derive(Default)]
+    struct RecordingSettle {
+        settled: Mutex<Vec<OverlayAddress>>,
+    }
+
+    impl PeerSettle for RecordingSettle {
+        fn settle(&self, peer: OverlayAddress) -> futures::future::BoxFuture<'static, ()> {
+            self.settled.lock().push(peer);
+            Box::pin(async {})
+        }
+    }
+
     /// Refresh rate used in tests (AU/sec). One token is one AU, so a request
     /// costing `COST` AU drains `COST` of the allowance-sized bucket.
     const REFRESH_RATE: u64 = 10;
@@ -612,6 +738,9 @@ mod tests {
         }
         fn allowance_to_payment_threshold(&self, overlay: &OverlayAddress) -> Au {
             self.0.allowance_to_payment_threshold(overlay)
+        }
+        fn should_settle(&self, overlay: &OverlayAddress) -> bool {
+            self.0.should_settle(overlay)
         }
     }
 
@@ -1082,6 +1211,54 @@ mod tests {
                 .await
                 .is_some(),
             "a different peer's slots are independent"
+        );
+    }
+
+    #[tokio::test]
+    async fn acquire_pre_pays_a_peer_at_the_settlement_trigger() {
+        // A blocking acquire to a peer past the early-payment trigger settles
+        // that peer before admitting, so the request that follows is pre-paid and
+        // the committed debit cannot push the peer over the disconnect line.
+        let signal = SettleSignal::new(true);
+        let recorder = Arc::new(RecordingSettle::default());
+        let t = build_throttle(signal.clone(), Arc::new(FixedPrice(COST)), REFRESH_RATE, 100)
+            .with_settle(recorder.clone());
+
+        let permit = t.acquire(peer(1), address(1), ProtocolKind::Retrieval).await;
+        assert!(permit.is_some(), "an affordable peer still admits after settling");
+        assert_eq!(
+            recorder.settled.lock().as_slice(),
+            &[peer(1)],
+            "the peer at the trigger is settled before the request goes out"
+        );
+
+        // Below the trigger, no pre-pay settle fires.
+        signal.set(false);
+        let _ = t.acquire(peer(2), address(1), ProtocolKind::Retrieval).await;
+        assert_eq!(
+            recorder.settled.lock().len(),
+            1,
+            "a peer below the trigger is not settled"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_acquire_admits_a_peer_at_the_trigger_while_settling() {
+        // The non-blocking path does NOT skip a peer past the trigger: skipping
+        // the (typically closest) peer would shift load to farther peers and
+        // re-dial. It admits through the bucket and drains the debt with a
+        // background settle (kicked off only when an executor is present, not in
+        // this unit test). The admission itself is what this asserts: a generous
+        // allowance plus a peer at the trigger must still admit.
+        let signal = SettleSignal::new(true);
+        let recorder = Arc::new(RecordingSettle::default());
+        let t = build_throttle(signal.clone(), Arc::new(FixedPrice(COST)), REFRESH_RATE, 100)
+            .with_settle(recorder.clone());
+
+        assert!(
+            t.try_acquire(peer(1), address(1), ProtocolKind::Retrieval)
+                .is_some(),
+            "a peer at the trigger still admits through the bucket"
         );
     }
 }

@@ -159,8 +159,13 @@ pub fn assemble_client_core(ctx: ClientCoreCtx) -> ClientCore {
 
     // Outbound self-throttle: pace our retrieval and pushsync requests under each
     // peer's pseudosettle allowance so a burst never crosses the settlement
-    // trigger.
-    let throttle = Arc::new(SelfThrottle::new(&accounting, &bandwidth));
+    // trigger, and pre-pay a peer already at the trigger by settling before the
+    // request goes out, so the committed debit never crosses the line the remote
+    // drops us at. The settle source is the same shared accounting the pacing and
+    // the delivery debit read.
+    let throttle = Arc::new(
+        SelfThrottle::new(&accounting, &bandwidth).with_settle(accounting.bandwidth().clone()),
+    );
     let throttled_handle = client_handle.clone().with_throttle(Arc::clone(&throttle));
 
     // The service reports through the same peer-manager authority accounting
