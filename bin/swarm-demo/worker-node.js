@@ -15,7 +15,14 @@ self.onmessage = async (e) => {
   try {
     if (msg.type === 'boot') {
       await init({ module_or_path: '/swarm-demo_bg.wasm' });
-      node = await startWorkerNode();
+      // Optional per-worker address bias and footprint: prefixBits/prefixValue
+      // steer this node's overlay into its assigned address slice, footprint/
+      // bootstrap shrink its connection budget so K workers fit under the pool.
+      const prefixBits = msg.prefixBits | 0;
+      const prefixValue = msg.prefixValue | 0;
+      const footprint = msg.footprint | 0;
+      const bootstrap = msg.bootstrap | 0;
+      node = await startWorkerNode(prefixBits, prefixValue, footprint, bootstrap);
       self.postMessage({ type: 'ready', id: msg.id, overlay: node.overlay });
       return;
     }
@@ -49,6 +56,24 @@ self.onmessage = async (e) => {
       if (!node) throw new Error('node not booted');
       const size = await node.fileSize(msg.fileRoot);
       self.postMessage({ type: 'size', id: msg.id, size });
+      return;
+    }
+    if (msg.type === 'listLeaves') {
+      if (!node) throw new Error('node not booted');
+      const leaves = await node.listLeaves(msg.fileRoot);
+      self.postMessage({ type: 'listLeaves', id: msg.id, leaves: Array.from(leaves) });
+      return;
+    }
+    if (msg.type === 'fetchLeaves') {
+      if (!node) throw new Error('node not booted');
+      // `pairs` is a flat [addrHex, offset, ...]. The result is one concatenated
+      // body buffer plus parallel offsets/lengths; transfer the buffer to main.
+      const res = await node.fetchLeavesAt(msg.pairs, msg.width || 0);
+      const bytes = res.bytes;
+      self.postMessage({
+        type: 'fetchLeaves', id: msg.id,
+        offsets: res.offsets, lengths: res.lengths, bytes,
+      }, [bytes.buffer]);
       return;
     }
     if (msg.type === 'range') {

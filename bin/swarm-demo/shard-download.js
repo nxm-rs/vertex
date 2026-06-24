@@ -35,11 +35,33 @@ function makeWorker() {
   return { w, call };
 }
 
-async function bootWorkers(k) {
+// Boot K workers. `opts.prefixBits` biases each worker's overlay into its slice
+// (worker i gets prefixValue = i << (8 - prefixBits)); `opts.footprint`/
+// `opts.bootstrap` shrink each worker's connection budget so K fit under the
+// renderer socket pool. All zero keeps the unbiased full-footprint behaviour.
+async function bootWorkers(k, opts) {
+  opts = opts || {};
+  const prefixBits = opts.prefixBits | 0;
+  const footprint = opts.footprint | 0;
+  const bootstrap = opts.bootstrap | 0;
   const workers = [];
   for (let i = 0; i < k; i++) workers.push(makeWorker());
-  const readies = await Promise.all(workers.map((wk) => wk.call({ type: 'boot' })));
+  const readies = await Promise.all(workers.map((wk, i) => wk.call({
+    type: 'boot',
+    prefixBits,
+    prefixValue: prefixBits ? (i << (8 - prefixBits)) & 0xff : 0,
+    footprint,
+    bootstrap,
+  })));
   return { workers, overlays: readies.map((r) => r.overlay) };
+}
+
+// Worker index for a chunk address by its leading `prefixBits` bits, so a chunk
+// is fetched by the worker whose overlay sits in the same address slice.
+function workerForAddr(addrHex, prefixBits) {
+  const h = addrHex.startsWith('0x') ? addrHex.slice(2) : addrHex;
+  const b = parseInt(h.slice(0, 2), 16) || 0;
+  return b >> (8 - prefixBits);
 }
 
 // Map an address-hex to a worker index by its leading byte, so the partition is
@@ -144,13 +166,23 @@ window.__classifyRefs = async function (refs, warmupMs, perCallTimeoutMs) {
 // Each worker runs the monolithic ~150-190 KB/s pipeline on its own slice, so K
 // workers aggregate toward K x the single-node rate, bounded by the per-worker
 // WebSocket budget (per worker, not per origin).
-window.__shardRangeDownload = async function (ref, k, warmupMs, runTimeoutMs, width, path) {
-  k = k || 3;
-  warmupMs = warmupMs || 14000;
+window.__shardRangeDownload = async function (ref, k, warmupMs, runTimeoutMs, width, path, footprint, bootstrap) {
+  k = k || 4;
+  warmupMs = warmupMs || 18000;
   runTimeoutMs = runTimeoutMs || 240000;
   width = width || 0;
+  // Measured operating point on the live network (hoverfly 3.6 MB wasm): a small
+  // per-worker connection footprint (total dial target ~32, bootstrap fill ~12)
+  // cuts each worker's dial/connection churn and lifts aggregate throughput about
+  // 48% over the full default footprint, while four workers still fill the
+  // renderer's socket pool. Larger K thrashes the pool; a larger footprint does
+  // not help. Callers may override both.
+  footprint = footprint || 32;
+  bootstrap = bootstrap || 12;
   const t0 = performance.now();
-  const { workers, overlays } = await bootWorkers(k);
+  // Byte-range workers cannot address-bias (a byte slice scatters across the
+  // address space), so only the footprint knob applies here.
+  const { workers, overlays } = await bootWorkers(k, { footprint, bootstrap });
 
   // One warmup window for all K workers in parallel (they bootstrap concurrently).
   await new Promise((r) => setTimeout(r, warmupMs));
@@ -234,6 +266,118 @@ window.__shardRangeDownload = async function (ref, k, warmupMs, runTimeoutMs, wi
     perWorker,
     warmupSecs: ((tWarm - t0) / 1000),
     rootSecs: ((tRoot - tWarm) / 1000),
+    fetchSecs: Number(fetchSecs.toFixed(2)),
+    kbps: Number(((assembled / 1024) / fetchSecs).toFixed(2)),
+    mbps: Number(((assembled / 1048576) / fetchSecs).toFixed(3)),
+  };
+};
+
+// Run a K-worker ADDRESS-SHARDED download of `ref`.
+//
+// Each worker's overlay is biased into one slice of the address space
+// (prefixBits = log2(K)) and runs a small connection footprint. Worker 0
+// enumerates the file's leaves in tree order, each tagged with its byte offset.
+// Leaves are partitioned by their leading address bits to the worker whose slice
+// they fall in, so the closest peer to each leaf is in that worker's connected
+// set (the not-connected retrieval tax collapses). Each worker fetches only its
+// slice's leaves and returns them as (offset, bytes); the coordinator writes each
+// at its offset and byte-verifies the whole file (wasm magic + SHA-256).
+//
+// K must be a power of two so prefixBits = log2(K) partitions the byte cleanly.
+window.__shardAddrDownload = async function (ref, k, warmupMs, runTimeoutMs, width, path, footprint, bootstrap) {
+  k = k || 4;
+  warmupMs = warmupMs || 16000;
+  runTimeoutMs = runTimeoutMs || 240000;
+  width = width || 0;
+  footprint = footprint || 0;
+  bootstrap = bootstrap || 0;
+  const prefixBits = Math.round(Math.log2(k));
+  if ((1 << prefixBits) !== k) throw new Error('K must be a power of two for address sharding');
+
+  const t0 = performance.now();
+  const { workers, overlays } = await bootWorkers(k, { prefixBits, footprint, bootstrap });
+  await new Promise((r) => setTimeout(r, warmupMs));
+  const tWarm = performance.now();
+
+  // Resolve file root + size on worker 0 (any worker can resolve; its slice bias
+  // does not stop it walking the manifest/intermediates).
+  const rootMsg = path
+    ? await workers[0].call({ type: 'resolvePath', address: ref, path }, null, 120000)
+    : await workers[0].call({ type: 'resolveRoot', address: ref }, null, 120000);
+  const fileRoot = rootMsg.fileRoot;
+  const sizeMsg = await workers[0].call({ type: 'size', fileRoot }, null, 120000);
+  const total = sizeMsg.size;
+  if (!total) throw new Error('could not resolve file size');
+
+  // Enumerate leaves in tree order with byte offsets on worker 0.
+  const leavesMsg = await workers[0].call({ type: 'listLeaves', fileRoot }, null, 180000);
+  const flat = leavesMsg.leaves || [];
+  const leaves = [];
+  for (let i = 0; i + 1 < flat.length; i += 2) leaves.push({ addr: flat[i], offset: flat[i + 1] });
+  const tList = performance.now();
+  if (!leaves.length) throw new Error('no leaves enumerated');
+
+  // Partition leaves by address slice.
+  const shards = Array.from({ length: k }, () => []);
+  for (const l of leaves) shards[workerForAddr(l.addr, prefixBits)].push(l);
+
+  // Each worker fetches its slice; returns one concatenated body buffer with
+  // parallel offsets/lengths. The coordinator writes each body at its offset.
+  const file = new Uint8Array(total);
+  let assembled = 0;
+  const tFetch0 = performance.now();
+  const perWorker = new Array(k).fill(null);
+  await Promise.all(workers.map(async (wk, i) => {
+    const pairs = [];
+    for (const l of shards[i]) { pairs.push(l.addr); pairs.push(l.offset); }
+    const w0 = performance.now();
+    const m = await wk.call({ type: 'fetchLeaves', pairs, width }, null, runTimeoutMs);
+    const w1 = performance.now();
+    const offsets = m.offsets, lengths = m.lengths, bytes = m.bytes;
+    let pos = 0, wbytes = 0;
+    for (let j = 0; j < offsets.length; j++) {
+      const off = offsets[j], len = lengths[j];
+      file.set(bytes.subarray(pos, pos + len), off);
+      pos += len; wbytes += len;
+    }
+    assembled += wbytes;
+    const secs = (w1 - w0) / 1000;
+    perWorker[i] = {
+      leaves: shards[i].length,
+      fetched: offsets.length,
+      bytes: wbytes,
+      secs: Number(secs.toFixed(2)),
+      kbps: Number(((wbytes / 1024) / secs).toFixed(2)),
+    };
+  }));
+  const tEnd = performance.now();
+
+  const magic = Array.from(file.subarray(0, 4)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  let sha256 = null;
+  try {
+    const digest = await crypto.subtle.digest('SHA-256', file);
+    sha256 = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  } catch (e) { sha256 = 'sha-error:' + String(e && e.message ? e.message : e); }
+
+  for (const wk of workers) wk.w.terminate();
+
+  const fetchSecs = (tEnd - tFetch0) / 1000;
+  return {
+    mode: 'addr',
+    k, prefixBits, warmupMs, width, footprint, bootstrap,
+    overlays,
+    fileRoot,
+    total,
+    assembled,
+    byteComplete: assembled === total,
+    magic,
+    wasmMagic: magic === '0061736d',
+    sha256,
+    leafCount: leaves.length,
+    shardSizes: shards.map((s) => s.length),
+    perWorker,
+    warmupSecs: ((tWarm - t0) / 1000),
+    listSecs: ((tList - tWarm) / 1000),
     fetchSecs: Number(fetchSecs.toFixed(2)),
     kbps: Number(((assembled / 1024) / fetchSecs).toFixed(2)),
     mbps: Number(((assembled / 1048576) / fetchSecs).toFixed(3)),

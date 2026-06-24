@@ -105,6 +105,52 @@ impl Identity {
         }
     }
 
+    /// Creates a random ephemeral identity whose overlay's leading `prefix_bits`
+    /// equal `prefix_value` (taken from the high bits of `prefix_value`).
+    ///
+    /// The signer is random; only the nonce is ground, so the overlay
+    /// (`keccak256(address || network_id || nonce)`) lands in the target slice
+    /// of the address space. A sharded browser download gives worker `k` the
+    /// prefix `k` over `log2(K)` bits, so its Kademlia neighbourhood covers the
+    /// peers closest to the chunks it is assigned, collapsing the
+    /// not-connected retrieval tax. `prefix_bits` is clamped to 8 (one byte);
+    /// grinding cost is `2^prefix_bits` keccaks on average.
+    pub fn random_in_prefix(
+        spec: Arc<Spec>,
+        node_type: SwarmNodeType,
+        prefix_bits: u8,
+        prefix_value: u8,
+    ) -> Self {
+        let bits = prefix_bits.min(8);
+        let signer = LocalSigner::random_with(&mut rand_08::rngs::OsRng);
+        let address = signer.address();
+        let network_id = spec.network_id();
+        // Mask the top `bits` of a byte; the target is `prefix_value`'s top
+        // `bits` bits, matched against the overlay's first byte.
+        let mask: u8 = if bits == 0 { 0 } else { 0xFFu8 << (8 - bits) };
+        let target = prefix_value & mask;
+        let mut bytes = [0u8; 32];
+        let nonce = loop {
+            vertex_util_runtime::rand::fill_bytes(&mut bytes);
+            let candidate = Nonce::new(bytes);
+            let overlay = compute_overlay(&address, network_id, &candidate);
+            let top = overlay.as_bytes().first().copied().unwrap_or(0);
+            if top & mask == target {
+                break candidate;
+            }
+        };
+        let overlay = compute_overlay(&address, network_id, &nonce);
+        Self {
+            spec,
+            signer: Arc::new(signer),
+            nonce,
+            overlay,
+            node_type,
+            welcome_message: None,
+            ephemeral: true,
+        }
+    }
+
     /// Sets a custom welcome message.
     pub fn with_welcome_message(mut self, message: impl Into<String>) -> Self {
         self.welcome_message = Some(message.into());
@@ -229,6 +275,27 @@ mod tests {
 
         assert_eq!(id1.ethereum_address(), id2.ethereum_address());
         assert_ne!(id1.overlay_address(), id2.overlay_address());
+    }
+
+    #[test]
+    fn random_in_prefix_lands_in_slice() {
+        let spec = init_testnet();
+        // 2-bit prefix: worker indices 0..4 map to top-byte prefixes
+        // 0x00, 0x40, 0x80, 0xC0.
+        for k in 0u8..4 {
+            let value = k << 6; // top 2 bits = k
+            let id = Identity::random_in_prefix(spec.clone(), SwarmNodeType::Client, 2, value);
+            let top = id.overlay_address().as_bytes().first().copied().unwrap();
+            assert_eq!(top >> 6, k, "overlay top 2 bits must equal worker index");
+        }
+    }
+
+    #[test]
+    fn random_in_prefix_zero_bits_is_unconstrained() {
+        let spec = init_testnet();
+        // Zero prefix bits imposes no constraint and still yields a valid overlay.
+        let id = Identity::random_in_prefix(spec, SwarmNodeType::Client, 0, 0xFF);
+        assert!(!id.overlay_address().is_zero());
     }
 
     #[test]

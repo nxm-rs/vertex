@@ -135,9 +135,31 @@ impl KademliaConfig {
 
     /// Set the per-bin bootstrap fill target used while `depth == 0`
     /// (production threads it from the connection profile).
-    pub(crate) fn with_bootstrap_target(mut self, target: usize) -> Self {
+    pub fn with_bootstrap_target(mut self, target: usize) -> Self {
         self.limits = self.limits.with_bootstrap_target(target);
         self
+    }
+
+    /// Set the per-bin oversaturation level: the trim floor and minimum
+    /// inbound ceiling at any depth. The effective level is clamped up to
+    /// `bootstrap_target` and `saturation` at read time, so lowering it shrinks
+    /// the retention band only down to the depth frontier.
+    pub fn with_oversaturation(mut self, oversaturation: usize) -> Self {
+        self.limits = self.limits.with_oversaturation_peers(oversaturation);
+        self
+    }
+
+    /// Shrink the whole connection footprint to a small fixed budget: the total
+    /// dial target, the depth-0 bootstrap fill, and the per-bin retention band
+    /// are all set from `total`. A browser worker that owns a narrow address
+    /// slice needs only enough connections to reach a usable depth over that
+    /// slice, so K such workers fit under the per-renderer socket pool where one
+    /// full-footprint node each would not. The saturation floor still protects
+    /// the depth climb (see [`DepthAwareLimits`]).
+    pub fn with_small_footprint(self, total: usize, bootstrap: usize) -> Self {
+        self.with_total_target(total)
+            .with_bootstrap_target(bootstrap)
+            .with_oversaturation(bootstrap)
     }
 }
 

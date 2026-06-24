@@ -86,6 +86,12 @@ fn prefetch_concurrency() -> usize {
     PREFETCH_CONCURRENCY_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The configured prefetch fan-out width, for callers (the leaf-shard fetch)
+/// that default their own width to the same operating point.
+pub fn default_prefetch_width() -> usize {
+    prefetch_concurrency()
+}
+
 /// When set, `download_file` walks the chunk tree with a single global in-flight
 /// pool that enqueues a node's children the instant the node decodes, instead of
 /// the level-synchronous breadth-first walk that drains each level fully before
@@ -734,6 +740,159 @@ async fn retrieve_with_timeout(
         futures::future::Either::Left((Err(e), _)) => Err(e.to_string()),
         futures::future::Either::Right(_) => Err("retrieval timed out".to_string()),
     }
+}
+
+/// A leaf chunk with the byte offset and length it occupies in the joined file.
+///
+/// The shard coordinator partitions these by address across workers; each leaf
+/// carries its own offset so a worker that fetched it can return bytes the
+/// coordinator places without any tree context.
+pub struct LeafOffset {
+    pub address: ChunkAddress,
+    pub offset: u64,
+}
+
+/// Enumerate the leaves of the file at `file_root` in tree order, each tagged
+/// with the byte offset and length it occupies in the joined file.
+///
+/// Walks the intermediate nodes breadth-first (one fetch per intermediate, never
+/// per leaf), computing each child's byte offset from the parent offset and the
+/// per-child subtree span, the same arithmetic the range prefetch uses. The
+/// result lets the coordinator shard leaves by address and reassemble by offset:
+/// each worker fetches the leaves nearest its own overlay, so the closest peer to
+/// each fetched chunk is in its connected set and the not-connected tax falls.
+pub async fn list_leaf_offsets(
+    file_root: ChunkAddress,
+    provider: Arc<dyn SwarmChunkProvider>,
+    cache: &MemoryCache,
+) -> Result<Vec<LeafOffset>, JsValue> {
+    const BRANCHES: u64 = (DEFAULT_BODY_SIZE / REF_SIZE) as u64;
+    const LIST_RETRIES: u32 = 4;
+    const LIST_BACKOFF: std::time::Duration = std::time::Duration::from_millis(200);
+
+    let mut leaves: Vec<LeafOffset> = Vec::new();
+    // (intermediate address, byte offset of its subtree).
+    let mut level: Vec<(ChunkAddress, u64)> = vec![(file_root, 0)];
+    let mut seen: HashSet<ChunkAddress> = HashSet::new();
+    seen.insert(file_root);
+
+    while !level.is_empty() {
+        let fetched: Vec<Result<(AnyChunk, u64), JsValue>> =
+            futures::stream::iter(level.into_iter())
+                .map(|(addr, node_offset)| {
+                    let provider = Arc::clone(&provider);
+                    let cached = cache.fetch(&addr);
+                    async move {
+                        if let Some(chunk) = cached {
+                            return Ok((chunk, node_offset));
+                        }
+                        let mut last = String::new();
+                        for attempt in 0..LIST_RETRIES {
+                            if attempt > 0 {
+                                vertex_tasks::time::sleep(LIST_BACKOFF * attempt).await;
+                            }
+                            match provider.retrieve_chunk(&addr).await {
+                                Ok(r) => {
+                                    vertex_tasks::time::yield_to_event_loop().await;
+                                    return Ok((r.chunk, node_offset));
+                                }
+                                Err(e) => last = e.to_string(),
+                            }
+                        }
+                        Err(JsValue::from_str(&format!(
+                            "list-leaf retrieve {addr}: {last}"
+                        )))
+                    }
+                })
+                .buffer_unordered(prefetch_concurrency())
+                .collect()
+                .await;
+
+        let mut next: Vec<(ChunkAddress, u64)> = Vec::new();
+        for result in fetched {
+            let (chunk, node_offset) = match result {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if chunk.span() > DEFAULT_BODY_SIZE as u64 {
+                // Each child subtree spans `child_span` bytes; when that equals one
+                // body the children are leaves (record their offsets without a
+                // fetch), otherwise they are intermediates to descend into. This
+                // is the exact structural test the range prefetch uses, never a
+                // span/branch-count guess (which mis-sizes the final partial
+                // child and drops leaves).
+                let child_span = child_subtree_span(chunk.span(), BRANCHES);
+                let children_are_leaves = child_span == DEFAULT_BODY_SIZE as u64;
+                for (i, child) in parse_child_refs(chunk.data())?.into_iter().enumerate() {
+                    let child_offset = node_offset + (i as u64) * child_span;
+                    if children_are_leaves {
+                        // A leaf address can legitimately recur at several offsets
+                        // (identical 4 KiB blocks dedup to one chunk address), so
+                        // every leaf occurrence is recorded by offset; only the BFS
+                        // over intermediates dedups, to avoid re-walking a shared
+                        // subtree.
+                        leaves.push(LeafOffset {
+                            address: child,
+                            offset: child_offset,
+                        });
+                    } else if seen.insert(child) {
+                        next.push((child, child_offset));
+                    }
+                }
+            } else {
+                // The root itself is a single-leaf file.
+                leaves.push(LeafOffset {
+                    address: *chunk.address(),
+                    offset: node_offset,
+                });
+            }
+            cache.insert(chunk);
+        }
+        level = next;
+    }
+
+    leaves.sort_by_key(|l| l.offset);
+    Ok(leaves)
+}
+
+/// Fetch each address in `addrs` and return its body bytes paired with the byte
+/// `offset` it occupies in the file, so the coordinator can reassemble without
+/// tree context. Misses are retried; a leaf that exhausts its retries is skipped
+/// and reported by absence (the coordinator counts assembled bytes).
+pub async fn fetch_leaves_at(
+    addrs: Vec<(ChunkAddress, u64)>,
+    width: usize,
+    provider: Arc<dyn SwarmChunkProvider>,
+) -> Vec<(u64, Vec<u8>)> {
+    const MAX_RETRIES: u32 = 10;
+    const BACKOFF_STEP: std::time::Duration = std::time::Duration::from_millis(250);
+    const ATTEMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(8000);
+
+    futures::stream::iter(addrs.into_iter())
+        .map(|(addr, offset)| {
+            let provider = Arc::clone(&provider);
+            async move {
+                for attempt in 0..MAX_RETRIES {
+                    if attempt > 0 {
+                        vertex_tasks::time::sleep(BACKOFF_STEP * attempt).await;
+                    }
+                    match retrieve_with_timeout(&provider, &addr, ATTEMPT_TIMEOUT).await {
+                        Ok(chunk) => {
+                            vertex_tasks::time::yield_to_event_loop().await;
+                            // `data()` is the leaf body (the span lives separately),
+                            // so the file bytes at this offset are the body verbatim.
+                            return Some((offset, chunk.data().to_vec()));
+                        }
+                        Err(_) => continue,
+                    }
+                }
+                None
+            }
+        })
+        .buffer_unordered(width.max(1))
+        .filter_map(|r| async move { r })
+        .collect()
+        .await
 }
 
 /// The byte span each child subtree of a node covering `span` bytes holds: the

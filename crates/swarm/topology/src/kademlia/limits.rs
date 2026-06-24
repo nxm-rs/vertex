@@ -145,6 +145,17 @@ impl DepthAwareLimits {
         self
     }
 
+    /// Set the per-bin oversaturation level (trim floor and minimum inbound
+    /// ceiling).
+    ///
+    /// The effective level is clamped to at least `bootstrap_target` and
+    /// `saturation` at read time ([`Self::oversaturation`]), so a value
+    /// below either has no effect on its own.
+    pub(crate) fn with_oversaturation_peers(mut self, oversaturation: usize) -> Self {
+        self.oversaturation_peers = oversaturation;
+        self
+    }
+
     /// Per-bin saturation threshold; the depth frontier and all allocation
     /// floors derive from this single value.
     pub(crate) fn saturation(&self) -> usize {
@@ -303,16 +314,6 @@ impl DepthAwareLimits {
 
 #[cfg(test)]
 impl DepthAwareLimits {
-    /// Set the per-bin oversaturation level (trim floor and minimum inbound
-    /// ceiling).
-    ///
-    /// The effective level is clamped to at least `bootstrap_target` and
-    /// `saturation` at read time ([`Self::oversaturation`]), so a value
-    /// below either has no effect on its own.
-    pub(crate) fn with_oversaturation_peers(mut self, oversaturation: usize) -> Self {
-        self.oversaturation_peers = oversaturation;
-        self
-    }
     /// Expected available peers in bin (exponential estimate from uniform distribution).
     pub(crate) fn expected_available(&self, bin: Bin, depth: NeighborhoodDepth) -> usize {
         if depth == NeighborhoodDepth::ZERO || depth.contains(bin) {

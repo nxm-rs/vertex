@@ -14,6 +14,7 @@ use vertex_swarm_api::{SwarmChunkProvider, SwarmIdentity};
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::{ClientLauncher, SwarmNodeType};
 use vertex_swarm_spec::{init_mainnet, mainnet_wss_bootnodes};
+use vertex_swarm_topology::KademliaConfig;
 use wasm_bindgen::prelude::*;
 
 use crate::client::{BrowserChunkProvider, parse_address};
@@ -111,6 +112,74 @@ impl WorkerNode {
         .await
     }
 
+    /// Enumerate the leaves of the file at `file_root_hex` in tree order, each
+    /// tagged with its byte offset, as a flat `[addrHex, offset, addrHex, offset,
+    /// ...]` array (offsets as f64). The coordinator shards leaves by address to
+    /// the address-biased workers and reassembles by offset.
+    #[wasm_bindgen(js_name = listLeaves)]
+    pub async fn list_leaves(&self, file_root_hex: String) -> Result<js_sys::Array, JsValue> {
+        let file_root = parse_address(&file_root_hex)?;
+        let cache = crate::client::MemoryCache::new();
+        let leaves =
+            crate::client::list_leaf_offsets(file_root, self.provider.clone(), &cache).await?;
+        let out = js_sys::Array::new();
+        for l in leaves {
+            out.push(&JsValue::from_str(&l.address.to_string()));
+            out.push(&JsValue::from_f64(l.offset as f64));
+        }
+        Ok(out)
+    }
+
+    /// Fetch each `(addrHex, offset)` pair in the flat `addrs_offsets` array and
+    /// return a flat `[offset, byteLength, ...bytes]`-free transfer: the offsets
+    /// array and one concatenated body buffer, with a parallel lengths array, so
+    /// the coordinator writes each body at its offset. Runs the bounded
+    /// concurrent fetch scoped to this worker's address slice.
+    #[wasm_bindgen(js_name = fetchLeavesAt)]
+    pub async fn fetch_leaves_at(
+        &self,
+        addrs_offsets: js_sys::Array,
+        width: usize,
+    ) -> Result<js_sys::Object, JsValue> {
+        let mut pairs: Vec<(nectar_primitives::ChunkAddress, u64)> = Vec::new();
+        let n = addrs_offsets.length();
+        let mut i = 0;
+        while i + 1 < n {
+            let addr_hex = addrs_offsets.get(i).as_string().unwrap_or_default();
+            let offset = addrs_offsets.get(i + 1).as_f64().unwrap_or(0.0) as u64;
+            let addr = parse_address(&addr_hex)?;
+            pairs.push((addr, offset));
+            i += 2;
+        }
+        let width = if width == 0 {
+            crate::client::default_prefetch_width()
+        } else {
+            width
+        };
+        let results = crate::client::fetch_leaves_at(pairs, width, self.provider.clone()).await;
+
+        // Concatenate bodies into one buffer with parallel offsets/lengths so the
+        // whole slice transfers in one ArrayBuffer (no per-chunk postMessage).
+        let mut total = 0usize;
+        for (_, body) in &results {
+            total += body.len();
+        }
+        let mut buf = Vec::with_capacity(total);
+        let offsets = js_sys::Array::new();
+        let lengths = js_sys::Array::new();
+        for (offset, body) in &results {
+            offsets.push(&JsValue::from_f64(*offset as f64));
+            lengths.push(&JsValue::from_f64(body.len() as f64));
+            buf.extend_from_slice(body);
+        }
+        let out = js_sys::Object::new();
+        js_sys::Reflect::set(&out, &JsValue::from_str("offsets"), &offsets)?;
+        js_sys::Reflect::set(&out, &JsValue::from_str("lengths"), &lengths)?;
+        let bytes = js_sys::Uint8Array::from(buf.as_slice());
+        js_sys::Reflect::set(&out, &JsValue::from_str("bytes"), &bytes)?;
+        Ok(out)
+    }
+
     /// Resolve the manifest at `reference_hex` to its file root, then walk the
     /// chunk tree returning every chunk address (intermediates and leaves) as a
     /// hex array. The shard coordinator partitions this list across workers.
@@ -139,10 +208,21 @@ impl WorkerNode {
 /// transport are all available in a `WorkerGlobalScope`, so the node
 /// infrastructure runs unchanged.
 ///
+/// `prefix_bits`/`prefix_value` bias the node's overlay into one slice of the
+/// address space so its neighbourhood covers the peers closest to the chunks it
+/// is assigned (zero bits = unbiased). `footprint`/`bootstrap` shrink the
+/// per-worker connection budget so K workers fit under the renderer's socket
+/// pool; a zero `footprint` keeps the full default footprint.
+///
 /// # Errors
 /// Returns a JS error if bootnode resolution or the node launch fails.
 #[wasm_bindgen(js_name = startWorkerNode)]
-pub async fn start_worker_node() -> Result<WorkerNode, JsValue> {
+pub async fn start_worker_node(
+    prefix_bits: u8,
+    prefix_value: u8,
+    footprint: usize,
+    bootstrap: usize,
+) -> Result<WorkerNode, JsValue> {
     console_error_panic_hook::set_once();
     crate::init_tracing();
 
@@ -151,16 +231,25 @@ pub async fn start_worker_node() -> Result<WorkerNode, JsValue> {
     let task_manager = vertex_tasks::TaskManager::current();
 
     let spec = init_mainnet();
-    let identity = Identity::random(spec, SwarmNodeType::Client);
+    let identity = if prefix_bits == 0 {
+        Identity::random(spec, SwarmNodeType::Client)
+    } else {
+        Identity::random_in_prefix(spec, SwarmNodeType::Client, prefix_bits, prefix_value)
+    };
     let overlay = identity.overlay_address().to_string();
-    info!(%overlay, "worker node: resolving bootnodes");
+    info!(%overlay, prefix_bits, prefix_value, footprint, bootstrap, "worker node: resolving bootnodes");
 
     let bootnodes =
         resolve_mainnet_wss_bootnodes(&DohClient::cloudflare(), mainnet_wss_bootnodes()).await;
     info!(count = bootnodes.len(), "worker node: dialing bootnodes");
 
-    let launched = ClientLauncher::new(identity)
-        .with_bootnodes(bootnodes)
+    let mut launcher = ClientLauncher::new(identity).with_bootnodes(bootnodes);
+    if footprint != 0 {
+        let boot = if bootstrap == 0 { 12 } else { bootstrap };
+        launcher =
+            launcher.with_kademlia(KademliaConfig::default().with_small_footprint(footprint, boot));
+    }
+    let launched = launcher
         .launch()
         .await
         .map_err(|e| JsValue::from_str(&format!("worker launch failed: {e}")))?;

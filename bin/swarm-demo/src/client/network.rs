@@ -159,9 +159,8 @@ fn lb_hedge() -> Duration {
 /// least-loaded close peer leads. Ties keep proximity order (stable sort).
 fn least_loaded_first(ranked: &[OverlayAddress]) -> Vec<OverlayAddress> {
     let g = peer_inflight_lock();
-    let load = |p: &OverlayAddress| -> u32 {
-        g.as_ref().and_then(|m| m.get(p).copied()).unwrap_or(0)
-    };
+    let load =
+        |p: &OverlayAddress| -> u32 { g.as_ref().and_then(|m| m.get(p).copied()).unwrap_or(0) };
     let mut out = ranked.to_vec();
     out.sort_by_key(|p| load(p));
     out
