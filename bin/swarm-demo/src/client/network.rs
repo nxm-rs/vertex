@@ -213,6 +213,46 @@ static CLOSEST_TO_CALLS: AtomicU64 = AtomicU64::new(0);
 static HIT_LATENCY_MS_SUM: AtomicU64 = AtomicU64::new(0);
 static HIT_LATENCY_CALLS: AtomicU64 = AtomicU64::new(0);
 
+/// Per-served-bin tail diagnostic: a chunk's *whole-retrieval* wall time (entry
+/// to hit, spanning every busy re-pick and the widening fall-through) and the
+/// number of re-pick rounds it took, bucketed by how many chunks had already
+/// been served when it completed. Bins of [`TAIL_BIN`] served chunks let the
+/// instrumentation line show whether the last bins (the deep-leaf tail) cost
+/// more wall time and more rounds per chunk than the early spread, which
+/// distinguishes a scheduling-order tail from a retry/accounting-bound one.
+/// Measurement aid, not a shipping metric.
+const TAIL_BINS: usize = 8;
+const TAIL_BIN: u64 = 125;
+static TAIL_WALL_MS_SUM: [AtomicU64; TAIL_BINS] = [const { AtomicU64::new(0) }; TAIL_BINS];
+static TAIL_ROUNDS_SUM: [AtomicU64; TAIL_BINS] = [const { AtomicU64::new(0) }; TAIL_BINS];
+static TAIL_COUNT: [AtomicU64; TAIL_BINS] = [const { AtomicU64::new(0) }; TAIL_BINS];
+
+/// Record one served chunk's whole-retrieval cost into its served-progress bin.
+fn record_tail(served: u64, wall_ms: u64, rounds: u64) {
+    let bin = ((served.saturating_sub(1)) / TAIL_BIN) as usize;
+    let bin = bin.min(TAIL_BINS - 1);
+    TAIL_WALL_MS_SUM[bin].fetch_add(wall_ms, Ordering::Relaxed);
+    TAIL_ROUNDS_SUM[bin].fetch_add(rounds, Ordering::Relaxed);
+    TAIL_COUNT[bin].fetch_add(1, Ordering::Relaxed);
+}
+
+/// Render the per-bin `mean_wall_ms/mean_rounds` series for the instrumentation
+/// line, e.g. `bin0=12ms/1.1 bin1=...`. Empty bins are skipped.
+fn tail_histogram() -> String {
+    let mut parts = Vec::new();
+    for b in 0..TAIL_BINS {
+        let c = TAIL_COUNT[b].load(Ordering::Relaxed);
+        if c == 0 {
+            continue;
+        }
+        let wall = TAIL_WALL_MS_SUM[b].load(Ordering::Relaxed) / c;
+        let rounds =
+            (TAIL_ROUNDS_SUM[b].load(Ordering::Relaxed) as f64 / c as f64 * 100.0).round() / 100.0;
+        parts.push(format!("b{b}={wall}ms/{rounds}r"));
+    }
+    parts.join(" ")
+}
+
 /// Hard ceiling on connected peers a retrieval considers before it stops
 /// widening.
 ///
@@ -345,18 +385,26 @@ impl SwarmChunkProvider for BrowserChunkProvider {
         // in-flight cap (a wide parallel download), which is transient
         // back-pressure, not absence. Wait a short backoff and re-pick from the
         // refreshed load picture.
+        //
+        // Time the whole retrieval (entry to hit) and count the re-pick rounds so
+        // the tail diagnostic can attribute a slow tail to wall time vs round
+        // count per served-progress bin.
+        let chunk_started = js_sys::Date::now();
+        let mut rounds = 1u64;
         let mut outcome = race(&ranked).await;
         for _ in 0..retrieve_busy_retries() {
             if !matches!(&outcome, WaveOutcome::Failed(ChunkTransferError::Busy)) {
                 break;
             }
             futures_timer::Delay::new(RETRIEVE_BUSY_BACKOFF).await;
+            rounds += 1;
             outcome = race(&ranked).await;
         }
 
         match outcome {
             WaveOutcome::Hit(result) => {
                 let served = CHUNKS_SERVED.fetch_add(1, Ordering::Relaxed) + 1;
+                record_tail(served, (js_sys::Date::now() - chunk_started) as u64, rounds);
                 // Report the single-thread breakdown once per 100 chunks: the
                 // substreams-per-chunk multiplier and the mean `closest_to`
                 // cost, so iteration can see where the per-chunk thread time
@@ -405,6 +453,7 @@ impl SwarmChunkProvider for BrowserChunkProvider {
                     let topo_routing = self.topology.routing_peers_count();
                     let topo_pending = self.topology.pending_connections_count();
                     let topo_stored = self.topology.stored_peers_count();
+                    let tail_hist = tail_histogram();
                     tracing::info!(
                         "retrieval-instrumentation served={served} legs={legs} \
                          substreams_per_chunk={spc} closest_to_us_mean={} closest_to_calls={ct_calls} \
@@ -417,7 +466,8 @@ impl SwarmChunkProvider for BrowserChunkProvider {
                          conc_peers={conc_peers} conc_max={conc_max} conc_inflight={conc_total} \
                          conc_top10_share={conc_top10_x100} \
                          topo_connected={topo_connected} topo_routing={topo_routing} \
-                         topo_pending={topo_pending} topo_stored={topo_stored}",
+                         topo_pending={topo_pending} topo_stored={topo_stored} \
+                         tail_hist=[{tail_hist}]",
                         ct_us / ct_calls,
                     );
                 }

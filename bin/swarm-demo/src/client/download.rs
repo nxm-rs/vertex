@@ -388,7 +388,11 @@ async fn warm_skipped(
 
     let all = list_tree_addresses(file_root, provider.clone(), cache, 0).await?;
     for pass in 0..MAX_PASSES {
-        let missing: Vec<ChunkAddress> = all.iter().copied().filter(|a| cache.fetch(a).is_none()).collect();
+        let missing: Vec<ChunkAddress> = all
+            .iter()
+            .copied()
+            .filter(|a| cache.fetch(a).is_none())
+            .collect();
         if missing.is_empty() {
             return Ok(());
         }
