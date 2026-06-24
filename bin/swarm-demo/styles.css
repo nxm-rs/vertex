@@ -1,6 +1,6 @@
 /* =========================================================================
    VERTEX // Swarm Scanner - dark network-operations-console aesthetic.
-   Layout: top bar, a 3-column main grid (self+topology | globe | scoreboard),
+   Layout: top bar, a 3-column main grid (self+topology | map | scoreboard),
    and a collapsible bottom Files bar. Monospace, neon cyan/amber accents,
    subtle grid + glow.
    ========================================================================= */
@@ -118,39 +118,17 @@ body::before {
     rgba(4, 8, 12, 0.55);
   overflow: hidden;
 }
-#globe { position: absolute; inset: 0; }
+#globe { position: absolute; inset: 0; display: grid; place-items: center; }
 
-.globe-fallback {
-  position: absolute; inset: 0; display: grid; place-items: center;
-  color: var(--muted);
+/* Static SVG world map backdrop: paints once, never repaints. */
+.map-backdrop {
+  width: 100%; height: 100%;
+  object-fit: contain;
+  opacity: 0.9;
+  filter: drop-shadow(0 0 18px rgba(43, 217, 255, 0.12));
+  pointer-events: none;
+  user-select: none;
 }
-
-/* score legend over the globe */
-.globe-legend {
-  position: absolute; left: 14px; bottom: 14px;
-  display: grid; grid-template-columns: auto 1fr; grid-auto-rows: auto;
-  gap: 2px 8px; align-items: center;
-  font-size: 10px; letter-spacing: 0.14em; color: var(--muted);
-  background: rgba(4, 8, 12, 0.55); border: 1px solid var(--line);
-  padding: 8px 10px; border-radius: 8px; backdrop-filter: blur(4px);
-}
-.globe-legend .lg-title { grid-column: 1 / -1; color: var(--cyan-dim); }
-.globe-legend .lg-bar {
-  grid-column: 1 / -1; height: 6px; border-radius: 3px;
-  background: linear-gradient(90deg, #ff3c3c, #ffb347, #2bff9b, #2bd9ff);
-}
-.globe-legend .lg-lo { justify-self: start; }
-.globe-legend .lg-hi { justify-self: end; }
-
-/* globe tooltips (globe.gl injects raw html) */
-.globe-tip {
-  font: 11px var(--mono); color: var(--text);
-  background: rgba(6, 12, 18, 0.92); border: 1px solid var(--cyan-dim);
-  padding: 6px 9px; border-radius: 6px; box-shadow: var(--glow);
-  white-space: nowrap;
-}
-.globe-tip.self { border-color: #fff; }
-.globe-tip b { color: var(--cyan); }
 
 /* ---------------- cards ---------------- */
 .card {

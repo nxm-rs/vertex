@@ -7,9 +7,9 @@
 
     <!--
       Every JS library is vendored and served same-origin so the page has no
-      cross-origin subresources. globe.gl's UMD dist bundles three.js and
-      exposes a global `Globe`; it is a classic (non-module) script so the
-      global is set before app.js (an ES module) runs.
+      cross-origin subresources. The map backdrop is a static, pre-rendered SVG
+      copied with the assets directory; there is no map library and no runtime
+      tile fetching.
     -->
     <link data-trunk rel="copy-dir" href="assets" />
     <!-- The stream-to-disk service worker must sit at the demo root so it can
@@ -21,7 +21,6 @@
     <link data-trunk rel="copy-file" href="worker-node.js" />
     <link data-trunk rel="copy-file" href="shard-download.js" />
     <link data-trunk rel="copy-file" href="shard.html" />
-    <script src="assets/vendor/globe.gl.min.js"></script>
 
     <!-- Download sink factory (File System Access fast path + service-worker
          fallback). Loaded as a module so its `createDownloadSink` export is
@@ -32,7 +31,7 @@
     <link data-trunk rel="rust" data-type="main" />
     <link data-trunk rel="css" href="styles.css" />
 
-    <!-- scanner orchestrator: globe + scoreboard + self panel + mock feed -->
+    <!-- scanner orchestrator: map backdrop + scoreboard + self panel + feed -->
     <script type="module" src="assets/app.js"></script>
   </head>
   <body>
@@ -80,7 +79,7 @@
           </section>
         </aside>
 
-        <!-- CENTER globe (earth + country outlines backdrop) -->
+        <!-- CENTER static world-map backdrop (country outlines) -->
         <section class="col col-globe">
           <div id="globe"></div>
         </section>

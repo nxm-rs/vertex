@@ -3,8 +3,8 @@
 // Presentation-layer orchestrator for the Vertex Swarm scanner UI.
 //
 // Wires a peer feed (mock today, wasm later) to three views:
-//   - a 3D globe (globe.gl, vendored) rendering the earth and country outlines
-//     as a backdrop
+//   - a static 2D world-map backdrop (a vendored, pre-rendered SVG of country
+//     outlines; no WebGL, no animation loop, no runtime tile fetches)
 //   - a live, sortable peer scoreboard
 //   - a self panel for our own node
 //
@@ -22,12 +22,6 @@ import { makePeerFeed } from './peer-feed.js';
 // app is served from site root (/) or a subpath (GitHub Pages /vertex/).
 const ASSET_BASE = new URL('.', import.meta.url); // .../assets/
 const assetUrl = (rel) => new URL(rel, ASSET_BASE).href;
-
-// Optional dark earth texture. Left unset by default: we render a solid dark
-// sphere + country polygons (the scanner look) and ship no large texture, so
-// there is no subresource to 404. To use a texture, vendor it into assets/ and
-// set GLOBE_IMG to assetUrl('your-texture.jpg').
-const GLOBE_IMG = null;
 
 // Coerce a score (number or { total }) to a clamped 0..100 number.
 function scoreNum(score) {
@@ -77,74 +71,22 @@ let sortKey = 'score';
 let sortDir = -1; // -1 desc, 1 asc
 
 // ===========================================================================
-// Globe
+// Map backdrop
 // ===========================================================================
+//
+// A static, pre-rendered SVG world map (vendored under assets/, derived from
+// Natural Earth public-domain country outlines, styled to match the dark
+// scanner theme). It paints once as a plain <img> and never repaints: no
+// WebGL, no requestAnimationFrame loop, no runtime tile fetches. This keeps the
+// single browser thread free for the wasm node's libp2p retrieval.
 
-let globe = null;
-
-function initGlobe(el) {
-  if (typeof Globe === 'undefined') {
-    console.error('[app] globe.gl global not found - vendored bundle failed to load');
-    el.innerHTML = '<div class="globe-fallback">globe library unavailable</div>';
-    return;
-  }
-  globe = Globe()(el)
-    .backgroundColor('rgba(0,0,0,0)')
-    .showAtmosphere(true)
-    .atmosphereColor('#2bd9ff')
-    .atmosphereAltitude(0.18)
-    .showGraticules(true);
-
-  // Use a vendored dark earth texture if one is configured; otherwise render
-  // the globe as a solid dark sphere with country polygons (the default look).
-  if (GLOBE_IMG) globe.globeImageUrl(GLOBE_IMG);
-
-  // Solid dark base so the globe reads even without a texture. The material is
-  // a real three.js material; mutate its existing Color objects in place via
-  // .set() rather than constructing new THREE.Color (THREE is bundled inside
-  // globe.gl and not exposed as a global under COEP).
-  try {
-    const mat = globe.globeMaterial();
-    mat.color && mat.color.set && mat.color.set('#0a1018');
-    mat.emissive && mat.emissive.set && mat.emissive.set('#06121c');
-    if ('emissiveIntensity' in mat) mat.emissiveIntensity = 0.4;
-    mat.needsUpdate = true;
-  } catch (e) {
-    console.warn('[app] globe material tint skipped', e);
-  }
-
-  // Auto-rotate.
-  const controls = globe.controls();
-  controls.autoRotate = true;
-  controls.autoRotateSpeed = 0.55;
-  controls.enableZoom = true;
-
-  // Optional country polygons for a faint land outline; loaded async.
-  loadCountryPolygons();
-
-  // Responsive sizing.
-  const resize = () => {
-    const rect = el.getBoundingClientRect();
-    globe.width(rect.width).height(rect.height);
-  };
-  resize();
-  window.addEventListener('resize', resize);
-}
-
-async function loadCountryPolygons() {
-  try {
-    const r = await fetch(assetUrl('vendor/countries-110m.geojson'));
-    if (!r.ok) return;
-    const geo = await r.json();
-    globe
-      .polygonsData(geo.features)
-      .polygonCapColor(() => 'rgba(20,40,55,0.35)')
-      .polygonSideColor(() => 'rgba(0,0,0,0)')
-      .polygonStrokeColor(() => 'rgba(43,217,255,0.35)')
-      .polygonAltitude(0.006);
-  } catch (e) {
-    console.warn('[app] country polygons unavailable', e);
-  }
+function initMap(el) {
+  const img = document.createElement('img');
+  img.className = 'map-backdrop';
+  img.alt = '';
+  img.decoding = 'async';
+  img.src = assetUrl('world-map.svg');
+  el.appendChild(img);
 }
 
 // ===========================================================================
@@ -305,39 +247,16 @@ function waitForWasmHandle(timeoutMs = 40000, stepMs = 250) {
   });
 }
 
-// Wrap the wasm client's download/stream entry points so the globe's WebGL
-// animation loop is paused while a transfer is in flight. The globe and the
-// wasm node share one browser thread; pausing the render loop hands that thread
-// to retrieval and roughly triples bulk download throughput. Idempotent and
-// reference-counted; a no-op when the globe or handle is absent.
-function installGlobeRenderGovernor(handle) {
-  const client = handle && handle.client;
-  if (!globe || !client || client.__renderGovernorInstalled) return;
-  client.__renderGovernorInstalled = true;
-
-  let active = 0;
-  const pause = () => { if (active++ === 0 && globe.pauseAnimation) globe.pauseAnimation(); };
-  const resume = () => { if (active > 0 && --active === 0 && globe.resumeAnimation) globe.resumeAnimation(); };
-  const guard = (name) => {
-    const orig = client[name];
-    if (typeof orig !== 'function') return;
-    client[name] = function (...args) {
-      pause();
-      let out;
-      try { out = orig.apply(this, args); } catch (e) { resume(); throw e; }
-      return (out && typeof out.finally === 'function') ? out.finally(resume) : (resume(), out);
-    };
-  };
-  for (const name of ['downloadFile', 'streamToSink']) guard(name);
-}
-
+// `?noglobe` hides the map backdrop entirely. The static map is near-zero CPU
+// (one decode, no repaint), so it is on by default; the toggle is retained as a
+// cheap escape hatch and for parity with older verification harnesses.
 function isGlobeDisabled() {
   return (window.location.search || '').toLowerCase().includes('noglobe');
 }
 
 async function boot() {
-  const globeEl = document.getElementById('globe');
-  if (globeEl && !isGlobeDisabled()) initGlobe(globeEl);
+  const mapEl = document.getElementById('globe');
+  if (mapEl && !isGlobeDisabled()) initMap(mapEl);
   initScoreboard();
   initCollapsibles();
 
@@ -352,15 +271,6 @@ async function boot() {
 
   const { feed, mode } = makePeerFeed({ handle });
   wireFeed(feed, mode);
-
-  // The 3D globe renders on a continuous WebGL animation loop, and the wasm
-  // node runs on the same single browser thread. A bulk download is bound by
-  // that thread's scheduling: while the globe paints every frame, the node's
-  // retrieval timers wake late and throughput drops sharply. Pause the globe's
-  // animation for the duration of a download or stream and resume after, so the
-  // thread is free for retrieval. Reference-counted so overlapping transfers
-  // keep the globe paused until the last one finishes.
-  installGlobeRenderGovernor(handle);
 
   // Expose for debugging / the verification harness.
   window.__scanner = { peers, getSelf: () => self, feed, mode };
