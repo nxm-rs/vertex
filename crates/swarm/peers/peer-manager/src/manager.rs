@@ -346,6 +346,17 @@ impl<I: SwarmIdentity> PeerManager<I> {
         self.peers.get(overlay).is_some_and(|e| e.is_in_backoff())
     }
 
+    /// Hold a peer out of re-dial selection briefly after a transport-reset
+    /// disconnect, without scoring it down or counting a dial failure. Breaks
+    /// the reset-then-instant-redial-then-reset cascade that drains a close bin
+    /// below saturation; the peer rejoins the candidate set once the window
+    /// elapses.
+    pub fn enter_redial_cooldown(&self, overlay: &OverlayAddress) {
+        if let Some(entry) = self.peers.get(overlay) {
+            entry.enter_redial_cooldown();
+        }
+    }
+
     /// Check if peer is banned (O(1) via the banned map).
     #[must_use]
     pub fn is_banned(&self, overlay: &OverlayAddress) -> bool {

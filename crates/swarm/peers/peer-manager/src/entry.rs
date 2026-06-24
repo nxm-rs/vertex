@@ -109,6 +109,22 @@ pub(crate) fn unix_timestamp_secs() -> u64 {
     vertex_util_runtime::time::now_unix_secs()
 }
 
+/// Current wall-clock time in unix milliseconds (the re-dial cooldown is
+/// sub-second, so the seconds clock is too coarse for it).
+pub(crate) fn unix_timestamp_millis() -> u64 {
+    vertex_util_runtime::time::now_unix_millis()
+}
+
+/// Anti-cascade re-dial cooldown after a transport-reset disconnect, in
+/// milliseconds. A serving peer that resets us mid-transfer is honest (it is
+/// not scored down or backed off), but re-dialing it within tens of
+/// milliseconds reloads it straight back into the reset, so the same close
+/// peer churns several times and its bin drains below saturation. A brief,
+/// non-penalising hold lets the peer's stream budget recover before the
+/// replenishment dialer reconnects it; the peer stays a candidate, just not
+/// for this window.
+pub(crate) const REDIAL_COOLDOWN_MS: u64 = 2000;
+
 pub(crate) fn jitter_seed_from_overlay(overlay: &OverlayAddress) -> u64 {
     // OverlayAddress is B256 (32 bytes); first 8 bytes always exist.
     let b = &overlay.0;
@@ -256,6 +272,10 @@ pub(crate) struct PeerEntry {
     /// record: a gossiped address refresh on a verified peer does not clear
     /// it.
     verified: AtomicBool,
+    /// Unix milliseconds before which this peer should not be re-dialed after a
+    /// transport-reset disconnect (0 = no cooldown). Anti-cascade hold, never
+    /// persisted; see [`REDIAL_COOLDOWN_MS`].
+    redial_cooldown_until: AtomicU64,
 }
 
 impl PeerEntry {
@@ -279,6 +299,7 @@ impl PeerEntry {
             direction: AtomicU8::new(DIRECTION_NONE),
             trust: AtomicU8::new(TrustLevel::Normal as u8),
             verified: AtomicBool::new(false),
+            redial_cooldown_until: AtomicU64::new(0),
         }
     }
 
@@ -304,6 +325,7 @@ impl PeerEntry {
             direction: AtomicU8::new(DIRECTION_NONE),
             trust: AtomicU8::new(TrustLevel::Normal as u8),
             verified: AtomicBool::new(false),
+            redial_cooldown_until: AtomicU64::new(0),
         }
     }
 
@@ -503,7 +525,24 @@ impl PeerEntry {
     }
 
     pub(crate) fn is_dialable(&self) -> bool {
-        !self.is_banned() && !self.is_in_backoff()
+        !self.is_banned() && !self.is_in_backoff() && !self.in_redial_cooldown()
+    }
+
+    /// Hold this peer out of re-dial selection for [`REDIAL_COOLDOWN_MS`] after a
+    /// transport-reset disconnect. Non-penalising: it touches neither the backoff
+    /// failure count nor the score, so the peer rejoins the candidate set as soon
+    /// as the window elapses.
+    pub(crate) fn enter_redial_cooldown(&self) {
+        self.redial_cooldown_until.store(
+            unix_timestamp_millis().saturating_add(REDIAL_COOLDOWN_MS),
+            Ordering::Relaxed,
+        );
+    }
+
+    /// True while inside the post-reset re-dial cooldown window.
+    pub(crate) fn in_redial_cooldown(&self) -> bool {
+        let until = self.redial_cooldown_until.load(Ordering::Relaxed);
+        until != 0 && unix_timestamp_millis() < until
     }
 
     /// Backoff with per-peer jitter (+/-25%) to prevent synchronized retry storms.
@@ -641,6 +680,29 @@ mod tests {
         assert!(!restored.is_banned());
         assert_eq!(restored.consecutive_failures(), 0);
         assert!(restored.is_dialable());
+    }
+
+    #[test]
+    fn test_redial_cooldown_holds_then_clears_without_penalty() {
+        let entry = test_entry(1, SwarmNodeType::Storer);
+        assert!(entry.is_dialable());
+        assert!(!entry.in_redial_cooldown());
+
+        entry.enter_redial_cooldown();
+        assert!(entry.in_redial_cooldown());
+        assert!(!entry.is_dialable());
+        // The cooldown is non-penalising: no failure counted, not backed off,
+        // not banned, score untouched.
+        assert_eq!(entry.consecutive_failures(), 0);
+        assert!(!entry.is_in_backoff());
+        assert!(!entry.is_banned());
+
+        // Force the window past by rewinding the stored expiry.
+        entry
+            .redial_cooldown_until
+            .store(unix_timestamp_millis().saturating_sub(1), Ordering::Relaxed);
+        assert!(!entry.in_redial_cooldown());
+        assert!(entry.is_dialable());
     }
 
     #[test]

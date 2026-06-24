@@ -116,6 +116,16 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         };
 
         debug!(%peer_id, ?reason, "Dialing peer");
+        // Re-dial attribution for the churn diagnosis: bin of a re-dialed peer
+        // joined offline against its prior disconnect-detail line by overlay,
+        // to measure how fast a just-reset close peer is re-dialed.
+        if let Some(overlay) = target.overlay() {
+            let bin = self.bin_for(&overlay);
+            debug!(
+                "redial-detail overlay={overlay} bin={} reason={reason:?}",
+                bin.get(),
+            );
+        }
 
         // Track discovery dials for delayed gossip exchange
         if reason == DialReason::Discovery {

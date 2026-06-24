@@ -151,7 +151,17 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
         let new_depth = self.routing.depth();
 
         // Determine disconnect reason from pending evictions and libp2p cause.
-        let disconnect_reason = if self.pending_evictions.remove(&overlay) {
+        let bin_trimmed = self.pending_evictions.remove(&overlay);
+        let cause_class = if bin_trimmed {
+            "bintrim"
+        } else {
+            match closed.cause {
+                Some(ConnectionError::IO(_)) => "io",
+                Some(ConnectionError::KeepAliveTimeout) => "keepalive",
+                None => "orderly",
+            }
+        };
+        let disconnect_reason = if bin_trimmed {
             DisconnectReason::BinTrimmed
         } else {
             match closed.cause {
@@ -161,6 +171,31 @@ impl<I: SwarmIdentity + Clone> TopologyBehaviour<I> {
                 None => DisconnectReason::LocalClose,
             }
         };
+
+        // Anti-cascade hold: a transport-reset (`ConnectionError`) close of a
+        // peer that was actively serving us is honest, so we neither score it
+        // down nor back it off. But re-dialing it within tens of milliseconds
+        // reloads it straight back into the reset, churning the same close peer
+        // several times until its bin drains below saturation and depth
+        // collapses. A brief non-penalising re-dial cooldown lets the peer's
+        // stream budget recover before replenishment reconnects it.
+        if disconnect_reason == DisconnectReason::ConnectionError {
+            self.peer_manager.enter_redial_cooldown(&overlay);
+        }
+
+        // Single-line disconnect attribution for the demo churn diagnosis: the
+        // cause class, the peer's bin (bin 0 is the closest neighbourhood the
+        // retrieval scheduler loads hardest), the connection lifetime, and our
+        // depth. One scrapeable line per disconnect; the wasm console formatter
+        // splits multi-field events across physical lines, so attribution needs
+        // everything in the message string.
+        debug!(
+            "disconnect-detail overlay={overlay} bin={} cause={cause_class} \
+             dur_ms={} dpth={} node_type={node_type:?}",
+            bin.get(),
+            connection_duration.map(|d| d.as_millis()).unwrap_or(0),
+            new_depth.get(),
+        );
 
         // Penalize early disconnects only when we can attribute the close to
         // the peer. We skip two blameless cases:
