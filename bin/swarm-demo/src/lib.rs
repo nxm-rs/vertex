@@ -425,8 +425,20 @@ fn apply_retrieval_overrides_from_page() {
         parse("busy"),
     );
     client::configure_prefetch(parse("pf").map(|v| v as usize));
+    // The download client raises the per-peer in-flight cap above the
+    // interop-conservative node default: a browser owns one neighbourhood, so the
+    // tail of a large file is served by only a handful of close peers and a deeper
+    // per-peer fan-out is what keeps those few peers busy. Live storers tolerate
+    // it (transport resets stay a small minority of legs). Overridable via
+    // `inflight` for sweeping.
+    vertex_swarm_node::set_inflight_per_peer(parse("inflight").map_or(16, |v| v as usize));
     client::configure_yield_batch(parse("yieldn").map(|v| v as usize));
     client::configure_prefetch_pipeline(params.get("pipeline").is_some_and(|v| v != "0"));
+    // Re-fetch the prefetch-skipped tail by default: warming those few hard,
+    // deep-forwarding chunks in wide passes after the first wave drains beats
+    // leaving them for the ordered joiner to grind one neighbourhood-bound
+    // subtree at a time. Disable with `refetch=0`.
+    client::configure_prefetch_refetch(params.get("refetch").map_or(true, |v| v != "0"));
     client::configure_load_balance(
         params.get("lb").map(|v| v != "0"),
         parse("lbtopk"),
@@ -548,6 +560,35 @@ fn tracing_verbosity_override() -> Option<tracing_subscriber::filter::LevelFilte
     }
 }
 
+/// Per-reason disconnect tally over the session, surfaced as a periodic console
+/// histogram so the harness can attribute a peer-set collapse to its cause
+/// (remote/transport close vs local bin-trim vs orderly local close).
+/// Measurement aid for the download peer-timeline investigation.
+static DISCONNECT_TOTAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static DISCONNECT_BIN_TRIMMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static DISCONNECT_CONN_ERROR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static DISCONNECT_LOCAL_CLOSE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn record_disconnect(reason: &vertex_swarm_topology::DisconnectReason) {
+    use std::sync::atomic::Ordering::Relaxed;
+    use vertex_swarm_topology::DisconnectReason;
+    DISCONNECT_TOTAL.fetch_add(1, Relaxed);
+    match reason {
+        DisconnectReason::BinTrimmed => DISCONNECT_BIN_TRIMMED.fetch_add(1, Relaxed),
+        DisconnectReason::ConnectionError => DISCONNECT_CONN_ERROR.fetch_add(1, Relaxed),
+        DisconnectReason::LocalClose => DISCONNECT_LOCAL_CLOSE.fetch_add(1, Relaxed),
+    };
+    let total = DISCONNECT_TOTAL.load(Relaxed);
+    if total.is_multiple_of(10) {
+        tracing::info!(
+            "disconnect-histogram total={total} bin_trimmed={} conn_error={} local_close={}",
+            DISCONNECT_BIN_TRIMMED.load(Relaxed),
+            DISCONNECT_CONN_ERROR.load(Relaxed),
+            DISCONNECT_LOCAL_CLOSE.load(Relaxed),
+        );
+    }
+}
+
 /// Forward topology events from the broadcast subscription to both consumers.
 fn spawn_event_pump(
     topology: TopologyHandle<Arc<Identity>>,
@@ -561,6 +602,9 @@ fn spawn_event_pump(
         loop {
             match rx.recv().await {
                 Ok(event) => {
+                    if let TopologyEvent::PeerDisconnected { reason, .. } = &event {
+                        record_disconnect(reason);
+                    }
                     let (kind, detail) = describe_event(&event);
                     ui::append_event(kind, &escape_html(&detail));
 

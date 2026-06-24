@@ -190,6 +190,26 @@ const MAX_THROTTLE_WAIT: Duration = Duration::from_secs(2);
 /// the closest few and resetting their streams.
 const MAX_INFLIGHT_PER_PEER: usize = 8;
 
+/// Live per-peer in-flight cap, defaulting to [`MAX_INFLIGHT_PER_PEER`].
+///
+/// A wide concurrent download spreads its fan-out across the neighbourhood, but
+/// the deep-leaf region of a large file is served by a small set of close peers,
+/// so those few peers' slots are the throughput bound. This override lets the
+/// operating point be tuned to the remote's actual multiplex tolerance without a
+/// rebuild; the compiled default stays conservative.
+static INFLIGHT_PER_PEER: AtomicU64 = AtomicU64::new(MAX_INFLIGHT_PER_PEER as u64);
+
+/// Set the per-peer in-flight retrieval/pushsync cap. A zero is ignored.
+pub fn set_inflight_per_peer(cap: usize) {
+    if cap > 0 {
+        INFLIGHT_PER_PEER.store(cap as u64, Ordering::Relaxed);
+    }
+}
+
+fn inflight_per_peer() -> usize {
+    INFLIGHT_PER_PEER.load(Ordering::Relaxed) as usize
+}
+
 /// Paces outbound pushsync and retrieval requests under the remote peer's
 /// pseudosettle allowance.
 ///
@@ -271,7 +291,7 @@ impl SelfThrottle {
             self.inflight
                 .lock()
                 .entry(*peer)
-                .or_insert_with(|| Arc::new(Semaphore::new(MAX_INFLIGHT_PER_PEER))),
+                .or_insert_with(|| Arc::new(Semaphore::new(inflight_per_peer()))),
         )
     }
 

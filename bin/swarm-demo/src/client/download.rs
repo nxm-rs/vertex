@@ -146,6 +146,18 @@ async fn maybe_yield_to_event_loop() {
 /// stay warm ahead of their leaves. Toggled by the `pipeline` URL param.
 static PREFETCH_PIPELINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// When set, `download_file` follows the main prefetch with bounded wide
+/// re-fetch passes over only the chunks the prefetch skipped, warming them while
+/// the congesting first wave has drained, rather than leaving them for the
+/// ordered joiner to grind one neighbourhood-bound subtree at a time. Toggled by
+/// the `refetch` URL param.
+static PREFETCH_REFETCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Enable the post-prefetch skipped-set re-fetch passes (`refetch` URL param).
+pub fn configure_prefetch_refetch(on: bool) {
+    PREFETCH_REFETCH.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Enable the pipelined (no per-level barrier) prefetch (`pipeline` URL param).
 pub fn configure_prefetch_pipeline(on: bool) {
     PREFETCH_PIPELINE.store(on, std::sync::atomic::Ordering::Relaxed);
@@ -346,8 +358,68 @@ pub async fn download_file(
         prefetch_tree(file_root, provider.clone(), cache).await?;
     }
 
+    if PREFETCH_REFETCH.load(std::sync::atomic::Ordering::Relaxed) {
+        warm_skipped(file_root, provider.clone(), cache).await?;
+    }
+
     let getter = NetworkChunkGet::new(provider, cache.snapshot_map());
     join_to_bytes(file_root, getter).await
+}
+
+/// Wide re-fetch passes over the chunks the main prefetch left uncached.
+///
+/// The first prefetch wave congests the close peers and skips the hardest
+/// (deepest-forwarding) chunks. Left to the ordered joiner those skips serialise
+/// the tail, because they cluster on the same few close peers. This warms them in
+/// wide unordered passes after the wave has drained: each pass fetches only the
+/// still-missing addresses, and passes repeat until the set is empty or a pass
+/// makes no progress (a genuinely unreachable chunk is then left for the joiner's
+/// own retrieval). Enumerating the tree reads warm intermediates from the cache,
+/// so the walk costs nothing for the already-prefetched majority.
+async fn warm_skipped(
+    file_root: ChunkAddress,
+    provider: Arc<dyn SwarmChunkProvider>,
+    cache: &MemoryCache,
+) -> Result<(), JsValue> {
+    // Bound the passes so a permanently unreachable chunk cannot loop forever;
+    // each pass that fetches at least one chunk resets the no-progress count.
+    const MAX_PASSES: usize = 8;
+
+    let all = list_tree_addresses(file_root, provider.clone(), cache, 0).await?;
+    for pass in 0..MAX_PASSES {
+        let missing: Vec<ChunkAddress> = all.iter().copied().filter(|a| cache.fetch(a).is_none()).collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        tracing::info!("warm-skipped pass={pass} missing={}", missing.len());
+        let fetched: usize = futures::stream::iter(missing.into_iter())
+            .map(|addr| {
+                let provider = Arc::clone(&provider);
+                async move {
+                    match provider.retrieve_chunk(&addr).await {
+                        Ok(r) => {
+                            maybe_yield_to_event_loop().await;
+                            Some(r.chunk)
+                        }
+                        Err(_) => None,
+                    }
+                }
+            })
+            .buffer_unordered(prefetch_concurrency())
+            .filter_map(|c| async move { c })
+            .fold(0usize, |n, chunk| {
+                cache.insert(chunk);
+                async move { n + 1 }
+            })
+            .await;
+        // No chunk landed this pass: the remainder is unreachable from here, so
+        // stop and let the joiner make its own attempt rather than spinning.
+        if fetched == 0 {
+            tracing::info!("warm-skipped no progress at pass={pass}; leaving remainder for joiner");
+            return Ok(());
+        }
+    }
+    Ok(())
 }
 
 /// Resolve the manifest at `root` to its file root, then breadth-first walk the
@@ -579,7 +651,7 @@ async fn prefetch_tree_pipelined(
     }
 
     if skipped > 0 {
-        tracing::debug!(skipped, "pipelined prefetch left chunks for the joiner");
+        tracing::info!("prefetch-skipped skipped={skipped} (pipelined left for joiner)");
     }
     Ok(())
 }
@@ -1095,7 +1167,7 @@ async fn prefetch_tree(
     }
 
     if skipped > 0 {
-        tracing::debug!(skipped, "prefetch left chunks for the joiner");
+        tracing::info!("prefetch-skipped skipped={skipped} (level-walk left for joiner)");
     }
     Ok(())
 }

@@ -42,7 +42,7 @@ pub use protocol::{
 
 pub use selection::{AccountingSettlement, PeerScores, PeerSelector, SettlementTrigger};
 pub use staggered_race::{RETRIEVAL_STAGGER, RaceFailure, race_candidates};
-pub use throttle::{SelfThrottle, retrieval_throttle_stats};
+pub use throttle::{SelfThrottle, retrieval_throttle_stats, set_inflight_per_peer};
 
 pub use bootnodes::BootnodeProvider;
 pub use node::stats::StatsConfig;

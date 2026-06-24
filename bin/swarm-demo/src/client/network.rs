@@ -9,7 +9,7 @@ use std::time::Duration;
 use nectar_primitives::SwarmAddress;
 use vertex_swarm_api::{
     ChunkAddress, ChunkRetrievalResult, PushReceipt, StampedChunk, SwarmChunkProvider,
-    SwarmChunkSender, SwarmError, SwarmResult, SwarmTopologyRouting,
+    SwarmChunkSender, SwarmError, SwarmResult, SwarmTopologyRouting, SwarmTopologyStats,
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::{
@@ -390,6 +390,15 @@ impl SwarmChunkProvider for BrowserChunkProvider {
                     // Concentration of in-flight legs across forwarder peers.
                     let (conc_peers, conc_max, conc_total, conc_top10_x100) =
                         inflight_concentration();
+                    // Topology health over the download: the total connected-peer
+                    // count (does the serving set hold or decay), the routing-table
+                    // size, in-flight dials replenishing it, and the stored hive
+                    // candidate pool the dialer draws from. The connected timeline is
+                    // the proof of whether the peer set survives the whole download.
+                    let topo_connected = self.topology.connected_peers_count();
+                    let topo_routing = self.topology.routing_peers_count();
+                    let topo_pending = self.topology.pending_connections_count();
+                    let topo_stored = self.topology.stored_peers_count();
                     tracing::info!(
                         "retrieval-instrumentation served={served} legs={legs} \
                          substreams_per_chunk={spc} closest_to_us_mean={} closest_to_calls={ct_calls} \
@@ -400,7 +409,9 @@ impl SwarmChunkProvider for BrowserChunkProvider {
                          throttle_sleep_ms_mean={throttle_sleep_ms_mean} throttle_paced={thr_paced} \
                          rtt_ms_mean={rtt_ms_mean} throttle_capped={thr_capped} \
                          conc_peers={conc_peers} conc_max={conc_max} conc_inflight={conc_total} \
-                         conc_top10_share={conc_top10_x100}",
+                         conc_top10_share={conc_top10_x100} \
+                         topo_connected={topo_connected} topo_routing={topo_routing} \
+                         topo_pending={topo_pending} topo_stored={topo_stored}",
                         ct_us / ct_calls,
                     );
                 }
