@@ -144,7 +144,7 @@ window.__classifyRefs = async function (refs, warmupMs, perCallTimeoutMs) {
 // Each worker runs the monolithic ~150-190 KB/s pipeline on its own slice, so K
 // workers aggregate toward K x the single-node rate, bounded by the per-worker
 // WebSocket budget (per worker, not per origin).
-window.__shardRangeDownload = async function (ref, k, warmupMs, runTimeoutMs, width) {
+window.__shardRangeDownload = async function (ref, k, warmupMs, runTimeoutMs, width, path) {
   k = k || 3;
   warmupMs = warmupMs || 14000;
   runTimeoutMs = runTimeoutMs || 240000;
@@ -156,8 +156,11 @@ window.__shardRangeDownload = async function (ref, k, warmupMs, runTimeoutMs, wi
   await new Promise((r) => setTimeout(r, warmupMs));
   const tWarm = performance.now();
 
-  // Resolve the file root and total size on worker 0.
-  const rootMsg = await workers[0].call({ type: 'resolveRoot', address: ref }, null, 120000);
+  // Resolve the file root and total size on worker 0. A `path` selects one entry
+  // of a multi-file manifest; otherwise the single-file manifest pick is used.
+  const rootMsg = path
+    ? await workers[0].call({ type: 'resolvePath', address: ref, path }, null, 120000)
+    : await workers[0].call({ type: 'resolveRoot', address: ref }, null, 120000);
   const fileRoot = rootMsg.fileRoot;
   const sizeMsg = await workers[0].call({ type: 'size', fileRoot }, null, 120000);
   const total = sizeMsg.size;
@@ -173,6 +176,10 @@ window.__shardRangeDownload = async function (ref, k, warmupMs, runTimeoutMs, wi
     ranges.push({ offset, len });
   }
 
+  // Assemble into one contiguous buffer so the file can be byte-verified
+  // (wasm magic + SHA-256) against the gateway, proving the sharded download is
+  // not just length-complete but bit-correct.
+  const file = new Uint8Array(total);
   const tFetch0 = performance.now();
   const perWorker = new Array(k).fill(null);
   const slices = new Array(k).fill(null);
@@ -182,6 +189,7 @@ window.__shardRangeDownload = async function (ref, k, warmupMs, runTimeoutMs, wi
     const m = await wk.call({ type: 'range', fileRoot, offset: r.offset, len: r.len, width }, null, runTimeoutMs);
     const w1 = performance.now();
     slices[i] = { offset: r.offset, len: m.bytes.length };
+    file.set(m.bytes.subarray(0, Math.min(m.bytes.length, total - r.offset)), r.offset);
     const secs = (w1 - w0) / 1000;
     perWorker[i] = {
       offset: r.offset,
@@ -201,6 +209,14 @@ window.__shardRangeDownload = async function (ref, k, warmupMs, runTimeoutMs, wi
     if (slices[i].len !== ranges[i].len) complete = false;
   }
 
+  // Correctness proof: leading magic bytes plus a SHA-256 over the whole file.
+  const magic = Array.from(file.subarray(0, 4)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  let sha256 = null;
+  try {
+    const digest = await crypto.subtle.digest('SHA-256', file);
+    sha256 = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  } catch (e) { sha256 = 'sha-error:' + String(e && e.message ? e.message : e); }
+
   for (const wk of workers) wk.w.terminate();
 
   const fetchSecs = (tEnd - tFetch0) / 1000;
@@ -212,6 +228,9 @@ window.__shardRangeDownload = async function (ref, k, warmupMs, runTimeoutMs, wi
     total,
     assembled,
     byteComplete: complete && assembled === total,
+    magic,
+    wasmMagic: magic === '0061736d',
+    sha256,
     perWorker,
     warmupSecs: ((tWarm - t0) / 1000),
     rootSecs: ((tRoot - tWarm) / 1000),

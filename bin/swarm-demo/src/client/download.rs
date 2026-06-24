@@ -776,6 +776,28 @@ pub async fn ls_manifest(
         .collect())
 }
 
+/// Resolve `path` in the manifest at `root` to the referenced file's root
+/// address, without downloading the file. The shard coordinator hands this root
+/// to every worker so each range download targets the path's file directly.
+pub async fn resolve_file_path(
+    root: ChunkAddress,
+    path: &str,
+    provider: Arc<dyn SwarmChunkProvider>,
+    cache: &MemoryCache,
+) -> Result<ChunkAddress, JsValue> {
+    let path_owned = path.to_string();
+    let entry: Entry = prefetch_then(provider, cache, |c| {
+        let mut manifest: PlainManifest<MemoryCache> = PlainManifest::open(root, c.clone());
+        manifest.lookup(&path_owned)
+    })
+    .await?;
+
+    entry
+        .address()
+        .copied()
+        .ok_or_else(|| JsValue::from_str(&format!("manifest entry '{path}' has no reference")))
+}
+
 /// Walk `path` in the manifest at `root`, returning the referenced file's bytes.
 pub async fn walk(
     root: ChunkAddress,
@@ -783,18 +805,7 @@ pub async fn walk(
     provider: Arc<dyn SwarmChunkProvider>,
     cache: &MemoryCache,
 ) -> Result<Vec<u8>, JsValue> {
-    let path_owned = path.to_string();
-    let entry: Entry = prefetch_then(provider.clone(), cache, |c| {
-        let mut manifest: PlainManifest<MemoryCache> = PlainManifest::open(root, c.clone());
-        manifest.lookup(&path_owned)
-    })
-    .await?;
-
-    let file_root = entry
-        .address()
-        .copied()
-        .ok_or_else(|| JsValue::from_str(&format!("manifest entry '{path}' has no reference")))?;
-
+    let file_root = resolve_file_path(root, path, provider.clone(), cache).await?;
     download_file(file_root, provider, cache).await
 }
 

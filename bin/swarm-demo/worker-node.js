@@ -39,6 +39,12 @@ self.onmessage = async (e) => {
       self.postMessage({ type: 'resolveRoot', id: msg.id, fileRoot });
       return;
     }
+    if (msg.type === 'resolvePath') {
+      if (!node) throw new Error('node not booted');
+      const fileRoot = await node.resolveFilePath(msg.address, msg.path);
+      self.postMessage({ type: 'resolvePath', id: msg.id, fileRoot });
+      return;
+    }
     if (msg.type === 'size') {
       if (!node) throw new Error('node not booted');
       const size = await node.fileSize(msg.fileRoot);

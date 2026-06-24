@@ -63,6 +63,22 @@ impl WorkerNode {
         Ok(file_root.to_string())
     }
 
+    /// Resolve `path` in the manifest at `reference_hex` to that path's file root,
+    /// as a hex string, without downloading the file. The coordinator resolves a
+    /// multi-file manifest path once and hands the file root to every range worker.
+    #[wasm_bindgen(js_name = resolveFilePath)]
+    pub async fn resolve_file_path(
+        &self,
+        reference_hex: String,
+        path: String,
+    ) -> Result<String, JsValue> {
+        let root = parse_address(&reference_hex)?;
+        let cache = crate::client::MemoryCache::new();
+        let file_root =
+            crate::client::resolve_file_path(root, &path, self.provider.clone(), &cache).await?;
+        Ok(file_root.to_string())
+    }
+
     /// Total byte size of the file at `file_root_hex` (opens the joiner and reads
     /// its span). The coordinator needs this to partition the file into K ranges.
     #[wasm_bindgen(js_name = fileSize)]
