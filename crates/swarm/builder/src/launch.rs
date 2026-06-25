@@ -1300,15 +1300,22 @@ mod tests {
         assert_eq!(after, baseline, "a receive breach must not score the peer");
     }
 
-    /// The shared accounting wired into the client service via `with_accounting`
+    /// The shared accounting wired into the client handle via `with_reserver`
     /// debits the serving peer for an own-request delivery. This proves the
     /// builder's wiring expression activates the origin debit, not just that the
-    /// service supports it.
+    /// path supports it.
+    ///
+    /// The debit is owned by the dispatch reservation: an origin retrieval
+    /// reserves its per-chunk price at dispatch and applies it on delivery (the
+    /// delivery event no longer debits, so doing so would double-count). The
+    /// test drives the real `retrieve_chunk` dispatch path so `reserve_origin`
+    /// and `settle_reservation` fire against the builder-assembled accounting.
     #[tokio::test]
     async fn builder_wiring_debits_an_origin_delivery() {
         use nectar_primitives::{AnyChunk, ChunkAddress, ContentChunk};
+        use tokio::sync::mpsc;
         use vertex_swarm_api::{SwarmBandwidthAccounting, SwarmPeerBandwidth, SwarmPricing};
-        use vertex_swarm_node::{ClientEvent, ClientService};
+        use vertex_swarm_node::{ClientCommand, ClientHandle, RetrievalResult};
 
         let identity = test_identity_arc();
         let config = DefaultBandwidthConfig::default();
@@ -1321,38 +1328,44 @@ mod tests {
         let chunk: AnyChunk = ContentChunk::new(b"origin debit through the builder".to_vec())
             .expect("valid content chunk")
             .into();
-        let address = *chunk.address();
+        let address: ChunkAddress = *chunk.address();
         let overlay = ChunkAddress::from([0x5cu8; 32]);
         let price = accounting.pricing().peer_price(&overlay, &address);
         assert!(price > Au::ZERO, "the per-chunk price is non-zero");
 
-        // The same wiring expression `build_client_backed_node` uses.
-        let (service, event_tx, _handle) = ClientService::new();
-        let service = service.with_accounting(
+        // The same wiring expression `build_client_backed_node` uses for the
+        // dispatch handle: the reserver reads the builder-assembled accounting,
+        // so the reservation it takes at dispatch commits against the very
+        // balance this test asserts on.
+        let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(1);
+        let handle = ClientHandle::new(command_tx).with_reserver(
             Arc::new(accounting.pricing().clone()),
             accounting.bandwidth().clone(),
         );
 
-        let manager = TaskManager::current();
-        let handle = manager
-            .executor()
-            .spawn_service("test.client_service", service);
+        // Drive an origin retrieval through the real dispatch path. This reserves
+        // the per-chunk debt before the command is sent and applies it once the
+        // serving peer delivers.
+        let request =
+            tokio::spawn(async move { handle.retrieve_chunk(overlay, address, true).await });
 
-        event_tx
-            .send(ClientEvent::ChunkReceived {
-                peer: overlay,
-                address,
-                chunk,
-                stamp: None,
-                latency: std::time::Duration::from_millis(1),
-                originated: true,
-            })
+        let command = command_rx.recv().await.expect("dispatch emits a command");
+        match command {
+            ClientCommand::RetrieveChunk { response, peer, .. } => {
+                response
+                    .send(Ok(RetrievalResult {
+                        chunk,
+                        stamp: None,
+                        peer,
+                    }))
+                    .ok();
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+        request
             .await
-            .expect("service is running");
-        // Dropping the sender closes the channel, so the run loop drains the one
-        // queued event and then exits.
-        drop(event_tx);
-        handle.await.expect("service task joins cleanly");
+            .expect("retrieval task joins")
+            .expect("delivery succeeds");
 
         assert_eq!(
             accounting.bandwidth().for_peer(overlay).balance(),
