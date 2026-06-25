@@ -9,22 +9,24 @@
 // Unlike the ordered `download-sink.js`, writes carry an explicit byte offset
 // and may arrive out of order: the stream traverses the chunk tree at full
 // concurrency and writes each leaf to its exact position the moment it decodes,
-// so a slow chunk never blocks the writes ready behind it. Both back-ends
-// support positional writes on an async `FileSystemWritableFileStream` via the
-// `{ type: 'write', position, data }` write command, which is main-thread safe
-// (no `SyncAccessHandle` worker needed).
+// so a slow chunk never blocks the writes ready behind it.
 //
-// Two implementations, feature-detected at call time:
+// Implementations, feature-detected at call time:
 //
 //   * File System Access (Chromium/Edge): `showSaveFilePicker` opens the native
-//     save dialog and the writable streams straight to the picked file. The
+//     save dialog and an async `FileSystemWritableFileStream` streams straight to
+//     the picked file via the `{ type: 'write', position, data }` command. The
 //     picker REQUIRES a user gesture, so this factory consumes a handle opened
 //     in-gesture by `openRandomAccessPicker` (stashed on `window`).
 //
 //   * OPFS (Firefox/Chromium/headless): the origin-private file system stages
-//     the file under a fixed name. `navigator.storage.getDirectory` needs no
-//     gesture, so this path is driveable headlessly: the test opens the same
-//     OPFS file, reads it back, and hashes it to byte-verify the assembly.
+//     the file under a fixed name. The positional writes run by default in
+//     `sink-worker.js` on a `SyncAccessHandle` (the fast synchronous write,
+//     worker-only) so they leave the main thread, with `?inlinesink` selecting
+//     the main-thread `createWritable` baseline for A/B. `getDirectory` needs no
+//     gesture, so this path is driveable headlessly: after close the worker
+//     releases its exclusive handle and the test re-opens the same OPFS file,
+//     reads it back, and hashes it to byte-verify the assembly.
 //     The user cannot reach an OPFS file directly, so on `close()` this sink
 //     hands the staged file off to the user without re-buffering it: it opens
 //     the staged file, takes a `ReadableStream` via `getFile().stream()`, and
@@ -78,6 +80,90 @@ if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
 function notifyProgress(written, total) {
   if (typeof window !== 'undefined' && typeof window.__swarmDownloadProgress === 'function') {
     window.__swarmDownloadProgress(written, total);
+  }
+}
+
+// True when the inline main-thread `createWritable` OPFS path is requested via
+// `?inlinesink` (the A/B baseline); otherwise the OPFS path uses the sink worker.
+function inlineSinkRequested() {
+  if (typeof window === 'undefined' || !window.location) {
+    return false;
+  }
+  try {
+    return new URLSearchParams(window.location.search).has('inlinesink');
+  } catch (_) {
+    return false;
+  }
+}
+
+// A random-access sink whose positional writes run in `sink-worker.js` on an
+// OPFS `SyncAccessHandle`, off the main thread. Each `writeAt` transfers the
+// chunk's ArrayBuffer to the worker (zero-copy) and awaits the worker's `ack`,
+// so the caller paces to the worker's write rate and the postMessage queue never
+// grows past one outstanding write. The handle is exclusive: the main thread
+// must not open the staged file until `close()` resolves.
+class WorkerOpfsSink {
+  constructor(worker, stagingName) {
+    this.worker = worker;
+    this.stagingName = stagingName;
+    this.written = 0;
+    this.total = null;
+    this.seq = 0;
+    // Pending requests keyed by reply type; the worker answers each in order.
+    this.pending = new Map();
+    this.worker.onmessage = (ev) => {
+      const msg = ev.data;
+      if (!msg) return;
+      if (msg.type === 'error') {
+        for (const { reject } of this.pending.values()) {
+          reject(new Error(msg.error));
+        }
+        this.pending.clear();
+        return;
+      }
+      const waiter = this.pending.get(msg.type);
+      if (waiter) {
+        this.pending.delete(msg.type);
+        waiter.resolve(msg);
+      }
+    };
+    this.worker.onerror = (ev) => {
+      const err = new Error(ev && ev.message ? ev.message : 'sink worker error');
+      for (const { reject } of this.pending.values()) reject(err);
+      this.pending.clear();
+    };
+  }
+  _await(replyType) {
+    return new Promise((resolve, reject) => {
+      this.pending.set(replyType, { resolve, reject });
+    });
+  }
+  setTotal(n) {
+    this.total = n;
+    notifyProgress(this.written, this.total);
+  }
+  // Write `data` at `position`. `data` is a Uint8Array over a freshly allocated
+  // ArrayBuffer (the wasm side copies out before calling), so its buffer is
+  // transferred to the worker zero-copy and detached on this side. Awaiting the
+  // `ack` is the backpressure: the next write waits for the prior disk write.
+  async writeAt(position, data) {
+    const buffer = data.buffer;
+    const ack = this._await('ack');
+    this.worker.postMessage({ type: 'write', offset: position, buffer }, [buffer]);
+    const reply = await ack;
+    this.written = reply.bytesWritten;
+    notifyProgress(this.written, this.total);
+  }
+  async close() {
+    const closed = this._await('closed');
+    this.worker.postMessage({ type: 'close' });
+    await closed;
+    this.worker.terminate();
+  }
+  abort(_reason) {
+    try {
+      this.worker.terminate();
+    } catch (_) {}
   }
 }
 
@@ -136,23 +222,45 @@ async function fsaSinkFrom(handlePromise, sizeHint) {
   }
 }
 
-// Build a sink over an OPFS-staged file. No gesture required; the file lands
-// under `OPFS_STAGING_NAME` so a test can re-open and read it back. On `close()`
-// the staged file is handed to the user via the download service worker,
-// streamed (never re-buffered whole), so memory stays bounded.
+// Build a sink over an OPFS-staged file under `OPFS_STAGING_NAME`, so a test can
+// re-open and read it back. The default back-end runs the positional writes in
+// `sink-worker.js` on a `SyncAccessHandle` off the main thread; `?inlinesink`
+// selects the main-thread `createWritable` baseline for A/B. On `close()` the
+// staged file is delivered to the user via the download service worker, streamed
+// (never re-buffered whole), so memory stays bounded. The worker holds an
+// exclusive lock until close, so delivery (which opens the file) runs only after.
 async function opfsSink(filename, sizeHint) {
-  const dir = await navigator.storage.getDirectory();
-  const handle = await dir.getFileHandle(OPFS_STAGING_NAME, { create: true });
-  const writable = await handle.createWritable({ keepExistingData: true });
-  const sink = new WritablePositionSink(writable);
+  const useInline = inlineSinkRequested();
+  let sink;
+  if (useInline) {
+    const dir = await navigator.storage.getDirectory();
+    const handle = await dir.getFileHandle(OPFS_STAGING_NAME, { create: true });
+    const writable = await handle.createWritable({ keepExistingData: true });
+    sink = new WritablePositionSink(writable);
+  } else {
+    const worker = new Worker(new URL('sink-worker.js', import.meta.url), { type: 'module' });
+    const opened = new Promise((resolve, reject) => {
+      worker.onmessage = (ev) => {
+        if (ev.data && ev.data.type === 'opened') resolve();
+        else if (ev.data && ev.data.type === 'error') reject(new Error(ev.data.error));
+      };
+      worker.onerror = (ev) => reject(new Error(ev && ev.message ? ev.message : 'sink worker error'));
+    });
+    worker.postMessage({ type: 'open', filename: OPFS_STAGING_NAME });
+    await opened;
+    sink = new WorkerOpfsSink(worker, OPFS_STAGING_NAME);
+  }
   if (sizeHint != null && Number.isFinite(sizeHint)) {
     sink.setTotal(sizeHint);
   }
-  // After the positional writes finish and the writable closes, deliver the
-  // staged file to the user as a streamed attachment.
-  const closeWritable = sink.close.bind(sink);
+  // After the positional writes finish and the sink closes (releasing the OPFS
+  // handle), open the staged file and deliver it to the user as a streamed
+  // attachment.
+  const closeInner = sink.close.bind(sink);
   sink.close = async () => {
-    await closeWritable();
+    await closeInner();
+    const dir = await navigator.storage.getDirectory();
+    const handle = await dir.getFileHandle(OPFS_STAGING_NAME, { create: false });
     await deliverOpfsViaServiceWorker(handle, filename, sink.total);
   };
   return sink;

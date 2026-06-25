@@ -60,7 +60,10 @@ extern "C" {
     fn set_total_ra(this: &RandomAccessSink, total: f64);
 
     /// Write `data` at byte `offset`; resolves when the sink can accept more.
-    /// Offsets may be written in any order.
+    /// Offsets may be written in any order. `data` is backed by a fresh
+    /// `ArrayBuffer` (copied out of wasm memory) so the sink may transfer it to
+    /// the OPFS sink worker zero-copy; resolution awaits the worker's write ack,
+    /// which is the backpressure signal.
     #[wasm_bindgen(method, catch, js_name = writeAt)]
     async fn write_at(
         this: &RandomAccessSink,
