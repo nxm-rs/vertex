@@ -154,6 +154,110 @@ window.__classifyRefs = async function (refs, warmupMs, perCallTimeoutMs) {
   };
 };
 
+// Run a K-worker sharded download of a FIXED byte window `[baseOffset,
+// baseOffset + windowLen)` of `ref`, rather than the whole file.
+//
+// Worker 0 resolves the file root once. The window is split into K contiguous
+// equal sub-ranges; worker k downloads sub-range k via the range-prefetch path
+// and transfers its ordered slice back in one ArrayBuffer. The coordinator
+// reassembles the window by offset and reports its SHA-256, so the same window
+// hashed across K proves the sharded reassembly is byte-correct (any boundary or
+// offset bug diverges the hash). Each worker is a separate node with its own
+// accounting/throttle/neighbourhood, so K sub-ranges pace independently and the
+// aggregate approaches K x the single-worker rate until the shared renderer
+// socket pool caps it.
+window.__shardWindowDownload = async function (ref, k, baseOffset, windowLen, warmupMs, runTimeoutMs, width, path, footprint, bootstrap, expectedSha) {
+  k = k || 1;
+  baseOffset = baseOffset || 0;
+  warmupMs = warmupMs || 18000;
+  runTimeoutMs = runTimeoutMs || 240000;
+  width = width || 0;
+  footprint = footprint || 32;
+  bootstrap = bootstrap || 12;
+  const t0 = performance.now();
+  const { workers, overlays } = await bootWorkers(k, { footprint, bootstrap });
+
+  await new Promise((r) => setTimeout(r, warmupMs));
+  const tWarm = performance.now();
+
+  const rootMsg = path
+    ? await workers[0].call({ type: 'resolvePath', address: ref, path }, null, 120000)
+    : await workers[0].call({ type: 'resolveRoot', address: ref }, null, 120000);
+  const fileRoot = rootMsg.fileRoot;
+  const sizeMsg = await workers[0].call({ type: 'size', fileRoot }, null, 120000);
+  const total = sizeMsg.size;
+  const tRoot = performance.now();
+  if (!total) throw new Error('could not resolve file size');
+  if (baseOffset + windowLen > total) throw new Error('window exceeds file size');
+
+  // K equal contiguous sub-ranges of the window; last absorbs the remainder.
+  const ranges = [];
+  const base = Math.floor(windowLen / k);
+  for (let i = 0; i < k; i++) {
+    const offset = baseOffset + i * base;
+    const len = (i === k - 1) ? (windowLen - i * base) : base;
+    ranges.push({ offset, len });
+  }
+
+  // Assemble into one window-sized buffer indexed from baseOffset.
+  const win = new Uint8Array(windowLen);
+  const tFetch0 = performance.now();
+  const perWorker = new Array(k).fill(null);
+  const slices = new Array(k).fill(null);
+  await Promise.all(workers.map(async (wk, i) => {
+    const r = ranges[i];
+    const w0 = performance.now();
+    const m = await wk.call({ type: 'range', fileRoot, offset: r.offset, len: r.len, width }, null, runTimeoutMs);
+    const w1 = performance.now();
+    const got = m.bytes.length;
+    slices[i] = { offset: r.offset, len: got };
+    win.set(m.bytes.subarray(0, Math.min(got, r.len)), r.offset - baseOffset);
+    const secs = (w1 - w0) / 1000;
+    perWorker[i] = {
+      offset: r.offset,
+      expected: r.len,
+      got,
+      secs: Number(secs.toFixed(2)),
+      kbps: Number(((got / 1024) / secs).toFixed(2)),
+    };
+  }));
+  const tEnd = performance.now();
+
+  let assembled = 0;
+  let complete = true;
+  for (let i = 0; i < k; i++) {
+    assembled += slices[i].len;
+    if (slices[i].len !== ranges[i].len) complete = false;
+  }
+
+  let sha256 = null;
+  try {
+    const digest = await crypto.subtle.digest('SHA-256', win);
+    sha256 = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  } catch (e) { sha256 = 'sha-error:' + String(e && e.message ? e.message : e); }
+
+  for (const wk of workers) wk.w.terminate();
+
+  const fetchSecs = (tEnd - tFetch0) / 1000;
+  return {
+    mode: 'window',
+    k, baseOffset, windowLen, warmupMs, width,
+    overlays,
+    fileRoot,
+    total,
+    assembled,
+    byteComplete: complete && assembled === windowLen,
+    sha256,
+    shaMatch: expectedSha ? (sha256 === expectedSha) : null,
+    perWorker,
+    warmupSecs: ((tWarm - t0) / 1000),
+    rootSecs: ((tRoot - tWarm) / 1000),
+    fetchSecs: Number(fetchSecs.toFixed(2)),
+    kbps: Number(((assembled / 1024) / fetchSecs).toFixed(2)),
+    mbps: Number(((assembled / 1048576) / fetchSecs).toFixed(3)),
+  };
+};
+
 // Run a K-worker byte-range sharded download of `ref`.
 //
 // Worker 0 resolves the file root and its total size once. The file is split
