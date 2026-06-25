@@ -8,7 +8,7 @@ use nectar_primitives::ChunkAddress;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use vertex_swarm_api::{
-    Au, AccountingAction, BandwidthDebit, BandwidthReserve, PeerAffordability, PeerReporter,
+    AccountingAction, Au, BandwidthDebit, BandwidthReserve, PeerAffordability, PeerReporter,
     ReportSource, SwarmLocalStore, SwarmPricing, SwarmScoringEvent,
 };
 use vertex_swarm_client_protocol::PseudosettleAck;
@@ -1338,7 +1338,11 @@ mod tests {
         }
     }
 
-    fn reserving_handle() -> (ClientHandle, mpsc::Receiver<ClientCommand>, Arc<ReserveTally>) {
+    fn reserving_handle() -> (
+        ClientHandle,
+        mpsc::Receiver<ClientCommand>,
+        Arc<ReserveTally>,
+    ) {
         let (tx, rx) = mpsc::channel::<ClientCommand>(16);
         let tally = Arc::new(ReserveTally::default());
         let handle = ClientHandle::new(tx).with_reserver(
@@ -1352,8 +1356,7 @@ mod tests {
     async fn origin_retrieval_reserves_at_dispatch_and_applies_on_delivery() {
         let (handle, mut rx, tally) = reserving_handle();
         let address = test_address();
-        let task =
-            tokio::spawn(async move { handle.retrieve_chunk(peer(1), address, true).await });
+        let task = tokio::spawn(async move { handle.retrieve_chunk(peer(1), address, true).await });
 
         let cmd = rx.recv().await.expect("command emitted");
         // The reservation is taken before the command is sent.
@@ -1384,8 +1387,7 @@ mod tests {
     async fn origin_retrieval_releases_reservation_on_failure() {
         let (handle, mut rx, tally) = reserving_handle();
         let address = test_address();
-        let task =
-            tokio::spawn(async move { handle.retrieve_chunk(peer(1), address, true).await });
+        let task = tokio::spawn(async move { handle.retrieve_chunk(peer(1), address, true).await });
 
         let cmd = rx.recv().await.expect("command emitted");
         match cmd {
@@ -1406,8 +1408,7 @@ mod tests {
         // A dropped response channel (cancellation) must release the reservation.
         let (handle, mut rx, tally) = reserving_handle();
         let address = test_address();
-        let task =
-            tokio::spawn(async move { handle.retrieve_chunk(peer(1), address, true).await });
+        let task = tokio::spawn(async move { handle.retrieve_chunk(peer(1), address, true).await });
 
         let cmd = rx.recv().await.expect("command emitted");
         drop(cmd); // drops the oneshot response sender -> Cancelled

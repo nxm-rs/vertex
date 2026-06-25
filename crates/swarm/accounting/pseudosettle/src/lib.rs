@@ -32,7 +32,7 @@ use vertex_swarm_primitives::OverlayAddress;
 
 pub use error::PseudosettleSettlementError;
 pub use handle::PseudosettleHandle;
-pub use service::{PseudosettleCommand, PseudosettleService};
+pub use service::{PseudosettleCommand, PseudosettleService, pseudosettle_stats};
 pub use vertex_swarm_client_protocol::PseudosettleEvent;
 
 /// Time-based settlement provider.

@@ -14,6 +14,23 @@
 //! layer), so the two protocols cannot each pace against a private, divergent
 //! view of the same allowance.
 //!
+//! # Per-peer debt gate
+//!
+//! The rate bucket bounds the long-run pace, but the load-bearing brake is a hard
+//! per-peer debt gate. The remote's only per-peer brake is accounting debt: it
+//! resets and drops us once our debt to it (its `balance + shadowReserved` view,
+//! taken at request time, ahead of our own delivery debit) crosses its disconnect
+//! line. Before admitting a request the throttle reads our live unsettled debt to
+//! the peer counted the same way ([`PeerAffordability::unsettled_debt`], committed
+//! plus the in-flight reservation) and refuses admission if that debt plus this
+//! request's price would cross the peer's payment threshold
+//! ([`PeerAffordability::payment_threshold`]). The payment threshold sits below
+//! the disconnect line by the payment-tolerance margin, so a gated peer's debt the
+//! remote sees stays a margin under the line. The non-blocking path skips a gated
+//! peer (the scheduler assigns the chunk elsewhere while a background settle drains
+//! the debt); the blocking path settles-and-waits so a candidate walk still makes
+//! progress when every peer is momentarily over the ceiling.
+//!
 //! # Per-peer in-flight cap
 //!
 //! The allowance pacing alone bounds the long-run *rate* to a peer but not the
@@ -85,7 +102,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use vertex_net_ratelimiter::{Quota, SelfRateLimiter};
 use vertex_swarm_accounting::DefaultBandwidthConfig;
 use vertex_swarm_api::{
-    PeerAffordability, SwarmAccountingConfig, SwarmClientAccounting, SwarmPricing,
+    Au, PeerAffordability, SwarmAccountingConfig, SwarmClientAccounting, SwarmPricing,
 };
 use vertex_swarm_primitives::OverlayAddress;
 
@@ -144,6 +161,41 @@ static RETRIEVAL_INFLIGHT_CAPPED: AtomicU64 = AtomicU64::new(0);
 static RETRIEVAL_THROTTLE_SLEEP_US: AtomicU64 = AtomicU64::new(0);
 /// Legs that paced at all (the bucket refused at least once).
 static RETRIEVAL_THROTTLE_PACED: AtomicU64 = AtomicU64::new(0);
+/// Maximum per-peer unsettled debt (AU, counted the remote's way) observed by
+/// the debt gate across all admission decisions. The compliance proof: it must
+/// stay below the remote's disconnect line for the duration of a sustained
+/// download. A measurement aid, not a shipping metric.
+static RETRIEVAL_MAX_PEER_DEBT: AtomicU64 = AtomicU64::new(0);
+/// Count of admission decisions the hard debt gate refused (debt + price would
+/// cross the payment threshold). A non-zero value means the gate is actively
+/// bounding per-peer debt; pairs with the unchanged io-reset count to show the
+/// gate, not a disconnect, is what relieves the pressure.
+static RETRIEVAL_DEBT_GATED: AtomicU64 = AtomicU64::new(0);
+
+/// Record the largest per-peer debt the gate has seen, keeping the running max.
+fn observe_peer_debt(debt: u64) {
+    let mut current = RETRIEVAL_MAX_PEER_DEBT.load(Ordering::Relaxed);
+    while debt > current {
+        match RETRIEVAL_MAX_PEER_DEBT.compare_exchange_weak(
+            current,
+            debt,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+/// Snapshot the debt-gate proof counters: `(max_peer_debt_au, debt_gated)`.
+/// Cumulative; `max_peer_debt_au` is the running maximum.
+pub fn retrieval_debt_stats() -> (u64, u64) {
+    (
+        RETRIEVAL_MAX_PEER_DEBT.load(Ordering::Relaxed),
+        RETRIEVAL_DEBT_GATED.load(Ordering::Relaxed),
+    )
+}
 
 /// Snapshot the retrieval throttle-wait decomposition: `(total_wall_us, calls,
 /// inflight_capped, total_intended_sleep_us, paced_legs)`. Cumulative.
@@ -280,6 +332,18 @@ pub struct SelfThrottle {
     /// line the remote drops us at. Absent (`None`) on a throttle built without
     /// settlement (the in-memory test helper), where requests only pace.
     settle: Option<Arc<dyn PeerSettle>>,
+    /// Peers with a background settle already spawned and not yet resolved.
+    ///
+    /// The non-blocking path spawns a settle for every gated request, but the
+    /// provider rate-limits to one offer per peer per second, so a wide download
+    /// that gates a peer hundreds of times per second would otherwise flood the
+    /// single-thread executor with redundant settle futures that compete with the
+    /// retrieval poll and starve each other (the settlement freeze under sustained
+    /// load). This set collapses that to one in-flight settle per peer: a spawn is
+    /// skipped while the peer is present, and the spawned future removes the peer
+    /// on completion so the next gate re-drives it. Shared `Arc` so the spawned
+    /// future can clear its own entry.
+    settling: Arc<Mutex<std::collections::HashSet<OverlayAddress>>>,
 }
 
 impl SelfThrottle {
@@ -323,7 +387,37 @@ impl SelfThrottle {
             allowance_percent,
             inflight: Mutex::new(HashMap::new()),
             settle: None,
+            settling: Arc::new(Mutex::new(std::collections::HashSet::new())),
         }
+    }
+
+    /// Spawn a background settle for `peer`, deduplicated so at most one is in
+    /// flight per peer at a time.
+    ///
+    /// The non-blocking admission path calls this whenever it gates or pre-pays a
+    /// peer, which under a sustained download is hundreds of times per second per
+    /// peer. The provider only acts on one offer per peer per second, so spawning
+    /// one future per call would flood the single-thread executor and starve the
+    /// settles it is trying to run. The dedup set admits one spawn per peer until
+    /// it resolves, then the future clears the entry so the next gate re-drives
+    /// it: settlement keeps pace instead of drowning in redundant futures.
+    fn spawn_settle(&self, peer: OverlayAddress) {
+        let Some(settle) = &self.settle else {
+            return;
+        };
+        let Ok(executor) = TaskExecutor::try_current() else {
+            return;
+        };
+        if !self.settling.lock().insert(peer) {
+            // A settle for this peer is already in flight.
+            return;
+        }
+        let fut = settle.settle(peer);
+        let settling = Arc::clone(&self.settling);
+        executor.spawn(Box::pin(async move {
+            fut.await;
+            settling.lock().remove(&peer);
+        }));
     }
 
     /// Attach the awaitable debtor-initiated settle so a request to a peer past
@@ -393,6 +487,28 @@ impl SelfThrottle {
         saturating_u32(self.pricing.peer_price(peer, address).as_amount().max(1))
     }
 
+    /// True if admitting `address` to `peer` would push our unsettled debt
+    /// counted the remote's way (committed plus in-flight reservation, plus this
+    /// request's price) past the peer's payment threshold.
+    ///
+    /// The payment threshold sits below the remote's disconnect line by the
+    /// payment-tolerance margin, so a gate that refuses admission here keeps the
+    /// debt the remote sees strictly under the line it drops us at. The committed
+    /// debit lands on delivery and the reservation is taken at dispatch, so this
+    /// matches the remote's `PeerDebt = balance + shadowReserved` view ahead of
+    /// our own delivery debit. A zero payment threshold (the in-memory test
+    /// helper, which tracks no accounting) never gates.
+    fn debt_would_exceed_threshold(&self, peer: &OverlayAddress, address: &ChunkAddress) -> bool {
+        let ceiling = self.allowance.payment_threshold(peer);
+        if ceiling == Au::ZERO {
+            return false;
+        }
+        let debt = self.allowance.unsettled_debt(peer);
+        observe_peer_debt(debt.as_amount());
+        let price = self.pricing.peer_price(peer, address);
+        debt.saturating_add(price) > ceiling
+    }
+
     /// Admit a request for `address` to `peer`, returning a permit the caller
     /// holds for the request's lifetime.
     ///
@@ -459,16 +575,29 @@ impl SelfThrottle {
             }
         };
 
-        // Pre-pay: if this peer is already past the early-payment trigger, settle
-        // its debt before the request goes out. The committed debit lands on
-        // delivery, so settling first keeps that debit from pushing the peer's
-        // view of our debt across the line it drops us at. Awaited here so the
-        // request is genuinely pre-paid rather than racing the settle. The
-        // provider rate-limits per peer, so a settle already in flight resolves
-        // cheaply without a redundant offer.
-        if let Some(settle) = &self.settle
+        // Hard debt gate, blocking variant: if admitting would push our unsettled
+        // debt past the peer's payment threshold, settle-and-wait first so the
+        // debt drains below the ceiling before the request goes out. The blocking
+        // path is the candidate-walk fallback, so settling synchronously here
+        // (rather than skipping) is what guarantees progress when every candidate
+        // is momentarily over the ceiling: the settle drains the debt and the
+        // re-check below admits. If settlement cannot drain it (no settle attached
+        // or the creditor refuses), the request still goes out after the wait
+        // rather than hanging; the remote may refuse it, which is recoverable.
+        if self.debt_would_exceed_threshold(&peer, &address) {
+            if kind == ProtocolKind::Retrieval {
+                RETRIEVAL_DEBT_GATED.fetch_add(1, Ordering::Relaxed);
+            }
+            if let Some(settle) = &self.settle {
+                settle.settle(peer).await;
+            }
+        } else if let Some(settle) = &self.settle
             && self.allowance.should_settle(&peer)
         {
+            // Below the hard ceiling but past the softer early-payment trigger:
+            // pre-pay so the committed debit on delivery does not carry across to
+            // the next request. The provider rate-limits per peer, so a settle
+            // already in flight resolves cheaply without a redundant offer.
             settle.settle(peer).await;
         }
 
@@ -540,18 +669,38 @@ impl SelfThrottle {
         address: ChunkAddress,
         kind: ProtocolKind,
     ) -> Option<ThrottlePermit> {
-        // Pre-pay, non-blocking variant: a peer past the early-payment trigger has
-        // a settle kicked off in the background so its debt drains, but the
-        // request is NOT skipped: the bucket below already paces against the
-        // payment-threshold headroom, and skipping the (typically closest) peer
-        // would shift load to farther peers and re-dial, churning the
-        // neighbourhood. The scheduler keeps admitting through the bucket while
-        // the background settle resets the balance.
-        if let Some(settle) = &self.settle
-            && self.allowance.should_settle(&peer)
-            && let Ok(executor) = TaskExecutor::try_current()
-        {
-            executor.spawn(settle.settle(peer));
+        // Hard debt gate: if admitting this request would push our unsettled debt
+        // counted the remote's way past its payment threshold, skip the peer. The
+        // distributed scheduler then assigns the chunk to the next-closest peer,
+        // and a background settle drains this peer's debt so a later poll readmits
+        // it below the line. This is the load-bearing brake: under a sustained
+        // download the per-peer debt is what the remote resets us on, so refusing
+        // admission before the debt crosses the line is what keeps us connected,
+        // independently of how the rate bucket happens to be sized. The gate runs
+        // before the slot reservation so a gated request holds nothing.
+        if self.debt_would_exceed_threshold(&peer, &address) {
+            self.spawn_settle(peer);
+            if kind == ProtocolKind::Retrieval {
+                RETRIEVAL_THROTTLE_PACED.fetch_add(1, Ordering::Relaxed);
+                RETRIEVAL_DEBT_GATED.fetch_add(1, Ordering::Relaxed);
+            }
+            metrics::counter!(
+                kind.throttled_metric(),
+                "peer_overlay" => peer.to_string(),
+            )
+            .increment(1);
+            return None;
+        }
+
+        // Pre-pay, non-blocking variant: a peer past the early-payment trigger but
+        // still under the debt ceiling has a settle kicked off in the background
+        // so its debt drains while the scheduler keeps admitting through the
+        // bucket. Skipping it on the softer `should_settle` trigger alone would
+        // shift load to farther peers and re-dial, churning the neighbourhood; the
+        // hard gate above is what bounds the debt. Deduplicated so a wide download
+        // does not flood the executor with redundant settles for the same peer.
+        if self.settle.is_some() && self.allowance.should_settle(&peer) {
+            self.spawn_settle(peer);
         }
 
         let slot = match self.peer_semaphore(&peer).try_acquire_owned() {
@@ -741,6 +890,12 @@ mod tests {
         }
         fn should_settle(&self, overlay: &OverlayAddress) -> bool {
             self.0.should_settle(overlay)
+        }
+        fn unsettled_debt(&self, overlay: &OverlayAddress) -> Au {
+            self.0.unsettled_debt(overlay)
+        }
+        fn payment_threshold(&self, overlay: &OverlayAddress) -> Au {
+            self.0.payment_threshold(overlay)
         }
     }
 
@@ -1221,11 +1376,21 @@ mod tests {
         // the committed debit cannot push the peer over the disconnect line.
         let signal = SettleSignal::new(true);
         let recorder = Arc::new(RecordingSettle::default());
-        let t = build_throttle(signal.clone(), Arc::new(FixedPrice(COST)), REFRESH_RATE, 100)
-            .with_settle(recorder.clone());
+        let t = build_throttle(
+            signal.clone(),
+            Arc::new(FixedPrice(COST)),
+            REFRESH_RATE,
+            100,
+        )
+        .with_settle(recorder.clone());
 
-        let permit = t.acquire(peer(1), address(1), ProtocolKind::Retrieval).await;
-        assert!(permit.is_some(), "an affordable peer still admits after settling");
+        let permit = t
+            .acquire(peer(1), address(1), ProtocolKind::Retrieval)
+            .await;
+        assert!(
+            permit.is_some(),
+            "an affordable peer still admits after settling"
+        );
         assert_eq!(
             recorder.settled.lock().as_slice(),
             &[peer(1)],
@@ -1234,7 +1399,9 @@ mod tests {
 
         // Below the trigger, no pre-pay settle fires.
         signal.set(false);
-        let _ = t.acquire(peer(2), address(1), ProtocolKind::Retrieval).await;
+        let _ = t
+            .acquire(peer(2), address(1), ProtocolKind::Retrieval)
+            .await;
         assert_eq!(
             recorder.settled.lock().len(),
             1,
@@ -1252,13 +1419,191 @@ mod tests {
         // allowance plus a peer at the trigger must still admit.
         let signal = SettleSignal::new(true);
         let recorder = Arc::new(RecordingSettle::default());
-        let t = build_throttle(signal.clone(), Arc::new(FixedPrice(COST)), REFRESH_RATE, 100)
-            .with_settle(recorder.clone());
+        let t = build_throttle(
+            signal.clone(),
+            Arc::new(FixedPrice(COST)),
+            REFRESH_RATE,
+            100,
+        )
+        .with_settle(recorder.clone());
 
         assert!(
             t.try_acquire(peer(1), address(1), ProtocolKind::Retrieval)
                 .is_some(),
             "a peer at the trigger still admits through the bucket"
+        );
+    }
+
+    /// Affordability whose unsettled debt and payment threshold are settable, so
+    /// the hard debt gate can be exercised independently of the rate bucket.
+    /// Always rate-affordable (a wide allowance) so only the debt gate governs.
+    struct DebtSignal {
+        debt: AtomicU64,
+        threshold: AtomicU64,
+    }
+
+    impl DebtSignal {
+        fn new(debt: u64, threshold: u64) -> Arc<Self> {
+            Arc::new(Self {
+                debt: AtomicU64::new(debt),
+                threshold: AtomicU64::new(threshold),
+            })
+        }
+        fn set_debt(&self, debt: u64) {
+            self.debt.store(debt, Ordering::SeqCst);
+        }
+    }
+
+    impl PeerAffordability for DebtSignal {
+        fn can_afford(&self, _overlay: &OverlayAddress, _price: Au) -> bool {
+            true
+        }
+        fn allowance_remaining(&self, _overlay: &OverlayAddress) -> Au {
+            Au::from_amount(u64::from(u32::MAX))
+        }
+        fn allowance_to_payment_threshold(&self, _overlay: &OverlayAddress) -> Au {
+            Au::from_amount(u64::from(u32::MAX))
+        }
+        fn unsettled_debt(&self, _overlay: &OverlayAddress) -> Au {
+            Au::from_amount(self.debt.load(Ordering::SeqCst))
+        }
+        fn payment_threshold(&self, _overlay: &OverlayAddress) -> Au {
+            Au::from_amount(self.threshold.load(Ordering::SeqCst))
+        }
+    }
+
+    #[tokio::test]
+    async fn try_acquire_skips_a_peer_over_the_debt_ceiling() {
+        // Debt just under the ceiling admits; once debt + price would cross the
+        // payment threshold, the non-blocking path skips the peer (returns None)
+        // so the scheduler assigns the chunk elsewhere. This is the core gate: it
+        // bounds per-peer debt below the line the remote drops us at, regardless
+        // of the rate bucket. Threshold 100, price COST (10): debt 80 leaves room
+        // (90 <= 100) but debt 95 would cross (105 > 100).
+        let signal = DebtSignal::new(80, 100);
+        let recorder = Arc::new(RecordingSettle::default());
+        let t = build_throttle(
+            signal.clone(),
+            Arc::new(FixedPrice(COST)),
+            REFRESH_RATE,
+            100,
+        )
+        .with_settle(recorder.clone());
+
+        assert!(
+            t.try_acquire(peer(1), address(1), ProtocolKind::Retrieval)
+                .is_some(),
+            "a peer under the debt ceiling admits"
+        );
+
+        signal.set_debt(95);
+        assert!(
+            t.try_acquire(peer(1), address(1), ProtocolKind::Retrieval)
+                .is_none(),
+            "a peer whose debt plus this request would cross the payment threshold is skipped"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_acquire_does_not_gate_when_threshold_is_zero() {
+        // A zero payment threshold (no accounting, e.g. the in-memory helper) must
+        // never gate: the debt gate is a no-op so the bucket alone governs.
+        let signal = DebtSignal::new(u64::from(u32::MAX), 0);
+        let t = throttle_with(signal);
+        assert!(
+            t.try_acquire(peer(1), address(1), ProtocolKind::Retrieval)
+                .is_some(),
+            "a zero threshold disables the debt gate"
+        );
+    }
+
+    #[tokio::test]
+    async fn acquire_settles_then_admits_a_peer_over_the_debt_ceiling() {
+        // The blocking path settles-and-waits when over the ceiling (rather than
+        // skipping), guaranteeing progress on the candidate-walk fallback. With a
+        // recording settle that does not actually drain the debt, the request is
+        // still released after the settle so the future never hangs.
+        let signal = DebtSignal::new(u64::from(u32::MAX), 100);
+        let recorder = Arc::new(RecordingSettle::default());
+        let t = build_throttle(signal, Arc::new(FixedPrice(COST)), REFRESH_RATE, 100)
+            .with_settle(recorder.clone());
+
+        let permit = tokio::time::timeout(
+            Duration::from_secs(2),
+            t.acquire(peer(1), address(1), ProtocolKind::Retrieval),
+        )
+        .await
+        .expect("over-ceiling acquire releases after settling, never hangs");
+        assert!(permit.is_some(), "the request is released after the settle");
+        assert_eq!(
+            recorder.settled.lock().as_slice(),
+            &[peer(1)],
+            "the over-ceiling peer is settled before the request goes out"
+        );
+    }
+
+    fn throttle_with(allowance: Arc<dyn PeerAffordability>) -> SelfThrottle {
+        build_throttle(allowance, Arc::new(FixedPrice(COST)), REFRESH_RATE, 100)
+    }
+
+    /// A settle that counts how many times it was invoked, so the dedup test can
+    /// assert that repeated gating of one peer does not spawn a settle each time.
+    #[derive(Default)]
+    struct CountingSettle {
+        calls: AtomicU64,
+    }
+
+    impl CountingSettle {
+        fn new() -> Arc<Self> {
+            Arc::new(Self::default())
+        }
+    }
+
+    impl PeerSettle for CountingSettle {
+        fn settle(&self, _peer: OverlayAddress) -> futures::future::BoxFuture<'static, ()> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async {})
+        }
+    }
+
+    #[tokio::test]
+    async fn gated_settles_are_deduplicated_per_peer() {
+        // Repeatedly gating the same peer must spawn at most one settle while one
+        // is in flight: the dedup set bounds the executor load so settlement is
+        // not drowned by redundant futures under a sustained download. The test
+        // installs a task manager so `TaskExecutor::try_current` resolves, then
+        // pre-seeds the dedup set to model an in-flight settle and asserts a
+        // second gate does not re-spawn.
+        let _manager = vertex_tasks::TaskManager::current();
+        let signal = DebtSignal::new(u64::from(u32::MAX), 100); // always over the ceiling
+        let recorder = CountingSettle::new();
+        let t = build_throttle(signal, Arc::new(FixedPrice(COST)), REFRESH_RATE, 100)
+            .with_settle(recorder.clone());
+
+        // First gate spawns one settle and marks the peer as settling.
+        assert!(
+            t.try_acquire(peer(1), address(1), ProtocolKind::Retrieval)
+                .is_none()
+        );
+        assert!(
+            t.settling.lock().contains(&peer(1)),
+            "the gated peer is recorded as settling"
+        );
+
+        // While that settle is recorded in flight, further gates of the same peer
+        // do not spawn another: the dedup set already holds it.
+        let before = recorder.calls.load(Ordering::SeqCst);
+        for _ in 0..50 {
+            let _ = t.try_acquire(peer(1), address(1), ProtocolKind::Retrieval);
+        }
+        // The immediate-resolving recorder may have cleared and re-armed once or
+        // twice as the executor drains; the invariant is that 50 gates did not
+        // produce ~50 spawns. A small constant proves the flood is collapsed.
+        let after = recorder.calls.load(Ordering::SeqCst);
+        assert!(
+            after - before <= 5,
+            "50 gates produced {} settles; dedup did not collapse the flood",
+            after - before
         );
     }
 }

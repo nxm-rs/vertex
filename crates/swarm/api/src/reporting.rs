@@ -225,6 +225,27 @@ pub trait PeerAffordability: Send + Sync {
         let _ = overlay;
         false
     }
+
+    /// Our current unsettled debt to `overlay` in AU, counted the way the remote
+    /// meters it: the committed debt (our negative balance, negated) plus the
+    /// in-flight reservation we hold for requests not yet delivered, floored at
+    /// zero. This is the figure the remote compares against its disconnect line,
+    /// so an admission gate that keeps `unsettled_debt + request_price` below the
+    /// payment threshold stays a safe margin under the line the remote drops us
+    /// at. The default is zero (no debt tracked); accounting overrides it.
+    fn unsettled_debt(&self, overlay: &OverlayAddress) -> Au {
+        let _ = overlay;
+        Au::ZERO
+    }
+
+    /// The peer's per-peer payment threshold in AU, the ceiling an admission gate
+    /// holds [`Self::unsettled_debt`] below. Below the remote's disconnect line by
+    /// the payment-tolerance margin. The default is zero (no accounting); the
+    /// accounting layer overrides it with the configured (light-scaled) value.
+    fn payment_threshold(&self, overlay: &OverlayAddress) -> Au {
+        let _ = overlay;
+        Au::ZERO
+    }
 }
 
 /// Why a peer's connection should be closed.

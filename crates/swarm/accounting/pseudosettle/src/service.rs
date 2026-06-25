@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use alloy_primitives::U256;
 use tokio::sync::{mpsc, oneshot};
@@ -16,6 +17,29 @@ use vertex_swarm_primitives::OverlayAddress;
 use vertex_tasks::{GracefulShutdown, MaybeSend, SpawnableTask};
 
 use crate::error::PseudosettleSettlementError;
+
+/// Settlement effectiveness counters for the outbound (debtor) pseudosettle
+/// path. A measurement aid, not a shipping metric: lets the browser
+/// instrumentation report whether settlement fires during a sustained download
+/// and how much forgiveness the creditors grant per offer.
+///
+/// `(offers_sent, offered_au_sum, accepted_au_sum, full_accepts, partial_accepts)`.
+static PS_OFFERS_SENT: AtomicU64 = AtomicU64::new(0);
+static PS_OFFERED_AU_SUM: AtomicU64 = AtomicU64::new(0);
+static PS_ACCEPTED_AU_SUM: AtomicU64 = AtomicU64::new(0);
+static PS_FULL_ACCEPTS: AtomicU64 = AtomicU64::new(0);
+static PS_PARTIAL_ACCEPTS: AtomicU64 = AtomicU64::new(0);
+
+/// Snapshot the outbound pseudosettle counters. Cumulative.
+pub fn pseudosettle_stats() -> (u64, u64, u64, u64, u64) {
+    (
+        PS_OFFERS_SENT.load(Ordering::Relaxed),
+        PS_OFFERED_AU_SUM.load(Ordering::Relaxed),
+        PS_ACCEPTED_AU_SUM.load(Ordering::Relaxed),
+        PS_FULL_ACCEPTS.load(Ordering::Relaxed),
+        PS_PARTIAL_ACCEPTS.load(Ordering::Relaxed),
+    )
+}
 
 /// Commands from the handle to the service.
 pub enum PseudosettleCommand {
@@ -167,6 +191,8 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
                 self.last_settlement.insert(peer, now);
 
                 debug!(%peer, %amount, "Sending pseudosettle request");
+                PS_OFFERS_SENT.fetch_add(1, Ordering::Relaxed);
+                PS_OFFERED_AU_SUM.fetch_add(amount.as_amount(), Ordering::Relaxed);
 
                 // Send via network
                 if let Err(e) = self.command_tx.send(ClientCommand::SendPseudosettle {
@@ -209,13 +235,17 @@ impl<A: SwarmBandwidthAccounting + 'static> PseudosettleService<A> {
                     // leaves little forgiveness accrued). Our debt only partly
                     // drained and we stay nearer its disconnect line; surface it
                     // rather than silently crediting the partial.
+                    PS_ACCEPTED_AU_SUM.fetch_add(accepted.as_amount(), Ordering::Relaxed);
                     if accepted < pending.amount {
+                        PS_PARTIAL_ACCEPTS.fetch_add(1, Ordering::Relaxed);
                         debug!(
                             %peer,
                             offered = %pending.amount,
                             accepted = %accepted,
                             "pseudosettle partially accepted; debt not fully drained"
                         );
+                    } else {
+                        PS_FULL_ACCEPTS.fetch_add(1, Ordering::Relaxed);
                     }
 
                     // Credit our balance by the APPROVED amount (we paid, debt

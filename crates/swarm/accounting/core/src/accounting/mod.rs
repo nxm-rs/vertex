@@ -359,6 +359,32 @@ impl<C: SwarmAccountingConfig, I: SwarmIdentity> PeerAffordability for Accountin
 
         debt >= trigger
     }
+
+    fn unsettled_debt(&self, overlay: &OverlayAddress) -> Au {
+        // Our debt to the peer counted the remote's way: the committed debt
+        // (negated balance, since a negative balance means we owe) plus the
+        // in-flight receive reservation, floored at zero. Same figure
+        // `should_settle` triggers on, exposed numerically so an admission gate
+        // can compare it against the payment threshold per request.
+        let (balance, reserved) = match self.peers.read().get(overlay) {
+            Some(state) => (state.balance(), state.reserved_balance()),
+            None => return Au::ZERO,
+        };
+        Au::ZERO
+            .saturating_sub(balance)
+            .saturating_add(reserved)
+            .max(Au::ZERO)
+    }
+
+    fn payment_threshold(&self, overlay: &OverlayAddress) -> Au {
+        // The per-peer payment threshold: the live state's value when the peer is
+        // known (client-only peers carry the scaled threshold), else the config
+        // default, matching `get_or_create_peer`.
+        match self.peers.read().get(overlay) {
+            Some(state) => state.payment_threshold(),
+            None => self.config.payment_threshold(),
+        }
+    }
 }
 
 /// Handle to a peer's accounting state. Cheap to clone.
@@ -871,5 +897,32 @@ mod tests {
         assert_eq!(handle.balance(), au(-400));
         assert_eq!(accounting.allowance_to_payment_threshold(&peer), au(600));
         assert_eq!(accounting.allowance_remaining(&peer), au(850));
+    }
+
+    #[test]
+    fn test_unsettled_debt_counts_committed_plus_reservation() {
+        let accounting = Accounting::new(small_config(), test_identity());
+        let peer = test_peer();
+
+        // Unknown peer: no debt, and the default payment threshold.
+        assert_eq!(accounting.unsettled_debt(&peer), au(0));
+        assert_eq!(accounting.payment_threshold(&peer), au(1000));
+
+        // We owe the peer 400 (committed). Debt is the negated balance.
+        let handle = accounting.for_peer(peer);
+        handle.record(au(400), Direction::Download);
+        assert_eq!(handle.balance(), au(-400));
+        assert_eq!(accounting.unsettled_debt(&peer), au(400));
+
+        // An in-flight receive reservation adds to the debt the remote sees ahead
+        // of our delivery debit, matching its shadow-reserved view.
+        let action = accounting
+            .prepare_receive(peer, au(150), true)
+            .expect("within threshold");
+        assert_eq!(accounting.unsettled_debt(&peer), au(550));
+
+        // Releasing the reservation (request failed) drops it back to committed.
+        drop(action);
+        assert_eq!(accounting.unsettled_debt(&peer), au(400));
     }
 }

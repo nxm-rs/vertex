@@ -13,7 +13,8 @@ use vertex_swarm_api::{
 };
 use vertex_swarm_identity::Identity;
 use vertex_swarm_node::{
-    ChunkTransferError, ClientHandle, RaceFailure, race_candidates, retrieval_throttle_stats,
+    ChunkTransferError, ClientHandle, RaceFailure, pseudosettle_stats, race_candidates,
+    retrieval_debt_stats, retrieval_throttle_stats,
 };
 use vertex_swarm_primitives::OverlayAddress;
 use vertex_swarm_topology::TopologyHandle;
@@ -498,6 +499,18 @@ impl SwarmChunkProvider for BrowserChunkProvider {
                     // its own pacing wait, so RTT = full - throttle-wait.
                     let (thr_wait_us, thr_calls, thr_capped, thr_sleep_us, thr_paced) =
                         retrieval_throttle_stats();
+                    // Outbound pseudosettle effectiveness: offers actually sent,
+                    // and how much forgiveness the creditors granted (full vs
+                    // partial acks). A partial-heavy ratio means settlement is
+                    // claiming all the per-peer forgiveness the creditor will
+                    // grant, i.e. we are pinned at the refresh-rate ceiling.
+                    let (ps_offers, ps_offered_au, ps_accepted_au, ps_full, ps_partial) =
+                        pseudosettle_stats();
+                    // Debt-gate proof: the maximum per-peer unsettled debt the
+                    // admission gate has observed (must stay below the remote's
+                    // light disconnect line of 1,687,500 AU) and how many
+                    // admissions the gate refused to bound that debt.
+                    let (max_peer_debt, debt_gated) = retrieval_debt_stats();
                     let thr_calls_nz = thr_calls.max(1);
                     let throttle_wait_ms_mean = (thr_wait_us / thr_calls_nz) / 1000;
                     // Intended allowance sleep (the bucket's wait hints) vs the
@@ -531,6 +544,9 @@ impl SwarmChunkProvider for BrowserChunkProvider {
                          conc_top10_share={conc_top10_x100} \
                          topo_connected={topo_connected} topo_routing={topo_routing} \
                          topo_pending={topo_pending} topo_stored={topo_stored} \
+                         ps_offers={ps_offers} ps_offered_au={ps_offered_au} \
+                         ps_accepted_au={ps_accepted_au} ps_full={ps_full} ps_partial={ps_partial} \
+                         max_peer_debt={max_peer_debt} debt_gated={debt_gated} \
                          tail_hist=[{tail_hist}]",
                         ct_us / ct_calls,
                     );
@@ -768,7 +784,11 @@ impl BrowserChunkProvider {
         // than report no candidate, so a transient all-cooling window never fails
         // a chunk that a still-live peer could serve.
         let span = &ranked[..probe_span];
-        let live: Vec<OverlayAddress> = span.iter().copied().filter(|p| !peer_is_cooling(p)).collect();
+        let live: Vec<OverlayAddress> = span
+            .iter()
+            .copied()
+            .filter(|p| !peer_is_cooling(p))
+            .collect();
         let probe: &[OverlayAddress] = if live.is_empty() { span } else { &live };
         for &peer in probe {
             match self.try_retrieve_leg(peer, chunk_address).await {
