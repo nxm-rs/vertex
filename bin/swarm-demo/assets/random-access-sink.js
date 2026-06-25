@@ -25,6 +25,12 @@
 //     the file under a fixed name. `navigator.storage.getDirectory` needs no
 //     gesture, so this path is driveable headlessly: the test opens the same
 //     OPFS file, reads it back, and hashes it to byte-verify the assembly.
+//     The user cannot reach an OPFS file directly, so on `close()` this sink
+//     hands the staged file off to the user without re-buffering it: it opens
+//     the staged file, takes a `ReadableStream` via `getFile().stream()`, and
+//     pipes it to the StreamSaver-style download service worker (`download-sw.js`),
+//     pacing sends against the worker's pull signal. Peak retained memory stays
+//     one stream chunk, never the whole file, so an 800 MB download does not OOM.
 //
 // Keeping the browser plumbing here lets the Rust side stay a plain `extern`
 // binding with async writeAt/close/abort/setTotal.
@@ -32,6 +38,40 @@
 // Fixed staging name for the OPFS back-end, so a test can re-open and read back
 // the assembled file to byte-verify it.
 const OPFS_STAGING_NAME = '__swarm_ra_download__';
+
+// Service-worker download plumbing, shared with the ordered sink: resolve the
+// worker at the demo root (one level up from assets/) so it controls the
+// synthetic download URL, register it once, and reuse it for OPFS hand-off.
+const SW_URL = resolveRootUrl('download-sw.js');
+const DL_PREFIX = '__stream_dl__';
+
+function resolveRootUrl(rel) {
+  const assetsBase = new URL('.', import.meta.url); // .../assets/
+  return new URL('../' + rel, assetsBase).href;
+}
+
+let swRegistration = null;
+async function ensureServiceWorker() {
+  if (!('serviceWorker' in navigator)) {
+    return null;
+  }
+  if (swRegistration) {
+    return swRegistration;
+  }
+  const scope = resolveRootUrl('');
+  swRegistration = await navigator.serviceWorker.register(SW_URL, { scope });
+  await navigator.serviceWorker.ready;
+  return swRegistration;
+}
+
+function randomId() {
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+// Pre-register the worker eagerly so the OPFS hand-off does not pay for it.
+if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+  ensureServiceWorker().catch(() => {});
+}
 
 // Progress is surfaced through the same window-level hook the ordered sink
 // uses; absent that it is a no-op, so the sink stays usable from a bare page.
@@ -97,8 +137,10 @@ async function fsaSinkFrom(handlePromise, sizeHint) {
 }
 
 // Build a sink over an OPFS-staged file. No gesture required; the file lands
-// under `OPFS_STAGING_NAME` so a test can re-open and read it back.
-async function opfsSink(sizeHint) {
+// under `OPFS_STAGING_NAME` so a test can re-open and read it back. On `close()`
+// the staged file is handed to the user via the download service worker,
+// streamed (never re-buffered whole), so memory stays bounded.
+async function opfsSink(filename, sizeHint) {
   const dir = await navigator.storage.getDirectory();
   const handle = await dir.getFileHandle(OPFS_STAGING_NAME, { create: true });
   const writable = await handle.createWritable({ keepExistingData: true });
@@ -106,7 +148,121 @@ async function opfsSink(sizeHint) {
   if (sizeHint != null && Number.isFinite(sizeHint)) {
     sink.setTotal(sizeHint);
   }
+  // After the positional writes finish and the writable closes, deliver the
+  // staged file to the user as a streamed attachment.
+  const closeWritable = sink.close.bind(sink);
+  sink.close = async () => {
+    await closeWritable();
+    await deliverOpfsViaServiceWorker(handle, filename, sink.total);
+  };
   return sink;
+}
+
+// Hand a completed OPFS-staged file off to the user as a download, streaming it
+// through `download-sw.js` so peak retained memory is one stream chunk, not the
+// whole file. The page reads the OPFS file as a `ReadableStream` and forwards
+// each chunk to the worker over a MessagePort, sending only when the worker's
+// consumer pulls (backpressure). A hidden iframe navigation to the synthetic URL
+// makes the browser treat the streamed Response as an attachment download.
+async function deliverOpfsViaServiceWorker(handle, filename, total) {
+  const reg = await ensureServiceWorker();
+  if (!reg) {
+    // No service worker: leave the file staged in OPFS (a test can still read it
+    // back) but surface that direct delivery was not possible.
+    console.warn('OPFS staged but no service worker for hand-off; file is in OPFS only');
+    return;
+  }
+  const worker = reg.active || navigator.serviceWorker.controller;
+  if (!worker) {
+    await navigator.serviceWorker.ready;
+  }
+  const active = reg.active || navigator.serviceWorker.controller;
+  if (!active) {
+    console.warn('OPFS staged but service worker did not activate; file is in OPFS only');
+    return;
+  }
+
+  const file = await handle.getFile();
+  const id = randomId();
+  const channel = new MessageChannel();
+  const port = channel.port1;
+
+  // Backpressure: the worker posts `pull` when its consumer drains below the
+  // high-water mark; the page sends the next chunk only then.
+  let resolvePull = null;
+  let pulls = 0;
+  let cancelled = false;
+  port.onmessage = (ev) => {
+    const msg = ev.data;
+    if (msg && msg.type === 'pull') {
+      if (resolvePull) {
+        const r = resolvePull;
+        resolvePull = null;
+        r();
+      } else {
+        pulls += 1;
+      }
+    } else if (msg && (msg.type === 'cancel')) {
+      cancelled = true;
+      if (resolvePull) {
+        const r = resolvePull;
+        resolvePull = null;
+        r();
+      }
+    }
+  };
+  const awaitPull = () => {
+    if (cancelled || pulls > 0) {
+      if (pulls > 0) pulls -= 1;
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => { resolvePull = resolve; });
+  };
+
+  active.postMessage(
+    {
+      type: 'register',
+      id,
+      filename: filename || 'swarm-download.bin',
+      total: total != null && Number.isFinite(total) ? total : (file.size || null),
+      port: channel.port2,
+    },
+    [channel.port2],
+  );
+
+  // Trigger the attachment download via a hidden iframe so the page is not
+  // navigated away; the worker answers it with the streamed Response.
+  const dlUrl = resolveRootUrl(DL_PREFIX + '/' + id);
+  const iframe = document.createElement('iframe');
+  iframe.hidden = true;
+  iframe.src = dlUrl;
+  document.body.appendChild(iframe);
+
+  // Pump the OPFS file's ReadableStream to the worker, one chunk per pull.
+  const reader = file.stream().getReader();
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (cancelled) break;
+      await awaitPull();
+      if (cancelled) break;
+      // Copy into a transferable buffer; transfer to keep memory bounded.
+      const buf = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+      port.postMessage(buf, [buf]);
+    }
+    if (!cancelled) {
+      port.postMessage({ type: 'end' });
+    }
+  } catch (err) {
+    try { port.postMessage({ type: 'abort' }); } catch (_) {}
+    console.warn('OPFS service-worker hand-off failed', err);
+  } finally {
+    try { reader.releaseLock(); } catch (_) {}
+    setTimeout(() => {
+      try { iframe.remove(); } catch (_) {}
+    }, 2000);
+  }
 }
 
 export async function createRandomAccessSink(filename, sizeHint) {
@@ -136,7 +292,7 @@ export async function createRandomAccessSink(filename, sizeHint) {
   // FALLBACK: OPFS. Available in every modern engine, needs no gesture, and is
   // the path a headless test drives and reads back to byte-verify.
   if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.getDirectory) {
-    return opfsSink(sizeHint);
+    return opfsSink(filename, sizeHint);
   }
 
   throw new Error('no random-access download path: missing File System Access and OPFS');

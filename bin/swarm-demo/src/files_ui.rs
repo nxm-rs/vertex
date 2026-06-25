@@ -39,13 +39,14 @@ extern "C" {
     fn open_random_access_picker(filename: &str) -> bool;
 }
 
-/// Whether the page URL requests the streaming random-access download path
-/// (`?ra`, default off so the ordered path stays the A/B baseline).
-fn random_access_requested() -> bool {
+/// Whether the page URL requests the old ordered joiner+prefetch download path
+/// (`?ordered`). The streaming random-access path is the default; `?ordered`
+/// keeps the ordered path reachable for A/B comparison and as a fallback.
+fn ordered_requested() -> bool {
     web_sys::window()
         .and_then(|w| w.location().search().ok())
         .and_then(|s| web_sys::UrlSearchParams::new_with_str(&s).ok())
-        .and_then(|p| p.get("ra"))
+        .and_then(|p| p.get("ordered"))
         .is_some_and(|v| v != "0")
 }
 
@@ -235,25 +236,26 @@ fn wire_download(client: SwarmClient) {
         // the picker would be rejected with a SecurityError. The async sink
         // factory consumes the stashed handle (and falls back if it failed).
         let filename = "swarm-download.bin";
-        // `?ra` selects the streaming random-access path; the default keeps the
-        // ordered path as the A/B baseline.
-        let random_access = random_access_requested();
+        // The streaming random-access path is the default (bounded memory, each
+        // leaf written to its byte offset); `?ordered` selects the old ordered
+        // joiner+prefetch path for A/B comparison and as a fallback.
+        let ordered = ordered_requested();
         // Result is conveyed via the stashed save handle the factory consumes.
-        let _ = if random_access {
-            open_random_access_picker(filename)
-        } else {
+        let _ = if ordered {
             open_save_picker(filename)
+        } else {
+            open_random_access_picker(filename)
         };
         install_progress_hook();
 
         spawn_local(async move {
             show_progress(true);
-            let result = if random_access {
-                log_line(&format!("download (random-access) {reference}…"));
-                stream_random_access(&client, &reference, filename).await
+            let result = if ordered {
+                log_line(&format!("download (ordered) {reference}…"));
+                stream_ordered(&client, &reference, filename).await
             } else {
                 log_line(&format!("download {reference}…"));
-                stream_ordered(&client, &reference, filename).await
+                stream_random_access(&client, &reference, filename).await
             };
             match result {
                 Ok(()) => log_line("download complete"),
