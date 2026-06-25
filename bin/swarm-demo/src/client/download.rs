@@ -230,6 +230,41 @@ pub fn reset_peak_retained_chunks() {
     PEAK_RETAINED_CHUNKS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Buffered `(offset, body)` leaves the random-access sink stage may hold between
+/// the fetch stream and the disk writes.
+///
+/// The streaming random-access path decouples fetching from the single positional
+/// sink writable: the fetch stream pushes each landed leaf into a bounded channel
+/// and a sink stage drains it, writing sequentially. The bound caps peak buffered
+/// memory at this many leaves (plus the fetch pool's in-flight width); an
+/// unbounded channel would re-buffer the whole file. Small enough to bound memory,
+/// large enough that a positional write never starves the fetch pool.
+const SINK_CHANNEL_CAP: usize = 128;
+
+/// Peak depth the random-access sink channel reached, a buffered-memory gauge.
+///
+/// The fetch stream stalls (backpressure) once the channel is full, so this never
+/// exceeds [`SINK_CHANNEL_CAP`]. A measurement aid (`peakSinkChannelDepth` /
+/// `resetPeakSinkChannelDepth` on the client) proving the decoupling does not
+/// reintroduce an unbounded buffer.
+static PEAK_SINK_CHANNEL_DEPTH: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Record `current` queued leaves, bumping the channel-depth high-water mark.
+fn observe_sink_channel_depth(current: usize) {
+    PEAK_SINK_CHANNEL_DEPTH.fetch_max(current, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The peak sink-channel-depth high-water mark since the last reset.
+pub fn peak_sink_channel_depth() -> usize {
+    PEAK_SINK_CHANNEL_DEPTH.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reset the sink-channel-depth high-water mark before a measured download.
+pub fn reset_peak_sink_channel_depth() {
+    PEAK_SINK_CHANNEL_DEPTH.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Download the file at `root`, resolving it as a single-file manifest if it is one.
 pub async fn download_reference(
     root: ChunkAddress,
@@ -370,10 +405,17 @@ struct PendingNode {
 /// lands, out of order. Every intermediate and leaf fetch competes for one
 /// bounded pool, so the configured width of individual chunks is in flight
 /// regardless of how few top-level subtrees the tree has (the subtree-granular
-/// variant would fetch only one leaf per subtree at a time). Each pair is
-/// written straight to the random-access `sink` at its offset and then dropped,
-/// so a slow chunk never gates the leaves ready behind it and peak wasm memory
-/// is bounded by the in-flight width, not the file size.
+/// variant would fetch only one leaf per subtree at a time).
+///
+/// The fetch stage and the disk sink run decoupled. A bounded channel
+/// ([`SINK_CHANNEL_CAP`]) carries each landed `(offset, body)` from the fetch
+/// stream to a sink stage that drains it and writes positionally, one write at a
+/// time (the single OPFS/FSA writable is inherently sequential). Both stages are
+/// polled concurrently by one task, so a slow positional write no longer stalls
+/// the fetch pull: the stream keeps pulling and the pool stays saturated, blocking
+/// only when the channel fills (backpressure). Peak wasm memory is bounded by the
+/// fetch width plus the channel cap, not the file size: an unbounded channel would
+/// re-buffer the whole file, which is exactly the coupling this avoids.
 ///
 /// Per-chunk resilience (a per-attempt timeout, inline re-races, and a backoff
 /// for a congested wave) lives in the [`RetryingChunkGet`] the joiner reads from:
@@ -385,6 +427,10 @@ pub async fn stream_file_random_access(
     provider: Arc<dyn SwarmChunkProvider>,
     sink: &RandomAccessSink,
 ) -> Result<(), JsValue> {
+    use futures::SinkExt;
+    use futures::channel::mpsc;
+    use nectar_primitives::bytes::Bytes;
+
     let getter = RetryingChunkGet::new(provider);
     let joiner = Joiner::<RetryingChunkGet, DEFAULT_BODY_SIZE>::new(getter, file_root)
         .await
@@ -400,25 +446,70 @@ pub async fn stream_file_random_access(
         return finish_ra(sink).await;
     }
 
-    let mut written: u64 = 0;
-    let stream = joiner.into_offset_stream_chunked();
-    futures::pin_mut!(stream);
-    while let Some(pair) = stream.next().await {
-        let (offset, body) = match pair {
-            Ok(pair) => pair,
-            Err(e) => {
-                sink.abort_ra(&format!("joiner read: {e}"));
-                return Err(JsValue::from_str(&format!("joiner read: {e}")));
+    // The decoupling channel: the fetch stage sends, the sink stage receives. The
+    // bound applies backpressure (a full channel stalls the fetch pull) and caps
+    // buffered memory. `channel(CAP)` reserves one extra slot per sender, so the
+    // effective queue depth is `CAP + 1`.
+    let (mut tx, mut rx) = mpsc::channel::<(u64, Bytes)>(SINK_CHANNEL_CAP);
+    // Live channel depth, shared by both stages on this single task: the fetch
+    // stage increments on send, the sink stage decrements on drain. A `Cell`, not
+    // an atomic, because both stages run on the one wasm thread.
+    let queued = std::cell::Cell::new(0usize);
+
+    // Fetch stage: drain the offset stream into the channel, awaiting `send` only
+    // when the channel is full. Pulls keep the fetch pool saturated independently
+    // of how fast the sink drains.
+    let fetch_stage = async {
+        let stream = joiner.into_offset_stream_chunked();
+        futures::pin_mut!(stream);
+        while let Some(pair) = stream.next().await {
+            let (offset, body) =
+                pair.map_err(|e| JsValue::from_str(&format!("joiner read: {e}")))?;
+            let depth = queued.get() + 1;
+            queued.set(depth);
+            observe_sink_channel_depth(depth);
+            // Retained leaves: the in-flight fetch width plus what the channel
+            // holds, both bounded, so this never grows with the file.
+            observe_retained(joiner_concurrency_hint() + depth);
+            // A closed receiver means the sink stage aborted; surface that as the
+            // fetch error so the join returns it.
+            tx.send((offset, body))
+                .await
+                .map_err(|_| JsValue::from_str("sink stage closed"))?;
+        }
+        // Drop the sender so the sink stage's receive loop terminates.
+        drop(tx);
+        Ok::<(), JsValue>(())
+    };
+
+    // Sink stage: drain the channel and write each leaf to its byte offset,
+    // sequentially. The single positional writable is written one leg at a time,
+    // but this no longer gates fetching.
+    let sink_stage = async {
+        let mut written: u64 = 0;
+        while let Some((offset, body)) = rx.next().await {
+            queued.set(queued.get().saturating_sub(1));
+            match write_leaf(sink, offset, &body).await {
+                Ok(n) => written += n,
+                Err(e) => {
+                    // Stop receiving so the fetch stage's `send` fails fast and the
+                    // join returns the write error.
+                    rx.close();
+                    return Err(e);
+                }
             }
-        };
-        // The retained-memory high-water mark: a decoded leaf is written to disk
-        // and dropped, never accumulated, so this is bounded by the in-flight
-        // width rather than growing with the file.
-        observe_retained(joiner_concurrency_hint());
-        // Write this leaf at its exact byte offset. The await applies the sink's
-        // backpressure but does not block other ready leaves, which the joiner's
-        // bounded-concurrency fetch keeps resolving behind this write.
-        written += write_leaf(sink, offset, &body).await?;
+        }
+        Ok::<u64, JsValue>(written)
+    };
+
+    // Poll both stages on one task (single-threaded wasm: no spawn, the sink stays
+    // borrowed). A sink-stage write error has already aborted the sink (in
+    // `write_leaf`); a fetch error aborts before propagating.
+    let (fetch_result, sink_result) = futures::future::join(fetch_stage, sink_stage).await;
+    let written = sink_result?;
+    if let Err(e) = fetch_result {
+        sink.abort_ra(&format!("{e:?}"));
+        return Err(e);
     }
 
     debug_assert_eq!(written, total, "written bytes match the file span");

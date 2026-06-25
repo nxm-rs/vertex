@@ -235,6 +235,19 @@ impl SwarmClient {
         download::reset_peak_retained_chunks();
     }
 
+    /// The peak depth the random-access sink channel reached since the last reset
+    /// (the buffered-leaf high-water mark; bounded by the sink channel cap).
+    #[wasm_bindgen(js_name = peakSinkChannelDepth)]
+    pub fn peak_sink_channel_depth(&self) -> usize {
+        download::peak_sink_channel_depth()
+    }
+
+    /// Reset the sink-channel-depth high-water mark before a measured download.
+    #[wasm_bindgen(js_name = resetPeakSinkChannelDepth)]
+    pub fn reset_peak_sink_channel_depth(&self) {
+        download::reset_peak_sink_channel_depth();
+    }
+
     /// List the entries of the manifest rooted at `root_hex` (JS `{ path, address }`).
     #[wasm_bindgen(js_name = lsManifest)]
     pub async fn ls_manifest(&self, root_hex: String) -> Result<js_sys::Array, JsValue> {
